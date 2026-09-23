@@ -7450,7 +7450,10 @@ function addCrmOpportunity() {
     stage: '', value: '', close_date: '',
     win_pct: '', status: '', loss_reason: '',
     priority: '', source: '',
-    personal_interest: '', turf_product: '', description: ''
+    personal_interest: '', turf_product: '', description: '',
+    // Stuck Deals measures from the last stage change; with none yet, this
+    // is what stops a new deal reading as stuck since the beginning of time.
+    created_at: new Date().toISOString(),
   });
   saveCrmOpportunities();
   renderCrmOpportunitiesTab();
@@ -8875,6 +8878,7 @@ function _crmMakeOpportunity(seed) {
     personal_interest: seed.personal_interest || '',
     turf_product:      seed.turf_product || '',
     description:       seed.description || '',
+    created_at:        new Date().toISOString(),
   };
   crmOpportunities.unshift(opp);
   return opp;
@@ -9319,6 +9323,13 @@ function _crmOutreachRows() {
     return st !== 'Won' && st !== 'Lost';
   });
 
+  // Built once, not once per row: the outstanding list walks the whole touch
+  // log, and rebuilding it inside the map would do that for every open deal.
+  const steps = _crmAllOutstandingSteps();
+  const stepFor = o => steps.find(st =>
+    st._subject === o.id
+    || String(st.company || '').trim().toLowerCase() === String(o.company || '').trim().toLowerCase());
+
   const rows = open.map(o => {
     const company = _crmCompanyFor(o.company);
     const person  = _crmPersonFor(o.company, o.lead_contact);
@@ -9327,9 +9338,15 @@ function _crmOutreachRows() {
     const due     = String(o.close_date || '');
 
     const touch = _crmTouchForOpp(o);
+    // The promise outstanding against this deal, so the call list says what
+    // you said you would do rather than only who to ring.
+    const step = stepFor(o);
     return {
       id:       o.id,
       touch,
+      next_step:      step ? step.next_step : '',
+      next_step_due:  step ? step.due : '',
+      next_step_late: !!(step && step.overdue),
       days_since: touch ? _crmDaysSince(touch.at) : null,
       priority: o.priority || '',
       name:     o.name || '',
@@ -9397,9 +9414,13 @@ const _CRM_OUTREACH_COLS = [
       return b ? `<span style="background:${b.color};color:#fff;border-radius:10px;padding:0.1rem 0.45rem;
         font-size:0.67rem;font-weight:600;white-space:nowrap">${esc(r.field_age)} · ${esc(b.label)}</span>` : ''; },
     text: r => r.bucket ? `${r.field_age} · ${r.bucket}` : '' },
-  { f: 'personal_interest', label: 'Personal Interest', w: 7 },
-  { f: 'turf_product',      label: 'Turf Product', w: 6.5 },
-  { f: 'opener',            label: 'Opener (News Center)', w: 5, cell: r =>
+  { f: 'next_step',         label: 'Last Promised', w: 9, cell: r => r.next_step
+      ? `<span style="font-size:0.74rem;color:${r.next_step_late ? '#f87171' : 'var(--text)'}"
+           title="${r.next_step_due ? 'Due ' + esc(r.next_step_due) : 'No due date'}">${esc(r.next_step)}</span>`
+      : '<span style="color:var(--muted)">—</span>' },
+  { f: 'personal_interest', label: 'Personal Interest', w: 5.5 },
+  { f: 'turf_product',      label: 'Turf Product', w: 5 },
+  { f: 'opener',            label: 'Opener (News Center)', w: 4, cell: r =>
       `<span style="font-size:0.76rem;color:${r.opener ? 'var(--text)' : 'var(--muted)'}">${esc(r.opener || '—')}</span>` },
 ];
 
@@ -9466,6 +9487,543 @@ const _CRM_ACTIVITY_COLS = [
 
 function _crmSetActivityDays(days) { _crmActivityDays = parseInt(days, 10) || 30; renderCrmReportsTab(); }
 
+
+/* ═══════════════════════════════════════════
+   CRM — the reports the data was already there for
+
+   Three of these read fields the CRM has been collecting and never once
+   read back: the next step and due date on every logged touch, the loss
+   reason on every closed deal, and the install year on every field. Data
+   captured and never surfaced is worse than data not captured — someone
+   typed it believing it would be used.
+═══════════════════════════════════════════ */
+
+function _crmMedian(nums) {
+  const a = nums.filter(n => Number.isFinite(n)).sort((x, y) => x - y);
+  if (!a.length) return null;
+  const m = Math.floor(a.length / 2);
+  return a.length % 2 ? a[m] : Math.round((a[m - 1] + a[m]) / 2);
+}
+
+const _crmToday = () => new Date().toISOString().slice(0, 10);
+
+/* ── 1. Next Steps Due ──────────────────────────────────────────────────
+   Every touch records what was agreed next. Nothing has ever told anyone it
+   was due. A rep says "quote by Thursday", it is written down, and Thursday
+   passes in silence. */
+
+let _crmStepScope = 'open';   // 'overdue' | 'week' | 'open'
+
+/**
+ * The outstanding promise per subject.
+ *
+ * The latest touch that set a next step wins: a later conversation that set
+ * a new one supersedes it. A later touch that set NO next step does not —
+ * saying nothing is not the same as saying it is done, and treating it that
+ * way would quietly clear promises nobody kept.
+ */
+function _crmOutstandingSteps() {
+  const latest = new Map();
+  for (const t of crmTouches) {
+    if (!String(t.next_step || '').trim()) continue;
+    const key = t.person_id ? 'p:' + t.person_id
+              : t.opp_id    ? 'o:' + t.opp_id
+              : 'c:' + String(t.company || '').trim().toLowerCase();
+    const cur = latest.get(key);
+    if (!cur || String(t.at) > String(cur.at)) latest.set(key, t);
+  }
+
+  const today = _crmToday();
+  const weekOut = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+
+  const rows = [...latest.values()].map(t => {
+    const person = t.person_id ? crmPeople.find(p => p.id === t.person_id) : null;
+    const opp    = t.opp_id    ? crmOpportunities.find(o => o.id === t.opp_id) : null;
+    const due    = String(t.next_step_date || '');
+    return {
+      id: t.id, at: t.at, due,
+      _kind:    t.person_id ? 'person' : 'opportunity',
+      _subject: t.person_id || t.opp_id || '',
+      overdue:  !!due && due < today,
+      due_in:   due ? Math.round((Date.parse(due) - Date.parse(today)) / 86400000) : null,
+      next_step: t.next_step,
+      who:      _crmTouchWho(t),
+      company:  t.company || (opp && opp.company) || (person && person.company) || '',
+      lead_contact: (opp && opp.lead_contact) || (person && person.lead_contact) || '',
+      phone:    (person && person.work_phone) || '',
+      email:    (person && person.work_email) || '',
+      promised: new Date(t.at).toLocaleDateString(),
+      by:       t.by || '',
+      // A promise attached to a deal that is already closed is not owed.
+      _closed:  !!opp && ['Won', 'Lost'].includes(String(opp.status || '').trim()),
+    };
+  }).filter(r => !r._closed);
+
+  const scoped = _crmStepScope === 'overdue' ? rows.filter(r => r.overdue)
+    : _crmStepScope === 'week' ? rows.filter(r => r.due && r.due <= weekOut)
+    : rows;
+
+  // Most overdue first — that is the order they should be dealt with. A step
+  // with no date is a promise without a deadline, so it sits at the bottom
+  // rather than pretending to be urgent.
+  return scoped.sort((a, b) => {
+    if (!a.due && !b.due) return String(b.at).localeCompare(String(a.at));
+    if (!a.due) return 1;
+    if (!b.due) return -1;
+    return a.due.localeCompare(b.due);
+  });
+}
+
+function _crmStepCell(r) {
+  if (!r.due) return `<span style="font-size:0.72rem;color:var(--muted)">no date</span>`;
+  const color = r.overdue ? '#f87171' : r.due_in === 0 ? '#fbbf24' : '#4ade80';
+  const label = r.overdue ? `${Math.abs(r.due_in)}d late` : r.due_in === 0 ? 'today' : `in ${r.due_in}d`;
+  return `<span style="font-size:0.72rem;color:${color};font-weight:600;white-space:nowrap"
+    title="Due ${esc(r.due)}">${label}</span>`;
+}
+
+const _CRM_STEP_COLS = [
+  { f: '_due',        label: 'Due',        w: 6,  cell: _crmStepCell,
+    text: r => r.due ? String(r.due_in) : '99999' },
+  { f: 'due',         label: 'Due Date',   w: 7 },
+  { f: 'next_step',   label: 'What Was Promised', w: 24 },
+  { f: 'who',         label: 'Who',        w: 13 },
+  { f: 'company',     label: 'Company',    w: 13 },
+  { f: 'lead_contact', label: 'Lead Contact', w: 9 },
+  { f: 'phone',       label: 'Phone',      w: 8 },
+  { f: 'promised',    label: 'Promised On', w: 8 },
+  { f: 'by',          label: 'By',         w: 7 },
+];
+
+/* ── 2. Replacement Forecast ────────────────────────────────────────────
+   The dashboard buckets say what is due today. This says what is due next
+   year, which is the only version of the question you can plan against. */
+
+const _CRM_REPLACE_AT = (_CRM_AGE_BUCKETS.find(b => b.key === 'replacement') || { min: 8 }).min;
+
+function _crmForecastRows() {
+  const thisYear = new Date().getFullYear();
+  return crmFields.map(f => {
+    const age = _crmFieldAge(f);
+    if (age == null) return null;
+    const installed = parseInt(String(f.installed_year).slice(0, 4), 10);
+    const co = crmCompanies.find(c => c.id === f.company_id)
+      || crmCompanies.find(c => String(c.company_name || '').trim().toLowerCase()
+           === String(f.company_name || '').trim().toLowerCase());
+    const company = (co && co.company_name) || f.company_name || '';
+    const open = crmOpportunities.some(o =>
+      String(o.company || '').trim().toLowerCase() === company.trim().toLowerCase()
+      && !['Won', 'Lost'].includes(String(o.status || '').trim()));
+    const bucket = _crmBucketForAge(age);
+    return {
+      id: f.id,
+      due_year: installed + _CRM_REPLACE_AT,
+      overdue:  installed + _CRM_REPLACE_AT <= thisYear,
+      field:    f.field_name || f.field_type || 'Field',
+      company,
+      field_type: f.field_type || '',
+      field_size: f.field_size || '',
+      installed: String(installed),
+      age:      String(age),
+      bucket:   bucket ? bucket.label : '',
+      state:    (co && co.state) || '',
+      lead_contact: (co && co.lead_contact) || '',
+      turf_product: f.turf_product || (co && co.turf_product) || '',
+      has_opp:  open,
+    };
+  }).filter(Boolean)
+    .sort((a, b) => a.due_year - b.due_year || a.company.localeCompare(b.company));
+}
+
+const _CRM_FORECAST_COLS = [
+  { f: 'due_year',  label: 'Due',  w: 6, cell: r =>
+      `<span style="font-size:0.72rem;font-weight:700;white-space:nowrap;
+        color:${r.overdue ? '#f87171' : '#fbbf24'}">${r.overdue ? 'now' : r.due_year}</span>`,
+    text: r => String(r.due_year) },
+  { f: 'field',        label: 'Field',       w: 13 },
+  { f: 'company',      label: 'Company',     w: 16 },
+  { f: 'field_type',   label: 'Type',        w: 8 },
+  { f: 'field_size',   label: 'Size',        w: 6 },
+  { f: 'installed',    label: 'Installed',   w: 6 },
+  { f: 'age',          label: 'Age',         w: 4 },
+  { f: 'bucket',       label: 'Bucket Now',  w: 11, cell: r => {
+      const b = _CRM_AGE_BUCKETS.find(x => x.label === r.bucket);
+      return b ? `<span style="background:${b.color};color:#fff;border-radius:10px;padding:0.1rem 0.45rem;
+        font-size:0.67rem;font-weight:600;white-space:nowrap">${esc(b.label)}</span>` : ''; } },
+  { f: 'turf_product', label: 'Turf Product', w: 8 },
+  { f: 'state',        label: 'St',          w: 3 },
+  { f: 'lead_contact', label: 'Lead Contact', w: 8 },
+  // The column that turns a forecast into a task list.
+  { f: 'has_opp',      label: 'Open Deal?',  w: 7,
+    text: r => r.has_opp ? 'Yes' : 'No',
+    cell: r => r.has_opp
+      ? `<span style="font-size:0.7rem;color:#4ade80">yes</span>`
+      : `<span style="font-size:0.7rem;color:#f87171;font-weight:600">none</span>` },
+];
+
+/* ── 3. Win / Loss ──────────────────────────────────────────────────────
+   Loss Reason has been a curated pick list on every closed-lost deal and
+   nothing has ever counted it. */
+
+let _crmWinLossDim = 'source';
+
+const _CRM_WINLOSS_DIMS = [
+  { key: 'source',       label: 'Source' },
+  { key: 'loss_reason',  label: 'Loss Reason' },
+  { key: 'lead_contact', label: 'Lead Contact' },
+  { key: 'turf_product', label: 'Turf Product' },
+  { key: 'stage',        label: 'Stage Lost At' },
+];
+
+function _crmClosedOpps() {
+  return crmOpportunities.filter(o => {
+    const st = String(o.status || '').trim(), sg = String(o.stage || '').trim();
+    return st === 'Won' || st === 'Lost' || sg === 'Closed Won' || sg === 'Closed Lost';
+  }).map(o => ({
+    ...o,
+    _won: String(o.status || '').trim() === 'Won' || String(o.stage || '').trim() === 'Closed Won',
+  }));
+}
+
+function _crmWinLossRows() {
+  const dim = _crmWinLossDim;
+  // Only a lost deal has a loss reason, so counting won deals under it would
+  // pile every win into "not recorded" and make the split meaningless.
+  const closed = _crmClosedOpps().filter(o => dim !== 'loss_reason' || !o._won);
+
+  const by = new Map();
+  for (const o of closed) {
+    const key = String(o[dim] || '').trim() || '— not recorded —';
+    if (!by.has(key)) by.set(key, { value: key, won: 0, lost: 0, won_value: 0, lost_value: 0 });
+    const g = by.get(key);
+    const v = parseFloat(o.value) || 0;
+    if (o._won) { g.won++; g.won_value += v; } else { g.lost++; g.lost_value += v; }
+  }
+
+  return [...by.values()].map(g => {
+    const total = g.won + g.lost;
+    return { ...g, total, win_pct: total ? Math.round((g.won / total) * 100) : 0 };
+  }).sort((a, b) => b.total - a.total || a.value.localeCompare(b.value));
+}
+
+const _CRM_WINLOSS_COLS = [
+  { f: 'value',      label: 'Value',   w: 26 },
+  { f: 'total',      label: 'Closed',  w: 9 },
+  { f: 'won',        label: 'Won',     w: 8 },
+  { f: 'lost',       label: 'Lost',    w: 8 },
+  { f: 'win_pct',    label: 'Win %',   w: 9, cell: r => {
+      if (!r.total) return '';
+      const c = r.win_pct >= 50 ? '#4ade80' : r.win_pct >= 25 ? '#fbbf24' : '#f87171';
+      return `<span style="color:${c};font-weight:700;font-size:0.78rem">${r.win_pct}%</span>`; } },
+  { f: 'won_value',  label: 'Won $',   w: 20, text: r => String(Math.round(r.won_value)),
+    cell: r => `<span style="color:#4ade80">$${Math.round(r.won_value).toLocaleString()}</span>` },
+  { f: 'lost_value', label: 'Lost $',  w: 20, text: r => String(Math.round(r.lost_value)),
+    cell: r => `<span style="color:var(--muted)">$${Math.round(r.lost_value).toLocaleString()}</span>` },
+];
+
+/* ── 4. Stuck Deals ─────────────────────────────────────────────────────
+   Different from gone cold: a deal can be talked to every week and still
+   not move. This reads the stage log rather than the touch log. */
+
+let _crmStuckDays = 30;
+
+function _crmStuckRows() {
+  const lastMove = new Map();
+  for (const e of crmStatusLog) {
+    if (e.field !== 'Stage') continue;          // status flips are not progress
+    const cur = lastMove.get(e.opp_id);
+    if (!cur || String(e.at) > String(cur)) lastMove.set(e.opp_id, e.at);
+  }
+
+  return crmOpportunities
+    .filter(o => !['Won', 'Lost'].includes(String(o.status || '').trim()))
+    .map(o => {
+      // No stage move yet: fall back to when the row was created, which new
+      // opportunities stamp. Older rows have neither, and say so rather than
+      // being reported as stuck since the beginning of time.
+      const moved = lastMove.get(o.id) || '';
+      const since = moved || o.created_at || '';
+      const touch = _crmTouchForOpp(o);
+      return {
+        id: o.id,
+        days:     since ? _crmDaysSince(since) : null,
+        basis:    moved ? 'stage moved' : (o.created_at ? 'created' : 'unknown'),
+        name:     o.name || '',
+        company:  o.company || '',
+        stage:    o.stage || '',
+        priority: o.priority || '',
+        value:    o.value || '',
+        lead_contact: o.lead_contact || '',
+        touch,
+      };
+    })
+    .filter(r => r.days == null || r.days >= _crmStuckDays)
+    .sort((a, b) => (b.days == null ? -1 : a.days == null ? 1 : b.days - a.days));
+}
+
+const _CRM_STUCK_COLS = [
+  { f: 'days', label: 'Not Moved', w: 8,
+    text: r => r.days == null ? '99999' : String(r.days),
+    cell: r => r.days == null
+      ? `<span style="font-size:0.72rem;color:var(--muted)" title="No stage change recorded and no creation date">unknown</span>`
+      : `<span style="font-size:0.72rem;font-weight:600;white-space:nowrap;
+          color:${r.days >= 90 ? '#f87171' : r.days >= 60 ? '#fbbf24' : 'var(--text)'}"
+          title="Since it last ${esc(r.basis)}">${r.days}d</span>` },
+  { f: 'name',     label: 'Opportunity', w: 17 },
+  { f: 'company',  label: 'Company',     w: 15 },
+  { f: 'stage',    label: 'Stuck In',    w: 11 },
+  { f: 'priority', label: 'Priority',    w: 8 },
+  { f: 'value',    label: 'Value',       w: 8,
+    cell: r => r.value ? `$${Number(r.value).toLocaleString()}` : '' },
+  { f: 'lead_contact', label: 'Lead Contact', w: 10 },
+  { f: '_touch', label: 'Last Touch', w: 8, filter: false,
+    cell: r => _crmTouchCell(r.touch), text: r => _crmTouchText(r.touch) },
+  { f: 'basis',  label: 'Measured From', w: 10 },
+];
+
+/* ── 5. Rep Scorecard ───────────────────────────────────────────────────
+   One row per person who carries accounts. */
+
+function _crmScorecardRows() {
+  const names = new Set(_crmListValues('crm_lead_contacts'));
+  for (const list of [crmPeople, crmCompanies, crmOpportunities]) {
+    for (const r of list) { const v = String(r.lead_contact || '').trim(); if (v) names.add(v); }
+  }
+
+  const since30 = Date.now() - 30 * 86400000;
+
+  return [...names].sort((a, b) => a.localeCompare(b)).map(name => {
+    const mine   = crmOpportunities.filter(o => String(o.lead_contact || '').trim() === name);
+    const open   = mine.filter(o => !['Won', 'Lost'].includes(String(o.status || '').trim()));
+    const closed = mine.filter(o =>  ['Won', 'Lost'].includes(String(o.status || '').trim()));
+    const won    = closed.filter(o => String(o.status || '').trim() === 'Won');
+    const touches = crmTouches.filter(t => String(t.by || '').trim() === name && Date.parse(t.at) >= since30);
+
+    const gaps = open.map(o => { const t = _crmTouchForOpp(o); return t ? _crmDaysSince(t.at) : null; })
+      .map(d => d == null ? 9999 : d);
+
+    const overdue = _crmAllOutstandingSteps()
+      .filter(r => r.overdue && String(r.lead_contact || '').trim() === name).length;
+
+    return {
+      name,
+      open_count: open.length,
+      open_value: open.reduce((n, o) => n + (parseFloat(o.value) || 0), 0),
+      won_count:  won.length,
+      won_value:  won.reduce((n, o) => n + (parseFloat(o.value) || 0), 0),
+      win_pct:    closed.length ? Math.round((won.length / closed.length) * 100) : null,
+      touches30:  touches.length,
+      median_gap: _crmMedian(gaps),
+      overdue,
+    };
+  }).filter(r => r.open_count || r.won_count || r.touches30);
+}
+
+/** The full outstanding list regardless of the scope the tab is showing. */
+function _crmAllOutstandingSteps() {
+  const keep = _crmStepScope;
+  _crmStepScope = 'open';
+  try { return _crmOutstandingSteps(); } finally { _crmStepScope = keep; }
+}
+
+const _CRM_SCORE_COLS = [
+  { f: 'name',       label: 'Lead Contact', w: 16 },
+  { f: 'open_count', label: 'Open Deals',   w: 9 },
+  { f: 'open_value', label: 'Open Pipeline', w: 13, text: r => String(Math.round(r.open_value)),
+    cell: r => `<span style="color:#60a5fa">$${Math.round(r.open_value).toLocaleString()}</span>` },
+  { f: 'won_count',  label: 'Won',          w: 7 },
+  { f: 'won_value',  label: 'Won $',        w: 13, text: r => String(Math.round(r.won_value)),
+    cell: r => `<span style="color:#4ade80">$${Math.round(r.won_value).toLocaleString()}</span>` },
+  { f: 'win_pct',    label: 'Win %',        w: 8,
+    text: r => r.win_pct == null ? '' : String(r.win_pct),
+    cell: r => r.win_pct == null ? '<span style="color:var(--muted)">—</span>'
+      : `<span style="font-weight:700;color:${r.win_pct >= 50 ? '#4ade80' : '#fbbf24'}">${r.win_pct}%</span>` },
+  { f: 'touches30',  label: 'Contacts 30d', w: 10 },
+  { f: 'median_gap', label: 'Median Gap',   w: 11,
+    text: r => r.median_gap == null ? '' : String(r.median_gap),
+    cell: r => r.median_gap == null ? '<span style="color:var(--muted)">—</span>'
+      : `<span style="color:${r.median_gap >= _CRM_COLD_DAYS ? '#f87171' : 'var(--text)'}">${r.median_gap >= 9999 ? 'never' : r.median_gap + 'd'}</span>` },
+  { f: 'overdue',    label: 'Overdue Steps', w: 11,
+    cell: r => r.overdue
+      ? `<span style="color:#f87171;font-weight:700">${r.overdue}</span>`
+      : `<span style="color:var(--muted)">0</span>` },
+];
+
+function _crmSetStepScope(v)   { _crmStepScope = v;   renderCrmReportsTab(); }
+function _crmSetWinLossDim(v)  { _crmWinLossDim = v;  renderCrmReportsTab(); }
+function _crmSetStuckDays(d)   { _crmStuckDays = parseInt(d, 10) || 30; renderCrmReportsTab(); }
+
+/* ── Shared report chrome, so eight reports do not repeat one header ──── */
+function _crmReportHead(title, blurb, meta, tools) {
+  return `<div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:0.7rem;gap:1rem;flex-wrap:wrap">
+      <div style="min-width:0">
+        <div style="font-size:0.9rem;font-weight:600;color:var(--text)">${title}</div>
+        <div style="font-size:0.76rem;color:var(--muted);max-width:66ch;margin-top:0.15rem">${blurb}</div>
+        <div style="font-size:0.75rem;color:var(--muted);margin-top:0.35rem">${meta}</div>
+      </div>
+      <div style="display:flex;gap:0.5rem;align-items:center;flex-shrink:0">${tools}</div>
+    </div>`;
+}
+
+const _crmScopeBtn = (fn, cur, val, label) => `<button onclick="${fn}('${val}')"
+  style="background:${cur === val ? 'var(--blue)' : 'var(--surface2)'};
+         color:${cur === val ? '#fff' : 'var(--muted)'};
+         border:1px solid ${cur === val ? 'var(--blue)' : 'var(--border)'};
+         border-radius:4px;padding:0.15rem 0.55rem;font-size:0.73rem;font-weight:600;cursor:pointer">${label}</button>`;
+
+function _crmRenderNextSteps() {
+  const rows = _crmOutstandingSteps();
+  const all  = _crmAllOutstandingSteps();
+  const late = all.filter(r => r.overdue).length;
+
+  return _crmReportHead('Next Steps Due',
+    'What was promised on the last call, and whether it has come due. Every logged contact can carry a next step — this is the list of them still owed.',
+    `<strong style="color:var(--text)">${rows.length}</strong> shown · ${late} overdue of ${all.length} outstanding
+     <span style="margin-left:0.6rem;display:inline-flex;gap:0.3rem">
+       ${_crmScopeBtn('_crmSetStepScope', _crmStepScope, 'overdue', 'Overdue')}
+       ${_crmScopeBtn('_crmSetStepScope', _crmStepScope, 'week',    'Next 7 days')}
+       ${_crmScopeBtn('_crmSetStepScope', _crmStepScope, 'open',    'All outstanding')}
+     </span>`,
+    _crmToolButtons(`_crmExportCsv('next-steps-due', _CRM_STEP_COLS, _crmOutstandingSteps(), 'steps')`,
+      `_crmPrintReport('Next Steps Due','What was promised', _CRM_STEP_COLS, _crmOutstandingSteps(), 'steps')`))
+    + _crmTable({
+        table: 'steps', cols: _CRM_STEP_COLS, rows,
+        actions: r => _crmTouchBtn(r._kind, r._subject), actionCols: [2.5],
+        minWidth: 1400,
+        empty: _crmStepScope === 'overdue'
+          ? 'Nothing overdue. Try “All outstanding”.'
+          : 'No next steps outstanding. They are set when you log a contact — the “Next step” box on the ☏ form.',
+      });
+}
+
+function _crmRenderForecast() {
+  const rows = _crmForecastRows();
+  const year = new Date().getFullYear();
+
+  // How many fields come due in each of the next few years — the planning
+  // view. The table under it is the same data, one row per field.
+  const years = [];
+  for (let y = year; y <= year + 5; y++) {
+    const n = rows.filter(r => y === year ? r.due_year <= year : r.due_year === y).length;
+    years.push({ y, n, label: y === year ? 'Due now' : String(y) });
+  }
+  const peak = Math.max(...years.map(v => v.n), 1);
+  const noOpp = rows.filter(r => r.overdue && !r.has_opp).length;
+
+  const strip = `<div style="display:grid;grid-template-columns:repeat(${years.length},1fr);gap:0.6rem;margin-bottom:1rem">
+    ${years.map(v => `<div style="background:var(--surface2);border:1px solid var(--border);
+        border-top:3px solid ${v.y === year ? '#f87171' : '#fbbf24'};border-radius:7px;padding:0.7rem 0.85rem">
+      <div style="font-size:0.62rem;text-transform:uppercase;letter-spacing:0.09em;color:var(--muted)">${esc(v.label)}</div>
+      <div style="font-size:1.5rem;font-weight:700;color:var(--text);line-height:1.1;margin-top:0.25rem">${v.n}</div>
+      <div style="background:var(--bg);border-radius:3px;height:4px;margin-top:0.45rem">
+        <div style="width:${Math.round(v.n / peak * 100)}%;height:100%;border-radius:3px;
+          background:${v.y === year ? '#f87171' : '#fbbf24'}"></div>
+      </div>
+    </div>`).join('')}
+  </div>`;
+
+  return _crmReportHead('Replacement Forecast',
+    `Every field you know, by the year it reaches ${_CRM_REPLACE_AT} years old. The dashboard buckets say what is due today; this says what is due next season, and which of those has nobody working it.`,
+    `<strong style="color:var(--text)">${rows.length}</strong> dated field${rows.length === 1 ? '' : 's'}
+     ${noOpp ? ` · <span style="color:#f87171">${noOpp} already due with no open deal</span>` : ''}`,
+    _crmToolButtons(`_crmExportCsv('replacement-forecast', _CRM_FORECAST_COLS, _crmForecastRows(), 'forecast')`,
+      `_crmPrintReport('Replacement Forecast','By year due', _CRM_FORECAST_COLS, _crmForecastRows(), 'forecast')`))
+    + strip
+    + _crmTable({
+        table: 'forecast', cols: _CRM_FORECAST_COLS, rows, minWidth: 1450,
+        empty: 'No fields carry an install year yet — add one on a field row and it will appear here.',
+      });
+}
+
+function _crmRenderWinLoss() {
+  const rows   = _crmWinLossRows();
+  const closed = _crmClosedOpps();
+  const won    = closed.filter(o => o._won);
+  const rate   = closed.length ? Math.round((won.length / closed.length) * 100) : null;
+  const dim    = _CRM_WINLOSS_DIMS.find(d => d.key === _crmWinLossDim);
+
+  return _crmReportHead('Win / Loss',
+    'Where deals come from, and why they go. Loss Reason is a curated list on every closed-lost deal — this is what it adds up to.',
+    `<strong style="color:var(--text)">${closed.length}</strong> closed ·
+     ${rate == null ? 'no win rate yet' : `<strong style="color:${rate >= 50 ? '#4ade80' : '#fbbf24'}">${rate}%</strong> won overall`}
+     <span style="margin-left:0.6rem;display:inline-flex;gap:0.3rem;flex-wrap:wrap">
+       ${_CRM_WINLOSS_DIMS.map(d => _crmScopeBtn('_crmSetWinLossDim', _crmWinLossDim, d.key, d.label)).join('')}
+     </span>`,
+    _crmToolButtons(`_crmExportCsv('win-loss', _CRM_WINLOSS_COLS, _crmWinLossRows(), 'winloss')`,
+      `_crmPrintReport('Win / Loss','By ${esc(dim ? dim.label : '')}', _CRM_WINLOSS_COLS, _crmWinLossRows(), 'winloss')`))
+    + _crmTable({
+        table: 'winloss', cols: _CRM_WINLOSS_COLS, rows, minWidth: 1000,
+        empty: 'Nothing closed yet. Set an opportunity’s Status to Won or Lost and it will count here.',
+      });
+}
+
+function _crmRenderStuck() {
+  const rows = _crmStuckRows();
+  return _crmReportHead('Stuck Deals',
+    'Open deals whose stage has not moved. Not the same as gone cold — a deal can be spoken to every week and still sit in Proposal for a quarter.',
+    `<strong style="color:var(--text)">${rows.length}</strong> not moved in
+     <select onchange="_crmSetStuckDays(this.value)"
+       style="background:var(--surface2);border:1px solid var(--border);color:var(--text);
+              border-radius:3px;font-size:0.73rem;padding:0.1rem 0.25rem;outline:none;cursor:pointer">
+       ${[14, 30, 60, 90, 180].map(d => `<option value="${d}" ${_crmStuckDays === d ? 'selected' : ''}>${d} days</option>`).join('')}
+     </select>`,
+    _crmToolButtons(`_crmExportCsv('stuck-deals', _CRM_STUCK_COLS, _crmStuckRows(), 'stuck')`,
+      `_crmPrintReport('Stuck Deals','No stage change in ${_crmStuckDays} days', _CRM_STUCK_COLS, _crmStuckRows(), 'stuck')`))
+    + _crmTable({
+        table: 'stuck', cols: _CRM_STUCK_COLS, rows,
+        actions: r => _crmTouchBtn('opportunity', r.id), actionCols: [2.5],
+        minWidth: 1300,
+        empty: 'Nothing has been sitting that long. Stage changes are recorded from the moment an opportunity’s Stage is changed.',
+      });
+}
+
+function _crmRenderScorecard() {
+  const rows = _crmScorecardRows();
+  return _crmReportHead('Rep Scorecard',
+    'One row per person carrying accounts: what they are holding, what they have closed, how recently they have spoken to it, and what they owe.',
+    `<strong style="color:var(--text)">${rows.length}</strong> lead contact${rows.length === 1 ? '' : 's'} with activity
+     · median gap is across their own open deals`,
+    _crmToolButtons(`_crmExportCsv('rep-scorecard', _CRM_SCORE_COLS, _crmScorecardRows(), 'score')`,
+      `_crmPrintReport('Rep Scorecard','Pipeline and activity by lead contact', _CRM_SCORE_COLS, _crmScorecardRows(), 'score')`))
+    + _crmTable({
+        table: 'score', cols: _CRM_SCORE_COLS, rows, minWidth: 1150,
+        empty: 'No lead contacts are carrying anything yet — set Lead Contact on a person, company or opportunity.',
+      });
+}
+
+/** The totals strip above the activity log: what happened, not just a list. */
+function _crmActivityTotals(rows) {
+  if (!rows.length) return '';
+  const byChannel = new Map(), byPerson = new Map();
+  for (const r of rows) {
+    const c = r.channel || '—', p = r.by || '—';
+    byChannel.set(c, (byChannel.get(c) || 0) + 1);
+    byPerson.set(p,  (byPerson.get(p)  || 0) + 1);
+  }
+  const weeks = Math.max(1, Math.round(_crmActivityDays / 7));
+  const perWeek = (rows.length / weeks).toFixed(1);
+
+  // People with nothing ever logged — the companion question to "what did we
+  // do", and the one a list of activity cannot answer by itself.
+  const untouched = crmPeople.filter(p => !_crmTouchForPerson(p)).length;
+
+  const pill = (label, n) => `<span style="background:var(--surface2);border:1px solid var(--border);
+    border-radius:11px;padding:0.12rem 0.55rem;font-size:0.72rem;color:var(--text);white-space:nowrap">
+    ${esc(label)} <strong>${n}</strong></span>`;
+
+  return `<div style="display:flex;gap:0.9rem;flex-wrap:wrap;align-items:center;margin-bottom:0.85rem;
+      padding:0.7rem 0.85rem;background:var(--surface2);border:1px solid var(--border);border-radius:7px">
+    <span style="font-size:0.72rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.08em">Per week</span>
+    <span style="font-size:1.1rem;font-weight:700;color:var(--text)">${perWeek}</span>
+    <span class="nc-filter-sep" style="background:var(--border);width:1px;align-self:stretch"></span>
+    ${[...byChannel.entries()].sort((a, b) => b[1] - a[1]).map(([c, n]) => pill(c, n)).join('')}
+    <span class="nc-filter-sep" style="background:var(--border);width:1px;align-self:stretch"></span>
+    ${[...byPerson.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([p, n]) => pill(p, n)).join('')}
+    ${untouched ? `<span style="margin-left:auto;font-size:0.73rem;color:#f87171">
+      ${untouched} contact${untouched === 1 ? '' : 's'} never logged</span>` : ''}
+  </div>`;
+}
+
 /* ── The tab ────────────────────────────────────────────────────────────── */
 
 function _crmSetReport(which) { _crmReport = which; renderCrmReportsTab(); }
@@ -9483,11 +10041,27 @@ function renderCrmReportsTab() {
            border:1px solid ${_crmReport === key ? 'var(--blue)' : 'var(--border)'};
            border-radius:4px;padding:0.25rem 0.7rem;font-size:0.78rem;font-weight:600;cursor:pointer">${label}</button>`;
 
-  const head = `<div style="display:flex;gap:0.4rem;margin-bottom:0.9rem">
+  const head = `<div style="display:flex;gap:0.4rem;margin-bottom:0.9rem;flex-wrap:wrap">
       ${tab('outreach', 'Outreach This Week')}
+      ${tab('steps',    'Next Steps Due')}
+      ${tab('stuck',    'Stuck Deals')}
+      ${tab('forecast', 'Replacement Forecast')}
+      ${tab('winloss',  'Win / Loss')}
+      ${tab('score',    'Rep Scorecard')}
       ${tab('activity', 'Contact Activity')}
       ${tab('status',   'Status Changes')}
     </div>`;
+
+  // Each new report renders itself; the two originals keep their inline
+  // branches below rather than being rewritten for the sake of symmetry.
+  const panels = {
+    steps:    _crmRenderNextSteps,
+    forecast: _crmRenderForecast,
+    winloss:  _crmRenderWinLoss,
+    stuck:    _crmRenderStuck,
+    score:    _crmRenderScorecard,
+  };
+  if (panels[_crmReport]) { root.innerHTML = head + panels[_crmReport](); return; }
 
   if (_crmReport === 'outreach') {
     const rows = _crmOutreachRows();
@@ -9556,6 +10130,7 @@ function renderCrmReportsTab() {
             `_crmPrintReport('Contact Activity','Last ${_crmActivityDays} days', _CRM_ACTIVITY_COLS, _crmActivityRows(), 'activity')`)}
         </div>
       </div>
+      ${_crmActivityTotals(rows)}
       ${_crmTable({
         table: 'activity', cols: _CRM_ACTIVITY_COLS, rows, minWidth: 1250,
         empty: 'Nothing logged in this window. Use the ☏ button on a People or Opportunities row to log a call.',
@@ -9617,6 +10192,11 @@ Object.assign(_CRM_RERENDER, {
   outreach:      () => renderCrmReportsTab(),
   statuslog:     () => renderCrmReportsTab(),
   activity:      () => renderCrmReportsTab(),
+  steps:         () => renderCrmReportsTab(),
+  forecast:      () => renderCrmReportsTab(),
+  winloss:       () => renderCrmReportsTab(),
+  stuck:         () => renderCrmReportsTab(),
+  score:         () => renderCrmReportsTab(),
 });
 
 

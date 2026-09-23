@@ -828,6 +828,154 @@ console.log('\nAI Search effort and feedback');
   assert('a hung response is still given up on', SRC.includes('_CRM_SEARCH_DEADLINE_MS + 30000'));
 }
 
+/* ── 4j. The four reports built on data nothing was reading ─────────────── */
+console.log('\nReports');
+{
+  const R = new Function([
+    'let crmTouches = [], crmPeople = [], crmCompanies = [], crmFields = [], crmOpportunities = [], crmStatusLog = [];',
+    'let _crmStepScope = "open", _crmWinLossDim = "source", _crmStuckDays = 30;',
+    'const _CRM_COLD_DAYS = 60;',
+    extractConst(SRC, '_CRM_AGE_BUCKETS'),
+    extractFunction(SRC, '_crmMedian'),
+    extractFunction(SRC, '_crmFieldAge'),
+    extractFunction(SRC, '_crmBucketForAge'),
+    extractFunction(SRC, '_crmDaysSince'),
+    extractFunction(SRC, '_crmTouchWho'),
+    'const _crmToday = () => new Date().toISOString().slice(0, 10);',
+    // Stuck Deals shows a last-touch column; the touch index has its own
+    // tests, and stubbing it keeps this about stage movement.
+    'const _crmTouchForOpp = () => null;',
+    'const _CRM_REPLACE_AT = (_CRM_AGE_BUCKETS.find(b => b.key === "replacement") || { min: 8 }).min;',
+    extractFunction(SRC, '_crmOutstandingSteps'),
+    extractFunction(SRC, '_crmForecastRows'),
+    extractFunction(SRC, '_crmClosedOpps'),
+    extractFunction(SRC, '_crmWinLossRows'),
+    extractFunction(SRC, '_crmStuckRows'),
+    'return { _crmOutstandingSteps, _crmForecastRows, _crmWinLossRows, _crmStuckRows, _crmMedian,',
+    '  _CRM_REPLACE_AT, seed: d => { crmTouches = d.touches || []; crmPeople = d.people || [];',
+    '    crmCompanies = d.companies || []; crmFields = d.fields || []; crmOpportunities = d.opps || [];',
+    '    crmStatusLog = d.log || []; },',
+    '  scope: v => { _crmStepScope = v; }, dim: v => { _crmWinLossDim = v; }, stuckDays: v => { _crmStuckDays = v; } };',
+  ].join('\n'))();
+
+  const iso = d => new Date(Date.now() - d * 86400000).toISOString();
+  const day = d => new Date(Date.now() - d * 86400000).toISOString().slice(0, 10);
+
+  /* ── Next steps: which promise is still owed ── */
+  R.seed({
+    people: [{ id: 'p1', name: 'Dave', company: 'Fort Cherry' }],
+    opps:   [{ id: 'o1', name: 'Deal', company: 'Fort Cherry', status: 'Open' },
+             { id: 'o2', name: 'Done', company: 'Elsewhere',   status: 'Won' }],
+    touches: [
+      { id: 't1', at: iso(20), person_id: 'p1', company: 'Fort Cherry', next_step: 'Old promise',   next_step_date: day(15) },
+      { id: 't2', at: iso(5),  person_id: 'p1', company: 'Fort Cherry', next_step: 'Send the quote', next_step_date: day(3) },
+      { id: 't3', at: iso(1),  person_id: 'p1', company: 'Fort Cherry', next_step: '',               next_step_date: '' },
+      { id: 't4', at: iso(2),  opp_id: 'o2',    company: 'Elsewhere',   next_step: 'On a won deal',  next_step_date: day(1) },
+    ],
+  });
+  let steps = R._crmOutstandingSteps();
+  assert('the newest promise supersedes the older one',
+    steps.some(s => s.next_step === 'Send the quote') && !steps.some(s => s.next_step === 'Old promise'));
+  // The subtle one: saying nothing later is not the same as saying it is done.
+  assert('a later touch with no next step does not clear the promise',
+    steps.some(s => s.next_step === 'Send the quote'));
+  assert('a promise on a closed deal is not owed',
+    !steps.some(s => s.next_step === 'On a won deal'));
+  assert('an overdue promise is flagged', steps[0].overdue === true);
+  assert('and counted in days late',      steps[0].due_in === -3, String(steps[0].due_in));
+
+  R.scope('overdue');
+  assert('the overdue scope keeps it', R._crmOutstandingSteps().length === 1);
+  R.seed({ people: [{ id: 'p1', company: 'X' }], opps: [],
+           touches: [{ id: 't', at: iso(1), person_id: 'p1', next_step: 'Later', next_step_date: day(-30) }] });
+  assert('a future promise is not overdue', R._crmOutstandingSteps().length === 0);
+  R.scope('open');
+  assert('but is still outstanding', R._crmOutstandingSteps().length === 1);
+  assert('a step with no date sorts last',
+    (() => { R.seed({ people: [{ id: 'a' }, { id: 'b' }], opps: [], touches: [
+        { id: '1', at: iso(2), person_id: 'a', next_step: 'No date', next_step_date: '' },
+        { id: '2', at: iso(1), person_id: 'b', next_step: 'Dated',   next_step_date: day(-2) }] });
+      return R._crmOutstandingSteps()[1].next_step === 'No date'; })());
+
+  /* ── Forecast: the year a field comes due ── */
+  const thisYear = new Date().getFullYear();
+  R.seed({
+    companies: [{ id: 'c1', company_name: 'Fort Cherry', state: 'PA', lead_contact: 'Ben' }],
+    fields: [
+      { id: 'f1', company_id: 'c1', field_name: 'Varsity', installed_year: String(thisYear - 11) },
+      { id: 'f2', company_id: 'c1', field_name: 'Newer',   installed_year: String(thisYear - 4) },
+      { id: 'f3', company_id: 'c1', field_name: 'Undated', installed_year: '' },
+    ],
+    opps: [{ id: 'o1', company: 'Fort Cherry', status: 'Open' }],
+  });
+  const fc = R._crmForecastRows();
+  assert('a field with no install year is left out', fc.length === 2, String(fc.length));
+  assert(`due year is install + ${R._CRM_REPLACE_AT}`,
+    fc[0].due_year === thisYear - 11 + R._CRM_REPLACE_AT);
+  assert('a field already past it reads as due now', fc[0].overdue === true);
+  assert('a younger one carries a future year', fc[1].due_year === thisYear - 4 + R._CRM_REPLACE_AT);
+  assert('soonest first', fc[0].due_year < fc[1].due_year);
+  assert('an open deal on the company is noticed', fc[0].has_opp === true);
+
+  R.seed({ companies: [{ id: 'c1', company_name: 'Fort Cherry' }],
+           fields: [{ id: 'f1', company_id: 'c1', installed_year: String(thisYear - 11) }],
+           opps: [{ id: 'o1', company: 'Fort Cherry', status: 'Lost' }] });
+  assert('a closed deal does not count as working it', R._crmForecastRows()[0].has_opp === false);
+
+  /* ── Win / Loss ── */
+  R.seed({ opps: [
+    { id: '1', status: 'Won',  source: 'Referral', value: '100' },
+    { id: '2', status: 'Lost', source: 'Referral', value: '50',  loss_reason: 'Price' },
+    { id: '3', status: 'Lost', source: 'Website',  value: '25',  loss_reason: 'Price' },
+    { id: '4', status: 'Open', source: 'Referral', value: '999' },
+  ] });
+  R.dim('source');
+  const bySource = R._crmWinLossRows();
+  const referral = bySource.find(r => r.value === 'Referral');
+  assert('an open deal is not counted as closed', referral.total === 2);
+  assert('the split is right', referral.won === 1 && referral.lost === 1);
+  assert('and the rate',      referral.win_pct === 50);
+  assert('won value sums',    referral.won_value === 100);
+
+  // Only a lost deal carries a loss reason, so counting wins under it would
+  // pile every win into "not recorded".
+  R.dim('loss_reason');
+  const byReason = R._crmWinLossRows();
+  assert('the loss-reason view counts only losses',
+    byReason.every(r => r.won === 0) && byReason.find(r => r.value === 'Price').lost === 2);
+  assert('and no phantom "not recorded" row from the wins',
+    !byReason.some(r => r.value === '— not recorded —'));
+
+  /* ── Stuck deals ── */
+  R.seed({
+    opps: [
+      { id: 'o1', name: 'Moved long ago', status: 'Open', stage: 'Proposal' },
+      { id: 'o2', name: 'Brand new',      status: 'Open', stage: 'Prospecting', created_at: iso(3) },
+      { id: 'o3', name: 'Old and unmoved', status: 'Open', stage: 'Prospecting', created_at: iso(200) },
+      { id: 'o4', name: 'Closed',         status: 'Won',  stage: 'Closed Won' },
+    ],
+    log: [
+      { id: 'l1', at: iso(120), opp_id: 'o1', field: 'Stage',  from: 'Qualification', to: 'Proposal' },
+      // A status flip is not progress, so it must not reset the clock.
+      { id: 'l2', at: iso(1),   opp_id: 'o1', field: 'Status', from: 'Open', to: 'On Hold' },
+    ],
+  });
+  R.stuckDays(30);
+  const stuck = R._crmStuckRows();
+  assert('a closed deal is never stuck',      !stuck.some(r => r.name === 'Closed'));
+  assert('a new deal is not stuck',           !stuck.some(r => r.name === 'Brand new'));
+  assert('an old unmoved deal is',            stuck.some(r => r.name === 'Old and unmoved'));
+  const moved = stuck.find(r => r.name === 'Moved long ago');
+  assert('a long-ago stage move counts',      moved && moved.days === 120, moved && String(moved.days));
+  assert('a status flip does not reset it',   moved.basis === 'stage moved');
+  assert('and the fallback says what it measured from',
+    stuck.find(r => r.name === 'Old and unmoved').basis === 'created');
+  assert('longest first', stuck[0].days >= stuck[stuck.length - 1].days);
+
+  assert('the median helper handles both lengths',
+    R._crmMedian([1, 3, 5]) === 3 && R._crmMedian([1, 3]) === 2 && R._crmMedian([]) === null);
+}
+
 /* ── 5. Wiring ───────────────────────────────────────────────────────────── */
 console.log('\nTab wiring and columns');
 {
