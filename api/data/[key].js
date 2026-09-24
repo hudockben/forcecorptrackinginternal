@@ -64,7 +64,7 @@ module.exports = async (req, res) => {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const payload = requireAuth(req, res);
+  const payload = await requireAuth(req, res);
   if (!payload) return;
 
   const key = req.query.key;

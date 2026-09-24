@@ -13,7 +13,7 @@
  */
 
 const { neon } = require('@neondatabase/serverless');
-const jwt      = require('jsonwebtoken');
+const { authenticate } = require('../lib/auth');
 const {
   syncProjects,
   syncLists,
@@ -26,17 +26,6 @@ const {
   syncIntercompanyBillingEntries,
 } = require('../lib/sync-normalized');
 
-function verifyToken(req) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return null;
-  try {
-    return jwt.verify(token, process.env.JWT_SECRET);
-  } catch {
-    return null;
-  }
-}
-
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -47,16 +36,30 @@ module.exports = async (req, res) => {
 
   const body = req.body || {};
 
-  // Auth: accept JWT or admin secret
+  // Auth: accept JWT or admin secret. The JWT arm is judged on the account's
+  // role as it stands now (authenticate reads it), not the role the token was
+  // signed with, and without sending anything — a refused token still falls
+  // through to the admin secret, as it always has.
   let companyCode;
-  const jwtPayload = verifyToken(req);
+  const auth = await authenticate(req);
+  const jwtPayload = auth.payload;
   if (jwtPayload && ['admin', 'level3'].includes(jwtPayload.role)) {
-    companyCode = body.companyCode
-      ? String(body.companyCode).toUpperCase()
-      : jwtPayload.companyCode;
+    // A signed-in admin resyncs their OWN company. Naming another one is for a
+    // platform admin, or for the admin secret below: taking the body's code on
+    // trust let any company's level3 rebuild another company's tables and read
+    // back its record counts.
+    const own   = String(jwtPayload.companyCode || '').toUpperCase();
+    const asked = body.companyCode ? String(body.companyCode).toUpperCase() : own;
+    if (asked !== own && !jwtPayload.isPlatformAdmin) {
+      return res.status(403).json({ error: 'You can only resync your own company' });
+    }
+    companyCode = asked;
   } else if (body.adminSecret && body.adminSecret === process.env.ADMIN_SECRET) {
     if (!body.companyCode) return res.status(400).json({ error: 'companyCode required' });
     companyCode = String(body.companyCode).toUpperCase();
+  } else if (auth.status === 503) {
+    // The account could not be read, so its role is unknown — not refused.
+    return res.status(503).json({ error: auth.error });
   } else {
     return res.status(403).json({ error: 'Forbidden — valid JWT (admin/level3) or adminSecret required' });
   }

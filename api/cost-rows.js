@@ -16,7 +16,7 @@ function safeFloat(v) {
 }
 
 module.exports = async (req, res) => {
-  const payload = requireAuth(req, res);
+  const payload = await requireAuth(req, res);
   if (!payload) return;
 
   const { companyCode } = payload;

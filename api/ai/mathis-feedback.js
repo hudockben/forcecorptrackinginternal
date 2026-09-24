@@ -43,11 +43,10 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST')    return res.status(405).json({ error: 'Method not allowed' });
 
-  const payload = requireAuth(req, res);
+  // requireAuth reads the account through DATABASE_URL, and answers 503 itself
+  // when it cannot, so there is no separate check for it here.
+  const payload = await requireAuth(req, res);
   if (!payload) return;
-  if (!process.env.DATABASE_URL) {
-    return res.status(503).json({ error: 'Feedback is unavailable right now.' });
-  }
 
   const body    = req.body || {};
   const verdict = body.verdict === 'up' ? 'up' : body.verdict === 'down' ? 'down' : null;
@@ -57,7 +56,9 @@ module.exports = async (req, res) => {
 
   // Re-read rather than trusted, like every other Mathis path: a token lasts
   // 30 days, and feedback rows carry a user id that had better be real.
-  const authz = await mathis.refreshAuthz(sql, payload);
+  // requireAuth read the account on this request — a deleted one is already
+  // refused — so this is its access now.
+  const authz = mathis.authzFrom(payload);
   if (!authz) return res.status(401).json({ error: 'Your access could not be verified — please log in again.' });
 
   // A thread id from the client is a claim of ownership. Unverified, it is

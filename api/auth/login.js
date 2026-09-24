@@ -4,31 +4,10 @@ const { neon }   = require('@neondatabase/serverless');
 const bcrypt     = require('bcryptjs');
 const jwt        = require('jsonwebtoken');
 const { syncProjects, syncLists, syncPurchaseOrders, syncInventory } = require('../lib/sync-normalized');
-
-// All divisions the platform supports — order determines display order on the selector
-const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders', 'safety'];
-
-// Restrictive divisions — must NEVER be granted implicitly via the legacy
-// fallback path (company allowed_divisions / user.divisions). They require
-// an explicit non-no_access entry in users.division_roles.
-const RESTRICTED_DIVISIONS = new Set(['timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'safety']);
-
-/**
- * Compute the effective divisions a user can access.
- * Platform admins always get everything.
- * Otherwise: user.divisions (if set) overrides the company's allowed_divisions.
- * Restrictive divisions (timesheet, payroll, fuel, fuel_admin, driver,
- * quarry_sales, safety) are stripped
- * from any implicit grant — those are only available through an explicit
- * divisionRoles entry.
- */
-function effectiveDivisions(isPlatformAdmin, userDivisions, companyDivisions) {
-  if (isPlatformAdmin) return ALL_DIVISIONS;
-  const base = (userDivisions && userDivisions.length > 0)
-    ? userDivisions
-    : (companyDivisions && companyDivisions.length > 0 ? companyDivisions : ['turf']);
-  return base.filter(d => !RESTRICTED_DIVISIONS.has(d));
-}
+// What a sign-in grants is decided in one place, because requireAuth applies
+// the same rule to the account on every request afterwards: a token that
+// disagreed with it would be a device whose screens and server disagreed.
+const { accessFromRow } = require('../lib/auth');
 
 /**
  * Background sync — runs after login if the projects table has no rows for
@@ -157,27 +136,11 @@ module.exports = async (req, res) => {
       return res.status(401).json({ error: 'Invalid company code, username, or password' });
     }
 
-    const isPlatformAdmin   = Boolean(user.is_platform_admin);
-    const divisionRoles     = user.division_roles || null; // e.g. {"turf":"level3","dust":"no_access"}
-
-    // Effective role for this session = turf role from division_roles (for tracker.html compat)
-    // Falls back to user.role for accounts without per-division roles set.
-    let effectiveRole = user.role;
-    if (!isPlatformAdmin && divisionRoles && divisionRoles.turf && divisionRoles.turf !== 'no_access') {
-      effectiveRole = divisionRoles.turf;
-    }
-
-    // Compute allowedDivisions: use division_roles keys (non-no_access) when set,
-    // otherwise fall back to user.divisions or company allowed_divisions.
-    let allowedDivisions;
-    if (!isPlatformAdmin && divisionRoles) {
-      allowedDivisions = Object.entries(divisionRoles)
-        .filter(([, v]) => v !== 'no_access')
-        .map(([k]) => k);
-      if (!allowedDivisions.length) allowedDivisions = [];
-    } else {
-      allowedDivisions = effectiveDivisions(isPlatformAdmin, user.divisions, user.allowed_divisions);
-    }
+    // role (the turf role, for tracker.html), divisionRoles, allowedDivisions
+    // and isPlatformAdmin. The token carries them so the pages can draw
+    // without a round trip; the server never trusts them — requireAuth reads
+    // the account again on every request.
+    const { role, divisionRoles, allowedDivisions, isPlatformAdmin } = accessFromRow(user);
 
     const cleanCode = companyCode.toUpperCase();
 
@@ -187,7 +150,7 @@ module.exports = async (req, res) => {
         username:         user.username,
         companyCode:      cleanCode,
         companyName:      user.company_name,
-        role:             effectiveRole,
+        role,
         divisionRoles,
         allowedDivisions,
         isPlatformAdmin,
@@ -206,7 +169,7 @@ module.exports = async (req, res) => {
         username:         user.username,
         companyCode:      cleanCode,
         companyName:      user.company_name,
-        role:             effectiveRole,
+        role,
         divisionRoles,
         allowedDivisions,
         isPlatformAdmin,

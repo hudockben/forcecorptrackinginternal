@@ -73,6 +73,14 @@ const auth = require(root('api/lib/auth.js'));
     sqlImpl = (strings, ...values) => {
       const text = strings.join('?').replace(/\s+/g, ' ').trim();
       sent.push({ text, values });
+      // The caller's own account, which requireAuth reads on every request —
+      // still the company admin the token was signed for.
+      if (/FROM users u JOIN companies c/.test(text)) {
+        return Promise.resolve([{
+          division_roles: { turf: 'admin' }, divisions: null, role: 'admin',
+          is_platform_admin: false, company_code: 'FCT', allowed_divisions: null,
+        }]);
+      }
       if (/^SELECT id FROM users/.test(text)) return Promise.resolve([{ id: 7 }]); // existing user → role-only update
       return Promise.resolve([]);
     };

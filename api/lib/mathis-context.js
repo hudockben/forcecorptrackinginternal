@@ -67,79 +67,30 @@ function safeText(v, cap = TEXT_CAP) {
 const money = v => (Number.isFinite(Number(v)) ? Math.round(Number(v) * 100) / 100 : null);
 
 /**
- * Re-read this user's access from the database, every turn.
+ * This turn's access, from the payload requireAuth has just built.
  *
  * Tokens last 30 days and carry no revocation, so a role the JWT claims may be
- * a month stale. Reading the row back is what makes "access removed this
- * morning" mean anything before tomorrow.
+ * a month stale. Mathis used to read the row back itself for that reason;
+ * requireAuth now does it for every request, so the roles here are already
+ * the account's rather than the token's — legacy path included — and an
+ * account that no longer exists never got this far. A second read of the same
+ * row bought nothing but a second way to fail: a blip between the two answered
+ * 401, which reads as signed out.
  *
- * The legacy path matters as much as the explicit one: when division_roles is
- * NULL, hasDivisionAccess falls through to payload.allowedDivisions, which on
- * an unrefreshed token is exactly the stale claim we are trying to replace. So
- * users.divisions and companies.allowed_divisions are refreshed too, and
- * restricted divisions are stripped from those paths the same way
- * api/auth/verify.js strips them.
- *
- * Returns null when the user cannot be read — a missing row, a dropped
- * connection, a deleted account. The caller must treat null as "no access",
- * never as "carry on with the token": failing open here would hand a deleted
- * user their company's financials.
+ * Identity comes from the token, access from the row, and the username is
+ * made safe for a prompt. Null only for a payload missing who is asking, which
+ * the caller treats as no access, never as "carry on".
  */
-const RESTRICTED_DIVISIONS = new Set(['timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales']);
-
-async function refreshAuthz(sql, payload) {
+function authzFrom(payload) {
   if (!payload || !payload.userId || !payload.companyCode) return null;
-  let rows;
-  try {
-    rows = await sql`
-      SELECT u.division_roles, u.divisions, u.role, u.is_platform_admin,
-             u.company_code, c.allowed_divisions
-      FROM   users u
-      JOIN   companies c ON c.code = u.company_code
-      WHERE  u.id = ${payload.userId}
-      LIMIT  1
-    `;
-  } catch (err) {
-    console.error('[mathis] role refresh failed:', err.message);
-    return null;
-  }
-  if (!rows.length) return null;
-  const u = rows[0];
-
-  // login.js uppercases the company code into the JWT while its own lookup is
-  // LOWER(...), so the two spellings must be compared case-insensitively or
-  // every request from a lowercase-coded company is refused.
-  const dbCode = String(u.company_code || '').toUpperCase();
-  const tokCode = String(payload.companyCode || '').toUpperCase();
-  if (!dbCode || dbCode !== tokCode) {
-    console.error('[mathis] company mismatch between token and row');
-    return null;
-  }
-
-  const isPlatformAdmin = Boolean(u.is_platform_admin);
-  const divisionRoles   = (u.division_roles && typeof u.division_roles === 'object') ? u.division_roles : null;
-
-  let allowedDivisions;
-  if (isPlatformAdmin) {
-    allowedDivisions = ALL_DIVISIONS.slice();
-  } else if (divisionRoles) {
-    allowedDivisions = Object.entries(divisionRoles).filter(([, v]) => v !== 'no_access').map(([k]) => k);
-  } else if (Array.isArray(u.divisions) && u.divisions.length) {
-    allowedDivisions = u.divisions.filter(d => !RESTRICTED_DIVISIONS.has(d));
-  } else if (Array.isArray(u.allowed_divisions) && u.allowed_divisions.length) {
-    allowedDivisions = u.allowed_divisions.filter(d => !RESTRICTED_DIVISIONS.has(d));
-  } else {
-    allowedDivisions = [];
-  }
-
   return {
-    userId:      payload.userId,
-    username:    safeText(payload.username, 60),
-    companyCode: dbCode,
-    role:        u.role || 'level1',
-    divisionRoles,
-    allowedDivisions,
-    isPlatformAdmin,
+    userId:           payload.userId,
+    username:         safeText(payload.username, 60),
+    companyCode:      String(payload.companyCode).toUpperCase(),
+    role:             payload.role || 'level1',
+    divisionRoles:    payload.divisionRoles || null,
+    allowedDivisions: Array.isArray(payload.allowedDivisions) ? payload.allowedDivisions : [],
+    isPlatformAdmin:  Boolean(payload.isPlatformAdmin),
   };
 }
 
@@ -267,7 +218,7 @@ module.exports = {
   NOT_YET,
   safeText,
   money,
-  refreshAuthz,
+  authzFrom,
   divisionScope,
   resolveDivision,
   canSeePay,

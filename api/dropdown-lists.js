@@ -16,7 +16,7 @@ const { requireAuth } = require('./lib/auth');
 const ALLOWED = new Set(['field_types', 'job_classes', 'infill_types']);
 
 module.exports = async (req, res) => {
-  const payload = requireAuth(req, res);
+  const payload = await requireAuth(req, res);
   if (!payload) return;
 
   const { companyCode } = payload;

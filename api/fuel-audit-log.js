@@ -41,7 +41,7 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET')     return res.status(405).json({ error: 'Method not allowed' });
 
-  const payload = requireAuth(req, res);
+  const payload = await requireAuth(req, res);
   if (!payload) return;
 
   const canRead = hasDivisionAccess(payload, 'fuel_admin') || payload.isPlatformAdmin;

@@ -34,7 +34,7 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const payload = requireAuth(req, res);
+  const payload = await requireAuth(req, res);
   if (!payload) return;
   if (!hasDivisionAccess(payload, 'trucking')) {
     return res.status(403).json({ error: 'You do not have access to this division\'s data' });

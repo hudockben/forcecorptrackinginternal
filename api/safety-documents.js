@@ -27,7 +27,7 @@
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
 const {
-  SAFETY_DIVISION, currentSafetyCapabilities, requiredSigners, mondayOf, dateOnly, SIGNATURE_STATEMENT,
+  SAFETY_DIVISION, safetyCapabilities, requiredSigners, mondayOf, dateOnly, SIGNATURE_STATEMENT,
 } = require('./lib/safety');
 const storage = require('./lib/storage');
 
@@ -79,7 +79,7 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const payload = requireAuth(req, res);
+  const payload = await requireAuth(req, res);
   if (!payload) return;
 
   const { companyCode, userId } = payload;
@@ -87,10 +87,10 @@ module.exports = async (req, res) => {
   const q   = req.query || {};
 
   try {
-    // The row, not the token: a grant made since this device last signed in
-    // has to work now, and one taken away has to stop working now. See
-    // currentSafetyCapabilities in api/lib/safety.js.
-    const caps = await currentSafetyCapabilities(sql, payload);
+    // The payload is the account as it stands now (requireAuth reads it), so
+    // a grant made since this device last signed in works, and one taken away
+    // stops working, on the next request.
+    const caps = safetyCapabilities(payload);
     if (!caps.canView) {
       return res.status(403).json({ error: 'You do not have access to the Safety Center' });
     }

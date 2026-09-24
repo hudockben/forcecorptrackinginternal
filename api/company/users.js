@@ -2,7 +2,7 @@
 
 const { neon } = require('@neondatabase/serverless');
 const bcrypt   = require('bcryptjs');
-const jwt      = require('jsonwebtoken');
+const { requireAuth } = require('../lib/auth');
 
 const ALLOWED_ROLES     = ['admin', 'level3', 'level2', 'level1'];
 const DIV_ROLE_VALUES   = ['admin', 'level3', 'level2', 'level1', 'sales', 'no_access'];
@@ -10,17 +10,6 @@ const DIV_ROLE_VALUES   = ['admin', 'level3', 'level2', 'level1', 'sales', 'no_a
 // SALES_LEVEL in api/lib/auth.js. Mirrors SALES_DIVISIONS there.
 const SALES_DIVISIONS   = ['turf', 'paving'];
 const ALL_DIVISIONS     = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders', 'safety'];
-
-function verifyToken(req) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return null;
-  try {
-    return jwt.verify(token, process.env.JWT_SECRET);
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Derive the legacy `role` column value from division_roles (turf role, or
@@ -60,8 +49,11 @@ module.exports = async (req, res) => {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const payload = verifyToken(req);
-  if (!payload) return res.status(401).json({ error: 'Unauthorized' });
+  // The account's role as it stands now, not as it stood at sign-in: this
+  // screen can make anybody an admin, so a company admin who has been stood
+  // down — or deleted — must lose it on their next request, not in a month.
+  const payload = await requireAuth(req, res);
+  if (!payload) return;
   if (payload.role !== 'admin' && !payload.isPlatformAdmin) {
     return res.status(403).json({ error: 'Company admin access required' });
   }
