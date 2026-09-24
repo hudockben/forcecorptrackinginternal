@@ -86,6 +86,64 @@ function safetyLevelFor(payload) {
 }
 
 /**
+ * safetyCapabilities() for this caller as the users table has them NOW. Every
+ * Safety Center endpoint gates on this, never on the token alone.
+ *
+ * The token is signed at sign-in, lasts thirty days, and carries the role map
+ * as it stood at that moment. Manage Users writes a new grant to the row and
+ * nothing reissues anybody's token, so somebody given the Safety Center after
+ * they last signed in kept presenting one that said they had no such thing.
+ * divisions.html reads the row back through /api/auth/verify, so their tile
+ * appeared and the page drew itself — and every call behind it answered "You
+ * do not have access to the Safety Center" until they happened to sign out.
+ * Signing in AS them from another machine minted a fresh token and worked at
+ * once, which is why it looked like nothing was wrong with the account.
+ *
+ * It bites hardest in this division because the grant IS the roster: the crew
+ * is granted it all at once, from sessions already open, and requiredSigners()
+ * reads the row — so the report listed people as owing a signature these
+ * endpoints would not let them make. Reading the same row for access puts the
+ * roster and the gate on one answer. The other direction comes with it:
+ * access removed, or a supervisor set back to Read & sign, takes effect on the
+ * next request rather than whenever the old token runs out.
+ *
+ * The token's allowedDivisions is not consulted. It is exactly the stale claim
+ * this replaces, and the division is never granted through the legacy lists
+ * anyway (RESTRICTED_DIVISIONS in api/auth/verify.js) — so a row with no role
+ * map reaches it only as a platform admin.
+ *
+ * No row — an account deleted with a token still in its pocket — or a row in
+ * another company is no access. A failed read throws: nothing after this
+ * could have been served either, and each caller answers it as a 500.
+ */
+async function currentSafetyCapabilities(sql, payload) {
+  const none = { level: 'no_access', canView: false, canManage: false };
+  if (!payload || payload.userId == null) return none;
+
+  const rows = await sql`
+    SELECT division_roles, is_platform_admin, company_code
+    FROM   users
+    WHERE  id = ${payload.userId}
+    LIMIT  1
+  `;
+  const row = rows && rows[0];
+  // login.js uppercases the code it signs into the token while matching the
+  // row case-insensitively, so the two are compared the same way here.
+  if (!row || String(row.company_code || '').toUpperCase()
+            !== String(payload.companyCode || '').toUpperCase()) {
+    return none;
+  }
+
+  return safetyCapabilities({
+    divisionRoles: row.division_roles && typeof row.division_roles === 'object'
+      ? row.division_roles
+      : null,
+    isPlatformAdmin:  Boolean(row.is_platform_admin),
+    allowedDivisions: [],
+  });
+}
+
+/**
  * Everyone the report expects a signature from: every user in the company
  * whose role map grants them the Safety Center at all.
  *
@@ -201,6 +259,7 @@ module.exports = {
   SIGNATURE_STATEMENT,
   SUPERVISOR_LEVELS,
   safetyCapabilities,
+  currentSafetyCapabilities,
   safetyLevelFor,
   requiredSigners,
   safetyKeyClaimed,

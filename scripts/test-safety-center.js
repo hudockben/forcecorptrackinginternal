@@ -20,7 +20,7 @@ process.env.TZ = 'Europe/Berlin';
  * who may do what, and a stub that waves callers through would let the whole
  * file pass with no gate at all.
  *
- * Five things are worth pinning, in descending order of how quietly they would
+ * Six things are worth pinning, in descending order of how quietly they would
  * break:
  *
  * 1. A SIGNATURE IS A RECORD, AND RECORDS DO NOT MOVE. Signing twice does not
@@ -49,6 +49,15 @@ process.env.TZ = 'Europe/Berlin';
  *    recomputed rather than trusted, and the shared upload endpoint refuses to
  *    delete or overwrite a key the Safety Center has registered — otherwise
  *    every signature already collected would quietly describe different bytes.
+ *
+ * 6. ACCESS IS THE ROW, NOT THE TOKEN. A token is a thirty-day snapshot of
+ *    sign-in and Manage Users only ever writes the row, so somebody granted the
+ *    division after they last signed in was refused everything until they
+ *    signed out — while the report, which reads the row, listed them as owing
+ *    a signature. Every other caller in this file carries a token signed from
+ *    the same map as its row, which is the one case where it makes no
+ *    difference which of the two the endpoints read; only the tests that pull
+ *    the two apart can tell.
  */
 
 const path   = require('path');
@@ -108,10 +117,11 @@ function ymd(v) {
   }
   return String(v).slice(0, 10);
 }
-const DB = { docs: [], sigs: [], users: [], nextSigId: 1, calls: [] };
+const DB = { docs: [], sigs: [], users: [], nextSigId: 1, calls: [], failUserRead: false };
 
 function resetDb() {
   DB.docs = []; DB.sigs = []; DB.users = []; DB.nextSigId = 1; DB.calls = [];
+  DB.failUserRead = false;
 }
 
 function sql(strings, ...values) {
@@ -121,6 +131,19 @@ function sql(strings, ...values) {
   const v = values;
 
   // ── users ──
+  // The caller's own row, which is what access is decided on. Answers only for
+  // the id asked about — a mock that handed back any row would let an endpoint
+  // that read the wrong one pass.
+  if (/^SELECT division_roles, is_platform_admin, company_code FROM users WHERE id =/.test(flat)) {
+    if (DB.failUserRead) return Promise.reject(new Error('Connection terminated unexpectedly'));
+    return Promise.resolve(DB.users
+      .filter(u => u.id === v[0])
+      .slice(0, 1)
+      .map(u => ({
+        division_roles: u.division_roles, is_platform_admin: Boolean(u.is_platform_admin),
+        company_code: u.company_code,
+      })));
+  }
   if (/^SELECT id, username, division_roles FROM users/.test(flat)) {
     const [companyCode, divKey] = v;
     return Promise.resolve(DB.users
@@ -276,6 +299,7 @@ const storage  = require(root('api/lib/storage.js'));
 const safetyLib = require(root('api/lib/safety.js'));
 const docsHandler = require(root('api/safety-documents.js'));
 const sigHandler  = require(root('api/safety-signatures.js'));
+const uploadHandler = require(root('api/document-upload-url.js'));
 
 // The only two things in api/lib/storage.js that touch the network. Everything
 // else — key building, MIME resolution, SigV4 presigning — runs for real.
@@ -298,6 +322,9 @@ function tokenFor(user) {
   return jwt.sign({
     userId: user.id, username: user.username, companyCode: COMPANY,
     divisionRoles: user.division_roles, isPlatformAdmin: Boolean(user.isPlatformAdmin),
+    // Only set by the tests that need a legacy division list on the token;
+    // left undefined, it is dropped from the payload like it never existed.
+    allowedDivisions: user.allowedDivisions,
     role: 'level1',
   }, process.env.JWT_SECRET, { expiresIn: '1h' });
 }
@@ -309,10 +336,23 @@ const LAB_C  = { id: 4, username: 'twhite',   division_roles: { safety: 'level1'
 const OFFICE = { id: 5, username: 'bookkeep', division_roles: { payroll: 'level3' } };
 const PLATFORM = { id: 6, username: 'root', division_roles: null, isPlatformAdmin: true };
 
+// The platform admin has a row like anyone else — access is read from it — but
+// no role map, so the roster query passes over them.
 function seedUsers() {
-  DB.users = [SUPER, LAB_A, LAB_B, LAB_C, OFFICE].map(u => ({
+  DB.users = [SUPER, LAB_A, LAB_B, LAB_C, OFFICE, PLATFORM].map(u => ({
     id: u.id, username: u.username, company_code: COMPANY, division_roles: u.division_roles,
+    is_platform_admin: Boolean(u.isPlatformAdmin),
   }));
+}
+
+// What Manage Users has done since a caller signed in. Replaces fields on the
+// row rather than editing the role map in place: seeded rows share their map
+// with the caller constants, so an in-place edit would rewrite the TOKEN too
+// and the test would be comparing the row with itself.
+function setRow(id, fields) {
+  const row = DB.users.find(u => u.id === id);
+  if (!row) throw new Error('no seeded row for user ' + id);
+  Object.assign(row, fields);
 }
 
 function makeRes() {
@@ -886,6 +926,234 @@ async function agreementTests() {
     });
     assert('and an oversized one is refused on size before anything else',
       r.statusCode === 413, String(r.statusCode));
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// 4c. Access is what Manage Users says now, not what the token said at sign-in
+// ═══════════════════════════════════════════════════════════════════════════
+const DOC3 = '33333333-3333-4333-8333-333333333333';
+const ticketFor = user => call(uploadHandler, user, {
+  method: 'POST', query: { division: 'safety' }, body: { filename: GOOD_FILE },
+});
+const USER_READ = /^SELECT division_roles, is_platform_admin, company_code FROM users WHERE id =/;
+
+async function currentAccessTests() {
+  console.log('\n[access is what Manage Users says now, not what the token said at sign-in]');
+  await seedTwoDocs();
+
+  {
+    // The baseline the rest departs from: token and row agree.
+    const t = await ticketFor(SUPER);
+    assert('a supervisor is handed an upload ticket',
+      t.statusCode === 200 && typeof t.body.uploadUrl === 'string',
+      `${t.statusCode} ${JSON.stringify(t.body).slice(0, 120)}`);
+    const L2 = { ...LAB_A, division_roles: { safety: 'level2' } };
+    setRow(LAB_A.id, { division_roles: { safety: 'level2' } });
+    const l2 = await ticketFor(L2);
+    assert('  and a level2 signer is not, though the generic scale would upload',
+      l2.statusCode === 403, String(l2.statusCode));
+    seedUsers();
+  }
+
+  // Signed in when their only grant was timesheet, and given the Safety Center
+  // since. Their phone still presents that sign-in's token, which says
+  // timesheet and nothing else, while the row says they are crew. Signing in
+  // as them anywhere else mints a token that agrees with the row — which is
+  // why this worked for whoever tried it on their behalf.
+  const LATE = { id: 7, username: 'kbarlow', division_roles: { timesheet: 'level1' } };
+  const seedLate = () => DB.users.push({
+    id: LATE.id, username: LATE.username, company_code: COMPANY,
+    division_roles: { timesheet: 'level1', safety: 'level1' }, is_platform_admin: false,
+  });
+  seedLate();
+  {
+    const list = await call(docsHandler, LATE, {});
+    assert('somebody granted the division after signing in sees the documents',
+      list.statusCode === 200 && list.body.documents.length === 2,
+      `${list.statusCode} ${JSON.stringify(list.body).slice(0, 120)}`);
+    assert('  as crew, which is what they were granted',
+      !!list.body.permissions && list.body.permissions.canSign === true
+      && list.body.permissions.canManage === false,
+      JSON.stringify(list.body.permissions));
+    const count = await call(docsHandler, LATE, { query: { action: 'count' } });
+    assert('  the tile counts what they owe',
+      count.statusCode === 200 && count.body.unsignedByMe === 2, JSON.stringify(count.body));
+    const open = await call(docsHandler, LATE, { query: { action: 'open', id: DOC1 } });
+    assert('  they can open one',
+      open.statusCode === 200 && /X-Amz-Signature=/.test(open.body.url || ''), String(open.statusCode));
+    const sign = await call(sigHandler, LATE, {
+      method: 'POST', body: { documentId: DOC1, fullName: 'Kyle Barlow', acknowledged: true },
+    });
+    assert('  and sign it, without signing out first',
+      sign.statusCode === 201, `${sign.statusCode} ${JSON.stringify(sign.body)}`);
+
+    // The report has always read its roster from the row. This is where the
+    // two halves disagreed: listed as owing a signature they were refused.
+    const rep = await call(sigHandler, SUPER, { query: { scope: 'report' } });
+    const g = rep.body.documents.find(x => x.document.id === DOC1);
+    assert('  so the report has them signed, not outstanding',
+      g.signed.some(s => s.username === LATE.username && s.onRoster === true)
+      && !g.outstanding.some(o => o.username === LATE.username),
+      JSON.stringify({ signed: g.signed.map(s => s.username), outstanding: g.outstanding.map(o => o.username) }));
+  }
+  {
+    DB.calls.length = 0;
+    await call(docsHandler, LATE, {});
+    const reads = DB.calls.filter(c => USER_READ.test(c.q));
+    assert('one read of the row per request, keyed on whose token it is',
+      reads.length === 1 && reads[0].values[0] === LATE.id,
+      JSON.stringify(reads.map(r => r.values)));
+  }
+
+  {
+    // Set back to Read & sign since signing in; the token still says level3.
+    setRow(SUPER.id, { division_roles: { safety: 'level1' } });
+    const list = await call(docsHandler, SUPER, {});
+    assert('a supervisor set back to Read & sign is crew from the next request',
+      list.statusCode === 200 && list.body.permissions.canManage === false
+      && list.body.documents.every(d => d.signedCount === undefined),
+      JSON.stringify(list.body.permissions));
+    const rep = await call(sigHandler, SUPER, { query: { scope: 'report' } });
+    assert('  the report is closed to them', rep.statusCode === 403, String(rep.statusCode));
+    const arch = await call(docsHandler, SUPER, { method: 'DELETE', query: { id: DOC1 } });
+    assert('  they cannot archive', arch.statusCode === 403, String(arch.statusCode));
+    const t = await ticketFor(SUPER);
+    assert('  or get an upload ticket', t.statusCode === 403, String(t.statusCode));
+    const post = await call(docsHandler, SUPER, { method: 'POST', body: postBody(DOC3) });
+    assert('  or register a document', post.statusCode === 403 && !DB.docs.some(d => d.id === DOC3),
+      String(post.statusCode));
+    const sign = await call(sigHandler, SUPER, {
+      method: 'POST', body: { documentId: DOC1, fullName: 'Dan Simmons', acknowledged: true },
+    });
+    assert('  but can still sign, which is what they were left with',
+      sign.statusCode === 201, `${sign.statusCode} ${JSON.stringify(sign.body)}`);
+    seedUsers(); seedLate();
+  }
+
+  {
+    // Signed in as crew and made the supervisor since. The page draws them the
+    // upload form from the refreshed user, so every step behind it must agree.
+    setRow(LAB_C.id, { division_roles: { safety: 'level3' } });
+    const list = await call(docsHandler, LAB_C, {});
+    assert('a supervisor appointed after signing in is told they may manage',
+      list.statusCode === 200 && list.body.permissions.canManage === true,
+      JSON.stringify(list.body.permissions));
+    assert('  with the counts on each card',
+      list.body.documents.length > 0 && list.body.documents.every(d => d.expectedCount !== undefined));
+    const rep = await call(sigHandler, LAB_C, { query: { scope: 'report' } });
+    assert('  can read the report', rep.statusCode === 200, String(rep.statusCode));
+    const t = await ticketFor(LAB_C);
+    assert('  is handed an upload ticket',
+      t.statusCode === 200 && typeof t.body.uploadUrl === 'string',
+      `${t.statusCode} ${JSON.stringify(t.body).slice(0, 120)}`);
+    const post = await call(docsHandler, LAB_C, {
+      method: 'POST', body: postBody(DOC3, { title: 'Tailgate — Ladders', weekOf: '2026-09-28' }),
+    });
+    assert('  and can post the week\'s form',
+      post.statusCode === 201, `${post.statusCode} ${JSON.stringify(post.body).slice(0, 120)}`);
+    seedUsers(); seedLate();
+  }
+
+  {
+    // Still holding a token that says safety:level1; Manage Users has since
+    // taken it away.
+    setRow(LAB_B.id, { division_roles: { safety: 'no_access' } });
+    const rs = [
+      await call(docsHandler, LAB_B, {}),
+      await call(docsHandler, LAB_B, { query: { action: 'count' } }),
+      await call(docsHandler, LAB_B, { query: { action: 'open', id: DOC1 } }),
+      await call(sigHandler, LAB_B, {
+        method: 'POST', body: { documentId: DOC1, fullName: 'Marco Reyes', acknowledged: true },
+      }),
+    ];
+    assert('access removed since signing in is gone from the next request',
+      rs.every(r => r.statusCode === 403), rs.map(r => r.statusCode).join(','));
+    assert('  and nothing was signed on the old token', !DB.sigs.some(s => s.user_id === LAB_B.id));
+    setRow(LAB_B.id, { division_roles: { timesheet: 'level1' } });
+    const dropped = await call(docsHandler, LAB_B, {});
+    assert('  whether it was set to no access or dropped from the map',
+      dropped.statusCode === 403, String(dropped.statusCode));
+
+    DB.users = DB.users.filter(u => u.id !== LAB_B.id);
+    const gone = [
+      await call(docsHandler, LAB_B, {}),
+      await call(sigHandler, LAB_B, {
+        method: 'POST', body: { documentId: DOC1, fullName: 'Marco Reyes', acknowledged: true },
+      }),
+    ];
+    assert('a deleted account is refused, however long its token has left',
+      gone.every(r => r.statusCode === 403), gone.map(r => r.statusCode).join(','));
+    seedUsers(); seedLate();
+  }
+
+  {
+    setRow(LAB_A.id, { company_code: 'OTH' });
+    const other = await call(docsHandler, LAB_A, {});
+    assert('a row belonging to another company grants nothing here',
+      other.statusCode === 403, String(other.statusCode));
+    // login.js uppercases the code it signs; the row need not have been.
+    setRow(LAB_A.id, { company_code: COMPANY.toLowerCase() });
+    const cased = await call(docsHandler, LAB_A, {});
+    assert('  though the same company spelled in another case is the same company',
+      cased.statusCode === 200, String(cased.statusCode));
+    seedUsers(); seedLate();
+  }
+
+  {
+    // A token from when the map said safety — login.js lists every granted key
+    // in allowedDivisions as well — against a row whose map has since been
+    // cleared. With no map, hasDivisionAccess falls back to allowedDivisions,
+    // so carrying the token's list over would hand the division straight back.
+    setRow(LAB_A.id, { division_roles: null });
+    const r = await call(docsHandler, { ...LAB_A, allowedDivisions: ['safety', 'timesheet'] }, {});
+    assert('a cleared role map is not refilled from the token\'s old division list',
+      r.statusCode === 403, String(r.statusCode));
+    seedUsers(); seedLate();
+  }
+
+  {
+    setRow(PLATFORM.id, { is_platform_admin: false });
+    const was = await call(docsHandler, PLATFORM, {});
+    assert('a platform admin flag removed since signing in takes the division with it',
+      was.statusCode === 403, String(was.statusCode));
+    seedUsers(); seedLate();
+    // Office staff with payroll only, made a platform admin since. No safety
+    // role is named, so the platform-admin default applies: the supervisor side.
+    setRow(OFFICE.id, { is_platform_admin: true });
+    const now = await call(docsHandler, OFFICE, {});
+    assert('  and one granted since reaches it, on the supervisor side as ever',
+      now.statusCode === 200 && now.body.permissions.canManage === true,
+      `${now.statusCode} ${JSON.stringify(now.body.permissions)}`);
+    seedUsers(); seedLate();
+  }
+
+  {
+    // Nothing after the read could have been served either, so this is an
+    // error — never a quiet fall back to what the token claims. The endpoints
+    // log what failed; kept off the console of an otherwise silent suite, and
+    // asserted on only after the console is back, so a failure is still heard.
+    const before = DB.sigs.length;
+    const quiet = console.error;
+    console.error = () => {};
+    DB.failUserRead = true;
+    let rs;
+    try {
+      rs = [
+        await call(docsHandler, LAB_A, {}),
+        await call(sigHandler, LAB_A, {
+          method: 'POST', body: { documentId: DOC2, fullName: 'Jesse Hauser', acknowledged: true },
+        }),
+        await ticketFor(SUPER),
+      ];
+    } finally {
+      DB.failUserRead = false;
+      console.error = quiet;
+    }
+    assert('a failed read of the row is an error, never a fall back to the token',
+      rs.every(r => r.statusCode === 500), rs.map(r => r.statusCode).join(','));
+    assert('  so nothing is signed', DB.sigs.length === before, `${before} → ${DB.sigs.length}`);
+    assert('  and no writable URL is handed out', !rs[2].body.uploadUrl);
   }
 }
 
@@ -1474,7 +1742,7 @@ function wiringTests() {
     // up, because the purge sweep only walks project_documents.
     const upload = read('api/document-upload-url.js');
     assert('an upload ticket for this division follows ITS levels, not the generic scale',
-      /division === SAFETY_DIVISION[\s\S]{0,120}canUpload = safetyCapabilities\(payload\)\.canManage/.test(upload));
+      /division === SAFETY_DIVISION[\s\S]{0,300}canUpload = \(await currentSafetyCapabilities\([^;]*\)\)\.canManage/.test(upload));
     const level2 = safetyLib.safetyCapabilities({ divisionRoles: { safety: 'level2' } });
     assert('  so a level2 signer cannot mint one', level2.canManage === false);
     assert('  while a supervisor still can',
@@ -1583,12 +1851,17 @@ async function tileCountTests() {
   }
 
   // Asked on every division-picker load, so it must not quietly become the list
-  // read: no document rows, no signature rows, no roster tally.
+  // read: no document rows, no signature rows, no roster tally. The one other
+  // read is the caller's own row, which is what access is decided on.
   {
     DB.calls.length = 0;
     await call(docsHandler, SUPER, { query: { action: 'count' } });
-    assert('  in one query, since every sign-in pays for it',
-      DB.calls.length === 1, `${DB.calls.length} queries`);
+    const qs = DB.calls.map(c => c.q);
+    assert('  in one count after the caller\'s own row, since every sign-in pays for it',
+      qs.length === 2
+      && /^SELECT division_roles, is_platform_admin, company_code FROM users WHERE id =/.test(qs[0])
+      && /^SELECT COUNT\(\*\)::int AS unsigned_by_me/.test(qs[1]),
+      `${qs.length} queries: ${qs.map(q => q.slice(0, 50)).join(' | ')}`);
   }
 
   {
@@ -1709,6 +1982,7 @@ function pickerTests() {
   await signTests();
   await listAndReportTests();
   await agreementTests();
+  await currentAccessTests();
   await fileTests();
   await pageTests();
   await tileCountTests();
