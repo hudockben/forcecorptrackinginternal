@@ -1096,14 +1096,12 @@
       if (!r || r._equipHoursTouched) return false;
       if (!isTravelRow(r) || !isPickup(r.equipment)) return false;
       // ONLY WHERE THERE IS A DRIVE TO MIRROR. A travel row with no hours on it
-      // is not a zero-hour drive — it is a day whose timesheet filed none, and
-      // the pickup sitting on it carries the employee's OWN stated figure,
-      // seated by openSheet's fallback precisely because there was no drive to
-      // take. Levelling that to zero wipes the only figure the row has and
-      // leaves a machine with no hours, which the save refuses: the sheet opened
-      // already unsaveable, on the commonest shape this feature has, because the
-      // harvest re-derives the mirror on every row. The link relights by itself
-      // the moment he types a drive.
+      // is not a zero-hour drive — it is a drive somebody cleared, and the
+      // pickup sitting on it still carries the last figure it had. Levelling
+      // that to zero leaves a machine with no hours, which the save refuses,
+      // and the harvest re-derives the mirror on every row — so the sheet would
+      // turn unsaveable under him. The link relights by itself the moment he
+      // types a drive.
       const drive = r2(r.labor_hours);
       if (!(drive > 0)) return false;
       const want = String(drive);
@@ -1399,9 +1397,11 @@
       };
 
       // An UNTOUCHED travel row is not an error, it is the answer "there was no
-      // drive". A sheet only opens with one where travel was filed, but one
-      // added with "+ Travel" and then left empty — or a filed drive cleared
-      // back to nothing — is simply dropped here. Kept once anything is on it:
+      // drive". A sheet only opens with one where travel was filed; one added
+      // with "+ Travel" and left empty is simply dropped here. A FILED drive
+      // cleared back to nothing is dropped too, but that is not "no answer":
+      // travel_hours below then goes out as 0, a request to cut the filed
+      // drive that the supervisor has to decide. Kept once anything is on it:
       // hours, or the pickup that did the driving.
       //
       // Numbered by where it sits ON SCREEN, not by where it lands in the body:
