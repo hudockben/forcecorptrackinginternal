@@ -512,6 +512,25 @@
       color: #0a0a0f;
     }
     .qr-btn.active:hover { color: #0a0a0f; filter: brightness(1.08); }
+    /* Reports ▸ Overtime always covers the week in progress, so the range
+       buttons would change nothing there. The bar stays rather than folding
+       away — it holds the sub-tabs below it still, so the one just clicked does
+       not jump out from under the pointer — and says which week is on show.
+       Padded and bordered like a .qr-btn so the bar keeps its height. */
+    .qr-otw-note {
+      display: none;
+      align-items: center;
+      gap: 0.4rem;
+      flex-wrap: wrap;
+      padding: 0.4rem 0;
+      border: 1px solid transparent;
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+    .qr-otw-note strong { color: var(--text); font-weight: 600; }
+    .quick-ranges.otw-mode > .qr-label,
+    .quick-ranges.otw-mode > .qr-btn { display: none; }
+    .quick-ranges.otw-mode > .qr-otw-note { display: flex; }
 
     /* ── Report layout ── */
     .report {
@@ -982,6 +1001,7 @@
     .proj-stat-sub { font-size: 0.68rem; color: var(--muted); margin-top: 0.1rem; }
     .proj-stat.ot   .proj-stat-value { color: var(--orange); }
     .proj-stat.room .proj-stat-value { color: var(--teal); }
+    .proj-stat.near .proj-stat-value { color: var(--yellow); }
 
     .proj-section-title {
       font-size: 0.68rem;
@@ -1382,6 +1402,55 @@
     .report td.num-room      { color: var(--teal); font-weight: 600; }
     .report thead th.th-room { color: var(--teal); }
 
+    /* ── Reports ▸ Overtime ──
+       Seven columns, so none of the Hours Report's sticky-column machinery: its
+       rules are child chains through .report-scroll and do not reach this
+       table, which is the point — they are pinned to that table's column
+       numbers. One rule splits the two halves of the row: what has been
+       worked, and where that leaves the person against the 40. */
+    .otw-scroll { overflow-x: auto; }
+    /* Even columns. Left to auto layout, the longest heading ("Hours Left
+       Until OT") took the most room and OT Hrs the least, which pressed the
+       overtime figure up against the Status pill beside it. */
+    .otw-table thead th:first-child { width: 24%; }
+    .otw-table thead th:nth-child(n+2):nth-child(-n+6) { width: 12%; }
+    .otw-table th:last-child,
+    .otw-table td:last-child { padding-left: 1.1rem; }
+    .otw-table th.otw-split,
+    .otw-table td.otw-split { border-right: 1px solid var(--border); }
+    .otw-table tbody tr:hover td { background: rgba(255,255,255,0.03); }
+    /* A phone cannot fit seven columns, so the table scrolls — and the name
+       stays put while it does, as on the Hours Report, or the figures scrolled
+       into view belong to nobody. Screen only: in print a filled sticky cell is
+       a dark bar down the page. The fill is opaque so figures pass under it;
+       the hover tint is layered on as an image to keep it that way. */
+    @media screen and (max-width: 800px) {
+      .otw-table thead th:first-child,
+      .otw-table td.name {
+        position: sticky;
+        left: 0;
+        z-index: 1;
+        background: var(--surface);
+        box-shadow: 6px 0 8px -6px rgba(0,0,0,0.65);
+      }
+      .otw-table thead th:first-child { background: var(--surface2); z-index: 2; }
+      .otw-table tfoot td.name { background: var(--surface2); }
+      .otw-table tbody tr:hover td.name {
+        background-color: var(--surface);
+        background-image: linear-gradient(rgba(255,255,255,0.03), rgba(255,255,255,0.03));
+      }
+    }
+    /* The figure the other columns are read against. */
+    .otw-table td.otw-worked { font-weight: 700; }
+    .proj-note.otw-note { margin: 0.85rem 0 0; }
+    /* Where someone stands, in the capacity board's three hues for the same
+       three things: orange is overtime already worked, amber is the next hours
+       costing it, teal is hours still available. */
+    .pill-ot   { background: rgba(249,115,22,0.14); color: var(--orange); }
+    .pill-near { background: rgba(234,179,8,0.12);  color: var(--yellow); }
+    .pill-room { background: rgba(45,212,191,0.12); color: var(--teal); }
+    .otw-foot-status { font-size: 0.72rem; color: var(--muted); font-weight: 600; }
+
     /* ── Print: hide everything except the active report / audit log ── */
     @media print {
       /* Landscape: the hours report runs 15 columns wide once travel is split
@@ -1507,6 +1576,17 @@
       .report tfoot td { color: #000 !important; }
       .pill-pending { background: #fde68a !important; color: #6b3a00 !important; }
       .pill-clear   { background: #d1fae5 !important; color: #064e3b !important; }
+      /* Reports ▸ Overtime. The table is narrow enough for the page as it is;
+         the scroll box, the colours and one gutter need telling. The gutter is
+         the Status column's: the print padding above is !important, and
+         without its own it puts the pill back against the OT figure. */
+      .otw-scroll   { overflow: visible !important; }
+      .otw-table th:last-child,
+      .otw-table td:last-child { padding-left: 0.8rem !important; }
+      .pill-ot      { background: #fed7aa !important; color: #7c2d12 !important; }
+      .pill-near    { background: #fde68a !important; color: #6b3a00 !important; }
+      .pill-room    { background: #ccfbf1 !important; color: #134e4a !important; }
+      .otw-foot-status { color: #000 !important; }
       .report tr.has-pending td.name::before { color: #b45309 !important; }
       /* Expanded per-employee detail: print whatever the user left open. The
          caret is a screen-only affordance, so hide it on paper. */
@@ -1571,7 +1651,8 @@
       .proj-stat-label, .proj-stat-sub { color: #444 !important; }
       .proj-stat-value,
       .proj-stat.ot   .proj-stat-value,
-      .proj-stat.room .proj-stat-value { color: #000 !important; font-size: 13pt !important; }
+      .proj-stat.room .proj-stat-value,
+      .proj-stat.near .proj-stat-value { color: #000 !important; font-size: 13pt !important; }
       .proj-section-title { color: #000 !important; }
       .proj-note {
         color: #000 !important;
@@ -2904,15 +2985,22 @@
       <button class="qr-btn" data-range="last_biweekly"
               data-range-note="The fortnight before it, the one already closed"
               onclick="setRange('last_biweekly')">Last Cycle</button>
+      <!-- Stands in for the buttons on Reports ▸ Overtime, which always covers
+           the week in progress — the buttons would change nothing there. -->
+      <span class="qr-otw-note" id="otwRangeNote"></span>
     </div>
 
     <!-- ── Reports sub-tabs (only on the Reports tab) ──
-         Same fetch, same filters, two groupings: by employee, or by job. -->
+         Same fetch, same filters, two groupings: by employee, or by job.
+         Overtime is the exception: it always covers the week in progress,
+         so it loads that week on its own (see loadOvertimeWeek). -->
     <div class="report-subtabs" id="reportSubTabs" style="display:none">
       <button class="rst-btn active" id="rst-employees" onclick="setReportSubTab('employees')"
               title="One row per employee — hours, the overtime split and the rate split for the range above.">Employees</button>
       <button class="rst-btn" id="rst-projects" onclick="setReportSubTab('projects')"
               title="The same range grouped by job: which project is buying the overtime, who worked it, and how many hours each man has left before the fortieth.">Projects</button>
+      <button class="rst-btn" id="rst-overtime" onclick="setReportSubTab('overtime')"
+              title="This week only: each employee's hours so far, pending time included, how many are left before 40, and any overtime past it.">Overtime</button>
     </div>
 
     <!-- ── Report container (Reports tab) ── -->
@@ -2920,6 +3008,9 @@
 
     <!-- ── Project overtime container (Reports ▸ Projects) ── -->
     <div id="projectsWrap" style="display:none"></div>
+
+    <!-- ── This week's overtime container (Reports ▸ Overtime) ── -->
+    <div id="overtimeWrap" style="display:none"></div>
 
     <!-- ── Audit log container (Audit Log tab) ── -->
     <div id="auditLogWrap" style="display:none"></div>
@@ -3233,7 +3324,22 @@
     let expandedReportUsers = new Set(); // Reports tab: usernames whose per-entry detail is expanded
     // Reports tab: which grouping is on show — 'employees' (the Hours Report)
     // or 'projects' (the same range grouped by job). One fetch feeds both.
+    // 'overtime' is the third, and the one that does NOT read that fetch: it
+    // is always the week in progress, whatever the range says, so it keeps
+    // its own rows below.
     let reportSubTab = 'employees';
+
+    // ── Reports ▸ Overtime: this week's rows ──────────────────────────────
+    // Fetched on their own because the question is fixed — who is close to 40
+    // THIS WEEK — and the range above is free to be last cycle. Fetched with no
+    // division, too: overtime is a person's whole week across every division
+    // they worked, so a Paving filter may choose who is LISTED but must never
+    // trim the hours that decide how close they are. Sequenced like the entry
+    // list, so a slow reply cannot land over a newer one.
+    let otwEntries = [];      // the week's submitted + approved rows, every division
+    let otwScope   = null;    // { from, to } they were fetched for; null until one lands
+    let otwSeq     = 0;
+    let otwError   = null;    // message from the last failed load, else null
     let supervisors  = [];
     let jobsCache    = {};
     let editingEntry = null;
@@ -3545,6 +3651,7 @@
       const auditWrap  = document.getElementById('auditLogWrap');
       const anaWrap    = document.getElementById('analyticsWrap');
       const projWrap   = document.getElementById('projectsWrap');
+      const otwWrap    = document.getElementById('overtimeWrap');
       const subTabs    = document.getElementById('reportSubTabs');
       const bulkBar    = document.getElementById('bulkBar');
       const rateBar    = document.getElementById('rateBar');
@@ -3557,6 +3664,7 @@
       if (auditWrap)  auditWrap.style.display  = 'none';
       if (anaWrap)    anaWrap.style.display    = 'none';
       if (projWrap)   projWrap.style.display   = 'none';
+      if (otwWrap)    otwWrap.style.display    = 'none';
       if (subTabs)    subTabs.style.display    = 'none';
       if (bulkBar)    bulkBar.classList.remove('open');
       if (rateBar)    rateBar.classList.remove('open');
@@ -3580,9 +3688,11 @@
         // Whichever grouping was last open — the sub-tab is remembered across
         // tab switches, the way the date range is.
         if (subTabs)    subTabs.style.display    = 'flex';
-        if (reportWrap) reportWrap.style.display = reportSubTab === 'projects' ? 'none' : '';
-        if (projWrap)   projWrap.style.display   = reportSubTab === 'projects' ? '' : 'none';
+        if (reportWrap) reportWrap.style.display = reportSubTab === 'employees' ? '' : 'none';
+        if (projWrap)   projWrap.style.display   = reportSubTab === 'projects'  ? '' : 'none';
+        if (otwWrap)    otwWrap.style.display    = reportSubTab === 'overtime'  ? '' : 'none';
         if (quick)    { quick.style.display      = 'flex'; labelQuickRanges(); }
+        syncOvertimeRangeNote();
         selectedIds.clear();
       } else if (tab === 'auditlog') {
         if (auditWrap) auditWrap.style.display = '';
@@ -3935,6 +4045,12 @@
       // preset buttons, Apply, Reset and the first load.
       markActiveRange();
 
+      // Reports ▸ Overtime reads its own week, not this range, so it reloads
+      // alongside it rather than from it. The range load below still runs: the
+      // other two sub-tabs re-render from it without refetching, and have to
+      // find it matching the boxes when someone clicks back to them.
+      if (currentTab === 'reports' && reportSubTab === 'overtime') loadOvertimeWeek();
+
       const params = new URLSearchParams();
       params.set('status', 'submitted_approved');
       // Review grid = everyone's time. The endpoint defaults to the caller's
@@ -4074,10 +4190,17 @@
       if (entriesLoadError || (currentTab !== 'pending' && currentTab !== 'approved')) {
         renderBacklogNote();
       }
-      if (entriesLoadError) { renderLoadError(); return; }
+      if (entriesLoadError) {
+        renderLoadError();
+        // Its own rows and its own failure: a range that would not load says
+        // nothing about this week's, and the boxes still choose who is listed.
+        if (currentTab === 'reports' && reportSubTab === 'overtime') renderOvertimeReport();
+        return;
+      }
       if (currentTab === 'reports') {
-        if (reportSubTab === 'projects') renderProjectsReport();
-        else                             renderReport();
+        if (reportSubTab === 'projects')      renderProjectsReport();
+        else if (reportSubTab === 'overtime') renderOvertimeReport();
+        else                                  renderReport();
       } else if (currentTab === 'auditlog') {
         renderAuditLog();
       } else if (currentTab === 'analytics') {
@@ -4928,19 +5051,28 @@
     // job he worked that week, so it is never summed down the column, and the
     // tooltip on every cell says which weeks it came from.
     function setReportSubTab(which) {
-      if (which !== 'employees' && which !== 'projects') return;
+      if (which !== 'employees' && which !== 'projects' && which !== 'overtime') return;
       reportSubTab = which;
       const emp  = document.getElementById('rst-employees');
       const proj = document.getElementById('rst-projects');
+      const otw  = document.getElementById('rst-overtime');
       if (emp)  emp.classList.toggle('active',  which === 'employees');
       if (proj) proj.classList.toggle('active', which === 'projects');
+      if (otw)  otw.classList.toggle('active',  which === 'overtime');
       const reportWrap = document.getElementById('reportWrap');
       const projWrap   = document.getElementById('projectsWrap');
+      const otwWrap    = document.getElementById('overtimeWrap');
       if (reportWrap) reportWrap.style.display = which === 'employees' ? '' : 'none';
       if (projWrap)   projWrap.style.display   = which === 'projects'  ? '' : 'none';
-      // Both groupings are built from the rows already in memory, so this is a
-      // re-render and not a refetch.
-      filterAndRender();
+      if (otwWrap)    otwWrap.style.display    = which === 'overtime'  ? '' : 'none';
+      syncOvertimeRangeNote();
+      // Overtime reads its own week and is fetched fresh each time it is
+      // opened — it is the tab someone opens to see where the crew stands NOW,
+      // and it draws itself when the rows land. The other two groupings are
+      // built from the rows already in memory, so they are a re-render and not
+      // a refetch.
+      if (which === 'overtime') loadOvertimeWeek();
+      else                      filterAndRender();
     }
 
     // Two jobs in different divisions can wear the same label, and the same job
@@ -5945,6 +6077,344 @@
         </div>`;
     }
 
+    // ── Reports ▸ Overtime ───────────────────────────────────────────────
+    //
+    // The simplest question on the page, asked about one week only: where does
+    // each person stand against 40 RIGHT NOW? Hours worked so far — pending
+    // time included, because a day waiting on a signature was still worked —
+    // how many are left before overtime starts, and how many are already past
+    // it.
+    //
+    // THE HOURS ARE ALWAYS THE WHOLE WEEK. The Division, Supervisor and
+    // Employee boxes choose who is LISTED, never which hours count: someone on
+    // Paving who put 12 hours in at Turf on Monday is 12 hours closer to
+    // overtime than the Paving time alone says, and "18 left" printed over a
+    // week that has 6 left is the one mistake this report exists to prevent.
+    // That is also why its rows come from a fetch of their own with no division
+    // on it (loadOvertimeWeek) rather than from the range load.
+    //
+    // What counts toward the 40 is weeklyOvertime's rule, taken from it rather
+    // than restated: work + travel on submitted and approved daily entries.
+    // Paid time off is not hours worked and counts toward nothing.
+
+    // Hours left at or under which someone is flagged as close: one full day.
+    const OTW_NEAR_HOURS = 8;
+
+    /**
+     * Loads the week in progress for Reports ▸ Overtime — every division,
+     * submitted and approved. Draws the report as it starts, so a first open
+     * reads "Loading" rather than blank (a refresh keeps the rows on screen
+     * until the new ones land), and again when the rows arrive — if the report
+     * is still the one on show.
+     */
+    async function loadOvertimeWeek() {
+      const [mon, sun] = rangeFor('current_week');
+      const from = ymd(mon), to = ymd(sun);
+      const seq  = ++otwSeq;
+      // A retry after a failure reads "Loading", not the old failure.
+      otwError = null;
+      if (currentTab === 'reports' && reportSubTab === 'overtime') renderOvertimeReport();
+
+      const params = new URLSearchParams();
+      params.set('status', 'submitted_approved');
+      // Everyone's time. The endpoint defaults to the caller's own rows.
+      params.set('scope', 'all');
+      params.set('from',  from);
+      params.set('to',    to);
+      try {
+        const res  = await fetch('/api/timesheet-entries?' + params.toString(), { headers: authHeaders() });
+        const data = await res.json();
+        // A newer load owns the report now.
+        if (seq !== otwSeq) return;
+        if (!res.ok) throw new Error(data.error || 'Failed');
+        otwEntries = Array.isArray(data.entries) ? data.entries : [];
+        otwScope   = { from, to, at: new Date() };
+        otwError   = null;
+      } catch (err) {
+        if (seq !== otwSeq) return;
+        // The entry list's rule: rows from before a failed refresh are never
+        // shown as though the refresh had landed.
+        otwEntries = [];
+        otwScope   = null;
+        otwError   = (err && err.message) || "Failed to load this week's time";
+      }
+      if (currentTab === 'reports' && reportSubTab === 'overtime') renderOvertimeReport();
+    }
+
+    // The quick-range bar on Reports ▸ Overtime: the buttons give way to a line
+    // naming the week on show, since the report always covers the week in
+    // progress and the buttons would change nothing on it.
+    function syncOvertimeRangeNote() {
+      const on   = currentTab === 'reports' && reportSubTab === 'overtime';
+      const bar  = document.getElementById('quickRanges');
+      const note = document.getElementById('otwRangeNote');
+      if (bar) bar.classList.toggle('otw-mode', on);
+      if (!note) return;
+      if (!on) { note.innerHTML = ''; return; }
+      const [mon, sun] = rangeFor('current_week');
+      // The spaces between the parts are for anything reading the text rather
+      // than the layout — the flex gap spaces them on screen either way.
+      note.innerHTML = '<span class="qr-label">Week:</span> '
+        + `<strong>${escapeHtml(prettyDateShort(ymd(mon)))} – ${escapeHtml(prettyDateShort(ymd(sun)))}</strong> `
+        + '<span>· The Overtime report always covers the week in progress, Monday to Sunday. '
+        + 'The From and To dates above apply to Employees and Projects.</span>';
+    }
+
+    // Where someone stands against the 40 this week. Decided here once, so the
+    // pill, the tiles and the workbook's Status column cannot disagree.
+    function otwStanding(left, otHours) {
+      if (otHours > 0.001) return { key: 'over', cls: 'pill-ot',   label: 'Overtime' };
+      // Exactly on the line: nothing left, and the next hour worked is overtime.
+      if (left < 0.005)    return { key: 'near', cls: 'pill-near', label: 'At 40' };
+      if (left <= OTW_NEAR_HOURS + 0.001) {
+        return { key: 'near', cls: 'pill-near', label: 'Near OT' };
+      }
+      return { key: 'room', cls: 'pill-room', label: 'Under 40' };
+    }
+
+    // The report's figures apart from its markup, so the table on screen and
+    // the workbook are built from one set of numbers.
+    function buildOvertimeWeekModel() {
+      // Before the first load lands there are no rows, but the head still has
+      // to say which week is coming.
+      let scope = otwScope;
+      if (!scope) {
+        const [mon, sun] = rangeFor('current_week');
+        scope = { from: ymd(mon), to: ymd(sun), at: null };
+      }
+      const divEl   = document.getElementById('flt-division');
+      const div     = divEl ? divEl.value : '';
+      const userRaw = (document.getElementById('flt-user').value || '').trim();
+      const supRaw  = (document.getElementById('flt-supervisor').value || '').trim();
+      const userQ   = userRaw.toLowerCase();
+      const supQ    = supRaw.toLowerCase();
+
+      // Every counted row of the week, grouped by person, BEFORE any filter —
+      // the filters below pick people, and a person's hours are all of them.
+      const byUser = new Map();
+      for (const e of otwEntries) {
+        if (!e || e.entry_type !== 'daily') continue;
+        if (e.status !== 'submitted' && e.status !== 'approved') continue;
+        // The fetch asked for this week; a row dated outside it is not in it.
+        const d = String(e.work_date || '').slice(0, 10);
+        if (!d || d < scope.from || d > scope.to) continue;
+        const u = e.username || '—';
+        if (!byUser.has(u)) byUser.set(u, {
+          username: u, entries: [], approvedHours: 0, pendingHours: 0,
+          divisions: new Set(), supervisors: new Set(), days: new Set(),
+        });
+        const acc = byUser.get(u);
+        // Work + travel — what the day is owed, and what counts toward 40.
+        const h = Number(e.computed_hours || 0) + Number(e.travel_hours || 0);
+        acc.entries.push(e);
+        if (e.status === 'approved') acc.approvedHours += h;
+        else                         acc.pendingHours  += h;
+        if (e.division)        acc.divisions.add(e.division);
+        if (e.supervisor_name) acc.supervisors.add(String(e.supervisor_name).toLowerCase());
+        acc.days.add(d);
+      }
+
+      const rows = [];
+      for (const acc of byUser.values()) {
+        if (userQ && !acc.username.toLowerCase().includes(userQ)) continue;
+        if (div   && !acc.divisions.has(div)) continue;
+        if (supQ  && ![...acc.supervisors].some(s => s.includes(supQ))) continue;
+        const ot   = weeklyOvertime(acc.entries, scope);
+        const left = Math.max(0, OT_WEEKLY_THRESHOLD - ot.totalHours);
+        rows.push({
+          username:      acc.username,
+          approvedHours: acc.approvedHours,
+          pendingHours:  acc.pendingHours,
+          worked:        ot.totalHours,
+          left,
+          otHours:       ot.otHours,
+          standing:      otwStanding(left, ot.otHours),
+          divisions:     [...acc.divisions].sort(),
+          days:          acc.days.size,
+        });
+      }
+      // Closest to overtime first — the rows someone opens this to find.
+      rows.sort((a, b) => b.worked - a.worked || a.username.localeCompare(b.username));
+
+      const tot    = { approvedHours: 0, pendingHours: 0, worked: 0, left: 0, otHours: 0 };
+      const counts = { over: 0, near: 0, room: 0 };
+      for (const r of rows) {
+        tot.approvedHours += r.approvedHours;
+        tot.pendingHours  += r.pendingHours;
+        tot.worked        += r.worked;
+        tot.left          += r.left;
+        tot.otHours       += r.otHours;
+        counts[r.standing.key]++;
+      }
+
+      const listedBits = [];
+      if (div)     listedBits.push(`${prettyDiv(div)} division`);
+      if (supRaw)  listedBits.push(`supervisor "${supRaw}"`);
+      if (userRaw) listedBits.push(`employee "${userRaw}"`);
+      // A page left open over Sunday night still holds last week's rows until
+      // something reloads them; the head must not call those "this week".
+      const isCurrent = scope.from === ymd(thisWeekMonday());
+      const weekLine  = `${isCurrent ? 'This week' : 'Week'} · ${prettyDate(scope.from)} – ${prettyDate(scope.to)}`;
+      const asOf = scope.at
+        ? scope.at.toLocaleString(undefined, {
+            weekday: 'short', month: 'short', day: 'numeric', year: 'numeric',
+            hour: 'numeric', minute: '2-digit',
+          })
+        : '';
+      const companyName = (user && (user.companyName || user.companyCode)) || '';
+
+      return {
+        rows, tot, counts, listedBits, isCurrent, weekLine, asOf, companyName,
+        from: scope.from, to: scope.to, loaded: Boolean(otwScope),
+      };
+    }
+
+    function renderOvertimeReport() {
+      const wrap = document.getElementById('overtimeWrap');
+      if (!wrap) return;
+      const m   = buildOvertimeWeekModel();
+      const hrs = v => (Number(v) || 0).toFixed(2);
+
+      const head = (actions) => `
+        <div class="report-head">
+          <div>
+            <div class="report-brand">DataWatch</div>
+            <div class="report-title">Weekly Overtime Report</div>
+            <div class="report-sub">
+              ${m.companyName ? `<strong>${escapeHtml(m.companyName)}</strong><br/>` : ''}
+              ${escapeHtml(m.weekLine)}<br/>
+              ${m.listedBits.length ? `Listing: ${escapeHtml(m.listedBits.join(' · '))}<br/>` : ''}
+              ${m.asOf ? `As of ${escapeHtml(m.asOf)}` : ''}
+            </div>
+          </div>
+          <div class="report-actions">${actions}</div>
+        </div>`;
+      const printBtn = '<button class="btn-print" onclick="printReport()">Print / Save PDF</button>';
+      const noExport = why =>
+        `<button class="btn-print btn-excel" disabled title="${escapeHtml(why)}">&#8681; Export to Excel</button>`;
+
+      if (otwError) {
+        wrap.innerHTML = `
+          <div class="report">
+            ${head(noExport("Nothing to export — this week's time did not load"))}
+            <div class="load-error">Couldn't load this week's time — ${escapeHtml(otwError)}.
+              <div class="load-error-actions"><button class="qr-btn" onclick="loadOvertimeWeek()">Try again</button></div>
+            </div>
+          </div>`;
+        return;
+      }
+      if (!m.loaded) {
+        wrap.innerHTML = `
+          <div class="report">
+            ${head(noExport('Nothing to export yet — this week is still loading'))}
+            <div class="report-empty">Loading this week's time…</div>
+          </div>`;
+        return;
+      }
+      if (!m.rows.length) {
+        const msg = m.listedBits.length
+          ? 'Nobody matching these filters has time submitted for this week yet.'
+          : `No time has been submitted for this week yet — everyone has the full ${OT_WEEKLY_THRESHOLD} hours before overtime.`;
+        wrap.innerHTML = `
+          <div class="report">
+            ${head(noExport('Nothing to export — no time submitted for this week'))}
+            <div class="report-empty">${escapeHtml(msg)}</div>
+          </div>`;
+        return;
+      }
+
+      const { rows, tot, counts } = m;
+      const bodyRows = rows.map(r => {
+        const pendNote = r.pendingHours > 0.001
+          ? ` ${hrs(r.pendingHours)} h of it is still pending approval, so this can change when it is reviewed.`
+          : '';
+        const standTitle = r.standing.key === 'over'
+          ? `${hrs(r.worked)} h this week — ${hrs(r.otHours)} h past ${OT_WEEKLY_THRESHOLD}.${pendNote}`
+          : r.left < 0.005
+            ? `${hrs(r.worked)} h this week — at ${OT_WEEKLY_THRESHOLD}, so the next hour worked is overtime.${pendNote}`
+            : `${hrs(r.worked)} h this week — ${hrs(r.left)} h left before overtime starts.${pendNote}`;
+        const who = `${r.divisions.map(prettyDiv).join(', ') || 'No division'} · `
+          + `${r.days} day${r.days === 1 ? '' : 's'} worked this week`;
+        return `
+          <tr class="otw-row">
+            <td class="name" title="${escapeHtml(who)}">${escapeHtml(r.username)}</td>
+            <td class="num">${hrs(r.approvedHours)}</td>
+            <td class="num">${hrs(r.pendingHours)}</td>
+            <td class="num otw-split otw-worked">${hrs(r.worked)}</td>
+            <td class="num${r.left > 0.001 ? ' num-room' : ''}">${hrs(r.left)}</td>
+            <td class="num${r.otHours > 0.001 ? ' num-ot' : ''}">${hrs(r.otHours)}</td>
+            <td><span class="pill ${r.standing.cls}" title="${escapeHtml(standTitle)}">${escapeHtml(r.standing.label)}</span></td>
+          </tr>`;
+      }).join('');
+
+      wrap.innerHTML = `
+        <div class="report">
+          ${head(`
+            <button class="btn-print btn-excel" onclick="exportOvertimeExcel()" title="Download this report as an Excel workbook (.xlsx)">&#8681; Export to Excel</button>
+            ${printBtn}`)}
+
+          <div class="proj-stats">
+            <div class="proj-stat">
+              <div class="proj-stat-label">Employees</div>
+              <div class="proj-stat-value">${rows.length}</div>
+              <div class="proj-stat-sub">${hrs(tot.worked)} h worked this week</div>
+            </div>
+            <div class="proj-stat${counts.over ? ' ot' : ''}">
+              <div class="proj-stat-label">In Overtime</div>
+              <div class="proj-stat-value">${counts.over}</div>
+              <div class="proj-stat-sub">${hrs(tot.otHours)} OT hours so far</div>
+            </div>
+            <div class="proj-stat${counts.near ? ' near' : ''}">
+              <div class="proj-stat-label">Near Overtime</div>
+              <div class="proj-stat-value">${counts.near}</div>
+              <div class="proj-stat-sub">${OTW_NEAR_HOURS} h or less before ${OT_WEEKLY_THRESHOLD}</div>
+            </div>
+            <div class="proj-stat">
+              <div class="proj-stat-label">Pending Hours</div>
+              <div class="proj-stat-value">${hrs(tot.pendingHours)}</div>
+              <div class="proj-stat-sub">awaiting approval — counted in Hours Worked</div>
+            </div>
+          </div>
+
+          <div class="otw-scroll">
+          <table class="otw-table">
+            <thead>
+              <tr>
+                <th>Employee</th>
+                <th style="text-align:right" title="Hours already approved this week — work + travel.">Approved Hrs</th>
+                <th style="text-align:right" title="Hours submitted this week but not yet approved. They are counted in Hours Worked, so a pending day can still change the figures when it is reviewed.">Pending Hrs</th>
+                <th class="otw-split" style="text-align:right" title="Approved + pending: every hour submitted for this Monday–Sunday week, in every division. Work + travel; paid time off does not count toward the ${OT_WEEKLY_THRESHOLD}.">Hours Worked</th>
+                <th class="th-room" style="text-align:right" title="${OT_WEEKLY_THRESHOLD} minus Hours Worked — what can still be worked this week before overtime starts. Zero once someone reaches ${OT_WEEKLY_THRESHOLD}.">Hours Left Until OT</th>
+                <th class="th-ot" style="text-align:right" title="Hours past ${OT_WEEKLY_THRESHOLD} this week, counted across every division.">OT Hrs</th>
+                <th title="Overtime: past ${OT_WEEKLY_THRESHOLD} · At 40 / Near OT: ${OTW_NEAR_HOURS} h or less before ${OT_WEEKLY_THRESHOLD} · Under 40: more than ${OTW_NEAR_HOURS} h left">Status</th>
+              </tr>
+            </thead>
+            <tbody>${bodyRows}</tbody>
+            <tfoot>
+              <tr class="total">
+                <td class="name">Totals (${rows.length} employee${rows.length === 1 ? '' : 's'})</td>
+                <td class="num">${hrs(tot.approvedHours)}</td>
+                <td class="num">${hrs(tot.pendingHours)}</td>
+                <td class="num otw-split">${hrs(tot.worked)}</td>
+                <td class="num" title="Straight-time hours the people listed can still work this week before overtime, added up. Anyone at or past ${OT_WEEKLY_THRESHOLD} adds nothing.">${hrs(tot.left)}</td>
+                <td class="num${tot.otHours > 0.001 ? ' num-ot' : ''}">${hrs(tot.otHours)}</td>
+                <td><span class="otw-foot-status">${counts.over} in overtime · ${counts.near} near</span></td>
+              </tr>
+            </tfoot>
+          </table>
+          </div>
+
+          <p class="proj-note otw-note">
+            <strong>Overtime is anything past ${OT_WEEKLY_THRESHOLD} hours in the Monday–Sunday week.</strong>
+            Hours Worked is work + travel on every submitted and approved day this week, in every division —
+            pending days included, so a figure can still change when one is reviewed. Paid time off does not
+            count toward the ${OT_WEEKLY_THRESHOLD}, and anyone with no time submitted yet is not listed.${
+            m.listedBits.length ? ' The filters above choose who is listed; each person\'s hours are still their whole week.' : ''}
+          </p>
+          ${m.isCurrent ? '' : '<p class="report-caveat">A new week has started since these hours were loaded. Press Apply to load the week in progress.</p>'}
+        </div>`;
+    }
+
     // ── CSV export ───────────────────────────────────────────────────────
     // Compliance-style fixed-column export of the audit log. Every event
     // produces a row with the same 21 columns in the same order — empty
@@ -6300,11 +6770,12 @@
     }
 
     // <company>-<range> for an export filename, so two scopes never land on the
-    // same name on payroll's disk.
-    function exportScopeSuffix() {
+    // same name on payroll's disk. The dates are the filter bar's unless a span
+    // is passed — Reports ▸ Overtime exports its own week, not the boxes'.
+    function exportScopeSuffix(span) {
       const companyCode = String((user && user.companyCode) || '').replace(/[^A-Za-z0-9_-]/g, '') || 'payroll';
-      const from = document.getElementById('flt-from').value;
-      const to   = document.getElementById('flt-to').value;
+      const from = span ? span.from : document.getElementById('flt-from').value;
+      const to   = span ? span.to   : document.getElementById('flt-to').value;
       const range = (from && to) ? `${from}_${to}` : ymd(new Date());
       return `${companyCode}-${range}`;
     }
@@ -7215,6 +7686,70 @@
       downloadBlob(`job-overtime-${exportScopeSuffix()}.xlsx`, xlsxBlob([
         { name: 'Overtime by Project',  xml: projectSummarySheetXml(model) },
         { name: 'Employees by Project', xml: projectEmployeeSheetXml(model) },
+      ]));
+    }
+
+    // ── Excel export (Reports ▸ Overtime) ────────────────────────────────
+    // One sheet: the table on screen, built from the same model, so the file
+    // cannot drift from what payroll is looking at.
+    function overtimeWeekSheetXml(model) {
+      const { rows, tot, counts, weekLine, listedBits, asOf, companyName } = model;
+      const T = OT_WEEKLY_THRESHOLD;
+      const headers = ['Employee', 'Approved Hrs', 'Pending Hrs',
+        'Hours Worked (approved + pending)', `Hours Left Until OT (${T} − worked)`,
+        `OT Hrs (past ${T})`, 'Status'];
+      const HEADER_ROW = 7;
+
+      const sheet = [
+        [cTxt('Weekly Overtime Report', XS.title)],
+        [cTxt(companyName, XS.bold)],
+        [cTxt(weekLine + (listedBits.length ? ` · Listing: ${listedBits.join(' · ')}` : ''), XS.sub)],
+        [cTxt(asOf ? `As of ${asOf}` : '', XS.sub)],
+        // Spreadsheets have no tooltips, so the rule is stated on the sheet.
+        [cTxt(`Overtime is anything past ${T} hours in the Monday–Sunday week. Hours Worked is work + travel on every submitted and approved day this week, in every division — pending days included, so a figure can still change when one is reviewed. Paid time off does not count toward the ${T}.`, XS.sub)],
+        [],
+        headers.map((h, i) => cTxt(h, (i >= 1 && i <= 5) ? XS.headNum : XS.head)),
+      ];
+
+      for (const r of rows) {
+        sheet.push([
+          cTxt(r.username,       XS.text),
+          cNum(r.approvedHours,  XS.num),
+          cNum(r.pendingHours,   XS.num),
+          cNum(r.worked,         XS.num),
+          cNum(r.left,           XS.num),
+          cNum(r.otHours,        XS.num),
+          cTxt(r.standing.label, XS.text),
+        ]);
+      }
+
+      sheet.push([
+        cTxt(`Totals (${rows.length} employee${rows.length === 1 ? '' : 's'})`, XS.totText),
+        cNum(tot.approvedHours, XS.totNum),
+        cNum(tot.pendingHours,  XS.totNum),
+        cNum(tot.worked,        XS.totNum),
+        cNum(tot.left,          XS.totNum),
+        cNum(tot.otHours,       XS.totNum),
+        cTxt(`${counts.over} in overtime · ${counts.near} near`, XS.totText),
+      ]);
+
+      return xlsxSheetXml({
+        colWidths: [26, 14, 14, 20, 22, 14, 14],
+        rows: sheet,
+        freezeRow: HEADER_ROW,
+        autoFilterRef: `A${HEADER_ROW}:G${HEADER_ROW + rows.length}`,
+        tabSelected: true,
+      });
+    }
+
+    function exportOvertimeExcel() {
+      const model = buildOvertimeWeekModel();
+      if (!model.loaded || !model.rows.length) {
+        alert('No time submitted for this week to export.');
+        return;
+      }
+      downloadBlob(`weekly-overtime-${exportScopeSuffix({ from: model.from, to: model.to })}.xlsx`, xlsxBlob([
+        { name: 'Weekly Overtime', xml: overtimeWeekSheetXml(model) },
       ]));
     }
 
