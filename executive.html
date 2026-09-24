@@ -1533,6 +1533,7 @@
         trucking:     data.trucking     || null,
         intercompany: data.intercompany || null,
         payroll:      data.payroll      || null,
+        safety:       data.safety       || null,
       });
     }
 
@@ -1554,7 +1555,84 @@
         data.trucking     ? renderTruckingSection(data.trucking)    : '',
         data.intercompany ? renderIcSection(data.intercompany)      : '',
         data.payroll      ? renderPayrollSection(data.payroll)      : '',
+        data.safety       ? renderSafetySection(data.safety)        : '',
       ].join('');
+    }
+
+    // ── Safety Sign-Off ──
+    // The week's Safety Center document: who has signed it and when, then who
+    // has not. Signed first, earliest signature at the top, so the list reads
+    // in the order the crew signed; the outstanding names follow alphabetically.
+    function fmtSignedAt(iso) {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '—';
+      return d.toLocaleString('en-US', {
+        weekday: 'short', month: 'short', day: 'numeric',
+        hour: 'numeric', minute: '2-digit',
+      });
+    }
+
+    function fmtWeekOf(ymd) {
+      const m = String(ymd || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (!m) return '';
+      return new Date(+m[1], +m[2] - 1, +m[3])
+        .toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+
+    function renderSafetySection(d) {
+      const docs = Array.isArray(d.documents) ? d.documents : [];
+      if (!docs.length) {
+        return renderDivisionSection(d, {
+          sub: `Week of ${fmtWeekOf(d.weekOf)} · no safety document posted`,
+          body: '<div class="section-empty">No document has been posted in the Safety Center yet.</div>',
+        });
+      }
+
+      const sub = (d.isCurrentWeek ? '' : 'Nothing posted this week — showing the latest document · ')
+        + docs.map(doc => `${doc.title} (week of ${fmtWeekOf(doc.weekOf)})`).join(' · ');
+
+      const table = doc => {
+        const signed = (doc.signed || []).map(s => {
+          // The typed name is the signature; the login rides underneath so it
+          // can be matched against the "not signed" names below.
+          const meta = [
+            s.fullName && s.username && s.fullName !== s.username ? s.username : '',
+            s.onRoster ? '' : 'not on the signing roster',
+          ].filter(Boolean).join(' · ');
+          return `
+          <tr>
+            <td>
+              <div class="pname">
+                <span class="pname-main">${esc(s.fullName || s.username)}</span>
+                ${meta ? `<span class="pname-sub">${esc(meta)}</span>` : ''}
+              </div>
+            </td>
+            <td><span class="pstatus tone-green">Signed</span></td>
+            <td class="v-actual">${esc(fmtSignedAt(s.signedAt))}</td>
+          </tr>`;
+        }).join('');
+        const notSigned = (doc.notSigned || []).map(n => `
+          <tr>
+            <td><div class="pname"><span class="pname-main">${esc(n.username)}</span></div></td>
+            <td><span class="pstatus tone-red">Not signed</span></td>
+            <td class="v-mute">—</td>
+          </tr>`).join('');
+        const heading = docs.length > 1 ? `<div class="inv-head">${esc(doc.title)}</div>` : '';
+        return signed || notSigned ? `
+          ${heading}
+          <div class="ptable-wrap">
+            <table class="ptable">
+              <thead>
+                <tr><th>Name</th><th>Status</th><th>Signed At</th></tr>
+              </thead>
+              <tbody>${signed}${notSigned}</tbody>
+            </table>
+          </div>`
+          : `${heading}<div class="section-empty">Nobody is assigned to sign in the Safety Center.</div>`;
+      };
+
+      return renderDivisionSection(d, { sub, body: docs.map(table).join('') });
     }
 
     // ── Payroll ──
