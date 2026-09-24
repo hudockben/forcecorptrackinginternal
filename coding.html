@@ -147,8 +147,8 @@
       display:flex; flex-direction:column; gap:0.5rem;
     }
     .eqbox .eqhead { font-size:0.64rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); font-weight:700; }
-    .addrow { display:flex; gap:0.5rem; }
-    .addrow .btn.add { flex:1; }
+    .addrow { display:flex; flex-wrap:wrap; gap:0.5rem; }
+    .addrow .btn.add { flex:1 1 0; white-space:nowrap; padding-left:0.5rem; padding-right:0.5rem; }
     .tally .sub { display:block; font-size:0.66rem; color:var(--muted); font-weight:400; }
 
     .btn {
@@ -830,15 +830,16 @@
         // The work hours are known outright, so the common case — one phase all
         // day — needs no arithmetic from anybody.
         rows[0].labor_hours = String(workHours(e));
-        // The drive as the employee filed it. A travel row is offered even at
-        // zero, because the filed figure is routinely zero and wrong: the
-        // travel boxes on the timesheet are optional, the man who drove the
-        // crew out knows what it took, and there was no way to say so. The row
-        // starts empty in that case and the foreman either fills it in or
-        // removes it.
-        const t = blankRow('travel');
-        t.labor_hours = filedTravel(e) > 0 ? String(filedTravel(e)) : '';
-        rows.push(t);
+        // The drive as the employee filed it — and ONLY where he filed one. A
+        // day in town or at the shop has no drive, and a Travel block sitting
+        // there at 0.00 h reads to the crew as a line they are meant to fill
+        // in. Where there was a drive he did not file, "+ Travel" is one tap
+        // away and brings the job's travel codes with it.
+        const t = filedTravel(e) > 0 ? blankRow('travel') : null;
+        if (t) {
+          t.labor_hours = String(filedTravel(e));
+          rows.push(t);
+        }
 
         /* ── The iron he named on his own timesheet, onto the rows it belongs
          *    on rather than a row apiece ──
@@ -874,21 +875,15 @@
 
           const hours = piece.hours != null && piece.hours > 0 ? r2(piece.hours) : 0;
 
-          if (isPickup(piece.name) && !pickupSeated) {
-            // Only where something will land on it. A pickup with no hours from
-            // either source bills the job nothing, and seating it would open the
-            // sheet already failing its own check — the travel row is kept the
-            // moment it carries a machine, and a machine with no hours is
-            // refused. Same guard payroll's pickup branch applies before it
-            // makes a travel row at all.
-            const drive = filedTravel(e);
-            if (drive <= 0 && hours <= 0) continue;
+          // Only where there IS a drive to ride. With no filed travel there is
+          // no travel row, and a pickup he gave hours to falls through to a
+          // machine line of its own below — still billed, without opening a
+          // Travel block the day never had.
+          if (isPickup(piece.name) && !pickupSeated && t) {
             t.equipment = piece.name;
             // THE DRIVE'S HOURS, because the pickup was running for exactly as
-            // long as the man was in it — that is the whole of the rule. His own
-            // stated figure is the fallback where the timesheet filed no drive,
-            // so the row is not left empty and unsaveable.
-            t.equip_hours = drive > 0 ? String(drive) : String(hours);
+            // long as the man was in it — that is the whole of the rule.
+            t.equip_hours = String(filedTravel(e));
             pickupSeated = true;
             continue;
           }
@@ -903,7 +898,8 @@
           // The first one rides the work row. HIS figure, not the page's, and
           // marked as his so nothing levels it to the labour hours later.
           //
-          // A SECOND PICKUP never takes that seat. The work row's machine is
+          // A PICKUP NOT ON THE DRIVE — a second one, or one on a day with no
+          // filed travel — never takes that seat. The work row's machine is
           // the iron that worked the site, and handing the slot to another
           // truck demotes the excavator behind it to a row of its own while
           // claiming a pickup ran the job. It gets its own line instead — still
@@ -1100,14 +1096,12 @@
       if (!r || r._equipHoursTouched) return false;
       if (!isTravelRow(r) || !isPickup(r.equipment)) return false;
       // ONLY WHERE THERE IS A DRIVE TO MIRROR. A travel row with no hours on it
-      // is not a zero-hour drive — it is a day whose timesheet filed none, and
-      // the pickup sitting on it carries the employee's OWN stated figure,
-      // seated by openSheet's fallback precisely because there was no drive to
-      // take. Levelling that to zero wipes the only figure the row has and
-      // leaves a machine with no hours, which the save refuses: the sheet opened
-      // already unsaveable, on the commonest shape this feature has, because the
-      // harvest re-derives the mirror on every row. The link relights by itself
-      // the moment he types a drive.
+      // is not a zero-hour drive — it is a drive somebody cleared, and the
+      // pickup sitting on it still carries the last figure it had. Levelling
+      // that to zero leaves a machine with no hours, which the save refuses,
+      // and the harvest re-derives the mirror on every row — so the sheet would
+      // turn unsaveable under him. The link relights by itself the moment he
+      // types a drive.
       const drive = r2(r.labor_hours);
       if (!(drive > 0)) return false;
       const want = String(drive);
@@ -1261,8 +1255,8 @@
          <div class="addrow">
            <button class="btn add" onclick="addRow('work')">+ Phase</button>
            <button class="btn add" onclick="addRow('equip')">+ Equipment</button>
+           ${sheet.rows.some(isTravelRow) ? '' : `<button class="btn add" onclick="addRow('travel')">+ Travel</button>`}
          </div>
-         ${sheet.rows.some(isTravelRow) ? '' : `<button class="btn add" onclick="addRow('travel')">+ Travel</button>`}
          <div class="msg err" id="sheetMsg">${esc(sheet.err || '')}</div>`;
       if (sheet.err) document.getElementById('sheetMsg').classList.add('show');
 
@@ -1379,7 +1373,10 @@
     // straight from a text field fires the click before that field's change
     // event on some mobile browsers"); these two never did, and the sheet now
     // has two more buttons on that path and two more text fields per row.
-    function addRow(kind) { if (sheet) { harvestSheetDom(); sheet.rows.push(blankRow(kind)); renderSheet(); } }
+    //
+    // A drive added by hand gets the job's travel codes the same way one the
+    // sheet opened with does — it only ever writes into blank cells.
+    function addRow(kind) { if (sheet) { harvestSheetDom(); sheet.rows.push(blankRow(kind)); if (kind === 'travel') applyTravelCodes(); renderSheet(); } }
     function delRow(i)    { if (sheet) { harvestSheetDom(); sheet.rows.splice(i, 1);        renderSheet(); } }
 
     async function saveCoding() {
@@ -1400,10 +1397,12 @@
       };
 
       // An UNTOUCHED travel row is not an error, it is the answer "there was no
-      // drive". Every sheet opens with one — the filed figure is routinely zero
-      // and wrong, and a foreman who cannot see the box will not think to add
-      // it — so on the ordinary day it is simply left empty and dropped here.
-      // Kept once anything is on it: hours, or the pickup that did the driving.
+      // drive". A sheet only opens with one where travel was filed; one added
+      // with "+ Travel" and left empty is simply dropped here. A FILED drive
+      // cleared back to nothing is dropped too, but that is not "no answer":
+      // travel_hours below then goes out as 0, a request to cut the filed
+      // drive that the supervisor has to decide. Kept once anything is on it:
+      // hours, or the pickup that did the driving.
       //
       // Numbered by where it sits ON SCREEN, not by where it lands in the body:
       // dropping a row renumbers everything after it, and "row 3 needs a sub
