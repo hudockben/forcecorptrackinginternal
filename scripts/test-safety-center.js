@@ -1358,9 +1358,17 @@ function pageTests() {
     /DELETE', '\/document-upload-url\?division=safety&storageKey=/.test(page));
 
   // ── Driven in jsdom ────────────────────────────────────────────────────
+  // jsdom does not fetch <script src>, and the printout is written through
+  // dwWrite() from report-branding.js — so the real file is inlined where the
+  // page loads it, and every sheet below goes through the branding it ships with.
+  const brandingTag = '<script src="report-branding.js" defer></script>';
+  // A function, not a string: a string replacement reads `$&` and friends in
+  // the inlined source as patterns.
+  const pageWithBranding = page.replace(brandingTag, () => `<script>${read('report-branding.js')}</script>`);
+
   function boot(user, docs, report, opts = {}) {
     const calls = [];
-    const dom = new JSDOM(page, {
+    const dom = new JSDOM(pageWithBranding, {
       url: 'http://localhost/safety.html',
       runScripts: 'dangerously',
       beforeParse(win) {
@@ -1385,9 +1393,17 @@ function pageTests() {
           scale() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, clearRect() {},
         });
         win.HTMLCanvasElement.prototype.toDataURL = () => 'data:image/png;base64,AAAA';
-        win.fetch = (url, opts) => {
-          calls.push({ url: String(url), opts });
-          const body = String(url).includes('safety-signatures')
+        win.fetch = (url, init) => {
+          calls.push({ url: String(url), opts: init });
+          if (opts.fail && opts.fail(String(url))) {
+            return Promise.resolve({
+              ok: false, status: 500, json: () => Promise.resolve({ error: 'Server error' }),
+            });
+          }
+          // One document's read — the only one that carries the drawn marks.
+          const detail = opts.detail && /[?&]documentId=/.test(String(url)) ? opts.detail(String(url)) : undefined;
+          const body = detail !== undefined ? detail
+            : String(url).includes('safety-signatures')
             ? (String(url).includes('scope=report') ? report : { signatures: [], statement: 'S' })
             : docs;
           return Promise.resolve({
@@ -1676,6 +1692,302 @@ function pageTests() {
       assert('  and the ones who have not signed', csv && /twhite,,Not signed/.test(csv), String(csv));
       resolve();
     }, 30)));
+  }
+
+  // ── Print / PDF ────────────────────────────────────────────────────────
+  // The sheet the safety supervisor uploads to ISNetworld. It has to carry the
+  // drawn marks, which the report deliberately does not, so it is built from a
+  // fresh read of each document — and it prints who SIGNED, never the list of
+  // who has not.
+  {
+    assert('the page loads the branding its printout is written through',
+      page.includes(brandingTag));
+
+    const STATEMENT = safetyLib.SIGNATURE_STATEMENT;
+    // A real 1x1 PNG, so it passes the same shape check the server applies.
+    const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+    const DOC3 = '33333333-3333-4333-8333-333333333333';
+    const docMeta = (id, title, weekOf) => ({
+      id, title, weekOf, filename: 'form.pdf',
+      uploadedBy: 'dsimmons', uploadedAt: weekOf + 'T12:00:00Z', archivedAt: null,
+    });
+    const JESSE = { userId: 2, username: 'jhauser', fullName: 'Jesse Hauser', signedAt: '2026-09-15T13:00:00.000Z',
+                    statement: STATEMENT, hasDrawnSignature: true,  onRoster: true };
+    const MARCO = { userId: 3, username: 'mreyes',  fullName: 'Marco Reyes',  signedAt: '2026-09-15T14:00:00.000Z',
+                    statement: STATEMENT, hasDrawnSignature: false, onRoster: true };
+    const TOM   = { userId: 4, username: 'twhite',  fullName: 'Tom White',    signedAt: '2026-09-08T12:00:00.000Z',
+                    statement: STATEMENT, hasDrawnSignature: true,  onRoster: true };
+    const grp = (doc, signed, outstanding) => ({
+      document: doc, expectedCount: 4, signedCount: signed.length, outstandingCount: outstanding.length,
+      percentSigned: Math.round((signed.length / 4) * 100), signed,
+      outstanding: outstanding.map((u, i) => ({ userId: 50 + i, username: u, level: 'level1' })),
+    });
+    const D1 = docMeta(DOC1, 'Tailgate — Trenching',    '2026-09-14');
+    const D2 = docMeta(DOC2, 'Tailgate — Heat Illness', '2026-09-07');
+    const D3 = docMeta(DOC3, 'Tailgate — Silica',       '2026-08-31');
+    // What the report hands out: no marks, only whether one was drawn.
+    const REPORT_P = { statement: STATEMENT, documents: [
+      grp(D1, [JESSE, MARCO], ['dsimmons', 'twhite']),
+      grp(D2, [TOM],          ['dsimmons', 'jhauser', 'mreyes']),
+      grp(D3, [],             ['dsimmons', 'jhauser', 'mreyes', 'twhite']),
+    ] };
+    // What one document's own read hands out: the same rows, marks included.
+    const DETAIL_P = {
+      [DOC1]: grp(D1, [{ ...JESSE, signatureImage: PNG }, MARCO], ['dsimmons', 'twhite']),
+      [DOC2]: grp(D2, [{ ...TOM, signatureImage: PNG }],          ['dsimmons', 'jhauser', 'mreyes']),
+      [DOC3]: grp(D3, [],                                         ['dsimmons', 'jhauser', 'mreyes', 'twhite']),
+    };
+    const detailFrom = table => url => {
+      const id = decodeURIComponent(/[?&]documentId=([^&]+)/.exec(url)[1]);
+      return { documents: table[id] ? [table[id]] : [], statement: STATEMENT };
+    };
+    const SUPERVISOR = {
+      username: 'dsimmons', companyName: 'Force Corp',
+      divisionRoles: { safety: 'level3' }, isPlatformAdmin: false,
+    };
+    const settle = (ms = 20) => new Promise(r => setTimeout(r, ms));
+    const detailReads = calls => calls
+      .filter(c => /safety-signatures\?documentId=/.test(c.url))
+      .map(c => decodeURIComponent(/documentId=([^&]+)/.exec(c.url)[1]));
+    const titleOf = html => (/<title>([^<]*)<\/title>/.exec(html) || [])[1];
+
+    // A stand-in for the pop-up that records what is written into it.
+    function popupsOn(win) {
+      const opened = [];
+      win.open = () => {
+        const p = {
+          closed: false, writes: [],
+          get html() { return this.writes.join(''); },
+          document: {
+            open() { p.writes = []; },
+            write(...chunks) { p.writes.push(chunks.join('')); },
+            close() {},
+            getElementById: () => null,
+          },
+          focus() {}, print() {}, close() { p.closed = true; },
+        };
+        opened.push(p);
+        return p;
+      };
+      return opened;
+    }
+
+    // One document's sheet.
+    {
+      const { win, doc, calls } = boot(SUPERVISOR, DOCS_SUPER, REPORT_P, { detail: detailFrom(DETAIL_P) });
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('report');
+        await settle();
+        const popups = popupsOn(win);
+
+        assert('the report offers a print of everything it lists',
+          !!doc.querySelector('button[onclick="printReport()"]'));
+        const btn = doc.querySelector(`[data-act="print"][data-doc-id="${DOC1}"]`);
+        assert('  and each document carries a Print / PDF of its own', !!btn);
+
+        const before = calls.length;
+        btn.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+        await settle();
+        assert('printing a document does not also expand it',
+          win.eval(`state.reportOpen.has(${JSON.stringify(DOC1)})`) === false);
+        assert('  it opens one print window', popups.length === 1, String(popups.length));
+        assert('  filled from a FRESH read of that document, which is where the marks are',
+          detailReads(calls.slice(before)).join() === DOC1, detailReads(calls.slice(before)).join());
+
+        const html = popups[0] ? popups[0].html : '';
+        assert('the sheet is a whole document, titled for the file it will be saved as',
+          /^<!DOCTYPE html>/i.test(html.trim())
+          && titleOf(html) === 'Tailgate — Trenching — sign-off sheet — week of 2026-09-14', titleOf(html));
+        assert('  written through dwWrite, so it carries the DataWatch band', /data-dw-brand/.test(html));
+        assert('  under the company\'s own name', />Force Corp</.test(html));
+        assert('  naming the document and its week',
+          /<h1>Tailgate — Trenching<\/h1>/.test(html) && /Week of Sep 14, 2026/.test(html));
+        assert('  and the sentence each of them agreed to', html.includes(STATEMENT));
+        assert('every signer is on it, by typed name and by login',
+          /Jesse Hauser/.test(html) && /jhauser/.test(html) && /Marco Reyes/.test(html) && /mreyes/.test(html));
+        assert('  with the mark they drew', html.includes(`src="${PNG}"`));
+        assert('  and a signer who drew nothing is said so, rather than left blank',
+          /Signed by typed name — no mark drawn/.test(html));
+        assert('who has NOT signed is not on the sheet', !/twhite/.test(html),
+          'the outstanding list is for chasing, not part of the record of who signed');
+        assert('the print dialog opens once the sheet has loaded',
+          /window\.onload = function \(\) \{ window\.print\(\); \};/.test(html));
+        assert('  with a button to open it again that stays off the paper',
+          /class="bar no-print"/.test(html) && /\.no-print \{ display: none !important; \}/.test(html));
+        resolve();
+      }, 30)));
+    }
+
+    // One person's acknowledgement.
+    {
+      const { win, doc } = boot(SUPERVISOR, DOCS_SUPER, REPORT_P, { detail: detailFrom(DETAIL_P) });
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('report');
+        await settle();
+        win.toggleGroup(DOC1);
+        await settle();
+        const popups = popupsOn(win);
+        const one = doc.querySelector('[data-act="print-sig"][data-username="jhauser"]');
+        assert('each signature carries a Print / PDF of its own',
+          !!one && one.getAttribute('data-doc-id') === DOC1
+          && one.getAttribute('data-signed-at') === JESSE.signedAt);
+        one.dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+        await settle();
+        const html = popups[0] ? popups[0].html : '';
+        assert('  which prints that one person\'s acknowledgement',
+          /Safety acknowledgement record/.test(html) && /<h1>Jesse Hauser<\/h1>/.test(html)
+          && html.includes(`src="${PNG}"`) && html.includes(STATEMENT));
+        assert('  and nobody else\'s', !/Marco Reyes/.test(html));
+        assert('  saved under their name and the document',
+          titleOf(html) === 'Jesse Hauser — Tailgate — Trenching — signed 2026-09-15', titleOf(html));
+        assert('  without collapsing the group it was pressed in',
+          win.eval(`state.reportOpen.has(${JSON.stringify(DOC1)})`) === true);
+        resolve();
+      }, 30)));
+    }
+
+    // Whatever is in a name or a title is printed as text. The pop-up shares
+    // this origin, so markup in it would run with the supervisor's session.
+    {
+      const nasty = { ...JESSE, fullName: 'Jesse <img src=x onerror=alert(1)> Hauser' };
+      const odd   = { ...MARCO, hasDrawnSignature: true };
+      const title = { ...D1, title: 'Trench <script>alert(1)</script>' };
+      const table = { [DOC1]: grp(title, [{ ...nasty, signatureImage: PNG }, { ...odd, signatureImage: 'javascript:alert(1)' }], []) };
+      const report = { statement: STATEMENT, documents: [grp(D1, [nasty, odd], [])] };
+      const { win } = boot(SUPERVISOR, DOCS_SUPER, report, { detail: detailFrom(table) });
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('report');
+        await settle();
+        const popups = popupsOn(win);
+        win.printDocument(DOC1);
+        await settle();
+        const html = popups[0] ? popups[0].html : '';
+        assert('a name on the sheet is text, never markup',
+          html.includes('Jesse &lt;img src=x onerror=alert(1)&gt; Hauser') && !/<img src=x/.test(html));
+        assert('  and so is a title', html.includes('Trench &lt;script&gt;') && !/<script>alert\(1\)/.test(html));
+        assert('only a PNG mark ever reaches an src',
+          !/javascript:alert/.test(html) && /Drawn signature on file — could not be shown here/.test(html));
+        resolve();
+      }, 30)));
+    }
+
+    // Signers who agreed to different wording.
+    {
+      const { win } = boot(SUPERVISOR, DOCS_SUPER, REPORT_P, { detail: detailFrom(DETAIL_P) });
+      done.push(new Promise(resolve => setTimeout(() => {
+        const OLD = 'I have read and understood this form.';
+        const info = { at: '2026-09-20T12:00:00Z', by: 'dsimmons', company: 'Force Corp' };
+        const html = win.sheetHTML(grp(D1, [JESSE, { ...MARCO, statement: OLD }], []), info);
+        assert('signers who agreed to different wording see each wording, numbered',
+          html.includes(STATEMENT) && html.includes(OLD) && /<ol>/.test(html));
+        assert('  with the number beside each name',
+          /Jesse Hauser<\/b><sup>1<\/sup>/.test(html) && /Marco Reyes<\/b><sup>2<\/sup>/.test(html));
+        const same = win.sheetHTML(grp(D1, [JESSE, MARCO], []), info);
+        assert('  while one wording is stated once, unnumbered', !/<sup>/.test(same) && !/<ol>/.test(same));
+        resolve();
+      }, 30)));
+    }
+
+    // Print all.
+    {
+      const { win, doc, calls } = boot(SUPERVISOR, DOCS_SUPER, REPORT_P, { detail: detailFrom(DETAIL_P) });
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('report');
+        await settle();
+        const popups = popupsOn(win);
+        const before = calls.length;
+        doc.querySelector('button[onclick="printReport()"]').click();
+        await settle(40);
+        const html = popups[0] ? popups[0].html : '';
+        const reads = detailReads(calls.slice(before));
+        assert('Print all reads each signed document afresh',
+          reads.slice().sort().join() === [DOC1, DOC2].sort().join(), reads.join());
+        assert('  skipping the one nobody has signed', !reads.includes(DOC3));
+        assert('  behind a contents page that says it was left out',
+          /Safety sign-off report/.test(html) && /1 document in this range\s+has no signatures yet/.test(html));
+        const h1s = [...html.matchAll(/<h1>([^<]*)<\/h1>/g)].map(m => m[1]);
+        assert('  then a sheet for each, oldest week first',
+          h1s.join(' | ') === 'Weeks of Sep 7, 2026 – Sep 14, 2026 | Tailgate — Heat Illness | Tailgate — Trenching',
+          h1s.join(' | '));
+        assert('  carrying every signature in the range',
+          /Jesse Hauser/.test(html) && /Marco Reyes/.test(html) && /Tom White/.test(html));
+        assert('  saved under the range it covers',
+          titleOf(html) === 'Safety sign-offs — 2026-09-07 to 2026-09-14', titleOf(html));
+        resolve();
+      }, 30)));
+    }
+
+    // A year of weekly forms is a year of small reads, a few at a time — never
+    // every document's marks in flight at once.
+    {
+      const many = [];
+      const table = {};
+      for (let i = 0; i < 9; i++) {
+        const id = `4444444${i}-4444-4444-8444-444444444444`;
+        const d = docMeta(id, `Week ${i + 1}`, `2026-0${i < 8 ? 7 : 8}-${String(1 + (i % 8) * 3).padStart(2, '0')}`);
+        many.push(grp(d, [TOM], []));
+        table[id] = grp(d, [{ ...TOM, signatureImage: PNG }], []);
+      }
+      const { win } = boot(SUPERVISOR, DOCS_SUPER, { statement: STATEMENT, documents: many }, { detail: detailFrom(table) });
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('report');
+        await settle();
+        const popups = popupsOn(win);
+        let inFlight = 0, peak = 0, total = 0;
+        const realFetch = win.fetch;
+        win.fetch = (url, init) => {
+          if (!/documentId=/.test(String(url))) return realFetch(url, init);
+          inFlight++; total++; peak = Math.max(peak, inFlight);
+          return new Promise(r => setTimeout(r, 5)).then(() => { inFlight--; return realFetch(url, init); });
+        };
+        win.printReport();
+        await settle(120);
+        assert('Print all reads at most four documents at once', peak > 1 && peak <= 4, `peak ${peak}`);
+        assert('  and still reads every one of them', total === 9, String(total));
+        assert('  into one printout', popups.length === 1
+          && (popups[0].html.match(/<section class="sheet">/g) || []).length === 10);
+        win.fetch = realFetch;
+        resolve();
+      }, 30)));
+    }
+
+    // The ways it can go wrong, each of which must say so.
+    {
+      const { win, doc, calls } = boot(SUPERVISOR, DOCS_SUPER, REPORT_P, {
+        detail: detailFrom(DETAIL_P), fail: url => url.includes('documentId=' + DOC2),
+      });
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('report');
+        await settle();
+        const toastText = () => doc.getElementById('toast').textContent;
+
+        win.open = () => null;
+        const before = calls.length;
+        win.printDocument(DOC1);
+        await settle();
+        assert('a blocked pop-up says so, rather than doing nothing',
+          /blocked the print window/.test(toastText()), toastText());
+        assert('  and reads nothing it has nowhere to put', detailReads(calls.slice(before)).length === 0);
+
+        const popups = popupsOn(win);
+        win.printDocument(DOC3);
+        await settle();
+        assert('a document nobody has signed opens no window', popups.length === 0, String(popups.length));
+        assert('  and says why', /nothing to print/.test(toastText()), toastText());
+
+        win.printDocument(DOC2);
+        await settle();
+        assert('a failed read closes the window rather than printing an empty sheet',
+          popups.length === 1 && popups[0].closed && !/class="sheet"/.test(popups[0].html));
+        assert('  and says what went wrong', /Could not build the printout/.test(toastText()), toastText());
+
+        win.printReport();
+        await settle(40);
+        assert('Print all never prints a report with a document silently missing from it',
+          popups.length === 2 && popups[1].closed && !/class="sheet"/.test(popups[1].html));
+        resolve();
+      }, 30)));
+    }
   }
 
   return Promise.all(done);

@@ -269,6 +269,16 @@
     }
     .sig-pending { display:block; margin-top:3px; font-size:0.68rem; color:var(--muted); }
     .rep-none { font-size:0.8rem; color:var(--muted); padding:0.45rem 0.6rem; }
+    /* Print / PDF, per document in its header and per signature under its
+       time. Small beside the name, because the name is what is being read. */
+    .rep-head .rep-print { flex:none; }
+    .rep-list li .side { flex:none; display:flex; flex-direction:column; align-items:flex-end; gap:0.35rem; }
+    .sig-print {
+      background:none; border:1px solid var(--border); color:var(--muted); border-radius:6px;
+      padding:0.3rem 0.5rem; font-size:0.6rem; font-weight:700; letter-spacing:0.08em;
+      text-transform:uppercase; cursor:pointer; font-family:inherit; white-space:nowrap;
+    }
+    .sig-print:hover { color:var(--text); border-color:#555; }
 
     /* ── Phone ───────────────────────────────────────────────────────────
        The crew are on phones, in gloves, outdoors. Apple and Google both put
@@ -280,6 +290,7 @@
       .icon-btn   { min-height:44px; padding:0.6rem 0.85rem; }
       .tab        { min-height:48px; padding-left:1rem; padding-right:1rem; }
       .btn-ghost  { min-height:44px; }
+      .sig-print  { min-height:44px; padding:0.5rem 0.75rem; }
       .ack input[type=checkbox] { width:30px; height:30px; min-height:30px; }
       /* A file picker under 16px makes iOS zoom the whole page on focus and
          leaves it zoomed. Every other control here is already 16px. */
@@ -303,6 +314,10 @@
       .card-side { flex-direction:row; align-items:center; flex-wrap:wrap; gap:0.35rem; }
       .toolbar   { flex-direction:column; align-items:stretch; }
       .toolbar .btn { width:100%; }
+      /* Same squeeze in a report group: beside the count, the Print button
+         left the title a column three words wide. It takes its own row. */
+      .rep-head { flex-wrap:wrap; }
+      .rep-head .rep-print { flex:1 0 100%; }
     }
 
     /* A filename or a pasted title with no spaces in it must not push the
@@ -417,19 +432,25 @@
       return dstr(d);
     }
 
+    function dayLabel(ds) {
+      const d = new Date(String(ds) + 'T12:00:00');
+      if (isNaN(d.getTime())) return String(ds || '');
+      return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+
     function weekLabel(ds) {
       const d = new Date(String(ds) + 'T12:00:00');
       if (isNaN(d.getTime())) return String(ds || '');
-      return 'Week of ' + d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+      return 'Week of ' + dayLabel(ds);
     }
 
-    function stamp(iso) {
+    function stamp(iso, withZone) {
       if (!iso) return '';
       const d = new Date(iso);
       if (isNaN(d.getTime())) return String(iso);
-      return d.toLocaleString(undefined, {
+      return d.toLocaleString(undefined, Object.assign({
         month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit',
-      });
+      }, withZone ? { timeZoneName: 'short' } : {}));
     }
 
     function fileSize(bytes) {
@@ -1024,15 +1045,26 @@
       if (state.detail[id] === undefined) {
         state.detail[id] = null;   // in flight — stops a second tap re-fetching
         try {
-          const d = await api('GET', '/safety-signatures?documentId=' + encodeURIComponent(id));
-          const g = (d.documents || [])[0];
-          state.detail[id] = (g && g.signed) || [];
+          await fetchSignOff(id);
         } catch (err) {
           state.detail[id] = [];
           toast(err.message, true);
         }
         if (state.reportOpen.has(id)) renderReport();
       }
+    }
+
+    /* One document's sign-off as it stands now, drawn marks included, and the
+       on-screen cache refreshed on the way past. Rejects rather than resolving
+       empty: the printout calls this too, and a failed read must never come
+       out of the printer as a document nobody signed. */
+    async function fetchSignOff(id) {
+      const d = await api('GET', '/safety-signatures?documentId=' + encodeURIComponent(id));
+      const g = (d.documents || [])[0];
+      if (!g) throw new Error('That document could not be found. Reload the report and try again.');
+      g.signed = g.signed || [];
+      state.detail[id] = g.signed;
+      return g;
     }
 
     function groupHTML(g) {
@@ -1055,7 +1087,12 @@
                  ? `<img class="sig-mark" src="${esc(marks[s.username])}" alt="Signature of ${esc(s.fullName)}" />`
                  : (s.hasDrawnSignature ? `<span class="sig-pending">signature loading…</span>` : '')
              }</span>
-             <span class="when">${esc(stamp(s.signedAt))}</span>
+             <span class="side">
+               <span class="when">${esc(stamp(s.signedAt))}</span>
+               <button class="sig-print" data-act="print-sig" data-doc-id="${esc(d.id)}"
+                       data-username="${esc(s.username)}" data-signed-at="${esc(s.signedAt)}"
+                       title="Print or save ${esc(s.fullName)}'s signature on its own">Print / PDF</button>
+             </span>
            </li>`).join('') + `</ul>`
         : `<div class="rep-none">Nobody has signed this one yet.</div>`;
 
@@ -1073,6 +1110,8 @@
               <div class="s">${esc(weekLabel(d.weekOf))} &middot; posted by ${esc(d.uploadedBy || 'the office')} on ${esc(stamp(d.uploadedAt))}</div>
             </div>
             <div class="rep-count ${full ? 'full' : 'part'}">${g.signedCount} / ${g.expectedCount}</div>
+            <button class="btn btn-ghost rep-print" data-act="print" data-doc-id="${esc(d.id)}"
+                    title="Print or save this document's sign-off sheet">Print / PDF</button>
           </div>
           <div class="bar"><span style="width:${pct}%"></span></div>
           <div class="rep-body">
@@ -1111,6 +1150,7 @@
             </div>
             <button class="btn btn-primary" onclick="loadReport()">Apply</button>
             <button class="btn btn-ghost" onclick="exportReportCsv()">Export CSV</button>
+            <button class="btn btn-ghost" onclick="printReport()">Print all / PDF</button>
           </div>
           <span class="fld-note">Everyone granted the Safety Center is expected to sign. Grant or remove the
             division in Manage Users to change who appears here.</span>
@@ -1177,6 +1217,416 @@
       setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     }
 
+    /* ═══════ Print / PDF ═══════ */
+    /* The sign-off sheet: what the safety supervisor uploads to ISNetworld and
+       hands an auditor — what was covered, who signed it, when, and the mark
+       each person drew. Three ways in, one builder:
+
+         Print all / PDF   every document in the report's range, a page each,
+                           behind a contents page
+         Print / PDF       on a document: that document's sheet
+         Print / PDF       on a signature: that one person's acknowledgement,
+                           for a per-employee training record
+
+       Only signatures are printed. Who is still outstanding is a list for the
+       supervisor to chase, not part of the record of who signed.
+
+       Each document is read FRESH rather than lifted from the report on screen.
+       The report carries no drawn marks (see loadGroupDetail), and a sheet
+       built from a group expanded an hour ago would leave off anybody who has
+       signed since — on the one copy that goes to the auditor. */
+
+    // The shape the server insists on before it stores a mark. The sheet is
+    // written into a window on this origin, so nothing else reaches an src.
+    const PNG_MARK = /^data:image\/png;base64,[A-Za-z0-9+/]+={0,2}$/;
+
+    // Documents read at once for Print all. Each read is one document's marks,
+    // so a year of weekly forms is a year of small reads rather than one read
+    // big enough to stop the report loading — the reason the report leaves the
+    // marks out in the first place.
+    const PRINT_READS_AT_ONCE = 4;
+
+    const PRINT_CANCELLED = new Error('cancelled');
+    let printBusy = false;
+
+    const PRINT_CSS = `
+      @page { size: portrait; margin: 0.5in; }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: #fff; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+        color: #111; font-size: 11px; line-height: 1.4; padding: 24px 28px;
+        -webkit-print-color-adjust: exact; print-color-adjust: exact;
+      }
+      .bar {
+        display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px;
+        padding: 10px 12px; background: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 8px;
+        font-size: 12px; color: #14532d;
+      }
+      .bar button {
+        font: inherit; font-size: 13px; font-weight: 700; padding: 8px 16px; border: none;
+        border-radius: 6px; background: #16a34a; color: #fff; cursor: pointer;
+      }
+      @media print { body { padding: 0; } .no-print { display: none !important; } }
+      .sheet + .sheet { break-before: page; page-break-before: always; }
+      .hdr {
+        display: flex; justify-content: space-between; align-items: flex-end; gap: 16px;
+        border-bottom: 2px solid #111; padding-bottom: 6px;
+      }
+      .hdr .co { font-size: 15px; font-weight: 800; }
+      .hdr .kind {
+        font-size: 9px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase;
+        color: #16a34a; text-align: right;
+      }
+      h1 { font-size: 19px; line-height: 1.25; margin: 12px 0 10px; overflow-wrap: anywhere; }
+      .meta {
+        display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px 18px;
+        padding: 9px 12px; border: 1px solid #d1d5db; border-radius: 6px; margin-bottom: 10px;
+      }
+      .k {
+        display: block; font-size: 8px; font-weight: 700; letter-spacing: 0.1em;
+        text-transform: uppercase; color: #6b7280;
+      }
+      .meta .v { display: block; font-size: 11px; font-weight: 600; overflow-wrap: anywhere; }
+      .stmt { border-left: 3px solid #16a34a; background: #f3f4f6; padding: 8px 11px; margin-bottom: 12px; }
+      .stmt p, .stmt ol { margin: 3px 0 0; font-size: 10.5px; }
+      .stmt ol { padding-left: 18px; }
+      table { width: 100%; border-collapse: collapse; }
+      thead { display: table-header-group; }
+      th {
+        text-align: left; font-size: 8px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+        color: #374151; border-bottom: 2px solid #111; padding: 5px 6px;
+      }
+      /* Repeats with the column heads on every page of a long sheet, so a page
+         that comes loose from the stack still says which document it signs. */
+      th.cap {
+        border-bottom: none; padding: 0 6px 2px; font-size: 8.5px; letter-spacing: 0.02em;
+        text-transform: none; color: #6b7280; font-weight: 600;
+      }
+      td { border-bottom: 1px solid #e5e7eb; padding: 5px 6px; vertical-align: middle; overflow-wrap: anywhere; }
+      tr { break-inside: avoid; page-break-inside: avoid; }
+      .n { width: 26px; text-align: right; color: #6b7280; font-variant-numeric: tabular-nums; }
+      td.name b { font-size: 11.5px; }
+      td.name small { display: block; color: #6b7280; font-size: 9.5px; }
+      .when { white-space: nowrap; font-variant-numeric: tabular-nums; }
+      .num { text-align: right; font-variant-numeric: tabular-nums; }
+      td.mark { width: 2.7in; height: 0.62in; }
+      td.mark img { display: block; max-width: 2.6in; max-height: 0.56in; }
+      .none { color: #6b7280; font-size: 9.5px; font-style: italic; }
+      .person { margin: 16px 0 8px; border: 1px solid #d1d5db; border-radius: 6px; padding: 14px 16px 10px; }
+      .person .line {
+        height: 1.3in; display: flex; align-items: flex-end;
+        border-bottom: 1.5px solid #111; padding-bottom: 4px;
+      }
+      .person .line img { display: block; max-width: 100%; max-height: 1.22in; }
+      .person .under {
+        display: flex; justify-content: space-between; gap: 12px; margin-top: 4px;
+        font-size: 9.5px; color: #374151;
+      }
+      .foot { margin-top: 12px; padding-top: 6px; border-top: 1px solid #e5e7eb; font-size: 8.5px; color: #6b7280; }
+    `;
+
+    const printInfo = () => ({
+      at:      new Date().toISOString(),
+      by:      (user && user.username) || '',
+      company: (user && (user.companyName || user.companyCode)) || '',
+    });
+
+    const ymdOf = iso => { const d = new Date(iso); return isNaN(d.getTime()) ? '' : dstr(d); };
+
+    // Oldest first. The screen leads with this week because that is what is
+    // being chased; a printed record reads in the order things happened.
+    const byWeek = (a, b) =>
+      String(a.document.weekOf || '').localeCompare(String(b.document.weekOf || ''))
+      || String(a.document.uploadedAt || '').localeCompare(String(b.document.uploadedAt || ''));
+
+    function rangeLabel(weeks) {
+      const sorted = weeks.slice().sort();
+      const lo = sorted[0], hi = sorted[sorted.length - 1];
+      return lo === hi ? weekLabel(lo) : `Weeks of ${dayLabel(lo)} – ${dayLabel(hi)}`;
+    }
+
+    function printShell(title, body) {
+      return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+        <title>${esc(title)}</title>
+        <style>${PRINT_CSS}</style></head>
+        <body>
+          <div class="bar no-print">
+            <button onclick="window.print()">Print / Save as PDF</button>
+            <span>To keep a file for ISNetworld or an audit, pick <b>Save as PDF</b> as the printer.</span>
+          </div>
+          ${body}
+          <script>window.onload = function () { window.print(); };<\/script>
+        </body></html>`;
+    }
+
+    function printHead(info, kind) {
+      return `<div class="hdr">
+          <div class="co">${esc(info.company || 'Safety Center')}</div>
+          <div class="kind">${esc(kind)}</div>
+        </div>`;
+    }
+
+    function printedCell(info) {
+      return `<div><span class="k">Printed</span><span class="v">${esc(stamp(info.at, true))}${
+        info.by ? ' by ' + esc(info.by) : ''}</span></div>`;
+    }
+
+    function printFoot() {
+      return `<div class="foot">Collected electronically in the DataWatch Safety Center. Each signer ticked
+        the acknowledgement and typed their own full name; a drawn signature is optional and is shown
+        wherever one was made. Times are recorded by the server at the moment of signing.</div>`;
+    }
+
+    // The drawn mark, or what stands in its place. Drawing is optional — the
+    // typed name and the acknowledgement are the signature — so a missing mark
+    // is said in words rather than left as a blank that reads like a gap.
+    function printMark(s) {
+      if (s.signatureImage && PNG_MARK.test(s.signatureImage)) {
+        return `<img src="${esc(s.signatureImage)}" alt="Signature of ${esc(s.fullName)}">`;
+      }
+      return s.hasDrawnSignature
+        ? `<span class="none">Drawn signature on file — could not be shown here</span>`
+        : `<span class="none">Signed by typed name — no mark drawn</span>`;
+    }
+
+    // The sentence each person agreed to is stored with their signature. If the
+    // wording ever changes, a sheet whose signers saw two versions shows both,
+    // numbered, rather than claiming one sentence for everybody on it.
+    function statementBlock(signed, who) {
+      const says = [];
+      signed.forEach(s => { if (s.statement && !says.includes(s.statement)) says.push(s.statement); });
+      if (!says.length) return { html: '', ref: () => '' };
+      const html = says.length === 1
+        ? `<div class="stmt"><span class="k">${esc(who)} signed to confirm</span><p>“${esc(says[0])}”</p></div>`
+        : `<div class="stmt"><span class="k">${esc(who)} signed to confirm the statement numbered beside their name</span>
+             <ol>${says.map(t => `<li>“${esc(t)}”</li>`).join('')}</ol></div>`;
+      const ref = s => (says.length > 1 && s.statement) ? `<sup>${says.indexOf(s.statement) + 1}</sup>` : '';
+      return { html, ref };
+    }
+
+    function sheetHTML(g, info) {
+      const d = g.document;
+      const stmt = statementBlock(g.signed, 'Each person below');
+      return `
+        <section class="sheet">
+          ${printHead(info, 'Safety sign-off sheet')}
+          <h1>${esc(d.title)}</h1>
+          <div class="meta">
+            <div><span class="k">Week</span><span class="v">${esc(weekLabel(d.weekOf))}</span></div>
+            <div><span class="k">File</span><span class="v">${esc(d.filename || '—')}</span></div>
+            <div><span class="k">Signatures</span><span class="v">${g.signed.length}</span></div>
+            <div><span class="k">Posted by</span><span class="v">${esc(d.uploadedBy || 'the office')}</span></div>
+            <div><span class="k">Posted</span><span class="v">${esc(stamp(d.uploadedAt, true))}</span></div>
+            ${printedCell(info)}
+          </div>
+          ${stmt.html}
+          <table>
+            <thead>
+              <tr><th class="cap" colspan="4">${esc(d.title)} &middot; ${esc(weekLabel(d.weekOf))}</th></tr>
+              <tr><th class="n">#</th><th>Name</th><th>Signed</th><th>Signature</th></tr>
+            </thead>
+            <tbody>${g.signed.map((s, i) => `
+              <tr>
+                <td class="n">${i + 1}</td>
+                <td class="name"><b>${esc(s.fullName)}</b>${stmt.ref(s)}<small>${esc(s.username)}</small></td>
+                <td class="when">${esc(stamp(s.signedAt, true))}</td>
+                <td class="mark">${printMark(s)}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+          ${printFoot()}
+        </section>`;
+    }
+
+    function personHTML(g, s, info) {
+      const d = g.document;
+      const stmt = statementBlock([s], s.fullName);
+      return `
+        <section class="sheet">
+          ${printHead(info, 'Safety acknowledgement record')}
+          <h1>${esc(s.fullName)}</h1>
+          <div class="meta">
+            <div><span class="k">Document</span><span class="v">${esc(d.title)}</span></div>
+            <div><span class="k">Week</span><span class="v">${esc(weekLabel(d.weekOf))}</span></div>
+            <div><span class="k">Signed</span><span class="v">${esc(stamp(s.signedAt, true))}</span></div>
+            <div><span class="k">Username</span><span class="v">${esc(s.username)}</span></div>
+            <div><span class="k">File</span><span class="v">${esc(d.filename || '—')}</span></div>
+            ${printedCell(info)}
+          </div>
+          ${stmt.html}
+          <div class="person">
+            <div class="line">${printMark(s)}</div>
+            <div class="under">
+              <span>Signature of ${esc(s.fullName)}</span>
+              <span>${esc(stamp(s.signedAt, true))}</span>
+            </div>
+          </div>
+          ${printFoot()}
+        </section>`;
+    }
+
+    function contentsHTML(groups, skipped, info) {
+      const total = groups.reduce((n, g) => n + g.signed.length, 0);
+      return `
+        <section class="sheet">
+          ${printHead(info, 'Safety sign-off report')}
+          <h1>${esc(rangeLabel(groups.map(g => g.document.weekOf)))}</h1>
+          <div class="meta">
+            <div><span class="k">Documents</span><span class="v">${groups.length}</span></div>
+            <div><span class="k">Signatures</span><span class="v">${total}</span></div>
+            ${printedCell(info)}
+          </div>
+          <table>
+            <thead><tr><th>Week of</th><th>Document</th><th class="num">Signatures</th></tr></thead>
+            <tbody>${groups.map(g => `
+              <tr>
+                <td class="when">${esc(dayLabel(g.document.weekOf))}</td>
+                <td>${esc(g.document.title)}</td>
+                <td class="num">${g.signed.length}</td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+          ${skipped ? `<p class="none">${skipped} document${skipped === 1 ? '' : 's'} in this range
+            ${skipped === 1 ? 'has' : 'have'} no signatures yet and ${skipped === 1 ? 'is' : 'are'} not included.</p>` : ''}
+          ${printFoot()}
+        </section>`;
+    }
+
+    /* The window is claimed inside the click, BEFORE anything is fetched. A
+       pop-up opened after an await is no longer answering a click as far as
+       Safari and Chrome are concerned, and they swallow it — the sheet somebody
+       came here for would simply never appear. It is filled in once the reads
+       land, the same way the job summary in kiewit-pinetree.html does it. */
+    function openPrintWindow(what) {
+      const w = window.open('', '_blank');
+      if (!w) {
+        toast('Your browser blocked the print window. Allow pop-ups for this site, then try again.', true);
+        return null;
+      }
+      try {
+        w.document.open();
+        dwWrite(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Preparing…</title></head>
+          <body style="font:14px/1.5 system-ui,sans-serif;color:#475569;padding:28px">
+          <p id="prep">Preparing ${esc(what)}…</p></body></html>`);
+        w.document.close();
+      } catch { /* not writable yet — the real write below still lands */ }
+      return w;
+    }
+
+    function printProgress(w, text) {
+      try { const el = w.document.getElementById('prep'); if (el) el.textContent = text; }
+      catch { /* closed, or between documents */ }
+    }
+
+    function fillPrintWindow(w, title, body) {
+      if (w.closed) return;   // they closed it while it was being prepared
+      w.document.open();
+      dwWrite(w, printShell(title, body));
+      w.document.close();
+      try { w.focus(); } catch { /* the browser's call */ }
+    }
+
+    function printFailed(w, err) {
+      if (err === PRINT_CANCELLED) return;
+      try { if (!w.closed) w.close(); } catch { /* already gone */ }
+      toast('Could not build the printout: ' + err.message, true);
+    }
+
+    // fn over items, at most `limit` at a time, answers in the items' order.
+    // The first failure stops the rest from starting.
+    async function mapLimit(items, limit, fn) {
+      const out = new Array(items.length);
+      let next = 0, stop = false;
+      async function worker() {
+        while (!stop && next < items.length) {
+          const i = next++;
+          try { out[i] = await fn(items[i], i); }
+          catch (err) { stop = true; throw err; }
+        }
+      }
+      await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
+      return out;
+    }
+
+    async function printDocument(id) {
+      const g = (state.report || []).find(x => x.document.id === id);
+      if (!g) return;
+      if (!g.signed.length) return toast('Nobody has signed this one yet, so there is nothing to print.', true);
+      if (printBusy) return toast('Still preparing the last printout…');
+      const w = openPrintWindow('the sign-off sheet');
+      if (!w) return;
+      printBusy = true;
+      try {
+        const fresh = await fetchSignOff(id);
+        if (!fresh.signed.length) throw new Error('Nobody has signed this one yet.');
+        const d = fresh.document;
+        fillPrintWindow(w, `${d.title} — sign-off sheet — week of ${d.weekOf}`, sheetHTML(fresh, printInfo()));
+      } catch (err) {
+        printFailed(w, err);
+      } finally {
+        printBusy = false;
+      }
+    }
+
+    async function printSignature(id, username, signedAt) {
+      if (printBusy) return toast('Still preparing the last printout…');
+      const w = openPrintWindow('the signature record');
+      if (!w) return;
+      printBusy = true;
+      try {
+        const g = await fetchSignOff(id);
+        const s = g.signed.find(x => x.username === username && String(x.signedAt) === String(signedAt));
+        if (!s) throw new Error('That signature could not be found. Reload the report and try again.');
+        fillPrintWindow(w, `${s.fullName} — ${g.document.title} — signed ${ymdOf(s.signedAt)}`,
+          personHTML(g, s, printInfo()));
+      } catch (err) {
+        printFailed(w, err);
+      } finally {
+        printBusy = false;
+      }
+    }
+
+    async function printReport() {
+      const all = state.report || [];
+      const groups = all.filter(g => g.signed.length);
+      if (!groups.length) {
+        return toast(all.length
+          ? 'Nobody has signed anything in this range yet, so there is nothing to print.'
+          : 'Nothing to print yet.', true);
+      }
+      if (printBusy) return toast('Still preparing the last printout…');
+      const n = groups.length;
+      const w = openPrintWindow(n === 1 ? '1 document' : n + ' documents');
+      if (!w) return;
+      printBusy = true;
+      try {
+        let read = 0;
+        const fresh = await mapLimit(groups, PRINT_READS_AT_ONCE, async g => {
+          if (w.closed) throw PRINT_CANCELLED;   // they gave up on it — stop reading
+          const got = await fetchSignOff(g.document.id);
+          read++;
+          printProgress(w, `Preparing ${n} document${n === 1 ? '' : 's'}… ${read} of ${n} read.`);
+          return got;
+        });
+        const kept = fresh.filter(g => g.signed.length).sort(byWeek);
+        if (!kept.length) throw new Error('Nobody has signed anything in this range yet.');
+        const info  = printInfo();
+        const weeks = kept.map(g => g.document.weekOf).sort();
+        const title = weeks[0] === weeks[weeks.length - 1]
+          ? `Safety sign-offs — week of ${weeks[0]}`
+          : `Safety sign-offs — ${weeks[0]} to ${weeks[weeks.length - 1]}`;
+        // A contents page for one document would be a page saying "see next page".
+        const body = (kept.length > 1 ? contentsHTML(kept, all.length - kept.length, info) : '')
+          + kept.map(g => sheetHTML(g, info)).join('');
+        fillPrintWindow(w, title, body);
+      } catch (err) {
+        printFailed(w, err);
+      } finally {
+        printBusy = false;
+      }
+    }
+
     /* ═══════ Nav ═══════ */
     function goToDivisions() { localStorage.removeItem('fct_division'); window.location.replace('divisions.html'); }
     function signOut() {
@@ -1211,10 +1661,20 @@
       }
     });
 
+    // closest() finds the innermost action, so the Print button sitting inside
+    // a group's header prints rather than also expanding the group.
     delegate('panelReport', function (e) {
-      const hit = e.target.closest('[data-act="toggle"]');
+      const hit = e.target.closest('[data-act]');
       if (!hit || !this.contains(hit)) return;
-      toggleGroup(hit.getAttribute('data-doc-id'));
+      const act = hit.getAttribute('data-act');
+      const id  = hit.getAttribute('data-doc-id');
+      if (act === 'print') {
+        printDocument(id);
+      } else if (act === 'print-sig') {
+        printSignature(id, hit.getAttribute('data-username'), hit.getAttribute('data-signed-at'));
+      } else if (act === 'toggle') {
+        toggleGroup(id);
+      }
     });
 
     // The one signal available that the document was actually put in front of
@@ -1246,6 +1706,7 @@
 
     loadDocs();
   </script>
+  <script src="report-branding.js" defer></script>
   <script src="mathis.js" defer></script>
 </body>
 </html>
