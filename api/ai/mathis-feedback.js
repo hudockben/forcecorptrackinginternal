@@ -43,11 +43,10 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST')    return res.status(405).json({ error: 'Method not allowed' });
 
+  // requireAuth reads the account through DATABASE_URL, and answers 503 itself
+  // when it cannot, so there is no separate check for it here.
   const payload = await requireAuth(req, res);
   if (!payload) return;
-  if (!process.env.DATABASE_URL) {
-    return res.status(503).json({ error: 'Feedback is unavailable right now.' });
-  }
 
   const body    = req.body || {};
   const verdict = body.verdict === 'up' ? 'up' : body.verdict === 'down' ? 'down' : null;

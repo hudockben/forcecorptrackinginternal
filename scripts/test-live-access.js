@@ -49,11 +49,12 @@ function assert(label, cond, detail) {
 // answers an empty company: these tests are about who gets past the gate, and
 // an endpoint that got past it with nothing to show still answers.
 const USER_READ = /^SELECT u\.division_roles, .* FROM users u JOIN companies c ON c\.code = u\.company_code WHERE u\.id =/;
-const DB = { users: new Map(), failRead: false, calls: [] };
+const DB = { users: new Map(), failRead: false, down: false, calls: [] };
 
 function sql(strings, ...values) {
   const q = (Array.isArray(strings) ? strings.join('?') : String(strings)).replace(/\s+/g, ' ').trim();
   DB.calls.push({ q, values });
+  if (DB.down) return Promise.reject(new Error('Connection terminated unexpectedly'));
   if (USER_READ.test(q)) {
     if (DB.failRead) return Promise.reject(new Error('Connection terminated unexpectedly'));
     const row = DB.users.get(values[0]);
@@ -440,6 +441,48 @@ async function endpointTests() {
     r = await quietly(() => run(token, { adminSecret: process.env.ADMIN_SECRET, companyCode: COMPANY }));
     assert('  and the admin secret still works whatever the token says',
       r.statusCode !== 403 && r.statusCode !== 503, `${r.statusCode} ${JSON.stringify(r.body)}`);
+
+    // Taking the body's company code on trust let any company's level3
+    // rebuild another company's tables and read back its record counts.
+    const own = account({ role: 'level3', division_roles: { turf: 'level3' } });
+    const ownToken = signIn(own);
+    r = await quietly(() => run(ownToken, { companyCode: 'OTH' }));
+    assert('a company admin cannot resync another company',
+      r.statusCode === 403 && /own company/.test(r.body.error), `${r.statusCode} ${JSON.stringify(r.body)}`);
+    r = await quietly(() => run(ownToken, { companyCode: COMPANY.toLowerCase() }));
+    assert('  but can resync their own, however it is spelled',
+      r.statusCode === 200 && r.body.companyCode === COMPANY, `${r.statusCode} ${JSON.stringify(r.body)}`);
+    const platform = account({ role: 'admin', is_platform_admin: true });
+    r = await quietly(() => run(signIn(platform), { companyCode: 'OTH' }));
+    assert('  while a platform admin still can',
+      r.statusCode === 200 && r.body.companyCode === 'OTH', `${r.statusCode} ${JSON.stringify(r.body)}`);
+  }
+
+  console.log('\n[the diagnostics during an outage]');
+  {
+    // The account read comes first everywhere, but an unreachable database is
+    // what this endpoint exists to report — so a genuine token still gets the
+    // environment and the database check, just not the blob listing.
+    const row = account({ division_roles: { turf: 'level1' } });
+    const token = signIn(row);
+    DB.down = true;
+    let r = await quietly(() => call('api/debug.js', token));
+    DB.down = false;
+    assert('with the database down, the debug endpoint still reports it',
+      r.statusCode === 200 && r.body.checks && r.body.checks.DATABASE_URL === true
+      && /Connection terminated/.test(String(r.body.dbCheck)),
+      `${r.statusCode} ${JSON.stringify(r.body)}`);
+    assert('  says the account could not be read, and lists no data',
+      r.body.account === 'could not be read' && r.body.appDataKeys === null, JSON.stringify(r.body));
+    r = await call('api/debug.js', token);
+    assert('  and with it back, the verified account gets the listing again',
+      r.statusCode === 200 && r.body.account === 'ok' && Array.isArray(r.body.appDataKeys),
+      JSON.stringify(r.body));
+    const forged = jwt.sign({ userId: row.id, companyCode: COMPANY }, 'some-other-secret');
+    DB.down = true;
+    r = await quietly(() => call('api/debug.js', forged));
+    DB.down = false;
+    assert('  while a forged token is still refused, outage or not', r.statusCode === 401, String(r.statusCode));
   }
 }
 

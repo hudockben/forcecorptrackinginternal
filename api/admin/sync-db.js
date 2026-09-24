@@ -44,9 +44,16 @@ module.exports = async (req, res) => {
   const auth = await authenticate(req);
   const jwtPayload = auth.payload;
   if (jwtPayload && ['admin', 'level3'].includes(jwtPayload.role)) {
-    companyCode = body.companyCode
-      ? String(body.companyCode).toUpperCase()
-      : jwtPayload.companyCode;
+    // A signed-in admin resyncs their OWN company. Naming another one is for a
+    // platform admin, or for the admin secret below: taking the body's code on
+    // trust let any company's level3 rebuild another company's tables and read
+    // back its record counts.
+    const own   = String(jwtPayload.companyCode || '').toUpperCase();
+    const asked = body.companyCode ? String(body.companyCode).toUpperCase() : own;
+    if (asked !== own && !jwtPayload.isPlatformAdmin) {
+      return res.status(403).json({ error: 'You can only resync your own company' });
+    }
+    companyCode = asked;
   } else if (body.adminSecret && body.adminSecret === process.env.ADMIN_SECRET) {
     if (!body.companyCode) return res.status(400).json({ error: 'companyCode required' });
     companyCode = String(body.companyCode).toUpperCase();

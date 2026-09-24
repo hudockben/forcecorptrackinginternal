@@ -178,11 +178,10 @@ module.exports = async (req, res) => {
   const payload = await requireAuth(req, res);
   if (!payload) return;
 
+  // No DATABASE_URL check here: requireAuth has just read the account through
+  // it, and answers 503 itself when it cannot — /api/debug says which setting.
   if (!process.env.ANTHROPIC_API_KEY) {
     return res.status(503).json({ error: 'Mathis is not configured — ANTHROPIC_API_KEY is missing.' });
-  }
-  if (!process.env.DATABASE_URL) {
-    return res.status(503).json({ error: 'Mathis is not configured — DATABASE_URL is missing.' });
   }
 
   const body    = req.body || {};
