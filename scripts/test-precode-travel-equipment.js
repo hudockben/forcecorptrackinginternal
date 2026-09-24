@@ -177,9 +177,11 @@ vm.runInContext(`
 function defaultRows(e) {
   const rows = [cod.blankRow('work')];
   rows[0].labor_hours = String(cod.workHours(e));
-  const t = cod.blankRow('travel');
-  t.labor_hours = cod.filedTravel(e) > 0 ? String(cod.filedTravel(e)) : '';
-  rows.push(t);
+  const t = cod.filedTravel(e) > 0 ? cod.blankRow('travel') : null;
+  if (t) {
+    t.labor_hours = String(cod.filedTravel(e));
+    rows.push(t);
+  }
   const seen = new Set();
   let pickupSeated = false;
   for (const p of (e.equipment_used || [])) {
@@ -187,11 +189,9 @@ function defaultRows(e) {
     if (seen.has(k)) continue;
     seen.add(k);
     const hours = p.hours != null && p.hours > 0 ? cod.r2(p.hours) : 0;
-    if (cod.isPickup(p.name) && !pickupSeated) {
-      const drive = cod.filedTravel(e);
-      if (drive <= 0 && hours <= 0) continue;
+    if (cod.isPickup(p.name) && !pickupSeated && t) {
       t.equipment   = p.name;
-      t.equip_hours = drive > 0 ? String(drive) : String(hours);
+      t.equip_hours = String(cod.filedTravel(e));
       pickupSeated = true;
       continue;
     }
@@ -209,6 +209,13 @@ function defaultRows(e) {
     rows.push(r);
   }
   return rows;
+}
+
+/** "+ Travel": a drive the foreman adds where none was filed. Returns the new
+ *  row's index. */
+function addTravel(rows) {
+  rows.push(cod.blankRow('travel'));
+  return rows.length - 1;
 }
 
 /**
@@ -430,14 +437,46 @@ console.log('\nThe drive: prefilled, editable, and only ever a request');
   eq('and the day still allocates work + travel', out.coded_for_hours, 10);
   eq('the figure is stored even when he agreed with it', out.proposed_travel_hours, 2);
 
+  // THE USER'S COMPLAINT: a shop day, or a site in town, filed no travel and
+  // still opened a Travel block at 0.00 h — which the crew read as a line they
+  // were meant to fill in.
   const none = { computed_hours: 8, travel_hours: 0, equipment_used: [] };
-  const untouched = save(none, code(defaultRows(none)));
-  eq('a travel row left empty is dropped, not an error', untouched.split.length, 1);
-  eq('and reads as no drive at all', untouched.travel_hours, 0);
+  const noneRows = defaultRows(none);
+  eq('a day with no filed travel opens with no travel row', noneRows.filter(cod.isTravelRow).length, 0);
+  eq('just the work', noneRows.length, 1);
+  const untouched = save(none, code(noneRows));
+  eq('and saves as the one row', untouched.split.length, 1);
+  eq('reading as no drive at all', untouched.travel_hours, 0);
   eq('allocating the work hours alone', precode(none, untouched).coded_for_hours, 8);
 
+  const emptyAdded = code(defaultRows(none));
+  addTravel(emptyAdded);
+  eq('a travel row added and left empty is dropped, not an error', save(none, emptyAdded).split.length, 1);
+  assert('the page opens a travel row only where travel was filed',
+    /const t = filedTravel\(e\) > 0 \? blankRow\('travel'\) : null;/.test(codeSrc),
+    'openSheet is building a travel row on days that filed no drive again');
+
+  // "+ Travel" is how a drive nobody filed gets on the sheet now, so it has to
+  // arrive with the job's travel codes the way the prefilled row did.
+  const handAdded = [cod.blankRow('work')];
+  handAdded[0].labor_hours = '8';
+  handAdded[0].cost_code = '101'; handAdded[0].sub_code = 'Mowing';
+  const hi = addTravel(handAdded);
+  cod.setSheet({ rows: handAdded, codes: [
+    { cost_code: 'Mobilization', sub_codes: ['Travel', 'Load'] },
+    { cost_code: '101', sub_codes: ['Mowing'] },
+  ] });
+  cod.applyTravelCodes();
+  eq('a hand-added drive gets the job\'s travel codes',
+    [handAdded[hi].cost_code, handAdded[hi].sub_code], ['Mobilization', 'Travel']);
+  assert('and "+ Travel" runs that prefill',
+    /sheet\.rows\.push\(blankRow\(kind\)\); if \(kind === 'travel'\) applyTravelCodes\(\);/.test(codeSrc),
+    'addRow no longer prefills a hand-added travel row');
+
   const rows = code(defaultRows(none));
-  rows[1].labor_hours = '2';
+  const ai = addTravel(rows);
+  code(rows);
+  rows[ai].labor_hours = '2';
   const added = save(none, rows);
   assert('he can add a drive nobody filed', !added.err, added.err);
   eq('the split then allocates work + HIS drive', precode(none, added).coded_for_hours, 10);
@@ -479,7 +518,7 @@ console.log('\nEquipment, with its hours');
   // row the foreman never wrote. It is left off; he still has "+ Equipment".
   const noHours = { computed_hours: 8, travel_hours: 0, equipment_used: [{ name: 'CAT 336', hours: null }] };
   const nh = defaultRows(noHours);
-  eq('a machine named with no hours opens no row at all', nh.length, 2);
+  eq('a machine named with no hours opens no row at all — the work row alone', nh.length, 1);
   eq('and none of them carries it', nh.filter(r => r.equipment).length, 0);
   assert('so the sheet does not open already failing validation', !save(noHours, code(nh)).err);
   // ...but "left off" and "never mentioned" must not look the same on screen.
@@ -791,15 +830,16 @@ console.log('\nThe pickup follows the drive as the foreman corrects it');
   eq('billing the truck with no drive under it', save({ computed_hours: 9, travel_hours: 2 }, seated).travel_hours, 0);
 
   // A drive that does not exist is not a zero-hour drive: the link waits for
-  // one rather than levelling his stated figure to nothing, and relights by
-  // itself when he types it.
-  const none = defaultRows({ computed_hours: 8, travel_hours: 0,
-                             equipment_used: [{ name: 'Pickup', hours: 2 }] });
-  const ni = none.findIndex(cod.isTravelRow);
-  harvest(none);
-  eq('with no drive on the row his own figure stands', none[ni].equip_hours, '2');
-  typeTravelHours(none, ni, '1.25');
-  eq('and the link relights the moment he names one', none[ni].equip_hours, '1.25');
+  // one rather than levelling the pickup's figure to nothing, and relights by
+  // itself when he types it. THE ONE THAT GOT THROUGH once: harvestSheetDom
+  // re-derives the mirror on every row — on open, on every repaint, and once
+  // more inside saveCoding — and a mirror with no "is there a drive" guard
+  // levelled this to zero before anybody had touched it, leaving a machine
+  // with no hours, which the save refuses.
+  harvest(seated);
+  eq('with no drive on the row the pickup\'s figure stands', seated[si].equip_hours, '2');
+  typeTravelHours(seated, si, '1.25');
+  eq('and the link relights the moment he names one', seated[si].equip_hours, '1.25');
 
   assert('the mirror writes the input as well as the row, or the harvest reverts it',
     /const el = document\.getElementById\('eqh' \+ i\);/.test(codeSrc),
@@ -817,24 +857,23 @@ console.log('\nA pickup with nothing to bill opens no row');
   eq('nothing carries it', rows.filter(r => r.equipment).length, 0);
   assert('and the sheet saves clean', !save(bare, code(rows)).err);
 
-  // But his own stated hours are enough, where the timesheet filed no drive.
+  // His own stated hours still bill the truck where the timesheet filed no
+  // drive — but on a machine line of its own, not on a Travel block the day
+  // never had. A shop day or a site in town opens no travel row at all.
   const stated = { computed_hours: 8, travel_hours: 0, equipment_used: [{ name: 'Pickup', hours: 1.5 }] };
   const r2rows = defaultRows(stated);
-  const t = r2rows.find(cod.isTravelRow);
-  eq('the pickup rides the drive on his own figure', t.equipment, 'Pickup');
-  eq('at the hours he gave it', t.equip_hours, '1.5');
-  // THE ONE THAT GOT THROUGH. harvestSheetDom re-derives the mirror on every
-  // row, and a mirror with no "is there a drive" guard levelled this to zero
-  // before the foreman had touched anything — leaving a machine with no hours,
-  // which the save refuses. It runs on open, on every repaint, and once more
-  // inside saveCoding.
+  eq('no travel row is opened for it', r2rows.filter(cod.isTravelRow).length, 0);
+  const p = r2rows.find(cod.isEquipRow);
+  eq('the pickup gets a machine line of its own', p && p.equipment, 'Pickup');
+  eq('at the hours he gave it', p.equip_hours, '1.5');
+  eq('and it does not take the work row\'s seat', r2rows[0].equipment, '');
   harvest(r2rows);
-  eq('and the figure survives the harvest', t.equip_hours, '1.5');
+  eq('the figure survives the harvest', p.equip_hours, '1.5');
   assert('so the day is still saveable after it', !save(stated, code(harvest(r2rows))).err);
-  eq('and the drive itself is still zero — his machine hours are not a claim on his pay',
-    t.labor_hours, '');
   const out = precode(stated, save(stated, code(r2rows)));
   assert('it saves', !out.err, out.err);
+  eq('as the work and the machine line', out.rows.length, 2);
+  eq('with no travel row in it', out.rows.filter(r => r.is_travel).length, 0);
   eq('proposing no drive, so the day stays on payroll\'s fast path', out.proposed_travel_hours, 0);
 }
 
