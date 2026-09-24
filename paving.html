@@ -3944,8 +3944,9 @@ function drDeleteBySubCode(subCode) {
    level3  — full access
    level2  — insert/edit daily rows & POs; cannot delete projects
    level1  — view-only: Project Dashboard & Purchase Orders
-   sales   — view-only: Schedule, Purchase Orders, Documents, Trucking; plus
-             the CRM. Nothing that carries what a job costs — no Cost
+   sales   — the CRM, where they land; plus view-only Schedule, Purchase
+             Orders, Documents and Trucking. Nothing that carries what a job
+             costs — no Cost
              Tracking, Project Dashboard, Home, Analytics or Daily Summary.
              See SALES_LEVEL in api/lib/auth.js.
 ═══════════════════════════════════════════ */
@@ -3983,7 +3984,7 @@ const perm = (() => {
     // tabs visible to this role (null = all). The first is where they land.
     visibleTabs: (r === 'level1') ? new Set(['info', 'po', 'trucking', 'docs'])
                : (r === 'level2') ? new Set(['home', 'schedule', 'info', 'po', 'trucking', 'docs'])
-               : isSales          ? new Set(['schedule', 'po', 'docs', 'trucking', 'crm'])
+               : isSales          ? new Set(['crm', 'schedule', 'po', 'docs', 'trucking'])
                : null,
   };
 })();
@@ -22135,7 +22136,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     if (activeTab === 'po') renderPOTab();
     if (activeTab === 'trucking') renderTruckingTab();
     if (activeTab === 'cost') renderCostTable();
-    if (activeTab === 'schedule') renderScheduleTab(); // sales lands here
+    if (activeTab === 'schedule') renderScheduleTab();
     renderHeaderActions();
     // renderProjectsTab() and renderCostTable() are lazy — only render on tab click
   }, 0);

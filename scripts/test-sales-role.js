@@ -182,14 +182,19 @@ const auth = require(root('api/lib/auth.js'));
     const mob = doc.querySelector('.tab-btn[data-tab="mob-entry"]');
     assert('  Daily Entry stays hidden even on a phone, over the stylesheet\'s !important',
       mob && mob.style.display === 'none' && mob.style.getPropertyPriority('display') === 'important');
-    assert('lands on the Schedule', doc.getElementById('tab-schedule').classList.contains('active')
-      && !doc.getElementById('tab-cost').classList.contains('active')
-      && !doc.getElementById('tab-home').classList.contains('active'));
-    // The picker is mounted by renderScheduleTab itself; the markup ships the
-    // mount empty, so a filled one proves the boot rendered the landing tab.
-    const mount = doc.getElementById('sched-proj-cb-mount');
-    assert('  and the Schedule is rendered there, not left blank',
-      mount && mount.children.length > 0, mount && mount.outerHTML.slice(0, 120));
+    // The CRM is their working screen, so it is where they land.
+    const activePanels = [...doc.querySelectorAll('.tab-panel.active')].map(p => p.id);
+    assert('lands on the CRM, and only the CRM',
+      JSON.stringify(activePanels) === '["tab-crm"]', JSON.stringify(activePanels));
+    const activeBtns = [...doc.querySelectorAll('.tab-btn.active')].map(b => b.dataset.tab || b.id);
+    assert('  with the CRM tab lit in the bar', JSON.stringify(activeBtns) === '["crm"]', JSON.stringify(activeBtns));
+    // Whichever CRM sub-tab opens by default (the Dashboard on paving, News
+    // Center on turf) ships an empty root, so content in it proves the boot
+    // drew the landing screen rather than leaving it blank.
+    const crmPanel = doc.querySelector('#tab-crm .crm-sub-panel.active');
+    const crmRoot  = crmPanel && crmPanel.querySelector('[id$="-root"]');
+    assert(`  and its opening sub-tab (${crmPanel && crmPanel.id}) is drawn, not left blank`,
+      crmRoot && crmRoot.children.length > 0, crmRoot && crmRoot.outerHTML.slice(0, 120));
     const hdr = doc.getElementById('header-actions').innerHTML;
     assert('no Daily Summary report (it prints labor and equipment dollars)', hdr && !/Daily Summary/.test(hdr), hdr.slice(0, 200));
     assert('  the Sign-In Sheet is still there', /Sign-In Sheet/.test(hdr));

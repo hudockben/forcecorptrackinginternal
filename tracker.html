@@ -4384,8 +4384,8 @@ function drDeleteBySubCode(subCode) {
    level3  — full access
    level2  — insert/edit daily rows & POs; cannot delete projects
    level1  — view-only: Project Dashboard & Purchase Orders
-   sales   — view-only: both Schedules, Purchase Orders, Documents,
-             Trucking; plus the CRM. Nothing that carries what a job costs —
+   sales   — the CRM, where they land; plus view-only Schedules, Purchase
+             Orders, Documents and Trucking. Nothing that carries what a job costs —
              no Cost Tracking, Project Dashboard, Home, Analytics, Infill
              Inventory or Daily Summary. See SALES_LEVEL in api/lib/auth.js.
 ═══════════════════════════════════════════ */
@@ -4422,7 +4422,7 @@ const perm = (() => {
     // tabs visible to this role (null = all). The first is where they land.
     visibleTabs: (r === 'level1') ? new Set(['info', 'po', 'trucking', 'docs'])
                : (r === 'level2') ? new Set(['info', 'schedule', 'po', 'trucking', 'docs'])
-               : isSales          ? new Set(['schedule', 'construction', 'po', 'docs', 'trucking', 'crm'])
+               : isSales          ? new Set(['crm', 'schedule', 'construction', 'po', 'docs', 'trucking'])
                : null,
   };
 })();
