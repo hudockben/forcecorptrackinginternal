@@ -4379,22 +4379,50 @@ function drDeleteBySubCode(subCode) {
 
 /* ═══════════════════════════════════════════
    PERMISSIONS
-   Roles: admin | level3 | level2 | level1
+   Roles: admin | level3 | level2 | level1 | sales
    admin   — full access + manage company users
    level3  — full access
    level2  — insert/edit daily rows & POs; cannot delete projects
    level1  — view-only: Project Dashboard & Purchase Orders
+   sales   — the CRM, where they land; plus view-only Schedules, Purchase
+             Orders, Documents and Trucking. Nothing that carries what a job costs —
+             no Cost Tracking, Project Dashboard, Home, Analytics, Infill
+             Inventory or Daily Summary. See SALES_LEVEL in api/lib/auth.js.
 ═══════════════════════════════════════════ */
+
+/**
+ * This user's level on THIS page. Mirrors levelFor() in api/lib/auth.js.
+ *
+ * On turf, fctUser.role is the same grant — login.js copies divisionRoles.turf
+ * into it — but only as of sign-in. divisions.html refreshes divisionRoles on
+ * every visit, so reading the map first means an admin moving someone to
+ * sales takes effect the next time they pass the division selector rather
+ * than whenever their 30-day token runs out.
+ */
+function _levelHere() {
+  if (!fctUser) return 'level1';
+  if (fctUser.isPlatformAdmin) return 'admin';
+  const dr = fctUser.divisionRoles;
+  const own = (dr && typeof dr === 'object') ? dr[DIVISION] : null;
+  if (own && own !== 'no_access') return own;
+  return fctUser.role || 'level1';
+}
+
 const perm = (() => {
-  const r = fctUser ? fctUser.role : 'level1';
+  const r = _levelHere();
+  const isSales = r === 'sales';
   return {
     role:             r,
     isAdmin:          r === 'admin',
+    isSales,
     canEdit:          ['admin', 'level3', 'level2'].includes(r),
     canDeleteProject: ['admin', 'level3'].includes(r),
-    // tabs visible to this role (null = all)
+    // Dollar figures that live outside a tab — the Daily Summary report.
+    canSeeCosts:      !isSales,
+    // tabs visible to this role (null = all). The first is where they land.
     visibleTabs: (r === 'level1') ? new Set(['info', 'po', 'trucking', 'docs'])
                : (r === 'level2') ? new Set(['info', 'schedule', 'po', 'trucking', 'docs'])
+               : isSales          ? new Set(['crm', 'schedule', 'construction', 'po', 'docs', 'trucking'])
                : null,
   };
 })();
@@ -4402,6 +4430,14 @@ const perm = (() => {
 // Apply tab visibility
 (function () {
   if (perm.visibleTabs) {
+    // The mobile stylesheet forces Daily Entry on with !important, which
+    // beats the plain inline hide below. level1/level2 have always relied on
+    // that to enter rows from a phone; sales enters none, so it is hidden with
+    // an !important of its own.
+    if (perm.isSales) {
+      const mob = document.querySelector('.tab-btn[data-tab="mob-entry"]');
+      if (mob) mob.style.setProperty('display', 'none', 'important');
+    }
     // Hide tabs this role cannot see
     document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
       if (!perm.visibleTabs.has(btn.dataset.tab)) btn.style.display = 'none';
@@ -5069,7 +5105,9 @@ function adminSwitchTab(tab) {
 function renderHeaderActions() {
   const el = document.getElementById('header-actions');
   const logoutBtn = `<button class="btn btn-ghost" onclick="logout()">Sign Out</button>`;
-  const summaryBtn = `<button class="btn btn-ghost" onclick="openDailySummaryReport()" title="Download a PDF summary of today's production across all projects">&#8659; Daily Summary</button><button class="btn btn-ghost" onclick="openCrewSignInOverlay()" title="Print crew sign-in sheet for a given day">&#128221; Sign-In Sheet</button>`;
+  // The Daily Summary prints labor, equipment and material dollars per row.
+  const summaryBtn = (perm.canSeeCosts ? `<button class="btn btn-ghost" onclick="openDailySummaryReport()" title="Download a PDF summary of today's production across all projects">&#8659; Daily Summary</button>` : '')
+    + `<button class="btn btn-ghost" onclick="openCrewSignInOverlay()" title="Print crew sign-in sheet for a given day">&#128221; Sign-In Sheet</button>`;
   const canSwitch = fctUser && (fctUser.isPlatformAdmin || (Array.isArray(fctUser.allowedDivisions) && fctUser.allowedDivisions.length > 1));
   const switchBtn = canSwitch ? `<button class="btn btn-ghost" onclick="switchDivision()">Switch Division</button>` : '';
   if (activeTab === 'cost') {

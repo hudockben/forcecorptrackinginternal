@@ -505,6 +505,7 @@
     .div-role-badge.level3  { background: rgba(34,197,94,0.12);  color: #22c55e; }
     .div-role-badge.level2  { background: rgba(96,165,250,0.12); color: #60a5fa; }
     .div-role-badge.level1  { background: rgba(100,116,139,0.1); color: #94a3b8; }
+    .div-role-badge.sales   { background: rgba(245,158,11,0.12); color: #f59e0b; }
     .div-role-badge.none    { background: none; color: var(--border); padding-left: 0; }
 
     /* ── Status banner (save / remove feedback) ── */
@@ -1199,6 +1200,7 @@
           <option value="level3">Full access</option>
           <option value="level2">Insert &amp; edit</option>
           <option value="level1">View only</option>
+          <option value="sales">Sales</option>
           <option value="granted">Any access granted</option>
           <option value="no_access">No access</option>
         </select>
@@ -1267,6 +1269,7 @@
         <span class="item"><span class="div-role-badge level3">Full</span> full access</span>
         <span class="item"><span class="div-role-badge level2">Edit</span> insert &amp; edit</span>
         <span class="item"><span class="div-role-badge level1">View</span> view only</span>
+        <span class="item"><span class="div-role-badge sales">Sales</span> schedules, POs, docs, trucking &amp; CRM — no costs (Turf &amp; Paving)</span>
         <span class="item"><span class="div-role-badge none">—</span> no access</span>
       </div>
 
@@ -1305,6 +1308,10 @@
               <span class="div-role-label">Turf</span>
               <select id="mu-role-turf">
                 <option value="no_access">No Access</option>
+                <!-- Schedules, POs, Documents, Trucking and the CRM — nothing
+                     that shows what a job costs. See SALES_LEVEL in
+                     api/lib/auth.js; the server refuses it elsewhere. -->
+                <option value="sales">Sales — Schedules, POs, Docs, Trucking &amp; CRM</option>
                 <option value="level1">Level 1 — View only</option>
                 <option value="level2">Level 2 — Insert &amp; edit</option>
                 <option value="level3" selected>Level 3 — Full access</option>
@@ -1325,6 +1332,10 @@
               <span class="div-role-label">Paving</span>
               <select id="mu-role-paving">
                 <option value="no_access" selected>No Access</option>
+                <!-- Schedules, POs, Documents, Trucking and the CRM — nothing
+                     that shows what a job costs. See SALES_LEVEL in
+                     api/lib/auth.js; the server refuses it elsewhere. -->
+                <option value="sales">Sales — Schedules, POs, Docs, Trucking &amp; CRM</option>
                 <option value="level1">Level 1 — View only</option>
                 <option value="level2">Level 2 — Insert &amp; edit</option>
                 <option value="level3">Level 3 — Full access</option>
@@ -2122,6 +2133,7 @@
       level3:    'Full',
       level2:    'Edit',
       level1:    'View',
+      sales:     'Sales',
       no_access: '—',
     };
     // Spelled-out equivalents — used in the Excel export, where a bare "Full"
@@ -2131,6 +2143,7 @@
       level3:    'Full access',
       level2:    'Insert & edit',
       level1:    'View only',
+      sales:     'Sales — no cost screens',
       no_access: 'No access',
     };
     const DIV_KEYS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders', 'safety'];
@@ -2899,6 +2912,7 @@
           ['level3',    'Full',  'Full access to the division'],
           ['level2',    'Edit',  'Insert and edit records'],
           ['level1',    'View',  'View only'],
+          ['sales',     'Sales', 'Turf and Paving only: view Schedules, Purchase Orders, Documents and Trucking, and work the CRM. No Cost Tracking, Project Dashboard or Analytics'],
           ['no_access', '—',     'No access — the division is hidden for this user'],
         ],
         widths: [14, 12, 52],

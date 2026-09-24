@@ -21,6 +21,12 @@ CREATE TABLE IF NOT EXISTS companies (
 --   level2  — insert/edit cost rows & POs; cannot delete projects
 --   level1  — view-only for Cost Tracking and Purchase Orders tabs
 --
+-- division_roles (JSONB) carries the same four per division, plus:
+--   sales   — turf and paving only: Schedules, Purchase Orders, Documents,
+--             Trucking (view) and the CRM; no cost screens. It is never
+--             written to users.role — the CHECK below keeps the original
+--             four, so a turf 'sales' grant is stored there as 'level1'.
+--
 -- divisions: which divisions this user can access within their company.
 --   NULL = inherits all of the company's allowed_divisions
 --   Set to a subset (e.g. '{turf}') to restrict a user further.

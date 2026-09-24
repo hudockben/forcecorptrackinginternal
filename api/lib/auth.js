@@ -335,6 +335,7 @@ function levelFor(payload, division) {
 /**
  * What a caller may do in a division. Mirrors the `perm` object the division
  * pages build:
+ *   sales   view only (turf and paving; see SALES_LEVEL)
  *   level1  view only
  *   level2  upload, and edit their own uploads
  *   level3  everything except destroying a file
@@ -348,6 +349,30 @@ function capabilities(payload, division) {
     canManage: ['admin', 'level3'].includes(level),
     canDelete: level === 'admin',
   };
+}
+
+// ─────────────────────────────────────────────────
+// SALES — a view grant for the job divisions that sell work
+// ─────────────────────────────────────────────────
+// A salesman in turf or paving follows the jobs he sold: when they are
+// scheduled, what has been ordered for them, their paperwork, the trucking
+// against them — and he works out of the CRM. What a job COSTS is not his:
+// Cost Tracking, the Project Dashboard (bid items, budget, projected profit),
+// Analytics and the Daily Summary report all carry dollars.
+//
+// Its own value rather than level1, because in those two pages level1's
+// landing tab IS the Project Dashboard. capabilities() grants it none of its
+// three booleans — view-only on every endpoint that asks — and
+// api/company/users.js refuses it for any division outside SALES_DIVISIONS.
+// The CRM stays writable for it only because the CRM has never been gated on
+// level in the first place.
+const SALES_LEVEL = 'sales';
+const SALES_DIVISIONS = ['turf', 'paving'];
+
+/** True when this caller holds the sales grant in `division`. */
+function isSalesIn(payload, division) {
+  if (!payload || payload.isPlatformAdmin) return false;
+  return levelFor(payload, division) === SALES_LEVEL;
 }
 
 // ─────────────────────────────────────────────────
@@ -407,6 +432,9 @@ module.exports = {
   PO_SOURCE_DIVISIONS,
   PO_GENERAL_DIVISION,
   PAYROLL_CODER_LEVEL,
+  SALES_LEVEL,
+  SALES_DIVISIONS,
+  isSalesIn,
   canAccessPODivision,
   payrollAccess,
   poCapabilities,

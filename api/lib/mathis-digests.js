@@ -157,6 +157,25 @@ const countIds = v => {
   return 0;
 };
 
+// What a sales-level caller gets for each job: which job it is and where it
+// stands, and none of the money. Their own screen carries no Cost Tracking or
+// Project Dashboard, and an assistant that answered "what's our margin on it"
+// would be those two tabs back again through a chat window.
+function pickJobIdentity(r) {
+  return {
+    name:       safeText(r.name),
+    jobNumber:  safeText(r.jobNumber, 40),
+    status:     safeText(r.status, 40),
+    complete:   !!r.complete,
+    inProgress: !!r.inProgress,
+  };
+}
+
+const SALES_JOB_COVERS = ['each job by name, number and status — its contract value, bid budget, cost and profit are NOT here, because this user\'s access level (sales) does not include them'];
+const SALES_JOB_LIMITS = [
+  'This user holds the SALES level in this division. Contract values, bid budgets, costs to date, projected cost, profit, variance, unit costs and equipment hours are deliberately absent from this digest. If asked for any of them, say their access level does not include job cost figures and that an administrator can change it. Never estimate one, and never describe the absence as the job having no cost or no contract on file.',
+];
+
 function pickJobRow(r) {
   return {
     name:       safeText(r.name),
@@ -439,6 +458,14 @@ const HISTORY_LIMITS = [
 async function jobHistory(c, division, opts = {}) {
   const div = jobFin.jobDivision(division);
   if (!div) return null;
+  // Nothing in this series is anything but money — contract, cost, profit.
+  if (auth.isSalesIn(c.authz, division)) {
+    return {
+      division, divisionName: div.name, kind: 'restricted',
+      reason: 'Job history is contract, cost and profit over time, and this user\'s access level (sales) does not include job cost figures.',
+      limits: SALES_JOB_LIMITS,
+    };
+  }
 
   const want = Number(opts.days);
   const days = Number.isFinite(want) && want > 0
@@ -707,13 +734,20 @@ async function jobDigest(c, division, opts = {}) {
   // Named so a PO can say which job it is against instead of an opaque id.
   const projectNames = new Map(projects.map(p => [String(p.id || ''), report.projName(p)]));
 
+  // Sales sees purchase orders, documents and the crew on its own screen; the
+  // cost-code catalogue (unit costs) and equipment (unit costs and hours) are
+  // Cost Tracking and Analytics, which it does not. Pay is already withheld by
+  // canSeePay, which sales does not pass.
+  const sales = auth.isSalesIn(c.authz, division);
   const [pos, codes, equip, docs, crew] = await Promise.all([
     purchaseOrders(c, division, projectNames),
-    costCodes(c, division),
-    equipment(c, division, projects),
+    sales ? null : costCodes(c, division),
+    sales ? null : equipment(c, division, projects),
     documents(c, division, projects),
     employees(c, division, projects),
   ]);
+  const covers = sales ? SALES_JOB_COVERS : COVERS.jobs;
+  const limits = sales ? SALES_JOB_LIMITS.concat(JOB_LIMITS) : JOB_LIMITS;
 
   const extraCovers = [];
   if (inventory) extraCovers.push('rubber inventory by type: bags produced, used and in stock');
@@ -735,14 +769,14 @@ async function jobDigest(c, division, opts = {}) {
   if (!projects.length) {
     return {
       division, divisionName: div.name, kind: 'jobs',
-      covers: COVERS.jobs.concat(extraCovers),
+      covers: covers.concat(extraCovers),
       ...extras,
       ...(searched || {}),
       totalProjects, includedProjects: 0, rows: [], summary: null,
       ordering: searched
         ? `No job in this division matches "${searched.searchedFor}". Every one of its ${totalProjects} jobs was checked by name and job number, so this is a real absence rather than a window.`
         : 'none — this division has no projects on file',
-      limits: JOB_LIMITS,
+      limits,
     };
   }
 
@@ -753,7 +787,7 @@ async function jobDigest(c, division, opts = {}) {
     division,
     divisionName: div.name,
     kind: 'jobs',
-    covers: COVERS.jobs.concat(extraCovers),
+    covers: covers.concat(extraCovers),
     ...extras,
     ...(searched || {}),
     totalProjects,
@@ -762,9 +796,9 @@ async function jobDigest(c, division, opts = {}) {
     ordering: searched
       ? `The jobs matching "${searched.searchedFor}" by name or job number, out of all ${totalProjects} in this division. Nothing was filtered by recency.`
       : 'The most recently created jobs, newest first, with any pinned ones among them moved to the front — the same order the division page shows. Projects carry no created-at date, so position in the index is the only notion of recency there is; say which ordering you used.',
-    rows: rows.map(pickJobRow),
-    summary: jobFin.summarise(rows),
-    limits: JOB_LIMITS,
+    rows: rows.map(sales ? pickJobIdentity : pickJobRow),
+    summary: sales ? null : jobFin.summarise(rows),
+    limits,
   };
 }
 
