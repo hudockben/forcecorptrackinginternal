@@ -33,6 +33,7 @@ const {
 // The per-leg half of the same staleness check: which dust hauls the dust
 // office bills off its own grid, and so posts nothing to Truck Tracking.
 const { dustBilledLegs } = require('../lib/dust-injected');
+const { requiredSigners, mondayOf, dateOnly } = require('../lib/safety');
 
 const DUST_INVOICE_ERA_START = `${INVOICE_ERA_START_YEAR}-01-01`;
 
@@ -1750,6 +1751,90 @@ async function buildPayrollSummary(sql, companyCode) {
   };
 }
 
+// The Safety Center's sign-off for the week, as a plain list: who on the
+// signing roster has signed this week's document (and when), and who has not.
+// "The week's document" is whatever live document is filed under this week's
+// Monday — the same week-of rule the Safety Center files by. A week with none
+// posted yet falls back to the most recent live document, so the section shows
+// the last tailgate still being chased rather than going blank on a Monday
+// morning before the new one is up.
+async function buildSafetySignoff(sql, companyCode) {
+  const thisWeek = mondayOf(localDateIso(new Date()));
+  let docs = await sql`
+    SELECT id, title, week_of, uploaded_at FROM safety_documents
+    WHERE  company_code = ${companyCode} AND archived_at IS NULL
+      AND  week_of = ${thisWeek}::date
+    ORDER  BY uploaded_at DESC`;
+  let isCurrentWeek = true;
+  if (!docs.length) {
+    isCurrentWeek = false;
+    docs = await sql`
+      SELECT id, title, week_of, uploaded_at FROM safety_documents
+      WHERE  company_code = ${companyCode} AND archived_at IS NULL
+      ORDER  BY week_of DESC, uploaded_at DESC
+      LIMIT  1`;
+  }
+
+  const base = {
+    key: 'safety', name: 'Safety Sign-Off', accent: '#10b981',
+    weekOf: thisWeek, isCurrentWeek, documents: [],
+  };
+  if (!docs.length) {
+    return { ...base, status: 'No Document Posted', statusKind: 'mute', metrics: [] };
+  }
+
+  const ids = docs.map(d => d.id);
+  // Never the signature image — only who and when.
+  const [sigs, roster] = await Promise.all([
+    sql`
+      SELECT document_id, user_id, username, full_name, signed_at
+      FROM   safety_signatures
+      WHERE  company_code = ${companyCode} AND document_id = ANY(${ids})
+      ORDER  BY signed_at ASC`,
+    requiredSigners(sql, companyCode),
+  ]);
+  const rosterIds = new Set(roster.map(r => r.userId));
+
+  const documents = docs.map(d => {
+    const signedRows = sigs.filter(s => s.document_id === d.id);
+    const signedBy   = new Set(signedRows.map(s => s.user_id));
+    return {
+      id:     d.id,
+      title:  d.title,
+      weekOf: dateOnly(d.week_of),
+      signed: signedRows.map(s => ({
+        username: s.username,
+        fullName: s.full_name,
+        signedAt: s.signed_at instanceof Date ? s.signed_at.toISOString() : s.signed_at,
+        onRoster: rosterIds.has(s.user_id),
+      })),
+      // Roster minus who signed, same rule as the Safety Center's own report.
+      notSigned: roster
+        .filter(r => !signedBy.has(r.userId))
+        .map(r => ({ username: r.username })),
+      expected: roster.length,
+      signedCount: signedRows.filter(s => rosterIds.has(s.user_id)).length,
+    };
+  });
+
+  const outstanding = documents.reduce((n, d) => n + d.notSigned.length, 0);
+  const expected    = documents.reduce((n, d) => n + d.expected, 0);
+  const signedCount = documents.reduce((n, d) => n + d.signedCount, 0);
+  return {
+    ...base,
+    status: !expected ? 'No Signers Assigned'
+      : outstanding ? `${outstanding} Not Signed` : 'All Signed',
+    statusKind: !expected ? 'mute' : outstanding ? 'amber' : 'green',
+    metrics: [
+      { label: 'Signed', value: `${signedCount} / ${expected}`, tone: outstanding ? 'amber' : 'green',
+        sub: expected ? `${Math.round((signedCount / expected) * 100)}% of the roster` : 'nobody on the roster' },
+      { label: 'Not Signed', value: String(outstanding), tone: outstanding ? 'red' : 'green',
+        sub: outstanding ? 'still to sign' : 'nobody outstanding' },
+    ],
+    documents,
+  };
+}
+
 function mockReport() {
   return {
     ok: true,
@@ -1793,6 +1878,12 @@ function mockReport() {
       periodStart: null, periodEnd: null,
       metrics: [], rows: [], total: null,
     },
+
+    safety: {
+      key: 'safety', name: 'Safety Sign-Off', accent: '#10b981',
+      status: '—', statusKind: 'mute',
+      metrics: [], documents: [],
+    },
   };
 }
 
@@ -1832,7 +1923,7 @@ module.exports = async (req, res) => {
     // so one bad division cannot blank the report.
     const [
       livePortfolios, liveQuarry, liveDust, liveTrucking, liveIc,
-      liveInventory, livePayroll,
+      liveInventory, livePayroll, liveSafety,
     ] = await Promise.all([
       buildDivisionPortfolios(sql, company).catch(err => {
         console.error('[executive/report] portfolios build failed:', err.message); return null;
@@ -1855,6 +1946,9 @@ module.exports = async (req, res) => {
       buildPayrollSummary(sql, company).catch(err => {
         console.error('[executive/report] payroll summary failed:', err.message); return null;
       }),
+      buildSafetySignoff(sql, company).catch(err => {
+        console.error('[executive/report] safety sign-off failed:', err.message); return null;
+      }),
     ]);
     if (Array.isArray(livePortfolios) && livePortfolios.length) {
       report.portfolios = livePortfolios;
@@ -1869,6 +1963,7 @@ module.exports = async (req, res) => {
     if (livePayroll && Array.isArray(livePayroll.rows)) {
       report.payroll = livePayroll;
     }
+    if (liveSafety) report.safety = liveSafety;
 
     // Diagnostics — only when ?debug=1. Helps identify missing
     // columns, status mismatches, empty tables, etc. without server
@@ -1888,6 +1983,7 @@ module.exports.PROJECT_KEYS       = PROJECT_KEYS;
 // second implementation that could drift a day or a flag away from it.
 module.exports.QUARRY_BLOBS       = QUARRY_BLOBS;
 module.exports.buildRubberInventory = buildRubberInventory;
+module.exports.buildSafetySignoff = buildSafetySignoff;
 module.exports.biweeklyPayPeriod  = biweeklyPayPeriod;
 module.exports.attachPrevailingWage = attachPrevailingWage;
 module.exports.readTurfProjects   = readTurfProjects;
