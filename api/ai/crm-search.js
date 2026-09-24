@@ -388,7 +388,7 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST')    return res.status(405).json({ error: 'Method not allowed' });
 
-  const payload = requireAuth(req, res);
+  const payload = await requireAuth(req, res);
   if (!payload) return;
   if (!hasDivisionAccess(payload, 'turf')) {
     return res.status(403).json({ error: 'No access to the turf division.' });

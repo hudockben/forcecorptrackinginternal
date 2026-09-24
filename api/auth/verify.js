@@ -1,21 +1,22 @@
 'use strict';
 
-const jwt        = require('jsonwebtoken');
-const { neon }   = require('@neondatabase/serverless');
-
-const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders', 'safety'];
-// timesheet/payroll/fuel/fuel_admin/driver/quarry_sales/safety require an
-// explicit positive grant in division_roles — they're never granted implicitly
-// through user.divisions or company.allowed_divisions. For safety that rule is
-// load-bearing rather than cautious: the grant IS the sign-off roster, so an
-// implicit one would put every login in the company on the outstanding list.
-const RESTRICTED_DIVISIONS = new Set(['timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'safety']);
+const { requireAuth } = require('../lib/auth');
 
 /**
- * Verify the bearer token AND return the user's current division roles
- * direct from the DB. The JWT payload is a snapshot from login time;
- * looking up fresh roles lets the frontend reflect permission changes
- * without forcing a sign-out / sign-in cycle.
+ * Verify the bearer token AND return the account's current access, read from
+ * the database rather than the token. The token is a snapshot of sign-in; the
+ * pages call this on load so a change made in Manage Users since then is what
+ * they draw, without a sign-out / sign-in cycle.
+ *
+ * It answers from requireAuth, the same read every endpoint gates on, so what
+ * a page is told it may do is exactly what the server will then allow.
+ *
+ *   401  a bad or expired token — or an account that no longer exists. That
+ *        used to answer ok from the token's own claims, which kept a deleted
+ *        account signed in on every device it had used; the pages sign out
+ *        on a 401.
+ *   503  the account could not be read. The pages keep their cached session
+ *        on anything but a 401, so a database blip signs nobody out.
  */
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -25,58 +26,8 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'GET')     return res.status(405).json({ error: 'Method not allowed' });
 
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return res.status(401).json({ error: 'No token provided' });
-
-  let payload;
-  try {
-    payload = jwt.verify(token, process.env.JWT_SECRET);
-  } catch {
-    return res.status(401).json({ error: 'Invalid or expired token' });
-  }
-
-  // Defaults — used if the DB read fails so we still hand back a usable
-  // payload to the caller.
-  let divisionRoles    = payload.divisionRoles    || null;
-  let allowedDivisions = payload.allowedDivisions || (payload.isPlatformAdmin ? ALL_DIVISIONS : ['turf']);
-  let isPlatformAdmin  = Boolean(payload.isPlatformAdmin);
-
-  try {
-    const sql = neon(process.env.DATABASE_URL);
-    const rows = await sql`
-      SELECT u.division_roles, u.divisions, u.is_platform_admin,
-             c.allowed_divisions
-      FROM   users u
-      JOIN   companies c ON c.code = u.company_code
-      WHERE  u.id = ${payload.userId}
-      LIMIT  1
-    `;
-    if (rows.length) {
-      isPlatformAdmin = Boolean(rows[0].is_platform_admin);
-      divisionRoles   = rows[0].division_roles || null;
-
-      if (isPlatformAdmin) {
-        allowedDivisions = ALL_DIVISIONS;
-      } else if (divisionRoles && typeof divisionRoles === 'object') {
-        // Explicit per-division roles — restricted divisions are honored
-        // both ways: visible only when set to a non-no_access role.
-        allowedDivisions = Object.entries(divisionRoles)
-          .filter(([, v]) => v !== 'no_access')
-          .map(([k]) => k);
-      } else if (Array.isArray(rows[0].divisions) && rows[0].divisions.length) {
-        // Legacy fallback — strip restricted divisions; require explicit grant
-        allowedDivisions = rows[0].divisions.filter(d => !RESTRICTED_DIVISIONS.has(d));
-      } else if (Array.isArray(rows[0].allowed_divisions) && rows[0].allowed_divisions.length) {
-        // Company-licensed defaults — strip restricted divisions for same reason
-        allowedDivisions = rows[0].allowed_divisions.filter(d => !RESTRICTED_DIVISIONS.has(d));
-      } else {
-        allowedDivisions = ['turf'];
-      }
-    }
-  } catch (err) {
-    console.error('[auth/verify] fresh DB read failed (non-fatal):', err.message);
-  }
+  const payload = await requireAuth(req, res);
+  if (!payload) return;
 
   return res.json({
     ok: true,
@@ -86,9 +37,9 @@ module.exports = async (req, res) => {
       companyCode:      payload.companyCode,
       companyName:      payload.companyName,
       role:             payload.role,
-      divisionRoles,
-      allowedDivisions,
-      isPlatformAdmin,
+      divisionRoles:    payload.divisionRoles,
+      allowedDivisions: payload.allowedDivisions,
+      isPlatformAdmin:  payload.isPlatformAdmin,
     },
   });
 };

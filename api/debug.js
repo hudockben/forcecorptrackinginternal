@@ -1,12 +1,17 @@
 'use strict';
 
 const { neon } = require('@neondatabase/serverless');
-const jwt      = require('jsonwebtoken');
+const { requireAuth } = require('./lib/auth');
 
 /**
  * GET /api/debug
  * Health check — confirms env vars are set and DB is reachable.
- * Requires a valid JWT (any role). Never returns company or user data.
+ * Requires a valid JWT (any role) whose account still exists. Never returns
+ * company or user data.
+ *
+ * The account read comes first, so with the database down this answers 503
+ * from requireAuth rather than reporting dbCheck — which says the same thing,
+ * and the driver's own error is in the server log under [auth].
  */
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -15,15 +20,9 @@ module.exports = async (req, res) => {
 
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  // Require valid JWT — no unauthenticated access
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return res.status(401).json({ error: 'Unauthorized' });
-  try {
-    jwt.verify(token, process.env.JWT_SECRET);
-  } catch {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
+  // Require a valid JWT — no unauthenticated access
+  const payload = await requireAuth(req, res);
+  if (!payload) return;
 
   const checks = {
     DATABASE_URL: !!process.env.DATABASE_URL,

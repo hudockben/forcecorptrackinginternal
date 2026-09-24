@@ -81,8 +81,8 @@ function safeDate(v) {
  * the only caller, and one that guessed would file the order against the wrong
  * division's jobs.
  */
-function _guardFor(req, res) {
-  const guarded = _guardDivision(req, res);
+async function _guardFor(req, res) {
+  const guarded = await _guardDivision(req, res);
   if (!guarded) return null;
   // Both mirror tables' CHECK constraints admit only the job divisions and the
   // general list, while normalizeDivision accepts all sixteen and either guard
@@ -99,10 +99,10 @@ function _guardFor(req, res) {
   return guarded;
 }
 
-function _guardDivision(req, res) {
-  if (req.method === 'PUT') return requireDivision(req, res);
+async function _guardDivision(req, res) {
+  if (req.method === 'PUT') return await requireDivision(req, res);
 
-  const payload = requireAuth(req, res);
+  const payload = await requireAuth(req, res);
   if (!payload) return null;
 
   const raw = (req.query && req.query.division) || (req.body && req.body.division) || null;
@@ -131,7 +131,7 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const guard = _guardFor(req, res);
+  const guard = await _guardFor(req, res);
   if (!guard) return;
   const { payload, division } = guard;
 

@@ -247,7 +247,7 @@ module.exports = async (req, res) => {
   // order's own division or that division's tab shows an empty paperclip. So
   // the division check runs in two stages: the ordinary one first, and only if
   // that fails, a carve-out limited to one named purchase order.
-  const payload = requireAuth(req, res);
+  const payload = await requireAuth(req, res);
   if (!payload) return;
   const { companyCode } = payload;
   const division = normalizeDivision(req.query.division || (req.body && req.body.division)) || 'turf';

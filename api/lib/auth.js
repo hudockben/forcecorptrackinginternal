@@ -26,6 +26,13 @@ const jwt = require('jsonwebtoken');
 // and signs it; level3 and admin post documents and read the sign-off report.
 const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders', 'safety'];
 
+// Divisions reached ONLY through an explicit, non-no_access entry in
+// users.division_roles — never through the legacy users.divisions list or the
+// company's allowed_divisions. Each is somebody's personal queue or a grant
+// that means something by itself: for safety the grant IS the sign-off roster,
+// so an implicit one would put every login in the company on it.
+const RESTRICTED_DIVISIONS = new Set(['timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'safety']);
+
 // The job divisions central purchasing raises orders against. A PO tied to one
 // of these lives in THAT division's purchase-order list — there is no second
 // copy to reconcile, which is what makes "shows up in the division's own tab"
@@ -118,22 +125,144 @@ function isSharedKey(key) {
 }
 
 /**
- * Validates the Bearer JWT and returns the decoded payload.
- * If invalid, sends 401 and returns null so the caller can `return`.
+ * What signing in would put in the token for this users row: the per-division
+ * role map, the account-wide role (the TURF role, which tracker.html reads as
+ * `role`), the divisions the account can open, and the platform-admin flag.
+ *
+ * The one copy of that rule. login.js signs it, /api/auth/verify reports it,
+ * and requireAuth lays it over every request — so what a device may do cannot
+ * depend on when it last signed in.
+ *
+ * `row` carries users.role, divisions, division_roles and is_platform_admin,
+ * and the company's allowed_divisions.
  */
-function requireAuth(req, res) {
-  const authHeader = req.headers.authorization || '';
+function accessFromRow(row) {
+  const isPlatformAdmin = Boolean(row && row.is_platform_admin);
+  const divisionRoles = row && row.division_roles && typeof row.division_roles === 'object'
+    ? row.division_roles
+    : null;
+
+  // users.role for an account with no per-division map; otherwise the turf
+  // role, for tracker.html. A platform admin keeps users.role.
+  let role = (row && row.role) || 'level1';
+  if (!isPlatformAdmin && divisionRoles && divisionRoles.turf && divisionRoles.turf !== 'no_access') {
+    role = divisionRoles.turf;
+  }
+
+  let allowedDivisions;
+  if (isPlatformAdmin) {
+    allowedDivisions = ALL_DIVISIONS.slice();
+  } else if (divisionRoles) {
+    allowedDivisions = Object.entries(divisionRoles)
+      .filter(([, v]) => v && v !== 'no_access')
+      .map(([k]) => k);
+  } else {
+    // Legacy account: its own list, else the company's, else turf — never a
+    // restricted division, which only an explicit role map can grant.
+    const own     = Array.isArray(row && row.divisions) && row.divisions.length ? row.divisions : null;
+    const company = Array.isArray(row && row.allowed_divisions) && row.allowed_divisions.length
+      ? row.allowed_divisions
+      : null;
+    allowedDivisions = (own || company || ['turf']).filter(d => !RESTRICTED_DIVISIONS.has(d));
+  }
+
+  return { role, divisionRoles, allowedDivisions, isPlatformAdmin };
+}
+
+/**
+ * The access a token's account holds NOW, in the shape the token carries —
+ * or null when no such account exists in the token's company.
+ *
+ * Throws when the row cannot be read. A caller must not mistake that for "no
+ * account": the one signs the device out, the other is a database blip.
+ */
+async function currentAccess(sql, claims) {
+  if (!claims || claims.userId == null || !claims.companyCode) return null;
+  const rows = await sql`
+    SELECT u.division_roles, u.divisions, u.role, u.is_platform_admin,
+           u.company_code, c.allowed_divisions
+    FROM   users u
+    JOIN   companies c ON c.code = u.company_code
+    WHERE  u.id = ${claims.userId}
+    LIMIT  1
+  `;
+  const row = rows && rows[0];
+  if (!row) return null;
+  // login.js uppercases the code it signs while matching the row
+  // case-insensitively, so the two are compared the same way.
+  if (String(row.company_code || '').toUpperCase() !== String(claims.companyCode).toUpperCase()) {
+    return null;
+  }
+  return accessFromRow(row);
+}
+
+/**
+ * Who is asking, and what they may do right now — without sending anything.
+ * Resolves to { payload } or to { status, error }; requireAuth is this plus
+ * the response, and the one caller that needs another way in when the token
+ * is refused (admin/sync-db.js) uses it directly.
+ */
+async function authenticate(req) {
+  const authHeader = (req.headers && req.headers.authorization) || '';
   const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) {
-    res.status(401).json({ error: 'Unauthorized — please log in' });
-    return null;
-  }
+  if (!token) return { status: 401, error: 'Unauthorized — please log in' };
+
+  let claims;
   try {
-    return jwt.verify(token, process.env.JWT_SECRET);
+    claims = jwt.verify(token, process.env.JWT_SECRET);
   } catch {
-    res.status(401).json({ error: 'Unauthorized — please log in' });
+    return { status: 401, error: 'Unauthorized — please log in' };
+  }
+
+  let access;
+  try {
+    // Required here rather than at the top so a test that stubs the driver
+    // after this module has loaded is still the one answering.
+    const { neon } = require('@neondatabase/serverless');
+    access = await currentAccess(neon(process.env.DATABASE_URL), claims);
+  } catch (err) {
+    console.error('[auth] could not read the account behind a token:', err.message);
+    return { status: 503, error: 'Could not check your access just now. Please try again.' };
+  }
+  if (!access) return { status: 401, error: 'Unauthorized — please log in' };
+
+  return { payload: { ...claims, ...access } };
+}
+
+/**
+ * Validates the Bearer JWT, reads the account behind it, and returns the
+ * token's identity with the account's CURRENT access laid over it. If either
+ * fails, sends the answer and returns null so the caller can `return`.
+ *
+ * The token is a thirty-day snapshot of sign-in. Manage Users writes to the
+ * users row, nothing reissues anybody's token, and the server keeps no list of
+ * them — every device holds its own. So trusting the token's roles meant a
+ * division granted after somebody signed in stayed refused on that device until
+ * they signed out, while signing in as them anywhere else worked; and, the
+ * worse direction, a division taken away, or the whole account deleted, kept
+ * working on every device already signed in until its token ran out.
+ *
+ * The token now answers WHO is asking and the row answers WHAT they may do.
+ * The payload is exactly what signing in right now would produce (see
+ * accessFromRow), so every check made on it — hasDivisionAccess, capabilities,
+ * payrollAccess, poCapabilities, the Safety Center's levels — is current
+ * without any of them changing.
+ *
+ *   401  no token, a bad or expired one, or an account that no longer exists
+ *        in the token's company: a deleted account is signed out, not merely
+ *        refused.
+ *   503  the account could not be read. Never 401, which the pages treat as
+ *        signed out — a database blip must not sign the whole company out —
+ *        and never a fall back to the token's roles, the stale claim this
+ *        replaces.
+ */
+async function requireAuth(req, res) {
+  const { payload, status, error } = await authenticate(req);
+  if (!payload) {
+    res.status(status).json({ error });
     return null;
   }
+  return payload;
 }
 
 /**
@@ -259,8 +388,8 @@ function poCapabilities(payload, division) {
  * named rather than defaulting to turf: a cross-division writer that guessed
  * would file the order against the wrong job.
  */
-function requirePODivision(req, res) {
-  const payload = requireAuth(req, res);
+async function requirePODivision(req, res) {
+  const payload = await requireAuth(req, res);
   if (!payload) return null;
 
   const raw = (req.query && req.query.division) || (req.body && req.body.division) || null;
@@ -280,18 +409,20 @@ function requirePODivision(req, res) {
  * One-stop guard for division-scoped endpoints.
  *
  * Steps:
- *  1. requireAuth — validates Bearer JWT.
+ *  1. requireAuth — validates Bearer JWT and reads the account's current
+ *     access.
  *  2. Resolve division from req.query.division or req.body.division.
  *     If `options.required` is true, missing/invalid division → 400.
  *     Otherwise we default to 'turf' (back-compat for tracker.html).
  *  3. Verify the caller's divisionRoles allow the requested division.
  *     If not → 403, no leak of which divisions exist.
  *
- * Returns { payload, division } on success, or null when a response has
- * already been sent and the caller should `return` immediately.
+ * Resolves to { payload, division } on success, or to null when a response
+ * has already been sent and the caller should `return` immediately. Always
+ * awaited: an un-awaited promise is truthy, and would read as a pass.
  */
-function requireDivision(req, res, options = {}) {
-  const payload = requireAuth(req, res);
+async function requireDivision(req, res, options = {}) {
+  const payload = await requireAuth(req, res);
   if (!payload) return null;
 
   const raw = (req.query && req.query.division) || (req.body && req.body.division) || null;
@@ -429,6 +560,10 @@ function payrollAccess(payload) {
 
 module.exports = {
   ALL_DIVISIONS,
+  RESTRICTED_DIVISIONS,
+  accessFromRow,
+  currentAccess,
+  authenticate,
   PO_SOURCE_DIVISIONS,
   PO_GENERAL_DIVISION,
   PAYROLL_CODER_LEVEL,

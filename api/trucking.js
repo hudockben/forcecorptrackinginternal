@@ -51,7 +51,7 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const guard = requireDivision(req, res);
+  const guard = await requireDivision(req, res);
   if (!guard) return;
   const { payload, division } = guard;
 

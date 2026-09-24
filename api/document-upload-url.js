@@ -30,7 +30,7 @@ const {
   poCapabilities,
 } = require('./lib/auth');
 const { resolvePODocScope } = require('./lib/po-sync');
-const { safetyKeyClaimed, currentSafetyCapabilities, SAFETY_DIVISION } = require('./lib/safety');
+const { safetyKeyClaimed, safetyCapabilities, SAFETY_DIVISION } = require('./lib/safety');
 const storage             = require('./lib/storage');
 const crypto              = require('crypto');
 
@@ -56,7 +56,7 @@ module.exports = async (req, res) => {
     return res.status(405).json({ error: 'Method not allowed' });
   }
 
-  const payload = requireAuth(req, res);
+  const payload = await requireAuth(req, res);
   if (!payload) return;
   const { companyCode } = payload;
   const division = normalizeDivision(req.query.division || (req.body && req.body.division)) || 'turf';
@@ -100,18 +100,12 @@ module.exports = async (req, res) => {
   // the last word, though the two cannot meet today — canAccessPODivision is
   // false for 'safety', which is neither a job division nor purchasing.
   //
-  // Read from the row rather than the token, the same answer
-  // /api/safety-documents gives the register call that follows: a supervisor
-  // appointed since they last signed in is drawn the upload form, and a ticket
-  // refused on a stale token would fail it at the first step.
+  // The payload is the account as it stands now (requireAuth reads it), the
+  // same answer /api/safety-documents gives the register call that follows: a
+  // supervisor appointed since they last signed in is drawn the upload form,
+  // and gets the ticket for it.
   if (division === SAFETY_DIVISION) {
-    try {
-      const { neon } = require('@neondatabase/serverless');
-      canUpload = (await currentSafetyCapabilities(neon(process.env.DATABASE_URL), payload)).canManage;
-    } catch (err) {
-      console.error('[document-upload-url] safety access read failed:', err.message);
-      return res.status(500).json({ error: 'Server error' });
-    }
+    canUpload = safetyCapabilities(payload).canManage;
   }
 
   // Minting an upload ticket a view-only user could never redeem just wastes a

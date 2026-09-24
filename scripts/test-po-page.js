@@ -49,8 +49,19 @@ console.log('\n[the division is registered everywhere it has to be]');
   assert('with the job divisions it buys for',
     /const PO_SOURCE_DIVISIONS = \['turf', 'paving', 'kiewit'\]/.test(auth));
 
-  ['api/auth/login.js', 'api/auth/verify.js', 'api/company/users.js',
-   'api/admin/users.js', 'api/admin/companies.js'].forEach(f => {
+  // Sign-in and the session refresh keep no division list of their own: what
+  // an account may open comes from api/lib/auth.js, so the canonical list
+  // above is the one they use.
+  {
+    const login = read('api/auth/login.js');
+    const verify = read('api/auth/verify.js');
+    assert('sign-in takes its divisions from the canonical rule',
+      /accessFromRow\(/.test(login) && !/ALL_DIVISIONS\s*=/.test(login));
+    assert('and so does the session refresh',
+      /requireAuth\(/.test(verify) && !/ALL_DIVISIONS\s*=/.test(verify));
+  }
+
+  ['api/company/users.js', 'api/admin/users.js', 'api/admin/companies.js'].forEach(f => {
     assert(`${f} accepts the division`, read(f).includes("'purchase_orders'"));
   });
 

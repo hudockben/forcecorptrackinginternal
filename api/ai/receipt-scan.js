@@ -26,7 +26,7 @@
  */
 
 const Anthropic = require('@anthropic-ai/sdk');
-const jwt       = require('jsonwebtoken');
+const { requireAuth } = require('../lib/auth');
 const { numeric } = require('../lib/numeric');
 
 // Vercel caps a serverless request body at 4.5 MB and base64 costs a third on
@@ -46,13 +46,6 @@ const BASE64_ONLY = /^[A-Za-z0-9+/]+={0,2}$/;
 // How many known vendor names to show the model. Enough to cover a real
 // supplier list, bounded so the prompt cannot grow without limit.
 const MAX_VENDOR_HINTS = 400;
-
-function verifyToken(req) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return null;
-  try { return jwt.verify(token, process.env.JWT_SECRET); } catch { return null; }
-}
 
 /** Strip a data: URL prefix — the frontend sends raw base64, but be forgiving. */
 function stripDataUrl(s) {
@@ -122,8 +115,8 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const payload = verifyToken(req);
-  if (!payload) return res.status(401).json({ error: 'Unauthorized' });
+  const payload = await requireAuth(req, res);
+  if (!payload) return;
 
   if (!process.env.ANTHROPIC_API_KEY) {
     return res.status(503).json({ error: 'Receipt scanning is not configured — ANTHROPIC_API_KEY missing.' });

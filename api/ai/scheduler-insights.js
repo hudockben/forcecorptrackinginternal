@@ -15,18 +15,11 @@
 
 const Anthropic = require('@anthropic-ai/sdk');
 const { neon }  = require('@neondatabase/serverless');
-const jwt       = require('jsonwebtoken');
+const { requireAuth } = require('../lib/auth');
 
 const CACHE_TTL_MS  = 30 * 60 * 1000;
 const RATE_LIMIT_MS = 30 * 1000;
 const _rateLimitMap = new Map();
-
-function verifyToken(req) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return null;
-  try { return jwt.verify(token, process.env.JWT_SECRET); } catch { return null; }
-}
 
 function hasScheduler(payload) {
   if (!payload) return false;
@@ -42,8 +35,8 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const payload = verifyToken(req);
-  if (!payload) return res.status(401).json({ error: 'Unauthorized' });
+  const payload = await requireAuth(req, res);
+  if (!payload) return;
   if (!hasScheduler(payload)) return res.status(403).json({ error: 'Scheduler access required' });
   if (!process.env.ANTHROPIC_API_KEY) {
     return res.status(503).json({ error: 'AI not configured — ANTHROPIC_API_KEY missing.' });

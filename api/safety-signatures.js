@@ -22,7 +22,7 @@
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
 const {
-  currentSafetyCapabilities, requiredSigners, mondayOf, dateOnly, SIGNATURE_STATEMENT: STATEMENT,
+  safetyCapabilities, requiredSigners, mondayOf, dateOnly, SIGNATURE_STATEMENT: STATEMENT,
 } = require('./lib/safety');
 
 const MAX_NAME = 120;
@@ -109,7 +109,7 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const payload = requireAuth(req, res);
+  const payload = await requireAuth(req, res);
   if (!payload) return;
 
   const { companyCode, userId, username } = payload;
@@ -117,10 +117,10 @@ module.exports = async (req, res) => {
   const q   = req.query || {};
 
   try {
-    // The row, not the token — the same answer requiredSigners() reads the
-    // roster from, so nobody is listed as owing a signature they are refused
-    // the right to make. See currentSafetyCapabilities in api/lib/safety.js.
-    const caps = await currentSafetyCapabilities(sql, payload);
+    // The payload is the account as it stands now (requireAuth reads it) —
+    // the same row requiredSigners() reads the roster from, so nobody is
+    // listed as owing a signature they are refused the right to make.
+    const caps = safetyCapabilities(payload);
     if (!caps.canView) {
       return res.status(403).json({ error: 'You do not have access to the Safety Center' });
     }

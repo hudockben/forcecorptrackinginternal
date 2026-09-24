@@ -23,14 +23,7 @@
  */
 
 const Anthropic = require('@anthropic-ai/sdk');
-const jwt       = require('jsonwebtoken');
-
-function verifyToken(req) {
-  const authHeader = req.headers.authorization || '';
-  const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
-  if (!token) return null;
-  try { return jwt.verify(token, process.env.JWT_SECRET); } catch { return null; }
-}
+const { requireAuth } = require('../lib/auth');
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -39,8 +32,8 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
-  const payload = verifyToken(req);
-  if (!payload) return res.status(401).json({ error: 'Unauthorized' });
+  const payload = await requireAuth(req, res);
+  if (!payload) return;
 
   if (!process.env.ANTHROPIC_API_KEY) {
     return res.status(503).json({ error: 'AI not configured — ANTHROPIC_API_KEY missing.' });

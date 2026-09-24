@@ -4676,7 +4676,7 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  const payload = requireAuth(req, res);
+  const payload = await requireAuth(req, res);
   if (!payload) return;
 
   const { companyCode, userId, username } = payload;
@@ -4696,61 +4696,19 @@ module.exports = async (req, res) => {
   // its neighbours. Aliasing makes the narrow grant default-deny: a gate has
   // to be moved to canCode deliberately, and anything overlooked stays shut.
   // Only two places below open to a coder — this guard, and the list scope.
-  let { canCode, canApprove, isCoder } = payrollAccess(payload);
-  let canAdmin = canApprove;
+  //
+  // The payload is the account as it stands now — requireAuth reads it on
+  // every request — so taking approve away from somebody, or handing a foreman
+  // the coder grant, takes effect on their next request rather than after
+  // they next sign in.
+  const { canCode, canApprove, isCoder } = payrollAccess(payload);
+  const canAdmin = canApprove;
 
   if (!canSubmit && !canCode) {
     return res.status(403).json({ error: 'You do not have access to Timesheet or Payroll' });
   }
 
   const sql = neon(process.env.DATABASE_URL);
-
-  // The JWT lasts thirty days and cannot be revoked, so the grant inside it is
-  // a snapshot of whenever the holder last signed in. That is tolerable for
-  // "may look at this division" and not for "may approve payroll": taking
-  // approve away from somebody has to take effect now rather than within a
-  // month, and giving a foreman the coder grant has to work without making him
-  // sign out and back in first. mathis-context.refreshAuthz re-reads roles
-  // every turn for exactly this reason.
-  //
-  // Runs when the request has anything to do with payroll — the token already
-  // says the caller holds it, or the request is one only a coder makes. That
-  // covers both directions the grant has to work in: taking approve away from
-  // somebody (the token says payroll, so it refreshes and he loses it) and
-  // handing a foreman the coder grant (his token says no payroll, but asking
-  // for the crew queue or posting a proposal refreshes and he gains it,
-  // without having to sign out and back in first).
-  //
-  // Ordinary field traffic — a worker saving his own day — never reaches it
-  // and pays nothing. A failed read keeps the token's answer, which is exactly
-  // the behaviour this replaces.
-  const asksForPayroll = canCode
-    || String(req.query.scope  || '') === 'crew'
-    || String(req.query.action || '') === 'precode';
-  if (!payload.isPlatformAdmin && asksForPayroll) {
-    try {
-      const freshRows = await sql`
-        SELECT division_roles FROM users
-         WHERE id = ${safeInt(userId)} AND company_code = ${companyCode}
-      `;
-      const fresh = Array.isArray(freshRows) ? freshRows[0] : null;
-      if (fresh) {
-        const live = payrollAccess({
-          divisionRoles:   fresh.division_roles,
-          isPlatformAdmin: false,
-          // Kept so a legacy account with no division_roles still resolves the
-          // way payrollAccess resolves it from a token — fail open to today.
-          allowedDivisions: payload.allowedDivisions,
-          role:             payload.role,
-        });
-        canCode = live.canCode; canApprove = live.canApprove; isCoder = live.isCoder;
-        canAdmin = canApprove;
-        if (!canSubmit && !canCode) {
-          return res.status(403).json({ error: 'You do not have access to Timesheet or Payroll' });
-        }
-      }
-    } catch { /* keep the token's answer */ }
-  }
 
   try {
     // ── GET ?action=pending_span — where the unapproved time actually is ──

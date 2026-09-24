@@ -118,6 +118,8 @@ function ymd(v) {
   return String(v).slice(0, 10);
 }
 const DB = { docs: [], sigs: [], users: [], nextSigId: 1, calls: [], failUserRead: false };
+// requireAuth's read of the caller's account (api/lib/auth.js currentAccess).
+const USER_READ = /^SELECT u\.division_roles, .* FROM users u JOIN companies c ON c\.code = u\.company_code WHERE u\.id =/;
 
 function resetDb() {
   DB.docs = []; DB.sigs = []; DB.users = []; DB.nextSigId = 1; DB.calls = [];
@@ -131,17 +133,18 @@ function sql(strings, ...values) {
   const v = values;
 
   // ── users ──
-  // The caller's own row, which is what access is decided on. Answers only for
-  // the id asked about — a mock that handed back any row would let an endpoint
-  // that read the wrong one pass.
-  if (/^SELECT division_roles, is_platform_admin, company_code FROM users WHERE id =/.test(flat)) {
+  // The caller's own account, which requireAuth reads on every request and
+  // access is decided on. Answers only for the id asked about — a mock that
+  // handed back any row would let an endpoint that read the wrong one pass.
+  if (USER_READ.test(flat)) {
     if (DB.failUserRead) return Promise.reject(new Error('Connection terminated unexpectedly'));
     return Promise.resolve(DB.users
       .filter(u => u.id === v[0])
       .slice(0, 1)
       .map(u => ({
-        division_roles: u.division_roles, is_platform_admin: Boolean(u.is_platform_admin),
-        company_code: u.company_code,
+        division_roles: u.division_roles, divisions: u.divisions || null, role: u.role || 'level1',
+        is_platform_admin: Boolean(u.is_platform_admin), company_code: u.company_code,
+        allowed_divisions: null,
       })));
   }
   if (/^SELECT id, username, division_roles FROM users/.test(flat)) {
@@ -936,7 +939,6 @@ const DOC3 = '33333333-3333-4333-8333-333333333333';
 const ticketFor = user => call(uploadHandler, user, {
   method: 'POST', query: { division: 'safety' }, body: { filename: GOOD_FILE },
 });
-const USER_READ = /^SELECT division_roles, is_platform_admin, company_code FROM users WHERE id =/;
 
 async function currentAccessTests() {
   console.log('\n[access is what Manage Users says now, not what the token said at sign-in]');
@@ -1082,16 +1084,18 @@ async function currentAccessTests() {
         method: 'POST', body: { documentId: DOC1, fullName: 'Marco Reyes', acknowledged: true },
       }),
     ];
-    assert('a deleted account is refused, however long its token has left',
-      gone.every(r => r.statusCode === 403), gone.map(r => r.statusCode).join(','));
+    // 401, not 403: the pages sign out on it, so the device stops presenting
+    // the token at all rather than being refused one call at a time.
+    assert('a deleted account is signed out, however long its token has left',
+      gone.every(r => r.statusCode === 401), gone.map(r => r.statusCode).join(','));
     seedUsers(); seedLate();
   }
 
   {
     setRow(LAB_A.id, { company_code: 'OTH' });
     const other = await call(docsHandler, LAB_A, {});
-    assert('a row belonging to another company grants nothing here',
-      other.statusCode === 403, String(other.statusCode));
+    assert('a row belonging to another company is signed out here',
+      other.statusCode === 401, String(other.statusCode));
     // login.js uppercases the code it signs; the row need not have been.
     setRow(LAB_A.id, { company_code: COMPANY.toLowerCase() });
     const cased = await call(docsHandler, LAB_A, {});
@@ -1150,8 +1154,8 @@ async function currentAccessTests() {
       DB.failUserRead = false;
       console.error = quiet;
     }
-    assert('a failed read of the row is an error, never a fall back to the token',
-      rs.every(r => r.statusCode === 500), rs.map(r => r.statusCode).join(','));
+    assert('a failed read of the row is a 503, never a fall back to the token',
+      rs.every(r => r.statusCode === 503), rs.map(r => r.statusCode).join(','));
     assert('  so nothing is signed', DB.sigs.length === before, `${before} → ${DB.sigs.length}`);
     assert('  and no writable URL is handed out', !rs[2].body.uploadUrl);
   }
@@ -1691,18 +1695,32 @@ function wiringTests() {
   const { ALL_DIVISIONS } = require(root('api/lib/auth.js'));
   assert('safety is a real division', ALL_DIVISIONS.includes('safety'));
 
-  for (const f of ['api/auth/login.js', 'api/auth/verify.js', 'api/company/users.js']) {
-    const src = read(f);
+  {
+    const src = read('api/company/users.js');
     const list = /ALL_DIVISIONS\s*=\s*\[([^\]]*)\]/.exec(src);
-    assert(`${f} knows about it`, !!list && /'safety'/.test(list[1]), f);
+    assert('api/company/users.js knows about it', !!list && /'safety'/.test(list[1]));
   }
   // Restricted: a company-wide legacy grant must never hand somebody the
   // Safety Center by accident, because the roster IS the grant — an implicit
-  // one would put every login in the company on the outstanding list.
-  for (const f of ['api/auth/login.js', 'api/auth/verify.js']) {
-    const src = read(f);
-    const restricted = /RESTRICTED_DIVISIONS = new Set\(\[([^\]]*)\]/.exec(src);
-    assert(`${f} never grants it implicitly`, !!restricted && /'safety'/.test(restricted[1]), f);
+  // one would put every login in the company on the outstanding list. The
+  // rule lives once, in api/lib/auth.js: sign-in signs it, the session refresh
+  // reports it, and requireAuth applies it to every request.
+  {
+    const authLib = require(root('api/lib/auth.js'));
+    assert('it is never granted implicitly', authLib.RESTRICTED_DIVISIONS.has('safety'));
+    const legacy = authLib.accessFromRow({
+      role: 'level1', division_roles: null,
+      divisions: ['turf', 'safety'], allowed_divisions: ['turf', 'safety'],
+    });
+    assert('  not even by a legacy account whose own list names it',
+      !legacy.allowedDivisions.includes('safety')
+      && !authLib.hasDivisionAccess({ ...legacy }, 'safety'),
+      JSON.stringify(legacy.allowedDivisions));
+    const login = read('api/auth/login.js');
+    const verify = read('api/auth/verify.js');
+    assert('  and sign-in and the session refresh apply that rule rather than their own',
+      /accessFromRow\(/.test(login) && !/RESTRICTED_DIVISIONS/.test(login)
+      && /requireAuth\(/.test(verify) && !/RESTRICTED_DIVISIONS/.test(verify));
   }
 
   const divs = read('divisions.html');
@@ -1742,7 +1760,7 @@ function wiringTests() {
     // up, because the purge sweep only walks project_documents.
     const upload = read('api/document-upload-url.js');
     assert('an upload ticket for this division follows ITS levels, not the generic scale',
-      /division === SAFETY_DIVISION[\s\S]{0,300}canUpload = \(await currentSafetyCapabilities\([^;]*\)\)\.canManage/.test(upload));
+      /division === SAFETY_DIVISION[\s\S]{0,120}canUpload = safetyCapabilities\(payload\)\.canManage/.test(upload));
     const level2 = safetyLib.safetyCapabilities({ divisionRoles: { safety: 'level2' } });
     assert('  so a level2 signer cannot mint one', level2.canManage === false);
     assert('  while a supervisor still can',
@@ -1859,7 +1877,7 @@ async function tileCountTests() {
     const qs = DB.calls.map(c => c.q);
     assert('  in one count after the caller\'s own row, since every sign-in pays for it',
       qs.length === 2
-      && /^SELECT division_roles, is_platform_admin, company_code FROM users WHERE id =/.test(qs[0])
+      && USER_READ.test(qs[0])
       && /^SELECT COUNT\(\*\)::int AS unsigned_by_me/.test(qs[1]),
       `${qs.length} queries: ${qs.map(q => q.slice(0, 50)).join(' | ')}`);
   }

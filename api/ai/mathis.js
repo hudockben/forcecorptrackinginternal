@@ -175,7 +175,7 @@ module.exports = async (req, res) => {
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST')    return res.status(405).json({ error: 'Method not allowed' });
 
-  const payload = requireAuth(req, res);
+  const payload = await requireAuth(req, res);
   if (!payload) return;
 
   if (!process.env.ANTHROPIC_API_KEY) {
@@ -196,9 +196,10 @@ module.exports = async (req, res) => {
 
   // ── Who is this, right now ────────────────────────────────────────────────
   // Re-read rather than trusted: the token lasts 30 days and cannot be revoked,
-  // so a role removed this morning is still in it. Null means we could not
-  // establish access, and that fails closed.
-  const authz = await mathis.refreshAuthz(sql, payload);
+  // so a role removed this morning is still in it. requireAuth has read the
+  // account on this request, so these are its roles now. Null means we could
+  // not establish who is asking, and that fails closed.
+  const authz = mathis.authzFrom(payload);
   if (!authz) return res.status(401).json({ error: 'Your access could not be verified — please log in again.' });
 
   const scope = mathis.divisionScope(authz);

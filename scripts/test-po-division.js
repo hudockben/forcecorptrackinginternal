@@ -284,42 +284,67 @@ assert('paving user sees only paving',
 assert('dust user sees none', poDivisionsFor(dustOnly).length === 0);
 
 // ════════════════════════════════════════════════════════════════════════════
-console.log('\n[requirePODivision]');
 function fakeRes() {
   const r = { code: null, body: null };
   r.status = c => { r.code = c; return r; };
   r.json   = b => { r.body = b; return r; };
   return r;
 }
-function guardWith(payload, query) {
+// requirePODivision calls requireAuth, which wants a Bearer token and then
+// reads the account behind it. Both are stood in for rather than minting a real
+// JWT — the token path is already covered by test-division-isolation.js — and
+// the account read answers with the roles each fixture holds, since the payload
+// the guard judges is built from that row.
+function accountSql(payload) {
+  return strings => (/FROM\s+users\s+u\s+JOIN\s+companies/.test(strings.join('?'))
+    ? Promise.resolve([{
+        division_roles: payload.divisionRoles || null, divisions: null, role: 'level1',
+        is_platform_admin: Boolean(payload.isPlatformAdmin),
+        company_code: payload.companyCode, allowed_divisions: null,
+      }])
+    : Promise.reject(new Error('unexpected query from the guard')));
+}
+async function guardWith(payload, query) {
   const res = fakeRes();
-  const req = { query: query || {}, body: null, headers: {} };
-  // requirePODivision calls requireAuth, which wants a Bearer token. Stub the
-  // verification rather than minting a real JWT — the token path is already
-  // covered by test-division-isolation.js.
-  const origVerify = require('jsonwebtoken').verify;
-  require('jsonwebtoken').verify = () => payload;
-  req.headers.authorization = 'Bearer x';
-  try { return { out: requirePODivision(req, res), res }; }
-  finally { require('jsonwebtoken').verify = origVerify; }
+  const req = { query: query || {}, body: null, headers: { authorization: 'Bearer x' } };
+  const jwtLib   = require('jsonwebtoken');
+  const neonPath = require.resolve('@neondatabase/serverless');
+  const origVerify = jwtLib.verify;
+  const origNeon   = require.cache[neonPath];
+  jwtLib.verify = () => ({ userId: 1, ...payload });
+  require.cache[neonPath] = {
+    id: neonPath, filename: neonPath, loaded: true,
+    exports: { neon: () => accountSql(payload) },
+  };
+  try { return { out: await requirePODivision(req, res), res }; }
+  finally {
+    jwtLib.verify = origVerify;
+    if (origNeon) require.cache[neonPath] = origNeon;
+    else delete require.cache[neonPath];
+  }
 }
 
-let g = guardWith(purchasing, { division: 'paving' });
-assert('purchasing passes for paving', g.out && g.out.division === 'paving');
+// Awaited from the async runner below: requirePODivision is async now, and an
+// un-awaited promise is truthy — it would read as a pass.
+async function guardChecks() {
+  console.log('\n[requirePODivision]');
+  let g = await guardWith(purchasing, { division: 'paving' });
+  assert('purchasing passes for paving', g.out && g.out.division === 'paving');
 
-g = guardWith(purchasing, { division: 'dust' });
-assert('purchasing 403s for dust', g.out === null && g.res.code === 403);
-assert('the 403 names no division',
-  g.res.body && !/dust/i.test(JSON.stringify(g.res.body)));
+  g = await guardWith(purchasing, { division: 'dust' });
+  assert('purchasing 403s for dust', g.out === null && g.res.code === 403);
+  assert('the 403 names no division',
+    g.res.body && !/dust/i.test(JSON.stringify(g.res.body)));
 
-g = guardWith(purchasing, {});
-assert('a missing division is 400, not a turf default', g.out === null && g.res.code === 400);
+  g = await guardWith(purchasing, {});
+  assert('a missing division is 400, not a turf default', g.out === null && g.res.code === 400);
 
-g = guardWith(purchasing, { division: 'nonsense' });
-assert('an unknown division is 400', g.out === null && g.res.code === 400);
+  g = await guardWith(purchasing, { division: 'nonsense' });
+  assert('an unknown division is 400', g.out === null && g.res.code === 400);
 
-g = guardWith(pavingOnly, { division: 'turf' });
-assert('paving user 403s for turf', g.out === null && g.res.code === 403);
+  g = await guardWith(pavingOnly, { division: 'turf' });
+  assert('paving user 403s for turf', g.out === null && g.res.code === 403);
+}
 
 // ════════════════════════════════════════════════════════════════════════════
 console.log('\n[endpoint guard — the full-list PUT stays shut]');
@@ -329,7 +354,7 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
   const endpointPath = path.resolve(__dirname, '../api/purchase-orders.js');
   const src = require('fs').readFileSync(endpointPath, 'utf8');
   assert('PUT is routed to requireDivision',
-    /if \(req\.method === 'PUT'\) return requireDivision\(req, res\);/.test(src));
+    /if \(req\.method === 'PUT'\) return await requireDivision\(req, res\);/.test(src));
   assert('everything else resolves through canAccessPODivision',
     /canAccessPODivision\(payload, division\)/.test(src));
   assert('POST exists for single-order upsert', /req\.method === 'POST'/.test(src));
@@ -337,8 +362,10 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
 })();
 
 // ════════════════════════════════════════════════════════════════════════════
-console.log('\n[upsertPO — merging into a division list]');
 (async function () {
+  await guardChecks();
+
+  console.log('\n[upsertPO — merging into a division list]');
   // Insert into a list that already has somebody else's order in it.
   let st = makeStore();
   st.setBlob(KEY('paving'), [makePO({ id: 'theirs', po_number: 'PO-0009' })]);
