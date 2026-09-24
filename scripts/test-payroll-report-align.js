@@ -80,6 +80,7 @@ const detailHeadHtml = (() => {
   return new Function(`${fn('escapeHtml')}\n${cols}\n${fn('detailColumnsRowHtml')}\nreturn detailColumnsRowHtml();`)();
 })();
 const anaSrc    = between('const empBody = empRows.map', 'Hours by Supervisor');
+const otwSrc    = between('function renderOvertimeReport()', '// ── CSV export');
 
 const TABLES = [
   {
@@ -107,6 +108,13 @@ const TABLES = [
     head:  grab(anaSrc, /<thead>[\s\S]*?<\/thead>/,               'the analytics <thead>'),
     body:  grab(anaSrc, /<tr>\s*<td class="name">[\s\S]*?<\/tr>/, 'the analytics employee row'),
     foot:  grab(anaSrc, /<tr class="total">[\s\S]*?<\/tr>/,       'the analytics totals row'),
+  },
+  {
+    label: 'Reports ▸ Overtime (this week)',
+    wrap:  html => `<div class="report"><div class="otw-scroll"><table class="otw-table">${html}</table></div></div>`,
+    head:  grab(otwSrc, /<thead>[\s\S]*?<\/thead>/,           'the overtime report <thead>'),
+    body:  grab(otwSrc, /<tr class="otw-row">[\s\S]*?<\/tr>/, 'the overtime report employee row'),
+    foot:  grab(otwSrc, /<tr class="total">[\s\S]*?<\/tr>/,   'the overtime report totals row'),
   },
 ];
 
