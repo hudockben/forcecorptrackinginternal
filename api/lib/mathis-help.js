@@ -94,12 +94,15 @@ const JOB_TOPICS = {
     summary: 'what each permission level can see and do on this page',
     claims: ['canDeleteProject', 'visibleTabs'],
     text:
-      'Four levels, set per division. ' +
+      'Levels are set per division. ' +
       'level1 sees the Project Dashboard, Purchase Orders, Trucking and Documents, and can change nothing. ' +
       'level2 adds the Schedule and can enter and edit rows, purchase orders and uploads. ' +
       'level3 sees every tab, including Daily Tracking, Cost Tracking, Analytics and the Admin menu — ' +
       'which is where pay rates are — and can delete a project. ' +
       'An administrator adds deleting and restoring documents. ' +
+      'Turf and Paving also offer a sales level, for the people who sell the work: the Schedule, Purchase Orders, ' +
+      'Documents and Trucking to look at and the CRM to work in — no Home, Cost Tracking, Project Dashboard, ' +
+      'Analytics or Daily Summary, and no job contract, cost or profit figures from Mathis either. ' +
       'Mathis answers within whatever the asking person holds: the figures it will not show are the same ones ' +
       'their own screen will not show.',
   },

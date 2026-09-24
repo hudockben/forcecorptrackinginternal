@@ -64,10 +64,13 @@ for (const page of PAGES) {
 
   // level1 is view-only but must still reach the tab — the API decides what it
   // may do there, and hiding it outright would be a different product decision.
+  // Sales (turf and paving) is a restricted role too, and sees it for the
+  // same reason — so every restricted set is checked, however many there are.
   const permAt = src.indexOf('visibleTabs:');
-  const permBlock = src.slice(permAt, permAt + 320);
-  assert('both level1 and level2 can see the tab',
-    (permBlock.match(/'docs'/g) || []).length === 2, permBlock);
+  const permBlock = src.slice(permAt, src.indexOf(': null', permAt));
+  const roleSets = permBlock.split('\n').filter(l => /new Set\(/.test(l));
+  assert('level1, level2 and (where offered) sales can all see the tab',
+    roleSets.length >= 2 && roleSets.every(l => /'docs'/.test(l)), permBlock);
 
   // ── The PO table's colspan must match its header ───────────────────────
   const poTab = src.slice(src.indexOf('function renderPOTab()'));

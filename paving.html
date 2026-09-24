@@ -3939,22 +3939,51 @@ function drDeleteBySubCode(subCode) {
 
 /* ═══════════════════════════════════════════
    PERMISSIONS
-   Roles: admin | level3 | level2 | level1
+   Roles: admin | level3 | level2 | level1 | sales
    admin   — full access + manage company users
    level3  — full access
    level2  — insert/edit daily rows & POs; cannot delete projects
    level1  — view-only: Project Dashboard & Purchase Orders
+   sales   — view-only: Schedule, Purchase Orders, Documents, Trucking; plus
+             the CRM. Nothing that carries what a job costs — no Cost
+             Tracking, Project Dashboard, Home, Analytics or Daily Summary.
+             See SALES_LEVEL in api/lib/auth.js.
 ═══════════════════════════════════════════ */
+
+/**
+ * This user's level on THIS page. Mirrors levelFor() in api/lib/auth.js.
+ *
+ * fctUser.role is the caller's TURF role — login.js sets it from
+ * divisionRoles.turf for tracker.html's benefit — so reading it here answered
+ * about the wrong division: a salesman granted paving:'sales' alongside a turf
+ * grant was shown paving's cost screens at his turf level. The per-division map
+ * comes first; role is only the fallback for a legacy token with no map.
+ */
+function _levelHere() {
+  if (!fctUser) return 'level1';
+  if (fctUser.isPlatformAdmin) return 'admin';
+  const dr = fctUser.divisionRoles;
+  const own = (dr && typeof dr === 'object') ? dr[DIVISION] : null;
+  if (own && own !== 'no_access') return own;
+  return fctUser.role || 'level1';
+}
+
 const perm = (() => {
-  const r = fctUser ? fctUser.role : 'level1';
+  const r = _levelHere();
+  const isSales = r === 'sales';
   return {
     role:             r,
     isAdmin:          r === 'admin',
+    isSales,
     canEdit:          ['admin', 'level3', 'level2'].includes(r),
     canDeleteProject: ['admin', 'level3'].includes(r),
-    // tabs visible to this role (null = all)
+    // Dollar figures that live outside a tab — the Analytics menu and the
+    // Daily Summary report. visibleTabs cannot hide those on its own.
+    canSeeCosts:      !isSales,
+    // tabs visible to this role (null = all). The first is where they land.
     visibleTabs: (r === 'level1') ? new Set(['info', 'po', 'trucking', 'docs'])
                : (r === 'level2') ? new Set(['home', 'schedule', 'info', 'po', 'trucking', 'docs'])
+               : isSales          ? new Set(['schedule', 'po', 'docs', 'trucking', 'crm'])
                : null,
   };
 })();
@@ -3967,6 +3996,21 @@ const perm = (() => {
     if (!perm.visibleTabs.has('financials')) {
       const finItem = document.getElementById('analytics-item-financials');
       if (finItem) finItem.style.display = 'none';
+    }
+    // Every Analytics view is built from cost rows — labor and equipment
+    // hours, unit costs, production against budget — so sales loses the
+    // whole menu rather than just Financials.
+    if (!perm.canSeeCosts) {
+      const wrap = document.querySelector('.analytics-dropdown-wrap');
+      if (wrap) wrap.style.display = 'none';
+    }
+    // The mobile stylesheet forces Daily Entry on with !important, which
+    // beats the plain inline hide below. level1/level2 have always relied on
+    // that to enter rows from a phone; sales enters none, so it is hidden with
+    // an !important of its own.
+    if (perm.isSales) {
+      const mob = document.querySelector('.tab-btn[data-tab="mob-entry"]');
+      if (mob) mob.style.setProperty('display', 'none', 'important');
     }
     // Hide tabs this role cannot see
     document.querySelectorAll('.tab-btn[data-tab]').forEach(btn => {
@@ -4557,7 +4601,9 @@ function adminSwitchTab(tab) {
 function renderHeaderActions() {
   const el = document.getElementById('header-actions');
   const logoutBtn = `<button class="btn btn-ghost" onclick="logout()">Sign Out</button>`;
-  const summaryBtn = `<button class="btn btn-ghost" onclick="openDailySummaryReport()" title="Download a PDF summary of today's production across all projects">&#8659; Daily Summary</button><button class="btn btn-ghost" onclick="openCrewSignInOverlay()" title="Print crew sign-in sheet for a given day">&#128221; Sign-In Sheet</button>`;
+  // The Daily Summary prints labor, equipment and material dollars per row.
+  const summaryBtn = (perm.canSeeCosts ? `<button class="btn btn-ghost" onclick="openDailySummaryReport()" title="Download a PDF summary of today's production across all projects">&#8659; Daily Summary</button>` : '')
+    + `<button class="btn btn-ghost" onclick="openCrewSignInOverlay()" title="Print crew sign-in sheet for a given day">&#128221; Sign-In Sheet</button>`;
   const canSwitch = fctUser && (fctUser.isPlatformAdmin || (Array.isArray(fctUser.allowedDivisions) && fctUser.allowedDivisions.length > 1));
   const switchBtn = canSwitch ? `<button class="btn btn-ghost" onclick="switchDivision()">Switch Division</button>` : '';
   if (activeTab === 'cost') {
@@ -22089,6 +22135,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     if (activeTab === 'po') renderPOTab();
     if (activeTab === 'trucking') renderTruckingTab();
     if (activeTab === 'cost') renderCostTable();
+    if (activeTab === 'schedule') renderScheduleTab(); // sales lands here
     renderHeaderActions();
     // renderProjectsTab() and renderCostTable() are lazy — only render on tab click
   }, 0);

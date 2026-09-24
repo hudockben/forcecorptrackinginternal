@@ -5,7 +5,10 @@ const bcrypt   = require('bcryptjs');
 const jwt      = require('jsonwebtoken');
 
 const ALLOWED_ROLES     = ['admin', 'level3', 'level2', 'level1'];
-const DIV_ROLE_VALUES   = ['admin', 'level3', 'level2', 'level1', 'no_access'];
+const DIV_ROLE_VALUES   = ['admin', 'level3', 'level2', 'level1', 'sales', 'no_access'];
+// 'sales' is a grant for the divisions that sell work and nowhere else — see
+// SALES_LEVEL in api/lib/auth.js. Mirrors SALES_DIVISIONS there.
+const SALES_DIVISIONS   = ['turf', 'paving'];
 const ALL_DIVISIONS     = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'intercompany', 'executive', 'scheduler', 'timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'purchase_orders', 'safety'];
 
 function verifyToken(req) {
@@ -19,10 +22,19 @@ function verifyToken(req) {
   }
 }
 
-/** Derive the legacy `role` column value from division_roles (turf role, or highest if no turf) */
+/**
+ * Derive the legacy `role` column value from division_roles (turf role, or
+ * highest if no turf).
+ *
+ * users.role carries a CHECK constraint of the four original levels, so a turf
+ * 'sales' grant is stored there as 'level1' — the nearest thing it holds, and
+ * view-only like sales. The real grant lives in division_roles, which is what
+ * login.js and every division page read.
+ */
 function deriveLegacyRole(divisionRoles) {
   if (!divisionRoles) return null;
   const turfRole = divisionRoles.turf;
+  if (turfRole === 'sales') return 'level1';
   if (turfRole && turfRole !== 'no_access') return turfRole;
   // If turf is no_access, use highest role across all divisions
   const roleOrder = ['admin', 'level3', 'level2', 'level1'];
@@ -108,6 +120,9 @@ module.exports = async (req, res) => {
         }
         if (!DIV_ROLE_VALUES.includes(r)) {
           return res.status(400).json({ error: `Invalid role "${r}" for division "${div}"` });
+        }
+        if (r === 'sales' && !SALES_DIVISIONS.includes(div)) {
+          return res.status(400).json({ error: `The sales level is only available for ${SALES_DIVISIONS.join(' and ')}, not "${div}"` });
         }
       }
     }
