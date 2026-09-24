@@ -182,7 +182,11 @@
     '.mathis-raw{margin-top:7px;max-height:260px;overflow:auto;padding:8px;border-radius:6px;',
     'background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a35);',
     'font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;white-space:pre;color:var(--text,#e0e0e0)}',
-    '@media(max-width:520px){#mathis-panel{right:8px;left:8px;width:auto;bottom:74px}}'
+    '@media(max-width:520px){#mathis-panel{right:8px;left:8px;width:auto;bottom:74px}}',
+    // Never on paper. Every page that loads Mathis prints its reports with
+    // window.print(), and a fixed-position element prints on each page it
+    // overlays — the nudge came out as an empty card over the report's rows.
+    '@media print{#mathis-launch,#mathis-nudge,#mathis-panel{display:none!important}}'
   ].join('');
 
   var log, input, sendBtn, panel, whereEl;
