@@ -4491,6 +4491,58 @@ async function readSendTargets(sql, companyCode, selfUserId) {
     .map(r => ({ id: r.id, name: r.name }));
 }
 
+// ── Which pending days are still with a foreman ───────────────────────────
+// Sets `waiting_on_coder` on each entry: the login of the coder the crew named
+// as supervisor, while the day is still his — pending, codeable, and not yet
+// sent on — and null otherwise.
+//
+// For payroll's review grid. A crew who pick their foreman as supervisor put
+// his name in the Supervisor column, and from the approver's side that name
+// looks like any other: nothing says it belongs to somebody who cannot approve
+// and is still working on the day. This does, so an approver can see the day
+// has come in and who it is waiting on, rather than wondering why a foreman's
+// name is sitting in his queue — or coding it over the top of him.
+//
+// Matched exactly as ?scope=crew's second path matches (the Supervisor
+// picker's employees.id, or its login label, case-insensitively), so a day
+// flagged as waiting on Ted is precisely a day on Ted's Code Time page.
+// Coders are read through accessFromRow + payrollAccess, the same test every
+// request is held to.
+async function attachWaitingOnCoder(sql, companyCode, entries) {
+  for (const e of entries) e.waiting_on_coder = null;
+  const open = entries.filter(e => e.status === 'submitted' && e.entry_type === 'daily'
+    && AUTO_INJECT_DIVISIONS.includes(e.division) && e.job_id && !e.sent_at);
+  if (!open.length) return entries;
+
+  const users = await sql`
+    SELECT u.id, u.username, u.division_roles, u.divisions, u.role, u.is_platform_admin,
+           c.allowed_divisions
+      FROM users u
+      JOIN companies c ON c.code = u.company_code
+     WHERE u.company_code = ${companyCode}
+  `;
+  const byLogin = new Map();
+  for (const u of users) {
+    const login = String(u.username || '').trim();
+    if (login && payrollAccess(accessFromRow(u)).isCoder) byLogin.set(login.toLowerCase(), login);
+  }
+  if (!byLogin.size) return entries;
+
+  const emps = await sql`SELECT id, name FROM employees WHERE company_code = ${companyCode}`;
+  const byEmpId = new Map();
+  for (const emp of emps) {
+    const login = byLogin.get(String(emp.name || '').trim().toLowerCase());
+    if (login) byEmpId.set(Number(emp.id), login);
+  }
+
+  for (const e of open) {
+    e.waiting_on_coder = byLogin.get(String(e.supervisor_name || '').trim().toLowerCase())
+      || (e.supervisor_id != null ? byEmpId.get(Number(e.supervisor_id)) : null)
+      || null;
+  }
+  return entries;
+}
+
 // ── Split-day tag ─────────────────────────────────────────────────────────
 // One day spent on two jobs is submitted from timesheet.html as one form and
 // arrives here as two ordinary POSTs, each carrying the same split_group_id and
@@ -5034,6 +5086,16 @@ module.exports = async (req, res) => {
       }
 
       const entries = await attachPrevailingWage(sql, companyCode, rows.map(dbToEntry));
+      // Approvers only — it is the review grid's annotation, and the Approve
+      // modal's refetch comes back through here too. Best effort: the grid is
+      // worth showing without it, and a failure here must not take it down.
+      if (canAdmin) {
+        try {
+          await attachWaitingOnCoder(sql, companyCode, entries);
+        } catch (err) {
+          console.error('[timesheet-entries] waiting_on_coder failed (non-fatal):', err.message);
+        }
+      }
       // Nobody who cannot code is handed a cost code. timesheet.html renders
       // none, and the payload behind it should not carry one either — a field
       // user reading his own day back gets exactly what he always got.

@@ -294,6 +294,22 @@ async function run() {
   row = await entry(ids.mike);
   eq('and the day stays with him', row.supervisor_name, 'devalerioted');
 
+  // ── What the approver sees while a day is still with the foreman ─────────
+  console.log('\n[Pending Review: still with the foreman]');
+  r = await call('GET', { scope: 'all', status: 'submitted', from: DAY, to: DAY }, null, ALLEN);
+  const byName = n => (r.body.entries || []).find(e => e.username === n) || {};
+  eq('a day he has not coded says who it is waiting on', byName('nick').waiting_on_coder, 'devalerioted');
+  eq('so does one he coded but has not sent', byName('mike').waiting_on_coder, 'devalerioted');
+  eq('a day he sent is not waiting on anyone', byName('olly').waiting_on_coder, null);
+  eq('nor is a day naming a supervisor who is not a coder', byName('sam').waiting_on_coder, null);
+  // The id alone is enough, as it is for the crew queue.
+  await client.query(`UPDATE timesheet_entries SET supervisor_name = 'Ted (old name)' WHERE id = $1`, [ids.nick]);
+  await client.query(`UPDATE timesheet_entries SET supervisor_id = $1 WHERE id = $2`, [TED_EMP, ids.nick]);
+  r = await call('GET', { scope: 'all', status: 'submitted', from: DAY, to: DAY }, null, ALLEN);
+  eq('matched by roster id when the label has drifted', byName('nick').waiting_on_coder, 'devalerioted');
+  r = await call('GET', { scope: 'crew', status: 'submitted', from: DAY, to: DAY }, null, TED);
+  assert('the coder\'s own queue does not carry it', (r.body.entries || []).every(e => !('waiting_on_coder' in e)));
+
   await cleanup();
   console.log(`\n${passed} passed, ${failed} failed`);
   await client.end();
