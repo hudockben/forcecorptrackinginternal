@@ -568,16 +568,23 @@
     function rememberSendTo(v) { state.sendTo = v; try { localStorage.setItem(SEND_TO_KEY, String(v)); } catch {} }
 
     function isSent(e) { return !!(e && e.sent_at); }
-    /** Coded, still adding up, and not gone yet — the server refuses anything
-     *  else, so the bar never offers it. */
+    /** Does this day name HIM as supervisor? Only those are his to send. A day
+     *  he reached because he worked the job, whose crew named an approver, is
+     *  already on its way to them — he codes it and his codes are on it when
+     *  they open it. The server works this out (names_me), because a login
+     *  compared here would miss a day that names him by roster id alone. */
+    function namesMe(e) { return !!(e && e.names_me); }
+    /** His, coded, still adding up, and not gone yet — the server refuses
+     *  anything else, so the bar never offers it. */
     function isSendable(e) {
-      return !isSent(e) && Array.isArray(e.proposed_split) && e.proposed_split.length > 0 && !proposalStale(e);
+      return namesMe(e) && !isSent(e)
+        && Array.isArray(e.proposed_split) && e.proposed_split.length > 0 && !proposalStale(e);
     }
 
     function sendBarHtml(rows, i) {
       const ready = rows.filter(isSendable);
       if (!ready.length) return '';
-      const left = rows.filter(e => !isSent(e) && !isSendable(e)).length;
+      const left = rows.filter(e => namesMe(e) && !isSent(e) && !isSendable(e)).length;
       const n = ready.length;
       const lbl = `<strong>${n} coded day${n === 1 ? '' : 's'}</strong> ready to send for approval.`
         + (left ? ` ${left} still to code — ${left === 1 ? 'it stays' : 'they stay'} here.` : '');
@@ -624,9 +631,11 @@
       state.sending = true;
       render();
       let sent = 0, firstErr = null;
-      // One at a time. Each is its own day with its own checks, and a failure
-      // on one — approved meanwhile, hours moved — must not stop the rest.
-      for (const e of rows) {
+      // Side by side, each its own request. Every day has its own checks on
+      // the server, and a failure on one — approved meanwhile, hours moved —
+      // must not stop the rest; a crew of twelve should not be twelve round
+      // trips end to end either.
+      await Promise.all(rows.map(async (e) => {
         try {
           const r = await fetch(`${API}/timesheet-entries?action=send&id=${encodeURIComponent(e.id)}`, {
             method: 'POST', headers: authHeaders(true), body: JSON.stringify({ to: Number(to) }),
@@ -635,13 +644,15 @@
           if (!r.ok) throw new Error((j && j.error) || `Could not send (${r.status})`);
           if (j.entry) {
             const idx = state.entries.findIndex(x => String(x.id) === String(j.entry.id));
-            if (idx >= 0) state.entries[idx] = j.entry;
+            // The send reply comes off the plain entry read, which carries no
+            // names_me — and a sent day is read-only whatever it says.
+            if (idx >= 0) state.entries[idx] = Object.assign(j.entry, { names_me: state.entries[idx].names_me });
           }
           sent++;
         } catch (err) {
           if (!firstErr) firstErr = `${e.username}: ${err.message}`;
         }
-      }
+      }));
       state.sending = false;
       render();
       if (!firstErr) toast(`Sent ${sent} day${sent === 1 ? '' : 's'} to ${who} for approval.`);
@@ -693,13 +704,18 @@
       const tPill = pending
         ? `<span class="pill sup">travel ${n2(proposedTravel(e))}h proposed — waiting on your supervisor</span>`
         : '';
+      // Here because he worked the job, not because the man named him: it
+      // already goes to whoever the crew picked, and there is nothing to send.
+      const goes = !namesMe(e) && e.supervisor_name
+        ? `<span class="pill sent">goes to ${esc(e.supervisor_name)}</span>`
+        : '';
       const travel = filedTravel(e);
       return `
         <div class="card ${cls}" onclick="openSheet('${esc(e.id)}')">
           <div class="who">
             <div class="n">${esc(e.username)}</div>
             <div class="m">${esc(e.start_time || '')}–${esc(e.end_time || '')}${travel > 0 ? ` · ${n2(travel)}h travel` : ''}${e.lunch_break ? ' · lunch' : ''}</div>
-            ${pill}${tPill}
+            ${pill}${tPill}${goes}
           </div>
           <div class="hrs">
             <div class="h">${n2(requiredHours(e))}</div>
@@ -1728,7 +1744,10 @@
         // still the one on screen.
         if (j.entry) {
           const idx = state.entries.findIndex(x => String(x.id) === String(j.entry.id));
-          if (idx >= 0) state.entries[idx] = j.entry;
+          // names_me is the crew queue's own flag and the save reply does
+          // not carry it; dropping it would pull the day out of the Send bar
+          // the moment it was coded.
+          if (idx >= 0) state.entries[idx] = Object.assign(j.entry, { names_me: state.entries[idx].names_me });
         }
         if (sheet === mySheet) closeSheet();
         render();

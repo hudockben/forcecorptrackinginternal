@@ -8173,6 +8173,13 @@
         }
       }
       if (c.ees_other_injected) bits.push('EES other row posted');
+      // A coder handing the day on (SEND). Both names: the second is where the
+      // day is now, and the first — the one the crew picked — is kept nowhere
+      // else once the send overwrites it.
+      if (c.to_supervisor) {
+        bits.push(`sent to ${c.to_supervisor}`
+          + (c.from_supervisor ? ` (came in to ${c.from_supervisor})` : ''));
+      }
       return escapeHtml(bits.join(' · '));
     }
 
@@ -8300,10 +8307,9 @@
       // Counts across the CURRENT filtered set (date/division/employee scope).
       // The Total Hours stat is on-site hours + travel hours so the headline
       // figure matches the Total column in the per-entry table below.
-      let s = 0, a = 0, hours = 0, withForeman = 0;
+      let s = 0, a = 0, hours = 0;
       for (const e of filtered) {
         if (e.status === 'submitted') s++;
-        if (e.status === 'submitted' && e.waiting_on_coder) withForeman++;
         if (e.status === 'approved') {
           a++;
           if (e.computed_hours != null) hours += Number(e.computed_hours);
@@ -8311,16 +8317,25 @@
         }
       }
       document.getElementById('stat-submitted').textContent = s;
-      // Counted in Awaiting Review — they ARE awaiting it — and said apart,
-      // because a foreman still has them and the number is not all yours yet.
-      document.getElementById('stat-submitted-sub').textContent = withForeman
-        ? `${withForeman} still with a foreman to code` : '';
+      renderForemanCount();
       document.getElementById('stat-approved').textContent  = a;
       document.getElementById('stat-hours').textContent     = hours.toFixed(2);
       // The backlog notice counts the same rows from the other side. Approving
       // one row re-renders through here without going near filterAndRender,
       // so this is where the two are kept in step.
       renderBacklogNote();
+    }
+
+    // The line under Awaiting Review: how many of those days are still with
+    // the foreman their crew named (waiting_on_coder). Counted in Awaiting
+    // Review — they ARE awaiting it — and said apart, because a foreman still
+    // has them and the number is not all yours yet. Worded to cover both tags
+    // a row can carry, not coded yet and coded but not sent: "to code" would
+    // miscount a crew he has finished.
+    function renderForemanCount() {
+      const n = filtered.filter(e => e.status === 'submitted' && e.waiting_on_coder).length;
+      document.getElementById('stat-submitted-sub').textContent =
+        n ? `${n} still with a foreman, not sent yet` : '';
     }
 
     // Hours-mismatch detector — flags on-site hours that diverge on the SAME job
@@ -9187,8 +9202,8 @@
       if (entry.coded_source !== 'precode') return '';
       return `<div class="split-coded-note">
         Cost codes below were entered by <strong>${escapeHtml(who)}</strong>, who was
-        on the job.${waiting ? ' He has not sent it on yet.' : ''} Check them, change
-        anything that is wrong, then approve.
+        on the job.${waiting ? ` <strong>${escapeHtml(waiting)}</strong> has not sent it on yet.` : ''} Check
+        them, change anything that is wrong, then approve.
       </div>`;
     }
 
@@ -10065,8 +10080,14 @@
       const coded = Array.isArray(e.proposed_split) && e.proposed_split.length > 0
         && e.coded_source === 'precode' && !codedProposalStale(e);
       if (coded) {
-        const title = `${who} has coded this day in Code Time but has not sent it on yet.`
-          + ` Approving now opens with his codes filled in.`;
+        // Whoever CODED it may not be the foreman holding it — another coder
+        // on the same job can code a day, and only the man it names can send
+        // it. Credit each for what he did.
+        const by = String(e.coded_by_name || '');
+        const title = (by && by.toLowerCase() !== who.toLowerCase()
+            ? `${by} has coded this day, and ${who} — who it came in to — has not sent it on yet.`
+            : `${who} has coded this day in Code Time but has not sent it on yet.`)
+          + ` Approving now opens with those codes filled in.`;
         return `<span class="coded-chip waiting" title="${escAttr(title)}">not sent yet</span>`;
       }
       const title = `This day came in with ${who} as supervisor, and he codes it in Code Time,`

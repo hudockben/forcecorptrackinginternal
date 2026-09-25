@@ -108,9 +108,10 @@ let TED_EMP = null, ALLEN_EMP = null, BOB_EMP = null;
 // Everything this file creates, and nothing else — the database is shared with
 // the other SQL suites, and they seed users and employees of their own.
 const MY_EMPLOYEES = ['DeValerioTed', 'Steve Travis', 'AllenStrick', 'bobforeman'];
+const MY_USERS     = [50, 53, 61, 62, 63, 64, 65, 66, 67, 68, 69];
 async function cleanup() {
   await client.query(`TRUNCATE timesheet_entries, timesheet_audit_log RESTART IDENTITY CASCADE`);
-  await client.query(`DELETE FROM users WHERE id BETWEEN 50 AND 70`);
+  await client.query(`DELETE FROM users WHERE id = ANY($1)`, [MY_USERS]);
   await client.query(`DELETE FROM employees WHERE company_code = 'FCT' AND name = ANY($1)`, [MY_EMPLOYEES]);
 }
 
@@ -293,6 +294,43 @@ async function run() {
   assert('cannot be sent', r.statusCode === 409, `${r.statusCode} ${JSON.stringify(r.body)}`);
   row = await entry(ids.mike);
   eq('and the day stays with him', row.supervisor_name, 'devalerioted');
+
+  // ── A day the crew already addressed to an approver is not his to send ───
+  console.log('\n[a day that did not name him]');
+  r = await call('GET', { scope: 'crew', status: 'submitted', from: DAY, to: DAY }, null, TED);
+  const inQueue = n => (r.body.entries || []).find(e => e.username === n) || {};
+  eq('the queue says which days name him', inQueue('mike').names_me, true);
+  eq('and which reached him through the job', inQueue('sam').names_me, false);
+  r = await send(ids.sam, ALLEN_EMP, TED);
+  assert('he can code it but cannot send it', r.statusCode === 409, `${r.statusCode} ${JSON.stringify(r.body)}`);
+  row = await entry(ids.sam);
+  eq('it stays with the supervisor the crew picked', row.supervisor_name, 'Steve Travis');
+
+  // ── Payroll hands a sent day back to the foreman ─────────────────────────
+  console.log('\n[re-addressed back to him]');
+  const [full] = (await client.query(`SELECT * FROM timesheet_entries WHERE id = $1`, [ids.olly])).rows;
+  const putBody = {
+    entry_type: 'daily', work_date: DAY, division: full.division, job_id: full.job_id,
+    job_label: full.job_label, start_time: full.start_time, end_time: full.end_time,
+    // 07:00–15:30 less the half-hour lunch: the 8 hours the seed stored, so
+    // the codes still balance after the edit recomputes the day.
+    lunch_break: true, operated_equipment: false,
+    supervisor_id: TED_EMP, supervisor_name: 'devalerioted',
+  };
+  r = await call('PUT', { id: String(ids.olly) }, putBody, ALLEN);
+  assert('payroll points it back at Ted', r.statusCode === 200, `${r.statusCode} ${JSON.stringify(r.body)}`);
+  row = await entry(ids.olly);
+  assert('which clears the sent stamp', row.sent_at == null, JSON.stringify(row));
+  r = await precode(ids.olly, TED);
+  assert('so he can fix the codes', r.statusCode === 200, `${r.statusCode} ${JSON.stringify(r.body)}`);
+  r = await send(ids.olly, ALLEN_EMP, TED);
+  assert('and send it again', r.statusCode === 200, `${r.statusCode} ${JSON.stringify(r.body)}`);
+  putBody.supervisor_id = ALLEN_EMP; putBody.supervisor_name = 'allenstrick';
+  putBody.start_time = '06:30';
+  r = await call('PUT', { id: String(ids.olly) }, putBody, ALLEN);
+  row = await entry(ids.olly);
+  assert('an edit that keeps the same supervisor keeps the stamp', r.statusCode === 200 && row.sent_at != null,
+    `${r.statusCode} ${JSON.stringify(row)}`);
 
   // ── What the approver sees while a day is still with the foreman ─────────
   console.log('\n[Pending Review: still with the foreman]');

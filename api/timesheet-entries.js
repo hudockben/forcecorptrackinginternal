@@ -94,8 +94,8 @@
  *     Body { to: <id from send_targets> }. Re-points the day's supervisor at
  *     that approver and stamps sent_at / sent_by_*, so it lands under their
  *     name in payroll's Pending Review. Approves and injects nothing. Needs
- *     codes that still add up; same scope as precode; a coder cannot re-code
- *     or re-send a day once it is sent.
+ *     codes that still add up. A coder may only send a day that names HIM as
+ *     supervisor, and cannot re-code or re-send a day once it is sent.
  *
  *   POST   /api/timesheet-entries?action=resplit&id=N   — replace injected rows
  *     Payroll-admin only, row must already be 'approved'. Same body shape as
@@ -148,7 +148,7 @@
  */
 
 const { neon } = require('@neondatabase/serverless');
-const { requireAuth, hasDivisionAccess, payrollAccess, accessFromRow } = require('./lib/auth');
+const { requireAuth, hasDivisionAccess, payrollAccess, accessFromRow, PAYROLL_CODER_LEVEL } = require('./lib/auth');
 const { syncForKey } = require('./lib/sync-normalized');
 const { readEquipmentRoster } = require('./lib/equipment');
 // Identity + lifecycle rules for the Truck Tracking rows this file injects.
@@ -4455,6 +4455,93 @@ async function writeAudit(sql, companyCode, payload, entryId, action, changes, s
   }
 }
 
+// ── A coder's crew: the ONE copy of the scope ─────────────────────────────
+// Every pending, codeable day a coder can reach, each carrying WHICH path
+// reached it:
+//
+//   reach_same_job  — he filed a day (submitted or approved) on the same job
+//                     and date
+//   reach_names_me  — the man who filed it named him as supervisor
+//
+// plus the days he has already SENT on and that are still waiting, which reach
+// him by neither flag and are shown read-only.
+//
+// ?scope=crew lists from this, and precode and send ask it about one day by
+// `id`. It is a single query on purpose: the list, the write that codes and
+// the write that sends must agree about whose day is whose, and three copies of
+// the predicate would have to be kept in step by hand — a missed one shows a
+// coder days he cannot save, or lets him save days he was never shown.
+//
+// `userId` must already be a safeInt: a null here matches nothing, which is
+// the direction to fail in.
+async function readCrewDays(sql, { companyCode, userId, from, to, division, id }) {
+  const fromF = from || '1900-01-01';
+  const toF   = to   || '9999-12-31';
+  const divF  = division || '';
+  const idF   = id == null ? null : safeInt(id);
+  return sql`
+    SELECT * FROM (
+      SELECT e.*,
+        -- 1. He filed a day on this job, this date.
+        EXISTS (
+          SELECT 1 FROM timesheet_entries mine
+           WHERE mine.company_code = e.company_code
+             AND mine.user_id      = ${userId}
+             AND mine.entry_type   = 'daily'
+             -- A DRAFT confers nothing. A draft is self-asserted, costs
+             -- nothing to create, is never seen by anybody, and can name any
+             -- job and any date — so without this a coder could hand himself
+             -- the crew of any job in the company by filing a draft against it
+             -- and deleting it afterwards. Scope has to rest on a day he
+             -- actually filed and put his name to.
+             AND mine.status IN ('submitted','approved')
+             AND mine.work_date    = e.work_date
+             AND mine.division     = e.division
+             AND mine.job_id       = e.job_id
+        ) AS reach_same_job,
+        -- 2. The man who filed it named him as its supervisor.
+        --
+        -- Matched the way the timesheet's Supervisor picker builds its list
+        -- (api/timesheet-supervisors.js): the option's value is an
+        -- employees.id and its label is the user's login, joined on the name
+        -- case-insensitively. Either half counts, so a row whose id has since
+        -- gone stale still reaches the man it names.
+        --
+        -- The login is read off the account, not the token, which is a
+        -- thirty-day snapshot — a renamed account must not keep finding days
+        -- that name whoever holds its old name now. An empty login matches
+        -- nothing, rather than every row with no name on it.
+        EXISTS (
+          SELECT 1 FROM users me
+           WHERE me.id = ${userId}
+             AND TRIM(me.username) <> ''
+             AND (
+               LOWER(TRIM(e.supervisor_name)) = LOWER(TRIM(me.username))
+               OR e.supervisor_id IN (
+                 SELECT emp.id FROM employees emp
+                  WHERE emp.company_code = e.company_code
+                    AND LOWER(TRIM(emp.name)) = LOWER(TRIM(me.username))
+               )
+             )
+        ) AS reach_names_me
+      FROM timesheet_entries e
+      WHERE e.company_code = ${companyCode}
+        AND e.status       = 'submitted'
+        AND e.entry_type   = 'daily'
+        AND e.division     = ANY(${AUTO_INJECT_DIVISIONS})
+        AND e.job_id IS NOT NULL
+        AND e.job_id <> ''
+        AND e.work_date >= ${fromF}::date
+        AND e.work_date <= ${toF}::date
+        AND (${divF} = '' OR e.division = ${divF})
+        AND (${idF}::int IS NULL OR e.id = ${idF}::int)
+    ) x
+    -- 3. ...or he has already sent it on, and it is still waiting.
+    WHERE x.reach_same_job OR x.reach_names_me OR x.sent_by_user_id = ${userId}
+    ORDER BY x.work_date DESC, x.created_at DESC
+  `;
+}
+
 // ── Who a coded day can be SENT to ────────────────────────────────────────
 // The people on the timesheet's Supervisor list (the same list, built the same
 // way, as api/timesheet-supervisors.js) whose account can APPROVE payroll —
@@ -4470,7 +4557,10 @@ async function writeAudit(sql, companyCode, payload, entryId, action, changes, s
 // Approval is read off each account as it stands now, through the same
 // accessFromRow + payrollAccess the server applies to every request, so this
 // list and the approve button can never disagree about who is an approver.
-async function readSendTargets(sql, companyCode, selfUserId) {
+async function readSendTargets(sql, companyCode, selfUserId, onlyId) {
+  // `onlyId` narrows the read to one supervisor — a send checks the one it
+  // was handed rather than rebuilding the whole list for every day it sends.
+  const idF = onlyId == null ? null : safeInt(onlyId);
   const rows = await sql`
     SELECT e.id, u.username AS name, u.id AS user_id,
            u.division_roles, u.divisions, u.role, u.is_platform_admin,
@@ -4483,6 +4573,7 @@ async function readSendTargets(sql, companyCode, selfUserId) {
      WHERE e.company_code  = ${companyCode}
        AND e.is_supervisor = TRUE
        AND (e.active = TRUE OR e.active IS NULL)
+       AND (${idF}::int IS NULL OR e.id = ${idF}::int)
      ORDER BY u.username ASC
   `;
   return rows
@@ -4514,13 +4605,24 @@ async function attachWaitingOnCoder(sql, companyCode, entries) {
     && AUTO_INJECT_DIVISIONS.includes(e.division) && e.job_id && !e.sent_at);
   if (!open.length) return entries;
 
-  const users = await sql`
-    SELECT u.id, u.username, u.division_roles, u.divisions, u.role, u.is_platform_admin,
-           c.allowed_divisions
-      FROM users u
-      JOIN companies c ON c.code = u.company_code
-     WHERE u.company_code = ${companyCode}
-  `;
+  // Two small reads, side by side. Only accounts holding payroll at the
+  // coder level can be coders at all, so the SQL narrows to those and
+  // payrollAccess then says which really are; and only the supervisor ids on
+  // the open days themselves need resolving to a login.
+  const supIds = [...new Set(open.map(e => safeInt(e.supervisor_id)).filter(v => v != null))];
+  const [users, emps] = await Promise.all([
+    sql`
+      SELECT u.id, u.username, u.division_roles, u.divisions, u.role, u.is_platform_admin,
+             c.allowed_divisions
+        FROM users u
+        JOIN companies c ON c.code = u.company_code
+       WHERE u.company_code = ${companyCode}
+         AND u.division_roles->>'payroll' = ${PAYROLL_CODER_LEVEL}
+    `,
+    supIds.length
+      ? sql`SELECT id, name FROM employees WHERE company_code = ${companyCode} AND id = ANY(${supIds})`
+      : Promise.resolve([]),
+  ]);
   const byLogin = new Map();
   for (const u of users) {
     const login = String(u.username || '').trim();
@@ -4528,7 +4630,6 @@ async function attachWaitingOnCoder(sql, companyCode, entries) {
   }
   if (!byLogin.size) return entries;
 
-  const emps = await sql`SELECT id, name FROM employees WHERE company_code = ${companyCode}`;
   const byEmpId = new Map();
   for (const emp of emps) {
     const login = byLogin.get(String(emp.name || '').trim().toLowerCase());
@@ -5003,65 +5104,9 @@ module.exports = async (req, res) => {
 
       let rows;
       if (crewDay) {
-        rows = await sql`
-          SELECT e.* FROM timesheet_entries e
-          WHERE e.company_code = ${companyCode}
-            AND e.status       = 'submitted'
-            AND e.entry_type   = 'daily'
-            AND e.division     = ANY(${AUTO_INJECT_DIVISIONS})
-            AND e.job_id IS NOT NULL
-            AND e.job_id <> ''
-            AND e.work_date >= ${fromF}::date
-            AND e.work_date <= ${toF}::date
-            AND (${divF} = '' OR e.division = ${divF})
-            AND (
-              -- 1. He filed a day on this job, this date.
-              EXISTS (
-                SELECT 1 FROM timesheet_entries mine
-                 WHERE mine.company_code = e.company_code
-                   AND mine.user_id      = ${safeInt(userId)}
-                   AND mine.entry_type   = 'daily'
-                   -- A DRAFT confers nothing. A draft is self-asserted, costs
-                   -- nothing to create, is never seen by anybody, and can name
-                   -- any job and any date — so without this a coder could hand
-                   -- himself the crew of any job in the company by filing a
-                   -- draft against it and deleting it afterwards. Scope has to
-                   -- rest on a day he actually filed and put his name to.
-                   AND mine.status IN ('submitted','approved')
-                   AND mine.work_date    = e.work_date
-                   AND mine.division     = e.division
-                   AND mine.job_id       = e.job_id
-              )
-              -- 2. Or the man who filed it named him as its supervisor.
-              --
-              -- Matched the way the timesheet's Supervisor picker builds its
-              -- list (api/timesheet-supervisors.js): the option's value is an
-              -- employees.id and its label is the user's login, joined on the
-              -- name case-insensitively. Either half counts, so a row whose
-              -- id has since gone stale still reaches the man it names.
-              --
-              -- The login is read off the account, not the token, which is a
-              -- thirty-day snapshot — a renamed account must not keep finding
-              -- days that name whoever holds its old name now. An empty login
-              -- matches nothing, rather than every row with no name on it.
-              OR EXISTS (
-                SELECT 1 FROM users me
-                 WHERE me.id = ${safeInt(userId)}
-                   AND TRIM(me.username) <> ''
-                   AND (
-                     LOWER(TRIM(e.supervisor_name)) = LOWER(TRIM(me.username))
-                     OR e.supervisor_id IN (
-                       SELECT emp.id FROM employees emp
-                        WHERE emp.company_code = e.company_code
-                          AND LOWER(TRIM(emp.name)) = LOWER(TRIM(me.username))
-                     )
-                   )
-              )
-              -- 3. Or he has already sent it on, and it is still waiting.
-              OR e.sent_by_user_id = ${safeInt(userId)}
-            )
-          ORDER BY e.work_date DESC, e.created_at DESC
-        `;
+        rows = await readCrewDays(sql, {
+          companyCode, userId: safeInt(userId), from: fromF, to: toF, division: divF,
+        });
       } else if (userF != null) {
         rows = await sql`
           SELECT * FROM timesheet_entries
@@ -5085,7 +5130,12 @@ module.exports = async (req, res) => {
         `;
       }
 
-      const entries = await attachPrevailingWage(sql, companyCode, rows.map(dbToEntry));
+      // names_me rides along on the coder's queue only: it is what tells his
+      // page which days are his to SEND, as distinct from days he may code
+      // because he worked the job but whose crew already named an approver.
+      const entries = await attachPrevailingWage(sql, companyCode, rows.map(r => crewDay
+        ? Object.assign(dbToEntry(r), { names_me: r.reach_names_me === true })
+        : dbToEntry(r)));
       // Approvers only — it is the review grid's annotation, and the Approve
       // modal's refetch comes back through here too. Best effort: the grid is
       // worth showing without it, and a failure here must not take it down.
@@ -5869,9 +5919,8 @@ module.exports = async (req, res) => {
       // half can be the only guard. Somebody who can approve is not narrowed:
       // payroll coding a day early is just payroll working ahead.
       //
-      // Read off the row as it is stored, by id, rather than off `existing`:
-      // the predicate is then the list's own, word for word, and a copy that
-      // drifted from it would show a coder days he cannot save or save days he
+      // Asked of readCrewDays, the list's own query, so the two cannot drift:
+      // a copy that did would show a coder days he cannot save or save days he
       // was never shown.
       if (isCoder) {
         // Once he has sent it, the day is the approver's. Re-coding it now
@@ -5886,42 +5935,8 @@ module.exports = async (req, res) => {
             error: `You already sent this day to ${existing.supervisor_name || 'its supervisor'} — they can change the codes when they approve it.`,
           });
         }
-        const [mine] = await sql`
-          SELECT 1 AS ok FROM timesheet_entries e
-           WHERE e.id           = ${id}
-             AND e.company_code = ${companyCode}
-             AND (
-               EXISTS (
-                 SELECT 1 FROM timesheet_entries mine
-                  WHERE mine.company_code = e.company_code
-                    AND mine.user_id      = ${safeInt(userId)}
-                    AND mine.entry_type   = 'daily'
-                    -- Submitted or approved only, exactly as ?scope=crew
-                    -- requires: a draft is a record the caller can mint on
-                    -- demand against any job, so honouring one here would make
-                    -- the scope self-assigned.
-                    AND mine.status IN ('submitted','approved')
-                    AND mine.work_date    = e.work_date
-                    AND mine.division     = e.division
-                    AND mine.job_id       = e.job_id
-               )
-               OR EXISTS (
-                 SELECT 1 FROM users me
-                  WHERE me.id = ${safeInt(userId)}
-                    AND TRIM(me.username) <> ''
-                    AND (
-                      LOWER(TRIM(e.supervisor_name)) = LOWER(TRIM(me.username))
-                      OR e.supervisor_id IN (
-                        SELECT emp.id FROM employees emp
-                         WHERE emp.company_code = e.company_code
-                           AND LOWER(TRIM(emp.name)) = LOWER(TRIM(me.username))
-                      )
-                    )
-               )
-             )
-           LIMIT 1
-        `;
-        if (!mine) {
+        const [mine] = await readCrewDays(sql, { companyCode, userId: safeInt(userId), id });
+        if (!mine || !(mine.reach_same_job || mine.reach_names_me)) {
           return res.status(403).json({
             error: 'You can only code a day that names you as its supervisor, or a day on a job you worked yourself.',
           });
@@ -6068,11 +6083,15 @@ module.exports = async (req, res) => {
           AND division   = ${existing.division}
           AND job_id     = ${existing.job_id}
           AND work_date  = ${safeDate(existing.work_date)}::date
+          -- And, for a coder, not sent on meanwhile. The check above read the
+          -- row before this write; a send landing in between would otherwise
+          -- have its codes replaced under the approver it was just handed to.
+          AND (${!isCoder}::boolean OR sent_at IS NULL)
         RETURNING *
       `;
       if (!preUpdated) {
         return res.status(409).json({
-          error: 'This day changed while you were coding it — it was approved, or payroll moved it to another job or date. Your codes were not saved.',
+          error: 'This day changed while you were coding it — it was approved, sent on, or payroll moved it to another job or date. Your codes were not saved.',
         });
       }
 
@@ -6169,50 +6188,27 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'Only a coded turf, paving or kiewit day can be sent' });
       }
 
-      // SCOPE — the same two paths precode and ?scope=crew use, so a coder can
-      // only send what he could code. Sending is a write to who approves the
-      // day; it must not reach one inch further than coding it does.
+      // SCOPE — narrower than coding. A coder may CODE any day on a job he
+      // worked, but he may only SEND a day whose employee named him. Sending
+      // re-points who approves the day, and a day whose crew named an approver
+      // is already on its way to the person they chose: his codes will be on
+      // it when they open it, and re-pointing it at somebody else would pull
+      // it out of their queue over the crew's own answer. So sending only ever
+      // moves a day AWAY from him, never between two other people.
       if (isCoder) {
-        // Before scope, as in precode: once sent, the day no longer names him.
+        // Before scope: once sent, the day no longer names him, and the scope
+        // test would refuse him as a stranger to a day he coded himself.
         if (existing.sent_at && Number(existing.sent_by_user_id) === Number(userId)) {
           return res.status(409).json({
             error: `You already sent this day to ${existing.supervisor_name || 'its supervisor'}.`,
           });
         }
-        const [mine] = await sql`
-          SELECT 1 AS ok FROM timesheet_entries e
-           WHERE e.id           = ${id}
-             AND e.company_code = ${companyCode}
-             AND (
-               EXISTS (
-                 SELECT 1 FROM timesheet_entries mine
-                  WHERE mine.company_code = e.company_code
-                    AND mine.user_id      = ${safeInt(userId)}
-                    AND mine.entry_type   = 'daily'
-                    AND mine.status IN ('submitted','approved')
-                    AND mine.work_date    = e.work_date
-                    AND mine.division     = e.division
-                    AND mine.job_id       = e.job_id
-               )
-               OR EXISTS (
-                 SELECT 1 FROM users me
-                  WHERE me.id = ${safeInt(userId)}
-                    AND TRIM(me.username) <> ''
-                    AND (
-                      LOWER(TRIM(e.supervisor_name)) = LOWER(TRIM(me.username))
-                      OR e.supervisor_id IN (
-                        SELECT emp.id FROM employees emp
-                         WHERE emp.company_code = e.company_code
-                           AND LOWER(TRIM(emp.name)) = LOWER(TRIM(me.username))
-                      )
-                    )
-               )
-             )
-           LIMIT 1
-        `;
-        if (!mine) {
-          return res.status(403).json({
-            error: 'You can only send a day that names you as its supervisor, or a day on a job you worked yourself.',
+        const [mine] = await readCrewDays(sql, { companyCode, userId: safeInt(userId), id });
+        if (!mine || !mine.reach_names_me) {
+          return res.status(mine && mine.reach_same_job ? 409 : 403).json({
+            error: mine && mine.reach_same_job
+              ? `${existing.username || 'This employee'} named ${existing.supervisor_name || 'another supervisor'} as supervisor, so the day already goes to them — your codes will be on it when they approve it.`
+              : 'You can only send a day that names you as its supervisor.',
           });
         }
         if (existing.sent_at) {
@@ -6237,7 +6233,7 @@ module.exports = async (req, res) => {
         });
       }
 
-      const target = (await readSendTargets(sql, companyCode, userId)).find(t => Number(t.id) === to);
+      const [target] = await readSendTargets(sql, companyCode, userId, to);
       if (!target) {
         return res.status(400).json({
           error: 'Send it to a supervisor who approves payroll — pick one from the list.',
@@ -6267,11 +6263,16 @@ module.exports = async (req, res) => {
            AND proposed_split = ${JSON.stringify(split)}::jsonb
            AND coded_for_hours       IS NOT DISTINCT FROM ${existing.coded_for_hours}::numeric
            AND proposed_travel_hours IS NOT DISTINCT FROM ${existing.proposed_travel_hours}::numeric
+           -- And still addressed where it was when scope was checked: payroll
+           -- re-pointing the day, or another send, in between must not be
+           -- overwritten by this one.
+           AND supervisor_id   IS NOT DISTINCT FROM ${existing.supervisor_id}::int
+           AND supervisor_name IS NOT DISTINCT FROM ${existing.supervisor_name}::text
          RETURNING *
       `;
       if (!sent) {
         return res.status(409).json({
-          error: 'This day changed while you were sending it — it was approved, moved, or re-coded. Nothing was sent.',
+          error: 'This day changed while you were sending it — it was approved, moved, re-coded or re-addressed. Nothing was sent.',
         });
       }
 
@@ -6283,8 +6284,8 @@ module.exports = async (req, res) => {
           job_id:          existing.job_id,
           job_label:       existing.job_label,
           work_date:       safeDate(existing.work_date),
-          // Who the crew had named, and who it went to. The first is the
-          // only record of the crew's own answer once this overwrites it.
+          // Who the crew had named, and who it went to. The row itself only
+          // keeps the second, so this is where the crew's own answer lives on.
           from_supervisor: existing.supervisor_name || null,
           to_supervisor:   target.name,
           coded_by:        existing.coded_by_name || null,
@@ -7307,6 +7308,18 @@ module.exports = async (req, res) => {
         || String(data.job_id   || '') !== String(existing.job_id   || '')
         || safeDate(data.work_date)    !== safeDate(existing.work_date);
       const keepCoding = !movedDay;
+      // A send is a statement about WHO has the day. Payroll pointing it at
+      // somebody else — back at the foreman to fix his codes, most likely —
+      // answers that question again, and a stamp left saying "sent" would lock
+      // him out of the very day he was just handed: precode and send both
+      // refuse a coder a day he already sent. Compared the way the Supervisor
+      // picker keys it (id, then the login), so an edit that round-trips the
+      // same supervisor keeps the stamp.
+      const readdressed =
+        (safeInt(data.supervisor_id) || null) !== (safeInt(existing.supervisor_id) || null)
+        || String(data.supervisor_name || '').trim().toLowerCase()
+           !== String(existing.supervisor_name || '').trim().toLowerCase();
+      const keepSent = keepCoding && !readdressed;
 
       // Same hazard again for the machines named on the day. Payroll's Edit
       // Entry modal edits the DAY and sends no equipment_used key, so writing
@@ -7372,12 +7385,13 @@ module.exports = async (req, res) => {
             ELSE proposed_travel_hours END,
           coded_source       = CASE WHEN ${keepCoding}::boolean THEN coded_source     ELSE NULL END,
           -- And the record that those codes were sent on. What was sent was a
-          -- set of codes for one day; that day no longer exists, and leaving
-          -- the stamp would keep an uncoded day on the foreman's page as
-          -- "sent", read-only, with nothing on it.
-          sent_at            = CASE WHEN ${keepCoding}::boolean THEN sent_at          ELSE NULL END,
-          sent_by_user_id    = CASE WHEN ${keepCoding}::boolean THEN sent_by_user_id  ELSE NULL END,
-          sent_by_name       = CASE WHEN ${keepCoding}::boolean THEN sent_by_name     ELSE NULL END,
+          -- set of codes for one day; if the day moved, that day no longer
+          -- exists, and leaving the stamp would keep an uncoded day on the
+          -- foreman's page as "sent", read-only, with nothing on it. Dropped
+          -- too when the edit re-addresses the day — see readdressed above.
+          sent_at            = CASE WHEN ${keepSent}::boolean THEN sent_at          ELSE NULL END,
+          sent_by_user_id    = CASE WHEN ${keepSent}::boolean THEN sent_by_user_id  ELSE NULL END,
+          sent_by_name       = CASE WHEN ${keepSent}::boolean THEN sent_by_name     ELSE NULL END,
           -- How much of the day the truck bought, kept or dropped with the
           -- answer it describes. Cleared unconditionally, this had the same
           -- backwards sign the refresh-rates sweep did: null does not mean
