@@ -1318,9 +1318,13 @@ CREATE INDEX IF NOT EXISTS idx_ts_audit_entry      ON timesheet_audit_log(entry_
 -- below gives: scripts/run-schema.js splits this file on semicolons and would
 -- shred a DO $$ ... $$ body into fragments that do not parse. Two plain
 -- statements are idempotent in sequence and survive that splitter.
+--
+-- SEND joins it for the same reason: a coder handing a day to an approver
+-- re-points who approves it, and that has to be on the record under its own
+-- name rather than as an anonymous change to the supervisor column.
 ALTER TABLE timesheet_audit_log DROP CONSTRAINT IF EXISTS timesheet_audit_log_action_check;
 ALTER TABLE timesheet_audit_log ADD CONSTRAINT timesheet_audit_log_action_check
-  CHECK (action IN ('INSERT','UPDATE','SUBMIT','APPROVE','ADMIN_EDIT','DELETE','PRECODE'));
+  CHECK (action IN ('INSERT','UPDATE','SUBMIT','APPROVE','ADMIN_EDIT','DELETE','PRECODE','SEND'));
 
 -- ─────────────────────────────────────────────────
 -- FUEL SUBMISSIONS
@@ -2258,6 +2262,27 @@ ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS proposed_travel_hours NUM
 -- he worked it). The other — a day whose employee named him as supervisor —
 -- needs no index of its own: it is only ever tested against the submitted rows
 -- of the one day the page is reading.
+
+-- ── SEND — the coder hands a coded day to the supervisor who approves it ───
+-- The crew picks their FOREMAN as supervisor so the day reaches his Code Time
+-- queue. He is not the one who approves it, so once it is coded he sends it
+-- on: ?action=send re-points supervisor_id / supervisor_name at the approver
+-- he picks, and the day turns up under that name in payroll's Pending Review
+-- exactly as though the crew had picked the approver themselves. Nothing on
+-- the approving side had to change to receive it.
+--
+-- These three say it happened. Re-pointing the supervisor alone would leave no
+-- way to tell a day the foreman handed on from one the crew routed straight to
+-- the approver, and the foreman's own page needs to know which of his days are
+-- already gone — a day he sent keeps showing on it, read-only, until it is
+-- approved, so "did that go through?" has an answer on the screen.
+--
+-- Cleared with the coding columns when an edit moves the day to another job,
+-- date, division or type: what was sent was a set of codes for one day, and
+-- that day no longer exists.
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS sent_at         TIMESTAMPTZ;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS sent_by_user_id INTEGER;
+ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS sent_by_name    TEXT;
 CREATE INDEX IF NOT EXISTS idx_ts_job_day
   ON timesheet_entries(company_code, division, job_id, work_date)
   WHERE status = 'submitted';

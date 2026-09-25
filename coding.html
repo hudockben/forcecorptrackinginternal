@@ -86,6 +86,27 @@
     .pill.ok   { color:#86efac; background:rgba(34,197,94,0.14); }
     .pill.warn { color:#fca5a5; background:rgba(239,68,68,0.14); }
     .pill.sup  { color:#fbbf24; background:rgba(245,158,11,0.14); }
+    .pill.sent { color:#93c5fd; background:rgba(96,165,250,0.14); }
+    /* Sent on to the approver: his to change now, so the card reads as done
+       and does not open. */
+    .card.sent { border-left-color:var(--blue); opacity:0.72; cursor:default; }
+    .card.sent:active { background:var(--surface); }
+
+    /* ── Send bar: the last step, one per job ── */
+    .sendbar {
+      background:var(--surface); border:1px solid var(--border); border-radius:10px;
+      padding:0.7rem 0.8rem; display:flex; flex-direction:column; gap:0.55rem;
+    }
+    .sendbar .lbl { font-size:0.78rem; color:var(--muted); line-height:1.45; }
+    .sendbar .lbl strong { color:var(--text); }
+    .sendbar .row { display:flex; gap:0.5rem; }
+    .sendbar select {
+      flex:1; min-width:0; min-height:46px; background:var(--bg); color:var(--text);
+      border:1px solid var(--border); border-radius:9px; padding:0 0.7rem;
+      font-size:0.9rem; font-family:inherit;
+    }
+    .sendbar select:focus { outline:none; border-color:var(--accent); }
+    .sendbar .btn { flex:none; }
 
     .empty { text-align:center; color:var(--muted); font-size:0.85rem; padding:2.5rem 1rem; line-height:1.6; }
 
@@ -231,7 +252,11 @@
     const hasPayroll = isPlatformAdmin || allowedDivisions.includes('payroll');
 
     /* ═══════ State ═══════ */
-    let state = { date: todayStr(), entries: [], loading: true, error: null, ownFiled: null, onSupList: null };
+    // The approver he last sent to, per device. Declared ahead of `state`,
+    // which reads it on the way in.
+    const SEND_TO_KEY = 'fct_code_send_to';
+    let state = { date: todayStr(), entries: [], loading: true, error: null, ownFiled: null, onSupList: null,
+                  sendTo: rememberedSendTo(), sending: false };
     let sheet = null;   // { entry, rows, codes, saving }
 
     const DIV_LABEL = { turf:'Turf', paving:'Paving', kiewit:'Kiewit' };
@@ -340,6 +365,11 @@
         const j = await r.json();
         if (!r.ok) throw new Error((j && j.error) || `Could not load (${r.status})`);
         state.entries = Array.isArray(j.entries) ? j.entries : [];
+        // Who these days can be sent on to. Only wanted once there is a day
+        // on screen, and fetched once a session — it is the same list for
+        // every day and every job. Not awaited: the cards are worth showing
+        // before it lands, and the send bar redraws itself when it does.
+        if (state.entries.length) loadSendTargets();
       } catch (err) {
         state.error = err.message;
         state.entries = [];
@@ -456,35 +486,187 @@
         <div class="note">
           Enter the cost codes for what your crew actually did — a
           <strong>cost code and a sub code on every line</strong>, the travel each man
-          really had, and any machine he ran with its hours. Your supervisor
-          still approves the time — <strong>nothing here pays anybody or posts to the
-          job</strong> until he does, and he can change anything you enter.
+          really had, and any machine he ran with its hours. When a job's days are
+          coded, <strong>send them to the supervisor who approves them</strong>. They
+          still approve the time — <strong>nothing here pays anybody or posts to the
+          job</strong> until they do, and they can change anything you enter.
         </div>
         ${body}
       `;
     }
 
+    const groupKey = e => e.division + '||' + e.job_id;
+    // Index → job key for the groups on screen, so a Send button can say
+    // which job it belongs to without a key full of punctuation in an
+    // onclick attribute.
+    let groupKeys = [];
+
     function renderGroups() {
       const byJob = new Map();
       for (const e of state.entries) {
-        const key = e.division + '||' + e.job_id;
+        const key = groupKey(e);
         if (!byJob.has(key)) byJob.set(key, { label: e.job_label || e.job_id, division: e.division, rows: [] });
         byJob.get(key).rows.push(e);
       }
+      groupKeys = [];
       const out = [];
-      for (const g of byJob.values()) {
+      for (const [key, g] of byJob) {
+        const i = groupKeys.push(key) - 1;
         g.rows.sort((a, b) => String(a.username).localeCompare(String(b.username)));
         out.push(`
           <div class="jobgroup">
             <div class="jobhead">${esc(DIV_LABEL[g.division] || g.division)} · ${esc(g.label)}</div>
             ${g.rows.map(cardHtml).join('')}
+            ${sendBarHtml(g.rows, i)}
           </div>
         `);
       }
       return out.join('');
     }
 
+    /* ═══════ Sending on ═══════
+     *
+     * The crew picks their foreman as supervisor so their days reach this
+     * page. He is not the one who approves them, so once a day is coded he
+     * sends it on: the server re-points the day's supervisor at the approver
+     * he picks, and it turns up under that name in payroll's Pending Review
+     * as though the crew had picked them. A sent day stays here, read-only,
+     * until it is approved, so he can see it went.
+     *
+     * One bar per job rather than per day or per page. A foreman codes a crew
+     * and sends the lot, and a crew on one job goes to one approver — but two
+     * jobs on the same day can have two, so each carries its own picker.
+     */
+    let sendTargets = null;          // [{ id, name }] once loaded
+    let sendTargetsFailed = false;
+    let sendTargetsPromise = null;
+    function loadSendTargets() {
+      if (sendTargets) return Promise.resolve(sendTargets);
+      if (!sendTargetsPromise) {
+        sendTargetsFailed = false;
+        sendTargetsPromise = (async () => {
+          try {
+            const r = await fetch(`${API}/timesheet-entries?action=send_targets`, { headers: authHeaders() });
+            const j = await r.json();
+            if (!r.ok || !Array.isArray(j && j.targets)) throw new Error((j && j.error) || `(${r.status})`);
+            sendTargets = j.targets;
+          } catch {
+            // Never cached: a failed read must not hold an empty list for the
+            // rest of the session, which would read as "nobody to send to".
+            sendTargetsFailed = true;
+          } finally {
+            sendTargetsPromise = null;
+            if (!state.loading) render();
+          }
+          return sendTargets;
+        })();
+      }
+      return sendTargetsPromise;
+    }
+
+    function rememberedSendTo() { try { return localStorage.getItem(SEND_TO_KEY) || ''; } catch { return ''; } }
+    function rememberSendTo(v) { state.sendTo = v; try { localStorage.setItem(SEND_TO_KEY, String(v)); } catch {} }
+
+    function isSent(e) { return !!(e && e.sent_at); }
+    /** Coded, still adding up, and not gone yet — the server refuses anything
+     *  else, so the bar never offers it. */
+    function isSendable(e) {
+      return !isSent(e) && Array.isArray(e.proposed_split) && e.proposed_split.length > 0 && !proposalStale(e);
+    }
+
+    function sendBarHtml(rows, i) {
+      const ready = rows.filter(isSendable);
+      if (!ready.length) return '';
+      const left = rows.filter(e => !isSent(e) && !isSendable(e)).length;
+      const n = ready.length;
+      const lbl = `<strong>${n} coded day${n === 1 ? '' : 's'}</strong> ready to send for approval.`
+        + (left ? ` ${left} still to code — ${left === 1 ? 'it stays' : 'they stay'} here.` : '');
+
+      if (!sendTargets) {
+        return `<div class="sendbar"><div class="lbl">${lbl}<br>${sendTargetsFailed
+          ? `Could not load the supervisors to send to. <a href="#" onclick="loadSendTargets();return false" style="color:var(--accent)">Try again</a>`
+          : 'Loading supervisors…'}</div></div>`;
+      }
+      if (!sendTargets.length) {
+        return `<div class="sendbar"><div class="lbl">${lbl}<br>Nobody on the Supervisor list can approve
+          payroll yet, so there is no one to send these to. Ask the office.</div></div>`;
+      }
+      // The last approver he sent to, while they are still on the list; the
+      // only one when there is only one; otherwise he has to choose — a guess
+      // here is a crew's time landing in the wrong supervisor's queue.
+      const cur = sendTargets.some(t => String(t.id) === String(state.sendTo)) ? String(state.sendTo)
+        : (sendTargets.length === 1 ? String(sendTargets[0].id) : '');
+      const opts = (cur ? '' : '<option value="">Send to…</option>')
+        + sendTargets.map(t => `<option value="${esc(t.id)}"${String(t.id) === cur ? ' selected' : ''}>${esc(t.name)}</option>`).join('');
+      return `
+        <div class="sendbar">
+          <div class="lbl">${lbl}</div>
+          <div class="row">
+            <select id="sendto-${i}" aria-label="Supervisor to send to"
+                    onchange="rememberSendTo(this.value)">${opts}</select>
+            <button class="btn primary" onclick="sendGroup(${i})" ${state.sending ? 'disabled' : ''}>
+              ${state.sending ? 'Sending…' : 'Send'}</button>
+          </div>
+        </div>`;
+    }
+
+    async function sendGroup(i) {
+      if (state.sending) return;
+      const key = groupKeys[i];
+      const sel = document.getElementById('sendto-' + i);
+      const to = sel ? sel.value : '';
+      if (!to) { toast('Pick the supervisor to send these to.'); return; }
+      const rows = state.entries.filter(e => groupKey(e) === key && isSendable(e));
+      if (!rows.length) return;
+      const target = (sendTargets || []).find(t => String(t.id) === String(to));
+      const who = target ? target.name : 'the supervisor';
+
+      state.sending = true;
+      render();
+      let sent = 0, firstErr = null;
+      // One at a time. Each is its own day with its own checks, and a failure
+      // on one — approved meanwhile, hours moved — must not stop the rest.
+      for (const e of rows) {
+        try {
+          const r = await fetch(`${API}/timesheet-entries?action=send&id=${encodeURIComponent(e.id)}`, {
+            method: 'POST', headers: authHeaders(true), body: JSON.stringify({ to: Number(to) }),
+          });
+          const j = await r.json();
+          if (!r.ok) throw new Error((j && j.error) || `Could not send (${r.status})`);
+          if (j.entry) {
+            const idx = state.entries.findIndex(x => String(x.id) === String(j.entry.id));
+            if (idx >= 0) state.entries[idx] = j.entry;
+          }
+          sent++;
+        } catch (err) {
+          if (!firstErr) firstErr = `${e.username}: ${err.message}`;
+        }
+      }
+      state.sending = false;
+      render();
+      if (!firstErr) toast(`Sent ${sent} day${sent === 1 ? '' : 's'} to ${who} for approval.`);
+      else toast(sent ? `Sent ${sent} of ${rows.length} to ${who}. ${firstErr}` : firstErr);
+    }
+
     function cardHtml(e) {
+      // Sent on: the approver's now. Shown so he can see it went, and that is
+      // all — it does not open, because the server will not take new codes
+      // from him for it.
+      if (isSent(e)) {
+        return `
+          <div class="card sent" onclick="openSheet('${esc(e.id)}')">
+            <div class="who">
+              <div class="n">${esc(e.username)}</div>
+              <div class="m">${esc(e.start_time || '')}–${esc(e.end_time || '')}</div>
+              <span class="pill sent">sent to ${esc(e.supervisor_name || 'the supervisor')} — waiting on approval</span>
+            </div>
+            <div class="hrs">
+              <div class="h">${n2(requiredHours(e))}</div>
+              <div class="s">hours</div>
+            </div>
+          </div>
+        `;
+      }
       const coded = Array.isArray(e.proposed_split) && e.proposed_split.length;
       const stale = proposalStale(e);
       // WHO put those codes there. The approver's own accepted split is stored
@@ -816,6 +998,10 @@
     async function openSheet(id) {
       const e = state.entries.find(x => String(x.id) === String(id));
       if (!e) return;
+      if (isSent(e)) {
+        toast(`Sent to ${e.supervisor_name || 'the supervisor'} — they can change anything when they approve it.`);
+        return;
+      }
 
       // Reopen whatever was proposed before, unless the day's hours have moved
       // underneath it — a stale split cannot be saved, so offering it to edit
@@ -1548,7 +1734,7 @@
         render();
         toast(Math.abs(askedT - filedT) > 0.001
           ? `${who}'s day is coded. Your ${n2(askedT)} h of travel is a request — your supervisor decides.`
-          : `${who}'s day is coded — waiting on your supervisor.`);
+          : `${who}'s day is coded. Send it on when the crew is done.`);
       } catch (err) {
         mySheet.saving = false;
         // Only touch the form if it is still this one, and re-resolve the

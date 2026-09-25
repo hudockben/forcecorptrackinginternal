@@ -19,7 +19,7 @@
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth, payrollAccess } = require('./lib/auth');
 
-const VALID_ACTIONS = ['INSERT','UPDATE','SUBMIT','APPROVE','ADMIN_EDIT','DELETE','PRECODE'];
+const VALID_ACTIONS = ['INSERT','UPDATE','SUBMIT','APPROVE','ADMIN_EDIT','DELETE','PRECODE','SEND'];
 
 function safeDate(v) {
   if (!v) return null;

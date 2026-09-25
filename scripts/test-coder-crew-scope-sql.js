@@ -71,6 +71,10 @@ function assert(label, cond, detail) {
   if (cond) { passed++; console.log(`  ✓ ${label}`); }
   else      { failed++; console.error(`  ✗ ${label}${detail ? '  — ' + detail : ''}`); }
 }
+function eq(label, got, want) {
+  assert(label, JSON.stringify(got) === JSON.stringify(want),
+    `got ${JSON.stringify(got)}, wanted ${JSON.stringify(want)}`);
+}
 
 const DAY = '2026-09-25';
 
@@ -99,22 +103,48 @@ const precode = (id, auth) => call('POST', { action: 'precode', id: String(id) }
   split: [{ cost_code: '101', sub_code: 'A', labor_hours: 8, quantity: 0 }],
 }, auth);
 
-let TED_EMP = null;
+let TED_EMP = null, ALLEN_EMP = null, BOB_EMP = null;
+
+// Everything this file creates, and nothing else — the database is shared with
+// the other SQL suites, and they seed users and employees of their own.
+const MY_EMPLOYEES = ['DeValerioTed', 'Steve Travis', 'AllenStrick', 'bobforeman'];
+async function cleanup() {
+  await client.query(`TRUNCATE timesheet_entries, timesheet_audit_log RESTART IDENTITY CASCADE`);
+  await client.query(`DELETE FROM users WHERE id BETWEEN 50 AND 70`);
+  await client.query(`DELETE FROM employees WHERE company_code = 'FCT' AND name = ANY($1)`, [MY_EMPLOYEES]);
+}
+
+const ALLEN = { companyCode: 'FCT', userId: 69, username: 'allenstrick',
+                divisionRoles: { timesheet: 'level1', payroll: 'level3' } };
+
+const send = (id, to, auth) => call('POST', { action: 'send', id: String(id) }, { to }, auth);
+const targets = async (auth) => {
+  const r = await call('GET', { action: 'send_targets' }, null, auth);
+  return (r.body && r.body.targets || []).map(t => t.name);
+};
+const entry = async (id) => (await client.query(
+  `SELECT supervisor_id, supervisor_name, sent_at, sent_by_name FROM timesheet_entries WHERE id = $1`, [id])).rows[0];
 
 async function seed() {
   const q = (t, v) => client.query(t, v);
   await q(`TRUNCATE timesheet_entries, timesheet_audit_log RESTART IDENTITY CASCADE`);
   await q(`INSERT INTO companies (code, name) VALUES ('FCT','Force Corp'), ('OTH','Other Co')
            ON CONFLICT (code) DO NOTHING`);
-  await q(`DELETE FROM users WHERE id BETWEEN 50 AND 70`);
+  await cleanup();
   await q(`INSERT INTO users (id, company_code, username, password_hash, role) VALUES
              (50,'FCT','devalerioted','x','level1'),
              (53,'FCT','bobforeman','x','level1'),
              (61,'FCT','mike','x','level1'), (62,'FCT','sam','x','level1'),
              (63,'FCT','nick','x','level1'), (64,'FCT','olly','x','level1'),
              (65,'FCT','dan','x','level1'),  (66,'FCT','dave','x','level1'),
-             (67,'FCT','tim','x','level1'),  (68,'OTH','other','x','level1')`);
-  await q(`DELETE FROM employees WHERE company_code IN ('FCT','OTH')`);
+             (67,'FCT','tim','x','level1'),  (68,'OTH','other','x','level1'),
+             (69,'FCT','allenstrick','x','level1')`);
+  // What send_targets reads to decide who can approve: Allen approves, the two
+  // foremen only code.
+  await q(`UPDATE users SET division_roles = $1 WHERE id IN (50, 53)`,
+    [JSON.stringify({ timesheet: 'level1', payroll: 'level2' })]);
+  await q(`UPDATE users SET division_roles = $1 WHERE id = 69`,
+    [JSON.stringify({ timesheet: 'level1', payroll: 'level3' })]);
   // Ted's roster row is what the Supervisor picker hands out as the value.
   // Capitalised differently from his login, as roster names routinely are.
   const [emp] = (await q(`INSERT INTO employees (company_code, name, is_supervisor)
@@ -122,6 +152,12 @@ async function seed() {
   TED_EMP = emp.id;
   const [steve] = (await q(`INSERT INTO employees (company_code, name, is_supervisor)
                             VALUES ('FCT','Steve Travis', TRUE) RETURNING id`)).rows;
+  // On the Supervisor list with an account: Allen approves, Bob only codes.
+  // Steve above has no account, so the picker has never offered him.
+  ALLEN_EMP = (await q(`INSERT INTO employees (company_code, name, is_supervisor)
+                        VALUES ('FCT','AllenStrick', TRUE) RETURNING id`)).rows[0].id;
+  BOB_EMP   = (await q(`INSERT INTO employees (company_code, name, is_supervisor)
+                        VALUES ('FCT','bobforeman', TRUE) RETURNING id`)).rows[0].id;
 
   const add = (o) => q(`
     INSERT INTO timesheet_entries (
@@ -207,6 +243,58 @@ async function run() {
   r = await precode(ids.sam, TED);
   assert('and can be coded', r.statusCode === 200, `${r.statusCode} ${JSON.stringify(r.body)}`);
 
+  // ── SEND: the foreman hands the coded day to the supervisor who approves ──
+  console.log('\n[who he can send to]');
+  let t = await targets(TED);
+  eq('only the Supervisor-list names who can approve payroll', t, ['allenstrick']);
+  t = await targets(ALLEN);
+  assert('never the caller himself', !t.includes('allenstrick'), JSON.stringify(t));
+
+  console.log('\n[sending]');
+  r = await send(ids.nick, ALLEN_EMP, TED);
+  assert('a day he has not coded cannot go', r.statusCode === 409, `${r.statusCode} ${JSON.stringify(r.body)}`);
+  r = await send(ids.olly, BOB_EMP, TED);
+  assert('nor to somebody who cannot approve it', r.statusCode === 400, `${r.statusCode} ${JSON.stringify(r.body)}`);
+  r = await send(ids.olly, ALLEN_EMP, BOB);
+  assert('another coder cannot send Ted\'s crew', r.statusCode === 403, `${r.statusCode}`);
+
+  r = await send(ids.olly, ALLEN_EMP, TED);
+  assert('a coded day goes to Allen', r.statusCode === 200, `${r.statusCode} ${JSON.stringify(r.body)}`);
+  let row = await entry(ids.olly);
+  eq('it now names Allen as supervisor', row.supervisor_name, 'allenstrick');
+  eq('by his roster id, as the picker would', row.supervisor_id, ALLEN_EMP);
+  eq('and says who sent it', row.sent_by_name, 'devalerioted');
+  assert('and when', row.sent_at != null);
+
+  const audit = (await client.query(
+    `SELECT changes FROM timesheet_audit_log WHERE entry_id = $1 AND action = 'SEND'`, [ids.olly])).rows;
+  eq('the send is on the audit log', audit.length, 1);
+  eq('with the name the crew had picked', audit[0] && audit[0].changes.from_supervisor, 'Ted (old name)');
+  eq('and who it went to', audit[0] && audit[0].changes.to_supervisor, 'allenstrick');
+
+  console.log('\n[after it is sent]');
+  r = await call('GET', { scope: 'crew', status: 'submitted', from: DAY, to: DAY }, null, TED);
+  const shown = (r.body.entries || []).find(e => e.id === ids.olly);
+  assert('it stays on his page', !!shown, JSON.stringify((r.body.entries || []).map(e => e.username)));
+  assert('marked sent', !!(shown && shown.sent_at), JSON.stringify(shown && shown.sent_at));
+  r = await precode(ids.olly, TED);
+  assert('he cannot re-code it', r.statusCode === 409, `${r.statusCode} ${JSON.stringify(r.body)}`);
+  r = await send(ids.olly, ALLEN_EMP, TED);
+  assert('or send it twice', r.statusCode === 409, `${r.statusCode}`);
+
+  r = await call('GET', { scope: 'all', status: 'submitted', from: DAY, to: DAY }, null, ALLEN);
+  const inReview = (r.body.entries || []).find(e => e.id === ids.olly);
+  eq('Allen\'s Pending Review shows it under his name', inReview && inReview.supervisor_name, 'allenstrick');
+  assert('with Ted\'s codes on it', !!(inReview && inReview.proposed_split && inReview.proposed_split.length));
+
+  console.log('\n[codes that no longer add up]');
+  await client.query(`UPDATE timesheet_entries SET computed_hours = 9 WHERE id = $1`, [ids.mike]);
+  r = await send(ids.mike, ALLEN_EMP, TED);
+  assert('cannot be sent', r.statusCode === 409, `${r.statusCode} ${JSON.stringify(r.body)}`);
+  row = await entry(ids.mike);
+  eq('and the day stays with him', row.supervisor_name, 'devalerioted');
+
+  await cleanup();
   console.log(`\n${passed} passed, ${failed} failed`);
   await client.end();
   process.exit(failed ? 1 : 0);
