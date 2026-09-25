@@ -2253,8 +2253,11 @@ ALTER TABLE timesheet_entries ADD CONSTRAINT timesheet_entries_coded_source_chec
 -- the question has been answered one way or the other.
 ALTER TABLE timesheet_entries ADD COLUMN IF NOT EXISTS proposed_travel_hours NUMERIC(6,2);
 
--- The coder's queue: submitted entries on a job+date, which is how a site lead
--- is scoped (he may code the day he himself worked, on the job he worked it).
+-- The coder's queue: submitted entries on a job+date, which is one of the two
+-- ways a site lead is scoped (he may code the day he himself worked, on the job
+-- he worked it). The other — a day whose employee named him as supervisor —
+-- needs no index of its own: it is only ever tested against the submitted rows
+-- of the one day the page is reading.
 CREATE INDEX IF NOT EXISTS idx_ts_job_day
   ON timesheet_entries(company_code, division, job_id, work_date)
   WHERE status = 'submitted';

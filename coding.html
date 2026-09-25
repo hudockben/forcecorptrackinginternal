@@ -231,7 +231,7 @@
     const hasPayroll = isPlatformAdmin || allowedDivisions.includes('payroll');
 
     /* ═══════ State ═══════ */
-    let state = { date: todayStr(), entries: [], loading: true, error: null, ownFiled: null };
+    let state = { date: todayStr(), entries: [], loading: true, error: null, ownFiled: null, onSupList: null };
     let sheet = null;   // { entry, rows, codes, saving }
 
     const DIV_LABEL = { turf:'Turf', paving:'Paving', kiewit:'Kiewit' };
@@ -345,25 +345,45 @@
         state.entries = [];
       }
 
-      // An empty queue has several causes and only one of them is the coder's
-      // to act on. Scope comes from HIS OWN submitted day — a draft confers
-      // nothing, because a draft costs nothing to create against any job — so
-      // opening this page before sending his own time in shows him an empty
-      // list, and that is the order people naturally try first. Worth one
-      // extra read on the empty path to tell him which of the reasons it is
-      // rather than leaving him with a blank screen and three maybes.
+      // A day reaches this queue two ways: the man who filed it named HIM as
+      // its supervisor, or he filed his own day on the same job (a draft
+      // confers nothing, because a draft costs nothing to create against any
+      // job). An empty queue therefore has several causes, and a blank screen
+      // with three maybes reads like the feature is broken. Worth two extra
+      // reads on the empty path to say which it is:
+      //   • has he filed his own day? That brings in everyone on his job.
+      //   • is he on the Supervisor list his crew picks from at all? If he is
+      //     not, the first path can never fill, and nothing else on screen
+      //     would tell him why.
       //
-      // This request carries no scope, so the server returns his own rows.
+      // The first request carries no scope, so the server returns his own rows.
       state.ownFiled = null;
+      state.onSupList = null;
       if (!state.error && !state.entries.length) {
-        try {
-          const qs2 = new URLSearchParams({ from: state.date, to: state.date });
-          const r2 = await fetch(`${API}/timesheet-entries?${qs2}`, { headers: authHeaders() });
-          const j2 = await r2.json();
-          const mine = (r2.ok && Array.isArray(j2.entries)) ? j2.entries : [];
-          state.ownFiled = mine.some(x => x.entry_type === 'daily' && x.job_id
-            && (x.status === 'submitted' || x.status === 'approved'));
-        } catch { state.ownFiled = null; }
+        const own = (async () => {
+          try {
+            const qs2 = new URLSearchParams({ from: state.date, to: state.date });
+            const r2 = await fetch(`${API}/timesheet-entries?${qs2}`, { headers: authHeaders() });
+            const j2 = await r2.json();
+            const mine = (r2.ok && Array.isArray(j2.entries)) ? j2.entries : [];
+            state.ownFiled = mine.some(x => x.entry_type === 'daily' && x.job_id
+              && (x.status === 'submitted' || x.status === 'approved'));
+          } catch { state.ownFiled = null; }
+        })();
+        const sups = (async () => {
+          try {
+            const r3 = await fetch(`${API}/timesheet-supervisors`, { headers: authHeaders() });
+            const j3 = await r3.json();
+            // Unknown, not "no", on anything but a real list — telling a man
+            // he is missing from a list we failed to read sends him to the
+            // office over nothing.
+            if (!r3.ok || !Array.isArray(j3 && j3.supervisors)) return;
+            const me = String((user && user.username) || '').trim().toLowerCase();
+            state.onSupList = !!me && j3.supervisors.some(s =>
+              String((s && s.name) || '').trim().toLowerCase() === me);
+          } catch { state.onSupList = null; }
+        })();
+        await Promise.all([own, sups]);
       }
       state.loading = false;
       render();
@@ -389,27 +409,36 @@
       } else if (state.error) {
         body = `<div class="empty" style="color:#fca5a5">${esc(state.error)}</div>`;
       } else if (!state.entries.length) {
-        // The reason matters more than the fact. When we know he simply has
-        // not filed his own day yet, say that and point at the fix — "no
-        // entries" on its own reads like the feature is broken.
+        // The reason matters more than the fact — "no entries" on its own
+        // reads like the feature is broken. His own day is no longer a step he
+        // has to take first: a crew who name him as supervisor come in without
+        // it. So it is offered as the way to bring in the rest of his job, not
+        // as the reason the page is empty.
+        const notOnList = state.onSupList === false
+          ? `<br><br>Your crew cannot pick you yet — you are not on the <strong>Supervisor</strong>
+             list on the timesheet. Ask the office to mark you as a Supervisor.`
+          : '';
         body = state.ownFiled == null
           ? `<div class="empty">
               Nothing to code for this day.<br><br>
-              You code the crew of a job <strong>you worked yourself</strong>, and only
-              turf, paving and kiewit jobs are coded here.
+              You code the days your crew files with <strong>you as their supervisor</strong>,
+              and the crew of a job <strong>you worked yourself</strong>. Only turf, paving
+              and kiewit jobs are coded here.${notOnList}
             </div>`
           : state.ownFiled === false
           ? `<div class="empty">
-              You have not submitted your own time for this day yet.<br><br>
-              You code the crew of a job <strong>you worked yourself</strong>, so send your
-              own day in first and your crew's days will appear here.<br><br>
+              Nothing to code for this day yet.<br><br>
+              Your crew's days come in here as soon as they submit them with
+              <strong>you as their supervisor</strong>. Send in your own day too and anyone
+              else on that job comes in with it.${notOnList}<br><br>
               <a class="btn primary" style="display:inline-block;text-decoration:none"
                  href="timesheet.html">Go to my timesheet</a>
             </div>`
           : `<div class="empty">
-              Nothing to code for this day.<br><br>
-              You have filed your own day, so this will fill in once your men submit
-              theirs. Only turf, paving and kiewit jobs are coded here.
+              Nothing to code for this day yet.<br><br>
+              You have filed your own day, so this fills in as the men on your job —
+              and anyone who names you as supervisor — submit theirs. Only turf, paving
+              and kiewit jobs are coded here.${notOnList}
             </div>`;
       } else {
         body = renderGroups();

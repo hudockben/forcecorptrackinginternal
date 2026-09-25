@@ -8,7 +8,8 @@
  *     forgets to scope shows too little rather than the whole company.
  *     Query: ?status=draft|submitted|approved
  *            ?scope=crew  — a CODER's queue: submitted daily entries on a job
- *                           he himself worked that day (see the list handler)
+ *                           he himself worked that day, or that name him as
+ *                           their supervisor (see the list handler)
  *            ?from=YYYY-MM-DD&to=YYYY-MM-DD
  *            ?user_id=N      (admin only — one named user)
  *            ?scope=all      (admin only — every user in the company)
@@ -82,7 +83,8 @@
  *     entry stays pending and the approve modal pre-fills from the column.
  *     Open to payroll:'level2' (a coder — see payrollAccess in lib/auth.js) as
  *     well as to payroll admins. A coder is additionally scoped to days on a
- *     job HE worked, the same derivation ?scope=crew lists from.
+ *     job HE worked or that name him as supervisor, the same two paths
+ *     ?scope=crew lists from.
  *
  *   POST   /api/timesheet-entries?action=resplit&id=N   — replace injected rows
  *     Payroll-admin only, row must already be 'approved'. Same body shape as
@@ -4822,14 +4824,28 @@ module.exports = async (req, res) => {
       const askedUser   = safeInt(q.user_id);
       const companyWide = canAdmin && askedUser == null && q.scope === 'all';
 
-      // ?scope=crew — a CODER's queue: the submitted days of the job HE worked.
+      // ?scope=crew — a CODER's queue. A submitted day is his to code when
+      // EITHER of two records ties it to him:
       //
-      // Scope is DERIVED, never assigned. A site lead's own timesheet already
-      // says which job he was on and when, so his queue is every submitted day
-      // sharing that job and that date. There is no crew roster to maintain as
-      // men move around — and a man loaned to his site for a single day, who
-      // today is coded by whoever guesses hardest, falls into scope
-      // automatically because he worked the job the lead was standing on.
+      //   1. HIS OWN filed day on the same job and date. A site lead's own
+      //      timesheet already says which job he was on and when, so every
+      //      submitted day sharing that job and that date is his crew's. There
+      //      is no crew roster to maintain as men move around — and a man
+      //      loaned to his site for a single day, who today is coded by
+      //      whoever guesses hardest, falls into scope automatically because
+      //      he worked the job the lead was standing on.
+      //
+      //   2. The man who filed the day NAMED HIM as its supervisor. That is
+      //      the crew's own answer to "who is responsible for this day", and it
+      //      does not wait on the lead: without it his queue stayed empty until
+      //      he had sent his own day in, so a foreman who files at the end of
+      //      the week could not code a crew who had filed days before him.
+      //
+      // Neither is something the coder can hand himself. The first rests on a
+      // day he filed and put his name to (a draft confers nothing — see
+      // below). The second is written by somebody else on somebody else's row:
+      // only the employee filing the day, or payroll editing it, sets the
+      // supervisor on it.
       //
       // Narrowed three further ways, each of which costs nothing:
       //   • status 'submitted' only. He codes pending work; he has no reason
@@ -4885,21 +4901,49 @@ module.exports = async (req, res) => {
             AND e.work_date >= ${fromF}::date
             AND e.work_date <= ${toF}::date
             AND (${divF} = '' OR e.division = ${divF})
-            AND EXISTS (
-              SELECT 1 FROM timesheet_entries mine
-               WHERE mine.company_code = e.company_code
-                 AND mine.user_id      = ${safeInt(userId)}
-                 AND mine.entry_type   = 'daily'
-                 -- A DRAFT confers nothing. A draft is self-asserted, costs
-                 -- nothing to create, is never seen by anybody, and can name
-                 -- any job and any date — so without this a coder could hand
-                 -- himself the crew of any job in the company by filing a
-                 -- draft against it and deleting it afterwards. Scope has to
-                 -- rest on a day he actually filed and put his name to.
-                 AND mine.status IN ('submitted','approved')
-                 AND mine.work_date    = e.work_date
-                 AND mine.division     = e.division
-                 AND mine.job_id       = e.job_id
+            AND (
+              -- 1. He filed a day on this job, this date.
+              EXISTS (
+                SELECT 1 FROM timesheet_entries mine
+                 WHERE mine.company_code = e.company_code
+                   AND mine.user_id      = ${safeInt(userId)}
+                   AND mine.entry_type   = 'daily'
+                   -- A DRAFT confers nothing. A draft is self-asserted, costs
+                   -- nothing to create, is never seen by anybody, and can name
+                   -- any job and any date — so without this a coder could hand
+                   -- himself the crew of any job in the company by filing a
+                   -- draft against it and deleting it afterwards. Scope has to
+                   -- rest on a day he actually filed and put his name to.
+                   AND mine.status IN ('submitted','approved')
+                   AND mine.work_date    = e.work_date
+                   AND mine.division     = e.division
+                   AND mine.job_id       = e.job_id
+              )
+              -- 2. Or the man who filed it named him as its supervisor.
+              --
+              -- Matched the way the timesheet's Supervisor picker builds its
+              -- list (api/timesheet-supervisors.js): the option's value is an
+              -- employees.id and its label is the user's login, joined on the
+              -- name case-insensitively. Either half counts, so a row whose
+              -- id has since gone stale still reaches the man it names.
+              --
+              -- The login is read off the account, not the token, which is a
+              -- thirty-day snapshot — a renamed account must not keep finding
+              -- days that name whoever holds its old name now. An empty login
+              -- matches nothing, rather than every row with no name on it.
+              OR EXISTS (
+                SELECT 1 FROM users me
+                 WHERE me.id = ${safeInt(userId)}
+                   AND TRIM(me.username) <> ''
+                   AND (
+                     LOWER(TRIM(e.supervisor_name)) = LOWER(TRIM(me.username))
+                     OR e.supervisor_id IN (
+                       SELECT emp.id FROM employees emp
+                        WHERE emp.company_code = e.company_code
+                          AND LOWER(TRIM(emp.name)) = LOWER(TRIM(me.username))
+                     )
+                   )
+              )
             )
           ORDER BY e.work_date DESC, e.created_at DESC
         `;
@@ -5694,28 +5738,55 @@ module.exports = async (req, res) => {
         return res.status(400).json({ error: 'This entry has no job to code against' });
       }
 
-      // SCOPE. A coder may only touch a day on a job he himself worked — the
-      // same derivation ?scope=crew lists from, enforced again on the write so
-      // that neither half can be the only guard. Somebody who can approve is
-      // not narrowed: payroll coding a day early is just payroll working ahead.
+      // SCOPE. A coder may only touch a day on a job he himself worked, or a
+      // day whose employee named him as its supervisor — the same two paths
+      // ?scope=crew lists from, enforced again on the write so that neither
+      // half can be the only guard. Somebody who can approve is not narrowed:
+      // payroll coding a day early is just payroll working ahead.
+      //
+      // Read off the row as it is stored, by id, rather than off `existing`:
+      // the predicate is then the list's own, word for word, and a copy that
+      // drifted from it would show a coder days he cannot save or save days he
+      // was never shown.
       if (isCoder) {
         const [mine] = await sql`
-          SELECT 1 AS ok FROM timesheet_entries
-           WHERE company_code = ${companyCode}
-             AND user_id      = ${safeInt(userId)}
-             AND entry_type   = 'daily'
-             -- Submitted or approved only, exactly as ?scope=crew requires:
-             -- a draft is a record the caller can mint on demand against any
-             -- job, so honouring one here would make the scope self-assigned.
-             AND status IN ('submitted','approved')
-             AND work_date    = ${safeDate(existing.work_date)}::date
-             AND division     = ${existing.division}
-             AND job_id       = ${existing.job_id}
+          SELECT 1 AS ok FROM timesheet_entries e
+           WHERE e.id           = ${id}
+             AND e.company_code = ${companyCode}
+             AND (
+               EXISTS (
+                 SELECT 1 FROM timesheet_entries mine
+                  WHERE mine.company_code = e.company_code
+                    AND mine.user_id      = ${safeInt(userId)}
+                    AND mine.entry_type   = 'daily'
+                    -- Submitted or approved only, exactly as ?scope=crew
+                    -- requires: a draft is a record the caller can mint on
+                    -- demand against any job, so honouring one here would make
+                    -- the scope self-assigned.
+                    AND mine.status IN ('submitted','approved')
+                    AND mine.work_date    = e.work_date
+                    AND mine.division     = e.division
+                    AND mine.job_id       = e.job_id
+               )
+               OR EXISTS (
+                 SELECT 1 FROM users me
+                  WHERE me.id = ${safeInt(userId)}
+                    AND TRIM(me.username) <> ''
+                    AND (
+                      LOWER(TRIM(e.supervisor_name)) = LOWER(TRIM(me.username))
+                      OR e.supervisor_id IN (
+                        SELECT emp.id FROM employees emp
+                         WHERE emp.company_code = e.company_code
+                           AND LOWER(TRIM(emp.name)) = LOWER(TRIM(me.username))
+                      )
+                    )
+               )
+             )
            LIMIT 1
         `;
         if (!mine) {
           return res.status(403).json({
-            error: 'You can only code a day on a job you worked yourself that day.',
+            error: 'You can only code a day that names you as its supervisor, or a day on a job you worked yourself.',
           });
         }
       }
