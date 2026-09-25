@@ -1062,7 +1062,8 @@
       const d = await api('GET', '/safety-signatures?documentId=' + encodeURIComponent(id));
       const g = (d.documents || [])[0];
       if (!g) throw new Error('That document could not be found. Reload the report and try again.');
-      g.signed = g.signed || [];
+      g.signed      = g.signed || [];
+      g.outstanding = g.outstanding || [];
       state.detail[id] = g.signed;
       return g;
     }
@@ -1228,8 +1229,12 @@
          Print / PDF       on a signature: that one person's acknowledgement,
                            for a per-employee training record
 
-       Only signatures are printed. Who is still outstanding is a list for the
-       supervisor to chase, not part of the record of who signed.
+       Under the signatures, each sheet lists who has NOT signed — the names the
+       report shows under Still to sign — so one printout says both who is
+       covered and who is still owed. That list is the roster at the moment of
+       printing, not the roster the week the form was posted, and the section
+       says so: somebody granted the Safety Center since is listed against an
+       older form too, exactly as they are on screen.
 
        Each document is read FRESH rather than lifted from the report on screen.
        The report carries no drawn marks (see loadGroupDetail), and a sheet
@@ -1313,6 +1318,30 @@
       td.mark { width: 2.7in; height: 0.62in; }
       td.mark img { display: block; max-width: 2.6in; max-height: 0.56in; }
       .none { color: #6b7280; font-size: 9.5px; font-style: italic; }
+      /* The two halves of a sheet: who signed, then who has not. */
+      h2.sec {
+        display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+        margin: 14px 0 4px; font-size: 10px; font-weight: 800; letter-spacing: 0.12em;
+        text-transform: uppercase; color: #111;
+        break-after: avoid; page-break-after: avoid;
+      }
+      h2.sec small {
+        font-size: 8.5px; font-weight: 600; letter-spacing: 0.02em; text-transform: none;
+        color: #6b7280; text-align: right;
+      }
+      /* A login is all there is to print for somebody who has not signed — no
+         typed name, no time, no mark — so the names run down four columns
+         rather than taking a table row each: forty of them fill a quarter of a
+         page instead of two. */
+      ul.names {
+        list-style: none; margin: 0; padding: 0; border-top: 2px solid #111;
+        column-count: 4; column-gap: 18px;
+      }
+      ul.names li {
+        padding: 5px 6px; border-bottom: 1px solid #e5e7eb; font-size: 11px; font-weight: 600;
+        overflow-wrap: anywhere; break-inside: avoid; page-break-inside: avoid;
+      }
+      h2.sec + .none { margin: 0; padding: 6px; border-top: 2px solid #111; }
       .person { margin: 16px 0 8px; border: 1px solid #d1d5db; border-radius: 6px; padding: 14px 16px 10px; }
       .person .line {
         height: 1.3in; display: flex; align-items: flex-end;
@@ -1405,9 +1434,28 @@
       return { html, ref };
     }
 
+    // Who has not signed, by login, in the roster's alphabetical order — the
+    // report's own Still to sign list. An empty one is said in words: on a
+    // sheet that goes to an auditor, "nobody is outstanding" is a finding.
+    function unsignedHTML(g) {
+      const out = g.outstanding || [];
+      return `
+        <div class="unsigned">
+          <h2 class="sec">Not signed (${out.length})
+            <small>Everyone on the Safety Center roster who had not signed this document when it was printed</small></h2>
+          ${out.length
+            ? `<ul class="names">${out.map(o => `<li>${esc(o.username)}</li>`).join('')}</ul>`
+            : `<p class="none">${g.expectedCount
+                ? 'Nobody — everyone on the Safety Center roster has signed this document.'
+                : 'Nobody is on the Safety Center roster to sign this document.'}</p>`}
+        </div>`;
+    }
+
     function sheetHTML(g, info) {
       const d = g.document;
-      const stmt = statementBlock(g.signed, 'Each person below');
+      // "Each person below" stopped being true once the people who have NOT
+      // signed were listed below as well.
+      const stmt = statementBlock(g.signed, 'Each signer below');
       return `
         <section class="sheet">
           ${printHead(info, 'Safety sign-off sheet')}
@@ -1418,10 +1466,12 @@
             <div><span class="k">Signatures</span><span class="v">${g.signed.length}</span></div>
             <div><span class="k">Posted by</span><span class="v">${esc(d.uploadedBy || 'the office')}</span></div>
             <div><span class="k">Posted</span><span class="v">${esc(stamp(d.uploadedAt, true))}</span></div>
+            <div><span class="k">Not signed</span><span class="v">${(g.outstanding || []).length}</span></div>
             ${printedCell(info)}
           </div>
           ${stmt.html}
-          <table>
+          <h2 class="sec">Signed (${g.signed.length})</h2>
+          ${g.signed.length ? `<table>
             <thead>
               <tr><th class="cap" colspan="4">${esc(d.title)} &middot; ${esc(weekLabel(d.weekOf))}</th></tr>
               <tr><th class="n">#</th><th>Name</th><th>Signed</th><th>Signature</th></tr>
@@ -1434,7 +1484,8 @@
                 <td class="mark">${printMark(s)}</td>
               </tr>`).join('')}
             </tbody>
-          </table>
+          </table>` : `<p class="none">Nobody has signed this document.</p>`}
+          ${unsignedHTML(g)}
           ${printFoot()}
         </section>`;
     }
@@ -1466,8 +1517,12 @@
         </section>`;
     }
 
+    // Not signed is counted per document and never totalled: added up across
+    // a month of forms it would count the same laborer once a week, and read
+    // as a head count bigger than the crew.
     function contentsHTML(groups, skipped, info) {
       const total = groups.reduce((n, g) => n + g.signed.length, 0);
+      const one   = skipped === 1;
       return `
         <section class="sheet">
           ${printHead(info, 'Safety sign-off report')}
@@ -1478,17 +1533,19 @@
             ${printedCell(info)}
           </div>
           <table>
-            <thead><tr><th>Week of</th><th>Document</th><th class="num">Signatures</th></tr></thead>
+            <thead><tr><th>Week of</th><th>Document</th><th class="num">Signatures</th><th class="num">Not signed</th></tr></thead>
             <tbody>${groups.map(g => `
               <tr>
                 <td class="when">${esc(dayLabel(g.document.weekOf))}</td>
                 <td>${esc(g.document.title)}</td>
                 <td class="num">${g.signed.length}</td>
+                <td class="num">${(g.outstanding || []).length}</td>
               </tr>`).join('')}
             </tbody>
           </table>
-          ${skipped ? `<p class="none">${skipped} document${skipped === 1 ? '' : 's'} in this range
-            ${skipped === 1 ? 'has' : 'have'} no signatures yet and ${skipped === 1 ? 'is' : 'are'} not included.</p>` : ''}
+          ${skipped ? `<p class="none">${skipped} document${one ? '' : 's'} in this range
+            ${one ? 'has' : 'have'} no signatures and nobody on the roster to sign ${one ? 'it' : 'them'},
+            so ${one ? 'it is' : 'they are'} not included.</p>` : ''}
           ${printFoot()}
         </section>`;
     }
@@ -1549,17 +1606,25 @@
       return out;
     }
 
+    // A sheet has something to say when anybody is on either side of it. A form
+    // nobody has signed yet still prints: the list of who owes it is then the
+    // whole of what there is to know about it. Only a form with no signatures
+    // AND nobody on the roster to sign it would come out blank.
+    const hasNames = g => g.signed.length > 0 || (g.outstanding || []).length > 0;
+
     async function printDocument(id) {
       const g = (state.report || []).find(x => x.document.id === id);
       if (!g) return;
-      if (!g.signed.length) return toast('Nobody has signed this one yet, so there is nothing to print.', true);
+      if (!hasNames(g)) {
+        return toast('Nobody has signed this one and nobody is on the roster to sign it, so there is nothing to print.', true);
+      }
       if (printBusy) return toast('Still preparing the last printout…');
       const w = openPrintWindow('the sign-off sheet');
       if (!w) return;
       printBusy = true;
       try {
         const fresh = await fetchSignOff(id);
-        if (!fresh.signed.length) throw new Error('Nobody has signed this one yet.');
+        if (!hasNames(fresh)) throw new Error('Nobody has signed this one and nobody is on the roster to sign it.');
         const d = fresh.document;
         fillPrintWindow(w, `${d.title} — sign-off sheet — week of ${d.weekOf}`, sheetHTML(fresh, printInfo()));
       } catch (err) {
@@ -1589,10 +1654,10 @@
 
     async function printReport() {
       const all = state.report || [];
-      const groups = all.filter(g => g.signed.length);
+      const groups = all.filter(hasNames);
       if (!groups.length) {
         return toast(all.length
-          ? 'Nobody has signed anything in this range yet, so there is nothing to print.'
+          ? 'Nothing in this range has been signed and nobody is on the roster to sign it, so there is nothing to print.'
           : 'Nothing to print yet.', true);
       }
       if (printBusy) return toast('Still preparing the last printout…');
@@ -1609,8 +1674,8 @@
           printProgress(w, `Preparing ${n} document${n === 1 ? '' : 's'}… ${read} of ${n} read.`);
           return got;
         });
-        const kept = fresh.filter(g => g.signed.length).sort(byWeek);
-        if (!kept.length) throw new Error('Nobody has signed anything in this range yet.');
+        const kept = fresh.filter(hasNames).sort(byWeek);
+        if (!kept.length) throw new Error('Nothing in this range has been signed and nobody is on the roster to sign it.');
         const info  = printInfo();
         const weeks = kept.map(g => g.document.weekOf).sort();
         const title = weeks[0] === weeks[weeks.length - 1]

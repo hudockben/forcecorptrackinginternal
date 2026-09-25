@@ -1701,8 +1701,8 @@ function pageTests() {
   // ── Print / PDF ────────────────────────────────────────────────────────
   // The sheet the safety supervisor uploads to ISNetworld. It has to carry the
   // drawn marks, which the report deliberately does not, so it is built from a
-  // fresh read of each document — and it prints who SIGNED, never the list of
-  // who has not.
+  // fresh read of each document — and it prints who signed and then, in a
+  // section of its own, who has not.
   {
     assert('the page loads the branding its printout is written through',
       page.includes(brandingTag));
@@ -1812,8 +1812,24 @@ function pageTests() {
         assert('  with the mark they drew', html.includes(`src="${PNG}"`));
         assert('  and a signer who drew nothing is said so, rather than left blank',
           /Signed by typed name — no mark drawn/.test(html));
-        assert('who has NOT signed is not on the sheet', !/twhite/.test(html),
-          'the outstanding list is for chasing, not part of the record of who signed');
+        {
+          const table = (/<table>[\s\S]*?<\/table>/.exec(html) || [''])[0];
+          const names = [...((/<ul class="names">([\s\S]*?)<\/ul>/.exec(html) || [])[1] || '')
+            .matchAll(/<li>([^<]*)<\/li>/g)].map(m => m[1]);
+          assert('who has NOT signed is on the sheet too, in a section of its own',
+            /<h2 class="sec">Not signed \(2\)/.test(html) && names.join() === 'dsimmons,twhite',
+            names.join());
+          assert('  kept apart from the signers rather than mixed into their table',
+            !/twhite|dsimmons/.test(table) && !names.includes('jhauser') && !names.includes('mreyes'));
+          assert('  headed by its count, as the signers are by theirs',
+            /<h2 class="sec">Signed \(2\)<\/h2>/.test(html)
+            && /<span class="k">Signatures<\/span><span class="v">2<\/span>/.test(html)
+            && /<span class="k">Not signed<\/span><span class="v">2<\/span>/.test(html));
+          assert('  and saying whose list it is and when it was taken',
+            /on the Safety Center roster who had not signed this document when it was printed/.test(html));
+          assert('the agreed sentence is claimed for the signers, not for everyone listed below it',
+            /Each signer below signed to confirm/.test(html) && !/Each person below/.test(html));
+        }
         assert('the print dialog opens once the sheet has loaded',
           /window\.onload = function \(\) \{ window\.print\(\); \};/.test(html));
         assert('  with a button to open it again that stays off the paper',
@@ -1856,7 +1872,8 @@ function pageTests() {
       const nasty = { ...JESSE, fullName: 'Jesse <img src=x onerror=alert(1)> Hauser' };
       const odd   = { ...MARCO, hasDrawnSignature: true };
       const title = { ...D1, title: 'Trench <script>alert(1)</script>' };
-      const table = { [DOC1]: grp(title, [{ ...nasty, signatureImage: PNG }, { ...odd, signatureImage: 'javascript:alert(1)' }], []) };
+      const login = 'rook<img src=y onerror=alert(2)>';
+      const table = { [DOC1]: grp(title, [{ ...nasty, signatureImage: PNG }, { ...odd, signatureImage: 'javascript:alert(1)' }], [login]) };
       const report = { statement: STATEMENT, documents: [grp(D1, [nasty, odd], [])] };
       const { win } = boot(SUPERVISOR, DOCS_SUPER, report, { detail: detailFrom(table) });
       done.push(new Promise(resolve => setTimeout(async () => {
@@ -1869,6 +1886,8 @@ function pageTests() {
         assert('a name on the sheet is text, never markup',
           html.includes('Jesse &lt;img src=x onerror=alert(1)&gt; Hauser') && !/<img src=x/.test(html));
         assert('  and so is a title', html.includes('Trench &lt;script&gt;') && !/<script>alert\(1\)/.test(html));
+        assert('  and so is a login on the not-signed list',
+          html.includes('<li>rook&lt;img src=y onerror=alert(2)&gt;</li>') && !/<img src=y/.test(html));
         assert('only a PNG mark ever reaches an src',
           !/javascript:alert/.test(html) && /Drawn signature on file — could not be shown here/.test(html));
         resolve();
@@ -1892,6 +1911,26 @@ function pageTests() {
       }, 30)));
     }
 
+    // An empty not-signed list is said in words. On a sheet that goes to an
+    // auditor "nobody is outstanding" is a finding, and a blank would read as
+    // a section that failed to print.
+    {
+      const { win } = boot(SUPERVISOR, DOCS_SUPER, REPORT_P, { detail: detailFrom(DETAIL_P) });
+      done.push(new Promise(resolve => setTimeout(() => {
+        const info = { at: '2026-09-20T12:00:00Z', by: 'dsimmons', company: 'Force Corp' };
+        const all = win.sheetHTML(grp(D1, [JESSE, MARCO, TOM], []), info);
+        assert('a sheet everybody has signed says so under Not signed',
+          /<h2 class="sec">Not signed \(0\)/.test(all)
+          && /everyone on the Safety Center roster has signed this document/.test(all)
+          && !/<ul class="names">/.test(all));
+        const none = win.sheetHTML({ ...grp(D1, [JESSE], []), expectedCount: 0 }, info);
+        assert('  while with nobody on the roster it does not claim that everyone has',
+          /Nobody is on the Safety Center roster to sign this document/.test(none)
+          && !/everyone on the Safety Center roster has signed/.test(none));
+        resolve();
+      }, 30)));
+    }
+
     // Print all.
     {
       const { win, doc, calls } = boot(SUPERVISOR, DOCS_SUPER, REPORT_P, { detail: detailFrom(DETAIL_P) });
@@ -1904,19 +1943,30 @@ function pageTests() {
         await settle(40);
         const html = popups[0] ? popups[0].html : '';
         const reads = detailReads(calls.slice(before));
-        assert('Print all reads each signed document afresh',
-          reads.slice().sort().join() === [DOC1, DOC2].sort().join(), reads.join());
-        assert('  skipping the one nobody has signed', !reads.includes(DOC3));
-        assert('  behind a contents page that says it was left out',
-          /Safety sign-off report/.test(html) && /1 document in this range\s+has no signatures yet/.test(html));
+        assert('Print all reads every document afresh',
+          reads.slice().sort().join() === [DOC1, DOC2, DOC3].sort().join(), reads.join());
+        assert('  the one nobody has signed included, since the whole roster still owes it',
+          reads.includes(DOC3) && !/not included/.test(html));
+        {
+          const contents = (/<section class="sheet">[\s\S]*?<\/section>/.exec(html) || [''])[0];
+          const rows = [...contents.matchAll(
+            /<td>([^<]*)<\/td>\s*<td class="num">(\d+)<\/td>\s*<td class="num">(\d+)<\/td>/g)]
+            .map(m => `${m[1]} ${m[2]}/${m[3]}`);
+          assert('  behind a contents page counting who signed each one and who has not',
+            /Safety sign-off report/.test(contents) && /<th class="num">Not signed<\/th>/.test(contents)
+            && rows.join(' | ') === 'Tailgate — Silica 0/4 | Tailgate — Heat Illness 1/3 | Tailgate — Trenching 2/2',
+            rows.join(' | '));
+        }
         const h1s = [...html.matchAll(/<h1>([^<]*)<\/h1>/g)].map(m => m[1]);
         assert('  then a sheet for each, oldest week first',
-          h1s.join(' | ') === 'Weeks of Sep 7, 2026 – Sep 14, 2026 | Tailgate — Heat Illness | Tailgate — Trenching',
+          h1s.join(' | ') === 'Weeks of Aug 31, 2026 – Sep 14, 2026 | Tailgate — Silica | Tailgate — Heat Illness | Tailgate — Trenching',
           h1s.join(' | '));
         assert('  carrying every signature in the range',
           /Jesse Hauser/.test(html) && /Marco Reyes/.test(html) && /Tom White/.test(html));
+        assert('  and on each sheet, the names still owed',
+          ['Not signed (4)', 'Not signed (3)', 'Not signed (2)'].every(t => html.includes(`<h2 class="sec">${t}`)));
         assert('  saved under the range it covers',
-          titleOf(html) === 'Safety sign-offs — 2026-09-07 to 2026-09-14', titleOf(html));
+          titleOf(html) === 'Safety sign-offs — 2026-08-31 to 2026-09-14', titleOf(html));
         resolve();
       }, 30)));
     }
@@ -1974,11 +2024,6 @@ function pageTests() {
         assert('  and reads nothing it has nowhere to put', detailReads(calls.slice(before)).length === 0);
 
         const popups = popupsOn(win);
-        win.printDocument(DOC3);
-        await settle();
-        assert('a document nobody has signed opens no window', popups.length === 0, String(popups.length));
-        assert('  and says why', /nothing to print/.test(toastText()), toastText());
-
         win.printDocument(DOC2);
         await settle();
         assert('a failed read closes the window rather than printing an empty sheet',
@@ -1989,6 +2034,74 @@ function pageTests() {
         await settle(40);
         assert('Print all never prints a report with a document silently missing from it',
           popups.length === 2 && popups[1].closed && !/class="sheet"/.test(popups[1].html));
+        resolve();
+      }, 30)));
+    }
+
+    // A document nobody has signed yet still prints: who owes it is then the
+    // whole of what there is to know about it.
+    {
+      const { win, calls } = boot(SUPERVISOR, DOCS_SUPER, REPORT_P, { detail: detailFrom(DETAIL_P) });
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('report');
+        await settle();
+        const popups = popupsOn(win);
+        const before = calls.length;
+        win.printDocument(DOC3);
+        await settle();
+        const html  = popups[0] ? popups[0].html : '';
+        const names = [...((/<ul class="names">([\s\S]*?)<\/ul>/.exec(html) || [])[1] || '')
+          .matchAll(/<li>([^<]*)<\/li>/g)].map(m => m[1]);
+        assert('a document nobody has signed still prints, from a fresh read',
+          popups.length === 1 && detailReads(calls.slice(before)).join() === DOC3,
+          `${popups.length} window(s), read ${detailReads(calls.slice(before)).join()}`);
+        assert('  saying nobody has signed it, rather than drawing an empty table of signers',
+          /<h2 class="sec">Signed \(0\)<\/h2>/.test(html)
+          && /Nobody has signed this document\./.test(html) && !/<table>/.test(html));
+        assert('  then listing the whole roster as not signed',
+          /<h2 class="sec">Not signed \(4\)/.test(html) && names.join() === 'dsimmons,jhauser,mreyes,twhite',
+          names.join());
+        assert('  and claiming nobody agreed to the statement', !html.includes(STATEMENT));
+        resolve();
+      }, 30)));
+    }
+
+    // With nobody on the roster, a document nobody has signed has nothing on
+    // either side of its sheet — the one case still left with nothing to print.
+    {
+      const bare   = (d, signed) => ({ ...grp(d, signed, []), expectedCount: 0 });
+      const report = { statement: STATEMENT, documents: [bare(D1, [JESSE]), bare(D2, [TOM]), bare(D3, [])] };
+      const table  = { [DOC1]: bare(D1, [JESSE]), [DOC2]: bare(D2, [TOM]), [DOC3]: bare(D3, []) };
+      const { win, doc, calls } = boot(SUPERVISOR, DOCS_SUPER, report, { detail: detailFrom(table) });
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('report');
+        await settle();
+        const toastEl = doc.getElementById('toast');
+        const popups  = popupsOn(win);
+
+        toastEl.textContent = '';
+        win.printDocument(DOC3);
+        await settle();
+        assert('a document with nobody on either side opens no window', popups.length === 0, String(popups.length));
+        assert('  and says why', /nothing to print/.test(toastEl.textContent), toastEl.textContent);
+
+        const before = calls.length;
+        win.printReport();
+        await settle(40);
+        const html = popups[0] ? popups[0].html : '';
+        assert('Print all leaves such a document out',
+          popups.length === 1 && !detailReads(calls.slice(before)).includes(DOC3) && !/Tailgate — Silica/.test(html),
+          detailReads(calls.slice(before)).join());
+        assert('  and its contents page says so',
+          /1 document in this range\s+has no signatures and nobody on the roster to sign it,\s+so it is not included/.test(html),
+          (/<p class="none">[\s\S]*?<\/p>/.exec(html) || ['no note'])[0]);
+
+        win.eval('state.report = state.report.filter(g => !g.signed.length)');
+        toastEl.textContent = '';
+        win.printReport();
+        await settle(40);
+        assert('a range with nothing on either side opens no window', popups.length === 1, String(popups.length));
+        assert('  and says why', /nothing to print/.test(toastEl.textContent), toastEl.textContent);
         resolve();
       }, 30)));
     }
