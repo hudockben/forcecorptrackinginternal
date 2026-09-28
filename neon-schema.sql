@@ -2481,3 +2481,41 @@ CREATE INDEX IF NOT EXISTS idx_safety_sig_company_doc
     ON safety_signatures(company_code, document_id, signed_at);
 CREATE INDEX IF NOT EXISTS idx_safety_sig_company_user
     ON safety_signatures(company_code, user_id, signed_at DESC);
+
+-- ─────────────────────────────────────────────────
+-- NIGHTLY BACKUP OF app_data  (api/cron/data-backup.js)
+-- ─────────────────────────────────────────────────
+-- A copy of every app_data record as it stood each night, kept for 30 days.
+-- In September a failed read saved empty turf lists over the real ones, and
+-- nothing held an earlier copy that reached back far enough to restore them.
+--
+-- One row per record per night it CHANGED, so a record left alone for a month
+-- is stored once. A record's state on any night in the window is its newest
+-- row on or before that night. Pruning keeps each record's newest row from
+-- before the window, because that is still its state at the window's start.
+CREATE TABLE IF NOT EXISTS app_data_backups (
+    key               TEXT        NOT NULL,
+    backup_date       DATE        NOT NULL,
+    company_code      TEXT        NOT NULL,
+    value             JSONB,
+    -- md5 of value::text. jsonb prints keys in a fixed order, so an unchanged
+    -- record always hashes the same.
+    value_hash        TEXT        NOT NULL,
+    source_updated_at TIMESTAMPTZ,
+    captured_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (key, backup_date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_data_backups_company
+    ON app_data_backups (company_code, backup_date DESC);
+
+-- How many entries each watched list held each night. The morning check
+-- compares tonight's counts with the last night's and emails when a list
+-- empties or loses half of itself.
+CREATE TABLE IF NOT EXISTS data_watch_counts (
+    company_code TEXT    NOT NULL,
+    day          DATE    NOT NULL,
+    measure      TEXT    NOT NULL,
+    n            INTEGER NOT NULL,
+    PRIMARY KEY (company_code, day, measure)
+);
