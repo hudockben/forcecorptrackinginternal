@@ -467,6 +467,20 @@
     .li-rate::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
     .li-rate:focus { border-color: #2563eb; box-shadow: 0 0 0 1px #2563eb33; }
     .li-rate::placeholder { color: #5b6270; }
+    /* What a customer's past rows were billed at, offered beside an empty
+       rate box rather than written inside it. It used to be the box's
+       placeholder, and a gray 115 in a box reads as a saved 115 — 26
+       customers sat like that looking priced, and nothing ever filled from
+       one, because nothing reads a placeholder. Dashed and italic so it reads
+       as a suggestion, and a button because taking it is the obvious next step. */
+    .li-usual {
+      flex: none; margin-left: 0.4rem; padding: 0.06rem 0.34rem;
+      background: none; border: 1px dashed var(--border); border-radius: 3px;
+      color: var(--muted); font-family: inherit; font-size: 0.62rem;
+      font-style: italic; font-variant-numeric: tabular-nums;
+      white-space: nowrap; cursor: pointer;
+    }
+    .li-usual:hover { color: var(--text); border-color: #2563eb; }
     /* A unit is three facts — what it is called, the number painted on it and
        what kind of truck it is — and all three were read-only text until the
        only way to fix a typo was to delete the unit and add it again, which
@@ -2738,6 +2752,30 @@
         ? `<div class="lists-note">${esc(_listsNote)}</div>`
         : '';
 
+      /* What a rate just filled in. Says how far back it reached, because
+         filling a row from an earlier year moves that year's revenue — the
+         one thing worth checking before the bar goes away. */
+      const rateFillSaid = u => {
+        const n    = u.rows.length;
+        const one  = n === 1;
+        const year = String(new Date().getFullYear());
+        const old  = u.rows.filter(r => /^\d{4}/.test(r.date) && r.date.slice(0, 4) < year).length;
+        const rows = `<strong>${n} ${u.name ? esc(u.name) + ' ' : ''}row${one ? '' : 's'}</strong>`;
+        const lead = u.fromHistory
+          ? `Saved ${u.fromHistory} rate${u.fromHistory === 1 ? '' : 's'} from past rows and filled ${
+              u.fromHistory === 1 ? 'it' : 'them'} into ${rows}`
+          : u.rate
+          ? `Filled <strong>$${esc(u.rate)}/hr</strong> into ${rows}`
+          : `Filled each customer's saved rate into ${rows}`;
+        const back = old ? (one ? ` — dated before ${year}` : ` — ${old} of them dated before ${year}`) : '';
+        const left = u.skipped
+          ? ` ${u.skipped} more with no fee ${u.skipped === 1 ? 'is' : 'are'} already invoiced and ${
+              u.skipped === 1 ? 'was' : 'were'} left alone.`
+          : '';
+        return `${lead} that had no fee and ${one ? "isn't" : "aren't"} invoiced yet${back}.${left}`
+          + ` Undo empties ${one ? 'it' : 'them'} again; the rate${u.rate ? ' stays' : 's stay'}.`;
+      };
+
       const undoHTML = () => {
         const u = _listsUndo;
         if (!u) return '';
@@ -2752,6 +2790,8 @@
           ? `Merged <strong>${esc(u.from)}</strong> into <strong>${esc(u.to)}</strong> — ${
               u.ids.length ? `${u.ids.length} row${u.ids.length === 1 ? '' : 's'} renamed` : 'no rows to rename'
             }${u.locked ? `, ${u.locked} payroll row${u.locked === 1 ? '' : 's'} left alone (fix ${u.locked === 1 ? 'it' : 'those'} in Payroll)` : ''}.`
+          : u.kind === 'ratefill'
+          ? rateFillSaid(u)
           : `Removed <strong>${esc(u.value)}</strong>${
               u.uses
                 ? ` — ${u.uses} row${u.uses === 1 ? '' : 's'} keep it and still total the same.`
@@ -3035,11 +3075,28 @@
         // Counted over the whole list, not the filtered view: it is one action
         // on every blank rate, and a filter is only how you are looking.
         const fillable = all.filter(c => !customerRate(c) && _historicRate(c));
+        // Rows a rate already saved would fill — the same rules as a save.
+        const waiting  = _customersAwaitingRate();
+        const waitRows = waiting.reduce((t, c) => t + c.rows, 0);
+        const links = [];
+        if (fillable.length) links.push(`
+              <button class="lists-link" onclick="fillRatesFromHistory()"
+                title="Saves each blank rate as the fee that customer's own rows are billed at most often, and fills it into their rows that have no fee and aren't invoiced yet">
+                Fill ${fillable.length} blank rate${fillable.length === 1 ? '' : 's'} from past rows
+              </button>`);
+        if (waitRows) links.push(`
+              <button class="lists-link" onclick="fillFeesFromRates()"
+                title="${esc(waiting.map(c => `${c.name}: ${c.rows}`).join(', '))} — fills each customer's saved rate into its rows that have no fee and aren't invoiced yet">
+                Fill ${waitRows} blank Haul Fee${waitRows === 1 ? '' : 's'} from saved rates
+              </button>`);
         return `
         <div class="lists-section">
           <div class="lists-hint">
-            The rate fills in a row's Haul Fee once you name the customer. A row that
-            already has a fee is left alone. Two spellings of one company?
+            The rate fills in a row's Haul Fee once you name the customer. Saving one
+            also fills it into that customer's rows that have no fee and aren't
+            invoiced yet. A row that already has a fee is left alone. A
+            <em>usually</em> figure is only what past rows billed — it isn't a rate
+            until you click it or type one. Two spellings of one company?
             <strong>&#8676;</strong> folds one into the other and renames its rows.
           </div>
           <div class="lists-add-row">
@@ -3049,12 +3106,8 @@
               placeholder="rate" title="Rate — optional" onkeydown="if(event.key==='Enter')addToList('customers')">
             <button class="lists-add-btn" onclick="addToList('customers')">Add</button>
           </div>
-          ${fillable.length ? `
-            <div class="lists-hint" style="margin-bottom:0.5rem">
-              <button class="lists-link" onclick="fillRatesFromHistory()"
-                title="Sets each blank rate to the fee that customer's own rows are billed at most often">
-                Fill ${fillable.length} blank rate${fillable.length === 1 ? '' : 's'} from past rows
-              </button>
+          ${links.length ? `
+            <div class="lists-hint" style="margin-bottom:0.5rem">${links.join(' &middot; ')}
             </div>` : ''}
           <div class="lists-items">
             ${items.length === 0
@@ -3063,13 +3116,20 @@
                   if (merging('customers', c)) return mergeForm('customers', c);
                   const rate = customerRate(c);
                   const past = rate ? '' : _historicRate(c);
+                  // An empty box always says "rate", so it reads as empty; the
+                  // suggestion sits before it, where it cannot pass for a saved
+                  // number. Before rather than after, so the boxes still line up
+                  // down the column whether a row has one or not.
                   return `
                   <div class="lists-item">
                     <span class="li-name" title="${esc(c)}">${esc(c)}</span>
                     ${countChip('customers', c)}
+                    ${past ? `<button class="li-usual"
+                      onclick="updateCustomerRate('${argEsc(c)}', '${argEsc(past)}')"
+                      title="Not saved — ${esc(c)}'s past rows are usually billed at ${esc(past)}. Click to save it as the rate.">usually ${esc(past)}</button>` : ''}
                     <input type="number" class="li-rate" step="0.01" min="0"
-                      value="${esc(rate)}" placeholder="${past ? esc(past) : 'rate'}"
-                      title="${past ? 'Usually billed at ' + esc(past) + ' on past rows' : 'Rate this customer is billed at'}"
+                      value="${esc(rate)}" placeholder="rate"
+                      title="${rate ? 'Rate this customer is billed at' : 'No rate saved yet — type one to save it'}"
                       onchange="updateCustomerRate('${argEsc(c)}', this.value)">
                     ${mergeBtn('customers', c)}
                     ${delBtn('customers', c)}
@@ -3227,11 +3287,18 @@
       // side by side, and typing the name only to go find it again in the list
       // below is the long way round.
       const rateInp = key === 'customers' ? document.getElementById('lists-new-customers-rate') : null;
-      if (val && rateInp && rateInp.value.trim()) setCustomerRate(val, rateInp.value);
+      const rated = !!(val && rateInp && rateInp.value.trim()) && setCustomerRate(val, rateInp.value);
       if (rateInp) rateInp.value = '';
       if (!val || divTruckLists[key].includes(val)) {
         inp.value = '';
-        if (key === 'customers') { saveTruckLists(); renderListsPanel(); }
+        if (key === 'customers') {
+          // A name already on the list: what was typed beside it is its rate,
+          // saved like any other, rows and all.
+          const moved = rated ? _rateFillAfterSave([val]) : 0;
+          saveTruckLists();
+          renderListsPanel();
+          if (moved) renderTrackingTab();
+        }
         return;
       }
       // Typing a name back in is how a deleted one comes back.
@@ -3239,6 +3306,9 @@
       _listsUndo = null;
       divTruckLists[key].push(val);
       divTruckLists[key].sort((a, b) => a.localeCompare(b));
+      // After the bar is cleared for the new name, so the fill can put up its
+      // own. A name typed back in can have rows waiting on it.
+      if (rated) _rateFillAfterSave([val]);
       saveTruckLists();
       inp.value = '';
       renderListsPanel();
@@ -3310,6 +3380,7 @@
       if (u.kind === 'merge') _undoMerge(u);
       else if (u.kind === 'rename') _undoRename(u);
       else if (u.kind === 'notdriver') restoreLoginCandidate(u.value);
+      else if (u.kind === 'ratefill') _undoRateFill(u);
       else restoreToList(u.key, u.value);
     }
 
@@ -3420,22 +3491,203 @@
     /** Rate box beside a customer. Blank clears it. */
     function updateCustomerRate(name, value) {
       if (!setCustomerRate(name, value)) return;
+      const moved = _rateFillAfterSave([name]);
       saveTruckLists();
       renderListsPanel();
+      if (moved) renderTrackingTab();
     }
 
     /** Fill every blank rate from what that customer's own rows are billed at
      *  most often. The alternative is reading it off 1,944 rows by eye. */
     function fillRatesFromHistory() {
-      let filled = 0;
+      const saved = [];
       (divTruckLists.customers || []).forEach(c => {
         if (customerRate(c)) return;              // never overwrite a rate someone set
         const past = _historicRate(c);
-        if (past && setCustomerRate(c, past)) filled++;
+        if (past && setCustomerRate(c, past)) saved.push(c);
       });
-      if (!filled) return;
+      if (!saved.length) return;
+      const moved = _rateFillAfterSave(saved, { fromHistory: true });
       saveTruckLists();
       renderListsPanel();
+      if (moved) renderTrackingTab();
+    }
+
+    /* ── Filling a saved rate into the rows that have none ──
+       A rate used to reach a row at one moment only: when somebody named the
+       customer on it. Saving or correcting a rate changed the list and nothing
+       else, so every row already carrying that customer with no fee stayed at
+       $0 until it was typed in by hand — and a payroll row could never get it
+       at all, because its Customer cell is locked and naming the customer is
+       the only thing that ever read a rate onto a row.
+
+       So saving a rate now fills it into that customer's rows, on two
+       conditions that keep it from restating anything billed:
+         - the Haul Fee is blank. A fee on the row — typed, priced by payroll,
+           or a deliberate $0 — is left alone, the rule the rate has always
+           followed.
+         - nothing on the row says it was invoiced: no QB invoice number, no
+           invoiced, sent or paid date, not marked Paid or Partial. A haul that
+           has gone out on an invoice is not repriced from a list, blank or not.
+
+       A payroll row is priced through its backup fee, exactly as if somebody
+       typed the number into the box on it: payroll still owns the fee, and the
+       row says "set here" until payroll adopts it (see BACKUP HAUL FEE).
+
+       Everything it wrote is on the panel's Undo bar, which empties those rows
+       again and leaves the rate saved. While that bar is up, saving the same
+       customer's rate again replaces the fill instead of stacking on it — so
+       correcting a mistyped 1155 to 115 corrects the rows it just priced,
+       where they would otherwise go on billing the typo as a fee that was
+       "already on the row". */
+
+    /** Has anything about invoicing been recorded on this row? */
+    function _rowInvoiced(e) {
+      const st = String(e.invoice_status == null ? '' : e.invoice_status).trim().toLowerCase();
+      if (st === 'paid' || st === 'partial') return true;
+      return ['qb_invoice', 'invoiced_date', 'invoice_sent_date', 'date_paid']
+        .some(f => String(e[f] == null ? '' : e[f]).trim() !== '');
+    }
+
+    const _feeBlank = e => String(e.haul_fee == null ? '' : e.haul_fee).trim() === '';
+
+    /** Fill one customer's saved rate into its unpriced, uninvoiced rows.
+     *  Returns { rows: [{ id, customer, value, date }], skipped } — `value` is
+     *  what was written, so an undo can tell it from a fee typed since, and
+     *  `skipped` counts the blank rows left alone because they are invoiced. */
+    function _fillRateIntoRows(name) {
+      const out  = { rows: [], skipped: 0 };
+      const k    = _rateKey(name);
+      const rate = customerRate(name);
+      // Through the fee gate the server applies. The list keeps anything
+      // parseFloat reads, and "121/hr" is not a price the server would store.
+      const fee  = _feeVal(rate);
+      if (!k || fee === null || fee === '') return out;
+      divEntries.forEach(e => {
+        if (!e || _rateKey(e.customer) !== k || !_feeBlank(e)) return;
+        if (_rowInvoiced(e)) { out.skipped++; return; }
+        let value;
+        if (isPayrollRowId(e.id)) {
+          e.haul_fee_override = fee;
+          _applyBackupFee(e);
+          value = fee;
+        } else {
+          e.haul_fee = rate;                     // stored as updateField stores it
+          value = rate;
+        }
+        _syncRowTotal(e);
+        out.rows.push({ id: e.id, customer: e.customer, value, date: String(e.actual_date || '') });
+      });
+      return out;
+    }
+
+    /** Empty the rows a fill wrote, where they still hold what it wrote and
+     *  still are not invoiced. Returns how many it emptied. */
+    function _revertRateFill(rows) {
+      const want = new Map((rows || []).map(r => [r.id, r]));
+      let n = 0;
+      divEntries.forEach(e => {
+        const r = e && want.get(e.id);
+        if (!r || _rowInvoiced(e)) return;
+        if (isPayrollRowId(e.id)) {
+          if (!_hasBackupFee(e) || !_sameFee(e.haul_fee_override, r.value)) return;
+          e.haul_fee_override = '';
+          _applyBackupFee(e);
+        } else {
+          if (String(e.haul_fee == null ? '' : e.haul_fee) !== String(r.value)) return;
+          e.haul_fee = '';
+        }
+        _syncRowTotal(e);
+        n++;
+      });
+      return n;
+    }
+
+    /**
+     * After a rate is saved: fill it into the rows, and say what happened on
+     * the panel. `names` are the customers whose rate just changed. Returns
+     * how many rows moved, so the caller knows to redraw the table.
+     */
+    function _rateFillAfterSave(names, opts = {}) {
+      const keys = new Set(names.map(_rateKey).filter(Boolean));
+      let moved = 0, emptied = 0;
+      // The fill still on the bar, if it priced any of these customers' rows:
+      // what it wrote comes back off first, and the bar goes over to this save.
+      const prev = (_listsUndo && _listsUndo.kind === 'ratefill') ? _listsUndo : null;
+      if (prev && prev.rows.some(r => keys.has(_rateKey(r.customer)))) {
+        emptied = _revertRateFill(prev.rows.filter(r => keys.has(_rateKey(r.customer))));
+        moved += emptied;
+        _listsUndo = null;
+      }
+      const rows = [];
+      let skipped = 0;
+      names.forEach(n => {
+        const got = _fillRateIntoRows(n);
+        rows.push(...got.rows);
+        skipped += got.skipped;
+      });
+      moved += rows.length;
+      _listsNote = '';
+      if (rows.length) {
+        _listsUndo = {
+          kind: 'ratefill', rows, skipped,
+          // One customer is named on the bar with its rate; a batch is counted.
+          name: names.length === 1 ? String(names[0]).trim() : '',
+          rate: names.length === 1 ? customerRate(names[0]) : '',
+          fromHistory: opts.fromHistory ? names.length : 0,
+        };
+      } else if (skipped) {
+        // Said, because a blank row that stays blank after its customer got a
+        // rate is exactly the thing somebody comes asking about.
+        const one = skipped === 1;
+        _listsNote = (names.length === 1
+          ? `${skipped} of ${String(names[0]).trim()}'s rows with no fee ${one ? 'is' : 'are'} already invoiced, so the rate was not`
+          : `${skipped} row${one ? '' : 's'} with no fee ${one ? 'is' : 'are'} already invoiced, so the rates were not`)
+          + ` filled into ${one ? 'it' : 'them'}. Type the fee on the row if it should bill.`;
+      } else if (emptied) {
+        _listsNote = `Emptied the ${emptied} row${emptied === 1 ? '' : 's'} the last rate had just filled.`;
+      }
+      return moved;
+    }
+
+    function _undoRateFill(u) {
+      const n = _revertRateFill(u.rows);
+      saveTruckLists();
+      renderListsPanel();
+      if (n) renderTrackingTab();
+    }
+
+    /** The customers whose saved rate some blank, uninvoiced row is still
+     *  waiting on, by the spelling the rate is stored under. A rate saved
+     *  before saving one filled anything left its rows blank, and so does a
+     *  row that goes blank later — typing the same rate again is not a change,
+     *  so without this there would be no way to reach either. */
+    function _customersAwaitingRate() {
+      const rates = divTruckLists.rates || {};
+      const byKey = new Map();
+      Object.keys(rates).forEach(n => {
+        const f = _feeVal(rates[n]);
+        if (f !== null && f !== '') byKey.set(_rateKey(n), n);
+      });
+      const out = new Map();   // key → { name, rows }
+      divEntries.forEach(e => {
+        const k = e && _rateKey(e.customer);
+        if (!k || !byKey.has(k) || !_feeBlank(e) || _rowInvoiced(e)) return;
+        const hit = out.get(k) || { name: byKey.get(k), rows: 0 };
+        hit.rows++;
+        out.set(k, hit);
+      });
+      return [...out.values()];
+    }
+
+    /** Fill every saved rate into the rows still waiting on one. */
+    function fillFeesFromRates() {
+      const names = _customersAwaitingRate().map(c => c.name);
+      if (!names.length) return;
+      const moved = _rateFillAfterSave(names);
+      saveTruckLists();
+      renderListsPanel();
+      if (moved) renderTrackingTab();
     }
 
     /* ── Merging two spellings of the same thing ──
@@ -4228,7 +4480,13 @@
         : e.haul_fee;
       const v = _feeVal(e.haul_fee_override);
       if (v === null || v === '' || _sameFee(v, payroll)) {
-        delete e.haul_fee_override;
+        // Blank, not deleted. The save guard replays only the columns a save
+        // CARRIES and reads a missing one as "no opinion" — so deleting the
+        // override told the server to keep the one it already had, and a fee
+        // cleared here (the "set here" link, an emptied box) came back on the
+        // next load. '' is the answer "none"; the server settles it into the
+        // same row this is, and hands the row back without the key.
+        e.haul_fee_override = '';
         delete e.haul_fee_payroll;
         e.haul_fee = payroll == null ? '' : payroll;
       } else {

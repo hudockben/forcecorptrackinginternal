@@ -76,6 +76,14 @@ const ROWEDIT = slice(TRUCKING, '    /** Re-total a row and keep',
 // including the helpers that read a sign-in against the drivers list, which
 // the drivers section and the tab strip both call.
 const RENDER  = slice(TRUCKING, '    /* \u2500\u2500 Reading a sign-in against the drivers list', '    function schedSave()', 'panel render');
+// Saving a rate fills it into the rows that have none, and a payroll row takes
+// it through the backup fee — so the fee gate and the backup-fee helpers come
+// along with the panel. Ends before the Customer cell's pooled line, which is
+// rendering, not rules. scripts/test-truck-rate-fill.js holds the fill itself.
+const BACKUPFEE = slice(TRUCKING, '    /* \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\n       BACKUP HAUL FEE',
+                                  '    /* \u2500\u2500 The pooled name on a Customer cell',
+                                  'the fee gate + the backup fee',
+                                  ['function _feeVal', 'function _applyBackupFee', 'function clearBackupFee']);
 
 // The Manage Lists panel now carries an Intercompany Rollup tab, so the
 // pooling rule comes along with the panel it is part of rather than being
@@ -131,8 +139,8 @@ function newPage(state) {
     labor:    { loaded: false, assignments: {} },
   };
   vm.createContext(sandbox);
-  evalSlice(POOL + '\n' + HELPERS + '\n' + PANEL + '\n' + ROWEDIT, sandbox,
-           'the pool + list helpers + the panel + the row editor', { filename: 'trucking.html' });
+  evalSlice(POOL + '\n' + HELPERS + '\n' + PANEL + '\n' + ROWEDIT + '\n' + BACKUPFEE, sandbox,
+           'the pool + list helpers + the panel + the row editor + the backup fee', { filename: 'trucking.html' });
   return sandbox;
 }
 
@@ -164,8 +172,8 @@ function renderPanel(state, drive) {
     },
   };
   vm.createContext(sandbox);
-  evalSlice(POOL + '\n' + HELPERS + '\n' + RENDER + '\n' + ROWEDIT, sandbox,
-           'the pool + list helpers + the render + the row editor', { filename: 'trucking.html' });
+  evalSlice(POOL + '\n' + HELPERS + '\n' + RENDER + '\n' + ROWEDIT + '\n' + BACKUPFEE, sandbox,
+           'the pool + list helpers + the render + the row editor + the backup fee', { filename: 'trucking.html' });
   if (drive) drive(sandbox);
   sandbox.renderListsPanel();
   return { html, tabs: tabsHtml, page: sandbox };
@@ -742,8 +750,13 @@ const freshLists = () => ({
       html.includes('Kovalchick') && !html.includes('Barr, Michael'),
       html.replace(/\s+/g, ' ').slice(0, 200));
     assert('a stored rate shows in its box', /class="li-rate"[^>]*value="121"/.test(html), );
+    // Beside the box, never inside it: a gray 115 in the box read as a saved
+    // rate, and nothing fills a row from a placeholder.
     assert('a customer with no rate offers the one its rows bill at',
-      /placeholder="115"/.test(html), html.slice(html.indexOf('Kovalchick') - 300, html.indexOf('Kovalchick') + 300));
+      /class="li-usual"[\s\S]{0,400}>usually 115<\/button>/.test(html),
+      html.slice(html.indexOf('Kovalchick') - 300, html.indexOf('Kovalchick') + 300));
+    assert('and its empty box reads as empty',
+      !/placeholder="115"/.test(html) && /class="li-rate"[^>]*value=""[^>]*placeholder="rate"/.test(html));
     assert('each name says how many rows use it', /class="li-count"[^>]*>2</.test(html));
     assert('and the blank rates can be filled from those rows in one click',
       /fillRatesFromHistory\(\)/.test(html));

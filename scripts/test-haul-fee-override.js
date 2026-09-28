@@ -410,9 +410,23 @@ function rowCells(doc, id) {
     // Clearing it.
     page.clearBackupFee('tst-42-row');
     assert('clearing the box takes payroll\'s number back', page.divEntries[0].haul_fee === 115);
-    assert('and drops the receipt', !(HAUL_FEE_OVERRIDE in page.divEntries[0]));
+    assert('and drops the receipt', !(HAUL_FEE_PAYROLL in page.divEntries[0]));
+    // Blank, not deleted: the guard reads a column a save leaves off as "no
+    // opinion", so a deleted override was the server's cue to keep the one it
+    // had — and the fee cleared here came back on the next load.
+    assert('the override is sent as a blank answer, not left off',
+      page.divEntries[0][HAUL_FEE_OVERRIDE] === '', JSON.stringify(page.divEntries[0]));
     assert('the box shows it', doc.getElementById('th-fee-tst-42-row').value === '115');
     assert('and the note is gone', doc.getElementById('fee-ovr-tst-42-row').innerHTML === '');
+    {
+      // The save that carries it, against the server's copy that still has
+      // the override standing.
+      const srvRow = { ...page.divEntries[0], haul_fee: 135, haul_fee_override: 135, haul_fee_payroll: 115 };
+      const [kept] = mergeInjectedRows([srvRow], [JSON.parse(JSON.stringify(page.divEntries[0]))], TRUCK);
+      assert('and the server takes the clear rather than keeping its override',
+        kept.haul_fee === 115 && !(HAUL_FEE_OVERRIDE in kept) && !(HAUL_FEE_PAYROLL in kept),
+        JSON.stringify(kept));
+    }
 
     // Junk is refused rather than saved — the server would drop it, and a fee
     // that vanishes on the next load is the failure this is meant to prevent.
