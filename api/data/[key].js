@@ -19,6 +19,12 @@ const {
 } = require('../lib/auth');
 
 const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders', 'fct_presence', 'fct_trucking', 'fct_inventory', 'fct_scale_manual', 'fct_soe_units', 'fct_truck_division', 'fct_truck_division_lists', 'fct_trucking_schedule', 'fct_trucking_labor_schedule'];
+// The divisions' pick-list blobs: one object holding the employee roster, the
+// equipment list, suppliers, cost codes and the rest, each as an array. A PUT
+// may not empty any of those arrays that holds more than one entry — see the
+// list-wipe check in the PUT handler.
+const LIST_BLOB_KEYS = new Set(['fct_lists', 'fct_paving_lists', 'fct_kiewit_lists']);
+
 // The only prefixes /api/data/_keys will enumerate. Keeping this to the three
 // project-blob prefixes is what stops it becoming a general key scanner.
 const KEY_SCAN_PREFIXES = ['fct_project_', 'fct_paving_project_', 'fct_kiewit_project_'];
@@ -244,6 +250,31 @@ module.exports = async (req, res) => {
           error: 'Refusing to wipe data',
           detail: `Cannot replace ${prev.length} items in "${key}" with an empty array. Pass ?force=1 to override.`,
         });
+      }
+    }
+
+    // The same protection one level down, for the pick-list blobs. Those are
+    // objects, so the check above never saw them — and a turf page whose read
+    // of fct_lists failed would save its empty defaults straight over the
+    // company's employees, equipment and suppliers. A list holding more than
+    // one entry cannot be emptied, or dropped, by a whole-blob save. That also
+    // stops a tab still running the old page. Removing entries one at a time
+    // still works, as it does above.
+    if (LIST_BLOB_KEYS.has(key) && req.query.force !== '1') {
+      const prev = await _loadPrev();
+      if (prev && typeof prev === 'object' && !Array.isArray(prev)) {
+        const next = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+        const wiped = Object.keys(prev).filter(k =>
+          Array.isArray(prev[k]) && prev[k].length > 1
+          && !(Array.isArray(next[k]) && next[k].length > 0));
+        if (wiped.length) {
+          const named = wiped.map(k => `${k} (${prev[k].length})`).join(', ');
+          console.warn(`[data] refused list wipe for ${scopedKey}: ${named}`);
+          return res.status(409).json({
+            error: 'Refusing to wipe lists',
+            detail: `Cannot empty ${named} in "${key}". Pass ?force=1 to override.`,
+          });
+        }
       }
     }
 
