@@ -27,7 +27,7 @@
 
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('../lib/auth');
-const { readEmployeeRoster } = require('../lib/roster');
+const { readPeopleRoster } = require('../lib/roster');
 const { readEquipmentRoster } = require('../lib/equipment');
 
 // Same "live job" definition the Timesheet job picker uses; empty/missing
@@ -286,18 +286,38 @@ function plannedAssignmentsFromSchedule(ppSchedule, todayStr, job) {
 
 // The same roster the "Manage employees" list shows — the canonical table plus
 // the paving, kiewit and quarry lists. One definition, in api/lib/roster.js.
+//
+// As PEOPLE, each once: a login's role row folds into the person it names (see
+// foldLoginRows), so Aaron Todd is not also on the board as "toddaaron" —
+// counted twice as crew and never caught double-booked across the two names.
+// Which login went to whom rides along for the page, which moves bookings made
+// under a login name across once the scheduler has seen the pairs, and lets an
+// admin say who a login is where the name could not. A login an admin said is
+// nobody on the crew is left off the crew list altogether.
 async function readEmployees(sql, companyCode) {
   try {
-    const rows = await readEmployeeRoster(sql, companyCode);
-    return rows.map(r => ({
-      name: (r.name || '').trim(),
-      jobClass: r.job_class || '',
-      // The explicit role flags. The board groups crew by the job they do, and
-      // job_class alone cannot tell a role from a wage tier.
-      isSupervisor: r.is_supervisor === true,
-      isDriver: r.is_driver === true,
-    })).filter(r => r.name);
-  } catch (err) { console.warn('[scheduler/board] employees read failed:', err.message); return []; }
+    const { people, matched, unmatched, manual, offCrew, guesses } = await readPeopleRoster(sql, companyCode);
+    return {
+      list: people.filter(r => !r.offCrew).map(r => ({
+        name: (r.name || '').trim(),
+        jobClass: r.job_class || '',
+        // The explicit role flags. The board groups crew by the job they do, and
+        // job_class alone cannot tell a role from a wage tier.
+        isSupervisor: r.is_supervisor === true,
+        isDriver: r.is_driver === true,
+        // A login nobody could be matched to, left in the list as it was.
+        ...(r.login ? { login: true } : {}),
+      })).filter(r => r.name),
+      loginNames: matched,
+      unmatchedLogins: unmatched,
+      manualLogins: manual,
+      offCrewLogins: offCrew,
+      loginGuesses: guesses,
+    };
+  } catch (err) {
+    console.warn('[scheduler/board] employees read failed:', err.message);
+    return { list: [], loginNames: {}, unmatchedLogins: [], manualLogins: [], offCrewLogins: [], loginGuesses: {} };
+  }
 }
 // ── Divisions whose work is a CUSTOMER, not a bid item ─────────────────────
 // Turf, paving and kiewit are projects: they carry bid items, a quantity to
@@ -551,7 +571,7 @@ async function readTimeOff(sql, companyCode, todayStr) {
  * to run the same function rather than a second reading of the same blobs.
  */
 async function buildBoard(sql, companyCode, todayStr) {
-  const [employees, equipment, timeOff, dustEes, trucking, ...divisionProjects] = await Promise.all([
+  const [roster, equipment, timeOff, dustEes, trucking, ...divisionProjects] = await Promise.all([
     readEmployees(sql, companyCode),
     readEquipment(sql, companyCode),
     readTimeOff(sql, companyCode, todayStr),
@@ -607,12 +627,38 @@ async function buildBoard(sql, companyCode, todayStr) {
   jobs.push(...dustEes.dust, ...dustEes.ees, ...trucking.jobs);
 
   const equipOut = equipment.filter(Boolean).slice().sort((a, b) => a.localeCompare(b));
+  const employees = roster.list;
   employees.sort((a, b) => a.name.localeCompare(b.name));
   jobs.sort((a, b) => a.name.localeCompare(b.name));
+
+  // Time off is filed under a login as often as under a name — an entry with no
+  // employee on it is keyed by whoever sent it — so a login folded into a
+  // person brings its days off along, or the board would offer Aaron Todd on
+  // the day "toddaaron" asked for. Where both have the day, an approved one
+  // wins over a request. The login's own entry stays, for any booking still
+  // made under that name.
+  for (const [login, person] of Object.entries(roster.loginNames)) {
+    const days = timeOff[login];
+    if (!days) continue;
+    const into = timeOff[person] || (timeOff[person] = {});
+    for (const [ds, off] of Object.entries(days)) {
+      if (!into[ds] || (off.status === 'approved' && into[ds].status !== 'approved')) into[ds] = off;
+    }
+  }
 
   return {
     today: todayStr,
     employees,
+    // Each login folded into a person, login → that person's name; and the
+    // logins left in `employees` as they were, because nobody or more than one
+    // person answered to them. Which of the pairs an admin made, the logins an
+    // admin said are nobody on the crew, and what each login's name alone would
+    // give. See readEmployees.
+    loginNames: roster.loginNames,
+    unmatchedLogins: roster.unmatchedLogins,
+    manualLogins: roster.manualLogins,
+    offCrewLogins: roster.offCrewLogins,
+    loginGuesses: roster.loginGuesses,
     equipment: equipOut,
     jobs,
     plannedAssignments,

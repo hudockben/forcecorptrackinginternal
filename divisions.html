@@ -2994,7 +2994,10 @@
       const tbody = document.getElementById('dirListBody');
       tbody.innerHTML = '<tr><td colspan="5" class="mu-empty-cell">Loading…</td></tr>';
       try {
-        const res  = await fetch('/api/employees', { headers: { Authorization: `Bearer ${token}` } });
+        // As people: a login's Supervisor/Driver row ("toddaaron") comes back
+        // folded into the person it names ("Aaron Todd") rather than listed as
+        // a second person — see foldLoginRows in api/lib/roster.js.
+        const res  = await fetch('/api/employees?view=people', { headers: { Authorization: `Bearer ${token}` } });
         const data = await res.json();
         if (!res.ok) throw new Error(data.error || 'Failed to load the roster');
         dirEmployees = (Array.isArray(data.employees) ? data.employees : [])
@@ -3006,6 +3009,7 @@
             supervisor_name: e.supervisor_name || '',
             is_supervisor:   e.is_supervisor === true,
             is_driver:       e.is_driver     === true,
+            logins:          Array.isArray(e.logins) ? e.logins : [],
           }))
           .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
         dirLoaded = true;
@@ -3057,7 +3061,9 @@
           return false;
         }
         if (!q) return true;
-        if ([e.name, e.phone, e.email, e.supervisor_name]
+        // A person's logins too, so "toddaaron" still finds Aaron Todd now that
+        // the login is not listed on its own.
+        if ([e.name, e.phone, e.email, e.supervisor_name, ...(e.logins || [])]
               .some(v => String(v || '').toLowerCase().includes(q))) return true;
         // Digits-only, so typing 8145550142 finds "(814) 555-0142". Three is
         // the floor: fewer matches most of the roster and reads as broken.
@@ -3203,6 +3209,22 @@
         });
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error || 'Save failed');
+
+        // The same card onto the person's logins. A login's row can carry a
+        // number typed in when it was listed as a person of its own, and the
+        // directory falls back to it where the person has none — so a number
+        // cleared here would come straight back from the login unless the
+        // login is cleared with it. Only the card is sent: the login's
+        // Supervisor and Driver flags are left exactly as they are.
+        const card = dirEmployees.find(x => x.name.toLowerCase() === name.toLowerCase());
+        for (const login of (card && card.logins) || []) {
+          const r = await fetch('/api/employees?name=' + encodeURIComponent(login), {
+            method:  'PATCH',
+            headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+            body:    JSON.stringify({ phone, email, supervisor_name: sup }),
+          });
+          if (!r.ok) throw new Error(`Saved ${name}, but not the login ${login} — try again`);
+        }
 
         // Trust what came back rather than what was typed — the server trims
         // and lower-cases, and the table should show what is actually stored.

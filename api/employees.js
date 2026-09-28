@@ -1,6 +1,8 @@
 'use strict';
 /**
  * GET    /api/employees                 — list all active employees for the company
+ * GET    /api/employees?view=people     — the same, as people: each login's role
+ *                                         row folded into the person it names
  * PUT    /api/employees                 — full replace: sync entire employee array.
  *                                         Names absent from the array are deleted;
  *                                         `is_supervisor` is only moved when the
@@ -18,11 +20,15 @@
  *                                         alone — an absent field is left alone
  *                                         rather than reset, so two editors of the
  *                                         same person can never clobber each other.
+ * PATCH  /api/employees?login=X         — say which employee a login is (admins):
+ *                                         { person: '<name>' }, { none: true } for
+ *                                         a login that is nobody on the crew, or
+ *                                         { person: null } to go back to its name
  * DELETE /api/employees?id=N            — hard-delete one employee by id
  */
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
-const { readEmployeeRoster } = require('./lib/roster');
+const { readEmployeeRoster, readPeopleRoster, writeLoginLink } = require('./lib/roster');
 
 // ── Contact card normalisation ──────────────────────────────────────────────
 // The three fields the Team Directory writes. Each one is stored as typed
@@ -104,6 +110,15 @@ module.exports = async (req, res) => {
       // The union of every roster in the company, deduplicated by name — see
       // api/lib/roster.js. The Scheduler reads the same function, so the two
       // lists cannot drift apart again.
+      //
+      // ?view=people folds each login's role row into the person it names
+      // (foldLoginRows), for a list of PEOPLE: the Team Directory. Without it
+      // the rows come back as stored, login rows included, because Manage
+      // Users → Roles reads a login's flags off the row named after it.
+      if (req.query.view === 'people') {
+        const { people, matched, unmatched, manual, offCrew, guesses } = await readPeopleRoster(sql, companyCode);
+        return res.json({ employees: people, matched, unmatched, manual, offCrew, guesses });
+      }
       const merged = await readEmployeeRoster(sql, companyCode);
       return res.json({ employees: merged });
     }
@@ -210,6 +225,39 @@ module.exports = async (req, res) => {
                   sort_order
       `;
       return res.status(201).json({ employee: row });
+    }
+
+    // ── PATCH ?login= (which employee a login is) ─────────────────────────
+    // An admin's answer for a login the name cannot place, or places wrongly —
+    // see "Matched by hand" in api/lib/roster.js. The login has to be one of
+    // this company's, and the person somebody on its roster who is not a login
+    // themselves; anything else is refused rather than stored and ignored.
+    if (req.method === 'PATCH' && typeof req.query.login !== 'undefined') {
+      if (payload.role !== 'admin' && !payload.isPlatformAdmin) {
+        return res.status(403).json({ error: 'Company admin access required' });
+      }
+      const login = String(req.query.login || '').trim();
+      if (!login) return res.status(400).json({ error: 'login required' });
+      const [account] = await sql`
+        SELECT username FROM users
+        WHERE  company_code = ${companyCode} AND LOWER(username) = LOWER(${login})
+        LIMIT  1
+      `;
+      if (!account) return res.status(404).json({ error: 'No such login' });
+
+      const body = req.body || {};
+      let link = null;
+      if (body.none === true) {
+        link = { none: true };
+      } else if (body.person != null && String(body.person).trim()) {
+        const want = String(body.person).trim().toLowerCase();
+        const { people } = await readPeopleRoster(sql, companyCode);
+        const person = people.find(p => !p.login && p.name.toLowerCase() === want);
+        if (!person) return res.status(400).json({ error: `${String(body.person).trim()} is not on the roster` });
+        link = { person: person.name };
+      }
+      await writeLoginLink(sql, companyCode, account.username, link);
+      return res.json({ ok: true, login: account.username, link });
     }
 
     // ── PATCH (role flags + contact card, by name) ────────────────────────
