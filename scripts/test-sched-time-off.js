@@ -163,8 +163,7 @@ console.log('\n[every path that acts on an absence asks about the whole day]');
     /o\.status === 'approved' && !o\.partial/.test(src));
   assert('auto-fill offers a man who is only off for part of the day',
     /idleEmployees\(\)\.filter\(e => !dates\.every\(d => isBlockedOff\(e\.name, 'emp', d\)\)\)/.test(src));
-  assert('  and assigns him on the days he is there',
-    /dates\.filter\(d => !isBlockedOff\(e\.name, 'emp', d\)\)/.test(src));
+  // Which days auto-fill then books is run for real, in its own section below.
   assert('the week review does not list a part day as something to fix',
     /if \(off && !off\.partial\) offSched\.push/.test(src));
   assert('the candidate list only greys out a whole approved day',
@@ -177,6 +176,80 @@ console.log('\n[every path that acts on an absence asks about the whole day]');
   // The one place a scheduler is told WHY they cannot schedule somebody.
   assert('the refusal says it is the whole day that is spoken for',
     /is approved off for the whole day \(/.test(src));
+}
+
+// ── Auto-fill, run ──────────────────────────────────────────────────────────
+// Fill puts idle crew on a job for the rest of the week. It used to be pinned
+// here by a regex on one way of writing its day filter, and the suite went red
+// the day the filter was written another way although no day was booked
+// differently. What matters is which days end up booked and what the toast
+// says about the rest, so that is what this runs.
+console.log('\n[auto-fill books the days a person is there, and says why it left the rest]');
+{
+  const WEEK = ['2026-09-13', '2026-09-14', '2026-09-15', '2026-09-16', '2026-09-17', '2026-09-18', '2026-09-19'];
+  const [, MON, TUE, WED, THU, FRI] = WEEK;   // Sunday to Saturday; today is the Monday
+  const JOB = { division: 'paving', id: 'j1', name: 'Route 9' };
+  const WHO = 'Pat Doyle';
+  const toasts = [];
+  let seq = 0;
+  const ctx = {
+    state: null, _undo: [],
+    jobById: (div, id) => (div === JOB.division && id === JOB.id ? JOB : null),
+    jobRollup: () => ({ needed: 1 }),
+    jobCodes: () => [],
+    roleOf: () => '',
+    idleEmployees: () => ctx.state.board.employees,
+    fullWeekDateStrs: () => WEEK.slice(),
+    todayStr: () => MON,
+    pushUndo: () => { ctx._undo.push('snapshot'); },
+    updateUndoButtons: () => {},
+    toast: m => { toasts.push(m); },
+    render: () => {},
+    saveAssignments: () => {},
+    stampHaul: () => false,
+    uid: () => 'a' + (++seq),
+  };
+  vm.createContext(ctx);
+  vm.runInContext(['isOff', 'isBlockedOff', 'dayList', 'assignmentsFor', 'placeOnJob', 'addAssignmentSpan', 'autoFill']
+    .map(fn => requireFn(PAGE, fn, 'scheduler.html')).join('\n'), ctx);
+
+  const approved = (hours, partial) => ({ status: 'approved', type: 'vacation', hours, partial });
+  const elsewhere = { id: 'x1', resource: WHO, kind: 'emp', division: 'paving', jobId: 'j2', jobName: 'Mill St', costCode: '' };
+  // Fill the job with WHO the only idle hand; the days they land on it, and what they were told.
+  const fill = (timeOff, assignments) => {
+    ctx.state = { board: { employees: [{ name: WHO }], timeOff: { [WHO]: timeOff } }, assignments };
+    ctx._undo = []; toasts.length = 0;
+    ctx.autoFill(JOB.division, JOB.id);
+    const onJob = WEEK.filter(d => (assignments[d] || []).some(a => a.resource === WHO && a.jobId === JOB.id));
+    return { onJob, toast: toasts[toasts.length - 1] };
+  };
+
+  let r = fill({ [WED]: approved(8, false), [THU]: approved(4, true) }, { [TUE]: [{ ...elsewhere }] });
+  assert('a whole approved day off is not booked', !r.onJob.includes(WED), JSON.stringify(r.onJob));
+  assert('  a part day off IS — they are there for the rest of it', r.onJob.includes(THU), JSON.stringify(r.onJob));
+  assert('  and so is every day with nothing in the way', r.onJob.includes(MON) && r.onJob.includes(FRI));
+  assert('  while a day already on another job is left alone', !r.onJob.includes(TUE)
+    && ctx.state.assignments[TUE].length === 1 && ctx.state.assignments[TUE][0].jobId === 'j2');
+  assert('the toast counts the day off apart from the day already booked',
+    r.toast === 'Put Pat Doyle on Route 9 · left 1 day alone, already booked · skipped 1 day off', r.toast);
+
+  r = fill({ [MON]: approved(0, false), [TUE]: { status: 'submitted', type: 'vacation', hours: 8, partial: false } }, {});
+  assert('an UNPAID day off is skipped like a paid one', !r.onJob.includes(MON), JSON.stringify(r.onJob));
+  assert('  a day only REQUESTED off is still filled — it is not final yet', r.onJob.includes(TUE), JSON.stringify(r.onJob));
+  assert('  and with nothing already booked, the toast mentions only the day off',
+    r.toast === 'Put Pat Doyle on Route 9 · skipped 1 day off', r.toast);
+
+  r = fill({ [WED]: approved(8, false), [THU]: approved(8, false), [FRI]: approved(8, false) },
+    { [MON]: [{ ...elsewhere }], [TUE]: [{ ...elsewhere, id: 'x2' }] });
+  assert('booked or off every day left, nothing is added', r.onJob.length === 0, JSON.stringify(r.onJob));
+  assert('  the toast says off as well as booked',
+    r.toast === 'Those crew are already booked or off every day left this week', r.toast);
+  assert('  and the undo step it opened is taken back', ctx._undo.length === 0);
+
+  r = fill({ [MON]: approved(8, false), [TUE]: approved(8, false), [WED]: approved(8, false),
+    [THU]: approved(8, false), [FRI]: approved(8, false) }, {});
+  assert('someone off every day left is not offered at all',
+    r.onJob.length === 0 && /off all week/.test(r.toast), r.toast);
 }
 
 // ── What the assistant is handed ────────────────────────────────────────────

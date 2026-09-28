@@ -3204,19 +3204,27 @@ function autoFill(division, jobId) {
   const pick = idle.slice(0, need);
   if (!pick.length) { toast('No available idle crew this week (idle crew are off all week)'); return; }
   pushUndo();
-  let added = 0, skipped = 0; const used = [];
+  let added = 0, skipped = 0, away = 0; const used = [];
   pick.forEach(e => {
     // Never fill a man onto a day he is already working somewhere else. Idle
     // now means free on the day you are LOOKING at, so a man offered here may
     // well be on another job on Thursday — and the point of Fill is to use up
     // idle time, not to manufacture the double-booking the board then reddens.
-    const free = dates.filter(d => !assignmentsFor(d, e.name).length);
-    skipped += dates.length - free.length;
+    const open = dates.filter(d => !assignmentsFor(d, e.name).length);
+    // Nor onto a day they are approved off for the WHOLE of. A part day off is
+    // a day they are here for, and it is filled. placeOnJob would refuse the
+    // whole day anyway; asking here is what lets the toast say why it was left.
+    const free = open.filter(d => !isBlockedOff(e.name, 'emp', d));
+    skipped += dates.length - open.length;
+    away += open.length - free.length;
     const n = addAssignmentSpan(e.name, 'emp', job, '', free);
     if (n) used.push(e.name); added += n;
   });
-  if (!added) { _undo.pop(); updateUndoButtons(); toast('Those crew are already booked every day left this week'); return; }
-  toast('Put ' + used.join(', ') + ' on ' + job.name + (skipped ? ' \u00b7 left ' + skipped + ' day' + (skipped>1?'s':'') + ' alone, already booked' : ''));
+  const days = k => k + ' day' + (k > 1 ? 's' : '');
+  if (!added) { _undo.pop(); updateUndoButtons(); toast('Those crew are already booked' + (away ? ' or off' : '') + ' every day left this week'); return; }
+  toast('Put ' + used.join(', ') + ' on ' + job.name +
+    (skipped ? ' \u00b7 left ' + days(skipped) + ' alone, already booked' : '') +
+    (away ? ' \u00b7 skipped ' + days(away) + ' off' : ''));
   render();
 }
 function renderAttention() {
