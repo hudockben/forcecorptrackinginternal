@@ -4369,14 +4369,23 @@ function cbRenderMenu(input) {
 /* Opt-in (data-cb-fixed="1" on the .cb) fixed-position menu so the dropdown
    escapes any overflow-clipping / horizontally-scrolling ancestor. The
    construction-schedule Code/Subcode comboboxes sit inside an overflow-x:auto
-   table wrapper that would otherwise clip the list; other cb callers are
-   unaffected. Coordinates are viewport-relative (no transformed ancestors on
-   this page), and open upward when there isn't room below. */
+   table wrapper that would otherwise clip the list, and so do the Purchase
+   Orders and Trucking sub code pickers; other cb callers are unaffected.
+   Coordinates are viewport-relative (no transformed ancestors on this page),
+   and open upward when there isn't room below. */
 function _cbPositionFixed(input, menu) {
   const r = input.getBoundingClientRect();
   menu.style.position = 'fixed';
   menu.style.left = r.left + 'px';
   menu.style.minWidth = r.width + 'px';
+  // The menu is as wide as its longest option (up to the cap on .cb-menu), so
+  // it can be far wider than its box. Opened near the right edge it would run
+  // off the screen and hide the end of the very label it widened to show, so
+  // it slides back in. clientWidth leaves out the page's scrollbar, and reads
+  // 0 where nothing is laid out, hence the fallback.
+  const vw = document.documentElement.clientWidth || window.innerWidth;
+  const over = r.left + menu.offsetWidth - (vw - 8);
+  if (over > 0) menu.style.left = Math.max(8, r.left - over) + 'px';
   const menuH = Math.min(menu.scrollHeight || 220, 220);
   const below = window.innerHeight - r.bottom;
   if (below < menuH + 8 && r.top > below) {
@@ -11416,7 +11425,7 @@ function renderPOTab() {
           </td>
           <td style="padding:0.35rem 0.6rem;min-width:110px" onclick="event.stopPropagation()">${inp('date_created','date',po.date_created,po.id,null)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${cbHtml('projects', poProjName, '— none —', `data-po-id="${esc(po.id)}" data-po-field="project_id"${po.project_id ? ` data-cb-value="${esc(po.project_id)}"` : ''}`)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${esc(po.id)}" onclick="event.stopPropagation()">${cbHtml('po_subcodes:' + po.id, poSubLabel, po.project_id ? '— select —' : '— pick project first —', `data-po-id="${esc(po.id)}" data-po-field="sub_code_sel"${(po.cost_code || po.sub_code) ? ` data-cb-value="${esc((po.cost_code||'') + '||' + (po.sub_code||''))}"` : ''}`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${esc(po.id)}" onclick="event.stopPropagation()">${cbHtml('po_subcodes:' + po.id, poSubLabel, po.project_id ? '— select —' : '— pick project first —', `data-po-id="${esc(po.id)}" data-po-field="sub_code_sel"${(po.cost_code || po.sub_code) ? ` data-cb-value="${esc((po.cost_code||'') + '||' + (po.sub_code||''))}"` : ''}`, 'data-cb-fixed="1"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${inp('title','text',po.title,po.id,null,'placeholder="Material / Description"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${cbHtml('suppliers', po.supplier || '', '— select —', `data-po-id="${esc(po.id)}" data-po-field="supplier"`)}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.8rem;color:var(--muted)" id="po-qty-${esc(po.id)}">${tot.qty > 0 ? fmt(tot.qty) : '—'}</td>
@@ -12115,7 +12124,7 @@ function renderTruckingTab() {
         return `<tr style="border-bottom:1px solid var(--border)">
           <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted);white-space:nowrap">${esc(tr.tr_number)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:160px">${cbHtml('projects', projName, '— none —', `data-tr-id="${tr.id}" data-tr-field="project_id"${tr.project_id ? ` data-cb-value="${esc(tr.project_id)}"` : ''}`)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:180px" id="tr-subcode-cell-${tr.id}">${cbHtml('tr_subcodes:' + tr.id, subLabel, tr.project_id ? '— select —' : '— pick project first —', `data-tr-id="${tr.id}" data-tr-field="sub_code_sel"${(tr.cost_code || tr.sub_code) ? ` data-cb-value="${esc((tr.cost_code||'') + '||' + (tr.sub_code||''))}"` : ''}`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:180px" id="tr-subcode-cell-${tr.id}">${cbHtml('tr_subcodes:' + tr.id, subLabel, tr.project_id ? '— select —' : '— pick project first —', `data-tr-id="${tr.id}" data-tr-field="sub_code_sel"${(tr.cost_code || tr.sub_code) ? ` data-cb-value="${esc((tr.cost_code||'') + '||' + (tr.sub_code||''))}"` : ''}`, 'data-cb-fixed="1"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px">${cbHtml('employees', tr.driver || '', '— select —', `data-tr-id="${tr.id}" data-tr-field="driver"`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px">${cbHtml('equipment', tr.truck_type || '', '— select —', `data-tr-id="${tr.id}" data-tr-field="truck_type"`)}</td>
           <td style="padding:0.35rem 0.6rem;min-width:150px">${inp('material_hauled', 'text', 'placeholder="Material hauled"')}</td>
