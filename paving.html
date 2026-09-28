@@ -4063,22 +4063,36 @@ function _fctPollsSuspended() {
   return document.visibilityState === 'hidden' || _fctSessionOver();
 }
 
-async function apiGet(key) {
+/**
+ * GET one blob, and say whether the server actually answered.
+ *
+ * apiGet returns null both when nothing is stored and when the request failed.
+ * That is fine for a caller that only draws what it reads, and wrong for one
+ * that may save it back: a page that could not read a blob holds only its
+ * empty defaults, and saving those replaces what the server has. `ok` is false
+ * for every failure — network, 5xx, 403, a 401 that signs out — and `value` is
+ * then meaningless.
+ */
+async function apiGetChecked(key) {
   try {
     const r = await fetch(`${API_BASE}/data/${key}`, {
       headers: { 'Authorization': `Bearer ${fctToken}` }
     });
-    if (r.status === 401) { logout(); return null; }
+    if (r.status === 401) { logout(); return { ok: false, value: null }; }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const { value } = await r.json();
-    return value;
+    return { ok: true, value };
   } catch (err) {
     console.warn(`[DB] GET ${key} failed:`, err.message);
-    return null;
+    return { ok: false, value: null };
   }
 }
 
-function _showSaveError(isAuth, customMsg) {
+async function apiGet(key) {
+  return (await apiGetChecked(key)).value;
+}
+
+function _showSaveError(isAuth, customMsg, keptLocally = true) {
   const banner = document.getElementById('save-error-banner');
   if (!banner) return;
   const msg   = document.getElementById('save-error-msg');
@@ -4089,13 +4103,24 @@ function _showSaveError(isAuth, customMsg) {
   } else if (customMsg) {
     // Pass-through for backend conflict detail (e.g. the bulk-wipe
     // protection's "Cannot replace N items with an empty list" message).
-    if (msg)  msg.textContent  = '⚠ ' + customMsg + ' Your edits are kept locally.';
+    if (msg)  msg.textContent  = '⚠ ' + customMsg + (keptLocally ? ' Your edits are kept locally.' : '');
     if (link) link.hidden = true;
   } else {
     if (msg)  msg.textContent  = '⚠ Changes could not be saved to the server. Your edits are kept locally.';
     if (link) link.hidden = true;
   }
   banner.style.display = '';
+}
+
+/**
+ * A save refused because its list never loaded from the server. What the page
+ * holds then is an empty stand-in, and saving it would replace the real list
+ * with it. Nothing was kept, so the banner does not say it was.
+ */
+function _unloadedSaveRefused(what) {
+  console.warn(`[${what}] not saved: not loaded from the server yet`);
+  _showSaveError(false, `The ${what} have not loaded from the server, so that change was not saved. ` +
+    'Reload the page, then make it again.', false);
 }
 
 /** Fetch multiple keys in one request. Returns { key1: value1, key2: value2, ... } */
@@ -6433,6 +6458,11 @@ function nextTRNumber() {
 
 /* ── Inventory store ── */
 let inventoryEntries = [];
+// True once inventory has been read from the server. Until then the empty
+// list above is a stand-in, and saving it with one new entry would replace
+// every entry on the server. saveInventoryEntries() refuses until this is set;
+// the 60-second data poll finishes a load that failed.
+let _inventoryLoaded = false;
 let _invYear = new Date().getFullYear();
 let _invBreakdownOpen = false;
 
@@ -7404,17 +7434,27 @@ function saveSoeUnitOverrides() {
 }
 
 async function loadInventoryEntries() {
-  let saved = await apiGet('fct_paving_inventory');
-  if (!saved || (Array.isArray(saved) && saved.length === 0)) {
+  const got = await apiGetChecked('fct_paving_inventory');
+  // A failed read says nothing about what is stored. This used to push this
+  // browser's own copy back instead — written only when it last saved, so
+  // possibly weeks old — erasing every entry anyone else had added since.
+  if (!got.ok) return;
+  let saved = got.value;
+  if (saved == null) {
+    // The server has never held inventory: carry over this browser's copy
+    // from before it moved there. Not when the server holds an empty list —
+    // that is a list someone emptied, and the old copy would bring it back.
     try {
       const local = JSON.parse(localStorage.getItem('fct_paving_inventory'));
       if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_paving_inventory', saved); }
     } catch {}
   }
   inventoryEntries = Array.isArray(saved) ? saved : [];
+  _inventoryLoaded = true;
 }
 
 function saveInventoryEntries() {
+  if (!_inventoryLoaded) { _unloadedSaveRefused('inventory entries'); return; }
   localStorage.setItem('fct_paving_inventory', JSON.stringify(inventoryEntries));
   apiPut('fct_paving_inventory', inventoryEntries);
 }
@@ -13522,19 +13562,35 @@ function addListItem(key) {
 ═══════════════════════════════════════════ */
 const COST_KEY = 'fct_paving_cost_rows';
 let costRows = [];
+// True once the cost rows have been read from the server. Until then the empty
+// list above is a stand-in, and saving it with one new row would replace every
+// row on the server. saveCostRows() refuses until this is set; the 60-second
+// data poll finishes a load that failed.
+let _costRowsLoaded = false;
 
 async function loadCostRows() {
-  let saved = await apiGet('fct_paving_cost_rows');
-  if (!saved || (Array.isArray(saved) && saved.length === 0)) {
-    // Try legacy localStorage key as migration fallback
+  const got = await apiGetChecked('fct_paving_cost_rows');
+  // A failed read says nothing about what is stored. This used to push the
+  // legacy local copy back instead — one nothing has written since the rows
+  // moved to the server — rolling the cost rows back to it.
+  if (!got.ok) return;
+  let saved = got.value;
+  if (saved == null) {
+    // The server has never held cost rows: try the legacy localStorage key as
+    // a migration fallback. Not when it holds an empty list — that is a list
+    // someone emptied, and the old copy would bring it back.
     try {
       const local = JSON.parse(localStorage.getItem('fct_paving_rows'));
       if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_paving_cost_rows', saved); }
     } catch {}
   }
   costRows = Array.isArray(saved) ? saved : [];
+  _costRowsLoaded = true;
 }
-function saveCostRows() { apiPut('fct_paving_cost_rows', costRows); }
+function saveCostRows() {
+  if (!_costRowsLoaded) { _unloadedSaveRefused('cost rows'); return; }
+  apiPut('fct_paving_cost_rows', costRows);
+}
 
 // Only store bid/plan data — actuals come from daily aggregation
 const defaultCostRow = () => ({
@@ -22193,15 +22249,20 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   }
 
   async function _pollCostRows() {
-    const saved = await apiGet('fct_paving_cost_rows');
-    const incoming = Array.isArray(saved) ? saved : [];
-    if (JSON.stringify(incoming) === JSON.stringify(costRows)) return;
+    const got = await apiGetChecked('fct_paving_cost_rows');
+    // A failed read is not an empty list. Taking it for one blanked the cost
+    // table, and the next row saved then replaced every row on the server.
+    if (!got.ok) return;
+    const incoming = Array.isArray(got.value) ? got.value : [];
+    // Still a successful read, so it completes a first load that failed.
+    if (JSON.stringify(incoming) === JSON.stringify(costRows)) { _costRowsLoaded = true; return; }
     // Don't overwrite the in-memory array while the user is typing — the
     // next save would otherwise echo this polled snapshot back to the
     // server, wiping any pending edits. Skip the whole cycle; the next
     // poll (or a focus change) will pick it up.
     if (_isEditing()) return;
     costRows = incoming;
+    _costRowsLoaded = true;
     if (activeTab === 'cost') renderCostTable();
   }
 
@@ -22290,11 +22351,14 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   }
 
   async function _pollInventory() {
-    const saved = await apiGet('fct_paving_inventory');
-    const incoming = Array.isArray(saved) ? saved : [];
-    if (JSON.stringify(incoming) === JSON.stringify(inventoryEntries)) return;
+    const got = await apiGetChecked('fct_paving_inventory');
+    // A failed read is not an empty list — see _pollCostRows.
+    if (!got.ok) return;
+    const incoming = Array.isArray(got.value) ? got.value : [];
+    if (JSON.stringify(incoming) === JSON.stringify(inventoryEntries)) { _inventoryLoaded = true; return; }
     if (_isEditing()) return; // don't overwrite pending edits
     inventoryEntries = incoming;
+    _inventoryLoaded = true;
     if (activeTab === 'inventory') renderInventoryTab();
   }
 

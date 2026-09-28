@@ -130,6 +130,7 @@ function page({ respond, local = null, focused = null, tab = 'info' }) {
   const code = [
     extractFunction(SRC, 'apiGetChecked'),
     extractFunction(SRC, 'apiGet'),
+    extractFunction(SRC, '_unloadedSaveRefused'),
     extractConst(SRC, '_CRM_LISTS'),
     extractFunction(SRC, '_crmSeedLists'),
     extractListsSection(SRC),
