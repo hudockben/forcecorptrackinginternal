@@ -40,12 +40,21 @@ function assert(label, cond, detail) {
 
 const B = require(path.join(ROOT, 'api', 'lib', 'data-backup'));
 
-/** A tagged-template sql stub: answers by matching the statement's text. */
-function scriptedSql(answer) {
+/**
+ * A tagged-template sql stub: answers by matching the statement's text. The
+ * run lock is answered here — free unless `lock` says 'held', or an Error to
+ * throw — so each test scripts only what it is about.
+ */
+function scriptedSql(answer, { lock = 'free', unlock = null } = {}) {
   const calls = [];
   const sql = (strings, ...values) => {
     const text = strings.join('?').replace(/\s+/g, ' ').trim();
     calls.push({ text, values });
+    if (/^INSERT INTO data_backup_lock/.test(text)) {
+      if (lock instanceof Error) return Promise.reject(lock);
+      return Promise.resolve(lock === 'held' ? [] : [{ holder: values[0] }]);
+    }
+    if (/^DELETE FROM data_backup_lock/.test(text)) return unlock ? Promise.reject(unlock) : Promise.resolve([]);
     return Promise.resolve().then(() => answer(text, values));
   };
   sql.calls = calls;
@@ -204,6 +213,10 @@ function scriptedSql(answer) {
       send: async (msg) => { sends.push(msg); return /Beta/.test(msg.subject) ? { ok: false, error: 'bounced' } : { ok: true }; },
     });
     assert('the backup runs before anything else', order[0] === 'backup' && order.indexOf('count') > order.indexOf('prune'), order.join(','));
+    const first = sql.calls[0], last = sql.calls[sql.calls.length - 1];
+    assert('inside the run lock, taken first and given back last',
+      /^INSERT INTO data_backup_lock/.test(first.text) && /^DELETE FROM data_backup_lock/.test(last.text)
+        && last.values[0] === first.values[0] && String(first.values[0]).startsWith(AT), `${first.text.slice(0, 40)} … ${last.text.slice(0, 40)}`);
     assert('the run is stamped to the second', out.at === AT, out.at);
     // Every statement that writes or compares uses the run's one stamp.
     const stamped = sql.calls.filter(c => /^INSERT INTO (app_data_snapshots|list_counts|list_alerts_pending)|FROM list_counts WHERE company_code|FROM list_alerts_pending WHERE found_at/.test(c.text));
@@ -338,10 +351,38 @@ function scriptedSql(answer) {
       return [];
     });
     const out = await B.runDataBackup(sql, { now: NOW, recipients: ['ops@x.com'], send: async m => { sends.push(m); return { ok: true }; } });
-    assert('still runs the check', out.alerts.length === 1);
+    assert('still runs the check', out.alerts.length === 1 && out.alerts[0].since === PREV);
     assert('and says the backup failed, by email', sends.some(m => /nightly backup did not finish/.test(m.subject) && /statement timeout/.test(m.html)),
       JSON.stringify(sends.map(m => m.subject)));
     assert('as well as sending the drop', sends.some(m => /shrank/.test(m.subject)));
+    assert('but records no counts, so no later alert can point at this run for a copy it does not have',
+      !sql.calls.some(c => /^INSERT INTO list_counts/.test(c.text)));
+    assert('and still prunes', sql.calls.some(c => /^DELETE FROM app_data_snapshots/.test(c.text)));
+  }
+  {
+    const sql = scriptedSql(text => {
+      if (/^INSERT INTO app_data_snapshots/.test(text)) throw new Error('statement timeout');
+      if (/^SELECT split_part/.test(text)) return [{ company_code: 'A', measure: 'fct_cost_rows', n: 1 }];
+      if (/^SELECT code, name FROM companies/.test(text)) return [{ code: 'A', name: 'Alpha' }];
+      if (/FROM list_counts WHERE company_code/.test(text)) return [{ at: PREV, measure: 'fct_cost_rows', n: 40 }];
+      return [];
+    });
+    const out = await B.runDataBackup(sql, { now: NOW, recipients: ['ops@x.com'], send: async () => ({ ok: false, error: 'down' }) });
+    assert('an alert it cannot send is not kept either, since the next run finds the drop again by itself',
+      out.alerts.length === 1 && !sql.calls.some(c => /^INSERT INTO list_alerts_pending/.test(c.text)) && out.pending === 0);
+  }
+  {
+    const sends = [];
+    const sql = scriptedSql(text => {
+      if (/^DELETE FROM app_data_snapshots/.test(text)) throw new Error('lock timeout');
+      if (/^SELECT split_part/.test(text)) return [{ company_code: 'A', measure: 'fct_cost_rows', n: 5 }];
+      if (/^SELECT code, name FROM companies/.test(text)) return [{ code: 'A', name: 'Alpha' }];
+      return [];
+    });
+    const out = await B.runDataBackup(sql, { now: NOW, recipients: ['ops@x.com'], send: async m => { sends.push(m); return { ok: true }; } });
+    assert('a failed prune of old copies is reported',
+      out.errors.some(e => e.step === 'prune copies') && sends.some(m => /did not finish/.test(m.subject) && /lock timeout/.test(m.html)));
+    assert('but the copy was made, so the counts are recorded', sql.calls.some(c => /^INSERT INTO list_counts/.test(c.text)));
   }
   {
     const sends = [];
@@ -362,6 +403,41 @@ function scriptedSql(answer) {
     const out = await B.runDataBackup(sql, { now: NOW, recipients: ['ops@x.com'], send: async m => { sends.push(m); return { ok: true }; } });
     assert('so does one that cannot prune its old counts', out.failed === true
       && sends.length === 1 && /lock timeout/.test(sends[0].html), JSON.stringify(out.errors));
+  }
+
+  console.log('\n[one run at a time]');
+  {
+    const sends = [];
+    const sql = scriptedSql(() => { throw new Error('should not run'); }, { lock: 'held' });
+    const out = await B.runDataBackup(sql, { now: NOW, recipients: ['ops@x.com'], send: async m => { sends.push(m); return { ok: true }; } });
+    assert('a run that finds another under way stops at once', out.skipped === 'another run is under way'
+      && sql.calls.length === 1 && sends.length === 0, JSON.stringify(sql.calls.map(c => c.text.slice(0, 40))));
+    assert('and is not a failure', out.failed === false && out.errors.length === 0);
+    assert('it does not give back a lock it never took', !sql.calls.some(c => /^DELETE FROM data_backup_lock/.test(c.text)));
+  }
+  {
+    const sends = [];
+    const sql = scriptedSql(() => [], { lock: new Error('relation "data_backup_lock" does not exist') });
+    const out = await B.runDataBackup(sql, { now: NOW, recipients: ['ops@x.com'], send: async m => { sends.push(m); return { ok: true }; } });
+    assert('a lock that cannot be taken does not stop the backup', sql.calls.some(c => /^INSERT INTO app_data_snapshots/.test(c.text)));
+    assert('but is reported', out.failed === true && sends.some(m => /did not finish/.test(m.subject) && /data_backup_lock/.test(m.html)));
+    assert('and nothing is given back', !sql.calls.some(c => /^DELETE FROM data_backup_lock/.test(c.text)));
+  }
+  {
+    const sql = scriptedSql(() => [], { unlock: new Error('connection reset') });
+    const out = await B.runDataBackup(sql, { now: NOW, recipients: ['ops@x.com'], send: async () => ({ ok: true }) });
+    assert('a lock that cannot be given back is reported, to go stale on its own', out.errors.some(e => e.step === 'unlock'));
+  }
+  {
+    let released = 0;
+    const sql = scriptedSql(text => { if (/^SELECT split_part/.test(text)) throw new TypeError('boom'); return []; });
+    const orig = sql;
+    const wrapped = (strings, ...values) => {
+      if (/DELETE FROM data_backup_lock/.test(strings.join('?'))) released++;
+      return orig(strings, ...values);
+    };
+    await B.runDataBackup(wrapped, { now: NOW, recipients: [], send: async () => ({ ok: true }) });
+    assert('the lock is given back however the run went', released === 1);
   }
 
   console.log('\n[an emptied list is recorded as empty once]');
@@ -404,11 +480,14 @@ function scriptedSql(answer) {
   {
     let ran = 0;
     let FAILS = [];
+    let SKIPPED = false;
     const orig = Module._load;
     Module._load = function (req, parent) {
       if (req === '@neondatabase/serverless') return { neon: () => () => Promise.resolve([]) };
       if (req === '../lib/data-backup' && parent && /cron/.test(parent.filename)) {
-        return { runDataBackup: async () => { ran++; return { at: 'd', backup: {}, measures: 0, alerts: [], emailed: 0, pending: 0, errors: FAILS, failed: FAILS.some(e => e.step !== 'email') }; } };
+        return { runDataBackup: async () => { ran++; return SKIPPED
+          ? { at: 'd', backup: null, measures: 0, alerts: [], emailed: 0, pending: 0, errors: [], skipped: 'another run is under way', failed: false }
+          : { at: 'd', backup: {}, measures: 0, alerts: [], emailed: 0, pending: 0, errors: FAILS, failed: FAILS.some(e => e.step !== 'email') }; } };
       }
       return orig.apply(this, arguments);
     };
@@ -432,6 +511,10 @@ function scriptedSql(answer) {
     assert('with it, the night runs', r.code === 200 && r.body.ok === true && ran === 1);
     r = await call({ authorization: 'Bearer s3cret' }, 'DELETE');
     assert('other methods are refused', r.code === 405);
+    SKIPPED = true;
+    r = await call({ authorization: 'Bearer s3cret' });
+    assert('a run that found another under way answers 200, saying so', r.code === 200 && r.body.skipped === 'another run is under way');
+    SKIPPED = false;
     FAILS = [{ step: 'backup', error: 'statement timeout' }];
     r = await call({ authorization: 'Bearer s3cret' });
     assert('a run that did not finish answers 500, so the scheduler log shows it', r.code === 500 && r.body.ok === false);

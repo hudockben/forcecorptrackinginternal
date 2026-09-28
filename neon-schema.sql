@@ -2536,3 +2536,12 @@ CREATE TABLE IF NOT EXISTS list_alerts_pending (
     last_error   TEXT,
     PRIMARY KEY (company_code, found_at)
 );
+
+-- One backup run at a time. A run takes the single row at its start and
+-- gives it back at its end, and a run that finds it taken stops. A run that
+-- dies holding it leaves it to go stale after five minutes.
+CREATE TABLE IF NOT EXISTS data_backup_lock (
+    id        INTEGER     PRIMARY KEY,
+    holder    TEXT        NOT NULL,
+    locked_at TIMESTAMPTZ NOT NULL
+);

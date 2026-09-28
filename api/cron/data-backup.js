@@ -6,7 +6,8 @@
  *
  * Runs before the working day (vercel.json), so a list emptied during
  * yesterday's work is in someone's inbox before today's is saved on top of it.
- * Running it again by hand is safe: each run compares with the one before it.
+ * Running it again by hand is safe: runs take turns, and each compares with
+ * the one before it. A run that finds another under way stops and says so.
  *
  * Alerts go to DATA_ALERT_EMAILS, a comma-separated list set in the project's
  * environment. Without it the backup and the check still run, and the drops
@@ -44,6 +45,10 @@ module.exports = async (req, res) => {
   const sql = neon(process.env.DATABASE_URL);
   try {
     const out = await runDataBackup(sql, {});
+    if (out.skipped) {
+      console.warn('[data-backup] not run:', out.skipped);
+      return res.status(200).json({ ok: true, ...out });
+    }
     if (out.alerts.length) console.warn('[data-backup] lists shrank:', JSON.stringify(out.alerts));
     console.log('[data-backup]', JSON.stringify({ at: out.at, backup: out.backup, measures: out.measures,
       alerts: out.alerts.length, emailed: out.emailed, pending: out.pending, errors: out.errors }));

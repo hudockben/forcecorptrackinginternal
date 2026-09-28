@@ -7,7 +7,7 @@
  *      (defaults to postgres://fct_test_user:test@localhost/fct_test)
  *
  * DESTRUCTIVE: empties app_data, app_data_snapshots, list_counts,
- * list_alerts_pending and daily_tracking. It refuses to run against a database
+ * list_alerts_pending, data_backup_lock and daily_tracking. It refuses to run against a database
  * whose name doesn't look like a test database.
  *
  * scripts/test-data-backup.js pins the decisions around the SQL. This one runs
@@ -23,7 +23,7 @@ const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 const B = require(path.join(ROOT, 'api', 'lib', 'data-backup'));
 
-const TABLES = /app_data_snapshots|list_counts|list_alerts_pending/;
+const TABLES = /app_data_snapshots|list_counts|list_alerts_pending|data_backup_lock/;
 
 /** The statements neon-schema.sql holds for these tables, split the way scripts/run-schema.js splits them. */
 function schemaStatements() {
@@ -68,10 +68,10 @@ async function run(client) {
   await q(`CREATE TABLE IF NOT EXISTS daily_tracking (id SERIAL PRIMARY KEY, date DATE NOT NULL,
              company_code TEXT NOT NULL DEFAULT '', division TEXT NOT NULL DEFAULT 'turf')`);
   const schema = schemaStatements();
-  assert('the schema file holds the three tables', ['app_data_snapshots', 'list_counts', 'list_alerts_pending']
+  assert('the schema file holds the four tables', ['app_data_snapshots', 'list_counts', 'list_alerts_pending', 'data_backup_lock']
     .every(t => schema.some(s => s.startsWith(`CREATE TABLE IF NOT EXISTS ${t}`))), schema.map(s => s.slice(0, 50)).join(' | '));
   for (const stmt of schema) await q(stmt);
-  await q(`TRUNCATE app_data, app_data_snapshots, list_counts, list_alerts_pending`);
+  await q(`TRUNCATE app_data, app_data_snapshots, list_counts, list_alerts_pending, data_backup_lock`);
   await q(`DELETE FROM daily_tracking`);
   await q(`INSERT INTO companies (code, name) VALUES ('FORCECORP', 'Force Corp') ON CONFLICT (code) DO NOTHING`);
 
@@ -99,7 +99,10 @@ async function run(client) {
 
   const emails = [];
   // failSend: the mail provider refuses every message on that run.
-  const runAt = (at, { failSend = false } = {}) => B.runDataBackup(sql, {
+  // failCopy: the statement that copies the records fails on that run.
+  const copyFails = (strings, ...values) => (/^\s*INSERT INTO app_data_snapshots[\s\S]*FROM app_data a/.test(strings.join('?'))
+    ? Promise.reject(new Error('canceling statement due to statement timeout')) : sql(strings, ...values));
+  const runAt = (at, { failSend = false, failCopy = false } = {}) => B.runDataBackup(failCopy ? copyFails : sql, {
     now: new Date(at), recipients: ['ops@forcecorp.test'],
     send: async (msg) => {
       if (failSend) return { ok: false, error: 'provider unavailable' };
@@ -298,6 +301,59 @@ async function run(client) {
       && out.errors.some(e => /gave up on the 2026-09-14 09:45 UTC alert after 7 attempts/.test(e.error)), JSON.stringify(out.errors));
     const counts = await q(`SELECT n FROM list_counts WHERE company_code = 'FORCECORP' AND measure = 'fct_quarry_daily' ORDER BY taken_at DESC LIMIT 1`);
     assert('while the list stays counted as it is', counts[0] && counts[0].n === 0);
+  }
+
+  console.log('\n[a run whose copy fails]');
+  {
+    const PAVE = 'FORCECORP:fct_paving_lists';
+    await put(PAVE, { employees: people(3), equipment: [] });
+    await runAt('2026-09-21T09:45:00Z');
+    await put(PAVE, { employees: people(13), equipment: [] });   // ten hired
+    const sent = emails.length;
+    const failedCopy = await runAt('2026-09-22T09:45:00Z', { failCopy: true });
+    assert('is reported', failedCopy.failed === true && failedCopy.errors.some(e => e.step === 'backup')
+      && emails.slice(sent).some(m => /did not finish/.test(m.subject)), JSON.stringify(failedCopy.errors));
+    const noCopy = await q(`SELECT count(*)::int AS n FROM list_counts WHERE taken_at = TIMESTAMPTZ '2026-09-22T09:45:00Z'`);
+    assert('and records no counts, having no copy to go with them', noCopy[0].n === 0);
+    // Seven let go: 13 → 6 is a drop from the run with no copy, but not from
+    // the last run that made one, whose copy holds only three.
+    await put(PAVE, { employees: people(6), equipment: [] });
+    const next = await runAt('2026-09-23T09:45:00Z');
+    assert('so no alert offers a restore that would take the list from six down to three',
+      !next.alerts.some(a => a.drops.some(d => d.measure.startsWith('fct_paving_lists'))), JSON.stringify(next.alerts));
+    await put(PAVE, { employees: [], equipment: [] });
+    const at = emails.length;
+    const wiped = await runAt('2026-09-24T09:45:00Z');
+    const a = wiped.alerts.find(x => x.drops.some(d => d.measure === 'fct_paving_lists.employees'));
+    const d = a && a.drops.find(x => x.measure === 'fct_paving_lists.employees');
+    assert('the next alert points at a run that made a copy', a && a.since === '2026-09-23T09:45:00Z' && d.before === 6, JSON.stringify(wiped.alerts));
+    const mail = emails.slice(at).find(m => /shrank/.test(m.subject));
+    await q(restoresIn(mail.html)[0][1]);
+    assert('and its restore brings back exactly what it says was there', (await get(PAVE)).employees.length === d.before);
+  }
+
+  console.log('\n[one run at a time]');
+  {
+    const CO = 'FORCECORP:fct_kiewit_lists';
+    await put(CO, { employees: people(5) });
+    await runAt('2026-09-25T09:45:00Z');
+    await put(CO, { employees: [] });
+    const sent = emails.length;
+    const [one, two] = await Promise.all([runAt('2026-09-26T09:45:00Z'), runAt('2026-09-26T09:45:01Z')]);
+    const ran = [one, two].filter(r => !r.skipped), skipped = [one, two].filter(r => r.skipped);
+    assert('two runs at once: one runs, one stops', ran.length === 1 && skipped.length === 1
+      && skipped[0].skipped === 'another run is under way', JSON.stringify([one.skipped, two.skipped]));
+    assert('so the drop is emailed once', emails.slice(sent).filter(m => /shrank/.test(m.subject)).length === 1,
+      emails.slice(sent).map(m => m.subject).join(' | '));
+    assert('and the lock is given back', (await q(`SELECT count(*)::int AS n FROM data_backup_lock`))[0].n === 0);
+    // A run that died holding the lock leaves it behind.
+    await q(`INSERT INTO data_backup_lock (id, holder, locked_at) VALUES (1, 'a run that died', NOW() - INTERVAL '2 minutes')`);
+    const blocked = await runAt('2026-09-26T12:00:00Z');
+    assert('a lock taken minutes ago is honoured', blocked.skipped === 'another run is under way');
+    await q(`UPDATE data_backup_lock SET locked_at = NOW() - INTERVAL '6 minutes'`);
+    const after = await runAt('2026-09-26T12:10:00Z');
+    assert('a stale one is taken over', !after.skipped && after.errors.length === 0
+      && (await q(`SELECT count(*)::int AS n FROM data_backup_lock`))[0].n === 0, JSON.stringify(after.errors));
   }
 
   console.log('\n[thirty days on]');

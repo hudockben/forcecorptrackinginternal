@@ -41,6 +41,15 @@
  *   A list gone entirely is recorded as empty once, so it is reported once
  *   and not every night after.
  *
+ *   Counts are recorded only by a run whose copy was made, so the run an
+ *   alert compares with always has a copy to restore from. After a failed
+ *   copy the next run compares with the last run that made one, and reports
+ *   again anything this run found.
+ *
+ *   One run at a time. Two at once — a scheduler that fires twice, or a run
+ *   by hand over the nightly one — would both compare with the same earlier
+ *   run and both send its alerts, so the second one stops.
+ *
  *   A run whose backup or check fails says so by email too. A copy that has
  *   quietly stopped is the same problem as a list nobody noticed emptying.
  */
@@ -107,8 +116,8 @@ function human(at) {
 const STAMP = 'YYYY-MM-DD"T"HH24:MI:SS"Z"';
 
 /**
- * Copies every record that changed since its last copy, marks every record
- * deleted since its last copy, then prunes the window.
+ * Copies every record that changed since its last copy, and marks every
+ * record deleted since its last copy.
  */
 async function backupAppData(sql, at) {
   const stored = await sql`
@@ -140,6 +149,15 @@ async function backupAppData(sql, at) {
     ON CONFLICT (key, taken_at) DO NOTHING
     RETURNING key
   `;
+  return { stored: stored.length, gone: gone.length };
+}
+
+/**
+ * Drops the copies the window no longer needs: those older than RETAIN_DAYS,
+ * except each record's newest one from before the window, unless that one
+ * says the record was deleted. Returns how many went.
+ */
+async function pruneSnapshots(sql, at) {
   const cutoff = shiftDays(at, -RETAIN_DAYS);
   const pruned = await sql`
     DELETE FROM app_data_snapshots b
@@ -151,7 +169,7 @@ async function backupAppData(sql, at) {
                         AND n.taken_at < ${cutoff}::timestamptz))
     RETURNING b.key
   `;
-  return { stored: stored.length, gone: gone.length, pruned: pruned.length };
+  return pruned.length;
 }
 
 /**
@@ -372,10 +390,8 @@ async function deliver(send, recipients, { subject, html }) {
 }
 
 /**
- * The whole run: back up, count, compare, email. The backup runs first, but
- * its failure does not stop the check — a night with no copy is exactly when
- * a shrinking list most needs noticing — and one company's failure does not
- * stop the rest.
+ * The whole run: back up, count, compare, email — unless another run is
+ * under way, when it stops at once and says so in `skipped`.
  */
 async function runDataBackup(sql, opts = {}) {
   const at = runInstant(opts.now || new Date());
@@ -383,8 +399,53 @@ async function runDataBackup(sql, opts = {}) {
   const recipients = opts.recipients || alertRecipients();
   const result = { at, backup: null, measures: 0, alerts: [], emailed: 0, pending: 0, errors: [] };
 
-  try { result.backup = await backupAppData(sql, at); }
+  // The lock is one row. A run that dies holding it (Vercel stops the
+  // function after a minute) leaves it to go stale after five.
+  const holder = `${at}/${Math.random().toString(36).slice(2, 10)}`;
+  let locked = false;
+  try {
+    const got = await sql`
+      INSERT INTO data_backup_lock (id, holder, locked_at) VALUES (1, ${holder}, NOW())
+      ON CONFLICT (id) DO UPDATE SET holder = EXCLUDED.holder, locked_at = EXCLUDED.locked_at
+        WHERE data_backup_lock.locked_at < NOW() - INTERVAL '5 minutes'
+      RETURNING holder
+    `;
+    if (!got.length) {
+      result.skipped = 'another run is under way';
+      result.failed = false;
+      return result;
+    }
+    locked = true;
+  } catch (err) {
+    // The run can do its job without the lock: at worst a run alongside it
+    // repeats an alert. It carries on, and says so.
+    result.errors.push({ step: 'lock', error: err.message });
+  }
+  try {
+    await runNight(sql, at, send, recipients, result);
+  } finally {
+    if (locked) {
+      try { await sql`DELETE FROM data_backup_lock WHERE id = 1 AND holder = ${holder}`; }
+      catch (err) { result.errors.push({ step: 'unlock', error: err.message }); }
+    }
+  }
+  return result;
+}
+
+/**
+ * The backup runs first, but its failure does not stop the check — a night
+ * with no copy is exactly when a shrinking list most needs noticing — and one
+ * company's failure does not stop the rest.
+ */
+async function runNight(sql, at, send, recipients, result) {
+  let copied = false;
+  try { result.backup = await backupAppData(sql, at); copied = true; }
   catch (err) { result.errors.push({ step: 'backup', error: err.message }); }
+
+  try {
+    const pruned = await pruneSnapshots(sql, at);
+    if (result.backup) result.backup.pruned = pruned;
+  } catch (err) { result.errors.push({ step: 'prune copies', error: err.message }); }
 
   let counts = null;
   try { counts = await readCounts(sql); }
@@ -421,20 +482,26 @@ async function runDataBackup(sql, opts = {}) {
             result.errors.push({ company: code, step: 'email', error: why });
             // Kept for later runs to send. If it cannot even be kept, these
             // counts are not recorded either, so the next run finds the same
-            // drop against the same baseline and tries again.
-            try {
-              await sql`
-                INSERT INTO list_alerts_pending (company_code, found_at, since, drops, attempts, last_error)
-                VALUES (${code}, ${at}::timestamptz, ${prev.at}::timestamptz, ${JSON.stringify(drops)}::jsonb, 1, ${why})
-                ON CONFLICT (company_code, found_at) DO NOTHING
-              `;
-              result.pending++;
-            } catch (err) {
-              result.errors.push({ company: code, step: 'queue', error: err.message });
-              continue;
+            // drop against the same baseline and tries again. A run that made
+            // no copy records no counts at all, so it keeps nothing either.
+            if (copied) {
+              try {
+                await sql`
+                  INSERT INTO list_alerts_pending (company_code, found_at, since, drops, attempts, last_error)
+                  VALUES (${code}, ${at}::timestamptz, ${prev.at}::timestamptz, ${JSON.stringify(drops)}::jsonb, 1, ${why})
+                  ON CONFLICT (company_code, found_at) DO NOTHING
+                `;
+                result.pending++;
+              } catch (err) {
+                result.errors.push({ company: code, step: 'queue', error: err.message });
+                continue;
+              }
             }
           }
         }
+        // Without a copy beside them these counts would send a later alert's
+        // restore to an older copy than the counts it quotes.
+        if (!copied) continue;
         const rows = [...now].map(([measure, n]) => ({ company_code: code, measure, n }));
         // A list gone now is recorded as empty, once: the next run compares
         // it as empty, and the run after that it is simply gone.
@@ -495,12 +562,10 @@ async function runDataBackup(sql, opts = {}) {
     if (why === null) result.emailed++;
     else result.errors.push({ step: 'email', error: why });
   }
-
-  return result;
 }
 
 module.exports = {
   RETAIN_DAYS, COUNTS_RETAIN_DAYS, MAX_SEND_ATTEMPTS, EMPTIED_MIN, HALVED_MIN, SKIP_BACKUP, DELETED,
   isWatched, runInstant, shiftDays, human, findDrops, labelFor, restoreSql, buildAlert, buildFailure,
-  alertRecipients, deliver, backupAppData, readCounts, recordCounts, previousCounts, runDataBackup,
+  alertRecipients, deliver, backupAppData, pruneSnapshots, readCounts, recordCounts, previousCounts, runDataBackup,
 };
