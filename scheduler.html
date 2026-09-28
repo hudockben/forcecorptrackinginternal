@@ -152,6 +152,28 @@
     .job-row:hover .cell-times .jt, .cell-times:focus-within .jt { opacity:1; }
     .cell-times .jt-k { width:1.7rem; font-size:0.46rem; }
     .cell-times input[type=time].jt-in { font-size:0.56rem; }
+    /* The crew's note. On a day board it is typed into the day cell, floated
+       right so the names wrap around it, and borderless until it is wanted,
+       like the time fields. An empty one steps back until its row is under
+       the cursor. The right margin keeps it clear of the crew-repeat corner.
+       [type=text] in the selector for the reason the time field gives. */
+    .jn { float:right; display:flex; align-items:center; gap:0.3rem; width:clamp(180px, 38%, 480px); margin:0 12px 2px 0.6rem; cursor:text; }
+    .jn-k { flex:0 0 auto; font-size:0.52rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--amber); }
+    .jn.unset { opacity:0.4; transition:opacity .1s; }
+    .jn.unset .jn-k { color:var(--muted); }
+    .job-row:hover .jn.unset, .jn:focus-within { opacity:1; }
+    input[type=text].jn-in {
+      flex:1 1 auto; min-width:0; font-size:0.66rem; font-family:inherit; color:var(--text);
+      background:transparent; border:1px solid transparent; border-radius:4px; padding:0 0.25rem; height:1.25rem; }
+    input[type=text].jn-in:hover { border-color:var(--border); background:var(--surface2); }
+    input[type=text].jn-in:focus { outline:none; border-color:var(--blue); background:var(--surface2); }
+    input[type=text].jn-in::placeholder { color:var(--muted); }
+    /* Week board: shown, not typed. One line, cut short, the rest on hover.
+       contain:inline-size keeps the line's full length out of the column's
+       width — without it a long note widened its day and squeezed the other
+       six, when cutting it short was the whole idea. */
+    .cell-note { contain:inline-size; font-size:0.58rem; line-height:1.3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-bottom:2px; }
+    .cell-note .jn-k { font-size:0.46rem; margin-right:0.15rem; }
     .asn { display:inline-block; vertical-align:top; max-width:100%; font-size:0.64rem; line-height:1.3; padding:0.05rem 0.3rem; border-radius:4px; margin:0 0.14rem 0.14rem 0; border-left:3px solid var(--muted); background:var(--surface2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .asn.conflict { background:rgba(239,68,68,0.18); border-left-color:var(--red); } .asn.half { opacity:0.85; font-style:italic; } .asn .cc { color:var(--muted); }
     /* A haul is read through from Trucking and saves back there. The dashed
@@ -785,11 +807,18 @@ async function refreshData() {
     if (_dirtyAssign || _dirtyCrews || truckDirty()) { setSaveStatus('pending'); _scheduleFlush(); } else setSaveStatus('saved');
   } catch (err) { toast('Refresh failed: ' + err.message); }
 }
+// A note saves when its field is left, and closing the tab does not leave it —
+// so a note still being typed is kept here, before the last save goes out.
+function commitNoteTyping() {
+  const el = document.activeElement;
+  if (el && el.classList && el.classList.contains('jn-in')) onJobNoteCell(el, true);
+  else if (el && el.id === 'jobNote') onJobNoteInput(true);
+}
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') flushSaves(true);
+  if (document.visibilityState === 'hidden') { commitNoteTyping(); flushSaves(true); }
   else if (_dirtyAssign || _dirtyCrews || truckDirty()) flushSaves(false); // tab returned with unsaved edits — retry now
 });
-window.addEventListener('pagehide', () => flushSaves(true));
+window.addEventListener('pagehide', () => { commitNoteTyping(); flushSaves(true); });
 window.addEventListener('online', () => { if (_dirtyAssign || _dirtyCrews || truckDirty()) flushSaves(false); });
 document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
@@ -930,8 +959,10 @@ function siteKey(division, jobId) { return division + '::' + jobId; }
 function shopKey(division, jobId) { return 'shop¦' + division + '::' + jobId; }
 function timeKeyFor(kind, division, jobId) { return kind === 'shop' ? shopKey(division, jobId) : siteKey(division, jobId); }
 function getJobTime(kind, date, division, jobId) { return (state.siteTimes[date] || {})[timeKeyFor(kind, division, jobId)] || ''; }
-function setJobTime(kind, division, jobId, val, dates) {
-  const key = timeKeyFor(kind, division, jobId);
+function setJobTime(kind, division, jobId, val, dates) { setDayEntry(timeKeyFor(kind, division, jobId), val, dates); }
+// One entry under one key on each of the dates. An empty value takes the entry
+// off, and a date left with nothing on it goes with it.
+function setDayEntry(key, val, dates) {
   dates.forEach(d => {
     const day = state.siteTimes[d] || (state.siteTimes[d] = {});
     if (val) day[key] = val; else { delete day[key]; if (!Object.keys(day).length) delete state.siteTimes[d]; }
@@ -940,6 +971,21 @@ function setJobTime(kind, division, jobId, val, dates) {
 }
 function getSiteTime(date, division, jobId) { return getJobTime('site', date, division, jobId); }
 function getShopTime(date, division, jobId) { return getJobTime('shop', date, division, jobId); }
+// ── The crew's note (per job, per day) ──────────────────────────────────────
+// What the crew needs to know that is not a time: the gate code, the mix
+// coming at seven, bring the laser screed. It rides in the same siteTimes map
+// under a third key, for the reason the shop time does — a string under its
+// own key merges with no change to the merge, and two schedulers writing notes
+// on different jobs never touch the same entry. Prefixed like the shop key.
+function noteKey(division, jobId) { return 'note¦' + division + '::' + jobId; }
+const NOTE_MAX = 200;
+// One line, trimmed, capped: the board shows a note on one line and the
+// dispatch sheet prints it under the job, and a pasted paragraph is neither.
+// Cut by character, not by code unit, so an emoji at the cap is kept or
+// dropped whole rather than cut in half.
+function cleanNote(s) { return Array.from(String(s == null ? '' : s).replace(/\s+/g, ' ').trim()).slice(0, NOTE_MAX).join(''); }
+function getJobNote(date, division, jobId) { return (state.siteTimes[date] || {})[noteKey(division, jobId)] || ''; }
+function setJobNote(division, jobId, text, dates) { setDayEntry(noteKey(division, jobId), cleanNote(text), dates); }
 // What counts as ONE commitment for the double-booking flag. Every haul a man
 // has collapses to a single one, because running three loads in a day is an
 // ordinary trucking day and reddening it would spend the flag on the one case
@@ -1191,6 +1237,7 @@ function jobAllDone(job) {
 // ── Render dispatch ─────────────────────────────────────────────────────────
 function render() {
   if (!state.board) return;
+  const typing = captureNoteTyping();
   ['job','crew','attention','ai'].forEach(v => document.getElementById('tab-'+v).classList.toggle('active', state.view === v));
   const conf = totalConflicts();
   document.getElementById('tab-crew').innerHTML = 'By Crew' + (conf ? ' <span class="pip" title="cross-job conflicts">'+conf+'</span>' : '');
@@ -1203,6 +1250,7 @@ function render() {
   else if (state.view === 'crew') main.innerHTML = renderCrewBoard();
   else if (state.view === 'attention') main.innerHTML = renderAttention();
   else main.innerHTML = renderAI();
+  restoreNoteTyping(typing);
   updateUndoButtons();
 }
 function divFilterHtml() { const opts = ['all'].concat(state.board.sourceDivisions || []).concat([OTHER_DIV]); return '<select id="divFilter">' + opts.map(d => '<option value="'+d+'"'+(state.divFilter===d?' selected':'')+'>'+esc(d==='all'?'All divisions':d===OTHER_DIV?'Off project':divTitle(d))+'</option>').join('') + '</select>'; }
@@ -1555,6 +1603,76 @@ function onJobTimeCell(kind, division, jobId, date, el) {
 function cellTimesHtml(date, division, jobId) {
   return '<div class="cell-times">' + timeFieldsHtml(date, division, jobId) + '</div>';
 }
+// The crew's note, where the crew is. On a DAY board it is typed straight into
+// the day cell, floated right so the names wrap around it rather than being
+// pushed under it, and it saves the one day it sits on, as the time fields
+// beside the job name do. It saves when the field is left or Enter is pressed,
+// not on every keystroke: a note half typed is not one to print on a dispatch
+// sheet. Always drawn, stepping back while it is empty, because a note nobody
+// can see a place for is a note nobody writes.
+function noteFieldHtml(date, division, jobId) {
+  const n = getJobNote(date, division, jobId);
+  return '<label class="jn'+(n ? '' : ' unset')+'" onclick="event.stopPropagation()">'+
+    '<span class="jn-k">Note</span>'+
+    '<input type="text" class="jn-in" maxlength="'+NOTE_MAX+'" value="'+esc(n)+'"'+
+      ' placeholder="for the crew — gate code, delivery…"'+
+      ' data-date="'+esc(date)+'" data-div="'+esc(division)+'" data-job="'+esc(jobId)+'"'+
+      ' onkeydown="onJobNoteKey(event,this)" onblur="onJobNoteCell(this)"'+
+      ' title="'+esc(noteTitle(n))+'">'+
+  '</label>';
+}
+function noteTitle(n) { return n || 'A note for the crew on this job, this day — it prints on the dispatch sheet'; }
+// Enter keeps it and Escape puts back what was there. No key typed here
+// reaches the board's own: Ctrl+Z in a note undoes typing, not the last booking.
+function onJobNoteKey(e, el) {
+  e.stopPropagation();
+  if (e.key === 'Enter') { e.preventDefault(); el.blur(); }
+  else if (e.key === 'Escape') { e.preventDefault(); el.value = getJobNote(el.dataset.date, el.dataset.div, el.dataset.job); el.blur(); }
+}
+// On blur rather than on change, and compared with what is stored rather than
+// with what the field held when it was focused: the board can be redrawn under
+// somebody mid-note (another scheduler's save merging in), and the field that
+// comes back holding their words has to save them when it is left.
+// No re-render, for the reason onJobTimeCell gives. `typing` is set when the
+// note is saved while somebody is still in the field (the tab going away):
+// the words are saved, and the field is left exactly as typed, trailing space
+// and all, so the next word lands where it should.
+function onJobNoteCell(el, typing) {
+  const { date, div, job } = el.dataset;
+  const next = cleanNote(el.value);
+  if (!typing) el.value = next;
+  const wrap = el.closest('.jn'); if (wrap) wrap.classList.toggle('unset', !next);
+  el.title = noteTitle(next);
+  if (next === getJobNote(date, div, job)) return;
+  setJobNote(div, job, next, [date]);
+  toast((next ? 'Note saved' : 'Note cleared') + ' · ' + shortDate(date));
+}
+// A week cell is too narrow to type a note into, so there it is shown rather
+// than edited: one line, cut short, all of it on hover. The cell opens the
+// dialog as it always has, and the dialog carries the note beside the times.
+function cellNoteHtml(date, division, jobId) {
+  const n = getJobNote(date, division, jobId);
+  return n ? '<div class="cell-note" title="'+esc(n)+'"><span class="jn-k">Note</span> '+esc(n)+'</div>' : '';
+}
+// A board redrawn while somebody is typing a note would take the field out
+// from under the cursor and the words with it. So the field is found again by
+// the day and job it belongs to, and the words and the caret go back in.
+// Matched by walking the fields rather than by an attribute selector, because
+// an off-project job id is a label somebody typed.
+function captureNoteTyping() {
+  const el = document.activeElement;
+  if (!el || !el.classList || !el.classList.contains('jn-in')) return null;
+  return { date: el.dataset.date, div: el.dataset.div, job: el.dataset.job, value: el.value, from: el.selectionStart, to: el.selectionEnd };
+}
+function restoreNoteTyping(k) {
+  if (!k) return;
+  const el = Array.from(document.querySelectorAll('#main .jn-in'))
+    .find(x => x.dataset.date === k.date && x.dataset.div === k.div && x.dataset.job === k.job);
+  if (!el) return;
+  el.value = k.value;
+  el.focus();
+  try { el.setSelectionRange(k.from, k.to); } catch {}
+}
 // The times live in the assign dialog, in a section that is collapsed unless
 // one is already set. Reached from the cell, open it: somebody who clicked the
 // clock wants the clock, not to go hunting for it behind a disclosure.
@@ -1600,7 +1718,11 @@ function jobRowHtml(job, ds, tStr) {
     // one is wanted before the crew, the cell opens the dialog as it always has.
     const wantTimes = !oneDay && (crew.length ||
       getShopTime(d, job.division, job.id) || getSiteTime(d, job.division, job.id));
-    return dayCell(job, '', d, tStr, crew, wantTimes ? cellTimesHtml(d, job.division, job.id) : '');
+    // The note is not held back with the times: a day can want one before
+    // anybody is on it.
+    const extra = oneDay ? noteFieldHtml(d, job.division, job.id)
+      : (wantTimes ? cellTimesHtml(d, job.division, job.id) : '') + cellNoteHtml(d, job.division, job.id);
+    return dayCell(job, '', d, tStr, crew, extra);
   }).join('');
   return '<tr class="job-row"><td class="lead-col job-lead" style="border-left:3px solid '+col+'">'+
     '<div class="jl-wrap"><div class="jl-main">'+
@@ -2347,12 +2469,20 @@ function modalJobHtml(ctx) {
   const timesHtml = timeRow('shop', 'Be at the shop', '🏠', shopVal) +
     timeRow('site', 'Be on site', '⏰', siteVal) +
     '<div class="muted" style="font-size:0.68rem;margin-top:0.35rem">Both are for the WHOLE crew on <strong>'+esc(job.name)+'</strong> · '+spanLabel()+'.</div>';
+  // The note sits with the times: the other thing the crew is told about the
+  // day, set across the same Apply-to span. This is where a week board, whose
+  // cells are too narrow to type in, changes one.
+  const noteVal = getJobNote(ctx.date, ctx.division, ctx.jobId);
+  const noteHtml = '<label class="fld">Note for the crew</label>'+
+    '<input type="text" class="full" id="jobNote" maxlength="'+NOTE_MAX+'" value="'+esc(noteVal)+'" placeholder="Gate code, a delivery, what to bring…" onkeydown="onJobNoteModalKey(event)" onchange="onJobNoteInput()" autocomplete="off">'+
+    '<div class="muted" style="font-size:0.68rem;margin-top:0.35rem">Prints on the dispatch sheet under this job · '+spanLabel()+'.</div>';
   const anyTime = shopVal || siteVal;
   const timeSummary = [shopVal?'🏠 '+fmtTime(shopVal):'', siteVal?'⏰ '+fmtTime(siteVal):''].filter(Boolean).join(' · ');
-  const moreOpen = !!state.moreOpts || !!anyTime;
-  const moreHtml = '<button class="more-tog" onclick="toggleMoreOptions()">'+(moreOpen?'▾':'▸')+' Report times &amp; saved crews'+
-      (anyTime?' <span style="color:var(--blue)">· '+esc(timeSummary)+'</span>':'')+'</button>'+
-    (moreOpen ? '<div>'+timesHtml+'<label class="fld">Saved crews</label>'+crewOpts+'</div>' : '');
+  const summary = [timeSummary, noteVal ? 'note' : ''].filter(Boolean).join(' · ');
+  const moreOpen = !!state.moreOpts || !!anyTime || !!noteVal;
+  const moreHtml = '<button class="more-tog" onclick="toggleMoreOptions()">'+(moreOpen?'▾':'▸')+' Report times, note &amp; saved crews'+
+      (summary?' <span style="color:var(--blue)">· '+esc(summary)+'</span>':'')+'</button>'+
+    (moreOpen ? '<div>'+timesHtml+noteHtml+'<label class="fld">Saved crews</label>'+crewOpts+'</div>' : '');
 
   return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(divLabel(ctx.division))+'</span> '+esc(job.name)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
     summaryLine(job, null) +
@@ -2379,6 +2509,28 @@ function onJobTimeInput(kind) {
   if (el.value) toast((kind === 'shop' ? 'At the shop ' : 'On site ') + fmtTime(el.value) + (state.applySpan !== 'day' ? ' · ' + spanLabel() : ''));
 }
 function clearJobTime(kind) { const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return; setJobTime(kind, ctx.division, ctx.jobId, '', spanDates(ctx.date)); afterMutate(); }
+// Across the Apply-to span, as the times are: "gate code 4471" is usually true
+// all week. Only the board is redrawn — the field already says what was typed.
+// `typing` as onJobNoteCell has it.
+function onJobNoteInput(typing) {
+  const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
+  const el = document.getElementById('jobNote'); if (!el) return;
+  const next = cleanNote(el.value), dates = spanDates(ctx.date);
+  if (!typing) el.value = next;
+  if (dates.every(d => getJobNote(d, ctx.division, ctx.jobId) === next)) return;
+  setJobNote(ctx.division, ctx.jobId, next, dates);
+  document.getElementById('main').innerHTML = state.view==='job' ? renderJobBoard() : renderCrewBoard();
+  toast((next ? 'Note saved' : 'Note cleared') + (state.applySpan !== 'day' ? ' · ' + spanLabel() : ''));
+}
+// Enter keeps the note. So does Escape, which then closes the dialog as it
+// always has — everything else in this dialog saves as it goes, and a note
+// should not be the one thing Escape throws away. No other key reaches the
+// board: Ctrl+Z here undoes typing, not the last booking.
+function onJobNoteModalKey(e) {
+  if (e.key === 'Enter') { e.preventDefault(); e.target.blur(); return; }
+  if (e.key === 'Escape') { e.target.blur(); return; }
+  e.stopPropagation();
+}
 function updatePickList() {
   const ctx = state.assignCtx; if (!ctx || ctx.mode !== 'job') return;
   const box = document.getElementById('pickList'); if (!box) return;
@@ -2626,6 +2778,10 @@ function importPlanned() {
 const _td = 'border:1px solid #ccc;padding:5px 7px;text-align:left;vertical-align:top;font-size:12px';
 const _th = 'border:1px solid #ccc;padding:5px 7px;text-align:left;background:#f2f2f2;font-size:11px';
 const _h2 = 'font-size:15px;font-weight:800;border-bottom:2px solid #333;padding-bottom:3px;margin:18px 0 6px;color:#111';
+// The crew's note on the sheet: labelled in words and tinted, so it reads as
+// something to act on rather than as more of the table.
+const _noteTd = 'background:#fffbeb;color:#27272a';
+function dispatchNote(note, jobName) { return '<strong style="color:#92400e">Note</strong> — '+(jobName ? esc(jobName)+': ' : '')+esc(note); }
 function dispatchDates(scope) { return scope === 'today' ? [todayStr()] : fullWeekDateStrs(); }
 function dispatchTitle(scope) {
   if (scope === 'today') return 'Crew Dispatch — ' + new Date(todayStr()+'T12:00:00').toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'});
@@ -2685,7 +2841,7 @@ function dispatchBodyJob(dates) {
       const byCode = {};
       j.days[d].forEach(a => { const ck = a.costCode||''; (byCode[ck] = byCode[ck] || { costCode:ck, items:[] }).items.push(a); });
       const codeKeys = Object.keys(byCode).sort((x,y) => x.localeCompare(y));
-      return codeKeys.map((ck, i) => { const g = byCode[ck];
+      const codeRows = codeKeys.map((ck, i) => { const g = byCode[ck];
         // Dedupe defensively so a duplicate assignment never lists a name twice.
         const seenP = new Set(), people = []; g.items.forEach(a => { if (a.kind==='emp' && !seenP.has(a.resource)) { seenP.add(a.resource); people.push(a); } });
         const seenM = new Set(), machines = []; g.items.forEach(a => { if (a.kind==='equip') { const mk=a.resource+'¦'+(a.op||''); if (!seenM.has(mk)) { seenM.add(mk); machines.push(a); } } });
@@ -2705,6 +2861,10 @@ function dispatchBodyJob(dates) {
         const tline = t => '<div style="font-weight:800;color:#1d4ed8;font-size:11px;margin-top:2px">'+t+'</div>';
         const dayCell = i===0 ? dayLabel(d)+(sh?tline('🏠 Shop '+esc(fmtTime(sh))):'')+(st?tline('⏰ On site '+esc(fmtTime(st))):'') : '';
         return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600;vertical-align:top">'+dayCell+'</td><td style="'+_td+'">'+code+'</td><td style="'+_td+'">'+(crew.join(', ')||'—')+'</td><td style="'+_td+';color:#444">'+(eq.join(', ')||'—')+'</td></tr>'; }).join('');
+      // The note is the job's for the day, not a cost code's, so it prints once
+      // under the day's rows, across the whole table where the crew reads it.
+      const note = getJobNote(d, j.division, j.jobId);
+      return codeRows + (note ? '<tr><td colspan="4" style="'+_td+';'+_noteTd+'">'+dispatchNote(note)+'</td></tr>' : '');
     }).join('');
     return '<div style="'+_h2+'">'+esc(divLabel(j.division).toUpperCase())+' · '+esc(j.name)+'</div>'+dispatchJobSummary(job, j.days, dates)+'<table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:120px">Day</th><th style="'+_th+';width:22%">Cost Code</th><th style="'+_th+'">Crew</th><th style="'+_th+';width:22%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
 }
@@ -2725,7 +2885,13 @@ function dispatchBodyPerson(dates) {
       const onSite = (shops.length || times.length) ? '<strong style="color:#1d4ed8">'+
         [shops.length ? 'Shop '+shops.map(t=>esc(fmtTime(t))).join(' / ') : '',
          times.length ? 'On site '+times.map(t=>esc(fmtTime(t))).join(' / ') : ''].filter(Boolean).join(' · ')+'</strong> — ' : '';
-      return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600">'+dayLabel(d)+'</td><td style="'+_td+'">'+onSite+jobs+'</td></tr>'; }).join('');
+      // The note of each job they are on that day, under the assignment — and
+      // named, when they are on more than one, so a note is never read as
+      // belonging to the wrong job.
+      const onJobs = new Map(); items.forEach(a => onJobs.set(a.division+'::'+a.jobId, a));
+      const notes = [...onJobs.values()].map(a => { const n = getJobNote(d, a.division, a.jobId);
+        return n ? '<div style="margin-top:3px;padding:2px 5px;'+_noteTd+'">'+dispatchNote(n, onJobs.size > 1 ? a.jobName : '')+'</div>' : ''; }).join('');
+      return '<tr><td style="'+_td+';white-space:nowrap;font-weight:600">'+dayLabel(d)+'</td><td style="'+_td+'">'+onSite+jobs+notes+'</td></tr>'; }).join('');
     return '<div style="'+_h2+'">'+esc(n)+(r.kind==='equip'?' (equipment)':'')+'</div><table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:150px">Day</th><th style="'+_th+'">Assignment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
 }
 
@@ -2931,7 +3097,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { addOtherWork, onJobTimeInput, clearJobTime, onJobTimeCell, setBoardSpan, openJobTimes, toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
+Object.assign(window, { addOtherWork, onJobTimeInput, clearJobTime, onJobTimeCell, onJobNoteKey, onJobNoteCell, onJobNoteInput, onJobNoteModalKey, setBoardSpan, openJobTimes, toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
   newCrew, editCrew, cancelCrewEdit, saveCrewEdit, addCrewMember, removeCrewMember, updateCrewPickList, crewPickKey, onCrewName, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, toggleHideComplete, dismissHint, setCompact });
 wireBoardDnD();
 loadAll();

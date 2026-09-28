@@ -43,7 +43,7 @@ const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
 const { requireFn } = require(path.resolve(__dirname, 'lib/fn-source.js'));
 const SCHED = read('scheduler.html');
 
-const FNS = ['siteKey','shopKey','timeKeyFor','getJobTime','setJobTime','getSiteTime','getShopTime',
+const FNS = ['siteKey','shopKey','timeKeyFor','getJobTime','setJobTime','setDayEntry','getSiteTime','getShopTime',
              'cellTimesHtml','jobTimesHtml','timeFieldsHtml','fmtTime','fmtTimeShort'];
 
 function page(siteTimes) {
