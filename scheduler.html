@@ -96,8 +96,15 @@
     table.board thead th { position:sticky; top:0; background:var(--surface2); z-index:5; padding:0.26rem 0.4rem; text-align:center; font-weight:700; white-space:nowrap; }
     table.board thead th.weekend { color:var(--muted); } table.board thead th.today { color:var(--blue); }
     /* Wider than it was: the board is a handful of job rows now, not 78
-       sub-code rows, so the job name fits on one line and the row stays short. */
-    .lead-col { position:sticky; left:0; background:var(--surface); z-index:6; min-width:368px; max-width:418px; text-align:left !important; padding:0.26rem 0.5rem !important; }
+       sub-code rows, so the job name fits on one line and the row stays short.
+       The width is SET, not only capped. A table shares its spare width out
+       by how much each column holds, and a job's name and its shop and site
+       times hold more than an empty day does — so on a one-day board the Job
+       column was handed three quarters of the screen, most of it blank, and
+       the day the crew goes on got the rest. max-width does not stop that: it
+       caps what a column asks for, not what it is given. A column with a
+       width of its own sits out the share-out, and the days take all of it. */
+    .lead-col { position:sticky; left:0; background:var(--surface); z-index:6; width:418px; min-width:368px; max-width:418px; text-align:left !important; padding:0.26rem 0.5rem !important; }
     thead .lead-col { z-index:7; }
     .cell { position:relative; min-width:120px; height:auto; min-height:34px; padding:0.16rem; cursor:pointer; transition:background .1s; }
     body.compact .cell { min-height:26px; }
@@ -108,13 +115,10 @@
        absolute would lie on top of a cell holding nine names. */
     /* The job's name and its two report times, side by side in the lead cell.
        The name takes what is left; the times never shrink, because a time that
-       has been ellipsised is worse than no time at all. */
-    /* Capped, not stretched. A table cell takes whatever width the layout
-       hands it — on a one-column day board that is most of the screen — and
-       max-width on a <td> is not honoured in auto layout, so the cap lives
-       on this wrapper instead. Without it the times drift to the far right
-       of a 1000px cell, a foot away from the job they belong to. */
-    .jl-wrap { display:flex; align-items:flex-start; gap:0.5rem; max-width:398px; }
+       has been ellipsised is worse than no time at all. No cap of its own: the
+       lead column's set width is what keeps the times beside the job they
+       belong to rather than a foot away across a stretched cell. */
+    .jl-wrap { display:flex; align-items:flex-start; gap:0.5rem; }
     .jl-main { flex:1 1 auto; min-width:0; }
     .job-times { flex:0 0 auto; display:flex; flex-direction:column; gap:1px; cursor:pointer; padding:1px 0 0 0.3rem; border-left:1px solid var(--border); }
     .jt { display:flex; align-items:center; gap:0.3rem; line-height:1.2; white-space:nowrap; }
