@@ -4581,6 +4581,17 @@ function _showSaveError(isAuth, customMsg, keptLocally = true) {
   banner.style.display = '';
 }
 
+/**
+ * A save refused because its list never loaded from the server. What the page
+ * holds then is an empty stand-in, and saving it would replace the real list
+ * with it. Nothing was kept, so the banner does not say it was.
+ */
+function _unloadedSaveRefused(what) {
+  console.warn(`[${what}] not saved: not loaded from the server yet`);
+  _showSaveError(false, `The ${what} have not loaded from the server, so that change was not saved. ` +
+    'Reload the page, then make it again.', false);
+}
+
 /** Fetch multiple keys in one request. Returns { key1: value1, key2: value2, ... } */
 async function apiBatchGet(keys) {
   if (!keys.length) return {};
@@ -6966,6 +6977,11 @@ function nextTRNumber() {
 
 /* ── Inventory store ── */
 let inventoryEntries = [];
+// True once inventory has been read from the server. Until then the empty
+// list above is a stand-in, and saving it with one new entry would replace
+// every entry on the server. saveInventoryEntries() refuses until this is set;
+// the 60-second data poll finishes a load that failed.
+let _inventoryLoaded = false;
 let _invYear = new Date().getFullYear();
 let _invBreakdownOpen = false;
 
@@ -12304,17 +12320,27 @@ function saveSoeUnitOverrides() {
 }
 
 async function loadInventoryEntries() {
-  let saved = await apiGet('fct_inventory');
-  if (!saved || (Array.isArray(saved) && saved.length === 0)) {
+  const got = await apiGetChecked('fct_inventory');
+  // A failed read says nothing about what is stored. This used to push this
+  // browser's own copy back instead — written only when it last saved, so
+  // possibly weeks old — erasing every entry anyone else had added since.
+  if (!got.ok) return;
+  let saved = got.value;
+  if (saved == null) {
+    // The server has never held inventory: carry over this browser's copy
+    // from before it moved there. Not when the server holds an empty list —
+    // that is a list someone emptied, and the old copy would bring it back.
     try {
       const local = JSON.parse(localStorage.getItem('fct_inventory'));
       if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_inventory', saved); }
     } catch {}
   }
   inventoryEntries = Array.isArray(saved) ? saved : [];
+  _inventoryLoaded = true;
 }
 
 function saveInventoryEntries() {
+  if (!_inventoryLoaded) { _unloadedSaveRefused('inventory entries'); return; }
   localStorage.setItem('fct_inventory', JSON.stringify(inventoryEntries));
   apiPut('fct_inventory', inventoryEntries);
 }
@@ -12328,7 +12354,12 @@ function nextINVNumber() {
   return 'INV-' + String(next).padStart(4, '0');
 }
 
+// No entry can be added until inventory has loaded: the list is a stand-in
+// until then, and an entry added to it — or the daily row the project picker
+// links to one — would outlive the stand-in the next poll replaces. Copy and
+// delete need an existing entry, and end in the guarded save.
 function addINV() {
+  if (!_inventoryLoaded) { _unloadedSaveRefused('inventory entries'); return; }
   inventoryEntries.push({
     id:              uid(),
     inv_number:      nextINVNumber(),
@@ -15322,7 +15353,17 @@ let lists = {};
 // and Assigned Equipment boxes. saveLists() refuses until this is set.
 let _listsLoaded = false;
 
-async function loadLists() {
+// One read of the lists at a time. The retry timer and the lists poll can
+// each start one, and a slow read answering after a newer one would put its
+// older lists back over the newer ones, and over any edit made in between.
+// A second caller waits for the read already under way.
+let _listsLoading = null;
+function loadLists() {
+  if (!_listsLoading) _listsLoading = _readLists().finally(() => { _listsLoading = null; });
+  return _listsLoading;
+}
+
+async function _readLists() {
   const got = await apiGetChecked('fct_lists');
   if (!got.ok) {
     // Nothing is known about what the server holds. Draw with empty lists (a
@@ -15392,6 +15433,13 @@ function _redrawAfterListsLoad() {
   _listsRedrawPending = false;
   if (activeTab === 'info') renderProjectsTab();
   if (activeTab === 'supplier') renderSupplierTab();
+  // The phone's Daily Entry form was drawn with no crew or equipment to pick.
+  // It is redrawn only while nothing has been entered in it, since a redraw
+  // clears it. Once something has, it picks the lists up when next drawn.
+  if (activeTab === 'mob-entry') {
+    const form = document.getElementById('mob-entry-root');
+    if (form && !form.dataset.touched) renderMobileEntryForm();
+  }
   if (document.querySelector('.list-panel.active')) renderAllListPanels();
 }
 
@@ -15406,14 +15454,9 @@ function costCodeLabel(code, fallback) {
   return (hit && hit.description) || fallback || '';
 }
 function saveLists() {
-  if (!_listsLoaded) {
-    // The lists on this page are the empty defaults, not the company's.
-    // Saving them would wipe every list on the server.
-    console.warn('[lists] not saved: the lists have not loaded from the server');
-    _showSaveError(false, 'The employee, equipment and supplier lists have not loaded from the server, ' +
-      'so that change to them was not saved. Reload the page, then make it again.', false);
-    return;
-  }
+  // The lists on this page are the empty defaults, not the company's.
+  // Saving them would wipe every list on the server.
+  if (!_listsLoaded) { _unloadedSaveRefused('employee, equipment and supplier lists'); return; }
   apiPut('fct_lists', lists);
 }
 
@@ -17700,6 +17743,10 @@ document.getElementById('inventory-root').addEventListener('change', e => {
   const el = e.target;
   const id = el.dataset.invId, field = el.dataset.invField;
   if (!id || !field) return;
+  // Picking a project here posts a linked daily row before the entry is saved.
+  // Before inventory has loaded, the entry is a stand-in the next poll throws
+  // away, and the row would stay on the job with nothing owning it.
+  if (!_inventoryLoaded) { _unloadedSaveRefused('inventory entries'); return; }
   const entry = inventoryEntries.find(x => x.id === id);
   if (!entry) return;
   const oldProj = entry.project_id;
@@ -18476,19 +18523,35 @@ function addListItem(key) {
 ═══════════════════════════════════════════ */
 const COST_KEY = 'fct_cost_rows';
 let costRows = [];
+// True once the cost rows have been read from the server. Until then the empty
+// list above is a stand-in, and saving it with one new row would replace every
+// row on the server. saveCostRows() refuses until this is set; the 60-second
+// data poll finishes a load that failed.
+let _costRowsLoaded = false;
 
 async function loadCostRows() {
-  let saved = await apiGet('fct_cost_rows');
-  if (!saved || (Array.isArray(saved) && saved.length === 0)) {
-    // Try legacy localStorage key as migration fallback
+  const got = await apiGetChecked('fct_cost_rows');
+  // A failed read says nothing about what is stored. This used to push the
+  // legacy local copy back instead — one nothing has written since the rows
+  // moved to the server — rolling the cost rows back to it.
+  if (!got.ok) return;
+  let saved = got.value;
+  if (saved == null) {
+    // The server has never held cost rows: try the legacy localStorage key as
+    // a migration fallback. Not when it holds an empty list — that is a list
+    // someone emptied, and the old copy would bring it back.
     try {
       const local = JSON.parse(localStorage.getItem('fct_rows'));
       if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_cost_rows', saved); }
     } catch {}
   }
   costRows = Array.isArray(saved) ? saved : [];
+  _costRowsLoaded = true;
 }
-function saveCostRows() { apiPut('fct_cost_rows', costRows); }
+function saveCostRows() {
+  if (!_costRowsLoaded) { _unloadedSaveRefused('cost rows'); return; }
+  apiPut('fct_cost_rows', costRows);
+}
 
 // Only store bid/plan data — actuals come from daily aggregation
 const defaultCostRow = () => ({
@@ -19436,6 +19499,15 @@ function renderMobileEntryForm(successMsg) {
       </button>` : ''}
     <div id="mob-today-entries" style="margin-top:1rem"></div>
   `;
+  // Drawn afresh, so nothing is entered in it yet. The first edit marks it,
+  // which stops a late load of the lists from redrawing it over that edit.
+  delete el.dataset.touched;
+  if (!el.dataset.watched) {
+    el.dataset.watched = '1';
+    const touched = () => { el.dataset.touched = '1'; };
+    el.addEventListener('input', touched);
+    el.addEventListener('change', touched);
+  }
   // Populate today's entries for the initially selected project
   setTimeout(() => renderMobTodayEntries(lastProjId), 0);
   // Auto-dismiss success banner
@@ -19592,6 +19664,10 @@ function _mobCollectEquipBlocks() {
 function mobRepeatLastEntry() {
   if (!_mobLastEntry) return;
   const le = _mobLastEntry;
+  // Filled in without an edit event, so marked here: a late load of the
+  // lists must not redraw the form over it.
+  const form = document.getElementById('mob-entry-root');
+  if (form) form.dataset.touched = '1';
   document.getElementById('mob-project').value   = le.projId;
   document.getElementById('mob-date').value       = _localDateStr();
   document.getElementById('mob-field-type').value = le.fieldType || '';
@@ -28610,14 +28686,19 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   }
 
   async function _pollCostRows() {
-    const saved = await apiGet('fct_cost_rows');
-    const incoming = Array.isArray(saved) ? saved : [];
-    if (JSON.stringify(incoming) === JSON.stringify(costRows)) return;
+    const got = await apiGetChecked('fct_cost_rows');
+    // A failed read is not an empty list. Taking it for one blanked the cost
+    // table, and the next row saved then replaced every row on the server.
+    if (!got.ok) return;
+    const incoming = Array.isArray(got.value) ? got.value : [];
+    // Still a successful read, so it completes a first load that failed.
+    if (JSON.stringify(incoming) === JSON.stringify(costRows)) { _costRowsLoaded = true; return; }
     // Don't overwrite the in-memory array while the user is typing — the
     // next save would otherwise echo this polled snapshot back to the
     // server, wiping pending edits.
     if (_isEditing()) return;
     costRows = incoming;
+    _costRowsLoaded = true;
     if (activeTab === 'cost') renderCostTable();
   }
 
@@ -28706,11 +28787,14 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   }
 
   async function _pollInventory() {
-    const saved = await apiGet('fct_inventory');
-    const incoming = Array.isArray(saved) ? saved : [];
-    if (JSON.stringify(incoming) === JSON.stringify(inventoryEntries)) return;
+    const got = await apiGetChecked('fct_inventory');
+    // A failed read is not an empty list — see _pollCostRows.
+    if (!got.ok) return;
+    const incoming = Array.isArray(got.value) ? got.value : [];
+    if (JSON.stringify(incoming) === JSON.stringify(inventoryEntries)) { _inventoryLoaded = true; return; }
     if (_isEditing()) return; // don't overwrite pending edits
     inventoryEntries = incoming;
+    _inventoryLoaded = true;
     if (activeTab === 'inventory') renderInventoryTab();
   }
 

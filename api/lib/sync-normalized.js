@@ -117,8 +117,11 @@ async function syncLists(sql, companyCode, lists) {
     if (!name) continue;
     const jobClass  = typeof e === 'object' ? (e.job_class  || e.jobClass  || null) : null;
     const rate      = typeof e === 'object' ? safeFloat(e.rate)                     : null;
-    const pwRate    = typeof e === 'object' ? safeFloat(e.pw_rate    ?? e.pwRate)   : null;
-    const nonPwRate = typeof e === 'object' ? safeFloat(e.non_pw_rate ?? e.nonPwRate): null;
+    // tracker.html stores prevailing_rate / non_prevailing_rate. Reading only
+    // the older pw_rate names wrote NULL over every turf rate on each save, so
+    // this table never held the one copy of them that outlives the blob.
+    const pwRate    = typeof e === 'object' ? safeFloat(e.prevailing_rate ?? e.pw_rate ?? e.pwRate) : null;
+    const nonPwRate = typeof e === 'object' ? safeFloat(e.non_prevailing_rate ?? e.non_pw_rate ?? e.nonPwRate) : null;
 
     // is_supervisor, is_driver and the contact card (phone, email,
     // supervisor_name) are intentionally NOT in the UPDATE SET — all of them

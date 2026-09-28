@@ -20,7 +20,7 @@
  *
  * So the union lives here and both callers read it. A name is a name once:
  * matching is case-insensitive, and the first source to claim it wins, which
- * keeps the canonical table's job class, rates, role flags and contact card
+ * keeps the canonical table's job class, role flags and contact card
  * ahead of a bare blob entry.
  *
  * Every non-canonical source is read inside its own try/catch: a division blob
@@ -32,8 +32,6 @@ function blankRow(name, source, jobClass) {
     id:                  null,
     name,
     job_class:           jobClass || null,
-    prevailing_rate:     null,
-    non_prevailing_rate: null,
     is_supervisor:       false,
     is_driver:           false,
     phone:               null,
@@ -62,15 +60,17 @@ async function readBlobEmployees(sql, key) {
 
 /**
  * Every person on the company's books, deduplicated by name.
- * Rows carry the same shape GET /api/employees has always returned.
+ *
+ * No pay rates. GET /api/employees hands this to anyone signed in and the
+ * Scheduler board to anyone on the Scheduler, and neither page reads a rate.
+ * The employees table carries each turf rate as a backup of the list, which is
+ * no reason to send it to them.
  */
 async function readEmployeeRoster(sql, companyCode) {
   const byName = new Map(); // lowercased name → row
 
   const tableRows = await sql`
     SELECT id, name, job_class,
-           pw_rate       AS prevailing_rate,
-           non_pw_rate   AS non_prevailing_rate,
            is_supervisor,
            is_driver,
            phone,
@@ -88,8 +88,6 @@ async function readEmployeeRoster(sql, companyCode) {
       id:                  r.id,
       name,
       job_class:           r.job_class || null,
-      prevailing_rate:     r.prevailing_rate,
-      non_prevailing_rate: r.non_prevailing_rate,
       is_supervisor:       r.is_supervisor === true,
       is_driver:           r.is_driver === true,
       phone:               r.phone || null,

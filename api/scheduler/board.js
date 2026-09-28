@@ -296,8 +296,6 @@ async function readEmployees(sql, companyCode) {
       // job_class alone cannot tell a role from a wage tier.
       isSupervisor: r.is_supervisor === true,
       isDriver: r.is_driver === true,
-      rateStd: parseFloat(r.non_prevailing_rate) || 0,
-      ratePw: parseFloat(r.prevailing_rate) || parseFloat(r.non_prevailing_rate) || 0,
     })).filter(r => r.name);
   } catch (err) { console.warn('[scheduler/board] employees read failed:', err.message); return []; }
 }

@@ -68,9 +68,9 @@ function extractConst(src, name) {
 }
 
 /** The whole lists section: LISTS_KEY and defaultLists down to saveLists(). */
-function extractListsSection(src) {
-  const start = src.indexOf("const LISTS_KEY = 'fct_lists';");
-  if (start < 0) throw new Error('lists section not found in tracker.html');
+function extractListsSection(src, key = 'fct_lists') {
+  const start = src.indexOf(`const LISTS_KEY = '${key}';`);
+  if (start < 0) throw new Error(`lists section for ${key} not found`);
   const save = extractFunction(src.slice(src.indexOf('function saveLists(', start)), 'saveLists');
   return src.slice(start, src.indexOf('function saveLists(', start)) + save;
 }
@@ -100,11 +100,13 @@ const STORED = {
  * A fresh copy of the page's lists code with every outside call stubbed.
  * `respond` answers each GET: a {status, body} object, or 'network' to throw.
  */
-function page({ respond, local = null, focused = null, tab = 'info' }) {
+function page({ respond, local = null, focused = null, tab = 'info', src = SRC, key = 'fct_lists', mobileForm = null }) {
   const puts = [], banners = [], timers = [], draws = [];
   let logouts = 0;
+  let reads = 0;
   const fetch = async (url) => {
-    const r = respond(url);
+    reads++;
+    const r = await respond(url);
     if (r === 'network') throw new Error('Failed to fetch');
     return { status: r.status, ok: r.status >= 200 && r.status < 300, json: async () => r.body };
   };
@@ -113,7 +115,7 @@ function page({ respond, local = null, focused = null, tab = 'info' }) {
     API_BASE: '/api',
     fctToken: 'tok',
     logout: () => { logouts++; },
-    localStorage: { getItem: () => (local ? JSON.stringify(local) : null) },
+    localStorage: { getItem: k => (local && k === key ? JSON.stringify(local) : null) },
     apiPut: (key, value) => { puts.push({ key, value: JSON.parse(JSON.stringify(value)) }); },
     _showSaveError: (isAuth, msg, kept) => { banners.push({ isAuth, msg, kept }); },
     _fctSessionOver: () => false,
@@ -121,25 +123,30 @@ function page({ respond, local = null, focused = null, tab = 'info' }) {
     document: {
       activeElement: focused ? { tagName: focused } : null,
       querySelector: () => null,
+      getElementById: id => (id === 'mob-entry-root' ? mobileForm : null),
     },
     activeTab: tab,
     renderProjectsTab: () => draws.push('projects'),
     renderSupplierTab: () => draws.push('suppliers'),
     renderAllListPanels: () => draws.push('panels'),
+    renderMobileEntryForm: () => draws.push('mobile'),
   };
   const code = [
-    extractFunction(SRC, 'apiGetChecked'),
-    extractFunction(SRC, 'apiGet'),
-    extractConst(SRC, '_CRM_LISTS'),
-    extractFunction(SRC, '_crmSeedLists'),
-    extractListsSection(SRC),
+    extractFunction(src, 'apiGetChecked'),
+    extractFunction(src, 'apiGet'),
+    extractFunction(src, '_unloadedSaveRefused'),
+    // Only the turf page seeds the CRM lists.
+    ...(key === 'fct_lists' ? [extractConst(src, '_CRM_LISTS'), extractFunction(src, '_crmSeedLists')] : []),
+    extractListsSection(src, key),
     `return {
        loadLists, saveLists, _redrawAfterListsLoad,
        get lists() { return lists; },
        get loaded() { return _listsLoaded; },
        get pending() { return _listsRedrawPending; },
+       get reads() { return reads(); },
      };`,
   ].join('\n');
+  stubs.reads = () => reads;
   const api = new Function(...Object.keys(stubs), code)(...Object.values(stubs));
   // Runs the oldest queued retry, as the timer would.
   api.fireRetry = async () => { const t = timers.shift(); if (t) await t.fn(); return t; };
@@ -223,6 +230,30 @@ const listsPuts = puts => puts.filter(p => p.key === 'fct_lists');
     assert('the redraw is left pending for the poll', P.api.pending === true);
   }
 
+  console.log('\n[the phone\'s Daily Entry form]');
+  for (const file of ['tracker.html', 'paving.html', 'kiewit-pinetree.html']) {
+    const src = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    const key = { 'tracker.html': 'fct_lists', 'paving.html': 'fct_paving_lists', 'kiewit-pinetree.html': 'fct_kiewit_lists' }[file];
+    {
+      const P = page({ src, key, tab: 'mob-entry', mobileForm: { dataset: {} }, respond: () => ({ status: 200, body: { value: STORED } }) });
+      await P.api.loadLists();
+      P.api._redrawAfterListsLoad();
+      assert(`${file}: drawn with no crew to pick, it is redrawn once the lists arrive`, P.draws.includes('mobile'), JSON.stringify(P.draws));
+    }
+    {
+      const P = page({ src, key, tab: 'mob-entry', mobileForm: { dataset: { touched: '1' } }, respond: () => ({ status: 200, body: { value: STORED } }) });
+      await P.api.loadLists();
+      P.api._redrawAfterListsLoad();
+      assert(`${file}: but not over something already entered in it`, !P.draws.includes('mobile'), JSON.stringify(P.draws));
+    }
+    const form = extractFunction(src, 'renderMobileEntryForm');
+    assert(`${file}: each fresh draw clears the mark, and an edit sets it`,
+      /delete el\.dataset\.touched;/.test(form) && /addEventListener\('input', touched\)/.test(form) && /addEventListener\('change', touched\)/.test(form)
+        && form.indexOf('delete el.dataset.touched') > form.indexOf('el.innerHTML = `'));
+    assert(`${file}: repeating the last entry sets it too`,
+      /form\.dataset\.touched = '1'/.test(extractFunction(src, 'mobRepeatLastEntry')));
+  }
+
   console.log('\n[an answered read behaves as before]');
   {
     const P = page({ respond: () => ({ status: 200, body: { value: STORED } }) });
@@ -266,6 +297,58 @@ const listsPuts = puts => puts.filter(p => p.key === 'fct_lists');
     await P.api.loadLists();
     assert('signed out', P.logouts() === 1);
     assert('nothing saved', listsPuts(P.puts).length === 0);
+  }
+
+  console.log('\n[paving and kiewit: the same guard on their own lists]');
+  for (const [file, key] of [['paving.html', 'fct_paving_lists'], ['kiewit-pinetree.html', 'fct_kiewit_lists']]) {
+    const src = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    const puts = P => P.puts.filter(x => x.key === key);
+    {
+      const P = page({ src, key, respond: () => ({ status: 503, body: {} }), local: { employees: ['Somebody Who Left'] } });
+      await P.api.loadLists();
+      assert(`${file}: a failed read pushes no old copy`, puts(P).length === 0, JSON.stringify(P.puts));
+      assert(`${file}: not loaded, retry queued`, P.api.loaded === false && P.timers.length === 1 && P.timers[0].ms === 2000);
+      P.api.lists.employees.push({ name: 'New Hire' });
+      P.api.saveLists();
+      assert(`${file}: a save before the load is refused`, puts(P).length === 0 && P.banners.length === 1 && P.banners[0].kept === false);
+    }
+    {
+      let fail = true;
+      const P = page({ src, key, respond: () => (fail ? { status: 503, body: {} } : { status: 200, body: { value: STORED } }) });
+      await P.api.loadLists();
+      fail = false;
+      await P.api.fireRetry();
+      assert(`${file}: the retry finishes the load and redraws`, P.api.loaded === true && P.api.lists.employees.length === 3 && P.draws.includes('projects'));
+      P.api.saveLists();
+      assert(`${file}: then saving carries every list`, puts(P).length === 1 && puts(P)[0].value.employees.length === 3 && puts(P)[0].value.equipment.length === 2);
+    }
+    {
+      const P = page({ src, key, respond: () => ({ status: 200, body: { value: null } }), local: { employees: ['Allen Strick'] } });
+      await P.api.loadLists();
+      assert(`${file}: a server that has never held lists still takes the local copy`, puts(P).length === 1 && P.api.loaded === true);
+    }
+  }
+
+  console.log('\n[one read of the lists at a time]');
+  for (const [file, key] of [['tracker.html', 'fct_lists'], ['paving.html', 'fct_paving_lists'], ['kiewit-pinetree.html', 'fct_kiewit_lists']]) {
+    const src = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    // The first read hangs; the second would answer at once with older lists.
+    const answers = [];
+    const OLDER = { ...STORED, employees: STORED.employees.slice(0, 1) };
+    let n = 0;
+    const P = page({ src, key, respond: () => (n++ === 0
+      ? new Promise(resolve => answers.push(() => resolve({ status: 200, body: { value: STORED } })))
+      : { status: 200, body: { value: OLDER } }) });
+    const first = P.api.loadLists();            // the page's own load, slow to answer
+    const second = P.api.loadLists();           // the poll, a minute on
+    await Promise.resolve();
+    assert(`${file}: a second load waits for the read under way`, P.api.reads === 1, `${P.api.reads} reads`);
+    answers.shift()();
+    await Promise.all([first, second]);
+    assert(`${file}: and both see that one read's lists`, P.api.loaded === true && P.api.lists.employees.length === 3,
+      `${P.api.lists.employees.length} employees`);
+    await P.api.loadLists();
+    assert(`${file}: once it has answered, a new load reads again`, P.api.reads === 2);
   }
 
   /* ───────────────────────────────────────────────────────────────────────

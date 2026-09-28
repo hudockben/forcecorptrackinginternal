@@ -2481,3 +2481,67 @@ CREATE INDEX IF NOT EXISTS idx_safety_sig_company_doc
     ON safety_signatures(company_code, document_id, signed_at);
 CREATE INDEX IF NOT EXISTS idx_safety_sig_company_user
     ON safety_signatures(company_code, user_id, signed_at DESC);
+
+-- ─────────────────────────────────────────────────
+-- NIGHTLY BACKUP OF app_data  (api/cron/data-backup.js)
+-- ─────────────────────────────────────────────────
+-- A copy of every app_data record as each run found it, kept for 30 days.
+-- In September a failed read saved empty turf lists over the real ones, and
+-- nothing held an earlier copy that reached back far enough to restore them.
+--
+-- Every run is stamped with the instant it started. Its copies, its counts
+-- and its alerts carry that stamp, so an alert's restore names the copy taken
+-- alongside the counts it compared against.
+--
+-- One row per record per run it CHANGED in, so a record left alone for a
+-- month is stored once. A record's state at any moment in the window is its
+-- newest row at or before that moment. A record that disappears gets a row
+-- with value_hash 'deleted' and no value. Pruning keeps each record's newest
+-- row from before the window, because that is still its state at the
+-- window's start, unless that row says the record was deleted.
+CREATE TABLE IF NOT EXISTS app_data_snapshots (
+    key               TEXT        NOT NULL,
+    taken_at          TIMESTAMPTZ NOT NULL,
+    company_code      TEXT        NOT NULL,
+    value             JSONB,
+    -- md5 of value::text, or 'deleted'. jsonb prints keys in a fixed order,
+    -- so an unchanged record always hashes the same.
+    value_hash        TEXT        NOT NULL,
+    source_updated_at TIMESTAMPTZ,
+    PRIMARY KEY (key, taken_at)
+);
+
+CREATE INDEX IF NOT EXISTS idx_app_data_snapshots_company
+    ON app_data_snapshots (company_code, taken_at DESC);
+
+-- How many entries each watched list held at each run. The check compares a
+-- run's counts with the previous run's and emails when a list empties or
+-- loses half of itself.
+CREATE TABLE IF NOT EXISTS list_counts (
+    company_code TEXT        NOT NULL,
+    taken_at     TIMESTAMPTZ NOT NULL,
+    measure      TEXT        NOT NULL,
+    n            INTEGER     NOT NULL,
+    PRIMARY KEY (company_code, taken_at, measure)
+);
+
+-- Alerts a run found but could not email. Later runs try them again, still
+-- pointing at the copy they found, and give up after a week of tries.
+CREATE TABLE IF NOT EXISTS list_alerts_pending (
+    company_code TEXT        NOT NULL,
+    found_at     TIMESTAMPTZ NOT NULL,
+    since        TIMESTAMPTZ NOT NULL,
+    drops        JSONB       NOT NULL,
+    attempts     INTEGER     NOT NULL DEFAULT 1,
+    last_error   TEXT,
+    PRIMARY KEY (company_code, found_at)
+);
+
+-- One backup run at a time. A run takes the single row at its start and
+-- gives it back at its end, and a run that finds it taken stops. A run that
+-- dies holding it leaves it to go stale after five minutes.
+CREATE TABLE IF NOT EXISTS data_backup_lock (
+    id        INTEGER     PRIMARY KEY,
+    holder    TEXT        NOT NULL,
+    locked_at TIMESTAMPTZ NOT NULL
+);
