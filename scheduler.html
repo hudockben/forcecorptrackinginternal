@@ -81,6 +81,10 @@
     /* A login's username nobody on the roster answers to. Dashed, because it
        is a name the board could not place, not a person it knows. */
     .rail-login { font-size:0.5rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--amber); border:1px dashed var(--amber); border-radius:4px; padding:0 0.22rem; cursor:pointer; }
+    /* Login names dialog: the choice of who a login is, and the mark on one an
+       admin made rather than the name. */
+    select.login-pick { font-size:0.72rem; padding:0.12rem 0.3rem; max-width:230px; vertical-align:middle; }
+    .login-hand { font-size:0.54rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--blue); border:1px solid rgba(96,165,250,0.45); border-radius:4px; padding:0 0.25rem; }
     /* Two jobs on one day, said in the panel you drag from, so you can see it
        before you add a third. */
     .rail-load.clash { color:var(--red); border-color:var(--red); font-weight:700; }
@@ -1084,19 +1088,34 @@ function openLoginReview() {
   o.innerHTML = loginReviewHtml();
 }
 function closeLoginReview() { const o = document.getElementById('loginsOverlay'); if (o) o.remove(); }
+// Only an admin says who a login is — the server holds to the same rule — so
+// everybody else gets the answers as text.
+function canMatchLogins() { return !!(user && (user.role === 'admin' || user.isPlatformAdmin)); }
 function loginReviewHtml() {
-  const names = loginNames(), uses = loginNameUses();
+  const b = state.board || {}, names = loginNames(), uses = loginNameUses();
   const nb = loginUseCount('bookings'), nc = loginUseCount('crews');
-  const pairs = Object.keys(names).sort((a, b) => names[a].localeCompare(names[b]) || a.localeCompare(b));
-  const unmatched = ((state.board && state.board.unmatchedLogins) || []).slice().sort((a, b) => a.localeCompare(b));
-  const counted = (b, c) => [b ? b+' booking'+(b>1?'s':'') : '', c ? c+' saved crew'+(c>1?'s':'') : ''].filter(Boolean).join(', ');
-  const used = n => uses[n] ? ' <span class="warn">· '+counted(uses[n].bookings, uses[n].crews)+' under the login</span>' : '';
+  const byHand = new Set(b.manualLogins || []), guesses = b.loginGuesses || {}, admin = canMatchLogins();
+  const sorted = list => (list || []).slice().sort((x, y) => x.localeCompare(y));
+  const pairs = Object.keys(names).sort((x, y) => names[x].localeCompare(names[y]) || x.localeCompare(y));
+  const unmatched = sorted(b.unmatchedLogins), offCrew = sorted(b.offCrewLogins);
+  const people = (b.employees || []).filter(e => !e.login).map(e => e.name).sort((x, y) => x.localeCompare(y));
+  const counted = (bk, cr) => [bk ? bk+' booking'+(bk>1?'s':'') : '', cr ? cr+' saved crew'+(cr>1?'s':'') : ''].filter(Boolean).join(', ');
+  const used = l => uses[l] ? ' <span class="warn">· '+counted(uses[l].bookings, uses[l].crews)+' under the login</span>' : '';
+  // For an admin, the answer is a choice: the name's own guess, anybody on the
+  // roster, or nobody on the crew. Values are prefixed so no employee's name
+  // can be mistaken for either of the other two.
+  const pick = (l, now) => '<select class="login-pick" data-login="'+esc(l)+'" onchange="setLoginMatch(this)" aria-label="Who '+esc(l)+' is">'+
+    '<option value=""'+(now === '' ? ' selected' : '')+'>Automatic: '+esc(guesses[l] || 'no match')+'</option>'+
+    '<option value="none"'+(now === 'none' ? ' selected' : '')+'>Not on the crew list</option>'+
+    '<optgroup label="Employees">'+people.map(n => '<option value="'+esc('p:'+n)+'"'+(now === 'p:'+n ? ' selected' : '')+'>'+esc(n)+'</option>').join('')+'</optgroup>'+
+  '</select>';
+  const row = (l, now, text) => '<div class="cur-asn"><span class="grow"><span class="muted">'+esc(l)+'</span> → '+
+    (admin ? pick(l, now) : text)+(byHand.has(l) ? ' <span class="login-hand" title="Matched by an admin, not by the name">by hand</span>' : '')+used(l)+'</span></div>';
   const pairRows = pairs.length
-    ? pairs.map(l => '<div class="cur-asn"><span class="grow"><span class="muted">'+esc(l)+'</span> → <strong>'+esc(names[l])+'</strong>'+used(l)+'</span></div>').join('')
+    ? pairs.map(l => row(l, byHand.has(l) ? 'p:'+names[l] : '', '<strong>'+esc(names[l])+'</strong>')).join('')
     : '<div class="muted" style="font-size:0.76rem">None.</div>';
-  const loneRows = unmatched.length
-    ? unmatched.map(l => '<div class="cur-asn"><span class="grow"><strong>'+esc(l)+'</strong> <span class="muted">— no one on the roster, or more than one, answers to this name. It stays on the list as a login.</span></span></div>').join('')
-    : '';
+  const loneRows = unmatched.map(l => row(l, '', '<span class="muted">no one on the roster, or more than one, answers to this name. It stays on the list as a login.</span>')).join('');
+  const offRows = offCrew.map(l => row(l, 'none', '<span class="muted">not on the crew list</span>')).join('');
   const move = nb || nc
     ? '<div class="proj warn" style="display:flex;align-items:center;gap:0.6rem;flex-wrap:wrap"><span class="grow" style="flex:1">'+
         [nb ? nb+' booking'+(nb>1?'s':'') : '', nc ? nc+' saved-crew place'+(nc>1?'s':'') : ''].filter(Boolean).join(' and ')+
@@ -1104,11 +1123,30 @@ function loginReviewHtml() {
       '<button class="btn primary" onclick="moveLoginBookings()">Move to employee names</button></div>'
     : '<div class="proj ok">No bookings or saved crews are under a login name.</div>';
   return '<div class="modal"><div class="modal-head"><div style="font-weight:700">Login names</div><button class="x" onclick="closeLoginReview()">✕</button></div><div class="modal-body">'+
-    '<div class="muted" style="font-size:0.74rem;margin-bottom:0.6rem">Manage Users → Roles keeps each login’s Supervisor and Driver setting under its username, which put people on this list twice. Each login below is shown as the employee it was matched to by name, with that role. The logins themselves are unchanged — Timesheet and Payroll still use them.</div>'+
+    '<div class="muted" style="font-size:0.74rem;margin-bottom:0.6rem">Manage Users → Roles keeps each login’s Supervisor and Driver setting under its username, which put people on this list twice. Each login below is shown as the employee it was matched to by name, with that role. The logins themselves are unchanged — Timesheet and Payroll still use them.'+
+      (admin ? ' Where the name gets it wrong, or cannot tell, pick the employee the login belongs to. “Not on the crew list” is for a login that is not crew, such as an office login with a role.'
+             : ' Only an admin can change who a login is.')+'</div>'+
     move+
     '<label class="fld">Matched ('+pairs.length+')</label>'+pairRows+
     (unmatched.length ? '<label class="fld">Not matched ('+unmatched.length+')</label>'+loneRows : '')+
+    (offCrew.length ? '<label class="fld">Not on the crew list ('+offCrew.length+')</label>'+offRows : '')+
     '</div></div>';
+}
+// Saved on the server, for every scheduler, and then the board is read again,
+// because who is on the crew list is worked out there. The dialog stays open
+// on the new answer; a refused save puts the old one back.
+async function setLoginMatch(el) {
+  const login = el.dataset.login, v = el.value;
+  const body = v === 'none' ? { none: true } : v.startsWith('p:') ? { person: v.slice(2) } : { person: null };
+  el.disabled = true;
+  try {
+    await api('/api/employees?login=' + encodeURIComponent(login), { method: 'PATCH', body: JSON.stringify(body) });
+    await refreshData();
+    toast(v === 'none' ? login + ' is off the crew list' : v.startsWith('p:') ? login + ' is ' + v.slice(2) : login + ' is matched by its name again');
+  } catch (err) {
+    toast('Could not save: ' + err.message);
+  }
+  if (document.getElementById('loginsOverlay')) openLoginReview();
 }
 // One undo step for the bookings. Saved crews are renamed with them, so a crew
 // dropped on a job later does not book the login name all over again; that half
@@ -3243,7 +3281,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { addOtherWork, openLoginReview, closeLoginReview, moveLoginBookings, onJobTimeInput, clearJobTime, onJobTimeCell, onJobNoteKey, onJobNoteCell, onJobNoteInput, onJobNoteModalKey, setBoardSpan, openJobTimes, toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
+Object.assign(window, { addOtherWork, openLoginReview, closeLoginReview, moveLoginBookings, setLoginMatch, onJobTimeInput, clearJobTime, onJobTimeCell, onJobNoteKey, onJobNoteCell, onJobNoteInput, onJobNoteModalKey, setBoardSpan, openJobTimes, toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
   newCrew, editCrew, cancelCrewEdit, saveCrewEdit, addCrewMember, removeCrewMember, updateCrewPickList, crewPickKey, onCrewName, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, toggleHideComplete, dismissHint, setCompact });
 wireBoardDnD();
 loadAll();

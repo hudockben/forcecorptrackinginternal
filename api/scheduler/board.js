@@ -291,12 +291,14 @@ function plannedAssignmentsFromSchedule(ppSchedule, todayStr, job) {
 // foldLoginRows), so Aaron Todd is not also on the board as "toddaaron" —
 // counted twice as crew and never caught double-booked across the two names.
 // Which login went to whom rides along for the page, which moves bookings made
-// under a login name across once the scheduler has seen the pairs.
+// under a login name across once the scheduler has seen the pairs, and lets an
+// admin say who a login is where the name could not. A login an admin said is
+// nobody on the crew is left off the crew list altogether.
 async function readEmployees(sql, companyCode) {
   try {
-    const { people, matched, unmatched } = await readPeopleRoster(sql, companyCode);
+    const { people, matched, unmatched, manual, offCrew, guesses } = await readPeopleRoster(sql, companyCode);
     return {
-      list: people.map(r => ({
+      list: people.filter(r => !r.offCrew).map(r => ({
         name: (r.name || '').trim(),
         jobClass: r.job_class || '',
         // The explicit role flags. The board groups crew by the job they do, and
@@ -308,10 +310,13 @@ async function readEmployees(sql, companyCode) {
       })).filter(r => r.name),
       loginNames: matched,
       unmatchedLogins: unmatched,
+      manualLogins: manual,
+      offCrewLogins: offCrew,
+      loginGuesses: guesses,
     };
   } catch (err) {
     console.warn('[scheduler/board] employees read failed:', err.message);
-    return { list: [], loginNames: {}, unmatchedLogins: [] };
+    return { list: [], loginNames: {}, unmatchedLogins: [], manualLogins: [], offCrewLogins: [], loginGuesses: {} };
   }
 }
 // ── Divisions whose work is a CUSTOMER, not a bid item ─────────────────────
@@ -646,9 +651,14 @@ async function buildBoard(sql, companyCode, todayStr) {
     employees,
     // Each login folded into a person, login → that person's name; and the
     // logins left in `employees` as they were, because nobody or more than one
-    // person answered to them. See readEmployees.
+    // person answered to them. Which of the pairs an admin made, the logins an
+    // admin said are nobody on the crew, and what each login's name alone would
+    // give. See readEmployees.
     loginNames: roster.loginNames,
     unmatchedLogins: roster.unmatchedLogins,
+    manualLogins: roster.manualLogins,
+    offCrewLogins: roster.offCrewLogins,
+    loginGuesses: roster.loginGuesses,
     equipment: equipOut,
     jobs,
     plannedAssignments,

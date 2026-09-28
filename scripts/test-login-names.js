@@ -38,12 +38,15 @@ const vm     = require('vm');
 const Module = require('module');
 
 let CURRENT_SQL = null;
+const ADMIN = { companyCode: 'FCT', userId: 1, username: 'hudockben', role: 'admin', isPlatformAdmin: true };
+const FIELD = { companyCode: 'FCT', userId: 9, username: 'strickallen', role: 'level1', isPlatformAdmin: false };
+let NEXT_AUTH = ADMIN;
 const origLoad = Module._load;
 Module._load = function (request) {
   if (request === '@neondatabase/serverless') return { neon: () => CURRENT_SQL };
   if (request === './lib/auth' || request === '../lib/auth') {
     return {
-      requireAuth: () => ({ companyCode: 'FCT', userId: 1, username: 'hudockben', role: 'admin', isPlatformAdmin: true }),
+      requireAuth: () => NEXT_AUTH,
       hasDivisionAccess: () => true,
       requireDivision: () => null,
       payrollAccess: () => ({ canCode: true, canApprove: true, isCoder: false }),
@@ -53,7 +56,7 @@ Module._load = function (request) {
 };
 
 const ROOT = path.resolve(__dirname, '..');
-const { foldLoginRows, loginKeysFor, loginKey, readPeopleRoster, readEmployeeRoster } = require(path.join(ROOT, 'api', 'lib', 'roster'));
+const { foldLoginRows, loginKeysFor, loginKey, readPeopleRoster, readEmployeeRoster, writeLoginLink, readLoginLinks } = require(path.join(ROOT, 'api', 'lib', 'roster'));
 const employeesHandler = require(path.join(ROOT, 'api', 'employees.js'));
 const { buildBoard } = require(path.join(ROOT, 'api', 'scheduler', 'board.js'));
 const { requireFn, sliceSource, evalSlice } = require(path.join(__dirname, 'lib', 'fn-source.js'));
@@ -271,7 +274,8 @@ const LOGINS = ['toddaaron', 'strickallen', 'forcebryan', 'mcmillancolton', 'hop
     vm.createContext(sandbox);
     vm.runInContext('var _undo = [];', sandbox);
     evalSlice(HELPERS, sandbox, 'the page helpers', { filename: 'scheduler.html' });
-    ['isForeign', 'loginNames', 'loginNameUses', 'loginUseCount', 'loginReviewHtml', 'moveLoginBookings', 'offRoster',
+    vm.runInContext('var user = null;', sandbox);
+    ['isForeign', 'loginNames', 'loginNameUses', 'loginUseCount', 'canMatchLogins', 'loginReviewHtml', 'moveLoginBookings', 'offRoster',
      'stripSubCodes', 'dedupeAssignmentMap', 'railRow'].forEach(n => vm.runInContext(requireFn(SCHED, n, 'scheduler.html'), sandbox, { filename: 'scheduler.html' }));
 
     eq('  bookings under a login are counted, the operator of a machine too — and saved crews apart from them',
@@ -310,6 +314,176 @@ const LOGINS = ['toddaaron', 'strickallen', 'forcebryan', 'mcmillancolton', 'hop
     assert('  it points at the review instead', /under a login name, not the employee/.test(board) && /openLoginReview\(\)/.test(board));
     const exported = /Object\.assign\(window, \{([^}]*)\}/.exec(SCHED.replace(/\n/g, ' '));
     assert('  the review is reachable from the markup', exported && ['openLoginReview', 'closeLoginReview', 'moveLoginBookings'].every(n => new RegExp('\\b' + n + '\\b').test(exported[1])));
+  }
+
+  console.log('\n[an admin’s answer beats the name]');
+  {
+    const links = {
+      toddaaron:   { person: 'Amy Todd' },      // the name points at Aaron; an admin says Amy
+      atodd:       { person: 'Aaron Todd' },    // two people answer to it; an admin picks one
+      travissteve: { none: true },              // an office login with a role
+      stewartken:  { person: 'Nobody Here' },   // somebody no longer on the roster
+    };
+    const { people, matched, unmatched, manual, offCrew, guesses } = foldLoginRows(ROSTER, LOGINS, links);
+    const byName = Object.fromEntries(people.map(p => [p.name, p]));
+    eq('  a login goes to the person an admin chose, not the one its name points at', matched.toddaaron, 'Amy Todd');
+    assert('  who takes on its role', byName['Amy Todd'].is_supervisor === true);
+    eq('  the name’s own guess is still reported, for the screen that overrides it', guesses.toddaaron, 'Aaron Todd');
+    eq('  a login two people answer to goes where the admin says', matched.atodd, 'Aaron Todd');
+    eq('  and its guess says why it needed saying', guesses.atodd, null);
+    eq('  both are marked as matched by hand', manual.slice().sort(), ['atodd', 'toddaaron']);
+    assert('  a login an admin says is nobody on the crew is off the crew',
+      offCrew.includes('travissteve') && !unmatched.includes('travissteve') && !matched.travissteve);
+    assert('  but still in the list of people, marked, so the directory keeps its number',
+      byName.travissteve && byName.travissteve.offCrew === true && byName.travissteve.login === true);
+    eq('  an answer naming somebody no longer on the roster falls back to the name', matched.stewartken, 'Ken Stewart');
+    assert('  and is not counted as matched by hand', !manual.includes('stewartken'));
+    eq('  each login goes to one person only', byName['Aaron Todd'].logins, ['atodd']);
+  }
+
+  console.log('\n[an answer is written one login at a time]');
+  {
+    const sql = recordingSql();
+    await writeLoginLink(sql, 'FCT', 'ToddAaron', { person: 'Amy Todd' });
+    const set = sql.calls[0];
+    assert('  into this company’s row', set.values.includes('FCT:fct_login_links'));
+    assert('  under the login, lowercased', set.values.includes('toddaaron'));
+    assert('  with the answer as JSON', set.values.includes(JSON.stringify({ person: 'Amy Todd' })));
+    assert('  merged into the entries already there, never written over them',
+      /ON CONFLICT \(key\) DO UPDATE/.test(set.text) && /\|\| jsonb_build_object\(\?::text, \?::jsonb\)/.test(set.text), set.text);
+    await writeLoginLink(sql, 'FCT', 'toddaaron', null);
+    const clear = sql.calls[1];
+    assert('  going back to the name removes just that entry',
+      /^UPDATE app_data/.test(clear.text) && /- \?::text/.test(clear.text) && clear.values.includes('toddaaron'), clear.text);
+    const read = await readLoginLinks(recordingSql(() => [{ value: { links: ['not', 'an', 'object'] } }]), 'FCT');
+    eq('  a row in the wrong shape reads as no answers', read, {});
+  }
+
+  console.log('\n[PATCH /api/employees?login=]');
+  {
+    const baseReply = text => {
+      if (/SELECT username FROM users WHERE company_code = \? AND LOWER\(username\) = LOWER\(\?\)/.test(text)) return [{ username: 'toddaaron' }];
+      if (/FROM employees WHERE/.test(text)) return ROSTER.map(r => ({ ...r }));
+      if (/SELECT username FROM users/.test(text)) return LOGINS.map(username => ({ username }));
+      return [];
+    };
+    const call = async (auth, query, body, reply) => {
+      NEXT_AUTH = auth;
+      CURRENT_SQL = recordingSql(reply || baseReply);
+      let out = null, status = 200;
+      const res = { status(s) { status = s; return this; }, json(b) { out = b; return this; }, setHeader() {}, end() {} };
+      await employeesHandler({ method: 'PATCH', query, body, headers: {} }, res);
+      NEXT_AUTH = ADMIN;
+      return { status, out, sql: CURRENT_SQL };
+    };
+    const writes = r => r.sql.calls.filter(c => /app_data/.test(c.text) && !/SELECT value FROM app_data/.test(c.text));
+
+    const field = await call(FIELD, { login: 'toddaaron' }, { person: 'Amy Todd' });
+    assert('  only an admin can say who a login is', field.status === 403 && writes(field).length === 0);
+    const nobody = await call(ADMIN, { login: 'nosuchlogin' }, { person: 'Amy Todd' }, () => []);
+    assert('  a login that is not the company’s is refused', nobody.status === 404 && writes(nobody).length === 0);
+    const stranger = await call(ADMIN, { login: 'toddaaron' }, { person: 'Somebody Else' });
+    assert('  a person not on the roster is refused, not stored and ignored', stranger.status === 400 && writes(stranger).length === 0, JSON.stringify(stranger.out));
+    const loginAsPerson = await call(ADMIN, { login: 'toddaaron' }, { person: 'strickallen' });
+    assert('  and so is another login in a person’s place', loginAsPerson.status === 400 && writes(loginAsPerson).length === 0);
+    const ok = await call(ADMIN, { login: 'TODDAARON' }, { person: 'amy todd' });
+    assert('  a person on the roster is saved, under the login as the account spells it',
+      ok.status === 200 && ok.out.ok && ok.out.login === 'toddaaron' && writes(ok).length === 1 && writes(ok)[0].values.includes('toddaaron'), JSON.stringify(ok.out));
+    eq('  with the name as the roster spells it', ok.out.link, { person: 'Amy Todd' });
+    const none = await call(ADMIN, { login: 'toddaaron' }, { none: true });
+    assert('  "not on the crew" is saved as such', none.status === 200 && writes(none)[0].values.includes(JSON.stringify({ none: true })));
+    const back = await call(ADMIN, { login: 'toddaaron' }, { person: null });
+    assert('  and going back to the name clears the entry', back.status === 200 && /^UPDATE app_data/.test(writes(back)[0].text) && back.out.link === null);
+    const flags = await call(ADMIN, { name: 'Aaron Todd' }, { phone: '814-555-0100' }, () => [{ id: 1, name: 'Aaron Todd', phone: '814-555-0100' }]);
+    assert('  a PATCH by name is still the contact card, untouched', flags.status === 200 && flags.out.ok && writes(flags).length === 0);
+  }
+
+  console.log('\n[the board and the directory follow the answers]');
+  {
+    const reply = (text, values) => {
+      if (/FROM employees WHERE/.test(text)) return ROSTER.map(r => ({ ...r }));
+      if (/SELECT username FROM users/.test(text)) return LOGINS.map(username => ({ username }));
+      if (/SELECT value FROM app_data WHERE key = \?/.test(text) && values[0] === 'FCT:fct_login_links') {
+        return [{ value: { links: { travissteve: { none: true }, atodd: { person: 'Amy Todd' } } } }];
+      }
+      return [];
+    };
+    const quietW = console.warn; console.warn = () => {};
+    const board = await buildBoard(recordingSql(reply), 'FCT', '2026-09-28');
+    console.warn = quietW;
+    assert('  a login off the crew is off the crew list', !board.employees.some(e => e.name === 'travissteve') && board.offCrewLogins.includes('travissteve'));
+    assert('  a login matched by hand is folded, and says so', board.loginNames.atodd === 'Amy Todd' && board.manualLogins.includes('atodd'));
+    eq('  the guesses ride along for the screen', board.loginGuesses.toddaaron, 'Aaron Todd');
+    CURRENT_SQL = recordingSql(reply);
+    let dir = null;
+    await employeesHandler({ method: 'GET', query: { view: 'people' }, body: {}, headers: {} },
+      { status() { return this; }, json(b) { dir = b; return this; }, setHeader() {}, end() {} });
+    const steve = dir.employees.find(e => e.name === 'travissteve');
+    assert('  the directory keeps a login that is off the crew, marked', steve && steve.offCrew === true && dir.offCrew.includes('travissteve'));
+  }
+
+  console.log('\n[the Login names screen lets an admin choose]');
+  {
+    const HELPERS = sliceSource(SCHED, 'const esc = s =>', '// "06:30"', 'the page helpers', 'function shortDate(');
+    const calls = [];
+    const sb = {
+      console, toasts: [], refreshed: 0, redrawn: 0, overlayOpen: true,
+      state: {
+        board: {
+          employees: [{ name: 'Aaron Todd' }, { name: 'Amy Todd' }, { name: 'Nick Reed' }, { name: 'brewer', login: true }],
+          loginNames: { toddaaron: 'Aaron Todd', atodd: 'Amy Todd' }, manualLogins: ['atodd'],
+          unmatchedLogins: ['brewer'], offCrewLogins: ['travissteve'],
+          loginGuesses: { toddaaron: 'Aaron Todd', atodd: null, brewer: null, travissteve: null },
+        },
+        assignments: {}, crews: [],
+      },
+    };
+    sb.api = async (url, opts) => { calls.push({ url, opts }); if (sb.failNext) { sb.failNext = false; throw new Error('Company admin access required'); } return { ok: true }; };
+    sb.refreshData = async () => { sb.refreshed++; };
+    sb.openLoginReview = () => { sb.redrawn++; };
+    sb.toast = m => { sb.toasts.push(m); };
+    sb.document = { getElementById: id => (id === 'loginsOverlay' && sb.overlayOpen ? {} : null) };
+    vm.createContext(sb);
+    vm.runInContext('var user = { role: "admin" };', sb);
+    evalSlice(HELPERS, sb, 'the page helpers', { filename: 'scheduler.html' });
+    // requireFn lifts from the word "function", so an async one needs its keyword back.
+    ['isForeign', 'loginNames', 'loginNameUses', 'loginUseCount', 'canMatchLogins', 'loginReviewHtml', 'setLoginMatch']
+      .forEach(n => vm.runInContext((n === 'setLoginMatch' ? 'async ' : '') + requireFn(SCHED, n, 'scheduler.html'), sb, { filename: 'scheduler.html' }));
+
+    const html = sb.loginReviewHtml();
+    const selectFor = l => (new RegExp('<select class="login-pick" data-login="' + l + '"[\\s\\S]*?</select>').exec(html) || [''])[0];
+    eq('  every login gets a choice', (html.match(/<select class="login-pick"/g) || []).length, 4);
+    assert('  a login the name placed shows what the name says, chosen', /<option value="" selected>Automatic: Aaron Todd<\/option>/.test(selectFor('toddaaron')), selectFor('toddaaron'));
+    assert('  one an admin placed shows that person chosen, and is marked by hand',
+      /<option value="p:Amy Todd" selected>Amy Todd<\/option>/.test(selectFor('atodd')) && /by hand/.test(html), selectFor('atodd'));
+    assert('  one nobody answers to says so', /<option value="" selected>Automatic: no match<\/option>/.test(selectFor('brewer')));
+    assert('  one off the crew is listed as such, with that chosen',
+      /Not on the crew list \(1\)/.test(html) && /<option value="none" selected>Not on the crew list<\/option>/.test(selectFor('travissteve')));
+    assert('  the people to choose from are employees, never another login',
+      /value="p:Nick Reed"/.test(selectFor('toddaaron')) && !/value="p:brewer"/.test(selectFor('toddaaron')));
+
+    vm.runInContext('user = { role: "level1" };', sb);
+    const readOnly = sb.loginReviewHtml();
+    assert('  anyone else sees the answers, with nothing to change', !/<select/.test(readOnly) && /<strong>Aaron Todd<\/strong>/.test(readOnly) && /Only an admin can change who a login is/.test(readOnly));
+    vm.runInContext('user = { role: "admin" };', sb);
+
+    const pickAs = async v => { calls.length = 0; const el = { dataset: { login: 'toddaaron' }, value: v, disabled: false }; await sb.setLoginMatch(el); return el; };
+    const chose = await pickAs('p:Amy Todd');
+    assert('  choosing a person saves it for that login', calls[0].url === '/api/employees?login=toddaaron' && calls[0].opts.method === 'PATCH' && calls[0].opts.body === JSON.stringify({ person: 'Amy Todd' }));
+    assert('  then reads the board again and redraws the screen', sb.refreshed === 1 && sb.redrawn === 1 && chose.disabled === true);
+    eq('  and says what it did', sb.toasts[sb.toasts.length - 1], 'toddaaron is Amy Todd');
+    await pickAs('none');
+    eq('  "not on the crew list" saves as such', calls[0].opts.body, JSON.stringify({ none: true }));
+    await pickAs('');
+    eq('  "automatic" goes back to the name', calls[0].opts.body, JSON.stringify({ person: null }));
+    sb.failNext = true;
+    const refreshedBefore = sb.refreshed, redrawnBefore = sb.redrawn;
+    await pickAs('p:Nick Reed');
+    assert('  a refused save says so and redraws the stored answer, reading nothing',
+      /Could not save: Company admin access required/.test(sb.toasts[sb.toasts.length - 1]) && sb.refreshed === refreshedBefore && sb.redrawn === redrawnBefore + 1,
+      JSON.stringify({ toast: sb.toasts[sb.toasts.length - 1], refreshed: sb.refreshed - refreshedBefore, redrawn: sb.redrawn - redrawnBefore }));
+    const exported = /Object\.assign\(window, \{([^}]*)\}/.exec(SCHED.replace(/\n/g, ' '));
+    assert('  the choice is reachable from the markup', exported && /\bsetLoginMatch\b/.test(exported[1]));
   }
 
   console.log('\n[the Team Directory]');
