@@ -1026,10 +1026,11 @@ function validateSplit(rawSplit, entry, travelOverride) {
 // to the name matching or the equipment fallback lands in both at once.
 //
 // The normalized employees/projects tables are NOT usable here:
-// sync-normalized.js drops prevailing_wage, prevailing_rate and
-// non_prevailing_rate on the way through. Equipment does keep its unit_cost,
-// so the company-wide equipment union serves as the fallback the payroll
-// dropdown needs.
+// sync-normalized.js drops prevailing_wage on the way into projects, and the
+// employees table holds pay rates only as a backup copy of the TURF list —
+// paving's and kiewit's lists never reach it, and the list stays the one
+// source of truth. Equipment does keep its unit_cost, so the company-wide
+// equipment union serves as the fallback the payroll dropdown needs.
 const _eqKey = s => String(s == null ? '' : s).trim().toLowerCase();
 
 async function buildCostResolver(sql, companyCode, division, equipmentNames) {

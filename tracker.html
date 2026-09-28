@@ -12339,7 +12339,12 @@ function nextINVNumber() {
   return 'INV-' + String(next).padStart(4, '0');
 }
 
+// No entry can be added until inventory has loaded: the list is a stand-in
+// until then, and an entry added to it — or the daily row the project picker
+// links to one — would outlive the stand-in the next poll replaces. Copy and
+// delete need an existing entry, and end in the guarded save.
 function addINV() {
+  if (!_inventoryLoaded) { _unloadedSaveRefused('inventory entries'); return; }
   inventoryEntries.push({
     id:              uid(),
     inv_number:      nextINVNumber(),
@@ -15333,7 +15338,17 @@ let lists = {};
 // and Assigned Equipment boxes. saveLists() refuses until this is set.
 let _listsLoaded = false;
 
-async function loadLists() {
+// One read of the lists at a time. The retry timer and the lists poll can
+// each start one, and a slow read answering after a newer one would put its
+// older lists back over the newer ones, and over any edit made in between.
+// A second caller waits for the read already under way.
+let _listsLoading = null;
+function loadLists() {
+  if (!_listsLoading) _listsLoading = _readLists().finally(() => { _listsLoading = null; });
+  return _listsLoading;
+}
+
+async function _readLists() {
   const got = await apiGetChecked('fct_lists');
   if (!got.ok) {
     // Nothing is known about what the server holds. Draw with empty lists (a
@@ -15403,6 +15418,13 @@ function _redrawAfterListsLoad() {
   _listsRedrawPending = false;
   if (activeTab === 'info') renderProjectsTab();
   if (activeTab === 'supplier') renderSupplierTab();
+  // The phone's Daily Entry form was drawn with no crew or equipment to pick.
+  // It is redrawn only while nothing has been entered in it, since a redraw
+  // clears it. Once something has, it picks the lists up when next drawn.
+  if (activeTab === 'mob-entry') {
+    const form = document.getElementById('mob-entry-root');
+    if (form && !form.dataset.touched) renderMobileEntryForm();
+  }
   if (document.querySelector('.list-panel.active')) renderAllListPanels();
 }
 
@@ -17706,6 +17728,10 @@ document.getElementById('inventory-root').addEventListener('change', e => {
   const el = e.target;
   const id = el.dataset.invId, field = el.dataset.invField;
   if (!id || !field) return;
+  // Picking a project here posts a linked daily row before the entry is saved.
+  // Before inventory has loaded, the entry is a stand-in the next poll throws
+  // away, and the row would stay on the job with nothing owning it.
+  if (!_inventoryLoaded) { _unloadedSaveRefused('inventory entries'); return; }
   const entry = inventoryEntries.find(x => x.id === id);
   if (!entry) return;
   const oldProj = entry.project_id;
@@ -19458,6 +19484,15 @@ function renderMobileEntryForm(successMsg) {
       </button>` : ''}
     <div id="mob-today-entries" style="margin-top:1rem"></div>
   `;
+  // Drawn afresh, so nothing is entered in it yet. The first edit marks it,
+  // which stops a late load of the lists from redrawing it over that edit.
+  delete el.dataset.touched;
+  if (!el.dataset.watched) {
+    el.dataset.watched = '1';
+    const touched = () => { el.dataset.touched = '1'; };
+    el.addEventListener('input', touched);
+    el.addEventListener('change', touched);
+  }
   // Populate today's entries for the initially selected project
   setTimeout(() => renderMobTodayEntries(lastProjId), 0);
   // Auto-dismiss success banner
@@ -19614,6 +19649,10 @@ function _mobCollectEquipBlocks() {
 function mobRepeatLastEntry() {
   if (!_mobLastEntry) return;
   const le = _mobLastEntry;
+  // Filled in without an edit event, so marked here: a late load of the
+  // lists must not redraw the form over it.
+  const form = document.getElementById('mob-entry-root');
+  if (form) form.dataset.touched = '1';
   document.getElementById('mob-project').value   = le.projId;
   document.getElementById('mob-date').value       = _localDateStr();
   document.getElementById('mob-field-type').value = le.fieldType || '';

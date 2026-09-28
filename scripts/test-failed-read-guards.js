@@ -241,6 +241,40 @@ const fail503 = { status: 503, body: { error: 'Could not check your access just 
   }
   }
 
+  console.log('\n[no inventory entry can be touched before inventory loads]');
+  for (const { file, p } of PAGES) {
+    const SRC = fs.readFileSync(path.join(ROOT, file), 'utf8');
+    let refused = 0, puts = 0;
+    const stubs = {
+      _unloadedSaveRefused: () => { refused++; },
+      apiPut: () => { puts++; },
+      localStorage: { setItem() {} },
+      uid: () => 'u1', nextINVNumber: () => 'INV-0001', _localDateStr: () => '2026-09-28',
+      renderInventoryTab: () => {}, getProj: () => null, drDelete: () => {}, renderDailyTable: () => {},
+    };
+    const I = new Function(...Object.keys(stubs), [
+      'let inventoryEntries = []; let _inventoryLoaded = false;',
+      // The real save, so copy and delete are judged by what actually reaches the server.
+      extractFunction(SRC, 'saveInventoryEntries'),
+      extractFunction(SRC, 'addINV'), extractFunction(SRC, 'copyINV'), extractFunction(SRC, 'deleteINV'),
+      `return { addINV, copyINV, deleteINV, get list() { return inventoryEntries; },
+                load() { _inventoryLoaded = true; } };`,
+    ].join('\n'))(...Object.values(stubs));
+    I.addINV();
+    assert(`${file}: adding an entry is refused`, refused === 1 && I.list.length === 0 && puts === 0, `${refused} refused, ${puts} saved`);
+    I.copyINV('u1'); I.deleteINV('u1');
+    assert(`${file}: copy and delete reach nothing on the server`, puts === 0 && I.list.length === 0);
+    I.load(); I.addINV();
+    assert(`${file}: once loaded, adding works`, I.list.length === 1 && puts === 1);
+
+    // Picking a project posts a linked daily row before the entry is saved,
+    // so the refusal has to come first.
+    const head = SRC.slice(SRC.search(/(document\.getElementById\('inventory-root'\)|_invRoot)\.addEventListener\('change'/));
+    const beforePost = head.slice(0, head.indexOf('drPost('));
+    assert(`${file}: the project picker refuses before it posts a daily row`,
+      beforePost.length > 0 && /if \(!_inventoryLoaded\) \{ _unloadedSaveRefused\('inventory entries'\); return; \}/.test(beforePost));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => { console.error(err); process.exit(1); });

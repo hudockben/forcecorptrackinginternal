@@ -540,7 +540,9 @@
     .assign-list { display: flex; flex-direction: column; gap: 0.35rem; max-height: 180px; overflow-y: auto; padding: 0.5rem 0.6rem; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
     .assign-check { display: flex; align-items: center; gap: 0.5rem; font-size: 0.83rem; cursor: pointer; color: var(--text); }
     .assign-check input[type="checkbox"] { accent-color: var(--green); width: 14px; height: 14px; flex-shrink: 0; cursor: pointer; }
+    /* The list div is written with no whitespace inside it, or :empty never matches. */
     .assign-list:empty::after { content: "None in global lists yet"; color: var(--muted); font-size: 0.78rem; font-style: italic; }
+    .assign-list.assign-list-unloaded:empty::after { content: "Couldn't load this list from the server — retrying. Reload the page if it stays empty."; color: var(--yellow); font-style: normal; }
 
     /* ── Bid Items & Daily Tracking (shared section wrapper) ── */
     .bid-section { padding: 1.1rem 1.5rem; border-top: 1px solid var(--border); }
@@ -7513,7 +7515,12 @@ function nextINVNumber() {
   return 'INV-' + String(next).padStart(4, '0');
 }
 
+// No entry can be added until inventory has loaded: the list is a stand-in
+// until then, and an entry added to it — or the daily row the project picker
+// links to one — would outlive the stand-in the next poll replaces. Copy and
+// delete need an existing entry, and end in the guarded save.
 function addINV() {
+  if (!_inventoryLoaded) { _unloadedSaveRefused('inventory entries'); return; }
   inventoryEntries.push({
     id:              uid(),
     inv_number:      nextINVNumber(),
@@ -10254,14 +10261,12 @@ function projectCardHTML(p) {
               ${(lists.employees||[]).length && (lists.employees||[]).every(e=>(p.assigned_employees||[]).includes(e.name)) ? 'Deselect All' : 'Select All'}
             </button>
           </div>
-          <div class="assign-list">
-            ${(lists.employees||[]).map(emp => `
+          <div class="assign-list${_listsLoaded ? '' : ' assign-list-unloaded'}">${(lists.employees||[]).map(emp => `
               <label class="assign-check">
                 <input type="checkbox" ${(p.assigned_employees||[]).includes(emp.name) ? 'checked' : ''}
                   onchange="toggleProjectAssignment('${p.id}','assigned_employees','${esc(emp.name)}',this.checked)">
                 ${esc(emp.name)}${emp.job_class ? ` <span style="color:var(--muted);font-size:0.75rem">(${esc(emp.job_class)})</span>` : ''}
-              </label>`).join('')}
-          </div>
+              </label>`).join('')}</div>
         </div>
         <div class="assign-col-wrap">
           <div class="assign-col-label" style="display:flex;align-items:center;justify-content:space-between">
@@ -10271,14 +10276,12 @@ function projectCardHTML(p) {
               ${(lists.equipment||[]).length && (lists.equipment||[]).every(e=>(p.assigned_equipment||[]).includes(e.name)) ? 'Deselect All' : 'Select All'}
             </button>
           </div>
-          <div class="assign-list">
-            ${(lists.equipment||[]).map(eq => `
+          <div class="assign-list${_listsLoaded ? '' : ' assign-list-unloaded'}">${(lists.equipment||[]).map(eq => `
               <label class="assign-check">
                 <input type="checkbox" ${(p.assigned_equipment||[]).includes(eq.name) ? 'checked' : ''}
                   onchange="toggleProjectAssignment('${p.id}','assigned_equipment','${esc(eq.name)}',this.checked)">
                 ${esc(eq.name)}${eq.unit_cost ? ` <span style="color:var(--muted);font-size:0.75rem">($${fmt(eq.unit_cost)}/hr)</span>` : ''}
-              </label>`).join('')}
-          </div>
+              </label>`).join('')}</div>
         </div>
       </div>
     </div>
@@ -10451,9 +10454,36 @@ const defaultLists = {
 
 let lists = {};
 
-async function loadLists() {
-  let saved = await apiGet('fct_kiewit_lists');
+// True once this page has read the lists from the server. Until then `lists`
+// is only the empty defaults, and saving it would replace every employee,
+// machine and supplier the division has with whatever was just typed.
+// saveLists() refuses until this is set.
+let _listsLoaded = false;
+
+// One read of the lists at a time. The retry timer and the lists poll can
+// each start one, and a slow read answering after a newer one would put its
+// older lists back over the newer ones, and over any edit made in between.
+// A second caller waits for the read already under way.
+let _listsLoading = null;
+function loadLists() {
+  if (!_listsLoading) _listsLoading = _readLists().finally(() => { _listsLoading = null; });
+  return _listsLoading;
+}
+
+async function _readLists() {
+  const got = await apiGetChecked('fct_kiewit_lists');
+  if (!got.ok) {
+    // Nothing is known about what the server holds. Draw with empty lists (a
+    // copy, so an edit made meanwhile cannot change the defaults), save
+    // nothing, and try again shortly. This used to push the browser's old
+    // local copy over the server's lists instead.
+    if (!_listsLoaded) { lists = JSON.parse(JSON.stringify(defaultLists)); _retryLoadLists(); }
+    return;
+  }
+  let saved = got.value;
   if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+    // The server answered that it holds no lists: carry over the copy this
+    // browser kept before they moved there. Only on an answered read.
     try {
       const local = JSON.parse(localStorage.getItem(LISTS_KEY));
       if (local && typeof local === 'object') { saved = local; apiPut('fct_kiewit_lists', saved); }
@@ -10476,6 +10506,51 @@ async function loadLists() {
   // object only adds the description the document folders label themselves with.
   lists.cost_codes = (lists.cost_codes || []).map(c => typeof c === 'string'
     ? { value: c, description: '' } : { value: '', description: '', ...c });
+  _listsLoaded = true;
+}
+
+// After a failed first read: try again soon, then less often. The 60-second
+// lists poll keeps trying once these run out.
+const _LISTS_RETRY_MS = [2000, 5000, 15000, 30000];
+let _listsRetries = 0;
+let _listsRetryTimer = null;
+
+function _retryLoadLists() {
+  if (_listsRetryTimer || _listsRetries >= _LISTS_RETRY_MS.length) return;
+  _listsRetryTimer = setTimeout(async () => {
+    _listsRetryTimer = null;
+    _listsRetries++;
+    if (_listsLoaded || _fctSessionOver()) return;
+    await loadLists();
+    if (_listsLoaded) _redrawAfterListsLoad();
+  }, _LISTS_RETRY_MS[_listsRetries]);
+}
+
+/**
+ * Redraws what was drawn from the empty defaults once the real lists arrive:
+ * the open tab (the project cards' Assigned Employees / Equipment boxes and
+ * daily-tracking pickers, or Suppliers), and Manage Lists if it is open. Any
+ * other tab redraws itself when opened. A field with focus is left alone —
+ * the redraw rebuilds it — and the lists poll finishes the job later.
+ */
+let _listsRedrawPending = false;
+function _redrawAfterListsLoad() {
+  const el = document.activeElement;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
+    _listsRedrawPending = true;
+    return;
+  }
+  _listsRedrawPending = false;
+  if (activeTab === 'info') renderProjectsTab();
+  if (activeTab === 'supplier') renderSupplierTab();
+  // The phone's Daily Entry form was drawn with no crew or equipment to pick.
+  // It is redrawn only while nothing has been entered in it, since a redraw
+  // clears it. Once something has, it picks the lists up when next drawn.
+  if (activeTab === 'mob-entry') {
+    const form = document.getElementById('mob-entry-root');
+    if (form && !form.dataset.touched) renderMobileEntryForm();
+  }
+  if (document.querySelector('.list-panel.active')) renderAllListPanels();
 }
 
 /**
@@ -10491,7 +10566,11 @@ function costCodeLabel(code, fallback) {
   const hit = (lists.cost_codes || []).find(c => String(c.value) === String(code));
   return (hit && hit.description) || fallback || '';
 }
-function saveLists() { apiPut('fct_kiewit_lists', lists); }
+function saveLists() {
+  // The lists on this page are the empty defaults, not the division's.
+  if (!_listsLoaded) { _unloadedSaveRefused('employee, equipment and supplier lists'); return; }
+  apiPut('fct_kiewit_lists', lists);
+}
 
 /* ═══════════════════════════════════════════
    DOCUMENTS TAB
@@ -12733,6 +12812,10 @@ if (_invRoot) _invRoot.addEventListener('change', e => {
   const el = e.target;
   const id = el.dataset.invId, field = el.dataset.invField;
   if (!id || !field) return;
+  // Picking a project here posts a linked daily row before the entry is saved.
+  // Before inventory has loaded, the entry is a stand-in the next poll throws
+  // away, and the row would stay on the job with nothing owning it.
+  if (!_inventoryLoaded) { _unloadedSaveRefused('inventory entries'); return; }
   const entry = inventoryEntries.find(x => x.id === id);
   if (!entry) return;
   const oldProj = entry.project_id;
@@ -14266,6 +14349,15 @@ function renderMobileEntryForm(successMsg) {
       </button>` : ''}
     <div id="mob-today-entries" style="margin-top:1rem"></div>
   `;
+  // Drawn afresh, so nothing is entered in it yet. The first edit marks it,
+  // which stops a late load of the lists from redrawing it over that edit.
+  delete el.dataset.touched;
+  if (!el.dataset.watched) {
+    el.dataset.watched = '1';
+    const touched = () => { el.dataset.touched = '1'; };
+    el.addEventListener('input', touched);
+    el.addEventListener('change', touched);
+  }
   // Populate today's entries for the initially selected project
   setTimeout(() => renderMobTodayEntries(lastProjId), 0);
   // Auto-dismiss success banner
@@ -14422,6 +14514,10 @@ function _mobCollectEquipBlocks() {
 function mobRepeatLastEntry() {
   if (!_mobLastEntry) return;
   const le = _mobLastEntry;
+  // Filled in without an edit event, so marked here: a late load of the
+  // lists must not redraw the form over it.
+  const form = document.getElementById('mob-entry-root');
+  if (form) form.dataset.touched = '1';
   document.getElementById('mob-project').value   = le.projId;
   document.getElementById('mob-date').value       = _localDateStr();
   document.getElementById('mob-field-type').value = le.fieldType || '';
@@ -21988,6 +22084,13 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   async function pollLists() {
     if (_fctPollsSuspended()) return;
     try {
+      // The first read failed and its retries ran out: this is the first load.
+      if (!_listsLoaded) {
+        await loadLists();
+        if (_listsLoaded) _redrawAfterListsLoad();
+        return;
+      }
+      if (_listsRedrawPending) _redrawAfterListsLoad();
       let saved = await apiGet('fct_kiewit_lists');
       if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return;
       const incoming = { ...defaultLists, ...saved };

@@ -1,45 +1,68 @@
 'use strict';
 /**
- * The nightly copy of every company's saved data, and the morning check that
- * reads it. Run by api/cron/data-backup.js.
+ * The nightly copy of every company's saved data, and the check that reads it.
+ * Run by api/cron/data-backup.js.
  *
  * In September a failed read on the turf page saved empty employee, equipment
  * and supplier lists over the real ones. Nothing held an earlier copy that
  * reached back far enough, so the lists were rebuilt from whatever the
  * projects happened to record — and nobody noticed for three days. This
- * answers both halves: a copy to restore from, and a morning email when a list
+ * answers both halves: a copy to restore from, and an email when a list
  * shrinks.
  *
+ * Every run is stamped with the instant it started, to the second. Its copy,
+ * its counts and any alert it sends all carry that stamp, so an alert's
+ * restore always names the copy taken alongside the counts it compared
+ * against — however many times a day the job runs.
+ *
  * The backup
- *   Every app_data record, as it stood each night, for RETAIN_DAYS. A record
- *   is stored only on nights it CHANGED, so one left alone for a month costs
- *   one row, not thirty. Its state on any night in the window is its newest
- *   row on or before that night, and pruning keeps that true: rows older than
- *   the window go, except each record's newest one from before it, which is
- *   still that record's state at the window's start. The copy is made inside
- *   the database in one statement — no blob travels through this function.
+ *   Every app_data record, as each run found it, for RETAIN_DAYS. A record is
+ *   stored only when it CHANGED since its last copy, so one left alone for a
+ *   month costs one row, not thirty. Its state at any moment in the window is
+ *   its newest copy at or before that moment, and a record that disappears
+ *   gets a copy saying so. Pruning keeps that true: copies older than the
+ *   window go, except each record's newest one from before it, which is still
+ *   its state at the window's start — unless that copy says the record was
+ *   deleted, when it goes too. The copying happens inside the database; no
+ *   record travels through this function.
  *
  * The check
- *   Counts the entries in every company-level list — each array blob, and each
- *   array inside an object blob (fct_lists.employees, fct_lists.equipment...)
- *   — plus daily-tracking rows per division, and compares with the previous
- *   night. A list that empties, or loses half of six or more, is reported.
- *   Records that shrink as a matter of course are not watched: one job's own
- *   record, schedules that roll forward, presence, the news hub.
+ *   Counts the entries in every company-level list — each array record, and
+ *   each array inside an object record (fct_lists.employees,
+ *   fct_lists.equipment...) — plus daily-tracking rows per division, and
+ *   compares with the previous run. A list that empties, or loses half of six
+ *   or more, is reported. Records that shrink as a matter of course are not
+ *   watched: one job's own record, schedules that roll forward, presence, the
+ *   news hub.
  *
- *   Each drop is reported once, on the night it happens. The night after, the
- *   smaller count is what gets compared.
+ *   Each drop is reported once: every run's counts are the next run's
+ *   baseline. An alert that cannot be sent is kept and tried again on later
+ *   runs, up to MAX_SEND_ATTEMPTS in all, still pointing at the copy it found.
+ *   A list gone entirely is recorded as empty once, so it is reported once
+ *   and not every night after.
+ *
+ *   A run whose backup or check fails says so by email too. A copy that has
+ *   quietly stopped is the same problem as a list nobody noticed emptying.
  */
 
 const { buildEmailHtml, sendEmail, isValidEmail } = require('./email');
 
 const RETAIN_DAYS = 30;
-// Counts are a few hundred small rows a night. A season of them is enough to
+// Counts are a few hundred small rows a run. A season of them is enough to
 // see when a list started drifting.
 const COUNTS_RETAIN_DAYS = 400;
+// An alert that could not be sent is tried again on each later run, this many
+// times in all: a week of nights, well inside RETAIN_DAYS, so the copy it
+// points at is still there when it arrives.
+const MAX_SEND_ATTEMPTS = 7;
 
-// A record never copied: the heartbeat, rewritten every few seconds.
-const SKIP_BACKUP = ['fct_presence'];
+// Records never copied, by key prefix: the heartbeat, rewritten every few
+// seconds, and the assistants' caches, a new record per job or signature per
+// day, rebuilt on demand.
+const SKIP_BACKUP = ['fct_presence', 'fct_ai_', 'fct_scheduler_ai_'];
+
+// The value_hash of a copy that records the record's deletion, not a value.
+const DELETED = 'deleted';
 
 // Lists that shrink as a matter of course. A drop in these is not data loss.
 const UNWATCHED = [
@@ -49,7 +72,7 @@ const UNWATCHED = [
   /^fct_scheduler/,                           // the Scheduler board's assignments roll forward
   /^fct_trucking(_labor)?_schedule/,          // so do the trucking boards
   /crm_news/,                                 // rewritten by the overnight news pull
-  /^fct_trend_/, /^fct_lucius_/,              // derived and assistant state
+  /^fct_trend_/, /^fct_lucius_/, /^fct_ai_/,  // derived and assistant state
   /^fct_last_sync/,
   /^fct_intercompany_removed_entries/,        // bookkeeping of deletions, not data
 ];
@@ -64,45 +87,71 @@ function isWatched(measure) {
   return !UNWATCHED.some(re => re.test(String(measure)));
 }
 
-/** 'YYYY-MM-DD' shifted by whole days. */
-function shiftDay(day, days) {
-  const d = new Date(`${day}T00:00:00Z`);
-  d.setUTCDate(d.getUTCDate() + days);
-  return d.toISOString().slice(0, 10);
+/** A run's stamp: the instant to the whole second, as '2026-09-28T09:45:03Z'. */
+function runInstant(now = new Date()) {
+  return new Date(Math.floor(now.getTime() / 1000) * 1000).toISOString().replace('.000Z', 'Z');
 }
 
+/** A stamp shifted by whole days. */
+function shiftDays(at, days) {
+  return runInstant(new Date(Date.parse(at) + days * 86400000));
+}
+
+/** '2026-09-28T09:45:03Z' → '2026-09-28 09:45 UTC', for people. */
+function human(at) {
+  const s = String(at);
+  return `${s.slice(0, 10)} ${s.slice(11, 16)} UTC`;
+}
+
+// A stamp read back from the database in the form runInstant writes it.
+const STAMP = 'YYYY-MM-DD"T"HH24:MI:SS"Z"';
+
 /**
- * Copies every record that changed since its last copy, then prunes the
- * window. Returns how many records were stored and pruned.
+ * Copies every record that changed since its last copy, marks every record
+ * deleted since its last copy, then prunes the window.
  */
-async function backupAppData(sql, day) {
+async function backupAppData(sql, at) {
   const stored = await sql`
-    INSERT INTO app_data_backups (key, backup_date, company_code, value, value_hash, source_updated_at)
-    SELECT a.key, ${day}::date, split_part(a.key, ':', 1), a.value,
+    INSERT INTO app_data_snapshots (key, taken_at, company_code, value, value_hash, source_updated_at)
+    SELECT a.key, ${at}::timestamptz, split_part(a.key, ':', 1), a.value,
            md5(COALESCE(a.value::text, '')), a.updated_at
     FROM app_data a
     WHERE strpos(a.key, ':') > 0
-      AND NOT (substr(a.key, strpos(a.key, ':') + 1) = ANY(${SKIP_BACKUP}::text[]))
+      AND NOT EXISTS (SELECT 1 FROM unnest(${SKIP_BACKUP}::text[]) AS s(prefix)
+                      WHERE left(substr(a.key, strpos(a.key, ':') + 1), length(s.prefix)) = s.prefix)
       AND md5(COALESCE(a.value::text, '')) IS DISTINCT FROM (
-            SELECT b.value_hash FROM app_data_backups b
-            WHERE b.key = a.key AND b.backup_date <= ${day}::date
-            ORDER BY b.backup_date DESC LIMIT 1)
-    ON CONFLICT (key, backup_date) DO UPDATE
-      SET value = EXCLUDED.value, value_hash = EXCLUDED.value_hash,
-          source_updated_at = EXCLUDED.source_updated_at, captured_at = NOW()
+            SELECT b.value_hash FROM app_data_snapshots b
+            WHERE b.key = a.key AND b.taken_at <= ${at}::timestamptz
+            ORDER BY b.taken_at DESC LIMIT 1)
+    ON CONFLICT (key, taken_at) DO NOTHING
     RETURNING key
   `;
-  const cutoff = shiftDay(day, -RETAIN_DAYS);
+  // Without this copy a deleted record's last value would read as its state
+  // for ever after, and pruning would keep that value for ever too.
+  const gone = await sql`
+    INSERT INTO app_data_snapshots (key, taken_at, company_code, value, value_hash, source_updated_at)
+    SELECT l.key, ${at}::timestamptz, l.company_code, NULL::jsonb, ${DELETED}::text, NULL::timestamptz
+    FROM (SELECT DISTINCT ON (b.key) b.key, b.company_code, b.value_hash
+          FROM app_data_snapshots b
+          WHERE b.taken_at <= ${at}::timestamptz
+          ORDER BY b.key, b.taken_at DESC) l
+    WHERE l.value_hash <> ${DELETED}::text
+      AND NOT EXISTS (SELECT 1 FROM app_data a WHERE a.key = l.key)
+    ON CONFLICT (key, taken_at) DO NOTHING
+    RETURNING key
+  `;
+  const cutoff = shiftDays(at, -RETAIN_DAYS);
   const pruned = await sql`
-    DELETE FROM app_data_backups b
-    WHERE b.backup_date < ${cutoff}::date
-      AND EXISTS (SELECT 1 FROM app_data_backups n
-                  WHERE n.key = b.key
-                    AND n.backup_date > b.backup_date
-                    AND n.backup_date < ${cutoff}::date)
+    DELETE FROM app_data_snapshots b
+    WHERE b.taken_at < ${cutoff}::timestamptz
+      AND (b.value_hash = ${DELETED}::text
+           OR EXISTS (SELECT 1 FROM app_data_snapshots n
+                      WHERE n.key = b.key
+                        AND n.taken_at > b.taken_at
+                        AND n.taken_at < ${cutoff}::timestamptz))
     RETURNING b.key
   `;
-  return { stored: stored.length, pruned: pruned.length };
+  return { stored: stored.length, gone: gone.length, pruned: pruned.length };
 }
 
 /**
@@ -138,37 +187,37 @@ async function readCounts(sql) {
     .map(r => ({ company_code: String(r.company_code), measure: String(r.measure), n: Number(r.n) || 0 }));
 }
 
-async function recordCounts(sql, day, counts) {
-  if (!counts.length) return;
+async function recordCounts(sql, at, rows) {
+  if (!rows.length) return;
   await sql`
-    INSERT INTO data_watch_counts (company_code, day, measure, n)
-    SELECT t.c, ${day}::date, t.m, t.n
-    FROM unnest(${counts.map(r => r.company_code)}::text[],
-                ${counts.map(r => r.measure)}::text[],
-                ${counts.map(r => r.n)}::int[]) AS t(c, m, n)
-    ON CONFLICT (company_code, day, measure) DO UPDATE SET n = EXCLUDED.n
+    INSERT INTO list_counts (company_code, taken_at, measure, n)
+    SELECT t.c, ${at}::timestamptz, t.m, t.n
+    FROM unnest(${rows.map(r => r.company_code)}::text[],
+                ${rows.map(r => r.measure)}::text[],
+                ${rows.map(r => r.n)}::int[]) AS t(c, m, n)
+    ON CONFLICT (company_code, taken_at, measure) DO UPDATE SET n = EXCLUDED.n
   `;
 }
 
-/** The last night before `day` that has counts, and those counts. */
-async function previousCounts(sql, companyCode, day) {
+/** The counts the latest earlier run recorded for a company, and its stamp. */
+async function previousCounts(sql, companyCode, at) {
   const rows = await sql`
-    SELECT to_char(day, 'YYYY-MM-DD') AS day, measure, n
-    FROM data_watch_counts
+    SELECT to_char(taken_at AT TIME ZONE 'UTC', ${STAMP}) AS at, measure, n
+    FROM list_counts
     WHERE company_code = ${companyCode}
-      AND day = (SELECT max(day) FROM data_watch_counts
-                 WHERE company_code = ${companyCode} AND day < ${day}::date)
+      AND taken_at = (SELECT max(taken_at) FROM list_counts
+                      WHERE company_code = ${companyCode} AND taken_at < ${at}::timestamptz)
   `;
   if (!rows.length) return null;
   return {
-    day: rows[0].day,
+    at: rows[0].at,
     counts: new Map(rows.filter(r => isWatched(r.measure)).map(r => [r.measure, Number(r.n) || 0])),
   };
 }
 
 /**
  * The lists that shrank enough to report, biggest loss first. A list missing
- * tonight — its record gone, or the array dropped from it — counts as empty.
+ * now — its record gone, or the array dropped from it — counts as empty.
  * Growth and new lists are never reported.
  */
 function findDrops(prev, now) {
@@ -216,70 +265,93 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => (
 const sqlText = s => String(s).replace(/'/g, "''");
 
 /**
- * The SQL that puts one record back as it was on `day`. The record is the
+ * The SQL that puts one record back as it stood at `since`. The record is the
  * app_data key; daily-tracking rows are not in this backup and get no snippet.
  */
-function restoreSql(companyCode, measure, day) {
+function restoreSql(companyCode, measure, since) {
   const key = `${companyCode}:${measure.split('.')[0]}`;
+  const where = `WHERE key = '${sqlText(key)}' AND taken_at <= TIMESTAMPTZ '${sqlText(since)}'`;
   return [
-    `-- Look first: what the ${day} copy holds.`,
-    `SELECT backup_date, value FROM app_data_backups`,
-    `WHERE key = '${sqlText(key)}' AND backup_date <= DATE '${day}'`,
-    `ORDER BY backup_date DESC LIMIT 1;`,
+    `-- Look first: the copy as it stood at ${human(since)}.`,
+    `SELECT taken_at, value FROM app_data_snapshots`,
+    where,
+    `ORDER BY taken_at DESC LIMIT 1;`,
     ``,
-    `-- Put it back. This replaces the whole record, so anything changed in it`,
-    `-- since ${day} goes too.`,
-    `UPDATE app_data SET updated_at = NOW(), value = (`,
-    `  SELECT value FROM app_data_backups`,
-    `  WHERE key = '${sqlText(key)}' AND backup_date <= DATE '${day}'`,
-    `  ORDER BY backup_date DESC LIMIT 1)`,
-    `WHERE key = '${sqlText(key)}';`,
+    `-- Put it back, whether it was emptied or deleted outright. This replaces`,
+    `-- the whole record, so anything changed in it since then goes too.`,
+    `INSERT INTO app_data (key, value, updated_at)`,
+    `SELECT key, value, NOW() FROM (`,
+    `  SELECT key, value, value_hash FROM app_data_snapshots`,
+    `  ${where}`,
+    `  ORDER BY taken_at DESC LIMIT 1`,
+    `) latest WHERE value_hash <> '${DELETED}'`,
+    `ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW();`,
   ].join('\n');
 }
 
-function buildAlert({ companyCode, companyName, prevDay, day, drops }) {
+/**
+ * The email for one company's drops. `since` is the run whose counts were
+ * fuller, `at` the run that found them smaller. `late` marks an alert a
+ * later run is sending because the run that found it could not.
+ */
+function buildAlert({ companyCode, companyName, since, at, drops, late = false }) {
   const rows = drops.map(d => `
       <tr>
         <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb">${esc(labelFor(d.measure))}
           <div style="font-size:11px;color:#6b7280;font-family:monospace">${esc(d.measure)}</div></td>
-        <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right">${d.before}</td>
-        <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right;color:#991b1b;font-weight:700">${d.after}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right">${esc(d.before)}</td>
+        <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right;color:#991b1b;font-weight:700">${esc(d.after)}</td>
       </tr>`).join('');
   // One snippet per record — two arrays inside fct_lists are one restore.
   const records = [...new Set(drops.filter(d => !d.measure.startsWith('daily_tracking.'))
     .map(d => d.measure.split('.')[0]))];
   const snippets = records.map(r => `
       <div style="margin-top:14px;font-weight:700">${esc(labelFor(r))}</div>
-      <pre style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:4px;padding:10px;font-size:12px;white-space:pre-wrap">${esc(restoreSql(companyCode, r, prevDay))}</pre>`).join('');
+      <pre style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:4px;padding:10px;font-size:12px;white-space:pre-wrap">${esc(restoreSql(companyCode, r, since))}</pre>`).join('');
   const dailyNote = drops.some(d => d.measure.startsWith('daily_tracking.'))
     ? `<p style="font-size:13px">Daily-tracking rows are not in this backup. Restore them from Neon's
-       history — create a branch from a point in time before ${esc(day)} — while that time is still
-       inside the project's restore window.</p>`
+       history — create a branch from ${esc(human(since))}, when they were last counted in full — while
+       that time is still inside the project's restore window.</p>`
     : '';
   const bodyHtml = `
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:100%;font-size:13px">
       <tr style="background:#f9fafb;text-align:left">
         <th style="padding:6px 10px">List</th>
-        <th style="padding:6px 10px;text-align:right">${esc(prevDay)}</th>
-        <th style="padding:6px 10px;text-align:right">${esc(day)}</th>
+        <th style="padding:6px 10px;text-align:right">${esc(human(since))}</th>
+        <th style="padding:6px 10px;text-align:right">${esc(human(at))}</th>
       </tr>${rows}
     </table>
     ${records.length ? `<h3 style="font-size:15px;margin:22px 0 4px">To restore</h3>
     <p style="font-size:13px;margin:0">If the drop was not deliberate, run these in the Neon SQL editor
-      (Primary branch). Each puts the record back as the ${esc(prevDay)} backup has it.</p>${snippets}` : ''}
+      (Primary branch). Each puts the record back as the ${esc(human(since))} copy has it.</p>${snippets}` : ''}
     ${dailyNote}`;
+  const lists = drops.length === 1 ? 'a list' : `${drops.length} lists`;
   const html = buildEmailHtml({
-    title: 'Lists that shrank overnight',
+    title: 'Lists that shrank',
     companyName: companyName || companyCode,
-    note: `The nightly check found ${drops.length === 1 ? 'a list' : `${drops.length} lists`} holding far fewer entries than on ${prevDay}. If nobody meant to remove them, restore them before more work is saved on top.`,
+    note: `The ${human(at)} check found ${lists} holding far fewer entries than at ${human(since)}. `
+      + (late ? 'That check could not send this email, so it comes late: if the lists have been put back since, there is nothing to do. '
+              : 'If nobody meant to remove them, restore them before more work is saved on top.'),
     summary: [
       { label: 'Lists that shrank', value: String(drops.length), tone: 'bad' },
-      { label: 'Last fuller backup', value: prevDay },
+      { label: 'Last fuller copy', value: human(since) },
     ],
     bodyHtml,
   });
-  const subject = `DataWatch: ${drops.length === 1 ? 'a list' : `${drops.length} lists`} shrank overnight — ${companyName || companyCode}`;
+  const subject = `DataWatch: ${lists} shrank — ${companyName || companyCode}${late ? ` (found ${at.slice(0, 10)})` : ''}`;
   return { subject, html };
+}
+
+/** The email for a run whose backup or check did not finish. */
+function buildFailure({ at, errors }) {
+  const items = errors.map(e => `<li style="margin:4px 0"><strong>${esc(e.step)}${e.company ? ` (${esc(e.company)})` : ''}</strong>: ${esc(String(e.error).slice(0, 300))}</li>`).join('');
+  const html = buildEmailHtml({
+    title: 'The nightly backup did not finish',
+    note: `The ${human(at)} run of the backup and list check hit errors, so its copy or its check may be missing. It runs again tomorrow; if this repeats, the backup has stopped.`,
+    summary: [{ label: 'Run', value: human(at) }, { label: 'Steps that failed', value: String(errors.length), tone: 'bad' }],
+    bodyHtml: `<ul style="font-size:13px;padding-left:18px">${items}</ul>`,
+  });
+  return { subject: `DataWatch: the nightly backup did not finish (${at.slice(0, 10)})`, html };
 }
 
 /** DATA_ALERT_EMAILS: addresses separated by commas, semicolons or spaces. */
@@ -288,65 +360,147 @@ function alertRecipients(raw = process.env.DATA_ALERT_EMAILS) {
     .filter(isValidEmail);
 }
 
+/** Sends one email. Resolves to null once it is sent, else to why it was not. */
+async function deliver(send, recipients, { subject, html }) {
+  if (!recipients.length) return 'DATA_ALERT_EMAILS is not set';
+  try {
+    const sent = await send({ to: recipients, subject, html });
+    return sent && sent.ok ? null : String((sent && sent.error) || 'send failed');
+  } catch (err) {
+    return err.message || 'send failed';
+  }
+}
+
 /**
- * The whole night: back up, count, compare, email. Never lets one company's
- * email failure stop the rest; the backup always runs first, so a failed
- * check still leaves tonight's copy behind.
+ * The whole run: back up, count, compare, email. The backup runs first, but
+ * its failure does not stop the check — a night with no copy is exactly when
+ * a shrinking list most needs noticing — and one company's failure does not
+ * stop the rest.
  */
 async function runDataBackup(sql, opts = {}) {
-  const day = opts.day || (opts.today || new Date()).toISOString().slice(0, 10);
+  const at = runInstant(opts.now || new Date());
   const send = opts.send || sendEmail;
   const recipients = opts.recipients || alertRecipients();
-  const result = { day, backup: null, measures: 0, alerts: [], emailed: 0, errors: [] };
+  const result = { at, backup: null, measures: 0, alerts: [], emailed: 0, pending: 0, errors: [] };
 
-  result.backup = await backupAppData(sql, day);
+  try { result.backup = await backupAppData(sql, at); }
+  catch (err) { result.errors.push({ step: 'backup', error: err.message }); }
 
-  const counts = await readCounts(sql);
-  result.measures = counts.length;
-  await recordCounts(sql, day, counts);
+  let counts = null;
+  try { counts = await readCounts(sql); }
+  catch (err) { result.errors.push({ step: 'count', error: err.message }); }
 
-  const byCompany = new Map();
-  for (const r of counts) {
-    if (!byCompany.has(r.company_code)) byCompany.set(r.company_code, new Map());
-    byCompany.get(r.company_code).set(r.measure, r.n);
-  }
   const names = new Map();
   try {
     (await sql`SELECT code, name FROM companies`).forEach(c => names.set(String(c.code), c.name));
   } catch (err) { result.errors.push({ step: 'companies', error: err.message }); }
-  // A company whose every list vanished has no counts tonight, but still has
-  // last night's — so it is checked too.
-  const codes = new Set([...byCompany.keys(), ...names.keys()]);
 
-  for (const code of codes) {
-    try {
-      const prev = await previousCounts(sql, code, day);
-      if (!prev) continue;
-      const drops = findDrops(prev.counts, byCompany.get(code) || new Map());
-      if (!drops.length) continue;
-      result.alerts.push({ company: code, since: prev.day, drops });
-      if (!recipients.length) {
-        result.errors.push({ company: code, step: 'email', error: 'DATA_ALERT_EMAILS is not set' });
-        continue;
+  if (counts) {
+    result.measures = counts.length;
+    const byCompany = new Map();
+    for (const r of counts) {
+      if (!byCompany.has(r.company_code)) byCompany.set(r.company_code, new Map());
+      byCompany.get(r.company_code).set(r.measure, r.n);
+    }
+    // A company whose every list vanished has no counts now, but still has
+    // earlier ones — so it is checked too.
+    const codes = new Set([...byCompany.keys(), ...names.keys()]);
+
+    for (const code of codes) {
+      const now = byCompany.get(code) || new Map();
+      try {
+        const prev = await previousCounts(sql, code, at);
+        const drops = prev ? findDrops(prev.counts, now) : [];
+        if (drops.length) {
+          result.alerts.push({ company: code, since: prev.at, drops });
+          const why = await deliver(send, recipients,
+            buildAlert({ companyCode: code, companyName: names.get(code), since: prev.at, at, drops }));
+          if (why === null) {
+            result.emailed++;
+          } else {
+            result.errors.push({ company: code, step: 'email', error: why });
+            // Kept for later runs to send. If it cannot even be kept, these
+            // counts are not recorded either, so the next run finds the same
+            // drop against the same baseline and tries again.
+            try {
+              await sql`
+                INSERT INTO list_alerts_pending (company_code, found_at, since, drops, attempts, last_error)
+                VALUES (${code}, ${at}::timestamptz, ${prev.at}::timestamptz, ${JSON.stringify(drops)}::jsonb, 1, ${why})
+                ON CONFLICT (company_code, found_at) DO NOTHING
+              `;
+              result.pending++;
+            } catch (err) {
+              result.errors.push({ company: code, step: 'queue', error: err.message });
+              continue;
+            }
+          }
+        }
+        const rows = [...now].map(([measure, n]) => ({ company_code: code, measure, n }));
+        // A list gone now is recorded as empty, once: the next run compares
+        // it as empty, and the run after that it is simply gone.
+        if (prev) for (const [measure, n] of prev.counts) {
+          if (!now.has(measure) && n > 0) rows.push({ company_code: code, measure, n: 0 });
+        }
+        // Recorded straight after this company's alert, so a failure later in
+        // the run cannot send that alert a second time.
+        try { await recordCounts(sql, at, rows); }
+        catch (err) { result.errors.push({ company: code, step: 'record', error: err.message }); }
+      } catch (err) {
+        result.errors.push({ company: code, step: 'check', error: err.message });
       }
-      const { subject, html } = buildAlert({ companyCode: code, companyName: names.get(code), prevDay: prev.day, day, drops });
-      const sent = await send({ to: recipients, subject, html });
-      if (sent && sent.ok) result.emailed++;
-      else result.errors.push({ company: code, step: 'email', error: (sent && sent.error) || 'send failed' });
-    } catch (err) {
-      result.errors.push({ company: code, step: 'check', error: err.message });
     }
   }
 
+  // Alerts earlier runs found but could not send.
   try {
-    await sql`DELETE FROM data_watch_counts WHERE day < ${shiftDay(day, -COUNTS_RETAIN_DAYS)}::date`;
+    const waiting = await sql`
+      SELECT company_code, to_char(found_at AT TIME ZONE 'UTC', ${STAMP}) AS found_at,
+             to_char(since AT TIME ZONE 'UTC', ${STAMP}) AS since, drops, attempts
+      FROM list_alerts_pending
+      WHERE found_at < ${at}::timestamptz
+      ORDER BY found_at
+    `;
+    for (const p of waiting) {
+      const code = String(p.company_code);
+      const drops = typeof p.drops === 'string' ? JSON.parse(p.drops) : p.drops;
+      const why = await deliver(send, recipients, buildAlert({
+        companyCode: code, companyName: names.get(code), since: p.since, at: p.found_at, drops, late: true,
+      }));
+      const attempts = (Number(p.attempts) || 0) + 1;
+      if (why === null || attempts >= MAX_SEND_ATTEMPTS) {
+        await sql`DELETE FROM list_alerts_pending
+                  WHERE company_code = ${code} AND found_at = ${p.found_at}::timestamptz`;
+      } else {
+        await sql`UPDATE list_alerts_pending SET attempts = ${attempts}, last_error = ${why}
+                  WHERE company_code = ${code} AND found_at = ${p.found_at}::timestamptz`;
+        result.pending++;
+      }
+      if (why === null) result.emailed++;
+      else result.errors.push({ company: code, step: 'email', error: attempts >= MAX_SEND_ATTEMPTS
+        ? `gave up on the ${human(p.found_at)} alert after ${attempts} attempts: ${why}` : why });
+    }
+  } catch (err) { result.errors.push({ step: 'retry', error: err.message }); }
+
+  // Pruned before the failure email is written, so a failed prune is in it.
+  try {
+    await sql`DELETE FROM list_counts WHERE taken_at < ${shiftDays(at, -COUNTS_RETAIN_DAYS)}::timestamptz`;
   } catch (err) { result.errors.push({ step: 'prune counts', error: err.message }); }
+
+  // Anything but a failed send means the backup or the check did not do its
+  // job, and that is said the same way a shrinking list is.
+  const broken = result.errors.filter(e => e.step !== 'email');
+  result.failed = broken.length > 0;
+  if (broken.length && recipients.length) {
+    const why = await deliver(send, recipients, buildFailure({ at, errors: broken }));
+    if (why === null) result.emailed++;
+    else result.errors.push({ step: 'email', error: why });
+  }
 
   return result;
 }
 
 module.exports = {
-  RETAIN_DAYS, COUNTS_RETAIN_DAYS, EMPTIED_MIN, HALVED_MIN,
-  isWatched, shiftDay, findDrops, labelFor, restoreSql, buildAlert, alertRecipients,
-  backupAppData, readCounts, recordCounts, previousCounts, runDataBackup,
+  RETAIN_DAYS, COUNTS_RETAIN_DAYS, MAX_SEND_ATTEMPTS, EMPTIED_MIN, HALVED_MIN, SKIP_BACKUP, DELETED,
+  isWatched, runInstant, shiftDays, human, findDrops, labelFor, restoreSql, buildAlert, buildFailure,
+  alertRecipients, deliver, backupAppData, readCounts, recordCounts, previousCounts, runDataBackup,
 };

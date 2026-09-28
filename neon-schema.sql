@@ -2485,37 +2485,54 @@ CREATE INDEX IF NOT EXISTS idx_safety_sig_company_user
 -- ─────────────────────────────────────────────────
 -- NIGHTLY BACKUP OF app_data  (api/cron/data-backup.js)
 -- ─────────────────────────────────────────────────
--- A copy of every app_data record as it stood each night, kept for 30 days.
+-- A copy of every app_data record as each run found it, kept for 30 days.
 -- In September a failed read saved empty turf lists over the real ones, and
 -- nothing held an earlier copy that reached back far enough to restore them.
 --
--- One row per record per night it CHANGED, so a record left alone for a month
--- is stored once. A record's state on any night in the window is its newest
--- row on or before that night. Pruning keeps each record's newest row from
--- before the window, because that is still its state at the window's start.
-CREATE TABLE IF NOT EXISTS app_data_backups (
+-- Every run is stamped with the instant it started. Its copies, its counts
+-- and its alerts carry that stamp, so an alert's restore names the copy taken
+-- alongside the counts it compared against.
+--
+-- One row per record per run it CHANGED in, so a record left alone for a
+-- month is stored once. A record's state at any moment in the window is its
+-- newest row at or before that moment. A record that disappears gets a row
+-- with value_hash 'deleted' and no value. Pruning keeps each record's newest
+-- row from before the window, because that is still its state at the
+-- window's start, unless that row says the record was deleted.
+CREATE TABLE IF NOT EXISTS app_data_snapshots (
     key               TEXT        NOT NULL,
-    backup_date       DATE        NOT NULL,
+    taken_at          TIMESTAMPTZ NOT NULL,
     company_code      TEXT        NOT NULL,
     value             JSONB,
-    -- md5 of value::text. jsonb prints keys in a fixed order, so an unchanged
-    -- record always hashes the same.
+    -- md5 of value::text, or 'deleted'. jsonb prints keys in a fixed order,
+    -- so an unchanged record always hashes the same.
     value_hash        TEXT        NOT NULL,
     source_updated_at TIMESTAMPTZ,
-    captured_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    PRIMARY KEY (key, backup_date)
+    PRIMARY KEY (key, taken_at)
 );
 
-CREATE INDEX IF NOT EXISTS idx_app_data_backups_company
-    ON app_data_backups (company_code, backup_date DESC);
+CREATE INDEX IF NOT EXISTS idx_app_data_snapshots_company
+    ON app_data_snapshots (company_code, taken_at DESC);
 
--- How many entries each watched list held each night. The morning check
--- compares tonight's counts with the last night's and emails when a list
--- empties or loses half of itself.
-CREATE TABLE IF NOT EXISTS data_watch_counts (
-    company_code TEXT    NOT NULL,
-    day          DATE    NOT NULL,
-    measure      TEXT    NOT NULL,
-    n            INTEGER NOT NULL,
-    PRIMARY KEY (company_code, day, measure)
+-- How many entries each watched list held at each run. The check compares a
+-- run's counts with the previous run's and emails when a list empties or
+-- loses half of itself.
+CREATE TABLE IF NOT EXISTS list_counts (
+    company_code TEXT        NOT NULL,
+    taken_at     TIMESTAMPTZ NOT NULL,
+    measure      TEXT        NOT NULL,
+    n            INTEGER     NOT NULL,
+    PRIMARY KEY (company_code, taken_at, measure)
+);
+
+-- Alerts a run found but could not email. Later runs try them again, still
+-- pointing at the copy they found, and give up after a week of tries.
+CREATE TABLE IF NOT EXISTS list_alerts_pending (
+    company_code TEXT        NOT NULL,
+    found_at     TIMESTAMPTZ NOT NULL,
+    since        TIMESTAMPTZ NOT NULL,
+    drops        JSONB       NOT NULL,
+    attempts     INTEGER     NOT NULL DEFAULT 1,
+    last_error   TEXT,
+    PRIMARY KEY (company_code, found_at)
 );
