@@ -117,4 +117,112 @@ async function readEmployeeRoster(sql, companyCode) {
   return Array.from(byName.values()).sort((a, b) => a.name.localeCompare(b.name));
 }
 
-module.exports = { readEmployeeRoster };
+// ── Login rows ──────────────────────────────────────────────────────────────
+// Manage Users → Roles lists LOGINS, by username, and its Supervisor and Driver
+// toggles are stored on an employees row named after the username: Timesheet's
+// supervisor dropdown, its "was this a haul?" question and Code Time's
+// send-to list all find a login's role by that name. So flagging Aaron Todd's
+// login writes a row called "toddaaron" beside the "Aaron Todd" the division
+// lists already hold, and every list of people showed Aaron Todd twice — once
+// as a person, once as a login — and counted the one person twice as crew.
+// Nothing links a login to its person, so they are paired here by name.
+//
+// The row stays in the table; Timesheet and Payroll still need it. What
+// changes is the list of PEOPLE: a login's row folds into the person it names,
+// who takes on its Supervisor and Driver flags and any contact detail the
+// person's own row lacks. A login that names nobody, or could name two people,
+// stays in the list as it is and is marked as a login. Guessing wrong would
+// hand one person another's role, and a name nobody can place is better shown
+// than lost.
+
+const NAME_SUFFIX = /^(jr|sr|ii|iii|iv|v)$/;
+
+// The ways a login is usually made from a person's name: last + first
+// (toddaaron), first + last (aarontodd), the one-initial forms (atodd, todda,
+// aaront), and a middle name kept whole (smithmaryann, maryannsmith). Letters
+// only, so "McMillan" and "O'Brien" compare the way they are typed into a
+// username.
+function loginKeysFor(name) {
+  const parts = String(name || '').toLowerCase().split(/\s+/)
+    .map(p => p.replace(/[^a-z]/g, ''))
+    .filter(p => p && !NAME_SUFFIX.test(p));
+  if (parts.length < 2) return [];
+  const first = parts[0], last = parts[parts.length - 1], given = parts.slice(0, -1).join('');
+  return [...new Set([last + first, first + last, first[0] + last, last + first[0], first + last[0],
+                      last + given, given + last])];
+}
+
+// A username as the same kind of string: letters only, so "aaron.todd" and
+// "toddaaron2" find their person too.
+function loginKey(username) { return String(username || '').toLowerCase().replace(/[^a-z]/g, ''); }
+
+/**
+ * The roster as PEOPLE: each login's row folded into the person it names.
+ *
+ * A row is a login's when its name is a username and has no space in it — a
+ * username with a space in it is a person's full name, and is left alone.
+ *
+ * @param  {object[]} roster     readEmployeeRoster's rows
+ * @param  {string[]} usernames  the company's logins
+ * @return {{ people: object[], matched: object, unmatched: string[] }}
+ *   `matched` maps each folded login to the person it went to; `unmatched`
+ *   lists the logins left in the list, marked `login: true`.
+ */
+function foldLoginRows(roster, usernames) {
+  const logins = new Set((usernames || []).map(u => String(u || '').trim().toLowerCase()).filter(Boolean));
+  const isLogin = r => !/\s/.test(r.name) && logins.has(r.name.toLowerCase());
+  const people = roster.filter(r => !isLogin(r)).map(r => ({ ...r }));
+
+  const byKey = new Map();   // login key → the people it could name
+  for (const p of people) {
+    for (const k of loginKeysFor(p.name)) {
+      if (!byKey.has(k)) byKey.set(k, []);
+      byKey.get(k).push(p);
+    }
+  }
+
+  const matched = {}, unmatched = [];
+  for (const row of roster.filter(isLogin)) {
+    const hits = byKey.get(loginKey(row.name)) || [];
+    if (hits.length !== 1) {
+      people.push({ ...row, login: true });
+      unmatched.push(row.name);
+      continue;
+    }
+    const p = hits[0];
+    p.is_supervisor = p.is_supervisor || row.is_supervisor;
+    p.is_driver     = p.is_driver     || row.is_driver;
+    for (const f of ['phone', 'email', 'supervisor_name']) if (!p[f] && row[f]) p[f] = row[f];
+    (p.logins = p.logins || []).push(row.name);
+    matched[row.name] = p.name;
+  }
+
+  // "Reports to" names a person too. One that names a folded login now names
+  // the person it folded into, or it would point at somebody no longer listed.
+  const toPerson = new Map(Object.entries(matched).map(([login, name]) => [login.toLowerCase(), name]));
+  for (const p of people) {
+    const boss = toPerson.get(String(p.supervisor_name || '').trim().toLowerCase());
+    if (boss) p.supervisor_name = boss;
+  }
+
+  people.sort((a, b) => a.name.localeCompare(b.name));
+  return { people, matched, unmatched };
+}
+
+/**
+ * readEmployeeRoster, folded into people. A failed read of the logins folds
+ * nothing, which is the list as it was, rather than an error.
+ *
+ * `matched` and `unmatched` only ever name rows the roster already returns,
+ * so no login the roster does not already show is handed out.
+ */
+async function readPeopleRoster(sql, companyCode) {
+  const roster = await readEmployeeRoster(sql, companyCode);
+  let usernames = [];
+  try {
+    usernames = (await sql`SELECT username FROM users WHERE company_code = ${companyCode}`).map(r => r.username);
+  } catch (err) { console.error('[roster] users read failed (non-fatal):', err.message); }
+  return foldLoginRows(roster, usernames);
+}
+
+module.exports = { readEmployeeRoster, readPeopleRoster, foldLoginRows, loginKeysFor, loginKey };

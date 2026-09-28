@@ -1,6 +1,8 @@
 'use strict';
 /**
  * GET    /api/employees                 — list all active employees for the company
+ * GET    /api/employees?view=people     — the same, as people: each login's role
+ *                                         row folded into the person it names
  * PUT    /api/employees                 — full replace: sync entire employee array.
  *                                         Names absent from the array are deleted;
  *                                         `is_supervisor` is only moved when the
@@ -22,7 +24,7 @@
  */
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
-const { readEmployeeRoster } = require('./lib/roster');
+const { readEmployeeRoster, readPeopleRoster } = require('./lib/roster');
 
 // ── Contact card normalisation ──────────────────────────────────────────────
 // The three fields the Team Directory writes. Each one is stored as typed
@@ -104,6 +106,15 @@ module.exports = async (req, res) => {
       // The union of every roster in the company, deduplicated by name — see
       // api/lib/roster.js. The Scheduler reads the same function, so the two
       // lists cannot drift apart again.
+      //
+      // ?view=people folds each login's role row into the person it names
+      // (foldLoginRows), for a list of PEOPLE: the Team Directory. Without it
+      // the rows come back as stored, login rows included, because Manage
+      // Users → Roles reads a login's flags off the row named after it.
+      if (req.query.view === 'people') {
+        const { people, matched, unmatched } = await readPeopleRoster(sql, companyCode);
+        return res.json({ employees: people, matched, unmatched });
+      }
       const merged = await readEmployeeRoster(sql, companyCode);
       return res.json({ employees: merged });
     }
