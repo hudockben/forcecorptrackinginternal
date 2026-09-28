@@ -747,7 +747,9 @@
     .assign-list { display: flex; flex-direction: column; gap: 0.35rem; max-height: 180px; overflow-y: auto; padding: 0.5rem 0.6rem; background: var(--bg); border: 1px solid var(--border); border-radius: 4px; }
     .assign-check { display: flex; align-items: center; gap: 0.5rem; font-size: 0.83rem; cursor: pointer; color: var(--text); }
     .assign-check input[type="checkbox"] { accent-color: var(--green); width: 14px; height: 14px; flex-shrink: 0; cursor: pointer; }
+    /* The list div is written with no whitespace inside it, or :empty never matches. */
     .assign-list:empty::after { content: "None in global lists yet"; color: var(--muted); font-size: 0.78rem; font-style: italic; }
+    .assign-list.assign-list-unloaded:empty::after { content: "Couldn't load this list from the server — retrying. Reload the page if it stays empty."; color: var(--yellow); font-style: normal; }
 
     /* ── Bid Items & Daily Tracking (shared section wrapper) ── */
     .bid-section { padding: 1.1rem 1.5rem; border-top: 1px solid var(--border); }
@@ -4524,22 +4526,36 @@ function _fctPollsSuspended() {
   return document.visibilityState === 'hidden' || _fctSessionOver();
 }
 
-async function apiGet(key) {
+/**
+ * GET one blob, and say whether the server actually answered.
+ *
+ * apiGet returns null both when nothing is stored and when the request failed.
+ * That is fine for a caller that only draws what it reads, and wrong for one
+ * that may save it back: a page that could not read a blob holds only its
+ * empty defaults, and saving those replaces what the server has. `ok` is false
+ * for every failure — network, 5xx, 403, a 401 that signs out — and `value` is
+ * then meaningless.
+ */
+async function apiGetChecked(key) {
   try {
     const r = await fetch(`${API_BASE}/data/${key}`, {
       headers: { 'Authorization': `Bearer ${fctToken}` }
     });
-    if (r.status === 401) { logout(); return null; }
+    if (r.status === 401) { logout(); return { ok: false, value: null }; }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const { value } = await r.json();
-    return value;
+    return { ok: true, value };
   } catch (err) {
     console.warn(`[DB] GET ${key} failed:`, err.message);
-    return null;
+    return { ok: false, value: null };
   }
 }
 
-function _showSaveError(isAuth, customMsg) {
+async function apiGet(key) {
+  return (await apiGetChecked(key)).value;
+}
+
+function _showSaveError(isAuth, customMsg, keptLocally = true) {
   const banner = document.getElementById('save-error-banner');
   if (!banner) return;
   const msg   = document.getElementById('save-error-msg');
@@ -4550,7 +4566,7 @@ function _showSaveError(isAuth, customMsg) {
   } else if (customMsg) {
     // Pass-through for backend conflict detail (e.g. the bulk-wipe
     // protection's "Cannot replace N items with an empty list" message).
-    if (msg)  msg.textContent  = '⚠ ' + customMsg + ' Your edits are kept locally.';
+    if (msg)  msg.textContent  = '⚠ ' + customMsg + (keptLocally ? ' Your edits are kept locally.' : '');
     if (link) link.hidden = true;
   } else {
     if (msg)  msg.textContent  = '⚠ Changes could not be saved to the server. Your edits are kept locally.';
@@ -15081,14 +15097,12 @@ function projectCardHTML(p) {
               ${lists.employees.length && lists.employees.every(e=>(p.assigned_employees||[]).includes(e.name)) ? 'Deselect All' : 'Select All'}
             </button>
           </div>
-          <div class="assign-list">
-            ${lists.employees.map(emp => `
+          <div class="assign-list${_listsLoaded ? '' : ' assign-list-unloaded'}">${lists.employees.map(emp => `
               <label class="assign-check">
                 <input type="checkbox" ${(p.assigned_employees||[]).includes(emp.name) ? 'checked' : ''}
                   onchange="toggleProjectAssignment('${p.id}','assigned_employees','${esc(emp.name)}',this.checked)">
                 ${esc(emp.name)}${emp.job_class ? ` <span style="color:var(--muted);font-size:0.75rem">(${esc(emp.job_class)})</span>` : ''}
-              </label>`).join('')}
-          </div>
+              </label>`).join('')}</div>
         </div>
         <div class="assign-col-wrap">
           <div class="assign-col-label" style="display:flex;align-items:center;justify-content:space-between">
@@ -15098,14 +15112,12 @@ function projectCardHTML(p) {
               ${lists.equipment.length && lists.equipment.every(e=>(p.assigned_equipment||[]).includes(e.name)) ? 'Deselect All' : 'Select All'}
             </button>
           </div>
-          <div class="assign-list">
-            ${lists.equipment.map(eq => `
+          <div class="assign-list${_listsLoaded ? '' : ' assign-list-unloaded'}">${lists.equipment.map(eq => `
               <label class="assign-check">
                 <input type="checkbox" ${(p.assigned_equipment||[]).includes(eq.name) ? 'checked' : ''}
                   onchange="toggleProjectAssignment('${p.id}','assigned_equipment','${esc(eq.name)}',this.checked)">
                 ${esc(eq.name)}${eq.unit_cost ? ` <span style="color:var(--muted);font-size:0.75rem">($${fmt(eq.unit_cost)}/hr)</span>` : ''}
-              </label>`).join('')}
-          </div>
+              </label>`).join('')}</div>
         </div>
       </div>
     </div>
@@ -15287,9 +15299,29 @@ const defaultLists = {
 
 let lists = {};
 
+// True once this page has read the lists from the server. Until then `lists`
+// is only the empty defaults, and saving it would replace every employee,
+// machine, supplier and cost code the company has with nothing. A page whose
+// read failed used to do exactly that: it seeded the CRM lists into those
+// defaults and saved the lot, which empties every project's Assigned Employees
+// and Assigned Equipment boxes. saveLists() refuses until this is set.
+let _listsLoaded = false;
+
 async function loadLists() {
-  let saved = await apiGet('fct_lists');
+  const got = await apiGetChecked('fct_lists');
+  if (!got.ok) {
+    // Nothing is known about what the server holds. Draw with empty lists (a
+    // copy, so an edit made meanwhile cannot change the defaults), save
+    // nothing, and try again shortly.
+    if (!_listsLoaded) { lists = JSON.parse(JSON.stringify(defaultLists)); _retryLoadLists(); }
+    return;
+  }
+  let saved = got.value;
   if (!saved || typeof saved !== 'object' || Array.isArray(saved)) {
+    // The server answered that it holds no lists: carry over the copy this
+    // browser kept before they moved there. Only on an answered read. After a
+    // failed one, pushing that months-old copy would roll the company's lists
+    // back to it.
     try {
       const local = JSON.parse(localStorage.getItem(LISTS_KEY));
       if (local && typeof local === 'object') { saved = local; apiPut('fct_lists', saved); }
@@ -15306,8 +15338,46 @@ async function loadLists() {
   // object only adds the description the document folders label themselves with.
   lists.cost_codes = (lists.cost_codes || []).map(c => typeof c === 'string'
     ? { value: c, description: '' } : { value: '', description: '', ...c });
+  _listsLoaded = true;
   // First run fills the CRM pick lists with a starting vocabulary.
   if (typeof _crmSeedLists === 'function' && _crmSeedLists()) saveLists();
+}
+
+// After a failed first read: try again soon, then less often. The 60-second
+// lists poll keeps trying once these run out.
+const _LISTS_RETRY_MS = [2000, 5000, 15000, 30000];
+let _listsRetries = 0;
+let _listsRetryTimer = null;
+
+function _retryLoadLists() {
+  if (_listsRetryTimer || _listsRetries >= _LISTS_RETRY_MS.length) return;
+  _listsRetryTimer = setTimeout(async () => {
+    _listsRetryTimer = null;
+    _listsRetries++;
+    if (_listsLoaded || _fctSessionOver()) return;
+    await loadLists();
+    if (_listsLoaded) _redrawAfterListsLoad();
+  }, _LISTS_RETRY_MS[_listsRetries]);
+}
+
+/**
+ * Redraws what was drawn from the empty defaults once the real lists arrive:
+ * the open tab (the project cards' Assigned Employees / Equipment boxes and
+ * daily-tracking pickers, or Suppliers), and Manage Lists if it is open. Any
+ * other tab redraws itself when opened. A field with focus is left alone —
+ * the redraw rebuilds it — and the lists poll finishes the job later.
+ */
+let _listsRedrawPending = false;
+function _redrawAfterListsLoad() {
+  const el = document.activeElement;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
+    _listsRedrawPending = true;
+    return;
+  }
+  _listsRedrawPending = false;
+  if (activeTab === 'info') renderProjectsTab();
+  if (activeTab === 'supplier') renderSupplierTab();
+  if (document.querySelector('.list-panel.active')) renderAllListPanels();
 }
 
 /**
@@ -15320,7 +15390,17 @@ function costCodeLabel(code, fallback) {
   const hit = (lists.cost_codes || []).find(c => String(c.value) === String(code));
   return (hit && hit.description) || fallback || '';
 }
-function saveLists() { apiPut('fct_lists', lists); }
+function saveLists() {
+  if (!_listsLoaded) {
+    // The lists on this page are the empty defaults, not the company's.
+    // Saving them would wipe every list on the server.
+    console.warn('[lists] not saved: the lists have not loaded from the server');
+    _showSaveError(false, 'The employee, equipment and supplier lists have not loaded from the server, ' +
+      'so that change to them was not saved. Reload the page, then make it again.', false);
+    return;
+  }
+  apiPut('fct_lists', lists);
+}
 
 /* ═══════════════════════════════════════════
    DOCUMENTS TAB
@@ -28468,6 +28548,13 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
   async function pollLists() {
     if (_fctPollsSuspended()) return;
     try {
+      // The first read failed and its retries ran out: this is the first load.
+      if (!_listsLoaded) {
+        await loadLists();
+        if (_listsLoaded) _redrawAfterListsLoad();
+        return;
+      }
+      if (_listsRedrawPending) _redrawAfterListsLoad();
       let saved = await apiGet('fct_lists');
       if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return;
       const incoming = { ...defaultLists, ...saved };
