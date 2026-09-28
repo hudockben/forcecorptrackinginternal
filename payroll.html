@@ -2850,7 +2850,10 @@
     .cb-menu {
       position: fixed;
       min-width: 160px;
-      max-width: 320px;
+      /* cbPositionMenu sizes the menu to its longest option; this is as far as
+         it may grow. Anything longer still wraps (.cb-opt) rather than being
+         cut off. */
+      max-width: min(460px, calc(100vw - 16px));
       z-index: 1000;
       background: var(--surface);
       border: 1px solid var(--border);
@@ -2860,14 +2863,19 @@
       box-shadow: 0 6px 16px rgba(0,0,0,0.35);
     }
     .cb-menu[hidden] { display: none; }
+    /* Wrapped, not cut off with an ellipsis: a sub code is picked by reading
+       it, and the words an ellipsis hides can be the very ones that tell two
+       of them apart. A wrapped line hangs under its first so it cannot pass
+       for an option of its own. */
     .cb-opt {
-      padding: 0.3rem 0.5rem;
+      padding: 0.3rem 0.5rem 0.3rem 1.2rem;
+      text-indent: -0.7rem;
       font-size: 0.82rem;
+      line-height: 1.35;
       color: var(--text);
       cursor: pointer;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      white-space: normal;
+      overflow-wrap: anywhere;
     }
     .cb-opt.hi, .cb-opt:hover { background: #2563eb; color: #fff; }
     .cb-opt-empty { padding: 0.3rem 0.5rem; font-size: 0.74rem; color: var(--muted, #6b7280); font-style: italic; }
@@ -12204,9 +12212,16 @@
       const openUp = spaceBelow < 120 && spaceAbove > spaceBelow;
       const h = Math.max(80, Math.min(desired, openUp ? spaceAbove : spaceBelow));
       menu.style.maxHeight = h + 'px';
-      menu.style.width = Math.max(160, rect.width) + 'px';
-      const left = Math.min(Math.max(8, rect.left), vw - Math.max(160, rect.width) - 8);
-      menu.style.left = left + 'px';
+      // As wide as its longest option (up to the cap on .cb-menu), not as wide
+      // as the box. Pinned to the narrow Sub Code box, the menu cut a sub code
+      // off mid-word — "Excavate Backfill/Grad…" — so it could not be read.
+      // Never narrower than the box, so a short list still lines up under it.
+      menu.style.minWidth = Math.min(Math.max(160, rect.width), vw - 16) + 'px';
+      // Measured at the left edge, where nothing but the cap limits its width;
+      // measured where it opens, it would wrap early against the screen's edge.
+      menu.style.left = '0px';
+      const w = menu.offsetWidth;
+      menu.style.left = Math.min(Math.max(8, rect.left), vw - w - 8) + 'px';
       menu.style.top = (openUp ? (rect.top - h - gap) : (rect.bottom + gap)) + 'px';
     }
     function cbCloseAll() {
