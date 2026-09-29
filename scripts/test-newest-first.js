@@ -184,12 +184,14 @@ console.log('\n[daily tracking: newest work date first]');
   assert('a filtered subset is sorted', f.map(x => x.row.id).join() === 'd1,b,old1');
   assert('and keeps its real indices', f.map(x => x.ai).join() === '3,1,5');
 
-  // Copy row splices the copy in right after its source: it is the later
-  // entry on that date, so it is drawn directly above the source.
-  const withCopy = rows.slice(0, 4).concat([r('c-copy', '2026-09-28')], rows.slice(4));
+  // Copy row appends the copy, like every other new row. It is the latest
+  // entry on its date, so it is drawn first among that date's rows — the same
+  // place the server's date, created_at order puts it after a reload, so the
+  // row does not move on the next refresh.
+  const withCopy = rows.concat([r('d1-copy', '2026-09-28')]);
   const wc = order(withCopy).map(x => x.row.id);
-  assert('a copied row is drawn right beside its source',
-    Math.abs(wc.indexOf('c-copy') - wc.indexOf('d1')) === 1, wc.join());
+  assert('a copied row is drawn first among its date\'s rows',
+    wc.join() === 'new,d1-copy,d2,d1,c,b,a,old2,old1', wc.join());
 
   const sd = (d) => vm.runInContext('_dailySortDate', ctx)(d, '2026-09-29');
   assert('an imported M/D/YYYY date sorts as its date', sd('9/3/2026') === '2026-09-03');
@@ -246,6 +248,18 @@ for (const file of DIVISION_PAGES) {
   wrap.scrollTop = 500;
   vm.runInContext("_dailyShowNewest('p1')", ctx);
   assert(`${file}: after an add the table scrolls back to the top`, wrap.scrollTop === 0);
+
+  // Copy the older row of 09-25 (r1, drawn second): the copy is the latest
+  // entry of that date, so it is drawn first — and stays there after a
+  // reload, which returns the day's rows in the order they were entered.
+  ctx.drPost = () => {};
+  vm.runInContext(requireFn(src, 'copyDailyRow', file), ctx);
+  vm.runInContext("copyDailyRow('p1', 1)", ctx);
+  const afterCopy = [...tbody.children].map(tr => tr.querySelector('input[data-f="date"]').dataset.i);
+  assert(`${file}: a copied row is appended, not spliced in`,
+    proj.dailyRows.length === 5 && proj.dailyRows[4].quantity === '2' && proj.dailyRows[2].id === 'r2');
+  assert(`${file}: and drawn first among its date's rows`,
+    afterCopy.join() === '4,3,1,0,2', afterCopy.join());
 
   assert(`${file}: + Add Row brings the new row into view`,
     /function addDailyRow\(projId\) \{[\s\S]{0,300}renderDailyTable\(projId\);\n\s*_dailyShowNewest\(projId\);\n\}/.test(src));
