@@ -216,18 +216,48 @@ console.log('\n[the cascade]');
         { id: 't1', name: 'Turf Job', jobNumber: '100', codes: [
           { cost_code: '420', sub_code: 'Base', description: 'Stone base' } ] } ] },
       { division: 'paving', label: 'Paving', projects: [
-        { id: 'p1', name: 'Paving Job', jobNumber: '200', codes: [] } ] },
+        { id: 'p1', name: 'Paving Job', jobNumber: '200', codes: [] },
+        { id: 'p2', name: 'Finished Job', jobNumber: '201', done: true, codes: [
+          { cost_code: '500', sub_code: 'Top', description: 'Wearing course' } ] } ] },
     ];
     let purchaseOrders = [];
     // loadPurchaseOrders adds a key here once that division's list has come
     // back. A division absent from it has not loaded, and cannot be numbered.
     const loadedLists = new Set(['turf', 'paving', 'kiewit']);
   `, ctx);
-  ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'codeLabel', 'codeValue', 'nextPONumber']
+  ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'pickableProjects', 'projectOptionLabel',
+   'codesFor', 'codeLabel', 'codeValue', 'nextPONumber']
     .forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
   const run = expr => vm.runInContext(expr, ctx);
 
   assert('a division resolves to its jobs',   run("projectsFor('turf').length") === 1);
+
+  // A finished job is not somewhere new orders go, so the pickers leave it
+  // out — but an order already on it keeps it, labelled, and still reads its
+  // name and codes, which is why the catalogue flags it instead of dropping it.
+  assert('the pickers leave out a finished job',
+    run("pickableProjects('paving').map(p => p.id).join()") === 'p1');
+  assert('but keep it for an order already tied to it',
+    run("pickableProjects('paving','p2').map(p => p.id).join()") === 'p1,p2');
+  assert('where it is labelled complete',
+    run("projectOptionLabel(projectFor('paving','p2'))") === 'Finished Job  (#201) (complete)');
+  assert('an open job carries no such label',
+    run("projectOptionLabel(projectFor('paving','p1'))") === 'Paving Job  (#200)');
+  assert('an order on a finished job still reads its codes', run("codesFor('paving','p2').length") === 1);
+  // The flag comes from the job's own Status, the same rule the division tabs
+  // use for a finished job.
+  {
+    const cat = read('api/po-catalog.js');
+    const isDone = new Function(requireFn(cat, 'projectIsDone', 'api/po-catalog.js') + '; return projectIsDone;')();
+    assert('the catalogue flags a Complete job done',  isDone({ status: 'Complete' }) === true);
+    assert('and a Closed one',                          isDone({ status: 'closed' }) === true);
+    assert('but not one still being worked',
+      ['In Progress', 'Substantially Complete', 'On Hold', ''].every(st => isDone({ status: st }) === false));
+    assert('and sends the flag with each job',          /done:\s+projectIsDone\(blob\)/.test(cat));
+  }
+  assert('both job pickers read the filtered list',
+    /const list = pickableProjects\(po\._division, po\.project_id\);/.test(PAGE) &&
+    /: pickableProjects\(divKey\);/.test(PAGE));
   assert('the general list has no jobs',      run("projectsFor(GENERAL).length") === 0);
   assert('codes come from the job\'s bid items', run("codesFor('turf','t1').length") === 1);
   assert('a job with no bid items offers no codes', run("codesFor('paving','p1').length") === 0);

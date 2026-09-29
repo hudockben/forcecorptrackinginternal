@@ -824,6 +824,19 @@ function projectsFor(divKey) {
 function projectFor(divKey, projId) {
   return projectsFor(divKey).find(p => p.id === projId) || null;
 }
+/**
+ * The jobs a picker offers: every job still open, but not the finished ones —
+ * the catalogue flags a Complete or Closed job `done`. `keepId` is the job an
+ * order is already tied to, kept even when finished so the select does not
+ * snap that order onto another job. projectsFor stays the full list, because
+ * old orders on a finished job still need its name and codes.
+ */
+function pickableProjects(divKey, keepId) {
+  return projectsFor(divKey).filter(p => !p.done || p.id === keepId);
+}
+function projectOptionLabel(p) {
+  return p.name + (p.jobNumber ? '  (#' + p.jobNumber + ')' : '') + (p.done ? ' (complete)' : '');
+}
 function codesFor(divKey, projId) {
   const p = projectFor(divKey, projId);
   return p ? p.codes : [];
@@ -1565,12 +1578,10 @@ function projectSelectHTML(po) {
   if (po._division === GENERAL) {
     return '<span style="color:var(--muted);font-size:0.76rem">Pick a division first</span>';
   }
-  const list = projectsFor(po._division);
+  const list = pickableProjects(po._division, po.project_id);
   const opts = ['<option value=""' + (!po.project_id ? ' selected' : '') + '>General — no job</option>']
-    .concat(list.map(p => {
-      const label = p.name + (p.jobNumber ? '  (#' + p.jobNumber + ')' : '');
-      return '<option value="' + esc(p.id) + '"' + (po.project_id === p.id ? ' selected' : '') + '>' + esc(label) + '</option>';
-    }));
+    .concat(list.map(p =>
+      '<option value="' + esc(p.id) + '"' + (po.project_id === p.id ? ' selected' : '') + '>' + esc(projectOptionLabel(p)) + '</option>'));
   // A job that has since been removed from the division still labels its order,
   // rather than the select silently snapping to another job.
   if (po.project_id && !projectFor(po._division, po.project_id)) {
@@ -2314,9 +2325,9 @@ function onScanDivision(divKey) {
   const projSel = document.getElementById('sc-project');
   const codeSel = document.getElementById('sc-code');
   if (!projSel) return;
-  const list = divKey === GENERAL ? [] : projectsFor(divKey);
+  const list = divKey === GENERAL ? [] : pickableProjects(divKey);
   projSel.innerHTML = '<option value="">General — no job</option>' + list.map(p =>
-    '<option value="' + esc(p.id) + '">' + esc(p.name + (p.jobNumber ? '  (#' + p.jobNumber + ')' : '')) + '</option>').join('');
+    '<option value="' + esc(p.id) + '">' + esc(projectOptionLabel(p)) + '</option>').join('');
   projSel.disabled = divKey === GENERAL;
   codeSel.innerHTML = '<option value="">' + (divKey === GENERAL ? '—' : '— pick a job first —') + '</option>';
   codeSel.disabled = true;

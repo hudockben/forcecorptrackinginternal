@@ -71,6 +71,16 @@ function codesFromProject(project) {
   return codes;
 }
 
+/**
+ * A job that is finished — Complete, or Closed on older jobs. Mirrors
+ * projIsDone() in tracker.html. Purchasing should not be raising new orders
+ * against it, but orders already charged to it still need its name and codes,
+ * so it stays in the catalogue flagged rather than being dropped.
+ */
+function projectIsDone(project) {
+  return ['complete', 'closed'].includes(String((project && project.status) || '').toLowerCase());
+}
+
 /** Vendors as the division tabs store them: objects, but strings historically. */
 function vendorName(entry) {
   if (typeof entry === 'string') return entry.trim();
@@ -180,6 +190,7 @@ module.exports = async (req, res) => {
           name:      blob['project-name'] || 'Untitled',
           jobNumber: blob['job-number']   || '',
           codes:     codesFromProject(blob),
+          done:      projectIsDone(blob),
         });
       }
       projects.sort((a, b) => a.name.localeCompare(b.name));
