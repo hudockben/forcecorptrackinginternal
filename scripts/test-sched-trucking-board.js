@@ -128,9 +128,15 @@ const liveRows = b => Object.values((b && b.rows) || {}).flat();
     assert('it gets past the loading placeholder', !(p.w.document.body.textContent || '').includes('Loading master schedule'));
     assert('the turf job is drawn',     main.includes('Riverbend'));
     // Dust Control lists every customer it has, so its section shows the ones a
-    // scheduler picks — the rest wait in the section's + list, which is where
-    // an unbooked customer is. scripts/test-sched-board-rows.js covers picking.
-    assert('the dust customer is offered in its section', /<option value="c1">Acme Pit<\/option>/.test(main), main.match(/<select class="grp-add"[\s\S]*?<\/select>/g));
+    // scheduler ticks — the rest wait, unticked, in the section's checklist,
+    // which is where an unbooked customer is. scripts/test-sched-board-rows.js
+    // covers ticking them.
+    const doc = p.w.document;
+    const dustBtn = [...doc.querySelectorAll('#main .grp-pick')].find(b => b.dataset.div === 'dust');
+    if (dustBtn) dustBtn.click();
+    const acme = [...doc.querySelectorAll('#rowPickPop .rp-row')].find(r => r.querySelector('.rp-name').textContent === 'Acme Pit');
+    assert('the dust customer is offered in its section', !!acme && !acme.querySelector('input').checked, (doc.getElementById('rowPickPop') || {}).textContent || 'no checklist');
+    if (dustBtn) p.w.closeRowPicker();
     assert('both EES activities are',   main.includes('EES - Pre Loading') && main.includes('EES - Washing'));
     assert('and the haul',              main.includes('Borden Haul'));
     assert('the haul chip names the driver', main.includes('Dave Wilson'));
