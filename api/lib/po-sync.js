@@ -628,8 +628,10 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }
           : late);
     }
 
-    // Replaced in place: the purchase-order tables are drawn in list order, so
-    // appending an edited order would jump it to the end of everyone's screen.
+    // Replaced in place. The purchase-order tables sort by the time in the
+    // order's id now, but an order whose id carries no time still falls back
+    // to its place in the list, and moving it would churn every open tab's
+    // poll comparison for nothing.
     const next = list.slice();
     next[idx] = po;
     return next;

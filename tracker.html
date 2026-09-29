@@ -6399,6 +6399,34 @@ let dashSearch   = '';
 
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2); }
 
+/* Purchase orders are listed newest first by when they were raised.
+   uid() starts with Date.now() in base 36, and every page mints PO ids with
+   it, so an order's id carries its creation time through every edit and every
+   move between lists. Nothing else does: each stored list is appended to — a
+   move appends too, and a stale save puts the orders it had not seen last —
+   po_number is per division and renumbered on a move, and the Date field is
+   editable and takes a scanned receipt's date. An id that does not decode
+   falls back to that Date, then to list position. Keep this identical in
+   tracker.html, paving.html, kiewit-pinetree.html and purchase-orders.html. */
+function _poCreatedMs(po) {
+  const id = String((po && po.id) || '');
+  if (/^[0-9a-z]{9,}$/.test(id)) {
+    const t = parseInt(id.slice(0, 8), 36);
+    if (t >= Date.UTC(2020, 0, 1) && t <= Date.now() + 864e5) return t;
+  }
+  const d = String((po && po.date_created) || '');
+  const t = /^\d{4}-\d{2}-\d{2}$/.test(d) ? Date.parse(d + 'T12:00:00') : NaN;
+  return isNaN(t) ? -Infinity : t;
+}
+
+/** A newest-first copy of `list`. The list itself is never reordered: it is
+ *  what the poll compares and what a save sends back. */
+function _poNewestFirst(list) {
+  return list.map((po, i) => ({ po, i, t: _poCreatedMs(po) }))
+    .sort((a, b) => (b.t - a.t) || (b.i - a.i))
+    .map(x => x.po);
+}
+
 // Count daily rows that have a quantity entered — used to decide which data source is more complete
 function _countFilledQty(data) {
   if (!Array.isArray(data)) return 0;
@@ -15798,6 +15826,7 @@ function addPO() {
   // Auto-add first delivery line
   po.lines.push({ id: uid(), invoice_num: '', date: _localDateStr(), qty: '', unit_cost: '', tax: '', tax_pct: '', employee: '', po_row_id: null });
   savePurchaseOrders();
+  poPage = 0;   // the new order is the newest, so it is first on page 1
   renderPOTab();
 }
 
@@ -16195,7 +16224,7 @@ function renderPOTab() {
   const th = (label, right) =>
     `<th style="${TH_S}${right ? ';text-align:right' : ''}">${label}</th>`;
 
-  const allFilteredPOs = applyPOFilters().slice().reverse();
+  const allFilteredPOs = _poNewestFirst(applyPOFilters());
   const PO_PER_PAGE = 10;
   const totalPages  = Math.max(1, Math.ceil(allFilteredPOs.length / PO_PER_PAGE));
   if (poPage >= totalPages) poPage = totalPages - 1;
@@ -22386,6 +22415,41 @@ function makePOSelect(projId, selected, dataI) {
   </select>`;
 }
 
+/* Daily Tracking is drawn newest first: the latest work date on top, and
+   within one date the most recently entered row first. Only the drawing is
+   sorted. p.dailyRows keeps the order the loads and adds leave it in, and
+   data-i stays an index into it, so every handler still finds its row. That
+   order was never chronological: the first load takes the last 90 days and a
+   backfill then appends everything older after it, and every add appends —
+   which is what left the newest entries in the middle of the table. Within a
+   date the higher index is the later entry, because a load returns each day's
+   rows in the order they were entered and every add appends. */
+function _dailySortDate(d, today) {
+  const s = String(d || '').trim();
+  let m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (m) return m[1] + '-' + m[2] + '-' + m[3];
+  m = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/.exec(s);   // an imported M/D/YYYY
+  if (m) return (m[3].length === 2 ? '20' + m[3] : m[3]) + '-' + m[1].padStart(2, '0') + '-' + m[2].padStart(2, '0');
+  // Blank — the server saves a row with no date as today — or unreadable.
+  return today;
+}
+
+/** `rows` (a filtered subset of `allRows`) in drawing order, each with `ai`,
+ *  its index in allRows. */
+function _dailyDisplayOrder(allRows, rows) {
+  const today = _localDateStr();
+  const pos = new Map(allRows.map((r, i) => [r, i]));
+  return rows.map(row => ({ row, ai: pos.get(row), d: _dailySortDate(row.date, today) }))
+    .sort((a, b) => (a.d < b.d ? 1 : a.d > b.d ? -1 : b.ai - a.ai));
+}
+
+/** A new row is drawn first, so bring the top of the table into view. */
+function _dailyShowNewest(projId) {
+  const tbody = document.getElementById('daily-tbody-' + projId);
+  const wrap  = tbody && tbody.closest('.daily-table-wrap');
+  if (wrap) wrap.scrollTop = 0;
+}
+
 function renderDailyTable(projId) {
   const p     = getProj(projId); if (!p) return;
   const allRows = p.dailyRows || [];
@@ -22426,8 +22490,9 @@ function renderDailyTable(projId) {
   const equipOpts     = ['', ...eqNames];
   const supplierOpts  = ['', ...lists.suppliers.map(s => s.name || '').filter(Boolean).sort((a,b) => a.localeCompare(b))];
 
-  rows.forEach((row, _filteredIdx) => {
-    const ai = allRows.indexOf(row); // actual index in p.dailyRows (unaffected by filters)
+  // ai is the row's index in p.dailyRows (unaffected by filters or by the
+  // newest-first drawing order), which is what every data-i handler reads.
+  _dailyDisplayOrder(allRows, rows).forEach(({ row, ai }) => {
     const c  = calcDaily(row);
     // Rows auto-injected from payroll approval carry a timesheet_entry_id and
     // must NOT be editable in this tab — the supervisor edits them via
@@ -22518,9 +22583,17 @@ function copyDailyRow(projId, i) {
   const p = getProj(projId); if (!p) return;
   const src = (p.dailyRows || [])[i]; if (!src) return;
   const copy = Object.assign({}, src, { id: Date.now() + Math.random(), material_cost: '' });
-  p.dailyRows.splice(i + 1, 0, copy);
+  // Appended, like every other new row: the copy is the latest entry on its
+  // date, so it is drawn first among that date's rows — where the server's
+  // order puts it on the next reload too. Splicing it in beside its source
+  // drew it lower, then moved it on the next refresh.
+  p.dailyRows.push(copy);
   drPost(projId, copy);
   renderDailyTable(projId);
+  const tbody = document.getElementById('daily-tbody-' + projId);
+  const cell  = tbody && tbody.querySelector(`[data-i="${p.dailyRows.length - 1}"][data-f="date"]`);
+  const tr    = cell && cell.closest('tr');
+  if (tr && tr.scrollIntoView) tr.scrollIntoView({ block: 'nearest' });
 }
 
 function addDailyRow(projId) {
@@ -22531,6 +22604,7 @@ function addDailyRow(projId) {
   p.dailyRows.push(row);
   drPost(projId, row);
   renderDailyTable(projId);
+  _dailyShowNewest(projId);
 }
 
 function massAddDailyRows(projId) {
@@ -22550,6 +22624,7 @@ function massAddDailyRows(projId) {
   drPostBulk(projId, newRows).catch(err => console.warn('[mass-add] bulk save failed:', err.message));
   input.value = '';
   renderDailyTable(projId);
+  _dailyShowNewest(projId);
 }
 
 /* ══════════════════════════════════════════════
@@ -22585,11 +22660,17 @@ document.addEventListener('mousemove', e => {
   _fillDrag.endIdx = idx;
   const tbody = tr.closest('tbody');
   if (!tbody) return;
-  tbody.querySelectorAll('tr').forEach(row => {
+  // The span is by place on screen, not by data-i: the table is drawn newest
+  // first, so a higher index is not a lower row. Same rule as the mouseup.
+  const trs = [...tbody.children];
+  const at  = trs.map(row => {
     const m = row.querySelector(`[data-proj="${_fillDrag.projId}"][data-f]`);
-    if (!m) return;
-    const ri = parseInt(m.dataset.i, 10);
-    row.classList.toggle('fill-drag-target', ri > _fillDrag.srcIdx && ri <= _fillDrag.endIdx);
+    return m ? parseInt(m.dataset.i, 10) : NaN;
+  });
+  const srcPos = at.indexOf(_fillDrag.srcIdx);
+  const endPos = at.indexOf(_fillDrag.endIdx);
+  trs.forEach((row, pos) => {
+    row.classList.toggle('fill-drag-target', srcPos >= 0 && pos > srcPos && pos <= endPos);
   });
 });
 
@@ -22600,22 +22681,30 @@ document.addEventListener('mouseup', () => {
   document.body.style.userSelect = '';
   document.body.style.cursor     = '';
   document.querySelectorAll('.fill-drag-target').forEach(r => r.classList.remove('fill-drag-target'));
-  if (endIdx <= srcIdx) return;
+  if (endIdx === srcIdx) return;
   const p = getProj(projId); if (!p) return;
   const tbody = document.getElementById('daily-tbody-' + projId);
-  // data-i indexes p.dailyRows, and a column filter hides rows without
-  // renumbering the rest — so the indices on screen have gaps in them. Walking
-  // the numeric range would write to every hidden row caught between the two
-  // visible ends. Collect the targets from the DOM instead, which is exactly
-  // the set the drag highlighted on the way down.
+  // data-i indexes p.dailyRows, but the rows are not drawn in that order: the
+  // table is newest first, and a column filter hides rows without renumbering
+  // the rest. Walking the numeric range would write to rows that are not
+  // between the two ends on screen — hidden ones, or ones above the source.
+  // Take the rows below the source down to the end row, as drawn, which is
+  // exactly the set the drag highlighted on the way down. Dragging upward
+  // fills nothing.
   const targets = [];
   if (tbody) {
-    [...tbody.children].forEach(tr => {
+    const trs = [...tbody.children];
+    const at  = trs.map(tr => {
       const m = tr.querySelector(`[data-proj="${projId}"][data-f]`);
-      if (!m) return;
-      const ri = parseInt(m.dataset.i, 10);
-      if (ri > srcIdx && ri <= endIdx) targets.push({ i: ri, tr });
+      return m ? parseInt(m.dataset.i, 10) : NaN;
     });
+    const srcPos = at.indexOf(srcIdx);
+    const endPos = at.indexOf(endIdx);
+    if (srcPos >= 0 && endPos > srcPos) {
+      for (let pos = srcPos + 1; pos <= endPos; pos++) {
+        if (!isNaN(at[pos])) targets.push({ i: at[pos], tr: trs[pos] });
+      }
+    }
   }
   targets.forEach(({ i, tr }) => {
     const row = (p.dailyRows || [])[i];
