@@ -173,25 +173,27 @@
     .cell-times input[type=time].jt-in { font-size:0.56rem; }
     /* The crew's notes. On a day board they are typed into the day cell: a
        label and three ruled lines, floated right so the names wrap around
-       them, bare but for the rule until a line is wanted, like the time
-       fields. The lines are kept short, so the three stand only a little
-       taller than the two time lines beside the job name, and a row grows a
-       little rather than by whole lines. All three empty, the block steps back
-       until its row is under the cursor. The right margin keeps it clear of
-       the crew-repeat corner.
+       them, on a faint amber panel with an amber edge, so the block reads as
+       the place for the crew's notes at a glance. Bare rules in grey at 40%
+       all but vanished on the dark board, and a note nobody can see a place
+       for is a note nobody writes. The lines are kept short, so the three
+       stand only a little taller than the two time lines beside the job name,
+       and a row grows a little rather than by whole lines — the panel has no
+       top or bottom padding for the same reason. All three empty, the block
+       steps back a little until its row is under the cursor. The right margin
+       keeps it clear of the crew-repeat corner.
        [type=text] in the selector for the reason the time field gives. */
-    .jn { float:right; display:grid; grid-template-columns:auto 1fr; column-gap:0.35rem; row-gap:1px; width:clamp(180px, 38%, 480px); margin:0 12px 2px 0.6rem; cursor:text; }
-    .jn-k { grid-row:1 / span 3; align-self:start; padding-top:0.2rem; font-size:0.52rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--amber); }
-    .jn.unset { opacity:0.4; transition:opacity .1s; }
-    .jn.unset .jn-k { color:var(--muted); }
+    .jn { float:right; display:grid; grid-template-columns:auto 1fr; column-gap:0.35rem; row-gap:1px; width:clamp(180px, 38%, 480px); margin:0 12px 2px 0.6rem; padding-left:0.4rem; border-left:2px solid rgba(251,191,36,0.55); border-radius:0 4px 4px 0; background:rgba(251,191,36,0.05); cursor:text; }
+    .jn-k { grid-row:1 / span 3; align-self:start; padding-top:0.2rem; font-size:0.56rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--amber); }
+    .jn.unset { opacity:0.75; transition:opacity .1s; }
     .job-row:hover .jn.unset, .jn:focus-within { opacity:1; }
     input[type=text].jn-in {
       grid-column:2; min-width:0; font-size:0.62rem; font-family:inherit; color:var(--text);
-      background:transparent; border:1px solid transparent; border-bottom-color:var(--border); border-radius:0;
+      background:transparent; border:1px solid transparent; border-bottom-color:#3d3d52; border-radius:0;
       padding:0 0.25rem; height:1rem; line-height:1; }
     input[type=text].jn-in:hover { background:var(--surface2); }
     input[type=text].jn-in:focus { outline:none; border-color:var(--blue); border-radius:3px; background:var(--surface2); }
-    input[type=text].jn-in::placeholder { color:var(--muted); }
+    input[type=text].jn-in::placeholder { color:#8a8a9a; }
     /* The hint is for a block with nothing in it. Once any line is written it
        would sit above the real notes looking like one of them. */
     .jn:not(.unset) input[type=text].jn-in::placeholder { color:transparent; }
