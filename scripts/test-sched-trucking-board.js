@@ -127,7 +127,10 @@ const liveRows = b => Object.values((b && b.rows) || {}).flat();
     assert('nothing throws while the page boots', p.errors.length === 0, p.errors[0]);
     assert('it gets past the loading placeholder', !(p.w.document.body.textContent || '').includes('Loading master schedule'));
     assert('the turf job is drawn',     main.includes('Riverbend'));
-    assert('the dust customer is too',  main.includes('Acme Pit'));
+    // Dust Control lists every customer it has, so its section shows the ones a
+    // scheduler picks — the rest wait in the section's + list, which is where
+    // an unbooked customer is. scripts/test-sched-board-rows.js covers picking.
+    assert('the dust customer is offered in its section', /<option value="c1">Acme Pit<\/option>/.test(main), main.match(/<select class="grp-add"[\s\S]*?<\/select>/g));
     assert('both EES activities are',   main.includes('EES - Pre Loading') && main.includes('EES - Washing'));
     assert('and the haul',              main.includes('Borden Haul'));
     assert('the haul chip names the driver', main.includes('Dave Wilson'));
