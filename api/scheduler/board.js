@@ -294,20 +294,29 @@ function plannedAssignmentsFromSchedule(ppSchedule, todayStr, job) {
 // under a login name across once the scheduler has seen the pairs, and lets an
 // admin say who a login is where the name could not. A login an admin said is
 // nobody on the crew is left off the crew list altogether.
+//
+// So is a person an admin kept off the Scheduler in Manage Users → Scheduler —
+// the office, the crew away at college. They are not dropped without a word,
+// though: they ride along apart, so a day already booked for one of them is
+// drawn under their own name and said to be theirs, rather than passed off as
+// somebody who is not on the roster at all.
 async function readEmployees(sql, companyCode) {
   try {
     const { people, matched, unmatched, manual, offCrew, guesses } = await readPeopleRoster(sql, companyCode);
+    const asCrew = r => ({
+      name: (r.name || '').trim(),
+      jobClass: r.job_class || '',
+      // The explicit role flags. The board groups crew by the job they do, and
+      // job_class alone cannot tell a role from a wage tier.
+      isSupervisor: r.is_supervisor === true,
+      isDriver: r.is_driver === true,
+      // A login nobody could be matched to, left in the list as it was.
+      ...(r.login ? { login: true } : {}),
+    });
+    const crew = people.filter(r => !r.offCrew);
     return {
-      list: people.filter(r => !r.offCrew).map(r => ({
-        name: (r.name || '').trim(),
-        jobClass: r.job_class || '',
-        // The explicit role flags. The board groups crew by the job they do, and
-        // job_class alone cannot tell a role from a wage tier.
-        isSupervisor: r.is_supervisor === true,
-        isDriver: r.is_driver === true,
-        // A login nobody could be matched to, left in the list as it was.
-        ...(r.login ? { login: true } : {}),
-      })).filter(r => r.name),
+      list: crew.filter(r => !r.offScheduler).map(asCrew).filter(r => r.name),
+      offScheduler: crew.filter(r => r.offScheduler).map(asCrew).filter(r => r.name),
       loginNames: matched,
       unmatchedLogins: unmatched,
       manualLogins: manual,
@@ -316,7 +325,7 @@ async function readEmployees(sql, companyCode) {
     };
   } catch (err) {
     console.warn('[scheduler/board] employees read failed:', err.message);
-    return { list: [], loginNames: {}, unmatchedLogins: [], manualLogins: [], offCrewLogins: [], loginGuesses: {} };
+    return { list: [], offScheduler: [], loginNames: {}, unmatchedLogins: [], manualLogins: [], offCrewLogins: [], loginGuesses: {} };
   }
 }
 // ── Divisions whose work is a CUSTOMER, not a bid item ─────────────────────
@@ -649,6 +658,9 @@ async function buildBoard(sql, companyCode, todayStr) {
   return {
     today: todayStr,
     employees,
+    // On the roster, and kept off the Scheduler by an admin: never offered, and
+    // named where they are already booked. Same shape as `employees`.
+    offScheduler: roster.offScheduler,
     // Each login folded into a person, login → that person's name; and the
     // logins left in `employees` as they were, because nobody or more than one
     // person answered to them. Which of the pairs an admin made, the logins an

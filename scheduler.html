@@ -895,10 +895,12 @@ function jobCrewOn(date, division, jobId) {
 // Dates the employee is APPROVED off for the WHOLE day are refused — no path
 // can schedule over a whole approved day off. A part day is not refused: he is
 // on the job for the rest of it, which is what the hours on the entry are for.
-// Returns 'added' | 'retagged' | 'exists' | 'blocked'; callers do their own
-// messaging.
+// Somebody kept off the Scheduler is refused on every date ('kept').
+// Returns 'added' | 'retagged' | 'exists' | 'blocked' | 'kept'; callers do
+// their own messaging.
 function placeOnJob(date, job, costCode, proto) {
   const cc = costCode || '';
+  if (keptOff(proto.resource, proto.kind)) return 'kept';
   if (isBlockedOff(proto.resource, proto.kind, date)) return 'blocked';
   const mine = (state.assignments[date] || []).filter(a =>
     a.resource === proto.resource && a.kind === proto.kind && (a.op||'') === (proto.op||'') &&
@@ -1047,7 +1049,9 @@ function jobsOnDate(resource, date) {
 function offRoster() {
   const out = { emps: [], equips: [] };
   if (!state.board) return out;
-  const knownE = new Set((state.board.employees || []).map(e => e.name));
+  // Somebody kept off the Scheduler is on the roster all the same, and is named
+  // as that below (keptOffBooked), not as a stranger.
+  const knownE = new Set((state.board.employees || []).concat(state.board.offScheduler || []).map(e => e.name));
   const knownQ = new Set(state.board.equipment || []);
   const seenE = new Set(), seenQ = new Set();
   weekDateStrs().forEach(d => (state.assignments[d] || []).forEach(a => {
@@ -1058,6 +1062,31 @@ function offRoster() {
   out.equips.sort((a, b) => a.localeCompare(b));
   return out;
 }
+// ── Kept off the Scheduler ──────────────────────────────────────────────────
+// People an admin switched off in Manage Users → Scheduler: office staff, crew
+// away at college. They arrive apart from the crew list (see readEmployees in
+// api/scheduler/board.js), so nothing that offers crew offers them — the rail,
+// the picker, the crew editor, the counts, the Attention tab and auto-fill all
+// read the crew list. What is left is what does not come from that list: a day
+// booked before they were switched off, and the paths that book whatever names
+// they are handed — a saved crew, Copy week, a division's plan, a drag from a
+// booking they already have. Those refuse them, and say why. Taking a booking
+// OFF is never refused: that is the thing to do with one.
+function keptOff(name, kind) {
+  return kind !== 'equip' && !!state.board && (state.board.offScheduler || []).some(e => e.name === name);
+}
+// A machine is booked with the person who runs it, and does not go without them.
+function keptOffBooking(a) { return keptOff(a.resource, a.kind) || (a.kind === 'equip' && !!a.op && keptOff(a.op, 'emp')); }
+// Kept off, and booked in the range on screen anyway.
+function keptOffBooked() {
+  if (!state.board) return [];
+  const seen = new Set();
+  weekDateStrs().forEach(d => (state.assignments[d] || []).forEach(a => { if (keptOff(a.resource, a.kind)) seen.add(a.resource); }));
+  return [...seen].sort((a, b) => a.localeCompare(b));
+}
+// One wording, for the toasts that refuse somebody and the ones that count them.
+function keptOffWhy(name) { return name + ' is off the Scheduler (Manage Users → Scheduler)'; }
+function keptOffNote(n) { return n ? ' · ' + n + ' kept off the Scheduler' : ''; }
 // ── Login names ─────────────────────────────────────────────────────────────
 // The roster the board is sent is PEOPLE. A login's Supervisor or Driver row —
 // "toddaaron", written by Manage Users → Roles — arrives folded into the person
@@ -1472,7 +1501,8 @@ function renderToolbar() {
       '<input type="text" id="crewSearch" placeholder="\ud83d\udd0d Search crew\u2026" value="'+esc(state.crewSearch)+'" style="width:140px">' +
       '<select id="roleFilter" title="Group and filter crew by the job they do">'+roles.map(t => '<option value="'+esc(t)+'"'+(state.roleFilter===t?' selected':'')+'>'+(t==='all'?'All roles':esc(t))+'</option>').join('')+'</select>' +
       '<button class="tgl'+(state.showAll?' on':'')+'" id="showAll" title="Show everyone on the roster, not just crew in rotation">'+(state.showAll?'\u2713 ':'')+'Full roster</button>' +
-      '<span class="muted" style="font-size:0.7rem">'+(state.board.employees||[]).length+' crew \u00b7 '+(state.board.equipment||[]).length+' equip</span>' +
+      '<span class="muted" style="font-size:0.7rem">'+(state.board.employees||[]).length+' crew \u00b7 '+(state.board.equipment||[]).length+' equip'+
+        ((state.board.offScheduler||[]).length ? ' \u00b7 '+state.board.offScheduler.length+' off the Scheduler' : '')+'</span>' +
       '<div class="spacer"></div>' + pdfBtnHtml() + toolsHtml() +
       moreMenuHtml(['-', compactMenuItem()]);
   }
@@ -1523,7 +1553,11 @@ function renderCapacity() {
   // sub-code. A man on both in one week is a project man who also did a site
   // visit, so the two cards deliberately OVERLAP rather than partition.
   const onOther = new Set(); wk.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind==='emp' && a.division===OTHER_DIV) onOther.add(a.resource); }));
-  const idle = Math.max(total - assigned.size, 0);
+  // Idle is the crew list with nothing booked: the people you could still send.
+  // Crew less the booked count was the same number until somebody booked is
+  // not on the list — kept off the Scheduler, or off the roster — and then it
+  // read one short for each of them.
+  const idle = (state.board.employees||[]).filter(e => !assigned.has(e.name)).length;
   const conflicts = wk.reduce((s,d) => s + conflictResourcesOn(d).size, 0);
   const behind = (state.board.jobs||[]).reduce((s,j) => s + (j.subCodes||[]).filter(c => c.status==='behind').length, 0);
   const card = (v,l,c,t) => '<div class="cap-card"'+(t?' title="'+esc(t)+'"':'')+'><div class="cap-val" style="color:'+(c||'var(--text)')+'">'+v+'</div><div class="cap-lbl">'+l+'</div></div>';
@@ -1645,6 +1679,11 @@ function renderJobBoard() {
   if (nStray) notes.push('<span class="warn" title="'+esc(stray.emps.concat(stray.equips).join(', '))+'">\u26a0 '+nStray+' name'+(nStray>1?'s':'')+' booked '+rangeWords()+' '+(nStray>1?'are':'is')+' not on the roster \u00b7 <span class="lnk" onclick="state.view=\'crew\';render()">see By Crew</span></span>');
   const nLogin = loginUseCount('bookings');
   if (nLogin) notes.push('<span class="warn">\u26a0 '+nLogin+' booking'+(nLogin>1?'s are':' is')+' under a login name, not the employee\u2019s \u00b7 <span class="lnk" onclick="openLoginReview()">review and move</span></span>');
+  // Kept off the Scheduler: said, so a name somebody expects in the crew panel
+  // is accounted for rather than missing — and warned, where one is booked.
+  const keptAll = state.board.offScheduler || [], keptIn = keptOffBooked();
+  if (keptAll.length) notes.push('<span title="'+esc('Switched off in Manage Users \u2192 Scheduler: '+keptAll.map(e => e.name).join(', '))+'">\ud83d\udeab '+keptAll.length+' '+(keptAll.length>1?'people':'person')+' kept off the Scheduler in Manage Users</span>');
+  if (keptIn.length) notes.push('<span class="warn" title="'+esc(keptIn.join(', '))+'">\u26a0 '+keptIn.length+' booked '+rangeWords()+' '+(keptIn.length>1?'are':'is')+' off the Scheduler \u00b7 <span class="lnk" onclick="state.view=\'crew\';render()">see By Crew</span></span>');
   const note = notes.length ? '<div class="board-note">'+notes.join(' &nbsp;\u00b7&nbsp; ')+'</div>' : '';
   return html + '<div class="board-row"><div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>'+railHtml()+'</div>' + note;
 }
@@ -2092,6 +2131,16 @@ function renderCrewBoard() {
       body += stray.equips.map(n => rowFor(n, 'equip', { label:'not on the equipment list' })).join('');
     }
   }
+  // Kept off the Scheduler and booked all the same — days planned before they
+  // were switched off. On the roster, so not strangers: listed apart, under the
+  // reason, so the days can be seen, handed to somebody else, or taken off.
+  const kept = keptOffBooked();
+  if (kept.length) {
+    const collapsed = !!state.grpCol['keptoff'];
+    const headCells = ds.map(d => { const n = kept.filter(nm => assignmentsFor(d, nm).length).length; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
+    body += '<tr class="grp-row" onclick="toggleGrp(\'keptoff\')"><td class="lead-col grp-lead" title="Switched off in Manage Users → Scheduler, and still booked"><span class="caret">'+(collapsed?'▸':'▾')+'</span> <span class="warn">⚠ Off the Scheduler</span> <span class="muted">('+kept.length+')</span></td>'+headCells+'</tr>';
+    if (!collapsed) body += kept.map(n => rowFor(n, 'emp', { label:'off the Scheduler' })).join('');
+  }
   return html + '<div class="board-wrap"><table class="board crew"><thead><tr><th class="lead-col">Crew / Equipment</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
 }
 function toggleGrp(k) { state.grpCol[k] = !state.grpCol[k]; document.getElementById('main').innerHTML = renderCrewBoard(); }
@@ -2210,6 +2259,9 @@ function dropOnJobCell(srcDate, id, tgt, copy) {
     toast(a.resource + ' is on a haul — take him off it first (right-click), then put him here'); return;
   }
   if (foreignLocked(a)) { toast('This haul has no id in Trucking — open Trucking and re-save it'); return; }
+  // Kept off the Scheduler: the booking stays where it is until somebody takes
+  // it off. Moving it would be booking them again, somewhere new.
+  if (keptOffBooking(a)) { toast(keptOffWhy(a.kind === 'equip' ? a.op : a.resource) + ' — right-click to take it off'); return; }
   const job = jobFor(tgt.division, tgt.jobId, a.jobName);
   const movers = [a].concat(_pairedEquip(list, a));
   if (movers.every(m => isBlockedOff(m.resource, m.kind, tgt.date))) { toast(a.resource + ' is approved off ' + shortDate(tgt.date) + ' — not moved'); return; }
@@ -2253,6 +2305,9 @@ function dropOnResCell(srcDate, id, tgt, copy) {
   const a = list.find(x => x.id === id); if (!a) return;
   if (a.resource === tgt.resource && srcDate === tgt.date) return;
   if ((a.kind || 'emp') !== (tgt.rkind || 'emp')) { toast('A machine goes on an equipment row, a person on a crew row'); return; }
+  // Handing work TO somebody kept off the Scheduler is booking them. Handing
+  // their work to somebody else is how their days get covered, and is left alone.
+  if (keptOff(tgt.resource, tgt.rkind)) { toast(keptOffWhy(tgt.resource)); return; }
   if (isBlockedOff(tgt.resource, tgt.rkind, tgt.date)) { toast(tgt.resource + ' is approved off ' + shortDate(tgt.date)); return; }
   // Handing a haul to another driver is a change of driver on the SAME haul.
   // Deleting it and cutting a new one would file the load twice in Trucking's
@@ -2312,16 +2367,21 @@ function fillFromCell(src, tgt) {
   const job = jobFor(tgt.division, tgt.jobId, crew[0].jobName);
   pushUndo();
   let added = 0, blocked = 0;
+  // Counted by the person, not by the day: one kept off across five days is one.
+  const kept = new Set();
   dates.forEach(d => crew.forEach(a => {
+    // A machine stays with the person who runs it, here as everywhere.
+    if (keptOffBooking(a)) { kept.add(a.kind === 'equip' ? a.op : a.resource); return; }
     // Carry each man's own cost code when repeating a whole job row; use the
     // target's code when dragging onto a cost-code row.
     const cc = tgt.costCode || (src.costCode ? tgt.costCode : (a.costCode || ''));
     const r = placeOnJob(d, job, cc, a);
     if (r === 'blocked') blocked++; else if (r === 'added' || r === 'retagged') added++;
   }));
-  if (!added) { _undo.pop(); updateUndoButtons(); toast(blocked ? 'Those crew are approved off — nothing added' : 'Already scheduled on those days'); return; }
+  if (!added) { _undo.pop(); updateUndoButtons(); toast((blocked ? 'Those crew are approved off — nothing added' : kept.size ? 'Nothing added' : 'Already scheduled on those days') + keptOffNote(kept.size)); return; }
   saveAssignments(); render();
-  toast('Repeated ' + crew.length + (crew.length === 1 ? ' resource' : ' resources') + ' across ' + dates.length + ' day' + (dates.length > 1 ? 's' : '') + (blocked ? ' · skipped ' + blocked + ' approved off' : ''));
+  const repeated = crew.filter(a => !keptOffBooking(a)).length;
+  toast('Repeated ' + repeated + (repeated === 1 ? ' resource' : ' resources') + ' across ' + dates.length + ' day' + (dates.length > 1 ? 's' : '') + (blocked ? ' · skipped ' + blocked + ' approved off' : '') + keptOffNote(kept.size));
 }
 // A name out of the rail onto a square: one job, one day, no dialog and no
 // cost code. The span selector is deliberately NOT applied — you dropped it on
@@ -2343,7 +2403,8 @@ function railDrop(drag, tgt) {
   const r = placeOnJob(tgt.date, job, tgt.costCode, { resource: drag.resource, kind: drag.kind });
   if (r === 'added' || r === 'retagged') { saveAssignments(); render(); toast(drag.resource + ' \u2192 ' + job.name + ' \u00b7 ' + shortDate(tgt.date)); return; }
   _undo.pop(); updateUndoButtons();
-  toast(r === 'blocked' ? drag.resource + ' is approved off ' + shortDate(tgt.date)
+  toast(r === 'kept'    ? keptOffWhy(drag.resource)
+      : r === 'blocked' ? drag.resource + ' is approved off ' + shortDate(tgt.date)
                         : drag.resource + ' is already on ' + job.name + ' that day');
 }
 // The visible days from one to another, the source excluded — the span a fill
@@ -2358,6 +2419,7 @@ function rangeDates(from, to) {
 function personFill(src, tgt) {
   const list = state.assignments[src.date] || [];
   const a = list.find(x => x.id === src.id); if (!a) return;
+  if (keptOffBooking(a)) { toast(keptOffWhy(a.kind === 'equip' ? a.op : a.resource)); return; }
   const movers = [a].concat(_pairedEquip(list, a));
   let job, dates, forceCode = null;
   if (tgt.kind === 'job') {
@@ -2390,15 +2452,15 @@ function crewDrop(drag, tgt) {
   const job = dropJob(tgt);
   if (!crew || !job) return;
   pushUndo();
-  let n = 0, blocked = 0;
+  let n = 0, blocked = 0, kept = 0;
   crew.members.forEach(m => {
     const r = placeOnJob(tgt.date, job, tgt.costCode, { resource:m.name, kind:m.kind || 'emp' });
-    if (r === 'added' || r === 'retagged') n++; else if (r === 'blocked') blocked++;
+    if (r === 'added' || r === 'retagged') n++; else if (r === 'blocked') blocked++; else if (r === 'kept') kept++;
   });
   if (!n) { _undo.pop(); updateUndoButtons();
-    toast(blocked ? crew.name + ' are approved off ' + shortDate(tgt.date) : crew.name + ' is already on ' + job.name); return; }
+    toast((blocked ? crew.name + ' are approved off ' + shortDate(tgt.date) : kept ? 'Nobody added from ' + crew.name : crew.name + ' is already on ' + job.name) + keptOffNote(kept)); return; }
   saveAssignments(); render();
-  toast(crew.name + ' \u2192 ' + job.name + ' \u00b7 ' + shortDate(tgt.date) + ' (' + n + ')' + (blocked ? ' \u00b7 skipped ' + blocked + ' off' : ''));
+  toast(crew.name + ' \u2192 ' + job.name + ' \u00b7 ' + shortDate(tgt.date) + ' (' + n + ')' + (blocked ? ' \u00b7 skipped ' + blocked + ' off' : '') + keptOffNote(kept));
 }
 // Dragging a name off the board and onto the rail takes him off \u2014 the
 // opposite gesture, and the one people try.
@@ -2751,7 +2813,7 @@ function updatePickList() {
 }
 // Apply one placement decision across the span and say what happened.
 function placeSpan(resource, kind, job, costCode, dates) {
-  const r = { added:0, retagged:0, exists:0, blocked:0 };
+  const r = { added:0, retagged:0, exists:0, blocked:0, kept:0 };
   dates.forEach(d => { r[placeOnJob(d, job, costCode, { resource, kind })]++; });
   return r;
 }
@@ -2762,7 +2824,8 @@ function pickAdd(name, kind) {
   pushUndo();
   const r = placeSpan(name, kind, job, ctx.costCode, dates);
   if (!r.added && !r.retagged) { _undo.pop(); updateUndoButtons();
-    if (r.blocked) { const o = isOff(name, dates.find(d => isBlockedOff(name, kind, d))); toast(name+' is approved off for the whole day ('+((o&&o.type)||'time off')+') — not scheduled'); }
+    if (r.kept) toast(keptOffWhy(name));
+    else if (r.blocked) { const o = isOff(name, dates.find(d => isBlockedOff(name, kind, d))); toast(name+' is approved off for the whole day ('+((o&&o.type)||'time off')+') — not scheduled'); }
     else toast(name+' is already on this job'); return; }
   saveAssignments();
   const what = r.retagged && !r.added ? 'Put '+name+' on '+ctx.costCode : 'Added '+name;
@@ -2776,11 +2839,11 @@ function applyCrewFromPicker() {
   const job = jobFor(ctx.division, ctx.jobId);
   const dates = spanDates(ctx.date);
   pushUndo();
-  let changed = 0, blocked = 0;
-  crew.members.forEach(m => { const r = placeSpan(m.name, m.kind||'emp', job, ctx.costCode, dates); changed += r.added + r.retagged; blocked += r.blocked; });
-  if (!changed) { _undo.pop(); updateUndoButtons(); toast(blocked ? 'Crew are approved off for the whole day — nothing scheduled' : 'Crew are already on this job'); return; }
+  let changed = 0, blocked = 0, kept = 0;
+  crew.members.forEach(m => { const r = placeSpan(m.name, m.kind||'emp', job, ctx.costCode, dates); changed += r.added + r.retagged; blocked += r.blocked; if (r.kept) kept++; });
+  if (!changed) { _undo.pop(); updateUndoButtons(); toast((blocked ? 'Crew are approved off for the whole day — nothing scheduled' : kept ? 'Nobody added from '+crew.name : 'Crew are already on this job') + keptOffNote(kept)); return; }
   saveAssignments();
-  toast('Added '+crew.name+' ('+changed+' assignment'+(changed>1?'s':'')+')'+(blocked?' · skipped full days off':''));
+  toast('Added '+crew.name+' ('+changed+' assignment'+(changed>1?'s':'')+')'+(blocked?' · skipped full days off':'')+keptOffNote(kept));
   afterMutate();
 }
 function saveCurrentAsCrew() {
@@ -2801,7 +2864,15 @@ function modalResourceHtml(ctx) {
   const curHtml = current.length ? current.map(a => { const col = divColor(a.division); return '<div class="cur-asn"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(divLabel(a.division))+'</span><span class="grow">'+esc(a.jobName)+(a.costCode?' <span class="code-tag">'+esc(a.costCode)+'</span>':'')+'</span><button class="btn mini" onclick="toggleHalf(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">'+(a.half?'½ day':'full')+'</button><button class="btn mini" onclick="removeAssignment(\''+ctx.date+'\',\''+a.id+'\');afterMutate()">✕</button></div>'; }).join('') : '<div class="muted" style="font-size:0.78rem">Not scheduled this day.</div>';
   const jobs = visibleJobs();
   const jobOpts = '<option value="">Select job…</option>' + (state.board.sourceDivisions||[]).map(div => { const inDiv = jobs.filter(j => j.division === div); if (!inDiv.length) return ''; return '<optgroup label="'+div.toUpperCase()+'">'+inDiv.map(j => '<option value="'+esc(j.division)+'::'+esc(j.id)+'">'+esc(j.name)+(j.jobNumber?' (#'+esc(j.jobNumber)+')':'')+'</option>').join('')+'</optgroup>'; }).join('');
-  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">'+esc(ctx.resource)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.kind==='equip'?'equipment':'crew')+(conf?' · <span class="warn">double-booked</span>':'')+(off?' · <span class="warn">⛱ '+esc(off.type)+' '+esc(offLabel(off))+(off.status==='submitted'?' (requested)':(off.partial?' (approved — still schedulable for the rest of the day)':' (approved off — cannot schedule)'))+'</span>':'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
+  // Kept off the Scheduler: what they are booked on, to take off, and nothing
+  // to book them on — offering a job only to refuse it is a dead end.
+  const kept = keptOff(ctx.resource, ctx.kind);
+  const head = '<div class="modal"><div class="modal-head"><div><div style="font-weight:700">'+esc(ctx.resource)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+' · '+(ctx.kind==='equip'?'equipment':'crew')+(kept?' · <span class="warn">off the Scheduler</span>':'')+(conf?' · <span class="warn">double-booked</span>':'')+(off?' · <span class="warn">⛱ '+esc(off.type)+' '+esc(offLabel(off))+(off.status==='submitted'?' (requested)':(off.partial?' (approved — still schedulable for the rest of the day)':' (approved off — cannot schedule)'))+'</span>':'')+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">';
+  if (kept) return head +
+    '<label class="fld">Scheduled (this day)</label>'+curHtml+
+    '<div class="proj warn" style="margin-top:0.7rem">'+esc(keptOffWhy(ctx.resource))+', so nothing new is booked for them here. Take a booking off with ✕, or hand it to somebody else on the By Crew board.</div>'+
+    '<div style="display:flex;gap:0.5rem;margin-top:0.9rem"><button class="btn" style="flex:1" onclick="closeAssign()">Done</button></div></div></div>';
+  return head +
     '<label class="fld">Apply to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Weekdays</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">All 7 days</button></div>'+
     '<label class="fld">Scheduled (this day)</label>'+curHtml+
     '<label class="fld">Put on a job</label><select class="full" id="rJob" onchange="onPickRJob()">'+jobOpts+'</select>'+
@@ -2822,7 +2893,7 @@ function rConfirmAdd() { const sel = document.getElementById('rJob').value; if (
   pushUndo();
   const r = placeSpan(ctx.resource, ctx.kind, job, cc, dates);
   if (!r.added && !r.retagged) { _undo.pop(); updateUndoButtons();
-    toast(r.blocked ? ctx.resource+' is approved off for the whole day — not scheduled' : ctx.resource+' is already on that job'); return; }
+    toast(r.kept ? keptOffWhy(ctx.resource) : r.blocked ? ctx.resource+' is approved off for the whole day — not scheduled' : ctx.resource+' is already on that job'); return; }
   saveAssignments();
   toast('Added to '+job.name+(cc?' · '+cc:'')+(dates.length>1?' · '+(r.added+r.retagged)+' days':'')+(r.blocked?' · skipped '+r.blocked+' full day'+(r.blocked>1?'s':'')+' off':''));
   afterMutate();
@@ -2920,8 +2991,10 @@ function deleteCrew(id) {
 function copyWeekForward() {
   pushUndo();
   const wk = fullWeekDateStrs(); let added = 0, blocked = 0, hauls = 0;
+  const kept = new Set();   // by the person: one kept off all week is one
   wk.forEach(d => { const items = state.assignments[d] || []; const nd = addDays(d, 7);
-    items.forEach(a => { if (isBlockedOff(a.resource, a.kind, nd)) { blocked++; return; } // approved off next week — don't carry forward
+    items.forEach(a => { if (keptOffBooking(a)) { kept.add(a.kind === 'equip' ? a.op : a.resource); return; } // switched off since this week was planned — not carried on
+      if (isBlockedOff(a.resource, a.kind, nd)) { blocked++; return; } // approved off next week — don't carry forward
       if ((state.assignments[nd]||[]).some(x => x.resource===a.resource && x.division===a.division && x.jobId===a.jobId && (x.costCode||'')===(a.costCode||''))) return;
       const o = { ...a, id: uid() };
       // A haul repeated next week is a NEW haul in Trucking, and it needs its
@@ -2933,9 +3006,9 @@ function copyWeekForward() {
   if (added) { saveAssignments();
     // Hauls are said out loud: this button writes them into Trucking's own
     // schedule, and a bulk write into another division should never be silent.
-    toast('Copied '+added+' assignment'+(added>1?'s':'')+' into next week'+(hauls?' · '+hauls+' booked in Trucking':'')+(blocked?' · skipped '+blocked+' full days off':''));
+    toast('Copied '+added+' assignment'+(added>1?'s':'')+' into next week'+(hauls?' · '+hauls+' booked in Trucking':'')+(blocked?' · skipped '+blocked+' full days off':'')+keptOffNote(kept.size));
     state.weekAnchor.setDate(state.weekAnchor.getDate()+7); state.weekAnchor = new Date(state.weekAnchor); render(); }
-  else { _undo.pop(); updateUndoButtons(); toast(blocked ? 'Next week is all approved-off for those crew' : 'Nothing to copy (next week already matches)'); }
+  else { _undo.pop(); updateUndoButtons(); toast((blocked ? 'Next week is all approved-off for those crew' : kept.size ? 'Nothing copied' : 'Nothing to copy (next week already matches)')+keptOffNote(kept.size)); }
 }
 
 // ── Import division plans ───────────────────────────────────────────────────
@@ -2943,14 +3016,16 @@ function importPlanned() {
   const planned = state.board.plannedAssignments || []; if (!planned.length) { toast('No division plans to import'); return; }
   pushUndo();
   let added = 0, blocked = 0;
+  const kept = new Set();
   planned.forEach(p => { const kind = p.kind||'emp';
+    if (keptOff(p.resource, kind)) { kept.add(p.resource); return; } // a division's plan does not outrank Manage Users
     if (isBlockedOff(p.resource, kind, p.date)) { blocked++; return; } // approved off — never import over it
     // The planner schedules sub-codes; the board keeps only the cost code, so
     // one man planned across three sub-codes of a job imports as one booking.
     const dup = (state.assignments[p.date]||[]).some(a => a.resource===p.resource && a.division===p.division && a.jobId===p.jobId && (a.costCode||'')===(p.costCode||'')); if (dup) return;
     dayList(p.date).push({ id: uid(), resource:p.resource, kind, division:p.division, jobId:p.jobId, jobName:p.jobName, costCode:p.costCode||'', half:!!p.half }); added++; });
-  if (added) { saveAssignments(); toast('Imported '+added+' planned assignment'+(added>1?'s':'')+(blocked?' · skipped '+blocked+' full days off':'')); render(); }
-  else { _undo.pop(); updateUndoButtons(); toast(blocked ? 'Matching crew are approved off — nothing imported' : 'Already up to date with division plans'); }
+  if (added) { saveAssignments(); toast('Imported '+added+' planned assignment'+(added>1?'s':'')+(blocked?' · skipped '+blocked+' full days off':'')+keptOffNote(kept.size)); render(); }
+  else { _undo.pop(); updateUndoButtons(); toast((blocked ? 'Matching crew are approved off — nothing imported' : kept.size ? 'Nothing imported' : 'Already up to date with division plans')+keptOffNote(kept.size)); }
 }
 
 // ── Print / dispatch sheets ─────────────────────────────────────────────────
@@ -3159,7 +3234,9 @@ function buildAISnapshot() {
   const conflicts = []; Object.keys(state.assignments).forEach(d => { if (d < todayStr()) return; conflictResourcesOn(d).forEach(r => { conflicts.push({ date:d, resource:r, jobs: assignmentsFor(d,r).map(a => ({ name:a.jobName, costCode:a.costCode })) }); }); });
   const unstaffed = []; (state.board.jobs||[]).forEach(j => jobCodes(j).forEach(c => { if (c.status==='behind' && (c.needed || !c.crew.length)) unstaffed.push({ jobName:j.name, costCode:c.costCode, addlLaborersNeeded:c.needed }); }));
   const total = (state.board.employees||[]).length; const assigned = new Set(); wk.forEach(d => (state.assignments[d]||[]).forEach(a => { if (a.kind==='emp') assigned.add(a.resource); }));
-  return { today: todayStr(), jobs, conflicts: conflicts.slice(0,40), unstaffed: unstaffed.slice(0,30), capacity: { totalEmployees: total, assignedThisWeek: assigned.size, idleThisWeek: Math.max(total-assigned.size,0) } };
+  // Idle the way the KPI strip counts it: the crew list, less whoever on it is booked.
+  const idle = (state.board.employees||[]).filter(e => !assigned.has(e.name)).length;
+  return { today: todayStr(), jobs, conflicts: conflicts.slice(0,40), unstaffed: unstaffed.slice(0,30), capacity: { totalEmployees: total, assignedThisWeek: assigned.size, idleThisWeek: idle } };
 }
 async function generateAI() { state.aiLoading = true; render();
   try { state.ai = await api('/api/ai/scheduler-insights', { method:'POST', body: JSON.stringify(buildAISnapshot()) }); }

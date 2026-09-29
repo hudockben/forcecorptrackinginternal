@@ -1229,6 +1229,7 @@ const SCHEDULER_LIMITS = [
   'Trucking hauls on this board are read through from the Trucking dispatch board; that board owns them and this one shows them so a driver is not scheduled twice. Their hours, trucks and loads are not here — only who is on what, and on which day.',
   'addlLaborersNeeded is arithmetic — the extra bodies the pace implies — not a decision about who is available. Never present it as a staffing instruction.',
   'These figures are the plan as it stands today. There is no history here, so nothing about how the schedule has moved over time can be answered.',
+  'crewSize counts the people the Scheduler can book. keptOffScheduler counts people still on the roster whom an admin has kept off the Scheduler\'s crew list in Manage Users (office staff, crew away at school): they are not idle and not spare capacity, so never count them as either.',
   'timeOff is one row per person per DAY, and two fields on it decide what may be said. status is "approved" or "requested" — a requested day is a form a supervisor has not answered yet, so never report it as time the person is taking. partial is true when the day off leaves part of the day standing (hours says how much): that person IS working that day and IS schedulable, so never describe a partial day as being out. Only an approved, non-partial row means away for the whole day. Zero hours is an unpaid day off — away all day, and a payroll fact, not an extra kind of absence.',
 ];
 
@@ -1360,6 +1361,7 @@ async function schedulerDigest(c, opts = {}) {
     addlLaborersNeeded,
     unstaffedAtRisk: unstaffed,
     crewSize: (board.employees || []).length,
+    keptOffScheduler: (board.offScheduler || []).length,
     equipmentCount: (board.equipment || []).length,
     problems: capList(problems),
     conflicts: capList(conflicts),
