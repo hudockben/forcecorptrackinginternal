@@ -302,7 +302,7 @@ function plannedAssignmentsFromSchedule(ppSchedule, todayStr, job) {
 // somebody who is not on the roster at all.
 async function readEmployees(sql, companyCode) {
   try {
-    const { people, matched, unmatched, manual, offCrew, guesses } = await readPeopleRoster(sql, companyCode);
+    const { people, matched, unmatched, manual, offCrew, guesses, loginPeople } = await readPeopleRoster(sql, companyCode);
     const asCrew = r => ({
       name: (r.name || '').trim(),
       jobClass: r.job_class || '',
@@ -322,10 +322,13 @@ async function readEmployees(sql, companyCode) {
       manualLogins: manual,
       offCrewLogins: offCrew,
       loginGuesses: guesses,
+      // Every login → its person, for moving what a login filed onto the
+      // person here. Names logins the roster does not show: never sent.
+      loginPeople: loginPeople || {},
     };
   } catch (err) {
     console.warn('[scheduler/board] employees read failed:', err.message);
-    return { list: [], offScheduler: [], loginNames: {}, unmatchedLogins: [], manualLogins: [], offCrewLogins: [], loginGuesses: {} };
+    return { list: [], offScheduler: [], loginNames: {}, unmatchedLogins: [], manualLogins: [], offCrewLogins: [], loginGuesses: {}, loginPeople: {} };
   }
 }
 // ── Divisions whose work is a CUSTOMER, not a bid item ─────────────────────
@@ -641,16 +644,21 @@ async function buildBoard(sql, companyCode, todayStr) {
   jobs.sort((a, b) => a.name.localeCompare(b.name));
 
   // Time off is filed under a login as often as under a name — an entry with no
-  // employee on it is keyed by whoever sent it — so a login folded into a
-  // person brings its days off along, or the board would offer Aaron Todd on
-  // the day "toddaaron" asked for. Where both have the day, an approved one
-  // wins over a request. The login's own entry stays, for any booking still
-  // made under that name.
-  for (const [login, person] of Object.entries(roster.loginNames)) {
-    const days = timeOff[login];
-    if (!days) continue;
+  // employee on it is keyed by whoever sent it — so a login brings its days off
+  // to the person it is, or the board would offer Aaron Todd on the day
+  // "toddaaron" asked for. EVERY login, not only the ones folded into the crew
+  // list: most field logins have no row of their own (only a Supervisor or
+  // Driver flag makes one), and reading only those left a laborer's approved
+  // vacation invisible here while Payroll showed it. Where both have the day,
+  // an approved one wins over a request. The login's own entry stays, for any
+  // booking still made under that name.
+  const loginToPerson = new Map(Object.entries(roster.loginNames).map(([l, p]) => [l.toLowerCase(), p]));
+  for (const [l, p] of Object.entries(roster.loginPeople || {})) loginToPerson.set(l, p);
+  for (const login of Object.keys(timeOff)) {
+    const person = loginToPerson.get(login.toLowerCase());
+    if (!person || person === login) continue;
     const into = timeOff[person] || (timeOff[person] = {});
-    for (const [ds, off] of Object.entries(days)) {
+    for (const [ds, off] of Object.entries(timeOff[login])) {
       if (!into[ds] || (off.status === 'approved' && into[ds].status !== 'approved')) into[ds] = off;
     }
   }

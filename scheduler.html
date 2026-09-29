@@ -74,7 +74,16 @@
     .rail-row { display:flex; align-items:center; gap:0.3rem; padding:0.2rem 0.35rem; border:1px solid var(--border); border-radius:5px; margin-bottom:0.16rem; cursor:grab; background:var(--surface2); }
     .rail-row:hover { border-color:#555; }
     .rail-row.dragging { opacity:0.35; }
-    .rail-row.off { opacity:0.45; }
+    /* Approved off every day on screen: red-lined, the way the assign dialog
+       strikes a name it will not take, and not draggable — there is no day
+       here they can be put on. */
+    .rail-row.off { cursor:not-allowed; opacity:0.75; border-color:rgba(239,68,68,0.45); border-left:3px solid var(--red); background:rgba(239,68,68,0.07); }
+    .rail-row.off .rail-name { text-decoration:line-through; text-decoration-color:var(--red); text-decoration-thickness:2px; color:var(--muted); }
+    .rail-load.offday { color:var(--red); border-color:var(--red); font-weight:700; }
+    /* Time off that does not block: a part day, a request not yet approved,
+       or — on a week board — some of the days shown and not all. */
+    .rail-off { font-size:0.54rem; padding:0 0.24rem; border-radius:7px; border:1px solid rgba(251,191,36,0.55); color:var(--amber); white-space:nowrap; }
+    .rail-off.hard { border-color:rgba(239,68,68,0.6); color:var(--red); font-weight:700; }
     .rail-name { flex:1; min-width:0; font-size:0.69rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .rail-load { font-size:0.54rem; padding:0 0.26rem; border-radius:7px; border:1px solid var(--border); color:var(--muted); white-space:nowrap; }
     .rail-load.free { color:var(--green); border-color:var(--green-dim); }
@@ -114,6 +123,9 @@
     .lead-col { position:sticky; left:0; background:var(--surface); z-index:6; width:418px; min-width:368px; max-width:418px; text-align:left !important; padding:0.26rem 0.5rem !important; }
     thead .lead-col { z-index:7; }
     .cell { position:relative; min-width:120px; height:auto; min-height:34px; padding:0.16rem; cursor:pointer; transition:background .1s; }
+    /* By Crew: a day the person is approved off for the whole of. Hatched,
+       not filled, so a booking still sitting on it reads over the top. */
+    td.cell.offday { background:repeating-linear-gradient(135deg, rgba(239,68,68,0.13) 0 6px, transparent 6px 12px); }
     body.compact .cell { min-height:26px; }
     .cell:hover { background:var(--surface2); }
     .cell.weekend { background:rgba(255,255,255,0.015); } .cell.today { box-shadow: inset 2px 0 0 var(--blue); }
@@ -192,6 +204,9 @@
     .cell-note { grid-column:2; min-width:0; contain:inline-size; font-size:0.58rem; line-height:1.3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .asn { display:inline-block; vertical-align:top; max-width:100%; font-size:0.64rem; line-height:1.3; padding:0.05rem 0.3rem; border-radius:4px; margin:0 0.14rem 0.14rem 0; border-left:3px solid var(--muted); background:var(--surface2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .asn.conflict { background:rgba(239,68,68,0.18); border-left-color:var(--red); } .asn.half { opacity:0.85; font-style:italic; } .asn .cc { color:var(--muted); }
+    /* Booked on a day the person is approved off for the whole of — a booking
+       made before the day off was, or one nobody caught. Struck through in red. */
+    .asn.offday { background:rgba(239,68,68,0.12); border-left-color:var(--red); text-decoration:line-through; text-decoration-color:var(--red); }
     /* A haul is read through from Trucking and saves back there. The dashed
        edge is the one visual cue that this booking has another owner. */
     .asn.haul { border-left-style:dashed; }
@@ -289,6 +304,38 @@
     .div-row td { background:var(--surface2); }
     /* The badge already shouts the division; the job count should not. */
     .div-row .grp-lead { font-size:0.72rem; }
+    /* A section's own controls: the checklist of its jobs or customers, and
+       + Work for off-project work in that division. */
+    .grp-pick { margin-left:0.45rem; }
+    .grp-pick.open { border-color:var(--blue); color:var(--blue); }
+    .grp-work { margin-left:0.35rem; }
+    /* The checklist itself, hung off <body> under its button. */
+    .row-pick { position:fixed; top:0; left:0; z-index:90; display:flex; flex-direction:column; background:var(--surface); border:1px solid var(--border); border-radius:8px; box-shadow:0 10px 28px rgba(0,0,0,0.55); font-size:0.76rem; overflow:hidden; }
+    .rp-top { display:flex; align-items:center; gap:0.4rem; padding:0.45rem 0.4rem 0.45rem 0.65rem; border-bottom:1px solid var(--border); }
+    .rp-top .x { margin-left:auto; font-size:0.95rem; padding:0 0.25rem; }
+    .rp-search { display:block; width:calc(100% - 1.1rem); margin:0.45rem 0.55rem 0.1rem; }
+    .rp-list { flex:1; min-height:0; overflow:auto; padding:0.15rem 0.3rem 0.35rem; }
+    .rp-head { font-size:0.58rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--muted); padding:0.45rem 0.35rem 0.15rem; }
+    .rp-row { display:flex; align-items:center; gap:0.45rem; padding:0.28rem 0.35rem; border-radius:5px; cursor:pointer; -webkit-tap-highlight-color:transparent; }
+    @media (hover: hover) { .rp-row:hover { background:var(--surface2); } }
+    .rp-row input { flex:0 0 auto; width:15px; height:15px; accent-color:var(--blue); cursor:pointer; }
+    .rp-row.locked, .rp-row.locked input { cursor:default; }
+    .rp-name { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .rp-num { font-size:0.62rem; color:var(--muted); white-space:nowrap; }
+    .rp-note { font-size:0.52rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--amber); border:1px solid rgba(251,191,36,0.45); border-radius:4px; padding:0 0.22rem; }
+    .rp-none { padding:0.5rem 0.4rem; }
+    .rp-row[hidden], .rp-group[hidden], .rp-none[hidden] { display:none; }
+    .rp-foot { display:flex; align-items:center; gap:0.35rem; padding:0.45rem 0.55rem 0.45rem 0.65rem; border-top:1px solid var(--border); }
+    .rp-sum { flex:1; font-size:0.66rem; }
+    /* A finger needs a taller row than a mouse does. */
+    @media (pointer: coarse) { .rp-row { padding:0.55rem 0.4rem; } .rp-row input { width:18px; height:18px; } }
+    /* Take a row off the board. Quiet until the row is pointed at. */
+    .row-x { margin-left:0.3rem; font-size:0.72rem; line-height:1; padding:0 0.25rem; background:none; border:1px solid transparent; border-radius:4px; color:var(--muted); cursor:pointer; opacity:0.35; }
+    .job-row:hover .row-x, .row-x:focus { opacity:1; border-color:var(--border); }
+    .row-x:hover { color:var(--red); border-color:var(--red); }
+    .row-x.pin { opacity:1; font-size:0.58rem; font-weight:700; color:var(--blue); border-color:rgba(96,165,250,0.45); }
+    .row-x.pin:hover { color:var(--blue); border-color:var(--blue); }
+    .off-tag { font-size:0.52rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; color:var(--purple); border:1px dashed var(--purple); border-radius:4px; padding:0 0.22rem; vertical-align:1px; }
     .job-lead { padding-left:0.8rem !important; }
     .code-tag { font-size:0.55rem; font-weight:700; letter-spacing:0.03em; color:var(--blue); border:1px solid rgba(96,165,250,0.45); border-radius:4px; padding:0 0.25rem; white-space:nowrap; }
     .lnk { color:var(--blue); cursor:pointer; text-decoration:underline; }
@@ -334,6 +381,8 @@ if (!token || !user) location.replace('index.html'); else if (!hasAccess) locati
 
 const ASSIGN_KEY = 'fct_scheduler_assignments';
 const CREWS_KEY  = 'fct_scheduler_crews';
+// Which rows each division section shows — see "Which rows a section shows".
+const ROWS_KEY   = 'fct_scheduler_rows';
 const DIV_COLORS = { turf:'#22c55e', paving:'#60a5fa', dust:'#fbbf24', trucking:'#ef4444', quarry:'#f97316',
                      // Pre Loading and Washing. Dust's hours, its own line of work.
                      ees:'#2dd4bf',
@@ -352,7 +401,7 @@ const state = {
   divFilter:'all', jobSearch:'', needCrewOnly:false,
   crewSearch:'', roleFilter:'all', showAll:false, grpCol:{},
   applySpan:'day', assignCtx:null, ai:null, aiLoading:false,
-  siteTimes:{}, codeCol:{}, equipPickFor:null, otherDrafts:[], span:'day',
+  siteTimes:{}, codeCol:{}, equipPickFor:null, otherDrafts:[], span:'day', rowChoices:{},
   // View preferences (persisted per user, below). hideComplete drops finished
   // sub-codes off the board — on a 69-code job they are most of the noise and
   // none of the work. compact trades the KPI strip and padding for grid rows.
@@ -458,6 +507,16 @@ function offLabel(o) { return !o ? '' : (o.partial ? offHrsText(o) + ' h off' : 
 // day and simply not paid for it, which is payroll's business and not the
 // board's. Only an answer that leaves part of the day standing frees the date.
 function isBlockedOff(name, kind, date) { if (kind === 'equip') return false; const o = isOff(name, date); return !!(o && o.status === 'approved' && !o.partial); }
+// Someone's days off among the days on screen, split the way the board acts on
+// them: the ones the rule above blocks, and the rest — a part day, a request
+// nobody has answered — which only warn.
+function offShown(name) {
+  const out = { blocked: [], soft: [] };
+  weekDateStrs().forEach(d => { const o = isOff(name, d); if (o) (isBlockedOff(name, 'emp', d) ? out.blocked : out.soft).push({ date: d, off: o }); });
+  return out;
+}
+// One day off, the way a tooltip says it: "Oct 26: vacation · off (approved)".
+function offDayText(x) { return shortDate(x.date) + ': ' + x.off.type + ' · ' + offLabel(x.off) + (x.off.status === 'submitted' ? ' (requested)' : ' (approved)'); }
 const _clientTag = 'c' + Math.random().toString(36).slice(2, 7); // per-client tag so ids never collide across schedulers
 let _uid = 0;
 function uid() { return _clientTag + (++_uid).toString(36); }
@@ -473,12 +532,14 @@ async function api(path, opts = {}) {
 // ── Load / save ─────────────────────────────────────────────────────────────
 async function loadAll() {
   try {
-    const [board, asn, crews] = await Promise.all([
+    const [board, asn, crews, rows] = await Promise.all([
       api('/api/scheduler/board?today=' + todayStr()),
       api('/api/data/' + ASSIGN_KEY).catch(() => ({ value:null })),
       api('/api/data/' + CREWS_KEY).catch(() => ({ value:null })),
+      api('/api/data/' + ROWS_KEY).catch(() => ({ value:null })),
     ]);
     state.board = board;
+    takeRowChoices(rows && rows.value);
     const v = asn && asn.value;
     // The hauls trucking already has on, straight off the board payload, and
     // the board's own rows out of its own blob — kept apart as baselines
@@ -802,8 +863,9 @@ async function flushSaves(keepalive) {
 }
 async function refreshData() {
   try {
-    const [board, sv] = await Promise.all([ api('/api/scheduler/board?today=' + todayStr()), _getVal(ASSIGN_KEY) ]);
+    const [board, sv, rows] = await Promise.all([ api('/api/scheduler/board?today=' + todayStr()), _getVal(ASSIGN_KEY), _getVal(ROWS_KEY) ]);
     state.board = board;
+    takeRowChoices(rows);
     const theirs = (sv && sv.assignments) || {};
     const theirsTimes = (sv && sv.siteTimes) || {};
     // Hauls reconcile the same way the board's own rows do, against their own
@@ -839,6 +901,7 @@ window.addEventListener('online', () => { if (_dirtyAssign || _dirtyCrews || tru
 document.addEventListener('keydown', e => {
   if ((e.metaKey || e.ctrlKey) && (e.key === 'z' || e.key === 'Z')) { e.preventDefault(); e.shiftKey ? redo() : undo(); return; }
   if (e.key === 'Escape') {
+    if (_rowPick) { closeRowPicker(); return; }
     if (state.moreOpen) { closeMoreMenu(); return; }
     if (document.getElementById('dispatchOverlay')) { closeDispatch(); return; }
     if (document.getElementById('crewsOverlay')) { closeCrews(); return; }
@@ -913,6 +976,8 @@ function placeOnJob(date, job, costCode, proto) {
   const o = { id: uid(), resource: proto.resource, kind: proto.kind, division: job.division, jobId: job.id,
               jobName: job.name, costCode: cc, half: !!proto.half };
   if (proto.op) o.op = proto.op;
+  // Other work that belongs to a division says which, so it is drawn there.
+  if (job.home) o.home = job.home;
   // A driver put on a trucking job here becomes a haul in TRUCKING's blob, not
   // a row of this board's own. Where the booking was copied from a haul, that
   // haul's load comes with it.
@@ -946,7 +1011,7 @@ function removePersonAssignment(date, id) {
 function addEquipForOp(date, machine, operator, job, costCode) {
   const cc = costCode || '';
   if (cellAssignments(date, job.division, job.id, cc).some(a => a.kind === 'equip' && a.resource === machine && (a.op||'') === operator)) return 0;
-  dayList(date).push({ id: uid(), resource: machine, kind: 'equip', op: operator, division: job.division, jobId: job.id, jobName: job.name, costCode: cc, half:false });
+  dayList(date).push(Object.assign({ id: uid(), resource: machine, kind: 'equip', op: operator, division: job.division, jobId: job.id, jobName: job.name, costCode: cc, half:false }, job.home ? { home: job.home } : {}));
   saveAssignments(); return 1;
 }
 function toggleHalf(date, id) {
@@ -1313,6 +1378,9 @@ function visibleJobs() {
   if (state.divFilter !== 'all') jobs = jobs.filter(j => j.division === state.divFilter);
   const q = state.jobSearch.trim().toLowerCase();
   if (q) jobs = jobs.filter(j => (j.name + ' ' + (j.jobNumber||'')).toLowerCase().includes(q));
+  // A search looks through every job, on the board or not: a customer you are
+  // looking for is not missing because nobody has picked it yet.
+  else jobs = jobs.filter(onBoard);
   // The board is a list of jobs now, so this filter is a job filter: show me
   // the jobs with work that is behind or at risk.
   if (state.needCrewOnly) jobs = jobs.filter(jobNeedsCrew);
@@ -1325,6 +1393,239 @@ function visibleJobs() {
   });
 }
 function jobById(division, id) { return (state.board.jobs || []).find(j => j.division === division && j.id === id); }
+
+// ── Which rows a section shows ──────────────────────────────────────────────
+// Dust Control and Trucking bring every customer they have — the Timesheet's
+// whole picker list — and the crews work for a couple at a time, so those two
+// sections were a long list of empty rows around the two that mattered. There
+// the board now shows what a scheduler ticked in the section's checklist, and
+// nothing else. Everywhere else it shows every live job, as it always has, and
+// any row can be unticked (or ×'d) and ticked back. Either way a row with
+// anyone booked on the days on screen is drawn: a crew you cannot see is a
+// crew you double-book.
+//
+// The picks are the board's layout, not its schedule, so they are kept apart
+// from the bookings (ROWS_KEY): one entry per row, 'show' or 'hide', written
+// when it is saved and read by every scheduler.
+const PICK_DIVISIONS = new Set(['dust', 'trucking']);
+let _rowsStored = false;   // is there a stored object to merge a pick into
+function rowKey(division, jobId) { return division + '::' + jobId; }
+function takeRowChoices(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return;   // a failed read keeps what we had
+  state.rowChoices = v; _rowsStored = true;
+}
+function bookedOnRow(job) { return weekDateStrs().some(d => jobAssignmentsOnDate(d, job.division, job.id).length > 0); }
+function onBoard(job) {
+  if (bookedOnRow(job)) return true;
+  const c = (state.rowChoices || {})[rowKey(job.division, job.id)];
+  if (c === 'show') return true;
+  if (c === 'hide') return false;
+  return !PICK_DIVISIONS.has(job.division);
+}
+// What a section's rows are called: a customer where the board picks them.
+function rowNoun(division, n) { return (PICK_DIVISIONS.has(division) ? 'customer' : 'job') + (n === 1 ? '' : 's'); }
+// The name on a section's checklist button.
+function pickNoun(division) { return PICK_DIVISIONS.has(division) ? 'Customers' : 'Jobs'; }
+// Any number of picks, saved at once. PATCH merges the keys into the stored
+// object in place, so two schedulers picking different customers keep both;
+// the first pick a company ever makes has no object to merge into, and writes
+// one. Saves go out one after another, so a second one made before the first
+// has landed merges into it rather than racing it to write the whole object.
+let _rowsSaving = Promise.resolve();
+function setBoardRows(fields) {
+  if (!Object.keys(fields).length) return _rowsSaving;
+  state.rowChoices = Object.assign({}, state.rowChoices, fields);
+  render();
+  const save = async () => {
+    try {
+      if (_rowsStored) {
+        await api('/api/data/' + ROWS_KEY, { method:'PATCH', body: JSON.stringify({ fields }) });
+      } else {
+        // Read with the call that throws, not _getVal: a read that failed is not
+        // an empty list, and writing over it would lose everyone else's picks.
+        const r = await api('/api/data/' + ROWS_KEY);
+        const now = r && r.value;
+        await _putKey(ROWS_KEY, Object.assign({}, (now && typeof now === 'object' && !Array.isArray(now)) ? now : {}, fields), false);
+        _rowsStored = true;
+      }
+    } catch (err) { toast('Could not save that for everyone: ' + err.message); }
+  };
+  return (_rowsSaving = _rowsSaving.then(save));
+}
+function setBoardRow(division, jobId, choice) { return setBoardRows({ [rowKey(division, jobId)]: choice }); }
+function dropBoardRow(division, jobId) {
+  const job = jobById(division, jobId); if (!job) return;
+  if (bookedOnRow(job)) { toast(job.name + ' has crew booked — take them off it first'); return; }
+  setBoardRow(division, jobId, 'hide');
+  toast(job.name + ' is off the board · + ' + pickNoun(division) + ' in its section puts it back');
+}
+// The controls on a section's header: the checklist of its jobs or customers,
+// and + Work, for work in this division with no project.
+function sectionAddHtml(division) {
+  return rowPickBtnHtml(division) + '<button class="btn mini grp-work" onclick="event.stopPropagation();addOtherWork(\''+escAttr(division)+'\')"'+
+    ' title="'+esc('Put crew on '+divTitle(division)+' work with no project behind it — a shop day, a site visit, a yard clean-up')+'">+ Work</button>';
+}
+
+// ── A section's checklist ───────────────────────────────────────────────────
+// Every job or customer a section has, ticked when it is on the board. Tick as
+// many as you like and they all go on in one save; untick one to take it off.
+// A row with crew booked on the days on screen stays ticked and cannot be
+// unticked — the board never hides a crew.
+//
+// It opens under its button but is not part of the board: it hangs off <body>,
+// so nothing that redraws the board loses what has been ticked. Clicking away,
+// or the button again, saves what was ticked, the way a dropdown you have made
+// choices in is expected to; Cancel, ✕ and Escape leave the board as it was.
+let _rowPick = null;   // { division, was: {id: on}, on: {id: on}, locked: {id: true} }
+function rowPickBtnHtml(division) {
+  const all = (state.board.jobs || []).filter(j => j.division === division);
+  if (!all.length) return '';
+  const off = all.filter(j => !onBoard(j)).length, noun = pickNoun(division);
+  return '<button class="btn mini grp-pick'+(_rowPick && _rowPick.division === division ? ' open' : '')+'" data-div="'+esc(division)+'"'+
+    ' onclick="event.stopPropagation();toggleRowPicker(\''+escAttr(division)+'\')"'+
+    ' title="'+esc('Tick the '+noun.toLowerCase()+' to show in '+divTitle(division)+' — '+(all.length - off)+' of '+all.length+' on the board')+'">'+
+    '+ '+noun+(off ? ' ('+off+')' : '')+' ▾</button>';
+}
+function toggleRowPicker(division) {
+  const same = _rowPick && _rowPick.division === division;
+  closeRowPicker(true);
+  if (!same) openRowPicker(division);
+}
+function openRowPicker(division) {
+  const jobs = (state.board.jobs || []).filter(j => j.division === division).sort((a, b) => a.name.localeCompare(b.name));
+  if (!jobs.length) return;
+  const was = {}, locked = {};
+  jobs.forEach(j => { was[j.id] = onBoard(j); if (bookedOnRow(j)) locked[j.id] = true; });
+  _rowPick = { division, was, on: Object.assign({}, was), locked };
+  let pop = document.getElementById('rowPickPop');
+  if (!pop) { pop = document.createElement('div'); pop.id = 'rowPickPop'; pop.className = 'row-pick'; document.body.appendChild(pop); }
+  pop.innerHTML = rowPickHtml(jobs);
+  document.querySelectorAll('.grp-pick').forEach(b => b.classList.toggle('open', b.dataset.div === division));
+  placeRowPicker();
+  updateRowPickFoot();
+  // A mouse gets the search box straight away; a finger gets the list, not a
+  // keyboard over half of it.
+  const q = document.getElementById('rowPickSearch');
+  if (q && window.matchMedia && window.matchMedia('(pointer: fine)').matches) q.focus();
+}
+function rowPickHtml(jobs) {
+  const p = _rowPick, noun = pickNoun(p.division).toLowerCase();
+  const row = j => '<label class="rp-row'+(p.locked[j.id] ? ' locked' : '')+'" data-q="'+esc((j.name+' '+(j.jobNumber||'')).trim().toLowerCase())+'"'+
+      (p.locked[j.id] ? ' title="'+esc('Crew booked '+rangeWords()+' — take them off it to take it off the board')+'"' : '')+'>'+
+    '<input type="checkbox" data-id="'+esc(j.id)+'"'+(p.on[j.id] ? ' checked' : '')+(p.locked[j.id] ? ' disabled' : '')+' onchange="onRowPickTick(this)">'+
+    '<span class="rp-name">'+esc(j.name)+'</span>'+
+    (j.jobNumber ? '<span class="rp-num">#'+esc(j.jobNumber)+'</span>' : '')+
+    (p.locked[j.id] ? '<span class="rp-note">booked</span>' : '')+
+  '</label>';
+  const group = (title, list) => list.length
+    ? '<div class="rp-group"><div class="rp-head">'+title+' · '+list.length+'</div>'+list.map(row).join('')+'</div>' : '';
+  return '<div class="rp-top"><span><strong>'+esc(divTitle(p.division))+'</strong> <span class="muted">'+noun+' on the board</span></span>'+
+      '<button class="x" onclick="closeRowPicker()" title="Close without saving">✕</button></div>'+
+    (jobs.length > 6 ? '<input type="text" id="rowPickSearch" class="rp-search" autocomplete="off" placeholder="Find a '+noun.replace(/s$/, '')+'…"'+
+      ' oninput="onRowPickSearch(this)" onkeydown="onRowPickKey(event)">' : '')+
+    '<div class="rp-list">'+group('On the board', jobs.filter(j => p.was[j.id]))+group('Not on the board', jobs.filter(j => !p.was[j.id]))+
+      '<div class="rp-none muted" hidden>Nothing matches.</div></div>'+
+    '<div class="rp-foot"><span class="rp-sum muted"></span>'+
+      '<button class="btn mini" onclick="closeRowPicker()">Cancel</button>'+
+      '<button class="btn mini primary" id="rowPickSave" onclick="closeRowPicker(true)">Save</button></div>';
+}
+// Under its button, or over it where there is more room above; as wide as a
+// phone allows. Called again whenever the page scrolls, resizes or redraws,
+// so it stays with the button it came from.
+//
+// Fitted to the part of the page on screen (the visual viewport), not the
+// window: on a phone the board is wider than the screen, the page is bigger
+// than what shows, and a panel fitted to the page hangs its Save button off
+// the bottom. Kept on screen even when its button scrolls away.
+function placeRowPicker() {
+  const pop = document.getElementById('rowPickPop'); if (!pop || !_rowPick) return;
+  const btn = [...document.querySelectorAll('.grp-pick')].find(b => b.dataset.div === _rowPick.division);
+  if (!btn) { closeRowPicker(true); return; }   // the board it belongs to is gone
+  const vv = window.visualViewport, m = 8;
+  const L = vv ? vv.offsetLeft : 0, T = vv ? vv.offsetTop : 0;
+  const W = vv ? vv.width : window.innerWidth, H = vv ? vv.height : window.innerHeight;
+  const w = Math.min(340, W - 2 * m), r = btn.getBoundingClientRect();
+  const below = T + H - m - (r.bottom + 4), above = (r.top - 4) - (T + m);
+  const up = below < 240 && above > below;
+  pop.style.width = w + 'px';
+  pop.style.left = Math.max(L + m, Math.min(r.left, L + W - w - m)) + 'px';
+  pop.style.maxHeight = Math.max(120, Math.min(460, up ? above : below, H - 2 * m)) + 'px';
+  const h = pop.offsetHeight;
+  pop.style.top = Math.max(T + m, Math.min(up ? r.top - 4 - h : r.bottom + 4, T + H - m - h)) + 'px';
+}
+function onRowPickTick(el) {
+  if (!_rowPick) return;
+  const id = el.dataset.id;
+  if (_rowPick.locked[id]) { el.checked = true; return; }
+  _rowPick.on[id] = el.checked;
+  updateRowPickFoot();
+}
+// What Save would write: a key for every row whose tick changed.
+function rowPickChanges(p) {
+  const fields = {}; let add = 0, drop = 0;
+  Object.keys(p.on).forEach(id => {
+    if (p.on[id] === p.was[id] || p.locked[id]) return;
+    fields[rowKey(p.division, id)] = p.on[id] ? 'show' : 'hide';
+    if (p.on[id]) add++; else drop++;
+  });
+  return { fields, add, drop };
+}
+function updateRowPickFoot() {
+  const pop = document.getElementById('rowPickPop'); if (!pop || !_rowPick) return;
+  const { add, drop } = rowPickChanges(_rowPick);
+  const bits = []; if (add) bits.push(add + ' to add'); if (drop) bits.push(drop + ' to take off');
+  const sum = pop.querySelector('.rp-sum'), save = document.getElementById('rowPickSave');
+  if (sum) sum.textContent = bits.length ? bits.join(' · ') : 'Tick what to show';
+  if (save) { save.disabled = !bits.length; save.textContent = add && !drop ? 'Add ' + add : 'Save'; }
+}
+function onRowPickSearch(el) {
+  const pop = document.getElementById('rowPickPop'); if (!pop) return;
+  const q = el.value.trim().toLowerCase();
+  let shown = 0;
+  pop.querySelectorAll('.rp-group').forEach(g => {
+    let n = 0;
+    g.querySelectorAll('.rp-row').forEach(r => { const hit = !q || r.dataset.q.includes(q); r.hidden = !hit; if (hit) n++; });
+    g.hidden = !n; shown += n;
+  });
+  const none = pop.querySelector('.rp-none'); if (none) none.hidden = shown > 0;
+}
+// Enter ticks the one row a search has narrowed to, and clears the search for
+// the next: type, Enter, type, Enter, Save.
+function onRowPickKey(e) {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const pop = document.getElementById('rowPickPop'); if (!pop) return;
+  const hits = [...pop.querySelectorAll('.rp-row:not([hidden]) input:not(:disabled)')];
+  if (hits.length !== 1) return;
+  hits[0].checked = !hits[0].checked; onRowPickTick(hits[0]);
+  e.target.value = ''; onRowPickSearch(e.target);
+}
+// `save`: write what was ticked. Without it the board is left as it was.
+function closeRowPicker(save) {
+  const p = _rowPick; _rowPick = null;
+  const pop = document.getElementById('rowPickPop'); if (pop) pop.remove();
+  document.querySelectorAll('.grp-pick.open').forEach(b => b.classList.remove('open'));
+  if (!p || !save) return;
+  const { fields, add, drop } = rowPickChanges(p);
+  if (!add && !drop) return;
+  setBoardRows(fields);
+  const n = k => k + ' ' + rowNoun(p.division, k);
+  toast(divTitle(p.division) + ' · ' + (add && drop ? add + ' added, ' + drop + ' taken off'
+    : add ? n(add) + ' added to the board' : n(drop) + ' taken off the board'));
+}
+// Clicking anywhere else saves and closes it — before the click does whatever
+// else it does, so a click on a day cell still opens that cell.
+document.addEventListener('click', e => {
+  if (!_rowPick) return;
+  const t = (e.target && e.target.nodeType === 1) ? e.target : null;
+  if (t && (t.closest('#rowPickPop') || t.closest('.grp-pick'))) return;
+  closeRowPicker(true);
+}, true);
+window.addEventListener('scroll', () => { if (_rowPick) placeRowPicker(); }, true);
+window.addEventListener('resize', () => { if (_rowPick) placeRowPicker(); });
+// A phone's own zoom and scroll, and its keyboard coming up, move only the
+// visual viewport.
+if (window.visualViewport) ['resize', 'scroll'].forEach(ev => window.visualViewport.addEventListener(ev, () => { if (_rowPick) placeRowPicker(); }));
 
 // ── Work with no project behind it ──────────────────────────────────────────
 // A site visit, a day in the shop, a man sent to look at something that has not
@@ -1347,10 +1648,15 @@ const OTHER_DIV = 'other';
 // space-collapsed so "Shop " and "Shop" are one row, and matched case-insensitively
 // so "shop" joins them — but the words are stored as typed, because a label is
 // something a person reads.
-function otherKey(label) { return OTHER_DIV + '::' + String(label || '').trim().replace(/\s+/g, ' ').toLowerCase(); }
-function otherJobOf(label) {
+//
+// Work can also belong to a division — Turf's shop day, Paving's yard — and
+// is drawn in that division's section (`home`). The division is part of the
+// identity, so Turf's "Shop" and Paving's "Shop" are two rows; work with no
+// division keeps the key it always had, so nothing already booked moves.
+function otherKey(label, home) { return OTHER_DIV + '::' + (home ? home + '::' : '') + String(label || '').trim().replace(/\s+/g, ' ').toLowerCase(); }
+function otherJobOf(label, home) {
   const name = String(label || '').trim().replace(/\s+/g, ' ');
-  return { division: OTHER_DIV, id: otherKey(name), name, subCodes: [] };
+  return Object.assign({ division: OTHER_DIV, id: otherKey(name, home), name, subCodes: [] }, home ? { home } : {});
 }
 // The label for a row, read back off any assignment carrying it — the whole
 // board, not just the week on screen, so paging away from the days a label is
@@ -1363,6 +1669,15 @@ function otherLabel(jobId) {
   const draft = state.otherDrafts.find(j => j.id === jobId);
   return draft ? draft.name : null;
 }
+// The division a row of other work belongs to, read back the same way.
+function otherHome(jobId) {
+  for (const d of Object.keys(state.assignments)) {
+    const a = (state.assignments[d] || []).find(x => x.division === OTHER_DIV && x.jobId === jobId);
+    if (a) return a.home || null;
+  }
+  const draft = state.otherDrafts.find(j => j.id === jobId);
+  return (draft && draft.home) || null;
+}
 // The rows to draw: every label the visible week actually carries, plus any
 // just typed and not yet staffed. Nothing is stored that is not an assignment —
 // an empty row is not a plan, it is a label somebody is halfway through
@@ -1371,7 +1686,7 @@ function otherJobsInWeek() {
   const by = new Map();
   weekDateStrs().forEach(d => (state.assignments[d] || []).forEach(a => {
     if (a.division !== OTHER_DIV || by.has(a.jobId)) return;
-    by.set(a.jobId, { division: OTHER_DIV, id: a.jobId, name: a.jobName || 'Other work', subCodes: [] });
+    by.set(a.jobId, Object.assign({ division: OTHER_DIV, id: a.jobId, name: a.jobName || 'Other work', subCodes: [] }, a.home ? { home: a.home } : {}));
   }));
   state.otherDrafts.forEach(j => { if (!by.has(j.id)) by.set(j.id, j); });
   return [...by.values()].sort((a, b) => a.name.localeCompare(b.name));
@@ -1383,7 +1698,8 @@ function jobFor(division, jobId, fallbackName) {
   const real = jobById(division, jobId);
   if (real) return real;
   if (division === OTHER_DIV) {
-    return { division, id: jobId, name: otherLabel(jobId) || fallbackName || 'Other work', subCodes: [] };
+    const home = otherHome(jobId);
+    return Object.assign({ division, id: jobId, name: otherLabel(jobId) || fallbackName || 'Other work', subCodes: [] }, home ? { home } : {});
   }
   return { division, id: jobId, name: fallbackName || 'Job', subCodes: [] };
 }
@@ -1426,6 +1742,7 @@ function render() {
   else main.innerHTML = renderAI();
   restoreNoteTyping(typing);
   updateUndoButtons();
+  if (_rowPick) placeRowPicker();
 }
 function divFilterHtml() { const opts = ['all'].concat(state.board.sourceDivisions || []).concat([OTHER_DIV]); return '<select id="divFilter">' + opts.map(d => '<option value="'+d+'"'+(state.divFilter===d?' selected':'')+'>'+esc(d==='all'?'All divisions':d===OTHER_DIV?'Off project':divTitle(d))+'</option>').join('') + '</select>'; }
 function wknavHtml() {
@@ -1593,12 +1910,16 @@ function haulNote(a) {
   const hrs = [a.start, a.end].filter(Boolean).map(fmtTime).join('\u2013');
   return (a.unit ? ' · ' + a.unit : '') + (hrs ? ' · ' + hrs : '') + ' · from Trucking';
 }
-function chip(a, conf, date, showJob) {
+// `offDay`: the person is approved off for the whole of `date` — a booking
+// made before the day off was, or one nobody caught. Struck through in red and
+// said in the tooltip; the callers ask, so this stays a pure formatter.
+function chip(a, conf, date, showJob, offDay) {
   const col = divColor(a.division);
   // data-res is what the trace below reads: a chip knew its assignment id but
   // never said whose it was, so the board could not answer "where else is he".
   const dd = ' draggable="true" data-aid="'+esc(a.id)+'" data-adate="'+esc(date||'')+'" data-res="'+esc(a.resource)+'"';
-  const cls = 'asn'+(a.kind==='equip'?' equip':'')+(conf?' conflict':'')+(a.half?' half':'')+(isForeign(a)?' haul':'');
+  const cls = 'asn'+(a.kind==='equip'?' equip':'')+(conf?' conflict':'')+(a.half?' half':'')+(isForeign(a)?' haul':'')+(offDay?' offday':'');
+  const offNote = offDay ? ' — approved off this day' : '';
   const half = a.half ? ' ½' : '';
   // Each name carries its own fill grip. The cell handle repeats the WHOLE
   // crew; this repeats the one man you grabbed, which is the thing a scheduler
@@ -1611,14 +1932,14 @@ function chip(a, conf, date, showJob) {
   // on — and the cost code, if anyone named one.
   if (showJob) {
     const label = (a.kind==='equip'?'🚜 ':isForeign(a)?'🚚 ':'')+esc(a.jobName)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'');
-    const title = a.jobName+(a.costCode?' · '+a.costCode:'')+(a.kind==='equip'&&a.op?' — operated by '+a.op:'')+haulNote(a)+DRAG_TIP;
+    const title = a.jobName+(a.costCode?' · '+a.costCode:'')+(a.kind==='equip'&&a.op?' — operated by '+a.op:'')+haulNote(a)+offNote+DRAG_TIP;
     return open+'"'+esc(title)+'">'+label+half+grip+'</span>';
   }
   if (a.kind === 'equip') {
     const label = '🚜 '+esc(a.resource)+(a.op?' · '+esc(a.op):'');
     return open+'"'+esc(a.resource+(a.op?' — operated by '+a.op:'')+' — '+a.jobName+DRAG_TIP)+'">'+label+half+grip+'</span>';
   }
-  return open+'"'+esc(a.resource+' — '+a.jobName+(a.costCode?' · '+a.costCode:'')+haulNote(a)+DRAG_TIP)+'">'+(isForeign(a)?'🚚 ':'')+esc(a.resource)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'')+half+grip+'</span>';
+  return open+'"'+esc(a.resource+' — '+a.jobName+(a.costCode?' · '+a.costCode:'')+haulNote(a)+offNote+DRAG_TIP)+'">'+(isForeign(a)?'🚚 ':'')+esc(a.resource)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'')+half+grip+'</span>';
 }
 
 // ── By Job board ────────────────────────────────────────────────
@@ -1630,44 +1951,52 @@ function renderJobBoard() {
   const jobs = visibleJobs();
   const searching = state.jobSearch.trim() !== '';
   let html = renderCapacity() + hintHtml('Click any day on a job to put men on it \u00b7 drag a name to another day, job or person \u00b7 drag the blue corner across the week to repeat a crew \u00b7 right-click a name to take it off.');
+  // The division sections to draw, each with its jobs on the board and its own
+  // off-project work.
+  const sections = boardSections(jobs, searching);
   // With no projects to show there may still be off-project work — and the
   // control that makes some. Only an empty BOARD takes the empty state.
   if (!jobs.length && !otherJobsInWeek().length) {
-    const ex0 = (state.board && state.board.excludedJobs) || 0;
-    const why = [];
-    if (_hiddenJobCount) why.push(_hiddenJobCount+' completed');
-    if (ex0) why.push(ex0+' hidden from the Scheduler on '+(ex0>1?'their':'its')+' division dashboard');
-    return html + '<div class="empty">'+(searching ? 'No projects match \u201c'+esc(state.jobSearch.trim())+'\u201d.'
-      : 'No active jobs'+(state.divFilter!=='all'?' in '+state.divFilter:'')+(state.needCrewOnly?' need crew':'')+'.'+(why.length?'<br><span class="muted">'+why.join(' \u00b7 ')+'</span>':''))+'</div>';
+    // …and a section whose jobs are all still in its + list is not empty
+    // either: its header is how one gets on the board.
+    if (!sections.length) {
+      const ex0 = (state.board && state.board.excludedJobs) || 0;
+      const why = [];
+      if (_hiddenJobCount) why.push(_hiddenJobCount+' completed');
+      if (ex0) why.push(ex0+' hidden from the Scheduler on '+(ex0>1?'their':'its')+' division dashboard');
+      return html + '<div class="empty">'+(searching ? 'No projects match \u201c'+esc(state.jobSearch.trim())+'\u201d.'
+        : 'No active jobs'+(state.divFilter!=='all'?' in '+state.divFilter:'')+(state.needCrewOnly?' need crew':'')+'.'+(why.length?'<br><span class="muted">'+why.join(' \u00b7 ')+'</span>':''))+'</div>';
+    }
   }
   // Grouped by division. A mixed list sorted by status put a Kiewit job
   // between two turf ones, and a scheduler works a division at a time.
-  const byDiv = new Map();
-  jobs.forEach(j => { if (!byDiv.has(j.division)) byDiv.set(j.division, []); byDiv.get(j.division).push(j); });
-  const order = (state.board.sourceDivisions || []).filter(d => byDiv.has(d))
-    .concat([...byDiv.keys()].filter(d => !(state.board.sourceDivisions || []).includes(d)).sort());
   let body = '';
-  order.forEach(div => {
-    const list = byDiv.get(div);
+  sections.forEach(({ div, list, other }) => {
+    const rows = list.concat(other);
     const col = divColor(div);
     const collapsed = !!state.grpCol['d::'+div] && !searching;
     const behind = list.reduce((n, j) => n + jobRollup(j).behind, 0);
     const headCells = ds.map(d => {
       const set = new Set();
-      list.forEach(j => jobCrewOn(d, j.division, j.id).forEach(a => { if (a.kind !== 'equip') set.add(a.resource); }));
+      rows.forEach(j => jobCrewOn(d, j.division, j.id).forEach(a => { if (a.kind !== 'equip') set.add(a.resource); }));
       return '<td class="cnt-cell'+(set.size?' has':'')+'">'+(set.size||'\u00b7')+'</td>';
     }).join('');
     body += '<tr class="grp-row div-row" onclick="toggleDivGrp(\''+escAttr(div)+'\')" title="'+(collapsed?'Show':'Hide')+' this division"><td class="lead-col grp-lead">'+
       '<span class="caret">'+(collapsed?'\u25b8':'\u25be')+'</span> '+
       '<span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(divLabel(div))+'</span> '+
-      '<span class="muted">'+list.length+' job'+(list.length>1?'s':'')+'</span>'+
+      '<span class="muted">'+(list.length ? list.length+' '+rowNoun(div, list.length) : 'none on the board')+(other.length ? ' \u00b7 '+other.length+' off project' : '')+'</span>'+
       (behind?' <span class="warn" style="font-size:0.62rem">'+behind+' behind</span>':'')+
+      sectionAddHtml(div)+
       '</td>'+headCells+'</tr>';
-    if (!collapsed) list.forEach(job => { body += jobRowHtml(job, ds, tStr); });
+    if (collapsed) return;
+    rows.forEach(job => { body += jobRowHtml(job, ds, tStr); });
+    if (!rows.length) body += '<tr class="job-row"><td class="lead-col job-lead muted" style="border-left:3px dashed '+col+';font-weight:400">'+
+      (PICK_DIVISIONS.has(div) ? 'No customers on the board \u2014 tick the ones being worked in + Customers' : 'Nothing on the board \u2014 tick jobs in + Jobs to put them back')+
+      '</td>'+ds.map(() => '<td class="cell"></td>').join('')+'</tr>';
   });
   body += otherGroupHtml(ds, tStr, searching);
   const notes = [];
-  if (!jobs.length) notes.push('<span class="muted">No active jobs'+(state.divFilter!=='all'&&state.divFilter!==OTHER_DIV?' in '+esc(state.divFilter):'')+(state.needCrewOnly?' need crew':'')+'.</span>');
+  if (!jobs.length && !sections.length) notes.push('<span class="muted">No active jobs'+(state.divFilter!=='all'&&state.divFilter!==OTHER_DIV?' in '+esc(state.divFilter):'')+(state.needCrewOnly?' need crew':'')+'.</span>');
   if (_hiddenJobCount) notes.push('\u2713 '+_hiddenJobCount+' completed project'+(_hiddenJobCount>1?'s':'')+' hidden \u00b7 <span class="lnk" onclick="toggleHideComplete()">show completed work</span>');
   const ex = (state.board && state.board.excludedJobs) || 0;
   if (ex) notes.push('<span title="Set on the project info card in Paving / Turf / Kiewit">\ud83d\udeab '+ex+' project'+(ex>1?'s':'')+' hidden from the Scheduler on '+(ex>1?'their':'its')+' division dashboard</span>');
@@ -1684,8 +2013,37 @@ function renderJobBoard() {
   const keptAll = state.board.offScheduler || [], keptIn = keptOffBooked();
   if (keptAll.length) notes.push('<span title="'+esc('Switched off in Manage Users \u2192 Scheduler: '+keptAll.map(e => e.name).join(', '))+'">\ud83d\udeab '+keptAll.length+' '+(keptAll.length>1?'people':'person')+' kept off the Scheduler in Manage Users</span>');
   if (keptIn.length) notes.push('<span class="warn" title="'+esc(keptIn.join(', '))+'">\u26a0 '+keptIn.length+' booked '+rangeWords()+' '+(keptIn.length>1?'are':'is')+' off the Scheduler \u00b7 <span class="lnk" onclick="state.view=\'crew\';render()">see By Crew</span></span>');
+  // Booked on a day they are approved off for the whole of: made before the day
+  // off was approved, or missed. Said here so it is fixed on the board rather
+  // than found out at the gate; the Attention tab lists each one with Remove.
+  const onOff = [];
+  weekDateStrs().forEach(d => (state.assignments[d]||[]).forEach(a => { if (isBlockedOff(a.resource, a.kind, d)) onOff.push(a.resource+' \u00b7 '+shortDate(d)); }));
+  if (onOff.length) notes.push('<span class="warn" title="'+esc(onOff.join(', '))+'">\u26f1 '+onOff.length+' booking'+(onOff.length>1?'s are':' is')+' on an approved day off \u00b7 <span class="lnk" onclick="state.view=\'attention\';render()">see Attention</span></span>');
   const note = notes.length ? '<div class="board-note">'+notes.join(' &nbsp;\u00b7&nbsp; ')+'</div>' : '';
   return html + '<div class="board-row"><div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>'+railHtml()+'</div>' + note;
+}
+// The division sections to draw, in the server's order: each with its jobs on
+// the board and the off-project work that is its own. A division with nothing
+// on the board is drawn all the same while it has jobs waiting in its + list
+// and nothing is narrowing the board — the header holds that list, and a
+// section you cannot see is one nobody can fill.
+function boardSections(jobs, searching) {
+  const q = state.jobSearch.trim().toLowerCase();
+  const order = state.board.sourceDivisions || [];
+  const by = new Map();
+  const sec = d => { if (!by.has(d)) by.set(d, { div: d, list: [], other: [] }); return by.get(d); };
+  jobs.forEach(j => sec(j.division).list.push(j));
+  otherJobsInWeek().forEach(j => {
+    if (!j.home || !order.includes(j.home)) return;
+    if (state.divFilter !== 'all' && state.divFilter !== j.home) return;
+    if (q && !j.name.toLowerCase().includes(q)) return;
+    sec(j.home).other.push(j);
+  });
+  if (!searching && !state.needCrewOnly) order.forEach(d => {
+    if (state.divFilter !== 'all' && state.divFilter !== d) return;
+    if ((state.board.jobs || []).some(j => j.division === d && !onBoard(j))) sec(d);
+  });
+  return order.filter(d => by.has(d)).concat([...by.keys()].filter(d => !order.includes(d)).sort()).map(d => by.get(d));
 }
 // The Other work group: work with no project behind it, drawn under the
 // divisions because that is what it is subordinate to. It is always here, even
@@ -1694,6 +2052,11 @@ function renderJobBoard() {
 // a secret and the Idle count goes on lying.
 function otherGroupHtml(ds, tStr, searching) {
   let list = otherJobsInWeek();
+  // Work that belongs to a division is drawn in that division's section. The
+  // board filtered to Off project shows all of it here, each row naming its
+  // division.
+  const homes = state.board.sourceDivisions || [];
+  if (state.divFilter !== OTHER_DIV) list = list.filter(j => !j.home || !homes.includes(j.home));
   const q = state.jobSearch.trim().toLowerCase();
   if (q) list = list.filter(j => j.name.toLowerCase().includes(q));
   // It is not a division, so the division filter treats it as one thing: shown
@@ -1717,20 +2080,23 @@ function otherGroupHtml(ds, tStr, searching) {
   if (collapsed) return out;
   if (!list.length) {
     out += '<tr class="job-row"><td class="lead-col job-lead muted" style="border-left:3px solid ' + col + ';font-weight:400">' +
-      'No off-project work '+rangeWords() + '</td>' + ds.map(() => '<td class="cell"></td>').join('') + '</tr>';
+      (otherJobsInWeek().some(j => j.home && homes.includes(j.home)) ? 'No other off-project work ' : 'No off-project work ')+rangeWords() + '</td>' + ds.map(() => '<td class="cell"></td>').join('') + '</tr>';
     return out;
   }
-  list.forEach(job => { out += jobRowHtml(job, ds, tStr); });
+  list.forEach(job => { out += jobRowHtml(job, ds, tStr, true); });
   return out;
 }
 // Free text, because the work it names has not been through a bid and will not
 // fit a list somebody maintains: "look at the Juniata drainage", "shop \u2014 fix
 // the screed", "ride with Blake". Typing the same words again lands on the same
 // row, which is all the structure this needs.
-function addOtherWork() {
-  const label = (prompt('What is the work? \u2014 a site visit, shop, training, anything with no project behind it') || '').trim();
+//
+// From a division's section (`home`) the work is that division's, and is
+// drawn there; from the Off project group it belongs to no division.
+function addOtherWork(home) {
+  const label = (prompt('What is the '+(home ? divTitle(home)+' ' : '')+'work? \u2014 a site visit, shop, training, anything with no project behind it') || '').trim();
   if (!label) return;
-  const job = otherJobOf(label);
+  const job = otherJobOf(label, home);
   const known = otherJobsInWeek().some(j => j.id === job.id);
   if (!known) state.otherDrafts.push(job);
   render();
@@ -1901,10 +2267,24 @@ function dayCell(job, costCode, d, tStr, items, extra) {
   const fill = items.length ? '<span class="fill-h" draggable="true" data-fill="1"'+jobCellData(job, costCode, d)+' title="Drag across the week to put this WHOLE crew on the other days"></span>' : '';
   return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+'" data-drop="job"'+jobCellData(job, costCode, d)+
     ' onclick="openAssignJob(\''+job.division+'\',\''+escAttr(job.id)+'\',\''+escAttr(costCode||'')+'\',\''+d+'\')">'+
-    (extra||'')+items.map(a => chip(a, confSet.has(a.resource), d)).join('')+fill+'</td>';
+    (extra||'')+items.map(a => chip(a, confSet.has(a.resource), d, false, isBlockedOff(a.resource, a.kind, d))).join('')+fill+'</td>';
 }
-function jobRowHtml(job, ds, tStr) {
-  const col = divColor(job.division);
+// `general`: drawn in the Off project group rather than its own division's
+// section, so a row of a division's other work names the division.
+function jobRowHtml(job, ds, tStr, general) {
+  // Other work that belongs to a division wears that division's colour, dashed,
+  // and says it is off project.
+  const home = job.division === OTHER_DIV ? job.home : null;
+  const col = divColor(home || job.division);
+  const tag = home ? '<span class="off-tag" title="'+esc(divTitle(home)+' work with no project behind it')+'">'+(general ? esc(divTitle(home))+' \u00b7 ' : '')+'off project</span> ' : '';
+  // Any other row can be taken off the board while nobody is booked on it;
+  // the + list in its section puts it back. A row drawn only because a search
+  // found it is not on the board yet, and offers to put it there instead.
+  const listed = job.division !== OTHER_DIV && onBoard(job);
+  const drop = job.division === OTHER_DIV ? ''
+    : !listed ? ' <button class="row-x pin" title="'+esc('Put '+job.name+' on the board, for every scheduler')+'" onclick="event.stopPropagation();setBoardRow(\''+escAttr(job.division)+'\',\''+escAttr(job.id)+'\',\'show\')">+ board</button>'
+    : !bookedOnRow(job) ? ' <button class="row-x" title="'+esc('Take '+job.name+' off the board \u2014 + '+pickNoun(job.division)+' in its section puts it back')+'" onclick="event.stopPropagation();dropBoardRow(\''+escAttr(job.division)+'\',\''+escAttr(job.id)+'\')">\u00d7</button>'
+    : '';
   const r = jobRollup(job);
   // "no deadline" is not information, and it pushed the line that is onto a
   // second row in a 300px lead column.
@@ -1931,9 +2311,9 @@ function jobRowHtml(job, ds, tStr) {
       : (wantTimes ? cellTimesHtml(d, job.division, job.id) : '') + cellNoteHtml(d, job.division, job.id);
     return dayCell(job, '', d, tStr, crew, extra);
   }).join('');
-  return '<tr class="job-row"><td class="lead-col job-lead" style="border-left:3px solid '+col+'">'+
+  return '<tr class="job-row"><td class="lead-col job-lead" style="border-left:3px '+(home?'dashed':'solid')+' '+col+'">'+
     '<div class="jl-wrap"><div class="jl-main">'+
-      esc(job.name)+(job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+
+      tag+esc(job.name)+(job.jobNumber?' <span class="muted">#'+esc(job.jobNumber)+'</span>':'')+drop+
       '<div class="sub-meta">'+meta.join(' \u00b7 ')+'</div>'+
     '</div>'+(oneDay ? jobTimesHtml(ds[0], job.division, job.id) : '')+'</div></td>'+cells+'</tr>';
 }
@@ -1959,11 +2339,43 @@ function railLoadPill(name) {
 // `login` marks a login's username that no employee on the roster answers to
 // (see foldLoginRows in api/lib/roster.js): somebody is behind it, but the
 // board cannot say who, so it says so rather than passing it off as a name.
-function railRow(name, kind, sub, offAll, login) {
-  return '<div class="rail-row'+(offAll?' off':'')+'" draggable="true" data-rail="1" data-res="'+esc(name)+'" data-rkind="'+kind+'"'+
-    ' title="'+esc(name+(sub?' · '+sub:'')+(login?' · a login, not matched to an employee':'')+(offAll?' — off every day shown':'')+' — drag onto a day on the board')+'">'+
+//
+// Time off (`off`, from offShown). Approved off every day on screen — on a day
+// board, that day — the row is red-lined: struck through, "off" where the load
+// pill was, and not draggable, so there is nothing to drag onto a job by
+// mistake. A click says why. Anything short of that — some of a week's days, a
+// part day, a request — is said on the row and the row still drags, because
+// there is a day or an hour they can be put on; the drop refuses a whole day
+// off itself (placeOnJob).
+function railRow(name, kind, sub, offAll, login, off) {
+  const days = off ? off.blocked.concat(off.soft) : [];
+  const offTip = days.length ? days.map(offDayText).join('; ') : '';
+  const mark = offAll || !days.length ? '' : railOffMark(off);
+  return '<div class="rail-row'+(offAll?' off':'')+'" draggable="'+(offAll?'false':'true')+'" data-rail="1" data-res="'+esc(name)+'" data-rkind="'+kind+'"'+
+    (offAll?' onclick="railOffWhy(this)"':'')+
+    ' title="'+esc(name+(sub?' · '+sub:'')+(login?' · a login, not matched to an employee':'')+
+      (offAll ? ' — approved off, cannot be scheduled'+(offTip?' · '+offTip:'') : (offTip?' · '+offTip:'')+' — drag onto a day on the board'))+'">'+
     '<span class="rail-name">'+(kind==='equip'?'🚜 ':'')+esc(name)+'</span>'+
-    (login?'<span class="rail-login" onclick="event.stopPropagation();openLoginReview()">login</span>':'')+railLoadPill(name)+'</div>';
+    (login?'<span class="rail-login" onclick="event.stopPropagation();openLoginReview()">login</span>':'')+mark+
+    (offAll ? '<span class="rail-load offday">off</span>' : railLoadPill(name))+'</div>';
+}
+// Time off that does not red-line the row. Whole days approved off on some of
+// a week's days, in red with how many; the rest in amber — on a day board, what
+// kind ("req off", "4h off"), on a week, how many days.
+function railOffMark(off) {
+  const hard = off.blocked.length
+    ? '<span class="rail-off hard" title="'+esc('Approved off, cannot be scheduled: '+off.blocked.map(offDayText).join('; '))+'">⛱ '+off.blocked.length+'d</span>' : '';
+  const s = off.soft;
+  const soft = s.length
+    ? '<span class="rail-off" title="'+esc(s.map(offDayText).join('; '))+'">'+
+        (viewingOneDay() ? (s[0].off.status === 'submitted' ? 'req off' : offHrsText(s[0].off)+'h off') : '⛱ '+s.length+'d')+'</span>' : '';
+  return hard + soft;
+}
+// A red-lined name was clicked: say why it will not go on a job.
+function railOffWhy(el) {
+  const name = el && el.dataset ? el.dataset.res : ''; if (!name) return;
+  const days = offShown(name).blocked;
+  toast(name+' is approved off '+(days.length === 1 ? shortDate(days[0].date)+' ('+days[0].off.type+')' : 'every day shown')+' — cannot be scheduled');
 }
 // Crew and equipment are two separate lists, one shown at a time. Folding the
 // machines onto the bottom of eighty-one names meant scrolling the whole roster
@@ -2006,12 +2418,16 @@ function railListHtml() {
   if (q) emps = emps.filter(e => e.name.toLowerCase().includes(q) || roleOf(e).toLowerCase().includes(q) || (e.jobClass||'').toLowerCase().includes(q));
   if (state.railIdleOnly) emps = emps.filter(e => !bookedInView(e.name));
   const groups = {}; emps.forEach(e => { const g = roleOf(e); (groups[g] = groups[g] || []).push(e); });
+  // Each person's time off on screen, read once: the row says it, and whoever
+  // is approved off every day shown is red-lined.
+  const offBy = new Map(emps.map(e => [e.name, offShown(e.name)]));
+  const redLined = n => offBy.get(n).blocked.length === wk.length;
   Object.keys(groups).sort(sortRoles).forEach(g => {
-    // Free first: on a day board that puts everyone you can still send at
-    // the top of the trade you are looking at.
-    const list = groups[g].slice().sort((a,b) => (bookedInView(a.name)?1:0) - (bookedInView(b.name)?1:0) || loadForResource(a.name) - loadForResource(b.name) || a.name.localeCompare(b.name));
+    // Free first, and anyone red-lined last: on a day board that puts everyone
+    // you can still send at the top of the trade you are looking at.
+    const list = groups[g].slice().sort((a,b) => (redLined(a.name)?1:0) - (redLined(b.name)?1:0) || (bookedInView(a.name)?1:0) - (bookedInView(b.name)?1:0) || loadForResource(a.name) - loadForResource(b.name) || a.name.localeCompare(b.name));
     html += '<div class="rail-grp">'+esc(g)+' <span style="opacity:0.7">('+list.length+')</span></div>';
-    html += list.map(e => railRow(e.name, 'emp', roleOf(e), wk.every(d => isBlockedOff(e.name, 'emp', d)), e.login)).join('');
+    html += list.map(e => railRow(e.name, 'emp', roleOf(e), redLined(e.name), e.login, offBy.get(e.name))).join('');
   });
   if (!html) html = '<div class="rail-empty">'+(q ? 'Nobody matches \u201c'+esc(state.railSearch.trim())+'\u201d.' : state.railIdleOnly ? 'Everybody is booked.' : 'No crew.')+'</div>';
   return html;
@@ -2102,7 +2518,10 @@ function renderCrewBoard() {
       // much of the day is gone and leaves the chips beside it alone.
       const offClash = !!(off && items.length && !off.partial);
       const offMark = off ? '<span title="'+esc(off.type)+' · '+esc(offLabel(off))+(off.status==='submitted'?' (requested)':' (approved)')+'" style="font-size:0.6rem;color:'+(offClash?'var(--red)':'var(--amber)')+'">⛱'+(off.partial?esc(offHrsText(off))+'h':'')+(offClash?' off!':'')+'</span>' : '';
-      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+(offClash?' conflict':'')+'" data-drop="res" data-date="'+esc(d)+'" data-res="'+esc(resource)+'" data-rkind="'+esc(kind)+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+offMark+items.map(a => chip(a, conf, d, true)).join('')+'</td>'; }).join('');
+      // A whole day approved off is red-lined like the crew panel: hatched,
+      // and anything still booked on it struck through.
+      const offDay = isBlockedOff(resource, kind, d);
+      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+(offClash?' conflict':'')+(offDay?' offday':'')+'" data-drop="res" data-date="'+esc(d)+'" data-res="'+esc(resource)+'" data-rkind="'+esc(kind)+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+offMark+items.map(a => chip(a, conf, d, true, offDay)).join('')+'</td>'; }).join('');
     return '<tr>'+left+cells+'</tr>';
   };
   if (!groupNames.length) body += '<tr><td class="lead-col muted">No crew match.</td>'+ds.map(()=>'<td></td>').join('')+'</tr>';
@@ -2193,6 +2612,9 @@ function onDragStart(e) {
   // A name dragged out of the crew rail: no assignment yet, just who.
   const rr = t.closest('[data-rail]');
   if (rr) {
+    // Red-lined: approved off every day on screen (railRow). The row is not
+    // draggable; this stops a drag begun some other way, out of selected text.
+    if (rr.classList.contains('off')) { e.preventDefault(); return; }
     _drag = rr.dataset.rcrew
       ? { type:'crew', id:rr.dataset.rcrew }
       : { type:'rail', resource:rr.dataset.res, kind:rr.dataset.rkind || 'emp' };
@@ -2682,7 +3104,7 @@ function codeSelectHtml(job, ctx) {
 function modalJobHtml(ctx) {
   const job = jobFor(ctx.division, ctx.jobId);
   const dfmt = new Date(ctx.date+'T12:00:00').toLocaleDateString(undefined,{weekday:'long', month:'long', day:'numeric'});
-  const col = divColor(ctx.division);
+  const col = divColor(job.home || ctx.division);
   const current = ctxAssignments(ctx);
   const people = current.filter(a => a.kind !== 'equip').length;
 
@@ -2721,7 +3143,7 @@ function modalJobHtml(ctx) {
       (summary?' <span style="color:var(--blue)">· '+esc(summary)+'</span>':'')+'</button>'+
     (moreOpen ? '<div>'+timesHtml+noteHtml+'<label class="fld">Saved crews</label>'+crewOpts+'</div>' : '');
 
-  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(divLabel(ctx.division))+'</span> '+esc(job.name)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
+  return '<div class="modal"><div class="modal-head"><div><div style="font-weight:700"><span class="div-badge" style="color:'+col+';border-color:'+col+'">'+esc(job.home ? divTitle(job.home)+' · off project' : divLabel(ctx.division))+'</span> '+esc(job.name)+'</div><div class="muted" style="font-size:0.72rem">'+esc(dfmt)+'</div></div><button class="x" onclick="closeAssign()">✕</button></div><div class="modal-body">'+
     summaryLine(job, null) +
     '<label class="fld">Apply to</label><div class="seg"><button class="'+(state.applySpan==='day'?'active':'')+'" onclick="setSpan(\'day\')">This day</button><button class="'+(state.applySpan==='week5'?'active':'')+'" onclick="setSpan(\'week5\')">Weekdays</button><button class="'+(state.applySpan==='week7'?'active':'')+'" onclick="setSpan(\'week7\')">All 7 days</button></div>'+
     '<label class="fld">Add crew or equipment <span style="text-transform:none;letter-spacing:0;font-weight:400">— type, ↑↓, Enter</span></label>'+
@@ -3090,7 +3512,7 @@ function dispatchJobSummary(job, days, dates) {
 }
 function dispatchBodyJob(dates) {
   const byJob = {};
-  dates.forEach(d => (state.assignments[d]||[]).forEach(a => { const k = a.division+'::'+a.jobId; (byJob[k] = byJob[k] || { name:a.jobName, division:a.division, jobId:a.jobId, days:{} }); (byJob[k].days[d] = byJob[k].days[d] || []).push(a); }));
+  dates.forEach(d => (state.assignments[d]||[]).forEach(a => { const k = a.division+'::'+a.jobId; (byJob[k] = byJob[k] || { name:a.jobName, division:a.division, jobId:a.jobId, home:a.home, days:{} }); (byJob[k].days[d] = byJob[k].days[d] || []).push(a); }));
   const keys = Object.keys(byJob).sort((x,y) => byJob[x].name.localeCompare(byJob[y].name));
   if (!keys.length) return '<div style="color:#999">No assignments in this range.</div>';
   return keys.map(k => { const j = byJob[k]; const job = jobById(j.division, j.jobId);
@@ -3125,7 +3547,8 @@ function dispatchBodyJob(dates) {
       const notes = getJobNotes(d, j.division, j.jobId).filter(Boolean);
       return codeRows + (notes.length ? '<tr><td colspan="4" style="'+_td+';'+_noteTd+'">'+dispatchNote(notes)+'</td></tr>' : '');
     }).join('');
-    return '<div style="'+_h2+'">'+esc(divLabel(j.division).toUpperCase())+' · '+esc(j.name)+'</div>'+dispatchJobSummary(job, j.days, dates)+'<table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:120px">Day</th><th style="'+_th+';width:22%">Cost Code</th><th style="'+_th+'">Crew</th><th style="'+_th+';width:22%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
+    // A division's own off-project work prints under that division, and says so.
+    return '<div style="'+_h2+'">'+esc((j.home ? divTitle(j.home)+' · off project' : divLabel(j.division)).toUpperCase())+' · '+esc(j.name)+'</div>'+dispatchJobSummary(job, j.days, dates)+'<table style="border-collapse:collapse;width:100%;margin-bottom:6px"><thead><tr><th style="'+_th+';width:120px">Day</th><th style="'+_th+';width:22%">Cost Code</th><th style="'+_th+'">Crew</th><th style="'+_th+';width:22%">Equipment</th></tr></thead><tbody>'+rows+'</tbody></table>'; }).join('');
 }
 function dispatchBodyPerson(dates) {
   const byRes = {};
@@ -3366,7 +3789,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { addOtherWork, openLoginReview, closeLoginReview, moveLoginBookings, setLoginMatch, onJobTimeInput, clearJobTime, onJobTimeCell, onJobNoteKey, onJobNoteCell, onJobNoteInput, onJobNoteModalKey, setBoardSpan, openJobTimes, toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
+Object.assign(window, { addOtherWork, railOffWhy, dropBoardRow, setBoardRow, toggleRowPicker, closeRowPicker, onRowPickTick, onRowPickSearch, onRowPickKey, openLoginReview, closeLoginReview, moveLoginBookings, setLoginMatch, onJobTimeInput, clearJobTime, onJobTimeCell, onJobNoteKey, onJobNoteCell, onJobNoteInput, onJobNoteModalKey, setBoardSpan, openJobTimes, toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
   newCrew, editCrew, cancelCrewEdit, saveCrewEdit, addCrewMember, removeCrewMember, updateCrewPickList, crewPickKey, onCrewName, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, toggleHideComplete, dismissHint, setCompact });
 wireBoardDnD();
 loadAll();
