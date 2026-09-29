@@ -18,7 +18,9 @@
  *      p.dailyRows — but a column filter hides rows without renumbering the
  *      rest, so those indices have gaps. Dragging between two VISIBLE rows
  *      wrote to every hidden row caught between them. The write set now comes
- *      from the DOM, so it matches the rows the drag highlighted.
+ *      from the DOM, so it matches the rows the drag highlighted. It is taken
+ *      by PLACE on screen, not by index range, because the table is drawn
+ *      newest first: a higher index is not a lower row.
  *
  * No DB, no server, no browser: structural greps over the three division apps
  * plus both units evaluated in a vm sandbox with a hand-built DOM.
@@ -88,8 +90,12 @@ function structuralChecks(file) {
   // — fill-handle drag —
   assert('the drag no longer walks the raw index range',
     !/for \(let i = srcIdx \+ 1; i <= endIdx; i\+\+\)/.test(src));
-  assert('the drag collects its targets from the DOM',
-    /const targets = \[\];[\s\S]{0,320}if \(ri > srcIdx && ri <= endIdx\) targets\.push\(\{ i: ri, tr \}\);/.test(src));
+  assert('the drag collects its targets from the DOM, by place on screen',
+    /const targets = \[\];[\s\S]{0,480}const srcPos = at\.indexOf\(srcIdx\);\s*\n\s*const endPos = at\.indexOf\(endIdx\);[\s\S]{0,200}targets\.push\(\{ i: at\[pos\], tr: trs\[pos\] \}\);/.test(src));
+  assert('the drag no longer compares raw indices to find its span',
+    !/ri > srcIdx && ri <= endIdx/.test(src) && !/ri > _fillDrag\.srcIdx && ri <= _fillDrag\.endIdx/.test(src));
+  assert('the highlight uses the same place-on-screen span',
+    /const srcPos = at\.indexOf\(_fillDrag\.srcIdx\);\s*\n\s*const endPos = at\.indexOf\(_fillDrag\.endIdx\);/.test(src));
   assert('the drag writes only to those targets',
     /targets\.forEach\(\(\{ i, tr \}\) => \{/.test(src));
   assert('the injected-row whitelist still gates the drag',
@@ -274,12 +280,51 @@ function fillDragChecks(file) {
       JSON.stringify(puts));
   }
 
-  // Dragging upward is a no-op — endIdx <= srcIdx bails before any write.
+  // Dragging upward is a no-op — an end row above the source bails before any write.
   {
     const rows = [0, 1, 2].map(i => mk(i));
     const { puts } = run({ rows, visible: [0, 1, 2], field: 'sub_code', srcIdx: 2, endIdx: 0, value: 'X' });
     assert('an upward drag writes nothing',
       puts.length === 0 && rows.every((r, i) => r.sub_code === 'keep' + i));
+  }
+
+  // The table is drawn newest first, so the screen runs from the HIGHEST index
+  // down. Dragging the top row down two rows must fill those two rows — under
+  // the old index-range rule (endIdx <= srcIdx) it wrote nothing at all.
+  {
+    const rows = [0, 1, 2, 3, 4].map(i => mk(i));
+    const { puts } = run({ rows, visible: [4, 3, 2, 1, 0], field: 'sub_code', srcIdx: 4, endIdx: 2, value: 'X' });
+    assert('newest-first: dragging down fills the rows below on screen',
+      rows[3].sub_code === 'X' && rows[2].sub_code === 'X', JSON.stringify(rows.map(r => r.sub_code)));
+    assert('newest-first: the source row is left alone',  rows[4].sub_code === 'keep4');
+    assert('newest-first: rows past the end are left alone',
+      rows[1].sub_code === 'keep1' && rows[0].sub_code === 'keep0');
+    assert('newest-first: exactly the filled rows are persisted',
+      puts.length === 2 && puts[0].id === 'r3' && puts[1].id === 'r2', JSON.stringify(puts));
+  }
+
+  // And dragging the bottom row UP must write nothing. Under the old rule
+  // (index range) this overwrote every row above it.
+  {
+    const rows = [0, 1, 2, 3, 4].map(i => mk(i));
+    const { puts } = run({ rows, visible: [4, 3, 2, 1, 0], field: 'sub_code', srcIdx: 0, endIdx: 3, value: 'X' });
+    assert('newest-first: an upward drag writes nothing',
+      puts.length === 0 && rows.every((r, i) => r.sub_code === 'keep' + i), JSON.stringify(puts));
+  }
+
+  // A mixed order, which is what a load really leaves: sorted by date, the
+  // drawn indices are not monotonic at all. The span is still what is between
+  // the two ends ON SCREEN, filters included.
+  {
+    const rows = [0, 1, 2, 3, 4, 5].map(i => mk(i));
+    const { puts } = run({ rows, visible: [2, 5, 0, 4, 1], field: 'sub_code', srcIdx: 5, endIdx: 4, value: 'X' });
+    assert('mixed order: fills exactly the rows between the ends on screen',
+      rows[0].sub_code === 'X' && rows[4].sub_code === 'X' &&
+      ['keep1', 'keep2', 'keep3', 'keep5'].every((v, k) => rows[[1, 2, 3, 5][k]].sub_code === v),
+      JSON.stringify(rows.map(r => r.sub_code)));
+    assert('mixed order: a hidden row is never written', rows[3].sub_code === 'keep3');
+    assert('mixed order: persisted in screen order',
+      puts.map(p => p.id).join() === 'r0,r4', JSON.stringify(puts));
   }
 }
 
