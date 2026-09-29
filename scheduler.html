@@ -74,7 +74,16 @@
     .rail-row { display:flex; align-items:center; gap:0.3rem; padding:0.2rem 0.35rem; border:1px solid var(--border); border-radius:5px; margin-bottom:0.16rem; cursor:grab; background:var(--surface2); }
     .rail-row:hover { border-color:#555; }
     .rail-row.dragging { opacity:0.35; }
-    .rail-row.off { opacity:0.45; }
+    /* Approved off every day on screen: red-lined, the way the assign dialog
+       strikes a name it will not take, and not draggable — there is no day
+       here they can be put on. */
+    .rail-row.off { cursor:not-allowed; opacity:0.75; border-color:rgba(239,68,68,0.45); border-left:3px solid var(--red); background:rgba(239,68,68,0.07); }
+    .rail-row.off .rail-name { text-decoration:line-through; text-decoration-color:var(--red); text-decoration-thickness:2px; color:var(--muted); }
+    .rail-load.offday { color:var(--red); border-color:var(--red); font-weight:700; }
+    /* Time off that does not block: a part day, a request not yet approved,
+       or — on a week board — some of the days shown and not all. */
+    .rail-off { font-size:0.54rem; padding:0 0.24rem; border-radius:7px; border:1px solid rgba(251,191,36,0.55); color:var(--amber); white-space:nowrap; }
+    .rail-off.hard { border-color:rgba(239,68,68,0.6); color:var(--red); font-weight:700; }
     .rail-name { flex:1; min-width:0; font-size:0.69rem; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .rail-load { font-size:0.54rem; padding:0 0.26rem; border-radius:7px; border:1px solid var(--border); color:var(--muted); white-space:nowrap; }
     .rail-load.free { color:var(--green); border-color:var(--green-dim); }
@@ -114,6 +123,9 @@
     .lead-col { position:sticky; left:0; background:var(--surface); z-index:6; width:418px; min-width:368px; max-width:418px; text-align:left !important; padding:0.26rem 0.5rem !important; }
     thead .lead-col { z-index:7; }
     .cell { position:relative; min-width:120px; height:auto; min-height:34px; padding:0.16rem; cursor:pointer; transition:background .1s; }
+    /* By Crew: a day the person is approved off for the whole of. Hatched,
+       not filled, so a booking still sitting on it reads over the top. */
+    td.cell.offday { background:repeating-linear-gradient(135deg, rgba(239,68,68,0.13) 0 6px, transparent 6px 12px); }
     body.compact .cell { min-height:26px; }
     .cell:hover { background:var(--surface2); }
     .cell.weekend { background:rgba(255,255,255,0.015); } .cell.today { box-shadow: inset 2px 0 0 var(--blue); }
@@ -192,6 +204,9 @@
     .cell-note { grid-column:2; min-width:0; contain:inline-size; font-size:0.58rem; line-height:1.3; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .asn { display:inline-block; vertical-align:top; max-width:100%; font-size:0.64rem; line-height:1.3; padding:0.05rem 0.3rem; border-radius:4px; margin:0 0.14rem 0.14rem 0; border-left:3px solid var(--muted); background:var(--surface2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
     .asn.conflict { background:rgba(239,68,68,0.18); border-left-color:var(--red); } .asn.half { opacity:0.85; font-style:italic; } .asn .cc { color:var(--muted); }
+    /* Booked on a day the person is approved off for the whole of — a booking
+       made before the day off was, or one nobody caught. Struck through in red. */
+    .asn.offday { background:rgba(239,68,68,0.12); border-left-color:var(--red); text-decoration:line-through; text-decoration-color:var(--red); }
     /* A haul is read through from Trucking and saves back there. The dashed
        edge is the one visual cue that this booking has another owner. */
     .asn.haul { border-left-style:dashed; }
@@ -458,6 +473,16 @@ function offLabel(o) { return !o ? '' : (o.partial ? offHrsText(o) + ' h off' : 
 // day and simply not paid for it, which is payroll's business and not the
 // board's. Only an answer that leaves part of the day standing frees the date.
 function isBlockedOff(name, kind, date) { if (kind === 'equip') return false; const o = isOff(name, date); return !!(o && o.status === 'approved' && !o.partial); }
+// Someone's days off among the days on screen, split the way the board acts on
+// them: the ones the rule above blocks, and the rest — a part day, a request
+// nobody has answered — which only warn.
+function offShown(name) {
+  const out = { blocked: [], soft: [] };
+  weekDateStrs().forEach(d => { const o = isOff(name, d); if (o) (isBlockedOff(name, 'emp', d) ? out.blocked : out.soft).push({ date: d, off: o }); });
+  return out;
+}
+// One day off, the way a tooltip says it: "Oct 26: vacation · off (approved)".
+function offDayText(x) { return shortDate(x.date) + ': ' + x.off.type + ' · ' + offLabel(x.off) + (x.off.status === 'submitted' ? ' (requested)' : ' (approved)'); }
 const _clientTag = 'c' + Math.random().toString(36).slice(2, 7); // per-client tag so ids never collide across schedulers
 let _uid = 0;
 function uid() { return _clientTag + (++_uid).toString(36); }
@@ -1593,12 +1618,16 @@ function haulNote(a) {
   const hrs = [a.start, a.end].filter(Boolean).map(fmtTime).join('\u2013');
   return (a.unit ? ' · ' + a.unit : '') + (hrs ? ' · ' + hrs : '') + ' · from Trucking';
 }
-function chip(a, conf, date, showJob) {
+// `offDay`: the person is approved off for the whole of `date` — a booking
+// made before the day off was, or one nobody caught. Struck through in red and
+// said in the tooltip; the callers ask, so this stays a pure formatter.
+function chip(a, conf, date, showJob, offDay) {
   const col = divColor(a.division);
   // data-res is what the trace below reads: a chip knew its assignment id but
   // never said whose it was, so the board could not answer "where else is he".
   const dd = ' draggable="true" data-aid="'+esc(a.id)+'" data-adate="'+esc(date||'')+'" data-res="'+esc(a.resource)+'"';
-  const cls = 'asn'+(a.kind==='equip'?' equip':'')+(conf?' conflict':'')+(a.half?' half':'')+(isForeign(a)?' haul':'');
+  const cls = 'asn'+(a.kind==='equip'?' equip':'')+(conf?' conflict':'')+(a.half?' half':'')+(isForeign(a)?' haul':'')+(offDay?' offday':'');
+  const offNote = offDay ? ' — approved off this day' : '';
   const half = a.half ? ' ½' : '';
   // Each name carries its own fill grip. The cell handle repeats the WHOLE
   // crew; this repeats the one man you grabbed, which is the thing a scheduler
@@ -1611,14 +1640,14 @@ function chip(a, conf, date, showJob) {
   // on — and the cost code, if anyone named one.
   if (showJob) {
     const label = (a.kind==='equip'?'🚜 ':isForeign(a)?'🚚 ':'')+esc(a.jobName)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'');
-    const title = a.jobName+(a.costCode?' · '+a.costCode:'')+(a.kind==='equip'&&a.op?' — operated by '+a.op:'')+haulNote(a)+DRAG_TIP;
+    const title = a.jobName+(a.costCode?' · '+a.costCode:'')+(a.kind==='equip'&&a.op?' — operated by '+a.op:'')+haulNote(a)+offNote+DRAG_TIP;
     return open+'"'+esc(title)+'">'+label+half+grip+'</span>';
   }
   if (a.kind === 'equip') {
     const label = '🚜 '+esc(a.resource)+(a.op?' · '+esc(a.op):'');
     return open+'"'+esc(a.resource+(a.op?' — operated by '+a.op:'')+' — '+a.jobName+DRAG_TIP)+'">'+label+half+grip+'</span>';
   }
-  return open+'"'+esc(a.resource+' — '+a.jobName+(a.costCode?' · '+a.costCode:'')+haulNote(a)+DRAG_TIP)+'">'+(isForeign(a)?'🚚 ':'')+esc(a.resource)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'')+half+grip+'</span>';
+  return open+'"'+esc(a.resource+' — '+a.jobName+(a.costCode?' · '+a.costCode:'')+haulNote(a)+offNote+DRAG_TIP)+'">'+(isForeign(a)?'🚚 ':'')+esc(a.resource)+(a.costCode?' <span class="cc">'+esc(a.costCode)+'</span>':'')+half+grip+'</span>';
 }
 
 // ── By Job board ────────────────────────────────────────────────
@@ -1684,6 +1713,12 @@ function renderJobBoard() {
   const keptAll = state.board.offScheduler || [], keptIn = keptOffBooked();
   if (keptAll.length) notes.push('<span title="'+esc('Switched off in Manage Users \u2192 Scheduler: '+keptAll.map(e => e.name).join(', '))+'">\ud83d\udeab '+keptAll.length+' '+(keptAll.length>1?'people':'person')+' kept off the Scheduler in Manage Users</span>');
   if (keptIn.length) notes.push('<span class="warn" title="'+esc(keptIn.join(', '))+'">\u26a0 '+keptIn.length+' booked '+rangeWords()+' '+(keptIn.length>1?'are':'is')+' off the Scheduler \u00b7 <span class="lnk" onclick="state.view=\'crew\';render()">see By Crew</span></span>');
+  // Booked on a day they are approved off for the whole of: made before the day
+  // off was approved, or missed. Said here so it is fixed on the board rather
+  // than found out at the gate; the Attention tab lists each one with Remove.
+  const onOff = [];
+  weekDateStrs().forEach(d => (state.assignments[d]||[]).forEach(a => { if (isBlockedOff(a.resource, a.kind, d)) onOff.push(a.resource+' \u00b7 '+shortDate(d)); }));
+  if (onOff.length) notes.push('<span class="warn" title="'+esc(onOff.join(', '))+'">\u26f1 '+onOff.length+' booking'+(onOff.length>1?'s are':' is')+' on an approved day off \u00b7 <span class="lnk" onclick="state.view=\'attention\';render()">see Attention</span></span>');
   const note = notes.length ? '<div class="board-note">'+notes.join(' &nbsp;\u00b7&nbsp; ')+'</div>' : '';
   return html + '<div class="board-row"><div class="board-wrap"><table class="board"><thead><tr><th class="lead-col">Job</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>'+railHtml()+'</div>' + note;
 }
@@ -1901,7 +1936,7 @@ function dayCell(job, costCode, d, tStr, items, extra) {
   const fill = items.length ? '<span class="fill-h" draggable="true" data-fill="1"'+jobCellData(job, costCode, d)+' title="Drag across the week to put this WHOLE crew on the other days"></span>' : '';
   return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+'" data-drop="job"'+jobCellData(job, costCode, d)+
     ' onclick="openAssignJob(\''+job.division+'\',\''+escAttr(job.id)+'\',\''+escAttr(costCode||'')+'\',\''+d+'\')">'+
-    (extra||'')+items.map(a => chip(a, confSet.has(a.resource), d)).join('')+fill+'</td>';
+    (extra||'')+items.map(a => chip(a, confSet.has(a.resource), d, false, isBlockedOff(a.resource, a.kind, d))).join('')+fill+'</td>';
 }
 function jobRowHtml(job, ds, tStr) {
   const col = divColor(job.division);
@@ -1959,11 +1994,43 @@ function railLoadPill(name) {
 // `login` marks a login's username that no employee on the roster answers to
 // (see foldLoginRows in api/lib/roster.js): somebody is behind it, but the
 // board cannot say who, so it says so rather than passing it off as a name.
-function railRow(name, kind, sub, offAll, login) {
-  return '<div class="rail-row'+(offAll?' off':'')+'" draggable="true" data-rail="1" data-res="'+esc(name)+'" data-rkind="'+kind+'"'+
-    ' title="'+esc(name+(sub?' · '+sub:'')+(login?' · a login, not matched to an employee':'')+(offAll?' — off every day shown':'')+' — drag onto a day on the board')+'">'+
+//
+// Time off (`off`, from offShown). Approved off every day on screen — on a day
+// board, that day — the row is red-lined: struck through, "off" where the load
+// pill was, and not draggable, so there is nothing to drag onto a job by
+// mistake. A click says why. Anything short of that — some of a week's days, a
+// part day, a request — is said on the row and the row still drags, because
+// there is a day or an hour they can be put on; the drop refuses a whole day
+// off itself (placeOnJob).
+function railRow(name, kind, sub, offAll, login, off) {
+  const days = off ? off.blocked.concat(off.soft) : [];
+  const offTip = days.length ? days.map(offDayText).join('; ') : '';
+  const mark = offAll || !days.length ? '' : railOffMark(off);
+  return '<div class="rail-row'+(offAll?' off':'')+'" draggable="'+(offAll?'false':'true')+'" data-rail="1" data-res="'+esc(name)+'" data-rkind="'+kind+'"'+
+    (offAll?' onclick="railOffWhy(this)"':'')+
+    ' title="'+esc(name+(sub?' · '+sub:'')+(login?' · a login, not matched to an employee':'')+
+      (offAll ? ' — approved off, cannot be scheduled'+(offTip?' · '+offTip:'') : (offTip?' · '+offTip:'')+' — drag onto a day on the board'))+'">'+
     '<span class="rail-name">'+(kind==='equip'?'🚜 ':'')+esc(name)+'</span>'+
-    (login?'<span class="rail-login" onclick="event.stopPropagation();openLoginReview()">login</span>':'')+railLoadPill(name)+'</div>';
+    (login?'<span class="rail-login" onclick="event.stopPropagation();openLoginReview()">login</span>':'')+mark+
+    (offAll ? '<span class="rail-load offday">off</span>' : railLoadPill(name))+'</div>';
+}
+// Time off that does not red-line the row. Whole days approved off on some of
+// a week's days, in red with how many; the rest in amber — on a day board, what
+// kind ("req off", "4h off"), on a week, how many days.
+function railOffMark(off) {
+  const hard = off.blocked.length
+    ? '<span class="rail-off hard" title="'+esc('Approved off, cannot be scheduled: '+off.blocked.map(offDayText).join('; '))+'">⛱ '+off.blocked.length+'d</span>' : '';
+  const s = off.soft;
+  const soft = s.length
+    ? '<span class="rail-off" title="'+esc(s.map(offDayText).join('; '))+'">'+
+        (viewingOneDay() ? (s[0].off.status === 'submitted' ? 'req off' : offHrsText(s[0].off)+'h off') : '⛱ '+s.length+'d')+'</span>' : '';
+  return hard + soft;
+}
+// A red-lined name was clicked: say why it will not go on a job.
+function railOffWhy(el) {
+  const name = el && el.dataset ? el.dataset.res : ''; if (!name) return;
+  const days = offShown(name).blocked;
+  toast(name+' is approved off '+(days.length === 1 ? shortDate(days[0].date)+' ('+days[0].off.type+')' : 'every day shown')+' — cannot be scheduled');
 }
 // Crew and equipment are two separate lists, one shown at a time. Folding the
 // machines onto the bottom of eighty-one names meant scrolling the whole roster
@@ -2006,12 +2073,16 @@ function railListHtml() {
   if (q) emps = emps.filter(e => e.name.toLowerCase().includes(q) || roleOf(e).toLowerCase().includes(q) || (e.jobClass||'').toLowerCase().includes(q));
   if (state.railIdleOnly) emps = emps.filter(e => !bookedInView(e.name));
   const groups = {}; emps.forEach(e => { const g = roleOf(e); (groups[g] = groups[g] || []).push(e); });
+  // Each person's time off on screen, read once: the row says it, and whoever
+  // is approved off every day shown is red-lined.
+  const offBy = new Map(emps.map(e => [e.name, offShown(e.name)]));
+  const redLined = n => offBy.get(n).blocked.length === wk.length;
   Object.keys(groups).sort(sortRoles).forEach(g => {
-    // Free first: on a day board that puts everyone you can still send at
-    // the top of the trade you are looking at.
-    const list = groups[g].slice().sort((a,b) => (bookedInView(a.name)?1:0) - (bookedInView(b.name)?1:0) || loadForResource(a.name) - loadForResource(b.name) || a.name.localeCompare(b.name));
+    // Free first, and anyone red-lined last: on a day board that puts everyone
+    // you can still send at the top of the trade you are looking at.
+    const list = groups[g].slice().sort((a,b) => (redLined(a.name)?1:0) - (redLined(b.name)?1:0) || (bookedInView(a.name)?1:0) - (bookedInView(b.name)?1:0) || loadForResource(a.name) - loadForResource(b.name) || a.name.localeCompare(b.name));
     html += '<div class="rail-grp">'+esc(g)+' <span style="opacity:0.7">('+list.length+')</span></div>';
-    html += list.map(e => railRow(e.name, 'emp', roleOf(e), wk.every(d => isBlockedOff(e.name, 'emp', d)), e.login)).join('');
+    html += list.map(e => railRow(e.name, 'emp', roleOf(e), redLined(e.name), e.login, offBy.get(e.name))).join('');
   });
   if (!html) html = '<div class="rail-empty">'+(q ? 'Nobody matches \u201c'+esc(state.railSearch.trim())+'\u201d.' : state.railIdleOnly ? 'Everybody is booked.' : 'No crew.')+'</div>';
   return html;
@@ -2102,7 +2173,10 @@ function renderCrewBoard() {
       // much of the day is gone and leaves the chips beside it alone.
       const offClash = !!(off && items.length && !off.partial);
       const offMark = off ? '<span title="'+esc(off.type)+' · '+esc(offLabel(off))+(off.status==='submitted'?' (requested)':' (approved)')+'" style="font-size:0.6rem;color:'+(offClash?'var(--red)':'var(--amber)')+'">⛱'+(off.partial?esc(offHrsText(off))+'h':'')+(offClash?' off!':'')+'</span>' : '';
-      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+(offClash?' conflict':'')+'" data-drop="res" data-date="'+esc(d)+'" data-res="'+esc(resource)+'" data-rkind="'+esc(kind)+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+offMark+items.map(a => chip(a, conf, d, true)).join('')+'</td>'; }).join('');
+      // A whole day approved off is red-lined like the crew panel: hatched,
+      // and anything still booked on it struck through.
+      const offDay = isBlockedOff(resource, kind, d);
+      return '<td class="cell'+(w?' weekend':'')+(isT?' today':'')+(offClash?' conflict':'')+(offDay?' offday':'')+'" data-drop="res" data-date="'+esc(d)+'" data-res="'+esc(resource)+'" data-rkind="'+esc(kind)+'" onclick="openAssignResource(\''+escAttr(resource)+'\',\''+kind+'\',\''+d+'\')">'+offMark+items.map(a => chip(a, conf, d, true, offDay)).join('')+'</td>'; }).join('');
     return '<tr>'+left+cells+'</tr>';
   };
   if (!groupNames.length) body += '<tr><td class="lead-col muted">No crew match.</td>'+ds.map(()=>'<td></td>').join('')+'</tr>';
@@ -2193,6 +2267,9 @@ function onDragStart(e) {
   // A name dragged out of the crew rail: no assignment yet, just who.
   const rr = t.closest('[data-rail]');
   if (rr) {
+    // Red-lined: approved off every day on screen (railRow). The row is not
+    // draggable; this stops a drag begun some other way, out of selected text.
+    if (rr.classList.contains('off')) { e.preventDefault(); return; }
     _drag = rr.dataset.rcrew
       ? { type:'crew', id:rr.dataset.rcrew }
       : { type:'rail', resource:rr.dataset.res, kind:rr.dataset.rkind || 'emp' };
@@ -3366,7 +3443,7 @@ function renderAI() {
 document.querySelectorAll('.tab').forEach(t => t.onclick = () => { state.view = t.dataset.view; render(); });
 document.getElementById('logoutBtn').onclick = () => { localStorage.removeItem('fct_token'); localStorage.removeItem('fct_user'); location.replace('index.html'); };
 if (user) document.getElementById('avatar').textContent = (user.username||'U').slice(0,2).toUpperCase();
-Object.assign(window, { addOtherWork, openLoginReview, closeLoginReview, moveLoginBookings, setLoginMatch, onJobTimeInput, clearJobTime, onJobTimeCell, onJobNoteKey, onJobNoteCell, onJobNoteInput, onJobNoteModalKey, setBoardSpan, openJobTimes, toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
+Object.assign(window, { addOtherWork, railOffWhy, openLoginReview, closeLoginReview, moveLoginBookings, setLoginMatch, onJobTimeInput, clearJobTime, onJobTimeCell, onJobNoteKey, onJobNoteCell, onJobNoteInput, onJobNoteModalKey, setBoardSpan, openJobTimes, toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
   newCrew, editCrew, cancelCrewEdit, saveCrewEdit, addCrewMember, removeCrewMember, updateCrewPickList, crewPickKey, onCrewName, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, toggleHideComplete, dismissHint, setCompact });
 wireBoardDnD();
 loadAll();

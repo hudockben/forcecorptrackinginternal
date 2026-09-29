@@ -172,13 +172,16 @@ function loginKey(username) { return String(username || '').toLowerCase().replac
  * @param  {string[]} usernames  the company's logins
  * @param  {object}   [links]    lowercased login → { person } or { none: true }
  * @return {{ people: object[], matched: object, unmatched: string[],
- *            manual: string[], offCrew: string[], guesses: object }}
+ *            manual: string[], offCrew: string[], guesses: object,
+ *            loginPeople: object }}
  *   `matched`   each folded login → the person it went to
  *   `unmatched` the logins left in the list, marked `login: true`
  *   `manual`    the matched logins an admin placed, rather than the name
  *   `offCrew`   the logins an admin said are nobody on the crew
  *   `guesses`   each login → the person its name alone points at, or null:
  *               what "automatic" gives, for the screen that overrides it
+ *   `loginPeople` EVERY login, row or none, lowercased → the person it is;
+ *               a login nobody is left out. Server-side only.
  */
 function foldLoginRows(roster, usernames, links) {
   const answers = links || {};
@@ -195,6 +198,12 @@ function foldLoginRows(roster, usernames, links) {
     }
   }
 
+  // The one person a login's name points at; the person an admin said it is,
+  // if that person is still on the roster; and an admin's "nobody on the crew".
+  const guessFor  = u => { const hits = byKey.get(loginKey(u)) || []; return hits.length === 1 ? hits[0] : null; };
+  const chosenFor = u => { const a = answers[u] || {}; return (a.person && byName.get(String(a.person).toLowerCase())) || null; };
+  const saidNone  = u => (answers[u] || {}).none === true;
+
   const matched = {}, unmatched = [], manual = [], offCrew = [], guesses = {};
   const fold = (row, p) => {
     p.is_supervisor = p.is_supervisor || row.is_supervisor;
@@ -204,20 +213,32 @@ function foldLoginRows(roster, usernames, links) {
     matched[row.name] = p.name;
   };
   for (const row of roster.filter(isLogin)) {
-    const hits = byKey.get(loginKey(row.name)) || [];
-    const guess = hits.length === 1 ? hits[0] : null;
+    const login = row.name.toLowerCase();
+    const guess = guessFor(login);
     guesses[row.name] = guess ? guess.name : null;
-    const answer = answers[row.name.toLowerCase()] || {};
-    if (answer.none === true) {
+    if (saidNone(login)) {
       people.push({ ...row, login: true, offCrew: true });
       offCrew.push(row.name);
       continue;
     }
-    const chosen = answer.person ? byName.get(String(answer.person).toLowerCase()) : null;
+    const chosen = chosenFor(login);
     if (chosen) { fold(row, chosen); manual.push(row.name); continue; }
     if (guess) { fold(row, guess); continue; }
     people.push({ ...row, login: true });
     unmatched.push(row.name);
+  }
+
+  // Every login the company has, a row of its own or not → the person it is,
+  // by the same answers and the same rule. Most logins have no row: only the
+  // ones given a role in Manage Users → Roles do. Those have nothing to fold,
+  // but they still file things under the username — time off above all — and
+  // what they file is the person's. It names logins the roster does not show,
+  // so it is for the server's own use and no caller sends it on.
+  const loginPeople = {};
+  for (const login of logins) {
+    if (saidNone(login)) continue;
+    const who = chosenFor(login) || guessFor(login);
+    if (who) loginPeople[login] = who.name;
   }
 
   // "Reports to" names a person too. One that names a folded login now names
@@ -229,7 +250,7 @@ function foldLoginRows(roster, usernames, links) {
   }
 
   people.sort((a, b) => a.name.localeCompare(b.name));
-  return { people, matched, unmatched, manual, offCrew, guesses };
+  return { people, matched, unmatched, manual, offCrew, guesses, loginPeople };
 }
 
 // ── Matched by hand ─────────────────────────────────────────────────────────
