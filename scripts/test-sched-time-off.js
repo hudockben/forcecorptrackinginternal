@@ -210,7 +210,8 @@ console.log('\n[auto-fill books the days a person is there, and says why it left
     uid: () => 'a' + (++seq),
   };
   vm.createContext(ctx);
-  vm.runInContext(['isOff', 'isBlockedOff', 'dayList', 'assignmentsFor', 'placeOnJob', 'addAssignmentSpan', 'autoFill']
+  // keptOff: placeOnJob refuses anyone kept off the Scheduler in Manage Users.
+  vm.runInContext(['isOff', 'isBlockedOff', 'keptOff', 'dayList', 'assignmentsFor', 'placeOnJob', 'addAssignmentSpan', 'autoFill']
     .map(fn => requireFn(PAGE, fn, 'scheduler.html')).join('\n'), ctx);
 
   const approved = (hours, partial) => ({ status: 'approved', type: 'vacation', hours, partial });

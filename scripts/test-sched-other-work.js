@@ -49,7 +49,9 @@ const FNS = ['otherKey','otherJobOf','otherLabel','otherJobsInWeek','jobFor','jo
              // a TRUCKING job so it saves back to Trucking; the double-booking
              // count folds a man's hauls into one commitment; and divLabel
              // prints a division's name rather than its key.
-             'stampHaul','commitKey','isForeign','divTitle'];
+             'stampHaul','commitKey','isForeign','divTitle',
+             // placeOnJob refuses anyone kept off the Scheduler in Manage Users.
+             'keptOff'];
 
 /** A board in a vm, running scheduler.html's own functions over it. */
 function board({ week, assignments, drafts, jobs, employees }) {

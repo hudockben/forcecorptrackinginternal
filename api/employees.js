@@ -24,11 +24,14 @@
  *                                         { person: '<name>' }, { none: true } for
  *                                         a login that is nobody on the crew, or
  *                                         { person: null } to go back to its name
+ * PATCH  /api/employees?scheduler=X     — keep a person off the Scheduler's crew
+ *                                         list, or put them back (admins):
+ *                                         { on: false } or { on: true }
  * DELETE /api/employees?id=N            — hard-delete one employee by id
  */
 const { neon }        = require('@neondatabase/serverless');
 const { requireAuth } = require('./lib/auth');
-const { readEmployeeRoster, readPeopleRoster, writeLoginLink } = require('./lib/roster');
+const { readEmployeeRoster, readPeopleRoster, writeLoginLink, writeOffScheduler } = require('./lib/roster');
 
 // ── Contact card normalisation ──────────────────────────────────────────────
 // The three fields the Team Directory writes. Each one is stored as typed
@@ -112,9 +115,11 @@ module.exports = async (req, res) => {
       // lists cannot drift apart again.
       //
       // ?view=people folds each login's role row into the person it names
-      // (foldLoginRows), for a list of PEOPLE: the Team Directory. Without it
-      // the rows come back as stored, login rows included, because Manage
-      // Users → Roles reads a login's flags off the row named after it.
+      // (foldLoginRows), for a list of PEOPLE: the Team Directory, and Manage
+      // Users → Scheduler, which reads who is kept off the Scheduler's crew
+      // list off it (`offScheduler`). Without it the rows come back as stored,
+      // login rows included, because Manage Users → Roles reads a login's
+      // flags off the row named after it.
       if (req.query.view === 'people') {
         const { people, matched, unmatched, manual, offCrew, guesses } = await readPeopleRoster(sql, companyCode);
         return res.json({ employees: people, matched, unmatched, manual, offCrew, guesses });
@@ -258,6 +263,32 @@ module.exports = async (req, res) => {
       }
       await writeLoginLink(sql, companyCode, account.username, link);
       return res.json({ ok: true, login: account.username, link });
+    }
+
+    // ── PATCH ?scheduler= (on the Scheduler's crew list or not) ──────────
+    // An admin's say-so that somebody on the roster is not to be offered on
+    // the Scheduler — see "Kept off the Scheduler" in api/lib/roster.js.
+    // Taking someone off has to name a person on the crew list, spelt however
+    // the caller likes; putting someone back does not, so an entry for a
+    // person since renamed or removed can still be cleared.
+    if (req.method === 'PATCH' && typeof req.query.scheduler !== 'undefined') {
+      if (payload.role !== 'admin' && !payload.isPlatformAdmin) {
+        return res.status(403).json({ error: 'Company admin access required' });
+      }
+      const name = String(req.query.scheduler || '').trim();
+      if (!name) return res.status(400).json({ error: 'name required' });
+      const on = (req.body || {}).on;
+      if (typeof on !== 'boolean') return res.status(400).json({ error: 'on must be true or false' });
+
+      let person = name;
+      if (!on) {
+        const { people } = await readPeopleRoster(sql, companyCode);
+        const hit = people.find(p => !p.offCrew && p.name.toLowerCase() === name.toLowerCase());
+        if (!hit) return res.status(400).json({ error: `${name} is not on the crew list` });
+        person = hit.name;
+      }
+      await writeOffScheduler(sql, companyCode, person, !on, payload.username);
+      return res.json({ ok: true, name: person, on });
     }
 
     // ── PATCH (role flags + contact card, by name) ────────────────────────

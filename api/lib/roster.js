@@ -284,24 +284,105 @@ async function writeLoginLink(sql, companyCode, login, link) {
   }
 }
 
+// ── Kept off the Scheduler ──────────────────────────────────────────────────
+// The Scheduler offers everybody on the roster as crew, and not everybody on
+// the roster can be sent to a job: office staff whose logins are flagged
+// Supervisor so they can approve a timesheet, crew who have gone back to
+// college. They stay on the roster — Timesheet, Payroll and the Team Directory
+// still need them — and an admin says, person by person, that the Scheduler's
+// crew list should leave them off. Manage Users → Scheduler says it, through
+// PATCH /api/employees?scheduler= and nothing else: like the login answers, the
+// generic data endpoint does not accept the key.
+//
+// Keyed by the person's name as the list of PEOPLE gives it (readPeopleRoster),
+// lowercased. So a login folded into its person is covered by the person's
+// entry, and a login nobody could be matched to — which is on the crew list
+// under its own name — is its own entry. Not on the employees row: half the
+// roster has no row (paving's and kiewit's lists, quarry's table), and making
+// one just to hold this would put a blank job class ahead of the one on the
+// division's list. One app_data row per company, an entry per person, written
+// in place — the same shape, and for the same reason, as the login answers.
+//
+// Opt-OUT: nobody is off until an admin says so, so nothing on anyone's board
+// moves when this ships.
+const OFF_SCHEDULER_KEY = 'fct_off_scheduler';
+function offSchedulerKey(companyCode) { return companyCode + ':' + OFF_SCHEDULER_KEY; }
+
+/** Lowercased name → { at, by } for everybody kept off. */
+async function readOffScheduler(sql, companyCode) {
+  const rows = await sql`SELECT value FROM app_data WHERE key = ${offSchedulerKey(companyCode)}`;
+  const people = rows.length && rows[0].value && rows[0].value.people;
+  return (people && typeof people === 'object' && !Array.isArray(people)) ? people : {};
+}
+
+/**
+ * Keeps one person off the Scheduler's crew list, or with `off` false puts them
+ * back. Written in place, like writeLoginLink, so two admins at once cannot
+ * undo each other.
+ *
+ * @param {string}  name  the person, as the list of people names them
+ * @param {boolean} off
+ * @param {string}  [by]  the username saying so, kept with the entry
+ */
+async function writeOffScheduler(sql, companyCode, name, off, by) {
+  const key = offSchedulerKey(companyCode), entry = String(name || '').trim().toLowerCase();
+  if (off) {
+    const said = JSON.stringify({ at: new Date().toISOString(), by: by || null });
+    await sql`
+      INSERT INTO app_data (key, value, updated_at)
+      VALUES (${key}, jsonb_build_object('people', jsonb_build_object(${entry}::text, ${said}::jsonb)), NOW())
+      ON CONFLICT (key) DO UPDATE SET
+        value = jsonb_build_object('people',
+                  (CASE WHEN jsonb_typeof(app_data.value -> 'people') = 'object'
+                        THEN app_data.value -> 'people' ELSE '{}'::jsonb END)
+                  || jsonb_build_object(${entry}::text, ${said}::jsonb)),
+        updated_at = NOW()
+    `;
+  } else {
+    await sql`
+      UPDATE app_data SET
+        value = jsonb_build_object('people',
+                  (CASE WHEN jsonb_typeof(value -> 'people') = 'object'
+                        THEN value -> 'people' ELSE '{}'::jsonb END) - ${entry}::text),
+        updated_at = NOW()
+      WHERE key = ${key}
+    `;
+  }
+}
+
+/** Marks each person an admin kept off (`offScheduler: true`), in place. */
+function markOffScheduler(people, off) {
+  const kept = off || {};
+  for (const p of people) {
+    if (Object.prototype.hasOwnProperty.call(kept, String(p.name || '').toLowerCase())) p.offScheduler = true;
+  }
+  return people;
+}
+
 /**
  * readEmployeeRoster, folded into people. A failed read of the logins folds
  * nothing, which is the list as it was, rather than an error; a failed read of
- * the admins' answers leaves the names to decide.
+ * the admins' answers leaves the names to decide; a failed read of who is kept
+ * off the Scheduler keeps nobody off.
  *
  * Everything returned names only rows the roster already returns, so no login
  * the roster does not already show is handed out.
  */
 async function readPeopleRoster(sql, companyCode) {
   const roster = await readEmployeeRoster(sql, companyCode);
-  let usernames = [], links = {};
+  let usernames = [], links = {}, off = {};
   try {
     usernames = (await sql`SELECT username FROM users WHERE company_code = ${companyCode}`).map(r => r.username);
   } catch (err) { console.error('[roster] users read failed (non-fatal):', err.message); }
   try { links = await readLoginLinks(sql, companyCode); }
   catch (err) { console.error('[roster] login links read failed (non-fatal):', err.message); }
-  return foldLoginRows(roster, usernames, links);
+  try { off = await readOffScheduler(sql, companyCode); }
+  catch (err) { console.error('[roster] off-scheduler read failed (non-fatal):', err.message); }
+  const folded = foldLoginRows(roster, usernames, links);
+  markOffScheduler(folded.people, off);
+  return folded;
 }
 
 module.exports = { readEmployeeRoster, readPeopleRoster, foldLoginRows, loginKeysFor, loginKey,
-                   readLoginLinks, writeLoginLink, loginLinksKey };
+                   readLoginLinks, writeLoginLink, loginLinksKey,
+                   readOffScheduler, writeOffScheduler, markOffScheduler, offSchedulerKey };

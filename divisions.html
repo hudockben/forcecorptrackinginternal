@@ -641,6 +641,10 @@
     .sup-table col.c-sup-tog  { width: 120px; }
     .sup-table th:last-child, .sup-table td:last-child { text-align: right; }
     .mu-note { font-size: 0.75rem; color: var(--muted); line-height: 1.55; }
+    /* Manage Users → Scheduler: the job class and logins under a name, and a
+       row switched off reading as off at a glance. */
+    .sch-sub { font-size: 0.66rem; color: var(--muted); margin-top: 0.15rem; }
+    .sup-table tr.sch-off .dir-name > span { color: var(--muted); }
 
     /* ── Team Directory table ──
        Narrower than the Manage Users matrix: five columns, not seventeen. */
@@ -672,6 +676,7 @@
     }
     .dir-tag.sup { color: var(--green); background: rgba(34,197,94,0.14); }
     .dir-tag.drv { color: #60a5fa;      background: rgba(96,165,250,0.14); }
+    .dir-tag.login { color: #fbbf24;    background: rgba(251,191,36,0.14); }
     /* A number you can dial and an address you can write to — the whole point
        of holding them here rather than in six people's phones. */
     .dir-link {
@@ -1176,6 +1181,7 @@
       <div class="mu-subtabs">
         <button class="mu-subtab-btn active" id="muTabBtnUsers"       onclick="switchUserSubTab('users')">Users<span class="mu-subtab-count" id="muTabCountUsers"></span></button>
         <button class="mu-subtab-btn"        id="muTabBtnSupervisors" onclick="switchUserSubTab('supervisors')">Roles</button>
+        <button class="mu-subtab-btn"        id="muTabBtnScheduler"   onclick="switchUserSubTab('scheduler')">Scheduler</button>
       </div>
 
       <div class="mu-body" id="muBody">
@@ -1535,6 +1541,53 @@
 
         <div id="sup-result" class="modal-result"></div>
       </div><!-- /#mu-panel-supervisors -->
+
+      <!-- ── Scheduler sub-panel ──
+           Who the Scheduler offers as crew, one switch a person. PEOPLE, not
+           logins, because that is what the Scheduler's crew list is: a login
+           shows as the person it was matched to, so each person is here once,
+           under the name the Scheduler shows. -->
+      <div class="mu-panel" id="mu-panel-scheduler">
+        <div class="mu-toolbar">
+          <div class="mu-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="text" id="sch-search" placeholder="Search people…" oninput="renderSchedulerList()" aria-label="Search people" />
+          </div>
+          <label style="display:flex;align-items:center;gap:0.4rem;font-size:0.68rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em;white-space:nowrap;cursor:pointer">
+            <input type="checkbox" id="sch-off-only" onchange="renderSchedulerList()" style="width:auto" /> Off only
+          </label>
+          <span class="mu-count" id="sch-count"></span>
+        </div>
+
+        <div class="mu-note">
+          Everyone switched on is offered on the <strong>Scheduler</strong>’s
+          crew list. Switch off anyone who cannot be sent to a job — office
+          staff, crew away at school — and the list is that much shorter. Nothing
+          else changes: they stay on the roster, in Timesheet, Payroll and the
+          Team Directory. A day already booked for them stays on the board,
+          flagged, until someone takes it off or hands it to someone else.
+          Switch them back on when they are back.
+        </div>
+
+        <div class="mu-table-wrap sup-wrap">
+          <table class="user-table sup-table">
+            <colgroup><col class="c-sup-user" /><col class="c-sup-tog" /></colgroup>
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">On the Scheduler</th>
+              </tr>
+            </thead>
+            <tbody id="schListBody">
+              <tr><td colspan="2" class="mu-empty-cell">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div id="sch-result" class="modal-result"></div>
+      </div><!-- /#mu-panel-scheduler -->
 
       </div><!-- /.mu-body -->
     </div>
@@ -2201,15 +2254,20 @@
       resetUserForm();
     }
 
+    // Sub-tab → the suffix its button and panel ids carry.
+    const MU_SUBTABS = { users: 'Users', supervisors: 'Supervisors', scheduler: 'Scheduler' };
+
     function switchUserSubTab(tab) {
       muActiveSubTab = tab;
-      const isUsers = tab === 'users';
-      document.getElementById('muTabBtnUsers').classList.toggle('active', isUsers);
-      document.getElementById('muTabBtnSupervisors').classList.toggle('active', !isUsers);
-      document.getElementById('mu-panel-users').classList.toggle('active', isUsers);
-      document.getElementById('mu-panel-supervisors').classList.toggle('active', !isUsers);
+      Object.keys(MU_SUBTABS).forEach(k => {
+        document.getElementById('muTabBtn' + MU_SUBTABS[k]).classList.toggle('active', k === tab);
+        document.getElementById('mu-panel-' + k).classList.toggle('active', k === tab);
+      });
       document.getElementById('muBody').scrollTop = 0;
-      if (!isUsers && !supervisorsLoaded) {
+      // Read again on every visit, not once: the list follows every division's
+      // roster, and a name added to one of those since is somebody to decide on.
+      if (tab === 'scheduler') loadSchedulerList();
+      if (tab === 'supervisors' && !supervisorsLoaded) {
         supervisorsLoaded = true;
         const search = document.getElementById('sup-search');
         const only   = document.getElementById('sup-only');
@@ -2695,6 +2753,132 @@
         result.textContent = err.message;
       } finally {
         el.disabled = false;
+      }
+    }
+
+    // ── Scheduler sub-panel (inside Manage Users modal) ─────────────────────
+    // The Scheduler's crew list as people, each with a switch that keeps them
+    // off it — see "Kept off the Scheduler" in api/lib/roster.js. Read off the
+    // same list of people the Scheduler reads, so a name here is the name
+    // there, and a login is under the person it was matched to.
+    let schPeople  = [];   // from /api/employees?view=people
+    let schLoadSeq = 0;    // the latest read wins, however they finish
+
+    async function loadSchedulerList() {
+      const seq   = ++schLoadSeq;
+      const tbody = document.getElementById('schListBody');
+      tbody.innerHTML = '<tr><td colspan="2" class="mu-empty-cell">Loading…</td></tr>';
+      try {
+        const res  = await fetch('/api/employees?view=people', { headers: { Authorization: `Bearer ${token}` } });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to load the roster');
+        if (seq !== schLoadSeq) return;
+        schPeople = (Array.isArray(data.employees) ? data.employees : [])
+          .filter(e => e && e.name)
+          .map(e => ({
+            name:          String(e.name),
+            job_class:     e.job_class || '',
+            is_supervisor: e.is_supervisor === true,
+            is_driver:     e.is_driver     === true,
+            login:         e.login === true,
+            logins:        Array.isArray(e.logins) ? e.logins : [],
+            // A login an admin said is nobody on the crew, in the Scheduler's
+            // Login names: off the list already, and not this switch's to undo.
+            notCrew:       e.offCrew === true,
+            off:           e.offScheduler === true || e.offCrew === true,
+          }))
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+        renderSchedulerList();
+      } catch (err) {
+        if (seq !== schLoadSeq) return;
+        tbody.innerHTML = `<tr><td colspan="2" class="mu-empty-cell" style="color:#ef4444">${escHtml(err.message)}</td></tr>`;
+      }
+    }
+
+    // Shared by the table and its count so the two can't disagree.
+    function visibleSchedulerPeople() {
+      const q       = (document.getElementById('sch-search').value || '').toLowerCase().trim();
+      const offOnly = document.getElementById('sch-off-only').checked;
+      let list = schPeople;
+      // A person's logins too, so the username the Roles tab shows still finds
+      // the person it belongs to.
+      if (q)       list = list.filter(p => [p.name, p.job_class, ...p.logins].some(v => String(v || '').toLowerCase().includes(q)));
+      if (offOnly) list = list.filter(p => p.off);
+      return list;
+    }
+
+    function schTags(p) {
+      return (p.is_supervisor ? '<span class="dir-tag sup">Supervisor</span>' : '')
+           + (p.is_driver     ? '<span class="dir-tag drv">Driver</span>'     : '')
+           + (p.login         ? '<span class="dir-tag login" title="A login no employee on the roster could be matched to">Login</span>' : '');
+    }
+
+    function renderSchedulerList() {
+      const tbody = document.getElementById('schListBody');
+      const count = document.getElementById('sch-count');
+      const list  = visibleSchedulerPeople();
+      const off   = schPeople.filter(p => p.off).length;
+
+      count.textContent = schPeople.length
+        ? (list.length === schPeople.length
+            ? `${schPeople.length - off} on the Scheduler · ${off} off`
+            : `${list.length} of ${schPeople.length} people`)
+        : '';
+
+      if (!list.length) {
+        tbody.innerHTML = `<tr><td colspan="2" class="mu-empty-cell">${
+          schPeople.length ? 'No one matches.' : 'No one on the roster yet.'}</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = list.map(p => {
+        const sub = [p.job_class, p.logins.length ? 'login: ' + p.logins.join(', ') : ''].filter(Boolean).join(' · ');
+        const title = p.notCrew
+          ? 'A login marked “Not on the crew list” in the Scheduler’s Login names — change it there'
+          : p.off ? `Off the Scheduler — switch on to offer ${p.name} as crew again`
+                  : `On the Scheduler — switch off to leave ${p.name} off its crew list`;
+        return `
+        <tr class="${p.off ? 'sch-off' : ''}">
+          <td>
+            <div class="dir-name"><span>${escHtml(p.name)}</span>${schTags(p)}</div>
+            ${sub ? `<div class="sch-sub">${escHtml(sub)}</div>` : ''}
+          </td>
+          <td>
+            <label class="sup-toggle" title="${escHtml(title)}">
+              <input type="checkbox" data-person="${escHtml(p.name)}" ${p.off ? '' : 'checked'} ${p.notCrew ? 'disabled' : ''}
+                     aria-label="${escHtml(p.name)} on the Scheduler" onchange="toggleOnScheduler(this)" />
+              <span class="slider"></span>
+            </label>
+          </td>
+        </tr>`;
+      }).join('');
+    }
+
+    async function toggleOnScheduler(el) {
+      const name   = el.dataset.person || '';
+      const on     = el.checked;
+      const result = document.getElementById('sch-result');
+      el.disabled  = true;
+      result.style.color = 'var(--muted)';
+      result.textContent = 'Saving…';
+      try {
+        const res = await fetch('/api/employees?scheduler=' + encodeURIComponent(name), {
+          method:  'PATCH',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body:    JSON.stringify({ on }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || 'Save failed');
+        const p = schPeople.find(x => x.name.toLowerCase() === name.toLowerCase());
+        if (p) p.off = !on;
+        renderSchedulerList();
+        result.style.color = 'var(--green)';
+        result.textContent = `${data.name || name} ${on ? 'is back on the Scheduler.' : 'is off the Scheduler.'}`;
+        setTimeout(() => { if (/the Scheduler\.$/.test(result.textContent)) result.textContent = ''; }, 2500);
+      } catch (err) {
+        el.checked  = !on;
+        el.disabled = false;
+        result.style.color = '#ef4444';
+        result.textContent = err.message;
       }
     }
 
