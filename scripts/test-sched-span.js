@@ -46,8 +46,8 @@ const { requireFn } = require(path.resolve(__dirname, 'lib/fn-source.js'));
 const SCHED = read('scheduler.html');
 
 /** The page's own range helpers, over a fixed anchor. */
-function ranges(span) {
-  const sandbox = { console, state: { span, weekAnchor: new Date('2026-09-21T12:00:00') } };
+function ranges(span, anchor) {
+  const sandbox = { console, state: { span, weekAnchor: new Date((anchor || '2026-09-21') + 'T12:00:00') } };
   vm.createContext(sandbox);
   const decl = SCHED.match(/^const BOARD_SPANS = \{[^}]*\};$/m);
   if (!decl) throw new Error('BOARD_SPANS not found — the span model moved');
@@ -134,6 +134,37 @@ const bodyOf = n => requireFn(SCHED, n, 'scheduler.html');
     eq('  a week says 7d', w.rangeTag(), '7d');
     eq('  and the prose follows it', d.rangeWords(), 'this day');
     eq('  both ways', w.rangeWords(), 'this week');
+  }
+
+  console.log('\n[the dispatch sheet is for the day on the board, not the calendar’s today]');
+  {
+    // Paged back to Tuesday on a Wednesday to reprint Tuesday's sheet, the
+    // print view came out for Wednesday and said "No assignments in this range".
+    const TODAY = '2026-09-30', SHOWN = '2026-09-29';
+    const sheet = span => {
+      const p = ranges(span, SHOWN);
+      p.todayStr = () => TODAY;   // what the sheet used to print, whatever the board showed
+      vm.runInContext(SCHED.match(/^const esc = .*$/m)[0], p, { filename: 'scheduler.html' });
+      ['dispatchDay','dispatchDates','dispatchDayWords','dispatchWeekWords','dispatchTitle','dispatchModalHtml']
+        .forEach(n => vm.runInContext(requireFn(SCHED, n, 'scheduler.html'), p, { filename: 'scheduler.html' }));
+      return p;
+    };
+    const long  = ds => new Date(ds + 'T12:00:00').toLocaleDateString(undefined, { weekday:'long', month:'long', day:'numeric' });
+    const short = ds => new Date(ds + 'T12:00:00').toLocaleDateString(undefined, { month:'short', day:'numeric' });
+    const d = sheet('day'), w = sheet('week');
+    eq('  the day sheet is the day shown', d.dispatchDates('day').join(), SHOWN);
+    eq('  and is titled with it', d.dispatchTitle('day'), 'Crew Dispatch — ' + long(SHOWN));
+    eq('  in the week view it is the first column', w.dispatchDates('day').join(), SHOWN);
+    eq('  the week sheet is the seven days from it', d.dispatchDates('week').join(),
+      ['2026-09-29','2026-09-30','2026-10-01','2026-10-02','2026-10-03','2026-10-04','2026-10-05'].join());
+    const html = d.dispatchModalHtml('');
+    assert('  the Range names the day it will print, and starts on it',
+      html.includes('<option value="day" selected>This day — ' + long(SHOWN) + '</option>'), html.slice(0, 600));
+    assert('  and the week it would print instead',
+      html.includes('This week — ' + short(SHOWN) + ' – ' + short('2026-10-05')), html.slice(0, 600));
+    assert('  it no longer says "Today only"', !/Today only/.test(html));
+    ['doPrint', 'doEmail'].forEach(fn => assert('  ' + fn + ' takes its dates from the same place',
+      /dispatchDates\(scope\)/.test(bodyOf(fn)) && !/todayStr\(\)/.test(bodyOf(fn))));
   }
 
   console.log('\n[the toggle is wired and the default is a day]');
