@@ -3465,9 +3465,16 @@ const _noteTd = 'background:#fffbeb;color:#27272a';
 function dispatchNote(lines, jobName) {
   return '<strong style="color:#92400e">'+(lines.length > 1 ? 'Notes' : 'Note')+'</strong> — '+(jobName ? esc(jobName)+': ' : '')+lines.map(esc).join('<br>');
 }
-function dispatchDates(scope) { return scope === 'today' ? [todayStr()] : fullWeekDateStrs(); }
+// The sheet is for the day ON THE BOARD, not the calendar's today. A
+// dispatcher pages back to reprint yesterday or forward to send tomorrow, and
+// a sheet that snapped back to today printed a day nobody asked for. In week
+// view that day is the first column, and the week is the seven shown.
+function dispatchDay() { return dstr(state.weekAnchor); }
+function dispatchDates(scope) { return scope === 'day' ? [dispatchDay()] : fullWeekDateStrs(); }
+function dispatchDayWords() { return new Date(dispatchDay()+'T12:00:00').toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'}); }
+function dispatchWeekWords() { const w = fullWeekDays(); return w[0].toLocaleDateString(undefined,{month:'short',day:'numeric'})+' – '+w[6].toLocaleDateString(undefined,{month:'short',day:'numeric'}); }
 function dispatchTitle(scope) {
-  if (scope === 'today') return 'Crew Dispatch — ' + new Date(todayStr()+'T12:00:00').toLocaleDateString(undefined,{weekday:'long',month:'long',day:'numeric'});
+  if (scope === 'day') return 'Crew Dispatch — ' + dispatchDayWords();
   return 'Crew Dispatch — week of ' + fullWeekDays()[0].toLocaleDateString(undefined,{month:'short',day:'numeric'});
 }
 function dayLabel(d) { return new Date(d+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'}); }
@@ -3595,7 +3602,7 @@ async function openDispatchModal() {
 function dispatchModalHtml(groupOptions) {
   return '<div class="modal"><div class="modal-head"><div style="font-weight:700">📤 Dispatch schedule</div><button class="x" onclick="closeDispatch()">✕</button></div><div class="modal-body">'+
     '<label class="fld">Layout</label><select class="full" id="dpLayout"><option value="job">By job — who is on each job each day</option><option value="person">By person — each crew member’s schedule</option></select>'+
-    '<label class="fld">Range</label><select class="full" id="dpScope"><option value="today" selected>Today only</option><option value="week">This week</option></select>'+
+    '<label class="fld">Range</label><select class="full" id="dpScope"><option value="day" selected>This day — '+esc(dispatchDayWords())+'</option><option value="week">This week — '+esc(dispatchWeekWords())+'</option></select>'+
     '<div style="margin-top:0.6rem"><button class="btn" onclick="doPrint()">🖨 Open print view</button></div>'+
     '<hr style="border:none;border-top:1px solid var(--border);margin:1rem 0">'+
     '<div style="font-weight:700;font-size:0.82rem">Email to crews</div>'+
