@@ -13575,15 +13575,22 @@ function _modalFieldUpdate(el) {
   }
   saveLists();
 }
-document.querySelector('.modal-body').addEventListener('input',  e => _modalFieldUpdate(e.target));
-document.querySelector('.modal-body').addEventListener('change', e => _modalFieldUpdate(e.target));
+// Manage Lists' own body, by its overlay. A bare '.modal-body' is the first one
+// on the page — right here today, but tracker.html grew a modal above its copy
+// and these handlers quietly moved to it, so ✕ and edits stopped working.
+const _manageListsBody = document.querySelector('#modal-overlay .modal-body');
+_manageListsBody.addEventListener('input',  e => _modalFieldUpdate(e.target));
+_manageListsBody.addEventListener('change', e => _modalFieldUpdate(e.target));
 
 // Modal remove item (with delete confirmation popover)
-document.querySelector('.modal-body').addEventListener('click', e => {
+_manageListsBody.addEventListener('click', e => {
   const btn = e.target.closest('.remove-item');
   if (!btn) return;
-  if (btn._confirmOpen) return;
 
+  // No "already open" flag: a second click on ✕ just opens the confirm again.
+  // The flag this kept was never cleared when a click elsewhere closed the
+  // popover — and a double-click does exactly that — so the ✕ went dead until
+  // the list was redrawn.
   e.stopPropagation();
   removeDelConfirm();
 
@@ -13597,7 +13604,6 @@ document.querySelector('.modal-body').addEventListener('click', e => {
     '<button class="dc-yes">Yes</button>' +
     '<button class="dc-no">No</button>';
 
-  btn._confirmOpen = true;
   document.body.appendChild(popover);
   const rect = btn.getBoundingClientRect();
   const pw = popover.offsetWidth;
@@ -13617,13 +13623,11 @@ document.querySelector('.modal-body').addEventListener('click', e => {
   popover.querySelector('.dc-no').addEventListener('click', ev => {
     ev.stopPropagation();
     removeDelConfirm();
-    btn._confirmOpen = false;
   });
 
   popover.querySelector('.dc-yes').addEventListener('click', ev => {
     ev.stopPropagation();
     removeDelConfirm();
-    btn._confirmOpen = false;
     if (key === 'equipment') lists.equipment.splice(idx, 1);
     else lists[key].splice(idx, 1);
     saveLists();
