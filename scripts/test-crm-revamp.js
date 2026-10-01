@@ -1088,7 +1088,7 @@ console.log('\nNext Steps email');
   assert('the modal knows what to call this report',
     fs.readFileSync(path.join(ROOT, 'report-email.js'), 'utf8').includes('crm_next_steps:'));
   assert('and the send endpoint will accept it',
-    fs.readFileSync(path.join(ROOT, 'api', 'email', 'send-report.js'), 'utf8').includes('crm_next_steps:'));
+    Boolean(require(path.join(ROOT, 'api', 'lib', 'report-catalog.js')).REPORT_TYPES.crm_next_steps));
 
 }
 

@@ -850,6 +850,7 @@
       .report { padding: 0 1rem; }
     }
   </style>
+  <script src="auto-report.js"></script>
   <script src="report-branding.js" defer></script>
   <script src="report-email.js" defer></script>
   <script src="mathis.js" defer></script>
@@ -1793,7 +1794,7 @@
     }
 
     setReportDate();
-    loadReport();
+    const _execBoot = loadReport();
 
     // ── Email Report ──
     // Captures the sections the picker checked, as read on screen. The page's
@@ -2125,6 +2126,23 @@
       window.print();
     }
 
+    /* ═══════════════════════════════════════════
+       SCHEDULED REPORTS — Manage Users → Auto Reports
+       The server opens this page in a headless browser, signed in as the
+       admin who set the schedule up, and asks for a report through
+       auto-report.js. It is the Email button, pressed with nothing picked —
+       the whole report, as read on screen.
+    ═══════════════════════════════════════════ */
+    (function registerAutoReports() {
+      const AR = window.dwAutoReport;
+      if (!AR) return;
+      AR.ready(_execBoot);
+      AR.register('executive', () => {
+        const body = document.getElementById('reportBody');
+        if (!body || body.style.display === 'none') throw new Error('The executive report did not load.');
+        return AR.capture(() => emailExecutiveReport());
+      });
+    })();
   </script>
 
 </body>

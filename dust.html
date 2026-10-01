@@ -2397,6 +2397,7 @@
   </div>
 
   <!-- Shared "Email Report" modal (recipients, saved groups, send) -->
+  <script src="auto-report.js"></script>
   <script src="report-branding.js" defer></script>
   <script src="report-email.js" defer></script>
   <script src="mathis.js" defer></script>
@@ -3018,6 +3019,9 @@
     // the division, so a failed read left as an empty list would show the
     // largest book billing $0 with nothing on screen saying why.
     let dustLoaded  = false;
+    // Whether /api/dust-config answered: the UB rate and the customer list
+    // with its vehicle rates. Without it every UB gallon prices at $0.
+    let dustConfigLoaded = false;
     let ubRate     = 0;
     // Profit Margin calculator inputs (persisted via dust-config settings blob)
     let profitMargin = {
@@ -5616,6 +5620,7 @@
       }
 
       if (config) {
+        dustConfigLoaded = true;
         const { settings, lists } = config;
         if (settings && settings.ub_rate != null) {
           ubRate = parseFloat(settings.ub_rate) || 0;
@@ -6923,7 +6928,7 @@
       ?.addEventListener('click', pcRenderTable);
 
     renderRowLegend();
-    init();
+    const _dustBoot = init();
 
     /* ═══════════════════════════════════════════
        OTHER BILLING — tracking rows
@@ -9187,6 +9192,35 @@
 
       heartbeat();
       setInterval(heartbeat, HEARTBEAT_MS);
+    })();
+
+    /* ═══════════════════════════════════════════
+       SCHEDULED REPORTS — Manage Users → Auto Reports
+       The server opens this page in a headless browser, signed in as the
+       admin who set the schedule up, and asks for a report through
+       auto-report.js. It is the Email button on the Print / Email dialog,
+       pressed with the schedule's dates and every customer.
+    ═══════════════════════════════════════════ */
+    (function registerAutoReports() {
+      const AR = window.dwAutoReport;
+      if (!AR) return;
+      AR.ready(_dustBoot);
+      AR.register('dust_tracking_summary', async spec => {
+        // A read that failed leaves `rows` empty, which would otherwise come
+        // back as "nothing to send" rather than as the failure it is.
+        if (!dustLoaded) throw new Error('The dust entries did not load.');
+        if (!dustConfigLoaded) throw new Error('The dust rates and customer list did not load.');
+        document.getElementById('prtStart').value = spec.start || '';
+        document.getElementById('prtEnd').value   = spec.end || '';
+        // No customer ticked is All Customers, the same as in the dialog.
+        document.querySelectorAll('#prtCustomerList .prt-co-cb').forEach(cb => { cb.checked = false; });
+        const item = await AR.capture(() => emailDustReport());
+        // The same subject every week would thread every week together.
+        if (item && !item.skip && spec.start) {
+          item.subject += ' — ' + (spec.start === spec.end ? spec.start : spec.start + ' to ' + spec.end);
+        }
+        return item;
+      });
     })();
   </script>
 

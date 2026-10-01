@@ -452,7 +452,7 @@ const tick = () => new Promise(r => setTimeout(r, 0));
   {
     const markup = new JSDOM(DIVS).window.document;
     const buttons = [...markup.querySelectorAll('.mu-subtabs .mu-subtab-btn')].map(b => b.textContent.trim());
-    eq('the tab sits beside Users and Roles', buttons, ['Users', 'Roles', 'Scheduler']);
+    eq('the tab sits beside Users and Roles', buttons, ['Users', 'Roles', 'Scheduler', 'Auto Reports']);
     const heads = [...markup.querySelectorAll('#mu-panel-scheduler thead th')].map(t => t.textContent.trim());
     eq('its table is a name and a switch', heads, ['Name', 'On the Scheduler']);
     assert('it is inside Manage Users, which only admins can open',

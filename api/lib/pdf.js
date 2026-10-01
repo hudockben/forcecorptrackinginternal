@@ -81,26 +81,37 @@ function inlineCidImages(html, attachments) {
 // which is why this only showed up in production. import() works from
 // CommonJS either way. The namespace fallback covers a build that exposes the
 // API directly rather than under .default.
-async function loadEsm(name) {
-  const mod = await import(name);
-  return mod.default ?? mod;
-}
+//
+// Each package is imported by its literal name, never through a variable: the
+// bundler that decides what ships with a function (Vercel's file tracer) can
+// only follow an import whose name it can read, and a package it cannot see is
+// left out of the deploy.
+const esmDefault = mod => mod.default ?? mod;
+const loadPuppeteer = async () => esmDefault(await import('puppeteer-core'));
+const loadChromium  = async () => esmDefault(await import('@sparticuz/chromium'));
 
 async function launchBrowser() {
-  const puppeteer = await loadEsm('puppeteer-core');
+  const puppeteer = await loadPuppeteer();
 
   // Local dev / self-hosted: use whatever Chrome the box already has.
   const localPath = process.env.CHROME_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '';
   if (localPath) {
+    const args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none'];
+    // The serverless Chrome below runs single-process (it is in
+    // @sparticuz/chromium's own flags), and some things a normal Chrome does
+    // happily crash it — opening a second browser context, for one. This runs
+    // a local Chrome the same way, so a test sees what production would.
+    if (process.env.CHROME_SINGLE_PROCESS === '1') args.push('--single-process', '--no-zygote');
     return puppeteer.launch({
       executablePath: localPath,
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none'],
+      // chrome-headless-shell is what serverless runs; it takes the 'shell' mode.
+      headless: /headless[-_]shell/.test(localPath) ? 'shell' : true,
+      args,
     });
   }
 
   // Serverless: the bundled Chromium build.
-  const chromium = await loadEsm('@sparticuz/chromium');
+  const chromium = await loadChromium();
   // Reports are text and tables — no WebGL, no canvas compositing. Skipping
   // the software GL stack cuts a noticeable chunk off cold start.
   chromium.setGraphicsMode = false;
@@ -119,20 +130,29 @@ async function launchBrowser() {
 //
 // Never throws — the email path treats a failure as "send it inline instead",
 // so a broken renderer degrades the email rather than dropping it.
+//
+// `opts.browser` lends an already-running Chrome — the scheduled-report runner
+// has one open to build the reports and renders each PDF in it rather than
+// paying a cold launch per email. A lent browser is the lender's to close; only
+// the page opened here is.
 async function renderHtmlToPdf(html, opts = {}) {
   if (typeof html !== 'string' || !html.trim()) {
     return { ok: false, error: 'No HTML to render' };
   }
 
-  let browser = null;
+  const lent = opts.browser || null;
+  let browser = lent;
+  let page = null;
   try {
-    try {
-      browser = await launchBrowser();
-    } catch (err) {
-      return { ok: false, error: `Could not start the PDF renderer: ${err.message}` };
+    if (!browser) {
+      try {
+        browser = await launchBrowser();
+      } catch (err) {
+        return { ok: false, error: `Could not start the PDF renderer: ${err.message}` };
+      }
     }
 
-    const page = await browser.newPage();
+    page = await browser.newPage();
     page.setDefaultTimeout(NAV_TIMEOUT_MS);
 
     await page.setRequestInterception(true);
@@ -174,13 +194,18 @@ async function renderHtmlToPdf(html, opts = {}) {
   } catch (err) {
     return { ok: false, error: err.message || 'PDF rendering failed' };
   } finally {
-    if (browser) { try { await browser.close(); } catch { /* already gone */ } }
+    if (lent) {
+      if (page) { try { await page.close(); } catch { /* already gone */ } }
+    } else if (browser) {
+      try { await browser.close(); } catch { /* already gone */ }
+    }
   }
 }
 
 module.exports = {
   MAX_PDF_BYTES,
   inlineCidImages,
+  launchBrowser,
   pdfPageCount,
   renderHtmlToPdf,
   wantsLandscape,

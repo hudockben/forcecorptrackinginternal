@@ -41,55 +41,14 @@ const { requireAuth, hasDivisionAccess } = require('../lib/auth');
 const {
   MAX_RECIPIENTS,
   MAX_HTML_BYTES,
-  MAX_ATTACHMENTS,
-  MAX_ATTACH_BYTES,
   isValidEmail,
-  sanitizeReportHtml,
   normalizeAttachments,
-  buildEmailHtml,
-  sendEmail,
 } = require('../lib/email');
-const { inlineCidImages, renderHtmlToPdf } = require('../lib/pdf');
-
-// Build a filename from the resolved subject, so a recipient saving three of
-// these to a desktop ends up with three distinguishable files.
-function pdfFilenameFor(subject) {
-  const slug = String(subject || 'report')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80) || 'report';
-  return `${slug}-${new Date().toISOString().slice(0, 10)}.pdf`;
-}
-
-// Each report type → which division the caller must have access to.
-const REPORT_TYPES = {
-  executive:            { division: 'executive', label: 'Executive Report'                 },
-  turf_daily_pm:        { division: 'turf',      label: 'Daily PM Report'                  },
-  turf_daily_summary:   { division: 'turf',      label: 'Daily Summary Report'             },
-  turf_bid_items:       { division: 'turf',      label: 'Bid Line Items vs Actuals — Turf' },
-  turf_job_summary:     { division: 'turf',      label: 'Job Summary — Turf'               },
-  turf_construction_schedule: { division: 'turf', label: 'Construction Schedule'           },
-  paving_daily_pm:      { division: 'paving',    label: 'Daily PM Report'                    },
-  paving_daily_summary: { division: 'paving',    label: 'Daily Summary Report'               },
-  paving_bid_items:     { division: 'paving',    label: 'Bid Line Items vs Actuals — Paving' },
-  paving_job_summary:   { division: 'paving',    label: 'Job Summary — Paving'                },
-  kiewit_daily_pm:      { division: 'kiewit',    label: 'Daily PM Report'                            },
-  kiewit_daily_summary: { division: 'kiewit',    label: 'Daily Summary Report'                       },
-  kiewit_bid_items:     { division: 'kiewit',    label: 'Bid Line Items vs Actuals — Kiewit Pinetree' },
-  kiewit_job_summary:   { division: 'kiewit',    label: 'Job Summary — Kiewit Pinetree'               },
-  kiewit_construction_schedule: { division: 'kiewit', label: 'Construction Schedule'                  },
-  quarry_breakeven:     { division: 'quarry',    label: 'Quarry Break-Even Analysis'          },
-  dust_tracking_summary:{ division: 'dust',      label: 'Dust Control Tracking Report'        },
-  scheduler_dispatch:   { division: 'scheduler', label: 'Crew Dispatch Schedule'              },
-  trucking_dispatch:    { division: 'trucking',  label: 'Trucking Dispatch Schedule'          },
-  // The Scheduler tab's second board. Same division — it is the trucking
-  // office's own labor board — so the same access check applies.
-  trucking_labor_dispatch: { division: 'trucking', label: 'Labor Dispatch Schedule'           },
-  // The CRM lives in the Turf tab, so Turf access is what gates its reports.
-  // The scheduled copy goes out from api/cron/crm-next-steps-email.js.
-  crm_next_steps:       { division: 'turf',      label: 'Next Steps Due — CRM'                },
-};
+const { deliverReport } = require('../lib/report-delivery');
+// Each report type → which division the caller must have access to. Shared
+// with the scheduled sends, which check the same thing for the account a
+// schedule runs as.
+const { REPORT_TYPES } = require('../lib/report-catalog');
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -159,105 +118,47 @@ module.exports = async (req, res) => {
     return res.status(400).json({ ok: false, error: att.error });
   }
 
-  const safeBody = sanitizeReportHtml(html);
-
-  // Build subject — caller can override, fallback to a sensible default.
-  let finalSubject = (typeof subject === 'string' && subject.trim()) || cfg.label;
-  if (project_name && typeof project_name === 'string' && !finalSubject.includes(project_name)) {
-    finalSubject = `${cfg.label} — ${String(project_name).trim()}`;
-  }
-  finalSubject = finalSubject.slice(0, 200);
-
-  // Render the report to a PDF. `safeBody` is already stripped of <script>
-  // (including the reports' own window.print() bootstrap), so what Chrome
-  // loads is inert markup plus the report's own CSS.
-  let pdfAttachment = null;
-  let pdfPages      = null;
-  let warning       = null;
-
-  if (attachPdf) {
-    const rendered = await renderHtmlToPdf(inlineCidImages(safeBody, att.attachments));
-    if (rendered.ok) {
-      pdfAttachment = {
-        filename:    pdfFilenameFor(finalSubject),
-        content:     rendered.buffer.toString('base64'),
-        contentType: 'application/pdf',
-      };
-      pdfPages = rendered.pageCount;
-    } else {
-      warning = `The report was sent inline — PDF rendering failed: ${rendered.error}`;
-      console.error('[email/send-report] pdf render failed:', rendered.error,
-        'user=' + payload.username, 'report=' + report_type);
-    }
-  }
-
-  // With the PDF attached, the caller's own attachments that existed only to
-  // back an <img src="cid:..."> in the inline body have no referent any more —
-  // they're baked into the PDF — so drop them rather than have them surface as
-  // stray files. Anything the caller meant as a real attachment (no contentId)
-  // still rides along.
-  const carried = pdfAttachment
-    ? att.attachments.filter(a => !a.inlineContentId)
-    : att.attachments;
-  const finalAttachments = pdfAttachment ? [...carried, pdfAttachment] : carried;
-
-  if (finalAttachments.length > MAX_ATTACHMENTS) {
-    return res.status(400).json({ ok: false, error: `Too many attachments (max ${MAX_ATTACHMENTS})` });
-  }
-  const attachBytes = finalAttachments.reduce(
-    (n, a) => n + Buffer.byteLength(String(a.content || ''), 'base64'), 0);
-  if (attachBytes > MAX_ATTACH_BYTES) {
-    return res.status(413).json({ ok: false, error: 'The report is too large to attach — narrow the date range or cost codes and try again.' });
-  }
-
-  const wrapped = buildEmailHtml({
-    title:        finalSubject,
+  const sent = await deliverReport({
+    label:        cfg.label,
+    projectName:  project_name,
+    recipients:   cleaned,
+    subject,
     note,
-    // The full table goes in the body only when there's no PDF carrying it.
-    bodyHtml:     pdfAttachment ? '' : safeBody,
+    html,
+    attachments:  att.attachments,
     summary,
-    attachmentNote: pdfAttachment
-      ? `Full report attached as PDF${pdfPages ? ` (${pdfPages} page${pdfPages === 1 ? '' : 's'})` : ''}.`
-      : null,
+    attachPdf,
     companyName:  payload.companyName,
-    generatedAt:  new Date().toLocaleString('en-US', {
-      weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
-      hour: '2-digit', minute: '2-digit',
-    }),
+    logTag:       'user=' + payload.username + ' report=' + report_type,
   });
 
-  const result = await sendEmail({
-    to:          cleaned,
-    subject:     finalSubject,
-    html:        wrapped,
-    attachments: finalAttachments,
-  });
-
-  if (!result.ok) {
-    console.error('[email/send-report] failed:',
-      result.error,
-      'user=' + payload.username,
-      'company=' + payload.companyCode,
-      'report=' + report_type
-    );
-    return res.status(502).json({ ok: false, error: result.error || 'Email send failed' });
+  if (!sent.ok) {
+    if (sent.status === 502) {
+      console.error('[email/send-report] failed:',
+        sent.error,
+        'user=' + payload.username,
+        'company=' + payload.companyCode,
+        'report=' + report_type
+      );
+    }
+    return res.status(sent.status || 502).json({ ok: false, error: sent.error || 'Email send failed' });
   }
 
   console.log('[email/send-report] sent',
-    'id=' + result.id,
+    'id=' + sent.id,
     'user=' + payload.username,
     'company=' + payload.companyCode,
     'report=' + report_type,
     'recipients=' + cleaned.length,
-    'pdf=' + (pdfAttachment ? (pdfPages ? pdfPages + 'p' : 'yes') : 'no')
+    'pdf=' + (sent.pdfAttached ? (sent.pdfPages ? sent.pdfPages + 'p' : 'yes') : 'no')
   );
 
   return res.json({
     ok:             true,
-    id:             result.id,
+    id:             sent.id,
     recipientCount: cleaned.length,
-    pdfAttached:    Boolean(pdfAttachment),
-    ...(pdfPages ? { pdfPages } : {}),
-    ...(warning ? { warning } : {}),
+    pdfAttached:    sent.pdfAttached,
+    ...(sent.pdfPages ? { pdfPages: sent.pdfPages } : {}),
+    ...(sent.warning ? { warning: sent.warning } : {}),
   });
 };

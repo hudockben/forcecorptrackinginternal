@@ -2569,6 +2569,7 @@
     </div>
   </div>
 
+  <script src="auto-report.js"></script>
   <script src="report-branding.js" defer></script>
   <script src="report-email.js" defer></script>
   <script src="mathis.js" defer></script>
@@ -10641,6 +10642,39 @@ ${sections}
         if (document.visibilityState === 'hidden') return;
         renderOnline(await presenceGet());
       }, POLL_MS);
+    })();
+
+    /* ═══════════════════════════════════════════
+       SCHEDULED REPORTS — Manage Users → Auto Reports
+       The server opens this page in a headless browser, signed in as the
+       admin who set the schedule up, and asks for a report through
+       auto-report.js. It is the Break-Even tab's Email button, pressed with
+       the schedule's year.
+    ═══════════════════════════════════════════ */
+    (function registerAutoReports() {
+      const AR = window.dwAutoReport;
+      if (!AR) return;
+      AR.register('quarry_breakeven', async spec => {
+        await AR.waitFor(() => listsLoaded, 30000, 'The quarry lists');
+        // What opening the tab does: pull daily, crushing, sales, fixed costs,
+        // royalty and benchmarks, then draw.
+        await refreshBreakeven();
+        // The loaders answer a failed read with an empty book and carry on, and
+        // a break-even emailed off one is wrong rather than empty. Sales,
+        // crushing and daily say whether they were ever read; the lists, fixed
+        // costs and royalty are read again here, where a failure is a failure.
+        if (!salesFetchedOnce || !crushFetchedOnce || !dailyFetchedOnce) throw new Error('The quarry entries did not load.');
+        try {
+          quarryLists        = await fetchLists();
+          quarryMonthlyFixed = await fetchMonthlyFixed();
+          quarryRoyalty      = await fetchRoyalty();
+        } catch (err) {
+          throw new Error('The quarry lists, fixed costs or royalty did not load — ' + ((err && err.message) || err));
+        }
+        yearFilters.breakeven = spec.year === 'all' ? 'all' : String(spec.year || new Date().getFullYear());
+        renderBreakeven();
+        return AR.capture(() => emailBreakevenReport());
+      });
     })();
   </script>
 

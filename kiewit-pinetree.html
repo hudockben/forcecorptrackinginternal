@@ -2562,6 +2562,7 @@
     .cs-tablewrap::-webkit-scrollbar-corner { background: transparent; }
   </style>
   <script defer src="/_vercel/speed-insights/script.js"></script>
+  <script src="auto-report.js"></script>
   <script src="report-branding.js" defer></script>
   <script src="report-email.js" defer></script>
   <script src="documents.js" defer></script>
@@ -5927,6 +5928,11 @@ const PROJECTS_KEY = 'fct_kiewit_projects';
 const INFO_KEY_LEGACY = 'fct_kiewit_project_info'; // for migration only
 
 let projectsList = [];
+// Settles once loadProjects' background fetch of daily rows older than 90 days
+// has landed (or failed). Running quantities, averages and the Daily Summary
+// read the whole history, and a person who has had the page open a few
+// seconds has it — so a scheduled report (auto-report.js) waits for it too.
+let _drBackfillDone = Promise.resolve();
 let _lastProjIndexTs = 0;
 let projSearch   = '';
 let projPage     = 0;
@@ -6254,8 +6260,9 @@ async function _loadAndMigrateDailyRows() {
 
   _distributeRows(recentRows);
 
-  // Backfill older rows in the background (non-blocking)
-  setTimeout(async () => {
+  // Backfill older rows in the background (non-blocking). Kept as a promise
+  // so a scheduled report can wait for the whole history — see _drBackfillDone.
+  _drBackfillDone = new Promise(resolve => setTimeout(async () => {
     try {
       const older = await drGetAll();
       const olderRows = Array.isArray(older) ? older : [];
@@ -6267,8 +6274,10 @@ async function _loadAndMigrateDailyRows() {
       }
     } catch (err) {
       console.warn('[daily-rows] backfill error:', err.message);
+    } finally {
+      resolve();
     }
-  }, 2000);
+  }, 2000));
 }
 
 // Save a single project blob (metadata only — dailyRows live in daily_tracking table)
@@ -22148,7 +22157,7 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
 /* ═══════════════════════════════════════════
    INIT
 ═══════════════════════════════════════════ */
-(async () => {
+const _bootReady = (async () => {
   // ── Instant render from localStorage cache so home tab is visible immediately ──
   try {
     const cached = JSON.parse(localStorage.getItem(PROJECTS_KEY));
@@ -22191,6 +22200,100 @@ const ROLE_LABELS = { admin: 'Admin', level3: 'Level 3 (Full)', level2: 'Level 2
     renderHeaderActions();
     // renderProjectsTab() and renderCostTable() are lazy — only render on tab click
   }, 0);
+})();
+
+/* ═══════════════════════════════════════════
+   SCHEDULED REPORTS — Manage Users → Auto Reports
+   The server opens this page in a headless browser, signed in as the admin
+   who set the schedule up, and asks for a report through auto-report.js.
+   Each one below is its Email button pressed at the set time: the same
+   function, handed what the button's dialog would have handed it.
+═══════════════════════════════════════════ */
+(function registerAutoReports() {
+  const AR = window.dwAutoReport;
+  if (!AR) return;
+
+  // Ready means what a person has once the page has settled: every list and
+  // job, plus the daily-row history older than 90 days that lands just after.
+  AR.ready(_bootReady.then(() => _drBackfillDone));
+
+  // "Every In Progress job" means the jobs marked In Progress — the status the
+  // PMs already keep, so nobody maintains a second list of what is running.
+  AR.jobs(() => projectsList
+    .filter(p => String(p['status'] || '').trim() === 'In Progress')
+    .map(p => ({ id: p.id, name: p['project-name'] || p['job-number'] || 'Untitled', jobNumber: p['job-number'] || '' })));
+
+  const jobFor = spec => {
+    const p = getProj(spec.projectId);
+    if (!p) throw new Error((spec.projectName || 'The job') + ' is no longer in Kiewit Pinetree — edit or delete this schedule.');
+    return p;
+  };
+
+  AR.register('kiewit_daily_pm', async spec => {
+    const p = jobFor(spec);
+    // What opening the Daily PM overlay does first: the deadlines, and the AI
+    // read of the job (its own once-a-day cache; left out if the AI is down).
+    // Twenty seconds at most for that read: a slow answer must not use up a
+    // run that has a report to build for every job after this one.
+    if (!_schedDeadlinesLoaded) await loadScheduleDeadlines();
+    await Promise.race([_fetchSchedAI(p), new Promise(r => setTimeout(r, 20000))]);
+    _pmrProjId = p.id;
+    return AR.capture(() => emailDailyPMReport());
+  }, { perJob: true });
+
+  AR.register('kiewit_daily_summary', async spec => {
+    const projVal = spec.projectId ? String(projectsList.indexOf(jobFor(spec))) : 'all';
+    const item = await AR.capture(() => emailDailySummaryReport(projVal, spec.start, spec.end));
+    // The button's subject names the first day only; a week's summary says so.
+    if (item && !item.skip && !item.projectName && spec.start !== spec.end) {
+      item.subject = 'Daily Production Summary — ' + spec.start + ' to ' + spec.end;
+    }
+    return item;
+  });
+
+  AR.register('kiewit_bid_items', spec => {
+    const p = jobFor(spec);
+    showBidPDFOptions(p.id, 'email');   // opens with every cost code ticked
+    return AR.capture(() => generateBidEmail());
+  }, { perJob: true });
+
+  AR.register('kiewit_job_summary', spec => {
+    const p = jobFor(spec);
+    openJobSummaryModal(p.id);
+    return AR.capture(() => jobSummaryEmail());
+  }, { perJob: true });
+
+  // The tab's own Email reads whichever schedule the tab has open, and its
+  // getHTML runs late — so borrow the job's saved schedule for the length of
+  // the build, the way the job summary does, rather than open it in the tab.
+  AR.register('kiewit_construction_schedule', async spec => {
+    const p = jobFor(spec);
+    // Read here rather than through _jsFetchConSchedule, which answers a
+    // failed read the same as "never built" — and the run must say which.
+    const got = await apiGetChecked(_csKey(p.id));
+    if (!got.ok) throw new Error('The construction schedule could not be read.');
+    const saved = got.value;
+    if (!(saved && typeof saved === 'object' && Array.isArray(saved.rows) && saved.rows.length)) {
+      return { skip: 'No construction schedule has been built for this job.' };
+    }
+    saved.header = Object.assign({ heading: '', projectTitle: '', pm: '', company: '', date: '' }, saved.header || {});
+    saved.projectId = p.id;
+    return _jsWithConSchedule(saved, () => {
+      try { _csAutofillHeader(p); } catch (_) { /* header stays as saved */ }
+      const h = _csData.header || {};
+      const title = h.projectTitle || h.heading || 'Construction Schedule';
+      const png = _csGanttToPng();
+      return {
+        html:        _csBuildEmailReportHtml(png),
+        subject:     'Construction Schedule — ' + title,
+        projectId:   p.id,
+        projectName: title,
+        attachments: png && png.dataUrl
+          ? [{ filename: 'construction-gantt.png', content: png.dataUrl.split(',')[1], contentId: 'cs-gantt' }]
+          : [],
+      };
+    });
+  }, { perJob: true });
 })();
 
 /* ═══════════════════════════════════════════
@@ -23810,7 +23913,7 @@ function printDailyPMReport(opts) {
 
   const counts = { 'on-track': 0, 'at-risk': 0, 'behind': 0, 'complete': 0, 'no-data': 0, 'not-started': 0 };
   const cardRows = bidItems.map(bi => {
-    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, isLumpSum, notStartedYet } = _schedCalcRow(bi, agg, daysLeft, deadline);
+    const { a, bidQty, runningQty, daysWorked, currentPace, pct, requiredPace, gap, status, usingPPDays, effectiveDaysLeft, isLumpSum, notStartedYet, unitsPerHour } = _schedCalcRow(bi, agg, daysLeft, deadline);
     counts[status]++;
 
     // Trend (print)
@@ -23956,9 +24059,14 @@ function printDailyPMReport(opts) {
   <script>window.onload=()=>{window.print();}<\/script>
   </body></html>`;
 
+  if (_returnHtml) {
+    return { html, projId, projName, jobNum };
+  }
+
   const win = window.open('', '_blank');
   dwWrite(win, html);
   win.document.close();
+  return null;
 }
 
 /* ── Schedule PDF Export ─────────────────────────────────────────────────── */
@@ -24187,14 +24295,9 @@ async function printSchedulePDF() {
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
 
-  if (_returnHtml) {
-    return { html, projId, projName, jobNum };
-  }
-
   const win = window.open('', '_blank');
   dwWrite(win, html);
   win.document.close();
-  return null;
 }
 
 function emailDailyPMReport() {

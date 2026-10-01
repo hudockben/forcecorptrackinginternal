@@ -349,6 +349,7 @@
        the confirmations that drag-and-drop relies on. */
     .toast { position:fixed; bottom:1rem; left:1rem; background:var(--surface2); border:1px solid var(--border); border-radius:8px; padding:0.55rem 0.9rem; font-size:0.76rem; z-index:200; opacity:0; transition:opacity .2s; } .toast.show { opacity:1; }
   </style>
+<script src="auto-report.js"></script>
 <script src="report-branding.js" defer></script>
 <script src="mathis.js" defer></script>
 </head>
@@ -536,13 +537,16 @@ async function loadAll() {
   try {
     const [board, asn, crews, rows] = await Promise.all([
       api('/api/scheduler/board?today=' + todayStr()),
-      api('/api/data/' + ASSIGN_KEY).catch(() => ({ value:null })),
+      // A failed read is noted, not just emptied: Auto Reports must not send
+      // (or skip) a dispatch with every crew missing as if that were the day.
+      api('/api/data/' + ASSIGN_KEY).catch(err => ({ value:null, readError: (err && err.message) || 'failed' })),
       api('/api/data/' + CREWS_KEY).catch(() => ({ value:null })),
       api('/api/data/' + ROWS_KEY).catch(() => ({ value:null })),
     ]);
     state.board = board;
     takeRowChoices(rows && rows.value);
     const v = asn && asn.value;
+    state.assignReadError = (asn && asn.readError) || null;
     // The hauls trucking already has on, straight off the board payload, and
     // the board's own rows out of its own blob — kept apart as baselines
     // because they save to different places, and joined for everything else.
@@ -3801,7 +3805,31 @@ if (user) document.getElementById('avatar').textContent = (user.username||'U').s
 Object.assign(window, { addOtherWork, railOffWhy, dropBoardRow, setBoardRow, toggleRowPicker, closeRowPicker, onRowPickTick, onRowPickSearch, onRowPickKey, openLoginReview, closeLoginReview, moveLoginBookings, setLoginMatch, onJobTimeInput, clearJobTime, onJobTimeCell, onJobNoteKey, onJobNoteCell, onJobNoteInput, onJobNoteModalKey, setBoardSpan, openJobTimes, toggleGrp, toggleDivGrp, toggleRail, toggleRailIdle, setRailTab, onRailSearch, crewDrop, openAssignJob, openAssignResource, closeAssign, updatePickList, pickAdd, pickKey, onPickRJob, rConfirmAdd, removeAssignment, removePersonAssignment, toggleHalf, afterMutate, renderModal, setSpan, setCode, toggleEquipPick, filterEquipPick, attachEquip, applyCrewFromPicker, saveCurrentAsCrew, clearCell, toggleMoreOptions, openCrewsModal, closeCrews, deleteCrew,
   newCrew, editCrew, cancelCrewEdit, saveCrewEdit, addCrewMember, removeCrewMember, updateCrewPickList, crewPickKey, onCrewName, copyWeekForward, openDispatchModal, closeDispatch, doPrint, doEmail, autoFill, toggleHideComplete, dismissHint, setCompact });
 wireBoardDnD();
-loadAll();
+const _schedBoot = loadAll();
+
+/* ═══════════════════════════════════════════
+   SCHEDULED REPORTS — Manage Users → Auto Reports
+   The server opens this page in a headless browser, signed in as the admin
+   who set the schedule up, and asks for a report through auto-report.js. It
+   is the dispatch dialog's Send, for one day, laid out by job — the dialog's
+   defaults — with the board moved to the day the schedule asks for.
+═══════════════════════════════════════════ */
+(function registerAutoReports() {
+  const AR = window.dwAutoReport;
+  if (!AR) return;
+  AR.ready(_schedBoot);
+  AR.register('scheduler_dispatch', spec => {
+    // loadAll swallows its own failure and leaves the board unset.
+    if (!state.board) throw new Error('The schedule did not load.');
+    if (state.assignReadError) throw new Error('The crew assignments could not be read — ' + state.assignReadError);
+    state.weekAnchor = startOfDay(new Date(spec.day + 'T12:00:00'));
+    const dates = dispatchDates('day');
+    // From the data, not by looking for the empty-state words in the sheet: a
+    // crew note can say "No assignments change…" too.
+    if (!dates.some(d => (state.assignments[d] || []).length)) return { skip: 'Nothing scheduled for ' + dispatchDayWords() + '.' };
+    return { html: buildDispatchBody('job', dates), subject: dispatchTitle('day') };
+  });
+})();
 </script>
 </body>
 </html>
