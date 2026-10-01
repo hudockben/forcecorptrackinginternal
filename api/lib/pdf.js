@@ -156,10 +156,12 @@ async function renderHtmlToPdf(html, opts = {}) {
     page.setDefaultTimeout(NAV_TIMEOUT_MS);
 
     await page.setRequestInterception(true);
+    // continue()/abort() answer with a promise that Puppeteer rejects when it
+    // cannot apply them; unhandled, that ends the whole function on Vercel.
     page.on('request', req => {
       try {
-        if (isSafeRequestUrl(req.url())) req.continue();
-        else req.abort();
+        const answer = isSafeRequestUrl(req.url()) ? req.continue() : req.abort();
+        if (answer && typeof answer.catch === 'function') answer.catch(() => {});
       } catch { /* request already handled */ }
     });
 

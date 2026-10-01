@@ -634,6 +634,38 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
       allRuns.length === 1 && allRuns[0].project_name === null && allRuns[0].project_id === null, JSON.stringify(allRuns));
   }
 
+  console.log('\nWhere a run has got to');
+  {
+    const mk = async over => (await call('POST', {}, { ...base, ...over }, BOSS)).body.schedule.id;
+    const pg = await mk({});
+    const tok = runner.newClaimToken();
+    await client.query("UPDATE report_schedules SET claimed_at = NOW(), claim_token = $2, last_status = 'sending', last_message = 'Building and sending.' WHERE id = $1", [pg, tok]);
+    const snap = await row(pg);
+    const note = runner.progressWriter(sql, snap, tok);
+    note('Building Maple Ave (3 of 12); 2 reports sent so far; 900 MB in use');
+    await new Promise(r => setTimeout(r, 150));
+    let s = await row(pg);
+    assert('a run notes its step on the row while it sends',
+      s.last_message === 'Working: Building Maple Ave (3 of 12); 2 reports sent so far; 900 MB in use', s.last_message);
+    let g = await call('GET', {}, null, BOSS);
+    let shown = g.body.schedules.find(x => Number(x.id) === Number(pg));
+    assert('…which the tab gets, still sending', shown.sending === true && /^Working: Building Maple Ave/.test(shown.last_message));
+    await client.query("UPDATE report_schedules SET claimed_at = NOW() - interval '20 minutes' WHERE id = $1", [pg]);
+    g = await call('GET', {}, null, BOSS);
+    shown = g.body.schedules.find(x => Number(x.id) === Number(pg));
+    assert('cut off there, it reads Interrupted and says where it stopped',
+      shown.last_status === 'interrupted'
+        && shown.last_message === 'The run was cut off at: Building Maple Ave (3 of 12); 2 reports sent so far; 900 MB in use. Some of its emails may have gone out; the rest did not.',
+      shown.last_message);
+    await runner.recordRun(sql, snap, { status: 'sent', sent: 12, total: 12, recipientCount: 1, message: 'Sent 12 reports to 1 recipient.' },
+      { kind: 'manual', token: tok, startedAt: new Date(), now: new Date() });
+    note('Making the PDF and sending Oak St (12 of 12); a late note');
+    await new Promise(r => setTimeout(r, 150));
+    s = await row(pg);
+    assert('a note that lands after the run is written down does not overwrite its result',
+      s.last_status === 'sent' && s.last_message === 'Sent 12 reports to 1 recipient.', `${s.last_status} ${s.last_message}`);
+  }
+
   console.log('\nHistory');
   {
     const r = await call('GET', {}, null, BOSS);

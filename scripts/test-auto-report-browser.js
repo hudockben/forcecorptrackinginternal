@@ -288,6 +288,7 @@ async function build(browser, baseUrl, type, extra = {}) {
   }
 }
 
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.html.includes(s));
 
 (async () => {
@@ -650,6 +651,27 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
     HANG.clear();
     ok('a page that never finishes loading names the request it is waiting on',
       /^Opening the report took longer than \d+s\. Still waiting on GET \/api\/daily-rows\?/.test(stuck), stuck);
+
+    console.log('\nWhat production found, the second time');
+    // A rejected answer to a paused request (here: a header Chrome refuses)
+    // used to go unhandled, which ends the function on Vercel — a bare 500.
+    const rejections = [];
+    const onRejection = e => rejections.push(String((e && e.message) || e));
+    process.on('unhandledRejection', onRejection);
+    process.env.VERCEL_AUTOMATION_BYPASS_SECRET = 'bad\nsecret';
+    SENT.length = 0;
+    const steps = [];
+    res = await runSchedule(fakeSql, sched, { baseUrl, browser, now: new Date(), progress: t => steps.push(t) });
+    delete process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+    await sleep(200);
+    process.removeListener('unhandledRejection', onRejection);
+    ok('a request Chrome will not take with the bypass header still goes, without it — no stray rejection, nothing hung',
+      res.status === 'sent' && SENT.length === 2 && rejections.length === 0, JSON.stringify({ res, rejections }));
+    ok('the run notes each step as it goes, with what has been sent and the memory in use',
+      /^Opening the Turf Management page; 0 reports sent so far; \d+ MB in use$/.test(steps[0] || '')
+        && steps.some(t => /^Building Turf Maple Ave \(1 of 2\); 0 reports sent so far/.test(t))
+        && /^Making the PDF and sending Turf Oak St \(2 of 2\); 1 report sent so far; \d+ MB in use$/.test(steps[steps.length - 1] || ''),
+      JSON.stringify(steps));
 
     console.log('\nWhat the second review found');
     // Stopped partway — here, saved over mid-send — the rest is handed back,

@@ -63,6 +63,15 @@ const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
  * left 'sending' behind as its last status — shown as Interrupted, since some
  * of its emails may have gone.
  */
+// A run cut off partway (the function stopped: out of memory, out of time, a
+// crash) leaves its last progress note on the row; say where it got to.
+function cutOffMessage(lastMessage) {
+  const tail = 'Some of its emails may have gone out; the rest did not.';
+  const m = String(lastMessage || '');
+  if (!m.startsWith(runner.PROGRESS_PREFIX)) return `The run was cut off before it finished. ${tail}`;
+  return `The run was cut off at: ${m.slice(runner.PROGRESS_PREFIX.length)}. ${tail}`;
+}
+
 function shape(r) {
   const fresh = Boolean(r.claimed_at) && Date.now() - new Date(r.claimed_at).getTime() < runner.STALE_CLAIM_MS;
   const cutOff = r.last_status === 'sending' && !fresh;
@@ -87,9 +96,7 @@ function shape(r) {
     next_run_at:   r.next_run_at,
     last_run_at:   r.last_run_at,
     last_status:   cutOff ? 'interrupted' : r.last_status,
-    last_message:  cutOff
-      ? 'The run was cut off before it finished. Some of its emails may have gone out; the rest did not.'
-      : r.last_message,
+    last_message:  cutOff ? cutOffMessage(r.last_message) : r.last_message,
     sending:       fresh,
     created_by_username: r.created_by_username,
     updated_at:    r.updated_at,
@@ -289,6 +296,7 @@ module.exports = async (req, res) => {
       const result = await runner.runSchedule(sql, claimed, {
         // Inside the function's 300 seconds, as the cron's is.
         baseUrl: runner.appBaseUrl(req), now: startedAt, deadline: startedAt.getTime() + 285_000,
+        progress: runner.progressWriter(sql, claimed, token),
       });
       try {
         await runner.recordRun(sql, claimed, result, {
