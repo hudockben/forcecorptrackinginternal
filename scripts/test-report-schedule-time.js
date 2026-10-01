@@ -59,6 +59,8 @@ eq('monthly on the last day finds a leap day',
   T.nextRunAt(occ('monthly', '07:00', { day_of_month: -1 }), at('2028-02-01T00:00:00Z')), at('2028-02-29T12:00:00Z'));
 eq('another zone is that zone\'s clock',
   T.nextRunAt({ frequency: 'daily', send_time: '06:30', timezone: 'America/Chicago' }, at('2026-10-01T10:00:00Z')), at('2026-10-01T11:30:00Z'));
+eq('where a spring-forward gap spans midnight (Nuuk), the moved occurrence is not skipped',
+  T.nextRunAt({ frequency: 'daily', send_time: '23:30', timezone: 'America/Nuuk' }, at('2026-03-29T01:00:00.728Z')), at('2026-03-29T01:30:00Z'));
 eq('an occurrence that can never fire has no next send', T.nextRunAt(occ('weekly', '07:00', { days_of_week: [] }), at('2026-10-01T00:00:00Z')), null);
 
 console.log('\nWhat the editor may save');
@@ -68,6 +70,9 @@ eq('fields a frequency does not use are dropped',
   T.normalizeOccurrence({ frequency: 'daily', send_time: '07:15', days_of_week: [1], day_of_month: 4 }).value,
   { frequency: 'daily', send_time: '07:15', timezone: NY, days_of_week: null, day_of_month: null });
 eq('no time is refused', T.normalizeOccurrence({ frequency: 'daily' }).ok, false);
+eq('11:57 PM is refused — the server checks every five minutes, so it would go out tomorrow',
+  T.normalizeOccurrence({ frequency: 'daily', send_time: '23:57' }).error, 'Pick a time on a five-minute mark — the server checks every five minutes.');
+eq('11:55 PM is fine', T.normalizeOccurrence({ frequency: 'daily', send_time: '23:55' }).ok, true);
 eq('24:00 is refused', T.normalizeOccurrence({ frequency: 'daily', send_time: '24:00' }).ok, false);
 eq('weekly with no day is refused, in words', T.normalizeOccurrence({ frequency: 'weekly', send_time: '07:00' }).error, 'Pick at least one day of the week.');
 eq('monthly on the 32nd is refused', T.normalizeOccurrence({ frequency: 'monthly', send_time: '07:00', day_of_month: 32 }).ok, false);

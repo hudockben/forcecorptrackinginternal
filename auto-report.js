@@ -28,9 +28,14 @@
  * is an answer, not a failure: an empty report is an email people learn to
  * ignore.
  *
- * The server side (api/lib/report-schedule-runner.js) calls one thing:
+ * The server side (api/lib/report-schedule-runner.js) calls two things:
  *
- *   await dwAutoReport.build(spec)  →  { items: [...], skipped: [...] }
+ *   await dwAutoReport.plan(spec)   →  { jobs: null } | { jobs: [{ id, name }] }
+ *   await dwAutoReport.build(spec)  →  { items: [...], skipped: [...], errors: [...] }
+ *
+ * For "every In Progress job" it asks for the jobs, then builds one job per
+ * call — each with its own time limit, and sent before the next is built — so
+ * a slow job costs that job, not every report already made.
  *
  * spec: { type, projectId ('*' = every In Progress job), start, end, day,
  *         options, timezone }.
@@ -147,6 +152,15 @@
     register(type, fn, opts) { registry[type] = { fn, perJob: Boolean(opts && opts.perJob) }; },
     types() { return Object.keys(registry); },
     has(type) { return Boolean(registry[type]); },
+
+    // The jobs an every-job spec covers; null for anything that is one build.
+    async plan(spec) {
+      const entry = spec && registry[spec.type];
+      if (!entry) throw new Error('This page cannot build "' + (spec && spec.type) + '".');
+      if (readyPromise) await readyPromise;
+      if (!entry.perJob || spec.projectId !== '*') return { jobs: null };
+      return { jobs: asArray(jobsFn ? jobsFn() : []).map(j => ({ id: j.id, name: j.name || null })) };
+    },
 
     async build(spec) {
       const out = { items: [], skipped: [], errors: [] };

@@ -792,7 +792,8 @@
     .ar-badge.partial { color: #f59e0b; background: rgba(245,158,11,0.12); }
     .ar-badge.skipped { color: #94a3b8; background: rgba(100,116,139,0.14); }
     .ar-badge.failed,
-    .ar-badge.missed  { color: #f87171; background: rgba(239,68,68,0.12); }
+    .ar-badge.missed,
+    .ar-badge.interrupted { color: #f87171; background: rgba(239,68,68,0.12); }
     .ar-badge.due     { color: #f59e0b; background: rgba(245,158,11,0.14); }
     .ar-badge.sending { color: #60a5fa; background: rgba(96,165,250,0.14); }
     .ar-badge.off,
@@ -3334,6 +3335,8 @@
     let arPoll     = null;
     let arFreq     = 'weekdays';
     let arDays     = new Set([1]);
+    const arSendingIds = new Set();   // Send now presses still in flight, so a redraw cannot re-arm the button
+    let arSavingGroup  = false;
     const arProjects = {};      // division → jobs, for the editor's job picker
     const AR_DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const AR_DAY_INIT  = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -3343,6 +3346,7 @@
       skipped: 'Nothing to send',
       failed:  'Failed',
       missed:  'Missed',
+      interrupted: 'Interrupted',
     };
 
     function arTz() { return (arData && arData.defaultTimezone) || 'America/New_York'; }
@@ -3430,9 +3434,9 @@
         label: AR_RESULT[s.last_status] || s.last_status,
         when:  arFmtWhen(s.last_run_at),
       } : null;
-      const bad = Boolean(last && ['failed', 'missed', 'partial'].includes(last.cls));
+      const bad = Boolean(last && ['failed', 'missed', 'partial', 'interrupted'].includes(last.cls));
+      if (s.sending || arSendingIds.has(s.id)) return { badge: { cls: 'sending', label: 'Sending…' }, last, flag: 'due', bad, sending: true };
       if (!s.enabled) return { badge: { cls: 'off', label: 'Off' }, last, flag: '', bad: false };
-      if (s.sending) return { badge: { cls: 'sending', label: 'Sending…' }, last, flag: 'due', bad };
       if (next && next <= now) return { badge: { cls: 'due', label: 'Due now' }, last, flag: 'due', bad, due: true };
       if (last) return { badge: { cls: last.cls, label: last.label + (last.when ? ' · ' + last.when : '') }, last, flag: bad ? 'bad' : '', bad, lastShown: true };
       return { badge: { cls: 'new', label: 'Not sent yet' }, last, flag: '', bad: false };
@@ -3546,10 +3550,10 @@
       const scope = arScopeText(s, def);
       const st    = arStatusOf(s);
       const name  = def ? def.name : s.report_type;
-      const next  = s.enabled && s.next_run_at && !st.due && !s.sending ? 'Next: ' + arFmtWhen(s.next_run_at) : '';
+      const next  = s.enabled && s.next_run_at && !st.due && !st.sending ? 'Next: ' + arFmtWhen(s.next_run_at) : '';
       let msg = '';
       if (st.due) msg = 'Its time has come — it goes out on the next check, within five minutes.';
-      else if (s.sending) msg = 'Building and sending now.';
+      else if (st.sending) msg = 'Building and sending now.';
       else if (st.last && s.last_message) msg = (st.lastShown ? '' : `Last: ${st.last.label} ${st.last.when} — `) + s.last_message;
       const msgBad = st.bad && !st.due && !s.sending;
       return `
@@ -3577,7 +3581,7 @@
             </label>
           </div>
           <div class="ar-c-act">
-            <button class="ar-send-btn" onclick="arSendNow(${s.id}, this)" ${s.sending ? 'disabled' : ''} title="Build it and send it to its groups right now">Send now</button>
+            <button class="ar-send-btn" onclick="arSendNow(${s.id}, this)" ${st.sending ? 'disabled' : ''} title="Build it and send it to its groups right now">${st.sending ? 'Sending…' : 'Send now'}</button>
             <button class="user-edit-btn" onclick="arEdit(${s.id})">Edit</button>
             <button class="user-del-btn" onclick="arDelete(${s.id})" title="Delete this schedule">&#10005;</button>
           </div>
@@ -3588,11 +3592,10 @@
       const body = document.getElementById('ar-hist-body');
       if (!body || !arData) return;
       const divF = document.getElementById('ar-filter-div').value;
-      const runs = (arData.runs || []).filter(r => {
-        if (!divF) return true;
-        const def = arReportDef(r.report_type);
-        return def && (arData.divisions.find(d => d.key === divF) || { reports: [] }).reports.some(x => x.type === r.report_type);
-      });
+      // The server sends each division's latest few, so a quiet division's
+      // weekly report is here even when a busy one's dailies fill the top.
+      const all = (arData.runs || []).filter(r => !divF || r.division === divF);
+      const runs = divF ? all : all.slice(0, 40);
       if (!runs.length) {
         body.innerHTML = '<tr><td colspan="4" class="mu-empty-cell">Nothing sent yet.</td></tr>';
         return;
@@ -3644,6 +3647,9 @@
     async function arToggle(el, id) {
       const on = el.checked;
       el.disabled = true;
+      // A list read already on its way was read before this change: let it
+      // land on nothing, or it flips the switch back under the banner.
+      arLoadSeq++;
       try {
         const r = await arApi('PUT', 'id=' + id, { enabled: on });
         const i = arData.schedules.findIndex(s => s.id === id);
@@ -3665,8 +3671,14 @@
       if (!s) return;
       const def = arReportDef(s.report_type);
       const name = def ? def.name : s.report_type;
+      if (arSendingIds.has(id)) return;
       if (!confirm(`Send ${name} now to ${arGroupsText(s)}?`)) return;
+      // Held here, not just on the button: the 30-second refresh redraws the
+      // row, and a fresh "Send now" under the admin's thumb mid-send is how a
+      // report goes out twice. (The server refuses a second one as well.)
+      arSendingIds.add(id);
       if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+      renderAutoReports();
       arBanner(`Building ${name} and sending it — this can take a minute.`, 'ok');
       try {
         const r = await arApi('POST', `id=${id}&action=run`, {});
@@ -3675,6 +3687,8 @@
         arBanner(`${name}: ${AR_RESULT[res.status] || res.status}. ${res.message || ''}`, kind);
       } catch (err) {
         arBanner(`${name} was not sent: ${err.message}`, 'err');
+      } finally {
+        arSendingIds.delete(id);
       }
       await loadAutoReports({ quiet: true });
     }
@@ -3739,7 +3753,14 @@
       const head = def.scope === 'job'
         ? [['*', 'Every In Progress job — one email each']]
         : [['', 'All jobs — one report']];
-      arFillSelect(sel, head.concat([['__loading', 'Loading jobs…']]), head[0][0]);
+      // The saved job is an option from the start — while the list loads, and
+      // if it fails to — so Save in either state keeps the schedule on that
+      // job instead of quietly turning it into every job.
+      const savedOpt = value && value !== '*' ? [[value, valueName || value]] : [];
+      const start = value === undefined || value === null ? head[0][0] : value;
+      arFillSelect(sel, head.concat(savedOpt, [['__loading', 'Loading jobs…']]), start);
+      const loadingOpt = sel.querySelector('option[value="__loading"]');
+      if (loadingOpt) loadingOpt.disabled = true;
       if (!arProjects[divKey]) {
         try {
           const res  = await fetch('/api/email/report-schedules?projects=' + encodeURIComponent(divKey), { headers: { Authorization: `Bearer ${token}` } });
@@ -3748,7 +3769,7 @@
           arProjects[divKey] = data.projects || [];
         } catch (err) {
           arProjects[divKey] = null;
-          arFillSelect(sel, head, head[0][0]);
+          arFillSelect(sel, head.concat(savedOpt), start);
           document.getElementById('ar-form-result').textContent = 'Could not load the job list: ' + err.message;
           return;
         }
@@ -3803,12 +3824,14 @@
     }
 
     async function arSaveNewGroup() {
+      if (arSavingGroup) return;   // a double-click would make the group twice
       const name = document.getElementById('ar-ng-name').value.trim();
       const emails = document.getElementById('ar-ng-emails').value.split(/[,;\s]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
       const out = document.getElementById('ar-ng-result');
       out.style.color = '#ef4444';
       if (!name) { out.textContent = 'Give the group a name.'; return; }
       if (!emails.length) { out.textContent = 'Add at least one email address.'; return; }
+      arSavingGroup = true;
       try {
         const res = await fetch('/api/email/recipient-groups', {
           method: 'POST',
@@ -3828,6 +3851,8 @@
         arUpdateSummary();
       } catch (err) {
         out.textContent = err.message;
+      } finally {
+        arSavingGroup = false;
       }
     }
 
@@ -3981,6 +4006,7 @@
       const v = arFormValues();
       if (!v.report_type) { out.textContent = 'Pick a report.'; return; }
       if (!v.send_time) { out.textContent = 'Pick a time.'; return; }
+      if (Number(v.send_time.slice(3)) % 5) { out.textContent = 'Pick a time on a five-minute mark — the server checks every five minutes.'; return; }
       if (v.frequency === 'weekly' && !(v.days_of_week || []).length) { out.textContent = 'Pick at least one day of the week.'; return; }
       if (!v.group_ids.length) { out.textContent = 'Pick at least one recipient group.'; return; }
       const id = document.getElementById('ar-edit-id').value;

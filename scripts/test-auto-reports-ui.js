@@ -87,8 +87,13 @@ function adapt(handler) {
   };
 }
 
+let failJobList = false;   // the editor's job list read fails while this is set
 const server = http.createServer((req, res) => {
   const p = decodeURIComponent(new globalThis.URL(req.url, 'http://x').pathname);
+  if (failJobList && /[?&]projects=/.test(req.url)) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    return res.end(JSON.stringify({ ok: false, error: 'Database unavailable' }));
+  }
   if (ROUTES[p]) {
     let raw = '';
     req.on('data', c => { raw += c; });
@@ -142,7 +147,12 @@ async function cleanUp() {
     divisionRoles: roles, allowedDivisions: Object.keys(roles), isPlatformAdmin: false });
 
   let sendNowCalls = 0;
-  runner.runSchedule = async () => { sendNowCalls++; return { status: 'sent', sent: 1, total: 1, recipientCount: 2, message: 'Sent to 2 recipients.' }; };
+  let sendGate = null;   // while set, a send waits on it — a send still going
+  runner.runSchedule = async () => {
+    sendNowCalls++;
+    if (sendGate) await sendGate;
+    return { status: 'sent', sent: 1, total: 1, recipientCount: 2, message: 'Sent to 2 recipients.' };
+  };
 
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const base = 'http://127.0.0.1:' + server.address().port;
@@ -269,6 +279,52 @@ async function cleanUp() {
     ok('sends it and says how it went', sendNowCalls === 1 && /Sent to 2 recipients/.test(await page.$eval('#ar-status', e => e.textContent)));
     await page.waitForFunction(() => /Send now · benadmin/.test(document.getElementById('ar-hist-body').innerText), { timeout: 8000 }).catch(() => {});
     ok('…and it is in Recent sends', /Send now · benadmin/.test(await page.$eval('#ar-hist-body', b => b.innerText)));
+
+    console.log('\nSend now, pressed again while it is still going');
+    let release;
+    sendGate = new Promise(r => { release = r; });
+    dialogs.length = 0;
+    const callsBefore = sendNowCalls;
+    await page.click(`.ar-row[data-id="${made.id}"] .ar-send-btn`);
+    await page.waitForFunction(() => /Building/.test(document.getElementById('ar-status').textContent), { timeout: 8000 }).catch(() => {});
+    await page.evaluate(() => loadAutoReports({ quiet: true }));   // the 30-second refresh, mid-send
+    await sleep(500);
+    const mid = await page.$eval(`.ar-row[data-id="${made.id}"]`, r => ({ text: r.innerText, disabled: r.querySelector('.ar-send-btn').disabled }));
+    ok('a refresh mid-send keeps the row Sending…, its button off', /SENDING/i.test(mid.text) && mid.disabled === true, JSON.stringify(mid));
+    await page.evaluate(id => arSendNow(id), Number(made.id));   // a second press, past the button
+    await sleep(300);
+    ok('…and a second press asks nothing and sends nothing', dialogs.length === 1 && sendNowCalls === callsBefore + 1,
+      JSON.stringify({ dialogs, calls: sendNowCalls - callsBefore }));
+    release();
+    sendGate = null;
+    await page.waitForFunction(id => /Send now/.test(document.querySelector(`.ar-row[data-id="${id}"] .ar-send-btn`).textContent), { timeout: 8000 }, made.id).catch(() => {});
+    ok('…then, once it is sent, the button comes back',
+      await page.$eval(`.ar-row[data-id="${made.id}"] .ar-send-btn`, b => !b.disabled && b.textContent === 'Send now'));
+
+    console.log('\nA run that was cut off');
+    await db.q(`UPDATE report_schedules SET last_status = 'sending', last_run_at = NOW() - interval '40 minutes',
+        claimed_at = NOW() - interval '40 minutes', claim_token = 'gone', next_run_at = NOW() + interval '1 day' WHERE id = $1`, [made.id]);
+    await page.evaluate(() => loadAutoReports({ quiet: true }));
+    await page.waitForFunction(id => /Interrupted/i.test((document.querySelector(`.ar-row[data-id="${id}"] .ar-badge`) || {}).textContent || ''), { timeout: 8000 }, made.id).catch(() => {});
+    const cut = await page.$eval(`.ar-row[data-id="${made.id}"]`, r => ({ cls: r.className, text: r.innerText }));
+    ok('reads Interrupted, flagged red, not Sending… forever',
+      /flag-bad/.test(cut.cls) && /INTERRUPTED/i.test(cut.text) && !/SENDING/i.test(cut.text), cut.text);
+    ok('…and says some of it may have gone out', /Some of its emails may have gone out/.test(cut.text), cut.text);
+    await db.q("UPDATE report_schedules SET claimed_at = NULL, claim_token = NULL WHERE id = $1", [made.id]);
+
+    console.log('\nThe job list, when it cannot be read');
+    await page.evaluate(() => { delete arProjects.paving; });
+    failJobList = true;
+    await page.click(`.ar-row[data-id="${made.id}"] .user-edit-btn`);
+    await page.waitForFunction(() => /Could not load the job list/.test(document.getElementById('ar-form-result').textContent), { timeout: 8000 }).catch(() => {});
+    const failedPick = await page.$eval('#ar-job', s => ({ value: s.value, text: s.selectedOptions[0] && s.selectedOptions[0].textContent }));
+    ok('Edit says so, and stays on the saved job — not "every job"',
+      failedPick.value === 'pv1' && /Route 30 Overlay/.test(failedPick.text), JSON.stringify(failedPick));
+    await page.click('#ar-save');
+    await page.waitForFunction(() => !document.getElementById('ar-form').classList.contains('open'), { timeout: 8000 }).catch(() => {});
+    const kept = (await db.schedules()).find(r => r.id === made.id);
+    ok('…and Save keeps the schedule on that job', kept && kept.project_id === 'pv1', JSON.stringify(kept && kept.project_id));
+    failJobList = false;
 
     console.log('\nA new recipient group, from the form');
     await page.evaluate(() => arNew('dust'));

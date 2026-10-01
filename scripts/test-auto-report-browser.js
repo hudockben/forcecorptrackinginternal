@@ -168,9 +168,31 @@ function json(res, body, status = 200) {
 }
 function divisionOf(u) { return u.searchParams.get('division') || 'turf'; }
 
+// Reads to fail on purpose (a path, or a /api/data key), to see a failed load
+// reported as a failure rather than emailed as an empty report.
+const FAIL = new Set();
+// The AI's answer time per job id, to see one slow answer not sink a run.
+const AI_DELAY = {};
+// Every request that carried the deployment-protection bypass header.
+const BYPASS_SEEN = { app: 0, other: 0 };
+
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   const p = decodeURIComponent(u.pathname);
+  if (req.headers['x-vercel-protection-bypass']) BYPASS_SEEN.app++;
+  if (FAIL.has(p) || (p.startsWith('/api/data/') && FAIL.has(p.slice('/api/data/'.length)))) {
+    return json(res, { error: 'Database is down' }, 503);
+  }
+  // A page of the app's own that pulls a script from another origin.
+  if (p === '/__fixture/bypass.html') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    return res.end(`<!doctype html><script src="/auto-report.js"></script>
+      <script src="${OTHER_ORIGIN}/lib.js"></script>
+      <script>dwAutoReport.register('fixture', async () => {
+        await fetch('/api/data/fct_lists');
+        return { html: '<p>fixture</p>', subject: 'Fixture' };
+      });</script>`);
+  }
   if (p.startsWith('/api/')) {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && p !== '/api/ai/schedule-analysis') {
       writes.push(req.method + ' ' + p);
@@ -196,7 +218,15 @@ const server = http.createServer((req, res) => {
     if (p === '/api/trucking')        return json(res, { truckingEntries: [] });
     if (p === '/api/deadlines')       return json(res, { deadlines: [] });
     if (p === '/api/ai/schedule-analysis') {
-      return json(res, { summary: 'Excavation is pacing ahead of plan.', recommendations: [], outlook: 'on-track' });
+      let body = '';
+      req.on('data', c => { body += c; });
+      req.on('end', () => {
+        let pid = '';
+        try { pid = JSON.parse(body).projectId; } catch {}
+        setTimeout(() => json(res, { summary: 'Excavation is pacing ahead of plan.', recommendations: [], outlook: 'on-track' }),
+          AI_DELAY[pid] || 0);
+      });
+      return;
     }
     if (p === '/api/dust-rows')   return json(res, { dustRows: DUST_ROWS });
     if (p === '/api/dust-config') return json(res, { settings: { ub_rate: 0 }, lists: { companies: [] } });
@@ -219,6 +249,14 @@ const server = http.createServer((req, res) => {
   if (!f.startsWith(ROOT) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.writeHead(404); return res.end('no'); }
   res.writeHead(200, { 'Content-Type': f.endsWith('.js') ? 'text/javascript' : 'text/html; charset=utf-8' });
   res.end(fs.readFileSync(f));
+});
+
+// Another origin, standing in for a CDN.
+let OTHER_ORIGIN = '';
+const other = http.createServer((req, res) => {
+  if (req.headers['x-vercel-protection-bypass']) BYPASS_SEEN.other++;
+  res.writeHead(200, { 'Content-Type': 'text/javascript' });
+  res.end('window.__cdn = 1;');
 });
 
 const ACCT = {
@@ -244,6 +282,8 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
 
 (async () => {
   await new Promise(r => server.listen(0, '127.0.0.1', r));
+  await new Promise(r => other.listen(0, '127.0.0.1', r));
+  OTHER_ORIGIN = 'http://127.0.0.1:' + other.address().port;
   const baseUrl = 'http://127.0.0.1:' + server.address().port;
   const browser = await launchBrowser();
   try {
@@ -486,9 +526,83 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
       options: { day: 'today' } }, { baseUrl, browser, now: new Date() });
     ok('a dispatch with nothing on the board is skipped, and nothing is sent',
       res.status === 'skipped' && SENT.length === 0 && /Nothing to send — Nothing scheduled/.test(res.message), JSON.stringify(res));
+    console.log('\nWhat the review found');
+    // The bypass secret goes to the app and nowhere else.
+    process.env.VERCEL_AUTOMATION_BYPASS_SECRET = 'SECRET-BYPASS';
+    const fixtureDef = { page: '__fixture/bypass.html', division: 'turf', label: 'Fixture' };
+    let fx;
+    try { fx = await buildInBrowser(browser, { baseUrl, def: fixtureDef, acct: ACCT, spec: { type: 'fixture', timezone: 'America/New_York' } }); }
+    catch (err) { fx = { error: err.message }; }
+    delete process.env.VERCEL_AUTOMATION_BYPASS_SECRET;
+    ok('the deployment-protection bypass secret goes to the app\'s own requests…', !fx.error && fx.items.length === 1 && BYPASS_SEEN.app >= 2,
+      fx.error || JSON.stringify(BYPASS_SEEN));
+    ok('…and never to another origin, a CDN\'s included', BYPASS_SEEN.other === 0, JSON.stringify(BYPASS_SEEN));
+
+    // One slow AI answer costs that job its AI block, not the run.
+    AI_DELAY.p1 = 25000;
+    const t0 = Date.now();
+    r = await build(browser, baseUrl, 'turf_daily_pm', { projectId: '*' });
+    delete AI_DELAY.p1;
+    ok('a Daily PM job whose AI read is slow still goes out, without the AI block, and the next job too',
+      !r.error && r.out.items.length === 2 && !has(r.out.items[0], 'pacing ahead') && has(r.out.items[1], 'pacing ahead'),
+      r.error || JSON.stringify({ n: r.out.items.length, errs: r.out.errors }));
+    ok('…waiting about twenty seconds for it, not forever', Date.now() - t0 < 60000, `${Date.now() - t0}ms`);
+
+    // A failed read is a failure, not "nothing to send".
+    FAIL.add('fct_conschedule_p1');
+    r = await build(browser, baseUrl, 'turf_construction_schedule', { projectId: 'p1' });
+    FAIL.clear();
+    ok('a construction schedule that could not be read fails, rather than "never built"',
+      !r.error && r.out.items.length === 0 && r.out.skipped.length === 0 && /could not be read/.test((r.out.errors[0] || {}).error),
+      r.error || JSON.stringify(r.out));
+    FAIL.add('fct_scheduler_assignments');
+    r = await build(browser, baseUrl, 'scheduler_dispatch', { day: YESTERDAY });
+    FAIL.clear();
+    ok('crew assignments that could not be read fail the dispatch, rather than "nothing scheduled"',
+      !r.error && r.out.skipped.length === 0 && /crew assignments could not be read/.test((r.out.errors[0] || {}).error),
+      r.error || JSON.stringify(r.out));
+    FAIL.add('/api/dust-config');
+    r = await build(browser, baseUrl, 'dust_tracking_summary', { start: daysAgo(7), end: YESTERDAY });
+    FAIL.clear();
+    ok('dust rates that could not be read fail the report, rather than price every gallon at $0',
+      !r.error && r.out.items.length === 0 && /rates and customer list did not load/.test((r.out.errors[0] || {}).error),
+      r.error || JSON.stringify(r.out));
+    STORE.fct_quarry_sales = [{ id: 's1', date: YESTERDAY, location: 'Pit 2', product: '2A Modified', tons: 400, price: 14, total: 5600 }];
+    FAIL.add('fct_quarry_monthly_fixed');
+    r = await build(browser, baseUrl, 'quarry_breakeven', { year: String(today.getFullYear()) });
+    FAIL.clear();
+    delete STORE.fct_quarry_sales;
+    ok('quarry fixed costs that could not be read fail the break-even, rather than email it without them',
+      !r.error && r.out.items.length === 0 && /did not load/.test((r.out.errors[0] || {}).error),
+      r.error || JSON.stringify(r.out));
+
+    // Switched off while it was being built: nothing more goes.
+    SENT.length = 0;
+    res = await runSchedule(fakeSql, sched, { baseUrl, browser, now: new Date(),
+      stillWanted: async () => 'It was switched off while it was being built, so nothing more was sent.' });
+    ok('a schedule switched off mid-run sends nothing more, and says why',
+      SENT.length === 0 && res.status === 'skipped' && /switched off/.test(res.message), JSON.stringify(res));
+
+    // More addresses than one email carries go as several emails, not fewer people.
+    const manySql = (strings, ...vals) => {
+      const q = strings.join('?');
+      if (/FROM report_recipient_groups/.test(q)) {
+        return Promise.resolve([{ id: 1, name: 'Everyone', emails: Array.from({ length: 63 }, (_, i) => `crew${i}@example.com`) }]);
+      }
+      return fakeSql(strings, ...vals);
+    };
+    SENT.length = 0;
+    res = await runSchedule(manySql, { ...sched, report_type: 'executive', division: 'executive', project_id: null },
+      { baseUrl, browser, now: new Date() });
+    ok('63 addresses: the report goes as two emails of 50 and 13, the PDF on both',
+      res.status === 'sent' && SENT.length === 2 && SENT[0].to.length === 50 && SENT[1].to.length === 13
+        && SENT.every(m => (m.attachments || []).some(a => a.contentType === 'application/pdf'))
+        && res.message === 'Sent to 63 recipients.',
+      JSON.stringify({ res, sizes: SENT.map(m => m.to.length) }));
   } finally {
     await browser.close();
     server.close();
+    other.close();
   }
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);

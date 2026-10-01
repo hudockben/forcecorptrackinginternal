@@ -13,6 +13,7 @@
 // builds (the attachment count and size after the PDF joins them).
 
 const {
+  MAX_RECIPIENTS,
   MAX_ATTACHMENTS,
   MAX_ATTACH_BYTES,
   sanitizeReportHtml,
@@ -50,7 +51,8 @@ function finalSubjectFor({ subject, label, projectName }) {
  *   deliverReport({
  *     label,          // the report's name, for the default subject
  *     projectName?,   // appended to the subject when not already in it
- *     recipients,     // cleaned, validated, de-duplicated emails
+ *     recipients,     // cleaned, validated, de-duplicated emails — past the
+ *                     // MAX_RECIPIENTS one email can carry, it goes as several
  *     subject?, note?,
  *     html,           // the report document the page built
  *     attachments,    // normalized (normalizeAttachments) — may be []
@@ -63,7 +65,7 @@ function finalSubjectFor({ subject, label, projectName }) {
  *   })
  *
  * Resolves to
- *   { ok: true, id, subject, pdfAttached, pdfPages?, warning? }
+ *   { ok: true, id, ids, subject, pdfAttached, pdfPages?, warning? }
  *   | { ok: false, status, error }      status: 400 | 413 | 502
  *
  * Never throws for anything the email itself can cause.
@@ -135,20 +137,29 @@ async function deliverReport(opts) {
     }),
   });
 
-  const result = await sendEmail({
-    to:          recipients,
-    subject:     finalSubject,
-    html:        wrapped,
-    attachments: finalAttachments,
-  });
-
-  if (!result.ok) {
-    return { ok: false, status: 502, error: result.error || 'Email send failed' };
+  // One email carries at most MAX_RECIPIENTS addresses. A scheduled report's
+  // groups can add up to more, and dropping the rest would leave people off
+  // with nothing saying so — so it goes as several, the PDF rendered once.
+  const ids = [];
+  for (let i = 0; i < recipients.length; i += MAX_RECIPIENTS) {
+    if (i) await new Promise(r => setTimeout(r, 600));   // the mail service's rate limit
+    const result = await sendEmail({
+      to:          recipients.slice(i, i + MAX_RECIPIENTS),
+      subject:     finalSubject,
+      html:        wrapped,
+      attachments: finalAttachments,
+    });
+    if (!result.ok) {
+      const already = i ? ` (after it had gone to ${i} of ${recipients.length} recipients)` : '';
+      return { ok: false, status: 502, error: (result.error || 'Email send failed') + already };
+    }
+    ids.push(result.id);
   }
 
   return {
     ok:          true,
-    id:          result.id,
+    id:          ids[0] || null,
+    ids,
     subject:     finalSubject,
     pdfAttached: Boolean(pdfAttachment),
     ...(pdfPages ? { pdfPages } : {}),

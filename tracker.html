@@ -28780,8 +28780,10 @@ const _bootReady = (async () => {
     const p = jobFor(spec);
     // What opening the Daily PM overlay does first: the deadlines, and the AI
     // read of the job (its own once-a-day cache; left out if the AI is down).
+    // Twenty seconds at most for that read: a slow answer must not use up a
+    // run that has a report to build for every job after this one.
     if (!_schedDeadlinesLoaded) await loadScheduleDeadlines();
-    await _fetchSchedAI(p);
+    await Promise.race([_fetchSchedAI(p), new Promise(r => setTimeout(r, 20000))]);
     _pmrProjId = p.id;
     return AR.capture(() => emailDailyPMReport());
   }, { perJob: true });
@@ -28813,8 +28815,15 @@ const _bootReady = (async () => {
   // the build, the way the job summary does, rather than open it in the tab.
   AR.register('turf_construction_schedule', async spec => {
     const p = jobFor(spec);
-    const saved = await _jsFetchConSchedule(p.id);
-    if (!saved) return { skip: 'No construction schedule has been built for this job.' };
+    // Read here rather than through _jsFetchConSchedule, which answers a
+    // failed read the same as "never built" — and the run must say which.
+    const got = await apiGetChecked(_csKey(p.id));
+    if (!got.ok) throw new Error('The construction schedule could not be read.');
+    const saved = got.value;
+    if (!(saved && typeof saved === 'object' && Array.isArray(saved.rows) && saved.rows.length)) {
+      return { skip: 'No construction schedule has been built for this job.' };
+    }
+    saved.header = Object.assign({ heading: '', projectTitle: '', pm: '', company: '', date: '' }, saved.header || {});
     saved.projectId = p.id;
     return _jsWithConSchedule(saved, () => {
       try { _csAutofillHeader(p); } catch (_) { /* header stays as saved */ }

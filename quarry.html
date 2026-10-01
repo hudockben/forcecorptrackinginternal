@@ -10659,7 +10659,18 @@ ${sections}
         // What opening the tab does: pull daily, crushing, sales, fixed costs,
         // royalty and benchmarks, then draw.
         await refreshBreakeven();
-        if (!salesLoaded || !crushLoaded || !dailyLoaded) throw new Error('The quarry entries did not load.');
+        // The loaders answer a failed read with an empty book and carry on, and
+        // a break-even emailed off one is wrong rather than empty. Sales,
+        // crushing and daily say whether they were ever read; the lists, fixed
+        // costs and royalty are read again here, where a failure is a failure.
+        if (!salesFetchedOnce || !crushFetchedOnce || !dailyFetchedOnce) throw new Error('The quarry entries did not load.');
+        try {
+          quarryLists        = await fetchLists();
+          quarryMonthlyFixed = await fetchMonthlyFixed();
+          quarryRoyalty      = await fetchRoyalty();
+        } catch (err) {
+          throw new Error('The quarry lists, fixed costs or royalty did not load — ' + ((err && err.message) || err));
+        }
         yearFilters.breakeven = spec.year === 'all' ? 'all' : String(spec.year || new Date().getFullYear());
         renderBreakeven();
         return AR.capture(() => emailBreakevenReport());

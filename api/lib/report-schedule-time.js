@@ -107,6 +107,11 @@ function normalizeOccurrence(input) {
 
   const send_time = String(src.send_time || '').trim();
   if (!TIME_RE.test(send_time)) return { ok: false, error: 'Pick a time of day.' };
+  // The server checks every five minutes. 11:57 PM would never be reached
+  // before midnight, and go out the next day as the next day's report.
+  if (Number(send_time.slice(3)) % 5) {
+    return { ok: false, error: 'Pick a time on a five-minute mark — the server checks every five minutes.' };
+  }
 
   const timezone = src.timezone == null || src.timezone === '' ? DEFAULT_TZ : String(src.timezone);
   if (!isValidTimeZone(timezone)) return { ok: false, error: 'Unknown time zone.' };
@@ -164,8 +169,11 @@ function nextRunAt(occ, after) {
   const tz = isValidTimeZone(occ.timezone) ? occ.timezone : DEFAULT_TZ;
   const from = after instanceof Date ? after : new Date(after);
 
+  // From the day before: where a spring-forward gap spans midnight (Nuuk's
+  // does), the previous day's late occurrence lands on today, and starting
+  // from today would step over it. Anything not after `after` is skipped below.
   const start = wallClock(from, tz);
-  for (let i = 0; i <= 62; i++) {
+  for (let i = -1; i <= 62; i++) {
     const c = addDays(start.y, start.m, start.d, i);
     if (!firesOn(occ, c.y, c.m, c.d)) continue;
     const at = zonedToUtc(c.y, c.m, c.d, hh, mm, tz);

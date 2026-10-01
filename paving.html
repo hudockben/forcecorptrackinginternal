@@ -22454,8 +22454,10 @@ const _bootReady = (async () => {
     const p = jobFor(spec);
     // What opening the Daily PM overlay does first: the deadlines, and the AI
     // read of the job (its own once-a-day cache; left out if the AI is down).
+    // Twenty seconds at most for that read: a slow answer must not use up a
+    // run that has a report to build for every job after this one.
     if (!_schedDeadlinesLoaded) await loadScheduleDeadlines();
-    await _fetchSchedAI(p);
+    await Promise.race([_fetchSchedAI(p), new Promise(r => setTimeout(r, 20000))]);
     _pmrProjId = p.id;
     return AR.capture(() => emailDailyPMReport());
   }, { perJob: true });

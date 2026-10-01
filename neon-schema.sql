@@ -1683,9 +1683,9 @@ CREATE INDEX IF NOT EXISTS idx_rrg_company_project ON report_recipient_groups(co
 -- a division away from somebody also stops the reports they scheduled from
 -- it, rather than leaving a schedule as a way around Manage Users.
 --
--- claimed_at marks a schedule a run is working on, so two overlapping runs
--- never send the same report twice. A claim older than fifteen minutes
--- belongs to a run that died, and is free to take.
+-- claimed_at (and claim_token, whose claim it is) marks a schedule a run is
+-- working on, so two runs never send the same report at once. A claim older
+-- than fifteen minutes belongs to a run that died, and is free to take.
 -- ─────────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS report_schedules (
     id                  BIGSERIAL PRIMARY KEY,
@@ -1709,6 +1709,7 @@ CREATE TABLE IF NOT EXISTS report_schedules (
     run_as_username     TEXT,
     next_run_at         TIMESTAMPTZ,
     claimed_at          TIMESTAMPTZ,
+    claim_token         TEXT,
     last_run_at         TIMESTAMPTZ,
     last_status         TEXT,
     last_message        TEXT,
@@ -1720,6 +1721,9 @@ CREATE TABLE IF NOT EXISTS report_schedules (
 
 CREATE INDEX IF NOT EXISTS idx_report_schedules_company ON report_schedules(company_code, division);
 CREATE INDEX IF NOT EXISTS idx_report_schedules_due     ON report_schedules(next_run_at) WHERE enabled;
+
+-- Added after the table first shipped to a preview database.
+ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS claim_token TEXT;
 
 -- One row per send attempt, scheduled or "Send now". The schedule row keeps
 -- only the latest outcome; this is what answers "did Monday's go out?" a
@@ -1736,8 +1740,19 @@ CREATE TABLE IF NOT EXISTS report_schedule_runs (
     message             TEXT,
     triggered_by        TEXT,
     started_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    finished_at         TIMESTAMPTZ
+    finished_at         TIMESTAMPTZ,
+    report_type         TEXT,
+    division            TEXT,
+    project_id          TEXT,
+    project_name        TEXT
 );
+
+-- What each run sent, as it was sent: the schedule may be pointed at another
+-- job or report since, and the history must not be relabelled with it.
+ALTER TABLE report_schedule_runs ADD COLUMN IF NOT EXISTS report_type  TEXT;
+ALTER TABLE report_schedule_runs ADD COLUMN IF NOT EXISTS division     TEXT;
+ALTER TABLE report_schedule_runs ADD COLUMN IF NOT EXISTS project_id   TEXT;
+ALTER TABLE report_schedule_runs ADD COLUMN IF NOT EXISTS project_name TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_report_schedule_runs_company  ON report_schedule_runs(company_code, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_report_schedule_runs_schedule ON report_schedule_runs(schedule_id, started_at DESC);

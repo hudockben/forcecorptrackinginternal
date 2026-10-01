@@ -2,80 +2,68 @@
 /**
  * GET /api/cron/report-schedules — send the scheduled reports that are due.
  *
- * Runs every five minutes. Each run takes the schedules whose next_run_at has
- * come, sends each one (api/lib/report-schedule-runner.js), writes down how it
- * went, and moves it to its next time. So a report set for 6:30 goes out
- * between 6:30 and 6:35 — the tab says so next to the time picker.
+ * Runs every five minutes. Each run takes due schedules one at a time, sends
+ * each (api/lib/report-schedule-runner.js), and writes down how it went. So a
+ * report set for 6:30 goes out between 6:30 and 6:35 — the tab says so next to
+ * the time picker, which only offers five-minute marks.
  *
- * Three things about how it does it.
+ * How it does it, and why.
  *
- * It claims before it sends. Two runs can overlap — a slow one still going
- * when the next fires — and both would otherwise see the same 6:30 report as
- * due and send it twice. A schedule is taken by stamping claimed_at in the
- * same statement that picks it, and a run only sends what it claimed. A claim
- * left behind by a run that died goes stale after fifteen minutes and is
- * taken by the next one.
+ * One at a time, claimed just before it runs. A batch claimed up front ran
+ * each schedule from a snapshot up to a few minutes old — one switched off or
+ * re-pointed at another group in the meantime still went out as it was.
+ * Claiming stamps claimed_at and a token in the statement that picks the row,
+ * so two overlapping runs never take the same one.
  *
- * It stops before the platform stops it. A function killed at its ceiling
- * leaves claims behind and no record of what went out. This watches the
- * clock, hands back what it has not started, and the next run, five minutes
- * later, picks those up first.
+ * At most once. The claimed occurrence is marked taken (the timetable moves to
+ * the next one) before anything is sent. A run killed partway — the function's
+ * time limit, a crash — leaves a report cut short and says 'Interrupted'; it
+ * does not leave the occurrence due, to be sent again in full fifteen minutes
+ * later to people who already have half of it.
  *
- * Late is not the same as on time. After an outage, a report twelve hours
- * past its time is not sent — a 6:30 Daily PM arriving at 7 PM is noise, and
- * a week's backlog arriving at once is worse. It is written down as missed,
- * and the tab shows it, so nobody wonders where it went.
+ * It stops before the platform stops it. It starts no new schedule after
+ * TIME_BUDGET_MS, and the one it is on stops sending at HARD_STOP_MS, inside
+ * the 300 seconds the function gets.
+ *
+ * Late is not the same as on time. After an outage, a report twelve hours past
+ * its time is not sent — a 6:30 Daily PM arriving at 7 PM is noise, and a
+ * week's backlog arriving at once is worse. It is written down as missed, and
+ * the tab shows it, so nobody wonders where it went.
  */
 const { neon } = require('@neondatabase/serverless');
 const runner = require('../lib/report-schedule-runner');
 const { launchBrowser } = require('../lib/pdf');
 
-// maxDuration is 300s in vercel.json. A run can take a minute or more (a page
-// to load, a report per job, a PDF each), so stop starting new ones well
-// before the ceiling.
-const TIME_BUDGET_MS = 200_000;
-// …and the last one started stops sending here, still inside the 300s.
-const HARD_STOP_MS   = 275_000;
-const MAX_CLAIM      = 20;
-const STALE_CLAIM    = '15 minutes';
+const TIME_BUDGET_MS  = 150_000;   // start no new schedule after this
+const HARD_STOP_MS    = 285_000;   // the one running stops sending here
 const MISSED_AFTER_MS = 12 * 3600 * 1000;
-const RETAIN_RUNS    = '180 days';
+const RETAIN_RUNS     = '180 days';
 
 async function runDueSchedules(sql, opts = {}) {
   const t0  = Date.now();
-  const out = { claimed: 0, sent: 0, partial: 0, skipped: 0, failed: 0, missed: 0, released: 0 };
-
-  const due = await sql`
-    UPDATE report_schedules SET claimed_at = NOW()
-     WHERE id IN (
-       SELECT id FROM report_schedules
-        WHERE enabled
-          AND next_run_at IS NOT NULL
-          AND next_run_at <= NOW()
-          AND (claimed_at IS NULL OR claimed_at < NOW() - ${STALE_CLAIM}::interval)
-        ORDER BY next_run_at
-        LIMIT ${MAX_CLAIM}
-        FOR UPDATE SKIP LOCKED)
-     RETURNING *`;
-  out.claimed = due.length;
-  if (!due.length) return out;
-  due.sort((a, b) => new Date(a.next_run_at) - new Date(b.next_run_at));
-
+  const out = { claimed: 0, sent: 0, partial: 0, skipped: 0, failed: 0, missed: 0 };
   let browser = null;
   try {
-    for (let i = 0; i < due.length; i++) {
-      const sched = due[i];
-      if (Date.now() - t0 > TIME_BUDGET_MS) {
-        const ids = due.slice(i).map(s => s.id);
-        await sql`UPDATE report_schedules SET claimed_at = NULL WHERE id = ANY(${ids})`;
-        out.released = ids.length;
+    while (Date.now() - t0 < TIME_BUDGET_MS) {
+      const token = runner.newClaimToken();
+      const sched = await runner.claimNextDue(sql, token);
+      if (!sched) break;
+      out.claimed++;
+
+      const startedAt = new Date();
+      const dueAt = new Date(sched.next_run_at);
+      try {
+        await runner.beginRun(sql, sched, token, { kind: 'schedule', now: startedAt });
+      } catch (err) {
+        // Nothing sent and nothing moved: hand it back for the next run.
+        console.error('[report-schedules] could not start schedule', sched.id, err.message);
+        try { await runner.releaseClaim(sql, sched, token); } catch { /* goes stale instead */ }
         break;
       }
 
-      const startedAt = new Date();
       let result;
-      if (startedAt - new Date(sched.next_run_at) > MISSED_AFTER_MS) {
-        const when = new Date(sched.next_run_at).toLocaleString('en-US', {
+      if (startedAt - dueAt > MISSED_AFTER_MS) {
+        const when = dueAt.toLocaleString('en-US', {
           timeZone: sched.timezone || 'America/New_York',
           weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
         });
@@ -89,13 +77,19 @@ async function runDueSchedules(sql, opts = {}) {
           catch (err) { browser = null; }
         }
         result = await runner.runSchedule(sql, sched, {
-          baseUrl: opts.baseUrl, now: startedAt, browser, deadline: t0 + HARD_STOP_MS,
+          baseUrl:     opts.baseUrl,
+          now:         startedAt,
+          occurrence:  dueAt,
+          browser,
+          deadline:    t0 + HARD_STOP_MS,
+          stillWanted: () => runner.stillWanted(sql, sched),
         });
       }
       try {
-        await runner.recordRun(sql, sched, result, { kind: 'schedule', triggeredBy: null, startedAt, now: new Date() });
+        await runner.recordRun(sql, sched, result, { kind: 'schedule', token, triggeredBy: null, startedAt, now: new Date() });
       } catch (err) {
-        // Deleted while it was being sent: nothing left to write it on.
+        // Deleted while it ran, or the database blinked. The occurrence is
+        // already marked taken, so this costs the record, never a resend.
         console.error('[report-schedules] could not record schedule', sched.id, err.message);
       }
       out[result.status] = (out[result.status] || 0) + 1;

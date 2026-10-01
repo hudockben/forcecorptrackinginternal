@@ -3019,6 +3019,9 @@
     // the division, so a failed read left as an empty list would show the
     // largest book billing $0 with nothing on screen saying why.
     let dustLoaded  = false;
+    // Whether /api/dust-config answered: the UB rate and the customer list
+    // with its vehicle rates. Without it every UB gallon prices at $0.
+    let dustConfigLoaded = false;
     let ubRate     = 0;
     // Profit Margin calculator inputs (persisted via dust-config settings blob)
     let profitMargin = {
@@ -5617,6 +5620,7 @@
       }
 
       if (config) {
+        dustConfigLoaded = true;
         const { settings, lists } = config;
         if (settings && settings.ub_rate != null) {
           ubRate = parseFloat(settings.ub_rate) || 0;
@@ -9205,6 +9209,7 @@
         // A read that failed leaves `rows` empty, which would otherwise come
         // back as "nothing to send" rather than as the failure it is.
         if (!dustLoaded) throw new Error('The dust entries did not load.');
+        if (!dustConfigLoaded) throw new Error('The dust rates and customer list did not load.');
         document.getElementById('prtStart').value = spec.start || '';
         document.getElementById('prtEnd').value   = spec.end || '';
         // No customer ticked is All Customers, the same as in the dialog.

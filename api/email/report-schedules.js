@@ -34,7 +34,9 @@ const jobFin = require('../lib/job-financials');
 
 const MAX_SCHEDULES = 200;    // per company
 const MAX_GROUPS    = 10;     // per schedule
-const RECENT_RUNS   = 40;
+// Recent sends, per division: a quiet division's weekly report must not be
+// pushed out of the history by a busy one's dailies.
+const RUNS_PER_DIVISION = 25;
 const DAY_CHOICES   = ['today', 'tomorrow', 'next_workday'];
 const YEAR_CHOICES  = ['current', 'all'];
 
@@ -52,7 +54,18 @@ function isAdmin(payload) {
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
 /** The schedule as the tab reads it. */
+/**
+ * The schedule as the tab reads it.
+ *
+ * "Sending" is a claim a live run holds; one older than the stale limit
+ * belongs to a run that died, and the row says so rather than reading
+ * "Sending…" until the next occurrence. A run that died after it started
+ * left 'sending' behind as its last status — shown as Interrupted, since some
+ * of its emails may have gone.
+ */
 function shape(r) {
+  const fresh = Boolean(r.claimed_at) && Date.now() - new Date(r.claimed_at).getTime() < runner.STALE_CLAIM_MS;
+  const cutOff = r.last_status === 'sending' && !fresh;
   return {
     id:            Number(r.id),
     report_type:   r.report_type,
@@ -73,9 +86,11 @@ function shape(r) {
     run_as_username: r.run_as_username,
     next_run_at:   r.next_run_at,
     last_run_at:   r.last_run_at,
-    last_status:   r.last_status,
-    last_message:  r.last_message,
-    sending:       Boolean(r.claimed_at),
+    last_status:   cutOff ? 'interrupted' : r.last_status,
+    last_message:  cutOff
+      ? 'The run was cut off before it finished. Some of its emails may have gone out; the rest did not.'
+      : r.last_message,
+    sending:       fresh,
     created_by_username: r.created_by_username,
     updated_at:    r.updated_at,
   };
@@ -201,13 +216,19 @@ module.exports = async (req, res) => {
         sql`SELECT * FROM report_schedules WHERE company_code = ${company} ORDER BY division, report_type, id`,
         sql`SELECT id, name, emails, report_type, project_id FROM report_recipient_groups
              WHERE company_code = ${company} ORDER BY name`,
-        sql`SELECT r.id, r.schedule_id, r.run_kind, r.status, r.sent_count, r.total_count, r.recipient_count,
-                   r.message, r.triggered_by, r.started_at, r.finished_at, s.report_type, s.division, s.project_name, s.project_id
-              FROM report_schedule_runs r
-              JOIN report_schedules s ON s.id = r.schedule_id
-             WHERE r.company_code = ${company}
-             ORDER BY r.started_at DESC
-             LIMIT ${RECENT_RUNS}`,
+        sql`SELECT * FROM (
+              SELECT r.id, r.schedule_id, r.run_kind, r.status, r.sent_count, r.total_count, r.recipient_count,
+                     r.message, r.triggered_by, r.started_at, r.finished_at,
+                     COALESCE(r.report_type, s.report_type)   AS report_type,
+                     COALESCE(r.division, s.division)         AS division,
+                     COALESCE(r.project_name, s.project_name) AS project_name,
+                     COALESCE(r.project_id, s.project_id)     AS project_id,
+                     row_number() OVER (PARTITION BY COALESCE(r.division, s.division) ORDER BY r.started_at DESC) AS rn
+                FROM report_schedule_runs r
+                JOIN report_schedules s ON s.id = r.schedule_id
+               WHERE r.company_code = ${company}) recent
+             WHERE rn <= ${RUNS_PER_DIVISION}
+             ORDER BY started_at DESC`,
       ]);
 
       return res.json({
@@ -223,7 +244,7 @@ module.exports = async (req, res) => {
           id: Number(r.id), schedule_id: Number(r.schedule_id), kind: r.run_kind, status: r.status,
           sent: r.sent_count, total: r.total_count, recipients: r.recipient_count, message: r.message,
           triggered_by: r.triggered_by, started_at: r.started_at, finished_at: r.finished_at,
-          report_type: r.report_type, project_name: r.project_name, project_id: r.project_id,
+          report_type: r.report_type, division: r.division, project_name: r.project_name, project_id: r.project_id,
         })),
         periods: T.PERIODS,
         payRanges: PAY_RANGES,
@@ -241,13 +262,23 @@ module.exports = async (req, res) => {
       if (!mayUseDivision(payload, sched.division)) {
         return res.status(403).json({ ok: false, error: 'You do not have access to that division.' });
       }
+      // Claimed like a timetabled run, so a second press — or the five-minute
+      // run reaching the same schedule — cannot send it again while this one
+      // is still going. The page also shows it as Sending… meanwhile.
+      const token = runner.newClaimToken();
+      const claimed = await runner.claimForSendNow(sql, id, company, token);
+      if (!claimed) {
+        return res.status(409).json({ ok: false, error: 'It is being sent right now — wait for that to finish.' });
+      }
       const startedAt = new Date();
-      const result = await runner.runSchedule(sql, sched, {
-        baseUrl: runner.appBaseUrl(req), now: startedAt, deadline: startedAt.getTime() + 270_000,
+      await runner.beginRun(sql, claimed, token, { kind: 'manual', now: startedAt });
+      const result = await runner.runSchedule(sql, claimed, {
+        // Inside the function's 300 seconds, as the cron's is.
+        baseUrl: runner.appBaseUrl(req), now: startedAt, deadline: startedAt.getTime() + 285_000,
       });
       try {
-        await runner.recordRun(sql, sched, result, {
-          kind: 'manual', triggeredBy: payload.username, startedAt, now: new Date(),
+        await runner.recordRun(sql, claimed, result, {
+          kind: 'manual', token, triggeredBy: payload.username, startedAt, now: new Date(),
         });
       } catch (err) {
         console.error('[report-schedules] could not record send now', id, err.message);
@@ -314,7 +345,19 @@ module.exports = async (req, res) => {
       // goes at the next matching time from now — never "immediately, to catch
       // up", which is how a report turned back on after a month would arrive
       // at once for no reason anyone asked for.
-      const next = v.enabled ? T.nextRunAt(v, new Date()) : null;
+      //
+      // Except the one it is about to send. A schedule showing "Due now" is
+      // waiting for the next five-minute check; fixing a typo in its subject
+      // in that window must not quietly skip today's report. So with the
+      // timetable unchanged and the schedule on throughout, a due occurrence
+      // stays due.
+      const sameTimetable = cur.frequency === v.frequency && cur.send_time === v.send_time
+        && cur.timezone === v.timezone
+        && JSON.stringify(cur.days_of_week || null) === JSON.stringify(v.days_of_week || null)
+        && (cur.day_of_month == null ? null : Number(cur.day_of_month)) === (v.day_of_month == null ? null : Number(v.day_of_month));
+      const stillDue = cur.enabled && v.enabled && sameTimetable
+        && cur.next_run_at && new Date(cur.next_run_at) <= new Date();
+      const next = !v.enabled ? null : stillDue ? new Date(cur.next_run_at) : T.nextRunAt(v, new Date());
       const rows = await sql`
         UPDATE report_schedules SET
           report_type   = ${v.report_type},

@@ -296,8 +296,10 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
   {
     const realRun = runner.runSchedule;
     const sentIds = [];
-    runner.runSchedule = async (s, sched) => {
+    const ctxs = {};
+    runner.runSchedule = async (s, sched, ctx) => {
       sentIds.push(Number(sched.id));
+      ctxs[Number(sched.id)] = ctx;
       await new Promise(r => setTimeout(r, 50));
       return { status: 'sent', sent: 1, total: 1, recipientCount: 2, message: 'Sent to 2 recipients.' };
     };
@@ -327,6 +329,10 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
     assert('…and nothing that was not due, switched off, or claimed by a live run',
       !counts[later] && !counts[off] && !counts[id], JSON.stringify(counts));
     assert('…between them they claimed two', a.claimed + b.claimed === 2, `${a.claimed} + ${b.claimed}`);
+    const c1 = ctxs[Number(due1)] || {};
+    assert('a run\'s dates are worked from when it was due, not when the server got to it',
+      c1.occurrence instanceof Date && Math.abs(Date.now() - 120000 - c1.occurrence.getTime()) < 15000, String(c1.occurrence));
+    assert('…and it checks the schedule is still wanted before it sends', typeof c1.stillWanted === 'function');
 
     const s1 = await row(due1);
     assert('a sent schedule moves to its next time and lets go of its claim',
@@ -346,6 +352,114 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
       !sentIds.includes(due1) && m.missed === 1 && s.last_status === 'missed' && /more than 12 hours late/.test(s.last_message),
       `${JSON.stringify(m)} ${s.last_message}`);
     assert('…and it is back on its timetable', new Date(s.next_run_at) > new Date());
+
+    runner.runSchedule = realRun;
+  }
+
+  console.log('\nCut off, edited, doubled — what the review found');
+  {
+    const realRun = runner.runSchedule;
+    const noBrowser = { launchBrowser: async () => ({ close: async () => {} }) };
+    const mk = async over => (await call('POST', {}, { ...base, ...over }, BOSS)).body.schedule.id;
+    const due = id => client.query("UPDATE report_schedules SET next_run_at = NOW() - interval '1 minute', claimed_at = NULL WHERE id = $1", [id]);
+    const sentOk = { status: 'sent', sent: 1, total: 1, recipientCount: 2, message: 'Sent to 2 recipients.' };
+
+    // A run that dies between its first email and its last.
+    const k = await mk({});
+    await due(k);
+    const tk = runner.newClaimToken();
+    const claimed = await runner.claimNextDue(sql, tk);
+    await runner.beginRun(sql, claimed, tk, { kind: 'schedule', now: new Date() });
+    let after = await row(k);
+    assert('the timetable moves on before anything is sent',
+      claimed && Number(claimed.id) === Number(k) && new Date(after.next_run_at) > new Date() && after.last_status === 'sending',
+      JSON.stringify({ claimed: claimed && claimed.id, next: after.next_run_at, st: after.last_status }));
+    await client.query("UPDATE report_schedules SET claimed_at = NOW() - interval '20 minutes' WHERE id = $1", [k]);
+    let calls = 0;
+    runner.runSchedule = async () => { calls++; return sentOk; };
+    await cron.runDueSchedules(sql, noBrowser);
+    assert('so a run killed partway is not sent again in full fifteen minutes later', calls === 0, `${calls} run(s)`);
+    let g = await call('GET', {}, null, BOSS);
+    let shown = g.body.schedules.find(x => Number(x.id) === Number(k));
+    assert('…it reads Interrupted, not Sending…, and Send now is free',
+      shown.last_status === 'interrupted' && shown.sending === false && /cut off/.test(shown.last_message), JSON.stringify(shown));
+
+    // An edit saved while it runs is the timetable that stands.
+    const e = await mk({});
+    await due(e);
+    const te = runner.newClaimToken();
+    const ce = await runner.claimNextDue(sql, te);
+    await runner.beginRun(sql, ce, te, { kind: 'schedule', now: new Date() });
+    const put = await call('PUT', { id: e }, { ...base, frequency: 'weekly', days_of_week: [1], send_time: '14:00' }, BOSS);
+    await runner.recordRun(sql, ce, sentOk, { kind: 'schedule', token: te, startedAt: new Date(), now: new Date() });
+    after = await row(e);
+    assert('an edit saved mid-run is not overwritten by the old timetable when the run ends',
+      after.frequency === 'weekly' && new Date(after.next_run_at).getTime() === new Date(put.body.schedule.next_run_at).getTime()
+        && after.claimed_at === null && after.last_status === 'sent',
+      JSON.stringify({ next: after.next_run_at, put: put.body.schedule.next_run_at, claimed: after.claimed_at }));
+
+    // Switched off, changed or deleted while it is being built: nothing more goes.
+    const w = await mk({});
+    let snap = await row(w);
+    await call('PUT', { id: w }, { enabled: false }, BOSS);
+    assert('switched off mid-run: the run is told to stop', /switched off/.test(await runner.stillWanted(sql, snap) || ''));
+    await call('PUT', { id: w }, { enabled: true }, BOSS);
+    snap = await row(w);
+    await new Promise(r => setTimeout(r, 20));
+    await call('PUT', { id: w }, { ...base, subject: 'New subject' }, BOSS);
+    assert('changed mid-run: told to stop, the next run uses the change', /changed/.test(await runner.stillWanted(sql, snap) || ''));
+    snap = await row(w);
+    assert('unchanged: carries on', (await runner.stillWanted(sql, snap)) === null);
+    await client.query('DELETE FROM report_schedules WHERE id = $1', [w]);
+    assert('deleted mid-run: told to stop', /deleted/.test(await runner.stillWanted(sql, snap) || ''));
+
+    // Send now twice while the first is still going.
+    const d2 = await mk({});
+    runner.runSchedule = async () => { await new Promise(r => setTimeout(r, 400)); return sentOk; };
+    const [r1, r2] = await Promise.all([
+      call('POST', { id: d2, action: 'run' }, {}, BOSS),
+      new Promise(r => setTimeout(r, 80)).then(() => call('POST', { id: d2, action: 'run' }, {}, BOSS)),
+    ]);
+    assert('a second Send now while the first is going is refused, not sent twice',
+      r1.statusCode === 200 && r2.statusCode === 409 && /being sent right now/.test(r2.body.error), `${r1.statusCode} ${r2.statusCode}`);
+    after = await row(d2);
+    assert('…and the claim is let go when the first finishes', after.claimed_at === null && after.claim_token === null);
+
+    // Saving a schedule that shows Due now.
+    const dn = await mk({});
+    await due(dn);
+    const dueAt = (await row(dn)).next_run_at;
+    await call('PUT', { id: dn }, { ...base, subject: 'Typo fixed' }, BOSS);
+    assert('fixing a subject while it is Due now keeps today\'s send', new Date((await row(dn)).next_run_at).getTime() === new Date(dueAt).getTime());
+    await call('PUT', { id: dn }, { ...base, send_time: '17:00' }, BOSS);
+    assert('…retiming it does move it on', new Date((await row(dn)).next_run_at) > new Date());
+
+    // The history says what was sent, not what the schedule says now.
+    await call('PUT', { id: e }, { ...base, project_id: 'j2', project_name: 'Oak St' }, BOSS);
+    g = await call('GET', {}, null, BOSS);
+    const eRuns = g.body.runs.filter(r => Number(r.schedule_id) === Number(e));
+    assert('a past send keeps the job it was for after the schedule moves to another',
+      eRuns.length === 1 && eRuns[0].project_name === 'Maple Ave' && eRuns[0].division === 'turf', JSON.stringify(eRuns));
+
+    // A quiet division's sends are not pushed out by a busy one's.
+    const dustId = await mk({ report_type: 'dust_tracking_summary', project_id: '' });
+    await client.query(`INSERT INTO report_schedule_runs (schedule_id, company_code, run_kind, status, started_at, report_type, division)
+                        VALUES ($1, $2, 'schedule', 'sent', NOW() - interval '6 days', 'dust_tracking_summary', 'dust')`, [dustId, CO]);
+    for (let i = 0; i < 45; i++) {
+      await client.query(`INSERT INTO report_schedule_runs (schedule_id, company_code, run_kind, status, started_at, report_type, division)
+                          VALUES ($1, $2, 'schedule', 'sent', NOW() - ($3 || ' minutes')::interval, 'turf_daily_pm', 'turf')`, [e, CO, String(i)]);
+    }
+    g = await call('GET', {}, null, BOSS);
+    assert('a weekly dust send is still in the history under 45 newer turf ones',
+      g.body.runs.some(r => r.division === 'dust'), `${g.body.runs.length} runs, divisions ${[...new Set(g.body.runs.map(r => r.division))]}`);
+
+    // More addresses than one email can carry.
+    const many = n => Array.from({ length: n }, (_, i) => `crew${n}-${i}@example.com`);
+    const ga = (await client.query("INSERT INTO report_recipient_groups (company_code, name, emails) VALUES ($1, 'Field', $2) RETURNING id", [CO, JSON.stringify(many(40))])).rows[0].id;
+    const gb = (await client.query("INSERT INTO report_recipient_groups (company_code, name, emails) VALUES ($1, 'Office', $2) RETURNING id", [CO, JSON.stringify(many(41))])).rows[0].id;
+    const rec = await runner.recipientsFor(sql, CO, [gb, ga]);
+    assert('groups past fifty addresses keep every address, in the order the groups were picked',
+      rec.emails.length === 81 && rec.emails[0] === 'crew41-0@example.com', `${rec.emails.length} ${rec.emails[0]}`);
 
     runner.runSchedule = realRun;
   }
