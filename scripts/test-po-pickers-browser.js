@@ -165,6 +165,15 @@ const geometry = (page, input) => input.evaluate(el => {
     const code = row.locator('.cb[data-list="codes"] .cb-input');
     const vendor = row.locator('.cb[data-list="vendors"] .cb-input');
     const desc = row.locator('input[placeholder="Material / description"]');
+    const active = () => page.evaluate(() => (document.activeElement || {}).outerHTML.slice(0, 120));
+    const entry = (box, text) => box.locator('xpath=following-sibling::div[1]').locator('.cb-opt', { hasText: text });
+    // A click the way a hand makes one. Playwright's own lets go in the same
+    // instant, which hides anything that happens to the page mid-press.
+    const press = async loc => {
+      const b = await loc.boundingBox();
+      await page.mouse.move(b.x + b.width / 2, b.y + b.height / 2);
+      await page.mouse.down(); await sleep(90); await page.mouse.up();
+    };
 
     ok('the code cell shows the order\'s code by its label', await code.inputValue() === '420 / Base — Stone base',
       await code.inputValue());
@@ -185,32 +194,57 @@ const geometry = (page, input) => input.evaluate(el => {
     ok('  and the box shows its label', await until(async () =>
       (await row.locator('.cb[data-list="codes"] .cb-input').inputValue()) === '510 / Stone — Rip rap'));
 
-    // Tab: one keystroke takes the code and moves to Description. A re-render
-    // then would have rebuilt the row and dropped the cursor out of it.
+    // A right-click on an entry — to copy its text, say — is not a pick.
     await code.click();
-    await page.keyboard.type('mobil');
+    const savesBeforeRight = saves.length;
+    await entry(code, 'Mobilization').click({ button: 'right' });
+    await sleep(600);
+    ok('a right-click on an entry does not take it',
+      saves.length === savesBeforeRight && await code.inputValue() !== '100 / Mobilization', await code.inputValue());
+    // Away the way a hand goes after a context menu: a click elsewhere. Chrome
+    // places the caret on the next click into the box after a right-click
+    // rather than keeping the box's own select-all, which is its affair.
+    await page.mouse.click(700, 30);
+    await sleep(200);
+
+    // Tab takes a code and moves on in the same keystroke. The row must not be
+    // rebuilt under the field the cursor went to — nor later, under whatever
+    // is reached or pressed next.
+    await code.click();
+    await page.keyboard.type('base');
     await page.keyboard.press('Tab');
-    await sleep(400);
-    const focusedDesc = await desc.evaluate(el => document.activeElement === el);
-    ok('Tab takes the code and the cursor lands in Description', focusedDesc,
-      await page.evaluate(() => document.activeElement && document.activeElement.outerHTML.slice(0, 120)));
-    ok('  where it stays while the save goes out', await until(() => saves.some(s => s.po.cost_code === '100')));
-    // Tabbing into a text field selects what is in it; End appends instead.
-    await page.keyboard.press('End');
+    await sleep(300);
+    ok('Tab takes the code and the cursor lands in Description',
+      await desc.evaluate(el => document.activeElement === el), await active());
+    ok('  where it stays while the save goes out', await until(() =>
+      saves.some(s => s.po.cost_code === '420' && s.po.sub_code === 'Base')));
+    await page.keyboard.press('End');   // tabbing into a text field selects what is in it
     await page.keyboard.type(' — 2 loads');
     ok('  and typing carries on in that field', (await desc.inputValue()) === 'Base stone — 2 loads', await desc.inputValue());
-    await page.mouse.click(700, 30);   // the header: out of every field
+    await page.keyboard.press('Tab');   // Vendor
+    await page.keyboard.press('Tab');   // Status
+    await page.keyboard.press('Tab');   // the paperclip
+    await sleep(300);
+    ok('  and Tab walks on along the row to the paperclip, focus intact',
+      await row.locator('.icon-btn').evaluate(el => document.activeElement === el), await active());
+
+    await code.click();
+    await page.keyboard.type('surface');
+    await page.keyboard.press('Tab');
     await sleep(200);
-    ok('the row redraws once the fields are left, with the new code',
-      await row.locator('.cb[data-list="codes"] .cb-input').inputValue() === '100 / Mobilization');
+    await press(row.locator('td').first());
+    ok('the first click after a Tab pick lands: ▶ opens the deliveries',
+      await until(async () => await page.locator('#po-body .lines-wrap').count() === 1, 1500));
+    ok('  and the code was taken', await until(() => saves.some(s => s.po.sub_code === 'Surface')));
 
     // Half-typed text that names no code goes back on blur.
+    const surface = '420 / Surface — Asphalt surface — 9.5mm wearing course, two lifts';
     await code.click();
     await page.keyboard.type('asph');
     await page.mouse.click(700, 30);
     await sleep(300);
     ok('half-typed text that names no code goes back to the order\'s code',
-      await code.inputValue() === '100 / Mobilization', await code.inputValue());
+      await code.inputValue() === surface, await code.inputValue());
 
     // Vendor: free text the list suggests for.
     await vendor.click();
@@ -220,17 +254,25 @@ const geometry = (page, input) => input.evaluate(el => {
     g = await geometry(page, vendor);
     ok('typing finds a vendor by a word inside its name', g.texts.join('|') === 'Tri-State Aggregates & Supply Co',
       g.texts.join('|'));
-    await vendor.locator('xpath=following-sibling::div[1]').locator('.cb-opt').first().click();
+    ok('  suggested, not chosen: a partial match is not highlighted',
+      await vendor.evaluate(el => !el.nextElementSibling.querySelector('.cb-opt.hi')));
+    await entry(vendor, 'Tri-State').click();
     ok('a click takes it and saves it', await until(() => saves.some(s => s.po.id === 'po-main'
       && s.po.supplier === 'Tri-State Aggregates & Supply Co')));
+    await vendor.click();
+    await page.keyboard.type('Ferg');
+    await page.keyboard.press('Enter');
+    ok('Enter keeps a name as typed, even one a longer entry contains', await until(() =>
+      saves.some(s => s.po.id === 'po-main' && s.po.supplier === 'Ferg')), await vendor.inputValue());
     await vendor.click();
     await page.keyboard.type('Keystone Concrete');
     await page.mouse.click(700, 30);
     ok('a vendor not on the list is saved as typed', await until(() => saves.some(s => s.po.id === 'po-main'
       && s.po.supplier === 'Keystone Concrete')));
 
-    // Received By, in the deliveries panel — a second scroll pane, nested.
-    await row.locator('td').first().click();
+    // Received By, in the deliveries panel opened above — a second scroll pane,
+    // nested. Opened here if that click was lost, so the rest still reports.
+    if (await page.locator('#po-body .lines-wrap').count() === 0) await row.locator('td').first().click();
     const recv = page.locator('#po-body .cb[data-list="employees"] .cb-input').first();
     await recv.waitFor();
     await recv.click();
@@ -238,10 +280,16 @@ const geometry = (page, input) => input.evaluate(el => {
     ok('Received By lists the employees, clear of the deliveries table',
       g.open && g.texts.join('|') === 'Dana Ruiz|Lee Park|Sam Ortiz' && g.reachable, JSON.stringify(g.texts));
     if (SHOTS) await page.screenshot({ path: path.join(SHOTS, 'po-picker-received-by.png') });
+    await page.keyboard.type('Lee');
+    await page.keyboard.press('Tab');
+    ok('Tab keeps a name as typed: a delivery taken by "Lee" stays Lee', await until(() =>
+      saves.some(s => s.po.id === 'po-main' && s.po.lines && s.po.lines[0].employee === 'Lee')), await recv.inputValue());
+    await recv.click();
     await page.keyboard.type('lee');
+    await page.keyboard.press('ArrowDown');
     await page.keyboard.press('Enter');
-    ok('picking a name saves it on the delivery', await until(() => saves.some(s => s.po.id === 'po-main'
-      && s.po.lines && s.po.lines[0].employee === 'Lee Park')));
+    ok('ArrowDown then Enter takes the suggestion', await until(() => saves.some(s => s.po.id === 'po-main'
+      && s.po.lines && s.po.lines[0].employee === 'Lee Park')), await recv.inputValue());
 
     // Low on the screen there is no room below, so the list goes up.
     const last = page.locator('#po-body tr.po-head').last().locator('.cb[data-list="vendors"] .cb-input');
@@ -282,6 +330,16 @@ const geometry = (page, input) => input.evaluate(el => {
     await page.keyboard.type('lime');
     g = await geometry(page, vendor);
     ok('the card\'s vendor box searches too', g.texts.join('|') === 'Martin Limestone', g.texts.join('|'));
+    await page.keyboard.press('Escape');
+
+    // A phone on its side with the keyboard up leaves a strip of screen. The
+    // list has to fit the room there is, not hang off the bottom of it.
+    await page.setViewportSize({ width: 844, height: 160 });
+    await code.evaluate(el => el.scrollIntoView({ block: 'center' }));
+    await code.tap();
+    g = await geometry(page, code);
+    ok('with little room either side, the list still fits the screen',
+      g.open && g.menu.top >= 0 && g.menu.bottom <= g.vh, JSON.stringify({ box: g.box, menu: g.menu, vh: g.vh }));
     ok('no script errors on the phone page', errors.length === 0, errors.join(' | '));
     await ctx.close();
   }
@@ -302,12 +360,54 @@ const geometry = (page, input) => input.evaluate(el => {
     await page.selectOption('#sc-project', 'p1');
     ok('  and opens once one with codes is picked', !(await sc.isDisabled()));
 
+    // The list can hang past the bottom of the sheet, over the backdrop. A pick
+    // made there has to land on the entry — not close the sheet, scan and all.
+    const spot = await page.evaluate(() => {
+      const sheet = document.getElementById('scan-sheet');
+      const box = document.getElementById('sc-vendor');
+      const edge = sheet.getBoundingClientRect().bottom;
+      sheet.scrollTop += box.getBoundingClientRect().bottom - (edge - 224);
+      const r = box.getBoundingClientRect();
+      return { x: r.left + 30, y: r.top + r.height / 2, edge };
+    });
+    await page.mouse.click(spot.x, spot.y);
+    const hanging = await page.evaluate(edge => {
+      const menu = document.querySelector('#scan-sheet .cb[data-list="vendors"] .cb-menu');
+      const m = menu.getBoundingClientRect();
+      for (const o of menu.querySelectorAll('.cb-opt')) {
+        const b = o.getBoundingClientRect();
+        const top = Math.max(b.top, edge + 2), bottom = Math.min(b.bottom, m.bottom - 2);
+        if (bottom - top >= 4) return { text: o.textContent, x: b.left + b.width / 2, y: (top + bottom) / 2 };
+      }
+      return null;
+    }, spot.edge);
+    ok('the vendor list can hang past the bottom of the sheet', Boolean(hanging), JSON.stringify(spot));
+    let vendorNow = 'Fastenal';
+    if (hanging) {
+      await page.mouse.click(hanging.x, hanging.y);
+      await sleep(250);
+      ok('a pick made there keeps the sheet — and the scan — open',
+        await page.locator('#scan-backdrop.open').count() === 1);
+      if (await page.locator('#scan-backdrop.open').count() === 0) {
+        console.log('  (the sheet is gone, so the rest of the scan checks cannot run)');
+        failed++;
+        await ctx.close();
+        await browser.close();
+        server.close();
+        console.log(`\n${passed} passed, ${failed} failed`);
+        process.exit(1);
+      }
+      ok('  and takes the entry', await page.locator('#sc-vendor').inputValue() === hanging.text,
+        await page.locator('#sc-vendor').inputValue());
+      vendorNow = hanging.text;
+    }
+
     // Escape backs out of a list without throwing the scan away.
     await page.locator('#sc-vendor').click();
     await page.keyboard.press('Escape');
     await sleep(150);
     ok('Escape in a list closes the list, not the sheet',
-      await page.locator('#scan-backdrop.open').count() === 1 && await page.locator('#sc-vendor').inputValue() === 'Fastenal');
+      await page.locator('#scan-backdrop.open').count() === 1 && await page.locator('#sc-vendor').inputValue() === vendorNow);
 
     await sc.click();
     await page.keyboard.type('base');
@@ -326,7 +426,7 @@ const geometry = (page, input) => input.evaluate(el => {
     await page.keyboard.press('Enter');
     await page.click('#sc-save');
     ok('a picked code is booked on the new order', await until(() => saves.some(s => s.division === 'paving'
-      && s.po.id !== 'po-main' && s.po.cost_code === '420' && s.po.sub_code === 'Base' && s.po.supplier === 'Fastenal')),
+      && s.po.id !== 'po-main' && s.po.cost_code === '420' && s.po.sub_code === 'Base' && s.po.supplier === vendorNow)),
       JSON.stringify(saves.map(s => [s.division, s.po.cost_code, s.po.sub_code, s.po.supplier])));
     ok('  and the sheet closes', await until(async () => await page.locator('#scan-backdrop.open').count() === 0));
     ok('no script errors in the scan', errors.length === 0, errors.join(' | '));

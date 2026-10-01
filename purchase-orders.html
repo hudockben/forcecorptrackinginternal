@@ -1500,9 +1500,7 @@ function setSubCode(poId, value) {
   po.cost_code = parts[0] || '';
   po.sub_code  = parts[1] || '';
   savePO(po, { immediate: true });
-  // Not render(): this runs from the code box, often with the focus already
-  // on its way to the next field.
-  renderWhenIdle();
+  updateCodeInPlace(po);
 }
 
 function setField(poId, field, value) {
@@ -1758,6 +1756,10 @@ function cbOpen(input) {
 }
 
 function cbOnFocus(input) {
+  // Still open, so the focus is coming back to this box rather than arriving:
+  // the window regaining it after a look at another one fires this again, and
+  // starting over would take the half-typed text as what to go back to.
+  if (_cbState.has(input)) return;
   // What the box held coming in: for Escape to go back to, and for a
   // pick-list left holding text that names no code.
   input._cbFrom = { text: input.value, value: input.dataset.cbValue || '' };
@@ -1776,7 +1778,12 @@ function cbOnInput(input) {
   const q = input.value.trim().toLowerCase();
   state.filtered = cbFilter(state.options, q);
   const exact = state.filtered.findIndex(o => cbText(o).toLowerCase() === q);
-  state.highlight = !q ? -1 : exact >= 0 ? exact : (state.filtered.length ? 0 : -1);
+  // A pick-list offers its best match for Enter or Tab to take. A free-text
+  // box only suggests: Tab there still means the next field, and a delivery
+  // taken by "Lee" must not quietly become "Lee Park". Only the same name
+  // typed in full is chosen for it.
+  state.highlight = !q ? -1 : exact >= 0 ? exact
+                  : (!cbFree(cb) && state.filtered.length ? 0 : -1);
   cbRenderMenu(input);
 }
 
@@ -1785,15 +1792,13 @@ function cbOnKey(event, input) {
   const k = event.key;
   if (k === 'ArrowDown' || k === 'ArrowUp') {
     event.preventDefault();
-    const state = _cbState.get(input) || cbOpen(input);
+    let state = _cbState.get(input);
+    if (!state) { state = cbOpen(input); cbRenderMenu(input); }
     const n = state.filtered.length;
-    if (n) {
-      const step = k === 'ArrowDown' ? 1 : -1;
-      state.highlight = state.highlight < 0 ? (step > 0 ? 0 : n - 1)
-                                            : (state.highlight + step + n) % n;
-    }
-    cbRenderMenu(input);
-    cbScrollHi(input);
+    if (!n) return;
+    const step = k === 'ArrowDown' ? 1 : -1;
+    cbHighlight(input, state.highlight < 0 ? (step > 0 ? 0 : n - 1)
+                                          : (state.highlight + step + n) % n);
   } else if (k === 'Enter' || k === 'Tab') {
     const state = _cbState.get(input);
     const pick = state ? state.filtered[state.highlight] : null;
@@ -1935,7 +1940,10 @@ function _cbPositionFixed(input, menu) {
   const below = bottom - r.bottom - 6;
   const above = r.top - top - 6;
   const up = below < Math.min(menu.scrollHeight, 240) && above > below;
-  menu.style.maxHeight = Math.max(96, Math.min(240, up ? above : below)) + 'px';
+  // Only as tall as the room there is. A taller floor pushed the bottom of the
+  // list off a phone on its side with the keyboard up, and the last entries
+  // could not be scrolled into reach.
+  menu.style.maxHeight = Math.max(32, Math.min(240, up ? above : below)) + 'px';
   menu.style.top = (up ? r.top - menu.offsetHeight - 2 : r.bottom + 2) + 'px';
 }
 
@@ -1944,7 +1952,11 @@ function _cbRepositionFixedMenus() {
     if (menu.previousElementSibling) _cbPositionFixed(menu.previousElementSibling, menu);
   });
 }
-window.addEventListener('scroll', _cbRepositionFixedMenus, true);
+window.addEventListener('scroll', e => {
+  // Not for the list's own scrolling: its box has not moved.
+  if (e.target.classList && e.target.classList.contains('cb-menu')) return;
+  _cbRepositionFixedMenus();
+}, true);
 window.addEventListener('resize', _cbRepositionFixedMenus);
 if (window.visualViewport) {
   // Usually the keyboard coming up: the list was placed before it arrived.
@@ -1952,9 +1964,18 @@ if (window.visualViewport) {
   window.visualViewport.addEventListener('scroll', _cbRepositionFixedMenus);
 }
 
-function cbScrollHi(input) {
-  const hi = input.nextElementSibling && input.nextElementSibling.querySelector('.cb-opt.hi');
-  if (hi) hi.scrollIntoView({ block: 'nearest' });
+/** Move the highlight to entry `i`: two rows restyled, not the list rebuilt. */
+function cbHighlight(input, i) {
+  const state = _cbState.get(input);
+  const rows = input.nextElementSibling.querySelectorAll('.cb-opt');
+  const from = rows[state.highlight], to = rows[i];
+  if (from) { from.classList.remove('hi'); from.setAttribute('aria-selected', 'false'); }
+  state.highlight = i;
+  if (!to) { input.removeAttribute('aria-activedescendant'); return; }
+  to.classList.add('hi');
+  to.setAttribute('aria-selected', 'true');
+  input.setAttribute('aria-activedescendant', to.id);
+  to.scrollIntoView({ block: 'nearest' });
 }
 
 function cbClose(input) {
@@ -1965,27 +1986,32 @@ function cbClose(input) {
   _cbState.delete(input);
 }
 
-// A press on a list picks from it; a press anywhere else closes any list open.
+// A press on a list keeps the focus in its box, scrollbar included — a blur
+// would commit what was typed in place of what is being picked. A press
+// anywhere else closes any list open.
 document.addEventListener('mousedown', e => {
-  const menu = e.target.closest ? e.target.closest('.cb-menu') : null;
-  if (menu) {
-    // The focus stays in the box, scrollbar included: a blur would commit what
-    // was typed in place of what is being picked.
-    e.preventDefault();
-    const opt   = e.target.closest('.cb-opt');
-    const input = menu.previousElementSibling;
-    const state = input && _cbState.get(input);
-    if (!opt || !state) return;
-    const pick = state.filtered[Number(opt.dataset.i)];
-    if (pick != null) cbTake(input, pick);
-    cbCommitInput(input);
-    input.blur();
-    return;
-  }
+  if (e.target.closest && e.target.closest('.cb-menu')) { e.preventDefault(); return; }
   const here = e.target.closest ? e.target.closest('.cb') : null;
   document.querySelectorAll('.cb-menu:not([hidden])').forEach(m => {
     if (m.closest('.cb') !== here && m.previousElementSibling) cbClose(m.previousElementSibling);
   });
+});
+
+// The pick is the click, once the button is back up. Picking on the press hid
+// the list at once, so the release landed on whatever lay beneath it — for an
+// entry hanging past the bottom of the scan sheet, the backdrop, which took it
+// for a tap beside the sheet and threw the scan away. A click is the main
+// button only, too: a right-click to copy an entry is not a pick.
+document.addEventListener('click', e => {
+  const opt = e.target.closest ? e.target.closest('.cb-opt') : null;
+  if (!opt || e.button !== 0) return;
+  const input = opt.parentElement.previousElementSibling;
+  const state = input && _cbState.get(input);
+  if (!state) return;
+  const pick = state.filtered[Number(opt.dataset.i)];
+  if (pick != null) cbTake(input, pick);
+  cbCommitInput(input);
+  input.blur();
 });
 
 /* ═══════════════════════════════════════════
@@ -2212,11 +2238,6 @@ function renderCards(rows) {
   }
   wrap.innerHTML = rows.map(po => {
     const tot  = poTotals(po);
-    const proj = projectFor(po._division, po.project_id);
-    const jobLine = po.project_id
-      ? (proj ? proj.name + (proj.jobNumber ? ' · #' + proj.jobNumber : '') : po.project_id)
-      : 'General — no job';
-    const codes = [po.cost_code, po.sub_code].filter(Boolean).join(' / ');
     const n = docCounts[po.id] || 0;
     const open = expanded.has(po.id);
 
@@ -2227,7 +2248,7 @@ function renderCards(rows) {
       '</div>' +
       '<div class="title">' + esc(po.title || 'Untitled order') + '</div>' +
       '<div class="meta">' + esc(po.supplier || 'No vendor') + ' · ' + esc(po.date_created || '') + '</div>' +
-      '<div class="meta">' + divChipHTML(po._division) + ' ' + esc(jobLine) + (codes ? ' · ' + esc(codes) : '') + '</div>' +
+      '<div class="meta" id="card-job-' + idAttr(po.id) + '">' + cardJobLineHTML(po) + '</div>' +
       '<div class="amt" id="card-tot-' + idAttr(po.id) + '" style="margin-top:0.4rem">$' + fmt(tot.total) + '</div>' +
       '<div class="card-actions">' +
         '<button class="btn" onclick="toggleLines(\'' + jsAttr(po.id) + '\')">' + (open ? 'Hide' : 'Edit') + ' details</button>' +
@@ -2237,6 +2258,17 @@ function renderCards(rows) {
       (open ? '<div style="margin-top:0.75rem;border-top:1px solid var(--border);padding-top:0.6rem">' + cardEditorHTML(po) + '</div>' : '') +
     '</div>';
   }).join('');
+}
+
+/** A card's division, job and code. Its own line, so a new code can redraw
+ *  just this — see updateCodeInPlace. */
+function cardJobLineHTML(po) {
+  const proj = projectFor(po._division, po.project_id);
+  const jobLine = po.project_id
+    ? (proj ? proj.name + (proj.jobNumber ? ' · #' + proj.jobNumber : '') : po.project_id)
+    : 'General — no job';
+  const codes = [po.cost_code, po.sub_code].filter(Boolean).join(' / ');
+  return divChipHTML(po._division) + ' ' + esc(jobLine) + (codes ? ' · ' + esc(codes) : '');
 }
 
 /** The full editor for one order on a phone — the table's columns, stacked. */
@@ -2314,18 +2346,26 @@ function render() {
 }
 
 /**
- * render(), once nothing is being typed in.
+ * Show an order's new code everywhere it appears, without a re-render.
  *
- * A re-render rebuilds every row, and the field holding the focus goes with
- * it. Taking a code with Tab moves on to Description in the same keystroke,
- * and rendering there would drop the cursor out of the table. So this waits
- * until the focus has left the fields, as the paperclip counts do at load.
+ * The code box changes it on a click, Enter or Tab, and Tab moves on to the
+ * next field in the same keystroke. A re-render there rebuilds the row under
+ * the cursor, and holding one back until the fields are left only moves the
+ * damage onto whatever is pressed next: the button is rebuilt mid-press and
+ * the click is lost. The box itself already shows the new label; what else
+ * shows the code is the same order's box on the other surface — the table and
+ * the cards are both in the document — and the card's job line.
  */
-function renderWhenIdle() {
-  if (!isTyping()) { render(); return; }
-  // Looked at again once the blur is over: during it, the focus is still on
-  // its way to wherever it is going.
-  document.activeElement.addEventListener('blur', () => setTimeout(renderWhenIdle, 0), { once: true });
+function updateCodeInPlace(po) {
+  const value = orderCodeValue(po), label = orderCodeLabel(po);
+  document.querySelectorAll('.cb[data-list="codes"]').forEach(cb => {
+    const input = cb.querySelector('.cb-input');
+    if (cb.dataset.po !== po.id || !input || input === document.activeElement) return;
+    input.value = label;
+    if (value) input.dataset.cbValue = value; else delete input.dataset.cbValue;
+  });
+  const line = document.getElementById('card-job-' + po.id);
+  if (line) line.innerHTML = cardJobLineHTML(po);
 }
 
 /* ═══════════════════════════════════════════
@@ -3182,7 +3222,17 @@ async function addAttachment(poId) {
    a few seconds later, re-opens the sheet over whatever the user moved on to,
    and — if they started a second scan meanwhile — renders the first receipt's
    figures against the second receipt's photo and order. */
+// Where the press behind a backdrop click began. A click goes to whatever the
+// press and the release have in common, so one that started inside the sheet
+// — on an entry of a list hanging past its edge, or selecting text in a field
+// — and was let go over the backdrop reads as a tap beside the sheet. Only a
+// press that began on the backdrop is one.
+let _pressOnScanBackdrop = false;
+document.getElementById('scan-backdrop').addEventListener('mousedown', function (e) {
+  _pressOnScanBackdrop = e.target === this;
+});
 document.getElementById('scan-backdrop').addEventListener('click', function (e) {
+  if (!_pressOnScanBackdrop) return;
   if (e.target !== this) return;
   // Not while it is reading. The sheet fills the screen on a phone but the
   // backdrop is still a strip down each side, and a thumb resting there threw
