@@ -88,11 +88,19 @@ function adapt(handler) {
 }
 
 let failJobList = false;   // the editor's job list read fails while this is set
+let slowListMs = 0;        // the tab's list read takes this long
 const server = http.createServer((req, res) => {
   const p = decodeURIComponent(new globalThis.URL(req.url, 'http://x').pathname);
   if (failJobList && /[?&]projects=/.test(req.url)) {
     res.writeHead(500, { 'Content-Type': 'application/json' });
     return res.end(JSON.stringify({ ok: false, error: 'Database unavailable' }));
+  }
+  if (slowListMs && p === '/api/email/report-schedules' && req.method === 'GET' && !/[?&]projects=/.test(req.url)) {
+    const wait = slowListMs;
+    let raw0 = '';
+    req.on('data', c => { raw0 += c; });
+    req.on('end', () => setTimeout(() => adapt(ROUTES[p])(req, res, {}), wait));
+    return;
   }
   if (ROUTES[p]) {
     let raw = '';
@@ -363,6 +371,51 @@ async function cleanUp() {
     await page.waitForFunction(id => document.querySelector(`.ar-row[data-id="${id}"]`), { timeout: 8000 }, payRow && payRow.id).catch(() => {});
     ok('…and its row reads as all employees, last pay cycle',
       payRow && /All employees[\s\S]*Last pay cycle/.test(await page.$eval(`.ar-row[data-id="${payRow.id}"]`, r => r.innerText)));
+
+    console.log('\nA Send now on a report that failed last time');
+    const failedId = Number((await db.q("SELECT id FROM report_schedules WHERE company_code = $1 AND report_type = 'turf_daily_pm'", [CO]))[0].id);
+    let release2;
+    sendGate = new Promise(r => { release2 = r; });
+    await page.click(`.ar-row[data-id="${failedId}"] .ar-send-btn`);
+    await page.waitForFunction(id => /Sending/i.test(document.querySelector(`.ar-row[data-id="${id}"] .ar-badge`).textContent), { timeout: 8000 }, failedId).catch(() => {});
+    const sendingMsg = await page.$eval(`.ar-row[data-id="${failedId}"]`, r => {
+      const m = r.querySelector('.ar-msg');
+      return m ? { text: m.textContent, bad: m.classList.contains('bad') } : null;
+    });
+    ok('while it sends, its line says so in plain colours, not the failure red',
+      sendingMsg && /Building and sending now/.test(sendingMsg.text) && !sendingMsg.bad, JSON.stringify(sendingMsg));
+    release2();
+    sendGate = null;
+    await page.waitForFunction(id => /Send now/.test(document.querySelector(`.ar-row[data-id="${id}"] .ar-send-btn`).textContent), { timeout: 8000 }, failedId).catch(() => {});
+
+    console.log('\nA report handed to the next pass');
+    await db.q(`UPDATE report_schedules SET last_status = 'continuing', last_run_at = NOW(),
+        last_message = 'Sent 11 reports to 2 recipients so far. 4 more jobs go out at the next pass, in a few minutes.',
+        next_run_at = NOW() - interval '1 minute' WHERE id = $1`, [failedId]);
+    await page.evaluate(() => loadAutoReports({ quiet: true }));
+    await page.waitForFunction(id => /next pass/.test(document.querySelector(`.ar-row[data-id="${id}"]`).innerText), { timeout: 8000 }, failedId).catch(() => {});
+    const cont = await page.$eval(`.ar-row[data-id="${failedId}"]`, r => ({ cls: r.className, text: r.innerText }));
+    ok('reads as due, with what is left — not flagged as a failure',
+      /DUE NOW/i.test(cont.text) && /4 more jobs go out at the next pass/.test(cont.text) && !/flag-bad/.test(cont.cls), JSON.stringify(cont));
+
+    console.log('\nA switch flipped while the list is reloading');
+    const dustId = Number((await db.q("SELECT id FROM report_schedules WHERE company_code = $1 AND report_type = 'dust_tracking_summary'", [CO]))[0].id);
+    slowListMs = 1500;
+    dialogs.length = 0;
+    await page.click(`.ar-row[data-id="${dustId}"] .user-del-btn`);
+    await sleep(300);   // the delete is in, its list reload on the way
+    await page.click(`.ar-row[data-id="${payRow.id}"] .sup-toggle`);
+    await sleep(4500);
+    slowListMs = 0;
+    const after = await page.evaluate((d, pid) => ({
+      deletedShown: Boolean(document.querySelector(`.ar-row[data-id="${d}"]`)),
+      toggledOff: !document.querySelector(`.ar-row[data-id="${pid}"] .sup-toggle input, .ar-row[data-id="${pid}"] input.sup-toggle`)
+        ? null : !(document.querySelector(`.ar-row[data-id="${pid}"] .sup-toggle input, .ar-row[data-id="${pid}"] input.sup-toggle`).checked),
+    }), dustId, Number(payRow.id));
+    ok('a schedule deleted just before is gone from the list, not left there by the switch',
+      !after.deletedShown && !(await db.schedules()).some(r => Number(r.id) === dustId), JSON.stringify(after));
+    ok('…and the switch is off, on screen and saved', (await db.schedules()).find(r => Number(r.id) === Number(payRow.id)).enabled === false,
+      JSON.stringify(after));
 
     console.log('\nDelete');
     dialogs.length = 0;

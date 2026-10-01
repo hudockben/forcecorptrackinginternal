@@ -1725,6 +1725,15 @@ CREATE INDEX IF NOT EXISTS idx_report_schedules_due     ON report_schedules(next
 -- Added after the table first shipped to a preview database.
 ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS claim_token TEXT;
 
+-- A run that runs out of time (or is saved over mid-send) hands the rest of
+-- its occurrence to the next five-minute pass: next_run_at goes back to the
+-- occurrence, resume_state holds what earlier passes sent ({ done: job ids,
+-- sent, attempted, problems, passes }) so they are not sent twice, and
+-- resume_count caps how many passes one occurrence may take. Both are cleared
+-- when the occurrence is finished.
+ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS resume_state JSONB;
+ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS resume_count INTEGER NOT NULL DEFAULT 0;
+
 -- One row per send attempt, scheduled or "Send now". The schedule row keeps
 -- only the latest outcome; this is what answers "did Monday's go out?" a
 -- week later. Pruned after 180 days by the cron.

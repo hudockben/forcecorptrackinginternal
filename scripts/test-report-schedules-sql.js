@@ -464,11 +464,165 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
     runner.runSchedule = realRun;
   }
 
+  console.log('\nThe rest of a run, handed to the next pass');
+  {
+    const realRun = runner.runSchedule;
+    const realBegin = runner.beginRun;
+    const noBrowser = { launchBrowser: async () => ({ close: async () => {} }) };
+    const mk = async over => (await call('POST', {}, { ...base, ...over }, BOSS)).body.schedule.id;
+    const due = id => client.query("UPDATE report_schedules SET next_run_at = NOW() - interval '1 minute', claimed_at = NULL, claim_token = NULL WHERE id = $1", [id]);
+    const sentOk = { status: 'sent', sent: 1, total: 1, recipientCount: 2, message: 'Sent to 2 recipients.' };
+    // Claim one schedule by id, the way claimNextDue claims (its reading of updated_at included).
+    const claim = async id => {
+      const tok = runner.newClaimToken();
+      const r = await client.query(
+        `UPDATE report_schedules SET claimed_at = NOW(), claim_token = $2 WHERE id = $1
+          RETURNING *, extract(epoch FROM updated_at)::text AS updated_epoch`, [id, tok]);
+      return { sched: r.rows[0], tok };
+    };
+    // Other due schedules from the sections above are sent and forgotten.
+    const quietOthers = () => client.query(
+      "UPDATE report_schedules SET next_run_at = NOW() + interval '1 day' WHERE company_code = $1 AND next_run_at <= NOW()", [CO]);
+
+    // Fifteen Daily PMs where the time allows eleven.
+    const h = await mk({ project_id: '*' });
+    await quietOthers();
+    await due(h);
+    const dueAt = new Date((await row(h)).next_run_at);
+    const seen = [];
+    runner.runSchedule = async (s, sched, ctx) => {
+      if (Number(sched.id) !== Number(h)) return sentOk;
+      seen.push({ resume: ctx.resume, occurrence: ctx.occurrence });
+      if (seen.length === 1) {
+        const ok = await ctx.handBack({ state: { done: ['j1'], sent: 1, attempted: 1, problems: [], passes: 1 }, progress: true });
+        return ok
+          ? { status: 'continuing', sent: 1, total: 1, recipientCount: 2, message: 'Sent 1 report to 2 recipients so far. 1 more job goes out at the next pass, in a few minutes.' }
+          : { status: 'partial', sent: 1, total: 1, recipientCount: 2, message: 'not handed back' };
+      }
+      return { status: 'sent', sent: 1, total: 1, recipientCount: 2, message: 'Sent 2 reports to 2 recipients (over 2 runs).' };
+    };
+    let out = await cron.runDueSchedules(sql, noBrowser);
+    let s = await row(h);
+    assert('a run that runs out of time hands the rest back: due again at once, for the same occurrence',
+      s.last_status === 'continuing' && new Date(s.next_run_at).getTime() === dueAt.getTime() && s.claimed_at === null,
+      JSON.stringify({ st: s.last_status, next: s.next_run_at, due: dueAt, claimed: s.claimed_at }));
+    assert('…with what it already sent written down', s.resume_state && JSON.stringify(s.resume_state.done) === '["j1"]' && s.resume_count === 1,
+      JSON.stringify({ state: s.resume_state, n: s.resume_count }));
+    assert('…and the same pass does not take it again', seen.length === 1 && out.continuing === 1, JSON.stringify({ seen: seen.length, out }));
+    out = await cron.runDueSchedules(sql, noBrowser);
+    s = await row(h);
+    assert('the next pass continues it — the same occurrence, told what was sent',
+      seen.length === 2 && seen[1].occurrence.getTime() === dueAt.getTime() && seen[1].resume && JSON.stringify(seen[1].resume.done) === '["j1"]',
+      JSON.stringify(seen[1]));
+    assert('…and once it is finished: on to its next time, nothing carried over',
+      s.last_status === 'sent' && new Date(s.next_run_at) > new Date() && s.resume_state === null && s.resume_count === 0,
+      JSON.stringify({ st: s.last_status, next: s.next_run_at, state: s.resume_state, n: s.resume_count }));
+    assert('both passes are in the history', (await runsFor(h)).map(r => r.status).join(',') === 'continuing,sent',
+      (await runsFor(h)).map(r => r.status).join(','));
+    runner.runSchedule = realRun;
+
+    // What decides whether the rest is wanted.
+    const occ = new Date(Date.now() - 60000);
+    const state = { done: ['j1'], sent: 1, attempted: 1, problems: [], passes: 1 };
+    let x = await mk({ project_id: '*' });
+    let c = await claim(x);
+    await new Promise(r => setTimeout(r, 15));
+    await call('PUT', { id: x }, { ...base, project_id: '*', subject: 'Typo fixed' }, BOSS);
+    assert('saved mid-send with the same timetable: the rest goes at the next pass, with the new settings',
+      await runner.handBack(sql, c.sched, c.tok, { occurrence: occ, state, progress: true }) === true
+        && new Date((await row(x)).next_run_at).getTime() === occ.getTime());
+    c = await claim(x);
+    await call('PUT', { id: x }, { ...base, project_id: '*', send_time: '15:00' }, BOSS);
+    const retimedNext = (await row(x)).next_run_at;
+    assert('retimed mid-send: nothing handed back, the new timetable stands',
+      await runner.handBack(sql, c.sched, c.tok, { occurrence: occ, state, progress: true }) === false
+        && new Date((await row(x)).next_run_at).getTime() === new Date(retimedNext).getTime());
+    c = await claim(x);
+    await call('PUT', { id: x }, { enabled: false }, BOSS);
+    assert('switched off mid-send: nothing handed back', await runner.handBack(sql, c.sched, c.tok, { occurrence: occ, state, progress: true }) === false
+      && (await row(x)).next_run_at === null);
+    await call('PUT', { id: x }, { enabled: true }, BOSS);
+    c = await claim(x);
+    await call('PUT', { id: x }, { ...base, project_id: '', report_type: 'turf_daily_summary', send_time: c.sched.send_time }, BOSS);
+    assert('another report since: handed back, but started over rather than skipping jobs',
+      await runner.handBack(sql, c.sched, c.tok, { occurrence: occ, state, progress: true }) === true && (await row(x)).resume_state === null);
+    c = await claim(x);
+    await client.query('UPDATE report_schedules SET resume_count = $2 WHERE id = $1', [x, runner.MAX_PASSES - 1]);
+    assert(`no more than ${runner.MAX_PASSES} passes at one occurrence`,
+      await runner.handBack(sql, { ...c.sched, resume_count: runner.MAX_PASSES - 1 }, c.tok, { occurrence: occ, state, progress: true }) === false);
+    assert(`…and no more than ${runner.MAX_IDLE_PASSES} that sent nothing`,
+      await runner.handBack(sql, { ...c.sched, resume_count: runner.MAX_IDLE_PASSES }, c.tok, { occurrence: occ, state, progress: false }) === false
+        && await runner.handBack(sql, { ...c.sched, resume_count: 0 }, c.tok, { occurrence: occ, state, progress: false }) === true);
+    assert('a claim that is not this run\'s hands nothing back',
+      await runner.handBack(sql, { ...c.sched, resume_count: 0 }, 'someone-else', { occurrence: occ, state, progress: true }) === false);
+    await client.query('DELETE FROM report_schedules WHERE id = $1', [x]);
+    assert('deleted mid-send: nothing handed back', await runner.handBack(sql, c.sched, c.tok, { occurrence: occ, state, progress: true }) === false);
+
+    // Saved between the claim and the start.
+    const b = await mk({});
+    await quietOthers();
+    await due(b);
+    const before = (await row(b)).next_run_at;
+    let ran = 0;
+    runner.runSchedule = async (s2, sched) => { if (Number(sched.id) === Number(b)) ran++; return sentOk; };
+    runner.beginRun = async (...a) => {
+      if (Number(a[1].id) === Number(b) && !ran) await call('PUT', { id: b }, { ...base, subject: 'Saved just now' }, BOSS);
+      return realBegin(...a);
+    };
+    out = await cron.runDueSchedules(sql, noBrowser);
+    runner.beginRun = realBegin;
+    s = await row(b);
+    assert('a schedule saved between its claim and its start is not run on the old copy, nor its new timetable overwritten',
+      ran === 0 && s.claimed_at === null && s.claim_token === null && s.last_status !== 'sending'
+        && new Date(s.next_run_at).getTime() === new Date(before).getTime(),
+      JSON.stringify({ ran, claimed: s.claimed_at, st: s.last_status, next: s.next_run_at, before }));
+    await cron.runDueSchedules(sql, noBrowser);
+    assert('…the next pass sends it as saved', ran === 1 && (await row(b)).last_status === 'sent');
+    runner.runSchedule = realRun;
+
+    // Send now that cannot start.
+    const sn = await mk({});
+    runner.beginRun = async () => { throw new Error('connection reset'); };
+    let r = await call('POST', { id: sn, action: 'run' }, {}, BOSS);
+    runner.beginRun = realBegin;
+    s = await row(sn);
+    assert('a Send now that cannot start says so and lets go of its claim',
+      r.statusCode === 500 && /Could not start it/.test(r.body.error) && s.claim_token === null && s.claimed_at === null,
+      `${r.statusCode} ${JSON.stringify(r.body)} ${s.claim_token}`);
+    runner.runSchedule = async () => sentOk;
+    r = await call('POST', { id: sn, action: 'run' }, {}, BOSS);
+    assert('…so pressing it again works, not "being sent right now"', r.statusCode === 200 && r.body.result.status === 'sent');
+    runner.runSchedule = realRun;
+
+    // Carried state and the editor.
+    const cs = await mk({ project_id: '*' });
+    await due(cs);
+    await client.query(`UPDATE report_schedules SET resume_state = '{"done":["j1"],"sent":1}'::jsonb, resume_count = 1 WHERE id = $1`, [cs]);
+    await call('PUT', { id: cs }, { ...base, project_id: '*', subject: 'Fixed' }, BOSS);
+    s = await row(cs);
+    assert('saving a schedule mid-continuation, same timetable: what was sent is kept',
+      s.resume_state && JSON.stringify(s.resume_state.done) === '["j1"]' && s.resume_count === 1);
+    await runner.recordRun(sql, s, sentOk, { kind: 'manual', token: null, triggeredBy: 'boss', startedAt: new Date(), now: new Date() });
+    assert('…a Send now in between leaves it alone', (await row(cs)).resume_count === 1);
+    await call('PUT', { id: cs }, { ...base, project_id: '*', send_time: '16:00' }, BOSS);
+    s = await row(cs);
+    assert('…retimed, it starts clean', s.resume_state === null && s.resume_count === 0);
+
+    // History: a run for all jobs stays a run for all jobs.
+    const all = await mk({ report_type: 'turf_daily_summary', project_id: '' });
+    await runner.recordRun(sql, await row(all), sentOk, { kind: 'manual', token: null, triggeredBy: 'boss', startedAt: new Date(), now: new Date() });
+    await call('PUT', { id: all }, { ...base, report_type: 'turf_daily_summary', project_id: 'j1', project_name: 'Maple Ave' }, BOSS);
+    const g = await call('GET', {}, null, BOSS);
+    const allRuns = g.body.runs.filter(rr => Number(rr.schedule_id) === Number(all));
+    assert('a past send for all jobs is not relabelled with the job the schedule moved to',
+      allRuns.length === 1 && allRuns[0].project_name === null && allRuns[0].project_id === null, JSON.stringify(allRuns));
+  }
+
   console.log('\nHistory');
   {
     const r = await call('GET', {}, null, BOSS);
     assert('the tab gets recent runs, newest first, with what they were',
-      r.body.runs.length >= 4 && r.body.runs[0].report_type === 'turf_daily_pm'
+      r.body.runs.length >= 4 && /^turf_/.test(r.body.runs[0].report_type || '')
         && new Date(r.body.runs[0].started_at) >= new Date(r.body.runs[r.body.runs.length - 1].started_at));
     const d = await call('DELETE', { id }, null, BOSS);
     assert('deleting a schedule takes its history with it',

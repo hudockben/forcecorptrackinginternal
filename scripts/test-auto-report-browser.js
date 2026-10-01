@@ -177,6 +177,8 @@ const AI_DELAY = {};
 const BYPASS_SEEN = { app: 0, other: 0 };
 // Paths that are never answered, to see what a stuck page reports.
 const HANG = new Set();
+// AI reads in flight at once, and the most there ever were.
+const AI_SEEN = { live: 0, max: 0 };
 
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
@@ -226,8 +228,12 @@ const server = http.createServer((req, res) => {
       req.on('end', () => {
         let pid = '';
         try { pid = JSON.parse(body).projectId; } catch {}
-        setTimeout(() => json(res, { summary: 'Excavation is pacing ahead of plan.', recommendations: [], outlook: 'on-track' }),
-          AI_DELAY[pid] || 0);
+        AI_SEEN.live++;
+        AI_SEEN.max = Math.max(AI_SEEN.max, AI_SEEN.live);
+        setTimeout(() => {
+          AI_SEEN.live--;
+          json(res, { summary: 'Excavation is pacing ahead of plan.', recommendations: [], outlook: 'on-track' });
+        }, AI_DELAY[pid] || 0);
       });
       return;
     }
@@ -643,6 +649,112 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
     HANG.clear();
     ok('a page that never finishes loading names the request it is waiting on',
       /^Opening the report took longer than \d+s\. Still waiting on GET \/api\/daily-rows\?/.test(stuck), stuck);
+
+    console.log('\nWhat the second review found');
+    // Stopped partway — here, saved over mid-send — the rest is handed back,
+    // and the next pass sends only what is left.
+    let handed = null;
+    let stillAsks = 0;
+    SENT.length = 0;
+    res = await runSchedule(fakeSql, sched, { baseUrl, browser, now: new Date(),
+      stillWanted: async () => (++stillAsks > 1 ? 'It was changed while it was being built, so nothing more was sent; the next run uses the new settings.' : null),
+      handBack: async h => { handed = h; return true; } });
+    ok('saved over after its first email: the rest is handed to the next pass, not dropped',
+      res.status === 'continuing' && SENT.length === 1 && handed && JSON.stringify(handed.state.done) === '["p1"]'
+        && handed.progress === true && /goes out at the next pass, with the new settings/.test(res.message),
+      JSON.stringify({ res, handed }));
+    SENT.length = 0;
+    res = await runSchedule(fakeSql, sched, { baseUrl, browser, now: new Date(), resume: handed && handed.state,
+      handBack: async () => { throw new Error('should not be asked'); } });
+    ok('…and the next pass sends only the job that had not gone, and reports on the whole',
+      res.status === 'sent' && SENT.length === 1 && /Oak St/.test(SENT[0].subject || '')
+        && res.message === 'Sent 2 reports to 2 recipients (over 2 runs).', JSON.stringify({ res, subjects: SENT.map(m => m.subject) }));
+
+    // Out of time before anything went: tried again at the next pass.
+    HANG.add('/api/daily-rows');
+    handed = null;
+    res = await runSchedule(fakeSql, sched, { baseUrl, browser, now: new Date(), deadline: Date.now() + 63_000,
+      handBack: async h => { handed = h; return true; } });
+    ok('a run whose page ran out of time before sending anything is tried again at the next pass',
+      res.status === 'continuing' && handed && handed.progress === false && /tried again at the next pass/.test(res.message),
+      JSON.stringify({ res, handed }));
+    res = await runSchedule(fakeSql, sched, { baseUrl, browser, now: new Date(), deadline: Date.now() + 63_000 });
+    HANG.clear();
+    ok('…and without a next pass to give it to (Send now), it fails, saying why', res.status === 'failed' && /took longer than/.test(res.message),
+      res.message);
+
+    // A job whose build times out is still running in its page; the next job
+    // gets a fresh page, and its own report.
+    HANG.add('/api/data/fct_conschedule_p1');
+    SENT.length = 0;
+    const t2 = Date.now();
+    res = await runSchedule(fakeSql, { ...sched, report_type: 'turf_job_summary' }, { baseUrl, browser, now: new Date() });
+    HANG.clear();
+    ok('after one job\'s report times out, the next job still goes out — its own report, not the stuck one\'s',
+      res.status === 'partial' && SENT.length === 1 && /Oak St/.test(SENT[0].subject || '') && !/Maple Ave/.test(SENT[0].subject || '')
+        && /Maple Ave: Building the report took longer than/.test(res.message),
+      JSON.stringify({ res, subjects: SENT.map(m => m.subject), took: Date.now() - t2 }));
+
+    // Reads that still answered a failure with defaults.
+    FAIL.add('fct_conschedule_p1');
+    r = await build(browser, baseUrl, 'turf_job_summary', { projectId: 'p1' });
+    FAIL.clear();
+    ok('a Job Summary whose construction schedule could not be read fails, rather than say none was built',
+      !r.error && r.out.items.length === 0 && /construction schedule could not be read/.test((r.out.errors[0] || {}).error),
+      r.error || JSON.stringify(r.out));
+    FAIL.add('fct_kiewit_conschedule_p1');
+    r = await build(browser, baseUrl, 'kiewit_job_summary', { projectId: 'p1' });
+    FAIL.clear();
+    ok('…Kiewit\'s too', !r.error && r.out.items.length === 0 && /construction schedule could not be read/.test((r.out.errors[0] || {}).error),
+      r.error || JSON.stringify(r.out));
+
+    const p1 = STORE.fct_project_p1;
+    STORE.fct_project_p1 = { ...p1 };
+    delete STORE.fct_project_p1['end-date'];
+    FAIL.add('/api/deadlines');
+    r = await build(browser, baseUrl, 'turf_daily_pm', { projectId: 'p1' });
+    ok('a Daily PM for a job whose deadline lives in the deadlines list fails when that list cannot be read',
+      !r.error && r.out.items.length === 0 && /project deadlines could not be read/.test((r.out.errors[0] || {}).error),
+      r.error || JSON.stringify(r.out));
+    STORE.fct_project_p1 = p1;
+    r = await build(browser, baseUrl, 'turf_daily_pm', { projectId: 'p1' });
+    FAIL.clear();
+    ok('…and one with its own end date still goes', !r.error && r.out.items.length === 1, r.error || JSON.stringify(r.out));
+
+    STORE.fct_quarry_sales = [{ id: 's1', date: YESTERDAY, location: 'Pit 2', product: '2A Modified', tons: 400, price: 14, total: 5600 }];
+    FAIL.add('fct_quarry_benchmarks');
+    r = await build(browser, baseUrl, 'quarry_breakeven', { year: String(today.getFullYear()) });
+    FAIL.clear();
+    delete STORE.fct_quarry_sales;
+    ok('a break-even whose benchmarks could not be read fails, rather than show the stock ranges as the company\'s',
+      !r.error && r.out.items.length === 0 && /benchmarks did not load/.test((r.out.errors[0] || {}).error),
+      r.error || JSON.stringify(r.out));
+
+    // A Daily PM for every job asks the AI about all of them at once.
+    AI_DELAY.p1 = 3000; AI_DELAY.p2 = 3000;
+    AI_SEEN.max = 0;
+    r = await build(browser, baseUrl, 'turf_daily_pm', { projectId: '*' });
+    delete AI_DELAY.p1; delete AI_DELAY.p2;
+    ok('a Daily PM for every job reads the AI for its jobs together, not one after another',
+      !r.error && r.out.items.length === 2 && AI_SEEN.max >= 2 && r.out.items.every(it => has(it, 'pacing ahead')),
+      r.error || JSON.stringify({ max: AI_SEEN.max, n: r.out.items.length }));
+    AI_SEEN.max = 0;
+    r = await build(browser, baseUrl, 'turf_daily_pm', { projectId: 'p1' });
+    ok('…and a one-job Daily PM asks about that job only', !r.error && r.out.items.length === 1 && AI_SEEN.max === 1,
+      r.error || JSON.stringify({ max: AI_SEEN.max }));
+
+    // Payroll's ranges count from the day the report was due.
+    r = await build(browser, baseUrl, 'payroll_hours', { options: { range: 'current_week' }, today: LAST_SUN });
+    const wantSpan = (() => {
+      const a = new Date(LAST_MON + 'T00:00:00'), b = new Date(LAST_SUN + 'T00:00:00');
+      const md = d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      if (a.getFullYear() !== b.getFullYear()) return `${md(a)}, ${a.getFullYear()} – ${md(b)}, ${b.getFullYear()}`;
+      if (a.getMonth() === b.getMonth()) return `${md(a)}–${b.getDate()}, ${b.getFullYear()}`;
+      return `${md(a)} – ${md(b)}, ${b.getFullYear()}`;
+    })();
+    ok('a payroll report due Sunday night and run after midnight covers the week it was due in',
+      !r.error && r.out.items.length === 1 && (r.out.items[0].subject || '').endsWith(wantSpan),
+      r.error || (r.out.items[0] || {}).subject + ' vs ' + wantSpan + ' ' + JSON.stringify(r.out.skipped));
   } finally {
     await browser.close();
     server.close();

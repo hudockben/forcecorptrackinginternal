@@ -18107,14 +18107,21 @@ function _jsGanttImg(png) {
 /* Saved Construction Schedule for a job, fetched without disturbing whichever
    job the Construction Schedule tab itself has open. Null when the job has
    never had one built. */
+// Set when the read below fails, as opposed to finding nothing. On screen the
+// summary falls back to the bid-item timeline either way; a scheduled send
+// checks it, and fails rather than email "no schedule built" for a job that
+// has one (registerAutoReports).
+let _jsConScheduleReadFailed = false;
 async function _jsFetchConSchedule(projId) {
   try {
-    const saved = await apiGet(_csKey(projId));
+    const got = await apiGetChecked(_csKey(projId));
+    if (!got.ok) { _jsConScheduleReadFailed = true; return null; }
+    const saved = got.value;
     if (saved && typeof saved === 'object' && Array.isArray(saved.rows) && saved.rows.length) {
       saved.header = Object.assign({ heading: '', projectTitle: '', pm: '', company: '', date: '' }, saved.header || {});
       return saved;
     }
-  } catch (e) { console.warn('[JobSummary] schedule load failed:', e.message); }
+  } catch (e) { _jsConScheduleReadFailed = true; console.warn('[JobSummary] schedule load failed:', e.message); }
   return null;
 }
 
@@ -22233,10 +22240,20 @@ const _bootReady = (async () => {
     const p = jobFor(spec);
     // What opening the Daily PM overlay does first: the deadlines, and the AI
     // read of the job (its own once-a-day cache; left out if the AI is down).
-    // Twenty seconds at most for that read: a slow answer must not use up a
-    // run that has a report to build for every job after this one.
-    if (!_schedDeadlinesLoaded) await loadScheduleDeadlines();
-    await Promise.race([_fetchSchedAI(p), new Promise(r => setTimeout(r, 20000))]);
+    // The deadlines get longer than the screen's five seconds, and a read
+    // that fails is a failure for a job whose deadline lives there (no end
+    // date of its own) — not a report with no deadline and no pace.
+    if (!_schedDeadlinesOk) await loadScheduleDeadlines(20000);
+    if (!_schedDeadlinesOk && !p['end-date']) throw new Error('The project deadlines could not be read.');
+    // Twenty seconds at most for the AI read: a slow answer must not use up a
+    // run that has a report to build for every job after this one. A run for
+    // every job starts all their reads at once, four at a time, so job ten's
+    // is long back by the time it is built.
+    const reads = Array.isArray(spec.batch) && spec.batch.length > 1
+      ? AR.prefetch('daily-pm-ai', spec.batch.map(id => getProj(id)).filter(Boolean), _fetchSchedAI, 4)
+      : null;
+    const read = (reads && reads.get(String(p.id))) || _fetchSchedAI(p);
+    await Promise.race([read, new Promise(r => setTimeout(r, 20000))]);
     _pmrProjId = p.id;
     return AR.capture(() => emailDailyPMReport());
   }, { perJob: true });
@@ -22257,10 +22274,15 @@ const _bootReady = (async () => {
     return AR.capture(() => generateBidEmail());
   }, { perJob: true });
 
-  AR.register('kiewit_job_summary', spec => {
+  AR.register('kiewit_job_summary', async spec => {
     const p = jobFor(spec);
     openJobSummaryModal(p.id);
-    return AR.capture(() => jobSummaryEmail());
+    _jsConScheduleReadFailed = false;
+    const item = await AR.capture(() => jobSummaryEmail());
+    // Its schedule page is the saved construction schedule, or — when there
+    // is none — the bid-item timeline. A read that failed is neither.
+    if (_jsConScheduleReadFailed) throw new Error('The construction schedule could not be read.');
+    return item;
   }, { perJob: true });
 
   // The tab's own Email reads whichever schedule the tab has open, and its
@@ -22810,18 +22832,24 @@ function commitImportCSV() {
 
 let _schedDeadlines = [];
 let _schedDeadlinesLoaded = false;
+// Whether the last read of the deadlines worked. The screen carries on
+// without them; a scheduled Daily PM (registerAutoReports) must not.
+let _schedDeadlinesOk = false;
 
-async function loadScheduleDeadlines() {
+async function loadScheduleDeadlines(timeoutMs) {
+  let ok = false;
   try {
     const ctrl = new AbortController();
-    const tid  = setTimeout(() => ctrl.abort(), 5000);
+    const tid  = setTimeout(() => ctrl.abort(), timeoutMs || 5000);
     const r    = await fetch('/api/deadlines?division=' + DIVISION, { headers: { 'Authorization': 'Bearer ' + fctToken }, signal: ctrl.signal });
     clearTimeout(tid);
     if (r.ok) {
       const d = await r.json();
       _schedDeadlines = d.deadlines || [];
+      ok = true;
     }
   } catch { _schedDeadlines = []; }
+  _schedDeadlinesOk = ok;
   _schedDeadlinesLoaded = true;
 }
 

@@ -795,7 +795,8 @@
     .ar-badge.missed,
     .ar-badge.interrupted { color: #f87171; background: rgba(239,68,68,0.12); }
     .ar-badge.due     { color: #f59e0b; background: rgba(245,158,11,0.14); }
-    .ar-badge.sending { color: #60a5fa; background: rgba(96,165,250,0.14); }
+    .ar-badge.sending,
+    .ar-badge.continuing { color: #60a5fa; background: rgba(96,165,250,0.14); }
     .ar-badge.off,
     .ar-badge.new     { color: #8b8b9a; background: var(--surface2); }
     .ar-badge.due::before, .ar-badge.sending::before {
@@ -3347,6 +3348,9 @@
       failed:  'Failed',
       missed:  'Missed',
       interrupted: 'Interrupted',
+      // Ran out of time, or was saved mid-send, and handed the rest of the
+      // occurrence to the next five-minute pass. Not a problem in itself.
+      continuing: 'Continuing',
     };
 
     function arTz() { return (arData && arData.defaultTimezone) || 'America/New_York'; }
@@ -3552,10 +3556,13 @@
       const name  = def ? def.name : s.report_type;
       const next  = s.enabled && s.next_run_at && !st.due && !st.sending ? 'Next: ' + arFmtWhen(s.next_run_at) : '';
       let msg = '';
-      if (st.due) msg = 'Its time has come — it goes out on the next check, within five minutes.';
+      // Handed back by a run that ran out of time: it is due again, and what
+      // it says is what is left of it.
+      if (st.due && s.last_status === 'continuing' && s.last_message) msg = s.last_message;
+      else if (st.due) msg = 'Its time has come — it goes out on the next check, within five minutes.';
       else if (st.sending) msg = 'Building and sending now.';
       else if (st.last && s.last_message) msg = (st.lastShown ? '' : `Last: ${st.last.label} ${st.last.when} — `) + s.last_message;
-      const msgBad = st.bad && !st.due && !s.sending;
+      const msgBad = st.bad && !st.due && !st.sending;
       return `
         <div class="ar-row${s.enabled ? '' : ' off'}${st.flag ? ' flag-' + st.flag : ''}" data-id="${s.id}">
           <div class="ar-c-title">
@@ -3649,6 +3656,8 @@
       el.disabled = true;
       // A list read already on its way was read before this change: let it
       // land on nothing, or it flips the switch back under the banner.
+      // That includes one a Save, Delete or Send now just started — so the
+      // list is read again once the change is in, and nothing is lost.
       arLoadSeq++;
       try {
         const r = await arApi('PUT', 'id=' + id, { enabled: on });
@@ -3664,6 +3673,7 @@
         el.disabled = false;
         arBanner('Could not change it: ' + err.message, 'err');
       }
+      await loadAutoReports({ quiet: true });
     }
 
     async function arSendNow(id, btn) {
