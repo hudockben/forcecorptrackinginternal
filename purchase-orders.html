@@ -165,6 +165,35 @@
 
     .empty { padding: 1.75rem; text-align: center; color: var(--muted); font-size: 0.85rem; }
 
+    /* ── Typeahead combobox ──
+       Cost / Sub Code, Vendor and Received By: type to narrow the list. The
+       box takes its look from wherever it sits — a table cell or a sheet
+       field — through the input rules above, so only the caret and the list
+       are styled here. The list is position: fixed and placed by
+       _cbPositionFixed, because every one of these boxes is inside something
+       that scrolls, and a list positioned inside it would be clipped. */
+    .cb { position: relative; width: 100%; }
+    .cb::after {
+      content: '\25BE'; position: absolute; right: 0.45rem; top: 50%;
+      transform: translateY(-50%); font-size: 0.7rem; color: var(--muted);
+      pointer-events: none;
+    }
+    .cb .cb-input { display: block; padding-right: 1.35rem; text-overflow: ellipsis; }
+    .cb-menu {
+      position: fixed; z-index: 1000;
+      width: max-content; max-width: min(460px, 92vw); max-height: 240px;
+      overflow-y: auto; overscroll-behavior: contain;
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 5px;
+      box-shadow: 0 8px 22px rgba(0,0,0,0.5);
+    }
+    .cb-menu[hidden] { display: none; }
+    .cb-opt {
+      padding: 0.35rem 0.6rem; font-size: 0.8rem; line-height: 1.35; color: var(--text);
+      cursor: pointer; white-space: normal; overflow-wrap: anywhere;
+    }
+    .cb-opt.hi, .cb-opt:hover { background: var(--green-dim); color: #fff; }
+    .cb-empty { padding: 0.35rem 0.6rem; font-size: 0.74rem; color: var(--muted); font-style: italic; }
+
     /* ── Save indicator ── */
     .save-indicator {
       position: fixed; right: 1rem; bottom: 1rem; z-index: 400;
@@ -306,6 +335,9 @@
          The names are long by nature — "Tri-State Aggregates & Supply Co". */
       .filter-bar select { max-width: 100%; flex: 1 1 8rem; min-width: 0; }
       .filter-bar { flex-wrap: wrap; }
+
+      /* A row of a picker's list is a tap too — the same 44px as the fields. */
+      .cb-opt, .cb-empty { padding: 0.75rem 0.8rem; font-size: 15px; }
     }
     .po-card {
       background: var(--surface); border: 1px solid var(--border);
@@ -445,8 +477,6 @@
      ignored on a desktop, which then offers the file picker instead. -->
 <input type="file" id="receipt-capture" accept="image/*" style="display:none" />
 <input type="file" id="attach-capture"  accept="image/*,application/pdf" style="display:none" />
-
-<datalist id="vendor-list"></datalist>
 
 <script>
 /* ═══════════════════════════════════════════
@@ -921,8 +951,6 @@ async function loadCatalog() {
   renderDivisionFilter();
 
   const vendors = Array.isArray(catalog.vendors) ? catalog.vendors : [];
-  document.getElementById('vendor-list').innerHTML =
-    vendors.map(v => '<option value="' + esc(v.name) + '"></option>').join('');
   document.getElementById('f-vendor').innerHTML = '<option value="">All vendors</option>'
     + vendors.map(v => '<option value="' + esc(v.name) + '">' + esc(v.name) + '</option>').join('');
 
@@ -1472,7 +1500,9 @@ function setSubCode(poId, value) {
   po.cost_code = parts[0] || '';
   po.sub_code  = parts[1] || '';
   savePO(po, { immediate: true });
-  render();
+  // Not render(): this runs from the code box, often with the focus already
+  // on its way to the next field.
+  renderWhenIdle();
 }
 
 function setField(poId, field, value) {
@@ -1582,6 +1612,383 @@ function visiblePOs() {
 }
 
 /* ═══════════════════════════════════════════
+   TYPEAHEAD COMBOBOX
+   Cost / Sub Code, Vendor and Received By: type to narrow the list, then
+   take an entry with a click, Enter or Tab. It is the picker the division
+   tabs give these same fields — paving.html has why a native <select> or
+   <datalist> is not good enough — ported to this page, with three
+   differences that come from how this page is built:
+
+   - A commit calls this page's own setters directly, as trucking.html's copy
+     does. The division tabs fire a synthetic change event for their
+     delegated listeners, and this page has none to hear it.
+   - There are two kinds of list. Vendor and Received By are free text that
+     the list only suggests for, and they write on every keystroke exactly as
+     the plain inputs they replace did — so a name typed and left still
+     saves, closing the tab included. Cost / Sub Code is a pick-list: what is
+     typed there is a search, and nothing is written until it names a code
+     the job carries.
+   - Every list is fixed-position (see the stylesheet).
+═══════════════════════════════════════════ */
+const _cbState = new WeakMap();
+let _cbSeq = 0;
+
+/**
+ * One combobox, as markup. `list` names what it searches (cbOptionsFor) and
+ * `text` is what the box shows. opts:
+ *   value        for a pick-list, the code behind the text ('cost||sub')
+ *   placeholder, label (its aria-label), disabled
+ *   attrs        more attributes for the <input>, already escaped
+ *   data         { po, line } — the order, and delivery, it writes to. A box
+ *                with neither belongs to a sheet, which reads it on save.
+ */
+function cbHtml(list, text, opts) {
+  const o = opts || {};
+  const data = Object.keys(o.data || {})
+    .map(k => ' data-' + k + '="' + esc(o.data[k]) + '"').join('');
+  return '<div class="cb" data-list="' + esc(list) + '"' + data + '>' +
+    '<input type="text" class="cb-input boxed"' + (o.attrs ? ' ' + o.attrs : '') +
+      ' value="' + esc(text || '') + '"' +
+      (o.value ? ' data-cb-value="' + esc(o.value) + '"' : '') +
+      ' placeholder="' + esc(o.placeholder || '') + '"' +
+      (o.label ? ' aria-label="' + esc(o.label) + '"' : '') +
+      ' autocomplete="off" autocorrect="off" spellcheck="false"' +
+      ' role="combobox" aria-autocomplete="list" aria-expanded="false"' +
+      (o.disabled ? ' disabled' : '') +
+      ' onfocus="cbOnFocus(this)" oninput="cbOnInput(this)"' +
+      ' onkeydown="cbOnKey(event, this)" onblur="cbOnBlur(this)">' +
+    '<div class="cb-menu" role="listbox" hidden></div>' +
+  '</div>';
+}
+
+/** Vendor and Received By take whatever is typed; the rest are pick-lists. */
+function cbFree(cb) {
+  return cb.dataset.list === 'vendors' || cb.dataset.list === 'employees';
+}
+
+/** An entry's text. A free-text list's entries are plain names. */
+function cbText(o) { return typeof o === 'string' ? o : o.label; }
+
+/** A job's codes as pick-list entries. `code` is the pair alone, so typing
+ *  "420 / Base" in full finds it without its description. */
+function codeOptions(codes) {
+  return codes.map(c => ({
+    value: codeValue(c),
+    label: codeLabel(c),
+    code:  [c.cost_code, c.sub_code].filter(Boolean).join(' / '),
+  }));
+}
+
+/** An order's code as its picker holds it: 'cost||sub', or '' for none. */
+function orderCodeValue(po) {
+  return (po.cost_code || po.sub_code) ? codeValue(po) : '';
+}
+
+/**
+ * What an order's code box shows: the code's label on its job — or the bare
+ * pair, flagged, when the job no longer carries it, as the old <select> did,
+ * rather than the box going blank on an order that still has a code.
+ */
+function orderCodeLabel(po) {
+  const value = orderCodeValue(po);
+  if (!value) return '';
+  const hit = codesFor(po._division, po.project_id).find(c => codeValue(c) === value);
+  return hit ? codeLabel(hit) : [po.cost_code, po.sub_code].filter(Boolean).join(' / ') + ' (not on this job)';
+}
+
+/**
+ * What a box offers. Read every time it opens, so a list that has changed
+ * underneath it — the catalogue arriving late, the scan sheet's job being
+ * switched — is already reflected.
+ */
+function cbOptionsFor(cb) {
+  const names = rows => (Array.isArray(rows) ? rows : []).map(r => r && r.name).filter(Boolean);
+  const list = cb.dataset.list;
+  if (list === 'vendors')   return names(catalog.vendors);
+  if (list === 'employees') return names(catalog.employees);
+  if (list === 'codes') {
+    const po = purchaseOrders.find(p => p.id === cb.dataset.po);
+    return po ? codeOptions(codesFor(po._division, po.project_id)) : [];
+  }
+  if (list === 'scan-codes') {
+    const div  = document.getElementById('sc-division');
+    const proj = document.getElementById('sc-project');
+    return div && proj && proj.value ? codeOptions(codesFor(div.value, proj.value)) : [];
+  }
+  return [];
+}
+
+/**
+ * The entries matching what has been typed, best first. Every word typed has
+ * to appear somewhere in an entry, in any order — "stone 420" finds
+ * "420 / Base — Stone base". Entries that start with the text lead, then ones
+ * with a word that does, then the rest, each group in the list's own order.
+ */
+function cbFilter(options, query) {
+  const q = String(query || '').trim().toLowerCase();
+  if (!q) return options;
+  const words = q.split(/\s+/);
+  return options
+    .map((o, i) => ({ o, i, hay: cbText(o).toLowerCase() }))
+    .filter(m => words.every(w => m.hay.includes(w)))
+    .map(m => Object.assign(m, {
+      rank: m.hay.startsWith(q) ? 0
+          : m.hay.split(/[^a-z0-9]+/).some(w => w.startsWith(words[0])) ? 1 : 2,
+    }))
+    .sort((a, b) => (a.rank - b.rank) || (a.i - b.i))
+    .map(m => m.o);
+}
+
+/** Open a box's list: its entries, and where the box's own value sits in them. */
+function cbOpen(input) {
+  const cb = input.closest('.cb');
+  const options = cb ? cbOptionsFor(cb) : [];
+  const value = input.dataset.cbValue || '';
+  const state = {
+    options,
+    filtered: options,
+    // The entry already chosen, so the list opens showing where it sits — and
+    // none at all for an empty box. Tab takes whatever is highlighted, and
+    // tabbing through an empty Received By must not fill it with the first
+    // name on the list.
+    highlight: options.findIndex(o => value ? o.value === value : cbText(o) === input.value),
+  };
+  _cbState.set(input, state);
+  return state;
+}
+
+function cbOnFocus(input) {
+  // What the box held coming in: for Escape to go back to, and for a
+  // pick-list left holding text that names no code.
+  input._cbFrom = { text: input.value, value: input.dataset.cbValue || '' };
+  cbOpen(input);
+  cbRenderMenu(input);
+  input.select();
+}
+
+function cbOnInput(input) {
+  const cb = input.closest('.cb');
+  if (!cb) return;
+  // Typing un-picks. Until it names a code again, a pick-list's box holds a search.
+  delete input.dataset.cbValue;
+  if (cbFree(cb)) cbCommit(cb, input.value.trim());
+  const state = _cbState.get(input) || cbOpen(input);
+  const q = input.value.trim().toLowerCase();
+  state.filtered = cbFilter(state.options, q);
+  const exact = state.filtered.findIndex(o => cbText(o).toLowerCase() === q);
+  state.highlight = !q ? -1 : exact >= 0 ? exact : (state.filtered.length ? 0 : -1);
+  cbRenderMenu(input);
+}
+
+function cbOnKey(event, input) {
+  if (event.isComposing) return;
+  const k = event.key;
+  if (k === 'ArrowDown' || k === 'ArrowUp') {
+    event.preventDefault();
+    const state = _cbState.get(input) || cbOpen(input);
+    const n = state.filtered.length;
+    if (n) {
+      const step = k === 'ArrowDown' ? 1 : -1;
+      state.highlight = state.highlight < 0 ? (step > 0 ? 0 : n - 1)
+                                            : (state.highlight + step + n) % n;
+    }
+    cbRenderMenu(input);
+    cbScrollHi(input);
+  } else if (k === 'Enter' || k === 'Tab') {
+    const state = _cbState.get(input);
+    const pick = state ? state.filtered[state.highlight] : null;
+    if (pick != null) cbTake(input, pick);
+    cbCommitInput(input);
+    if (k === 'Enter') { event.preventDefault(); input.blur(); }
+  } else if (k === 'Escape' && _cbState.has(input)) {
+    // Stopped here: the page's own Escape closes the sheet this box may sit
+    // in, and backing out of a list must not throw away a scan being checked.
+    event.preventDefault();
+    event.stopPropagation();
+    cbRevert(input);
+    cbClose(input);
+    input.blur();
+  }
+}
+
+function cbOnBlur(input) {
+  // Deferred, as in the division tabs' copy, so a press on the list lands first.
+  setTimeout(() => { if (document.activeElement !== input) cbCommitInput(input); }, 120);
+}
+
+/** Put an entry in the box: its text, and for a pick-list the code behind it. */
+function cbTake(input, opt) {
+  input.value = cbText(opt);
+  if (typeof opt === 'object' && opt.value) input.dataset.cbValue = opt.value;
+  else delete input.dataset.cbValue;
+}
+
+/** Back to what the box held when it was focused. */
+function cbRevert(input) {
+  const from = input._cbFrom || { text: '', value: '' };
+  input.value = from.text;
+  if (from.value) input.dataset.cbValue = from.value; else delete input.dataset.cbValue;
+  // Free text was written as it was typed, so the writing is undone too.
+  const cb = input.closest('.cb');
+  if (cb && cbFree(cb)) cbCommit(cb, from.text);
+}
+
+/**
+ * The code a pick-list's box names: the one picked, else the one whose label —
+ * or its code alone, "420 / Base" — has been typed in full. An emptied box
+ * names no code, which is how a code is cleared. null for any other text.
+ */
+function cbResolve(input, options) {
+  if (input.dataset.cbValue) return { value: input.dataset.cbValue, label: input.value };
+  const typed = input.value.trim().toLowerCase();
+  if (!typed) return { value: '', label: '' };
+  return options.find(o => o.label.toLowerCase() === typed || o.code.toLowerCase() === typed) || null;
+}
+
+/**
+ * Settle what the box holds, and write it. Runs on a pick, Enter, Tab and
+ * blur — so more than once for the same value, which the writers in cbCommit
+ * treat as nothing to do.
+ */
+function cbCommitInput(input) {
+  const cb = input.closest('.cb');
+  if (!cb) return;
+  cbClose(input);
+  if (cbFree(cb)) {
+    input.value = input.value.trim();
+    cbCommit(cb, input.value);
+    return;
+  }
+  const hit = cbResolve(input, cbOptionsFor(cb));
+  if (hit) {
+    cbTake(input, hit);
+    cbCommit(cb, hit.value);
+  } else if (cb.dataset.po) {
+    // Text that names no code on the job. An order's box writes the moment it
+    // commits, so it goes back to the code the order really has rather than
+    // leave a half-typed search on screen looking like one. A sheet's box
+    // keeps the text, for the sheet's own save to refuse with a reason.
+    cbRevert(input);
+  }
+}
+
+/** Write a settled value to the order — or delivery — its box belongs to. */
+function cbCommit(cb, value) {
+  const po = cb.dataset.po ? purchaseOrders.find(p => p.id === cb.dataset.po) : null;
+  if (!po) return;   // a sheet's box, which the sheet reads when it saves
+  const list = cb.dataset.list;
+  if (list === 'vendors') {
+    if ((po.supplier || '') !== value) setField(po.id, 'supplier', value);
+  } else if (list === 'employees') {
+    const line = (po.lines || []).find(l => l.id === cb.dataset.line);
+    if (line && (line.employee || '') !== value) setLineField(po.id, line.id, 'employee', value);
+  } else if (list === 'codes') {
+    if (value !== orderCodeValue(po)) setSubCode(po.id, value);
+  }
+}
+
+function cbRenderMenu(input) {
+  const cb = input.closest('.cb');
+  const state = _cbState.get(input);
+  const menu = input.nextElementSibling;
+  if (!cb || !state || !menu) return;
+  // A free-text box with nothing to suggest — the catalogue did not load — is
+  // just a text box. A list saying so on every focus would be noise.
+  if (cbFree(cb) && !state.options.length) { menu.hidden = true; return; }
+  if (!menu.id) menu.id = 'cb-menu-' + (++_cbSeq);
+  const rows = state.filtered;
+  menu.innerHTML = rows.length
+    ? rows.map((o, i) =>
+        '<div class="cb-opt' + (i === state.highlight ? ' hi' : '') + '" role="option"' +
+        ' id="' + menu.id + '-' + i + '" aria-selected="' + (i === state.highlight) + '"' +
+        ' data-i="' + i + '">' + esc(cbText(o)) + '</div>').join('')
+    : '<div class="cb-empty">' +
+        (cbFree(cb) ? 'No match — saved as typed' : 'No code on this job matches') + '</div>';
+  menu.hidden = false;
+  input.setAttribute('aria-expanded', 'true');
+  input.setAttribute('aria-controls', menu.id);
+  if (state.highlight >= 0) input.setAttribute('aria-activedescendant', menu.id + '-' + state.highlight);
+  else input.removeAttribute('aria-activedescendant');
+  _cbPositionFixed(input, menu);
+}
+
+/**
+ * Pin an open list to its box: below it, or above when there is more room
+ * there. The room is measured in the VISUAL viewport, which on a phone is the
+ * part above the keyboard. Measured against the window, a list under a field
+ * low on the screen would open behind the keyboard, out of reach.
+ */
+function _cbPositionFixed(input, menu) {
+  const r      = input.getBoundingClientRect();
+  const vv     = window.visualViewport;
+  const top    = vv ? vv.offsetTop : 0;
+  const bottom = vv ? vv.offsetTop + vv.height : window.innerHeight;
+  const width  = document.documentElement.clientWidth || window.innerWidth;
+
+  menu.style.minWidth = r.width + 'px';
+  menu.style.left = r.left + 'px';
+  // As wide as its longest entry, so it can run off the right edge and hide
+  // the end of the very label it widened to show. Slide it back in.
+  const over = r.left + menu.offsetWidth - (width - 8);
+  if (over > 0) menu.style.left = Math.max(8, r.left - over) + 'px';
+
+  const below = bottom - r.bottom - 6;
+  const above = r.top - top - 6;
+  const up = below < Math.min(menu.scrollHeight, 240) && above > below;
+  menu.style.maxHeight = Math.max(96, Math.min(240, up ? above : below)) + 'px';
+  menu.style.top = (up ? r.top - menu.offsetHeight - 2 : r.bottom + 2) + 'px';
+}
+
+function _cbRepositionFixedMenus() {
+  document.querySelectorAll('.cb-menu:not([hidden])').forEach(menu => {
+    if (menu.previousElementSibling) _cbPositionFixed(menu.previousElementSibling, menu);
+  });
+}
+window.addEventListener('scroll', _cbRepositionFixedMenus, true);
+window.addEventListener('resize', _cbRepositionFixedMenus);
+if (window.visualViewport) {
+  // Usually the keyboard coming up: the list was placed before it arrived.
+  window.visualViewport.addEventListener('resize', _cbRepositionFixedMenus);
+  window.visualViewport.addEventListener('scroll', _cbRepositionFixedMenus);
+}
+
+function cbScrollHi(input) {
+  const hi = input.nextElementSibling && input.nextElementSibling.querySelector('.cb-opt.hi');
+  if (hi) hi.scrollIntoView({ block: 'nearest' });
+}
+
+function cbClose(input) {
+  const menu = input.nextElementSibling;
+  if (menu) menu.hidden = true;
+  input.setAttribute('aria-expanded', 'false');
+  input.removeAttribute('aria-activedescendant');
+  _cbState.delete(input);
+}
+
+// A press on a list picks from it; a press anywhere else closes any list open.
+document.addEventListener('mousedown', e => {
+  const menu = e.target.closest ? e.target.closest('.cb-menu') : null;
+  if (menu) {
+    // The focus stays in the box, scrollbar included: a blur would commit what
+    // was typed in place of what is being picked.
+    e.preventDefault();
+    const opt   = e.target.closest('.cb-opt');
+    const input = menu.previousElementSibling;
+    const state = input && _cbState.get(input);
+    if (!opt || !state) return;
+    const pick = state.filtered[Number(opt.dataset.i)];
+    if (pick != null) cbTake(input, pick);
+    cbCommitInput(input);
+    input.blur();
+    return;
+  }
+  const here = e.target.closest ? e.target.closest('.cb') : null;
+  document.querySelectorAll('.cb-menu:not([hidden])').forEach(m => {
+    if (m.closest('.cb') !== here && m.previousElementSibling) cbClose(m.previousElementSibling);
+  });
+});
+
+/* ═══════════════════════════════════════════
    RENDER
 ═══════════════════════════════════════════ */
 function divisionSelectHTML(po) {
@@ -1619,25 +2026,35 @@ function projectSelectHTML(po) {
     'onchange="setProject(\'' + jsAttr(po.id) + '\', this.value)" aria-label="Job">' + opts.join('') + '</select>';
 }
 
-function subCodeSelectHTML(po) {
+/** The order's cost / sub code: a search over its job's codes (cbHtml). */
+function subCodePickerHTML(po) {
   if (!po.project_id) {
     return '<span style="color:var(--muted);font-size:0.76rem">' +
       (po._division === GENERAL ? '—' : 'No job — no code') + '</span>';
   }
-  const codes = codesFor(po._division, po.project_id);
-  const current = (po.cost_code || '') + '||' + (po.sub_code || '');
-  if (!codes.length) {
+  if (!codesFor(po._division, po.project_id).length) {
     return '<span style="color:var(--muted);font-size:0.76rem">No bid items on this job</span>';
   }
-  const opts = ['<option value=""' + (current === '||' ? ' selected' : '') + '>— select —</option>']
-    .concat(codes.map(c =>
-      '<option value="' + esc(codeValue(c)) + '"' + (codeValue(c) === current ? ' selected' : '') + '>' + esc(codeLabel(c)) + '</option>'));
-  if (current !== '||' && !codes.some(c => codeValue(c) === current)) {
-    opts.push('<option value="' + esc(current) + '" selected>' +
-      esc([po.cost_code, po.sub_code].filter(Boolean).join(' / ')) + ' (not on this job)</option>');
-  }
-  return '<select ' + (capsFor(po._division).canEdit ? '' : 'disabled ') +
-    'onchange="setSubCode(\'' + jsAttr(po.id) + '\', this.value)" aria-label="Cost and sub code">' + opts.join('') + '</select>';
+  return cbHtml('codes', orderCodeLabel(po), {
+    value: orderCodeValue(po), placeholder: 'Search codes…', label: 'Cost and sub code',
+    disabled: !capsFor(po._division).canEdit, data: { po: po.id },
+  });
+}
+
+/** The vendor: free text, with the catalogue's vendors to search. */
+function vendorPickerHTML(po) {
+  return cbHtml('vendors', po.supplier || '', {
+    placeholder: 'Search vendors…', label: 'Vendor', attrs: 'autocapitalize="words"',
+    disabled: !capsFor(po._division).canEdit, data: { po: po.id },
+  });
+}
+
+/** Who took a delivery: free text, with the catalogue's employees to search. */
+function receivedByPickerHTML(po, line) {
+  return cbHtml('employees', line.employee || '', {
+    placeholder: 'Search employees…', label: 'Received by', attrs: 'autocapitalize="words"',
+    disabled: !capsFor(po._division).canEdit, data: { po: po.id, line: line.id },
+  });
 }
 
 function statusSelectHTML(po) {
@@ -1693,7 +2110,7 @@ function lineRowsHTML(po, surface) {
       '</td>' +
       '<td class="r" style="color:var(--yellow);font-weight:600" id="' + cell('tot', l.id) + '">' +
         ((amt + tax) !== 0 ? '$' + fmt(amt + tax) : '—') + '</td>' +
-      '<td style="min-width:120px">' + inp('employee','text', l.employee, 'placeholder="Received by" list="employee-list"') + '</td>' +
+      '<td style="min-width:140px">' + receivedByPickerHTML(po, l) + '</td>' +
       '<td style="width:30px;text-align:center">' +
         (capsFor(po._division).canEdit ? '<button class="del-btn" onclick="deleteLine(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\')" title="Remove delivery">&#10005;</button>' : '') +
       '</td></tr>';
@@ -1766,11 +2183,10 @@ function renderTable(rows) {
         'onchange="setField(\'' + jsAttr(po.id) + '\',\'date_created\', this.value)"></td>' +
       '<td>' + divisionSelectHTML(po) + '</td>' +
       '<td>' + projectSelectHTML(po) + '</td>' +
-      '<td>' + subCodeSelectHTML(po) + '</td>' +
+      '<td>' + subCodePickerHTML(po) + '</td>' +
       '<td><input type="text" class="boxed" placeholder="Material / description" value="' + esc(po.title || '') + '" ' +
         (capsFor(po._division).canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'title\', this.value)"></td>' +
-      '<td><input type="text" class="boxed" list="vendor-list" placeholder="Vendor" value="' + esc(po.supplier || '') + '" ' +
-        (capsFor(po._division).canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'supplier\', this.value)"></td>' +
+      '<td>' + vendorPickerHTML(po) + '</td>' +
       '<td class="r" style="color:var(--muted)" id="po-qty-' + idAttr(po.id) + '">' + (tot.qty !== 0 ? qfmt(tot.qty) : '—') + '</td>' +
       '<td class="r" style="color:var(--ok);white-space:nowrap" id="po-amt-' + idAttr(po.id) + '">' + (tot.amt !== 0 ? '$' + fmt(tot.amt) : '—') + '</td>' +
       '<td class="r" style="color:var(--yellow);font-weight:600;white-space:nowrap" id="po-tot-' + idAttr(po.id) + '">' + (tot.total !== 0 ? '$' + fmt(tot.total) : '—') + '</td>' +
@@ -1827,7 +2243,7 @@ function renderCards(rows) {
 function cardEditorHTML(po) {
   return '<div class="field"><label>Division</label>' + divisionSelectHTML(po) + '</div>' +
     '<div class="field"><label>Job</label>' + projectSelectHTML(po) + '</div>' +
-    '<div class="field"><label>Cost / Sub Code</label>' + subCodeSelectHTML(po) + '</div>' +
+    '<div class="field"><label>Cost / Sub Code</label>' + subCodePickerHTML(po) + '</div>' +
     '<div class="grid2">' +
       '<div class="field"><label>Date</label><input type="date" value="' + esc(po.date_created || '') + '" ' +
         (capsFor(po._division).canEdit ? '' : 'disabled ') + 'onchange="setField(\'' + jsAttr(po.id) + '\',\'date_created\', this.value)"></div>' +
@@ -1835,8 +2251,7 @@ function cardEditorHTML(po) {
     '</div>' +
     '<div class="field"><label>Description</label><input type="text" value="' + esc(po.title || '') + '" ' +
       (capsFor(po._division).canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'title\', this.value)"></div>' +
-    '<div class="field"><label>Vendor</label><input type="text" list="vendor-list" value="' + esc(po.supplier || '') + '" ' +
-      (capsFor(po._division).canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'supplier\', this.value)"></div>' +
+    '<div class="field"><label>Vendor</label>' + vendorPickerHTML(po) + '</div>' +
     '<div class="section-label">Deliveries</div>' +
     '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem;min-width:700px">' +
       '<thead><tr><th style="text-align:left;font-size:0.62rem;color:var(--muted)">Invoice</th>' +
@@ -1896,6 +2311,21 @@ function render() {
     document.getElementById('new-po-btn').style.display = 'none';
     document.getElementById('scan-btn').style.display = 'none';
   }
+}
+
+/**
+ * render(), once nothing is being typed in.
+ *
+ * A re-render rebuilds every row, and the field holding the focus goes with
+ * it. Taking a code with Tab moves on to Description in the same keystroke,
+ * and rendering there would drop the cursor out of the table. So this waits
+ * until the focus has left the fields, as the paperclip counts do at load.
+ */
+function renderWhenIdle() {
+  if (!isTyping()) { render(); return; }
+  // Looked at again once the blur is over: during it, the focus is still on
+  // its way to wherever it is going.
+  document.activeElement.addEventListener('blur', () => setTimeout(renderWhenIdle, 0), { once: true });
 }
 
 /* ═══════════════════════════════════════════
@@ -2317,10 +2747,12 @@ function renderScanForm(receipt, scanError) {
         '<select id="sc-division" onchange="onScanDivision(this.value)">' + divOpts + '</select></div>' +
       '<div class="field"><label>Job</label><select id="sc-project" onchange="onScanProject(this.value)">' +
         '<option value="">General — no job</option></select></div>' +
-      '<div class="field"><label>Cost / Sub Code</label><select id="sc-code">' +
-        '<option value="">— pick a job first —</option></select></div>') +
+      '<div class="field"><label>Cost / Sub Code</label>' +
+        cbHtml('scan-codes', '', { placeholder: '— pick a job first —', label: 'Cost and sub code',
+                                   attrs: 'id="sc-code"', disabled: true }) + '</div>') +
     '<div class="field"><label>Vendor' + mark(r.vendor) + '</label>' +
-      '<input type="text" id="sc-vendor" list="vendor-list" autocorrect="off" spellcheck="false" autocapitalize="words" value="' + esc(val(r.vendor)) + '" placeholder="Who it was bought from"></div>' +
+      cbHtml('vendors', val(r.vendor), { placeholder: 'Who it was bought from', label: 'Vendor',
+                                         attrs: 'id="sc-vendor" autocapitalize="words"' }) + '</div>' +
     '<div class="field"><label>Description' + mark(r.description) + '</label>' +
       '<input type="text" id="sc-title" value="' + esc(val(r.description)) + '" placeholder="What was bought"></div>' +
     '<div class="grid2">' +
@@ -2355,23 +2787,30 @@ function renderScanForm(receipt, scanError) {
 
 function onScanDivision(divKey) {
   const projSel = document.getElementById('sc-project');
-  const codeSel = document.getElementById('sc-code');
   if (!projSel) return;
   const list = divKey === GENERAL ? [] : pickableProjects(divKey);
   projSel.innerHTML = '<option value="">General — no job</option>' + list.map(p =>
     '<option value="' + esc(p.id) + '">' + esc(projectOptionLabel(p)) + '</option>').join('');
   projSel.disabled = divKey === GENERAL;
-  codeSel.innerHTML = '<option value="">' + (divKey === GENERAL ? '—' : '— pick a job first —') + '</option>';
-  codeSel.disabled = true;
+  resetScanCode(divKey === GENERAL ? '—' : '— pick a job first —', false);
 }
 
 function onScanProject(projId) {
   const divKey = document.getElementById('sc-division').value;
-  const codeSel = document.getElementById('sc-code');
   const codes = projId ? codesFor(divKey, projId) : [];
-  codeSel.innerHTML = '<option value="">' + (projId ? '— select —' : 'No job — no code') + '</option>' +
-    codes.map(c => '<option value="' + esc(codeValue(c)) + '">' + esc(codeLabel(c)) + '</option>').join('');
-  codeSel.disabled = !projId || !codes.length;
+  resetScanCode(!projId ? 'No job — no code' : codes.length ? 'Search codes…' : 'No bid items on this job',
+                Boolean(projId && codes.length));
+}
+
+/** Empty the scan sheet's code box for a new job; it opens only when the job has codes. */
+function resetScanCode(placeholder, usable) {
+  const box = document.getElementById('sc-code');
+  if (!box) return;
+  cbClose(box);
+  box.value = '';
+  delete box.dataset.cbValue;
+  box.placeholder = placeholder;
+  box.disabled = !usable;
 }
 
 /**
@@ -2389,6 +2828,18 @@ async function commitScan() {
   _committing = true;
   const btn = document.getElementById('sc-save');
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Saving…'; }
+
+  // The code box holds a search until a code is taken from it. Text that names
+  // no code on the job would otherwise be dropped without a word, and the
+  // order booked uncoded while the sheet still showed what was typed.
+  const codeBox  = scanState.targetPoId ? null : document.getElementById('sc-code');
+  const scanCode = codeBox ? cbResolve(codeBox, cbOptionsFor(codeBox.closest('.cb'))) : { value: '' };
+  if (!scanCode) {
+    _committing = false;
+    if (btn) { btn.disabled = false; btn.textContent = 'Create order'; }
+    toast('Pick the cost / sub code from the list, or clear it.', 'err');
+    return;
+  }
 
   const qty   = document.getElementById('sc-qty').value;
   const unit  = document.getElementById('sc-unit').value;
@@ -2481,7 +2932,7 @@ async function commitScan() {
         throw new Error('No purchase-order list is available to save this into. Reload and try again.');
       }
       const projId  = document.getElementById('sc-project').value || '';
-      const codeVal = (document.getElementById('sc-code').value || '').split('||');
+      const codeVal = scanCode.value.split('||');
       po = {
         id:           uid(),
         po_number:    nextPONumber(divKey),
@@ -2910,14 +3361,6 @@ document.addEventListener('keydown', e => {
     toast('Could not load purchase orders: ' + err.message, 'err');
   }
   render();
-
-  // The employee datalist is built after the first paint: the delivery rows
-  // reference it by id, and nothing needs it before one is opened.
-  const emps = (catalog.employees || []).map(e => '<option value="' + esc(e.name) + '"></option>').join('');
-  const dl = document.createElement('datalist');
-  dl.id = 'employee-list';
-  dl.innerHTML = emps;
-  document.body.appendChild(dl);
 
   // Counts feed the paperclip badges, and are slow enough (one request per
   // division) that the table should not wait on them.
