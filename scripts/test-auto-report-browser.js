@@ -125,6 +125,25 @@ const DUST_ROWS = [
     vehicle1: 'T-2', gallons: 300 },
 ];
 
+// Payroll: timesheet entries for last week and this week, on the office's
+// calendar (the page reads its ranges in the schedule's zone).
+const NY_TODAY = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+const nyDay = n => { const d = new Date(NY_TODAY + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
+const NY_MON = nyDay(-((new Date(NY_TODAY + 'T12:00:00Z').getUTCDay() + 6) % 7));   // this week's Monday
+const weekDay = (weekOffset, i) => { const d = new Date(NY_MON + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + weekOffset * 7 + i); return d.toISOString().slice(0, 10); };
+const LAST_MON = weekDay(-1, 0), LAST_SUN = weekDay(-1, 6);
+const entry = (id, username, work_date, hours, status, division, job_id, job_label) => ({
+  id, username, entry_type: 'daily', work_date, status, division, job_id, job_label,
+  computed_hours: hours, travel_hours: 0, travel_to_site_hours: 0, travel_to_shop_hours: 0,
+  prevailing_wage: false, haul_type: null, haul_hours: 0, haul_off_site_hours: 0,
+  supervisor_name: 'Pat', start_time: '07:00', end_time: '16:30', lunch_break: 0.5, operated_equipment: [],
+});
+let PAYROLL_ENTRIES = [];
+for (let i = 0; i < 5; i++) PAYROLL_ENTRIES.push(entry('s' + i, 'sam', weekDay(-1, i), 9, 'approved', 'turf', 'j1', 'Maple Ave'));
+for (let i = 0; i < 4; i++) PAYROLL_ENTRIES.push(entry('d' + i, 'dale', weekDay(-1, i), 8, 'submitted', 'paving', 'j2', 'Route 30'));
+for (let i = 0; i < 3; i++) PAYROLL_ENTRIES.push(entry('t' + i, 'sam', weekDay(0, i), 10, 'submitted', 'turf', 'j1', 'Maple Ave'));
+const ALL_PAYROLL = PAYROLL_ENTRIES.slice();
+
 const STORE = Object.assign({}, DIVS.turf.store, DIVS.paving.store, DIVS.kiewit.store, {
   fct_trucking_schedule: { assignments: { [YESTERDAY]: [
     { id: 'a1', driver: 'Dale', customer: 'Acme Paving', unit: 'T-14', start: '06:30', notes: 'Stone to Maple Ave' },
@@ -172,6 +191,15 @@ const server = http.createServer((req, res) => {
     }
     if (p === '/api/dust-rows')   return json(res, { dustRows: DUST_ROWS });
     if (p === '/api/dust-config') return json(res, { settings: { ub_rate: 0 }, lists: { companies: [] } });
+    if (p === '/api/timesheet-entries') {
+      const from = u.searchParams.get('from') || '0000', to = u.searchParams.get('to') || '9999';
+      const inRange = PAYROLL_ENTRIES.filter(e => e.work_date >= from && e.work_date <= to);
+      if (u.searchParams.get('action') === 'pending_span') {
+        return json(res, { total: 0, before: 0, after: 0, oldest: null, newest: null, oldestSince: null });
+      }
+      return json(res, { entries: inRange });
+    }
+    if (p === '/api/timesheet-supervisors') return json(res, { supervisors: [{ name: 'Pat' }] });
     if (p === '/api/executive/report') {
       return json(res, { ok: true, generatedAt: new Date().toISOString(), portfolios: [],
         safety: { key: 'safety', name: 'Safety Sign-Off', accent: '#f59e0b', weekOf: YESTERDAY, documents: [] } });
@@ -187,7 +215,7 @@ const server = http.createServer((req, res) => {
 const ACCT = {
   userId: 7, username: 'robot-admin', companyCode: 'FCT', companyName: 'Force Corp',
   role: 'admin', isPlatformAdmin: true, allowedDivisions: [],
-  divisionRoles: { turf: 'admin', paving: 'admin', kiewit: 'admin', dust: 'admin', quarry: 'admin',
+  divisionRoles: { turf: 'admin', paving: 'admin', kiewit: 'admin', dust: 'admin', quarry: 'admin', payroll: 'admin',
     trucking: 'admin', scheduler: 'admin', executive: 'admin' },
 };
 
@@ -322,6 +350,68 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
       r.error || JSON.stringify(r.out));
     ok('…and nothing written', r.writes.length === 0, r.writes.join(', '));
 
+    console.log('\nPayroll — payroll.html');
+    const LAST_WEEK_WORDS = (() => {
+      const a = new Date(LAST_MON + 'T00:00:00'), b = new Date(LAST_SUN + 'T00:00:00');
+      const md = d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+      if (a.getFullYear() !== b.getFullYear()) return `${md(a)}, ${a.getFullYear()} – ${md(b)}, ${b.getFullYear()}`;
+      if (a.getMonth() === b.getMonth()) return `${md(a)}–${b.getDate()}, ${b.getFullYear()}`;
+      return `${md(a)} – ${md(b)}, ${b.getFullYear()}`;
+    })();
+    const fig = (item, label) => ((item && item.summary || []).find(x => x.label === label) || {});
+    r = await build(browser, baseUrl, 'payroll_hours', { options: { range: 'last_week' } });
+    const ph = r.out && r.out.items[0];
+    ok('Payroll Hours for last week builds, everybody on it',
+      !r.error && r.out.items.length === 1 && has(ph, '>sam<') && has(ph, '>dale<') && !has(ph, 'Maple Ave'),
+      r.error || JSON.stringify(r.out && (r.out.errors || r.out.skipped)));
+    ok('…with the week in its subject', ph && ph.subject === `Payroll Hours Report — ${LAST_WEEK_WORDS}`, ph && ph.subject);
+    ok('…and the key figures: 2 men, 5 h overtime, 32 h pending',
+      fig(ph, 'Employees').value === '2' && fig(ph, 'Overtime').value === '5.00' && fig(ph, 'Overtime').tone === 'bad'
+        && fig(ph, 'Pending').value === '32.00', JSON.stringify(ph && ph.summary));
+    ok('…as Print makes it: the page\'s landscape @page, no buttons, no unopened detail',
+      has(ph, 'size: landscape') && !has(ph, 'Export to Excel') && !has(ph, 'report-detail" data-user') && !/<button/.test(ph.html),
+      ph && ph.html.length);
+    ok('…one DataWatch mark, not two', ph && (ph.html.match(/data-dw-brand/g) || []).length === 1);
+    ok('…and no arrow the server\'s font cannot draw', ph && !ph.html.includes('→'));
+    ok('…and nothing written', r.writes.length === 0, r.writes.join(', '));
+
+    r = await build(browser, baseUrl, 'payroll_hours', { options: { range: 'current_week' } });
+    ok('this week so far is this week\'s hours only',
+      !r.error && r.out.items.length === 1 && fig(r.out.items[0], 'Employees').value === '1' && fig(r.out.items[0], 'Hours Worked').value === '30.00',
+      r.error || JSON.stringify(r.out.items[0] && r.out.items[0].summary));
+
+    r = await build(browser, baseUrl, 'payroll_projects', { options: { range: 'last_week' } });
+    const pp = r.out && r.out.items[0];
+    ok('the Project Overtime Report builds, both jobs on it',
+      !r.error && r.out.items.length === 1 && has(pp, 'Maple Ave') && has(pp, 'Route 30')
+        && pp.subject === `Project Overtime Report — ${LAST_WEEK_WORDS}`,
+      r.error || JSON.stringify(r.out && (r.out.errors || r.out.skipped || pp.subject)));
+    ok('…with the PDF ticks Print defaults to: no summary cards, the board and the job tables in',
+      pp && !has(pp, 'class="proj-stats') && has(pp, 'data-piece="crew"') && has(pp, 'data-piece="tables"'));
+    const blocks = pp ? (pp.html.match(/class="proj-block(?: [^"]*)?"/g) || []) : [];
+    ok('…every job opened and the whole crew shown',
+      pp && !/class="[^"]*\bcc-collapsed\b/.test(pp.html) && /class="cc-board/.test(pp.html)
+        && blocks.length === 2 && blocks.every(c => /\bopen\b/.test(c)),
+      JSON.stringify({ blocks }));
+    ok('…and its key figures', fig(pp, 'Jobs Worked').value === '2' && fig(pp, 'Men Past 40').value === '1', JSON.stringify(pp && pp.summary));
+
+    r = await build(browser, baseUrl, 'payroll_overtime', {});
+    const po = r.out && r.out.items[0];
+    ok('Weekly Overtime builds for the week in progress',
+      !r.error && r.out.items.length === 1 && /^Weekly Overtime — .* \(so far, as of /.test(po.subject) && has(po, '>sam<'),
+      r.error || JSON.stringify(r.out && (r.out.errors || r.out.skipped || po.subject)));
+    ok('…with where everybody stands', fig(po, 'Employees').value === '1' && fig(po, 'Hours Worked').value === '30.00', JSON.stringify(po && po.summary));
+
+    PAYROLL_ENTRIES = [];
+    r = await build(browser, baseUrl, 'payroll_hours', { options: { range: 'last_week' } });
+    ok('a week with no time on it is skipped, not sent empty',
+      !r.error && r.out.items.length === 0 && r.out.skipped.length === 1 && /No timesheet entries for/.test(r.out.skipped[0].why),
+      r.error || JSON.stringify(r.out));
+    r = await build(browser, baseUrl, 'payroll_overtime', {});
+    ok('…and so is a week nobody has submitted to yet', !r.error && r.out.items.length === 0 && /No time has been submitted/.test((r.out.skipped[0] || {}).why),
+      r.error || JSON.stringify(r.out));
+    PAYROLL_ENTRIES = ALL_PAYROLL.slice();
+
     console.log('\nEnd to end — runSchedule, to the mail service');
     // The database the runner reads, as three answers: the account it runs
     // as, that account's access, and the recipient group.
@@ -360,6 +450,19 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
     ok('…and the result says so in words', res.message === 'Sent 2 reports to 2 recipients.', res.message);
     ok('…and nothing was written while building it', writes.length === 0, writes.join(', '));
 
+    SENT.length = 0;
+    SENT.length = 0;
+    res = await runSchedule(fakeSql, { ...sched, report_type: 'payroll_hours', division: 'payroll', project_id: null,
+      options: { range: 'last_week' } }, { baseUrl, browser, now: new Date() });
+    const ppdf = ((SENT[0] || {}).attachments || []).find(a => a.contentType === 'application/pdf');
+    const pbuf = ppdf ? Buffer.from(ppdf.content, 'base64') : Buffer.alloc(0);
+    ok('payroll end to end: the hours report goes out as a PDF',
+      res.status === 'sent' && SENT.length === 1 && pbuf.subarray(0, 5).toString() === '%PDF-', JSON.stringify(res));
+    ok('…landscape, the way the page prints it', /\/MediaBox\s*\[\s*0\s+0\s+792(\.\d+)?\s+612/.test(pbuf.toString('latin1')),
+      (pbuf.toString('latin1').match(/\/MediaBox\s*\[[^\]]*\]/) || [])[0]);
+    ok('…with the figures in the email body', /Total Paid/.test((SENT[0] || {}).html || ''));
+    // For a person to look at: SHOT_DIR=/some/dir keeps the PDF that was sent.
+    if (process.env.SHOT_DIR && pbuf.length) fs.writeFileSync(path.join(process.env.SHOT_DIR, 'payroll-hours.pdf'), pbuf);
     SENT.length = 0;
     res = await runSchedule(fakeSql, { ...sched, report_type: 'trucking_labor_dispatch', division: 'trucking', project_id: null,
       options: { day: 'today' } }, { baseUrl, browser, now: new Date() });

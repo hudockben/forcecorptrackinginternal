@@ -40,6 +40,11 @@ const REPORT_TYPES = {
   // The CRM lives in the Turf tab, so Turf access is what gates its reports.
   // The scheduled copy goes out from api/cron/crm-next-steps-email.js.
   crm_next_steps:       { division: 'turf',      label: 'Next Steps Due — CRM'                },
+  // Payroll's Reports tab. There is no Email button on that page; these exist
+  // for Auto Reports, which builds them from the tab's Print / Save PDF.
+  payroll_hours:        { division: 'payroll',   label: 'Payroll Hours Report'                },
+  payroll_projects:     { division: 'payroll',   label: 'Project Overtime Report'             },
+  payroll_overtime:     { division: 'payroll',   label: 'Weekly Overtime Report'              },
 };
 
 // The divisions Auto Reports groups its schedules under, in the order the
@@ -53,7 +58,20 @@ const DIVISIONS = [
   { key: 'trucking',  name: 'Trucking',        page: 'trucking.html'        },
   { key: 'scheduler', name: 'Scheduler',       page: 'scheduler.html'       },
   { key: 'executive', name: 'Executive',       page: 'executive.html'       },
+  { key: 'payroll',   name: 'Payroll',         page: 'payroll.html'         },
 ];
+
+// The ranges payroll's Reports tab offers, by the names of its own buttons.
+// The page works the dates out itself (rangeFor in payroll.html), because a
+// pay cycle is a fortnight counted from that page's anchor Sunday, and a copy
+// of that arithmetic here would be one more thing to drift.
+const PAY_RANGES = {
+  last_week:          'Last week (Mon–Sun)',
+  current_week:       'This week so far',
+  last_and_this_week: 'Last week + this week',
+  last_biweekly:      'Last pay cycle',
+  current_biweekly:   'This pay cycle so far',
+};
 
 // scope:
 //   'job'        — one job's report. The schedule names a job, or '*' for
@@ -65,6 +83,7 @@ const DIVISIONS = [
 // day:    the default day a dispatch sheet is for — today, tomorrow or the
 //         next workday.
 // year:   offers "this year" or "all years".
+// payRange: the default PAY_RANGES entry a payroll report covers.
 const JOB_REPORTS = (div, label) => ({
   [`${div}_daily_pm`]:      { name: 'Daily PM Report', scope: 'job',
     blurb: 'The day\'s field plan for a job: pace, required pace and status on every bid item.' },
@@ -96,6 +115,12 @@ const SCHEDULE_DEFS = {
     blurb: 'The Scheduler board for one day, by job.' },
   executive:              { name: 'Executive Report', scope: 'division',
     blurb: 'The cross-division roll-up, every section.' },
+  payroll_hours:          { name: 'Payroll Hours Report', scope: 'division', payRange: 'last_week',
+    blurb: 'Every employee: hours worked, regular and overtime, prevailing, time off, pending against approved.' },
+  payroll_projects:       { name: 'Project Overtime Report', scope: 'division', payRange: 'last_week',
+    blurb: 'Hours and overtime by job, the crew capacity board, and each job\'s crew.' },
+  payroll_overtime:       { name: 'Weekly Overtime', scope: 'division',
+    blurb: 'The week in progress so far: each man\'s hours against 40, who is in overtime and who is close. Best sent midweek.' },
 };
 
 // Each schedulable report with its division, label and page filled in from
@@ -109,4 +134,20 @@ for (const [type, def] of Object.entries(SCHEDULE_DEFS)) {
   SCHEDULABLE[type] = { ...def, type, division: rt.division, label: rt.label, page: div.page };
 }
 
-module.exports = { REPORT_TYPES, DIVISIONS, SCHEDULABLE };
+/**
+ * May this account schedule — or have sent as it — reports from `division`?
+ *
+ * Holding the division is the rule everywhere but payroll. There, a coder
+ * (payroll level2) holds the division so he can reach the timesheet endpoint,
+ * but the payroll page sends him to coding.html and the server will not give
+ * him the company's hours; a schedule running as him would only ever fail.
+ * So payroll takes an approver, the same line payrollAccess draws.
+ */
+function mayUseDivision(payload, division) {
+  const { hasDivisionAccess, payrollAccess } = require('./auth');
+  if (!hasDivisionAccess(payload, division)) return false;
+  if (division === 'payroll') return payrollAccess(payload).canApprove;
+  return true;
+}
+
+module.exports = { REPORT_TYPES, DIVISIONS, SCHEDULABLE, PAY_RANGES, mayUseDivision };

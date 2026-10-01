@@ -118,7 +118,7 @@ async function cleanUp() {
 (async () => {
   await cleanUp();
   await client.query("INSERT INTO companies (code, name, allowed_divisions) VALUES ($1, 'Force Corp UI test', '{turf,paving}')", [CO]);
-  const roles = { turf: 'admin', paving: 'admin', dust: 'admin', executive: 'admin' };
+  const roles = { turf: 'admin', paving: 'admin', dust: 'admin', executive: 'admin', payroll: 'admin' };
   const adminId = (await client.query(
     "INSERT INTO users (username, company_code, password_hash, role, division_roles) VALUES ('benadmin', $1, 'x', 'admin', $2) RETURNING id",
     [CO, JSON.stringify(roles)])).rows[0].id;
@@ -183,7 +183,7 @@ async function cleanUp() {
     await page.click('#muTabBtnReports');
     await page.waitForSelector('.ar-div', { timeout: 8000 });
     const cards = await page.$$eval('.ar-div .ar-div-name', els => els.map(e => e.textContent));
-    ok('one card per division the admin can open, in order', JSON.stringify(cards) === '["Turf Management","Paving","Dust Control","Executive"]', JSON.stringify(cards));
+    ok('one card per division the admin can open, in order', JSON.stringify(cards) === '["Turf Management","Paving","Dust Control","Executive","Payroll"]', JSON.stringify(cards));
     const failedRow = await page.$eval('.ar-row', r => ({ cls: r.className, text: r.innerText }));
     ok('the failed report is flagged red, with its reason',
       /flag-bad/.test(failedRow.cls) && /FAILED/i.test(failedRow.text) && /too large to email/.test(failedRow.text), failedRow.text);
@@ -285,6 +285,28 @@ async function cleanUp() {
     await page.click('#ar-save');
     await page.waitForFunction(() => !document.getElementById('ar-form').classList.contains('open'), { timeout: 8000 }).catch(() => {});
     ok('and the dust schedule saves', (await db.schedules()).some(r => r.report_type === 'dust_tracking_summary' && r.options.period === 'prev_week'));
+
+    console.log('\nA payroll report');
+    await page.evaluate(() => arNew('payroll'));
+    await page.waitForFunction(() => document.getElementById('ar-form').classList.contains('open'));
+    const rangeShown = await page.$eval('#ar-range-wrap', e => e.style.display !== 'none');
+    const ranges = await page.$$eval('#ar-range option', os => os.map(o => o.textContent));
+    ok('offers payroll\'s own weeks and pay cycles, last week first',
+      rangeShown && ranges[0] === 'Last week (Mon–Sun)' && ranges.includes('Last pay cycle')
+        && await page.$eval('#ar-range', s => s.value) === 'last_week', JSON.stringify(ranges));
+    ok('…and no job or period picker', await page.$eval('#ar-job-wrap', e => e.style.display === 'none')
+      && await page.$eval('#ar-period-wrap', e => e.style.display === 'none'));
+    await page.select('#ar-range', 'last_biweekly');
+    await page.click(`#ar-groups input[value="${g1}"]`);
+    ok('the sentence says what it covers', /covering last pay cycle/.test(await page.$eval('#ar-summary', e => e.textContent)),
+      await page.$eval('#ar-summary', e => e.textContent));
+    await page.click('#ar-save');
+    await page.waitForFunction(() => !document.getElementById('ar-form').classList.contains('open'), { timeout: 8000 }).catch(() => {});
+    const payRow = (await db.schedules()).find(r => r.report_type === 'payroll_hours');
+    ok('saves with its range', payRow && payRow.options.range === 'last_biweekly', JSON.stringify(payRow && payRow.options));
+    await page.waitForFunction(id => document.querySelector(`.ar-row[data-id="${id}"]`), { timeout: 8000 }, payRow && payRow.id).catch(() => {});
+    ok('…and its row reads as all employees, last pay cycle',
+      payRow && /All employees[\s\S]*Last pay cycle/.test(await page.$eval(`.ar-row[data-id="${payRow.id}"]`, r => r.innerText)));
 
     console.log('\nDelete');
     dialogs.length = 0;

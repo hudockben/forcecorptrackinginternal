@@ -3281,6 +3281,7 @@
     </div>
   </div>
 
+  <script src="auto-report.js"></script>
   <script>
     // ── Auth ──────────────────────────────────────────────────────────────
     const token = localStorage.getItem('fct_token');
@@ -3306,6 +3307,13 @@
     const payrollLevel   = (user && user.divisionRoles && user.divisionRoles.payroll) || '';
     const isPayrollCoder = !isPlatformAdmin && payrollLevel === 'level2';
 
+    // The first load's promise, for Auto Reports (see SCHEDULED REPORTS at the
+    // foot of this script). Declared here, above the gate, because init() runs
+    // from the gate — before every let further down this script exists.
+    // Null on a page that never calls init(): a coder sent to coding.html, or
+    // a login without payroll, has no report to give.
+    let payrollBoot = null;
+
     if (isPayrollCoder) {
       window.location.replace('coding.html');
     } else if (!hasPayroll) {
@@ -3314,7 +3322,7 @@
     } else {
       document.getElementById('userChip').innerHTML =
         `<strong>${escapeHtml(user.username)}</strong>`;
-      init();
+      payrollBoot = init();
     }
 
     function escapeHtml(s) {
@@ -3605,13 +3613,16 @@
       // style work has settled before we trigger the render. Re-call
       // filterAndRender once the fetch resolves as a safety net in case the
       // first render didn't paint into rowsBody for any reason.
-      setTimeout(() => {
+      //
+      // Returns that first load's promise. It never rejects — a failed load
+      // shows on the page, not as an error — so it only says "done".
+      return new Promise(resolve => setTimeout(() => {
         widenPendingOnLoad().then(() => applyFilters()).then(() => {
           if (currentTab === 'pending' || currentTab === 'approved') {
             filterAndRender();
           }
-        }).catch(() => {});
-      }, 0);
+        }).catch(() => {}).then(resolve);
+      }, 0));
     }
 
     /**
@@ -3645,6 +3656,10 @@
       const fromEl = document.getElementById('flt-from');
       const toEl   = document.getElementById('flt-to');
       if (!fromEl || !toEl) return;
+      // Auto Reports opens this page only to build a report for a range it
+      // sets itself: up to twelve weeks of review queue would be fetched for
+      // nobody to look at, against the run's time limit.
+      if (typeof location !== 'undefined' && /[?&]autoreport=1(&|$)/.test(location.search)) return;
 
       const floorDate = ymd(addDays(new Date(), -MAX_AUTO_WIDEN_DAYS));
       const from = fromEl.value, to = toEl.value;
@@ -16900,6 +16915,190 @@
       localStorage.removeItem('fct_division');
       window.location.replace('index.html');
     }
+
+    /* ═══════════════════════════════════════════
+       SCHEDULED REPORTS — Manage Users → Auto Reports
+       The server opens this page in a headless browser, signed in as the
+       payroll approver who set the schedule up, and asks for a report through
+       auto-report.js. This page has no Email button, so each report below is
+       its Print / Save PDF instead: the report as the Reports tab draws it,
+       cut out with this page's own stylesheet, whose @media print rules and
+       landscape @page are what Print uses — so the PDF that arrives is the
+       one Print would have made.
+    ═══════════════════════════════════════════ */
+    (function registerAutoReports() {
+      const AR = window.dwAutoReport;
+      // No init(), no report: a coder sent to coding.html, or a login with
+      // no payroll, says so by never offering one.
+      if (!AR || !payrollBoot) return;
+      AR.ready(payrollBoot);
+
+      // The quick-range buttons' names. rangeFor() works the dates out on this
+      // page's calendar — the pay cycle counts from BIWEEKLY_ANCHOR_END.
+      const PAY_RANGES = ['last_week', 'current_week', 'last_and_this_week', 'last_biweekly', 'current_biweekly'];
+
+      // What the screen's dark theme becomes on paper, for the one place the
+      // screen rules are seen: an email sent inline because the PDF could not
+      // be rendered. The PDF itself is print media and unchanged by it. Then
+      // two print fixes: Totals once rather than at the foot of every page,
+      // and a pending marker drawn from a glyph the server's font carries —
+      // its Chrome has Open Sans and nothing else, which has no ⚠.
+      const EMAIL_CSS =
+        ':root{--bg:#fff;--surface:#fff;--surface2:#f3f3f3;--border:#c8c8c8;--text:#111;--muted:#555;' +
+        '--sunken:#fafafa;--band:#f2f2f2;--band-ot:#fdeee4;--green:#16a34a;--blue:#2563eb;--yellow:#a16207;' +
+        '--orange:#c2410c;--violet:#6d28d9;--teal:#0f766e;--red:#b91c1c;--accent:#db2777;--accent-d:#be185d}' +
+        'body{background:#fff;color:#111}' +
+        '.report tfoot{display:table-row-group}' +
+        ".report tr.has-pending td.name::before{content:'!';font-weight:700}";
+
+      function spanWords(from, to) {
+        const a = new Date(from + 'T00:00:00'), b = new Date(to + 'T00:00:00');
+        const md = d => d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        if (a.getFullYear() !== b.getFullYear()) return `${md(a)}, ${a.getFullYear()} – ${md(b)}, ${b.getFullYear()}`;
+        if (a.getMonth() === b.getMonth()) return `${md(a)}–${b.getDate()}, ${b.getFullYear()}`;
+        return `${md(a)} – ${md(b)}, ${b.getFullYear()}`;
+      }
+      const hrs = n => (Number(n) || 0).toFixed(2);
+
+      // Load the schedule's range the way its quick-range button does, all
+      // divisions and nobody filtered out, and make sure what arrived is that
+      // range: applyFilters never throws, and a failed load draws the same
+      // "No timesheet entries" a quiet week does.
+      async function loadRange(spec, subTab) {
+        const kind = PAY_RANGES.includes(spec.options && spec.options.range) ? spec.options.range : 'last_week';
+        const [a, b] = rangeFor(kind);
+        const from = ymd(a), to = ymd(b);
+        document.getElementById('flt-from').value       = from;
+        document.getElementById('flt-to').value         = to;
+        document.getElementById('flt-division').value   = '';
+        document.getElementById('flt-supervisor').value = '';
+        document.getElementById('flt-user').value       = '';
+        // Set by name, not by switchTab: that starts a load of its own, which
+        // would overtake this one and leave it holding nothing.
+        currentTab   = 'reports';
+        reportSubTab = subTab;
+        await applyFilters();
+        if (entriesLoadError) throw new Error('The timesheet entries did not load — ' + entriesLoadError);
+        if (!loadedScope || loadedScope.from !== from || loadedScope.to !== to || loadedScope.division) {
+          throw new Error(`The timesheet entries for ${from} to ${to} did not load.`);
+        }
+        return { from, to };
+      }
+
+      // The emailed copy of a drawn report: no buttons, no daily detail a
+      // person did not open (Print leaves it out too, and it would put a large
+      // crew over the email's size limit), no hover-only tooltips.
+      function emailCopy(selector) {
+        const live = document.querySelector(selector);
+        if (!live) throw new Error('The report did not draw.');
+        const c = live.cloneNode(true);
+        c.querySelectorAll('.report-actions, .report-action-row, .print-picker, .proj-part-tools, .proj-expand, .btn-print, .exp-caret')
+          .forEach(n => n.remove());
+        c.querySelectorAll('tr.report-detail[hidden]').forEach(n => n.remove());
+        c.querySelectorAll('[title]').forEach(n => n.removeAttribute('title'));
+        // The report carries its own DataWatch wordmark; this keeps a second
+        // band from being stamped above it.
+        const brand = c.querySelector('.report-brand');
+        if (brand) brand.setAttribute('data-dw-brand', '');
+        // "2026-09-21 → 2026-09-27": the server's font has no arrow.
+        const walk = document.createTreeWalker(c, NodeFilter.SHOW_TEXT);
+        for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+          if (n.nodeValue.includes('→')) n.nodeValue = n.nodeValue.replace(/\s*→\s*/g, ' to ');
+        }
+        return c;
+      }
+
+      function emailDocument(copy, title) {
+        const css = (document.querySelector('head > style') || {}).textContent || '';
+        return '<!DOCTYPE html><html><head><meta charset="utf-8"><title>' + escapeHtml(title) + '</title>' +
+          '<style>' + css + '</style><style>' + EMAIL_CSS + '</style></head>' +
+          '<body><main>' + copy.outerHTML + '</main></body></html>';
+      }
+
+      AR.register('payroll_hours', async spec => {
+        const { from, to } = await loadRange(spec, 'employees');
+        const m = buildReportModel();
+        if (!m.rows.length) return { skip: `No timesheet entries for ${spanWords(from, to)}.` };
+        renderReport();
+        const t = m.tot;
+        const worked = t.pendingHours + t.approvedHours;
+        return {
+          html:    emailDocument(emailCopy('#reportWrap > .report'), 'Payroll Hours Report'),
+          subject: `Payroll Hours Report — ${spanWords(from, to)}`,
+          summary: [
+            { label: 'Employees',     value: String(m.rows.length) },
+            { label: 'Hours Worked',  value: hrs(worked) },
+            { label: 'Regular',       value: hrs(t.regHours) },
+            { label: 'Overtime',      value: hrs(t.otHours), ...(t.otHours > 0.001 ? { tone: 'bad' } : {}) },
+            { label: 'Prevailing OT', value: hrs(t.otPwHours) },
+            { label: 'Time Off',      value: hrs(t.offHours) },
+            { label: 'Total Paid',    value: hrs(worked + t.offHours) },
+            { label: 'Pending',       value: hrs(t.pendingHours), ...(t.pendingHours > 0.001 ? { tone: 'bad' } : {}) },
+          ],
+        };
+      });
+
+      AR.register('payroll_projects', async spec => {
+        const { from, to } = await loadRange(spec, 'projects');
+        const m = buildProjectsModel();
+        if (!m.projects.length) return { skip: `No job hours for ${spanWords(from, to)}.` };
+        renderProjectsReport();
+        const c = emailCopy('#projectsWrap > .report');
+        // The "PDF includes" ticks as Print applies them. They live in each
+        // person's own browser, so a schedule gets the defaults — summary
+        // cards off; crew board, chart and job tables on. Taken out rather
+        // than hidden, so the inline fallback leaves them out too.
+        const st = printPieceState();
+        PRINT_PIECES.filter(p => !st[p.key]).forEach(p => {
+          const sel = p.key === 'stats' ? '.proj-stats' : `.proj-piece[data-piece="${p.key}"]`;
+          c.querySelectorAll(sel).forEach(n => n.remove());
+        });
+        c.querySelectorAll('section.proj-part').forEach(sec => { if (!sec.querySelector('.proj-piece')) sec.remove(); });
+        // Opened, as print opens them: every job's crew table, the whole crew on the board.
+        c.querySelectorAll('.proj-block').forEach(b => b.classList.add('open'));
+        c.querySelectorAll('.cc-board.cc-collapsed').forEach(b => b.classList.remove('cc-collapsed'));
+        return {
+          html:    emailDocument(c, 'Project Overtime Report'),
+          subject: `Project Overtime Report — ${spanWords(from, to)}`,
+          summary: [
+            { label: 'Jobs Worked',      value: String(m.projects.length) },
+            { label: 'Hours on Jobs',    value: hrs(m.tot.totalHours) },
+            { label: 'Overtime Hours',   value: hrs(m.tot.otHours), ...(m.tot.otHours > 0.001 ? { tone: 'bad' } : {}) },
+            { label: 'Men Past 40',      value: String(m.inOt), ...(m.inOt ? { tone: 'bad' } : {}) },
+            { label: 'Crew',             value: String(m.employeeCount) },
+            { label: 'Hours Before OT',  value: hrs(m.totRemaining), tone: 'good' },
+          ],
+        };
+      });
+
+      // Always the week in progress — that is the report. Sent midweek it is
+      // who can still be put on a job before the premium starts.
+      AR.register('payroll_overtime', async spec => {
+        document.getElementById('flt-division').value   = '';
+        document.getElementById('flt-supervisor').value = '';
+        document.getElementById('flt-user').value       = '';
+        await loadOvertimeWeek();
+        if (otwError) throw new Error("This week's time did not load — " + otwError);
+        if (!otwScope) throw new Error("This week's time did not load.");
+        const m = buildOvertimeWeekModel();
+        if (!m.rows.length) return { skip: `No time has been submitted for the week of ${spanWords(m.from, m.to)} yet.` };
+        renderOvertimeReport();
+        const asOf = new Date((spec.today || ymd(new Date())) + 'T12:00:00')
+          .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+        return {
+          html:    emailDocument(emailCopy('#overtimeWrap > .report'), 'Weekly Overtime Report'),
+          subject: `Weekly Overtime — ${spanWords(m.from, m.to)} (so far, as of ${asOf})`,
+          summary: [
+            { label: 'Employees',     value: String(m.rows.length) },
+            { label: 'In Overtime',   value: String(m.counts.over), ...(m.counts.over ? { tone: 'bad' } : {}) },
+            { label: 'Near Overtime', value: String(m.counts.near), ...(m.counts.near ? { tone: 'actual' } : {}) },
+            { label: 'Hours Worked',  value: hrs(m.tot.worked) },
+            { label: 'Overtime',      value: hrs(m.tot.otHours) },
+            { label: 'Pending',       value: hrs(m.tot.pendingHours) },
+          ],
+        };
+      });
+    })();
   </script>
   <script src="mathis.js" defer></script>
 </body>

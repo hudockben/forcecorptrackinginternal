@@ -140,6 +140,37 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
     assert('a Paving admin sees Paving only', JSON.stringify(r.body.divisions.map(d => d.key)) === '["paving"]');
   }
 
+  console.log('\nPayroll: approvers only');
+  {
+    const payId   = await mkUser('payroller', { payroll: 'admin' });
+    const coderId = await mkUser('coder',     { payroll: 'level2', turf: 'admin' });
+    const PAYR  = { companyCode: CO, userId: payId,   username: 'payroller', role: 'level1', divisionRoles: { payroll: 'admin' } };
+    const CODER = { companyCode: CO, userId: coderId, username: 'coder',     role: 'level1', divisionRoles: { payroll: 'level2', turf: 'admin' } };
+    let r = await call('GET', {}, null, PAYR);
+    const pay = r.body.divisions && r.body.divisions.find(d => d.key === 'payroll');
+    assert('a payroll approver gets the Payroll card with its three reports',
+      pay && JSON.stringify(pay.reports.map(x => x.type)) === '["payroll_hours","payroll_projects","payroll_overtime"]',
+      JSON.stringify(r.body.divisions && r.body.divisions.map(d => d.key)));
+    assert('…and the pay ranges by their button names', r.body.payRanges && r.body.payRanges.last_biweekly === 'Last pay cycle');
+    r = await call('GET', {}, null, CODER);
+    assert('a payroll coder does not', !r.body.divisions.some(d => d.key === 'payroll'), JSON.stringify(r.body.divisions.map(d => d.key)));
+    const body = { report_type: 'payroll_hours', frequency: 'weekly', days_of_week: [1], send_time: '07:00', group_ids: [g1], options: { range: 'last_biweekly' } };
+    r = await call('POST', {}, body, CODER);
+    assert('…and cannot schedule one', r.statusCode === 403, `${r.statusCode} ${JSON.stringify(r.body)}`);
+    r = await call('POST', {}, body, PAYR);
+    assert('an approver can, and the pay range is kept', r.statusCode === 200 && r.body.schedule.options.range === 'last_biweekly', JSON.stringify(r.body));
+    const pid = r.body.schedule.id;
+    r = await call('POST', {}, { ...body, options: { range: 'last_month' } }, PAYR);
+    assert('a range that is not one of the page\'s falls back to last week', r.body.schedule && r.body.schedule.options.range === 'last_week', JSON.stringify(r.body));
+    await call('DELETE', { id: r.body.schedule.id }, null, PAYR);
+    const sched = await row(pid);
+    await client.query("UPDATE users SET division_roles = $1 WHERE id = $2", [JSON.stringify({ payroll: 'level2' }), payId]);
+    const res = await runner.runSchedule(sql, sched, { now: new Date() });
+    assert('the run stops if its owner is made a coder since, saying why',
+      res.status === 'failed' && /payroller is no longer a payroll approver/.test(res.message), res.message);
+    await client.query('DELETE FROM report_schedules WHERE id = $1', [pid]);
+  }
+
   console.log('\nThe job picker');
   {
     const r = await call('GET', { projects: 'turf' }, null, BOSS);

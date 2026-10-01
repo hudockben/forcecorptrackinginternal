@@ -24,11 +24,11 @@
 // rather than leaving a timetable as a way around Manage Users.
 
 const jwt = require('jsonwebtoken');
-const { currentAccess, hasDivisionAccess } = require('./auth');
+const { currentAccess } = require('./auth');
 const { MAX_HTML_BYTES, MAX_RECIPIENTS, isValidEmail, normalizeAttachments } = require('./email');
 const { launchBrowser } = require('./pdf');
 const { deliverReport } = require('./report-delivery');
-const { SCHEDULABLE, DIVISIONS } = require('./report-catalog');
+const { SCHEDULABLE, DIVISIONS, PAY_RANGES, mayUseDivision } = require('./report-catalog');
 const T = require('./report-schedule-time');
 
 // How long a page gets to load its data and build. The big job pages pull
@@ -153,6 +153,10 @@ function specFor(sched, def, now) {
     spec.day = which === 'today' ? spec.today
       : which === 'tomorrow' ? T.localDate(now, tz, 1)
       : nextWorkday(now, tz);
+  }
+  if (def.payRange) {
+    // A name, not dates: the payroll page knows its own weeks and cycles.
+    spec.options = { ...opts, range: Object.prototype.hasOwnProperty.call(PAY_RANGES, opts.range) ? opts.range : def.payRange };
   }
   if (def.year) {
     spec.year = opts.year === 'all' ? 'all' : spec.today.slice(0, 4);
@@ -344,8 +348,10 @@ async function runSchedule(sql, sched, ctx = {}) {
   if (!acct) {
     return fail(`It runs as ${sched.run_as_username || 'a deleted account'}, which no longer exists. Open it and save it to run it as you.`);
   }
-  if (!hasDivisionAccess(acct, def.division)) {
-    return fail(`${acct.username} no longer has access to ${divisionName(def.division)}. Open it and save it as someone who does.`);
+  if (!mayUseDivision(acct, def.division)) {
+    return fail(def.division === 'payroll'
+      ? `${acct.username} is no longer a payroll approver. Open it and save it as someone who is.`
+      : `${acct.username} no longer has access to ${divisionName(def.division)}. Open it and save it as someone who does.`);
   }
 
   let recips;

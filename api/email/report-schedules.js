@@ -26,8 +26,8 @@
 // access it is sent with, checked again at every send.
 
 const { neon } = require('@neondatabase/serverless');
-const { requireAuth, hasDivisionAccess } = require('../lib/auth');
-const { SCHEDULABLE, DIVISIONS } = require('../lib/report-catalog');
+const { requireAuth } = require('../lib/auth');
+const { SCHEDULABLE, DIVISIONS, PAY_RANGES, mayUseDivision } = require('../lib/report-catalog');
 const T = require('../lib/report-schedule-time');
 const runner = require('../lib/report-schedule-runner');
 const jobFin = require('../lib/job-financials');
@@ -89,7 +89,7 @@ function normalizeBody(body, payload) {
   const b = body || {};
   const def = SCHEDULABLE[b.report_type];
   if (!def) return { error: 'Pick a report.' };
-  if (!hasDivisionAccess(payload, def.division)) {
+  if (!mayUseDivision(payload, def.division)) {
     return { status: 403, error: 'You do not have access to that division.' };
   }
 
@@ -113,6 +113,9 @@ function normalizeBody(body, payload) {
   }
   if (def.day)  options.day  = DAY_CHOICES.includes(inOpts.day) ? inOpts.day : def.day;
   if (def.year) options.year = YEAR_CHOICES.includes(inOpts.year) ? inOpts.year : 'current';
+  if (def.payRange) {
+    options.range = Object.prototype.hasOwnProperty.call(PAY_RANGES, inOpts.range) ? inOpts.range : def.payRange;
+  }
 
   const occ = T.normalizeOccurrence(b);
   if (!occ.ok) return { error: occ.error };
@@ -169,7 +172,7 @@ module.exports = async (req, res) => {
     if (req.method === 'GET' && q.projects) {
       const div = jobFin.jobDivision(String(q.projects));
       if (!div) return res.status(400).json({ ok: false, error: 'Unknown division' });
-      if (!hasDivisionAccess(payload, div.key)) return res.status(403).json({ ok: false, error: 'No access to that division' });
+      if (!mayUseDivision(payload, div.key)) return res.status(403).json({ ok: false, error: 'No access to that division' });
       const projects = (await div.read(sql, company, {})).filter(Boolean).map(p => ({
         id:        String(p.id || ''),
         name:      String(p['project-name'] || p.name || '').trim() || 'Untitled',
@@ -182,13 +185,13 @@ module.exports = async (req, res) => {
     // ── GET — everything the tab draws ────────────────────────────────────
     if (req.method === 'GET') {
       const divisions = DIVISIONS
-        .filter(d => hasDivisionAccess(payload, d.key))
+        .filter(d => mayUseDivision(payload, d.key))
         .map(d => ({
           key: d.key,
           name: d.name,
           reports: Object.values(SCHEDULABLE).filter(s => s.division === d.key).map(s => ({
             type: s.type, name: s.name, label: s.label, scope: s.scope, blurb: s.blurb,
-            period: s.period || null, day: s.day || null, year: Boolean(s.year),
+            period: s.period || null, day: s.day || null, year: Boolean(s.year), payRange: s.payRange || null,
           })),
         }))
         .filter(d => d.reports.length);
@@ -223,6 +226,7 @@ module.exports = async (req, res) => {
           report_type: r.report_type, project_name: r.project_name, project_id: r.project_id,
         })),
         periods: T.PERIODS,
+        payRanges: PAY_RANGES,
         defaultTimezone: T.DEFAULT_TZ,
         now: new Date().toISOString(),
       });
@@ -234,7 +238,7 @@ module.exports = async (req, res) => {
       if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'id is required' });
       const sched = await loadOne(sql, company, id);
       if (!sched) return res.status(404).json({ ok: false, error: 'Schedule not found' });
-      if (!hasDivisionAccess(payload, sched.division)) {
+      if (!mayUseDivision(payload, sched.division)) {
         return res.status(403).json({ ok: false, error: 'You do not have access to that division.' });
       }
       const startedAt = new Date();
@@ -289,7 +293,7 @@ module.exports = async (req, res) => {
       if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'id is required' });
       const cur = await loadOne(sql, company, id);
       if (!cur) return res.status(404).json({ ok: false, error: 'Schedule not found' });
-      if (!hasDivisionAccess(payload, cur.division)) {
+      if (!mayUseDivision(payload, cur.division)) {
         return res.status(403).json({ ok: false, error: 'You do not have access to that division.' });
       }
 
@@ -343,7 +347,7 @@ module.exports = async (req, res) => {
       if (!Number.isFinite(id)) return res.status(400).json({ ok: false, error: 'id is required' });
       const cur = await loadOne(sql, company, id);
       if (!cur) return res.json({ ok: true });
-      if (!hasDivisionAccess(payload, cur.division)) {
+      if (!mayUseDivision(payload, cur.division)) {
         return res.status(403).json({ ok: false, error: 'You do not have access to that division.' });
       }
       await sql`DELETE FROM report_schedules WHERE id = ${id} AND company_code = ${company}`;
