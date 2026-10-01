@@ -3438,11 +3438,15 @@
         label: AR_RESULT[s.last_status] || s.last_status,
         when:  arFmtWhen(s.last_run_at),
       } : null;
+      // Handed to the next pass, then switched off or retimed before that pass
+      // came: the rest never went, whatever the last message promised.
+      const unfinished = Boolean(last && last.cls === 'continuing' && !(s.enabled && next && next <= now) && !s.sending);
+      if (unfinished) { last.cls = 'partial'; last.label = 'Not finished'; }
       const bad = Boolean(last && ['failed', 'missed', 'partial', 'interrupted'].includes(last.cls));
       if (s.sending || arSendingIds.has(s.id)) return { badge: { cls: 'sending', label: 'Sending…' }, last, flag: 'due', bad, sending: true };
-      if (!s.enabled) return { badge: { cls: 'off', label: 'Off' }, last, flag: '', bad: false };
+      if (!s.enabled) return { badge: { cls: 'off', label: 'Off' }, last, flag: '', bad: false, unfinished };
       if (next && next <= now) return { badge: { cls: 'due', label: 'Due now' }, last, flag: 'due', bad, due: true };
-      if (last) return { badge: { cls: last.cls, label: last.label + (last.when ? ' · ' + last.when : '') }, last, flag: bad ? 'bad' : '', bad, lastShown: true };
+      if (last) return { badge: { cls: last.cls, label: last.label + (last.when ? ' · ' + last.when : '') }, last, flag: bad ? 'bad' : '', bad, lastShown: true, unfinished };
       return { badge: { cls: 'new', label: 'Not sent yet' }, last, flag: '', bad: false };
     }
 
@@ -3561,6 +3565,8 @@
       if (st.due && s.last_status === 'continuing' && s.last_message) msg = s.last_message;
       else if (st.due) msg = 'Its time has come — it goes out on the next check, within five minutes.';
       else if (st.sending) msg = 'Building and sending now.';
+      else if (st.unfinished) msg = (st.lastShown ? '' : `Last: ${st.last.label} ${st.last.when} — `)
+        + 'The rest of its last send did not go out: it was switched off or changed before the next pass.';
       else if (st.last && s.last_message) msg = (st.lastShown ? '' : `Last: ${st.last.label} ${st.last.when} — `) + s.last_message;
       const msgBad = st.bad && !st.due && !st.sending;
       return `

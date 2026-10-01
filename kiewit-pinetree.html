@@ -22249,8 +22249,12 @@ const _bootReady = (async () => {
     // run that has a report to build for every job after this one. A run for
     // every job starts all their reads at once, four at a time, so job ten's
     // is long back by the time it is built.
+    // Only jobs whose deadline is known: the AI is told it, and an analysis
+    // made without it is cached on the server for the day. A job that needs
+    // the list makes its own read once its deadline check has passed.
     const reads = Array.isArray(spec.batch) && spec.batch.length > 1
-      ? AR.prefetch('daily-pm-ai', spec.batch.map(id => getProj(id)).filter(Boolean), _fetchSchedAI, 4)
+      ? AR.prefetch('daily-pm-ai', spec.batch.map(id => getProj(id)).filter(q => q && (_schedDeadlinesOk || q['end-date'])),
+          _fetchSchedAI, 4)
       : null;
     const read = (reads && reads.get(String(p.id))) || _fetchSchedAI(p);
     await Promise.race([read, new Promise(r => setTimeout(r, 20000))]);
@@ -22276,6 +22280,11 @@ const _bootReady = (async () => {
 
   AR.register('kiewit_job_summary', async spec => {
     const p = jobFor(spec);
+    // Its schedule page draws the job's deadline and pace, as the Daily PM
+    // does: a job whose deadline lives in the deadlines list does not go out
+    // without it.
+    if (!_schedDeadlinesOk) await loadScheduleDeadlines(20000);
+    if (!_schedDeadlinesOk && !p['end-date']) throw new Error('The project deadlines could not be read.');
     openJobSummaryModal(p.id);
     _jsConScheduleReadFailed = false;
     const item = await AR.capture(() => jobSummaryEmail());

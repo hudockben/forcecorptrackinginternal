@@ -102,7 +102,7 @@ async function runDueSchedules(sql, opts = {}) {
           deadline:    t0 + HARD_STOP_MS,
           stillWanted: () => runner.stillWanted(sql, sched),
           resume:      sched.resume_state,
-          handBack:    ({ state, progress }) => runner.handBack(sql, sched, token, { occurrence: dueAt, state, progress }),
+          handBack:    ({ state }) => runner.handBack(sql, sched, token, { occurrence: dueAt, state }),
         });
       }
       try {

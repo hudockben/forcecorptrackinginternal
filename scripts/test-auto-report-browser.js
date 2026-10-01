@@ -178,7 +178,7 @@ const BYPASS_SEEN = { app: 0, other: 0 };
 // Paths that are never answered, to see what a stuck page reports.
 const HANG = new Set();
 // AI reads in flight at once, and the most there ever were.
-const AI_SEEN = { live: 0, max: 0 };
+const AI_SEEN = { live: 0, max: 0, pids: [] };
 
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
@@ -229,6 +229,7 @@ const server = http.createServer((req, res) => {
         let pid = '';
         try { pid = JSON.parse(body).projectId; } catch {}
         AI_SEEN.live++;
+        AI_SEEN.pids.push(pid);
         AI_SEEN.max = Math.max(AI_SEEN.max, AI_SEEN.live);
         setTimeout(() => {
           AI_SEEN.live--;
@@ -655,20 +656,52 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
     // and the next pass sends only what is left.
     let handed = null;
     let stillAsks = 0;
+    const occ = new Date(Date.now() - 60000);
     SENT.length = 0;
-    res = await runSchedule(fakeSql, sched, { baseUrl, browser, now: new Date(),
+    res = await runSchedule(fakeSql, sched, { baseUrl, browser, now: new Date(), occurrence: occ,
       stillWanted: async () => (++stillAsks > 1 ? 'It was changed while it was being built, so nothing more was sent; the next run uses the new settings.' : null),
       handBack: async h => { handed = h; return true; } });
     ok('saved over after its first email: the rest is handed to the next pass, not dropped',
       res.status === 'continuing' && SENT.length === 1 && handed && JSON.stringify(handed.state.done) === '["p1"]'
-        && handed.progress === true && /goes out at the next pass, with the new settings/.test(res.message),
+        && handed.state.idle === 0 && /goes out at the next pass, with the new settings/.test(res.message),
       JSON.stringify({ res, handed }));
     SENT.length = 0;
-    res = await runSchedule(fakeSql, sched, { baseUrl, browser, now: new Date(), resume: handed && handed.state,
+    res = await runSchedule(fakeSql, sched, { baseUrl, browser, now: new Date(), occurrence: occ, resume: handed && handed.state,
       handBack: async () => { throw new Error('should not be asked'); } });
     ok('…and the next pass sends only the job that had not gone, and reports on the whole',
       res.status === 'sent' && SENT.length === 1 && /Oak St/.test(SENT[0].subject || '')
         && res.message === 'Sent 2 reports to 2 recipients (over 2 runs).', JSON.stringify({ res, subjects: SENT.map(m => m.subject) }));
+    SENT.length = 0;
+    res = await runSchedule(fakeSql, sched, { baseUrl, browser, now: new Date(), occurrence: new Date(occ.getTime() + 864e5),
+      resume: handed && handed.state });
+    ok('what one occurrence sent is not skipped by the next (a pass killed before it could write itself down)',
+      res.status === 'sent' && SENT.length === 2 && res.message === 'Sent 2 reports to 2 recipients.', JSON.stringify(res));
+
+    // A job cut short by the run's time, not slow in itself, goes back whole.
+    HANG.add('/api/data/fct_conschedule_p1');
+    handed = null;
+    SENT.length = 0;
+    res = await runSchedule(fakeSql, { ...sched, report_type: 'turf_job_summary' }, { baseUrl, browser, now: new Date(), occurrence: occ,
+      deadline: Date.now() + 75_000, handBack: async h => { handed = h; return true; } });
+    HANG.clear();
+    ok('a job whose build the run\'s own deadline cut short is handed back with the rest, not written off',
+      res.status === 'continuing' && SENT.length === 0 && handed && handed.state.done.length === 0 && handed.state.attempted === 0
+        && /2 more jobs go out at the next pass/.test(res.message), JSON.stringify({ res, handed }));
+
+    // One report, timed out, then sent at the next pass: it reads as sent.
+    HANG.add('/api/data/fct_conschedule_p1');
+    handed = null;
+    const one = { ...sched, report_type: 'turf_job_summary', project_id: 'p1', project_name: 'Turf Maple Ave' };
+    res = await runSchedule(fakeSql, one, { baseUrl, browser, now: new Date(), occurrence: occ,
+      deadline: Date.now() + 75_000, handBack: async h => { handed = h; return true; } });
+    HANG.clear();
+    ok('a single report that timed out is tried again, counted as a pass that got nothing done',
+      res.status === 'continuing' && handed && handed.state.idle === 1 && handed.state.attempted === 0 && handed.state.problems.length === 0,
+      JSON.stringify({ res, handed }));
+    SENT.length = 0;
+    res = await runSchedule(fakeSql, one, { baseUrl, browser, now: new Date(), occurrence: occ, resume: handed && handed.state });
+    ok('…and when it goes out at the next pass, it reads as sent — not partly, over the first try',
+      res.status === 'sent' && SENT.length === 1 && !/took longer/.test(res.message), JSON.stringify(res));
 
     // Out of time before anything went: tried again at the next pass.
     HANG.add('/api/daily-rows');
@@ -676,7 +709,7 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
     res = await runSchedule(fakeSql, sched, { baseUrl, browser, now: new Date(), deadline: Date.now() + 63_000,
       handBack: async h => { handed = h; return true; } });
     ok('a run whose page ran out of time before sending anything is tried again at the next pass',
-      res.status === 'continuing' && handed && handed.progress === false && /tried again at the next pass/.test(res.message),
+      res.status === 'continuing' && handed && handed.state.idle === 1 && /tried again at the next pass/.test(res.message),
       JSON.stringify({ res, handed }));
     res = await runSchedule(fakeSql, sched, { baseUrl, browser, now: new Date(), deadline: Date.now() + 63_000 });
     HANG.clear();
@@ -716,10 +749,32 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
     ok('a Daily PM for a job whose deadline lives in the deadlines list fails when that list cannot be read',
       !r.error && r.out.items.length === 0 && /project deadlines could not be read/.test((r.out.errors[0] || {}).error),
       r.error || JSON.stringify(r.out));
+    r = await build(browser, baseUrl, 'turf_job_summary', { projectId: 'p1' });
+    ok('…so does a Job Summary, whose schedule page draws the same deadline',
+      !r.error && r.out.items.length === 0 && /project deadlines could not be read/.test((r.out.errors[0] || {}).error),
+      r.error || JSON.stringify(r.out));
+    const pv1 = STORE.fct_paving_project_p1;
+    STORE.fct_paving_project_p1 = { ...pv1 };
+    delete STORE.fct_paving_project_p1['end-date'];
+    r = await build(browser, baseUrl, 'paving_job_summary', { projectId: 'p1' });
+    STORE.fct_paving_project_p1 = pv1;
+    ok('…Paving\'s too', !r.error && r.out.items.length === 0 && /project deadlines could not be read/.test((r.out.errors[0] || {}).error),
+      r.error || JSON.stringify(r.out));
     STORE.fct_project_p1 = p1;
     r = await build(browser, baseUrl, 'turf_daily_pm', { projectId: 'p1' });
-    FAIL.clear();
     ok('…and one with its own end date still goes', !r.error && r.out.items.length === 1, r.error || JSON.stringify(r.out));
+    // Every job, the list down: the AI is asked only about the job that knows its deadline.
+    const p2 = STORE.fct_project_p2;
+    STORE.fct_project_p2 = { ...p2 };
+    delete STORE.fct_project_p2['end-date'];
+    AI_SEEN.pids.length = 0;
+    r = await build(browser, baseUrl, 'turf_daily_pm', { projectId: '*' });
+    STORE.fct_project_p2 = p2;
+    FAIL.clear();
+    ok('an every-job Daily PM with the deadlines list down asks the AI only about jobs whose deadline it knows',
+      !r.error && r.out.items.length === 1 && /project deadlines could not be read/.test((r.out.errors[0] || {}).error)
+        && AI_SEEN.pids.includes('p1') && !AI_SEEN.pids.includes('p2'),
+      r.error || JSON.stringify({ pids: AI_SEEN.pids, errs: r.out.errors, n: r.out.items.length }));
 
     STORE.fct_quarry_sales = [{ id: 's1', date: YESTERDAY, location: 'Pit 2', product: '2A Modified', tons: 400, price: 14, total: 5600 }];
     FAIL.add('fct_quarry_benchmarks');

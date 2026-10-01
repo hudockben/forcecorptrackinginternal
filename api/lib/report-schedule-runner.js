@@ -437,10 +437,18 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
     if (!open.length && warnings.length) parts.push('Its last warning: ' + warnings[warnings.length - 1]);
     return parts.join(' ');
   };
+  // runOutOfTime on the error: the RUN's time was short, not the report slow
+  // — a build given less than BUILD_MS because the run's deadline was near.
+  // That report has not failed; the next pass should build it again.
   const ask = async (fn, s, what) => {
     const ms = budget(deadline, BUILD_MS, SEND_NEEDS_MS);
-    if (ms < 10_000) throw timeUp('The run ran out of time.');
-    return withTimeout(page.evaluate(fn, s), ms, what, stuckOn);
+    if (ms < 10_000) throw Object.assign(timeUp('The run ran out of time.'), { runOutOfTime: true });
+    try {
+      return await withTimeout(page.evaluate(fn, s), ms, what, stuckOn);
+    } catch (err) {
+      if (isTimeUp(err) && ms < BUILD_MS) err.runOutOfTime = true;
+      throw err;
+    }
   };
   return {
     stats,
@@ -561,9 +569,17 @@ async function runSchedule(sql, sched, ctx = {}) {
   let timedOut   = false; // the page or the report ran out of time before anything went
   // What earlier passes at this same occurrence did (handBack): the jobs they
   // sent are not sent again, and the outcome below is the occurrence's whole.
-  const prev = resumeState(ctx.resume);
+  const occurrence = new Date(ctx.occurrence || now);
+  const prev = resumeState(ctx.resume, occurrence);
   const done = new Set(prev.done);
   const everyJob = spec.projectId === '*';
+  let planned = null;       // every-job runs: how many jobs the occurrence has
+  // Failures about time that the next pass may well undo — a page that was
+  // slow to open, a report whose build ran out of time. Reported if this is
+  // the last pass; not carried to the next, so a report that goes out on the
+  // second try is not "partly sent" because of the first.
+  const retryProblems = [];
+  let retryAttempts = 0;
 
   let browser = ctx.browser || null;
   const ownBrowser = !browser;
@@ -576,13 +592,22 @@ async function runSchedule(sql, sched, ctx = {}) {
         catch (err) { problems.push(`Could not start the report browser: ${err.message}`); return; }
       }
       try { session = await open(); }
-      catch (err) { timedOut = isTimeUp(err); problems.push(err.message || 'The report page would not open.'); return; }
+      catch (err) {
+        timedOut = isTimeUp(err);
+        (timedOut ? retryProblems : problems).push(err.message || 'The report page would not open.');
+        return;
+      }
 
       const holder = { items: [], skipped: [], errors: [] };
       let specs;
       try { specs = await specsToBuild(session, spec, holder); }
-      catch (err) { timedOut = isTimeUp(err); problems.push(err.message || 'The report could not be built.'); return; }
+      catch (err) {
+        timedOut = isTimeUp(err);
+        (timedOut ? retryProblems : problems).push(err.message || 'The report could not be built.');
+        return;
+      }
       skipped.push(...holder.skipped.map(s => s.why));
+      if (everyJob) planned = specs.length;
       if (everyJob) specs = specs.filter(sp => !done.has(String(sp.projectId)));
       if (specs.length > MAX_ITEMS) {
         overCap = specs.length - MAX_ITEMS;
@@ -605,7 +630,7 @@ async function runSchedule(sql, sched, ctx = {}) {
           try { session = await open(); }
           catch (err) {
             outOfTime += specs.length - s;
-            problems.push(err.message || 'The report page would not open.');
+            (isTimeUp(err) ? retryProblems : problems).push(err.message || 'The report page would not open.');
             halted = true;
             break;
           }
@@ -613,13 +638,28 @@ async function runSchedule(sql, sched, ctx = {}) {
         let built;
         try { built = await session.build(one); }
         catch (err) {
-          attempted++;
-          problems.push(`${one.projectName || def.label}: ${err.message}`);
+          const msg = `${one.projectName || def.label}: ${err.message}`;
           if (isTimeUp(err)) {
-            if (!everyJob) timedOut = true;
             await session.close();
             session = null;
           }
+          // Cut short by the run's own time, not slow in itself: this job and
+          // the rest go back to the next pass, the job not counted as tried.
+          if (everyJob && isTimeUp(err) && err.runOutOfTime) {
+            outOfTime += specs.length - s;
+            halted = true;
+            break;
+          }
+          attempted++;
+          if (!everyJob && isTimeUp(err)) {
+            timedOut = true;
+            retryAttempts++;
+            retryProblems.push(msg);
+          } else {
+            problems.push(msg);
+          }
+          // A job whose own build failed is done with for this occurrence —
+          // tried, and reported — not built again by every later pass.
           if (everyJob) done.add(String(one.projectId));
           continue;
         }
@@ -695,8 +735,15 @@ async function runSchedule(sql, sched, ctx = {}) {
   const unreached    = outOfTime + overCap + stoppedLeft;
   const allSent      = prev.sent + result.sent;
   const allAttempted = prev.attempted + attempted;
-  const allProblems  = [...prev.problems, ...problems];
+  const allProblems  = [...prev.problems, ...problems, ...retryProblems];
   const to = plural(recips.emails.length, 'recipient');
+  // An every-job occurrence's jobs, all passes: the most any pass's plan saw.
+  // Those not yet tried are what is left, whatever this pass managed to see.
+  const total = everyJob ? Math.max(planned == null ? 0 : planned, prev.total) : 0;
+  const left  = everyJob && total ? Math.max(0, total - done.size) : unreached;
+  // Lasting progress only: a report sent, or a job dealt with for good. A
+  // single report that timed out and will be built again is neither.
+  const progress = result.sent > 0 || done.size > prev.done.length;
 
   // Unfinished — out of time, stopped, or more jobs than one pass sends: the
   // rest goes back to the next five-minute pass, if the schedule still wants
@@ -706,13 +753,15 @@ async function runSchedule(sql, sched, ctx = {}) {
     try {
       handedBack = await ctx.handBack({
         state: {
-          done:      [...done],
-          sent:      allSent,
-          attempted: allAttempted,
-          problems:  allProblems.slice(-10).map(p => String(p).slice(0, 300)),
-          passes:    prev.passes + 1,
+          occurrence: occurrence.toISOString(),
+          done:       [...done],
+          sent:       allSent,
+          attempted:  allAttempted - retryAttempts,
+          problems:   [...prev.problems, ...problems].slice(-10).map(p => String(p).slice(0, 300)),
+          passes:     prev.passes + 1,
+          idle:       prev.idle + (progress ? 0 : 1),
+          total,
         },
-        progress: result.sent > 0 || attempted > 0,
       });
     } catch (err) {
       console.error('[report-schedules] could not hand back schedule', sched.id, err.message);
@@ -724,17 +773,22 @@ async function runSchedule(sql, sched, ctx = {}) {
     const soFar = allSent ? `Sent ${plural(allSent, 'report')} to ${to} so far. ` : '';
     const why = stopped
       ? 'It was changed while it was being sent, so the rest goes out at the next pass, with the new settings.'
-      : unreached
-        ? `${plural(unreached, 'more job')} ${unreached === 1 ? 'goes' : 'go'} out at the next pass, in a few minutes.`
+      : left
+        ? `${plural(left, 'more job')} ${left === 1 ? 'goes' : 'go'} out at the next pass, in a few minutes.`
         : 'It will be tried again at the next pass, in a few minutes.';
     result.message = `${soFar}${why}${problems.length ? ' ' + problems.join('; ') : ''}`;
     return result;
   }
 
-  if (outOfTime) {
-    allProblems.push(`${plural(outOfTime, 'more job')} not sent — the run ran out of time before it got to ${outOfTime === 1 ? 'it' : 'them'}.`);
+  // The last pass at this occurrence: whatever is still not sent is said so.
+  // (A stop says why itself.)
+  const unsent = stopped ? 0 : left;
+  if (unsent) {
+    const reason = overCap && !outOfTime ? `one run sends at most ${MAX_ITEMS}`
+      : outOfTime ? `the run ran out of time before it got to ${unsent === 1 ? 'it' : 'them'}`
+      : 'the run stopped before it got to them';
+    allProblems.push(`${plural(unsent, 'more job')} not sent — ${reason}.`);
   }
-  if (overCap) allProblems.push(`${plural(overCap, 'more job')} not sent — one run sends at most ${MAX_ITEMS}.`);
   const passes = prev.passes ? ` (over ${prev.passes + 1} runs)` : '';
   const tail = [...allProblems, ...(stopped ? [stopped] : []), ...notes];
   if (allSent && !allProblems.length && !stopped) {
@@ -744,7 +798,7 @@ async function runSchedule(sql, sched, ctx = {}) {
       + (skipped.length ? ` Skipped — ${skipped.join('; ')}` : '');
   } else if (allSent) {
     result.status = 'partial';
-    result.message = `Sent ${allSent} of ${allAttempted + outOfTime + overCap} to ${to}${passes}. ${tail.join('; ')}`;
+    result.message = `Sent ${allSent} of ${allAttempted + unsent} to ${to}${passes}. ${tail.join('; ')}`;
   } else if (!allProblems.length && (skipped.length || stopped)) {
     result.status = 'skipped';
     result.message = stopped && !skipped.length ? stopped : `Nothing to send — ${[...skipped, ...(stopped ? [stopped] : [])].join('; ')}`;
@@ -755,15 +809,23 @@ async function runSchedule(sql, sched, ctx = {}) {
   return result;
 }
 
-// What an earlier pass at this occurrence left for the next (handBack).
-function resumeState(raw) {
+// What an earlier pass at this occurrence left for the next (handBack) —
+// this occurrence's only. A pass killed before it could write itself down
+// leaves its state on the row, and tomorrow's run must not skip the jobs
+// that went out today.
+function resumeState(raw, occurrence) {
   const r = raw && typeof raw === 'object' ? raw : {};
+  const at = r.occurrence ? new Date(r.occurrence).getTime() : NaN;
+  const mine = Number.isFinite(at) && occurrence && at === new Date(occurrence).getTime();
+  if (!mine) return { done: [], sent: 0, attempted: 0, problems: [], passes: 0, idle: 0, total: 0 };
   return {
     done:      Array.isArray(r.done) ? r.done.map(String) : [],
     sent:      Number(r.sent) || 0,
     attempted: Number(r.attempted) || 0,
     problems:  Array.isArray(r.problems) ? r.problems.map(String) : [],
     passes:    Number(r.passes) || 0,
+    idle:      Number(r.idle) || 0,
+    total:     Number(r.total) || 0,
   };
 }
 
@@ -855,7 +917,8 @@ async function beginRun(sql, sched, token, { kind, now }) {
 
 // A pass that hands back takes another five minutes, and a page that never
 // opens costs a minute and a half of Chrome each time: an occurrence gets at
-// most this many passes all told, and only this many that sent nothing.
+// most this many passes all told, and only this many hand-backs from passes
+// that got nothing done.
 const MAX_PASSES      = 8;
 const MAX_IDLE_PASSES = 2;
 
@@ -873,10 +936,13 @@ const MAX_IDLE_PASSES = 2;
  * occurrence over rather than skip jobs it never sent. Resolves true if
  * handed back.
  */
-async function handBack(sql, sched, token, { occurrence, state, progress }) {
-  const passes = Number(sched.resume_count) || 0;
-  if (passes + 1 >= MAX_PASSES) return false;
-  if (!progress && passes >= MAX_IDLE_PASSES) return false;
+async function handBack(sql, sched, token, { occurrence, state }) {
+  // Counted in the state, which belongs to this occurrence: passes so far
+  // (this one included), and how many of them got nothing done.
+  const st = state || {};
+  const passes = Number(st.passes) || 1;
+  if (passes >= MAX_PASSES) return false;
+  if ((Number(st.idle) || 0) > MAX_IDLE_PASSES) return false;
   const occ = new Date(occurrence);
   if (!Number.isFinite(occ.getTime())) return false;
   const days = Array.isArray(sched.days_of_week) ? JSON.stringify(sched.days_of_week) : null;
@@ -885,7 +951,7 @@ async function handBack(sql, sched, token, { occurrence, state, progress }) {
     UPDATE report_schedules
        SET next_run_at  = ${occ.toISOString()},
            resume_state = CASE WHEN report_type = ${sched.report_type} THEN ${JSON.stringify(state || {})}::jsonb ELSE NULL END,
-           resume_count = resume_count + 1
+           resume_count = ${passes}
      WHERE id = ${sched.id} AND claim_token = ${token} AND enabled
        AND frequency = ${sched.frequency} AND send_time = ${sched.send_time} AND timezone = ${sched.timezone}
        AND day_of_month IS NOT DISTINCT FROM ${dom}::integer

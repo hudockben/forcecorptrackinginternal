@@ -397,6 +397,14 @@ async function cleanUp() {
     const cont = await page.$eval(`.ar-row[data-id="${failedId}"]`, r => ({ cls: r.className, text: r.innerText }));
     ok('reads as due, with what is left — not flagged as a failure',
       /DUE NOW/i.test(cont.text) && /4 more jobs go out at the next pass/.test(cont.text) && !/flag-bad/.test(cont.cls), JSON.stringify(cont));
+    // Retimed before the next pass came (the server's own rewrite raced): the rest never went.
+    await db.q("UPDATE report_schedules SET next_run_at = NOW() + interval '1 day' WHERE id = $1", [failedId]);
+    await page.evaluate(() => loadAutoReports({ quiet: true }));
+    await page.waitForFunction(id => /did not go out/.test(document.querySelector(`.ar-row[data-id="${id}"]`).innerText), { timeout: 8000 }, failedId).catch(() => {});
+    const stale = await page.$eval(`.ar-row[data-id="${failedId}"]`, r => ({ cls: r.className, text: r.innerText }));
+    ok('…and once it is no longer due, it no longer promises the rest',
+      /NOT FINISHED/i.test(stale.text) && /did not go out/.test(stale.text) && !/next pass, in a few minutes/.test(stale.text) && /flag-bad/.test(stale.cls),
+      JSON.stringify(stale));
 
     console.log('\nA switch flipped while the list is reloading');
     const dustId = Number((await db.q("SELECT id FROM report_schedules WHERE company_code = $1 AND report_type = 'dust_tracking_summary'", [CO]))[0].id);

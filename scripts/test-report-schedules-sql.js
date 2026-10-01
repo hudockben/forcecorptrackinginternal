@@ -547,14 +547,15 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
     assert('another report since: handed back, but started over rather than skipping jobs',
       await runner.handBack(sql, c.sched, c.tok, { occurrence: occ, state, progress: true }) === true && (await row(x)).resume_state === null);
     c = await claim(x);
-    await client.query('UPDATE report_schedules SET resume_count = $2 WHERE id = $1', [x, runner.MAX_PASSES - 1]);
     assert(`no more than ${runner.MAX_PASSES} passes at one occurrence`,
-      await runner.handBack(sql, { ...c.sched, resume_count: runner.MAX_PASSES - 1 }, c.tok, { occurrence: occ, state, progress: true }) === false);
-    assert(`…and no more than ${runner.MAX_IDLE_PASSES} that sent nothing`,
-      await runner.handBack(sql, { ...c.sched, resume_count: runner.MAX_IDLE_PASSES }, c.tok, { occurrence: occ, state, progress: false }) === false
-        && await runner.handBack(sql, { ...c.sched, resume_count: 0 }, c.tok, { occurrence: occ, state, progress: false }) === true);
+      await runner.handBack(sql, c.sched, c.tok, { occurrence: occ, state: { ...state, passes: runner.MAX_PASSES } }) === false
+        && await runner.handBack(sql, c.sched, c.tok, { occurrence: occ, state: { ...state, passes: runner.MAX_PASSES - 1 } }) === true);
+    assert(`…and no more than ${runner.MAX_IDLE_PASSES} hand-backs from passes that got nothing done — counted on their own`,
+      await runner.handBack(sql, c.sched, c.tok, { occurrence: occ, state: { ...state, passes: 3, idle: runner.MAX_IDLE_PASSES + 1 } }) === false
+        && await runner.handBack(sql, c.sched, c.tok, { occurrence: occ, state: { ...state, passes: 5, idle: runner.MAX_IDLE_PASSES } }) === true);
+    assert('…and the row says how many passes the occurrence has had', (await row(x)).resume_count === 5);
     assert('a claim that is not this run\'s hands nothing back',
-      await runner.handBack(sql, { ...c.sched, resume_count: 0 }, 'someone-else', { occurrence: occ, state, progress: true }) === false);
+      await runner.handBack(sql, c.sched, 'someone-else', { occurrence: occ, state }) === false);
     await client.query('DELETE FROM report_schedules WHERE id = $1', [x]);
     assert('deleted mid-send: nothing handed back', await runner.handBack(sql, c.sched, c.tok, { occurrence: occ, state, progress: true }) === false);
 
@@ -604,9 +605,24 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
       s.resume_state && JSON.stringify(s.resume_state.done) === '["j1"]' && s.resume_count === 1);
     await runner.recordRun(sql, s, sentOk, { kind: 'manual', token: null, triggeredBy: 'boss', startedAt: new Date(), now: new Date() });
     assert('…a Send now in between leaves it alone', (await row(cs)).resume_count === 1);
-    await call('PUT', { id: cs }, { ...base, project_id: '*', send_time: '16:00' }, BOSS);
+    await call('PUT', { id: cs }, { ...base, project_id: '*', report_type: 'turf_bid_items' }, BOSS);
     s = await row(cs);
-    assert('…retimed, it starts clean', s.resume_state === null && s.resume_count === 0);
+    assert('…pointed at another report, it starts clean, though still due', s.resume_state === null && s.resume_count === 0
+      && new Date(s.next_run_at) <= new Date());
+    await client.query(`UPDATE report_schedules SET resume_state = '{"done":["j1"],"sent":11}'::jsonb, resume_count = 1,
+        last_status = 'continuing', last_message = '4 more jobs go out at the next pass, in a few minutes.' WHERE id = $1`, [cs]);
+    await call('PUT', { id: cs }, { enabled: false }, BOSS);
+    s = await row(cs);
+    assert('a report handed to the next pass and then switched off says the rest did not go',
+      s.resume_state === null && s.last_status === 'partial' && /did not go out: it was switched off/.test(s.last_message)
+        && /11 reports had gone out/.test(s.last_message), `${s.last_status} ${s.last_message}`);
+    await call('PUT', { id: cs }, { enabled: true }, BOSS);
+    await client.query(`UPDATE report_schedules SET resume_state = '{"done":[],"sent":0}'::jsonb,
+        last_status = 'continuing', last_message = 'It will be tried again at the next pass.' WHERE id = $1`, [cs]);
+    await call('PUT', { id: cs }, { ...base, project_id: '*', report_type: 'turf_bid_items', send_time: '16:00' }, BOSS);
+    s = await row(cs);
+    assert('…and retimed with nothing sent yet, that nothing went', s.resume_state === null && s.resume_count === 0
+      && s.last_status === 'skipped' && /it was changed before the next pass/.test(s.last_message), `${s.last_status} ${s.last_message}`);
 
     // History: a run for all jobs stays a run for all jobs.
     const all = await mk({ report_type: 'turf_daily_summary', project_id: '' });

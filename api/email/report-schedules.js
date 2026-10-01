@@ -375,6 +375,16 @@ module.exports = async (req, res) => {
       const stillDue = cur.enabled && v.enabled && sameTimetable
         && cur.next_run_at && new Date(cur.next_run_at) <= new Date();
       const next = !v.enabled ? null : stillDue ? new Date(cur.next_run_at) : T.nextRunAt(v, new Date());
+      // A due occurrence kept keeps what its earlier passes sent — while it
+      // is still the same report for the same job. Anything else starts with
+      // nothing carried over; a report handed to the next pass that is now
+      // off, retimed or another report says the rest did not go.
+      const keepResume = Boolean(stillDue) && cur.report_type === v.report_type
+        && (cur.project_id || null) === (v.project_id || null);
+      const sentBefore = Number(cur.resume_state && cur.resume_state.sent) || 0;
+      const endedStatus = sentBefore ? 'partial' : 'skipped';
+      const endedMessage = `The rest of its last send did not go out: it was ${v.enabled ? 'changed' : 'switched off'} before the next pass.`
+        + (sentBefore ? ` ${sentBefore} report${sentBefore === 1 ? '' : 's'} had gone out before that.` : '');
       const rows = await sql`
         UPDATE report_schedules SET
           report_type   = ${v.report_type},
@@ -395,10 +405,10 @@ module.exports = async (req, res) => {
           run_as_user_id  = ${payload.userId},
           run_as_username = ${payload.username || null},
           next_run_at   = ${next ? next.toISOString() : null},
-          -- A due occurrence kept keeps what its earlier passes sent; any
-          -- other timetable starts with nothing carried over.
-          resume_state  = CASE WHEN ${Boolean(stillDue)} THEN resume_state ELSE NULL END,
-          resume_count  = CASE WHEN ${Boolean(stillDue)} THEN resume_count ELSE 0 END,
+          resume_state  = CASE WHEN ${keepResume} THEN resume_state ELSE NULL END,
+          resume_count  = CASE WHEN ${keepResume} THEN resume_count ELSE 0 END,
+          last_status   = CASE WHEN last_status = 'continuing' AND NOT ${keepResume} THEN ${endedStatus} ELSE last_status END,
+          last_message  = CASE WHEN last_status = 'continuing' AND NOT ${keepResume} THEN ${endedMessage} ELSE last_message END,
           updated_at    = NOW()
          WHERE id = ${id} AND company_code = ${company}
          RETURNING *`;
