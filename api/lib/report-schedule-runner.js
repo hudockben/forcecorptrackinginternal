@@ -55,6 +55,7 @@ const STALE_CLAIM_MS = 15 * 60 * 1000;
 // answer cache, and without it the scheduled copy would be missing the block
 // the button's copy has.
 const READ_ONLY_POSTS = new Set(['/api/ai/schedule-analysis']);
+const READ_ONLY_BODY  = JSON.stringify({ error: 'Scheduled report runs are read-only.' });
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -211,11 +212,25 @@ function robotToken(acct) {
   }, process.env.JWT_SECRET, { expiresIn: '30m' });
 }
 
-function withTimeout(promise, ms, what) {
+// A failure that is about time, not about the report: worth another try at
+// the next five-minute pass (see handBack), where a page that is broken is not.
+const timeUp = msg => Object.assign(new Error(msg), { timeout: true });
+const isTimeUp = err => Boolean(err && (err.timeout || err.name === 'TimeoutError'));
+
+// `why`, if given, is asked at the moment of the timeout for what the page was
+// doing then — so the schedule's row says what it was stuck on, not just that
+// it was slow.
+function withTimeout(promise, ms, what, why) {
   let t;
   return Promise.race([
     promise.finally(() => clearTimeout(t)),
-    new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`${what} took longer than ${Math.round(ms / 1000)}s`)), ms); }),
+    new Promise((_, rej) => {
+      t = setTimeout(async () => {
+        let detail = '';
+        try { detail = why ? await why() : ''; } catch { /* the bare message, then */ }
+        rej(timeUp(`${what} took longer than ${Math.round(ms / 1000)}s${detail ? '. ' + detail : ''}`));
+      }, ms);
+    }),
   ]);
 }
 
@@ -241,6 +256,10 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
   if (!baseUrl) throw new Error('The server does not know its own address (set APP_BASE_URL).');
   const origin = new URL(baseUrl).origin;
   const stats = { blockedWrites: 0, pageErrors: [] };
+  // For the message when the page is too slow: the app's requests still
+  // open, and the last few things the page warned about.
+  const inflight = new Map();
+  const warnings = [];
   const page = await browser.newPage();
   let cdp = null;
   const wipe = async () => {
@@ -281,12 +300,17 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
         const read = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
         if (u.origin === origin) {
           if (read || READ_ONLY_POSTS.has(u.pathname)) {
+            if (u.pathname.startsWith('/api/')) inflight.set(req, Date.now());
             return bypass
               ? req.continue({ headers: { ...req.headers(), 'x-vercel-protection-bypass': bypass } })
               : req.continue();
           }
+          // Refused the way a server refuses, not dropped the way a network
+          // drops: the pages retry a failed connection with backoff (the job
+          // pages give a refused bulk save 1 + 2 + 4 seconds), and a page that
+          // does that once per job at boot never gets as far as the report.
           stats.blockedWrites++;
-          return req.abort('accessdenied');
+          return req.respond({ status: 403, contentType: 'application/json', body: READ_ONLY_BODY });
         }
         // The pages pull a few libraries and fonts from CDNs. Reads only, and
         // only the kinds of thing a page renders with.
@@ -294,9 +318,20 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
         return req.abort();
       } catch { /* already handled */ }
     });
+    page.on('requestfinished', req => inflight.delete(req));
+    page.on('requestfailed', req => inflight.delete(req));
     // An alert() would hang the page forever with nobody to click OK.
     page.on('dialog', d => { d.dismiss().catch(() => {}); });
     page.on('pageerror', err => { if (stats.pageErrors.length < 5) stats.pageErrors.push(String(err && err.message || err)); });
+    page.on('console', msg => {
+      try {
+        if (msg.type() !== 'warn' && msg.type() !== 'warning' && msg.type() !== 'error') return;
+        const text = String(msg.text() || '');
+        if (!text || /^Failed to load resource/.test(text)) return;   // the CDNs' noise, not the page's
+        warnings.push(text.slice(0, 160));
+        if (warnings.length > 3) warnings.shift();
+      } catch { /* a message is never worth failing over */ }
+    });
 
     const user = {
       username:         acct.username,
@@ -307,7 +342,7 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
       allowedDivisions: acct.allowedDivisions,
       isPlatformAdmin:  acct.isPlatformAdmin,
     };
-    await page.evaluateOnNewDocument((appOrigin, ls, readOnlyPosts) => {
+    await page.evaluateOnNewDocument((appOrigin, ls, readOnlyPosts, refusal) => {
       // The session goes to the app's own origin and nowhere else — not to
       // a page the app redirects to, not to a frame from somewhere else.
       if (location.origin !== appOrigin) return;
@@ -325,12 +360,16 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
           return u.origin !== location.origin || readOnlyPosts.includes(u.pathname);
         } catch (_) { return false; }
       };
+      // Answered with a 403, as the server answers a write it will not take —
+      // not a rejected fetch, which the pages read as a dropped connection
+      // and retry with backoff.
       const realFetch = window.fetch;
       window.fetch = function (input, init) {
         const method = String((init && init.method) || (input && typeof input === 'object' && input.method) || 'GET').toUpperCase();
         const url = typeof input === 'string' ? input : (input && input.url) || String(input);
         if (!READS.includes(method) && !allowed(url)) {
-          return Promise.reject(new TypeError('Scheduled report runs are read-only.'));
+          window.__dwRefusedWrites = (window.__dwRefusedWrites || 0) + 1;
+          return Promise.resolve(new Response(refusal, { status: 403, headers: { 'Content-Type': 'application/json' } }));
         }
         return realFetch.apply(this, arguments);
       };
@@ -350,10 +389,10 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
       fct_user:         JSON.stringify(user),
       fct_division:     def.division,
       fct_company_code: acct.companyCode,
-    }, [...READ_ONLY_POSTS]);
+    }, [...READ_ONLY_POSTS], READ_ONLY_BODY);
 
     const loadMs = () => budget(deadline, PAGE_LOAD_MS, SEND_NEEDS_MS);
-    if (loadMs() < 5_000) throw new Error('The run ran out of time before the page could be opened.');
+    if (loadMs() < 5_000) throw timeUp('The run ran out of time before the page could be opened.');
     page.setDefaultTimeout(loadMs());
     await page.goto(`${baseUrl}/${def.page}?autoreport=1`, { waitUntil: 'domcontentloaded', timeout: loadMs() });
 
@@ -361,23 +400,55 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
       await page.waitForFunction(
         t => window.dwAutoReport && window.dwAutoReport.has(t),
         { timeout: Math.max(1_000, loadMs()), polling: 250 }, spec.type);
-    } catch {
+    } catch (waitErr) {
       const where = (() => { try { return new URL(page.url()).pathname; } catch { return ''; } })();
       if (!where.endsWith('/' + def.page)) {
         throw new Error(`The ${divisionName(def.division)} page sent ${acct.username} away (to ${where || 'another page'}) instead of opening.`);
       }
-      throw new Error(`The ${divisionName(def.division)} page did not offer this report`
+      const notOffered = new Error(`The ${divisionName(def.division)} page did not offer this report`
         + (stats.pageErrors.length ? ` — it hit an error: ${stats.pageErrors[0]}` : '.'));
+      // Still loading when the wait ran out (no error on the page) may be a
+      // slow morning, not a broken page: the run may try it again.
+      if (isTimeUp(waitErr) && !stats.pageErrors.length) notOffered.timeout = true;
+      throw notOffered;
     }
   } catch (err) {
+    if (err && err.name === 'TimeoutError') err.timeout = true;
     await close();
     throw err;
   }
 
+  // What the page was doing when it ran out of time, in a sentence or two.
+  const stuckOn = async () => {
+    const parts = [];
+    const now = Date.now();
+    const open = [...inflight].map(([req, at]) => {
+      let where = req.url();
+      try { const u = new URL(where); where = u.pathname + (u.search.length > 40 ? u.search.slice(0, 40) + '…' : u.search); } catch { /* as is */ }
+      return { where: `${req.method()} ${where}`, secs: Math.round((now - at) / 1000) };
+    }).sort((a, b) => b.secs - a.secs);
+    if (open.length) {
+      parts.push('Still waiting on ' + open.slice(0, 3).map(o => `${o.where} (${o.secs}s)`).join(', ')
+        + (open.length > 3 ? ` and ${open.length - 3} more` : '') + '.');
+    }
+    let refused = stats.blockedWrites;
+    try { refused += await withTimeout(page.evaluate(() => window.__dwRefusedWrites || 0), 2_000, 'Reading the page'); } catch { /* the network count, then */ }
+    if (refused) parts.push(`The page tried to save ${refused} time${refused === 1 ? '' : 's'} (refused: scheduled runs are read-only).`);
+    if (!open.length && warnings.length) parts.push('Its last warning: ' + warnings[warnings.length - 1]);
+    return parts.join(' ');
+  };
+  // runOutOfTime on the error: the RUN's time was short, not the report slow
+  // — a build given less than BUILD_MS because the run's deadline was near.
+  // That report has not failed; the next pass should build it again.
   const ask = async (fn, s, what) => {
     const ms = budget(deadline, BUILD_MS, SEND_NEEDS_MS);
-    if (ms < 10_000) throw new Error('The run ran out of time.');
-    return withTimeout(page.evaluate(fn, s), ms, what);
+    if (ms < 10_000) throw Object.assign(timeUp('The run ran out of time.'), { runOutOfTime: true });
+    try {
+      return await withTimeout(page.evaluate(fn, s), ms, what, stuckOn);
+    } catch (err) {
+      if (isTimeUp(err) && ms < BUILD_MS) err.runOutOfTime = true;
+      throw err;
+    }
   };
   return {
     stats,
@@ -420,7 +491,14 @@ async function specsToBuild(session, spec, out) {
   const plan = await session.plan(spec);
   if (!plan || !Array.isArray(plan.jobs)) return [spec];
   if (!plan.jobs.length) out.skipped.push({ why: 'No jobs are marked In Progress.' });
-  return plan.jobs.map(j => ({ ...spec, projectId: j.id, projectName: j.name || null }));
+  return withBatch(plan.jobs.map(j => ({ ...spec, projectId: j.id, projectName: j.name || null })));
+}
+
+// Each job's spec names every job the run will build (`batch`), so a page
+// can start a slow per-job read for all of them at once (dwAutoReport.prefetch).
+function withBatch(specs) {
+  const batch = specs.map(sp => String(sp.projectId));
+  return specs.map(sp => ({ ...sp, batch }));
 }
 
 function plural(n, one, many) { return `${n} ${n === 1 ? one : (many || one + 's')}`; }
@@ -482,101 +560,168 @@ async function runSchedule(sql, sched, ctx = {}) {
   const problems = [];   // what kept something from going out
   const notes    = [];   // what went out, but not quite as asked
   const skipped  = [];
-  let stopped    = null; // the schedule was switched off or changed mid-run
+  let stopped    = null;  // the schedule was switched off or changed mid-run
   let halted     = false; // the run stopped early, for whatever reason
   let attempted  = 0;
+  // Jobs this pass never got to, and why: the run's time ran out, more were
+  // due than one run sends (MAX_ITEMS), or the schedule stopped it.
+  let outOfTime = 0, overCap = 0, stoppedLeft = 0;
+  let timedOut   = false; // the page or the report ran out of time before anything went
+  // What earlier passes at this same occurrence did (handBack): the jobs they
+  // sent are not sent again, and the outcome below is the occurrence's whole.
+  const occurrence = new Date(ctx.occurrence || now);
+  const prev = resumeState(ctx.resume, occurrence);
+  const done = new Set(prev.done);
+  const everyJob = spec.projectId === '*';
+  let planned = null;       // every-job runs: how many jobs the occurrence has
+  // Failures about time that the next pass may well undo — a page that was
+  // slow to open, a report whose build ran out of time. Reported if this is
+  // the last pass; not carried to the next, so a report that goes out on the
+  // second try is not "partly sent" because of the first.
+  const retryProblems = [];
+  let retryAttempts = 0;
 
   let browser = ctx.browser || null;
   const ownBrowser = !browser;
   let session = null;
+  const open = () => openReportPage(browser, { baseUrl: ctx.baseUrl, def, acct, spec, deadline: ctx.deadline });
   try {
-    if (!browser) {
-      try { browser = await launchBrowser(); }
-      catch (err) { return fail(`Could not start the report browser: ${err.message}`); }
-    }
-    try {
-      session = await openReportPage(browser, { baseUrl: ctx.baseUrl, def, acct, spec, deadline: ctx.deadline });
-    } catch (err) {
-      return fail(err.message || 'The report page would not open.');
-    }
-
-    const holder = { items: [], skipped: [], errors: [] };
-    let specs;
-    try { specs = await specsToBuild(session, spec, holder); }
-    catch (err) { return fail(err.message || 'The report could not be built.'); }
-    skipped.push(...holder.skipped.map(s => s.why));
-    if (specs.length > MAX_ITEMS) {
-      notes.push(`${specs.length - MAX_ITEMS} more job${specs.length - MAX_ITEMS === 1 ? '' : 's'} not sent — a schedule sends at most ${MAX_ITEMS} at once. Split it up.`);
-      specs = specs.slice(0, MAX_ITEMS);
-    }
-
-    let firstSend = true;
-    for (let s = 0; s < specs.length && !halted; s++) {
-      const one = specs[s];
-      if (ctx.deadline && budget(ctx.deadline, Infinity, SEND_NEEDS_MS) < 10_000) {
-        problems.push(`${specs.length - s} more not sent — the run ran out of time. Split this schedule up so each run is smaller.`);
-        halted = true;
-        break;
+    await (async () => {
+      if (!browser) {
+        try { browser = await launchBrowser(); }
+        catch (err) { problems.push(`Could not start the report browser: ${err.message}`); return; }
       }
-      let built;
-      try { built = await session.build(one); }
+      try { session = await open(); }
       catch (err) {
-        attempted++;
-        problems.push(`${one.projectName || def.label}: ${err.message}`);
-        continue;
+        timedOut = isTimeUp(err);
+        (timedOut ? retryProblems : problems).push(err.message || 'The report page would not open.');
+        return;
       }
-      built.skipped.forEach(k => skipped.push(k.projectName ? `${k.projectName}: ${k.why}` : k.why));
-      built.errors.forEach(e => { attempted++; problems.push(`${e.projectName || 'Report'}: ${e.error}`); });
 
-      for (const it of built.items) {
-        attempted++;
-        const name = it.projectName || def.label;
-        if (ctx.deadline && budget(ctx.deadline, Infinity) < SEND_NEEDS_MS) {
-          problems.push('The rest were not sent — the run ran out of time. Split this schedule up so each run is smaller.');
+      const holder = { items: [], skipped: [], errors: [] };
+      let specs;
+      try { specs = await specsToBuild(session, spec, holder); }
+      catch (err) {
+        timedOut = isTimeUp(err);
+        (timedOut ? retryProblems : problems).push(err.message || 'The report could not be built.');
+        return;
+      }
+      skipped.push(...holder.skipped.map(s => s.why));
+      if (everyJob) planned = specs.length;
+      if (everyJob) specs = specs.filter(sp => !done.has(String(sp.projectId)));
+      if (specs.length > MAX_ITEMS) {
+        overCap = specs.length - MAX_ITEMS;
+        specs = specs.slice(0, MAX_ITEMS);
+      }
+      if (everyJob) specs = withBatch(specs);
+
+      let firstSend = true;
+      for (let s = 0; s < specs.length && !halted; s++) {
+        const one = specs[s];
+        if (ctx.deadline && budget(ctx.deadline, Infinity, SEND_NEEDS_MS) < 10_000) {
+          outOfTime += specs.length - s;
           halted = true;
           break;
         }
-        if (ctx.stillWanted) {
-          let why = null;
-          try { why = await ctx.stillWanted(); } catch { why = null; }
-          if (why) { stopped = why; halted = true; break; }
+        // A build that timed out is still running in its page, and its
+        // report would land in the next job's capture. The next job gets a
+        // page of its own.
+        if (!session) {
+          try { session = await open(); }
+          catch (err) {
+            outOfTime += specs.length - s;
+            (isTimeUp(err) ? retryProblems : problems).push(err.message || 'The report page would not open.');
+            halted = true;
+            break;
+          }
         }
-        if (Buffer.byteLength(it.html, 'utf8') > MAX_HTML_BYTES) {
-          problems.push(`${name}: the report is too large to email.`);
+        let built;
+        try { built = await session.build(one); }
+        catch (err) {
+          const msg = `${one.projectName || def.label}: ${err.message}`;
+          if (isTimeUp(err)) {
+            await session.close();
+            session = null;
+          }
+          // Cut short by the run's own time, not slow in itself: this job and
+          // the rest go back to the next pass, the job not counted as tried.
+          if (everyJob && isTimeUp(err) && err.runOutOfTime) {
+            outOfTime += specs.length - s;
+            halted = true;
+            break;
+          }
+          attempted++;
+          if (!everyJob && isTimeUp(err)) {
+            timedOut = true;
+            retryAttempts++;
+            retryProblems.push(msg);
+          } else {
+            problems.push(msg);
+          }
+          // A job whose own build failed is done with for this occurrence —
+          // tried, and reported — not built again by every later pass.
+          if (everyJob) done.add(String(one.projectId));
           continue;
         }
-        const att = normalizeAttachments(it.attachments);
-        if (!att.ok) { problems.push(`${name}: ${att.error}`); continue; }
+        built.skipped.forEach(k => skipped.push(k.projectName ? `${k.projectName}: ${k.why}` : k.why));
+        built.errors.forEach(e => { attempted++; problems.push(`${e.projectName || 'Report'}: ${e.error}`); });
 
-        if (!firstSend) await sleep(SEND_GAP_MS);
-        firstSend = false;
-        const sent = await deliverReport({
-          label:       def.label,
-          projectName: it.projectName,
-          recipients:  recips.emails,
-          subject:     sched.subject && sched.subject.trim()
-            ? (it.projectName && !sched.subject.includes(it.projectName) ? `${sched.subject.trim()} — ${it.projectName}` : sched.subject.trim())
-            : it.subject,
-          note:        sched.note || '',
-          html:        it.html,
-          attachments: att.attachments,
-          summary:     it.summary,
-          attachPdf:   sched.attach_pdf !== false,
-          companyName: acct.companyName,
-          generatedAt,
-          browser,
-          logTag:      `schedule=${sched.id} report=${sched.report_type}`,
-        });
-        if (sent.ok) {
-          result.sent++;
-          // It went — the PDF just could not be made, so the report is in the body.
-          if (sent.warning) notes.push(`${name}: ${sent.warning}`);
-        } else {
-          problems.push(`${name}: ${sent.error}`);
+        let finished = true;
+        for (const it of built.items) {
+          const name = it.projectName || def.label;
+          if (ctx.deadline && budget(ctx.deadline, Infinity) < SEND_NEEDS_MS) {
+            finished = false;
+            halted = true;
+            break;
+          }
+          if (ctx.stillWanted) {
+            let why = null;
+            try { why = await ctx.stillWanted(); } catch { why = null; }
+            if (why) { stopped = why; finished = false; halted = true; break; }
+          }
+          attempted++;
+          if (Buffer.byteLength(it.html, 'utf8') > MAX_HTML_BYTES) {
+            problems.push(`${name}: the report is too large to email.`);
+            continue;
+          }
+          const att = normalizeAttachments(it.attachments);
+          if (!att.ok) { problems.push(`${name}: ${att.error}`); continue; }
+
+          if (!firstSend) await sleep(SEND_GAP_MS);
+          firstSend = false;
+          const sent = await deliverReport({
+            label:       def.label,
+            projectName: it.projectName,
+            recipients:  recips.emails,
+            subject:     sched.subject && sched.subject.trim()
+              ? (it.projectName && !sched.subject.includes(it.projectName) ? `${sched.subject.trim()} — ${it.projectName}` : sched.subject.trim())
+              : it.subject,
+            note:        sched.note || '',
+            html:        it.html,
+            attachments: att.attachments,
+            summary:     it.summary,
+            attachPdf:   sched.attach_pdf !== false,
+            companyName: acct.companyName,
+            generatedAt,
+            browser,
+            logTag:      `schedule=${sched.id} report=${sched.report_type}`,
+          });
+          if (sent.ok) {
+            result.sent++;
+            // It went — the PDF just could not be made, so the report is in the body.
+            if (sent.warning) notes.push(`${name}: ${sent.warning}`);
+          } else {
+            problems.push(`${name}: ${sent.error}`);
+          }
         }
+        // A job is done once every report it made has been tried; one the
+        // run stopped partway through is left for the next pass, whole.
+        if (finished) { if (everyJob) done.add(String(one.projectId)); }
+        else if (stopped) stoppedLeft += specs.length - s;
+        else outOfTime += specs.length - s;
       }
-    }
-    if (session.stats.blockedWrites) {
+    })();
+    if (session && session.stats.blockedWrites) {
       console.log('[report-schedules] refused', session.stats.blockedWrites, 'page write(s) while building schedule', sched.id);
     }
   } catch (err) {
@@ -587,17 +732,74 @@ async function runSchedule(sql, sched, ctx = {}) {
   }
 
   result.total = attempted;
+  const unreached    = outOfTime + overCap + stoppedLeft;
+  const allSent      = prev.sent + result.sent;
+  const allAttempted = prev.attempted + attempted;
+  const allProblems  = [...prev.problems, ...problems, ...retryProblems];
   const to = plural(recips.emails.length, 'recipient');
-  const tail = [...problems, ...(stopped ? [stopped] : []), ...notes];
-  if (result.sent && !problems.length && !stopped) {
+  // An every-job occurrence's jobs, all passes: the most any pass's plan saw.
+  // Those not yet tried are what is left, whatever this pass managed to see.
+  const total = everyJob ? Math.max(planned == null ? 0 : planned, prev.total) : 0;
+  const left  = everyJob && total ? Math.max(0, total - done.size) : unreached;
+  // Lasting progress only: a report sent, or a job dealt with for good. A
+  // single report that timed out and will be built again is neither.
+  const progress = result.sent > 0 || done.size > prev.done.length;
+
+  // Unfinished — out of time, stopped, or more jobs than one pass sends: the
+  // rest goes back to the next five-minute pass, if the schedule still wants
+  // it (see handBack). Only a timetabled run hands anything back.
+  let handedBack = false;
+  if ((unreached > 0 || (timedOut && !result.sent)) && ctx.handBack) {
+    try {
+      handedBack = await ctx.handBack({
+        state: {
+          occurrence: occurrence.toISOString(),
+          done:       [...done],
+          sent:       allSent,
+          attempted:  allAttempted - retryAttempts,
+          problems:   [...prev.problems, ...problems].slice(-10).map(p => String(p).slice(0, 300)),
+          passes:     prev.passes + 1,
+          idle:       prev.idle + (progress ? 0 : 1),
+          total,
+        },
+      });
+    } catch (err) {
+      console.error('[report-schedules] could not hand back schedule', sched.id, err.message);
+      handedBack = false;
+    }
+  }
+  if (handedBack) {
+    result.status = 'continuing';
+    const soFar = allSent ? `Sent ${plural(allSent, 'report')} to ${to} so far. ` : '';
+    const why = stopped
+      ? 'It was changed while it was being sent, so the rest goes out at the next pass, with the new settings.'
+      : left
+        ? `${plural(left, 'more job')} ${left === 1 ? 'goes' : 'go'} out at the next pass, in a few minutes.`
+        : 'It will be tried again at the next pass, in a few minutes.';
+    result.message = `${soFar}${why}${problems.length ? ' ' + problems.join('; ') : ''}`;
+    return result;
+  }
+
+  // The last pass at this occurrence: whatever is still not sent is said so.
+  // (A stop says why itself.)
+  const unsent = stopped ? 0 : left;
+  if (unsent) {
+    const reason = overCap && !outOfTime ? `one run sends at most ${MAX_ITEMS}`
+      : outOfTime ? `the run ran out of time before it got to ${unsent === 1 ? 'it' : 'them'}`
+      : 'the run stopped before it got to them';
+    allProblems.push(`${plural(unsent, 'more job')} not sent — ${reason}.`);
+  }
+  const passes = prev.passes ? ` (over ${prev.passes + 1} runs)` : '';
+  const tail = [...allProblems, ...(stopped ? [stopped] : []), ...notes];
+  if (allSent && !allProblems.length && !stopped) {
     result.status = 'sent';
-    result.message = (result.sent === 1 ? `Sent to ${to}.` : `Sent ${result.sent} reports to ${to}.`)
+    result.message = (allSent === 1 ? `Sent to ${to}.` : `Sent ${allSent} reports to ${to}${passes}.`)
       + (notes.length ? ` ${notes.join('; ')}` : '')
       + (skipped.length ? ` Skipped — ${skipped.join('; ')}` : '');
-  } else if (result.sent) {
+  } else if (allSent) {
     result.status = 'partial';
-    result.message = `Sent ${result.sent} of ${attempted} to ${to}. ${tail.join('; ')}`;
-  } else if (!problems.length && (skipped.length || stopped)) {
+    result.message = `Sent ${allSent} of ${allAttempted + unsent} to ${to}${passes}. ${tail.join('; ')}`;
+  } else if (!allProblems.length && (skipped.length || stopped)) {
     result.status = 'skipped';
     result.message = stopped && !skipped.length ? stopped : `Nothing to send — ${[...skipped, ...(stopped ? [stopped] : [])].join('; ')}`;
   } else {
@@ -605,6 +807,26 @@ async function runSchedule(sql, sched, ctx = {}) {
     result.message = tail.length ? tail.join('; ') : 'The page built no report.';
   }
   return result;
+}
+
+// What an earlier pass at this occurrence left for the next (handBack) —
+// this occurrence's only. A pass killed before it could write itself down
+// leaves its state on the row, and tomorrow's run must not skip the jobs
+// that went out today.
+function resumeState(raw, occurrence) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const at = r.occurrence ? new Date(r.occurrence).getTime() : NaN;
+  const mine = Number.isFinite(at) && occurrence && at === new Date(occurrence).getTime();
+  if (!mine) return { done: [], sent: 0, attempted: 0, problems: [], passes: 0, idle: 0, total: 0 };
+  return {
+    done:      Array.isArray(r.done) ? r.done.map(String) : [],
+    sent:      Number(r.sent) || 0,
+    attempted: Number(r.attempted) || 0,
+    problems:  Array.isArray(r.problems) ? r.problems.map(String) : [],
+    passes:    Number(r.passes) || 0,
+    idle:      Number(r.idle) || 0,
+    total:     Number(r.total) || 0,
+  };
 }
 
 // ── Claims ──────────────────────────────────────────────────────────────────
@@ -618,8 +840,13 @@ const occurrenceOf = s => ({
   send_time: s.send_time, timezone: s.timezone,
 });
 
-/** Claim the most overdue schedule that is due and not being sent — or null. */
-async function claimNextDue(sql, token) {
+/**
+ * Claim the most overdue schedule that is due and not being sent — or null.
+ * `except` is the schedules this run has already had a go at: one it handed
+ * back is due again at once, and is the next run's to take, not this one's.
+ */
+async function claimNextDue(sql, token, except = []) {
+  const skip = except.map(Number).filter(Number.isFinite);
   const rows = await sql`
     UPDATE report_schedules SET claimed_at = NOW(), claim_token = ${token}
      WHERE id = (
@@ -628,10 +855,11 @@ async function claimNextDue(sql, token) {
           AND next_run_at IS NOT NULL
           AND next_run_at <= NOW()
           AND (claimed_at IS NULL OR claimed_at < NOW() - ${STALE_CLAIM}::interval)
+          AND NOT (id = ANY(${skip}::bigint[]))
         ORDER BY next_run_at
         LIMIT 1
         FOR UPDATE SKIP LOCKED)
-     RETURNING *`;
+     RETURNING *, extract(epoch FROM updated_at)::text AS updated_epoch`;
   return rows[0] || null;
 }
 
@@ -658,21 +886,78 @@ async function claimForSendNow(sql, id, companyCode, token) {
  * nothing after the run touches the timetable, so an edit saved while it ran
  * is the timetable that stands.
  */
+//
+// Resolves false when a timetabled schedule was saved between its claim and
+// here: the timetable worked out from the claimed copy is no longer the one
+// that stands, so nothing is written over it and the run does not start. The
+// caller lets the claim go; the next pass takes the schedule as it now is.
 async function beginRun(sql, sched, token, { kind, now }) {
   const at = (now || new Date()).toISOString();
   if (kind === 'schedule') {
     const next = T.nextRunAt(occurrenceOf(sched), now || new Date());
-    await sql`
+    // updated_epoch is the claim's own reading of updated_at, to the
+    // microsecond — a JavaScript Date keeps milliseconds, and would never match.
+    const rows = await sql`
       UPDATE report_schedules
          SET next_run_at = ${next ? next.toISOString() : null},
              last_status = 'sending', last_run_at = ${at}, last_message = 'Building and sending.'
-       WHERE id = ${sched.id} AND claim_token = ${token}`;
-  } else {
-    await sql`
-      UPDATE report_schedules
-         SET last_status = 'sending', last_run_at = ${at}, last_message = 'Building and sending.'
-       WHERE id = ${sched.id} AND claim_token = ${token}`;
+       WHERE id = ${sched.id} AND claim_token = ${token}
+         AND (${sched.updated_epoch == null ? null : String(sched.updated_epoch)}::text IS NULL
+              OR extract(epoch FROM updated_at)::text = ${sched.updated_epoch == null ? null : String(sched.updated_epoch)}::text)
+       RETURNING id`;
+    return rows.length > 0;
   }
+  const rows = await sql`
+    UPDATE report_schedules
+       SET last_status = 'sending', last_run_at = ${at}, last_message = 'Building and sending.'
+     WHERE id = ${sched.id} AND claim_token = ${token}
+     RETURNING id`;
+  return rows.length > 0;
+}
+
+// A pass that hands back takes another five minutes, and a page that never
+// opens costs a minute and a half of Chrome each time: an occurrence gets at
+// most this many passes all told, and only this many hand-backs from passes
+// that got nothing done.
+const MAX_PASSES      = 8;
+const MAX_IDLE_PASSES = 2;
+
+/**
+ * Give the rest of a timetabled occurrence back to the next five-minute pass:
+ * the run ran out of time (or past MAX_ITEMS) with jobs still to send, timed
+ * out before sending anything, or was stopped because the schedule was saved
+ * mid-run. next_run_at goes back to the occurrence — due again, and its dates
+ * still that occurrence's — and resume_state carries what was already sent,
+ * so the next pass sends only the rest and reports on the whole.
+ *
+ * Only while the schedule still wants it: switched on, and on the timetable
+ * it was claimed on. Switched off or deleted, nothing more goes; retimed, the
+ * new timetable stands. A different report since: the next pass starts the
+ * occurrence over rather than skip jobs it never sent. Resolves true if
+ * handed back.
+ */
+async function handBack(sql, sched, token, { occurrence, state }) {
+  // Counted in the state, which belongs to this occurrence: passes so far
+  // (this one included), and how many of them got nothing done.
+  const st = state || {};
+  const passes = Number(st.passes) || 1;
+  if (passes >= MAX_PASSES) return false;
+  if ((Number(st.idle) || 0) > MAX_IDLE_PASSES) return false;
+  const occ = new Date(occurrence);
+  if (!Number.isFinite(occ.getTime())) return false;
+  const days = Array.isArray(sched.days_of_week) ? JSON.stringify(sched.days_of_week) : null;
+  const dom  = sched.day_of_month == null ? null : Number(sched.day_of_month);
+  const rows = await sql`
+    UPDATE report_schedules
+       SET next_run_at  = ${occ.toISOString()},
+           resume_state = CASE WHEN report_type = ${sched.report_type} THEN ${JSON.stringify(state || {})}::jsonb ELSE NULL END,
+           resume_count = ${passes}
+     WHERE id = ${sched.id} AND claim_token = ${token} AND enabled
+       AND frequency = ${sched.frequency} AND send_time = ${sched.send_time} AND timezone = ${sched.timezone}
+       AND day_of_month IS NOT DISTINCT FROM ${dom}::integer
+       AND days_of_week IS NOT DISTINCT FROM ${days}::jsonb
+     RETURNING id`;
+  return rows.length > 0;
 }
 
 /**
@@ -701,11 +986,17 @@ async function stillWanted(sql, sched) {
 async function recordRun(sql, sched, result, { kind, token, triggeredBy, startedAt, now }) {
   const at = now || new Date();
   const msg = String(result.message || '').slice(0, 2000);
+  // A timetabled occurrence that is finished — sent, failed, missed — drops
+  // what its passes carried; one handed back ('continuing') keeps it for the
+  // next. A Send now never touches it.
+  const finished = kind === 'schedule' && result.status !== 'continuing';
   await sql`
     UPDATE report_schedules
        SET last_run_at = ${at.toISOString()}, last_status = ${result.status}, last_message = ${msg},
            claimed_at  = CASE WHEN claim_token = ${token || ''} THEN NULL ELSE claimed_at END,
-           claim_token = CASE WHEN claim_token = ${token || ''} THEN NULL ELSE claim_token END
+           claim_token = CASE WHEN claim_token = ${token || ''} THEN NULL ELSE claim_token END,
+           resume_state = CASE WHEN ${finished} THEN NULL ELSE resume_state END,
+           resume_count = CASE WHEN ${finished} THEN 0 ELSE resume_count END
      WHERE id = ${sched.id}`;
   // What was sent, as it was sent — an edit afterwards must not relabel it.
   await sql`
@@ -730,6 +1021,7 @@ module.exports = {
   runSchedule,
   recordRun,
   beginRun,
+  handBack,
   stillWanted,
   claimNextDue,
   claimForSendNow,
@@ -738,6 +1030,8 @@ module.exports = {
   appBaseUrl,
   specFor,
   STALE_CLAIM_MS,
+  MAX_PASSES,
+  MAX_IDLE_PASSES,
   // for the suite
   buildInBrowser,
   openReportPage,

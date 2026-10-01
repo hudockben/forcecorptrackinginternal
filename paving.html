@@ -22454,10 +22454,24 @@ const _bootReady = (async () => {
     const p = jobFor(spec);
     // What opening the Daily PM overlay does first: the deadlines, and the AI
     // read of the job (its own once-a-day cache; left out if the AI is down).
-    // Twenty seconds at most for that read: a slow answer must not use up a
-    // run that has a report to build for every job after this one.
-    if (!_schedDeadlinesLoaded) await loadScheduleDeadlines();
-    await Promise.race([_fetchSchedAI(p), new Promise(r => setTimeout(r, 20000))]);
+    // The deadlines get longer than the screen's five seconds, and a read
+    // that fails is a failure for a job whose deadline lives there (no end
+    // date of its own) — not a report with no deadline and no pace.
+    if (!_schedDeadlinesOk) await loadScheduleDeadlines(20000);
+    if (!_schedDeadlinesOk && !p['end-date']) throw new Error('The project deadlines could not be read.');
+    // Twenty seconds at most for the AI read: a slow answer must not use up a
+    // run that has a report to build for every job after this one. A run for
+    // every job starts all their reads at once, four at a time, so job ten's
+    // is long back by the time it is built.
+    // Only jobs whose deadline is known: the AI is told it, and an analysis
+    // made without it is cached on the server for the day. A job that needs
+    // the list makes its own read once its deadline check has passed.
+    const reads = Array.isArray(spec.batch) && spec.batch.length > 1
+      ? AR.prefetch('daily-pm-ai', spec.batch.map(id => getProj(id)).filter(q => q && (_schedDeadlinesOk || q['end-date'])),
+          _fetchSchedAI, 4)
+      : null;
+    const read = (reads && reads.get(String(p.id))) || _fetchSchedAI(p);
+    await Promise.race([read, new Promise(r => setTimeout(r, 20000))]);
     _pmrProjId = p.id;
     return AR.capture(() => emailDailyPMReport());
   }, { perJob: true });
@@ -22478,8 +22492,13 @@ const _bootReady = (async () => {
     return AR.capture(() => generateBidEmail());
   }, { perJob: true });
 
-  AR.register('paving_job_summary', spec => {
+  AR.register('paving_job_summary', async spec => {
     const p = jobFor(spec);
+    // Its schedule page draws the job's deadline and pace, as the Daily PM
+    // does: a job whose deadline lives in the deadlines list does not go out
+    // without it.
+    if (!_schedDeadlinesOk) await loadScheduleDeadlines(20000);
+    if (!_schedDeadlinesOk && !p['end-date']) throw new Error('The project deadlines could not be read.');
     openJobSummaryModal(p.id);
     return AR.capture(() => jobSummaryEmail());
   }, { perJob: true });
@@ -22999,18 +23018,24 @@ function commitImportCSV() {
 
 let _schedDeadlines = [];
 let _schedDeadlinesLoaded = false;
+// Whether the last read of the deadlines worked. The screen carries on
+// without them; a scheduled Daily PM (registerAutoReports) must not.
+let _schedDeadlinesOk = false;
 
-async function loadScheduleDeadlines() {
+async function loadScheduleDeadlines(timeoutMs) {
+  let ok = false;
   try {
     const ctrl = new AbortController();
-    const tid  = setTimeout(() => ctrl.abort(), 5000);
+    const tid  = setTimeout(() => ctrl.abort(), timeoutMs || 5000);
     const r    = await fetch('/api/deadlines?division=' + DIVISION, { headers: { 'Authorization': 'Bearer ' + fctToken }, signal: ctrl.signal });
     clearTimeout(tid);
     if (r.ok) {
       const d = await r.json();
       _schedDeadlines = d.deadlines || [];
+      ok = true;
     }
   } catch { _schedDeadlines = []; }
+  _schedDeadlinesOk = ok;
   _schedDeadlinesLoaded = true;
 }
 

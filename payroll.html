@@ -3769,8 +3769,10 @@
     const BIWEEKLY_ANCHOR_END = new Date(2026, 4, 10); // Sun May 10, 2026 — paid Fri May 15
     const DAY_MS = 86400 * 1000;
 
-    function thisWeekMonday() {
-      const today = new Date();
+    // `base` is the day to count from — today unless a scheduled report says
+    // otherwise (its occurrence's day, which a late run must not move on).
+    function thisWeekMonday(base) {
+      const today = base ? new Date(base) : new Date();
       const dayOfWeek = today.getDay();              // 0=Sun..6=Sat
       const offsetToMonday = (dayOfWeek + 6) % 7;    // Mon=0, ..., Sun=6
       const monday = new Date(today);
@@ -3806,8 +3808,8 @@
     // buttons, their tooltips and the highlight showing which one you are
     // looking at all read the same definition. Three copies of "the current
     // cycle" is how they end up disagreeing by a day.
-    function rangeFor(kind) {
-      const monday = thisWeekMonday();
+    function rangeFor(kind, base) {
+      const monday = thisWeekMonday(base);
       if (kind === 'current_week') return [monday, addDays(monday, 6)];
       // The week being paid this Friday
       if (kind === 'last_week')    return [addDays(monday, -7), addDays(monday, -1)];
@@ -3819,9 +3821,9 @@
       // where the fortnight the accountant is paying happens to start is a
       // different question, and the Cycle buttons are the ones that answer it.
       if (kind === 'last_and_this_week') return [addDays(monday, -7), addDays(monday, 6)];
-      if (kind === 'current_biweekly') return biweeklyCycleContaining(new Date());
+      if (kind === 'current_biweekly') return biweeklyCycleContaining(base ? new Date(base) : new Date());
       if (kind === 'last_biweekly') {
-        const [curStart] = biweeklyCycleContaining(new Date());
+        const [curStart] = biweeklyCycleContaining(base ? new Date(base) : new Date());
         return [addDays(curStart, -14), addDays(curStart, -1)];
       }
       return null;
@@ -6148,8 +6150,8 @@
      * until the new ones land), and again when the rows arrive — if the report
      * is still the one on show.
      */
-    async function loadOvertimeWeek() {
-      const [mon, sun] = rangeFor('current_week');
+    async function loadOvertimeWeek(base) {
+      const [mon, sun] = rangeFor('current_week', base);
       const from = ymd(mon), to = ymd(sun);
       const seq  = ++otwSeq;
       // A retry after a failure reads "Loading", not the old failure.
@@ -16964,9 +16966,13 @@
       // divisions and nobody filtered out, and make sure what arrived is that
       // range: applyFilters never throws, and a failed load draws the same
       // "No timesheet entries" a quiet week does.
+      // The day the schedule was due, not the day the server got to it: a
+      // Sunday 11:55 PM report reached at 12:00 AM Monday is still Sunday's.
+      const dueDay = spec => (spec && /^\d{4}-\d{2}-\d{2}$/.test(spec.today || '') ? new Date(spec.today + 'T12:00:00') : undefined);
+
       async function loadRange(spec, subTab) {
         const kind = PAY_RANGES.includes(spec.options && spec.options.range) ? spec.options.range : 'last_week';
-        const [a, b] = rangeFor(kind);
+        const [a, b] = rangeFor(kind, dueDay(spec));
         const from = ymd(a), to = ymd(b);
         document.getElementById('flt-from').value       = from;
         document.getElementById('flt-to').value         = to;
@@ -17077,7 +17083,7 @@
         document.getElementById('flt-division').value   = '';
         document.getElementById('flt-supervisor').value = '';
         document.getElementById('flt-user').value       = '';
-        await loadOvertimeWeek();
+        await loadOvertimeWeek(dueDay(spec));
         if (otwError) throw new Error("This week's time did not load — " + otwError);
         if (!otwScope) throw new Error("This week's time did not load.");
         const m = buildOvertimeWeekModel();

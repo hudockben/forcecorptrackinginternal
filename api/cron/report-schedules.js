@@ -25,6 +25,14 @@
  * TIME_BUDGET_MS, and the one it is on stops sending at HARD_STOP_MS, inside
  * the 300 seconds the function gets.
  *
+ * What does not fit waits for the next pass. A schedule cut short by that
+ * stop — fifteen Daily PMs where the time allows eleven — hands the rest of
+ * its occurrence back (runner.handBack): due again at once, with the jobs
+ * already sent written down so the next pass, five minutes on, sends only the
+ * other four. So does one that ran out of time before it sent anything, and
+ * one saved over while it was sending (the rest go with the new settings).
+ * Each schedule is taken once per pass, so one handed back waits its turn.
+ *
  * Late is not the same as on time. After an outage, a report twelve hours past
  * its time is not sent — a 6:30 Daily PM arriving at 7 PM is noise, and a
  * week's backlog arriving at once is worse. It is written down as missed, and
@@ -41,24 +49,34 @@ const RETAIN_RUNS     = '180 days';
 
 async function runDueSchedules(sql, opts = {}) {
   const t0  = Date.now();
-  const out = { claimed: 0, sent: 0, partial: 0, skipped: 0, failed: 0, missed: 0 };
+  const out = { claimed: 0, sent: 0, partial: 0, skipped: 0, failed: 0, missed: 0, continuing: 0 };
   let browser = null;
+  const taken = [];   // this pass's schedules, each taken once
   try {
     while (Date.now() - t0 < TIME_BUDGET_MS) {
       const token = runner.newClaimToken();
-      const sched = await runner.claimNextDue(sql, token);
+      const sched = await runner.claimNextDue(sql, token, taken);
       if (!sched) break;
+      taken.push(sched.id);
       out.claimed++;
 
       const startedAt = new Date();
       const dueAt = new Date(sched.next_run_at);
+      let started;
       try {
-        await runner.beginRun(sql, sched, token, { kind: 'schedule', now: startedAt });
+        started = await runner.beginRun(sql, sched, token, { kind: 'schedule', now: startedAt });
       } catch (err) {
         // Nothing sent and nothing moved: hand it back for the next run.
         console.error('[report-schedules] could not start schedule', sched.id, err.message);
         try { await runner.releaseClaim(sql, sched, token); } catch { /* goes stale instead */ }
         break;
+      }
+      if (!started) {
+        // Saved between the claim and here: its timetable is the one just
+        // saved, not the one claimed. The next pass takes it as it now is.
+        try { await runner.releaseClaim(sql, sched, token); } catch { /* goes stale instead */ }
+        out.claimed--;
+        continue;
       }
 
       let result;
@@ -83,6 +101,8 @@ async function runDueSchedules(sql, opts = {}) {
           browser,
           deadline:    t0 + HARD_STOP_MS,
           stillWanted: () => runner.stillWanted(sql, sched),
+          resume:      sched.resume_state,
+          handBack:    ({ state }) => runner.handBack(sql, sched, token, { occurrence: dueAt, state }),
         });
       }
       try {

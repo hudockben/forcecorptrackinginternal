@@ -219,11 +219,17 @@ module.exports = async (req, res) => {
         sql`SELECT * FROM (
               SELECT r.id, r.schedule_id, r.run_kind, r.status, r.sent_count, r.total_count, r.recipient_count,
                      r.message, r.triggered_by, r.started_at, r.finished_at,
-                     COALESCE(r.report_type, s.report_type)   AS report_type,
-                     COALESCE(r.division, s.division)         AS division,
-                     COALESCE(r.project_name, s.project_name) AS project_name,
-                     COALESCE(r.project_id, s.project_id)     AS project_id,
-                     row_number() OVER (PARTITION BY COALESCE(r.division, s.division) ORDER BY r.started_at DESC) AS rn
+                     -- As sent. A run's job is NULL when it was for all jobs
+                     -- or the whole division, and stays so; only a run from
+                     -- before these columns (no report_type) borrows the
+                     -- schedule's.
+                     CASE WHEN r.report_type IS NULL THEN s.report_type  ELSE r.report_type  END AS report_type,
+                     CASE WHEN r.report_type IS NULL THEN s.division     ELSE r.division     END AS division,
+                     CASE WHEN r.report_type IS NULL THEN s.project_name ELSE r.project_name END AS project_name,
+                     CASE WHEN r.report_type IS NULL THEN s.project_id   ELSE r.project_id   END AS project_id,
+                     row_number() OVER (
+                       PARTITION BY CASE WHEN r.report_type IS NULL THEN s.division ELSE r.division END
+                       ORDER BY r.started_at DESC) AS rn
                 FROM report_schedule_runs r
                 JOIN report_schedules s ON s.id = r.schedule_id
                WHERE r.company_code = ${company}) recent
@@ -271,7 +277,15 @@ module.exports = async (req, res) => {
         return res.status(409).json({ ok: false, error: 'It is being sent right now — wait for that to finish.' });
       }
       const startedAt = new Date();
-      await runner.beginRun(sql, claimed, token, { kind: 'manual', now: startedAt });
+      try {
+        await runner.beginRun(sql, claimed, token, { kind: 'manual', now: startedAt });
+      } catch (err) {
+        // Not started: let go of the claim, or the row reads Sending… and
+        // refuses Send now — and the timetable skips it — for fifteen minutes.
+        console.error('[report-schedules] could not start send now', id, err.message);
+        try { await runner.releaseClaim(sql, claimed, token); } catch { /* goes stale instead */ }
+        return res.status(500).json({ ok: false, error: 'Could not start it — the database did not answer. Try again.' });
+      }
       const result = await runner.runSchedule(sql, claimed, {
         // Inside the function's 300 seconds, as the cron's is.
         baseUrl: runner.appBaseUrl(req), now: startedAt, deadline: startedAt.getTime() + 285_000,
@@ -285,7 +299,10 @@ module.exports = async (req, res) => {
       }
       console.log('[report-schedules] send now', 'id=' + id, 'user=' + payload.username,
         'status=' + result.status, 'sent=' + result.sent);
-      const fresh = await loadOne(sql, company, id);
+      // It has been sent (or not) by now; failing to re-read the row must not
+      // turn that into an error that invites a second press.
+      let fresh = null;
+      try { fresh = await loadOne(sql, company, id); } catch { /* the page reloads the list anyway */ }
       return res.json({ ok: true, result, schedule: fresh ? shape(fresh) : null });
     }
 
@@ -358,6 +375,16 @@ module.exports = async (req, res) => {
       const stillDue = cur.enabled && v.enabled && sameTimetable
         && cur.next_run_at && new Date(cur.next_run_at) <= new Date();
       const next = !v.enabled ? null : stillDue ? new Date(cur.next_run_at) : T.nextRunAt(v, new Date());
+      // A due occurrence kept keeps what its earlier passes sent — while it
+      // is still the same report for the same job. Anything else starts with
+      // nothing carried over; a report handed to the next pass that is now
+      // off, retimed or another report says the rest did not go.
+      const keepResume = Boolean(stillDue) && cur.report_type === v.report_type
+        && (cur.project_id || null) === (v.project_id || null);
+      const sentBefore = Number(cur.resume_state && cur.resume_state.sent) || 0;
+      const endedStatus = sentBefore ? 'partial' : 'skipped';
+      const endedMessage = `The rest of its last send did not go out: it was ${v.enabled ? 'changed' : 'switched off'} before the next pass.`
+        + (sentBefore ? ` ${sentBefore} report${sentBefore === 1 ? '' : 's'} had gone out before that.` : '');
       const rows = await sql`
         UPDATE report_schedules SET
           report_type   = ${v.report_type},
@@ -378,6 +405,10 @@ module.exports = async (req, res) => {
           run_as_user_id  = ${payload.userId},
           run_as_username = ${payload.username || null},
           next_run_at   = ${next ? next.toISOString() : null},
+          resume_state  = CASE WHEN ${keepResume} THEN resume_state ELSE NULL END,
+          resume_count  = CASE WHEN ${keepResume} THEN resume_count ELSE 0 END,
+          last_status   = CASE WHEN last_status = 'continuing' AND NOT ${keepResume} THEN ${endedStatus} ELSE last_status END,
+          last_message  = CASE WHEN last_status = 'continuing' AND NOT ${keepResume} THEN ${endedMessage} ELSE last_message END,
           updated_at    = NOW()
          WHERE id = ${id} AND company_code = ${company}
          RETURNING *`;

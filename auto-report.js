@@ -49,6 +49,37 @@
   const registry = Object.create(null);
   let readyPromise = null;
   let jobsFn = null;
+  // A build in progress. The server gives up on a build that takes too long,
+  // but the page cannot be told to stop one: it runs on, and when it finally
+  // opens "its" email modal, a build started after it would record that as its
+  // own report — job A's report sent as job B's. So one at a time; the server
+  // opens a fresh page after a build it gave up on, and this refuses outright
+  // if it ever does not.
+  let building = false;
+  const pools = Object.create(null);
+
+  // Start fn(item) for every item, `limit` at a time, once per key on this
+  // page, and hand back a Map of item id → its promise (null on failure).
+  // For a read every job's report needs that would otherwise be made one job
+  // at a time — the Daily PM's AI read is ten seconds or more, and a run for
+  // fifteen jobs would spend most of its time waiting on them in turn.
+  function prefetch(key, items, fn, limit) {
+    if (pools[key]) return pools[key];
+    const pool = new Map();
+    const queue = [];
+    for (const item of asArray(items)) {
+      if (!item || item.id == null || pool.has(String(item.id))) continue;
+      let settle;
+      pool.set(String(item.id), new Promise(r => { settle = r; }));
+      queue.push(() => Promise.resolve().then(() => fn(item)).catch(() => null).then(settle));
+    }
+    const worker = async () => { while (queue.length) await queue.shift()(); };
+    // Counted before any starts: each one takes from the queue as it starts.
+    const workers = Math.min(Math.max(1, limit || 4), queue.length);
+    for (let i = 0; i < workers; i++) worker();
+    pools[key] = pool;
+    return pool;
+  }
 
   function asArray(v) { return v == null ? [] : (Array.isArray(v) ? v : [v]); }
 
@@ -142,6 +173,7 @@
   window.dwAutoReport = {
     capture,
     waitFor,
+    prefetch,
     ready(p) {
       readyPromise = Promise.resolve(p);
       // build() awaits it and sees a failed boot; this only stops a person's
@@ -166,27 +198,37 @@
       const out = { items: [], skipped: [], errors: [] };
       const entry = spec && registry[spec.type];
       if (!entry) throw new Error('This page cannot build "' + (spec && spec.type) + '".');
-      if (readyPromise) await readyPromise;
-
-      if (!entry.perJob) {
-        await runOne(entry.fn, spec, null, out);
-        return out;
+      if (building) throw new Error('The report before this one is still being built on this page.');
+      building = true;
+      try {
+        return await buildNow(entry, spec, out);
+      } finally {
+        building = false;
       }
-
-      const all = asArray(jobsFn ? jobsFn() : []);
-      let jobs;
-      if (spec.projectId === '*') {
-        jobs = all;
-        if (!jobs.length) out.skipped.push({ why: 'No jobs are marked In Progress.' });
-      } else {
-        // A job no longer In Progress can still be named outright — the
-        // schedule asked for that job, not for whatever is active. The page's
-        // builder says so if the job itself is gone.
-        const one = all.find(j => String(j.id) === String(spec.projectId));
-        jobs = one ? [one] : [{ id: spec.projectId, name: spec.projectName || null }];
-      }
-      for (const job of jobs) await runOne(entry.fn, spec, job, out);
-      return out;
     },
   };
+
+  async function buildNow(entry, spec, out) {
+    if (readyPromise) await readyPromise;
+
+    if (!entry.perJob) {
+      await runOne(entry.fn, spec, null, out);
+      return out;
+    }
+
+    const all = asArray(jobsFn ? jobsFn() : []);
+    let jobs;
+    if (spec.projectId === '*') {
+      jobs = all;
+      if (!jobs.length) out.skipped.push({ why: 'No jobs are marked In Progress.' });
+    } else {
+      // A job no longer In Progress can still be named outright — the
+      // schedule asked for that job, not for whatever is active. The page's
+      // builder says so if the job itself is gone.
+      const one = all.find(j => String(j.id) === String(spec.projectId));
+      jobs = one ? [one] : [{ id: spec.projectId, name: spec.projectName || null }];
+    }
+    for (const job of jobs) await runOne(entry.fn, spec, job, out);
+    return out;
+  }
 })();
