@@ -55,6 +55,7 @@ const STALE_CLAIM_MS = 15 * 60 * 1000;
 // answer cache, and without it the scheduled copy would be missing the block
 // the button's copy has.
 const READ_ONLY_POSTS = new Set(['/api/ai/schedule-analysis']);
+const READ_ONLY_BODY  = JSON.stringify({ error: 'Scheduled report runs are read-only.' });
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -211,11 +212,20 @@ function robotToken(acct) {
   }, process.env.JWT_SECRET, { expiresIn: '30m' });
 }
 
-function withTimeout(promise, ms, what) {
+// `why`, if given, is asked at the moment of the timeout for what the page was
+// doing then — so the schedule's row says what it was stuck on, not just that
+// it was slow.
+function withTimeout(promise, ms, what, why) {
   let t;
   return Promise.race([
     promise.finally(() => clearTimeout(t)),
-    new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`${what} took longer than ${Math.round(ms / 1000)}s`)), ms); }),
+    new Promise((_, rej) => {
+      t = setTimeout(async () => {
+        let detail = '';
+        try { detail = why ? await why() : ''; } catch { /* the bare message, then */ }
+        rej(new Error(`${what} took longer than ${Math.round(ms / 1000)}s${detail ? '. ' + detail : ''}`));
+      }, ms);
+    }),
   ]);
 }
 
@@ -241,6 +251,10 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
   if (!baseUrl) throw new Error('The server does not know its own address (set APP_BASE_URL).');
   const origin = new URL(baseUrl).origin;
   const stats = { blockedWrites: 0, pageErrors: [] };
+  // For the message when the page is too slow: the app's requests still
+  // open, and the last few things the page warned about.
+  const inflight = new Map();
+  const warnings = [];
   const page = await browser.newPage();
   let cdp = null;
   const wipe = async () => {
@@ -281,12 +295,17 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
         const read = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
         if (u.origin === origin) {
           if (read || READ_ONLY_POSTS.has(u.pathname)) {
+            if (u.pathname.startsWith('/api/')) inflight.set(req, Date.now());
             return bypass
               ? req.continue({ headers: { ...req.headers(), 'x-vercel-protection-bypass': bypass } })
               : req.continue();
           }
+          // Refused the way a server refuses, not dropped the way a network
+          // drops: the pages retry a failed connection with backoff (the job
+          // pages give a refused bulk save 1 + 2 + 4 seconds), and a page that
+          // does that once per job at boot never gets as far as the report.
           stats.blockedWrites++;
-          return req.abort('accessdenied');
+          return req.respond({ status: 403, contentType: 'application/json', body: READ_ONLY_BODY });
         }
         // The pages pull a few libraries and fonts from CDNs. Reads only, and
         // only the kinds of thing a page renders with.
@@ -294,9 +313,20 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
         return req.abort();
       } catch { /* already handled */ }
     });
+    page.on('requestfinished', req => inflight.delete(req));
+    page.on('requestfailed', req => inflight.delete(req));
     // An alert() would hang the page forever with nobody to click OK.
     page.on('dialog', d => { d.dismiss().catch(() => {}); });
     page.on('pageerror', err => { if (stats.pageErrors.length < 5) stats.pageErrors.push(String(err && err.message || err)); });
+    page.on('console', msg => {
+      try {
+        if (msg.type() !== 'warn' && msg.type() !== 'warning' && msg.type() !== 'error') return;
+        const text = String(msg.text() || '');
+        if (!text || /^Failed to load resource/.test(text)) return;   // the CDNs' noise, not the page's
+        warnings.push(text.slice(0, 160));
+        if (warnings.length > 3) warnings.shift();
+      } catch { /* a message is never worth failing over */ }
+    });
 
     const user = {
       username:         acct.username,
@@ -307,7 +337,7 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
       allowedDivisions: acct.allowedDivisions,
       isPlatformAdmin:  acct.isPlatformAdmin,
     };
-    await page.evaluateOnNewDocument((appOrigin, ls, readOnlyPosts) => {
+    await page.evaluateOnNewDocument((appOrigin, ls, readOnlyPosts, refusal) => {
       // The session goes to the app's own origin and nowhere else — not to
       // a page the app redirects to, not to a frame from somewhere else.
       if (location.origin !== appOrigin) return;
@@ -325,12 +355,16 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
           return u.origin !== location.origin || readOnlyPosts.includes(u.pathname);
         } catch (_) { return false; }
       };
+      // Answered with a 403, as the server answers a write it will not take —
+      // not a rejected fetch, which the pages read as a dropped connection
+      // and retry with backoff.
       const realFetch = window.fetch;
       window.fetch = function (input, init) {
         const method = String((init && init.method) || (input && typeof input === 'object' && input.method) || 'GET').toUpperCase();
         const url = typeof input === 'string' ? input : (input && input.url) || String(input);
         if (!READS.includes(method) && !allowed(url)) {
-          return Promise.reject(new TypeError('Scheduled report runs are read-only.'));
+          window.__dwRefusedWrites = (window.__dwRefusedWrites || 0) + 1;
+          return Promise.resolve(new Response(refusal, { status: 403, headers: { 'Content-Type': 'application/json' } }));
         }
         return realFetch.apply(this, arguments);
       };
@@ -350,7 +384,7 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
       fct_user:         JSON.stringify(user),
       fct_division:     def.division,
       fct_company_code: acct.companyCode,
-    }, [...READ_ONLY_POSTS]);
+    }, [...READ_ONLY_POSTS], READ_ONLY_BODY);
 
     const loadMs = () => budget(deadline, PAGE_LOAD_MS, SEND_NEEDS_MS);
     if (loadMs() < 5_000) throw new Error('The run ran out of time before the page could be opened.');
@@ -374,10 +408,29 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
     throw err;
   }
 
+  // What the page was doing when it ran out of time, in a sentence or two.
+  const stuckOn = async () => {
+    const parts = [];
+    const now = Date.now();
+    const open = [...inflight].map(([req, at]) => {
+      let where = req.url();
+      try { const u = new URL(where); where = u.pathname + (u.search.length > 40 ? u.search.slice(0, 40) + '…' : u.search); } catch { /* as is */ }
+      return { where: `${req.method()} ${where}`, secs: Math.round((now - at) / 1000) };
+    }).sort((a, b) => b.secs - a.secs);
+    if (open.length) {
+      parts.push('Still waiting on ' + open.slice(0, 3).map(o => `${o.where} (${o.secs}s)`).join(', ')
+        + (open.length > 3 ? ` and ${open.length - 3} more` : '') + '.');
+    }
+    let refused = stats.blockedWrites;
+    try { refused += await withTimeout(page.evaluate(() => window.__dwRefusedWrites || 0), 2_000, 'Reading the page'); } catch { /* the network count, then */ }
+    if (refused) parts.push(`The page tried to save ${refused} time${refused === 1 ? '' : 's'} (refused: scheduled runs are read-only).`);
+    if (!open.length && warnings.length) parts.push('Its last warning: ' + warnings[warnings.length - 1]);
+    return parts.join(' ');
+  };
   const ask = async (fn, s, what) => {
     const ms = budget(deadline, BUILD_MS, SEND_NEEDS_MS);
     if (ms < 10_000) throw new Error('The run ran out of time.');
-    return withTimeout(page.evaluate(fn, s), ms, what);
+    return withTimeout(page.evaluate(fn, s), ms, what, stuckOn);
   };
   return {
     stats,

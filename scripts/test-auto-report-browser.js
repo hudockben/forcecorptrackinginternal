@@ -175,11 +175,14 @@ const FAIL = new Set();
 const AI_DELAY = {};
 // Every request that carried the deployment-protection bypass header.
 const BYPASS_SEEN = { app: 0, other: 0 };
+// Paths that are never answered, to see what a stuck page reports.
+const HANG = new Set();
 
 const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   const p = decodeURIComponent(u.pathname);
   if (req.headers['x-vercel-protection-bypass']) BYPASS_SEEN.app++;
+  if (HANG.has(p)) return;
   if (FAIL.has(p) || (p.startsWith('/api/data/') && FAIL.has(p.slice('/api/data/'.length)))) {
     return json(res, { error: 'Database is down' }, 503);
   }
@@ -599,6 +602,47 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
         && SENT.every(m => (m.attachments || []).some(a => a.contentType === 'application/pdf'))
         && res.message === 'Sent to 63 recipients.',
       JSON.stringify({ res, sizes: SENT.map(m => m.to.length) }));
+
+    console.log('\nWhat production found');
+    // An account from before daily rows had their own table: jobs with no rows
+    // there, and the old all-projects record still carrying theirs. The page
+    // moves those rows over at boot — a write, refused here — and the job
+    // pages retry a failed save three times with backoff. Refused as a network
+    // failure, that was seven seconds a job, and 90s ran out before the page
+    // reached the report (Turf, Bid Line Items, first production run).
+    const savedIndex = STORE.fct_projects_index;
+    const legacy = [];
+    STORE.fct_projects_index = savedIndex.concat(['L1', 'L2', 'L3', 'L4']);
+    for (const id of ['L1', 'L2', 'L3', 'L4']) {
+      STORE['fct_project_' + id] = { id, 'project-name': 'Old ' + id, 'job-number': '21' + id, status: 'Complete', bidItems: [] };
+      legacy.push({ ...STORE['fct_project_' + id], dailyRows: [
+        { id: id + '-r1', date: daysAgo(700), cost_code: '0100', sub_code: 'Excavation', quantity: 40, labor_hours: 8, employee: 'Sam' }] });
+    }
+    STORE.fct_projects = legacy;
+    const t1 = Date.now();
+    r = await build(browser, baseUrl, 'turf_bid_items', { projectId: '*' });
+    const took = Date.now() - t1;
+    STORE.fct_projects_index = savedIndex;
+    delete STORE.fct_projects;
+    for (const id of ['L1', 'L2', 'L3', 'L4']) delete STORE['fct_project_' + id];
+    ok('a page that tries to move old rows at boot still opens in seconds, its saves refused at once',
+      !r.error && r.out.items.length === 2 && took < 15000, r.error || `${took}ms, ${r.out.items.length} items`);
+    ok('…and nothing written', r.writes.length === 0, JSON.stringify(r.writes));
+
+    // A page stuck on a request says which one, in the schedule's row.
+    HANG.add('/api/daily-rows');
+    let stuck;
+    try {
+      // A deadline 63s out leaves plan() about 13s (each wait keeps 50s back
+      // for sending), so this takes seconds rather than the full 90.
+      await buildInBrowser(browser, { baseUrl, def: SCHEDULABLE.turf_bid_items, acct: ACCT,
+        spec: { type: 'turf_bid_items', projectId: '*', options: {}, timezone: 'America/New_York', today: ymd(today) },
+        deadline: Date.now() + 63_000 });
+      stuck = 'built';
+    } catch (err) { stuck = err.message; }
+    HANG.clear();
+    ok('a page that never finishes loading names the request it is waiting on',
+      /^Opening the report took longer than \d+s\. Still waiting on GET \/api\/daily-rows\?/.test(stuck), stuck);
   } finally {
     await browser.close();
     server.close();
