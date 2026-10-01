@@ -29,13 +29,22 @@ const http = require('http');
 
 const ROOT = path.resolve(__dirname, '..');
 
+// Production runs chrome-headless-shell, single-process (@sparticuz/chromium's
+// own flags), and some things a normal Chrome does happily crash it — a second
+// browser context did, and every scheduled report with it, while this suite ran
+// green on a normal Chrome. So it runs the way production does: the headless
+// shell when there is one, and single-process always (CHROME_SINGLE_PROCESS=0
+// to opt out).
 const CHROME = [
   process.env.CHROME_EXECUTABLE_PATH,
+  '/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell',
   '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
   '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome',
 ].find(p => p && fs.existsSync(p));
 if (!CHROME) { console.log('no Chrome/Chromium on this box — skipping browser checks'); process.exit(0); }
 process.env.CHROME_EXECUTABLE_PATH = CHROME;
+if (process.env.CHROME_SINGLE_PROCESS == null) process.env.CHROME_SINGLE_PROCESS = '1';
+console.log(`Chrome: ${CHROME}${process.env.CHROME_SINGLE_PROCESS === '1' ? ' (single-process, as in production)' : ''}`);
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'auto-report-test-secret';
 // api/lib/email.js reads these at load. The Resend SDK itself is stubbed
 // below — nothing leaves the box.
@@ -303,6 +312,15 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
           cs && JSON.stringify(cs.attachments.map(a => a.filename)));
         ok('…and nothing written', r.writes.length === 0, r.writes.join(', '));
       }
+    }
+
+    console.log('\nOne run leaves nothing for the next');
+    {
+      const probe = await browser.newPage();
+      await probe.goto(baseUrl + '/nothing-here.html').catch(() => {});
+      const keys = await probe.evaluate(() => Object.keys(localStorage)).catch(err => ['error: ' + err.message]);
+      await probe.close();
+      ok('the app\'s storage is empty after a run — no token, no cached jobs', keys.length === 0, JSON.stringify(keys));
     }
 
     console.log('\nDust Control — dust.html');

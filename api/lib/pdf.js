@@ -81,26 +81,37 @@ function inlineCidImages(html, attachments) {
 // which is why this only showed up in production. import() works from
 // CommonJS either way. The namespace fallback covers a build that exposes the
 // API directly rather than under .default.
-async function loadEsm(name) {
-  const mod = await import(name);
-  return mod.default ?? mod;
-}
+//
+// Each package is imported by its literal name, never through a variable: the
+// bundler that decides what ships with a function (Vercel's file tracer) can
+// only follow an import whose name it can read, and a package it cannot see is
+// left out of the deploy.
+const esmDefault = mod => mod.default ?? mod;
+const loadPuppeteer = async () => esmDefault(await import('puppeteer-core'));
+const loadChromium  = async () => esmDefault(await import('@sparticuz/chromium'));
 
 async function launchBrowser() {
-  const puppeteer = await loadEsm('puppeteer-core');
+  const puppeteer = await loadPuppeteer();
 
   // Local dev / self-hosted: use whatever Chrome the box already has.
   const localPath = process.env.CHROME_EXECUTABLE_PATH || process.env.PUPPETEER_EXECUTABLE_PATH || '';
   if (localPath) {
+    const args = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none'];
+    // The serverless Chrome below runs single-process (it is in
+    // @sparticuz/chromium's own flags), and some things a normal Chrome does
+    // happily crash it — opening a second browser context, for one. This runs
+    // a local Chrome the same way, so a test sees what production would.
+    if (process.env.CHROME_SINGLE_PROCESS === '1') args.push('--single-process', '--no-zygote');
     return puppeteer.launch({
       executablePath: localPath,
-      headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--font-render-hinting=none'],
+      // chrome-headless-shell is what serverless runs; it takes the 'shell' mode.
+      headless: /headless[-_]shell/.test(localPath) ? 'shell' : true,
+      args,
     });
   }
 
   // Serverless: the bundled Chromium build.
-  const chromium = await loadEsm('@sparticuz/chromium');
+  const chromium = await loadChromium();
   // Reports are text and tables — no WebGL, no canvas compositing. Skipping
   // the software GL stack cuts a noticeable chunk off cold start.
   chromium.setGraphicsMode = false;

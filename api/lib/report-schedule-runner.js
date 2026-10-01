@@ -202,11 +202,25 @@ function withTimeout(promise, ms, what) {
 async function buildInBrowser(browser, { baseUrl, def, acct, spec }) {
   if (!baseUrl) throw new Error('The server does not know its own address (set APP_BASE_URL).');
   const origin = new URL(baseUrl).origin;
-  const context = await browser.createBrowserContext();
   let blockedWrites = 0;
   const pageErrors = [];
+  // One page in the browser's default context. Not a fresh context per run,
+  // which is the obvious way to keep one account's session from the next:
+  // serverless Chrome runs single-process, and opening a second context there
+  // kills the browser outright ("Target closed"). So the app origin's storage
+  // is wiped instead — before the run, for anything a crashed run left, and
+  // after it, so the next schedule (another account, perhaps another company)
+  // opens on nothing but what it is given.
+  const page = await browser.newPage();
+  let cdp = null;
+  const wipe = async () => {
+    try {
+      if (!cdp) cdp = await page.createCDPSession();
+      await cdp.send('Storage.clearDataForOrigin', { origin, storageTypes: 'all' });
+    } catch { /* best effort: the page may already be gone */ }
+  };
   try {
-    const page = await context.newPage();
+    await wipe();
     page.setDefaultTimeout(PAGE_LOAD_MS);
     await page.setViewport({ width: 1440, height: 900 });
     // The page's "today" is the office's today: a report the schedule sends
@@ -316,7 +330,10 @@ async function buildInBrowser(browser, { baseUrl, def, acct, spec }) {
       BUILD_MS, 'Building the report');
     return { ...out, blockedWrites, pageErrors };
   } finally {
-    try { await context.close(); } catch { /* already gone */ }
+    // Off the app first, so nothing on it writes to storage after the wipe.
+    try { await page.goto('about:blank', { timeout: 10_000 }); } catch { /* close regardless */ }
+    await wipe();
+    try { await page.close(); } catch { /* already gone */ }
   }
 }
 
