@@ -28565,6 +28565,20 @@ function removeDelConfirm() {
   document.querySelectorAll('.del-confirm').forEach(el => el.remove());
 }
 
+/**
+ * Where a row picked for deletion sits now. A reload while its confirm is open
+ * (coming back to the window does one) swaps in fresh rows in the server's
+ * order, so the index the ✕ was drawn with can point at a different row by the
+ * time Yes is clicked. The same object if it is still there, else the row with
+ * its id, else -1: it is gone already, and nothing is deleted in its place.
+ */
+function _delRowIndex(rows, row) {
+  if (!Array.isArray(rows) || !row) return -1;
+  const at = rows.indexOf(row);
+  if (at >= 0 || row.id == null || row.id === '') return at;
+  return rows.findIndex(r => r && String(r.id) === String(row.id));
+}
+
 document.addEventListener('click', e => {
   // Close any open confirm popover when clicking outside
   if (!e.target.closest('.del-confirm') && !e.target.closest('.del-btn')) {
@@ -28574,18 +28588,24 @@ document.addEventListener('click', e => {
   const btn = e.target.closest('.del-btn');
   if (!btn) return;
 
-  // If a confirm is already open for this button, ignore (handled by its own listeners)
-  if (btn.querySelector('.del-confirm') || btn._confirmOpen) return;
+  // Only the rows this handler deletes. Bid item rows use a JS confirm dialog
+  // instead of the inline popover, and a ✕ with no data-tab (suppliers, CRM
+  // rows, change orders) runs its own delete: answering it here as well put a
+  // second "Are you sure?" on screen whose Yes did nothing.
+  const tab = btn.dataset.tab;
+  if (!tab || tab === 'bid-item') return;
 
-  // Bid item rows use a JS confirm dialog instead of the inline popover
-  if (btn.dataset.tab === 'bid-item') return;
-
+  // No "already open" flag: a second click on ✕ just opens the confirm again.
+  // The flag this kept was never cleared when the popover closed any other
+  // way (a click elsewhere, or another row's ✕), so that ✕ went dead until
+  // the table was redrawn.
   e.stopPropagation();
   removeDelConfirm(); // close any other open confirms
 
-  const tab    = btn.dataset.tab;
   const i      = parseInt(btn.dataset.i);
   const projId = btn.dataset.proj;
+  // The daily row itself, not only where it sat; see _delRowIndex.
+  const row    = tab === 'daily' ? ((getProj(projId) || {}).dailyRows || [])[i] : null;
 
   const yesLabel = 'Yes';
   const popover = document.createElement('div');
@@ -28596,7 +28616,6 @@ document.addEventListener('click', e => {
     '<button class="dc-no">No</button>';
 
   // Position relative to button, flip up if too close to bottom/right edge
-  btn._confirmOpen = true;
   document.body.appendChild(popover);
   const rect = btn.getBoundingClientRect();
   const pw = popover.offsetWidth;
@@ -28618,22 +28637,21 @@ document.addEventListener('click', e => {
   popover.querySelector('.dc-no').addEventListener('click', e => {
     e.stopPropagation();
     removeDelConfirm();
-    btn._confirmOpen = false;
   });
 
   popover.querySelector('.dc-yes').addEventListener('click', e => {
     e.stopPropagation();
     removeDelConfirm();
-    btn._confirmOpen = false;
     if (tab === 'cost') {
       costRows.splice(i, 1);
       saveCostRows();
       renderCostTable();
     } else if (tab === 'daily') {
       const p = getProj(projId); if (!p) return;
-      const deletedRow = p.dailyRows[i];
-      p.dailyRows.splice(i, 1);
+      const at = _delRowIndex(p.dailyRows, row);
+      const deletedRow = at >= 0 ? p.dailyRows[at] : null;
       if (deletedRow) {
+        p.dailyRows.splice(at, 1);
         drDelete(deletedRow.id);
         // If a trucking entry owned this daily row, detach it so later field
         // syncs don't silently no-op and the entry re-counts in reports.
