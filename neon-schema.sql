@@ -1671,6 +1671,78 @@ CREATE INDEX IF NOT EXISTS idx_rrg_company         ON report_recipient_groups(co
 CREATE INDEX IF NOT EXISTS idx_rrg_company_project ON report_recipient_groups(company_code, project_id);
 
 -- ─────────────────────────────────────────────────
+-- REPORT SCHEDULES (Manage Users → Auto Reports)
+-- A report that goes out on its own: which report, for which job (or every
+-- active job, one email each), how often and at what time on the office
+-- clock, and to which saved recipient groups. api/cron/report-schedules.js
+-- picks up the ones whose next_run_at has come, builds each report the way
+-- its Email button does, and sends it.
+--
+-- run_as_user_id is the admin who last saved the schedule. The report is
+-- built with that account's access, checked again at every send — so taking
+-- a division away from somebody also stops the reports they scheduled from
+-- it, rather than leaving a schedule as a way around Manage Users.
+--
+-- claimed_at marks a schedule a run is working on, so two overlapping runs
+-- never send the same report twice. A claim older than fifteen minutes
+-- belongs to a run that died, and is free to take.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS report_schedules (
+    id                  BIGSERIAL PRIMARY KEY,
+    company_code        TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    report_type         TEXT        NOT NULL,
+    division            TEXT        NOT NULL,
+    project_id          TEXT,
+    project_name        TEXT,
+    options             JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    frequency           TEXT        NOT NULL,
+    days_of_week        JSONB,
+    day_of_month        INTEGER,
+    send_time           TEXT        NOT NULL,
+    timezone            TEXT        NOT NULL DEFAULT 'America/New_York',
+    group_ids           JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    subject             TEXT,
+    note                TEXT,
+    attach_pdf          BOOLEAN     NOT NULL DEFAULT TRUE,
+    enabled             BOOLEAN     NOT NULL DEFAULT TRUE,
+    run_as_user_id      INTEGER     NOT NULL,
+    run_as_username     TEXT,
+    next_run_at         TIMESTAMPTZ,
+    claimed_at          TIMESTAMPTZ,
+    last_run_at         TIMESTAMPTZ,
+    last_status         TEXT,
+    last_message        TEXT,
+    created_by          INTEGER,
+    created_by_username TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_schedules_company ON report_schedules(company_code, division);
+CREATE INDEX IF NOT EXISTS idx_report_schedules_due     ON report_schedules(next_run_at) WHERE enabled;
+
+-- One row per send attempt, scheduled or "Send now". The schedule row keeps
+-- only the latest outcome; this is what answers "did Monday's go out?" a
+-- week later. Pruned after 180 days by the cron.
+CREATE TABLE IF NOT EXISTS report_schedule_runs (
+    id                  BIGSERIAL PRIMARY KEY,
+    schedule_id         BIGINT      NOT NULL REFERENCES report_schedules(id) ON DELETE CASCADE,
+    company_code        TEXT        NOT NULL,
+    run_kind            TEXT        NOT NULL,
+    status              TEXT        NOT NULL,
+    sent_count          INTEGER     NOT NULL DEFAULT 0,
+    total_count         INTEGER     NOT NULL DEFAULT 0,
+    recipient_count     INTEGER     NOT NULL DEFAULT 0,
+    message             TEXT,
+    triggered_by        TEXT,
+    started_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    finished_at         TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_report_schedule_runs_company  ON report_schedule_runs(company_code, started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_report_schedule_runs_schedule ON report_schedule_runs(schedule_id, started_at DESC);
+
+-- ─────────────────────────────────────────────────
 -- JOB DOCUMENT VAULT
 -- Per-project document storage. File BYTES live in object storage;
 -- these tables hold only metadata, the folder tree, and the audit trail.

@@ -527,8 +527,16 @@ function staticTests() {
     .map(([f]) => f);
   assert('no endpoint checks a token on its own', verifiers.length === 0, verifiers.join(', '));
 
-  const signers = Object.entries(src).filter(([, s]) => /jwt\.sign\(/.test(code(s))).map(([f]) => f);
-  assert('  and only sign-in signs one', signers.join(',') === 'api/auth/login.js', signers.join(','));
+  // Sign-in, and the scheduled-report robot: Auto Reports opens a division
+  // page headlessly as the admin who set the schedule up, so it needs that
+  // admin's session for thirty minutes. It signs only for an account it has
+  // just read back and checked for the division, and every request the page
+  // then makes goes through requireAuth like anyone's — so it is a second way
+  // to be handed a token, not a way around the account. Anything else that
+  // starts signing tokens has to come and argue its case here.
+  const signers = Object.entries(src).filter(([, s]) => /jwt\.sign\(/.test(code(s))).map(([f]) => f).sort();
+  assert('  and only sign-in and the report robot sign one',
+    signers.join(',') === 'api/auth/login.js,api/lib/report-schedule-runner.js', signers.join(','));
 
   // The cron jobs read the Authorization header too, but for their own
   // secret, which is not a sign-in and has no account behind it.

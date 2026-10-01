@@ -2569,6 +2569,7 @@
     </div>
   </div>
 
+  <script src="auto-report.js"></script>
   <script src="report-branding.js" defer></script>
   <script src="report-email.js" defer></script>
   <script src="mathis.js" defer></script>
@@ -10641,6 +10642,28 @@ ${sections}
         if (document.visibilityState === 'hidden') return;
         renderOnline(await presenceGet());
       }, POLL_MS);
+    })();
+
+    /* ═══════════════════════════════════════════
+       SCHEDULED REPORTS — Manage Users → Auto Reports
+       The server opens this page in a headless browser, signed in as the
+       admin who set the schedule up, and asks for a report through
+       auto-report.js. It is the Break-Even tab's Email button, pressed with
+       the schedule's year.
+    ═══════════════════════════════════════════ */
+    (function registerAutoReports() {
+      const AR = window.dwAutoReport;
+      if (!AR) return;
+      AR.register('quarry_breakeven', async spec => {
+        await AR.waitFor(() => listsLoaded, 30000, 'The quarry lists');
+        // What opening the tab does: pull daily, crushing, sales, fixed costs,
+        // royalty and benchmarks, then draw.
+        await refreshBreakeven();
+        if (!salesLoaded || !crushLoaded || !dailyLoaded) throw new Error('The quarry entries did not load.');
+        yearFilters.breakeven = spec.year === 'all' ? 'all' : String(spec.year || new Date().getFullYear());
+        renderBreakeven();
+        return AR.capture(() => emailBreakevenReport());
+      });
     })();
   </script>
 

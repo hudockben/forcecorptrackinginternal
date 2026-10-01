@@ -119,20 +119,29 @@ async function launchBrowser() {
 //
 // Never throws — the email path treats a failure as "send it inline instead",
 // so a broken renderer degrades the email rather than dropping it.
+//
+// `opts.browser` lends an already-running Chrome — the scheduled-report runner
+// has one open to build the reports and renders each PDF in it rather than
+// paying a cold launch per email. A lent browser is the lender's to close; only
+// the page opened here is.
 async function renderHtmlToPdf(html, opts = {}) {
   if (typeof html !== 'string' || !html.trim()) {
     return { ok: false, error: 'No HTML to render' };
   }
 
-  let browser = null;
+  const lent = opts.browser || null;
+  let browser = lent;
+  let page = null;
   try {
-    try {
-      browser = await launchBrowser();
-    } catch (err) {
-      return { ok: false, error: `Could not start the PDF renderer: ${err.message}` };
+    if (!browser) {
+      try {
+        browser = await launchBrowser();
+      } catch (err) {
+        return { ok: false, error: `Could not start the PDF renderer: ${err.message}` };
+      }
     }
 
-    const page = await browser.newPage();
+    page = await browser.newPage();
     page.setDefaultTimeout(NAV_TIMEOUT_MS);
 
     await page.setRequestInterception(true);
@@ -174,13 +183,18 @@ async function renderHtmlToPdf(html, opts = {}) {
   } catch (err) {
     return { ok: false, error: err.message || 'PDF rendering failed' };
   } finally {
-    if (browser) { try { await browser.close(); } catch { /* already gone */ } }
+    if (lent) {
+      if (page) { try { await page.close(); } catch { /* already gone */ } }
+    } else if (browser) {
+      try { await browser.close(); } catch { /* already gone */ }
+    }
   }
 }
 
 module.exports = {
   MAX_PDF_BYTES,
   inlineCidImages,
+  launchBrowser,
   pdfPageCount,
   renderHtmlToPdf,
   wantsLandscape,

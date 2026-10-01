@@ -159,6 +159,17 @@
       background: rgba(34,197,94,0.08);
       border-color: var(--green);
     }
+    /* A scheduled report that failed or was missed — see Auto Reports. */
+    .add-user-btn.has-flag { position: relative; }
+    .add-user-btn.has-flag::after {
+      content: '';
+      position: absolute;
+      top: -4px; right: -4px;
+      width: 9px; height: 9px;
+      border-radius: 50%;
+      background: #ef4444;
+      box-shadow: 0 0 0 2px var(--surface);
+    }
 
     /* ── User modal ── */
     .modal-backdrop {
@@ -719,6 +730,250 @@
     .dir-cancel-btn:hover { color: var(--text); border-color: #555; }
     .dir-table tbody tr.editing { background: rgba(34,197,94,0.05); }
 
+    /* ── Manage Users → Auto Reports ──
+       A card per division and a row per scheduled report. The rows are a grid
+       rather than a table so that on a phone each one restacks into a card by
+       moving its cells, not by keeping a second layout in step with the first. */
+    .ar-list { display: flex; flex-direction: column; gap: 0.75rem; }
+    .ar-div {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: rgba(255,255,255,0.012);
+    }
+    .ar-div-head {
+      display: flex;
+      align-items: center;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+      padding: 0.6rem 0.8rem;
+      border-bottom: 1px solid var(--border);
+    }
+    .ar-div.empty .ar-div-head { border-bottom: none; }
+    .ar-div-name {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: #fff;
+    }
+    .ar-div-meta { font-size: 0.68rem; color: #8b8b9a; }
+    .ar-div-head .mu-tool-btn { margin-left: auto; padding: 0.3rem 0.6rem; }
+    .ar-row {
+      display: grid;
+      grid-template-columns: minmax(150px, 1.25fr) minmax(120px, 1fr) minmax(130px, 1fr) minmax(180px, 1.4fr) 48px minmax(150px, auto);
+      gap: 0.35rem 0.9rem;
+      align-items: center;
+      padding: 0.6rem 0.8rem;
+      border-bottom: 1px solid rgba(42,42,58,0.6);
+      font-size: 0.78rem;
+    }
+    .ar-row:last-child { border-bottom: none; }
+    .ar-row.off > :not(.ar-c-tog):not(.ar-c-act) { opacity: 0.55; }
+    /* The flag: a report whose time has come, or whose last send went wrong,
+       carries a stripe down its left edge as well as its badge. */
+    .ar-row.flag-due { box-shadow: inset 3px 0 0 #f59e0b; }
+    .ar-row.flag-bad { box-shadow: inset 3px 0 0 #ef4444; }
+    .ar-title { font-weight: 600; color: #fff; }
+    .ar-sub { font-size: 0.68rem; color: #8b8b9a; margin-top: 0.12rem; line-height: 1.4; }
+    .ar-c-status { display: flex; flex-direction: column; gap: 0.18rem; min-width: 0; }
+    .ar-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.32rem;
+      width: fit-content;
+      font-size: 0.6rem;
+      font-weight: 700;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      border-radius: 3px;
+      padding: 0.12rem 0.38rem;
+    }
+    .ar-badge.sent    { color: #22c55e; background: rgba(34,197,94,0.12); }
+    .ar-badge.partial { color: #f59e0b; background: rgba(245,158,11,0.12); }
+    .ar-badge.skipped { color: #94a3b8; background: rgba(100,116,139,0.14); }
+    .ar-badge.failed,
+    .ar-badge.missed  { color: #f87171; background: rgba(239,68,68,0.12); }
+    .ar-badge.due     { color: #f59e0b; background: rgba(245,158,11,0.14); }
+    .ar-badge.sending { color: #60a5fa; background: rgba(96,165,250,0.14); }
+    .ar-badge.off,
+    .ar-badge.new     { color: #8b8b9a; background: var(--surface2); }
+    .ar-badge.due::before, .ar-badge.sending::before {
+      content: '';
+      width: 6px; height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: ar-pulse 1.2s ease-in-out infinite;
+    }
+    @keyframes ar-pulse { 50% { opacity: 0.25; } }
+    @media (prefers-reduced-motion: reduce) { .ar-badge::before { animation: none !important; } }
+    .ar-msg {
+      font-size: 0.68rem;
+      color: #8b8b9a;
+      line-height: 1.4;
+      overflow: hidden;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+    }
+    .ar-msg.bad { color: #f87171; }
+    .ar-c-act { display: flex; gap: 0.28rem; justify-content: flex-end; flex-wrap: wrap; }
+    .ar-send-btn {
+      background: none;
+      border: 1px solid rgba(96,165,250,0.35);
+      color: #60a5fa;
+      border-radius: 3px;
+      padding: 0.15rem 0.45rem;
+      font-size: 0.66rem;
+      font-family: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s;
+    }
+    .ar-send-btn:hover { background: rgba(96,165,250,0.1); }
+    .ar-send-btn:disabled, .user-edit-btn:disabled, .user-del-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+    .ar-empty { padding: 0.15rem 0.8rem 0.65rem; font-size: 0.72rem; color: #8b8b9a; }
+
+    /* Editor */
+    .ar-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 0.6rem 1.1rem;
+      align-items: start;
+    }
+    .ar-hint { font-size: 0.66rem; color: #8b8b9a; margin-top: 0.25rem; line-height: 1.4; }
+    .ar-seg {
+      display: inline-flex;
+      flex-wrap: wrap;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      overflow: hidden;
+    }
+    .ar-seg button {
+      background: none;
+      border: none;
+      border-right: 1px solid var(--border);
+      color: #9a9aaa;
+      font-size: 0.74rem;
+      font-family: inherit;
+      padding: 0.45rem 0.8rem;
+      cursor: pointer;
+    }
+    .ar-seg button:last-child { border-right: none; }
+    .ar-seg button:hover { color: var(--text); }
+    .ar-seg button.on { background: rgba(34,197,94,0.12); color: var(--green); font-weight: 700; }
+    .ar-days { display: flex; gap: 0.3rem; flex-wrap: wrap; }
+    .ar-days button {
+      width: 2.15rem; height: 2.15rem;
+      border-radius: 50%;
+      border: 1px solid var(--border);
+      background: none;
+      color: #9a9aaa;
+      font-size: 0.72rem;
+      font-weight: 700;
+      font-family: inherit;
+      cursor: pointer;
+    }
+    .ar-days button.on { background: rgba(34,197,94,0.14); border-color: rgba(34,197,94,0.5); color: var(--green); }
+    .ar-groups {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+      gap: 0.2rem 0.6rem;
+      max-height: 190px;
+      overflow-y: auto;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 0.4rem;
+    }
+    .modal label.ar-check {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      margin: 0;
+      font-size: 0.8rem;
+      text-transform: none;
+      letter-spacing: 0;
+      color: var(--text);
+      cursor: pointer;
+      padding: 0.25rem 0.35rem;
+      border-radius: 4px;
+    }
+    .modal label.ar-check:hover { background: rgba(255,255,255,0.03); }
+    .modal label.ar-check input { width: auto; accent-color: var(--green); margin: 0; }
+    .ar-check .ar-count { margin-left: auto; font-size: 0.66rem; color: #8b8b9a; white-space: nowrap; }
+    .ar-newgroup {
+      display: none;
+      border: 1px dashed var(--border);
+      border-radius: 5px;
+      padding: 0.7rem;
+      gap: 0.55rem;
+      flex-direction: column;
+    }
+    .ar-newgroup.open { display: flex; }
+    .modal .ar-newgroup textarea {
+      width: 100%;
+      min-height: 3.6rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+      border-radius: 4px;
+      padding: 0.45rem 0.65rem;
+      font-size: 0.82rem;
+      font-family: inherit;
+      outline: none;
+      resize: vertical;
+    }
+    .modal .ar-newgroup textarea:focus { border-color: var(--green); }
+    .ar-link-btn {
+      background: none;
+      border: none;
+      padding: 0;
+      color: var(--green);
+      font-size: 0.72rem;
+      font-family: inherit;
+      cursor: pointer;
+      width: fit-content;
+    }
+    .ar-link-btn:hover { text-decoration: underline; }
+    .ar-summary {
+      font-size: 0.78rem;
+      line-height: 1.5;
+      color: var(--text);
+      background: rgba(34,197,94,0.06);
+      border: 1px solid rgba(34,197,94,0.2);
+      border-radius: 5px;
+      padding: 0.55rem 0.75rem;
+    }
+
+    /* Recent sends */
+    .ar-hist col.c-ar-when   { width: 17%; }
+    .ar-hist col.c-ar-report { width: 27%; }
+    .ar-hist col.c-ar-res    { width: 13%; }
+    .ar-hist col.c-ar-msg    { width: 43%; }
+    .ar-hist td { vertical-align: top; }
+    .ar-hist td.ar-hist-msg { white-space: normal; color: #9a9aaa; font-size: 0.72rem; line-height: 1.4; }
+
+    @media (max-width: 980px) {
+      .ar-row {
+        grid-template-columns: 1fr auto;
+        grid-template-areas:
+          "title  tog"
+          "job    job"
+          "when   when"
+          "status status"
+          "act    act";
+      }
+      .ar-c-title  { grid-area: title; }
+      .ar-c-job    { grid-area: job; }
+      .ar-c-when   { grid-area: when; }
+      .ar-c-status { grid-area: status; }
+      .ar-c-tog    { grid-area: tog; }
+      .ar-c-act    { grid-area: act; justify-content: flex-start; }
+      .ar-hist colgroup, .ar-hist thead { display: none; }
+      .ar-hist, .ar-hist tbody, .ar-hist tr, .ar-hist td { display: block; width: auto; }
+      .ar-hist tr { padding: 0.55rem 0.7rem; border-bottom: 1px solid var(--border); }
+      .ar-hist td { border: none; padding: 0.08rem 0; }
+    }
+
     /* ── Narrow screens: five columns don't fit, so each person becomes a
        card carrying only the lines that are filled in. ── */
     @media (max-width: 820px) {
@@ -809,6 +1064,11 @@
       .modal { height: 100vh; max-height: 100vh; border-radius: 0; border: none; }
       .mu-legend { display: none; }
       .modal-header, .mu-subtabs, .mu-body { padding-left: 1rem; padding-right: 1rem; }
+      /* Four tabs on one line: tighter, never wrapped, and the strip scrolls
+         sideways on its own rather than pushing the last tab off the screen. */
+      .mu-subtabs { overflow-x: auto; scrollbar-width: none; }
+      .mu-subtabs::-webkit-scrollbar { display: none; }
+      .mu-subtab-btn { white-space: nowrap; flex-shrink: 0; padding: 0.55rem 0.55rem; letter-spacing: 0.05em; }
       .mu-search { max-width: none; flex-basis: 100%; }
       .modal .mu-filter { flex: 1 1 45%; min-width: 0; }
     }
@@ -1182,6 +1442,7 @@
         <button class="mu-subtab-btn active" id="muTabBtnUsers"       onclick="switchUserSubTab('users')">Users<span class="mu-subtab-count" id="muTabCountUsers"></span></button>
         <button class="mu-subtab-btn"        id="muTabBtnSupervisors" onclick="switchUserSubTab('supervisors')">Roles</button>
         <button class="mu-subtab-btn"        id="muTabBtnScheduler"   onclick="switchUserSubTab('scheduler')">Scheduler</button>
+        <button class="mu-subtab-btn"        id="muTabBtnReports"     onclick="switchUserSubTab('reports')">Auto Reports<span class="mu-subtab-count" id="muTabCountReports" style="display:none"></span></button>
       </div>
 
       <div class="mu-body" id="muBody">
@@ -1588,6 +1849,170 @@
 
         <div id="sch-result" class="modal-result"></div>
       </div><!-- /#mu-panel-scheduler -->
+
+      <!-- ── Auto Reports sub-panel ──
+           Reports that go out on their own. One card per division; each
+           schedule says what it sends, for which job, when, to whom, and how
+           its last send went — and flags itself when its time has come or its
+           last send went wrong, so nobody has to remember to look. -->
+      <div class="mu-panel" id="mu-panel-reports">
+        <div class="mu-toolbar">
+          <select class="mu-filter" id="ar-filter-div" onchange="renderAutoReports()" aria-label="Filter by division">
+            <option value="">All divisions</option>
+          </select>
+          <select class="mu-filter" id="ar-filter-state" onchange="renderAutoReports()" aria-label="Filter by status">
+            <option value="">Any status</option>
+            <option value="on">On</option>
+            <option value="off">Off</option>
+            <option value="attention">Needs attention</option>
+          </select>
+          <span class="mu-count" id="ar-count"></span>
+          <button class="mu-tool-btn primary" onclick="arNew()" title="Schedule a report to go out on its own">+ New Schedule</button>
+        </div>
+
+        <div id="ar-status" class="mu-status"></div>
+
+        <div class="mu-note">
+          Each report goes out on its own at the time you set, to the recipient
+          groups you pick — the same email, PDF and key figures its
+          <strong>Email Report</strong> button sends. It is built with the
+          access of the admin who last saved it. Times are Eastern; the server
+          checks every five minutes, so a 6:30 report arrives by 6:35. Use
+          <strong>Send now</strong> to see one land before trusting it to the
+          timetable.
+        </div>
+
+        <!-- Create / Edit form — opens on "+ New Schedule", a division's "+ Add" or a row's Edit -->
+        <div class="mu-form" id="ar-form">
+          <div class="mu-form-head">
+            <div id="ar-form-heading" class="mu-section-label">New Scheduled Report</div>
+            <button class="modal-close" onclick="arCloseForm()" title="Close form" aria-label="Close form">&#10005;</button>
+          </div>
+          <input type="hidden" id="ar-edit-id" value="" />
+
+          <div class="ar-grid">
+            <div>
+              <label for="ar-division">Division</label>
+              <select id="ar-division" onchange="arOnDivision()"></select>
+            </div>
+            <div>
+              <label for="ar-report">Report</label>
+              <select id="ar-report" onchange="arOnReport()"></select>
+              <div class="ar-hint" id="ar-report-blurb"></div>
+            </div>
+            <div id="ar-job-wrap">
+              <label for="ar-job">Job</label>
+              <select id="ar-job" onchange="arUpdateSummary()"></select>
+            </div>
+            <div id="ar-period-wrap">
+              <label for="ar-period">Covers</label>
+              <select id="ar-period" onchange="arUpdateSummary()"></select>
+            </div>
+            <div id="ar-day-wrap">
+              <label for="ar-day">Dispatch for</label>
+              <select id="ar-day" onchange="arUpdateSummary()">
+                <option value="today">The same day</option>
+                <option value="tomorrow">The next day</option>
+                <option value="next_workday">The next workday</option>
+              </select>
+            </div>
+            <div id="ar-year-wrap">
+              <label for="ar-year">Year</label>
+              <select id="ar-year" onchange="arUpdateSummary()">
+                <option value="current">This year</option>
+                <option value="all">All years</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="mu-group-label">When</div>
+          <div class="ar-grid">
+            <div>
+              <label id="ar-freq-label">How often</label>
+              <div class="ar-seg" id="ar-freq" role="group" aria-labelledby="ar-freq-label">
+                <button type="button" data-f="daily">Daily</button>
+                <button type="button" data-f="weekdays">Weekdays</button>
+                <button type="button" data-f="weekly">Weekly</button>
+                <button type="button" data-f="monthly">Monthly</button>
+              </div>
+            </div>
+            <div id="ar-dow-wrap">
+              <label id="ar-dow-label">On</label>
+              <div class="ar-days" id="ar-dow" role="group" aria-labelledby="ar-dow-label"></div>
+            </div>
+            <div id="ar-dom-wrap">
+              <label for="ar-dom">Day of the month</label>
+              <select id="ar-dom" onchange="arUpdateSummary()"></select>
+            </div>
+            <div>
+              <label for="ar-time">Time</label>
+              <input id="ar-time" type="time" step="300" value="06:30" onchange="arUpdateSummary()" oninput="arUpdateSummary()" />
+              <div class="ar-hint">Eastern time · goes out within five minutes of it</div>
+            </div>
+          </div>
+
+          <div class="mu-group-label">Send to</div>
+          <div class="ar-groups" id="ar-groups"></div>
+          <button type="button" class="ar-link-btn" id="ar-newgroup-btn" onclick="arToggleNewGroup()">+ New recipient group</button>
+          <div class="ar-newgroup" id="ar-newgroup">
+            <div>
+              <label for="ar-ng-name">Group name</label>
+              <input id="ar-ng-name" type="text" placeholder="e.g. Maple Ave Stakeholders" autocomplete="off" />
+            </div>
+            <div>
+              <label for="ar-ng-emails">Email addresses</label>
+              <textarea id="ar-ng-emails" placeholder="pm@example.com, owner@example.com"></textarea>
+            </div>
+            <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+              <button type="button" class="mu-tool-btn primary" onclick="arSaveNewGroup()">Save Group</button>
+              <button type="button" class="mu-cancel-btn" style="padding:0.4rem 0.8rem" onclick="arToggleNewGroup(false)">Cancel</button>
+              <span id="ar-ng-result" class="modal-result"></span>
+            </div>
+          </div>
+
+          <div class="ar-grid">
+            <div>
+              <label for="ar-subject">Subject <span style="text-transform:none;letter-spacing:0">(optional)</span></label>
+              <input id="ar-subject" type="text" maxlength="200" placeholder="Same as the Email button's" autocomplete="off" />
+            </div>
+            <div>
+              <label for="ar-note">Note <span style="text-transform:none;letter-spacing:0">(optional)</span></label>
+              <input id="ar-note" type="text" maxlength="2000" placeholder="A line above the report in the email" autocomplete="off" />
+            </div>
+          </div>
+          <div style="display:flex;flex-wrap:wrap;gap:0.2rem 1.2rem">
+            <label class="ar-check"><input type="checkbox" id="ar-pdf" checked /> Attach the report as a PDF</label>
+            <label class="ar-check"><input type="checkbox" id="ar-enabled" checked onchange="arUpdateSummary()" /> On — send it on this timetable</label>
+          </div>
+
+          <div class="ar-summary" id="ar-summary" aria-live="polite"></div>
+
+          <div class="mu-form-actions">
+            <button class="modal-submit" id="ar-save" onclick="arSave()">Save Schedule</button>
+            <button class="mu-cancel-btn" onclick="arCloseForm()">Cancel</button>
+            <span id="ar-form-result" class="modal-result"></span>
+          </div>
+        </div>
+
+        <div class="ar-list" id="ar-list">
+          <div class="mu-note">Loading…</div>
+        </div>
+
+        <div>
+          <div class="mu-group-label">Recent sends</div>
+          <div class="mu-table-wrap">
+            <table class="user-table ar-hist">
+              <colgroup><col class="c-ar-when" /><col class="c-ar-report" /><col class="c-ar-res" /><col class="c-ar-msg" /></colgroup>
+              <thead>
+                <tr><th scope="col">When</th><th scope="col">Report</th><th scope="col">Result</th><th scope="col">Detail</th></tr>
+              </thead>
+              <tbody id="ar-hist-body">
+                <tr><td colspan="4" class="mu-empty-cell">Nothing sent yet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div><!-- /#mu-panel-reports -->
 
       </div><!-- /.mu-body -->
     </div>
@@ -2178,6 +2603,10 @@
     // ── Show admin-only buttons ─────────────────────────────────────────────
     if (user && (user.role === 'admin' || isPlatformAdmin)) {
       document.getElementById('addUserBtn').style.display = '';
+      // A scheduled report that failed or was missed puts a dot on the
+      // button, so it is seen on the way past rather than only by somebody
+      // who thought to go and look.
+      setTimeout(() => loadAutoReports({ quiet: true, flagsOnly: true }), 0);
     }
 
     // ── User modal ──────────────────────────────────────────────────────────
@@ -2247,15 +2676,19 @@
       switchUserSubTab('users');
       muStatus('');
       loadUserList();
+      // Only the flags: the Auto Reports tab says how many went wrong before
+      // anybody opens it.
+      loadAutoReports({ quiet: true, flagsOnly: true });
     }
 
     function closeUserModal() {
       document.getElementById('userModalBackdrop').classList.remove('open');
       resetUserForm();
+      arStopPolling();
     }
 
     // Sub-tab → the suffix its button and panel ids carry.
-    const MU_SUBTABS = { users: 'Users', supervisors: 'Supervisors', scheduler: 'Scheduler' };
+    const MU_SUBTABS = { users: 'Users', supervisors: 'Supervisors', scheduler: 'Scheduler', reports: 'Reports' };
 
     function switchUserSubTab(tab) {
       muActiveSubTab = tab;
@@ -2267,6 +2700,8 @@
       // Read again on every visit, not once: the list follows every division's
       // roster, and a name added to one of those since is somebody to decide on.
       if (tab === 'scheduler') loadSchedulerList();
+      // Read again on every visit too: a report may have gone out since.
+      if (tab === 'reports') { loadAutoReports(); arStartPolling(); } else arStopPolling();
       if (tab === 'supervisors' && !supervisorsLoaded) {
         supervisorsLoaded = true;
         const search = document.getElementById('sup-search');
@@ -2881,6 +3316,685 @@
         result.textContent = err.message;
       }
     }
+
+    // ── Auto Reports sub-panel (inside Manage Users modal) ─────────────────
+    // Reports that go out on their own. The server sends them (api/cron/
+    // report-schedules.js, every five minutes); this is where an admin sets
+    // one up, switches it off, presses Send now, and sees how each one's last
+    // send went. A schedule whose time has come, or whose last send failed,
+    // flags itself — on its row, on this tab, and on the Manage Users button —
+    // because the point of the feature is not having to remember to look.
+    let arData     = null;      // last GET /api/email/report-schedules
+    let arLoadSeq  = 0;
+    let arPoll     = null;
+    let arFreq     = 'weekdays';
+    let arDays     = new Set([1]);
+    const arProjects = {};      // division → jobs, for the editor's job picker
+    const AR_DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const AR_DAY_INIT  = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+    const AR_RESULT = {
+      sent:    'Sent',
+      partial: 'Partly sent',
+      skipped: 'Nothing to send',
+      failed:  'Failed',
+      missed:  'Missed',
+    };
+
+    function arTz() { return (arData && arData.defaultTimezone) || 'America/New_York'; }
+
+    function arFmtWhen(iso, withDay = true) {
+      if (!iso) return '';
+      const d = new Date(iso);
+      if (isNaN(d)) return '';
+      const opts = { timeZone: arTz(), hour: 'numeric', minute: '2-digit' };
+      if (withDay) Object.assign(opts, { weekday: 'short', month: 'short', day: 'numeric' });
+      return d.toLocaleString('en-US', opts);
+    }
+
+    function arClock(hhmm) {
+      const m = /^(\d{2}):(\d{2})$/.exec(String(hhmm || ''));
+      if (!m) return '';
+      const h = Number(m[1]);
+      return `${((h + 11) % 12) + 1}:${m[2]} ${h < 12 ? 'AM' : 'PM'}`;
+    }
+
+    function arOrdinal(n) {
+      const s = ['th', 'st', 'nd', 'rd'], v = n % 100;
+      return n + (s[(v - 20) % 10] || s[v] || s[0]);
+    }
+
+    function arReportDef(type) {
+      for (const d of (arData && arData.divisions) || []) {
+        const r = d.reports.find(x => x.type === type);
+        if (r) return Object.assign({ divisionName: d.name }, r);
+      }
+      return null;
+    }
+
+    function arWhenText(s) {
+      const at = arClock(s.send_time);
+      switch (s.frequency) {
+        case 'daily':    return `Daily · ${at}`;
+        case 'weekdays': return `Weekdays · ${at}`;
+        case 'weekly': {
+          const days = (s.days_of_week || []).map(d => AR_DAY_SHORT[d]).filter(Boolean);
+          return `${days.length === 7 ? 'Every day' : days.join(', ')} · ${at}`;
+        }
+        case 'monthly':
+          return `Monthly, ${s.day_of_month === -1 ? 'last day' : 'the ' + arOrdinal(s.day_of_month)} · ${at}`;
+        default: return at;
+      }
+    }
+
+    function arScopeText(s, def) {
+      const parts = [];
+      const scope = def ? def.scope : 'division';
+      if (scope === 'job') {
+        parts.push(s.project_id === '*' ? 'Every In Progress job' : (s.project_name || 'Job ' + s.project_id));
+      } else if (scope === 'job_or_all') {
+        parts.push(s.project_id ? (s.project_name || 'Job ' + s.project_id) : 'All jobs, one report');
+      } else {
+        parts.push('Whole division');
+      }
+      const o = s.options || {};
+      const sub = [];
+      if (scope === 'job' && s.project_id === '*') sub.push('one email per job');
+      if (o.period && arData && arData.periods) sub.push(arData.periods[o.period] || o.period);
+      if (o.day) sub.push({ today: 'for the same day', tomorrow: 'for the next day', next_workday: 'for the next workday' }[o.day] || o.day);
+      if (o.year) sub.push(o.year === 'all' ? 'all years' : 'this year');
+      return { main: parts.join(''), sub: sub.join(' · ') };
+    }
+
+    function arGroupsText(s) {
+      const groups = (arData && arData.groups) || [];
+      const names = (s.group_ids || []).map(id => {
+        const g = groups.find(x => x.id === id);
+        return g ? `${g.name} (${g.count})` : 'a deleted group';
+      });
+      return names.join(', ');
+    }
+
+    // What a schedule's row says about it, and whether it raises the flag.
+    function arStatusOf(s) {
+      const now = Date.now();
+      const next = s.next_run_at ? new Date(s.next_run_at).getTime() : null;
+      const last = s.last_status ? {
+        cls:   s.last_status,
+        label: AR_RESULT[s.last_status] || s.last_status,
+        when:  arFmtWhen(s.last_run_at),
+      } : null;
+      const bad = Boolean(last && ['failed', 'missed', 'partial'].includes(last.cls));
+      if (!s.enabled) return { badge: { cls: 'off', label: 'Off' }, last, flag: '', bad: false };
+      if (s.sending) return { badge: { cls: 'sending', label: 'Sending…' }, last, flag: 'due', bad };
+      if (next && next <= now) return { badge: { cls: 'due', label: 'Due now' }, last, flag: 'due', bad, due: true };
+      if (last) return { badge: { cls: last.cls, label: last.label + (last.when ? ' · ' + last.when : '') }, last, flag: bad ? 'bad' : '', bad, lastShown: true };
+      return { badge: { cls: 'new', label: 'Not sent yet' }, last, flag: '', bad: false };
+    }
+
+    function arNeedsAttention(s) {
+      const st = arStatusOf(s);
+      return s.enabled && (st.bad || st.due);
+    }
+
+    // The flag outside the tab: a count on the tab, a dot on Manage Users.
+    function arUpdateFlags() {
+      const list = (arData && arData.schedules) || [];
+      const n = list.filter(s => s.enabled && arStatusOf(s).bad).length;
+      const badge = document.getElementById('muTabCountReports');
+      if (badge) {
+        badge.textContent = n ? String(n) : '';
+        badge.style.display = n ? '' : 'none';
+        badge.style.color = n ? '#f87171' : '';
+        badge.title = n ? `${n} scheduled report${n === 1 ? '' : 's'} did not go out cleanly last time` : '';
+      }
+      const btn = document.getElementById('addUserBtn');
+      if (btn) {
+        btn.classList.toggle('has-flag', n > 0);
+        btn.title = n ? `${n} scheduled report${n === 1 ? '' : 's'} need${n === 1 ? 's' : ''} attention — see Auto Reports` : '';
+      }
+    }
+
+    async function loadAutoReports(opts = {}) {
+      const seq = ++arLoadSeq;
+      const list = document.getElementById('ar-list');
+      if (!opts.quiet && !arData && list) list.innerHTML = '<div class="mu-note">Loading…</div>';
+      try {
+        const res  = await fetch('/api/email/report-schedules', { headers: { Authorization: `Bearer ${token}` } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (seq !== arLoadSeq) return;
+        arData = data;
+        arFillDivisionFilter();
+        arUpdateFlags();
+        if (!opts.flagsOnly) renderAutoReports();
+      } catch (err) {
+        if (seq !== arLoadSeq || opts.flagsOnly) return;
+        if (list && !arData) list.innerHTML = `<div class="mu-note" style="color:#ef4444">${escHtml(err.message)}</div>`;
+      }
+    }
+
+    function arFillDivisionFilter() {
+      const sel = document.getElementById('ar-filter-div');
+      if (!sel || sel.dataset.filled) return;
+      (arData.divisions || []).forEach(d => {
+        const o = document.createElement('option');
+        o.value = d.key; o.textContent = d.name;
+        sel.appendChild(o);
+      });
+      sel.dataset.filled = '1';
+    }
+
+    function renderAutoReports() {
+      const list = document.getElementById('ar-list');
+      if (!list || !arData) return;
+      const divF   = document.getElementById('ar-filter-div').value;
+      const stateF = document.getElementById('ar-filter-state').value;
+      const all    = arData.schedules || [];
+
+      const keep = s => {
+        if (divF && s.division !== divF) return false;
+        if (stateF === 'on'  && !s.enabled) return false;
+        if (stateF === 'off' && s.enabled)  return false;
+        if (stateF === 'attention' && !arNeedsAttention(s)) return false;
+        return true;
+      };
+      const shown = all.filter(keep);
+      const on = all.filter(s => s.enabled).length;
+      document.getElementById('ar-count').textContent = all.length
+        ? (shown.length === all.length ? `${on} on · ${all.length - on} off` : `${shown.length} of ${all.length} schedules`)
+        : '';
+
+      if (!(arData.divisions || []).length) {
+        list.innerHTML = '<div class="mu-note">You do not have access to any division with reports to schedule.</div>';
+        renderAutoReportHistory();
+        return;
+      }
+
+      list.innerHTML = arData.divisions
+        .filter(d => !divF || d.key === divF)
+        .map(d => {
+          const rows = shown.filter(s => s.division === d.key);
+          // With a status filter on, a division with nothing matching is noise.
+          if (stateF && !rows.length) return '';
+          const mine = all.filter(s => s.division === d.key);
+          const meta = mine.length
+            ? `${mine.length} scheduled · ${mine.filter(s => s.enabled).length} on`
+            : 'No reports scheduled';
+          return `
+          <section class="ar-div${rows.length ? '' : ' empty'}" aria-label="${escHtml(d.name)}">
+            <div class="ar-div-head">
+              <span class="ar-div-name">${escHtml(d.name)}</span>
+              <span class="ar-div-meta">${meta}</span>
+              <button class="mu-tool-btn primary" onclick="arNew('${d.key}')" title="Schedule a ${escHtml(d.name)} report">+ Add</button>
+            </div>
+            ${rows.map(arRowHtml).join('')}
+          </section>`;
+        }).join('') || '<div class="mu-note">Nothing matches.</div>';
+
+      renderAutoReportHistory();
+    }
+
+    function arRowHtml(s) {
+      const def   = arReportDef(s.report_type);
+      const scope = arScopeText(s, def);
+      const st    = arStatusOf(s);
+      const name  = def ? def.name : s.report_type;
+      const next  = s.enabled && s.next_run_at && !st.due && !s.sending ? 'Next: ' + arFmtWhen(s.next_run_at) : '';
+      let msg = '';
+      if (st.due) msg = 'Its time has come — it goes out on the next check, within five minutes.';
+      else if (s.sending) msg = 'Building and sending now.';
+      else if (st.last && s.last_message) msg = (st.lastShown ? '' : `Last: ${st.last.label} ${st.last.when} — `) + s.last_message;
+      const msgBad = st.bad && !st.due && !s.sending;
+      return `
+        <div class="ar-row${s.enabled ? '' : ' off'}${st.flag ? ' flag-' + st.flag : ''}" data-id="${s.id}">
+          <div class="ar-c-title">
+            <div class="ar-title">${escHtml(name)}</div>
+            <div class="ar-sub">To ${escHtml(arGroupsText(s) || 'nobody')}</div>
+          </div>
+          <div class="ar-c-job">
+            <div>${escHtml(scope.main)}</div>
+            ${scope.sub ? `<div class="ar-sub">${escHtml(scope.sub)}</div>` : ''}
+          </div>
+          <div class="ar-c-when">
+            <div>${escHtml(arWhenText(s))}</div>
+            ${next ? `<div class="ar-sub">${escHtml(next)}</div>` : ''}
+          </div>
+          <div class="ar-c-status">
+            <span class="ar-badge ${st.badge.cls}">${escHtml(st.badge.label)}</span>
+            ${msg ? `<div class="ar-msg${msgBad ? ' bad' : ''}" title="${escHtml(msg)}">${escHtml(msg)}</div>` : ''}
+          </div>
+          <div class="ar-c-tog">
+            <label class="sup-toggle" title="${s.enabled ? 'On — switch off to stop sending' : 'Off — switch on to send on its timetable'}">
+              <input type="checkbox" ${s.enabled ? 'checked' : ''} aria-label="${escHtml(name)} on" onchange="arToggle(this, ${s.id})" />
+              <span class="slider"></span>
+            </label>
+          </div>
+          <div class="ar-c-act">
+            <button class="ar-send-btn" onclick="arSendNow(${s.id}, this)" ${s.sending ? 'disabled' : ''} title="Build it and send it to its groups right now">Send now</button>
+            <button class="user-edit-btn" onclick="arEdit(${s.id})">Edit</button>
+            <button class="user-del-btn" onclick="arDelete(${s.id})" title="Delete this schedule">&#10005;</button>
+          </div>
+        </div>`;
+    }
+
+    function renderAutoReportHistory() {
+      const body = document.getElementById('ar-hist-body');
+      if (!body || !arData) return;
+      const divF = document.getElementById('ar-filter-div').value;
+      const runs = (arData.runs || []).filter(r => {
+        if (!divF) return true;
+        const def = arReportDef(r.report_type);
+        return def && (arData.divisions.find(d => d.key === divF) || { reports: [] }).reports.some(x => x.type === r.report_type);
+      });
+      if (!runs.length) {
+        body.innerHTML = '<tr><td colspan="4" class="mu-empty-cell">Nothing sent yet.</td></tr>';
+        return;
+      }
+      body.innerHTML = runs.map(r => {
+        const def = arReportDef(r.report_type);
+        const job = r.project_id === '*' ? 'every In Progress job' : (r.project_name || '');
+        const how = r.kind === 'manual' ? `Send now${r.triggered_by ? ' · ' + r.triggered_by : ''}` : 'On schedule';
+        return `<tr>
+          <td>${escHtml(arFmtWhen(r.started_at))}<div class="ar-sub">${escHtml(how)}</div></td>
+          <td>${escHtml(def ? def.name : r.report_type)}${job ? `<div class="ar-sub">${escHtml(job)}</div>` : ''}</td>
+          <td><span class="ar-badge ${escHtml(r.status)}">${escHtml(AR_RESULT[r.status] || r.status)}</span></td>
+          <td class="ar-hist-msg">${escHtml(r.message || '')}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    function arBanner(msg, kind) {
+      const el = document.getElementById('ar-status');
+      if (!el) return;
+      el.textContent = msg || '';
+      el.className = 'mu-status' + (msg ? ' show ' + (kind || 'ok') : '');
+    }
+
+    // Live while the tab is open: "Due now" turns into "Sending…" and then
+    // into "Sent" without anybody reloading.
+    function arStartPolling() {
+      arStopPolling();
+      arPoll = setInterval(() => {
+        if (document.hidden) return;
+        if (muActiveSubTab !== 'reports') return arStopPolling();
+        if (document.getElementById('ar-form').classList.contains('open')) return;
+        loadAutoReports({ quiet: true });
+      }, 30000);
+    }
+    function arStopPolling() { if (arPoll) { clearInterval(arPoll); arPoll = null; } }
+
+    async function arApi(method, query, body) {
+      const res = await fetch('/api/email/report-schedules' + (query ? '?' + query : ''), {
+        method,
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+      return data;
+    }
+
+    async function arToggle(el, id) {
+      const on = el.checked;
+      el.disabled = true;
+      try {
+        const r = await arApi('PUT', 'id=' + id, { enabled: on });
+        const i = arData.schedules.findIndex(s => s.id === id);
+        if (i >= 0 && r.schedule) arData.schedules[i] = r.schedule;
+        arBanner(on
+          ? `Switched on. Next send: ${arFmtWhen(r.schedule && r.schedule.next_run_at)}.`
+          : 'Switched off — it will not send until switched back on.', 'ok');
+        arUpdateFlags();
+        renderAutoReports();
+      } catch (err) {
+        el.checked = !on;
+        el.disabled = false;
+        arBanner('Could not change it: ' + err.message, 'err');
+      }
+    }
+
+    async function arSendNow(id, btn) {
+      const s = arData.schedules.find(x => x.id === id);
+      if (!s) return;
+      const def = arReportDef(s.report_type);
+      const name = def ? def.name : s.report_type;
+      if (!confirm(`Send ${name} now to ${arGroupsText(s)}?`)) return;
+      if (btn) { btn.disabled = true; btn.textContent = 'Sending…'; }
+      arBanner(`Building ${name} and sending it — this can take a minute.`, 'ok');
+      try {
+        const r = await arApi('POST', `id=${id}&action=run`, {});
+        const res = r.result || {};
+        const kind = res.status === 'sent' ? 'ok' : res.status === 'skipped' ? 'ok' : 'err';
+        arBanner(`${name}: ${AR_RESULT[res.status] || res.status}. ${res.message || ''}`, kind);
+      } catch (err) {
+        arBanner(`${name} was not sent: ${err.message}`, 'err');
+      }
+      await loadAutoReports({ quiet: true });
+    }
+
+    async function arDelete(id) {
+      const s = arData.schedules.find(x => x.id === id);
+      if (!s) return;
+      const def = arReportDef(s.report_type);
+      if (!confirm(`Delete the scheduled ${def ? def.name : 'report'}? Its send history goes with it.`)) return;
+      try {
+        await arApi('DELETE', 'id=' + id);
+        arBanner('Schedule deleted.', 'ok');
+        if (document.getElementById('ar-edit-id').value === String(id)) arCloseForm();
+        await loadAutoReports({ quiet: true });
+      } catch (err) {
+        arBanner('Could not delete it: ' + err.message, 'err');
+      }
+    }
+
+    // ── Editor ──
+    function arFillSelect(sel, items, value) {
+      sel.innerHTML = items.map(([v, t]) => `<option value="${escHtml(v)}">${escHtml(t)}</option>`).join('');
+      if (value !== undefined && items.some(([v]) => String(v) === String(value))) sel.value = String(value);
+    }
+
+    function arCurrentDef() { return arReportDef(document.getElementById('ar-report').value); }
+
+    function arOnDivision(type) {
+      const divKey = document.getElementById('ar-division').value;
+      const d = (arData.divisions || []).find(x => x.key === divKey);
+      arFillSelect(document.getElementById('ar-report'), (d ? d.reports : []).map(r => [r.type, r.name]), type);
+      arOnReport();
+    }
+
+    async function arOnReport(preset) {
+      const def = arCurrentDef();
+      document.getElementById('ar-report-blurb').textContent = def ? def.blurb || '' : '';
+      const scope = def ? def.scope : 'division';
+      document.getElementById('ar-job-wrap').style.display    = scope === 'division' ? 'none' : '';
+      document.getElementById('ar-period-wrap').style.display = def && def.period ? '' : 'none';
+      document.getElementById('ar-day-wrap').style.display    = def && def.day ? '' : 'none';
+      document.getElementById('ar-year-wrap').style.display   = def && def.year ? '' : 'none';
+      if (def && def.period) {
+        const periods = Object.entries((arData && arData.periods) || {});
+        arFillSelect(document.getElementById('ar-period'), periods, (preset && preset.period) || def.period);
+      }
+      if (def && def.day) document.getElementById('ar-day').value = (preset && preset.day) || def.day;
+      if (def && def.year) document.getElementById('ar-year').value = (preset && preset.year) || 'current';
+      arRenderGroups(preset && preset.groupIds);
+      if (scope !== 'division') await arFillJobs(def, preset && preset.projectId, preset && preset.projectName);
+      arUpdateSummary();
+    }
+
+    async function arFillJobs(def, value, valueName) {
+      const sel = document.getElementById('ar-job');
+      const divKey = def ? arReportDivision(def.type) : '';
+      const head = def.scope === 'job'
+        ? [['*', 'Every In Progress job — one email each']]
+        : [['', 'All jobs — one report']];
+      arFillSelect(sel, head.concat([['__loading', 'Loading jobs…']]), head[0][0]);
+      if (!arProjects[divKey]) {
+        try {
+          const res  = await fetch('/api/email/report-schedules?projects=' + encodeURIComponent(divKey), { headers: { Authorization: `Bearer ${token}` } });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+          arProjects[divKey] = data.projects || [];
+        } catch (err) {
+          arProjects[divKey] = null;
+          arFillSelect(sel, head, head[0][0]);
+          document.getElementById('ar-form-result').textContent = 'Could not load the job list: ' + err.message;
+          return;
+        }
+      }
+      // Still the report the form is showing? The fetch may have raced a change.
+      if (!arCurrentDef() || arReportDivision(arCurrentDef().type) !== divKey) return;
+      const jobs = arProjects[divKey] || [];
+      const label = p => p.name + (p.jobNumber ? ` (${p.jobNumber})` : '');
+      const running = jobs.filter(p => p.status === 'In Progress').sort((a, b) => label(a).localeCompare(label(b)));
+      const others  = jobs.filter(p => p.status !== 'In Progress').sort((a, b) => label(a).localeCompare(label(b)));
+      let html = head.map(([v, t]) => `<option value="${escHtml(v)}">${escHtml(t)}</option>`).join('');
+      if (running.length) html += `<optgroup label="In Progress">${running.map(p => `<option value="${escHtml(p.id)}">${escHtml(label(p))}</option>`).join('')}</optgroup>`;
+      if (others.length)  html += `<optgroup label="Other jobs">${others.map(p => `<option value="${escHtml(p.id)}">${escHtml(label(p) + (p.status ? ' — ' + p.status : ''))}</option>`).join('')}</optgroup>`;
+      // A job saved on the schedule that has since left the list still shows.
+      if (value && value !== '*' && !jobs.some(p => p.id === value)) {
+        html += `<option value="${escHtml(value)}">${escHtml((valueName || value) + ' — no longer on the job list')}</option>`;
+      }
+      sel.innerHTML = html;
+      sel.value = value === undefined || value === null ? head[0][0] : value;
+      if (sel.selectedIndex < 0) sel.value = head[0][0];
+      arUpdateSummary();
+    }
+
+    function arReportDivision(type) {
+      const d = (arData.divisions || []).find(x => x.reports.some(r => r.type === type));
+      return d ? d.key : '';
+    }
+
+    function arRenderGroups(checkedIds) {
+      const wrap = document.getElementById('ar-groups');
+      const groups = (arData && arData.groups) || [];
+      const keep = new Set((checkedIds || [...wrap.querySelectorAll('input:checked')].map(i => Number(i.value))).map(Number));
+      if (!groups.length) {
+        wrap.innerHTML = '<div class="ar-hint" style="padding:0.3rem">No recipient groups yet — add one below.</div>';
+        return;
+      }
+      wrap.innerHTML = groups.map(g => `
+        <label class="ar-check">
+          <input type="checkbox" value="${g.id}" ${keep.has(g.id) ? 'checked' : ''} onchange="arUpdateSummary()" />
+          <span>${escHtml(g.name)}</span>
+          <span class="ar-count">${g.count} ${g.count === 1 ? 'address' : 'addresses'}</span>
+        </label>`).join('');
+    }
+
+    function arToggleNewGroup(open) {
+      const box = document.getElementById('ar-newgroup');
+      const show = open === undefined ? !box.classList.contains('open') : open;
+      box.classList.toggle('open', show);
+      document.getElementById('ar-newgroup-btn').style.display = show ? 'none' : '';
+      document.getElementById('ar-ng-result').textContent = '';
+      if (show) document.getElementById('ar-ng-name').focus();
+    }
+
+    async function arSaveNewGroup() {
+      const name = document.getElementById('ar-ng-name').value.trim();
+      const emails = document.getElementById('ar-ng-emails').value.split(/[,;\s]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
+      const out = document.getElementById('ar-ng-result');
+      out.style.color = '#ef4444';
+      if (!name) { out.textContent = 'Give the group a name.'; return; }
+      if (!emails.length) { out.textContent = 'Add at least one email address.'; return; }
+      try {
+        const res = await fetch('/api/email/recipient-groups', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ name, emails }),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        const g = data.group;
+        arData.groups.push({ id: Number(g.id), name: g.name, count: (g.emails || []).length });
+        arData.groups.sort((a, b) => a.name.localeCompare(b.name));
+        const checked = [...document.querySelectorAll('#ar-groups input:checked')].map(i => Number(i.value));
+        arRenderGroups(checked.concat(Number(g.id)));
+        document.getElementById('ar-ng-name').value = '';
+        document.getElementById('ar-ng-emails').value = '';
+        arToggleNewGroup(false);
+        arUpdateSummary();
+      } catch (err) {
+        out.textContent = err.message;
+      }
+    }
+
+    function arSetFreq(f) {
+      arFreq = f;
+      document.querySelectorAll('#ar-freq button').forEach(b => {
+        b.classList.toggle('on', b.dataset.f === f);
+        b.setAttribute('aria-pressed', b.dataset.f === f ? 'true' : 'false');
+      });
+      document.getElementById('ar-dow-wrap').style.display = f === 'weekly'  ? '' : 'none';
+      document.getElementById('ar-dom-wrap').style.display = f === 'monthly' ? '' : 'none';
+      arUpdateSummary();
+    }
+
+    function arRenderDays() {
+      document.getElementById('ar-dow').innerHTML = AR_DAY_INIT.map((c, i) =>
+        `<button type="button" class="${arDays.has(i) ? 'on' : ''}" aria-pressed="${arDays.has(i)}" aria-label="${AR_DAY_SHORT[i]}" title="${AR_DAY_SHORT[i]}" onclick="arToggleDay(${i})">${c}</button>`).join('');
+    }
+    function arToggleDay(i) {
+      if (arDays.has(i)) arDays.delete(i); else arDays.add(i);
+      arRenderDays();
+      arUpdateSummary();
+    }
+
+    function arFormValues() {
+      const def = arCurrentDef();
+      const scope = def ? def.scope : 'division';
+      const jobSel = document.getElementById('ar-job');
+      let project_id = scope === 'division' ? '' : jobSel.value;
+      if (project_id === '__loading') project_id = scope === 'job' ? '*' : '';
+      // The job's name rides along so the list can say which job without
+      // loading every division's jobs; it is display only.
+      let project_name = '';
+      if (project_id && project_id !== '*') {
+        const jobs = arProjects[arReportDivision(def.type)] || [];
+        const p = jobs.find(j => j.id === project_id);
+        const editing = arData.schedules.find(x => String(x.id) === document.getElementById('ar-edit-id').value);
+        project_name = p ? p.name : (editing && editing.project_id === project_id ? editing.project_name || '' : '');
+      }
+      const options = {};
+      if (def && def.period) options.period = document.getElementById('ar-period').value;
+      if (def && def.day)    options.day    = document.getElementById('ar-day').value;
+      if (def && def.year)   options.year   = document.getElementById('ar-year').value;
+      return {
+        report_type:  def ? def.type : '',
+        project_id,
+        project_name,
+        options,
+        frequency:    arFreq,
+        days_of_week: arFreq === 'weekly' ? [...arDays].sort() : null,
+        day_of_month: arFreq === 'monthly' ? Number(document.getElementById('ar-dom').value) : null,
+        send_time:    document.getElementById('ar-time').value,
+        timezone:     arTz(),
+        group_ids:    [...document.querySelectorAll('#ar-groups input:checked')].map(i => Number(i.value)),
+        subject:      document.getElementById('ar-subject').value.trim(),
+        note:         document.getElementById('ar-note').value.trim(),
+        attach_pdf:   document.getElementById('ar-pdf').checked,
+        enabled:      document.getElementById('ar-enabled').checked,
+      };
+    }
+
+    // The schedule in one sentence, so what Save will do is read before it is done.
+    function arUpdateSummary() {
+      const el = document.getElementById('ar-summary');
+      if (!el || !arData) return;
+      const v = arFormValues();
+      const def = arCurrentDef();
+      if (!def) { el.textContent = ''; return; }
+      const jobSel = document.getElementById('ar-job');
+      let what = def.name;
+      if (def.scope === 'job') what += v.project_id === '*' ? ' for every In Progress job (one email each)' : ` for ${jobSel.selectedOptions[0] ? jobSel.selectedOptions[0].textContent : 'the job'}`;
+      if (def.scope === 'job_or_all') what += v.project_id ? ` for ${jobSel.selectedOptions[0] ? jobSel.selectedOptions[0].textContent : 'the job'}` : ' for all jobs';
+      if (v.options.period) what += `, covering ${(arData.periods[v.options.period] || '').toLowerCase()}`;
+      if (v.options.day) what += `, ${({ today: 'for the same day', tomorrow: 'for the next day', next_workday: 'for the next workday' })[v.options.day]}`;
+      const when = !v.send_time ? 'at a time still to pick'
+        : arFreq === 'daily' ? `every day at ${arClock(v.send_time)}`
+        : arFreq === 'weekdays' ? `Monday to Friday at ${arClock(v.send_time)}`
+        : arFreq === 'weekly' ? (v.days_of_week && v.days_of_week.length ? `every ${v.days_of_week.map(d => AR_DAY_SHORT[d]).join(', ')} at ${arClock(v.send_time)}` : 'on days still to pick')
+        : `on ${v.day_of_month === -1 ? 'the last day' : 'the ' + arOrdinal(v.day_of_month)} of every month at ${arClock(v.send_time)}`;
+      const groups = (arData.groups || []).filter(g => v.group_ids.includes(g.id));
+      const people = groups.reduce((n, g) => n + g.count, 0);
+      const to = groups.length ? `to ${groups.map(g => g.name).join(', ')} (${people} address${people === 1 ? '' : 'es'}, before duplicates)` : 'to a group still to pick';
+      el.textContent = (v.enabled ? 'Sends ' : 'Saved switched off. When on, it sends ') + `the ${what} ${when} Eastern, ${to}.`;
+    }
+
+    function arOpenForm(heading) {
+      document.getElementById('ar-form-heading').textContent = heading;
+      document.getElementById('ar-form-result').textContent = '';
+      arToggleNewGroup(false);
+      const form = document.getElementById('ar-form');
+      form.classList.add('open');
+      form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    function arCloseForm() {
+      document.getElementById('ar-form').classList.remove('open');
+      document.getElementById('ar-edit-id').value = '';
+    }
+
+    function arFillDivisionSelect(value) {
+      arFillSelect(document.getElementById('ar-division'), (arData.divisions || []).map(d => [d.key, d.name]), value);
+    }
+
+    function arNew(divKey) {
+      if (!arData || !(arData.divisions || []).length) return;
+      document.getElementById('ar-edit-id').value = '';
+      arFillDivisionSelect(divKey || document.getElementById('ar-filter-div').value || arData.divisions[0].key);
+      document.getElementById('ar-time').value = '06:30';
+      arDays = new Set([1]);
+      arRenderDays();
+      document.getElementById('ar-dom').value = '1';
+      document.getElementById('ar-subject').value = '';
+      document.getElementById('ar-note').value = '';
+      document.getElementById('ar-pdf').checked = true;
+      document.getElementById('ar-enabled').checked = true;
+      document.getElementById('ar-groups').innerHTML = '';
+      arSetFreq('weekdays');
+      arOnDivision();
+      arOpenForm('New Scheduled Report');
+    }
+
+    function arEdit(id) {
+      const s = arData.schedules.find(x => x.id === id);
+      if (!s) return;
+      document.getElementById('ar-edit-id').value = String(id);
+      arFillDivisionSelect(s.division);
+      arFillSelect(document.getElementById('ar-report'),
+        ((arData.divisions.find(d => d.key === s.division) || {}).reports || []).map(r => [r.type, r.name]), s.report_type);
+      document.getElementById('ar-time').value = s.send_time;
+      arDays = new Set(s.days_of_week || [1]);
+      arRenderDays();
+      document.getElementById('ar-dom').value = String(s.day_of_month || 1);
+      document.getElementById('ar-subject').value = s.subject || '';
+      document.getElementById('ar-note').value = s.note || '';
+      document.getElementById('ar-pdf').checked = s.attach_pdf !== false;
+      document.getElementById('ar-enabled').checked = Boolean(s.enabled);
+      arSetFreq(s.frequency);
+      arOnReport({
+        projectId: s.project_id, projectName: s.project_name, groupIds: s.group_ids,
+        period: s.options && s.options.period, day: s.options && s.options.day, year: s.options && s.options.year,
+      });
+      arOpenForm('Edit Scheduled Report');
+    }
+
+    async function arSave() {
+      const out = document.getElementById('ar-form-result');
+      out.style.color = '#ef4444';
+      const v = arFormValues();
+      if (!v.report_type) { out.textContent = 'Pick a report.'; return; }
+      if (!v.send_time) { out.textContent = 'Pick a time.'; return; }
+      if (v.frequency === 'weekly' && !(v.days_of_week || []).length) { out.textContent = 'Pick at least one day of the week.'; return; }
+      if (!v.group_ids.length) { out.textContent = 'Pick at least one recipient group.'; return; }
+      const id = document.getElementById('ar-edit-id').value;
+      const btn = document.getElementById('ar-save');
+      btn.disabled = true;
+      out.style.color = 'var(--muted)';
+      out.textContent = 'Saving…';
+      try {
+        const r = await arApi(id ? 'PUT' : 'POST', id ? 'id=' + id : '', v);
+        arCloseForm();
+        const s = r.schedule;
+        arBanner(s && s.enabled && s.next_run_at
+          ? `Saved. Next send: ${arFmtWhen(s.next_run_at)}.`
+          : 'Saved, switched off.', 'ok');
+        await loadAutoReports({ quiet: true });
+      } catch (err) {
+        out.style.color = '#ef4444';
+        out.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    (function initAutoReportForm() {
+      document.querySelectorAll('#ar-freq button').forEach(b => { b.onclick = () => arSetFreq(b.dataset.f); });
+      arFillSelect(document.getElementById('ar-dom'),
+        Array.from({ length: 31 }, (_, i) => [i + 1, arOrdinal(i + 1)]).concat([[-1, 'Last day']]), 1);
+      arRenderDays();
+    })();
 
     // ── Excel export ────────────────────────────────────────────────────────
     // A real .xlsx rather than a CSV renamed: usernames that look like dates

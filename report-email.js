@@ -646,4 +646,7 @@
   }
 
   window.openReportEmailModal = openReportEmailModal;
+  // The scheduled sends (auto-report.js) put the same key figures in the email
+  // body the modal does, so they read them out the same way.
+  window.dwExtractReportSummary = extractSummary;
 })();
