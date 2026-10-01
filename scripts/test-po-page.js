@@ -303,6 +303,7 @@ console.log('\n[re-tying an order]');
     const loadedLists = new Set(['turf', 'paving', 'kiewit']);
     function savePO(po, opts) { saves.push({ id: po.id, immediate: !!(opts && opts.immediate) }); }
     function render() {}
+    function updateCodeInPlace() {}
     const toasted = [];
     function toast(msg) { toasted.push(msg); }
   `, ctx);
@@ -622,8 +623,20 @@ console.log('\n[the phone]');
   // notices until the report.
   assert('the invoice field does not autocorrect',
     /id="sc-invoice" autocapitalize="characters" autocorrect="off" spellcheck="false"/.test(PAGE));
-  assert('nor does the vendor field',
-    /id="sc-vendor"[^>]*autocorrect="off" spellcheck="false"/.test(PAGE));
+  // The vendor box is the typeahead picker now, so its attributes come out of
+  // cbHtml rather than sitting in the page as markup. Render the sheet's own
+  // call and read them off the element.
+  {
+    const at = PAGE.indexOf("cbHtml('vendors', val(r.vendor)");
+    const call = at < 0 ? '' : PAGE.slice(at, PAGE.indexOf('})', at) + 2);
+    const ctx = vm.createContext({});
+    ['esc', 'cbHtml'].forEach(n => vm.runInContext(requireFn(PAGE, n, 'purchase-orders.html'), ctx));
+    const html = call ? vm.runInContext('const val = v => v; const r = { vendor: "Fastenal" };\n' + call, ctx) : '';
+    const box = new JSDOM(html).window.document.getElementById('sc-vendor');
+    assert('nor does the vendor field',
+      Boolean(box) && box.getAttribute('autocorrect') === 'off' && box.getAttribute('spellcheck') === 'false'
+      && box.value === 'Fastenal', html || 'the sheet\'s vendor box is not built with cbHtml');
+  }
 
   // The page behind a sheet must not scroll with it, and must not lose the
   // reader's place either: `position: fixed` is the only thing iOS honours, and
@@ -1802,6 +1815,315 @@ console.log('\n[a number with a comma in it]');
       Math.abs(poSync.lineTax(line) - pageTax) < 1e-9,
       `${poSync.lineTax(line)} vs ${pageTax}`);
   }
+}
+
+console.log('\n[cost / sub code, vendor and received by are typeahead pickers]');
+{
+  // Structural: every place the three fields appear goes through the picker,
+  // and the datalists it replaced are gone rather than left half-wired.
+  assert('the order table uses the pickers',
+    /'<td>' \+ subCodePickerHTML\(po\) \+ '<\/td>'/.test(PAGE) && /'<td>' \+ vendorPickerHTML\(po\) \+ '<\/td>'/.test(PAGE));
+  assert('and so does the phone card editor',
+    /<label>Cost \/ Sub Code<\/label>' \+ subCodePickerHTML\(po\)/.test(PAGE)
+    && /<label>Vendor<\/label>' \+ vendorPickerHTML\(po\)/.test(PAGE));
+  assert('every delivery row — both surfaces build them — picks who received it',
+    /receivedByPickerHTML\(po, l\)/.test(PAGE));
+  assert('the scan sheet\'s code is a picker too, closed until a job is chosen',
+    /cbHtml\('scan-codes', '', \{[^}]*attrs: 'id="sc-code"', disabled: true \}\)/.test(PAGE));
+  assert('and its save refuses a code that was typed but never picked',
+    /const scanCode = codeBox \? cbResolve\(codeBox, cbOptionsFor\(codeBox\.closest\('\.cb'\)\)\) : \{ value: '' \};/.test(PAGE)
+    && /if \(!scanCode\) \{[\s\S]{0,200}Pick the cost \/ sub code from the list, or clear it\./.test(PAGE)
+    && /const codeVal = scanCode\.value\.split\('\|\|'\);/.test(PAGE));
+  assert('no datalist is left behind',
+    !/<datalist id=/.test(PAGE) && !/createElement\('datalist'\)/.test(PAGE) && !/list="(vendor|employee)-list"/.test(PAGE));
+  // A re-render after a code is taken rebuilt the row under the field Tab had
+  // just moved to; holding it back until the fields were left moved the damage
+  // onto the next button pressed, rebuilt mid-press, its click lost.
+  assert('a new code is shown in place, never by re-rendering the rows',
+    /savePO\(po, \{ immediate: true \}\);\s*\n\s*updateCodeInPlace\(po\);\s*\n\}/.test(PAGE)
+    && !/renderWhenIdle/.test(PAGE));
+  assert('  including the card\'s job line, which has an id to be found by',
+    /'<div class="meta" id="card-job-' \+ idAttr\(po\.id\) \+ '">' \+ cardJobLineHTML\(po\)/.test(PAGE));
+  // A press that began inside the sheet and was let go over the backdrop is
+  // sent to the backdrop as a click, and read as a tap beside the sheet.
+  assert('only a press that began on the backdrop closes the scan sheet',
+    /_pressOnScanBackdrop = e\.target === this;/.test(PAGE)
+    && /addEventListener\('click', function \(e\) \{\s*\n\s*if \(!_pressOnScanBackdrop\) return;/.test(PAGE));
+
+  // Behavioural: the page's own picker, run in a real DOM with the inline
+  // handlers live, against one paving job.
+  const start = PAGE.indexOf('const _cbState = new WeakMap();');
+  const end   = PAGE.lastIndexOf('/*', PAGE.indexOf('\n   RENDER\n'));
+  const region = start > -1 && end > start ? PAGE.slice(start, end) : '';
+  assert('the combobox region can be lifted whole',
+    region.includes('function cbHtml(') && region.includes("document.addEventListener('mousedown'")
+    && region.includes("document.addEventListener('click'"));
+
+  const harness = [
+    `var GENERAL = 'purchase_orders';
+     var PO_SOURCE = ['turf', 'paving', 'kiewit'];
+     var PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree' };
+     var sourceDivs = [{ division: 'paving', label: 'Paving', projects: [{ id: 'p1', name: 'Route 9', jobNumber: '2201', codes: [
+       { cost_code: '100', sub_code: 'Mobilization', description: '' },
+       { cost_code: '420', sub_code: 'Base',    description: 'Stone base' },
+       { cost_code: '420', sub_code: 'Surface', description: 'Asphalt surface' },
+       { cost_code: '510', sub_code: 'Stone',   description: 'Rip rap' },
+     ] }] }];
+     var catalog = {
+       vendors:   [{ name: 'Fastenal' }, { name: 'Home Depot' }, { name: 'Tri-State Aggregates & Supply Co' }],
+       employees: [{ name: 'Dana Ruiz' }, { name: 'Lee Park' }],
+     };
+     var purchaseOrders = [{ id: 'po1', po_number: 'PO-0001', _division: 'paving', project_id: 'p1',
+       cost_code: '420', sub_code: 'Base', supplier: 'Home Depot', lines: [{ id: 'l1', employee: '' }] }];
+     var fctUser = { username: 'tester' };
+     var DIV_COLORS = { turf: 'var(--div-turf)', paving: 'var(--div-paving)', kiewit: 'var(--div-kiewit)' };
+     var saves = [], renders = 0;
+     function capsFor() { return { canEdit: true, canDelete: true }; }
+     function savePO(po, opts) {
+       saves.push({ immediate: !!(opts && opts.immediate), supplier: po.supplier, code: po.cost_code + '||' + po.sub_code });
+     }
+     function render() { renders++; }
+     function recalcLineTax() {}
+     function updateTotalsInPlace() {}`,
+    ...['esc', 'isTyping', 'listDivs', 'divMeta', 'projectsFor', 'projectFor', 'pickableProjects',
+        'projectOptionLabel', 'codesFor', 'codeLabel', 'codeValue', 'subCodePickerHTML', 'vendorPickerHTML',
+        'receivedByPickerHTML', 'updateCodeInPlace', 'cardJobLineHTML', 'divChipHTML', 'divColor', 'divLabel',
+        'setSubCode', 'setField', 'setLineField', 'onScanDivision', 'onScanProject', 'resetScanCode']
+      .map(n => requireFn(PAGE, n, 'purchase-orders.html')),
+    region,
+  ].join('\n\n');
+
+  const dom = new JSDOM('<!doctype html><body><table><tbody><tr id="row"></tr></tbody></table>' +
+    '<div id="cards"></div><input id="elsewhere"><div id="sheet"></div></body>',
+    { url: 'http://localhost/', runScripts: 'dangerously' });
+  const { window } = dom;
+  const doc = window.document;
+  // jsdom lays nothing out, and has no scrollIntoView to scroll a list with.
+  window.Element.prototype.scrollIntoView = function () {};
+  window.eval(harness);
+  // The order as the table shows it, and as its card does: both are in the
+  // page at once, whichever is on screen.
+  window.eval(`document.getElementById('row').innerHTML =
+    '<td>' + subCodePickerHTML(purchaseOrders[0]) + '</td>' +
+    '<td>' + vendorPickerHTML(purchaseOrders[0]) + '</td>' +
+    '<td>' + receivedByPickerHTML(purchaseOrders[0], purchaseOrders[0].lines[0]) + '</td>';
+    document.getElementById('cards').innerHTML =
+      '<div class="meta" id="card-job-po1">' + cardJobLineHTML(purchaseOrders[0]) + '</div>' +
+      subCodePickerHTML(purchaseOrders[0]);`);
+
+  const box   = list => doc.querySelector('.cb[data-list="' + list + '"] .cb-input');
+  const menu  = el => [...el.nextElementSibling.querySelectorAll('.cb-opt')].map(o => o.textContent);
+  const hi    = el => { const h = el.nextElementSibling.querySelector('.cb-opt.hi'); return h ? h.textContent : null; };
+  const type  = (el, text) => { el.value = text; el.dispatchEvent(new window.Event('input', { bubbles: true })); };
+  const key   = (el, k) => el.dispatchEvent(new window.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+  const state = () => window.eval('({ po: purchaseOrders[0], saves: saves.slice(), renders: renders })');
+  const settle = () => new Promise(r => setTimeout(r, 150));   // past the 120ms blur commit
+  const mouse = (el, type, button) =>
+    el.dispatchEvent(new window.MouseEvent(type, { bubbles: true, cancelable: true, button: button || 0 }));
+  const elsewhere = doc.getElementById('elsewhere');
+
+  // ── Cost / Sub Code ──
+  const code = box('codes');
+  const cardCode = doc.querySelector('#cards .cb[data-list="codes"] .cb-input');
+  const cardLine = doc.getElementById('card-job-po1');
+  assert('the code cell is a search over the job\'s codes, not a <select>',
+    Boolean(code) && code.closest('.cb').dataset.po === 'po1' && !doc.querySelector('#row select'));
+  assert('  showing the order\'s code by its label', code.value === '420 / Base — Stone base', code.value);
+  assert('  with the code itself behind it', code.dataset.cbValue === '420||Base', code.dataset.cbValue);
+
+  code.focus();
+  assert('focusing it lists the job\'s codes',
+    menu(code).join(' | ') === '100 / Mobilization | 420 / Base — Stone base | 420 / Surface — Asphalt surface | 510 / Stone — Rip rap',
+    menu(code).join(' | '));
+  assert('  with the order\'s own code highlighted', hi(code) === '420 / Base — Stone base', hi(code));
+  type(code, 'stone');
+  assert('typing narrows to the codes it appears in',
+    menu(code).join(' | ') === '420 / Base — Stone base | 510 / Stone — Rip rap', menu(code).join(' | '));
+  type(code, 'rip 510');
+  assert('  matching every word, in any order', menu(code).join(' | ') === '510 / Stone — Rip rap', menu(code).join(' | '));
+  assert('  and a search writes nothing', state().saves.length === 0 && state().po.cost_code === '420');
+  type(code, 'zzz');
+  assert('a search with no hit says so',
+    code.nextElementSibling.textContent === 'No code on this job matches', code.nextElementSibling.textContent);
+
+  type(code, 'rip');
+  key(code, 'Enter');
+  let s = state();
+  assert('Enter takes the highlighted code', s.po.cost_code === '510' && s.po.sub_code === 'Stone', JSON.stringify(s.po));
+  assert('  saved straight away', s.saves.length === 1 && s.saves[0].immediate && s.saves[0].code === '510||Stone',
+    JSON.stringify(s.saves));
+  assert('  and the box shows its label', code.value === '510 / Stone — Rip rap', code.value);
+  await settle();
+  assert('  nothing is re-rendered for it', state().renders === 0, state().renders);
+  assert('  the same order\'s box on the other surface shows the new code too',
+    cardCode.value === '510 / Stone — Rip rap' && cardCode.dataset.cbValue === '510||Stone', cardCode.value);
+  assert('  and so does the card\'s job line', /510 \/ Stone/.test(cardLine.textContent), cardLine.textContent);
+  assert('  and the blur after it writes nothing more', state().saves.length === 1, state().saves.length);
+
+  code.focus(); type(code, 'asph'); code.blur(); await settle();
+  s = state();
+  assert('half-typed text that names no code goes back to the order\'s code',
+    code.value === '510 / Stone — Rip rap' && code.dataset.cbValue === '510||Stone' && s.po.cost_code === '510',
+    code.value);
+  assert('  without a write', s.saves.length === 1, s.saves.length);
+
+  code.focus(); type(code, '420 / surface'); code.blur(); await settle();
+  s = state();
+  assert('the bare pair typed in full is taken without its description',
+    s.po.sub_code === 'Surface' && code.value === '420 / Surface — Asphalt surface', code.value);
+
+  code.focus(); type(code, ''); key(code, 'Enter'); await settle();
+  s = state();
+  assert('emptying the box and pressing Enter clears the code — rather than taking the first entry',
+    s.po.cost_code === '' && s.po.sub_code === '', JSON.stringify(s.po));
+  assert('  on both surfaces', cardCode.value === '' && !cardCode.dataset.cbValue
+    && !/\//.test(cardLine.textContent), cardLine.textContent);
+
+  // Tab commits and moves on in one keystroke. A synthetic keydown has no
+  // default action, so the move is made by hand.
+  code.focus(); type(code, 'mobil'); key(code, 'Tab'); elsewhere.focus(); await settle();
+  s = state();
+  assert('Tab takes the code too', s.po.cost_code === '100' && s.po.sub_code === 'Mobilization', JSON.stringify(s.po));
+  elsewhere.blur(); await settle();
+  assert('  and nothing is rebuilt — not under the field the focus moved to, nor once it leaves',
+    state().renders === 0, state().renders);
+
+  // The old <select> kept a code the job no longer carries as an extra
+  // option, so the order still showed it. The box has to keep that promise.
+  window.eval("purchaseOrders[0].cost_code = '999'; purchaseOrders[0].sub_code = 'Gone';" +
+    "document.querySelector('.cb[data-list=codes]').parentNode.innerHTML = subCodePickerHTML(purchaseOrders[0]);");
+  const gone = box('codes');
+  assert('a code the job no longer carries still labels its order',
+    gone.value === '999 / Gone (not on this job)', gone.value);
+  const savesBefore = state().saves.length;
+  gone.focus(); gone.blur(); await settle();
+  assert('  and survives a focus and blur that changed nothing',
+    state().po.cost_code === '999' && state().saves.length === savesBefore, JSON.stringify(state().po));
+
+  // ── Vendor ──
+  const vendor = box('vendors');
+  vendor.focus();
+  assert('the vendor box lists the catalogue\'s vendors',
+    menu(vendor).join(' | ') === 'Fastenal | Home Depot | Tri-State Aggregates & Supply Co', menu(vendor).join(' | '));
+  assert('  with the order\'s vendor highlighted', hi(vendor) === 'Home Depot', hi(vendor));
+  type(vendor, 'Tri');
+  assert('a vendor is written as it is typed, as the plain box wrote it', state().po.supplier === 'Tri', state().po.supplier);
+  type(vendor, 'state');
+  assert('  matching inside a name, not only at its start',
+    menu(vendor).join(' | ') === 'Tri-State Aggregates & Supply Co', menu(vendor).join(' | '));
+  // Free text only suggests. Tab there still means the next field, and a
+  // name that a longer entry contains is a real name in its own right.
+  assert('  suggested, not chosen: a partial match is not highlighted', hi(vendor) === null, hi(vendor));
+  key(vendor, 'Enter');
+  assert('so Enter keeps what was typed', state().po.supplier === 'state' && vendor.value === 'state',
+    state().po.supplier);
+  await settle();
+  vendor.focus(); type(vendor, 'state');
+  const rowBefore = vendor.nextElementSibling.querySelector('.cb-opt');
+  key(vendor, 'ArrowDown');
+  assert('ArrowDown highlights the suggestion', hi(vendor) === 'Tri-State Aggregates & Supply Co', hi(vendor));
+  assert('  restyling the row it lands on, not rebuilding the list',
+    vendor.nextElementSibling.querySelector('.cb-opt') === rowBefore
+    && vendor.getAttribute('aria-activedescendant') === rowBefore.id);
+  key(vendor, 'Enter');
+  assert('  for Enter to take it',
+    state().po.supplier === 'Tri-State Aggregates & Supply Co' && vendor.value === 'Tri-State Aggregates & Supply Co',
+    state().po.supplier);
+  await settle();
+  vendor.focus(); type(vendor, 'home depot');
+  assert('the same name typed in other capitals is chosen for it', hi(vendor) === 'Home Depot', hi(vendor));
+  key(vendor, 'Tab'); elsewhere.focus(); await settle();
+  assert('  and Tab writes it as listed', state().po.supplier === 'Home Depot' && vendor.value === 'Home Depot',
+    state().po.supplier);
+
+  vendor.focus(); type(vendor, 'Acme Rentals');
+  assert('a vendor not on the list is kept as typed', state().po.supplier === 'Acme Rentals', state().po.supplier);
+  assert('  and the list says it will be', vendor.nextElementSibling.textContent === 'No match — saved as typed',
+    vendor.nextElementSibling.textContent);
+  vendor.blur(); await settle();
+  assert('  leaving the box keeps it', state().po.supplier === 'Acme Rentals' && vendor.value === 'Acme Rentals');
+
+  let escapes = 0;
+  doc.addEventListener('keydown', e => { if (e.key === 'Escape') escapes++; });
+  vendor.focus(); type(vendor, 'Fast'); key(vendor, 'Escape'); await settle();
+  assert('Escape puts the vendor back, the write included',
+    state().po.supplier === 'Acme Rentals' && vendor.value === 'Acme Rentals', state().po.supplier);
+  assert('  and goes no further, so it cannot close the sheet the box sits in', escapes === 0, escapes);
+
+  // Coming back to the window refocuses the box. That is not a new visit: what
+  // Escape goes back to, and what the list is narrowed to, both stand.
+  vendor.focus(); type(vendor, 'Fa');
+  vendor.dispatchEvent(new window.FocusEvent('focus'));
+  assert('the focus coming back with the window leaves the list as it was narrowed',
+    menu(vendor).join(' | ') === 'Fastenal', menu(vendor).join(' | '));
+  key(vendor, 'Escape'); await settle();
+  assert('  and Escape still goes back to what the box held before the typing',
+    state().po.supplier === 'Acme Rentals' && vendor.value === 'Acme Rentals', state().po.supplier);
+
+  // The pick is the click, not the press: a press hid the list under the
+  // pointer, and the release fell through to whatever lay beneath it.
+  vendor.focus(); type(vendor, 'fast');
+  const fastenal = vendor.nextElementSibling.querySelector('.cb-opt');
+  mouse(fastenal, 'mousedown');
+  assert('pressing on an entry does not take it yet, and keeps the list open',
+    state().po.supplier === 'fast' && !vendor.nextElementSibling.hidden, state().po.supplier);
+  mouse(fastenal, 'click', 2);
+  assert('  nor does a click of another button — a right-click to copy it',
+    state().po.supplier === 'fast' && !vendor.nextElementSibling.hidden, state().po.supplier);
+  mouse(fastenal, 'click');
+  assert('a click on an entry takes it', state().po.supplier === 'Fastenal' && vendor.value === 'Fastenal',
+    state().po.supplier);
+  await settle();
+
+  // ── Received By ──
+  const recv = box('employees');
+  recv.focus();
+  assert('an empty Received By opens with nothing highlighted', hi(recv) === null, hi(recv));
+  key(recv, 'Tab'); elsewhere.focus(); await settle();
+  assert('  so tabbing through it leaves it empty', state().po.lines[0].employee === '' && recv.value === '',
+    state().po.lines[0].employee);
+  recv.focus(); type(recv, 'Lee');
+  assert('a name is written to the delivery as it is typed', state().po.lines[0].employee === 'Lee');
+  key(recv, 'Tab'); elsewhere.focus(); await settle();
+  assert('  and Tab keeps it: a delivery taken by "Lee" does not become "Lee Park"',
+    state().po.lines[0].employee === 'Lee' && recv.value === 'Lee', state().po.lines[0].employee);
+  recv.focus(); type(recv, 'lee'); key(recv, 'ArrowDown'); key(recv, 'Enter'); await settle();
+  assert('ArrowDown then Enter takes the listed name', state().po.lines[0].employee === 'Lee Park',
+    state().po.lines[0].employee);
+
+  // ── Ids ──
+  // The ids reach the box through data- attributes, never a handler, so a
+  // crafted one is inert text rather than markup.
+  const hostile = 'x" onfocus="alert(1)';
+  window.eval('var hostileHtml = vendorPickerHTML(' + JSON.stringify({ id: hostile, _division: 'paving', supplier: 'A' }) + ');');
+  const holder = doc.createElement('div');
+  holder.innerHTML = window.hostileHtml;
+  assert('a quote in an order id cannot break out of the box\'s markup',
+    holder.querySelector('.cb').dataset.po === hostile
+    && holder.querySelector('input').getAttribute('onfocus') === 'cbOnFocus(this)', window.hostileHtml);
+
+  // ── The scan sheet ──
+  window.eval(`document.getElementById('sheet').innerHTML =
+    '<select id="sc-division"><option value="paving">Paving</option></select>' +
+    '<select id="sc-project"><option value="">General — no job</option></select>' +
+    cbHtml('scan-codes', '', { placeholder: '— pick a job first —', attrs: 'id="sc-code"', disabled: true });
+    onScanDivision('paving');`);
+  const sc = doc.getElementById('sc-code');
+  const resolveScan = () => window.eval(
+    "cbResolve(document.getElementById('sc-code'), cbOptionsFor(document.getElementById('sc-code').closest('.cb')))");
+  assert('the scan sheet\'s code box waits for a job', sc.disabled && sc.placeholder === '— pick a job first —');
+  doc.getElementById('sc-project').value = 'p1';
+  window.eval("onScanProject('p1')");
+  assert('  and opens for one with codes', !sc.disabled && sc.placeholder === 'Search codes…', sc.placeholder);
+  sc.focus(); type(sc, 'base'); sc.blur(); await settle();
+  assert('a half-typed code stays in the sheet\'s box, for its save to refuse',
+    sc.value === 'base' && resolveScan() === null, sc.value);
+  sc.focus(); type(sc, 'base'); key(sc, 'Enter'); await settle();
+  assert('  and a picked one is what the save books', (resolveScan() || {}).value === '420||Base',
+    JSON.stringify(resolveScan()));
+  window.eval("onScanProject('')");
+  assert('changing the job empties the box and closes it again',
+    sc.value === '' && !sc.dataset.cbValue && sc.disabled && sc.placeholder === 'No job — no code');
 }
 
 console.log(`\n${failed === 0 ? 'All checks passed.' : failed + ' check(s) failed.'}`);
