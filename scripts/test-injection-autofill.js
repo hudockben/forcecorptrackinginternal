@@ -496,10 +496,16 @@ async function refreshTests() {
   console.log('\n[POST ?action=refresh-rates]');
   const handler = require(path.resolve(__dirname, '..', 'api', 'timesheet-entries.js'));
 
-  function run(rows, { equipmentTable = [], prevailingWage = false } = {}) {
+  function run(rows, { equipmentTable = [], prevailingWage = false, query = {} } = {}) {
     const updates = [];
+    const scans = [];    // the values each daily_tracking scan was sent
+    const audits = [];
     CURRENT_SQL = (strings, ...values) => {
       const q = strings.join(' ').replace(/\s+/g, ' ').trim();
+      if (q.startsWith('INSERT INTO timesheet_audit_log')) {
+        audits.push(JSON.parse(values[5]));
+        return Promise.resolve([]);
+      }
       if (q.startsWith('SELECT value FROM app_data')) {
         return Promise.resolve([{ value: { employees: ROSTER, equipment: [] } }]);
       }
@@ -507,7 +513,7 @@ async function refreshTests() {
         return Promise.resolve((values[0] || []).map(k => ({ key: k, value: { prevailing_wage: prevailingWage } })));
       }
       if (q.includes('FROM equipment_list'))   return Promise.resolve(equipmentTable);
-      if (q.includes('FROM daily_tracking dt')) return Promise.resolve(rows);
+      if (q.includes('FROM daily_tracking dt')) { scans.push({ q, values }); return Promise.resolve(rows); }
       if (q.startsWith('UPDATE daily_tracking')) {
         // Positional, so this list must track the SET clause's order.
         // field_type sits between rate and equip_unit_cost: the backfill
@@ -525,8 +531,8 @@ async function refreshTests() {
       setHeader() {}, status(c) { this.statusCode = c; return this; },
       json(b) { this.body = b; return this; }, end() { return this; },
     };
-    return handler({ method: 'POST', query: { action: 'refresh-rates' }, body: {} }, res)
-      .then(() => ({ res, updates }));
+    return handler({ method: 'POST', query: { action: 'refresh-rates', ...query }, body: {} }, res)
+      .then(() => ({ res, updates, scans, audits }));
   }
 
   const row = over => Object.assign({
@@ -723,6 +729,103 @@ async function refreshTests() {
     const { res } = await run([]);
     assert('an empty range is a clean no-op', res.body.ok && res.body.scanned === 0 && res.body.updated === 0);
   }
+
+  // ?unpriced=1 — what a division tab sends when Manage Lists closes or Reload
+  // is pressed. The man approved before his rate was typed in (Rogersphil on
+  // Franklin Regional, at $0 on every row) gets the rate; nothing else moves.
+  const UNPRICED = { unpriced: '1', division: 'turf' };
+  {
+    const { res, updates, scans, audits } = await run([row({
+      employee: 'Zach Brewer', job_class: 'Operator', rate: 0,
+    })], { query: UNPRICED });
+    assert('unpriced: a $0 row takes the rate now on the list',
+      updates.length === 1 && updates[0].rate === 32.5, JSON.stringify(updates[0] || null));
+    assert('  and the run is recorded, marked as the blank fill',
+      audits.length === 1 && audits[0].unpriced_only === true && audits[0].division === 'turf'
+      && audits[0].updated === 1);
+    assert('  and the scan was told to look at that division\'s $0 rows only',
+      scans.length === 1 && scans[0].values.includes('turf') && scans[0].values.includes(true)
+      && /COALESCE\(dt\.rate, 0\) = 0/.test(scans[0].q)
+      && /COALESCE\(dt\.division, 'turf'\)/.test(scans[0].q));
+    assert('  and reports what it filled', res.body.updated === 1);
+  }
+  {
+    const { updates } = await run([row({ employee: 'Zach Brewer', rate: 0 })],
+      { query: UNPRICED, prevailingWage: true });
+    assert('unpriced: a $0 row on a prevailing job takes the prevailing rate',
+      updates.length === 1 && updates[0].rate === 58);
+  }
+  {
+    const { updates } = await run([row({ employee: 'Zach Brewer', rate: 0, field_type: 'Travel' })],
+      { query: UNPRICED, prevailingWage: true });
+    assert('unpriced: a $0 travel row takes the standard rate',
+      updates.length === 1 && updates[0].rate === 32.5 && updates[0].field_type === 'Travel');
+  }
+  {
+    // A raise since the work was approved is not a reason to restate it. Only
+    // the full Refresh Rates in Payroll, with its warning, does that.
+    const { updates } = await run([row({ employee: 'Zach Brewer', job_class: 'Operator', rate: 30 })],
+      { query: UNPRICED });
+    assert('unpriced: a row that already has a rate keeps it', updates.length === 0,
+      JSON.stringify(updates[0] || null));
+  }
+  {
+    const { updates } = await run([row({
+      rate: 0, field_type: 'Haul — To/From Site', haul_type: 'off_site', employee: 'Zach Brewer',
+    })], { query: UNPRICED });
+    assert('unpriced: a stamped haul keeps its $0', updates.length === 0);
+  }
+  {
+    // A haul by the rule but never stamped. The full sweep stamps it and moves
+    // the man's prevailing hours; the blank fill must do neither.
+    const { updates } = await run([row({
+      rate: 0, haul_type: 'off_site', equipment: 'Triaxle Dump', equip_hours: 8,
+    })], { query: UNPRICED });
+    assert('unpriced: an unstamped haul is left for the full sweep', updates.length === 0,
+      JSON.stringify(updates[0] || null));
+  }
+  {
+    // The driver changed his answer: stamped, but no longer a haul. Un-stamping
+    // moves his prevailing hours too, so that stays with Payroll's sweep.
+    const { updates } = await run([row({ rate: 0, field_type: 'Haul — On Site', haul_type: null })],
+      { query: UNPRICED });
+    assert('unpriced: a stamped row is never un-stamped by the blank fill', updates.length === 0);
+  }
+  {
+    const { updates } = await run([row({ equipment: 'Pickup Truck', equip_unit_cost: 15, rate: 0 })],
+      { query: UNPRICED, equipmentTable: [{ name: 'Pickup Truck', unit_cost: 18.75 }] });
+    assert('unpriced: an equipment price already on the row is kept',
+      updates.length === 1 && updates[0].equip_unit_cost === 15 && updates[0].rate === 32.5);
+  }
+  {
+    const { updates } = await run([row({ equipment: 'Pickup Truck', equip_unit_cost: 0, rate: 0 })],
+      { query: UNPRICED, equipmentTable: [{ name: 'Pickup Truck', unit_cost: 18.75 }] });
+    assert('unpriced: a missing equipment price is filled with the rate',
+      updates.length === 1 && updates[0].equip_unit_cost === 18.75);
+  }
+  {
+    // Runs on every Manage Lists close, so a run that fills nothing must not
+    // leave a line in the audit log each time.
+    const { audits } = await run([row({ employee: 'Zach Brewer', job_class: 'Operator', rate: 30 })],
+      { query: UNPRICED });
+    assert('unpriced: a run that fills nothing writes no audit record', audits.length === 0);
+  }
+  {
+    const { res, updates } = await run([row({ username: 'ghostuser', employee: 'ghostuser' })],
+      { query: UNPRICED });
+    assert('unpriced: an unmatched login is still left alone and reported',
+      updates.length === 0 && res.body.unresolved.length === 1);
+  }
+  {
+    const { scans, audits } = await run([row()]);
+    assert('the full sweep is unchanged: no division filter, every rate, audited',
+      scans[0].values.includes(null) && scans[0].values.includes(false) && audits.length === 1);
+  }
+  {
+    const { scans } = await run([], { query: { unpriced: '1', division: 'quarry' } });
+    assert('a division the sweep does not cover is not passed through',
+      scans[0].values.includes(null) && !scans[0].values.includes('quarry'));
+  }
   {
     // Non-admins must not be able to rewrite cost data.
     const denied = { statusCode: 200, body: null, setHeader() {},
@@ -731,6 +834,12 @@ async function refreshTests() {
     await handler({ method: 'POST', query: { action: 'refresh-rates' }, body: {} }, denied);
     NEXT_AUTH = null;
     assert('a non-admin is refused', denied.statusCode === 403);
+    // The blank fill is the same act on fewer rows, so it is the same gate.
+    const denied2 = { ...denied, statusCode: 200 };
+    NEXT_AUTH = { companyCode: 'FCT', userId: 2, username: 'field', payrollAdmin: false };
+    await handler({ method: 'POST', query: { action: 'refresh-rates', unpriced: '1', division: 'turf' }, body: {} }, denied2);
+    NEXT_AUTH = null;
+    assert('  and so is the blank fill', denied2.statusCode === 403);
   }
 }
 
