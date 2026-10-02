@@ -19388,7 +19388,7 @@ function _renderFinancialsTable() {
           ${ranged ? `<th title="Cost of the daily entries dated inside ${esc(_finRangeLabel())}">Actual in Range</th>` : ''}
           <th title="Estimated final cost — never less than what has already been spent">Projected Cost</th>
           <th title="Contract minus projected final cost">Projected Profit</th>
-          <th title="Contract value minus actual cost. Final once the job is complete.">Actual Profit</th>
+          <th title="Contract value minus actual cost. Final once the job is complete.">Gross Profit</th>
         </tr></thead>
         <tbody>${body}</tbody>
         <tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
@@ -19407,7 +19407,7 @@ function _renderFinancialsTable() {
     </div>
     <p style="font-size:0.72rem;color:var(--muted);margin-top:0.6rem;line-height:1.5">
       Projected Profit is contract value minus <strong>projected</strong> final cost, matching the project pages.
-      Actual Profit is contract value minus cost <strong>spent so far</strong> — blank until a job has spend, the final
+      Gross Profit is contract value minus cost <strong>spent so far</strong> — blank until a job has spend, the final
       figure once it is complete, and high in between on jobs that have barely started.
       ${t.noContract ? `${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount, so ${t.noContract === 1 ? 'it is' : 'they are'} excluded from both profit totals.` : ''}
       ${ranged ? `The date range keeps the jobs with a daily entry dated inside it. Every other column is still the whole job;
@@ -19418,7 +19418,7 @@ function _renderFinancialsTable() {
 
 // Column order is shared by the table, the export and the print view. A date
 // range adds Actual in Range straight after Actual in all three.
-const FIN_COLUMNS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Actual Profit'];
+const FIN_COLUMNS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Gross Profit'];
 const _finColumns = ranged => ranged
   ? FIN_COLUMNS.flatMap(c => c === 'Actual' ? [c, 'Actual in Range'] : [c])
   : FIN_COLUMNS;
@@ -19526,7 +19526,7 @@ function printFinancials() {
       <th>Job Name</th><th>Job #</th><th>Status</th>
       <th class="n">Contract Value</th><th class="n">Bid Budget</th><th class="n">Actual</th>
       ${ranged ? '<th class="n">Actual in Range</th>' : ''}
-      <th class="n">Projected Cost</th><th class="n">Projected Profit</th><th class="n">Actual Profit</th>
+      <th class="n">Projected Cost</th><th class="n">Projected Profit</th><th class="n">Gross Profit</th>
     </tr></thead>
     <tbody>${body}</tbody>
     <tfoot><tr>
@@ -19540,7 +19540,7 @@ function printFinancials() {
       <td class="n">${signed(t.actProfit)}${pct(t.actProfit, t.actBase)}</td>
     </tr></tfoot>
   </table>
-  <p class="note">Projected Profit is contract value minus projected final cost. Actual Profit is contract value minus cost spent so far — blank until a job has spend, final once it is complete.${t.noContract ? ` ${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount and ${t.noContract === 1 ? 'is' : 'are'} excluded from both profit totals.` : ''}${ranged ? ' The date range keeps the jobs with a daily entry dated inside it; every other column is the whole job, and Actual in Range is the cost of just the entries dated inside the range.' : ''}${filterNote ? ' Totals cover the filtered rows only.' : ''}</p>
+  <p class="note">Projected Profit is contract value minus projected final cost. Gross Profit is contract value minus cost spent so far — blank until a job has spend, final once it is complete.${t.noContract ? ` ${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount and ${t.noContract === 1 ? 'is' : 'are'} excluded from both profit totals.` : ''}${ranged ? ' The date range keeps the jobs with a daily entry dated inside it; every other column is the whole job, and Actual in Range is the cost of just the entries dated inside the range.' : ''}${filterNote ? ' Totals cover the filtered rows only.' : ''}</p>
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`);
   win.document.close();
