@@ -1734,6 +1734,11 @@ ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS claim_token TEXT;
 ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS resume_state JSONB;
 ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS resume_count INTEGER NOT NULL DEFAULT 0;
 
+-- A one-email-per-job report (project_id '*') sent for the jobs picked here
+-- rather than every job marked In Progress: [{ "id": "…", "name": "…" }],
+-- the name kept for the list. NULL means every In Progress job.
+ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS picked_jobs JSONB;
+
 -- One row per send attempt, scheduled or "Send now". The schedule row keeps
 -- only the latest outcome; this is what answers "did Monday's go out?" a
 -- week later. Pruned after 180 days by the cron.

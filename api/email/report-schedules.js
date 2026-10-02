@@ -34,6 +34,7 @@ const jobFin = require('../lib/job-financials');
 
 const MAX_SCHEDULES = 200;    // per company
 const MAX_GROUPS    = 10;     // per schedule
+const MAX_PICKED_JOBS = 100;  // jobs ticked on one schedule
 // Recent sends, per division: a quiet division's weekly report must not be
 // pushed out of the history by a busy one's dailies.
 const RUNS_PER_DIVISION = 25;
@@ -81,6 +82,7 @@ function shape(r) {
     division:      r.division,
     project_id:    r.project_id,
     project_name:  r.project_name,
+    picked_jobs:   Array.isArray(r.picked_jobs) && r.picked_jobs.length ? r.picked_jobs : null,
     options:       r.options || {},
     frequency:     r.frequency,
     days_of_week:  r.days_of_week,
@@ -127,6 +129,21 @@ function normalizeBody(body, payload) {
     project_id = pid && pid !== '*' ? pid : null;
   }
   if (project_id && project_id !== '*') project_name = str(b.project_name, 200) || null;
+  // One email per job, for the jobs ticked — or, with none, every job marked
+  // In Progress. Each job keeps its name for the list.
+  let picked_jobs = null;
+  if (def.scope === 'job' && project_id === '*' && Array.isArray(b.picked_jobs)) {
+    const seen = new Set();
+    picked_jobs = [];
+    for (const j of b.picked_jobs) {
+      const id = str(j && j.id, 120);
+      if (!id || id === '*' || seen.has(id)) continue;
+      seen.add(id);
+      picked_jobs.push({ id, name: str(j && j.name, 200) || null });
+    }
+    if (picked_jobs.length > MAX_PICKED_JOBS) return { error: `Pick at most ${MAX_PICKED_JOBS} jobs.` };
+    if (!picked_jobs.length) picked_jobs = null;
+  }
 
   const inOpts = b.options && typeof b.options === 'object' ? b.options : {};
   const options = {};
@@ -153,6 +170,7 @@ function normalizeBody(body, payload) {
       division:    def.division,
       project_id,
       project_name,
+      picked_jobs,
       options,
       ...occ.value,
       group_ids,
@@ -329,12 +347,13 @@ module.exports = async (req, res) => {
       const next = v.enabled ? T.nextRunAt(v, new Date()) : null;
       const rows = await sql`
         INSERT INTO report_schedules
-          (company_code, report_type, division, project_id, project_name, options,
+          (company_code, report_type, division, project_id, project_name, picked_jobs, options,
            frequency, days_of_week, day_of_month, send_time, timezone, group_ids,
            subject, note, attach_pdf, enabled, run_as_user_id, run_as_username,
            next_run_at, created_by, created_by_username)
         VALUES
-          (${company}, ${v.report_type}, ${v.division}, ${v.project_id}, ${v.project_name}, ${JSON.stringify(v.options)}::jsonb,
+          (${company}, ${v.report_type}, ${v.division}, ${v.project_id}, ${v.project_name},
+           ${v.picked_jobs ? JSON.stringify(v.picked_jobs) : null}::jsonb, ${JSON.stringify(v.options)}::jsonb,
            ${v.frequency}, ${v.days_of_week ? JSON.stringify(v.days_of_week) : null}::jsonb, ${v.day_of_month},
            ${v.send_time}, ${v.timezone}, ${JSON.stringify(v.group_ids)}::jsonb,
            ${v.subject}, ${v.note}, ${v.attach_pdf}, ${v.enabled}, ${payload.userId}, ${payload.username || null},
@@ -399,6 +418,7 @@ module.exports = async (req, res) => {
           division      = ${v.division},
           project_id    = ${v.project_id},
           project_name  = ${v.project_name},
+          picked_jobs   = ${v.picked_jobs ? JSON.stringify(v.picked_jobs) : null}::jsonb,
           options       = ${JSON.stringify(v.options || {})}::jsonb,
           frequency     = ${v.frequency},
           days_of_week  = ${v.days_of_week ? JSON.stringify(v.days_of_week) : null}::jsonb,

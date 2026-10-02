@@ -634,6 +634,39 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
       allRuns.length === 1 && allRuns[0].project_name === null && allRuns[0].project_id === null, JSON.stringify(allRuns));
   }
 
+  console.log('\nPicked jobs');
+  {
+    let r = await call('POST', {}, { ...base, project_id: '*', picked_jobs: [
+      { id: 'j1', name: 'Maple Ave' }, { id: 'j2', name: 'Oak St' }, { id: 'j1', name: 'Maple Ave' }, { id: '*' }, { id: '' }] }, BOSS);
+    assert('a schedule can send for the jobs ticked, each once',
+      r.statusCode === 200 && JSON.stringify(r.body.schedule.picked_jobs) === '[{"id":"j1","name":"Maple Ave"},{"id":"j2","name":"Oak St"}]'
+        && r.body.schedule.project_id === '*', JSON.stringify(r.body));
+    const pid = r.body.schedule.id;
+    let row1 = await row(pid);
+    assert('…stored as the jobs and their names', JSON.stringify(row1.picked_jobs) === '[{"id":"j1","name":"Maple Ave"},{"id":"j2","name":"Oak St"}]');
+    const spec = runner.specFor(row1, { scope: 'job', type: 'turf_daily_pm' }, new Date());
+    assert('the run is told which jobs', spec.projectId === '*' && JSON.stringify(spec.pickedJobs) === '[{"id":"j1","name":"Maple Ave"},{"id":"j2","name":"Oak St"}]',
+      JSON.stringify(spec));
+    await call('PUT', { id: pid }, { enabled: false }, BOSS);
+    await call('PUT', { id: pid }, { enabled: true }, BOSS);
+    assert('switching it off and on keeps the jobs ticked', JSON.stringify((await row(pid)).picked_jobs) === JSON.stringify(row1.picked_jobs));
+    await runner.recordRun(sql, await row(pid), { status: 'sent', sent: 2, total: 2, recipientCount: 2, message: 'Sent 2 reports.' },
+      { kind: 'manual', token: null, triggeredBy: 'boss', startedAt: new Date(), now: new Date() });
+    const g = await call('GET', {}, null, BOSS);
+    assert('its sends read as the picked jobs in the history', g.body.runs.some(x => Number(x.schedule_id) === Number(pid) && x.project_name === '2 picked jobs'),
+      JSON.stringify(g.body.runs.filter(x => Number(x.schedule_id) === Number(pid))));
+    r = await call('PUT', { id: pid }, { ...base, project_id: '*', picked_jobs: [] }, BOSS);
+    assert('none ticked is every In Progress job', r.statusCode === 200 && r.body.schedule.picked_jobs === null && (await row(pid)).picked_jobs === null);
+    r = await call('PUT', { id: pid }, { ...base, project_id: 'j1', project_name: 'Maple Ave', picked_jobs: [{ id: 'j2' }] }, BOSS);
+    assert('a single job is that job, whatever else came along', r.body.schedule.picked_jobs === null && r.body.schedule.project_id === 'j1');
+    r = await call('POST', {}, { ...base, report_type: 'turf_daily_summary', project_id: '', picked_jobs: [{ id: 'j1' }] }, BOSS);
+    assert('a report that is one report for all jobs takes no picks', r.statusCode === 200 && r.body.schedule.picked_jobs === null, JSON.stringify(r.body));
+    await call('DELETE', { id: r.body.schedule.id }, null, BOSS);
+    r = await call('POST', {}, { ...base, project_id: '*', picked_jobs: Array.from({ length: 101 }, (_, i) => ({ id: 'x' + i })) }, BOSS);
+    assert('at most 100 jobs on one schedule', r.statusCode === 400 && /at most 100 jobs/.test(r.body.error), JSON.stringify(r.body));
+    await call('DELETE', { id: pid }, null, BOSS);
+  }
+
   console.log('\nWhere a run has got to');
   {
     const mk = async over => (await call('POST', {}, { ...base, ...over }, BOSS)).body.schedule.id;
