@@ -460,8 +460,10 @@ ALTER TABLE purchase_orders   DROP CONSTRAINT IF EXISTS purchase_orders_division
 -- 'purchase_orders' is the central-purchasing division. Only its GENERAL
 -- (non-job) orders carry it: an order raised there against a job division is
 -- stored under that division, which is what puts it in that division's own
--- Purchase Orders tab without a second copy to reconcile.
-ALTER TABLE purchase_orders   ADD  CONSTRAINT purchase_orders_division_chk   CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany','purchase_orders'));
+-- Purchase Orders tab without a second copy to reconcile. 'quarry' is a
+-- purchasing division with no jobs — its orders are filed here but never cost
+-- a job, so daily_tracking_division_chk below deliberately does not admit it.
+ALTER TABLE purchase_orders   ADD  CONSTRAINT purchase_orders_division_chk   CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany','quarry','purchase_orders'));
 
 ALTER TABLE trucking_entries  DROP CONSTRAINT IF EXISTS trucking_entries_division_chk;
 ALTER TABLE trucking_entries  ADD  CONSTRAINT trucking_entries_division_chk  CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany'));

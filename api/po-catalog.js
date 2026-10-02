@@ -21,15 +21,19 @@ const {
   requireAuth,
   canAccessPODivision,
   PO_SOURCE_DIVISIONS,
+  PO_JOB_DIVISIONS,
 } = require('./lib/auth');
 
 // Blob-key prefixes per division. Jobs live at <prefix>project_<id>, the index
 // of live job ids at <prefix>projects_index, and the dropdown lists — vendors
-// and employees among them — at <prefix>lists.
+// and employees among them — at <prefix>lists. Quarry has the lists blob
+// (fct_quarry_lists, employees but no suppliers) and no jobs at all, so only
+// the PO_JOB_DIVISIONS have their projects read.
 const DIVISION_BLOBS = {
   turf:   { prefix: 'fct_',        label: 'Turf Management' },
   paving: { prefix: 'fct_paving_', label: 'Paving' },
   kiewit: { prefix: 'fct_kiewit_', label: 'Kiewit Pinetree' },
+  quarry: { prefix: 'fct_quarry_', label: 'Quarry' },
 };
 
 // A job blob can be large and a division can have many. This caps how many are
@@ -121,7 +125,8 @@ module.exports = async (req, res) => {
     const headKeys = [];
     for (const division of allowed) {
       const { prefix } = DIVISION_BLOBS[division];
-      headKeys.push(`${prefix}projects_index`, `${prefix}lists`);
+      headKeys.push(`${prefix}lists`);
+      if (PO_JOB_DIVISIONS.includes(division)) headKeys.push(`${prefix}projects_index`);
     }
     const heads = await readBlobs(sql, companyCode, headKeys);
 

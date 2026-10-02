@@ -5,15 +5,15 @@
  *
  * Run: node scripts/test-po-division.js
  *
- * The Purchase Orders division raises orders against turf, paving and kiewit
- * and stores each one in THAT division's list, so a purchasing user has to
+ * The Purchase Orders division raises orders against turf, paving, kiewit and
+ * quarry and stores each one in THAT division's list, so a purchasing user has to
  * reach lists it holds no role in. That is a deliberate hole in the division
  * wall, and these tests pin both halves of it: what it opens, and — far more
  * of them — what it does not.
  *
  * Covered:
- *  - canAccessPODivision / poDivisionsFor: purchasing reaches the three job
- *    divisions and nothing else; a job division gains nothing from it.
+ *  - canAccessPODivision / poDivisionsFor: purchasing reaches the four source
+ *    divisions and nothing else; a source division gains nothing from it.
  *  - requirePODivision: names its division, 403s outside the carve-out.
  *  - The endpoint guard: the full-list PUT stays behind a real division role,
  *    so purchasing can never wipe a division's list.
@@ -39,7 +39,7 @@ function assert(label, cond, detail) {
 const auth = require('../api/lib/auth');
 const {
   canAccessPODivision, poDivisionsFor, requirePODivision,
-  hasDivisionAccess, poCapabilities, PO_SOURCE_DIVISIONS, PO_GENERAL_DIVISION,
+  hasDivisionAccess, poCapabilities, PO_SOURCE_DIVISIONS, PO_JOB_DIVISIONS, PO_GENERAL_DIVISION,
 } = auth;
 const poSync = require('../api/lib/po-sync');
 
@@ -198,7 +198,12 @@ PO_SOURCE_DIVISIONS.forEach(d => {
 assert('purchasing reaches its own general list', canAccessPODivision(purchasing, PO_GENERAL_DIVISION) === true);
 assert('purchasing does NOT reach dust',          canAccessPODivision(purchasing, 'dust') === false);
 assert('purchasing does NOT reach trucking',      canAccessPODivision(purchasing, 'trucking') === false);
-assert('purchasing does NOT reach quarry',        canAccessPODivision(purchasing, 'quarry') === false);
+assert('purchasing reaches quarry',                canAccessPODivision(purchasing, 'quarry') === true);
+assert('which is a source division without jobs',
+  PO_SOURCE_DIVISIONS.includes('quarry') && !PO_JOB_DIVISIONS.includes('quarry'));
+assert('every job division is a source division',
+  PO_JOB_DIVISIONS.every(d => PO_SOURCE_DIVISIONS.includes(d)));
+assert('purchasing does NOT reach quarry sales',  canAccessPODivision(purchasing, 'quarry_sales') === false);
 assert('purchasing does NOT reach intercompany', canAccessPODivision(purchasing, 'intercompany') === false);
 assert('purchasing does NOT reach executive',    canAccessPODivision(purchasing, 'executive') === false);
 // A view-only purchasing role still resolves here — reading is the point, and
@@ -277,8 +282,8 @@ console.log('\n[poCapabilities — reaching a division is not permission to writ
 }
 
 console.log('\n[poDivisionsFor]');
-assert('purchasing sees all four lists',
-  JSON.stringify(poDivisionsFor(purchasing)) === JSON.stringify(['turf','paving','kiewit','purchase_orders']));
+assert('purchasing sees all five lists',
+  JSON.stringify(poDivisionsFor(purchasing)) === JSON.stringify(['turf','paving','kiewit','quarry','purchase_orders']));
 assert('paving user sees only paving',
   JSON.stringify(poDivisionsFor(pavingOnly)) === JSON.stringify(['paving']));
 assert('dust user sees none', poDivisionsFor(dustOnly).length === 0);
@@ -812,6 +817,50 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
   const genRows = [...st.daily.values()];
   assert('nothing was filed under a division daily_tracking cannot hold',
     !genRows.some(r => r.division === 'purchase_orders'), JSON.stringify(genRows));
+
+  console.log('\n[a quarry order carries no job]');
+  // Quarry is a source division with no projects, and daily_tracking's CHECK
+  // does not admit it. A job sent with a quarry order — a stale tab, a replayed
+  // request — must be cleared, not charged.
+  st = makeStore();
+  po = makePO({ id: 'q1', project_id: 'nojob', lines: [{ id: 'L1', qty: '4', unit_cost: '25' }] });
+  const qRes = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'quarry', po });
+  assert('the quarry order is stored', qRes.ok === true && st.getBlob(KEY('quarry')).length === 1);
+  assert('with its job cleared', po.project_id === '' && st.getBlob(KEY('quarry'))[0].project_id === '');
+  assert('and no cost row written', st.daily.size === 0, JSON.stringify([...st.daily.values()]));
+
+  // Moved there from a paving job: the job's rows go, and none come back.
+  st = makeStore();
+  po = makePO({ id: 'q2', project_id: 'pav1', lines: [{ id: 'L1', qty: '2', unit_cost: '5' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'paving', po });
+  assert('starts on a paving job', st.daily.size === 1);
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'quarry', po, from: 'paving' });
+  assert('moving it to quarry takes its cost off the paving job', st.daily.size === 0,
+    JSON.stringify([...st.daily.values()]));
+  assert('and it lives in quarry\'s list alone',
+    st.getBlob(KEY('quarry')).length === 1 && st.getBlob(KEY('paving')).length === 0);
+
+  // A quarry order can never own a cost row, so a link it arrives with points
+  // at somebody else's. Stored, it would count as owned on the next save — and
+  // emptying the line would delete that row by id, on whatever job it is.
+  st = makeStore();
+  st.daily.set('PAVROW', {
+    row_id: 'PAVROW', project_id: 'pav1', company_code: 'FCT', division: 'paving',
+    material: 'Paving\'s own row', material_cost: 750,
+  });
+  po = makePO({ id: 'q3', lines: [{ id: 'L1', qty: '1', unit_cost: '50', po_row_id: 'PAVROW' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'quarry', po });
+  assert('a link a quarry order arrives with is not stored',
+    po.lines[0].po_row_id === null && st.getBlob(KEY('quarry'))[0].lines[0].po_row_id === null,
+    JSON.stringify(st.getBlob(KEY('quarry'))[0].lines[0]));
+  po = makePO({ id: 'q3', lines: [{ id: 'L1', qty: '', unit_cost: '', po_row_id: 'PAVROW' }] });
+  const qEmpty = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'quarry', po });
+  assert('so emptying the line later cannot delete paving\'s row', st.daily.has('PAVROW'),
+    JSON.stringify(qEmpty.rows));
+  po = makePO({ id: 'q4', lines: [{ id: 'L1', qty: '1', unit_cost: '50' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'quarry', po });
+  await poSync.removePO(st.sql, { companyCode: 'FCT', division: 'quarry', poId: 'q3' });
+  assert('nor can deleting the order', st.daily.has('PAVROW'));
 
   console.log('\n[a client copy that lost its row link]');
   // The link from a delivery line to the job cost row it created lives in the

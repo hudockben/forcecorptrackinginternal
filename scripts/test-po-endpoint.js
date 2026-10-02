@@ -331,9 +331,9 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
   console.log('\n[a division no purchase order can be filed under]');
   {
     // normalizeDivision accepts all sixteen divisions and the access guard
-    // passes anyone holding a role in the one they named, but both mirror
-    // tables' CHECK constraints admit only the job divisions plus the general
-    // list. The INSERT that violated one ran AFTER the blob write committed:
+    // passes anyone holding a role in the one they named, but purchase_orders'
+    // CHECK admits only the source divisions plus the general list. The INSERT
+    // that violated it ran AFTER the blob write committed:
     // the order was stored, the caller was told "Database error", and the
     // retry hit the same wall forever.
     for (const method of ['POST', 'PUT', 'DELETE']) {
@@ -358,7 +358,7 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
     check('but a GET against it still answers', res.statusCode === 200, JSON.stringify(res.body));
   }
   {
-    // The four that ARE storable keep working.
+    // The four the full-list PUT has always served keep working.
     for (const division of ['turf', 'paving', 'kiewit', 'purchase_orders']) {
       const handler = loadEndpoint({ roles: { [division]: 'level3' } });
       const res = makeRes();
@@ -369,6 +369,90 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
       check(`${division} is still storable`, res.statusCode !== 400,
         division + ' -> ' + res.statusCode + ' ' + JSON.stringify(res.body));
     }
+  }
+
+  console.log('\n[quarry: purchasing files orders there, one at a time]');
+  {
+    // Quarry has no Purchase Orders tab, so nothing legitimately PUTs its whole
+    // list — central purchasing writes it through POST and DELETE. A PUT would
+    // let any quarry role, view-only included, replace every order filed there.
+    for (const level of ['level1', 'level3', 'admin']) {
+      const calls = [];
+      const sqlCalls = [];
+      const handler = loadEndpoint({ roles: { quarry: level }, calls,
+        sqlStub: async (...a) => { sqlCalls.push(a); return []; } });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'quarry', force: '1' }, headers: AUTHED,
+                      body: { purchaseOrders: [] } }, res);
+      check(`a quarry ${level} cannot replace quarry's whole list`, res.statusCode === 400,
+        res.statusCode + ' ' + JSON.stringify(res.body));
+      check(`  and nothing is written for the ${level}`, sqlCalls.length === 0 && calls.length === 0,
+        sqlCalls.length + ' sql call(s)');
+    }
+  }
+  {
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' } });
+    const res = makeRes();
+    await handler({ method: 'PUT', query: { division: 'quarry' }, headers: AUTHED,
+                    body: { purchaseOrders: [] } }, res);
+    check('nor can central purchasing', res.statusCode === 400 || res.statusCode === 403,
+      res.statusCode + ' ' + JSON.stringify(res.body));
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' }, calls });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'quarry' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('purchasing may raise an order in quarry', res.statusCode === 200, JSON.stringify(res.body));
+    check('  and it is filed under quarry', calls[0] && calls[0].args.division === 'quarry',
+      JSON.stringify(calls[0] && calls[0].args.division));
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' }, calls });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'paving', from: 'quarry' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('an order can move out of quarry onto a job division', res.statusCode === 200, JSON.stringify(res.body));
+    check('  naming quarry as where it came from', calls[0] && calls[0].args.from === 'quarry'
+      && calls[0].args.division === 'paving', JSON.stringify(calls[0] && calls[0].args));
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' }, calls });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'quarry', from: 'paving' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('and into quarry from one', res.statusCode === 200 && calls[0] && calls[0].args.from === 'paving',
+      JSON.stringify(res.body));
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' }, calls });
+    const res = makeRes();
+    await handler({ method: 'DELETE', query: { division: 'quarry', id: 'po1' }, headers: AUTHED }, res);
+    check('purchasing may delete a quarry order', res.statusCode === 200, JSON.stringify(res.body));
+    check('  from quarry\'s own list', calls[0] && calls[0].fn === 'removePO' && calls[0].args.division === 'quarry');
+  }
+  {
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level1' } });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'quarry' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('a view-only purchasing user cannot raise one there', res.statusCode === 403, JSON.stringify(res.body));
+  }
+  {
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' } });
+    const res = makeRes();
+    await handler({ method: 'GET', query: { division: 'quarry' }, headers: AUTHED }, res);
+    check('purchasing may read quarry\'s orders', res.statusCode === 200, JSON.stringify(res.body));
+  }
+  {
+    const handler = loadEndpoint({ roles: { quarry_sales: 'level3' } });
+    const res = makeRes();
+    await handler({ method: 'GET', query: { division: 'quarry' }, headers: AUTHED }, res);
+    check('but the scale house cannot', res.statusCode === 403, JSON.stringify(res.body));
   }
 
   console.log('\n[the basics]');

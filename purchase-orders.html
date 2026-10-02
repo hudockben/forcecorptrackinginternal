@@ -30,6 +30,7 @@
       --div-turf:   #22c55e;
       --div-paving: #60a5fa;
       --div-kiewit: #fdb913;
+      --div-quarry: #f97316;
       --div-none:   #818cf8;
     }
 
@@ -525,9 +526,12 @@ function switchDivision() {
  * only the fallback for a legacy token that carries no map. This mirrors
  * levelFor() in api/lib/auth.js.
  */
-// The job divisions purchasing raises orders against. Mirrors
+// The divisions purchasing raises orders against. Mirrors
 // PO_SOURCE_DIVISIONS in api/lib/auth.js.
-const PO_SOURCE = ['turf', 'paving', 'kiewit'];
+const PO_SOURCE = ['turf', 'paving', 'kiewit', 'quarry'];
+// The ones with jobs to charge. Quarry has none, so its orders carry no job and
+// no codes. Mirrors PO_JOB_DIVISIONS in api/lib/auth.js.
+const PO_JOB = ['turf', 'paving', 'kiewit'];
 
 /**
  * This user's level in one division, with no cross-division guessing.
@@ -829,7 +833,7 @@ const _savedDivision = {};
 // shows a completed move as undone and points _savedDivision at the list the
 // order has already left.
 let _saveEpoch = 0;
-const DIV_COLORS = { turf: 'var(--div-turf)', paving: 'var(--div-paving)', kiewit: 'var(--div-kiewit)' };
+const DIV_COLORS = { turf: 'var(--div-turf)', paving: 'var(--div-paving)', kiewit: 'var(--div-kiewit)', quarry: 'var(--div-quarry)' };
 
 let catalog       = { divisions: [], vendors: [], employees: [], truncated: [] };
 let sourceDivs    = [];        // [{ division, label, projects: [...] }]
@@ -847,7 +851,7 @@ let filters       = { division: '', status: '', job: '', vendor: '' };
 
 // The canonical labels, so a catalogue failure degrades to the right names
 // rather than to raw keys. Mirrors DIVISION_BLOBS in api/po-catalog.js.
-const PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree' };
+const PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree', quarry: 'Quarry' };
 
 /**
  * The division rows the UI offers.
@@ -874,6 +878,7 @@ function divLabel(key) {
   return m ? m.label : key;
 }
 function divColor(key) { return DIV_COLORS[key] || 'var(--div-none)'; }
+function hasJobs(divKey) { return PO_JOB.includes(divKey); }
 
 function projectsFor(divKey) {
   const m = divMeta(divKey);
@@ -964,10 +969,10 @@ async function loadCatalog() {
   if (!editable.length) {
     notes.push('You can read purchase orders here but not change them. Ask an administrator for a higher level under Manage Users.');
   } else if (!editable.includes(GENERAL)) {
-    notes.push('You can raise orders against ' + editable.map(named).join(', ') +
-               ' jobs, but not general (non-job) ones — those need a Purchase Orders role.');
+    notes.push('You can raise orders in ' + editable.map(named).join(', ') +
+               ', but not general (non-job) ones — those need a Purchase Orders role.');
   } else if (editable.length === 1) {
-    notes.push('You can raise general (non-job) orders here. Raising one against a Turf, Paving or Kiewit job needs a role in that division.');
+    notes.push('You can raise general (non-job) orders here. Raising one in Turf, Paving, Kiewit or Quarry needs a role in that division.');
   }
   if (!sourceDivs.length) {
     notes.push('The job and vendor lists are unavailable, so orders cannot be tied to a job right now.');
@@ -2039,6 +2044,9 @@ function projectSelectHTML(po) {
   if (po._division === GENERAL) {
     return '<span style="color:var(--muted);font-size:0.76rem">Pick a division first</span>';
   }
+  if (!hasJobs(po._division)) {
+    return '<span style="color:var(--muted);font-size:0.76rem">No jobs in ' + esc(divLabel(po._division)) + '</span>';
+  }
   const list = pickableProjects(po._division, po.project_id);
   const opts = ['<option value=""' + (!po.project_id ? ' selected' : '') + '>General — no job</option>']
     .concat(list.map(p =>
@@ -2056,7 +2064,7 @@ function projectSelectHTML(po) {
 function subCodePickerHTML(po) {
   if (!po.project_id) {
     return '<span style="color:var(--muted);font-size:0.76rem">' +
-      (po._division === GENERAL ? '—' : 'No job — no code') + '</span>';
+      (po._division === GENERAL || !hasJobs(po._division) ? '—' : 'No job — no code') + '</span>';
   }
   if (!codesFor(po._division, po.project_id).length) {
     return '<span style="color:var(--muted);font-size:0.76rem">No bid items on this job</span>';
@@ -2828,11 +2836,12 @@ function renderScanForm(receipt, scanError) {
 function onScanDivision(divKey) {
   const projSel = document.getElementById('sc-project');
   if (!projSel) return;
-  const list = divKey === GENERAL ? [] : pickableProjects(divKey);
-  projSel.innerHTML = '<option value="">General — no job</option>' + list.map(p =>
-    '<option value="' + esc(p.id) + '">' + esc(projectOptionLabel(p)) + '</option>').join('');
-  projSel.disabled = divKey === GENERAL;
-  resetScanCode(divKey === GENERAL ? '—' : '— pick a job first —', false);
+  const noJobs = divKey === GENERAL || !hasJobs(divKey);
+  const list = noJobs ? [] : pickableProjects(divKey);
+  projSel.innerHTML = '<option value="">' + (divKey !== GENERAL && noJobs ? 'No jobs in ' + esc(divLabel(divKey)) : 'General — no job') + '</option>' +
+    list.map(p => '<option value="' + esc(p.id) + '">' + esc(projectOptionLabel(p)) + '</option>').join('');
+  projSel.disabled = noJobs;
+  resetScanCode(noJobs ? '—' : '— pick a job first —', false);
 }
 
 function onScanProject(projId) {
@@ -3167,7 +3176,10 @@ async function openDocs(poId) {
     '<h2>' + esc(po.po_number) + ' — attachments</h2>' +
     '<div class="sub">Filed under ' + esc(divLabel(po._division)) +
       (po.project_id ? ', on ' + esc((projectFor(po._division, po.project_id) || {}).name || po.project_id) : ', with no job') +
-      ' — so it is on the paperclip in that division’s own tab too.</div>' +
+      (po._division === GENERAL || hasJobs(po._division)
+        ? ' — so it is on the paperclip in that division’s own tab too.'
+        : ' — ' + esc(divLabel(po._division)) + ' has no Purchase Orders tab of its own, so it is kept with the order here.') +
+      '</div>' +
     (loadError ? '<div class="scan-status err">' + esc(loadError) + '</div>' : list) +
     '<div class="sheet-actions">' +
       '<button class="btn" onclick="closeDocs()">Close</button>' +

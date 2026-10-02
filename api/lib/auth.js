@@ -33,11 +33,17 @@ const ALL_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry',
 // so an implicit one would put every login in the company on it.
 const RESTRICTED_DIVISIONS = new Set(['timesheet', 'payroll', 'fuel', 'fuel_admin', 'driver', 'quarry_sales', 'safety']);
 
-// The job divisions central purchasing raises orders against. A PO tied to one
+// The divisions central purchasing raises orders against. A PO tied to one
 // of these lives in THAT division's purchase-order list — there is no second
 // copy to reconcile, which is what makes "shows up in the division's own tab"
 // true by construction rather than by a sync job.
-const PO_SOURCE_DIVISIONS = ['turf', 'paving', 'kiewit'];
+const PO_SOURCE_DIVISIONS = ['turf', 'paving', 'kiewit', 'quarry'];
+
+// The source divisions that keep a JOB ledger an order can be charged to.
+// Quarry is a source division without one: it has no projects and no bid
+// items, so an order filed there carries no job and no cost rows — and
+// daily_tracking's CHECK does not admit it, so one that tried would 500.
+const PO_JOB_DIVISIONS = ['turf', 'paving', 'kiewit'];
 
 // Where a general (non-job) purchase order is filed. Orders with no division
 // belong to no job ledger, so they stay in purchasing's own list.
@@ -306,7 +312,7 @@ function hasDivisionAccess(payload, division) {
  * May this caller read and write division `division`'s PURCHASE ORDERS?
  *
  * True the ordinary way — they hold a role in that division — and also for a
- * central-purchasing user acting on one of the job divisions purchasing raises
+ * central-purchasing user acting on one of the divisions purchasing raises
  * orders against. That second arm is what lets purchase-orders.html file an
  * order into paving's list so it lands in paving's own tab.
  *
@@ -324,7 +330,7 @@ function canAccessPODivision(payload, division) {
 
 /**
  * Every division whose purchase orders this caller may see, in display order:
- * the job divisions they can reach, then the general (non-job) list.
+ * the source divisions they can reach, then the general (non-job) list.
  */
 function poDivisionsFor(payload) {
   const list = PO_SOURCE_DIVISIONS.filter(d => canAccessPODivision(payload, d));
@@ -565,6 +571,7 @@ module.exports = {
   currentAccess,
   authenticate,
   PO_SOURCE_DIVISIONS,
+  PO_JOB_DIVISIONS,
   PO_GENERAL_DIVISION,
   PAYROLL_CODER_LEVEL,
   SALES_LEVEL,

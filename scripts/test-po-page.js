@@ -46,8 +46,10 @@ console.log('\n[the division is registered everywhere it has to be]');
 {
   const auth = read('api/lib/auth.js');
   assert('in the canonical division list',   /const ALL_DIVISIONS = \[[^\]]*'purchase_orders'/.test(auth));
-  assert('with the job divisions it buys for',
-    /const PO_SOURCE_DIVISIONS = \['turf', 'paving', 'kiewit'\]/.test(auth));
+  assert('with the divisions it buys for',
+    /const PO_SOURCE_DIVISIONS = \['turf', 'paving', 'kiewit', 'quarry'\]/.test(auth));
+  assert('of which only the ones with jobs can be charged',
+    /const PO_JOB_DIVISIONS = \['turf', 'paving', 'kiewit'\]/.test(auth));
 
   // Sign-in and the session refresh keep no division list of their own: what
   // an account may open comes from api/lib/auth.js, so the canonical list
@@ -113,6 +115,12 @@ console.log('\n[the schema lets the new division exist]');
   const sql = read('neon-schema.sql');
   assert('purchase_orders rows may carry it',
     /purchase_orders_division_chk\s+CHECK \(division IN \([^)]*'purchase_orders'\)\)/.test(sql));
+  // Quarry is a source division, so its orders are mirrored too...
+  assert('and quarry orders can be mirrored',
+    /purchase_orders_division_chk\s+CHECK \(division IN \([^)]*'quarry'[^)]*\)\)/.test(sql));
+  // ...but it has no jobs, so nothing may ever cost one under it.
+  assert('but quarry never becomes a job cost row',
+    !/daily_tracking_division_chk\s+CHECK \(division IN \([^)]*'quarry'[^)]*\)\)/.test(sql));
   // A receipt on a general order is filed under purchasing, so its folder and
   // document rows need the value too — and the CHECK would reject them.
   assert('document folders may carry it',
@@ -433,8 +441,26 @@ console.log('\n[rights are per division, not per page]');
     /if \(dr && typeof dr === 'object'\) \{[\s\S]{0,160}return \(r && r !== 'no_access'\) \? r : 'no_access';/.test(PAGE));
   assert('rights are computed per division', /function capsFor\(division\)/.test(PAGE));
   assert('the page\'s source-division list matches the server\'s',
-    /const PO_SOURCE = \['turf', 'paving', 'kiewit'\];/.test(PAGE) &&
-    JSON.stringify(require('../api/lib/auth').PO_SOURCE_DIVISIONS) === JSON.stringify(['turf','paving','kiewit']));
+    /const PO_SOURCE = \['turf', 'paving', 'kiewit', 'quarry'\];/.test(PAGE) &&
+    JSON.stringify(require('../api/lib/auth').PO_SOURCE_DIVISIONS) === JSON.stringify(['turf','paving','kiewit','quarry']));
+  assert('and so does its list of divisions with jobs',
+    /const PO_JOB = \['turf', 'paving', 'kiewit'\];/.test(PAGE) &&
+    JSON.stringify(require('../api/lib/auth').PO_JOB_DIVISIONS) === JSON.stringify(['turf','paving','kiewit']));
+  // The sandboxes below restate these constants, so the PAGE's own copies are
+  // pinned here — otherwise dropping quarry from them would pass every check.
+  assert('the page names quarry for a catalogue failure',
+    /const PO_SOURCE_LABELS = \{[^}]*quarry: 'Quarry'[^}]*\};/.test(PAGE));
+  assert('and gives it its own chip colour',
+    /const DIV_COLORS = \{[^}]*quarry: 'var\(--div-quarry\)'[^}]*\};/.test(PAGE) &&
+    /--div-quarry:\s*#f97316;/.test(PAGE));
+  // Quarry has no Purchase Orders tab, so the attachments sheet must not send
+  // anyone looking for a paperclip there.
+  {
+    const sub = (PAGE.match(/'<div class="sub">Filed under '[\s\S]{0,700}?'<\/div>'/) || [''])[0];
+    assert('the attachments sheet only promises a tab to divisions that have one',
+      /po\._division === GENERAL \|\| hasJobs\(po\._division\)/.test(sub) &&
+      /has no Purchase Orders tab of its own/.test(sub), sub.slice(0, 300));
+  }
   assert('and GENERAL is declared before capsFor reads it',
     PAGE.indexOf('const GENERAL') < PAGE.indexOf('function capsFor'));
 
@@ -444,8 +470,8 @@ console.log('\n[rights are per division, not per page]');
     const DIVISION = 'purchase_orders';
     const GENERAL  = 'purchase_orders';
     // Lifted from the page rather than restated, so the two cannot drift.
-    const PO_SOURCE = ['turf', 'paving', 'kiewit'];
-    const PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree' };
+    const PO_SOURCE = ['turf', 'paving', 'kiewit', 'quarry'];
+    const PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree', quarry: 'Quarry' };
     let sourceDivs = [{ division: 'paving', label: 'Paving', projects: [] }];
     let fctUser = null;
   `, ctx);
@@ -872,8 +898,8 @@ console.log('\n[load failures do not corrupt numbering]');
     const ctx = vm.createContext({ console });
     vm.runInContext(`
       const GENERAL = 'purchase_orders';
-      const PO_SOURCE = ['turf', 'paving', 'kiewit'];
-      const PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree' };
+      const PO_SOURCE = ['turf', 'paving', 'kiewit', 'quarry'];
+      const PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree', quarry: 'Quarry' };
       let sourceDivs = [];          // the catalogue failed
     `, ctx);
     ['listDivs', 'divMeta', 'divLabel', 'listKeys']
@@ -881,10 +907,12 @@ console.log('\n[load failures do not corrupt numbering]');
     const r = e => vm.runInContext(e, ctx);
     assert('a catalogue failure still fetches every list',
       JSON.stringify(r('listKeys()')) ===
-      JSON.stringify(['turf', 'paving', 'kiewit', 'purchase_orders']), JSON.stringify(r('listKeys()')));
+      JSON.stringify(['turf', 'paving', 'kiewit', 'quarry', 'purchase_orders']), JSON.stringify(r('listKeys()')));
     assert('and every division is still offered, so no order is mislabelled',
       JSON.stringify(r('listDivs().map(d => d.division)')) ===
-      JSON.stringify(['turf', 'paving', 'kiewit']), JSON.stringify(r('listDivs()')));
+      JSON.stringify(['turf', 'paving', 'kiewit', 'quarry']), JSON.stringify(r('listDivs()')));
+    assert('quarry included, under its real name',
+      r("divLabel('quarry')") === 'Quarry', r("divLabel('quarry')"));
     assert('under its real name, not its key',
       r("divLabel('kiewit')") === 'Kiewit Pinetree', r("divLabel('kiewit')"));
     // The job and code pickers are the only things that genuinely need the
@@ -1861,14 +1889,15 @@ console.log('\n[cost / sub code, vendor and received by are typeahead pickers]')
 
   const harness = [
     `var GENERAL = 'purchase_orders';
-     var PO_SOURCE = ['turf', 'paving', 'kiewit'];
-     var PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree' };
+     var PO_SOURCE = ['turf', 'paving', 'kiewit', 'quarry'];
+     var PO_JOB = ['turf', 'paving', 'kiewit'];
+     var PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree', quarry: 'Quarry' };
      var sourceDivs = [{ division: 'paving', label: 'Paving', projects: [{ id: 'p1', name: 'Route 9', jobNumber: '2201', codes: [
        { cost_code: '100', sub_code: 'Mobilization', description: '' },
        { cost_code: '420', sub_code: 'Base',    description: 'Stone base' },
        { cost_code: '420', sub_code: 'Surface', description: 'Asphalt surface' },
        { cost_code: '510', sub_code: 'Stone',   description: 'Rip rap' },
-     ] }] }];
+     ] }] }, { division: 'quarry', label: 'Quarry', projects: [] }];
      var catalog = {
        vendors:   [{ name: 'Fastenal' }, { name: 'Home Depot' }, { name: 'Tri-State Aggregates & Supply Co' }],
        employees: [{ name: 'Dana Ruiz' }, { name: 'Lee Park' }],
@@ -1876,7 +1905,7 @@ console.log('\n[cost / sub code, vendor and received by are typeahead pickers]')
      var purchaseOrders = [{ id: 'po1', po_number: 'PO-0001', _division: 'paving', project_id: 'p1',
        cost_code: '420', sub_code: 'Base', supplier: 'Home Depot', lines: [{ id: 'l1', employee: '' }] }];
      var fctUser = { username: 'tester' };
-     var DIV_COLORS = { turf: 'var(--div-turf)', paving: 'var(--div-paving)', kiewit: 'var(--div-kiewit)' };
+     var DIV_COLORS = { turf: 'var(--div-turf)', paving: 'var(--div-paving)', kiewit: 'var(--div-kiewit)', quarry: 'var(--div-quarry)' };
      var saves = [], renders = 0;
      function capsFor() { return { canEdit: true, canDelete: true }; }
      function savePO(po, opts) {
@@ -1888,7 +1917,8 @@ console.log('\n[cost / sub code, vendor and received by are typeahead pickers]')
     ...['esc', 'isTyping', 'listDivs', 'divMeta', 'projectsFor', 'projectFor', 'pickableProjects',
         'projectOptionLabel', 'codesFor', 'codeLabel', 'codeValue', 'subCodePickerHTML', 'vendorPickerHTML',
         'receivedByPickerHTML', 'updateCodeInPlace', 'cardJobLineHTML', 'divChipHTML', 'divColor', 'divLabel',
-        'setSubCode', 'setField', 'setLineField', 'onScanDivision', 'onScanProject', 'resetScanCode']
+        'hasJobs', 'projectSelectHTML', 'setSubCode', 'setField', 'setLineField', 'onScanDivision', 'onScanProject',
+        'resetScanCode']
       .map(n => requireFn(PAGE, n, 'purchase-orders.html')),
     region,
   ].join('\n\n');
@@ -2124,6 +2154,25 @@ console.log('\n[cost / sub code, vendor and received by are typeahead pickers]')
   window.eval("onScanProject('')");
   assert('changing the job empties the box and closes it again',
     sc.value === '' && !sc.dataset.cbValue && sc.disabled && sc.placeholder === 'No job — no code');
+
+  // ── Quarry: a division with no jobs ──
+  // Orders file there, but there is nothing to charge, so the job and code
+  // pickers say so instead of offering a lone "General — no job".
+  window.eval("onScanDivision('quarry')");
+  const scProj = doc.getElementById('sc-project');
+  assert('the scan sheet has no job to offer in quarry',
+    scProj.disabled && scProj.options.length === 1 && scProj.options[0].text === 'No jobs in Quarry',
+    scProj.innerHTML);
+  assert('  and its code box stays shut', sc.disabled && sc.placeholder === '—', sc.placeholder);
+  window.eval("onScanDivision('paving')");
+  assert('  while paving still offers its jobs',
+    !scProj.disabled && [...scProj.options].some(o => o.value === 'p1'), scProj.innerHTML);
+  const quarryPO = { id: 'q1', _division: 'quarry', project_id: '', cost_code: '', sub_code: '', lines: [] };
+  const qJob  = window.eval('projectSelectHTML(' + JSON.stringify(quarryPO) + ')');
+  const qCode = window.eval('subCodePickerHTML(' + JSON.stringify(quarryPO) + ')');
+  assert('a quarry order\'s row has no job picker', !/<select/.test(qJob) && /No jobs in Quarry/.test(qJob), qJob);
+  assert('  nor a code picker', !/class="cb/.test(qCode) && />—</.test(qCode), qCode);
+  assert('  and its chip is quarry\'s colour', /var\(--div-quarry\)/.test(window.eval("divChipHTML('quarry')")));
 }
 
 console.log(`\n${failed === 0 ? 'All checks passed.' : failed + ' check(s) failed.'}`);
