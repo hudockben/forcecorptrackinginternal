@@ -110,7 +110,7 @@ const TABLES = [
     foot:  grab(anaSrc, /<tr class="total">[\s\S]*?<\/tr>/,       'the analytics totals row'),
   },
   {
-    label: 'Reports ▸ Overtime (this week)',
+    label: 'Reports ▸ Overtime',
     wrap:  html => `<div class="report"><div class="otw-scroll"><table class="otw-table">${html}</table></div></div>`,
     head:  grab(otwSrc, /<thead>[\s\S]*?<\/thead>/,           'the overtime report <thead>'),
     body:  grab(otwSrc, /<tr class="otw-row">[\s\S]*?<\/tr>/, 'the overtime report employee row'),
