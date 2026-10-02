@@ -260,6 +260,10 @@ async function cleanUp() {
     ok('…and the change is saved', edited.frequency === 'monthly' && edited.day_of_month === -1, JSON.stringify(edited));
 
     console.log('\nThe switch');
+    // Save closes the form and then reloads the list; a click on the row in
+    // between lands on a node the reload is about to replace.
+    await page.waitForFunction(id => /Monthly, last day/.test((document.querySelector(`.ar-row[data-id="${id}"]`) || {}).innerText || ''),
+      { timeout: 8000 }, made.id).catch(() => {});
     await page.click(`.ar-row[data-id="${made.id}"] .sup-toggle`);
     await sleep(600);
     ok('switching it off stops it', (await db.schedules()).find(r => r.id === made.id).enabled === false);
