@@ -37,7 +37,7 @@
 //   { ok: true, id, recipientCount, pdfAttached, pdfPages?, warning? }
 //   | { ok: false, error: '...' }
 
-const { requireAuth, hasDivisionAccess } = require('../lib/auth');
+const { requireAuth } = require('../lib/auth');
 const {
   MAX_RECIPIENTS,
   MAX_HTML_BYTES,
@@ -48,7 +48,7 @@ const { deliverReport } = require('../lib/report-delivery');
 // Each report type → which division the caller must have access to. Shared
 // with the scheduled sends, which check the same thing for the account a
 // schedule runs as.
-const { REPORT_TYPES } = require('../lib/report-catalog');
+const { REPORT_TYPES, mayUseDivision } = require('../lib/report-catalog');
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -77,7 +77,9 @@ module.exports = async (req, res) => {
   // Validate report type + division access.
   const cfg = REPORT_TYPES[report_type];
   if (!cfg) return res.status(400).json({ ok: false, error: 'Unknown report_type' });
-  if (!hasDivisionAccess(payload, cfg.division)) {
+  // The line Auto Reports draws, not bare division access: Safety crew and
+  // payroll coders hold their division without being allowed its reports.
+  if (!mayUseDivision(payload, cfg.division)) {
     return res.status(403).json({ ok: false, error: 'You do not have access to send this report' });
   }
 

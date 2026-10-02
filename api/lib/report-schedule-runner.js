@@ -29,7 +29,7 @@ const { currentAccess } = require('./auth');
 const { MAX_HTML_BYTES, isValidEmail, normalizeAttachments } = require('./email');
 const { launchBrowser } = require('./pdf');
 const { deliverReport } = require('./report-delivery');
-const { SCHEDULABLE, DIVISIONS, PAY_RANGES, mayUseDivision } = require('./report-catalog');
+const { SCHEDULABLE, DIVISIONS, PAY_RANGES, mayUseDivision, periodsFor } = require('./report-catalog');
 const T = require('./report-schedule-time');
 
 // Time limits. The function running all this is killed at 300s (vercel.json),
@@ -176,7 +176,7 @@ function specFor(sched, def, at) {
       .map(j => ({ id: String(j.id), name: j.name || null }));
   }
   if (def.period) {
-    const period = Object.prototype.hasOwnProperty.call(T.PERIODS, opts.period) ? opts.period : def.period;
+    const period = periodsFor(def, T.PERIODS).includes(opts.period) ? opts.period : def.period;
     const r = T.periodRange(period, now, tz);
     spec.start = r.start;
     spec.end = r.end;
@@ -190,6 +190,11 @@ function specFor(sched, def, at) {
   if (def.payRange) {
     // A name, not dates: the payroll page knows its own weeks and cycles.
     spec.options = { ...opts, range: Object.prototype.hasOwnProperty.call(PAY_RANGES, opts.range) ? opts.range : def.payRange };
+  }
+  if (def.sections) {
+    // As saved: the page says so if a picked section is no longer on it,
+    // rather than this quietly sending the whole report instead.
+    spec.options = { ...spec.options, sections: Array.isArray(opts.sections) && opts.sections.length ? opts.sections.map(String) : null };
   }
   if (def.year) {
     spec.year = opts.year === 'all' ? 'all' : spec.today.slice(0, 4);
@@ -650,7 +655,9 @@ async function runSchedule(sql, sched, ctx = {}) {
   if (!mayUseDivision(acct, def.division)) {
     return fail(def.division === 'payroll'
       ? `${acct.username} is no longer a payroll approver. Open it and save it as someone who is.`
-      : `${acct.username} no longer has access to ${divisionName(def.division)}. Open it and save it as someone who does.`);
+      : def.division === 'safety'
+        ? `${acct.username} is no longer a Safety Center supervisor. Open it and save it as someone who is.`
+        : `${acct.username} no longer has access to ${divisionName(def.division)}. Open it and save it as someone who does.`);
   }
 
   let recips;

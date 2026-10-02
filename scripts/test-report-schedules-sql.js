@@ -53,7 +53,7 @@ Module._load = function (request, parent) {
   if (request === '@neondatabase/serverless') return { neon: () => makeSql(SQL_CLIENT) };
   // The API handler's auth: who is asking is the test's to say; what they may
   // do is the real rule.
-  if (request === '../lib/auth' && parent && /api[\\/]email[\\/]report-schedules\.js$/.test(parent.filename)) {
+  if (request === '../lib/auth' && parent && /api[\\/]email[\\/](report-schedules|send-report)\.js$/.test(parent.filename)) {
     return {
       ...realAuth,
       requireAuth: (req, res) => {
@@ -76,12 +76,15 @@ function assert(label, cond, detail) {
   else      { failed++; console.error(`  ✗ ${label}${detail ? '  — ' + detail : ''}`); }
 }
 
-async function call(method, query, body, auth) {
+async function call(method, query, body, auth, h = handler) {
   AUTH = auth;
   const res = { statusCode: 200, body: null, setHeader() {}, status(c) { this.statusCode = c; return this; }, json(o) { this.body = o; return this; }, end() { return this; } };
-  await handler({ method, query: query || {}, body: body || {}, headers: { host: 'datawatch.test' } }, res);
+  await h({ method, query: query || {}, body: body || {}, headers: { host: 'datawatch.test' } }, res);
   return res;
 }
+// The Email Report button's endpoint: who may send which report by hand.
+const sendReport = require(path.join(ROOT, 'api/email/send-report.js'));
+const emailNow = (report_type, auth) => call('POST', {}, { report_type, recipients: [], html: '<p>x</p>' }, auth, sendReport);
 
 async function cleanUp() {
   await client.query('DELETE FROM report_schedules WHERE company_code = $1', [CO]);
@@ -157,6 +160,8 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
     const body = { report_type: 'payroll_hours', frequency: 'weekly', days_of_week: [1], send_time: '07:00', group_ids: [g1], options: { range: 'last_biweekly' } };
     r = await call('POST', {}, body, CODER);
     assert('…and cannot schedule one', r.statusCode === 403, `${r.statusCode} ${JSON.stringify(r.body)}`);
+    r = await emailNow('payroll_hours', CODER);
+    assert('…nor email one by hand', r.statusCode === 403, `${r.statusCode} ${JSON.stringify(r.body)}`);
     r = await call('POST', {}, body, PAYR);
     assert('an approver can, and the pay range is kept', r.statusCode === 200 && r.body.schedule.options.range === 'last_biweekly', JSON.stringify(r.body));
     const pid = r.body.schedule.id;
@@ -169,6 +174,91 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
     assert('the run stops if its owner is made a coder since, saying why',
       res.status === 'failed' && /payroller is no longer a payroll approver/.test(res.message), res.message);
     await client.query('DELETE FROM report_schedules WHERE id = $1', [pid]);
+  }
+
+  console.log('\nSafety Center: supervisors only');
+  {
+    const supId  = await mkUser('safetysup',  { safety: 'level3', turf: 'admin' });
+    const crewId = await mkUser('safetycrew', { safety: 'level1', turf: 'admin' });
+    const SUP  = { companyCode: CO, userId: supId,  username: 'safetysup',  role: 'level1', divisionRoles: { safety: 'level3', turf: 'admin' } };
+    const CREW = { companyCode: CO, userId: crewId, username: 'safetycrew', role: 'level1', divisionRoles: { safety: 'level1', turf: 'admin' } };
+    let r = await call('GET', {}, null, SUP);
+    const saf = r.body.divisions && r.body.divisions.find(d => d.key === 'safety');
+    const rep = saf && saf.reports[0];
+    assert('a safety supervisor gets the Safety Center card with the sign-off report',
+      saf && saf.name === 'Safety Center' && saf.reports.length === 1 && rep.type === 'safety_signoff' && rep.scope === 'division',
+      JSON.stringify(r.body.divisions && r.body.divisions.map(d => d.key)));
+    assert('…offering whole-week periods only, last week first',
+      rep && rep.period === 'prev_week' && JSON.stringify(rep.periods) === '["prev_week","week_to_date","month_to_date","prev_month"]'
+        && /filed by week/.test(rep.periodHint || ''), JSON.stringify(rep));
+    r = await call('GET', {}, null, CREW);
+    assert('crew, who hold the division only to sign, do not', !r.body.divisions.some(d => d.key === 'safety'),
+      JSON.stringify(r.body.divisions.map(d => d.key)));
+    r = await call('GET', {}, null, { ...BOSS, isPlatformAdmin: true });
+    assert('a platform admin with no safety role of their own does, as on the Safety page',
+      r.body.divisions.some(d => d.key === 'safety'), JSON.stringify(r.body.divisions.map(d => d.key)));
+    r = await call('GET', {}, null, { ...CREW, isPlatformAdmin: true });
+    assert('…but not one whose own safety role is crew', !r.body.divisions.some(d => d.key === 'safety'),
+      JSON.stringify(r.body.divisions.map(d => d.key)));
+
+    const body = { report_type: 'safety_signoff', frequency: 'weekly', days_of_week: [1], send_time: '07:00', group_ids: [g1],
+      options: { period: 'month_to_date' } };
+    r = await call('POST', {}, body, CREW);
+    assert('crew cannot schedule it', r.statusCode === 403, `${r.statusCode} ${JSON.stringify(r.body)}`);
+    r = await emailNow('safety_signoff', CREW);
+    assert('…nor email one by hand under its name', r.statusCode === 403, `${r.statusCode} ${JSON.stringify(r.body)}`);
+    r = await emailNow('safety_signoff', SUP);
+    assert('…which a supervisor gets past (to the next check: no recipients)', r.statusCode === 400 && /recipient/.test(r.body.error),
+      `${r.statusCode} ${JSON.stringify(r.body)}`);
+    r = await call('POST', {}, body, SUP);
+    assert('a supervisor can, and the period is kept',
+      r.statusCode === 200 && r.body.schedule.division === 'safety' && r.body.schedule.options.period === 'month_to_date'
+        && r.body.schedule.project_id === null, JSON.stringify(r.body));
+    const sid = r.body.schedule.id;
+    r = await call('POST', {}, { ...body, options: { period: 'prev_day' } }, SUP);
+    assert('a period it does not offer falls back to last week', r.body.schedule && r.body.schedule.options.period === 'prev_week',
+      JSON.stringify(r.body));
+    await call('DELETE', { id: r.body.schedule.id }, null, SUP);
+    const sched = await row(sid);
+    const spec = runner.specFor({ ...sched, options: { period: 'prev_day' } }, require(path.join(ROOT, 'api/lib/report-catalog.js')).SCHEDULABLE.safety_signoff,
+      new Date('2026-10-07T15:00:00Z'));
+    assert('…and so does the run, for one saved before the list was narrowed',
+      spec.start === '2026-09-28' && spec.end === '2026-10-04', JSON.stringify(spec));
+    await client.query("UPDATE users SET division_roles = $1 WHERE id = $2", [JSON.stringify({ safety: 'level1', turf: 'admin' }), supId]);
+    const res = await runner.runSchedule(sql, sched, { now: new Date() });
+    assert('the run stops if its owner is moved to crew since, saying why',
+      res.status === 'failed' && /safetysup is no longer a Safety Center supervisor/.test(res.message), res.message);
+    await client.query('DELETE FROM report_schedules WHERE id = $1', [sid]);
+  }
+
+  console.log('\nExecutive: picking its divisions');
+  {
+    const exId = await mkUser('execboss', { executive: 'admin' });
+    const EXEC = { companyCode: CO, userId: exId, username: 'execboss', role: 'level1', divisionRoles: { executive: 'admin' } };
+    let r = await call('GET', {}, null, EXEC);
+    const exDiv = r.body.divisions && r.body.divisions.find(d => d.key === 'executive');
+    const exRep = exDiv && exDiv.reports.find(x => x.type === 'executive');
+    assert('the Executive Report offers its divisions to pick, in the order it reads them',
+      exRep && JSON.stringify((exRep.sections || []).map(x => x.key))
+        === '["turf","paving","kiewit","quarry","dust","trucking","intercompany","payroll","safety"]'
+        && exRep.sections[0].name === 'Turf Management', JSON.stringify(exRep));
+    const body = { report_type: 'executive', frequency: 'weekly', days_of_week: [1], send_time: '07:00', group_ids: [g1] };
+    r = await call('POST', {}, { ...body, options: { sections: ['payroll', 'turf', 'turf'] } }, EXEC);
+    assert('the divisions picked are kept, once each, in the report\'s order',
+      r.statusCode === 200 && JSON.stringify(r.body.schedule.options.sections) === '["turf","payroll"]', JSON.stringify(r.body));
+    const sid = r.body.schedule.id;
+    const spec = runner.specFor(await row(sid), require(path.join(ROOT, 'api/lib/report-catalog.js')).SCHEDULABLE.executive, new Date());
+    assert('…and the run hands them to the page', JSON.stringify(spec.options.sections) === '["turf","payroll"]', JSON.stringify(spec));
+    r = await call('PUT', { id: sid }, { ...body, options: { sections: ['turf', 'payrol'] } }, EXEC);
+    assert('a division the report does not have is refused, not dropped',
+      r.statusCode === 400 && /Pick divisions from the list/.test(r.body.error)
+        && JSON.stringify((await row(sid)).options.sections) === '["turf","payroll"]', JSON.stringify(r.body));
+    r = await call('PUT', { id: sid }, { ...body, options: { sections: [] } }, EXEC);
+    assert('none picked is the whole report',
+      r.statusCode === 200 && !('sections' in r.body.schedule.options), JSON.stringify(r.body));
+    const whole = runner.specFor(await row(sid), require(path.join(ROOT, 'api/lib/report-catalog.js')).SCHEDULABLE.executive, new Date());
+    assert('…which the run hands over as nothing picked', whole.options.sections === null, JSON.stringify(whole.options));
+    await client.query('DELETE FROM report_schedules WHERE id = $1', [sid]);
   }
 
   console.log('\nThe job picker');

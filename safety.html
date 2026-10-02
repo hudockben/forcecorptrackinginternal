@@ -372,6 +372,7 @@
 
   <div class="toast" id="toast"></div>
 
+  <script src="auto-report.js"></script>
   <script>
     /* ═══════ Auth ═══════ */
     const API      = '/api';
@@ -1005,15 +1006,17 @@
     }
 
     /* ═══════ Report ═══════ */
-    async function loadReport() {
+    // The weeks in the From / To boxes, or — for Auto Reports — the ones a
+    // schedule covers, `range` being { from, to, archived }.
+    async function loadReport(range) {
       state.reportLoading = true; state.reportError = null; renderReport();
       try {
-        const from = (document.getElementById('repFrom') || {}).value || '';
-        const to   = (document.getElementById('repTo')   || {}).value || '';
+        const from = range ? range.from || '' : (document.getElementById('repFrom') || {}).value || '';
+        const to   = range ? range.to   || '' : (document.getElementById('repTo')   || {}).value || '';
         const parts = ['scope=report'];
         if (from) parts.push('from=' + encodeURIComponent(from));
         if (to)   parts.push('to=' + encodeURIComponent(to));
-        if (state.showArchived) parts.push('include=archived');
+        if (range ? range.archived : state.showArchived) parts.push('include=archived');
         const data = await api('GET', '/safety-signatures?' + parts.join('&'));
         state.report    = data.documents || [];
         state.detail    = {};
@@ -1375,17 +1378,19 @@
       return lo === hi ? weekLabel(lo) : `Weeks of ${dayLabel(lo)} – ${dayLabel(hi)}`;
     }
 
-    function printShell(title, body) {
+    // forEmail: the copy Auto Reports sends, which nobody prints from — no
+    // Print bar, no print dialog. The PDF is made from it on the server.
+    function printShell(title, body, forEmail) {
       return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
         <title>${esc(title)}</title>
         <style>${PRINT_CSS}</style></head>
         <body>
-          <div class="bar no-print">
+          ${forEmail ? '' : `<div class="bar no-print">
             <button onclick="window.print()">Print / Save as PDF</button>
             <span>To keep a file for ISNetworld or an audit, pick <b>Save as PDF</b> as the printer.</span>
-          </div>
+          </div>`}
           ${body}
-          <script>window.onload = function () { window.print(); };<\/script>
+          ${forEmail ? '' : `<script>window.onload = function () { window.print(); };<\/script>`}
         </body></html>`;
     }
 
@@ -1652,6 +1657,34 @@
       }
     }
 
+    /* Print all's reads: every document in the report that has names on it,
+       read fresh with its marks, in the order things happened. Shared with
+       the copy Auto Reports sends (below), so the scheduled PDF is the one
+       Print all makes. `hooks.beforeRead()` may throw to stop the rest;
+       `hooks.afterRead(g)` sees each one read, and may hand back a
+       replacement. Resolves to { kept, skipped, title }. */
+    async function signOffReads(all, hooks) {
+      const h = hooks || {};
+      const fresh = await mapLimit(all.filter(hasNames), PRINT_READS_AT_ONCE, async g => {
+        if (h.beforeRead) h.beforeRead();
+        const got = await fetchSignOff(g.document.id);
+        return h.afterRead ? (await h.afterRead(got)) || got : got;
+      });
+      const kept = fresh.filter(hasNames).sort(byWeek);
+      if (!kept.length) throw new Error('Nothing in this range has been signed and nobody is on the roster to sign it.');
+      const weeks = kept.map(g => g.document.weekOf).sort();
+      const title = weeks[0] === weeks[weeks.length - 1]
+        ? `Safety sign-offs — week of ${weeks[0]}`
+        : `Safety sign-offs — ${weeks[0]} to ${weeks[weeks.length - 1]}`;
+      return { kept, skipped: all.length - kept.length, title };
+    }
+
+    // A contents page for one document would be a page saying "see next page".
+    function signOffBody(kept, skipped, info) {
+      return (kept.length > 1 ? contentsHTML(kept, skipped, info) : '')
+        + kept.map(g => sheetHTML(g, info)).join('');
+    }
+
     async function printReport() {
       const all = state.report || [];
       const groups = all.filter(hasNames);
@@ -1667,30 +1700,140 @@
       printBusy = true;
       try {
         let read = 0;
-        const fresh = await mapLimit(groups, PRINT_READS_AT_ONCE, async g => {
-          if (w.closed) throw PRINT_CANCELLED;   // they gave up on it — stop reading
-          const got = await fetchSignOff(g.document.id);
-          read++;
-          printProgress(w, `Preparing ${n} document${n === 1 ? '' : 's'}… ${read} of ${n} read.`);
-          return got;
+        const { kept, skipped, title } = await signOffReads(all, {
+          beforeRead: () => { if (w.closed) throw PRINT_CANCELLED; },   // they gave up on it — stop reading
+          afterRead:  () => {
+            read++;
+            printProgress(w, `Preparing ${n} document${n === 1 ? '' : 's'}… ${read} of ${n} read.`);
+          },
         });
-        const kept = fresh.filter(hasNames).sort(byWeek);
-        if (!kept.length) throw new Error('Nothing in this range has been signed and nobody is on the roster to sign it.');
-        const info  = printInfo();
-        const weeks = kept.map(g => g.document.weekOf).sort();
-        const title = weeks[0] === weeks[weeks.length - 1]
-          ? `Safety sign-offs — week of ${weeks[0]}`
-          : `Safety sign-offs — ${weeks[0]} to ${weeks[weeks.length - 1]}`;
-        // A contents page for one document would be a page saying "see next page".
-        const body = (kept.length > 1 ? contentsHTML(kept, all.length - kept.length, info) : '')
-          + kept.map(g => sheetHTML(g, info)).join('');
-        fillPrintWindow(w, title, body);
+        fillPrintWindow(w, title, signOffBody(kept, skipped, printInfo()));
       } catch (err) {
         printFailed(w, err);
       } finally {
         printBusy = false;
       }
     }
+
+    /* ═══════ Auto Reports ═══════ */
+    /* Manage Users → Auto Reports sends the sign-off report on a timetable.
+       The server opens this page in a headless browser, signed in as the
+       safety supervisor who set the schedule up, and asks for the report
+       through auto-report.js. This page has no Email button, so the report is
+       Print all / PDF: the tab loaded for the weeks the schedule covers, each
+       document read fresh, the same contents page and sheets — the PDF that
+       arrives is the one Print all would have made with archived forms shown:
+       archiving is how a supervisor closes out a week everyone has signed,
+       and the record of that week is what the schedule is for. One more thing
+       differs, for the email's sake: the drawn marks go at the size the sheet
+       prints them, smaller still if that is too much for one email, and left
+       out — saying so — if even that is. */
+    (function registerAutoReports() {
+      const AR = window.dwAutoReport;
+      if (!AR) return;
+
+      // td.mark holds a mark to 2.6in × 0.56in, 250 × 54 CSS pixels. Twice
+      // that first, for a clean line on paper; then once, a month of a big
+      // crew's marks at twice being more than one email carries. The pad
+      // saves what the signer's screen drew — often six times as many pixels
+      // across again.
+      const MARK_SIZES = [{ w: 500, h: 108 }, { w: 250, h: 54 }];
+      // The server takes 1.5 MB of report (MAX_HTML_BYTES in api/lib/email.js);
+      // this leaves room for the DataWatch band stamped on after.
+      const EMAIL_HTML_BYTES = 1400000;
+      const bytes = html => new Blob([html]).size;
+
+      function shrinkMark(src, box) {
+        return new Promise(resolve => {
+          if (!src || !PNG_MARK.test(src)) return resolve(src);
+          const img = new Image();
+          img.onload = () => {
+            const k = Math.min(1, box.w / (img.naturalWidth || 1), box.h / (img.naturalHeight || 1));
+            if (k >= 1) return resolve(src);
+            const c = document.createElement('canvas');
+            c.width  = Math.max(1, Math.round(img.naturalWidth * k));
+            c.height = Math.max(1, Math.round(img.naturalHeight * k));
+            const ctx = c.getContext('2d');
+            ctx.imageSmoothingEnabled = true;
+            ctx.imageSmoothingQuality = 'high';
+            ctx.drawImage(img, 0, 0, c.width, c.height);
+            let out = src;
+            try { out = c.toDataURL('image/png'); } catch (_) { out = src; }
+            resolve(PNG_MARK.test(out) && out.length < src.length ? out : src);
+          };
+          img.onerror = () => resolve(src);
+          img.src = src;
+        });
+      }
+
+      // Copies, not edits: what fetchSignOff read also sits in the screen's
+      // cache (state.detail), and the next size down starts from the original.
+      async function withMarksAt(g, box) {
+        const signed = [];
+        for (const s of g.signed) {
+          signed.push(Object.assign({}, s, { signatureImage: await shrinkMark(s.signatureImage, box) }));
+        }
+        return Object.assign({}, g, { signed });
+      }
+      // printMark() then reads "Drawn signature on file — could not be shown here".
+      const withoutMarks = g => Object.assign({}, g, {
+        signed: g.signed.map(s => Object.assign({}, s, { signatureImage: null })),
+      });
+
+      AR.register('safety_signoff', async spec => {
+        // The weeks the schedule's days fall in — what From week / To week
+        // make of the same dates.
+        const from = mondayOf(spec.start), to = mondayOf(spec.end || spec.start);
+        const span = rangeLabel([from, to]);
+        const spanWords = span.charAt(0).toLowerCase() + span.slice(1);
+        await loadReport({ from, to, archived: true });
+        if (state.reportError) throw new Error('The sign-off report did not load — ' + state.reportError);
+        const all = state.report || [];
+        if (!all.length) return { skip: `No safety forms were posted for the ${spanWords}.` };
+        if (!all.some(hasNames)) {
+          return { skip: `Nothing posted for the ${spanWords} has been signed, and nobody is on the Safety Center roster to sign it.` };
+        }
+
+        const { kept, skipped, title } = await signOffReads(all);
+        const info = Object.assign(printInfo(), {
+          by: 'Auto Reports for ' + ((user && user.username) || 'a safety supervisor'),
+        });
+        let html = '';
+        for (const box of MARK_SIZES) {
+          const sized = [];
+          for (const g of kept) sized.push(await withMarksAt(g, box));
+          html = printShell(title, signOffBody(sized, skipped, info), true);
+          if (bytes(html) <= EMAIL_HTML_BYTES) break;
+          html = '';
+        }
+        if (!html) {
+          // The typed name and the tick are the signature; the marks stay in
+          // the Safety Center, and Print all there still has them.
+          html = printShell(title,
+            `<p class="none">The drawn signatures are left out of this emailed copy: with them it is more than
+              one email can carry. Print all / PDF on the Safety Center's Sign-Off Report tab has them.</p>`
+            + signOffBody(kept.map(withoutMarks), skipped, info), true);
+        }
+
+        const one = kept.length === 1 ? kept[0] : null;
+        const short = kept.filter(g => (g.outstanding || []).length > 0).length;
+        const summary = one
+          ? [
+              // The email shows 60 characters of a figure; a title is up to 160.
+              { label: 'Form',       value: one.document.title.length > 60 ? one.document.title.slice(0, 59) + '…' : one.document.title },
+              { label: 'Week Of',    value: dayLabel(one.document.weekOf) },
+              { label: 'Signed',     value: String(one.signed.length) },
+              { label: 'Not Signed', value: String(one.outstanding.length), tone: one.outstanding.length ? 'bad' : 'good' },
+            ]
+          : [
+              { label: 'Forms',        value: String(kept.length) },
+              { label: 'Signatures',   value: String(kept.reduce((n, g) => n + g.signed.length, 0)) },
+              { label: 'Fully Signed', value: `${kept.length - short} of ${kept.length}`, ...(short ? {} : { tone: 'good' }) },
+              { label: 'Short of Signatures', value: String(short), ...(short ? { tone: 'bad' } : {}) },
+            ];
+        return { html, subject: `Safety Sign-Off Report — ${span}`, summary };
+      });
+    })();
 
     /* ═══════ Nav ═══════ */
     function goToDivisions() { localStorage.removeItem('fct_division'); window.location.replace('divisions.html'); }

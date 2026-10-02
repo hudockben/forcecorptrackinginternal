@@ -45,6 +45,9 @@ const REPORT_TYPES = {
   payroll_hours:        { division: 'payroll',   label: 'Payroll Hours Report'                },
   payroll_projects:     { division: 'payroll',   label: 'Project Overtime Report'             },
   payroll_overtime:     { division: 'payroll',   label: 'Weekly Overtime Report'              },
+  // The Safety Center's Sign-Off Report tab. No Email button there either;
+  // Auto Reports builds it from the tab's Print all / PDF.
+  safety_signoff:       { division: 'safety',    label: 'Safety Sign-Off Report'              },
 };
 
 // The divisions Auto Reports groups its schedules under, in the order the
@@ -59,6 +62,7 @@ const DIVISIONS = [
   { key: 'scheduler', name: 'Scheduler',       page: 'scheduler.html'       },
   { key: 'executive', name: 'Executive',       page: 'executive.html'       },
   { key: 'payroll',   name: 'Payroll',         page: 'payroll.html'         },
+  { key: 'safety',    name: 'Safety Center',   page: 'safety.html'          },
 ];
 
 // The ranges payroll's Reports tab offers, by the names of its own buttons.
@@ -80,6 +84,10 @@ const PAY_RANGES = {
 //   'division'   — the division's report; nothing to pick.
 // period: the default stretch of days the report covers (see PERIODS in
 //         report-schedule-time.js); the editor offers the rest.
+// periods: the only PERIODS it offers, where some of them make no sense for
+//         the report; periodHint, a line under the choice saying how it reads.
+// sections: the parts of a division report a schedule may pick, as the
+//         page's own Email checklist offers them. None picked is all of it.
 // day:    the default day a dispatch sheet is for — today, tomorrow or the
 //         next workday.
 // year:   offers "this year" or "all years".
@@ -94,6 +102,20 @@ const JOB_REPORTS = (div, label) => ({
   [`${div}_job_summary`]:   { name: 'Job Summary', scope: 'job',
     blurb: 'Contract, budget, cost and schedule for a job on one page.' },
 });
+
+// The Executive Report's sections, one per division, in the order it reads
+// them (renderPortfolios in executive.html, where each is #portfolio-<key>).
+const EXEC_SECTIONS = [
+  { key: 'turf',         name: 'Turf Management'      },
+  { key: 'paving',       name: 'Paving'               },
+  { key: 'kiewit',       name: 'Kiewit Pinetree'      },
+  { key: 'quarry',       name: 'Quarry'               },
+  { key: 'dust',         name: 'Dust Control'         },
+  { key: 'trucking',     name: 'Trucking'             },
+  { key: 'intercompany', name: 'Intercompany Billing' },
+  { key: 'payroll',      name: 'Payroll'              },
+  { key: 'safety',       name: 'Safety Sign-Off'      },
+];
 
 const SCHEDULE_DEFS = {
   ...JOB_REPORTS('turf', 'Turf'),
@@ -113,14 +135,21 @@ const SCHEDULE_DEFS = {
     blurb: 'The Labor board for one day.' },
   scheduler_dispatch:     { name: 'Crew Dispatch', scope: 'division', day: 'next_workday',
     blurb: 'The Scheduler board for one day, by job.' },
-  executive:              { name: 'Executive Report', scope: 'division',
-    blurb: 'The cross-division roll-up, every section.' },
+  executive:              { name: 'Executive Report', scope: 'division', sections: EXEC_SECTIONS,
+    blurb: 'The cross-division roll-up: every division, or the ones you pick.' },
   payroll_hours:          { name: 'Payroll Hours Report', scope: 'division', payRange: 'last_week',
     blurb: 'Every employee: hours worked, regular and overtime, prevailing, time off, pending against approved.' },
   payroll_projects:       { name: 'Project Overtime Report', scope: 'division', payRange: 'last_week',
     blurb: 'Hours and overtime by job, the crew capacity board, and each job\'s crew.' },
   payroll_overtime:       { name: 'Weekly Overtime', scope: 'division',
     blurb: 'The week in progress so far: each man\'s hours against 40, who is in overtime and who is close. Best sent midweek.' },
+  // Forms are filed under their week's Monday, and the tab's From week / To
+  // week take whole weeks — so a period is the weeks its days fall in, which
+  // leaves nothing a day-sized period would add.
+  safety_signoff:         { name: 'Sign-Off Report', scope: 'division', period: 'prev_week',
+    periods: ['prev_week', 'week_to_date', 'month_to_date', 'prev_month'],
+    periodHint: 'Forms are filed by week — it takes every week these days fall in',
+    blurb: 'Every safety form posted for those weeks: who signed it and when, with their drawn signature, and who still has not.' },
 };
 
 // Each schedulable report with its division, label and page filled in from
@@ -131,6 +160,7 @@ for (const [type, def] of Object.entries(SCHEDULE_DEFS)) {
   const rt  = REPORT_TYPES[type];
   const div = rt && DIVISIONS.find(d => d.key === rt.division);
   if (!rt || !div) throw new Error(`report-catalog: ${type} has no division page`);
+  if (def.periods && !def.periods.includes(def.period)) throw new Error(`report-catalog: ${type}'s default period is not one it offers`);
   SCHEDULABLE[type] = { ...def, type, division: rt.division, label: rt.label, page: div.page };
 }
 
@@ -142,12 +172,34 @@ for (const [type, def] of Object.entries(SCHEDULE_DEFS)) {
  * but the payroll page sends him to coding.html and the server will not give
  * him the company's hours; a schedule running as him would only ever fail.
  * So payroll takes an approver, the same line payrollAccess draws.
+ *
+ * The Safety Center is the same shape: crew hold the division to sign, but
+ * only a supervisor may read the sign-off report (safetyCapabilities).
  */
 function mayUseDivision(payload, division) {
   const { hasDivisionAccess, payrollAccess } = require('./auth');
   if (!hasDivisionAccess(payload, division)) return false;
   if (division === 'payroll') return payrollAccess(payload).canApprove;
+  if (division === 'safety') return require('./safety').safetyCapabilities(payload).canManage;
   return true;
 }
 
-module.exports = { REPORT_TYPES, DIVISIONS, SCHEDULABLE, PAY_RANGES, mayUseDivision };
+/**
+ * The sections a schedule asked for, as the report's own keys in the
+ * report's own order; null for the whole report. Keys the report does not
+ * have are dropped, so `unknown` says whether any were.
+ */
+function pickSections(def, raw) {
+  if (!def || !Array.isArray(def.sections) || !Array.isArray(raw) || !raw.length) return { sections: null, unknown: false };
+  const want = new Set(raw.map(String));
+  const sections = def.sections.map(x => x.key).filter(k => want.has(k));
+  return { sections: sections.length ? sections : null, unknown: sections.length < want.size };
+}
+
+/** The PERIODS a report offers: its own short list, or all of them. */
+function periodsFor(def, all) {
+  const keys = Object.keys(all || {});
+  return def && Array.isArray(def.periods) ? def.periods.filter(k => keys.includes(k)) : keys;
+}
+
+module.exports = { REPORT_TYPES, DIVISIONS, SCHEDULABLE, PAY_RANGES, mayUseDivision, periodsFor, pickSections };

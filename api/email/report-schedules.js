@@ -27,7 +27,7 @@
 
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth } = require('../lib/auth');
-const { SCHEDULABLE, DIVISIONS, PAY_RANGES, mayUseDivision } = require('../lib/report-catalog');
+const { SCHEDULABLE, DIVISIONS, PAY_RANGES, mayUseDivision, periodsFor, pickSections } = require('../lib/report-catalog');
 const T = require('../lib/report-schedule-time');
 const runner = require('../lib/report-schedule-runner');
 const jobFin = require('../lib/job-financials');
@@ -148,12 +148,19 @@ function normalizeBody(body, payload) {
   const inOpts = b.options && typeof b.options === 'object' ? b.options : {};
   const options = {};
   if (def.period) {
-    options.period = Object.prototype.hasOwnProperty.call(T.PERIODS, inOpts.period) ? inOpts.period : def.period;
+    options.period = periodsFor(def, T.PERIODS).includes(inOpts.period) ? inOpts.period : def.period;
   }
   if (def.day)  options.day  = DAY_CHOICES.includes(inOpts.day) ? inOpts.day : def.day;
   if (def.year) options.year = YEAR_CHOICES.includes(inOpts.year) ? inOpts.year : 'current';
   if (def.payRange) {
     options.range = Object.prototype.hasOwnProperty.call(PAY_RANGES, inOpts.range) ? inOpts.range : def.payRange;
+  }
+  if (def.sections) {
+    // None ticked is the whole report; ticks the report has no section for
+    // are refused rather than quietly sending something else.
+    const { sections, unknown } = pickSections(def, inOpts.sections);
+    if (unknown) return { error: 'Pick divisions from the list.' };
+    if (sections) options.sections = sections;
   }
 
   const occ = T.normalizeOccurrence(b);
@@ -232,6 +239,8 @@ module.exports = async (req, res) => {
           reports: Object.values(SCHEDULABLE).filter(s => s.division === d.key).map(s => ({
             type: s.type, name: s.name, label: s.label, scope: s.scope, blurb: s.blurb,
             period: s.period || null, day: s.day || null, year: Boolean(s.year), payRange: s.payRange || null,
+            periods: s.period ? periodsFor(s, T.PERIODS) : null, periodHint: s.periodHint || null,
+            sections: s.sections || null,
           })),
         }))
         .filter(d => d.reports.length);
