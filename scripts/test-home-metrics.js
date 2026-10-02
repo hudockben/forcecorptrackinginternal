@@ -18,9 +18,13 @@
  *   folding it in would report the company further under budget every time it
  *   won a job — these two exist to watch live work burn its budget.
  *
- *   Total Actual Profit describes COMPLETED jobs instead. Realised profit only
- *   means anything once a job is done; totalling it over live work would
- *   report a margin against costs that have not finished landing.
+ *   Total GP Earned to Date describes EVERY job with a contract and spend,
+ *   whatever its status. Each job earns its contract in proportion to the
+ *   work in place (cost to date over projected cost), so the figure means the
+ *   same thing on a live job as on a finished one. It covered completed jobs
+ *   only while it was contract minus cost-to-date — that set the whole
+ *   contract against part of the cost, and over live work would have posted
+ *   most of every contract as profit before the work was built.
  *
  * The last block checks the two figures that have left the strip: the weekly
  * daily-entry count, dropped, and the pending-PO count, which moved to the
@@ -77,20 +81,24 @@ function aggregate(file, projects) {
   if (from < 0 || to < 0) throw new Error(`aggregation block not found in ${file}`);
   const block = home.slice(from, to);
 
-  return new Function('projectsList', 'dailyRowCost', 'projIsDone', 'projectedCostForProject', 'fmt',
+  // Counts projections per job: projecting is the expensive part of the loop.
+  const projCalls = {};
+  const out = new Function('projectsList', 'dailyRowCost', 'projIsDone', 'projectedCostForProject', 'fmt',
     `${contractHelperCode(src)}
+     ${extractFunction(src, 'gpEarnedToDate')}
      ${block}
      return { ipCount, ipContract, ipBid, ipActual, ipProfit, ipProfitBase,
               awCount, awContract, awBid, awProfit, awProfitBase,
               bookCount, bookContract, bookBid, bookProfit, bookProfitBase,
-              doneActProfit, doneCount, ipVariance, ipPct };`
+              gpEarned, gpCount, gpDone, ipVariance, ipPct };`
   )(
     projects,
     r => r.cost || 0,
     p => ['complete', 'closed'].includes((p && p['status'] || '').toLowerCase()),
-    p => p._projected,
+    p => { projCalls[p.id] = (projCalls[p.id] || 0) + 1; return p._projected; },
     (n, d = 2) => Number(n).toFixed(d),
   );
+  return { ...out, projCalls };
 }
 
 // _projected is supplied directly so these tests check the strip's arithmetic,
@@ -108,7 +116,7 @@ const JOBS = [
   job({ id: 'b', name: 'Live B', status: 'In Progress', contract: 300000, bid: 250000, actual: 100000, projected: 240000 }),
   // In progress with no contract: costs count, profit cannot.
   job({ id: 'c', name: 'Live Unpriced', status: 'In Progress', contract: 0, bid: 90000, actual: 20000, projected: 90000 }),
-  // Completed — drives Actual Profit only.
+  // Completed — counted in GP Earned to Date, at contract minus final cost.
   job({ id: 'd', name: 'Done A', status: 'Complete', contract: 200000, bid: 180000, actual: 170000, projected: 170000 }),
   job({ id: 'e', name: 'Done B', status: 'Complete', contract: 100000, bid: 95000, actual: 110000, projected: 110000 }),
   // Awarded — the future half of the book. Its 5,555 of spend is deliberate:
@@ -117,7 +125,8 @@ const JOBS = [
   job({ id: 'g', name: 'Awarded',  status: 'Awarded',  contract: 777777, bid: 666666, actual: 5555, projected: 666666 }),
   // Awarded with no contract: its budget counts, its margin cannot.
   job({ id: 'i', name: 'Awarded Unpriced', status: 'Awarded', contract: 0, bid: 50000, actual: 0, projected: 50000 }),
-  // Neither live, awarded nor complete — out of every figure.
+  // Neither live, awarded nor complete — out of every figure but GP Earned to
+  // Date, which is earned on the work in place whatever the status says.
   job({ id: 'f', name: 'Bidding',  status: 'Bidding',  contract: 999999, bid: 888888, actual: 7777, projected: 888888 }),
   job({ id: 'h', name: 'On Hold',  status: 'On Hold',  contract: 555555, bid: 444444, actual: 3333, projected: 444444 }),
 ];
@@ -192,20 +201,34 @@ for (const file of FILES) {
   assert('  over a margin base of both halves together',
     near(m.bookProfitBase, 1577777), `got ${m.bookProfitBase}`);
 
-  console.log('\n[Total Actual Profit covers finished work]');
-  // (200,000 − 170,000) + (100,000 − 110,000) = 30,000 − 10,000.
-  assert('sums contract minus actual across completed jobs',
-    near(m.doneActProfit, 20000), `got ${m.doneActProfit}`);
-  assert('  a completed job that lost money pulls it down', m.doneActProfit < 30000);
-  assert('  and it counts the completed jobs', m.doneCount === 2, `got ${m.doneCount}`);
-  assert('  in-progress jobs are not in it',
-    !near(m.doneActProfit, 20000 + (500000 - 150000)));
+  console.log('\n[Total GP Earned to Date covers the work in place]');
+  // Each job earns contract × (actual ÷ projected), less actual:
+  //   Live A   500,000 × 150/420 − 150,000      =  28,571.43
+  //   Live B   300,000 × 100/240 − 100,000      =  25,000.00
+  //   Done A   200,000 − 170,000                =  30,000.00
+  //   Done B   100,000 − 110,000                = −10,000.00
+  //   Awarded  777,777 × 5,555/666,666 − 5,555  =     925.83
+  //   Bidding  999,999 × 7,777/888,888 − 7,777  =     972.12
+  //   On Hold  555,555 × 3,333/444,444 − 3,333  =     833.25
+  // The two jobs with no contract earn nothing, and the awarded one with no
+  // spend has earned nothing yet.
+  assert('sums the gross profit each job has earned so far',
+    near(m.gpEarned, 76302.64), `got ${m.gpEarned}`);
+  assert('  a live job earns its share, not contract minus spend',
+    !near(m.gpEarned, 76302.64 - 28571.43 + (500000 - 150000)));
+  assert('  a completed job that lost money pulls it down', m.gpEarned < 76302.64 + 10000);
+  assert('  it counts the jobs behind it', m.gpCount === 7, `got ${m.gpCount}`);
+  assert('  and how many of those are finished', m.gpDone === 2, `got ${m.gpDone}`);
+  assert('each job is projected at most once, however many figures read it',
+    Object.values(m.projCalls).every(n => n === 1), JSON.stringify(m.projCalls));
+  assert('  and a job with no contract, which no figure here can read, is never projected',
+    !m.projCalls.c && !m.projCalls.i, JSON.stringify(m.projCalls));
 
   console.log('\n[nothing to report]');
   const empty = aggregate(file, []);
   assert('no projects gives zeroes, not NaN',
     empty.ipCount === 0 && empty.ipContract === 0 && empty.ipVariance === 0
-    && empty.doneActProfit === 0 && empty.ipPct === 0);
+    && empty.gpEarned === 0 && empty.gpCount === 0 && empty.ipPct === 0);
   assert('  and the awarded and book totals come back zero too',
     empty.awCount === 0 && empty.awContract === 0 && empty.awBid === 0
     && empty.bookCount === 0 && empty.bookContract === 0 && empty.bookProfit === 0
@@ -213,8 +236,8 @@ for (const file of FILES) {
   const noneLive = aggregate(file, [byId('d'), byId('f')]);
   assert('with nothing in progress the live figures are zero',
     noneLive.ipCount === 0 && noneLive.ipBid === 0 && noneLive.ipProfit === 0);
-  assert('  while completed work still reports its profit',
-    near(noneLive.doneActProfit, 30000), `got ${noneLive.doneActProfit}`);
+  assert('  while work already in place still reports what it earned',
+    near(noneLive.gpEarned, 30000 + 972.12) && noneLive.gpDone === 1, `got ${noneLive.gpEarned}`);
   // A division between jobs — everything won, nothing started — still has a
   // book worth reporting, and no live work to measure a burn against.
   const awaitingStart = aggregate(file, [byId('g'), byId('i')]);
@@ -230,7 +253,7 @@ for (const file of FILES) {
 // The labels the figures sit under, and the one they replaced.
 console.log('\n══════════ labels ══════════');
 const LABELS = ['Active Projects', 'Total Contract Value', 'Awarded Backlog', 'Total Bid Budget',
-                'Total Actual Spend', 'Total Variance', 'Total Projected Profit', 'Total Actual Profit'];
+                'Total Actual Spend', 'Total Variance', 'Total Projected Profit', 'Total GP Earned to Date'];
 
 // Which total each card is wired to. The arithmetic tests above prove the
 // totals are right; these prove the right one reaches the screen, which is the
@@ -243,6 +266,7 @@ const WIRING = [
   ['Total Actual Spend still reads in-progress spend', '$${fmt(ipActual, 0)}'],
   ['Total Variance still reads the in-progress variance', '${money0(ipVariance)}'],
   ['Total Projected Profit reads the book profit',    '${money0(bookProfit)}'],
+  ['Total GP Earned to Date reads the earned total',  '${money0(gpEarned)}'],
 ];
 for (const file of FILES) {
   const src = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
@@ -285,10 +309,13 @@ for (const file of FILES) {
   // Scoped to the aggregation loop — the projects table below it projects
   // costs too, legitimately, for its own rows.
   const agg = home.slice(home.indexOf('  let ipCount = 0'), home.indexOf('  const allDaily'));
-  assert('  the aggregation projects a cost only where one is read',
-    (agg.match(/projectedCostForProject\(/g) || []).length === 2
-    && /if \(projContract\) \{ ipProfit \+= projContract - projectedCostForProject\(p\)/.test(agg)
-    && /if \(projContract\) \{ awProfit \+= projContract - projectedCostForProject\(p\)/.test(agg),
+  // Three figures read a projection now, so it is memoised per job rather
+  // than called at each — the behaviour is pinned by projCalls above.
+  assert('  the aggregation projects through one memoised call',
+    (agg.match(/projectedCostForProject\(/g) || []).length === 1
+    && /if \(projContract\) \{ ipProfit \+= projContract - projCost\(\)/.test(agg)
+    && /if \(projContract\) \{ awProfit \+= projContract - projCost\(\)/.test(agg)
+    && /gpEarnedToDate\(projContract, projActual, projCost\(\)\)/.test(agg),
     `${(agg.match(/projectedCostForProject\(/g) || []).length} calls in the loop`);
 
   // The strip is a financial summary. A count of the week's daily entries
