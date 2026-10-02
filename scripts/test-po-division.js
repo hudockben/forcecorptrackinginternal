@@ -840,6 +840,28 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
   assert('and it lives in quarry\'s list alone',
     st.getBlob(KEY('quarry')).length === 1 && st.getBlob(KEY('paving')).length === 0);
 
+  // A quarry order can never own a cost row, so a link it arrives with points
+  // at somebody else's. Stored, it would count as owned on the next save — and
+  // emptying the line would delete that row by id, on whatever job it is.
+  st = makeStore();
+  st.daily.set('PAVROW', {
+    row_id: 'PAVROW', project_id: 'pav1', company_code: 'FCT', division: 'paving',
+    material: 'Paving\'s own row', material_cost: 750,
+  });
+  po = makePO({ id: 'q3', lines: [{ id: 'L1', qty: '1', unit_cost: '50', po_row_id: 'PAVROW' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'quarry', po });
+  assert('a link a quarry order arrives with is not stored',
+    po.lines[0].po_row_id === null && st.getBlob(KEY('quarry'))[0].lines[0].po_row_id === null,
+    JSON.stringify(st.getBlob(KEY('quarry'))[0].lines[0]));
+  po = makePO({ id: 'q3', lines: [{ id: 'L1', qty: '', unit_cost: '', po_row_id: 'PAVROW' }] });
+  const qEmpty = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'quarry', po });
+  assert('so emptying the line later cannot delete paving\'s row', st.daily.has('PAVROW'),
+    JSON.stringify(qEmpty.rows));
+  po = makePO({ id: 'q4', lines: [{ id: 'L1', qty: '1', unit_cost: '50' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'quarry', po });
+  await poSync.removePO(st.sql, { companyCode: 'FCT', division: 'quarry', poId: 'q3' });
+  assert('nor can deleting the order', st.daily.has('PAVROW'));
+
   console.log('\n[a client copy that lost its row link]');
   // The link from a delivery line to the job cost row it created lives in the
   // ORDER, and the client only learns a newly minted one from the save's

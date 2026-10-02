@@ -43,6 +43,7 @@ const {
   canAccessPODivision,
   poCapabilities,
   PO_SOURCE_DIVISIONS,
+  PO_JOB_DIVISIONS,
   PO_GENERAL_DIVISION,
 } = require('./lib/auth');
 const poSync = require('./lib/po-sync');
@@ -53,6 +54,13 @@ const { numeric } = require('./lib/numeric');
 // written to match. daily_tracking_division_chk admits only the job divisions,
 // which is why po-sync clears the job on a quarry or general order.
 const PO_STORABLE = PO_SOURCE_DIVISIONS.concat([PO_GENERAL_DIVISION]);
+
+// The lists the full-list PUT may replace: the ones it always could. That PUT
+// is the division tabs' save, and quarry has no Purchase Orders tab — its only
+// writer is central purchasing, one order at a time through POST and DELETE.
+// Letting quarry through would hand any quarry role, view-only included, a way
+// to replace every order purchasing filed there in one call.
+const PO_PUTTABLE = PO_JOB_DIVISIONS.concat([PO_GENERAL_DIVISION]);
 
 // ./lib/numeric, not a bare parseFloat: these are figures somebody typed, and
 // parseFloat reads '1.234,56' as 1.234.
@@ -85,8 +93,9 @@ function safeDate(v) {
 async function _guardFor(req, res) {
   const guarded = await _guardDivision(req, res);
   if (!guarded) return null;
-  // Both mirror tables' CHECK constraints admit only the job divisions and the
-  // general list, while normalizeDivision accepts all sixteen and either guard
+  // purchase_orders' CHECK admits only the source divisions and the general
+  // list (daily_tracking's, only the job divisions — po-sync clears the job on
+  // anything else), while normalizeDivision accepts all sixteen and either guard
   // above passes anyone holding a role in the one they named — so a level2 fuel
   // user reached a write for `fuel`. The INSERT that violated the constraint ran
   // AFTER the blob write had committed: the order was stored, the caller was
@@ -95,6 +104,10 @@ async function _guardFor(req, res) {
   // row in either table.
   if (req.method !== 'GET' && !PO_STORABLE.includes(guarded.division)) {
     res.status(400).json({ error: 'Purchase orders cannot be filed under this division' });
+    return null;
+  }
+  if (req.method === 'PUT' && !PO_PUTTABLE.includes(guarded.division)) {
+    res.status(400).json({ error: 'This division\'s purchase orders are saved one at a time from Purchase Orders' });
     return null;
   }
   return guarded;

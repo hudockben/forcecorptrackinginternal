@@ -446,6 +446,21 @@ console.log('\n[rights are per division, not per page]');
   assert('and so does its list of divisions with jobs',
     /const PO_JOB = \['turf', 'paving', 'kiewit'\];/.test(PAGE) &&
     JSON.stringify(require('../api/lib/auth').PO_JOB_DIVISIONS) === JSON.stringify(['turf','paving','kiewit']));
+  // The sandboxes below restate these constants, so the PAGE's own copies are
+  // pinned here — otherwise dropping quarry from them would pass every check.
+  assert('the page names quarry for a catalogue failure',
+    /const PO_SOURCE_LABELS = \{[^}]*quarry: 'Quarry'[^}]*\};/.test(PAGE));
+  assert('and gives it its own chip colour',
+    /const DIV_COLORS = \{[^}]*quarry: 'var\(--div-quarry\)'[^}]*\};/.test(PAGE) &&
+    /--div-quarry:\s*#f97316;/.test(PAGE));
+  // Quarry has no Purchase Orders tab, so the attachments sheet must not send
+  // anyone looking for a paperclip there.
+  {
+    const sub = (PAGE.match(/'<div class="sub">Filed under '[\s\S]{0,700}?'<\/div>'/) || [''])[0];
+    assert('the attachments sheet only promises a tab to divisions that have one',
+      /po\._division === GENERAL \|\| hasJobs\(po\._division\)/.test(sub) &&
+      /has no Purchase Orders tab of its own/.test(sub), sub.slice(0, 300));
+  }
   assert('and GENERAL is declared before capsFor reads it',
     PAGE.indexOf('const GENERAL') < PAGE.indexOf('function capsFor'));
 

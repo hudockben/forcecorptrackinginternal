@@ -408,7 +408,19 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
 
   // An order with no job has no cost rows at all — that is the general-purchase
   // case, and it is a first-class state rather than an incomplete order.
-  if (!projectId) return { staleIds, written: 0, writtenIds: [], createdIds: [] };
+  //
+  // Nor can it gain a link to one here. A po_row_id the stored order does not
+  // already name came from the request, and returning before writeRow would
+  // store it — after which it counts as owned, and emptying the line deletes
+  // that row by id wherever it lives. The job path below never keeps such a
+  // link; this is the same rule for an order with no job, which every quarry
+  // order is.
+  if (!projectId) {
+    for (const line of lines) {
+      if (line && line.po_row_id && !ownsRow(line.po_row_id)) line.po_row_id = null;
+    }
+    return { staleIds, written: 0, writtenIds: [], createdIds: [] };
+  }
 
   /**
    * Write one delivery's cost row under `rowId`, and say whether it landed.
