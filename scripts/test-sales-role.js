@@ -293,7 +293,9 @@ const auth = require(root('api/lib/auth.js'));
       full.rows.some(r => r.contract === 3017650), JSON.stringify(full.rows[0]));
     assert('a sales digest lists the same jobs',
       sold.rows.length === full.rows.length && sold.rows.some(r => /Franklin/.test(r.name)), JSON.stringify(sold.rows));
-    const money = ['contract', 'bid', 'actualCost', 'projectedFinalCost', 'variance', 'projectedProfit', 'actualProfit'];
+    // percentComplete is cost over projected cost, so it is a cost figure too.
+    const money = ['contract', 'bid', 'actualCost', 'projectedFinalCost', 'variance', 'projectedProfit',
+                   'gpEarnedToDate', 'percentComplete', 'actualProfit'];
     const leaked = sold.rows.flatMap(r => money.filter(k => k in r));
     assert('  with no contract, cost or profit on any row', leaked.length === 0, leaked.join(', '));
     assert('  no division summary', sold.summary === null);

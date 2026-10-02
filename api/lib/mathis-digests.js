@@ -76,7 +76,7 @@ function capList(list, cap = LIST_CAP) {
  * turns anything outside it into "I don't have that".
  */
 const COVERS = {
-  jobs: ['per-job contract value, bid budget, actual cost to date, projected final cost, projected and actual profit, and variance'],
+  jobs: ['per-job contract value, bid budget, actual cost to date, projected final cost, percent complete, projected profit, gross profit earned to date, and variance'],
   job_history: ['how each job\'s contract, cost and projected profit have MOVED over a window of days, from a nightly snapshot — the only history in this system'],
   quarry: ['sales, tons sold and crushed, cost per pit, tons on hand, and per-ton contribution against break-even'],
   dust: ['revenue across the three billing books, gallons, invoice ageing, and the product margin on a sprayed gallon'],
@@ -189,7 +189,10 @@ function pickJobRow(r) {
     projectedFinalCost: money(r.projected),
     variance:   money(r.variance),
     projectedProfit: r.profit    === null ? null : money(r.profit),
-    actualProfit:    r.actProfit === null ? null : money(r.actProfit),
+    // What the pages label GP Earned to Date; percentComplete is the share of
+    // the projected cost spent, which is how much of the contract it has earned.
+    gpEarnedToDate:  r.gpEarned == null ? null : money(r.gpEarned),
+    percentComplete: r.pctDone  == null ? null : Math.round(r.pctDone * 1000) / 10,
   };
 }
 
@@ -480,7 +483,7 @@ async function jobHistory(c, division, opts = {}) {
              actual_cost::float      AS actual_cost,
              projected_cost::float   AS projected_cost,
              projected_profit::float AS projected_profit,
-             actual_profit::float    AS actual_profit
+             gp_earned::float        AS gp_earned
         FROM mathis_job_facts
        WHERE company_code = ${c.companyCode}
          AND division     = ${division}
@@ -1485,8 +1488,8 @@ function execSlice(d) {
       measure: 'projected profit', activeProjects: s.activeProjects,
       contract: money(s.contract), actualCost: money(s.actual),
       projectedProfit: s.projProfit === null ? null : money(s.projProfit),
-      actualProfit: s.actProfit === null ? null : money(s.actProfit),
-      completedJobs: s.completedJobs,
+      gpEarnedToDate: s.gpEarned == null ? null : money(s.gpEarned),
+      gpEarnedJobs: s.gpJobs, completedJobs: s.completedJobs,
     };
   }
   if (d.kind === 'quarry') return {

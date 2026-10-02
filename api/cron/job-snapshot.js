@@ -77,7 +77,7 @@ async function snapshotDivision(sql, companyCode, division, day) {
         company_code, division, project_id, day,
         job_name, job_number, status, complete,
         contract, bid, actual_cost, projected_cost, variance,
-        projected_profit, actual_profit, captured_at
+        projected_profit, gp_earned, captured_at
       ) VALUES (
         ${companyCode}, ${division}, ${id}, ${day},
         ${String(r.name || '').slice(0, 200)},
@@ -87,7 +87,7 @@ async function snapshotDivision(sql, companyCode, division, day) {
         ${num(r.contract)}, ${num(r.bid)}, ${num(r.actual)},
         ${num(r.projected)}, ${num(r.variance)},
         ${r.profit === null ? null : num(r.profit)},
-        ${r.actProfit === null ? null : num(r.actProfit)},
+        ${r.gpEarned === null ? null : num(r.gpEarned)},
         NOW()
       )
       ON CONFLICT (company_code, division, project_id, day) DO UPDATE SET
@@ -101,7 +101,7 @@ async function snapshotDivision(sql, companyCode, division, day) {
         projected_cost   = EXCLUDED.projected_cost,
         variance         = EXCLUDED.variance,
         projected_profit = EXCLUDED.projected_profit,
-        actual_profit    = EXCLUDED.actual_profit,
+        gp_earned        = EXCLUDED.gp_earned,
         captured_at      = NOW()
     `;
     written++;
