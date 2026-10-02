@@ -1473,6 +1473,7 @@
             <div><span class="k">Posted</span><span class="v">${esc(stamp(d.uploadedAt, true))}</span></div>
             <div><span class="k">Not signed</span><span class="v">${(g.outstanding || []).length}</span></div>
             ${printedCell(info)}
+            ${d.archivedAt ? `<div><span class="k">Archived</span><span class="v">${esc(stamp(d.archivedAt, true))} — closed to signing</span></div>` : ''}
           </div>
           ${stmt.html}
           <h2 class="sec">Signed (${g.signed.length})</h2>
@@ -1542,7 +1543,7 @@
             <tbody>${groups.map(g => `
               <tr>
                 <td class="when">${esc(dayLabel(g.document.weekOf))}</td>
-                <td>${esc(g.document.title)}</td>
+                <td>${esc(g.document.title)}${g.document.archivedAt ? ' <span class="none">(archived)</span>' : ''}</td>
                 <td class="num">${g.signed.length}</td>
                 <td class="num">${(g.outstanding || []).length}</td>
               </tr>`).join('')}
@@ -1724,7 +1725,9 @@
        document read fresh, the same contents page and sheets — the PDF that
        arrives is the one Print all would have made with archived forms shown:
        archiving is how a supervisor closes out a week everyone has signed,
-       and the record of that week is what the schedule is for. One more thing
+       and the record of that week is what the schedule is for. (An archived
+       form nobody signed was taken down, not closed out, and is left out.)
+       One more thing
        differs, for the email's sake: the drawn marks go at the size the sheet
        prints them, smaller still if that is too much for one email, and left
        out — saying so — if even that is. */
@@ -1788,8 +1791,16 @@
         const spanWords = span.charAt(0).toLowerCase() + span.slice(1);
         await loadReport({ from, to, archived: true });
         if (state.reportError) throw new Error('The sign-off report did not load — ' + state.reportError);
-        const all = state.report || [];
-        if (!all.length) return { skip: `No safety forms were posted for the ${spanWords}.` };
+        // Archived with nobody's signature on it is a form taken down — posted
+        // in error, or replaced — not a week closed out. Nobody can sign it
+        // now, so it would only read as a crew that owes a signature.
+        const withdrawn = (state.report || []).filter(g => g.document.archivedAt && !g.signed.length);
+        const all = (state.report || []).filter(g => !withdrawn.includes(g));
+        if (!all.length) {
+          return { skip: withdrawn.length
+            ? `Nothing to send for the ${spanWords}: ${withdrawn.length === 1 ? 'its one form was' : `all ${withdrawn.length} of its forms were`} archived before anyone signed.`
+            : `No safety forms were posted for the ${spanWords}.` };
+        }
         if (!all.some(hasNames)) {
           return { skip: `Nothing posted for the ${spanWords} has been signed, and nobody is on the Safety Center roster to sign it.` };
         }
