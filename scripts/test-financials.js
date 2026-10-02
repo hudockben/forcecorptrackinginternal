@@ -40,7 +40,7 @@ const BRANDING = (() => {
 })();
 
 const FILES = ['tracker.html', 'paving.html', 'kiewit-pinetree.html'];
-const FIN_HEADERS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Gross Profit'];
+const FIN_HEADERS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'GP Earned to Date'];
 // The export carries the worked dates as columns of their own after the money.
 const WORKED_HEADERS = ['First Worked', 'Last Worked', 'Days Worked'];
 
@@ -49,6 +49,8 @@ function assert(label, cond, detail) {
   if (cond) { passed++; console.log(`  ✓ ${label}`); }
   else { failed++; console.error(`  ✗ ${label}${detail ? '  — ' + detail : ''}`); }
 }
+
+const near = (a, b) => Math.abs(a - b) < 0.01;
 
 function extractFunction(src, name) {
   const start = src.indexOf(`function ${name}(`);
@@ -63,7 +65,7 @@ function extractFunction(src, name) {
 
 // The whole Financials block — filter state, table, export and print all live
 // together — plus the real projection chain it depends on, over a stub DOM.
-const CHAIN = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject', 'statusBadgeClass', '_rowIsWorkDay'];
+const CHAIN = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject', 'gpEarnedToDate', 'statusBadgeClass', '_rowIsWorkDay'];
 
 // paving.html routes every contract read through projectContract(), which
 // folds in contract change orders; the other division files still inline the
@@ -177,7 +179,7 @@ function render(file, projects) {
 
 // A complete bid line projects at exactly its actual, which keeps the
 // arithmetic in most expectations obvious. rqty/done are overridable so a job
-// can be left mid-flight, where Projected Profit and Gross Profit diverge.
+// can be left mid-flight, where Projected Profit and GP Earned to Date diverge.
 const job = (o) => ({
   id: o.id, 'project-name': o.name, 'job-number': o.job, status: o.status,
   'contract-amount': o.contract,
@@ -197,7 +199,7 @@ const JOBS = [
   // so the two profit columns must not agree.
   job({ id: 'd', name: 'Half Built Job',                 job: '1001', status: 'In Progress',   contract: 1000000,   bid: 500000,    actual: 100000, rqty: 0.25, done: false }),
   // Contract signed, nothing spent — the case that would read as pure margin
-  // if Gross Profit were contract minus zero.
+  // if GP Earned to Date were contract minus zero.
   job({ id: 'e', name: 'Not Started Job',                job: '1002', status: 'In Progress',   contract: 800000,    bid: 600000,    actual: 0,      rqty: 0,    done: false }),
 ];
 
@@ -213,10 +215,10 @@ for (const file of FILES) {
 
   console.log('\n[every job is listed with the agreed column names]');
   assert('the header uses the agreed vocabulary',
-    ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Gross Profit']
+    ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'GP Earned to Date']
       .every(h => html.includes(`>${h}</th>`)));
   assert('  the old names are gone',
-    !/>Contract<\/th>|>Bid<\/th>|>Projected<\/th>|>Profit<\/th>|>Actual Profit<\/th>/.test(html));
+    !/>Contract<\/th>|>Bid<\/th>|>Projected<\/th>|>Profit<\/th>|>Actual Profit<\/th>|>Gross Profit<\/th>/.test(html));
   assert('every job appears', JOBS.every(j => html.includes(j['project-name'])));
   assert('the count is shown in the heading', html.includes('(5 jobs)'));
 
@@ -249,13 +251,21 @@ for (const file of FILES) {
   const d = rowOf('Half Built Job');
   assert('a quarter-built job projects $400,000', d.includes('$400,000.00'), d);
   assert('Projected Profit is contract minus projected ($600,000)', d.includes('$600,000.00'), d);
-  assert('Gross Profit is contract minus spend to date ($900,000)', d.includes('$900,000.00'), d);
+  // A quarter of the projected cost is in, so a quarter of the contract is
+  // earned: $250,000 earned less $100,000 spent. Contract minus spend would
+  // have posted $900,000 — ninety cents of profit on every dollar not yet built.
+  assert('GP Earned to Date is the contract earned so far less spend ($150,000)',
+    d.includes('$150,000.00') && !d.includes('$900,000.00'), d);
+  assert('  its margin is on revenue earned, so it matches the projected margin (60.0%)',
+    /\$150,000\.00 <span[^>]*>\(60\.0%\)/.test(d), d);
+  assert('  and the hover says how far along the job is',
+    d.includes('title="25.0% complete · $250,000.00 of the contract earned"'), d);
 
   console.log('\n[a signed job that has not started]');
   const e = rowOf('Not Started Job');
   assert('it still projects its bid', e.includes('$600,000.00'));
   assert('Projected Profit is contract minus bid ($200,000)', e.includes('$200,000.00'));
-  assert('Gross Profit stays blank rather than posting the contract as margin',
+  assert('GP Earned to Date stays blank rather than posting the contract as margin',
     !e.includes('$800,000.00</span>') && !/\(100\.0%\)/.test(e), e);
 
   console.log('\n[totals]');
@@ -264,8 +274,10 @@ for (const file of FILES) {
   assert('project cost total sums every job', html.includes('$1,468,562.30'));
   assert('Projected Profit total covers only jobs with a contract',
     html.includes('$1,032,750.02'), 'expected 217,750.02 + 15,000 + 600,000 + 200,000');
-  assert('Gross Profit total covers only jobs with a contract AND spend',
-    html.includes('$1,132,750.02'), 'expected 217,750.02 + 15,000 + 900,000');
+  assert('GP Earned to Date total covers only jobs with a contract AND spend',
+    html.includes('$382,750.02'), 'expected 217,750.02 + 15,000 + 150,000');
+  assert('  with its margin on the revenue those jobs have earned (40.7%)',
+    /\$382,750\.02 <span[^>]*>\(40\.7%\)/.test(html), 'base 479,312.32 + 210,000 + 250,000');
 
   console.log('\n[ordering and behaviour]');
   assert('live jobs sort above finished ones',
@@ -275,7 +287,7 @@ for (const file of FILES) {
   assert('rows open the project', html.includes(`goToProject('a')`));
   assert('both profit bases are stated on screen',
     /Projected Profit is contract value minus <strong>projected<\/strong> final cost/.test(html)
-    && /Gross Profit is contract value minus cost <strong>spent so far<\/strong>/.test(html));
+    && /GP Earned to Date is the gross profit on the work done <strong>so far<\/strong>/.test(html));
 
   console.log('\n[a total with nothing to total is unknown, not zero]');
   // Rendering "$0.00" in profit-green across a portfolio where no job carries
@@ -297,7 +309,7 @@ for (const file of FILES) {
   const noSpendFoot = noSpendHtml.slice(noSpendHtml.indexOf('<tfoot>'));
   assert('Projected Profit still totals when a job has a contract but no spend',
     noSpendFoot.includes('$100,000.00'), noSpendFoot);
-  assert('  while Gross Profit dashes', /—/.test(noSpendFoot));
+  assert('  while GP Earned to Date dashes', /—/.test(noSpendFoot));
 
   console.log('\n[empty state]');
   assert('no projects renders an empty state, not a broken table',
@@ -510,7 +522,7 @@ for (const file of FILES) {
   const ncCells = csvRows.find(l => l.startsWith('No Contract Yet')).split(',');
   const col = h => FIN_HEADERS.indexOf(h);
   assert('  a not-applicable profit is blank, not zero',
-    ncCells[col('Projected Profit')] === '' && ncCells[col('Gross Profit')] === '', ncCells.join(','));
+    ncCells[col('Projected Profit')] === '' && ncCells[col('GP Earned to Date')] === '', ncCells.join(','));
   assert('  the last row totals', csvRows[csvRows.length - 1].startsWith('Totals,,,2489312.32'));
   assert('  a name containing a comma is quoted', (() => {
     const m = loadFinancials(file, [job({ id: 'q', name: 'Smith, Jones & Co', job: '1', status: 'In Progress', contract: 100, bid: 90, actual: 80 })]);
@@ -833,24 +845,59 @@ for (const file of FILES) {
 
   console.log(`\n[${file}]`);
   assert('the header uses the agreed vocabulary',
-    ['Contract Value', 'Bid Budget', 'Projected Cost', 'Projected Profit', 'Actual Profit']
+    ['Contract Value', 'Bid Budget', 'Projected Cost', 'Projected Profit', 'GP Earned to Date']
       .every(h => thead.includes(`>${h}</th>`)), thead);
   assert('  the old names are gone',
-    !/>Contract<\/th>|>Bid<\/th>|>Projected<\/th>|>Profit<\/th>/.test(thead));
-  assert('  Actual Profit sits after Projected Profit',
-    thead.indexOf('Projected Profit') < thead.indexOf('Actual Profit'));
+    !/>Contract<\/th>|>Bid<\/th>|>Projected<\/th>|>Profit<\/th>|>Actual Profit<\/th>|>Gross Profit<\/th>/.test(thead));
+  assert('  GP Earned to Date sits after Projected Profit',
+    thead.indexOf('Projected Profit') < thead.indexOf('GP Earned to Date'));
   const ths = (thead.match(/<th[ >]/g) || []).length;
   const tds = (row.match(/<td[ >]/g) || []).length;
   assert(`every header has a cell under it (${ths} headers, ${tds} cells)`, ths === tds);
-  assert('the new cell renders the actual-profit figure',
-    /\$\{actProfitTxt\}/.test(row) && /\$\{actProfitStyle\}/.test(row));
-  // The formula lives here as well as in renderFinancials, so it can drift.
-  // Both guards matter: no contract means no revenue to subtract from, and no
-  // spend means a signed-but-unstarted job would post its contract as margin.
-  assert('Actual Profit is contract minus actual, guarded on both',
-    /const actProfit\s*=\s*\(contractVal && actual\)\s*\?\s*contractVal - actual\s*:\s*null;/.test(src));
+  assert('the cell renders the GP Earned to Date figure',
+    /\$\{gpEarnedTxt\}/.test(row) && /\$\{gpEarnedStyle\}/.test(row));
+  // Every surface has to go through the one helper, or the Home column, the
+  // Financials tab and the job summary drift apart on the same job.
+  assert('the Home column computes it through gpEarnedToDate, on the column\'s own projection',
+    /const gpE\s*=\s*gpEarnedToDate\(contractVal, actual, projCost\);/.test(src));
+  assert('  so do the Financials tab and the job summary',
+    /const gpE\s*=\s*gpEarnedToDate\(contract, actual, projected\);/.test(src)
+    && /const gpE\s*=\s*gpEarnedToDate\(contractVal, grandActual, projectedCostForProject\(p\)\);/.test(src)
+    && /<div class="sum-label">GP Earned to Date<\/div>/.test(src));
+  assert('  and nothing still sets the whole contract against cost-to-date',
+    !/contractVal - actual\b|contract - actual\b|contractVal - grandActual|projContract - projActual/.test(src));
   assert('  Projected Profit still subtracts projected, not actual',
     /const profit\s*=\s*contractVal \? contractVal - projCost : null;/.test(src));
+}
+
+// ── GP Earned to Date: the arithmetic ──────────────────────────────────────
+// Cost-to-cost earned value, the way a WIP schedule states it: cost to date
+// over projected cost is the share complete, that share of the contract is
+// earned, and earned less cost to date is the gross profit so far.
+console.log('\n══════════ gp earned to date ══════════');
+for (const file of FILES) {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  const gp  = new Function(`${extractFunction(src, 'gpEarnedToDate')}; return gpEarnedToDate;`)();
+  console.log(`\n[${file}]`);
+  const q = gp(1000000, 100000, 400000);
+  assert('a quarter complete earns a quarter of the contract',
+    near(q.pct, 0.25) && near(q.earned, 250000) && near(q.gp, 150000), JSON.stringify(q));
+  const done = gp(210000, 195000, 195000);
+  assert('a finished job settles at contract minus final cost', near(done.gp, 15000) && near(done.earned, 210000));
+  const loss = gp(100000, 60000, 120000);
+  assert('a job heading for a loss shows its loss to date, not a profit',
+    near(loss.gp, -10000) && near(loss.earned, 50000), JSON.stringify(loss));
+  assert('no contract: nothing to earn', gp(0, 5000, 10000) === null);
+  assert('no spend: nothing earned yet', gp(500000, 0, 400000) === null);
+  const over = gp(100000, 50000, 40000);
+  assert('earned revenue never passes the contract, even on a bad projection',
+    near(over.earned, 100000) && near(over.gp, 50000), JSON.stringify(over));
+  // Hempfield High School from the Financials screenshot: $5,231.50 into a
+  // $3.4M projection. Contract minus spend showed $4,430,183.50 (99.9%).
+  const hhs = gp(4435415, 5231.50, 3415415.02);
+  assert('a job barely started earns a sliver, at the job\'s margin',
+    Math.abs(hhs.gp - 1562.35) < 0.5 && Math.abs(hhs.gp / hhs.earned - (4435415 - 3415415.02) / 4435415) < 1e-9,
+    JSON.stringify(hhs));
 }
 
 // ── Status colours, everywhere status is shown ──────────────────────────────

@@ -63,8 +63,8 @@ const FAKE_TURF = [
     pinned: false, bidItems: [],
   },
   {
-    // Finished with spend behind it — the only shape that can contribute to
-    // Total Actual Profit (contract $200k − actual $150k = $50k).
+    // Finished with spend behind it: earns its whole contract, so it adds
+    // contract $200k − actual $150k = $50k to Total GP Earned to Date.
     id: 'p6',
     'project-name': 'Done Project', 'job-number': '26020', 'status': 'Complete',
     'contract-amount': '200000', 'start-date': '2025-01-01', 'end-date': '2025-12-01',
@@ -477,7 +477,7 @@ const res = {
       console.log(`     ${m.label.padEnd(22)} = ${String(m.value).padEnd(14)} ${m.sub || ''}`);
     }
     for (const r of (d.rows || [])) {
-      console.log(`     · ${(r.name || '').padEnd(30)} ${(r.status||'').padEnd(12)} bid=${r.bid} actual=${r.actual} proj=${r.projected} profit=${r.profit} actProfit=${r.actProfit} pinned=${r.pinned} ${r.progressPct}%`);
+      console.log(`     · ${(r.name || '').padEnd(30)} ${(r.status||'').padEnd(12)} bid=${r.bid} actual=${r.actual} proj=${r.projected} profit=${r.profit} gpEarned=${r.gpEarned} pinned=${r.pinned} ${r.progressPct}%`);
     }
   }
 
@@ -560,10 +560,17 @@ const res = {
     if (!backlog || backlog.value !== '$75,000') fail(`turf Awarded Backlog = ${backlog && backlog.value} (expected $75,000)`);
     else pass(`turf Awarded Backlog = ${backlog.value}`);
 
-    // Completed Done Project: $200,000 contract − $150,000 spend.
-    const actProfit = metric(turf, 'Total Actual Profit');
-    if (!actProfit || actProfit.value !== '$50,000') fail(`turf Total Actual Profit = ${actProfit && actProfit.value} (expected $50,000)`);
-    else pass(`turf Total Actual Profit = ${actProfit.value} — ${actProfit.sub}`);
+    // Every job with a contract and spend, earned cost-to-cost:
+    //   Done Project   $200,000 − $150,000                         = $50,000.00
+    //   Adams TWP LL   $190,086.60 × 105,789.27 / 109,598.79 − 105,789.27
+    //                  = $183,479.42 earned − $105,789.27           = $77,690.15
+    // Contract minus spend would have put $84,297 on Adams instead — a job not
+    // yet finished credited with more than its whole projected margin.
+    const gpTile = metric(turf, 'Total GP Earned to Date');
+    if (!gpTile || gpTile.value !== '$127,690') fail(`turf Total GP Earned to Date = ${gpTile && gpTile.value} (expected $127,690)`);
+    else pass(`turf Total GP Earned to Date = ${gpTile.value} — ${gpTile.sub}`);
+    if (!gpTile || gpTile.sub !== '2 jobs · 1 completed') fail(`turf GP Earned to Date sub = ${gpTile && gpTile.sub} (expected "2 jobs · 1 completed")`);
+    else pass(`  it says which jobs it covers: ${gpTile.sub}`);
 
     // Bid budget: p1 $375,931.05 + p3 $151,641.89 in progress, plus awarded
     // p7 at (100 + 20 change-order qty) × $500 = $60,000.

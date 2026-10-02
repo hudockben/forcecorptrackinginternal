@@ -4766,9 +4766,12 @@ function renderHomeTab() {
   // nothing against either, so rolling it into Actual Spend or Total Variance
   // would report the company further under budget every time it won a job —
   // those two watch live work burn its budget, so they stay on live work.
-  // Actual Profit is what finished work returned, so it totals completed jobs.
+  // GP Earned to Date is earned on the work in place whatever a job's status,
+  // so it totals every job with a contract and spend — the rows the Financials
+  // tab totals. It covered completed jobs only while it was contract minus
+  // cost-to-date, which meant nothing until a job's costs had finished landing.
   let ipCount = 0, ipContract = 0, ipBid = 0, ipActual = 0;
-  let ipProfit = 0, ipProfitBase = 0, doneActProfit = 0, doneCount = 0;
+  let ipProfit = 0, ipProfitBase = 0, gpEarned = 0, gpCount = 0, gpDone = 0;
   let awCount = 0, awContract = 0, awBid = 0, awProfit = 0, awProfitBase = 0;
   let statusCounts = { Active: 0, Complete: 0, 'On Hold': 0, 'At Risk': 0 };
 
@@ -4777,15 +4780,18 @@ function renderHomeTab() {
     const projBid    = (p.bidItems||[]).reduce((s,b) => s + _effBidQty(b) * (parseFloat(b.unit_cost)||0), 0);
     const projActual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
     const projContract = projectContract(p);
+    // Projecting a cost is the expensive part of this loop, so it runs at most
+    // once per job and only where a figure reads it.
+    let _proj;
+    const projCost = () => (_proj === undefined ? (_proj = projectedCostForProject(p)) : _proj);
     if ((p['status'] || '') === 'In Progress') {
       ipCount++;
       ipContract  += projContract;
       ipBid       += projBid;
       ipActual    += projActual;
       // Only a job carrying a contract can contribute a profit figure; without
-      // one there is no revenue to subtract the cost from. Projecting a cost is
-      // the expensive part of this loop, so it is only done where it is read.
-      if (projContract) { ipProfit += projContract - projectedCostForProject(p); ipProfitBase += projContract; }
+      // one there is no revenue to subtract the cost from.
+      if (projContract) { ipProfit += projContract - projCost(); ipProfitBase += projContract; }
     } else if ((p['status'] || '') === 'Awarded') {
       // Won, not started. With nothing spent against it yet its projected cost
       // is still the bid budget, so the profit it contributes is the margin the
@@ -4793,11 +4799,13 @@ function renderHomeTab() {
       awCount++;
       awContract += projContract;
       awBid      += projBid;
-      if (projContract) { awProfit += projContract - projectedCostForProject(p); awProfitBase += projContract; }
-    } else if (projIsDone(p) && projContract && projActual) {
-      // Realised profit needs both a contract and real spend behind it.
-      doneActProfit += projContract - projActual;
-      doneCount++;
+      if (projContract) { awProfit += projContract - projCost(); awProfitBase += projContract; }
+    }
+    // Earned profit needs both a contract and real spend behind it.
+    if (projContract > 0 && projActual > 0) {
+      gpEarned += gpEarnedToDate(projContract, projActual, projCost()).gp;
+      gpCount++;
+      if (projIsDone(p)) gpDone++;
     }
     // status counts from bid items
     (p.bidItems||[]).forEach(b => {
@@ -5075,10 +5083,15 @@ function renderHomeTab() {
     const profitTxt     = profit !== null ? (profit >= 0 ? '$' + fmt(profit) : '-$' + fmt(Math.abs(profit))) : '—';
     const profitStyle   = profit === null ? 'color:var(--muted)' : profit >= 0 ? 'color:var(--green)' : 'color:var(--red)';
     const profitPct     = (profit !== null && contractVal) ? ` (${(profit / contractVal * 100).toFixed(1)}%)` : '';
-    const actProfit     = (contractVal && actual) ? contractVal - actual : null;
-    const actProfitTxt  = actProfit !== null ? (actProfit >= 0 ? '$' + fmt(actProfit) : '-$' + fmt(Math.abs(actProfit))) : '—';
-    const actProfitStyle= actProfit === null ? 'color:var(--muted)' : actProfit >= 0 ? 'color:var(--green)' : 'color:var(--red)';
-    const actProfitPct  = (actProfit !== null && contractVal) ? ` (${(actProfit / contractVal * 100).toFixed(1)}%)` : '';
+    // Reads the same projected cost as Projected Profit beside it, so the two
+    // agree on how far along the job is.
+    const gpE           = gpEarnedToDate(contractVal, actual, projCost);
+    const gpEarned      = gpE ? gpE.gp : null;
+    const gpEarnedTxt   = gpEarned !== null ? (gpEarned >= 0 ? '$' + fmt(gpEarned) : '-$' + fmt(Math.abs(gpEarned))) : '—';
+    const gpEarnedStyle = gpEarned === null ? 'color:var(--muted)' : gpEarned >= 0 ? 'color:var(--green)' : 'color:var(--red)';
+    // Margin on the revenue earned so far, the way a WIP schedule states it.
+    const gpEarnedPct   = gpE ? ` (${(gpEarned / gpE.earned * 100).toFixed(1)}%)` : '';
+    const gpEarnedTip   = gpE ? `${(gpE.pct * 100).toFixed(1)}% complete · $${fmt(gpE.earned)} of the contract earned` : '';
     const barColor  = !bid ? 'var(--muted)' : actual/bid >= 1 ? 'var(--red)' : actual/bid >= 0.85 ? 'var(--yellow)' : 'var(--green)';
     const name      = p['project-name'] || 'Untitled Project';
     const meta      = [p['job-number'], p['client']].filter(Boolean).map(v => esc(v)).join(' · ');
@@ -5117,7 +5130,7 @@ function renderHomeTab() {
       <td class="pt-num" style="${varStyle}">${varTxt}</td>
       <td class="pt-num" style="${projStyle}">${projTxt}</td>
       <td class="pt-num" style="${profitStyle}">${profitTxt}<span style="font-size:0.7em;opacity:0.8">${profitPct}</span></td>
-      <td class="pt-num" style="${actProfitStyle}">${actProfitTxt}<span style="font-size:0.7em;opacity:0.8">${actProfitPct}</span></td>
+      <td class="pt-num" style="${gpEarnedStyle}" title="${gpEarnedTip}">${gpEarnedTxt}<span style="font-size:0.7em;opacity:0.8">${gpEarnedPct}</span></td>
       <td>
         <button class="pin-btn" onclick="event.stopPropagation();togglePin('${p.id}')"
           title="${p.pinned ? 'Unpin' : 'Pin to Home'}"
@@ -5226,10 +5239,10 @@ function renderHomeTab() {
         <span class="home-metric-value" style="${posNeg(bookProfit)}">${money0(bookProfit)}</span>
         <span class="home-metric-sub">${bookProfitBase ? fmtPct(bookProfit / bookProfitBase * 100) + ' margin' : awCount ? 'in progress + awarded' : 'in progress jobs'}</span>
       </div>
-      <div class="home-metric-item">
-        <span class="home-metric-label">Total Actual Profit</span>
-        <span class="home-metric-value" style="${posNeg(doneActProfit)}">${money0(doneActProfit)}</span>
-        <span class="home-metric-sub">${doneCount} completed job${doneCount === 1 ? '' : 's'}</span>
+      <div class="home-metric-item" title="Gross profit the work in place has earned so far, across every job with a contract and spend. Each job earns its contract in proportion to cost to date over projected cost.">
+        <span class="home-metric-label">Total GP Earned to Date</span>
+        <span class="home-metric-value" style="${posNeg(gpEarned)}">${money0(gpEarned)}</span>
+        <span class="home-metric-sub">${gpCount} job${gpCount === 1 ? '' : 's'} · ${gpDone} completed</span>
       </div>
       ${atRiskHTML}
     </div>
@@ -5250,7 +5263,7 @@ function renderHomeTab() {
               <th>Variance</th>
               <th>Projected Cost</th>
               <th>Projected Profit</th>
-              <th title="Contract value minus actual cost. Final once the job is complete.">Actual Profit</th>
+              <th title="Contract earned so far (cost to date ÷ projected cost) less cost to date. Contract minus final cost once the job is complete.">GP Earned to Date</th>
               <th></th>
             </tr></thead>
             <tbody>${projectTableRows}</tbody>
@@ -8795,6 +8808,24 @@ function projectedCostForProject(p) {
   const offBid = offBidForProject(p).total;
   // Backstop: never undercut what has already gone out the door.
   return Math.max(sumLines + offBid, totalActual);
+}
+
+/* Gross profit earned to date — the figure a WIP schedule carries. The
+   contract is earned as the work is done, measured cost-to-cost: cost to date
+   over projected final cost is the share of the job in place, and that share
+   of the contract less the cost to date is what the work has made so far. On
+   a finished job the projected cost IS the actual, so it settles at contract
+   minus final cost. Setting the whole contract against part of the cost — what
+   this figure used to be — read 99.9% on a job $5k in.
+   null without a contract (no revenue to earn) or without spend (nothing
+   earned yet). { gp, earned, pct }: pct is the share complete, 0 to 1. */
+function gpEarnedToDate(contract, actual, projected) {
+  if (!(contract > 0) || !(actual > 0)) return null;
+  // Projected never undercuts actual — projectedCostForProject floors it — but
+  // the cap keeps earned revenue from ever passing the contract regardless.
+  const pct    = projected > actual ? actual / projected : 1;
+  const earned = contract * pct;
+  return { gp: earned - actual, earned, pct };
 }
 
 function renderBidFooter(projId, opts = {}) {
@@ -18648,9 +18679,13 @@ async function exportJobSummary(projId, opts = {}) {
 
   // ── Financial summary bar ─────────────────────────────────────────
   const contractVal = projectContract(p);
-  const profitVal   = contractVal ? contractVal - grandActual : null;
+  // GP earned to date, as on the Home and Financials tabs. Contract minus
+  // cost-to-date posted nearly the whole contract as profit on a job barely
+  // started — and all of it on one not started at all.
+  const gpE         = gpEarnedToDate(contractVal, grandActual, projectedCostForProject(p));
+  const profitVal   = gpE ? gpE.gp : null;
   const profitCls   = profitVal === null ? '' : profitVal >= 0 ? 'sqft-under' : 'sqft-over';
-  const profitPct   = (profitVal !== null && contractVal) ? ` (${(profitVal / contractVal * 100).toFixed(1)}%)` : '';
+  const profitPct   = gpE ? ` (${(gpE.gp / gpE.earned * 100).toFixed(1)}%)` : '';
   // With change orders on the job the single "Contract Value" figure hides
   // where the number came from, so the original and the CO total are split
   // out beside it.
@@ -18663,7 +18698,7 @@ async function exportJobSummary(projId, opts = {}) {
     ${contractMetrics}
     <div class="sum-metric"><div class="sum-label">Bid Budget</div><div class="sum-val">${grandBid ? '$' + fmt(grandBid) : dash}</div></div>
     <div class="sum-sep"></div>
-    <div class="sum-metric"><div class="sum-label">Actual Profit</div><div class="sum-val ${profitCls}">${profitVal === null ? dash : money(profitVal) + profitPct}</div></div>
+    <div class="sum-metric"><div class="sum-label">GP Earned to Date</div><div class="sum-val ${profitCls}">${profitVal === null ? dash : money(profitVal) + profitPct}</div></div>
   </div>`;
 
   const workBarHTML = `<div class="sum-bar">
@@ -19213,6 +19248,7 @@ function _financialsRows() {
     });
     const dates     = [...byDate.keys()].sort();
     const projected = projectedCostForProject(p);
+    const gpE       = gpEarnedToDate(contract, actual, projected);
     return {
       id: p.id,
       name:   p['project-name'] || 'Untitled Project',
@@ -19231,10 +19267,13 @@ function _financialsRows() {
       // profit of "-$cost" would read as a loss on a job that simply hasn't
       // had its contract keyed in yet.
       profit: contract ? contract - projected : null,
-      // Realised profit — contract minus what has actually been spent. Needs
-      // real spend as well as a contract: contract-minus-nothing would post a
-      // barely-started job as pure margin.
-      actProfit: (contract && actual) ? contract - actual : null,
+      // Gross profit earned on the work in place — see gpEarnedToDate(). It
+      // reads the same projection as Projected Profit, so the two agree on how
+      // far along the job is. earned is the margin's base: the share of the
+      // contract the work so far has earned.
+      gpEarned: gpE ? gpE.gp : null,
+      earned:   gpE ? gpE.earned : 0,
+      pctDone:  gpE ? gpE.pct : null,
     };
   });
 
@@ -19397,7 +19436,7 @@ function finSetDate(which, val) {
 function _financialsTotals(rows) {
   const sum = k => rows.reduce((s, r) => s + (r[k] || 0), 0);
   const withContract = rows.filter(r => r.profit    !== null);
-  const withSpend    = rows.filter(r => r.actProfit !== null);
+  const withSpend    = rows.filter(r => r.gpEarned  !== null);
   return {
     contract:  sum('contract'),
     bid:       sum('bid'),
@@ -19406,8 +19445,8 @@ function _financialsTotals(rows) {
     projected: sum('projected'),
     profit:      withContract.length ? withContract.reduce((s, r) => s + r.profit,    0) : null,
     profitBase:  withContract.reduce((s, r) => s + r.contract, 0),
-    actProfit:   withSpend.length    ? withSpend.reduce((s, r) => s + r.actProfit, 0) : null,
-    actBase:     withSpend.reduce((s, r) => s + r.contract, 0),
+    gpEarned:    withSpend.length    ? withSpend.reduce((s, r) => s + r.gpEarned, 0) : null,
+    gpBase:      withSpend.reduce((s, r) => s + r.earned, 0),
     noContract:  rows.length - withContract.length,
   };
 }
@@ -19587,7 +19626,7 @@ function _renderFinancialsTable() {
       ${ranged ? `<td class="pt-num" style="color:var(--yellow)">${money(r.rangeActual)}</td>` : ''}
       <td class="pt-num">${money(r.projected)}</td>
       <td class="pt-num" style="${profCol(r.profit)}">${r.profit === null ? '—' : signed(r.profit) + pctSpan(r.profit, r.contract)}</td>
-      <td class="pt-num" style="${profCol(r.actProfit)}">${r.actProfit === null ? '—' : signed(r.actProfit) + pctSpan(r.actProfit, r.contract)}</td>
+      <td class="pt-num" style="${profCol(r.gpEarned)}"${r.gpEarned === null ? '' : ` title="${(r.pctDone * 100).toFixed(1)}% complete · $${fmt(r.earned)} of the contract earned"`}>${r.gpEarned === null ? '—' : signed(r.gpEarned) + pctSpan(r.gpEarned, r.earned)}</td>
     </tr>`).join('');
 
   const t = _financialsTotals(rows);
@@ -19605,7 +19644,7 @@ function _renderFinancialsTable() {
           ${ranged ? `<th title="Cost of the daily entries dated inside ${esc(_finRangeLabel())}">Actual in Range</th>` : ''}
           <th title="Estimated final cost — never less than what has already been spent">Projected Cost</th>
           <th title="Contract minus projected final cost">Projected Profit</th>
-          <th title="Contract value minus actual cost. Final once the job is complete.">Gross Profit</th>
+          <th title="Contract earned so far (cost to date ÷ projected cost) less cost to date. Contract minus final cost once the job is complete.">GP Earned to Date</th>
         </tr></thead>
         <tbody>${body}</tbody>
         <tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
@@ -19618,14 +19657,14 @@ function _renderFinancialsTable() {
           ${ranged ? `<td class="pt-num" style="color:var(--yellow)">${money(t.rangeActual)}</td>` : ''}
           <td class="pt-num">${money(t.projected)}</td>
           <td class="pt-num" style="${t.profit === null ? 'color:var(--muted)' : profCol(t.profit)}">${t.profit === null ? '—' : signed(t.profit) + pctSpan(t.profit, t.profitBase)}</td>
-          <td class="pt-num" style="${t.actProfit === null ? 'color:var(--muted)' : profCol(t.actProfit)}">${t.actProfit === null ? '—' : signed(t.actProfit) + pctSpan(t.actProfit, t.actBase)}</td>
+          <td class="pt-num" style="${t.gpEarned === null ? 'color:var(--muted)' : profCol(t.gpEarned)}">${t.gpEarned === null ? '—' : signed(t.gpEarned) + pctSpan(t.gpEarned, t.gpBase)}</td>
         </tr></tfoot>
       </table>
     </div>
     <p style="font-size:0.72rem;color:var(--muted);margin-top:0.6rem;line-height:1.5">
       Projected Profit is contract value minus <strong>projected</strong> final cost, matching the project pages.
-      Gross Profit is contract value minus cost <strong>spent so far</strong> — blank until a job has spend, the final
-      figure once it is complete, and high in between on jobs that have barely started.
+      GP Earned to Date is the gross profit on the work done <strong>so far</strong>: the contract earned in proportion to
+      cost to date over projected cost, less cost to date. Blank until a job has spend; contract minus final cost once it is complete.
       ${t.noContract ? `${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount, so ${t.noContract === 1 ? 'it is' : 'they are'} excluded from both profit totals.` : ''}
       ${ranged ? `The date range keeps the jobs with a daily entry dated inside it. Every other column is still the whole job;
         <strong>Actual in Range</strong> is the cost of just the entries dated inside the range.` : ''}
@@ -19635,7 +19674,7 @@ function _renderFinancialsTable() {
 
 // Column order is shared by the table, the export and the print view. A date
 // range adds Actual in Range straight after Actual in all three.
-const FIN_COLUMNS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Gross Profit'];
+const FIN_COLUMNS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'GP Earned to Date'];
 const _finColumns = ranged => ranged
   ? FIN_COLUMNS.flatMap(c => c === 'Actual' ? [c, 'Actual in Range'] : [c])
   : FIN_COLUMNS;
@@ -19664,12 +19703,12 @@ function exportFinancialsCSV() {
   rows.forEach(r => lines.push([
     q(r.name), q(r.job), q(r.status),
     m(r.contract), m(r.bid), m(r.actual), ...(ranged ? [m(r.rangeActual)] : []),
-    m(r.projected), n(r.profit), n(r.actProfit),
+    m(r.projected), n(r.profit), n(r.gpEarned),
     r.firstDate, r.lastDate, r.firstDate ? r.daysWorked : '',
   ].join(',')));
   const t = _financialsTotals(rows);
   lines.push(['Totals', '', '', m(t.contract), m(t.bid), m(t.actual), ...(ranged ? [m(t.rangeActual)] : []),
-    m(t.projected), n(t.profit), n(t.actProfit), '', '', ''].join(','));
+    m(t.projected), n(t.profit), n(t.gpEarned), '', '', ''].join(','));
 
   const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
@@ -19705,7 +19744,7 @@ function printFinancials() {
       ${ranged ? `<td class="n">${money(r.rangeActual)}</td>` : ''}
       <td class="n">${money(r.projected)}</td>
       <td class="n ${r.profit    === null ? '' : r.profit    >= 0 ? 'pos' : 'neg'}">${signed(r.profit)}${pct(r.profit, r.contract)}</td>
-      <td class="n ${r.actProfit === null ? '' : r.actProfit >= 0 ? 'pos' : 'neg'}">${signed(r.actProfit)}${pct(r.actProfit, r.contract)}</td>
+      <td class="n ${r.gpEarned  === null ? '' : r.gpEarned  >= 0 ? 'pos' : 'neg'}">${signed(r.gpEarned)}${pct(r.gpEarned, r.earned)}</td>
     </tr>`).join('');
 
   const filterNote = [
@@ -19743,7 +19782,7 @@ function printFinancials() {
       <th>Job Name</th><th>Job #</th><th>Status</th>
       <th class="n">Contract Value</th><th class="n">Bid Budget</th><th class="n">Actual</th>
       ${ranged ? '<th class="n">Actual in Range</th>' : ''}
-      <th class="n">Projected Cost</th><th class="n">Projected Profit</th><th class="n">Gross Profit</th>
+      <th class="n">Projected Cost</th><th class="n">Projected Profit</th><th class="n">GP Earned to Date</th>
     </tr></thead>
     <tbody>${body}</tbody>
     <tfoot><tr>
@@ -19754,10 +19793,10 @@ function printFinancials() {
       ${ranged ? `<td class="n">${money(t.rangeActual)}</td>` : ''}
       <td class="n">${money(t.projected)}</td>
       <td class="n">${signed(t.profit)}${pct(t.profit, t.profitBase)}</td>
-      <td class="n">${signed(t.actProfit)}${pct(t.actProfit, t.actBase)}</td>
+      <td class="n">${signed(t.gpEarned)}${pct(t.gpEarned, t.gpBase)}</td>
     </tr></tfoot>
   </table>
-  <p class="note">Projected Profit is contract value minus projected final cost. Gross Profit is contract value minus cost spent so far — blank until a job has spend, final once it is complete.${t.noContract ? ` ${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount and ${t.noContract === 1 ? 'is' : 'are'} excluded from both profit totals.` : ''}${ranged ? ' The date range keeps the jobs with a daily entry dated inside it; every other column is the whole job, and Actual in Range is the cost of just the entries dated inside the range.' : ''}${filterNote ? ' Totals cover the filtered rows only.' : ''}</p>
+  <p class="note">Projected Profit is contract value minus projected final cost. GP Earned to Date is the contract earned so far (cost to date over projected cost) less cost to date — blank until a job has spend, contract minus final cost once it is complete.${t.noContract ? ` ${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount and ${t.noContract === 1 ? 'is' : 'are'} excluded from both profit totals.` : ''}${ranged ? ' The date range keeps the jobs with a daily entry dated inside it; every other column is the whole job, and Actual in Range is the cost of just the entries dated inside the range.' : ''}${filterNote ? ' Totals cover the filtered rows only.' : ''}</p>
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`);
   win.document.close();
