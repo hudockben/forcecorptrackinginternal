@@ -3721,6 +3721,13 @@ const fctUser     = (() => { try { return JSON.parse(localStorage.getItem('fct_u
 const fctDivision = localStorage.getItem('fct_division');
 const DIVISION    = 'turf';
 
+// Opened by the scheduled-report robot (Manage Users → Auto Reports) rather
+// than a person. It runs inside a 2 GB server function, Chrome included, and
+// this page as a person sees it — every tab drawn, the map, the CRM — does not
+// fit there: the run is killed outright, no word of why. So the robot's copy
+// loads what reports are built from and draws nothing nobody will see.
+const _AUTO_REPORT = typeof location !== 'undefined' && /[?&]autoreport=1(&|$)/.test(location.search || '');
+
 // Fields on an auto-injected daily row (from payroll approval) that the
 // supervisor IS allowed to edit directly in the cost tracking tab. These
 // are categorization decisions — moving a row to a different cost code or
@@ -6484,6 +6491,11 @@ async function loadProjects() {
     // Load daily rows from DB (populates p.dailyRows; migrates any still-embedded rows)
     await _loadAndMigrateDailyRows();
 
+    // The report robot stops here. The recovery passes below mend a person's
+    // project list by writing it back, which the robot may not do; two of
+    // them read the whole pre-migration blob and every daily row again.
+    if (_AUTO_REPORT) return;
+
     // ── Recovery: for any project still with no rows, check the legacy
     //    fct_projects blob (never deleted, may still have embedded dailyRows
     //    from before the per-row DB migration succeeded).  Per-project check
@@ -6733,7 +6745,7 @@ async function _loadAndMigrateDailyRows() {
         _distributeRows(olderRows, { merge: true });
         projectsList.forEach(p => p._drFullLoaded = true);
         // Re-render if user is viewing schedule or a project
-        if (typeof renderCurrentTab === 'function') renderCurrentTab();
+        if (!_AUTO_REPORT && typeof renderCurrentTab === 'function') renderCurrentTab();
       }
     } catch (err) {
       console.warn('[daily-rows] backfill error:', err.message);
@@ -28723,23 +28735,30 @@ const _bootReady = (async () => {
     loadPurchaseOrders(),
     loadTruckingEntries(),
     loadInventoryEntries(),
-    loadCrmPeople(),
-    loadCrmCompanies(),
-    loadCrmFields(),
-    loadCrmOpportunities(),
-    loadCrmNews(),
-    loadCrmStatusLog(),
-    loadCrmTouches(),
+    // The CRM is no report's; the robot leaves it out.
+    ...(_AUTO_REPORT ? [] : [
+      loadCrmPeople(),
+      loadCrmCompanies(),
+      loadCrmFields(),
+      loadCrmOpportunities(),
+      loadCrmNews(),
+      loadCrmStatusLog(),
+      loadCrmTouches(),
+    ]),
     loadScaleManualEntries(),
     loadSoeUnitOverrides(),
   ]);
 
-  // Replay any writes that were persisted to WAL but never confirmed
-  _walReplay().then(() => _walStartPeriodicSync());
+  // Replay any writes that were persisted to WAL but never confirmed —
+  // a person's, on their own device; the robot has none and may write none.
+  if (!_AUTO_REPORT) _walReplay().then(() => _walStartPeriodicSync());
 
   // Needs the project ids, so it can't join the batch above. One request, and
   // projected cost reads the same on the home page as inside a project.
   await _loadAllBidCsCompletion();
+
+  // Each report draws its own; the robot draws none of the tabs.
+  if (_AUTO_REPORT) return;
 
   if (!perm.visibleTabs || perm.visibleTabs.has('cost')) renderCostTable();
   if (!perm.visibleTabs || perm.visibleTabs.has('home')) renderHomeTab();
