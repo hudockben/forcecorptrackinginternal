@@ -191,6 +191,15 @@ const server = http.createServer((req, res) => {
   if (FAIL.has(p) || (p.startsWith('/api/data/') && FAIL.has(p.slice('/api/data/'.length)))) {
     return json(res, { error: 'Database is down' }, 503);
   }
+  // A deployment behind Vercel's login: the page sends the robot to sign in.
+  if (p === '/__fixture/protected.html') {
+    res.writeHead(307, { Location: `${OTHER_ORIGIN}/sso-api?url=${encodeURIComponent('http://app' + req.url)}` });
+    return res.end();
+  }
+  if (p === '/__fixture/denied.html') {
+    res.writeHead(401, { 'Content-Type': 'text/html' });
+    return res.end('<!doctype html><title>Authentication Required</title>');
+  }
   // A page of the app's own that pulls a script from another origin.
   if (p === '/__fixture/bypass.html') {
     res.writeHead(200, { 'Content-Type': 'text/html' });
@@ -700,6 +709,22 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
     ok('a slow step is noted every few seconds, with how long, what it is waiting on and the memory',
       res.status === 'sent' && beats.some(t => /^Building Turf Maple Ave, \d+s in, waiting on POST \/api\/ai\/schedule-analysis \(\d+s\); 0 reports sent so far; \d+ MB in use$/.test(t)),
       JSON.stringify(beats));
+
+    // A preview behind Vercel's login: say so, not "net::ERR_FAILED".
+    let away;
+    try {
+      await buildInBrowser(browser, { baseUrl, def: { page: '__fixture/protected.html', division: 'turf', label: 'Fixture' }, acct: ACCT,
+        spec: { type: 'fixture', timezone: 'America/New_York' } });
+      away = 'opened';
+    } catch (err) { away = err.message; }
+    ok('a deployment behind Vercel\'s login is named as that, with what to do — not net::ERR_FAILED',
+      /behind Vercel's login \(Deployment Protection\)/.test(away) && /Protection Bypass for Automation/.test(away) && !/ERR_FAILED/.test(away), away);
+    try {
+      await buildInBrowser(browser, { baseUrl, def: { page: '__fixture/denied.html', division: 'turf', label: 'Fixture' }, acct: ACCT,
+        spec: { type: 'fixture', timezone: 'America/New_York' } });
+      away = 'opened';
+    } catch (err) { away = err.message; }
+    ok('…and one that answers 401 says the deployment refused the robot', /answered HTTP 401/.test(away) && /refused the report robot/.test(away), away);
 
     console.log('\nWhat the second review found');
     // Stopped partway — here, saved over mid-send — the rest is handed back,
