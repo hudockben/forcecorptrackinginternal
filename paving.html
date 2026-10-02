@@ -4173,7 +4173,8 @@ function apiPut(key, value, opts = {}) {
     body: JSON.stringify({ value })
   };
   if (opts.keepalive) init.keepalive = true;
-  fetch(`${API_BASE}/data/${key}`, init).then(async r => {
+  // Returned so a caller can wait for the save to land. It never rejects.
+  return fetch(`${API_BASE}/data/${key}`, init).then(async r => {
     if (r.ok) return;
     console.warn(`[DB] PUT ${key} failed: HTTP ${r.status}`);
     // 409 = backend bulk-wipe protection refused the request. The server
@@ -10759,10 +10760,42 @@ function costCodeLabel(code, fallback) {
   const hit = (lists.cost_codes || []).find(c => String(c.value) === String(code));
   return (hit && hit.description) || fallback || '';
 }
+// Settles once every list save sent so far has landed (apiPut never rejects).
+let _listsSaving = Promise.resolve();
 function saveLists() {
   // The lists on this page are the empty defaults, not the division's.
   if (!_listsLoaded) { _unloadedSaveRefused('employee, equipment and supplier lists'); return; }
-  apiPut('fct_paving_lists', lists);
+  const saving = apiPut('fct_paving_lists', lists);
+  _listsSaving = _listsSaving.then(() => saving);
+}
+
+/**
+ * Price this division's $0 payroll rows from Manage Lists as it stands now.
+ *
+ * A payroll row takes its rate from the list when the time is approved, and
+ * its rate cell is locked here. So a man approved before his rate was on the
+ * list stayed at $0 on the job however many times the rate was typed in
+ * afterwards — only Payroll's Refresh Rates reached it. This asks the server
+ * to fill those blanks: rows already priced keep their rate, and a haul's $0
+ * is left alone (see ?unpriced=1 in api/timesheet-entries.js).
+ *
+ * Waits for the list saves first, so it prices from the rate just typed and
+ * not the one before it. Resolves to the number of rows it filled; anyone
+ * without payroll approval gets 0 and the rows stay as they were.
+ */
+async function fillUnpricedPayrollRows() {
+  try {
+    await _listsSaving;
+    const r = await fetch(
+      `${API_BASE}/timesheet-entries?action=refresh-rates&unpriced=1&division=${DIVISION}`,
+      { method: 'POST', headers: { 'Authorization': `Bearer ${fctToken}` } });
+    if (!r.ok) return 0;
+    const j = await r.json();
+    return (j && Number(j.updated)) || 0;
+  } catch (err) {
+    console.warn('[fillUnpricedPayrollRows]', err.message);
+    return 0;
+  }
 }
 
 /* ═══════════════════════════════════════════
@@ -13460,6 +13493,8 @@ function closeModal() {
   document.getElementById('modal-overlay').classList.remove('open');
   // Refresh daily tables for all projects so dropdowns pick up new list values
   projectsList.forEach(p => renderDailyTable(p.id));
+  // A rate filled in here reaches the payroll rows that went in without one.
+  fillUnpricedPayrollRows().then(n => { if (n && dailyViewProjId) reloadDailyRows(dailyViewProjId); });
 }
 
 document.getElementById('modal-close-btn').addEventListener('click', closeModal);
@@ -20485,7 +20520,12 @@ function openDailyView(projId) {
   const massInput = document.getElementById('daily-mass-count');
   if (massInput) massInput.onkeydown = e => { if (e.key === 'Enter') massAddDailyRows(projId); };
   document.getElementById('daily-fs-export').onclick = () => exportDailyCSV(projId);
-  document.getElementById('daily-fs-reload').onclick  = () => reloadDailyRows(projId);
+  document.getElementById('daily-fs-reload').onclick  = e => {
+    // Busy from the click, not from the reload: the fill runs first.
+    e.currentTarget.disabled = true;
+    e.currentTarget.textContent = '↻ Loading…';
+    fillUnpricedPayrollRows().finally(() => reloadDailyRows(projId));
+  };
   // Robustly find the tbody regardless of its current id.
   // If closeDailyView() was skipped (browser back, tab switch, etc.) the tbody
   // retains its old 'daily-tbody-X' id instead of 'daily-fs-tbody', so
