@@ -1810,11 +1810,11 @@ const PURCHASING_LIMITS = [
  *
  * Every other digest answers for one division. This one is a roll-up across
  * several by design, because that is what the division IS: a buyer raising
- * orders against turf, paving and kiewit needs to see them side by side, and
+ * orders against turf, paving, kiewit and quarry needs to see them side by side, and
  * seeing one at a time would be the same view their own tabs already give.
  *
  * It stays defensible because the widening is bounded by the same rule that
- * bounds the page — canAccessPODivision, which reaches the three job divisions
+ * bounds the page — canAccessPODivision, which reaches the four source divisions
  * and the general list and nothing else — and because purchase orders are all
  * it ever reads. No bids, no daily rows, no pay.
  */

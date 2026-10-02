@@ -2194,14 +2194,15 @@
                   <rect x="9" y="14" width="6" height="6"/>
                 </svg>`,
       },
-      // Central purchasing. It raises orders against turf, paving and kiewit and
-      // stores each one in that division's own list, so an order booked here is
-      // already in that division's Purchase Orders tab — there is no second copy
-      // and nothing to reconcile. Its own list holds only the general orders that
-      // belong to no job.
+      // Central purchasing. It raises orders against turf, paving, kiewit and
+      // quarry and stores each one in that division's own list, so an order
+      // booked here is already in that division's Purchase Orders tab — there
+      // is no second copy and nothing to reconcile. Quarry has no jobs and no
+      // Purchase Orders tab of its own, so its orders are read here. Its own
+      // list holds only the general orders that belong to no job.
       purchase_orders: {
         name:  'Purchase Orders',
-        desc:  'Central purchasing across Turf, Paving and Kiewit — raise an order against any job or none, scan a receipt from your phone, and it lands in that division\u2019s books.',
+        desc:  'Central purchasing across Turf, Paving, Kiewit and Quarry — raise an order against any job or none, scan a receipt from your phone, and it lands in that division\u2019s books.',
         color: '#818cf8',
         href:  'purchase-orders.html',
         built: true,

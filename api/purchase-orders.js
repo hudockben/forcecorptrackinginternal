@@ -9,7 +9,7 @@
  * division's list and rewrites the whole thing.
  *
  * POST and DELETE exist for central purchasing (purchase-orders.html), which
- * writes into turf, paving and kiewit and so must never rewrite a list it does
+ * writes into turf, paving, kiewit and quarry and so must never rewrite a list it does
  * not own — a full PUT from it would erase whatever that division's own tab had
  * saved since it loaded. They touch one order, under a compare-and-set, and
  * reconcile that order's job cost rows server-side. See api/lib/po-sync.js.
@@ -48,9 +48,10 @@ const {
 const poSync = require('./lib/po-sync');
 const { numeric } = require('./lib/numeric');
 
-// The only divisions a purchase order can be stored under — the three job
-// divisions plus the general purchasing list. Both purchase_orders_division_chk
-// and daily_tracking_division_chk are written to match.
+// The only divisions a purchase order can be stored under — the source
+// divisions plus the general purchasing list. purchase_orders_division_chk is
+// written to match. daily_tracking_division_chk admits only the job divisions,
+// which is why po-sync clears the job on a quarry or general order.
 const PO_STORABLE = PO_SOURCE_DIVISIONS.concat([PO_GENERAL_DIVISION]);
 
 // ./lib/numeric, not a bare parseFloat: these are figures somebody typed, and

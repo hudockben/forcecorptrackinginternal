@@ -6,7 +6,7 @@
  * PUTting their whole list back. That is fine while one division's own tab is
  * the only writer: whoever saves last wins, and they were both editing the same
  * screen. Central purchasing breaks that assumption — purchase-orders.html
- * writes into turf, paving and kiewit, so a full-list PUT from it would erase
+ * writes into turf, paving, kiewit and quarry, so a full-list PUT from it would erase
  * whatever that division's own tab had saved in the meantime.
  *
  * So purchasing never PUTs a list. It upserts ONE order at a time through
@@ -23,7 +23,7 @@
  */
 
 const crypto = require('crypto');
-const { PO_GENERAL_DIVISION, PO_SOURCE_DIVISIONS } = require('./auth');
+const { PO_GENERAL_DIVISION, PO_JOB_DIVISIONS } = require('./auth');
 const { numeric } = require('./numeric');
 
 // How many times a losing writer re-reads and retries before giving up. Each
@@ -295,13 +295,14 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
   const lines = Array.isArray(po.lines) ? po.lines : [];
   // Only turf, paving and kiewit keep a job ledger a purchase order can charge.
   // An order filed anywhere else carries no job: the general list by design,
-  // and every other division because normalizeDivision accepts all sixteen and
-  // daily_tracking's own CHECK admits six — so the INSERT would 500 with the
-  // raw constraint name, after the DELETE above had already removed the rows
-  // for the old job. The page clears the job when the division changes, but
-  // that is client-side: a stale tab, a replayed request or any non-browser
-  // client with the same token still sends one.
-  if (!PO_SOURCE_DIVISIONS.includes(division) && po.project_id) po.project_id = '';
+  // quarry because it has no projects to charge, and every other division
+  // because normalizeDivision accepts all sixteen and daily_tracking's own
+  // CHECK admits six — so the INSERT would 500 with the raw constraint name,
+  // after the DELETE above had already removed the rows for the old job. The
+  // page clears the job when the division changes, but that is client-side: a
+  // stale tab, a replayed request or any non-browser client with the same
+  // token still sends one.
+  if (!PO_JOB_DIVISIONS.includes(division) && po.project_id) po.project_id = '';
   const projectId = po.project_id || '';
 
   const prevLines   = (prevPO && Array.isArray(prevPO.lines)) ? prevPO.lines : [];
