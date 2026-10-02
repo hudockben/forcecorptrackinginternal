@@ -624,6 +624,10 @@ function pngSize(dataUrl) {
       // Signed by everyone and archived — how a supervisor closes out a week.
       safetyDoc('sd4', 'Silica Exposure', weekDay(-3, 0), [signer(1, 'jlee', 'Jordan Lee', weekDay(-3, 0) + 'T13:00:00Z', MARK)], [],
         weekDay(-3, 4) + 'T20:00:00Z'),
+      // Archived before anybody signed — the wrong file, taken down and
+      // posted again (sd1) — and a week whose only form went the same way.
+      safetyDoc('sd5', 'Trenching (wrong file)', LAST_MON, [], ['jlee', 'mruiz', 'tcole'], LAST_MON + 'T13:00:00Z'),
+      safetyDoc('sd6', 'Hearing Protection', weekDay(-4, 0), [], ['jlee', 'mruiz', 'tcole'], weekDay(-4, 0) + 'T13:00:00Z'),
     ];
     SAFETY_DOCS = SAFETY_WEEKS.slice();
     ASKED.length = 0;
@@ -631,7 +635,7 @@ function pngSize(dataUrl) {
     const ss = r.out && r.out.items[0];
     ok('the sign-off report for last week builds: its one form, who signed it and who has not',
       !r.error && r.out.items.length === 1 && has(ss, 'Trenching &amp; Excavation') && has(ss, 'Jordan Lee') && has(ss, 'Maria Ruiz')
-        && has(ss, '<li>tcole</li>') && !has(ss, 'Heat Illness') && !has(ss, 'Ladder Safety'),
+        && has(ss, '<li>tcole</li>') && !has(ss, 'Heat Illness') && !has(ss, 'Ladder Safety') && !has(ss, 'wrong file'),
       r.error || JSON.stringify(r.out && (r.out.errors || r.out.skipped)));
     ok('…read for those weeks, the way From week / To week read them, archived forms included',
       ASKED.some(a => a.endsWith(`/api/safety-signatures?scope=report&from=${LAST_MON}&to=${LAST_MON}&include=archived`)),
@@ -669,9 +673,22 @@ function pngSize(dataUrl) {
       JSON.stringify(sm && sm.summary));
 
     r = await build(browser, baseUrl, 'safety_signoff', { start: weekDay(-3, 0), end: weekDay(-3, 6) });
-    ok('a week whose form was signed and archived still goes out, with that form',
-      !r.error && r.out.items.length === 1 && has(r.out.items[0], 'Silica Exposure') && has(r.out.items[0], 'Jordan Lee'),
+    ok('a week whose form was signed and archived still goes out, with that form, marked closed',
+      !r.error && r.out.items.length === 1 && has(r.out.items[0], 'Silica Exposure') && has(r.out.items[0], 'Jordan Lee')
+        && has(r.out.items[0], 'closed to signing'),
       r.error || JSON.stringify(r.out && (r.out.skipped || r.out.errors)));
+    r = await build(browser, baseUrl, 'safety_signoff', { start: weekDay(-4, 0), end: weekDay(-4, 6) });
+    ok('a week whose only form was taken down before anyone signed is skipped, saying so',
+      !r.error && r.out.items.length === 0 && r.out.skipped.length === 1
+        && r.out.skipped[0].why === `Nothing to send for the week of ${dayWords(weekDay(-4, 0))}: its one form was archived before anyone signed.`,
+      r.error || JSON.stringify(r.out));
+    r = await build(browser, baseUrl, 'safety_signoff', { start: weekDay(-4, 0), end: weekDay(-2, 6) });
+    const arc = r.out && r.out.items[0];
+    ok('…and over three weeks, the closed-out form is on the contents as archived, the withdrawn one is not on it at all',
+      !r.error && r.out.items.length === 1 && has(arc, 'Silica Exposure <span class="none">(archived)</span>')
+        && has(arc, 'Heat Illness') && !has(arc, 'Hearing Protection') && fig(arc, 'Forms').value === '2'
+        && fig(arc, 'Short of Signatures').value === '0',
+      r.error || JSON.stringify(r.out && (r.out.items[0] || {}).summary));
 
     r = await build(browser, baseUrl, 'safety_signoff', { start: weekDay(-6, 0), end: weekDay(-6, 6) });
     ok('a week with no form posted is skipped, not sent',
