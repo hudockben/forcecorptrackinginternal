@@ -24130,10 +24130,19 @@ function _scpSetTier(t) {
    Jobs are picked through the Job Name filter, the same checklist the
    Purchase Orders columns use. The table, the Excel export and the print
    view all read the same filtered set, so what you export is what you are
-   looking at. */
+   looking at.
+
+   The date range keeps the jobs that were WORKED inside it — a daily entry
+   dated there. The money columns stay whole-job (a contract does not split
+   by quarter, and a profit of contract-minus-one-quarter's-spend means
+   nothing), so the range adds an Actual in Range column alongside them for
+   the spend dated inside it. Every row also carries the dates it was worked,
+   because months on nobody remembers when a job was in the ground. */
 // names / statuses: Set of picked values, or null for "all". A Set is only
 // stored when it genuinely excludes something — see applyFinFilter().
-let finFilters = { q: '', statuses: null, names: null };
+// from / to: 'YYYY-MM-DD' bounds of the date range, '' where open-ended.
+// preset: the range-menu entry that set them, 'custom' once typed by hand.
+let finFilters = { q: '', statuses: null, names: null, from: '', to: '', preset: '' };
 
 // Every job, computed and sorted. Filtering happens separately so the filter
 // controls can list every value that exists, not just the ones surviving the
@@ -24145,7 +24154,24 @@ function _financialsRows() {
   const rows = (projectsList || []).map(p => {
     const contract  = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
     const bid       = (p.bidItems  || []).reduce((s, b) => s + _eb(b) * (parseFloat(b.unit_cost) || 0), 0);
-    const actual    = (p.dailyRows || []).reduce((s, r) => s + dailyRowCost(r), 0);
+    // One walk over the daily rows gives the total spend and the spend per
+    // date, so narrowing the date range never has to re-cost a row. A row
+    // only marks its date as worked when something is on it — a blank row
+    // keyed and never filled in would otherwise pull a job into this month.
+    let actual = 0;
+    const byDate = new Map();
+    (p.dailyRows || []).forEach(r => {
+      const cost = dailyRowCost(r);
+      actual += cost;
+      const d = /^\d{4}-\d{2}-\d{2}/.test(r.date || '') ? r.date.slice(0, 10) : '';
+      const work = _rowIsWorkDay(r);
+      if (!d || !(cost || work)) return;
+      const e = byDate.get(d) || { cost: 0, work: false };
+      e.cost += cost;
+      e.work = e.work || work;
+      byDate.set(d, e);
+    });
+    const dates     = [...byDate.keys()].sort();
     const projected = projectedCostForProject(p);
     return {
       id: p.id,
@@ -24155,6 +24181,12 @@ function _financialsRows() {
       status: p['status'] || '',
       done:   projIsDone(p),
       contract, bid, actual, projected,
+      dates, byDate,
+      firstDate: dates[0] || '',
+      lastDate:  dates[dates.length - 1] || '',
+      // Counted the way the project pages count Days Worked: distinct dates
+      // with hours or quantity booked, not the span from first to last.
+      daysWorked: dates.filter(d => byDate.get(d).work).length,
       // No contract amount means there is no revenue to subtract from — a
       // profit of "-$cost" would read as a loss on a job that simply hasn't
       // had its contract keyed in yet.
@@ -24172,20 +24204,153 @@ function _financialsRows() {
   return rows;
 }
 
+// The range as [low, high], open ends as ''. A From typed after its To is read
+// the other way round rather than matching nothing — and the inputs are left
+// as typed, because a date input reports every keystroke of the year as a
+// complete date and swapping them under the cursor would scramble it.
+function _finBounds() {
+  const a = finFilters.from || '', b = finFilters.to || '';
+  return (a && b && a > b) ? [b, a] : [a, b];
+}
+const _finHasRange = () => !!(finFilters.from || finFilters.to);
+
 // Takes an already-computed row set when the caller has one — building it is
 // the expensive part and the search box re-renders on every keystroke.
 function _financialsFiltered(rows) {
   const q     = (finFilters.q || '').trim().toLowerCase();
   const sts   = finFilters.statuses;
   const names = finFilters.names;
-  return (rows || _financialsRows()).filter(r =>
-    (!sts   || sts.has(r.status || '')) &&
-    (!names || names.has(r.name)) &&
-    (!q     || r.name.toLowerCase().includes(q) || String(r.job).toLowerCase().includes(q))
-  );
+  const ranged   = _finHasRange();
+  const [lo, hi] = _finBounds();
+  const out = [];
+  (rows || _financialsRows()).forEach(r => {
+    if (sts   && !sts.has(r.status || '')) return;
+    if (names && !names.has(r.name)) return;
+    if (q     && !(r.name.toLowerCase().includes(q) || String(r.job).toLowerCase().includes(q))) return;
+    if (!ranged) { out.push(r); return; }
+    // Worked inside the range, not merely spanning it: a job worked in March
+    // and again in June was not worked in April.
+    const inside = r.dates.filter(d => (!lo || d >= lo) && (!hi || d <= hi));
+    if (!inside.length) return;
+    out.push({ ...r, rangeActual: inside.reduce((s, d) => s + r.byDate.get(d).cost, 0) });
+  });
+  return out;
 }
 
-const _finFiltered = () => !!((finFilters.q || '').trim() || finFilters.statuses || finFilters.names);
+const _finFiltered = () => !!((finFilters.q || '').trim() || finFilters.statuses || finFilters.names || _finHasRange());
+
+/* ── Date range ───────────────────────────────────────────────────────────
+   Presets are calendar periods counted from today, plus every year the daily
+   entries reach back to with that year's quarters — last spring is one pick
+   away rather than two date pickers. Picking a preset fills From and To;
+   changing either date by hand turns the menu to Custom. */
+const _FIN_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const _FIN_PRESETS = [
+  ['month', 'This month'], ['last-month', 'Last month'],
+  ['quarter', 'This quarter'], ['last-quarter', 'Last quarter'],
+  ['ytd', 'Year to date'], ['last-year', 'Last year'],
+];
+// Local calendar date, not toISOString() — that is UTC, and after 8pm Eastern
+// it is already tomorrow.
+const _finIso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+// { from, to } for a preset key, or null. Months are 0-based and allowed to run
+// off either end of the year — new Date() rolls January's "last month" back to
+// December of the year before.
+function _finPresetRange(key, today = new Date()) {
+  const y = today.getFullYear(), m = today.getMonth(), q0 = Math.floor(m / 3) * 3;
+  const span = (y1, m1, m2) => ({ from: _finIso(new Date(y1, m1, 1)), to: _finIso(new Date(y1, m2 + 1, 0)) });
+  let mt;
+  if (key === 'month')        return span(y, m, m);
+  if (key === 'last-month')   return span(y, m - 1, m - 1);
+  if (key === 'quarter')      return span(y, q0, q0 + 2);
+  if (key === 'last-quarter') return span(y, q0 - 3, q0 - 1);
+  if (key === 'ytd')          return { from: `${y}-01-01`, to: _finIso(today) };
+  if (key === 'last-year')    return span(y - 1, 0, 11);
+  if ((mt = /^y(\d{4})$/.exec(key)))         return span(+mt[1], 0, 11);
+  if ((mt = /^q(\d{4})-([1-4])$/.exec(key))) { const s = (mt[2] - 1) * 3; return span(+mt[1], s, s + 2); }
+  return null;
+}
+
+// The menu itself. Years come from the dates actually on file — no costing,
+// just the date strings — so a year nobody worked is never offered.
+function _finRangeOptions(today = new Date()) {
+  const y = today.getFullYear(), curQ = Math.floor(today.getMonth() / 3) + 1;
+  const years = new Set([y]);
+  (projectsList || []).forEach(p => (p.dailyRows || []).forEach(r => {
+    if (/^\d{4}-/.test(r.date || '')) years.add(+r.date.slice(0, 4));
+  }));
+  const sel = finFilters.preset || '';
+  const opt = (v, label) => `<option value="${v}"${v === sel ? ' selected' : ''}>${label}</option>`;
+  return opt('', 'All dates')
+    + _FIN_PRESETS.map(([k, l]) => opt(k, l)).join('')
+    + [...years].sort((a, b) => b - a).map(yr =>
+        `<optgroup label="${yr}">${opt('y' + yr, 'All of ' + yr)}`
+        + [1, 2, 3, 4].filter(n => yr !== y || n <= curQ)
+            .map(n => opt(`q${yr}-${n}`, `Q${n} ${yr} · ${_FIN_MON[(n - 1) * 3]}–${_FIN_MON[(n - 1) * 3 + 2]}`)).join('')
+        + '</optgroup>').join('')
+    + opt('custom', 'Custom range');
+}
+
+function _finFmtDate(iso, withYear = true) {
+  const [y, m, d] = iso.split('-');
+  return `${_FIN_MON[+m - 1]} ${+d}${withYear ? ', ' + y : ''}`;
+}
+// "Mar 4 – Jun 18, 2026"; the year is written once when both ends share it.
+function _finFmtSpan(a, b) {
+  if (!a && !b) return '';
+  if (!b) return 'from ' + _finFmtDate(a);
+  if (!a) return 'through ' + _finFmtDate(b);
+  if (a === b) return _finFmtDate(a);
+  return `${_finFmtDate(a, a.slice(0, 4) !== b.slice(0, 4))} – ${_finFmtDate(b)}`;
+}
+
+// What the range is called on screen and on paper: "Q3 2026 (Jul 1 – Sep 30, 2026)".
+function _finRangeLabel() {
+  const [lo, hi] = _finBounds();
+  const dates = _finFmtSpan(lo, hi);
+  const p = finFilters.preset || '';
+  const named = (_FIN_PRESETS.find(([k]) => k === p) || [])[1];
+  let mt, name = named || '';
+  if ((mt = /^y(\d{4})$/.exec(p))) name = mt[1];
+  else if ((mt = /^q(\d{4})-([1-4])$/.exec(p))) name = `Q${mt[2]} ${mt[1]}`;
+  return name ? `${name} (${dates})` : dates;
+}
+
+// The worked line under a job's name: "Mar 4 – Jun 18, 2026 · 23 days worked".
+function _finWorkedText(r) {
+  if (!r.firstDate) return '';
+  const days = r.daysWorked ? ` · ${r.daysWorked} day${r.daysWorked === 1 ? '' : 's'} worked` : '';
+  return _finFmtSpan(r.firstDate, r.lastDate) + days;
+}
+
+function finSetPreset(key) {
+  if (key === 'custom') {
+    // Keep whatever dates are in the boxes and hand the cursor to From.
+    finFilters.preset = 'custom';
+    renderFinancials();
+    document.getElementById('fin-from')?.focus();
+    return;
+  }
+  const r = key ? _finPresetRange(key) : null;
+  finFilters.preset = r ? key : '';
+  finFilters.from   = r ? r.from : '';
+  finFilters.to     = r ? r.to : '';
+  renderFinancials();
+}
+
+// A typed date redraws the table only — rebuilding the bar would pull the
+// cursor out of the date box half way through typing a year.
+function finSetDate(which, val) {
+  finFilters[which] = val || '';
+  finFilters.preset = (finFilters.from || finFilters.to) ? 'custom' : '';
+  const sel = document.getElementById('fin-preset');
+  if (sel) {
+    sel.value = finFilters.preset;
+    sel.style.borderColor = _finHasRange() ? 'var(--green)' : 'var(--border)';
+  }
+  _renderFinancialsTable();
+}
 
 // Totals cover whatever is on screen. Both profits skip the rows that cannot
 // contribute one, so each carries its own base for the percentage.
@@ -24197,6 +24362,7 @@ function _financialsTotals(rows) {
     contract:  sum('contract'),
     bid:       sum('bid'),
     actual:    sum('actual'),
+    rangeActual: sum('rangeActual'),
     projected: sum('projected'),
     profit:      withContract.length ? withContract.reduce((s, r) => s + r.profit,    0) : null,
     profitBase:  withContract.reduce((s, r) => s + r.contract, 0),
@@ -24214,7 +24380,7 @@ function finSetFilter(key, val) {
 }
 
 function finClearFilters() {
-  finFilters = { q: '', statuses: null, names: null };
+  finFilters = { q: '', statuses: null, names: null, from: '', to: '', preset: '' };
   renderFinancials();
 }
 
@@ -24309,6 +24475,16 @@ function renderFinancials() {
         ${nStat ? `Status (${nStat})` : 'Status'} ▼</button>
       <input id="fin-q" type="search" placeholder="Job name or number" value="${esc(finFilters.q)}"
         style="${inp};min-width:200px" oninput="finSetFilter('q', this.value)">
+      <span style="display:inline-flex;gap:0.35rem;align-items:center"
+        title="Show the jobs that were worked in this period — a daily entry dated inside it">
+        <select id="fin-preset" style="${inp}${_finHasRange() ? ';border-color:var(--green)' : ''}"
+          onchange="finSetPreset(this.value)">${_finRangeOptions()}</select>
+        <input id="fin-from" type="date" value="${esc(finFilters.from)}" title="Worked from"
+          style="${inp}" onchange="finSetDate('from', this.value)">
+        <span style="color:var(--muted);font-size:0.75rem">–</span>
+        <input id="fin-to" type="date" value="${esc(finFilters.to)}" title="Worked through"
+          style="${inp}" onchange="finSetDate('to', this.value)">
+      </span>
       <button class="btn btn-ghost" style="font-size:0.74rem;padding:0.22rem 0.6rem" onclick="finClearFilters()">Clear</button>
       <div style="margin-left:auto;display:flex;gap:0.5rem">
         <button class="btn btn-ghost" style="font-size:0.74rem;padding:0.22rem 0.6rem"
@@ -24343,22 +24519,32 @@ function _renderFinancialsTable() {
   const count = _finFiltered()
     ? `${rows.length} of ${all.length} jobs`
     : `${rows.length} job${rows.length === 1 ? '' : 's'}`;
+  const ranged = _finHasRange();
   // The heading holds the way out, so it renders even when nothing is left to
   // list — otherwise an empty result hides the control that recovers from it.
-  const head = `<p class="home-section-title" style="margin-top:0">Financials <span style="font-weight:400">(${count})</span></p>`;
+  const head = `<p class="home-section-title" style="margin-top:0">Financials <span style="font-weight:400">(${count})</span>`
+    + (ranged ? ` <span style="font-weight:400;color:var(--muted)">· worked ${esc(_finRangeLabel())}</span>` : '') + '</p>';
 
   if (!rows.length) { el.innerHTML = head + '<div class="home-empty">No jobs match these filters.</div>'; return; }
+
+  // The worked line is deliberately quiet — it is there to jog a memory, not
+  // to compete with the figures. The hover spells it out.
+  const workedLine = r => r.firstDate
+    ? `<div class="pt-meta" title="First entry ${_finFmtDate(r.firstDate)} · last entry ${_finFmtDate(r.lastDate)}${r.daysWorked ? ` · ${r.daysWorked} day${r.daysWorked === 1 ? '' : 's'} with hours or quantity booked` : ''}">${_finWorkedText(r)}</div>`
+    : '';
 
   const body = rows.map(r => `<tr onclick="goToProject('${r.id}')" style="cursor:pointer">
       <td>
         <div class="pt-name">${esc(r.name)}</div>
         ${r.client ? `<div class="pt-meta">${esc(r.client)}</div>` : ''}
+        ${workedLine(r)}
       </td>
       <td class="pt-num">${r.job ? esc(r.job) : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${statusCell(r)}</td>
       <td class="pt-num" style="color:var(--blue)">${money(r.contract)}</td>
       <td class="pt-num" style="color:var(--green)">${money(r.bid)}</td>
       <td class="pt-num" style="color:var(--yellow)">${money(r.actual)}</td>
+      ${ranged ? `<td class="pt-num" style="color:var(--yellow)">${money(r.rangeActual)}</td>` : ''}
       <td class="pt-num">${money(r.projected)}</td>
       <td class="pt-num" style="${profCol(r.profit)}">${r.profit === null ? '—' : signed(r.profit) + pctSpan(r.profit, r.contract)}</td>
       <td class="pt-num" style="${profCol(r.actProfit)}">${r.actProfit === null ? '—' : signed(r.actProfit) + pctSpan(r.actProfit, r.contract)}</td>
@@ -24376,9 +24562,10 @@ function _renderFinancialsTable() {
           <th>Contract Value</th>
           <th>Bid Budget</th>
           <th>Actual</th>
+          ${ranged ? `<th title="Cost of the daily entries dated inside ${esc(_finRangeLabel())}">Actual in Range</th>` : ''}
           <th title="Estimated final cost — never less than what has already been spent">Projected Cost</th>
           <th title="Contract minus projected final cost">Projected Profit</th>
-          <th title="Contract value minus actual cost. Final once the job is complete.">Actual Profit</th>
+          <th title="Contract value minus actual cost. Final once the job is complete.">Gross Profit</th>
         </tr></thead>
         <tbody>${body}</tbody>
         <tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
@@ -24388,6 +24575,7 @@ function _renderFinancialsTable() {
           <td class="pt-num" style="color:var(--blue)">${money(t.contract)}</td>
           <td class="pt-num" style="color:var(--green)">${money(t.bid)}</td>
           <td class="pt-num" style="color:var(--yellow)">${money(t.actual)}</td>
+          ${ranged ? `<td class="pt-num" style="color:var(--yellow)">${money(t.rangeActual)}</td>` : ''}
           <td class="pt-num">${money(t.projected)}</td>
           <td class="pt-num" style="${t.profit === null ? 'color:var(--muted)' : profCol(t.profit)}">${t.profit === null ? '—' : signed(t.profit) + pctSpan(t.profit, t.profitBase)}</td>
           <td class="pt-num" style="${t.actProfit === null ? 'color:var(--muted)' : profCol(t.actProfit)}">${t.actProfit === null ? '—' : signed(t.actProfit) + pctSpan(t.actProfit, t.actBase)}</td>
@@ -24396,15 +24584,24 @@ function _renderFinancialsTable() {
     </div>
     <p style="font-size:0.72rem;color:var(--muted);margin-top:0.6rem;line-height:1.5">
       Projected Profit is contract value minus <strong>projected</strong> final cost, matching the project pages.
-      Actual Profit is contract value minus cost <strong>spent so far</strong> — blank until a job has spend, the final
+      Gross Profit is contract value minus cost <strong>spent so far</strong> — blank until a job has spend, the final
       figure once it is complete, and high in between on jobs that have barely started.
       ${t.noContract ? `${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount, so ${t.noContract === 1 ? 'it is' : 'they are'} excluded from both profit totals.` : ''}
+      ${ranged ? `The date range keeps the jobs with a daily entry dated inside it. Every other column is still the whole job;
+        <strong>Actual in Range</strong> is the cost of just the entries dated inside the range.` : ''}
       ${_finFiltered() ? 'Totals cover the filtered rows only — as do the Excel export and the printout.' : ''}
     </p>`;
 }
 
-// Column order is shared by the table, the export and the print view.
-const FIN_COLUMNS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Actual Profit'];
+// Column order is shared by the table, the export and the print view. A date
+// range adds Actual in Range straight after Actual in all three.
+const FIN_COLUMNS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Gross Profit'];
+const _finColumns = ranged => ranged
+  ? FIN_COLUMNS.flatMap(c => c === 'Actual' ? [c, 'Actual in Range'] : [c])
+  : FIN_COLUMNS;
+// The export has no line under the name to put the worked dates on, so they
+// go out as columns of their own — as real dates Excel can sort and filter.
+const FIN_WORKED_COLUMNS = ['First Worked', 'Last Worked', 'Days Worked'];
 
 function _finDivisionLabel() {
   const d = (typeof DIVISION !== 'undefined' && DIVISION) ? String(DIVISION) : '';
@@ -24422,18 +24619,26 @@ function exportFinancialsCSV() {
   };
   const n = v => (v === null || v === undefined) ? '' : Number(v).toFixed(2);
   const m = v => v ? Number(v).toFixed(2) : '';   // blank where the table shows —
-  const lines = [FIN_COLUMNS.map(q).join(',')];
+  const ranged = _finHasRange();
+  const lines = [_finColumns(ranged).concat(FIN_WORKED_COLUMNS).map(q).join(',')];
   rows.forEach(r => lines.push([
     q(r.name), q(r.job), q(r.status),
-    m(r.contract), m(r.bid), m(r.actual), m(r.projected), n(r.profit), n(r.actProfit),
+    m(r.contract), m(r.bid), m(r.actual), ...(ranged ? [m(r.rangeActual)] : []),
+    m(r.projected), n(r.profit), n(r.actProfit),
+    r.firstDate, r.lastDate, r.firstDate ? r.daysWorked : '',
   ].join(',')));
   const t = _financialsTotals(rows);
-  lines.push(['Totals', '', '', m(t.contract), m(t.bid), m(t.actual), m(t.projected), n(t.profit), n(t.actProfit)].join(','));
+  lines.push(['Totals', '', '', m(t.contract), m(t.bid), m(t.actual), ...(ranged ? [m(t.rangeActual)] : []),
+    m(t.projected), n(t.profit), n(t.actProfit), '', '', ''].join(','));
 
   const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = 'financials-' + _finDivisionLabel().toLowerCase().replace(/[^a-z0-9]+/g, '-') + '-' + new Date().toISOString().slice(0, 10) + '.csv';
+  // A ranged export says which range in its name, so two quarters saved side
+  // by side are not told apart by opening them.
+  const [lo, hi] = _finBounds();
+  const span = ranged ? '-worked-' + (lo || 'start') + '-to-' + (hi || 'now') : '';
+  a.download = 'financials-' + _finDivisionLabel().toLowerCase().replace(/[^a-z0-9]+/g, '-') + span + '-' + _finIso(new Date()) + '.csv';
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -24448,20 +24653,23 @@ function printFinancials() {
   const money  = v => v ? '$' + fmt(v) : '—';
   const signed = v => v === null ? '—' : (v >= 0 ? '$' + fmt(v) : '-$' + fmt(Math.abs(v)));
   const pct    = (v, base) => (v !== null && base) ? ` (${(v / base * 100).toFixed(1)}%)` : '';
+  const ranged = _finHasRange();
 
   const body = rows.map(r => `<tr>
-      <td>${esc2(r.name)}</td>
+      <td>${esc2(r.name)}${r.firstDate ? `<div class="worked">${esc2(_finWorkedText(r))}</div>` : ''}</td>
       <td>${esc2(r.job) || '—'}</td>
       <td>${esc2(r.status) || '—'}</td>
       <td class="n">${money(r.contract)}</td>
       <td class="n">${money(r.bid)}</td>
       <td class="n">${money(r.actual)}</td>
+      ${ranged ? `<td class="n">${money(r.rangeActual)}</td>` : ''}
       <td class="n">${money(r.projected)}</td>
       <td class="n ${r.profit    === null ? '' : r.profit    >= 0 ? 'pos' : 'neg'}">${signed(r.profit)}${pct(r.profit, r.contract)}</td>
       <td class="n ${r.actProfit === null ? '' : r.actProfit >= 0 ? 'pos' : 'neg'}">${signed(r.actProfit)}${pct(r.actProfit, r.contract)}</td>
     </tr>`).join('');
 
   const filterNote = [
+    ranged ? 'Worked ' + esc2(_finRangeLabel()) : '',
     finFilters.names ? finFilters.names.size + ' selected job' + (finFilters.names.size === 1 ? '' : 's') : '',
     finFilters.statuses ? 'Status: ' + esc2([...finFilters.statuses].map(s => s || '(blank)').join(', ')) : '',
     (finFilters.q || '').trim() ? 'Search: "' + esc2(finFilters.q.trim()) + '"' : '',
@@ -24481,6 +24689,7 @@ function printFinancials() {
          border-bottom: 1px solid #999; padding: 4px 6px; }
     th.n, td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
     td { padding: 4px 6px; border-bottom: 1px solid #e5e5e5; }
+    td .worked { font-size: 8px; color: #777; margin-top: 1px; }
     tfoot td { border-top: 2px solid #999; border-bottom: none; font-weight: 700; }
     .pos { color: #15803d; } .neg { color: #b91c1c; }
     tbody tr:nth-child(even) { background: #fafafa; }
@@ -24493,7 +24702,8 @@ function printFinancials() {
     <thead><tr>
       <th>Job Name</th><th>Job #</th><th>Status</th>
       <th class="n">Contract Value</th><th class="n">Bid Budget</th><th class="n">Actual</th>
-      <th class="n">Projected Cost</th><th class="n">Projected Profit</th><th class="n">Actual Profit</th>
+      ${ranged ? '<th class="n">Actual in Range</th>' : ''}
+      <th class="n">Projected Cost</th><th class="n">Projected Profit</th><th class="n">Gross Profit</th>
     </tr></thead>
     <tbody>${body}</tbody>
     <tfoot><tr>
@@ -24501,12 +24711,13 @@ function printFinancials() {
       <td class="n">${money(t.contract)}</td>
       <td class="n">${money(t.bid)}</td>
       <td class="n">${money(t.actual)}</td>
+      ${ranged ? `<td class="n">${money(t.rangeActual)}</td>` : ''}
       <td class="n">${money(t.projected)}</td>
       <td class="n">${signed(t.profit)}${pct(t.profit, t.profitBase)}</td>
       <td class="n">${signed(t.actProfit)}${pct(t.actProfit, t.actBase)}</td>
     </tr></tfoot>
   </table>
-  <p class="note">Projected Profit is contract value minus projected final cost. Actual Profit is contract value minus cost spent so far — blank until a job has spend, final once it is complete.${t.noContract ? ` ${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount and ${t.noContract === 1 ? 'is' : 'are'} excluded from both profit totals.` : ''}${filterNote ? ' Totals cover the filtered rows only.' : ''}</p>
+  <p class="note">Projected Profit is contract value minus projected final cost. Gross Profit is contract value minus cost spent so far — blank until a job has spend, final once it is complete.${t.noContract ? ` ${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount and ${t.noContract === 1 ? 'is' : 'are'} excluded from both profit totals.` : ''}${ranged ? ' The date range keeps the jobs with a daily entry dated inside it; every other column is the whole job, and Actual in Range is the cost of just the entries dated inside the range.' : ''}${filterNote ? ' Totals cover the filtered rows only.' : ''}</p>
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`);
   win.document.close();
