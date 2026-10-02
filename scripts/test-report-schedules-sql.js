@@ -171,6 +171,56 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
     await client.query('DELETE FROM report_schedules WHERE id = $1', [pid]);
   }
 
+  console.log('\nSafety Center: supervisors only');
+  {
+    const supId  = await mkUser('safetysup',  { safety: 'level3', turf: 'admin' });
+    const crewId = await mkUser('safetycrew', { safety: 'level1', turf: 'admin' });
+    const SUP  = { companyCode: CO, userId: supId,  username: 'safetysup',  role: 'level1', divisionRoles: { safety: 'level3', turf: 'admin' } };
+    const CREW = { companyCode: CO, userId: crewId, username: 'safetycrew', role: 'level1', divisionRoles: { safety: 'level1', turf: 'admin' } };
+    let r = await call('GET', {}, null, SUP);
+    const saf = r.body.divisions && r.body.divisions.find(d => d.key === 'safety');
+    const rep = saf && saf.reports[0];
+    assert('a safety supervisor gets the Safety Center card with the sign-off report',
+      saf && saf.name === 'Safety Center' && saf.reports.length === 1 && rep.type === 'safety_signoff' && rep.scope === 'division',
+      JSON.stringify(r.body.divisions && r.body.divisions.map(d => d.key)));
+    assert('…offering whole-week periods only, last week first',
+      rep && rep.period === 'prev_week' && JSON.stringify(rep.periods) === '["prev_week","week_to_date","month_to_date","prev_month"]'
+        && /filed by week/.test(rep.periodHint || ''), JSON.stringify(rep));
+    r = await call('GET', {}, null, CREW);
+    assert('crew, who hold the division only to sign, do not', !r.body.divisions.some(d => d.key === 'safety'),
+      JSON.stringify(r.body.divisions.map(d => d.key)));
+    r = await call('GET', {}, null, { ...BOSS, isPlatformAdmin: true });
+    assert('a platform admin with no safety role of their own does, as on the Safety page',
+      r.body.divisions.some(d => d.key === 'safety'), JSON.stringify(r.body.divisions.map(d => d.key)));
+    r = await call('GET', {}, null, { ...CREW, isPlatformAdmin: true });
+    assert('…but not one whose own safety role is crew', !r.body.divisions.some(d => d.key === 'safety'),
+      JSON.stringify(r.body.divisions.map(d => d.key)));
+
+    const body = { report_type: 'safety_signoff', frequency: 'weekly', days_of_week: [1], send_time: '07:00', group_ids: [g1],
+      options: { period: 'month_to_date' } };
+    r = await call('POST', {}, body, CREW);
+    assert('crew cannot schedule it', r.statusCode === 403, `${r.statusCode} ${JSON.stringify(r.body)}`);
+    r = await call('POST', {}, body, SUP);
+    assert('a supervisor can, and the period is kept',
+      r.statusCode === 200 && r.body.schedule.division === 'safety' && r.body.schedule.options.period === 'month_to_date'
+        && r.body.schedule.project_id === null, JSON.stringify(r.body));
+    const sid = r.body.schedule.id;
+    r = await call('POST', {}, { ...body, options: { period: 'prev_day' } }, SUP);
+    assert('a period it does not offer falls back to last week', r.body.schedule && r.body.schedule.options.period === 'prev_week',
+      JSON.stringify(r.body));
+    await call('DELETE', { id: r.body.schedule.id }, null, SUP);
+    const sched = await row(sid);
+    const spec = runner.specFor({ ...sched, options: { period: 'prev_day' } }, require(path.join(ROOT, 'api/lib/report-catalog.js')).SCHEDULABLE.safety_signoff,
+      new Date('2026-10-07T15:00:00Z'));
+    assert('…and so does the run, for one saved before the list was narrowed',
+      spec.start === '2026-09-28' && spec.end === '2026-10-04', JSON.stringify(spec));
+    await client.query("UPDATE users SET division_roles = $1 WHERE id = $2", [JSON.stringify({ safety: 'level1', turf: 'admin' }), supId]);
+    const res = await runner.runSchedule(sql, sched, { now: new Date() });
+    assert('the run stops if its owner is moved to crew since, saying why',
+      res.status === 'failed' && /safetysup is no longer a Safety Center supervisor/.test(res.message), res.message);
+    await client.query('DELETE FROM report_schedules WHERE id = $1', [sid]);
+  }
+
   console.log('\nThe job picker');
   {
     const r = await call('GET', { projects: 'turf' }, null, BOSS);

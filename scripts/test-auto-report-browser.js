@@ -153,6 +153,31 @@ for (let i = 0; i < 4; i++) PAYROLL_ENTRIES.push(entry('d' + i, 'dale', weekDay(
 for (let i = 0; i < 3; i++) PAYROLL_ENTRIES.push(entry('t' + i, 'sam', weekDay(0, i), 10, 'submitted', 'turf', 'j1', 'Maple Ave'));
 const ALL_PAYROLL = PAYROLL_ENTRIES.slice();
 
+// Safety Center: forms filed by week (their Monday), who signed each — with
+// the mark they drew, which the server hands out only on a one-document read
+// — and who on the roster has not. Marks are drawn in the browser below.
+const THIS_MON = weekDay(0, 0), TWO_MON = weekDay(-2, 0);
+const STATEMENT = 'I have read this document in full, I understand its contents, and I agree to follow the safety requirements it describes.';
+let SAFETY_DOCS = [];
+let SAFETY_DENY = false;
+const safetyDoc = (id, title, weekOf, signed, outstanding) => ({
+  document: { id, title, weekOf, filename: id + '.pdf', uploadedBy: 'sue', uploadedAt: weekOf + 'T12:00:00Z', archivedAt: null },
+  signed, outstanding: outstanding.map((u, i) => ({ userId: 100 + i, username: u, level: 'level1' })),
+});
+const signer = (userId, username, fullName, signedAt, signatureImage) =>
+  ({ userId, username, fullName, signedAt, statement: STATEMENT, signatureImage: signatureImage || null });
+function safetyGroup(g, withImages) {
+  const signed = g.signed.map(s => {
+    const o = { userId: s.userId, username: s.username, fullName: s.fullName, signedAt: s.signedAt, statement: s.statement,
+      hasDrawnSignature: Boolean(s.signatureImage), onRoster: true };
+    if (withImages && s.signatureImage) o.signatureImage = s.signatureImage;
+    return o;
+  });
+  const expected = signed.length + g.outstanding.length;
+  return { document: g.document, expectedCount: expected, signedCount: signed.length, outstandingCount: g.outstanding.length,
+    percentSigned: expected ? Math.round(signed.length / expected * 100) : 0, signed, outstanding: g.outstanding };
+}
+
 const STORE = Object.assign({}, DIVS.turf.store, DIVS.paving.store, DIVS.kiewit.store, {
   fct_trucking_schedule: { assignments: { [YESTERDAY]: [
     { id: 'a1', driver: 'Dale', customer: 'Acme Paving', unit: 'T-14', start: '06:30', notes: 'Stone to Maple Ave' },
@@ -276,6 +301,23 @@ const server = http.createServer((req, res) => {
       return json(res, { entries: inRange });
     }
     if (p === '/api/timesheet-supervisors') return json(res, { supervisors: [{ name: 'Pat' }] });
+    if (p === '/api/safety-documents') {
+      return json(res, { documents: SAFETY_DOCS.map(g => g.document), statement: STATEMENT, storageConfigured: true,
+        permissions: { canView: true, canManage: true } });
+    }
+    if (p === '/api/safety-signatures') {
+      if (SAFETY_DENY) return json(res, { error: 'Only a safety supervisor can read the sign-off report' }, 403);
+      const id = u.searchParams.get('documentId');
+      if (id) {
+        const g = SAFETY_DOCS.find(x => x.document.id === id);
+        return g ? json(res, { documents: [safetyGroup(g, true)], statement: STATEMENT }) : json(res, { error: 'Document not found' }, 404);
+      }
+      const from = u.searchParams.get('from') || '0000', to = u.searchParams.get('to') || '9999';
+      return json(res, { statement: STATEMENT, roster: [], documents: SAFETY_DOCS
+        .filter(g => g.document.weekOf >= from && g.document.weekOf <= to)
+        .sort((a, b) => b.document.weekOf.localeCompare(a.document.weekOf))
+        .map(g => safetyGroup(g, false)) });
+    }
     if (p === '/api/executive/report') {
       return json(res, { ok: true, generatedAt: new Date().toISOString(), portfolios: [],
         safety: { key: 'safety', name: 'Safety Sign-Off', accent: '#f59e0b', weekOf: YESTERDAY, documents: [] } });
@@ -300,7 +342,7 @@ const ACCT = {
   userId: 7, username: 'robot-admin', companyCode: 'FCT', companyName: 'Force Corp',
   role: 'admin', isPlatformAdmin: true, allowedDivisions: [],
   divisionRoles: { turf: 'admin', paving: 'admin', kiewit: 'admin', dust: 'admin', quarry: 'admin', payroll: 'admin',
-    trucking: 'admin', scheduler: 'admin', executive: 'admin' },
+    trucking: 'admin', scheduler: 'admin', executive: 'admin', safety: 'level3' },
 };
 
 async function build(browser, baseUrl, type, extra = {}) {
@@ -317,6 +359,42 @@ async function build(browser, baseUrl, type, extra = {}) {
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.html.includes(s));
+
+// A signature as the pad saves one: a w × h PNG off a canvas, the way a
+// phone's screen draws it. `noisy` fills it with noise that will not
+// compress, to see what happens when the marks are too big for one email.
+async function drawMark(browser, w, h, noisy) {
+  const pg = await browser.newPage();
+  try {
+    return await pg.evaluate((w, h, noisy) => {
+      const c = document.createElement('canvas'); c.width = w; c.height = h;
+      const x = c.getContext('2d');
+      x.lineWidth = Math.max(2, h / 50); x.strokeStyle = '#0f172a'; x.lineCap = 'round'; x.lineJoin = 'round';
+      x.beginPath();
+      for (let i = 0; i <= 60; i++) {
+        const px = w * 0.06 + i * w * 0.88 / 60, py = h / 2 + Math.sin(i * 0.7) * h * 0.28 + Math.cos(i * 2.3) * h * 0.08;
+        if (i) x.lineTo(px, py); else x.moveTo(px, py);
+      }
+      x.stroke();
+      if (noisy) {
+        const d = x.getImageData(0, 0, w, h);
+        let seed = 7;
+        // The LCG's high bits: its low ones repeat every 256 and compress.
+        for (let i = 0; i < d.data.length; i++) {
+          seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+          d.data[i] = i % 4 === 3 ? 255 : (seed >>> 16) & 255;
+        }
+        x.putImageData(d, 0, 0);
+      }
+      return c.toDataURL('image/png');
+    }, w, h, noisy);
+  } finally { await pg.close(); }
+}
+// Width × height of a PNG data URL, from its IHDR.
+function pngSize(dataUrl) {
+  const b = Buffer.from(String(dataUrl).split(',')[1] || '', 'base64');
+  return b.length >= 24 ? { w: b.readUInt32BE(16), h: b.readUInt32BE(20) } : null;
+}
 
 (async () => {
   await new Promise(r => server.listen(0, '127.0.0.1', r));
@@ -508,6 +586,92 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
       r.error || JSON.stringify(r.out));
     PAYROLL_ENTRIES = ALL_PAYROLL.slice();
 
+    console.log('\nSafety Center — safety.html');
+    // The page's own date words (dayLabel), in the robot's en-US Chrome.
+    const dayWords = ds => new Date(ds + 'T12:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    const MARK  = await drawMark(browser, 1500, 600, false);   // a phone's pad at 3× — what the server stores
+    const NOISE = await drawMark(browser, 480, 100, true);     // already sheet-sized, and will not compress
+    const SAFETY_WEEKS = [
+      safetyDoc('sd1', 'Trenching & Excavation', LAST_MON, [
+        signer(1, 'jlee', 'Jordan Lee', LAST_MON + 'T13:05:00Z', MARK),
+        signer(2, 'mruiz', 'Maria Ruiz', weekDay(-1, 1) + 'T14:30:00Z', null),
+      ], ['tcole']),
+      safetyDoc('sd2', 'Heat Illness Prevention', TWO_MON, [signer(1, 'jlee', 'Jordan Lee', TWO_MON + 'T13:00:00Z', MARK)], []),
+      safetyDoc('sd3', 'Ladder Safety', THIS_MON, [], ['jlee', 'mruiz', 'tcole']),
+    ];
+    SAFETY_DOCS = SAFETY_WEEKS.slice();
+    ASKED.length = 0;
+    r = await build(browser, baseUrl, 'safety_signoff', { start: LAST_MON, end: LAST_SUN });
+    const ss = r.out && r.out.items[0];
+    ok('the sign-off report for last week builds: its one form, who signed it and who has not',
+      !r.error && r.out.items.length === 1 && has(ss, 'Trenching &amp; Excavation') && has(ss, 'Jordan Lee') && has(ss, 'Maria Ruiz')
+        && has(ss, '<li>tcole</li>') && !has(ss, 'Heat Illness') && !has(ss, 'Ladder Safety'),
+      r.error || JSON.stringify(r.out && (r.out.errors || r.out.skipped)));
+    ok('…read for those weeks, the way From week / To week read them',
+      ASKED.some(a => a.endsWith(`/api/safety-signatures?scope=report&from=${LAST_MON}&to=${LAST_MON}`)),
+      ASKED.filter(a => /safety/.test(a)).join(' | '));
+    ok('…each form read again on its own, for the marks', ASKED.some(a => a.endsWith('/api/safety-signatures?documentId=sd1')));
+    ok('…with the week in its subject', ss && ss.subject === `Safety Sign-Off Report — Week of ${dayWords(LAST_MON)}`, ss && ss.subject);
+    const marks = ss ? [...ss.html.matchAll(/<img src="(data:image\/png;base64,[^"]+)"/g)].map(m => m[1]) : [];
+    const msize = marks[0] ? pngSize(marks[0]) : null;
+    ok('…with the drawn mark, made the size the sheet prints it',
+      marks.length === 1 && msize && msize.h <= 108 && msize.w <= 500 && marks[0].length < MARK.length / 2,
+      JSON.stringify({ n: marks.length, msize, len: marks[0] && marks[0].length, was: MARK.length }));
+    ok('…and the signer who typed their name said so in words', has(ss, 'Signed by typed name — no mark drawn'));
+    ok('…as Print all makes it, less the Print bar and the print dialog',
+      has(ss, 'Safety sign-off sheet') && has(ss, 'Not signed (1)') && has(ss, STATEMENT)
+        && !has(ss, 'Print / Save as PDF') && !/window\.print/.test(ss.html));
+    ok('…on the office clock', ss && /\bE[DS]T\b/.test(ss.html));
+    ok('…printed by Auto Reports for the supervisor it runs as', has(ss, 'by Auto Reports for robot-admin'));
+    ok('…one DataWatch mark', ss && (ss.html.match(/data-dw-brand/g) || []).length === 1);
+    ok('…and its key figures', fig(ss, 'Form').value === 'Trenching & Excavation' && fig(ss, 'Signed').value === '2'
+      && fig(ss, 'Not Signed').value === '1' && fig(ss, 'Not Signed').tone === 'bad', JSON.stringify(ss && ss.summary));
+    ok('…and nothing written', r.writes.length === 0, r.writes.join(', '));
+
+    r = await build(browser, baseUrl, 'safety_signoff', { start: TWO_MON, end: weekDay(0, 2) });
+    const sm = r.out && r.out.items[0];
+    const at = t => (sm ? sm.html.indexOf('<h1>' + t) : -1);
+    ok('three weeks: a contents page, then every form, oldest first',
+      !r.error && r.out.items.length === 1 && has(sm, 'Safety sign-off report')
+        && at('Heat Illness') > 0 && at('Heat Illness') < at('Trenching') && at('Trenching') < at('Ladder Safety'),
+      r.error || JSON.stringify({ h: at('Heat Illness'), t: at('Trenching'), l: at('Ladder Safety') }));
+    ok('…a form nobody has signed yet is on it, with who owes it', has(sm, 'Nobody has signed this document.') && has(sm, 'Not signed (3)'));
+    ok('…with the weeks in its subject', sm && sm.subject === `Safety Sign-Off Report — Weeks of ${dayWords(TWO_MON)} – ${dayWords(THIS_MON)}`,
+      sm && sm.subject);
+    ok('…and the figures across them', fig(sm, 'Forms').value === '3' && fig(sm, 'Signatures').value === '3'
+      && fig(sm, 'Fully Signed').value === '1 of 3' && fig(sm, 'Short of Signatures').value === '2' && fig(sm, 'Short of Signatures').tone === 'bad',
+      JSON.stringify(sm && sm.summary));
+
+    r = await build(browser, baseUrl, 'safety_signoff', { start: weekDay(-6, 0), end: weekDay(-6, 6) });
+    ok('a week with no form posted is skipped, not sent',
+      !r.error && r.out.items.length === 0 && r.out.skipped.length === 1
+        && r.out.skipped[0].why === `No safety forms were posted for the week of ${dayWords(weekDay(-6, 0))}.`,
+      r.error || JSON.stringify(r.out));
+
+    FAIL.add('/api/safety-signatures');
+    r = await build(browser, baseUrl, 'safety_signoff', { start: LAST_MON, end: LAST_SUN });
+    FAIL.clear();
+    ok('a report that could not be read fails, rather than "no forms posted"',
+      !r.error && r.out.items.length === 0 && r.out.skipped.length === 0
+        && /sign-off report did not load — Database is down/.test((r.out.errors[0] || {}).error),
+      r.error || JSON.stringify(r.out));
+    SAFETY_DENY = true;
+    r = await build(browser, baseUrl, 'safety_signoff', { start: LAST_MON, end: LAST_SUN });
+    SAFETY_DENY = false;
+    ok('…and so does one the server will not give this account',
+      !r.error && r.out.items.length === 0 && /Only a safety supervisor/.test((r.out.errors[0] || {}).error),
+      r.error || JSON.stringify(r.out));
+
+    SAFETY_DOCS = [safetyDoc('sd9', 'Confined Spaces', LAST_MON,
+      Array.from({ length: 24 }, (_, i) => signer(10 + i, 'crew' + i, 'Crew Member ' + i, LAST_MON + 'T13:00:00Z', NOISE)), [])];
+    r = await build(browser, baseUrl, 'safety_signoff', { start: LAST_MON, end: LAST_SUN });
+    const big = r.out && r.out.items[0];
+    ok('marks too big for one email even at sheet size: it still goes, without them, and says so',
+      !r.error && r.out.items.length === 1 && Buffer.byteLength(big.html) < 1500000 && !/<img src="data:image\/png/.test(big.html)
+        && (big.html.match(/Drawn signature on file/g) || []).length === 24 && has(big, 'left out of this emailed copy'),
+      r.error || JSON.stringify({ bytes: big && Buffer.byteLength(big.html), errs: r.out && r.out.errors }));
+    SAFETY_DOCS = SAFETY_WEEKS.slice();
+
     console.log('\nEnd to end — runSchedule, to the mail service');
     // The database the runner reads, as three answers: the account it runs
     // as, that account's access, and the recipient group.
@@ -559,6 +723,27 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
     ok('…with the figures in the email body', /Total Paid/.test((SENT[0] || {}).html || ''));
     // For a person to look at: SHOT_DIR=/some/dir keeps the PDF that was sent.
     if (process.env.SHOT_DIR && pbuf.length) fs.writeFileSync(path.join(process.env.SHOT_DIR, 'payroll-hours.pdf'), pbuf);
+    SENT.length = 0;
+    const safetySched = { ...sched, report_type: 'safety_signoff', division: 'safety', project_id: null, options: { period: 'prev_week' } };
+    res = await runSchedule(fakeSql, safetySched, { baseUrl, browser, now: new Date() });
+    const spdf = ((SENT[0] || {}).attachments || []).find(a => a.contentType === 'application/pdf');
+    const sbuf = spdf ? Buffer.from(spdf.content, 'base64') : Buffer.alloc(0);
+    ok('safety end to end: last week\'s sign-off sheet goes out as a PDF',
+      res.status === 'sent' && SENT.length === 1 && sbuf.subarray(0, 5).toString() === '%PDF-'
+        && /^Safety Sign-Off Report — Week of /.test(SENT[0].subject), JSON.stringify(res));
+    ok('…portrait, the way the sheet prints', /\/MediaBox\s*\[\s*0\s+0\s+612(\.\d+)?\s+792/.test(sbuf.toString('latin1')),
+      (sbuf.toString('latin1').match(/\/MediaBox\s*\[[^\]]*\]/) || [])[0]);
+    ok('…with who has not signed in the email body', /Not Signed/.test((SENT[0] || {}).html || ''));
+    if (process.env.SHOT_DIR && sbuf.length) fs.writeFileSync(path.join(process.env.SHOT_DIR, 'safety-signoff.pdf'), sbuf);
+    // Crew hold the division to sign; only a supervisor may read the report.
+    const crewSql = (strings, ...vals) => /u\.division_roles/.test(strings.join('?'))
+      ? Promise.resolve([{ division_roles: { safety: 'level1' }, divisions: null, role: 'user', is_platform_admin: false,
+          company_code: 'FCT', allowed_divisions: [] }])
+      : fakeSql(strings, ...vals);
+    SENT.length = 0;
+    res = await runSchedule(crewSql, safetySched, { baseUrl, browser, now: new Date() });
+    ok('…and run as somebody since moved to crew, it fails saying so, and nothing goes',
+      res.status === 'failed' && SENT.length === 0 && /no longer a Safety Center supervisor/.test(res.message), JSON.stringify(res));
     SENT.length = 0;
     res = await runSchedule(fakeSql, { ...sched, report_type: 'trucking_labor_dispatch', division: 'trucking', project_id: null,
       options: { day: 'today' } }, { baseUrl, browser, now: new Date() });

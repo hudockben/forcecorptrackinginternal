@@ -1913,6 +1913,7 @@
             <div id="ar-period-wrap">
               <label for="ar-period">Covers</label>
               <select id="ar-period" onchange="arUpdateSummary()"></select>
+              <div class="ar-hint" id="ar-period-hint"></div>
             </div>
             <div id="ar-day-wrap">
               <label for="ar-day">Dispatch for</label>
@@ -3423,8 +3424,10 @@
       } else if (scope === 'job_or_all') {
         parts.push(s.project_id ? (s.project_name || 'Job ' + s.project_id) : 'All jobs, one report');
       } else {
-        // Payroll's reports are everybody's time, whatever division booked it.
-        parts.push(s.division === 'payroll' ? 'All employees' : 'Whole division');
+        // Payroll's reports are everybody's time, whatever division booked it;
+        // the Safety Center's, every form posted for the weeks it covers.
+        parts.push(s.division === 'payroll' ? 'All employees'
+          : s.division === 'safety' ? 'Every form posted' : 'Whole division');
       }
       const o = s.options || {};
       const sub = [];
@@ -3778,9 +3781,13 @@
       document.getElementById('ar-year-wrap').style.display   = def && def.year ? '' : 'none';
       document.getElementById('ar-range-wrap').style.display  = def && def.payRange ? '' : 'none';
       if (def && def.period) {
-        const periods = Object.entries((arData && arData.periods) || {});
-        arFillSelect(document.getElementById('ar-period'), periods, (preset && preset.period) || def.period);
+        // A report that offers only some of the periods says which.
+        const periods = Object.entries((arData && arData.periods) || {})
+          .filter(([k]) => !Array.isArray(def.periods) || def.periods.includes(k));
+        const want = (preset && preset.period) || def.period;
+        arFillSelect(document.getElementById('ar-period'), periods, periods.some(([k]) => k === want) ? want : def.period);
       }
+      document.getElementById('ar-period-hint').textContent = (def && def.period && def.periodHint) || '';
       if (def && def.day) document.getElementById('ar-day').value = (preset && preset.day) || def.day;
       if (def && def.year) document.getElementById('ar-year').value = (preset && preset.year) || 'current';
       if (def && def.payRange) {

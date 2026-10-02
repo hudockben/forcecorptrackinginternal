@@ -131,7 +131,7 @@ async function cleanUp() {
 (async () => {
   await cleanUp();
   await client.query("INSERT INTO companies (code, name, allowed_divisions) VALUES ($1, 'Force Corp UI test', '{turf,paving}')", [CO]);
-  const roles = { turf: 'admin', paving: 'admin', dust: 'admin', executive: 'admin', payroll: 'admin' };
+  const roles = { turf: 'admin', paving: 'admin', dust: 'admin', executive: 'admin', payroll: 'admin', safety: 'admin' };
   const adminId = (await client.query(
     "INSERT INTO users (username, company_code, password_hash, role, division_roles) VALUES ('benadmin', $1, 'x', 'admin', $2) RETURNING id",
     [CO, JSON.stringify(roles)])).rows[0].id;
@@ -202,7 +202,7 @@ async function cleanUp() {
     await page.click('#muTabBtnReports');
     await page.waitForSelector('.ar-div', { timeout: 8000 });
     const cards = await page.$$eval('.ar-div .ar-div-name', els => els.map(e => e.textContent));
-    ok('one card per division the admin can open, in order', JSON.stringify(cards) === '["Turf Management","Paving","Dust Control","Executive","Payroll"]', JSON.stringify(cards));
+    ok('one card per division the admin can open, in order', JSON.stringify(cards) === '["Turf Management","Paving","Dust Control","Executive","Payroll","Safety Center"]', JSON.stringify(cards));
     const failedRow = await page.$eval('.ar-row', r => ({ cls: r.className, text: r.innerText }));
     ok('the failed report is flagged red, with its reason',
       /flag-bad/.test(failedRow.cls) && /FAILED/i.test(failedRow.text) && /too large to email/.test(failedRow.text), failedRow.text);
@@ -415,6 +415,34 @@ async function cleanUp() {
     await page.waitForFunction(id => document.querySelector(`.ar-row[data-id="${id}"]`), { timeout: 8000 }, payRow && payRow.id).catch(() => {});
     ok('…and its row reads as all employees, last pay cycle',
       payRow && /All employees[\s\S]*Last pay cycle/.test(await page.$eval(`.ar-row[data-id="${payRow.id}"]`, r => r.innerText)));
+
+    console.log('\nA Safety Center report');
+    await page.evaluate(() => arNew('safety'));
+    await page.waitForFunction(() => document.getElementById('ar-form').classList.contains('open'));
+    const safPeriods = await page.$$eval('#ar-period option', os => os.map(o => o.value));
+    ok('offers whole weeks only, last week first',
+      JSON.stringify(safPeriods) === '["prev_week","week_to_date","month_to_date","prev_month"]'
+        && await page.$eval('#ar-period', s => s.value) === 'prev_week', JSON.stringify(safPeriods));
+    ok('…says how a period reads when forms are filed by week',
+      /filed by week/.test(await page.$eval('#ar-period-hint', e => e.textContent)));
+    ok('…and no job picker', await page.$eval('#ar-job-wrap', e => e.style.display === 'none'));
+    await page.select('#ar-period', 'prev_month');
+    await page.click(`#ar-groups input[value="${g1}"]`);
+    ok('the sentence says what it covers', /Sign-Off Report, covering last month/.test(await page.$eval('#ar-summary', e => e.textContent)),
+      await page.$eval('#ar-summary', e => e.textContent));
+    await page.click('#ar-save');
+    await page.waitForFunction(() => !document.getElementById('ar-form').classList.contains('open'), { timeout: 8000 }).catch(() => {});
+    const safRow = (await db.schedules()).find(r => r.report_type === 'safety_signoff');
+    ok('saves under the Safety Center with its period', safRow && safRow.division === 'safety' && safRow.options.period === 'prev_month',
+      JSON.stringify(safRow && { division: safRow.division, options: safRow.options }));
+    await page.waitForFunction(id => document.querySelector(`.ar-row[data-id="${id}"]`), { timeout: 8000 }, safRow && safRow.id).catch(() => {});
+    ok('…and its row reads as every form posted, last month',
+      safRow && /Every form posted[\s\S]*Last month/.test(await page.$eval(`.ar-row[data-id="${safRow.id}"]`, r => r.innerText)));
+    await page.evaluate(() => arNew('dust'));
+    await page.waitForFunction(() => document.getElementById('ar-form').classList.contains('open'));
+    ok('a report that offers every period still gets every one, and no hint',
+      (await page.$$eval('#ar-period option', os => os.length)) === 8 && await page.$eval('#ar-period-hint', e => e.textContent) === '');
+    await page.evaluate(() => arCloseForm());
 
     console.log('\nA Send now on a report that failed last time');
     const failedId = Number((await db.q("SELECT id FROM report_schedules WHERE company_code = $1 AND report_type = 'turf_daily_pm'", [CO]))[0].id);
