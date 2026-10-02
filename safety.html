@@ -1007,7 +1007,7 @@
 
     /* ═══════ Report ═══════ */
     // The weeks in the From / To boxes, or — for Auto Reports — the ones a
-    // schedule covers, `range` being { from, to }.
+    // schedule covers, `range` being { from, to, archived }.
     async function loadReport(range) {
       state.reportLoading = true; state.reportError = null; renderReport();
       try {
@@ -1016,7 +1016,7 @@
         const parts = ['scope=report'];
         if (from) parts.push('from=' + encodeURIComponent(from));
         if (to)   parts.push('to=' + encodeURIComponent(to));
-        if (state.showArchived) parts.push('include=archived');
+        if (range ? range.archived : state.showArchived) parts.push('include=archived');
         const data = await api('GET', '/safety-signatures?' + parts.join('&'));
         state.report    = data.documents || [];
         state.detail    = {};
@@ -1722,30 +1722,33 @@
        through auto-report.js. This page has no Email button, so the report is
        Print all / PDF: the tab loaded for the weeks the schedule covers, each
        document read fresh, the same contents page and sheets — the PDF that
-       arrives is the one Print all would have made. Two things differ, both
-       for the email's sake: the drawn marks go at the size the sheet prints
-       them, and a copy still too big for one email leaves them out and says
-       so. */
+       arrives is the one Print all would have made with archived forms shown:
+       archiving is how a supervisor closes out a week everyone has signed,
+       and the record of that week is what the schedule is for. One more thing
+       differs, for the email's sake: the drawn marks go at the size the sheet
+       prints them, smaller still if that is too much for one email, and left
+       out — saying so — if even that is. */
     (function registerAutoReports() {
       const AR = window.dwAutoReport;
       if (!AR) return;
 
-      // td.mark holds a mark to 2.6in × 0.56in; this is twice that in CSS
-      // pixels, for a clean line on paper. The pad saves what the signer's
-      // screen drew — often three times as many pixels again — and a crew's
-      // worth of those is more than one email may carry.
-      const MARK_PX = { w: 500, h: 108 };
+      // td.mark holds a mark to 2.6in × 0.56in, 250 × 54 CSS pixels. Twice
+      // that first, for a clean line on paper; then once, a month of a big
+      // crew's marks at twice being more than one email carries. The pad
+      // saves what the signer's screen drew — often six times as many pixels
+      // across again.
+      const MARK_SIZES = [{ w: 500, h: 108 }, { w: 250, h: 54 }];
       // The server takes 1.5 MB of report (MAX_HTML_BYTES in api/lib/email.js);
       // this leaves room for the DataWatch band stamped on after.
       const EMAIL_HTML_BYTES = 1400000;
       const bytes = html => new Blob([html]).size;
 
-      function shrinkMark(src) {
+      function shrinkMark(src, box) {
         return new Promise(resolve => {
           if (!src || !PNG_MARK.test(src)) return resolve(src);
           const img = new Image();
           img.onload = () => {
-            const k = Math.min(1, MARK_PX.w / (img.naturalWidth || 1), MARK_PX.h / (img.naturalHeight || 1));
+            const k = Math.min(1, box.w / (img.naturalWidth || 1), box.h / (img.naturalHeight || 1));
             if (k >= 1) return resolve(src);
             const c = document.createElement('canvas');
             c.width  = Math.max(1, Math.round(img.naturalWidth * k));
@@ -1764,11 +1767,11 @@
       }
 
       // Copies, not edits: what fetchSignOff read also sits in the screen's
-      // cache (state.detail).
-      async function withSmallMarks(g) {
+      // cache (state.detail), and the next size down starts from the original.
+      async function withMarksAt(g, box) {
         const signed = [];
         for (const s of g.signed) {
-          signed.push(Object.assign({}, s, { signatureImage: await shrinkMark(s.signatureImage) }));
+          signed.push(Object.assign({}, s, { signatureImage: await shrinkMark(s.signatureImage, box) }));
         }
         return Object.assign({}, g, { signed });
       }
@@ -1783,7 +1786,7 @@
         const from = mondayOf(spec.start), to = mondayOf(spec.end || spec.start);
         const span = rangeLabel([from, to]);
         const spanWords = span.charAt(0).toLowerCase() + span.slice(1);
-        await loadReport({ from, to });
+        await loadReport({ from, to, archived: true });
         if (state.reportError) throw new Error('The sign-off report did not load — ' + state.reportError);
         const all = state.report || [];
         if (!all.length) return { skip: `No safety forms were posted for the ${spanWords}.` };
@@ -1791,12 +1794,19 @@
           return { skip: `Nothing posted for the ${spanWords} has been signed, and nobody is on the Safety Center roster to sign it.` };
         }
 
-        const { kept, skipped, title } = await signOffReads(all, { afterRead: withSmallMarks });
+        const { kept, skipped, title } = await signOffReads(all);
         const info = Object.assign(printInfo(), {
           by: 'Auto Reports for ' + ((user && user.username) || 'a safety supervisor'),
         });
-        let html = printShell(title, signOffBody(kept, skipped, info), true);
-        if (bytes(html) > EMAIL_HTML_BYTES) {
+        let html = '';
+        for (const box of MARK_SIZES) {
+          const sized = [];
+          for (const g of kept) sized.push(await withMarksAt(g, box));
+          html = printShell(title, signOffBody(sized, skipped, info), true);
+          if (bytes(html) <= EMAIL_HTML_BYTES) break;
+          html = '';
+        }
+        if (!html) {
           // The typed name and the tick are the signature; the marks stay in
           // the Safety Center, and Print all there still has them.
           html = printShell(title,
@@ -1809,7 +1819,8 @@
         const short = kept.filter(g => (g.outstanding || []).length > 0).length;
         const summary = one
           ? [
-              { label: 'Form',       value: one.document.title },
+              // The email shows 60 characters of a figure; a title is up to 160.
+              { label: 'Form',       value: one.document.title.length > 60 ? one.document.title.slice(0, 59) + '…' : one.document.title },
               { label: 'Week Of',    value: dayLabel(one.document.weekOf) },
               { label: 'Signed',     value: String(one.signed.length) },
               { label: 'Not Signed', value: String(one.outstanding.length), tone: one.outstanding.length ? 'bad' : 'good' },

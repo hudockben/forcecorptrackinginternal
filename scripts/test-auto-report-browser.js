@@ -160,8 +160,8 @@ const THIS_MON = weekDay(0, 0), TWO_MON = weekDay(-2, 0);
 const STATEMENT = 'I have read this document in full, I understand its contents, and I agree to follow the safety requirements it describes.';
 let SAFETY_DOCS = [];
 let SAFETY_DENY = false;
-const safetyDoc = (id, title, weekOf, signed, outstanding) => ({
-  document: { id, title, weekOf, filename: id + '.pdf', uploadedBy: 'sue', uploadedAt: weekOf + 'T12:00:00Z', archivedAt: null },
+const safetyDoc = (id, title, weekOf, signed, outstanding, archivedAt) => ({
+  document: { id, title, weekOf, filename: id + '.pdf', uploadedBy: 'sue', uploadedAt: weekOf + 'T12:00:00Z', archivedAt: archivedAt || null },
   signed, outstanding: outstanding.map((u, i) => ({ userId: 100 + i, username: u, level: 'level1' })),
 });
 const signer = (userId, username, fullName, signedAt, signatureImage) =>
@@ -313,8 +313,9 @@ const server = http.createServer((req, res) => {
         return g ? json(res, { documents: [safetyGroup(g, true)], statement: STATEMENT }) : json(res, { error: 'Document not found' }, 404);
       }
       const from = u.searchParams.get('from') || '0000', to = u.searchParams.get('to') || '9999';
+      const archived = u.searchParams.get('include') === 'archived';
       return json(res, { statement: STATEMENT, roster: [], documents: SAFETY_DOCS
-        .filter(g => g.document.weekOf >= from && g.document.weekOf <= to)
+        .filter(g => g.document.weekOf >= from && g.document.weekOf <= to && (archived || !g.document.archivedAt))
         .sort((a, b) => b.document.weekOf.localeCompare(a.document.weekOf))
         .map(g => safetyGroup(g, false)) });
     }
@@ -598,6 +599,9 @@ function pngSize(dataUrl) {
       ], ['tcole']),
       safetyDoc('sd2', 'Heat Illness Prevention', TWO_MON, [signer(1, 'jlee', 'Jordan Lee', TWO_MON + 'T13:00:00Z', MARK)], []),
       safetyDoc('sd3', 'Ladder Safety', THIS_MON, [], ['jlee', 'mruiz', 'tcole']),
+      // Signed by everyone and archived — how a supervisor closes out a week.
+      safetyDoc('sd4', 'Silica Exposure', weekDay(-3, 0), [signer(1, 'jlee', 'Jordan Lee', weekDay(-3, 0) + 'T13:00:00Z', MARK)], [],
+        weekDay(-3, 4) + 'T20:00:00Z'),
     ];
     SAFETY_DOCS = SAFETY_WEEKS.slice();
     ASKED.length = 0;
@@ -607,8 +611,8 @@ function pngSize(dataUrl) {
       !r.error && r.out.items.length === 1 && has(ss, 'Trenching &amp; Excavation') && has(ss, 'Jordan Lee') && has(ss, 'Maria Ruiz')
         && has(ss, '<li>tcole</li>') && !has(ss, 'Heat Illness') && !has(ss, 'Ladder Safety'),
       r.error || JSON.stringify(r.out && (r.out.errors || r.out.skipped)));
-    ok('…read for those weeks, the way From week / To week read them',
-      ASKED.some(a => a.endsWith(`/api/safety-signatures?scope=report&from=${LAST_MON}&to=${LAST_MON}`)),
+    ok('…read for those weeks, the way From week / To week read them, archived forms included',
+      ASKED.some(a => a.endsWith(`/api/safety-signatures?scope=report&from=${LAST_MON}&to=${LAST_MON}&include=archived`)),
       ASKED.filter(a => /safety/.test(a)).join(' | '));
     ok('…each form read again on its own, for the marks', ASKED.some(a => a.endsWith('/api/safety-signatures?documentId=sd1')));
     ok('…with the week in its subject', ss && ss.subject === `Safety Sign-Off Report — Week of ${dayWords(LAST_MON)}`, ss && ss.subject);
@@ -642,6 +646,11 @@ function pngSize(dataUrl) {
       && fig(sm, 'Fully Signed').value === '1 of 3' && fig(sm, 'Short of Signatures').value === '2' && fig(sm, 'Short of Signatures').tone === 'bad',
       JSON.stringify(sm && sm.summary));
 
+    r = await build(browser, baseUrl, 'safety_signoff', { start: weekDay(-3, 0), end: weekDay(-3, 6) });
+    ok('a week whose form was signed and archived still goes out, with that form',
+      !r.error && r.out.items.length === 1 && has(r.out.items[0], 'Silica Exposure') && has(r.out.items[0], 'Jordan Lee'),
+      r.error || JSON.stringify(r.out && (r.out.skipped || r.out.errors)));
+
     r = await build(browser, baseUrl, 'safety_signoff', { start: weekDay(-6, 0), end: weekDay(-6, 6) });
     ok('a week with no form posted is skipped, not sent',
       !r.error && r.out.items.length === 0 && r.out.skipped.length === 1
@@ -662,14 +671,31 @@ function pngSize(dataUrl) {
       !r.error && r.out.items.length === 0 && /Only a safety supervisor/.test((r.out.errors[0] || {}).error),
       r.error || JSON.stringify(r.out));
 
-    SAFETY_DOCS = [safetyDoc('sd9', 'Confined Spaces', LAST_MON,
-      Array.from({ length: 24 }, (_, i) => signer(10 + i, 'crew' + i, 'Crew Member ' + i, LAST_MON + 'T13:00:00Z', NOISE)), [])];
+    const crewOf = (n, mark) => [safetyDoc('sd9', 'Confined Spaces', LAST_MON,
+      Array.from({ length: n }, (_, i) => signer(10 + i, 'crew' + i, 'Crew Member ' + i, LAST_MON + 'T13:00:00Z', mark)), [])];
+    // A real mark is ~18 KB at twice sheet size and ~7 KB at sheet size, so a
+    // hundred of them fit only at the second.
+    SAFETY_DOCS = crewOf(100, MARK);
+    r = await build(browser, baseUrl, 'safety_signoff', { start: LAST_MON, end: LAST_SUN });
+    const mid = r.out && r.out.items[0];
+    const midMarks = mid ? [...mid.html.matchAll(/<img src="(data:image\/png;base64,[^"]+)"/g)].map(m => pngSize(m[1])) : [];
+    ok('marks too big for one email at twice sheet size go at sheet size instead',
+      !r.error && r.out.items.length === 1 && Buffer.byteLength(mid.html) < 1500000 && midMarks.length === 100
+        && midMarks.every(z => z && z.w <= 250 && z.h <= 54) && !has(mid, 'left out of this emailed copy'),
+      r.error || JSON.stringify({ bytes: mid && Buffer.byteLength(mid.html), n: midMarks.length, first: midMarks[0] }));
+    // Noise barely shrinks: thirty of these are too much at either size.
+    SAFETY_DOCS = crewOf(30, NOISE);
     r = await build(browser, baseUrl, 'safety_signoff', { start: LAST_MON, end: LAST_SUN });
     const big = r.out && r.out.items[0];
-    ok('marks too big for one email even at sheet size: it still goes, without them, and says so',
+    ok('too big even at that: it still goes, without the marks, and says so',
       !r.error && r.out.items.length === 1 && Buffer.byteLength(big.html) < 1500000 && !/<img src="data:image\/png/.test(big.html)
-        && (big.html.match(/Drawn signature on file/g) || []).length === 24 && has(big, 'left out of this emailed copy'),
+        && (big.html.match(/Drawn signature on file/g) || []).length === 30 && has(big, 'left out of this emailed copy'),
       r.error || JSON.stringify({ bytes: big && Buffer.byteLength(big.html), errs: r.out && r.out.errors }));
+    SAFETY_DOCS = [safetyDoc('sd8', 'Tailgate Safety Meeting — Trenching & Excavation, Competent Person Daily Inspection', LAST_MON,
+      [signer(1, 'jlee', 'Jordan Lee', LAST_MON + 'T13:00:00Z', null)], [])];
+    r = await build(browser, baseUrl, 'safety_signoff', { start: LAST_MON, end: LAST_SUN });
+    const longForm = fig(r.out && r.out.items[0], 'Form').value || '';
+    ok('a long form title is shortened for the email\'s figures, and says so', longForm.length === 60 && longForm.endsWith('…'), longForm);
     SAFETY_DOCS = SAFETY_WEEKS.slice();
 
     console.log('\nEnd to end — runSchedule, to the mail service');

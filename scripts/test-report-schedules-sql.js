@@ -53,7 +53,7 @@ Module._load = function (request, parent) {
   if (request === '@neondatabase/serverless') return { neon: () => makeSql(SQL_CLIENT) };
   // The API handler's auth: who is asking is the test's to say; what they may
   // do is the real rule.
-  if (request === '../lib/auth' && parent && /api[\\/]email[\\/]report-schedules\.js$/.test(parent.filename)) {
+  if (request === '../lib/auth' && parent && /api[\\/]email[\\/](report-schedules|send-report)\.js$/.test(parent.filename)) {
     return {
       ...realAuth,
       requireAuth: (req, res) => {
@@ -76,12 +76,15 @@ function assert(label, cond, detail) {
   else      { failed++; console.error(`  ✗ ${label}${detail ? '  — ' + detail : ''}`); }
 }
 
-async function call(method, query, body, auth) {
+async function call(method, query, body, auth, h = handler) {
   AUTH = auth;
   const res = { statusCode: 200, body: null, setHeader() {}, status(c) { this.statusCode = c; return this; }, json(o) { this.body = o; return this; }, end() { return this; } };
-  await handler({ method, query: query || {}, body: body || {}, headers: { host: 'datawatch.test' } }, res);
+  await h({ method, query: query || {}, body: body || {}, headers: { host: 'datawatch.test' } }, res);
   return res;
 }
+// The Email Report button's endpoint: who may send which report by hand.
+const sendReport = require(path.join(ROOT, 'api/email/send-report.js'));
+const emailNow = (report_type, auth) => call('POST', {}, { report_type, recipients: [], html: '<p>x</p>' }, auth, sendReport);
 
 async function cleanUp() {
   await client.query('DELETE FROM report_schedules WHERE company_code = $1', [CO]);
@@ -157,6 +160,8 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
     const body = { report_type: 'payroll_hours', frequency: 'weekly', days_of_week: [1], send_time: '07:00', group_ids: [g1], options: { range: 'last_biweekly' } };
     r = await call('POST', {}, body, CODER);
     assert('…and cannot schedule one', r.statusCode === 403, `${r.statusCode} ${JSON.stringify(r.body)}`);
+    r = await emailNow('payroll_hours', CODER);
+    assert('…nor email one by hand', r.statusCode === 403, `${r.statusCode} ${JSON.stringify(r.body)}`);
     r = await call('POST', {}, body, PAYR);
     assert('an approver can, and the pay range is kept', r.statusCode === 200 && r.body.schedule.options.range === 'last_biweekly', JSON.stringify(r.body));
     const pid = r.body.schedule.id;
@@ -200,6 +205,11 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
       options: { period: 'month_to_date' } };
     r = await call('POST', {}, body, CREW);
     assert('crew cannot schedule it', r.statusCode === 403, `${r.statusCode} ${JSON.stringify(r.body)}`);
+    r = await emailNow('safety_signoff', CREW);
+    assert('…nor email one by hand under its name', r.statusCode === 403, `${r.statusCode} ${JSON.stringify(r.body)}`);
+    r = await emailNow('safety_signoff', SUP);
+    assert('…which a supervisor gets past (to the next check: no recipients)', r.statusCode === 400 && /recipient/.test(r.body.error),
+      `${r.statusCode} ${JSON.stringify(r.body)}`);
     r = await call('POST', {}, body, SUP);
     assert('a supervisor can, and the period is kept',
       r.statusCode === 200 && r.body.schedule.division === 'safety' && r.body.schedule.options.period === 'month_to_date'
