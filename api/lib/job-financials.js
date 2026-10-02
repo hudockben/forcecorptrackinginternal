@@ -64,18 +64,26 @@ function rowsFor(division, projects, fin, ranged) {
       // A job with no contract has no revenue to subtract a cost from, so its
       // profit is unknown rather than negative. null, not 0.
       profit:    contract ? contract - projected : null,
-      // Realised profit needs spend behind it as well as a contract; contract
-      // minus nothing would post an unstarted job as pure margin.
-      actProfit: (contract && actual) ? contract - actual : null,
+      // Gross profit earned to date — report.gpEarnedToDate(), the figure the
+      // division pages label GP Earned to Date. Needs spend as well as a
+      // contract: nothing is earned before work is done. `earned` is its
+      // margin base (the share of the contract earned) and `pctDone` the share
+      // complete behind it, 0 to 1.
+      ...gpFields(report.gpEarnedToDate(contract, actual, projected)),
     };
   });
 }
 
+function gpFields(g) {
+  return { gpEarned: g ? g.gp : null, earned: g ? g.earned : 0, pctDone: g ? g.pct : null };
+}
+
 // Same shape as the division home strips: the live figures describe work in
-// progress, Actual Profit describes finished work.
+// progress; GP Earned to Date covers every job with a contract and spend,
+// whatever its status, since it is earned on the work in place.
 function summarise(rows) {
   const live = rows.filter(r => r.inProgress);
-  const done = rows.filter(r => r.complete && r.actProfit !== null);
+  const gp   = rows.filter(r => r.gpEarned !== null && r.gpEarned !== undefined);
   const sum  = (list, k) => list.reduce((s, r) => s + (r[k] || 0), 0);
   const withContract = live.filter(r => r.profit !== null);
   const ranged = rows.some(r => r.rangeActual !== undefined);
@@ -93,9 +101,12 @@ function summarise(rows) {
     variance:  sum(live, 'bid') - sum(live, 'actual'),
     projProfit:     withContract.length ? sum(withContract, 'profit') : null,
     projProfitBase: sum(withContract, 'contract'),
-    actProfit:      done.length ? sum(done, 'actProfit') : null,
-    actProfitBase:  sum(done, 'contract'),
-    completedJobs:  done.length,
+    gpEarned:       gp.length ? sum(gp, 'gpEarned') : null,
+    // Margin base: the revenue those jobs have earned, as a WIP schedule
+    // states the margin — not their whole contracts.
+    gpEarnedBase:   sum(gp, 'earned'),
+    gpJobs:         gp.length,
+    completedJobs:  gp.filter(r => r.complete).length,
   };
 }
 

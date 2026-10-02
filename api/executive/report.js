@@ -978,6 +978,25 @@ function daysLeftFor(p) {
   return Math.ceil((endMs - Date.now()) / 86400000);
 }
 
+/* Gross profit earned to date — the server's copy of gpEarnedToDate() on the
+   division pages, and the only one: the portfolio rows here, api/lib/
+   job-financials.js (Intercompany, Mathis) and the nightly mathis_job_facts
+   history all read it from this function. The contract is earned cost-to-cost — cost to date
+   over projected final cost is the share complete — and the gross profit so
+   far is that earned share less the cost to date. A finished job's projection
+   IS its actual, so it settles at contract minus final cost.
+   null without a contract (no revenue to earn) or without spend (nothing
+   earned yet). { gp, earned, pct }: pct is the share complete, 0 to 1. */
+function gpEarnedToDate(contract, actual, projected) {
+  const c = Number(contract) || 0, a = Number(actual) || 0, pr = Number(projected) || 0;
+  if (!(c > 0) || !(a > 0)) return null;
+  // The projection never undercuts actual, but the cap keeps earned revenue
+  // from passing the contract regardless.
+  const pct    = pr > a ? a / pr : 1;
+  const earned = c * pct;
+  return { gp: earned - a, earned, pct };
+}
+
 function portfolioRow(p, fin) {
   const f         = fin || { bid: 0, actual: 0, projected: 0, offBid: 0, offBidCodes: [] };
   const contract  = projContract(p);
@@ -996,11 +1015,11 @@ function portfolioRow(p, fin) {
                       : 'green';
 
   // A job with no contract value has no revenue to subtract a cost from, so
-  // its profit is unknown rather than zero. Actual Profit additionally needs
-  // real spend behind it — contract minus nothing would post an untouched job
-  // as pure margin.
+  // its profit is unknown rather than zero. GP Earned to Date additionally
+  // needs real spend behind it — nothing is earned before work is done.
   const profit    = contract > 0 && projected > 0 ? contract - projected : null;
-  const actProfit = contract > 0 && actual    > 0 ? contract - actual    : null;
+  const gpE       = gpEarnedToDate(contract, actual, projected);
+  const gpEarned  = gpE ? gpE.gp : null;
 
   return {
     id:          p.id,
@@ -1023,8 +1042,9 @@ function portfolioRow(p, fin) {
     projected,
     profit,
     profitPct:    profit    != null && contract > 0 ? (profit    / contract) * 100 : null,
-    actProfit,
-    actProfitPct: actProfit != null && contract > 0 ? (actProfit / contract) * 100 : null,
+    gpEarned,
+    // Margin on the revenue earned so far, as a WIP schedule states it.
+    gpEarnedPct: gpE && gpE.earned > 0 ? (gpE.gp / gpE.earned) * 100 : null,
     offBid:      Number(f.offBid) || 0,
     offBidCodes: Array.isArray(f.offBidCodes) ? f.offBidCodes : [],
   };
@@ -1034,12 +1054,12 @@ function portfolioRow(p, fin) {
 // progress" and "awarded" is theirs too and it matters: an awarded job carries
 // a contract and a budget but has spent nothing against either, so folding it
 // into Actual Spend or Variance would report the company further under budget
-// every time it won work. Actual Profit is what finished work returned, so it
-// covers completed jobs only.
+// every time it won work. GP Earned to Date is earned on the work in place
+// whatever a job's status, so it covers every job with a contract and spend.
 function portfolioMetrics(rows, totalProjects) {
   const live = rows.filter(r => r.status === 'In Progress');
   const awd  = rows.filter(r => r.status === 'Awarded');
-  const done = rows.filter(r => r.complete && r.actProfit != null);
+  const gp   = rows.filter(r => r.gpEarned != null);
   const sum  = (list, k) => list.reduce((s, r) => s + (Number(r[k]) || 0), 0);
 
   const ipContract = sum(live, 'contract');
@@ -1057,7 +1077,8 @@ function portfolioMetrics(rows, totalProjects) {
   const withContract   = [...live, ...awd].filter(r => r.profit != null);
   const bookProfit     = sum(withContract, 'profit');
   const bookProfitBase = sum(withContract, 'contract');
-  const doneProfit     = sum(done, 'actProfit');
+  const gpTotal        = sum(gp, 'gpEarned');
+  const gpDone         = gp.filter(r => r.complete).length;
 
   const bookCount    = live.length + awd.length;
   const bookContract = ipContract + awContract;
@@ -1112,10 +1133,10 @@ function portfolioMetrics(rows, totalProjects) {
       tone:  bookProfit >= 0 ? 'green' : 'red',
     },
     {
-      label: 'Total Actual Profit',
-      value: fmtCurrency(doneProfit),
-      sub:   `${done.length} completed job${done.length === 1 ? '' : 's'}`,
-      tone:  doneProfit >= 0 ? 'green' : 'red',
+      label: 'Total GP Earned to Date',
+      value: fmtCurrency(gpTotal),
+      sub:   `${gp.length} job${gp.length === 1 ? '' : 's'} · ${gpDone} completed`,
+      tone:  gpTotal >= 0 ? 'green' : 'red',
     },
   ];
 }
@@ -1990,6 +2011,7 @@ module.exports.readTurfProjects   = readTurfProjects;
 module.exports.readPavingProjects = readPavingProjects;
 module.exports.readKiewitProjects = readKiewitProjects;
 module.exports.buildFinancials    = buildFinancials;
+module.exports.gpEarnedToDate     = gpEarnedToDate;
 module.exports.projName           = projName;
 module.exports.projJob            = projJob;
 module.exports.projStatus         = projStatus;

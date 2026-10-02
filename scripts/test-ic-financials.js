@@ -10,8 +10,8 @@
  *
  *   It must NOT reuse the executive portfolio. That one is a curated summary —
  *   capped at 12 projects, completed jobs dropped unless pinned, filtered by a
- *   job-number cutoff. Actual Profit is the profit on FINISHED jobs, so a feed
- *   that drops completed work reports it as zero forever.
+ *   job-number cutoff. GP Earned to Date counts every finished job at contract
+ *   minus final cost, so a feed that drops completed work understates it.
  *
  *   The cost logic must stay in one place. Three copies across the division
  *   pages produced three bugs in this codebase, one of which made the profit
@@ -77,7 +77,7 @@ assert('  and asking for one by key gets nothing rather than a turf answer',
 console.log('\n[it is not the curated executive portfolio]');
 assert('no 12-project cap', !/slice\(0, ?12\)/.test(finSrc));
 assert('no executive job-number cutoff', !/projMeetsExecCutoff/.test(finSrc));
-assert('completed jobs are kept, since Actual Profit is about them',
+assert('completed jobs are kept, since GP Earned to Date counts them',
   /complete:\s*report\.projIsComplete/.test(jobFinSrc)
   && !/!projIsComplete\(p\)/.test(jobFinSrc));
 assert('it is gated on intercompany access, not executive',
@@ -91,11 +91,18 @@ assert('each division read is caught individually',
 // summarise() is the arithmetic the report leans on, so drive it directly.
 console.log('\n[the summary splits live work from finished work]');
 const { summarise } = jobFin;
+// Rows carry GP Earned to Date through the real helper, as rowsFor() does, so
+// a fixture cannot quietly disagree with production about the figure.
+const { gpEarnedToDate } = require(root('api/executive/report'));
+const gpOf = o => {
+  const g = gpEarnedToDate(o.contract, o.actual, o.projected);
+  return { gpEarned: g ? g.gp : null, earned: g ? g.earned : 0, pctDone: g ? g.pct : null };
+};
 const row = o => ({
   inProgress: o.status === 'In Progress', complete: o.status === 'Complete',
   contract: o.contract, bid: o.bid, actual: o.actual, projected: o.projected,
   profit: o.contract ? o.contract - o.projected : null,
-  actProfit: (o.contract && o.actual) ? o.contract - o.actual : null,
+  ...gpOf(o),
 });
 const SAMPLE = [
   row({ status: 'In Progress', contract: 500000, bid: 400000, actual: 150000, projected: 420000 }),
@@ -116,14 +123,25 @@ assert('Projected Profit skips the job with no contract',
   near(s.projProfit, 140000), `got ${s.projProfit}`);
 assert('  and bases its percentage only on jobs that contributed',
   near(s.projProfitBase, 800000), `got ${s.projProfitBase}`);
-assert('Actual Profit covers completed jobs only',
-  near(s.actProfit, 20000), `got ${s.actProfit}`);
-assert('  and a completed job that lost money pulls it down', s.actProfit < 30000);
-assert('  counting them', s.completedJobs === 2, `got ${s.completedJobs}`);
+// Every job with a contract and spend, earned cost-to-cost:
+//   500,000 × 150/420 − 150,000 = 28,571.43    300,000 × 100/240 − 100,000 = 25,000
+//   200,000 − 170,000           = 30,000       100,000 − 110,000           = −10,000
+//   999,999 × 7,777/888,888 − 7,777 = 972.12   (the job with no contract earns nothing)
+assert('GP Earned to Date covers every job with a contract and spend',
+  near(s.gpEarned, 74543.55), `got ${s.gpEarned}`);
+assert('  not contract minus spend on the live ones',
+  !near(s.gpEarned, 74543.55 - 28571.43 + (500000 - 150000)));
+assert('  and a completed job that lost money pulls it down', s.gpEarned < 74543.55 + 10000);
+assert('  its margin base is the revenue those jobs earned, not their contracts',
+  near(s.gpEarnedBase, 612320.55), `got ${s.gpEarnedBase}`);
+assert('  counting the jobs, and the completed ones among them',
+  s.gpJobs === 5 && s.completedJobs === 2, `got ${s.gpJobs} / ${s.completedJobs}`);
 const none = summarise([]);
 assert('nothing to report gives nulls for profit, not zero',
-  none.activeProjects === 0 && none.projProfit === null && none.actProfit === null,
+  none.activeProjects === 0 && none.projProfit === null && none.gpEarned === null,
   'zero profit is a claim; unknown profit is not');
+assert('rowsFor builds the figure through the shared helper',
+  /report\.gpEarnedToDate\(contract, actual, projected\)/.test(jobFinSrc) && !/contract - actual\b/.test(jobFinSrc));
 
 // ── The page ────────────────────────────────────────────────────────────────
 console.log('\n══════════ intercompany.html ══════════');
@@ -146,13 +164,14 @@ assert('  and does not compute costs itself',
   'the whole point of the endpoint');
 
 console.log('\n[what it shows]');
-for (const h of ['Contract Value', 'Bid Budget', 'Actual Spend', 'Variance', 'Projected Profit', 'Actual Profit']) {
-  assert(`the division summary carries ${h}`, ic.includes(`>${h}</th>`));
+for (const h of ['Contract Value', 'Bid Budget', 'Actual Spend', 'Variance', 'Projected Profit', 'GP Earned to Date']) {
+  assert(`the division summary carries ${h}`, new RegExp(`<th[^>]*>${h}</th>`).test(ic));
 }
 assert('every job is listed with its division',
   /<th>Job Name<\/th><th>Job #<\/th><th>Division<\/th><th>Status<\/th>/.test(ic));
 assert('the basis of each profit is stated on the page',
-  /Actual Profit covers\s*\n?\s*<strong>completed<\/strong> jobs/.test(ic));
+  /GP Earned to Date covers\s*\n?\s*<strong>every job with a contract and spend<\/strong>/.test(ic));
+assert('  and the old figure is gone from it', !/Actual Profit|actProfit/.test(ic));
 assert('a failed division is marked rather than silently dropped',
   /\(unavailable\)/.test(ic));
 
@@ -197,7 +216,7 @@ const R = (o) => ({
   contract: o.contract, bid: o.bid, actual: o.actual, projected: o.projected,
   variance: o.bid - o.actual,
   profit: o.contract ? o.contract - o.projected : null,
-  actProfit: (o.contract && o.actual) ? o.contract - o.actual : null,
+  ...gpOf(o),
 });
 const FEED = {
   rows: [
@@ -263,15 +282,19 @@ assert('a filtered summary covers only the filtered rows',
   kiewit.activeProjects === 1 && near(kiewit.contract, 4100000), JSON.stringify(kiewit));
 assert('  and its projected profit is the loss on that job',
   near(kiewit.projProfit, -1091999), `got ${kiewit.projProfit}`);
-assert('  with no completed job, actual profit is unknown rather than zero',
-  kiewit.actProfit === null);
+assert('  with no spend on it, GP earned is unknown rather than zero',
+  kiewit.gpEarned === null);
 icFns.clear();
 const all = icFns.summarise(icFns.rows());
 assert('unfiltered, Awarded work stays out of the live figures',
   all.activeProjects === 3 && !near(all.contract, 4100000 + 479312 + 123894 + 3426006),
   `got ${all.activeProjects} active`);
-assert('  and the completed job supplies the actual profit',
-  near(all.actProfit, 30000), `got ${all.actProfit}`);
+// Franklin 67,579.19 + Moon (awarded, but it has spend) 25,423.96 + Atwood
+// 24,150.28 + the finished job's 30,000. Acquisition Costs has spent nothing.
+assert('  while GP Earned to Date takes every job with spend, finished or not',
+  near(all.gpEarned, 147153.43), `got ${all.gpEarned}`);
+assert('  over the revenue those jobs have earned',
+  near(all.gpEarnedBase, 820079.43), `got ${all.gpEarnedBase}`);
 
 console.log('\n[the page wires them up]');
 assert('the summary is recomputed from the filtered rows, not the server totals',

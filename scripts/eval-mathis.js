@@ -338,10 +338,10 @@ const CASES = [
       { avoid: /^\s*\$[\d,]+/, note: 'answering a definition with a figure is answering a different question' },
     ] },
   { id: 'why-two-differ', division: 'paving',
-    ask: 'why is projected profit different from actual profit on these',
+    ask: 'why is projected profit different from GP earned to date on these',
     expect: [
       { say: /(to date|so far|spent|remaining|final)/i,
-        note: 'one counts cost so far and the other the projected final — the limits say so' },
+        note: 'one is the whole job at its projected final cost, the other the share earned so far — the limits say so' },
     ] },
   { id: 'have-a-view', division: 'paving',
     ask: 'which of these jobs should I be worried about, and why',
