@@ -289,33 +289,41 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
     // that secret opens every protected deployment of the project.
     const bypass = process.env.VERCEL_AUTOMATION_BYPASS_SECRET || '';
     await page.setRequestInterception(true);
+    // Every answer to a paused request is a promise, and Puppeteer rejects it
+    // when it cannot apply it — the request already gone, interception not on
+    // for whatever made it, a header Chrome will not take. Left unhandled,
+    // that rejection ends the whole function on Vercel: no result written,
+    // "Interrupted" on the row, a bare HTTP 500 for Send now. So none is left
+    // unhandled, and a request whose header override is refused still goes,
+    // without it, rather than hang.
+    const settle = p => { if (p && typeof p.catch === 'function') p.catch(() => {}); };
     page.on('request', req => {
       try {
         const url = req.url();
-        if (url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('about:')) return req.continue();
+        if (url.startsWith('data:') || url.startsWith('blob:') || url.startsWith('about:')) return settle(req.continue());
         let u;
-        try { u = new URL(url); } catch { return req.abort(); }
-        if (/^\/_vercel\/(insights|speed-insights)\//.test(u.pathname)) return req.abort();
+        try { u = new URL(url); } catch { return settle(req.abort()); }
+        if (/^\/_vercel\/(insights|speed-insights)\//.test(u.pathname)) return settle(req.abort());
         const method = req.method();
         const read = method === 'GET' || method === 'HEAD' || method === 'OPTIONS';
         if (u.origin === origin) {
           if (read || READ_ONLY_POSTS.has(u.pathname)) {
             if (u.pathname.startsWith('/api/')) inflight.set(req, Date.now());
-            return bypass
-              ? req.continue({ headers: { ...req.headers(), 'x-vercel-protection-bypass': bypass } })
-              : req.continue();
+            if (!bypass) return settle(req.continue());
+            return req.continue({ headers: { ...req.headers(), 'x-vercel-protection-bypass': bypass } })
+              .catch(() => settle(req.continue()));
           }
           // Refused the way a server refuses, not dropped the way a network
           // drops: the pages retry a failed connection with backoff (the job
           // pages give a refused bulk save 1 + 2 + 4 seconds), and a page that
           // does that once per job at boot never gets as far as the report.
           stats.blockedWrites++;
-          return req.respond({ status: 403, contentType: 'application/json', body: READ_ONLY_BODY });
+          return settle(req.respond({ status: 403, contentType: 'application/json', body: READ_ONLY_BODY }));
         }
         // The pages pull a few libraries and fonts from CDNs. Reads only, and
         // only the kinds of thing a page renders with.
-        if (read && ['script', 'stylesheet', 'font', 'image'].includes(req.resourceType())) return req.continue();
-        return req.abort();
+        if (read && ['script', 'stylesheet', 'font', 'image'].includes(req.resourceType())) return settle(req.continue());
+        return settle(req.abort());
       } catch { /* already handled */ }
     });
     page.on('requestfinished', req => inflight.delete(req));
@@ -501,6 +509,37 @@ function withBatch(specs) {
   return specs.map(sp => ({ ...sp, batch }));
 }
 
+// Memory in use, MB: this process and the Chrome it drives. Serverless Chrome
+// is one process (single-process mode), so its pid is all of it.
+function memoryInUse(browser) {
+  let mb = process.memoryUsage().rss / 1048576;
+  try {
+    const proc = browser && typeof browser.process === 'function' ? browser.process() : null;
+    if (proc && proc.pid) {
+      const st = require('fs').readFileSync(`/proc/${proc.pid}/status`, 'utf8');
+      const m = /VmRSS:\s+(\d+)\s+kB/.exec(st);
+      if (m) mb += Number(m[1]) / 1024;
+    }
+  } catch { /* no /proc here: this process alone */ }
+  return Math.round(mb);
+}
+
+// A promise rejected with nobody to catch it ends the whole function on
+// Vercel, and the run with it — no result written, the row left "Interrupted".
+// While a run is on, one is logged and noted on its row instead, so it says
+// what happened rather than dying silently.
+const runsUnderWay = new Set();
+let watchingRejections = false;
+function watchRejections() {
+  if (watchingRejections) return;
+  watchingRejections = true;
+  process.on('unhandledRejection', err => {
+    console.error('[report-schedules] unhandled rejection during a scheduled report:', (err && err.stack) || err);
+    const msg = String((err && err.message) || err).slice(0, 200);
+    for (const note of runsUnderWay) { try { note(msg); } catch { /* best effort */ } }
+  });
+}
+
 function plural(n, one, many) { return `${n} ${n === 1 ? one : (many || one + 's')}`; }
 
 /**
@@ -585,12 +624,30 @@ async function runSchedule(sql, sched, ctx = {}) {
   const ownBrowser = !browser;
   let session = null;
   const open = () => openReportPage(browser, { baseUrl: ctx.baseUrl, def, acct, spec, deadline: ctx.deadline });
+  // Where the run has got to, for the row while it runs — and, if the run is
+  // cut off, for the row afterwards: which step, how much was sent, and how
+  // much memory the function was using.
+  let lastStep = '';
+  const progress = step => {
+    lastStep = step;
+    if (!ctx.progress) return;
+    try {
+      ctx.progress(`${step}; ${plural(prev.sent + result.sent, 'report')} sent so far; ${memoryInUse(browser)} MB in use`);
+    } catch { /* never worth failing over */ }
+  };
+  const noteRejection = msg => {
+    if (ctx.progress) { try { ctx.progress(`${lastStep || 'Running'}; it hit an error nothing caught: ${msg}`); } catch { /* best effort */ } }
+  };
+  watchRejections();
+  runsUnderWay.add(noteRejection);
   try {
     await (async () => {
       if (!browser) {
+        progress('Starting the report browser');
         try { browser = await launchBrowser(); }
         catch (err) { problems.push(`Could not start the report browser: ${err.message}`); return; }
       }
+      progress(`Opening the ${divisionName(def.division)} page`);
       try { session = await open(); }
       catch (err) {
         timedOut = isTimeUp(err);
@@ -600,6 +657,7 @@ async function runSchedule(sql, sched, ctx = {}) {
 
       const holder = { items: [], skipped: [], errors: [] };
       let specs;
+      progress(everyJob ? 'Waiting for the page to load and listing the In Progress jobs' : 'Waiting for the page to load');
       try { specs = await specsToBuild(session, spec, holder); }
       catch (err) {
         timedOut = isTimeUp(err);
@@ -635,6 +693,8 @@ async function runSchedule(sql, sched, ctx = {}) {
             break;
           }
         }
+        const label = one.projectName || def.label;
+        progress(specs.length > 1 ? `Building ${label} (${s + 1} of ${specs.length})` : `Building ${label}`);
         let built;
         try { built = await session.build(one); }
         catch (err) {
@@ -689,6 +749,7 @@ async function runSchedule(sql, sched, ctx = {}) {
 
           if (!firstSend) await sleep(SEND_GAP_MS);
           firstSend = false;
+          progress(specs.length > 1 ? `Making the PDF and sending ${name} (${s + 1} of ${specs.length})` : `Making the PDF and sending ${name}`);
           const sent = await deliverReport({
             label:       def.label,
             projectName: it.projectName,
@@ -727,6 +788,7 @@ async function runSchedule(sql, sched, ctx = {}) {
   } catch (err) {
     problems.push(err.message || 'The run failed.');
   } finally {
+    runsUnderWay.delete(noteRejection);
     if (session) await session.close();
     if (ownBrowser && browser) { try { await browser.close(); } catch { /* already gone */ } }
   }
@@ -743,7 +805,7 @@ async function runSchedule(sql, sched, ctx = {}) {
   const left  = everyJob && total ? Math.max(0, total - done.size) : unreached;
   // Lasting progress only: a report sent, or a job dealt with for good. A
   // single report that timed out and will be built again is neither.
-  const progress = result.sent > 0 || done.size > prev.done.length;
+  const madeProgress = result.sent > 0 || done.size > prev.done.length;
 
   // Unfinished — out of time, stopped, or more jobs than one pass sends: the
   // rest goes back to the next five-minute pass, if the schedule still wants
@@ -759,7 +821,7 @@ async function runSchedule(sql, sched, ctx = {}) {
           attempted:  allAttempted - retryAttempts,
           problems:   [...prev.problems, ...problems].slice(-10).map(p => String(p).slice(0, 300)),
           passes:     prev.passes + 1,
-          idle:       prev.idle + (progress ? 0 : 1),
+          idle:       prev.idle + (madeProgress ? 0 : 1),
           total,
         },
       });
@@ -1010,6 +1072,25 @@ async function recordRun(sql, sched, result, { kind, token, triggeredBy, started
        ${sched.report_type}, ${sched.division}, ${sched.project_id || null}, ${sched.project_name || null})`;
 }
 
+/**
+ * Note a run's progress on its row as it goes (runSchedule's ctx.progress):
+ * last_message while it says 'sending', so the tab can show where it has got
+ * to, and an interrupted run says where it stopped. Written one at a time, in
+ * order, never holding the run up; only while this run's claim is the row's
+ * and it is still sending, so nothing lands on top of the run's own result.
+ */
+function progressWriter(sql, sched, token) {
+  let chain = Promise.resolve();
+  return text => {
+    const msg = `${PROGRESS_PREFIX}${String(text).slice(0, 400)}`;
+    console.log('[report-schedules] schedule', sched.id, String(text));
+    chain = chain.then(() => sql`
+      UPDATE report_schedules SET last_message = ${msg}
+       WHERE id = ${sched.id} AND claim_token = ${token} AND last_status = 'sending'`).catch(() => {});
+  };
+}
+const PROGRESS_PREFIX = 'Working: ';
+
 /** Let go of a claim with nothing recorded — a run that never started. */
 async function releaseClaim(sql, sched, token) {
   await sql`
@@ -1022,6 +1103,8 @@ module.exports = {
   recordRun,
   beginRun,
   handBack,
+  progressWriter,
+  PROGRESS_PREFIX,
   stillWanted,
   claimNextDue,
   claimForSendNow,

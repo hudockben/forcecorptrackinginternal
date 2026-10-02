@@ -3564,7 +3564,11 @@
       // it says is what is left of it.
       if (st.due && s.last_status === 'continuing' && s.last_message) msg = s.last_message;
       else if (st.due) msg = 'Its time has come — it goes out on the next check, within five minutes.';
-      else if (st.sending) msg = 'Building and sending now.';
+      // The run notes each step on the row as it goes ("Working: Building Maple
+      // Ave (3 of 12); 2 reports sent so far; …").
+      else if (st.sending) msg = s.sending && /^Working: /.test(s.last_message || '')
+        ? 'Sending now — ' + s.last_message.slice('Working: '.length) + '.'
+        : 'Building and sending now.';
       else if (st.unfinished) msg = (st.lastShown ? '' : `Last: ${st.last.label} ${st.last.when} — `)
         + 'The rest of its last send did not go out: it was switched off or changed before the next pass.';
       else if (st.last && s.last_message) msg = (st.lastShown ? '' : `Last: ${st.last.label} ${st.last.when} — `) + s.last_message;
@@ -3702,7 +3706,11 @@
         const kind = res.status === 'sent' ? 'ok' : res.status === 'skipped' ? 'ok' : 'err';
         arBanner(`${name}: ${AR_RESULT[res.status] || res.status}. ${res.message || ''}`, kind);
       } catch (err) {
-        arBanner(`${name} was not sent: ${err.message}`, 'err');
+        // A bare 5xx is the server stopping partway, not an answer from it —
+        // the row, reloaded below, says how far the run got.
+        arBanner(/^HTTP 5\d\d$/.test(err.message)
+          ? `${name}: the server stopped partway through (${err.message}). Its row below says how far it got.`
+          : `${name} was not sent: ${err.message}`, 'err');
       } finally {
         arSendingIds.delete(id);
       }

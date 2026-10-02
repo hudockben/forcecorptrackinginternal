@@ -388,6 +388,21 @@ async function cleanUp() {
     sendGate = null;
     await page.waitForFunction(id => /Send now/.test(document.querySelector(`.ar-row[data-id="${id}"] .ar-send-btn`).textContent), { timeout: 8000 }, failedId).catch(() => {});
 
+    console.log('\nWhere a run has got to');
+    const tokP = 'ui-progress';
+    await db.q(`UPDATE report_schedules SET claimed_at = NOW(), claim_token = $2, last_status = 'sending',
+        last_message = 'Working: Building Maple Ave (3 of 12); 2 reports sent so far; 900 MB in use' WHERE id = $1`, [failedId, tokP]);
+    await page.evaluate(() => loadAutoReports({ quiet: true }));
+    await page.waitForFunction(id => /Sending now —/.test(document.querySelector(`.ar-row[data-id="${id}"]`).innerText), { timeout: 8000 }, failedId).catch(() => {});
+    const live = await page.$eval(`.ar-row[data-id="${failedId}"]`, r => r.innerText);
+    ok('while it sends, the row says which step it is on', /Sending now — Building Maple Ave \(3 of 12\); 2 reports sent so far/.test(live), live);
+    await db.q("UPDATE report_schedules SET claimed_at = NOW() - interval '20 minutes' WHERE id = $1", [failedId]);
+    await page.evaluate(() => loadAutoReports({ quiet: true }));
+    await page.waitForFunction(id => /cut off at/.test(document.querySelector(`.ar-row[data-id="${id}"]`).innerText), { timeout: 8000 }, failedId).catch(() => {});
+    const cutAt = await page.$eval(`.ar-row[data-id="${failedId}"]`, r => r.innerText);
+    ok('cut off, it says where it stopped', /INTERRUPTED/i.test(cutAt) && /cut off at: Building Maple Ave \(3 of 12\)/.test(cutAt), cutAt);
+    await db.q("UPDATE report_schedules SET claimed_at = NULL, claim_token = NULL WHERE id = $1", [failedId]);
+
     console.log('\nA report handed to the next pass');
     await db.q(`UPDATE report_schedules SET last_status = 'continuing', last_run_at = NOW(),
         last_message = 'Sent 11 reports to 2 recipients so far. 4 more jobs go out at the next pass, in a few minutes.',
