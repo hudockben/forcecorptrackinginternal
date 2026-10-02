@@ -1117,7 +1117,7 @@
           ${varCell}
           <td class="col-num tone-${esc(p.projectedTone || 'plain')}">${esc(fmtMoney(p.projected, { zeroDash: true }))}</td>
           ${profitCell(p.profit, p.profitPct)}
-          ${profitCell(p.actProfit, p.actProfitPct)}
+          ${profitCell(p.gpEarned, p.gpEarnedPct)}
           <td class="${p.pinned ? 'pstar' : 'pstar off'}">${p.pinned ? '★' : '☆'}</td>
         </tr>
       `;
@@ -1202,7 +1202,7 @@
                 <th class="col-num">Variance</th>
                 <th class="col-num">Projected Cost</th>
                 <th class="col-num">Projected Profit</th>
-                <th class="col-num" title="Contract value minus actual cost. Final once the job is complete.">Actual Profit</th>
+                <th class="col-num" title="Contract earned so far (cost to date ÷ projected cost) less cost to date. Contract minus final cost once the job is complete.">GP Earned to Date</th>
                 <th></th>
               </tr>
             </thead>

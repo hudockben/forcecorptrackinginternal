@@ -4043,7 +4043,9 @@
 
     function _icSummarise(rows) {
       const live = rows.filter(r => r.inProgress);
-      const done = rows.filter(r => r.complete && r.actProfit !== null);
+      // GP Earned to Date covers every job with a contract and spend, as the
+      // division Home tiles do — it is earned on the work in place.
+      const gp   = rows.filter(r => r.gpEarned !== null && r.gpEarned !== undefined);
       const sum  = (list, k) => list.reduce((a, r) => a + (Number(r[k]) || 0), 0);
       const withContract = live.filter(r => r.profit !== null);
       return {
@@ -4054,8 +4056,8 @@
         variance: sum(live, 'bid') - sum(live, 'actual'),
         projProfit:     withContract.length ? sum(withContract, 'profit') : null,
         projProfitBase: sum(withContract, 'contract'),
-        actProfit:      done.length ? sum(done, 'actProfit') : null,
-        actProfitBase:  sum(done, 'contract'),
+        gpEarned:       gp.length ? sum(gp, 'gpEarned') : null,
+        gpEarnedBase:   sum(gp, 'earned'),
       };
     }
 
@@ -4216,7 +4218,7 @@
         <td class="ic-num">${_icMoney(d.actual, 0)}</td>
         <td class="ic-num ${_icSign(d.variance)}">${_icMoney(d.variance, 0)}</td>
         <td class="ic-num ${_icSign(d.projProfit)}">${_icMoney(d.projProfit, 0)}${_icPct(d.projProfit, d.projProfitBase)}</td>
-        <td class="ic-num ${_icSign(d.actProfit)}">${_icMoney(d.actProfit, 0)}${_icPct(d.actProfit, d.actProfitBase)}</td>
+        <td class="ic-num ${_icSign(d.gpEarned)}">${_icMoney(d.gpEarned, 0)}${_icPct(d.gpEarned, d.gpEarnedBase)}</td>
       </tr>`;
 
       const jobRow = r => `<tr>
@@ -4230,7 +4232,7 @@
         <td class="ic-num">${_icMoney(r.actual)}</td>
         <td class="ic-num">${_icMoney(r.projected)}</td>
         <td class="ic-num ${_icSign(r.profit)}">${_icMoney(r.profit)}</td>
-        <td class="ic-num ${_icSign(r.actProfit)}">${_icMoney(r.actProfit)}</td>
+        <td class="ic-num ${_icSign(r.gpEarned)}"${r.gpEarned === null || r.gpEarned === undefined ? '' : ` title="${(r.pctDone * 100).toFixed(1)}% complete · ${_icMoney(r.earned)} of the contract earned"`}>${_icMoney(r.gpEarned)}</td>
       </tr>`;
 
       body.innerHTML = `
@@ -4239,7 +4241,7 @@
             <th>Division</th><th class="ic-num">Active Projects</th>${rangeTh}
             <th class="ic-num">Contract Value</th><th class="ic-num">Bid Budget</th>
             <th class="ic-num">Actual Spend</th><th class="ic-num">Variance</th>
-            <th class="ic-num">Projected Profit</th><th class="ic-num">Actual Profit</th>
+            <th class="ic-num">Projected Profit</th><th class="ic-num" title="Contract earned so far (cost to date ÷ projected cost) less cost to date. Contract minus final cost once the job is complete.">GP Earned to Date</th>
           </tr></thead>
           <tbody>${shownDivs.map(divRow).join('')}</tbody>
           <tfoot><tr>
@@ -4251,7 +4253,7 @@
             <td class="ic-num">${_icMoney(t.actual, 0)}</td>
             <td class="ic-num ${_icSign(t.variance)}">${_icMoney(t.variance, 0)}</td>
             <td class="ic-num ${_icSign(t.projProfit)}">${_icMoney(t.projProfit, 0)}${_icPct(t.projProfit, t.projProfitBase)}</td>
-            <td class="ic-num ${_icSign(t.actProfit)}">${_icMoney(t.actProfit, 0)}${_icPct(t.actProfit, t.actProfitBase)}</td>
+            <td class="ic-num ${_icSign(t.gpEarned)}">${_icMoney(t.gpEarned, 0)}${_icPct(t.gpEarned, t.gpEarnedBase)}</td>
           </tr></tfoot>
         </table>
 
@@ -4261,15 +4263,15 @@
             <th>Job Name</th><th>Job #</th><th>Division</th><th>Status</th>${rangeTh}
             <th class="ic-num">Contract Value</th><th class="ic-num">Bid Budget</th>
             <th class="ic-num">Actual</th><th class="ic-num">Projected Cost</th>
-            <th class="ic-num">Projected Profit</th><th class="ic-num">Actual Profit</th>
+            <th class="ic-num">Projected Profit</th><th class="ic-num" title="Contract earned so far (cost to date ÷ projected cost) less cost to date. Contract minus final cost once the job is complete.">GP Earned to Date</th>
           </tr></thead>
           <tbody>${rows.map(jobRow).join('')}</tbody>
         </table>
         <p class="ic-fin-note">
-          The first six figures cover jobs that are <strong>In Progress</strong>. Actual Profit covers
-          <strong>completed</strong> jobs — contract value minus what was actually spent — since a realised
-          figure only means something once a job is done. Jobs with no contract amount contribute their
-          costs but no profit.${_icAnyFilter() ? ' These figures cover the filtered rows only — as do the Excel export and the printout.' : ''}
+          The first six figures cover jobs that are <strong>In Progress</strong>. GP Earned to Date covers
+          <strong>every job with a contract and spend</strong>: each job earns its contract in proportion to cost to
+          date over projected cost, less that cost — contract minus final cost once a job is complete. Its margin is
+          on the revenue earned so far. Jobs with no contract amount contribute their costs but no profit.${_icAnyFilter() ? ' These figures cover the filtered rows only — as do the Excel export and the printout.' : ''}
         </p>
         ${ranged ? `<p class="ic-fin-note">
           <strong>Spend in Range</strong> is the cost booked against each job between
@@ -4296,19 +4298,19 @@
       const ranged = _icFinRanged();
       const rangeHead = ranged ? ['Spend ' + (_icFinApplied.start || 'start') + ' to ' + (_icFinApplied.end || 'end')] : [];
       const head = ['Job Name', 'Job #', 'Division', 'Status', ...rangeHead, 'Contract Value', 'Bid Budget',
-                    'Actual', 'Projected Cost', 'Projected Profit', 'Actual Profit'];
+                    'Actual', 'Projected Cost', 'Projected Profit', 'GP Earned to Date'];
       const lines = [head.map(q).join(',')];
       rows.forEach(r => lines.push([
         q(r.name), q(r.jobNumber), q(r.divisionName), q(r.status),
         // Blank, not 0, where the job booked nothing in the window — the same
         // distinction the table draws with "no activity".
         ...(ranged ? [(r.rangeRows || 0) > 0 ? m(r.rangeActual) : ''] : []),
-        m(r.contract), m(r.bid), m(r.actual), m(r.projected), n(r.profit), n(r.actProfit),
+        m(r.contract), m(r.bid), m(r.actual), m(r.projected), n(r.profit), n(r.gpEarned),
       ].join(',')));
       const t = _icSummarise(rows);
       lines.push(['All Divisions (in progress)', '', '', '',
         ...(ranged ? [m(_icRangeSpend(rows))] : []),
-        m(t.contract), m(t.bid), m(t.actual), '', n(t.projProfit), n(t.actProfit)].join(','));
+        m(t.contract), m(t.bid), m(t.actual), '', n(t.projProfit), n(t.gpEarned)].join(','));
 
       const blob = new Blob(['\ufeff' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
       const a = document.createElement('a');

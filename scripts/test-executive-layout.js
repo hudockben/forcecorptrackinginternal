@@ -42,7 +42,7 @@ console.log('\n[the project table mirrors the division tables]');
 
 const COLUMNS = [
   'Project', 'Status', 'Progress', 'Contract Value', 'Bid Budget', 'Actual',
-  'Variance', 'Projected Cost', 'Projected Profit', 'Actual Profit',
+  'Variance', 'Projected Cost', 'Projected Profit', 'GP Earned to Date',
 ];
 
 // Pull the <th> labels out of a page's project table, in document order.
@@ -74,15 +74,17 @@ for (const [name, html] of [['tracker', tracker], ['paving', paving], ['kiewit-p
     'got: ' + JSON.stringify(cols));
 }
 
-assert('Actual Profit carries the division pages\' own tooltip',
-  exec.includes('title="Contract value minus actual cost. Final once the job is complete."'));
+// The tooltip is the formula, so it has to be the division pages' own words.
+const GP_TIP = 'title="Contract earned so far (cost to date ÷ projected cost) less cost to date. Contract minus final cost once the job is complete."';
+assert('GP Earned to Date carries the division pages\' own tooltip',
+  exec.includes(GP_TIP) && [tracker, paving, kiewit].every(h => h.includes(GP_TIP)));
 
 // ── The metric strip matches, label for label ──
 console.log('\n[the metric strip mirrors the division strips]');
 
 const METRICS = [
   'Active Projects', 'Total Contract Value', 'Awarded Backlog', 'Total Bid Budget',
-  'Total Actual Spend', 'Total Variance', 'Total Projected Profit', 'Total Actual Profit',
+  'Total Actual Spend', 'Total Variance', 'Total Projected Profit', 'Total GP Earned to Date',
 ];
 
 const report = read('api/executive/report.js');
@@ -131,10 +133,27 @@ assert('a bid line At Risk / On Hold outranks the project status',
   /p\.atRisk > 0[\s\S]{0,200}p\.onHold > 0[\s\S]{0,200}p\.status/.test(exec));
 assert('overdue and near-deadline jobs are flagged',
   exec.includes('d overdue') && exec.includes('d left'));
-assert('Actual Profit is rendered from its own field',
-  exec.includes('profitCell(p.actProfit, p.actProfitPct)'));
-assert('and the API only reports it where there is both a contract and spend',
-  /actProfit = contract > 0 && actual\s+> 0 \? contract - actual\s+: null/.test(report));
+assert('GP Earned to Date is rendered from its own field',
+  exec.includes('profitCell(p.gpEarned, p.gpEarnedPct)'));
+assert('and the API builds it through the one server helper',
+  /const gpE\s*=\s*gpEarnedToDate\(contract, actual, projected\);/.test(report)
+  && /module\.exports\.gpEarnedToDate\s*=\s*gpEarnedToDate;/.test(report));
+assert('  with its margin on revenue earned, as the division pages state it',
+  /gpEarnedPct: gpE && gpE\.earned > 0 \? \(gpE\.gp \/ gpE\.earned\) \* 100 : null/.test(report));
+// The server helper and the page helper are two copies of one formula — the
+// pages run in the browser and cannot require it — so pin that they agree.
+{
+  const { gpEarnedToDate: srv } = require(path.resolve(__dirname, '..', 'api/executive/report'));
+  const pageSrc = tracker.slice(tracker.indexOf('function gpEarnedToDate('));
+  const pageFn = new Function(`${pageSrc.slice(0, pageSrc.indexOf('\n}\n') + 2)}; return gpEarnedToDate;`)();
+  const cases = [[1000000, 100000, 400000], [210000, 195000, 195000], [100000, 60000, 120000],
+                 [0, 5000, 10000], [500000, 0, 400000], [100000, 50000, 40000], [4435415, 5231.5, 3415415.02]];
+  const same = cases.every(c => {
+    const a = srv(...c), b = pageFn(...c);
+    return (a === null && b === null) || (a && b && Math.abs(a.gp - b.gp) < 1e-6 && Math.abs(a.earned - b.earned) < 1e-6);
+  });
+  assert('  and it gives the same answer as the division pages\' copy on every case', same);
+}
 
 // ── Quarry mirrors the Quarry page ──
 console.log('\n[quarry mirrors the Quarry page]');

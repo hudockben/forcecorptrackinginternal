@@ -2232,6 +2232,34 @@ CREATE TABLE IF NOT EXISTS mathis_job_facts (
 CREATE INDEX IF NOT EXISTS idx_mathis_job_facts_window
     ON mathis_job_facts (company_code, division, day DESC);
 
+-- gp_earned: gross profit earned to date, the figure the pages label GP Earned
+-- to Date (report.gpEarnedToDate). The contract is earned cost-to-cost —
+-- actual_cost over projected_cost is the share complete — less the cost to
+-- date. It replaces actual_profit, which was contract minus cost-to-date: that
+-- set the whole contract against part of the cost and posted most of every
+-- live job's contract as profit. actual_profit is no longer written or read.
+-- It stays only because dropping a column from a build step is not something
+-- to do unasked; every value in it can be recomputed from contract and
+-- actual_cost on the same row.
+ALTER TABLE mathis_job_facts ADD COLUMN IF NOT EXISTS gp_earned NUMERIC(16,2);
+
+-- Backfill the history from the figures each row already carries, so a trend
+-- read across the switch compares like with like instead of splicing the old
+-- figure onto the new one. Exactly the arithmetic of report.gpEarnedToDate():
+-- earned share 1 unless projected_cost exceeds actual_cost. Guarded on
+-- gp_earned IS NULL so it is a no-op on every run after the first — the
+-- nightly write fills the column from then on — and on contract and spend,
+-- the same rows the function returns null for. NULLIF for the reason the
+-- quarry backfill above gives: this runs inside the Vercel build, and a
+-- division_by_zero there takes the whole deploy with it.
+UPDATE mathis_job_facts
+   SET gp_earned = ROUND(contract * (CASE WHEN projected_cost > actual_cost
+                                          THEN actual_cost / NULLIF(projected_cost, 0)
+                                          ELSE 1 END) - actual_cost, 2)
+ WHERE gp_earned IS NULL
+   AND contract > 0
+   AND actual_cost > 0;
+
 -- ── Division override: where an approved day's cost was SENT ───────────────
 -- A driver names one division on his timesheet and the whole day used to
 -- follow it. Payroll can now route individual split rows elsewhere at approval
