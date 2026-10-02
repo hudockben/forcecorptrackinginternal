@@ -240,15 +240,29 @@ function withTimeout(promise, ms, what, why) {
 // own explanation, since that is the one an admin can do something about.
 function sentAwayMessage(def, origin, url) {
   const page = `the ${divisionName(def.division)} page`;
-  let host = url, path = '';
-  try { const u = new URL(url); host = u.host; path = u.pathname; } catch { /* as is */ }
-  const deployment = (() => { try { return new URL(origin).host; } catch { return origin; } })();
-  if (/(^|\.)vercel\.com$/i.test(host) || /\/sso(-api)?(\/|$)/i.test(path)) {
-    return `Could not open ${page}: this deployment (${deployment}) is behind Vercel's login (Deployment Protection), `
-      + 'which sent the report robot to sign in. Production is not behind it, so scheduled reports run there; '
-      + 'to send one from a preview, turn on Protection Bypass for Automation in the Vercel project and redeploy.';
+  let to = null;
+  try { to = new URL(url); } catch { /* not a URL: say it as it is */ }
+  let from = null;
+  try { from = new URL(origin); } catch { /* as is */ }
+  const deployment = from ? from.host : String(origin);
+  if (to && /(^|\.)vercel\.com$/i.test(to.hostname)) {
+    const lead = `Could not open ${page}: this deployment (${deployment}) is behind Vercel's login (Deployment Protection), `
+      + 'which sent the report robot to sign in. ';
+    return process.env.VERCEL_ENV === 'production'
+      ? lead + 'That includes production here, so no scheduled report can open its page: turn on Protection Bypass '
+        + 'for Automation in the Vercel project (Settings → Deployment Protection) and redeploy, or take production '
+        + 'out of protection.'
+      : lead + 'Production domains are not behind it under Vercel\'s standard protection, so scheduled reports run '
+        + 'there; to send one from a preview, turn on Protection Bypass for Automation in the Vercel project and redeploy.';
   }
-  return `Could not open ${page}: ${deployment} sent the report robot to ${host} instead.`;
+  if (to && from && to.host === from.host && to.protocol !== from.protocol) {
+    return `Could not open ${page}: ${from.origin} sent the report robot to ${to.origin} instead. `
+      + `The app's address should be its ${to.protocol}// one — check APP_BASE_URL.`;
+  }
+  if (!to || to.protocol === 'chrome-error:') {
+    return `Could not open ${page}: ${deployment} would not load it for the report robot (${url}).`;
+  }
+  return `Could not open ${page}: ${deployment} sent the report robot to ${to.host} instead.`;
 }
 
 /**
@@ -432,7 +446,13 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
       if (stats.sentTo) throw new Error(sentAwayMessage(def, origin, stats.sentTo));
       throw err;
     }
-    const status = opened && typeof opened.status === 'function' ? opened.status() : 200;
+    // Sent elsewhere by the page's own script (a login page that redirects
+    // in script, not by HTTP): goto resolves — to nothing — and the frame
+    // sits on Chrome's error page. Said now, not after the whole load wait.
+    if (stats.sentTo || (!opened && String(page.url()).startsWith('chrome-error://'))) {
+      throw new Error(sentAwayMessage(def, origin, stats.sentTo || page.url()));
+    }
+    const status = opened && typeof opened.status === 'function' ? opened.status() : null;
     if (status === 401 || status === 403) {
       throw new Error(`The ${divisionName(def.division)} page answered HTTP ${status} — ${new URL(origin).host} refused the report robot. `
         + 'If this deployment is behind Vercel\'s login (Deployment Protection), see Protection Bypass for Automation.');
@@ -443,6 +463,8 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
         t => window.dwAutoReport && window.dwAutoReport.has(t),
         { timeout: Math.max(1_000, loadMs()), polling: 250 }, spec.type);
     } catch (waitErr) {
+      // Sent elsewhere after the document loaded: the same message as above.
+      if (stats.sentTo) throw new Error(sentAwayMessage(def, origin, stats.sentTo));
       const where = (() => { try { return new URL(page.url()).pathname; } catch { return ''; } })();
       if (!where.endsWith('/' + def.page)) {
         throw new Error(`The ${divisionName(def.division)} page sent ${acct.username} away (to ${where || 'another page'}) instead of opening.`);

@@ -193,7 +193,22 @@ const server = http.createServer((req, res) => {
   }
   // A deployment behind Vercel's login: the page sends the robot to sign in.
   if (p === '/__fixture/protected.html') {
-    res.writeHead(307, { Location: `${OTHER_ORIGIN}/sso-api?url=${encodeURIComponent('http://app' + req.url)}` });
+    res.writeHead(307, { Location: `https://vercel.com/sso-api?url=${encodeURIComponent('http://app' + req.url)}` });
+    return res.end();
+  }
+  // The same, but the login page redirects in script rather than by HTTP.
+  if (p === '/__fixture/script-login.html') {
+    res.writeHead(401, { 'Content-Type': 'text/html' });
+    return res.end('<!doctype html><script>location.href = "https://vercel.com/sso-api?url=x";</script>');
+  }
+  // Some other sign-in, on another host, with /sso in its path.
+  if (p === '/__fixture/other-sso.html') {
+    res.writeHead(302, { Location: `${OTHER_ORIGIN}/sso/start` });
+    return res.end();
+  }
+  // The app's address given as http where the site lives on https.
+  if (p === '/__fixture/to-https.html') {
+    res.writeHead(301, { Location: `https://${req.headers.host}${req.url}` });
     return res.end();
   }
   if (p === '/__fixture/denied.html') {
@@ -725,6 +740,52 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
       away = 'opened';
     } catch (err) { away = err.message; }
     ok('…and one that answers 401 says the deployment refused the robot', /answered HTTP 401/.test(away) && /refused the report robot/.test(away), away);
+    const openFixture = async page => {
+      const t = Date.now();
+      try {
+        await buildInBrowser(browser, { baseUrl, def: { page, division: 'turf', label: 'Fixture' }, acct: ACCT,
+          spec: { type: 'fixture', timezone: 'America/New_York' } });
+        return { msg: 'opened', ms: Date.now() - t };
+      } catch (err) { return { msg: err.message, ms: Date.now() - t }; }
+    };
+    let o = await openFixture('__fixture/script-login.html');
+    ok('a login page that redirects in script is named too, at once rather than after the whole load wait',
+      /behind Vercel's login/.test(o.msg) && o.ms < 10000, JSON.stringify(o));
+    o = await openFixture('__fixture/other-sso.html');
+    ok('another site\'s sign-in is not blamed on Vercel — it names where the robot was sent',
+      !/Vercel/.test(o.msg) && o.msg.includes('sent the report robot to ' + OTHER_ORIGIN.replace('http://', '')), o.msg);
+    o = await openFixture('__fixture/to-https.html');
+    ok('an address given as http for an https site says so, not "X sent it to X"',
+      /sent the report robot to https:\/\//.test(o.msg) && /APP_BASE_URL/.test(o.msg), o.msg);
+    process.env.VERCEL_ENV = 'production';
+    o = await openFixture('__fixture/protected.html');
+    delete process.env.VERCEL_ENV;
+    ok('turned away on production, it does not claim production is unprotected',
+      /includes production/.test(o.msg) && !/Production domains are not behind it/.test(o.msg), o.msg);
+
+    // The page's own sync timers: a person's page polls every minute; the
+    // robot's must not, or a long run loads the CRM and redraws the home tab.
+    const timersOf = async robot => {
+      const pg = await browser.newPage();
+      try {
+        await pg.evaluateOnNewDocument((user) => {
+          localStorage.setItem('fct_token', 'a.b.c');
+          localStorage.setItem('fct_user', user);
+          localStorage.setItem('fct_division', 'turf');
+          window.__timers = [];
+          const real = window.setInterval;
+          window.setInterval = function (fn, ms) { window.__timers.push((fn && fn.name) || ''); return real.apply(this, arguments); };
+        }, JSON.stringify({ username: 'robot-admin', companyCode: 'FCT', role: 'admin', divisionRoles: ACCT.divisionRoles, isPlatformAdmin: true }));
+        await pg.goto(`${baseUrl}/tracker.html${robot ? '?autoreport=1' : ''}`, { waitUntil: 'domcontentloaded' });
+        await sleep(1500);
+        return await pg.evaluate(() => window.__timers.filter(Boolean));
+      } finally { await pg.close(); }
+    };
+    const robotTimers = await timersOf(true), personTimers = await timersOf(false);
+    const SYNC = ['_pollAll', '_pollHomeFeeds', 'pollLists'];
+    ok('the robot\'s page starts none of the page\'s sync polls; a person\'s page still starts all of them',
+      SYNC.every(n => !robotTimers.includes(n)) && SYNC.every(n => personTimers.includes(n)),
+      JSON.stringify({ robotTimers, personTimers }));
 
     console.log('\nWhat the second review found');
     // Stopped partway — here, saved over mid-send — the rest is handed back,

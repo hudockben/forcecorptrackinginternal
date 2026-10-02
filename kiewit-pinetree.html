@@ -3948,6 +3948,8 @@ function drDeleteBySubCode(subCode) {
   // is hidden — a backgrounded window still means the user is signed in, and
   // stopping it would drop them off everyone else's online list after
   // STALE_MS. It is one small write a minute; the reads below are what stop.
+  // The report robot is nobody online (_AUTO_REPORT): no heartbeat, no list.
+  if (_AUTO_REPORT) return;
   heartbeat();
   setInterval(() => { if (!_fctSessionOver()) heartbeat(); }, HEARTBEAT_MS);
 
@@ -22381,7 +22383,9 @@ const _bootReady = (async () => {
     } catch { /* non-fatal */ }
   }
 
-  setInterval(pollLists, LISTS_POLL_MS);
+  // A person's page keeps up with other people's edits; the report robot's
+  // is open for one run and reads what it needs once (_AUTO_REPORT).
+  if (!_AUTO_REPORT) setInterval(pollLists, LISTS_POLL_MS);
 })();
 
 /* ═══════════════════════════════════════════
@@ -22592,8 +22596,13 @@ const _bootReady = (async () => {
     }
   }
 
-  setInterval(_pollAll,      POLL_MS);
-  setInterval(_pollHomeFeeds, BOARD_MS);
+  // Not on the report robot's page: a run can outlast a poll, and a poll
+  // there would load the CRM it skips, reload every job when anyone saves
+  // one, and draw the home tab — the memory the lean boot exists to save.
+  if (!_AUTO_REPORT) {
+    setInterval(_pollAll,      POLL_MS);
+    setInterval(_pollHomeFeeds, BOARD_MS);
+  }
 
   // Coming back to a tab that stood down should not wait out a full interval.
   document.addEventListener('visibilitychange', () => {
