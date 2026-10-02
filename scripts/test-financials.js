@@ -40,7 +40,9 @@ const BRANDING = (() => {
 })();
 
 const FILES = ['tracker.html', 'paving.html', 'kiewit-pinetree.html'];
-const FIN_HEADERS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Actual Profit'];
+const FIN_HEADERS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Gross Profit'];
+// The export carries the worked dates as columns of their own after the money.
+const WORKED_HEADERS = ['First Worked', 'Last Worked', 'Days Worked'];
 
 let passed = 0, failed = 0;
 function assert(label, cond, detail) {
@@ -61,7 +63,7 @@ function extractFunction(src, name) {
 
 // The whole Financials block — filter state, table, export and print all live
 // together — plus the real projection chain it depends on, over a stub DOM.
-const CHAIN = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject', 'statusBadgeClass'];
+const CHAIN = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject', 'statusBadgeClass', '_rowIsWorkDay'];
 
 // paving.html routes every contract read through projectContract(), which
 // folds in contract change orders; the other division files still inline the
@@ -84,6 +86,8 @@ function loadFinancials(file, projects) {
              + CHAIN.map(n => extractFunction(src, n)).join('\n\n') + '\n\n' + src.slice(start, end);
 
   const bar = { innerHTML: '' }, table = { innerHTML: '' };
+  // The range menu: finSetDate() points it at Custom without a redraw.
+  const preset = { value: '', style: {} };
   // rowCost counts how often the per-project cost walk runs, which is how the
   // cost of a re-render is measured below.
   const captured = { csv: null, print: '', alerts: [], download: null, rowCost: 0 };
@@ -104,7 +108,11 @@ function loadFinancials(file, projects) {
     `${code}
      return {
        renderFinancials, exportFinancialsCSV, printFinancials,
-       setFilters: f => { finFilters = { q: f.q || '', statuses: f.statuses || null, names: f.names || null }; },
+       setFilters: f => { finFilters = { q: f.q || '', statuses: f.statuses || null, names: f.names || null,
+                                         from: f.from || '', to: f.to || '', preset: f.preset || '' }; },
+       range: () => ({ from: finFilters.from, to: finFilters.to, preset: finFilters.preset }),
+       setPreset: finSetPreset, setDate: finSetDate, clearAll: finClearFilters,
+       presetRange: _finPresetRange, rangeOptions: _finRangeOptions, rangeLabel: _finRangeLabel,
        pickNames: n => { finFilters.names = n ? new Set(n) : null; },
        picked: () => finFilters.names ? [...finFilters.names] : null,
        applyNames: applyFinFilter, clearNames: clearFinFilter,
@@ -124,6 +132,7 @@ function loadFinancials(file, projects) {
         'finff-list': dd.list,
         'finff-search': dd.search,
         'finff-all': dd.all,
+        'fin-preset': preset,
       }[id] || null),
       // The job-name checklist queries its boxes by class.
       querySelectorAll: sel => (sel === '.finff-val-cb' ? dd.boxes : []),
@@ -147,6 +156,7 @@ function loadFinancials(file, projects) {
     ...api,
     captured,
     dd,
+    preset,
     // Stand the checklist up as if the user had ticked these boxes, so Apply's
     // real logic runs against it.
     tickBoxes: (names, ticked) => {
@@ -167,7 +177,7 @@ function render(file, projects) {
 
 // A complete bid line projects at exactly its actual, which keeps the
 // arithmetic in most expectations obvious. rqty/done are overridable so a job
-// can be left mid-flight, where Projected Profit and Actual Profit diverge.
+// can be left mid-flight, where Projected Profit and Gross Profit diverge.
 const job = (o) => ({
   id: o.id, 'project-name': o.name, 'job-number': o.job, status: o.status,
   'contract-amount': o.contract,
@@ -187,7 +197,7 @@ const JOBS = [
   // so the two profit columns must not agree.
   job({ id: 'd', name: 'Half Built Job',                 job: '1001', status: 'In Progress',   contract: 1000000,   bid: 500000,    actual: 100000, rqty: 0.25, done: false }),
   // Contract signed, nothing spent — the case that would read as pure margin
-  // if Actual Profit were contract minus zero.
+  // if Gross Profit were contract minus zero.
   job({ id: 'e', name: 'Not Started Job',                job: '1002', status: 'In Progress',   contract: 800000,    bid: 600000,    actual: 0,      rqty: 0,    done: false }),
 ];
 
@@ -203,10 +213,10 @@ for (const file of FILES) {
 
   console.log('\n[every job is listed with the agreed column names]');
   assert('the header uses the agreed vocabulary',
-    ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Actual Profit']
+    ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'Gross Profit']
       .every(h => html.includes(`>${h}</th>`)));
   assert('  the old names are gone',
-    !/>Contract<\/th>|>Bid<\/th>|>Projected<\/th>|>Profit<\/th>/.test(html));
+    !/>Contract<\/th>|>Bid<\/th>|>Projected<\/th>|>Profit<\/th>|>Actual Profit<\/th>/.test(html));
   assert('every job appears', JOBS.every(j => html.includes(j['project-name'])));
   assert('the count is shown in the heading', html.includes('(5 jobs)'));
 
@@ -239,13 +249,13 @@ for (const file of FILES) {
   const d = rowOf('Half Built Job');
   assert('a quarter-built job projects $400,000', d.includes('$400,000.00'), d);
   assert('Projected Profit is contract minus projected ($600,000)', d.includes('$600,000.00'), d);
-  assert('Actual Profit is contract minus spend to date ($900,000)', d.includes('$900,000.00'), d);
+  assert('Gross Profit is contract minus spend to date ($900,000)', d.includes('$900,000.00'), d);
 
   console.log('\n[a signed job that has not started]');
   const e = rowOf('Not Started Job');
   assert('it still projects its bid', e.includes('$600,000.00'));
   assert('Projected Profit is contract minus bid ($200,000)', e.includes('$200,000.00'));
-  assert('Actual Profit stays blank rather than posting the contract as margin',
+  assert('Gross Profit stays blank rather than posting the contract as margin',
     !e.includes('$800,000.00</span>') && !/\(100\.0%\)/.test(e), e);
 
   console.log('\n[totals]');
@@ -254,7 +264,7 @@ for (const file of FILES) {
   assert('project cost total sums every job', html.includes('$1,468,562.30'));
   assert('Projected Profit total covers only jobs with a contract',
     html.includes('$1,032,750.02'), 'expected 217,750.02 + 15,000 + 600,000 + 200,000');
-  assert('Actual Profit total covers only jobs with a contract AND spend',
+  assert('Gross Profit total covers only jobs with a contract AND spend',
     html.includes('$1,132,750.02'), 'expected 217,750.02 + 15,000 + 900,000');
 
   console.log('\n[ordering and behaviour]');
@@ -265,7 +275,7 @@ for (const file of FILES) {
   assert('rows open the project', html.includes(`goToProject('a')`));
   assert('both profit bases are stated on screen',
     /Projected Profit is contract value minus <strong>projected<\/strong> final cost/.test(html)
-    && /Actual Profit is contract value minus cost <strong>spent so far<\/strong>/.test(html));
+    && /Gross Profit is contract value minus cost <strong>spent so far<\/strong>/.test(html));
 
   console.log('\n[a total with nothing to total is unknown, not zero]');
   // Rendering "$0.00" in profit-green across a portfolio where no job carries
@@ -287,7 +297,7 @@ for (const file of FILES) {
   const noSpendFoot = noSpendHtml.slice(noSpendHtml.indexOf('<tfoot>'));
   assert('Projected Profit still totals when a job has a contract but no spend',
     noSpendFoot.includes('$100,000.00'), noSpendFoot);
-  assert('  while Actual Profit dashes', /—/.test(noSpendFoot));
+  assert('  while Gross Profit dashes', /—/.test(noSpendFoot));
 
   console.log('\n[empty state]');
   assert('no projects renders an empty state, not a broken table',
@@ -488,14 +498,19 @@ for (const file of FILES) {
   const csv = exp.captured.csv;
   const csvRows = csv.split('\r\n');
   assert('the export produces a CSV', !!csv);
-  assert('  headers match the table', csvRows[0].replace(/^﻿/, '') === FIN_HEADERS.join(','));
+  assert('  headers match the table, then the worked dates',
+    csvRows[0].replace(/^﻿/, '') === FIN_HEADERS.concat(WORKED_HEADERS).join(','), csvRows[0]);
   assert('  one row per job plus a header and a totals row', csvRows.length === JOBS.length + 2);
   assert('  numbers go out raw so Excel can total them',
     /,479312\.32,375931\.05,261562\.30,/.test(csv), csvRows[1]);
   assert('  no currency symbols or thousands separators to break the parse',
     !/[$]/.test(csv) && !/\d,\d\d\d\./.test(csv));
+  // Read by position: the worked-date columns after the profits are blank on
+  // an undated job too, so a trailing ',,' alone would prove nothing.
+  const ncCells = csvRows.find(l => l.startsWith('No Contract Yet')).split(',');
+  const col = h => FIN_HEADERS.indexOf(h);
   assert('  a not-applicable profit is blank, not zero',
-    csvRows.find(l => l.startsWith('No Contract Yet')).endsWith(',,'), csvRows.find(l => l.startsWith('No Contract Yet')));
+    ncCells[col('Projected Profit')] === '' && ncCells[col('Gross Profit')] === '', ncCells.join(','));
   assert('  the last row totals', csvRows[csvRows.length - 1].startsWith('Totals,,,2489312.32'));
   assert('  a name containing a comma is quoted', (() => {
     const m = loadFinancials(file, [job({ id: 'q', name: 'Smith, Jones & Co', job: '1', status: 'In Progress', contract: 100, bid: 90, actual: 80 })]);
@@ -558,6 +573,212 @@ for (const file of FILES) {
     none.captured.csv === null && none.captured.alerts.length === 2, JSON.stringify(none.captured.alerts));
 }
 
+// ── Date range and the worked line ──────────────────────────────────────────
+// "When was that job in the ground?" is the question months later. Two rules
+// carry the weight here: a range keeps the jobs WORKED inside it — a dated
+// entry there, not a first-to-last span that merely straddles it — and the
+// money columns stay whole-job, with the range's own spend in a column of its
+// own, because contract minus one quarter's spend is not a profit of anything.
+console.log('\n══════════ date range and worked dates ══════════');
+
+// Several dated entries on one complete bid line, so projected = actual and
+// the whole-job columns are easy to read off.
+const dated = (o) => ({
+  id: o.id, 'project-name': o.name, 'job-number': o.job, status: o.status || 'In Progress',
+  'contract-amount': o.contract,
+  bidItems: [{ cost_code: 'CC', sub_code: 'S1', quantity: 1, unit_cost: o.bid,
+    _actual: o.days.reduce((s, d) => s + d[1], 0), _rqty: 1, _done: true }],
+  dailyRows: o.days.map(([date, cost, extra]) => ({ cost_code: 'CC', sub_code: 'S1', date, cost, labor_hours: 8, ...(extra || {}) })),
+});
+
+const DATED = [
+  // Worked in March and again in June — never in April.
+  dated({ id: 'sp', name: 'Juniata Softball', job: '26094', contract: 10000, bid: 8000,
+    days: [['2026-03-04', 1000], ['2026-03-05', 1500], ['2026-06-18', 2000]] }),
+  // Straddles New Year.
+  dated({ id: 'wh', name: 'Woodland Hills', job: '25008', contract: 5000, bid: 4000,
+    days: [['2025-11-12', 500], ['2026-02-03', 700]] }),
+  dated({ id: 'mt', name: 'Moon Township', job: '26004', contract: 20000, bid: 15000,
+    days: [['2026-07-01', 3000], ['2026-09-30', 4000]] }),
+  // A row keyed with a date and never filled in, plus real spend with no date.
+  // Neither says when the job was worked.
+  dated({ id: 'pt', name: 'Penn Trafford', job: '26093', contract: 3000, bid: 2500,
+    days: [['2026-04-10', 0, { labor_hours: 0 }], ['', 900]] }),
+  // A material delivery: real spend on a date, but no hours or quantity, so it
+  // dates the job without counting as a day worked.
+  dated({ id: 'md', name: 'Material Only', job: '26001', contract: 1000, bid: 900,
+    days: [['2026-05-01', 250, { labor_hours: 0 }]] }),
+];
+
+for (const file of FILES) {
+  console.log(`\n[${file}]`);
+  const load = f => { const m = loadFinancials(file, DATED); if (f) m.setFilters(f); m.renderFinancials(); return m; };
+  const rowIn = (html, name) => {
+    const i = html.indexOf(name);
+    if (i < 0) return '';
+    return html.slice(html.lastIndexOf('<tr', i), html.indexOf('</tr>', i));
+  };
+
+  console.log('  — the worked line under each job —');
+  const plain = load();
+  const ph = plain.html();
+  assert('a job shows the dates it was worked and how many days',
+    rowIn(ph, 'Juniata Softball').includes('Mar 4 – Jun 18, 2026 · 3 days worked'), rowIn(ph, 'Juniata Softball'));
+  assert('  a span across New Year writes both years',
+    rowIn(ph, 'Woodland Hills').includes('Nov 12, 2025 – Feb 3, 2026 · 2 days worked'), rowIn(ph, 'Woodland Hills'));
+  assert('  it is the quiet meta line, not a column of its own',
+    /<div class="pt-meta" title="First entry Mar 4, 2026 · last entry Jun 18, 2026/.test(ph)
+    && !/>Worked<\/th>|>First Worked<\/th>/.test(ph));
+  assert('a blank dated row and undated spend give no worked line',
+    !/day|2026/.test(rowIn(ph, 'Penn Trafford').replace(/26093/g, '')), rowIn(ph, 'Penn Trafford'));
+  assert('  but the undated spend still counts toward Actual', rowIn(ph, 'Penn Trafford').includes('$900.00'));
+  assert('a dated delivery with no hours dates the job without claiming a day worked',
+    rowIn(ph, 'Material Only').includes('May 1, 2026') && !/days? worked/.test(rowIn(ph, 'Material Only')));
+  assert('no range means no Actual in Range column', !ph.includes('Actual in Range'));
+
+  console.log('  — worked inside, not merely spanning —');
+  const april = load({ from: '2026-04-01', to: '2026-04-30' });
+  assert('a job worked in March and June is not in April',
+    !april.html().includes('Juniata Softball'), april.html().slice(0, 300));
+  assert('  nor is the job whose only April row was left blank', !april.html().includes('Penn Trafford'));
+  assert('  and the empty result says so', /No jobs match these filters/.test(april.html()));
+
+  console.log('  — a quarter —');
+  const q1 = loadFinancials(file, DATED);
+  q1.renderFinancials();
+  q1.setPreset('q2026-1');
+  const qh = q1.html();
+  assert('picking Q1 2026 fills the dates', JSON.stringify(q1.range()) === JSON.stringify({ from: '2026-01-01', to: '2026-03-31', preset: 'q2026-1' }),
+    JSON.stringify(q1.range()));
+  assert('  keeps the jobs worked in it',
+    qh.includes('Juniata Softball') && qh.includes('Woodland Hills')
+    && !qh.includes('Moon Township') && !qh.includes('Material Only') && !qh.includes('Penn Trafford'));
+  assert('  counts them against the whole book', qh.includes('2 of 5 jobs'));
+  assert('  and names the range in the heading', qh.includes('worked Q1 2026 (Jan 1 – Mar 31, 2026)'), qh.slice(0, 400));
+  assert('an Actual in Range column follows Actual',
+    qh.indexOf('>Actual</th>') < qh.indexOf('>Actual in Range</th>')
+    && qh.indexOf('>Actual in Range</th>') < qh.indexOf('>Projected Cost</th>'));
+  const spq = rowIn(qh, 'Juniata Softball');
+  assert('  it holds only the spend dated in the range ($2,500 of $4,500)',
+    spq.includes('$2,500.00') && spq.includes('$4,500.00'), spq);
+  assert('  while profit stays whole-job — contract minus the whole projection',
+    spq.includes('$5,500.00'), spq);
+  const qfoot = qh.slice(qh.indexOf('<tfoot>'));
+  assert('  and totals across the rows shown', qfoot.includes('$3,200.00') && qfoot.includes('$5,700.00'), qfoot);
+  const ths = (qh.match(/<th[ >]/g) || []).length;
+  const tds = (spq.match(/<td[ >]/g) || []).length;
+  assert(`  every header has a cell under it (${ths} headers, ${tds} cells)`, ths === tds && ths === 10);
+  assert('  and the note says the other columns are still whole-job', /Every other column is still the whole job/.test(qh));
+
+  console.log('  — presets —');
+  const oct2 = new Date(2026, 9, 2, 23, 30);   // late evening: already tomorrow in UTC
+  const pr = (k, d = oct2) => { const r = q1.presetRange(k, d); return r && r.from + '..' + r.to; };
+  assert('This month',   pr('month')        === '2026-10-01..2026-10-31', pr('month'));
+  assert('Last month',   pr('last-month')   === '2026-09-01..2026-09-30', pr('last-month'));
+  assert('This quarter', pr('quarter')      === '2026-10-01..2026-12-31', pr('quarter'));
+  assert('Last quarter', pr('last-quarter') === '2026-07-01..2026-09-30', pr('last-quarter'));
+  assert('Year to date ends today, in local time', pr('ytd') === '2026-01-01..2026-10-02', pr('ytd'));
+  assert('Last year',    pr('last-year')    === '2025-01-01..2025-12-31', pr('last-year'));
+  assert('a named year', pr('y2025')        === '2025-01-01..2025-12-31');
+  assert('a named quarter', pr('q2024-2')   === '2024-04-01..2024-06-30');
+  const jan15 = new Date(2026, 0, 15);
+  assert('in January, last month is last December',
+    pr('last-month', jan15) === '2025-12-01..2025-12-31', pr('last-month', jan15));
+  assert('  and last quarter is last year\'s Q4',
+    pr('last-quarter', jan15) === '2025-10-01..2025-12-31', pr('last-quarter', jan15));
+  assert('a leap-year February ends on the 29th',
+    pr('month', new Date(2024, 1, 10)) === '2024-02-01..2024-02-29');
+  assert('an unknown key is no range', q1.presetRange('nonsense', oct2) === null);
+
+  console.log('  — the menu —');
+  const menu = q1.rangeOptions(oct2);
+  assert('it offers the rolling periods',
+    ['All dates', 'This month', 'Last month', 'This quarter', 'Last quarter', 'Year to date', 'Last year', 'Custom range']
+      .every(l => menu.includes(`>${l}</option>`)));
+  assert('  a group for each year on file, newest first',
+    menu.indexOf('label="2026"') >= 0 && menu.indexOf('label="2026"') < menu.indexOf('label="2025"'));
+  assert('  and none for a year nobody worked', !menu.includes('label="2024"'));
+  assert('  each year with its quarters',
+    menu.includes('value="q2025-4"') && menu.includes('Q3 2025 · Jul–Sep'));
+  const mayMenu = q1.rangeOptions(new Date(2026, 4, 1));
+  assert('  but not quarters of this year that have not begun',
+    mayMenu.includes('value="q2026-2"') && !mayMenu.includes('value="q2026-3"') && mayMenu.includes('value="q2025-3"'));
+  assert('  and the picked entry shows as selected', /value="q2026-1" selected/.test(menu));
+
+  console.log('  — typed dates —');
+  const typed = loadFinancials(file, DATED);
+  typed.renderFinancials();
+  typed.setPreset('q2026-1');
+  typed.setDate('from', '2026-07-01');
+  typed.setDate('to', '');
+  assert('typing a date turns the menu to Custom',
+    typed.range().preset === 'custom' && typed.preset.value === 'custom');
+  assert('  an open end is allowed', typed.html().includes('Moon Township') && !typed.html().includes('Juniata Softball'));
+  assert('  and the heading reads "from"', typed.html().includes('worked from Jul 1, 2026'));
+  const back = load({ from: '2026-09-30', to: '2026-07-01', preset: 'custom' });
+  assert('From after To is read the other way round, not as no match',
+    back.html().includes('Moon Township'), back.html().slice(0, 300));
+  assert('  without rewriting what was typed', back.range().from === '2026-09-30');
+  typed.setDate('from', '');
+  assert('emptying both dates is no range at all',
+    typed.range().preset === '' && typed.preset.value === '' && !typed.html().includes('Actual in Range'));
+
+  console.log('  — clearing —');
+  const clr = loadFinancials(file, DATED);
+  clr.renderFinancials();
+  clr.setPreset('ytd');
+  clr.setPreset('');
+  assert('All dates clears the range', clr.range().from === '' && clr.range().to === '' && clr.range().preset === '');
+  clr.setPreset('last-year');
+  clr.setPreset('custom');
+  assert('Custom keeps the dates already set', clr.range().preset === 'custom' && clr.range().from !== '');
+  clr.clearAll();
+  assert('Clear drops the range with the other filters',
+    clr.range().from === '' && clr.range().preset === '' && DATED.every(j => clr.html().includes(j['project-name'])));
+
+  console.log('  — the range composes with the other filters —');
+  const comp = load({ from: '2026-01-01', to: '2026-03-31', statuses: new Set(['In Progress']), q: 'woodland' });
+  assert('a search inside a range narrows further',
+    comp.html().includes('Woodland Hills') && !comp.html().includes('Juniata Softball'));
+
+  console.log('  — excel —');
+  const xq = load({ from: '2026-01-01', to: '2026-03-31', preset: 'q2026-1' });
+  xq.exportFinancialsCSV();
+  const xl = xq.captured.csv.replace(/^﻿/, '').split('\r\n');
+  const xh = xl[0].split(',');
+  assert('a ranged export adds Actual in Range after Actual',
+    xh.indexOf('Actual in Range') === xh.indexOf('Actual') + 1, xl[0]);
+  const xs = xl.find(l => l.startsWith('Juniata Softball')).split(',');
+  assert('  with the spend dated in the range', xs[xh.indexOf('Actual in Range')] === '2500.00', xs.join(','));
+  assert('  the worked dates go out as real dates',
+    xs[xh.indexOf('First Worked')] === '2026-03-04' && xs[xh.indexOf('Last Worked')] === '2026-06-18'
+    && xs[xh.indexOf('Days Worked')] === '3', xs.join(','));
+  const xt = xl[xl.length - 1].split(',');
+  assert('  the totals row carries the range total', xt[0] === 'Totals' && xt[xh.indexOf('Actual in Range')] === '3200.00', xt.join(','));
+  assert('  every line has as many cells as the header',
+    xl.every(l => l.split(',').length === xh.length), xl.map(l => l.split(',').length).join(' '));
+  assert('  and the filename says which range',
+    /^financials-.*-worked-2026-01-01-to-2026-03-31-\d{4}-\d{2}-\d{2}\.csv$/.test(xq.captured.download), xq.captured.download);
+  const xp = load();
+  xp.exportFinancialsCSV();
+  const xpl = xp.captured.csv.replace(/^﻿/, '').split('\r\n');
+  const ptc = xpl.find(l => l.startsWith('Penn Trafford')).split(',');
+  assert('unranged, a job never dated exports blank worked cells, not a zero day count',
+    ptc.slice(-3).join('|') === '||', ptc.join(','));
+  assert('  and there is no Actual in Range column', !xpl[0].includes('Actual in Range'));
+
+  console.log('  — print —');
+  const pq = load({ from: '2026-01-01', to: '2026-03-31', preset: 'q2026-1' });
+  pq.printFinancials();
+  const pd = pq.captured.print;
+  assert('a ranged printout names the range', pd.includes('Worked Q1 2026 (Jan 1 – Mar 31, 2026)'), (pd.match(/<p class="meta">[^]*?<\/p>/) || [''])[0]);
+  assert('  carries the Actual in Range column', pd.includes('>Actual in Range</th>'));
+  assert('  and the worked line under each name', pd.includes('Mar 4 – Jun 18, 2026 · 3 days worked'));
+  const pdThs = (pd.match(/<th[ >]/g) || []).length;
+  const pdRow = pd.slice(pd.indexOf('<tbody>'), pd.indexOf('</tr>', pd.indexOf('<tbody>')));
+  assert(`  every header has a cell under it (${pdThs} headers)`, (pdRow.match(/<td[ >]/g) || []).length === pdThs);
+}
+
 // A removed helper still called from somewhere is a runtime ReferenceError the
 // page parses straight past — the export and print both threw that way once.
 console.log('\n[nothing calls a helper that no longer exists]');
@@ -582,6 +803,10 @@ for (const file of FILES) {
     /oninput="finSetFilter\('q', this\.value\)"/.test(src)
     && /data-fin-f="statuses"/.test(src)
     && /onclick="finClearFilters\(\)"/.test(src));
+  assert(`  ${file} has the date range menu and both date boxes`,
+    /id="fin-preset"[^>]*\s+onchange="finSetPreset\(this\.value\)"/.test(src)
+    && /onchange="finSetDate\('from', this\.value\)"/.test(src)
+    && /onchange="finSetDate\('to', this\.value\)"/.test(src));
   assert(`  ${file} has Excel and Print buttons`,
     /onclick="exportFinancialsCSV\(\)"/.test(src) && /onclick="printFinancials\(\)"/.test(src));
   assert(`  ${file} has both checklists on one dropdown`,

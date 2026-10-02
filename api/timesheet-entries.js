@@ -6748,10 +6748,22 @@ module.exports = async (req, res) => {
     // the division tab. A row whose employee still does not resolve is left
     // exactly as it is and reported back, so the answer is "add this person to
     // Manage Lists" rather than a silently zeroed rate.
+    //
+    // ?unpriced=1 narrows it to filling blanks, and is what a division tab
+    // sends when its Manage Lists closes or its Reload is pressed: a man
+    // approved before his rate was on the list posted at $0, and the rate cell
+    // is locked on that tab, so typing the rate in afterwards changed nothing on
+    // the job. In that mode only a $0 row is touched, a priced row keeps the
+    // rate it was approved at (no restating old work after a raise), and a haul
+    // — stamped, or a haul by the rule below — is skipped whole, so the fill
+    // never moves anyone's prevailing hours. ?division= keeps it to one tab.
     if (req.method === 'POST' && req.query.action === 'refresh-rates') {
       if (!canAdmin) {
         return res.status(403).json({ error: 'Payroll admin access is required' });
       }
+      const unpricedOnly = req.query.unpriced === '1';
+      const onlyDivision = AUTO_INJECT_DIVISIONS.includes(req.query.division)
+        ? req.query.division : null;
       const from = safeDate(req.query.from);
       const to   = safeDate(req.query.to);
       // Bounded so one call cannot outrun the serverless timeout. The caller
@@ -6773,6 +6785,8 @@ module.exports = async (req, res) => {
               AND dt.timesheet_entry_id IS NOT NULL
               AND te.status = 'approved'
               AND te.work_date >= ${from} AND te.work_date <= ${to}
+              AND (${onlyDivision}::text IS NULL OR COALESCE(dt.division, 'turf') = ${onlyDivision})
+              AND (NOT ${unpricedOnly}::boolean OR COALESCE(dt.rate, 0) = 0)
             ORDER BY dt.row_id
             LIMIT ${SCAN_LIMIT}
           `
@@ -6789,6 +6803,8 @@ module.exports = async (req, res) => {
             WHERE dt.company_code = ${companyCode}
               AND dt.timesheet_entry_id IS NOT NULL
               AND te.status = 'approved'
+              AND (${onlyDivision}::text IS NULL OR COALESCE(dt.division, 'turf') = ${onlyDivision})
+              AND (NOT ${unpricedOnly}::boolean OR COALESCE(dt.rate, 0) = 0)
             ORDER BY dt.row_id
             LIMIT ${SCAN_LIMIT}
           `;
@@ -6890,6 +6906,12 @@ module.exports = async (req, res) => {
           const rate      = haulType
             ? 0
             : resolver.rateFor(emp, !travelRow && !!pwFlags.get(String(r.job_id)));
+          // Filling blanks only: a priced row is not a blank, a haul either way
+          // round is the full sweep's call, because changing sides moves the
+          // man's prevailing hours, and a roster still at $0 has nothing to
+          // fill the row with yet.
+          if (unpricedOnly
+              && (Number(r.rate) > 0 || stamped || haulType || !(rate > 0))) continue;
           // Re-stamp so the cost tab says why the row is priced at zero — and
           // un-stamp a row that is no longer a haul, so the marker never
           // outlives the answer that put it there.
@@ -6914,8 +6936,12 @@ module.exports = async (req, res) => {
           // overwrite a deliberate change. rate, employee and the equipment
           // price are locked over there, so they are ours to correct.
           const jobClass  = String(r.job_class || '').trim() ? r.job_class : (emp.job_class || null);
-          // Never trade a price we have for one we could not resolve.
-          const nextEqCost = eqCost > 0 ? eqCost : (Number(r.equip_unit_cost) || 0);
+          // Never trade a price we have for one we could not resolve. The blank
+          // fill keeps whatever price the row already carries, for the same
+          // reason it keeps a rate: that is what the work was approved at.
+          const nextEqCost = (unpricedOnly && Number(r.equip_unit_cost) > 0)
+            ? Number(r.equip_unit_cost)
+            : (eqCost > 0 ? eqCost : (Number(r.equip_unit_cost) || 0));
 
           const same = Number(r.rate) === rate
             && String(r.employee || '') === String(emp.name || '')
@@ -7021,12 +7047,17 @@ module.exports = async (req, res) => {
       // hours pay at the prevailing rate is his cheque, and a maintenance sweep
       // that does it silently is how nobody finds out until he asks.
       const reclassified = [...haulHoursMoved.keys()].map(Number).sort((a, b) => a - b);
-      await writeAudit(
-        sql, companyCode, payload, 0, 'ADMIN_EDIT',
-        Object.assign({ refresh_rates: true, scanned: scanRows.length, updated },
-          reclassified.length ? { haul_hours_reclassified: reclassified } : null),
-        null,
-      );
+      // The blank fill runs every time a division tab closes Manage Lists, so
+      // it is only recorded when it actually filled something.
+      if (!unpricedOnly || updated) {
+        await writeAudit(
+          sql, companyCode, payload, 0, 'ADMIN_EDIT',
+          Object.assign({ refresh_rates: true, scanned: scanRows.length, updated },
+            unpricedOnly ? { unpriced_only: true, division: onlyDivision } : null,
+            reclassified.length ? { haul_hours_reclassified: reclassified } : null),
+          null,
+        );
+      }
       return res.json({
         ok: true,
         scanned: scanRows.length,

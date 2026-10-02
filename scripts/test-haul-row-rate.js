@@ -264,9 +264,10 @@ console.log('\n[the re-rate sweep does not walk over the approver]');
 // would put the $0 straight back onto the site-labour row on the next run.
 // Wide enough to reach the audit record at the end of the branch: the
 // haul_hours adjustment and the line naming whose prevailing split moved both
-// live past where the old 12000-char window stopped.
+// live past where the old 12000-char window stopped, and the ?unpriced=1 blank
+// fill pushed them past 16000.
 const sweep = src.slice(src.indexOf("req.query.action === 'refresh-rates'"),
-                        src.indexOf("req.query.action === 'refresh-rates'") + 16000);
+                        src.indexOf("req.query.action === 'refresh-rates'") + 18000);
 assert('it reads the stamp already on the row',
   /const stamped\s*=\s*HAUL_FIELD_TYPE_RE\.test\(String\(r\.field_type \|\| ''\)\)/.test(sweep));
 assert('  and hands the truck plus that stored answer to the rule the approval uses',
