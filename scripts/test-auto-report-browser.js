@@ -177,6 +177,8 @@ const AI_DELAY = {};
 const BYPASS_SEEN = { app: 0, other: 0 };
 // Paths that are never answered, to see what a stuck page reports.
 const HANG = new Set();
+// Every app path the pages asked for, to see what the robot's page reads.
+const ASKED = [];
 // AI reads in flight at once, and the most there ever were.
 const AI_SEEN = { live: 0, max: 0, pids: [] };
 
@@ -184,6 +186,7 @@ const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   const p = decodeURIComponent(u.pathname);
   if (req.headers['x-vercel-protection-bypass']) BYPASS_SEEN.app++;
+  if (p.startsWith('/api/')) ASKED.push(req.method + ' ' + req.url);
   if (HANG.has(p)) return;
   if (FAIL.has(p) || (p.startsWith('/api/data/') && FAIL.has(p.slice('/api/data/'.length)))) {
     return json(res, { error: 'Database is down' }, 503);
@@ -672,6 +675,31 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
         && steps.some(t => /^Building Turf Maple Ave \(1 of 2\); 0 reports sent so far/.test(t))
         && /^Making the PDF and sending Turf Oak St \(2 of 2\); 1 report sent so far; \d+ MB in use$/.test(steps[steps.length - 1] || ''),
       JSON.stringify(steps));
+
+    // The robot's copy of a job page loads what reports are built from, and
+    // not what a person's does besides: no CRM, no recovery passes (they write
+    // the list back, and read the old blob and every row again).
+    ASKED.length = 0;
+    r = await build(browser, baseUrl, 'turf_bid_items', { projectId: '*' });
+    const crm = ASKED.filter(a => /fct_crm_/.test(a));
+    const recovery = ASKED.filter(a => /\/api\/data\/fct_projects($|\?)|_keys\?prefix=fct_project_/.test(a));
+    ok('the robot\'s Turf page skips the CRM and the recovery passes, and still builds every job',
+      !r.error && r.out.items.length === 2 && crm.length === 0 && recovery.length === 0,
+      r.error || JSON.stringify({ crm, recovery, n: r.out.items.length }));
+    ok('…but reads the whole daily-row history the reports are built from',
+      ASKED.some(a => /^GET \/api\/daily-rows\?division=turf$/.test(a)) && ASKED.some(a => /^GET \/api\/daily-rows\?since=/.test(a)),
+      JSON.stringify(ASKED.filter(a => /daily-rows/.test(a))));
+
+    // A slow step leaves a note every five seconds: how long, what it waits on, the memory.
+    AI_DELAY.p1 = 12000;
+    const beats = [];
+    SENT.length = 0;
+    res = await runSchedule(fakeSql, { ...sched, project_id: 'p1', project_name: 'Turf Maple Ave' },
+      { baseUrl, browser, now: new Date(), progress: t => beats.push(t) });
+    delete AI_DELAY.p1;
+    ok('a slow step is noted every few seconds, with how long, what it is waiting on and the memory',
+      res.status === 'sent' && beats.some(t => /^Building Turf Maple Ave, \d+s in, waiting on POST \/api\/ai\/schedule-analysis \(\d+s\); 0 reports sent so far; \d+ MB in use$/.test(t)),
+      JSON.stringify(beats));
 
     console.log('\nWhat the second review found');
     // Stopped partway — here, saved over mid-send — the rest is handed back,

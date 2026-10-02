@@ -58,6 +58,7 @@ const READ_ONLY_POSTS = new Set(['/api/ai/schedule-analysis']);
 const READ_ONLY_BODY  = JSON.stringify({ error: 'Scheduled report runs are read-only.' });
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const HEARTBEAT_MS = 5_000;   // how often a long step's progress note is refreshed
 
 function divisionName(key) {
   const d = DIVISIONS.find(x => x.key === key);
@@ -458,8 +459,19 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
       throw err;
     }
   };
+  // The app request the page has waited on longest, for the progress notes.
+  const waitingOn = () => {
+    let longest = null;
+    for (const [req, at] of inflight) if (!longest || at < longest.at) longest = { req, at };
+    if (!longest) return '';
+    let where = longest.req.url();
+    try { where = new URL(where).pathname; } catch { /* as is */ }
+    const more = inflight.size > 1 ? ` and ${inflight.size - 1} more` : '';
+    return `waiting on ${longest.req.method()} ${where} (${Math.round((Date.now() - longest.at) / 1000)}s)${more}`;
+  };
   return {
     stats,
+    waitingOn,
     plan:  s => ask(x => window.dwAutoReport.plan(x), s, 'Opening the report'),
     build: s => ask(x => window.dwAutoReport.build(x), s, 'Building the report'),
     close,
@@ -635,6 +647,21 @@ async function runSchedule(sql, sched, ctx = {}) {
       ctx.progress(`${step}; ${plural(prev.sent + result.sent, 'report')} sent so far; ${memoryInUse(browser)} MB in use`);
     } catch { /* never worth failing over */ }
   };
+  // Every five seconds while the page works on a step: how long, the memory,
+  // and what it is waiting for — so a run killed partway leaves its trend.
+  const during = async (step, fn) => {
+    progress(step);
+    const t0 = Date.now();
+    const beat = setInterval(() => {
+      if (!ctx.progress) return;
+      const waiting = session && typeof session.waitingOn === 'function' ? session.waitingOn() : '';
+      try {
+        ctx.progress(`${step}, ${Math.round((Date.now() - t0) / 1000)}s in${waiting ? ', ' + waiting : ''}; `
+          + `${plural(prev.sent + result.sent, 'report')} sent so far; ${memoryInUse(browser)} MB in use`);
+      } catch { /* never worth failing over */ }
+    }, HEARTBEAT_MS);
+    try { return await fn(); } finally { clearInterval(beat); }
+  };
   const noteRejection = msg => {
     if (ctx.progress) { try { ctx.progress(`${lastStep || 'Running'}; it hit an error nothing caught: ${msg}`); } catch { /* best effort */ } }
   };
@@ -657,8 +684,10 @@ async function runSchedule(sql, sched, ctx = {}) {
 
       const holder = { items: [], skipped: [], errors: [] };
       let specs;
-      progress(everyJob ? 'Waiting for the page to load and listing the In Progress jobs' : 'Waiting for the page to load');
-      try { specs = await specsToBuild(session, spec, holder); }
+      try {
+        specs = await during(everyJob ? 'Waiting for the page to load and listing the In Progress jobs' : 'Waiting for the page to load',
+          () => specsToBuild(session, spec, holder));
+      }
       catch (err) {
         timedOut = isTimeUp(err);
         (timedOut ? retryProblems : problems).push(err.message || 'The report could not be built.');
@@ -694,9 +723,11 @@ async function runSchedule(sql, sched, ctx = {}) {
           }
         }
         const label = one.projectName || def.label;
-        progress(specs.length > 1 ? `Building ${label} (${s + 1} of ${specs.length})` : `Building ${label}`);
         let built;
-        try { built = await session.build(one); }
+        try {
+          built = await during(specs.length > 1 ? `Building ${label} (${s + 1} of ${specs.length})` : `Building ${label}`,
+            () => session.build(one));
+        }
         catch (err) {
           const msg = `${one.projectName || def.label}: ${err.message}`;
           if (isTimeUp(err)) {
