@@ -27,7 +27,7 @@
 
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth } = require('../lib/auth');
-const { SCHEDULABLE, DIVISIONS, PAY_RANGES, mayUseDivision, periodsFor } = require('../lib/report-catalog');
+const { SCHEDULABLE, DIVISIONS, PAY_RANGES, mayUseDivision, periodsFor, pickSections } = require('../lib/report-catalog');
 const T = require('../lib/report-schedule-time');
 const runner = require('../lib/report-schedule-runner');
 const jobFin = require('../lib/job-financials');
@@ -155,6 +155,13 @@ function normalizeBody(body, payload) {
   if (def.payRange) {
     options.range = Object.prototype.hasOwnProperty.call(PAY_RANGES, inOpts.range) ? inOpts.range : def.payRange;
   }
+  if (def.sections) {
+    // None ticked is the whole report; ticks the report has no section for
+    // are refused rather than quietly sending something else.
+    const { sections, unknown } = pickSections(def, inOpts.sections);
+    if (unknown) return { error: 'Pick divisions from the list.' };
+    if (sections) options.sections = sections;
+  }
 
   const occ = T.normalizeOccurrence(b);
   if (!occ.ok) return { error: occ.error };
@@ -233,6 +240,7 @@ module.exports = async (req, res) => {
             type: s.type, name: s.name, label: s.label, scope: s.scope, blurb: s.blurb,
             period: s.period || null, day: s.day || null, year: Boolean(s.year), payRange: s.payRange || null,
             periods: s.period ? periodsFor(s, T.PERIODS) : null, periodHint: s.periodHint || null,
+            sections: s.sections || null,
           })),
         }))
         .filter(d => d.reports.length);

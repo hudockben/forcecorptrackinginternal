@@ -2130,17 +2130,25 @@
        SCHEDULED REPORTS — Manage Users → Auto Reports
        The server opens this page in a headless browser, signed in as the
        admin who set the schedule up, and asks for a report through
-       auto-report.js. It is the Email button, pressed with nothing picked —
-       the whole report, as read on screen.
+       auto-report.js. It is the Email button: with the divisions the
+       schedule ticked, as its checklist would have handed them over, or
+       with nothing picked — the whole report, as read on screen.
     ═══════════════════════════════════════════ */
     (function registerAutoReports() {
       const AR = window.dwAutoReport;
       if (!AR) return;
       AR.ready(_execBoot);
-      AR.register('executive', () => {
+      AR.register('executive', spec => {
         const body = document.getElementById('reportBody');
         if (!body || body.style.display === 'none') throw new Error('The executive report did not load.');
-        return AR.capture(() => emailExecutiveReport());
+        // Each division's section is #portfolio-<key>; the schedule saves the keys.
+        const want = spec && spec.options && Array.isArray(spec.options.sections) ? spec.options.sections.map(String) : [];
+        if (!want.length) return AR.capture(() => emailExecutiveReport());
+        const picked = reportSections().filter(el => want.includes(String(el.id).replace(/^portfolio-/, '')));
+        if (!picked.length) {
+          throw new Error('None of the divisions this schedule picks are on the Executive Report any more. Open it and pick them again.');
+        }
+        return AR.capture(() => emailExecutiveReport(picked));
       });
     })();
   </script>

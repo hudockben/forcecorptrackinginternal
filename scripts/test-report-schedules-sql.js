@@ -231,6 +231,36 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
     await client.query('DELETE FROM report_schedules WHERE id = $1', [sid]);
   }
 
+  console.log('\nExecutive: picking its divisions');
+  {
+    const exId = await mkUser('execboss', { executive: 'admin' });
+    const EXEC = { companyCode: CO, userId: exId, username: 'execboss', role: 'level1', divisionRoles: { executive: 'admin' } };
+    let r = await call('GET', {}, null, EXEC);
+    const exDiv = r.body.divisions && r.body.divisions.find(d => d.key === 'executive');
+    const exRep = exDiv && exDiv.reports.find(x => x.type === 'executive');
+    assert('the Executive Report offers its divisions to pick, in the order it reads them',
+      exRep && JSON.stringify((exRep.sections || []).map(x => x.key))
+        === '["turf","paving","kiewit","quarry","dust","trucking","intercompany","payroll","safety"]'
+        && exRep.sections[0].name === 'Turf Management', JSON.stringify(exRep));
+    const body = { report_type: 'executive', frequency: 'weekly', days_of_week: [1], send_time: '07:00', group_ids: [g1] };
+    r = await call('POST', {}, { ...body, options: { sections: ['payroll', 'turf', 'turf'] } }, EXEC);
+    assert('the divisions picked are kept, once each, in the report\'s order',
+      r.statusCode === 200 && JSON.stringify(r.body.schedule.options.sections) === '["turf","payroll"]', JSON.stringify(r.body));
+    const sid = r.body.schedule.id;
+    const spec = runner.specFor(await row(sid), require(path.join(ROOT, 'api/lib/report-catalog.js')).SCHEDULABLE.executive, new Date());
+    assert('…and the run hands them to the page', JSON.stringify(spec.options.sections) === '["turf","payroll"]', JSON.stringify(spec));
+    r = await call('PUT', { id: sid }, { ...body, options: { sections: ['turf', 'payrol'] } }, EXEC);
+    assert('a division the report does not have is refused, not dropped',
+      r.statusCode === 400 && /Pick divisions from the list/.test(r.body.error)
+        && JSON.stringify((await row(sid)).options.sections) === '["turf","payroll"]', JSON.stringify(r.body));
+    r = await call('PUT', { id: sid }, { ...body, options: { sections: [] } }, EXEC);
+    assert('none picked is the whole report',
+      r.statusCode === 200 && !('sections' in r.body.schedule.options), JSON.stringify(r.body));
+    const whole = runner.specFor(await row(sid), require(path.join(ROOT, 'api/lib/report-catalog.js')).SCHEDULABLE.executive, new Date());
+    assert('…which the run hands over as nothing picked', whole.options.sections === null, JSON.stringify(whole.options));
+    await client.query('DELETE FROM report_schedules WHERE id = $1', [sid]);
+  }
+
   console.log('\nThe job picker');
   {
     const r = await call('GET', { projects: 'turf' }, null, BOSS);

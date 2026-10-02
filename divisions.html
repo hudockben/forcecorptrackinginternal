@@ -1935,6 +1935,13 @@
               <select id="ar-range" onchange="arUpdateSummary()"></select>
               <div class="ar-hint">Payroll's own Monday–Sunday weeks and pay cycles</div>
             </div>
+            <div id="ar-sections-wrap">
+              <label for="ar-sections">Divisions</label>
+              <select id="ar-sections" onchange="arOnSectionsChange()">
+                <option value="all">Every division — the whole report</option>
+                <option value="pick">Pick divisions…</option>
+              </select>
+            </div>
           </div>
           <div class="ar-picks-wrap" id="ar-picks-wrap" style="display:none">
             <div class="ar-picks-head">
@@ -1943,6 +1950,14 @@
               <button type="button" class="ar-link-btn" onclick="arPickAll(false)">Clear</button>
             </div>
             <div class="ar-groups" id="ar-picks"></div>
+          </div>
+          <div class="ar-picks-wrap" id="ar-secpicks-wrap" style="display:none">
+            <div class="ar-picks-head">
+              <span class="ar-picks-title">Divisions on the report</span>
+              <button type="button" class="ar-link-btn" onclick="arSectionAll(true)">All</button>
+              <button type="button" class="ar-link-btn" onclick="arSectionAll(false)">Clear</button>
+            </div>
+            <div class="ar-groups" id="ar-secpicks"></div>
           </div>
 
           <div class="mu-group-label">When</div>
@@ -3417,8 +3432,12 @@
       const parts = [];
       const scope = def ? def.scope : 'division';
       const picked = scope === 'job' && s.project_id === '*' && Array.isArray(s.picked_jobs) && s.picked_jobs.length ? s.picked_jobs : null;
+      const o = s.options || {};
+      const secs = arSectionNames(def, o.sections);
       if (picked) {
         parts.push(`${picked.length} picked job${picked.length === 1 ? '' : 's'}`);
+      } else if (secs) {
+        parts.push(`${secs.length} picked division${secs.length === 1 ? '' : 's'}`);
       } else if (scope === 'job') {
         parts.push(s.project_id === '*' ? 'Every In Progress job' : (s.project_name || 'Job ' + s.project_id));
       } else if (scope === 'job_or_all') {
@@ -3427,10 +3446,11 @@
         // Payroll's reports are everybody's time, whatever division booked it;
         // the Safety Center's, every form posted for the weeks it covers.
         parts.push(s.division === 'payroll' ? 'All employees'
-          : s.division === 'safety' ? 'Every form posted' : 'Whole division');
+          : s.division === 'safety' ? 'Every form posted'
+          : def && def.sections ? 'Every division' : 'Whole division');
       }
-      const o = s.options || {};
       const sub = [];
+      if (secs) sub.push(secs.slice(0, 3).join(', ') + (secs.length > 3 ? ` +${secs.length - 3}` : ''));
       if (picked) {
         const names = picked.map(j => j.name || 'Job ' + j.id);
         sub.push(names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : ''));
@@ -3794,6 +3814,7 @@
         arFillSelect(document.getElementById('ar-range'), Object.entries((arData && arData.payRanges) || {}),
           (preset && preset.range) || def.payRange);
       }
+      arFillSections(def, preset && preset.sections);
       arRenderGroups(preset && preset.groupIds);
       if (scope !== 'division') await arFillJobs(def, preset && preset.projectId, preset && preset.projectName, preset && preset.pickedJobs);
       arUpdateSummary();
@@ -3898,6 +3919,42 @@
       const picking = Boolean(def && def.scope === 'job' && document.getElementById('ar-job').value === '+');
       document.getElementById('ar-picks-wrap').style.display = picking ? '' : 'none';
       arUpdateSummary();
+    }
+
+    // A report made of division sections (the Executive Report): all of
+    // them, or the ones ticked — its Email button's checklist, saved on the
+    // schedule. Every one starts ticked, so picking is unticking.
+    function arFillSections(def, saved) {
+      const offered = def && Array.isArray(def.sections) && def.sections.length ? def.sections : null;
+      document.getElementById('ar-sections-wrap').style.display = offered ? '' : 'none';
+      const keep = offered && Array.isArray(saved) && saved.length ? new Set(saved.map(String)) : null;
+      document.getElementById('ar-sections').value = keep ? 'pick' : 'all';
+      document.getElementById('ar-secpicks').innerHTML = (offered || []).map(x => `
+        <label class="ar-check">
+          <input type="checkbox" value="${escHtml(x.key)}" ${!keep || keep.has(x.key) ? 'checked' : ''} onchange="arUpdateSummary()" />
+          <span>${escHtml(x.name)}</span>
+        </label>`).join('');
+      arOnSectionsChange();
+    }
+
+    function arOnSectionsChange() {
+      const def = arCurrentDef();
+      const picking = Boolean(def && def.sections && document.getElementById('ar-sections').value === 'pick');
+      document.getElementById('ar-secpicks-wrap').style.display = picking ? '' : 'none';
+      arUpdateSummary();
+    }
+
+    function arSectionAll(on) {
+      document.querySelectorAll('#ar-secpicks input').forEach(i => { i.checked = on; });
+      arUpdateSummary();
+    }
+
+    // Picked section keys as their names, in the report's order; null for
+    // the whole report.
+    function arSectionNames(def, keys) {
+      if (!def || !Array.isArray(def.sections) || !Array.isArray(keys) || !keys.length) return null;
+      const want = new Set(keys.map(String));
+      return def.sections.filter(x => want.has(x.key)).map(x => x.name);
     }
 
     function arReportDivision(type) {
@@ -4011,6 +4068,9 @@
       if (def && def.day)    options.day    = document.getElementById('ar-day').value;
       if (def && def.year)   options.year   = document.getElementById('ar-year').value;
       if (def && def.payRange) options.range = document.getElementById('ar-range').value;
+      if (def && def.sections && document.getElementById('ar-sections').value === 'pick') {
+        options.sections = [...document.querySelectorAll('#ar-secpicks input:checked')].map(i => i.value);
+      }
       return {
         report_type:  def ? def.type : '',
         project_id,
@@ -4049,6 +4109,11 @@
       if (v.options.period) what += `, covering ${(arData.periods[v.options.period] || '').toLowerCase()}`;
       if (v.options.day) what += `, ${({ today: 'for the same day', tomorrow: 'for the next day', next_workday: 'for the next workday' })[v.options.day]}`;
       if (v.options.range) what += `, covering ${((arData.payRanges || {})[v.options.range] || '').toLowerCase()}`;
+      if (v.options.sections) {
+        const names = arSectionNames(def, v.options.sections) || [];
+        what += !names.length ? ' with divisions still to tick'
+          : ` with ${names.length === 1 ? names[0] : names.slice(0, -1).join(', ') + ' and ' + names[names.length - 1]} only`;
+      }
       const when = !v.send_time ? 'at a time still to pick'
         : arFreq === 'daily' ? `every day at ${arClock(v.send_time)}`
         : arFreq === 'weekdays' ? `Monday to Friday at ${arClock(v.send_time)}`
@@ -4115,7 +4180,7 @@
       arOnReport({
         projectId: s.project_id, projectName: s.project_name, pickedJobs: s.picked_jobs, groupIds: s.group_ids,
         period: s.options && s.options.period, day: s.options && s.options.day, year: s.options && s.options.year,
-        range: s.options && s.options.range,
+        range: s.options && s.options.range, sections: s.options && s.options.sections,
       });
       arOpenForm('Edit Scheduled Report');
     }
@@ -4132,6 +4197,10 @@
       const defNow = arCurrentDef();
       if (defNow && defNow.scope === 'job' && document.getElementById('ar-job').value === '+' && !(v.picked_jobs || []).length) {
         out.textContent = 'Tick at least one job — or choose every In Progress job.';
+        return;
+      }
+      if (defNow && defNow.sections && document.getElementById('ar-sections').value === 'pick' && !(v.options.sections || []).length) {
+        out.textContent = 'Tick at least one division — or choose every division.';
         return;
       }
       const id = document.getElementById('ar-edit-id').value;

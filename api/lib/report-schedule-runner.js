@@ -191,6 +191,11 @@ function specFor(sched, def, at) {
     // A name, not dates: the payroll page knows its own weeks and cycles.
     spec.options = { ...opts, range: Object.prototype.hasOwnProperty.call(PAY_RANGES, opts.range) ? opts.range : def.payRange };
   }
+  if (def.sections) {
+    // As saved: the page says so if a picked section is no longer on it,
+    // rather than this quietly sending the whole report instead.
+    spec.options = { ...spec.options, sections: Array.isArray(opts.sections) && opts.sections.length ? opts.sections.map(String) : null };
+  }
   if (def.year) {
     spec.year = opts.year === 'all' ? 'all' : spec.today.slice(0, 4);
   }

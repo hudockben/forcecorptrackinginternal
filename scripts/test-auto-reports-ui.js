@@ -448,6 +448,48 @@ async function cleanUp() {
       (await page.$$eval('#ar-period option', os => os.length)) === 8 && await page.$eval('#ar-period-hint', e => e.textContent) === '');
     await page.evaluate(() => arCloseForm());
 
+    console.log('\nAn Executive Report with some divisions');
+    await page.evaluate(() => arNew('executive'));
+    await page.waitForFunction(() => document.getElementById('ar-form').classList.contains('open'));
+    ok('offers every division or a pick, every division to start',
+      await page.$eval('#ar-sections-wrap', e => e.style.display !== 'none') && await page.$eval('#ar-sections', s => s.value) === 'all'
+        && await page.$eval('#ar-secpicks-wrap', e => e.style.display === 'none'));
+    await page.select('#ar-sections', 'pick');
+    const secBoxes = await page.$$eval('#ar-secpicks input', is => is.map(i => [i.value, i.checked]));
+    ok('Pick divisions… lists all nine, every one ticked to start',
+      secBoxes.length === 9 && secBoxes.every(([, c]) => c) && secBoxes[0][0] === 'turf', JSON.stringify(secBoxes));
+    await page.evaluate(() => arSectionAll(false));
+    await page.click(`#ar-groups input[value="${g1}"]`);
+    await page.click('#ar-save');
+    ok('with none ticked it will not save', /Tick at least one division/.test(await page.$eval('#ar-form-result', e => e.textContent)),
+      await page.$eval('#ar-form-result', e => e.textContent));
+    await page.click('#ar-secpicks input[value="payroll"]');
+    await page.click('#ar-secpicks input[value="turf"]');
+    const exSum = await page.$eval('#ar-summary', e => e.textContent);
+    ok('the sentence names them', /Executive Report with Turf Management and Payroll only/.test(exSum), exSum);
+    await page.click('#ar-save');
+    await page.waitForFunction(() => !document.getElementById('ar-form').classList.contains('open'), { timeout: 8000 }).catch(() => {});
+    let exRow = (await db.schedules()).find(r => r.report_type === 'executive');
+    ok('saves the divisions picked', exRow && JSON.stringify(exRow.options.sections) === '["turf","payroll"]',
+      JSON.stringify(exRow && exRow.options));
+    await page.waitForFunction(id => document.querySelector(`.ar-row[data-id="${id}"]`), { timeout: 8000 }, exRow && exRow.id).catch(() => {});
+    ok('…and its row reads as two picked divisions, by name',
+      exRow && /2 picked divisions[\s\S]*Turf Management, Payroll/.test(await page.$eval(`.ar-row[data-id="${exRow.id}"]`, r => r.innerText)));
+    await page.evaluate(id => arEdit(id), Number(exRow.id));
+    await page.waitForFunction(() => document.getElementById('ar-form').classList.contains('open'));
+    const reopened = await page.$$eval('#ar-secpicks input:checked', is => is.map(i => i.value));
+    ok('opened again, it is on Pick divisions… with those two ticked',
+      await page.$eval('#ar-sections', s => s.value) === 'pick' && JSON.stringify(reopened) === '["turf","payroll"]', JSON.stringify(reopened));
+    await page.select('#ar-sections', 'all');
+    await page.click('#ar-save');
+    await page.waitForFunction(() => !document.getElementById('ar-form').classList.contains('open'), { timeout: 8000 }).catch(() => {});
+    exRow = (await db.schedules()).find(r => r.report_type === 'executive');
+    ok('switched back to every division, it saves as the whole report', exRow && !('sections' in (exRow.options || {})),
+      JSON.stringify(exRow && exRow.options));
+    await page.waitForFunction(id => /Every division/.test((document.querySelector(`.ar-row[data-id="${id}"]`) || {}).innerText || ''),
+      { timeout: 8000 }, exRow && exRow.id).catch(() => {});
+    ok('…and reads as every division', exRow && /Every division/.test(await page.$eval(`.ar-row[data-id="${exRow.id}"]`, r => r.innerText)));
+
     console.log('\nA Send now on a report that failed last time');
     const failedId = Number((await db.q("SELECT id FROM report_schedules WHERE company_code = $1 AND report_type = 'turf_daily_pm'", [CO]))[0].id);
     let release2;

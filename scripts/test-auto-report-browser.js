@@ -320,7 +320,11 @@ const server = http.createServer((req, res) => {
         .map(g => safetyGroup(g, false)) });
     }
     if (p === '/api/executive/report') {
-      return json(res, { ok: true, generatedAt: new Date().toISOString(), portfolios: [],
+      // Five of its sections, as the server's placeholders shape them.
+      const sec = (key, name) => ({ key, name, accent: '#666', status: '—', statusKind: 'mute', metrics: [], rows: [], total: 0 });
+      return json(res, { ok: true, generatedAt: new Date().toISOString(),
+        portfolios: [sec('turf', 'Turf Management'), sec('paving', 'Paving'), sec('kiewit', 'Kiewit Pinetree')],
+        quarry: sec('quarry', 'Quarry'),
         safety: { key: 'safety', name: 'Safety Sign-Off', accent: '#f59e0b', weekOf: YESTERDAY, documents: [] } });
     }
     return json(res, {});
@@ -506,7 +510,25 @@ function pngSize(dataUrl) {
 
     console.log('\nExecutive — executive.html');
     r = await build(browser, baseUrl, 'executive');
-    ok('the executive report builds, every section', !r.error && r.out.items.length === 1 && /^Executive Report/.test(r.out.items[0].subject),
+    const ex = r.out && r.out.items[0];
+    const secIds = item => item ? [...item.html.matchAll(/id="portfolio-([a-z]+)"/g)].map(m => m[1]) : [];
+    ok('the executive report builds, every section', !r.error && r.out.items.length === 1 && /^Executive Report — /.test(ex.subject)
+      && JSON.stringify(secIds(ex)) === '["turf","paving","kiewit","quarry","safety"]', r.error || JSON.stringify({ s: ex && ex.subject, ids: secIds(ex) }));
+    r = await build(browser, baseUrl, 'executive', { options: { sections: ['safety', 'paving'] } });
+    const ex2 = r.out && r.out.items[0];
+    ok('with divisions picked, only those, in the report\'s order',
+      !r.error && r.out.items.length === 1 && JSON.stringify(secIds(ex2)) === '["paving","safety"]',
+      r.error || JSON.stringify({ ids: secIds(ex2), errs: r.out && r.out.errors }));
+    ok('…and it says so, as the Email checklist does: in the subject and above the report',
+      ex2 && /^Executive Report \(2 of 5 sections\) — /.test(ex2.subject) && has(ex2, 'Sections included: Paving · Safety Sign-Off'),
+      ex2 && ex2.subject);
+    r = await build(browser, baseUrl, 'executive', { options: { sections: ['quarry'] } });
+    ok('one division picked is named in the subject',
+      !r.error && r.out.items.length === 1 && /^Executive Report: Quarry — /.test(r.out.items[0].subject) && JSON.stringify(secIds(r.out.items[0])) === '["quarry"]',
+      r.error || JSON.stringify(r.out.items[0] && r.out.items[0].subject));
+    r = await build(browser, baseUrl, 'executive', { options: { sections: ['payroll'] } });
+    ok('picked divisions the report no longer has fail, rather than sending the whole report',
+      !r.error && r.out.items.length === 0 && /None of the divisions this schedule picks/.test((r.out.errors[0] || {}).error),
       r.error || JSON.stringify(r.out));
 
     console.log('\nScheduler — scheduler.html');
