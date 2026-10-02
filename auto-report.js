@@ -191,7 +191,7 @@
       if (!entry) throw new Error('This page cannot build "' + (spec && spec.type) + '".');
       if (readyPromise) await readyPromise;
       if (!entry.perJob || spec.projectId !== '*') return { jobs: null };
-      return { jobs: asArray(jobsFn ? jobsFn() : []).map(j => ({ id: j.id, name: j.name || null })) };
+      return { jobs: jobsFor(spec).map(j => ({ id: j.id, name: j.name || null })) };
     },
 
     async build(spec) {
@@ -208,6 +208,18 @@
     },
   };
 
+  // The jobs a one-email-per-job spec covers: the ones ticked on the
+  // schedule, In Progress or not — the schedule asked for those jobs, and a
+  // job that has gone says so in its own build — or, with none ticked, every
+  // job marked In Progress. Names from the page where it has them.
+  function jobsFor(spec) {
+    const live = asArray(jobsFn ? jobsFn() : []);
+    const picked = Array.isArray(spec && spec.pickedJobs) ? spec.pickedJobs.filter(j => j && j.id != null) : [];
+    if (!picked.length) return live;
+    const byId = new Map(live.map(j => [String(j.id), j]));
+    return picked.map(p => byId.get(String(p.id)) || { id: p.id, name: p.name || null });
+  }
+
   async function buildNow(entry, spec, out) {
     if (readyPromise) await readyPromise;
 
@@ -219,7 +231,7 @@
     const all = asArray(jobsFn ? jobsFn() : []);
     let jobs;
     if (spec.projectId === '*') {
-      jobs = all;
+      jobs = jobsFor(spec);
       if (!jobs.length) out.skipped.push({ why: 'No jobs are marked In Progress.' });
     } else {
       // A job no longer In Progress can still be named outright — the

@@ -168,6 +168,13 @@ function specFor(sched, def, at) {
     today:       T.localDate(now, tz),
   };
   if (def.scope === 'job' && !spec.projectId) spec.projectId = '*';
+  // One email per job, for the jobs ticked on the schedule rather than every
+  // job marked In Progress (dwAutoReport.plan).
+  if (spec.projectId === '*' && Array.isArray(sched.picked_jobs) && sched.picked_jobs.length) {
+    spec.pickedJobs = sched.picked_jobs
+      .filter(j => j && j.id != null && String(j.id) !== '*')
+      .map(j => ({ id: String(j.id), name: j.name || null }));
+  }
   if (def.period) {
     const period = Object.prototype.hasOwnProperty.call(T.PERIODS, opts.period) ? opts.period : def.period;
     const r = T.periodRange(period, now, tz);
@@ -1155,7 +1162,7 @@ async function recordRun(sql, sched, result, { kind, token, triggeredBy, started
       (${sched.id}, ${sched.company_code}, ${kind}, ${result.status}, ${result.sent || 0}, ${result.total || 0},
        ${result.recipientCount || 0}, ${msg}, ${triggeredBy || null},
        ${(startedAt || at).toISOString()}, ${at.toISOString()},
-       ${sched.report_type}, ${sched.division}, ${sched.project_id || null}, ${sched.project_name || null})`;
+       ${sched.report_type}, ${sched.division}, ${sched.project_id || null}, ${runLabel(sched)})`;
 }
 
 /**
@@ -1176,6 +1183,17 @@ function progressWriter(sql, sched, token) {
   };
 }
 const PROGRESS_PREFIX = 'Working: ';
+
+// The job a run was for, as the history shows it: the job's name, the jobs
+// ticked ("3 picked jobs"), or none for every In Progress job and whole-
+// division reports.
+function runLabel(sched) {
+  if (sched.project_id === '*' && Array.isArray(sched.picked_jobs) && sched.picked_jobs.length) {
+    const n = sched.picked_jobs.length;
+    return `${n} picked job${n === 1 ? '' : 's'}`;
+  }
+  return sched.project_name || null;
+}
 
 /** Let go of a claim with nothing recorded — a run that never started. */
 async function releaseClaim(sql, sched, token) {

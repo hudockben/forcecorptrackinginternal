@@ -902,6 +902,10 @@
     .modal label.ar-check:hover { background: rgba(255,255,255,0.03); }
     .modal label.ar-check input { width: auto; accent-color: var(--green); margin: 0; }
     .ar-check .ar-count { margin-left: auto; font-size: 0.66rem; color: #8b8b9a; white-space: nowrap; }
+    .ar-picks-wrap { margin-top: 0.7rem; }
+    .ar-picks-head { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; margin-bottom: 0.35rem; }
+    .ar-picks-title { font-size: 0.68rem; color: #9a9aaa; text-transform: uppercase; letter-spacing: 0.04em; margin-right: auto; }
+    .ar-picks-group { grid-column: 1 / -1; font-size: 0.64rem; color: #8b8b9a; text-transform: uppercase; letter-spacing: 0.05em; padding: 0.3rem 0.35rem 0.1rem; }
     .ar-newgroup {
       display: none;
       border: 1px dashed var(--border);
@@ -1904,7 +1908,7 @@
             </div>
             <div id="ar-job-wrap">
               <label for="ar-job">Job</label>
-              <select id="ar-job" onchange="arUpdateSummary()"></select>
+              <select id="ar-job" onchange="arOnJobChange()"></select>
             </div>
             <div id="ar-period-wrap">
               <label for="ar-period">Covers</label>
@@ -1930,6 +1934,14 @@
               <select id="ar-range" onchange="arUpdateSummary()"></select>
               <div class="ar-hint">Payroll's own Monday–Sunday weeks and pay cycles</div>
             </div>
+          </div>
+          <div class="ar-picks-wrap" id="ar-picks-wrap" style="display:none">
+            <div class="ar-picks-head">
+              <span class="ar-picks-title" id="ar-picks-title">Jobs to send — one email each</span>
+              <button type="button" class="ar-link-btn" onclick="arPickAll(true)">All In Progress</button>
+              <button type="button" class="ar-link-btn" onclick="arPickAll(false)">Clear</button>
+            </div>
+            <div class="ar-groups" id="ar-picks"></div>
           </div>
 
           <div class="mu-group-label">When</div>
@@ -3402,7 +3414,10 @@
     function arScopeText(s, def) {
       const parts = [];
       const scope = def ? def.scope : 'division';
-      if (scope === 'job') {
+      const picked = scope === 'job' && s.project_id === '*' && Array.isArray(s.picked_jobs) && s.picked_jobs.length ? s.picked_jobs : null;
+      if (picked) {
+        parts.push(`${picked.length} picked job${picked.length === 1 ? '' : 's'}`);
+      } else if (scope === 'job') {
         parts.push(s.project_id === '*' ? 'Every In Progress job' : (s.project_name || 'Job ' + s.project_id));
       } else if (scope === 'job_or_all') {
         parts.push(s.project_id ? (s.project_name || 'Job ' + s.project_id) : 'All jobs, one report');
@@ -3412,6 +3427,10 @@
       }
       const o = s.options || {};
       const sub = [];
+      if (picked) {
+        const names = picked.map(j => j.name || 'Job ' + j.id);
+        sub.push(names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : ''));
+      }
       if (scope === 'job' && s.project_id === '*') sub.push('one email per job');
       if (o.period && arData && arData.periods) sub.push(arData.periods[o.period] || o.period);
       if (o.day) sub.push({ today: 'for the same day', tomorrow: 'for the next day', next_workday: 'for the next workday' }[o.day] || o.day);
@@ -3752,6 +3771,7 @@
       document.getElementById('ar-report-blurb').textContent = def ? def.blurb || '' : '';
       const scope = def ? def.scope : 'division';
       document.getElementById('ar-job-wrap').style.display    = scope === 'division' ? 'none' : '';
+      if (scope !== 'job') document.getElementById('ar-picks-wrap').style.display = 'none';
       document.getElementById('ar-period-wrap').style.display = def && def.period ? '' : 'none';
       document.getElementById('ar-day-wrap').style.display    = def && def.day ? '' : 'none';
       document.getElementById('ar-year-wrap').style.display   = def && def.year ? '' : 'none';
@@ -3767,16 +3787,22 @@
           (preset && preset.range) || def.payRange);
       }
       arRenderGroups(preset && preset.groupIds);
-      if (scope !== 'division') await arFillJobs(def, preset && preset.projectId, preset && preset.projectName);
+      if (scope !== 'division') await arFillJobs(def, preset && preset.projectId, preset && preset.projectName, preset && preset.pickedJobs);
       arUpdateSummary();
     }
 
-    async function arFillJobs(def, value, valueName) {
+    async function arFillJobs(def, value, valueName, picked) {
       const sel = document.getElementById('ar-job');
       const divKey = def ? arReportDivision(def.type) : '';
       const head = def.scope === 'job'
-        ? [['*', 'Every In Progress job — one email each']]
+        ? [['*', 'Every In Progress job — one email each'], ['+', 'Pick jobs… — one email each']]
         : [['', 'All jobs — one report']];
+      // Ticked jobs show as '+' in the picker, with their checklist; saved,
+      // the schedule is '*' (one email per job) with the jobs listed.
+      const pickedJobs = def.scope === 'job' && Array.isArray(picked) && picked.length ? picked : null;
+      if (pickedJobs) value = '+';
+      arPickSaved = pickedJobs || [];
+      arRenderPicks(null, pickedJobs ? pickedJobs.map(j => String(j.id)) : []);
       // The saved job is an option from the start — while the list loads, and
       // if it fails to — so Save in either state keeps the schedule on that
       // job instead of quietly turning it into every job.
@@ -3794,6 +3820,7 @@
         } catch (err) {
           arProjects[divKey] = null;
           arFillSelect(sel, head.concat(savedOpt), start);
+          arOnJobChange();
           document.getElementById('ar-form-result').textContent = 'Could not load the job list: ' + err.message;
           return;
         }
@@ -3814,6 +3841,54 @@
       sel.innerHTML = html;
       sel.value = value === undefined || value === null ? head[0][0] : value;
       if (sel.selectedIndex < 0) sel.value = head[0][0];
+      if (def.scope === 'job') arRenderPicks(jobs);
+      arOnJobChange();
+    }
+
+    // The jobs ticked on the schedule being edited, as saved — kept on the
+    // checklist even if the job list fails to load or no longer has them.
+    let arPickSaved = [];
+
+    // The checklist for "Pick jobs…": In Progress first, then the rest with
+    // their status. `keep` is the ids to tick; by default whatever is ticked.
+    function arRenderPicks(jobs, keep) {
+      const wrap = document.getElementById('ar-picks');
+      const ticked = new Set(keep || [...wrap.querySelectorAll('input:checked')].map(i => i.value));
+      const label = p => p.name + (p.jobNumber ? ` (${p.jobNumber})` : '');
+      const list = Array.isArray(jobs) ? jobs : [];
+      const running = list.filter(p => p.status === 'In Progress').sort((a, b) => label(a).localeCompare(label(b)));
+      const others  = list.filter(p => p.status !== 'In Progress').sort((a, b) => label(a).localeCompare(label(b)));
+      const known = new Set(list.map(p => String(p.id)));
+      const gone = arPickSaved.filter(j => !known.has(String(j.id)));
+      const box = (id, text, note, name) => `
+        <label class="ar-check">
+          <input type="checkbox" value="${escHtml(String(id))}" data-name="${escHtml(name || '')}" ${ticked.has(String(id)) ? 'checked' : ''} onchange="arUpdateSummary()" />
+          <span>${escHtml(text)}</span>
+          ${note ? `<span class="ar-count">${escHtml(note)}</span>` : ''}
+        </label>`;
+      let html = '';
+      if (running.length) html += '<div class="ar-picks-group">In Progress</div>' + running.map(p => box(p.id, label(p), '', p.name)).join('');
+      if (others.length)  html += '<div class="ar-picks-group">Other jobs</div>' + others.map(p => box(p.id, label(p), p.status || '', p.name)).join('');
+      if (gone.length) {
+        html += `<div class="ar-picks-group">${jobs ? 'No longer on the job list' : 'Picked'}</div>`
+          + gone.map(j => box(j.id, j.name || 'Job ' + j.id, jobs ? 'gone' : '', j.name)).join('');
+      }
+      wrap.innerHTML = html || '<div class="ar-hint" style="padding:0.3rem">Loading jobs…</div>';
+    }
+
+    // Tick every In Progress job, or none.
+    function arPickAll(on) {
+      const def = arCurrentDef();
+      const jobs = (def && arProjects[arReportDivision(def.type)]) || [];
+      const running = new Set(jobs.filter(p => p.status === 'In Progress').map(p => String(p.id)));
+      document.querySelectorAll('#ar-picks input').forEach(i => { i.checked = on && running.has(i.value); });
+      arUpdateSummary();
+    }
+
+    function arOnJobChange() {
+      const def = arCurrentDef();
+      const picking = Boolean(def && def.scope === 'job' && document.getElementById('ar-job').value === '+');
+      document.getElementById('ar-picks-wrap').style.display = picking ? '' : 'none';
       arUpdateSummary();
     }
 
@@ -3907,6 +3982,13 @@
       const jobSel = document.getElementById('ar-job');
       let project_id = scope === 'division' ? '' : jobSel.value;
       if (project_id === '__loading') project_id = scope === 'job' ? '*' : '';
+      // "Pick jobs…": one email per job, for the jobs ticked.
+      let picked_jobs = null;
+      if (scope === 'job' && project_id === '+') {
+        project_id = '*';
+        picked_jobs = [...document.querySelectorAll('#ar-picks input:checked')]
+          .map(i => ({ id: i.value, name: i.dataset.name || null }));
+      }
       // The job's name rides along so the list can say which job without
       // loading every division's jobs; it is display only.
       let project_name = '';
@@ -3925,6 +4007,7 @@
         report_type:  def ? def.type : '',
         project_id,
         project_name,
+        picked_jobs,
         options,
         frequency:    arFreq,
         days_of_week: arFreq === 'weekly' ? [...arDays].sort() : null,
@@ -3948,7 +4031,12 @@
       if (!def) { el.textContent = ''; return; }
       const jobSel = document.getElementById('ar-job');
       let what = def.name;
-      if (def.scope === 'job') what += v.project_id === '*' ? ' for every In Progress job (one email each)' : ` for ${jobSel.selectedOptions[0] ? jobSel.selectedOptions[0].textContent : 'the job'}`;
+      if (def.scope === 'job' && jobSel.value === '+') {
+        const n = (v.picked_jobs || []).length;
+        const names = (v.picked_jobs || []).map(j => j.name || 'Job ' + j.id);
+        what += !n ? ' for jobs still to tick'
+          : ` for ${n} picked job${n === 1 ? '' : 's'} — ${names.slice(0, 3).join(', ')}${n > 3 ? ` and ${n - 3} more` : ''} (one email each)`;
+      } else if (def.scope === 'job') what += v.project_id === '*' ? ' for every In Progress job (one email each)' : ` for ${jobSel.selectedOptions[0] ? jobSel.selectedOptions[0].textContent : 'the job'}`;
       if (def.scope === 'job_or_all') what += v.project_id ? ` for ${jobSel.selectedOptions[0] ? jobSel.selectedOptions[0].textContent : 'the job'}` : ' for all jobs';
       if (v.options.period) what += `, covering ${(arData.periods[v.options.period] || '').toLowerCase()}`;
       if (v.options.day) what += `, ${({ today: 'for the same day', tomorrow: 'for the next day', next_workday: 'for the next workday' })[v.options.day]}`;
@@ -4017,7 +4105,7 @@
       document.getElementById('ar-enabled').checked = Boolean(s.enabled);
       arSetFreq(s.frequency);
       arOnReport({
-        projectId: s.project_id, projectName: s.project_name, groupIds: s.group_ids,
+        projectId: s.project_id, projectName: s.project_name, pickedJobs: s.picked_jobs, groupIds: s.group_ids,
         period: s.options && s.options.period, day: s.options && s.options.day, year: s.options && s.options.year,
         range: s.options && s.options.range,
       });
@@ -4033,6 +4121,11 @@
       if (Number(v.send_time.slice(3)) % 5) { out.textContent = 'Pick a time on a five-minute mark — the server checks every five minutes.'; return; }
       if (v.frequency === 'weekly' && !(v.days_of_week || []).length) { out.textContent = 'Pick at least one day of the week.'; return; }
       if (!v.group_ids.length) { out.textContent = 'Pick at least one recipient group.'; return; }
+      const defNow = arCurrentDef();
+      if (defNow && defNow.scope === 'job' && document.getElementById('ar-job').value === '+' && !(v.picked_jobs || []).length) {
+        out.textContent = 'Tick at least one job — or choose every In Progress job.';
+        return;
+      }
       const id = document.getElementById('ar-edit-id').value;
       const btn = document.getElementById('ar-save');
       btn.disabled = true;

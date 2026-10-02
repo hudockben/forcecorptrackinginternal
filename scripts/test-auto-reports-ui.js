@@ -137,7 +137,8 @@ async function cleanUp() {
     [CO, JSON.stringify(roles)])).rows[0].id;
   const g1 = Number((await client.query("INSERT INTO report_recipient_groups (company_code, name, emails) VALUES ($1, 'Paving PMs', $2) RETURNING id",
     [CO, JSON.stringify(['pm@example.com', 'super@example.com'])])).rows[0].id);
-  await client.query("INSERT INTO app_data (key, value) VALUES ($1, $2)", [CO + ':fct_paving_projects_index', JSON.stringify(['pv1', 'pv2'])]);
+  await client.query("INSERT INTO app_data (key, value) VALUES ($1, $2)", [CO + ':fct_paving_projects_index', JSON.stringify(['pv1', 'pv2', 'pv3'])]);
+  await client.query("INSERT INTO app_data (key, value) VALUES ($1, $2)", [CO + ':fct_paving_project_pv3', JSON.stringify({ id: 'pv3', 'project-name': 'Hanover St', 'job-number': '26207', status: 'In Progress' })]);
   await client.query("INSERT INTO app_data (key, value) VALUES ($1, $2)", [CO + ':fct_paving_project_pv1', JSON.stringify({ id: 'pv1', 'project-name': 'Route 30 Overlay', 'job-number': '26201', status: 'In Progress' })]);
   await client.query("INSERT INTO app_data (key, value) VALUES ($1, $2)", [CO + ':fct_paving_project_pv2', JSON.stringify({ id: 'pv2', 'project-name': 'Mall Lot', 'job-number': '25110', status: 'Complete' })]);
   // A turf report that failed this morning — the flag should be up before anything is opened.
@@ -333,6 +334,49 @@ async function cleanUp() {
     const kept = (await db.schedules()).find(r => r.id === made.id);
     ok('…and Save keeps the schedule on that job', kept && kept.project_id === 'pv1', JSON.stringify(kept && kept.project_id));
     failJobList = false;
+
+    console.log('\nPicking the jobs');
+    await page.evaluate(() => arNew('paving'));
+    await page.waitForFunction(() => [...document.querySelectorAll('#ar-job option')].some(o => o.value === 'pv1'), { timeout: 8000 }).catch(() => {});
+    ok('the job picker offers picking jobs, after every In Progress job',
+      await page.$$eval('#ar-job option', os => os.slice(0, 2).map(o => o.value).join(',')) === '*,+');
+    ok('…with no checklist until it is chosen', await page.$eval('#ar-picks-wrap', e => e.style.display === 'none'));
+    await page.select('#ar-job', '+');
+    const picks = await page.$eval('#ar-picks', e => e.innerText.replace(/\s+/g, ' ').trim());
+    ok('choosing it shows the division\'s jobs, In Progress first, the rest with their status',
+      await page.$eval('#ar-picks-wrap', e => e.style.display !== 'none')
+        && /^In Progress Hanover St \(26207\) Route 30 Overlay \(26201\) Other jobs Mall Lot \(25110\) Complete$/i.test(picks), picks);
+    await page.click('#ar-picks-wrap .ar-link-btn');   // All In Progress
+    ok('"All In Progress" ticks the running jobs and no others',
+      JSON.stringify(await page.$$eval('#ar-picks input:checked', is => is.map(i => i.value).sort())) === '["pv1","pv3"]');
+    await page.click('#ar-picks-wrap .ar-link-btn:nth-of-type(2)');   // Clear
+    await page.click(`#ar-groups input[value="${g1}"]`);
+    dialogs.length = 0;
+    await page.click('#ar-save');
+    await sleep(300);
+    ok('saving with none ticked asks for one', /Tick at least one job/.test(await page.$eval('#ar-form-result', e => e.textContent)));
+    await page.click('#ar-picks input[value="pv3"]');
+    await page.click('#ar-picks input[value="pv2"]');
+    const pickSummary = await page.$eval('#ar-summary', e => e.textContent);
+    ok('the sentence names the jobs picked', /Daily PM Report for 2 picked jobs — Hanover St, Mall Lot \(one email each\)/.test(pickSummary), pickSummary);
+    await page.click('#ar-save');
+    await page.waitForFunction(() => !document.getElementById('ar-form').classList.contains('open'), { timeout: 8000 }).catch(() => {});
+    const pickedRow = (await db.schedules()).find(r => Array.isArray(r.picked_jobs));
+    ok('saves as one email per job, for those jobs',
+      pickedRow && pickedRow.project_id === '*' && JSON.stringify(pickedRow.picked_jobs) === '[{"id":"pv3","name":"Hanover St"},{"id":"pv2","name":"Mall Lot"}]',
+      JSON.stringify(pickedRow && pickedRow.picked_jobs));
+    await page.waitForFunction(id => document.querySelector(`.ar-row[data-id="${id}"]`), { timeout: 8000 }, pickedRow && Number(pickedRow.id)).catch(() => {});
+    const pickedText = await page.$eval(`.ar-row[data-id="${Number(pickedRow.id)}"]`, r => r.innerText);
+    ok('its row says which', /2 picked jobs/.test(pickedText) && /Hanover St, Mall Lot/.test(pickedText) && /one email per job/.test(pickedText), pickedText);
+    await page.click(`.ar-row[data-id="${Number(pickedRow.id)}"] .user-edit-btn`);
+    await page.waitForFunction(() => document.getElementById('ar-job').value === '+'
+      && document.querySelectorAll('#ar-picks input:checked').length === 2, { timeout: 8000 }).catch(() => {});
+    ok('Edit reopens on the jobs picked',
+      await page.$eval('#ar-job', e => e.value) === '+'
+        && JSON.stringify(await page.$$eval('#ar-picks input:checked', is => is.map(i => i.value).sort())) === '["pv2","pv3"]');
+    await page.evaluate(() => arCloseForm());
+    await page.click(`.ar-row[data-id="${Number(pickedRow.id)}"] .user-del-btn`);
+    await page.waitForFunction(id => !document.querySelector(`.ar-row[data-id="${id}"]`), { timeout: 8000 }, Number(pickedRow.id)).catch(() => {});
 
     console.log('\nA new recipient group, from the form');
     await page.evaluate(() => arNew('dust'));

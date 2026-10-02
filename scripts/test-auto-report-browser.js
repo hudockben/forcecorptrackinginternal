@@ -787,6 +787,21 @@ const has = (item, s) => Boolean(item && typeof item.html === 'string' && item.h
       SYNC.every(n => !robotTimers.includes(n)) && SYNC.every(n => personTimers.includes(n)),
       JSON.stringify({ robotTimers, personTimers }));
 
+    console.log('\nPicked jobs');
+    SENT.length = 0;
+    res = await runSchedule(fakeSql, { ...sched, report_type: 'turf_bid_items',
+      picked_jobs: [{ id: 'p2', name: 'Turf Oak St' }, { id: 'p3', name: 'Turf Done Job' }] }, { baseUrl, browser, now: new Date() });
+    const subj = SENT.map(m => m.subject).sort();
+    ok('a schedule for picked jobs sends those jobs, one email each — a Complete one included — and no others',
+      res.status === 'sent' && SENT.length === 2 && /Done Job/.test(subj.join('|')) && /Oak St/.test(subj.join('|')) && !/Maple Ave/.test(subj.join('|')),
+      JSON.stringify({ res, subj }));
+    SENT.length = 0;
+    res = await runSchedule(fakeSql, { ...sched, report_type: 'turf_bid_items',
+      picked_jobs: [{ id: 'p1', name: 'Turf Maple Ave' }, { id: 'gone1', name: 'Old Pier' }] }, { baseUrl, browser, now: new Date() });
+    ok('a picked job deleted since fails on its own, by name, and the rest still go',
+      res.status === 'partial' && SENT.length === 1 && /Maple Ave/.test(SENT[0].subject || '') && /Old Pier is no longer in Turf/.test(res.message),
+      JSON.stringify(res));
+
     console.log('\nWhat the second review found');
     // Stopped partway — here, saved over mid-send — the rest is handed back,
     // and the next pass sends only what is left.
