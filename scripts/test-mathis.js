@@ -319,13 +319,13 @@ const BLOBS = {
 const JOB_FACTS = [
   { project_id: 'p1', day: '2026-08-25', job_name: 'Atwood Borough', job_number: '26040',
     status: 'In Progress', complete: false, contract: 123894, actual_cost: 45390,
-    projected_cost: 78285, projected_profit: 45609, actual_profit: 78504 },
+    projected_cost: 78285, projected_profit: 45609, gp_earned: 26444.31 },
   { project_id: 'p1', day: '2026-09-01', job_name: 'Atwood Borough', job_number: '26040',
     status: 'In Progress', complete: false, contract: 123894, actual_cost: 51390,
-    projected_cost: 84285, projected_profit: 39609, actual_profit: 72504 },
+    projected_cost: 84285, projected_profit: 39609, gp_earned: 24150.28 },
   { project_id: 'p2', day: '2026-09-01', job_name: 'Moon Township', job_number: '26004',
     status: 'In Progress', complete: false, contract: null, actual_cost: 20000,
-    projected_cost: 45000, projected_profit: null, actual_profit: null },
+    projected_cost: 45000, projected_profit: null, gp_earned: null },
 ];
 
 let queries = [];
@@ -551,9 +551,22 @@ console.log('\n══════════ the paving question ════�
       && near(atwood.projectedProfit, atwood.contract - atwood.projectedFinalCost),
     atwood && JSON.stringify(atwood));
 
+  // GP earned to date: the share of the projection spent, times the contract,
+  // less the spend. Asserted as the relationship, like projected profit above.
+  assert('  GP earned to date is the contract earned so far less the cost to date',
+    atwood && atwood.gpEarnedToDate !== null
+      && near(atwood.gpEarnedToDate, atwood.contract * atwood.actualCost / atwood.projectedFinalCost - atwood.actualCost)
+      && !near(atwood.gpEarnedToDate, atwood.contract - atwood.actualCost),
+    atwood && JSON.stringify(atwood));
+  assert('  and carries the percent complete behind it',
+    atwood && near(atwood.percentComplete, Math.round(atwood.actualCost / atwood.projectedFinalCost * 1000) / 10),
+    atwood && JSON.stringify(atwood));
+  assert('  and no row carries the retired contract-minus-spend figure',
+    d.rows.every(r => !('actualProfit' in r)));
+
   const moon = d.rows.find(r => r.name === 'Moon Township');
   assert('a job with no contract on file has UNKNOWN profit, not zero and not a loss',
-    moon && moon.projectedProfit === null && moon.actualProfit === null,
+    moon && moon.projectedProfit === null && moon.gpEarnedToDate === null && moon.percentComplete === null,
     moon && JSON.stringify(moon));
   assert('  but its costs are still reported', moon && near(moon.actualCost, 20000));
 }
@@ -2270,17 +2283,20 @@ console.log('\n══════════ the nightly snapshot ════�
   // rewritten every time somebody adjusted a bid item in it.
   const atwood = writes.find(w => w.values.includes('Atwood Borough'));
   const V = atwood && atwood.values;   // the INSERT's column order
-  const [contract, bid, actualCost, projCost, variance, projProfit, actProfit] =
+  const [contract, bid, actualCost, projCost, variance, projProfit, gpEarned] =
     V ? V.slice(8, 15) : [];
   assert('a snapshot row carries the figures the digest would show',
     contract === 123894 && actualCost === 51390, JSON.stringify(V));
   assert('  with projected profit as contract minus PROJECTED final cost',
     Math.abs(projProfit - (contract - projCost)) < 0.01,
     `${projProfit} vs ${contract} - ${projCost}`);
-  assert('  and actual profit as contract minus cost TO DATE, which is a different number',
-    Math.abs(actProfit - (contract - actualCost)) < 0.01
-      && Math.abs(projProfit - actProfit) > 1,
-    `${actProfit} vs ${contract} - ${actualCost}`);
+  assert('  and GP earned as the contract earned so far less cost to date',
+    Math.abs(gpEarned - (contract * actualCost / projCost - actualCost)) < 0.01
+      && Math.abs(gpEarned - (contract - actualCost)) > 1
+      && Math.abs(projProfit - gpEarned) > 1,
+    `${gpEarned} vs ${contract} × ${actualCost}/${projCost} - ${actualCost}`);
+  assert('  written to gp_earned, not the retired actual_profit column',
+    /projected_profit, gp_earned, captured_at/.test(atwood.text) && !/actual_profit/.test(atwood.text));
   assert('  and the bid and variance travelling with them',
     Number.isFinite(bid) && Number.isFinite(variance), JSON.stringify({ bid, variance }));
 

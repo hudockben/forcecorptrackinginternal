@@ -978,6 +978,25 @@ function daysLeftFor(p) {
   return Math.ceil((endMs - Date.now()) / 86400000);
 }
 
+/* Gross profit earned to date — the server's copy of gpEarnedToDate() on the
+   division pages, and the only one: the portfolio rows here, api/lib/
+   job-financials.js (Intercompany, Mathis) and the nightly mathis_job_facts
+   history all read it from this function. The contract is earned cost-to-cost — cost to date
+   over projected final cost is the share complete — and the gross profit so
+   far is that earned share less the cost to date. A finished job's projection
+   IS its actual, so it settles at contract minus final cost.
+   null without a contract (no revenue to earn) or without spend (nothing
+   earned yet). { gp, earned, pct }: pct is the share complete, 0 to 1. */
+function gpEarnedToDate(contract, actual, projected) {
+  const c = Number(contract) || 0, a = Number(actual) || 0, pr = Number(projected) || 0;
+  if (!(c > 0) || !(a > 0)) return null;
+  // The projection never undercuts actual, but the cap keeps earned revenue
+  // from passing the contract regardless.
+  const pct    = pr > a ? a / pr : 1;
+  const earned = c * pct;
+  return { gp: earned - a, earned, pct };
+}
+
 function portfolioRow(p, fin) {
   const f         = fin || { bid: 0, actual: 0, projected: 0, offBid: 0, offBidCodes: [] };
   const contract  = projContract(p);
@@ -998,12 +1017,9 @@ function portfolioRow(p, fin) {
   // A job with no contract value has no revenue to subtract a cost from, so
   // its profit is unknown rather than zero. GP Earned to Date additionally
   // needs real spend behind it — nothing is earned before work is done.
-  // It mirrors gpEarnedToDate() on the division pages: the contract is earned
-  // cost-to-cost (actual over projected — on a finished job the two are equal),
-  // and the gross profit so far is that earned share less the cost to date.
   const profit    = contract > 0 && projected > 0 ? contract - projected : null;
-  const earned    = contract > 0 && actual    > 0 ? contract * (projected > actual ? actual / projected : 1) : null;
-  const gpEarned  = earned != null ? earned - actual : null;
+  const gpE       = gpEarnedToDate(contract, actual, projected);
+  const gpEarned  = gpE ? gpE.gp : null;
 
   return {
     id:          p.id,
@@ -1028,7 +1044,7 @@ function portfolioRow(p, fin) {
     profitPct:    profit    != null && contract > 0 ? (profit    / contract) * 100 : null,
     gpEarned,
     // Margin on the revenue earned so far, as a WIP schedule states it.
-    gpEarnedPct: gpEarned != null && earned > 0 ? (gpEarned / earned) * 100 : null,
+    gpEarnedPct: gpE && gpE.earned > 0 ? (gpE.gp / gpE.earned) * 100 : null,
     offBid:      Number(f.offBid) || 0,
     offBidCodes: Array.isArray(f.offBidCodes) ? f.offBidCodes : [],
   };
@@ -1995,6 +2011,7 @@ module.exports.readTurfProjects   = readTurfProjects;
 module.exports.readPavingProjects = readPavingProjects;
 module.exports.readKiewitProjects = readKiewitProjects;
 module.exports.buildFinancials    = buildFinancials;
+module.exports.gpEarnedToDate     = gpEarnedToDate;
 module.exports.projName           = projName;
 module.exports.projJob            = projJob;
 module.exports.projStatus         = projStatus;

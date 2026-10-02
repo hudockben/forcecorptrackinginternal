@@ -135,11 +135,25 @@ assert('overdue and near-deadline jobs are flagged',
   exec.includes('d overdue') && exec.includes('d left'));
 assert('GP Earned to Date is rendered from its own field',
   exec.includes('profitCell(p.gpEarned, p.gpEarnedPct)'));
-assert('and the API only reports it where there is both a contract and spend',
-  /earned\s*=\s*contract > 0 && actual\s+> 0 \? contract \* \(projected > actual \? actual \/ projected : 1\) : null/.test(report)
-  && /gpEarned\s*=\s*earned != null \? earned - actual : null/.test(report));
+assert('and the API builds it through the one server helper',
+  /const gpE\s*=\s*gpEarnedToDate\(contract, actual, projected\);/.test(report)
+  && /module\.exports\.gpEarnedToDate\s*=\s*gpEarnedToDate;/.test(report));
 assert('  with its margin on revenue earned, as the division pages state it',
-  /gpEarnedPct: gpEarned != null && earned > 0 \? \(gpEarned \/ earned\) \* 100 : null/.test(report));
+  /gpEarnedPct: gpE && gpE\.earned > 0 \? \(gpE\.gp \/ gpE\.earned\) \* 100 : null/.test(report));
+// The server helper and the page helper are two copies of one formula — the
+// pages run in the browser and cannot require it — so pin that they agree.
+{
+  const { gpEarnedToDate: srv } = require(path.resolve(__dirname, '..', 'api/executive/report'));
+  const pageSrc = tracker.slice(tracker.indexOf('function gpEarnedToDate('));
+  const pageFn = new Function(`${pageSrc.slice(0, pageSrc.indexOf('\n}\n') + 2)}; return gpEarnedToDate;`)();
+  const cases = [[1000000, 100000, 400000], [210000, 195000, 195000], [100000, 60000, 120000],
+                 [0, 5000, 10000], [500000, 0, 400000], [100000, 50000, 40000], [4435415, 5231.5, 3415415.02]];
+  const same = cases.every(c => {
+    const a = srv(...c), b = pageFn(...c);
+    return (a === null && b === null) || (a && b && Math.abs(a.gp - b.gp) < 1e-6 && Math.abs(a.earned - b.earned) < 1e-6);
+  });
+  assert('  and it gives the same answer as the division pages\' copy on every case', same);
+}
 
 // ── Quarry mirrors the Quarry page ──
 console.log('\n[quarry mirrors the Quarry page]');
