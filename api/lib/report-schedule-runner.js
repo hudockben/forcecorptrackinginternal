@@ -235,6 +235,36 @@ function withTimeout(promise, ms, what, why) {
   ]);
 }
 
+// Where the page sent the robot instead of opening, in words. Vercel's own
+// login (Deployment Protection, on preview deployments by default) gets its
+// own explanation, since that is the one an admin can do something about.
+function sentAwayMessage(def, origin, url) {
+  const page = `the ${divisionName(def.division)} page`;
+  let to = null;
+  try { to = new URL(url); } catch { /* not a URL: say it as it is */ }
+  let from = null;
+  try { from = new URL(origin); } catch { /* as is */ }
+  const deployment = from ? from.host : String(origin);
+  if (to && /(^|\.)vercel\.com$/i.test(to.hostname)) {
+    const lead = `Could not open ${page}: this deployment (${deployment}) is behind Vercel's login (Deployment Protection), `
+      + 'which sent the report robot to sign in. ';
+    return process.env.VERCEL_ENV === 'production'
+      ? lead + 'That includes production here, so no scheduled report can open its page: turn on Protection Bypass '
+        + 'for Automation in the Vercel project (Settings → Deployment Protection) and redeploy, or take production '
+        + 'out of protection.'
+      : lead + 'Production domains are not behind it under Vercel\'s standard protection, so scheduled reports run '
+        + 'there; to send one from a preview, turn on Protection Bypass for Automation in the Vercel project and redeploy.';
+  }
+  if (to && from && to.host === from.host && to.protocol !== from.protocol) {
+    return `Could not open ${page}: ${from.origin} sent the report robot to ${to.origin} instead. `
+      + `The app's address should be its ${to.protocol}// one — check APP_BASE_URL.`;
+  }
+  if (!to || to.protocol === 'chrome-error:') {
+    return `Could not open ${page}: ${deployment} would not load it for the report robot (${url}).`;
+  }
+  return `Could not open ${page}: ${deployment} sent the report robot to ${to.host} instead.`;
+}
+
 /**
  * Open `def.page` as `acct`, ready to be asked for reports.
  *
@@ -324,6 +354,12 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
         // The pages pull a few libraries and fonts from CDNs. Reads only, and
         // only the kinds of thing a page renders with.
         if (read && ['script', 'stylesheet', 'font', 'image'].includes(req.resourceType())) return settle(req.continue());
+        // The page itself going elsewhere — Vercel's login in front of a
+        // protected deployment, say. Not followed; written down, so the run
+        // can say where it was sent rather than just "net::ERR_FAILED".
+        try {
+          if (req.isNavigationRequest() && req.frame() === page.mainFrame()) stats.sentTo = url;
+        } catch { /* the frame is gone; nothing to say */ }
         return settle(req.abort());
       } catch { /* already handled */ }
     });
@@ -403,13 +439,32 @@ async function openReportPage(browser, { baseUrl, def, acct, spec, deadline }) {
     const loadMs = () => budget(deadline, PAGE_LOAD_MS, SEND_NEEDS_MS);
     if (loadMs() < 5_000) throw timeUp('The run ran out of time before the page could be opened.');
     page.setDefaultTimeout(loadMs());
-    await page.goto(`${baseUrl}/${def.page}?autoreport=1`, { waitUntil: 'domcontentloaded', timeout: loadMs() });
+    let opened;
+    try {
+      opened = await page.goto(`${baseUrl}/${def.page}?autoreport=1`, { waitUntil: 'domcontentloaded', timeout: loadMs() });
+    } catch (err) {
+      if (stats.sentTo) throw new Error(sentAwayMessage(def, origin, stats.sentTo));
+      throw err;
+    }
+    // Sent elsewhere by the page's own script (a login page that redirects
+    // in script, not by HTTP): goto resolves — to nothing — and the frame
+    // sits on Chrome's error page. Said now, not after the whole load wait.
+    if (stats.sentTo || (!opened && String(page.url()).startsWith('chrome-error://'))) {
+      throw new Error(sentAwayMessage(def, origin, stats.sentTo || page.url()));
+    }
+    const status = opened && typeof opened.status === 'function' ? opened.status() : null;
+    if (status === 401 || status === 403) {
+      throw new Error(`The ${divisionName(def.division)} page answered HTTP ${status} — ${new URL(origin).host} refused the report robot. `
+        + 'If this deployment is behind Vercel\'s login (Deployment Protection), see Protection Bypass for Automation.');
+    }
 
     try {
       await page.waitForFunction(
         t => window.dwAutoReport && window.dwAutoReport.has(t),
         { timeout: Math.max(1_000, loadMs()), polling: 250 }, spec.type);
     } catch (waitErr) {
+      // Sent elsewhere after the document loaded: the same message as above.
+      if (stats.sentTo) throw new Error(sentAwayMessage(def, origin, stats.sentTo));
       const where = (() => { try { return new URL(page.url()).pathname; } catch { return ''; } })();
       if (!where.endsWith('/' + def.page)) {
         throw new Error(`The ${divisionName(def.division)} page sent ${acct.username} away (to ${where || 'another page'}) instead of opening.`);
