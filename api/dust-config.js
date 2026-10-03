@@ -1,7 +1,7 @@
 'use strict';
 /**
  * GET  /api/dust-config  — settings + lists for the company
- * PUT  /api/dust-config  — full sync: { settings: { ub_rate, profit_margin, ub_rate_base },
+ * PUT  /api/dust-config  — full sync: { settings: { ub_rate, profit_margin?, ub_rate_base },
  *                          lists: { equipment, employees, companies, materials, states, mu, employee_rates, cost_codes } }
  *   Refuses with 409 (writing nothing) a save that would blank the lists or
  *   zero the UB rate over stored values; ?force=1 overrides. Answers
@@ -329,19 +329,31 @@ module.exports = async (req, res) => {
       if (settings) {
         storeSettings = Object.assign({}, settings, { ub_rate: rate });
         delete storeSettings.ub_rate_base;
+        // The profit margin on the rate's terms: the page sends it only when
+        // it changed it, and a save without one keeps the stored margin. The
+        // writes below keep the one the blob holds at the moment of the
+        // write; a company whose settings are still only in the legacy
+        // unscoped blob (GET's fallback) has its margin copied from there.
+        if (!('profit_margin' in settings) && !_asObj(blobSettings[0]) && prevSettings.profit_margin !== undefined) {
+          storeSettings.profit_margin = prevSettings.profit_margin;
+        }
       }
 
       // Write blobs in parallel (safety net during migration window).
       // Settings blob: a kept rate leaves the stored blob's own ub_rate in
       // place (another tab's newer rate stays); a new one is rounded the way
       // dust_settings.ub_rate (NUMERIC(10,4)) rounds it, so the two agree.
+      // Either way the stored profit_margin is laid under the new value, so
+      // a save that carries none leaves it as it is.
       await Promise.all([
         storeSettings && (keepRate
           ? sql`
               INSERT INTO app_data (key, value, updated_at)
               VALUES (${companyCode + ':dust_settings'}, ${JSON.stringify(storeSettings)}::jsonb, NOW())
               ON CONFLICT (key) DO UPDATE SET
-                value = EXCLUDED.value || jsonb_build_object('ub_rate',
+                value = (CASE WHEN app_data.value->'profit_margin' IS NULL THEN '{}'::jsonb
+                              ELSE jsonb_build_object('profit_margin', app_data.value->'profit_margin') END)
+                        || EXCLUDED.value || jsonb_build_object('ub_rate',
                           COALESCE(NULLIF(app_data.value->'ub_rate', 'null'::jsonb), EXCLUDED.value->'ub_rate')),
                 updated_at = NOW()
             `
@@ -350,7 +362,11 @@ module.exports = async (req, res) => {
               VALUES (${companyCode + ':dust_settings'},
                       ${JSON.stringify(storeSettings)}::jsonb || jsonb_build_object('ub_rate', round(${rate}::numeric, 4)),
                       NOW())
-              ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+              ON CONFLICT (key) DO UPDATE SET
+                value = (CASE WHEN app_data.value->'profit_margin' IS NULL THEN '{}'::jsonb
+                              ELSE jsonb_build_object('profit_margin', app_data.value->'profit_margin') END)
+                        || EXCLUDED.value,
+                updated_at = NOW()
             `),
         lists && sql`
           INSERT INTO app_data (key, value, updated_at)

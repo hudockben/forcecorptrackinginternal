@@ -27,7 +27,8 @@
  * a new rate is answered as dust_settings stores it, and the last entry of a
  * sparse config can still be removed by a page that loaded it and names the
  * lists it removed from — while a page that loaded the lists empty cannot
- * delete the first entry another tab has added since.
+ * delete the first entry another tab has added since. A save that carries
+ * no profit margin keeps the stored one.
  */
 
 const fs     = require('fs');
@@ -633,6 +634,65 @@ async function run() {
     assert('  Alice and her rate are gone from the table and the blob', s.employees.length === 0
       && same(s.listsBlob.employees, []) && same(s.listsBlob.employee_rates, {}),
       JSON.stringify([s.employees, s.listsBlob.employees, s.listsBlob.employee_rates]));
+  }
+
+  console.log('\n[17] a save that carries no profit margin keeps the stored one');
+  {
+    // The page sends the margin only when its tab changed it. A tab that has
+    // not polled since another tab's margin edit used to put its old copy
+    // back with its next row edit.
+    const PM_NEW = Object.assign({}, PM_FULL, { base_rate: 2.2 });
+    const noPm = (mutate) => fromLoaded(b => { delete b.settings.profit_margin; if (mutate) mutate(b); });
+    await seed(FULL);
+    let r = await put(noPm(b => { b.lists.states = ['PA', 'WV', 'OH']; }));
+    let s = await snapshot();
+    assert('rate unchanged, no margin: 200, the list edit landed, the stored margin stands',
+      r.statusCode === 200 && same(s.states, ['PA', 'WV', 'OH']) && same(s.settingsBlob.profit_margin, PM_FULL)
+        && s.settingsBlob.ub_rate === 0.35, `${r.statusCode} ${JSON.stringify(s.settingsBlob)}`);
+    let g = await call('GET');
+    assert('  GET still hands it out', same(g.body.settings.profit_margin, PM_FULL),
+      JSON.stringify(g.body.settings.profit_margin));
+
+    await seed(FULL);
+    r = await put(noPm(b => { b.settings.ub_rate = 0.5; }));
+    s = await snapshot();
+    assert('a new rate, no margin: the rate is written, the stored margin stands',
+      r.statusCode === 200 && s.rate === 0.5 && s.settingsBlob.ub_rate === 0.5
+        && same(s.settingsBlob.profit_margin, PM_FULL), `${r.statusCode} ${JSON.stringify(s.settingsBlob)}`);
+
+    for (const [label, mutate] of [['rate unchanged', null], ['a new rate', b => { b.settings.ub_rate = 0.4; }]]) {
+      await seed(FULL);
+      let fired = false;
+      beforeStatement = async text => {
+        if (fired || !/INSERT INTO app_data/.test(text)) return;
+        fired = true;
+        await q(`UPDATE app_data SET value = jsonb_set(value, '{profit_margin}', $2::jsonb) WHERE key = $1`,
+          [`${CO}:dust_settings`, JSON.stringify(PM_NEW)]);
+      };
+      try { r = await put(noPm(mutate)); } finally { beforeStatement = null; }
+      s = await snapshot();
+      assert(`${label}: a margin another tab saved while this save was running stands`,
+        fired && r.statusCode === 200 && same(s.settingsBlob.profit_margin, PM_NEW),
+        `${fired} ${r.statusCode} ${JSON.stringify(s.settingsBlob.profit_margin)}`);
+    }
+
+    // A company whose settings are still only in the legacy unscoped blob.
+    await seed(FULL);
+    await q(`DELETE FROM app_data WHERE key = $1`, [`${CO}:dust_settings`]);
+    await q(`INSERT INTO app_data (key, value) VALUES ('dust_settings', $1::jsonb)`,
+      [JSON.stringify({ ub_rate: 0.35, profit_margin: PM_FULL })]);
+    r = await put(noPm());
+    s = await snapshot();
+    g = await call('GET');
+    assert('legacy blob only: the first scoped settings blob takes its margin',
+      r.statusCode === 200 && same(s.settingsBlob.profit_margin, PM_FULL) && same(g.body.settings.profit_margin, PM_FULL),
+      `${r.statusCode} ${JSON.stringify(s.settingsBlob)}`);
+
+    await seed(FULL);
+    r = await put(fromLoaded(b => { b.settings.profit_margin = PM_NEW; }));
+    s = await snapshot();
+    assert('a save that carries a margin still writes it', r.statusCode === 200 && same(s.settingsBlob.profit_margin, PM_NEW),
+      JSON.stringify(s.settingsBlob.profit_margin));
   }
 
   console.log('\n────────────────────────────────────────');

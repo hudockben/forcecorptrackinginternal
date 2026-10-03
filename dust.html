@@ -2760,16 +2760,20 @@
         const c    = calc(row);
         const prev = bySourceId.get(row.id);
 
-        // UB gallons priced at $0 mean the rate is missing, not that the UB
-        // is free: a tab still holding the $0 a blank config save left
-        // behind, a config that never loaded. Repricing an entry that billed
+        // UB gallons priced at $0 are taken for a missing rate, not free UB:
+        // a tab still holding the $0 a blank config save left behind, a
+        // config that never loaded. Repricing an entry that billed
         // UB from that would rewrite it to ub_total 0 — or, for a UB-only
         // row, void it, and with it the entry's id, sent_at and the
         // invoice/payment dates entered in Intercompany, which the entry
         // re-created later does not have. So its UB figures stay as they
         // were until the row prices its UB again; everything else on the row
-        // (invoice number and status, date, vehicles) still syncs.
-        const keepUb = !!prev && c.gallons > 0 && !(ubRateForRow(row) > 0) && (parseFloat(prev.ub_total) || 0) > 0;
+        // (invoice number and status, date, vehicles) still syncs. Only
+        // while the entry is still billed to the row's customer, though: a
+        // row moved to another customer — one whose own UB $/gal is $0, say
+        // — would otherwise carry the old customer's UB charge over to it.
+        const sameCo = !!prev && (prev.company_name || '').trim().toLowerCase() === (row.company || '').trim().toLowerCase();
+        const keepUb = sameCo && c.gallons > 0 && !(ubRateForRow(row) > 0) && (parseFloat(prev.ub_total) || 0) > 0;
 
         if (!keepUb && !(c.invTotal > 0)) {
           // Row is intrinsically no longer billable (rates/gallons cleared).
@@ -3036,8 +3040,15 @@
         // did not change it, so another tab's newer rate is not overwritten.
         // The settings are read at send time, so ub_rate_base reflects the
         // answer to every save queued ahead of this one.
+        // The profit margin goes only when this tab changed it (it moved off
+        // _pmBase, or a rescued edit is on its way); without one the server
+        // keeps the margin it holds. Sent with every save, a tab that had not
+        // polled since another tab's margin edit put its old copy back with
+        // its next row edit — and the poll then had the editing tab take
+        // that old copy up too.
         body: JSON.stringify({
-          settings: { ub_rate: ubRate, profit_margin: profitMargin, ub_rate_base: base },
+          settings: Object.assign({ ub_rate: ubRate, ub_rate_base: base },
+            (_pmBase == null || _pmKey(profitMargin) !== _pmBase) ? { profit_margin: profitMargin } : {}),
           lists,
           lists_removed: removed.map(([k]) => k),
         }),
@@ -3072,7 +3083,7 @@
         sentRemoved.forEach(([k, n]) => { if (_listsRemoved.get(k) === n) _listsRemoved.delete(k); });
         const stored = parseFloat(body.settings && body.settings.ub_rate);
         ubRateBase = isFinite(stored) ? stored : sentUb;
-        if (sentPm) _pmBase = sentPm;   // every settings save writes the margin it carries
+        if (sentPm) _pmBase = sentPm;   // the margin it carried, or (none carried) _pmBase already
         if (isFinite(stored) && Math.abs(stored - sentUb) > 1e-9
             && Math.abs(ubRate - sentUb) <= 1e-9) {
           ubRate = stored;

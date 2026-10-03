@@ -37,6 +37,10 @@
  *     and a tab loaded at a stored $0 never voids a UB-only entry;
  *   - an emptied or half-typed UB box is not a $0 rate, and a committed $0
  *     asks first;
+ *   - a row moved to a customer whose own UB $/gal is $0 does not carry
+ *     the old customer's UB charge to it;
+ *   - a save carries the profit margin only when its tab changed it, so a
+ *     tab that has not polled does not put an old margin back;
  *   - the hide flush, sent while a UB change is still out, still reads as
  *     the change it is; list removals queued behind a slow save reach the
  *     server one step at a time;
@@ -123,7 +127,8 @@ const PC_ROWS = [{ id: 'pc-1', date: '2026-09-27', hours: '3', mix_type: '8', co
 // `ctl` is the switchboard each case flips: what the config GET does, how the
 // config PUT answers, and whether Other Billing / Product Cost can be read.
 // The config PUT plays the server's UB rule: when ub_rate equals ub_rate_base
-// the tab did not change the rate, so the stored one stands.
+// the tab did not change the rate, so the stored one stands. A save that
+// carries no profit margin keeps the stored one too.
 function makeCtl(over = {}) {
   return Object.assign({
     cfgGet: 'ok',        // 'ok' | 'hang' | <status>
@@ -156,6 +161,8 @@ function stubFetch(ctl) {
     const ub = parseFloat(s.ub_rate) || 0;
     const base = typeof s.ub_rate_base === 'number' ? s.ub_rate_base : null;
     if (!(base != null && Math.abs(ub - base) <= 1e-9)) ctl.storedUb = ub;
+    // …and the profit margin, only when the save carries one.
+    if (s.profit_margin !== undefined) ctl.storedPm = JSON.parse(JSON.stringify(s.profit_margin));
     return res(200, { ok: true, settings: { ub_rate: ctl.storedUb } });
   };
   return async (url, init = {}) => {
@@ -472,7 +479,8 @@ async function main() {
       && fb.lists.employee_rates['John Doe'] === 31.5, fb && JSON.stringify(fb.lists).slice(0, 200));
     assert('  the rate, and ub_rate_base equal to it', fb && fb.settings.ub_rate === UB_RATE
       && fb.settings.ub_rate_base === UB_RATE);
-    assert('  and the profit margin', fb && fb.settings.profit_margin && fb.settings.profit_margin.base_gal === 275);
+    assert('  and no profit margin: this tab did not change it, so the stored one stands',
+      fb && !('profit_margin' in fb.settings), fb && JSON.stringify(fb.settings));
     setVisibility('visible');
     await sleep(100);
 
@@ -718,6 +726,30 @@ async function main() {
     assert('its invoice number still reaches Intercompany; only its UB figures stay (e-ub, 1200 gal, 420)',
       !!e && e.id === 'e-ub' && e.inv_number === 'INV-12' && e.total === 420 && e.ub_total === 420
         && e.gallons_ub === '1200', JSON.stringify(e));
+    dom.window.close();
+  }
+
+  // ── I2. …but a row moved to a customer whose own UB $/gal is $0 reprices ──
+  // The $0 guard keeps the UB a customer was billed. It must not carry CNX's
+  // UB charge over to Antero, whose own price for UB is $0.
+  {
+    const cfg = CONFIG();
+    cfg.lists.companies.find(c => c.name === 'Antero').ub_rate = 0;
+    const ctl = makeCtl({ cfgBody: cfg });
+    const { dom, ev } = await boot(ctl);
+    await until(() => ev('dustConfigLoaded') && ev('dustLoaded'));
+    await sleep(400);
+    console.log('\n[a UB row billed to CNX, moved to Antero (UB $/gal 0)]');
+    const n = puts(ctl, new RegExp(IC_KEY)).length;
+    ev("setCompany(rows.findIndex(r => r.id === 'r-ub'), 'Antero')");
+    await until(() => puts(ctl, new RegExp(IC_KEY)).length > n, 3000);
+    await sleep(300);
+    const c = ev("calc(rows.find(r => r.id === 'r-ub'))") || {};
+    const e = ctl.ic.find(x => x.source_id === 'r-ub');
+    assert('the page prices its UB at $0 (the case means something)', c.ubTotal === 0 && c.invTotal > 0,
+      JSON.stringify(c));
+    assert('Intercompany bills Antero what the page does: no UB, total = the row\'s total',
+      !!e && e.company_name === 'Antero' && e.ub_total === 0 && e.total === c.invTotal, JSON.stringify(e));
     dom.window.close();
   }
 
@@ -1115,8 +1147,9 @@ async function main() {
     ev("set(rows.findIndex(r => r.id === 'r-veh'), 'inv_number', 'INV-5')");
     await until(() => cfgPuts(ctl).length > n, 3000);
     const p = cfgPuts(ctl)[n];
-    assert('  so the next row edit carries it, not the blank one back over it',
-      p && p.body.settings.profit_margin.base_gal === 275, p && JSON.stringify(p.body.settings.profit_margin));
+    assert('  so the next row edit does not put the blank one back over it: it carries no margin',
+      p && !('profit_margin' in p.body.settings) && ctl.storedPm.base_gal === 275,
+      p && JSON.stringify(p.body.settings.profit_margin));
     await sleep(300);
 
     console.log('\n[…but not over a margin edit the server never took]');
@@ -1130,6 +1163,44 @@ async function main() {
     await poll();
     assert('the unsaved 300 stays', ev('profitMargin.base_gal') === 300, String(ev('profitMargin.base_gal')));
     dom.window.close();
+  }
+
+  // ── O2. A margin edit is not undone by another tab's routine save ────────
+  // A changes the margin; B, busy entering rows, has not polled since. B's
+  // row edit used to send B's old copy back over A's — and A's poll then
+  // took that old copy up too.
+  {
+    const ctl = makeCtl();
+    const A = await boot(ctl);
+    const B = await boot(ctl);
+    await until(() => A.ev('dustConfigLoaded') && A.ev('dustLoaded') && B.ev('dustConfigLoaded') && B.ev('dustLoaded'));
+    await sleep(400);
+    console.log('\n[A changes the margin; B edits a row before its poll]');
+    let n = cfgPuts(ctl).length;
+    A.doc.getElementById('pm-base-rate').value = '4.5';
+    A.ev('pmOnInput()');
+    await until(() => cfgPuts(ctl).length > n && A.ev('pmSaveTimer') === null && A.ev('_configPutInFlight') === 0, 4000);
+    const pa = cfgPuts(ctl)[n];
+    assert('A\'s save carries its margin, and it is stored',
+      pa && pa.body.settings.profit_margin && pa.body.settings.profit_margin.base_rate === 4.5
+        && ctl.storedPm.base_rate === 4.5, pa && JSON.stringify(pa.body.settings));
+    n = cfgPuts(ctl).length;
+    B.ev("set(rows.findIndex(r => r.id === 'r-veh'), 'inv_number', 'INV-3')");
+    await until(() => cfgPuts(ctl).length > n && B.ev('saveTimer') === null && B.ev('_configPutInFlight') === 0, 4000);
+    const pb = cfgPuts(ctl).slice(n);
+    assert('B\'s row edit sends no margin, and A\'s 4.5 stays stored',
+      pb.length > 0 && pb.every(p => !('profit_margin' in p.body.settings)) && ctl.storedPm.base_rate === 4.5,
+      `${JSON.stringify(pb.map(p => p.body.settings))} stored ${ctl.storedPm.base_rate}`);
+    await sleep(300);
+    const poll = async t => { t.ev('_configChangedAt = 0'); t.setVisibility('visible'); await sleep(400); };
+    await poll(A);
+    assert('A\'s poll keeps its 4.5', A.ev('profitMargin.base_rate') === 4.5
+      && A.doc.getElementById('pm-base-rate').value === '4.5', String(A.ev('profitMargin.base_rate')));
+    await poll(B);
+    assert('  and B\'s takes it up', B.ev('profitMargin.base_rate') === 4.5
+      && B.doc.getElementById('pm-base-rate').value === '4.5', String(B.ev('profitMargin.base_rate')));
+    A.dom.window.close();
+    B.dom.window.close();
   }
 
   // ── E. The profit-margin rescue still works ──────────────────────────────
