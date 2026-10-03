@@ -2759,6 +2759,16 @@
         const c    = calc(row);
         const prev = bySourceId.get(row.id);
 
+        // UB gallons priced at $0 mean the rate is missing, not that the UB
+        // is free: a blank or half-typed UB box, a tab still holding the $0 a
+        // blank config save left behind, a config that never loaded. Repricing
+        // an entry that billed UB from that would rewrite it to ub_total 0 —
+        // or, for a UB-only row, void it, and with it the entry's id, sent_at
+        // and the invoice/payment dates entered in Intercompany, which the
+        // entry re-created later does not have. So it is left exactly as it
+        // is until the row prices its UB again.
+        if (prev && c.gallons > 0 && !(ubRateForRow(row) > 0) && (parseFloat(prev.ub_total) || 0) > 0) continue;
+
         if (!(c.invTotal > 0)) {
           // Row is intrinsically no longer billable (rates/gallons cleared).
           // Void any stale entry so IC never bills a figure the row no longer has.
@@ -2983,23 +2993,42 @@
     // and the final write reflects the final list.
     let _configPutChain = Promise.resolve();
 
-    function _dustConfigBody(keepalive) {
+    // The UB rate of the config save now on its way to the server when that
+    // save changes it (it differs from its ub_rate_base), until it is
+    // answered. Saves go one at a time (see _configPutChain), so there is at
+    // most one. The unload flush goes out beside the queue and cannot wait
+    // for that answer to learn the new base — see dustConfigPut.
+    let _ubSending = null;
+
+    // `lists` is the snapshot dustConfigPut took when the save was asked for;
+    // `base` overrides ub_rate_base (the unload flush, see dustConfigPut).
+    function _dustConfigBody(keepalive, lists = dustLists, base = ubRateBase) {
       const init = {
         method: 'PUT',
         headers: AUTH_HDR(),
-        // Snapshot dustLists at send time so queued edits coalesce into the
-        // latest, most-complete list.
         // ub_rate_base is the rate this tab was last given by the server. The
         // server keeps its own rate when ub_rate still equals it — this tab
         // did not change it, so another tab's newer rate is not overwritten.
+        // The settings are read at send time, so ub_rate_base reflects the
+        // answer to every save queued ahead of this one.
         body: JSON.stringify({
-          settings: { ub_rate: ubRate, profit_margin: profitMargin, ub_rate_base: ubRateBase },
-          lists: dustLists,
+          settings: { ub_rate: ubRate, profit_margin: profitMargin, ub_rate_base: base },
+          lists,
         }),
       };
       if (keepalive) init.keepalive = true;
       return init;
     }
+
+    // The profit margin as a comparable value: its fields in a fixed order,
+    // since the server hands the object back with its keys reordered.
+    function _pmKey(pm) {
+      return JSON.stringify([...PM_NUM_FIELDS, 'charge_basis'].map(f => (pm && pm[f] != null) ? pm[f] : null));
+    }
+    // The profit margin as this tab last knew the server to hold it: on load,
+    // from the poller, or as sent in a save the server took. profitMargin
+    // moved off it is an edit of this tab's the server does not have yet.
+    let _pmBase = null;
 
     // Read the server's answer to a config save. A 2xx carries the UB rate
     // now stored, which becomes this tab's ub_rate_base; when it is not what
@@ -3008,18 +3037,23 @@
     // so its totals price at the rate that is actually stored. A 4xx is the
     // server refusing the save — 409 when it would have emptied the lists or
     // zeroed the rate — and its reason goes on screen. Anything else is null.
-    async function _dustConfigAnswer(r, sentUb) {
+    async function _dustConfigAnswer(r, sentUb, sentPm) {
       if (r.ok) {
         const body = await r.json().catch(() => null);
         if (!body) return null;
         const stored = parseFloat(body.settings && body.settings.ub_rate);
         ubRateBase = isFinite(stored) ? stored : sentUb;
+        if (sentPm) _pmBase = sentPm;   // every settings save writes the margin it carries
         if (isFinite(stored) && Math.abs(stored - sentUb) > 1e-9
             && Math.abs(ubRate - sentUb) <= 1e-9) {
           ubRate = stored;
           document.getElementById('ubRateInput').value = ubRate.toFixed(2);
           rows.forEach((_, i) => refreshCalcCells(i));
           refreshAllTotals();
+          // Intercompany may have been mirrored at the rate this tab held
+          // until now; mirror again at the stored one (it queues behind a
+          // sync already running).
+          autoSyncIntercompanyDust();
         }
         if (_dustConfigRefusal) { _dustConfigRefusal = ''; renderDustConfigState(); }
         return body;
@@ -3048,12 +3082,27 @@
 
       // Page-unload flushes must fire synchronously (the tab is closing) and
       // can't await retries — send once, outside the serialization queue.
+      // Being outside it, the flush can overtake the answer to a save that
+      // changes the UB rate and is still out, while ubRateBase is still the
+      // rate before it: a rate typed back to that old value would then read
+      // as "unchanged" and the save still out would win. Against that save's
+      // rate instead, it reads as the change it is.
       if (opts.keepalive) {
-        const sentUb = ubRate;
-        return fetch('/api/dust-config', _dustConfigBody(true))
-          .then(r => _dustConfigAnswer(r, sentUb)).catch(() => null)
+        const sentUb = ubRate, sentPm = _pmKey(profitMargin);
+        const base = (_ubSending != null && Math.abs(ubRate - _ubSending) > 1e-9) ? _ubSending : ubRateBase;
+        return fetch('/api/dust-config', _dustConfigBody(true, dustLists, base))
+          .then(r => _dustConfigAnswer(r, sentUb, sentPm)).catch(() => null)
           .finally(() => { _configPutInFlight = Math.max(0, _configPutInFlight - 1); });
       }
+
+      // The lists as they are NOW, when the save is asked for. Taken at send
+      // time instead, every save queued behind a slow one carried the lists
+      // as the last of them left them: removing the last three materials in
+      // quick succession reached the server as 2 -> 0, which it refuses as a
+      // stale tab's wipe — and every later save from this tab with it. The
+      // queue still delivers them in order, so the last write is the final
+      // list.
+      const listsSnap = JSON.parse(JSON.stringify(dustLists));
 
       // Retry a few times so a transient network/server error doesn't silently
       // drop the edit (saves were previously fire-and-forget with no retry).
@@ -3061,15 +3110,20 @@
       // stops at the first one.
       const send = async () => {
         _configChangedAt = Date.now(); // cover the actual send time for the poll cooldown
-        for (let attempt = 0; attempt < 3; attempt++) {
-          try {
-            const sentUb = ubRate;
-            const r = await fetch('/api/dust-config', _dustConfigBody(false));
-            if (r.ok || (r.status >= 400 && r.status < 500)) return await _dustConfigAnswer(r, sentUb);
-          } catch { /* network error — fall through to retry */ }
-          await new Promise(res => setTimeout(res, 400 * (attempt + 1)));
+        try {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            try {
+              const sentUb = ubRate, sentPm = _pmKey(profitMargin);
+              _ubSending = (ubRateBase == null || Math.abs(sentUb - ubRateBase) > 1e-9) ? sentUb : null;
+              const r = await fetch('/api/dust-config', _dustConfigBody(false, listsSnap));
+              if (r.ok || (r.status >= 400 && r.status < 500)) return await _dustConfigAnswer(r, sentUb, sentPm);
+            } catch { /* network error — fall through to retry */ }
+            await new Promise(res => setTimeout(res, 400 * (attempt + 1)));
+          }
+          return null;
+        } finally {
+          _ubSending = null;
         }
-        return null;
       };
 
       const p = _configPutChain.then(send, send)
@@ -3644,8 +3698,11 @@
         saveTimer = null;
         isSaving  = true;
         try {
-          const ok = await saveDustRows(rows);
-          dustConfigPut();
+          // The config save is awaited before the mirror: its answer carries
+          // the UB rate actually stored, which a tab still holding an old one
+          // (another tab changed it, or it loaded the $0 a blank save left)
+          // takes up there. Mirrored first, Intercompany got the old rate.
+          const [ok] = await Promise.all([saveDustRows(rows), dustConfigPut()]);
           // Mirror qualifying rows into Intercompany Billing automatically.
           if (ok) autoSyncIntercompanyDust();
           setSaveState(ok ? 'saved' : 'error');
@@ -5089,16 +5146,35 @@
     // Both stand down until the config loads (the box is disabled until then
     // too): a rate typed over the unloaded 0 would go out as a deliberate
     // change on the next save that could.
+    //
+    // The live preview only follows a rate above $0. Clearing the box to
+    // retype it, or passing through '0' or '0.' on the way to '0.50', is not
+    // a rate — read as one, it went out as a deliberate $0 with the next save
+    // that happened to fire (a row's debounce, the hide flush), and the
+    // server stores a deliberate $0. A $0 rate is set by committing it.
     function _liveUbRate(val) {
       if (!dustConfigLoaded) return;
-      ubRate = parseFloat(val) || 0;
+      const v = parseFloat(val);
+      if (!(v > 0)) return;
+      ubRate = v;
       rows.forEach((_, i) => refreshCalcCells(i));
       refreshAllTotals();
     }
 
     function onUbRateChange(val) {
       if (!dustConfigLoaded) return;
-      _liveUbRate(val);
+      const el = document.getElementById('ubRateInput');
+      const v = parseFloat(val);
+      // Left empty (or not a number): the rate is unchanged, so say so.
+      if (!isFinite(v) || v < 0) { el.value = ubRate.toFixed(2); return; }
+      if (v === 0 && ubRate > 0
+          && !confirm('Set the default UB gallon rate to $0? Every customer without its own UB $/gal will bill its UB gallons at $0.')) {
+        el.value = ubRate.toFixed(2);
+        return;
+      }
+      ubRate = v;
+      rows.forEach((_, i) => refreshCalcCells(i));
+      refreshAllTotals();
       scheduleSave();
     }
 
@@ -5114,7 +5190,10 @@
         const el = document.getElementById(id);
         if (el) { el.disabled = locked; if (locked) el.title = why; else el.removeAttribute('title'); }
       });
-      document.querySelectorAll('.pm-input, .pm-card-input, .pm-pill').forEach(el => { el.disabled = locked; });
+      // The calculator only: Actual Profit Margin (#an-actual) reuses
+      // .pm-pill for a view toggle that is saved nowhere.
+      document.querySelectorAll('#an-profit .pm-input, #an-profit .pm-card-input, #an-profit .pm-pill')
+        .forEach(el => { el.disabled = locked; });
 
       const el = document.getElementById('dustConfigBanner');
       if (!el) return;
@@ -5551,10 +5630,14 @@
 
       // The config is not a book, but without it every UB gallon above and
       // below is priced at $0 — a figure that reads as real unless said.
+      // "Could not read" only once a read has failed, as the banner does; a
+      // slow first read is still loading, not a failure.
       const booksHtml = `
         ${booksOut.length ? `<div class="dash-book-warn">Could not read ${esc(booksOut.join(' and '))} —
           every division figure on this page excludes ${booksOut.length === 1 ? 'it' : 'them'}.</div>` : ''}
-        ${dustConfigLoaded ? '' : `<div class="dash-book-warn">Could not read the dust rates and customer list —
+        ${dustConfigLoaded ? '' : `<div class="dash-book-warn">${_dustConfigReadFailed
+          ? 'Could not read the dust rates and customer list'
+          : 'Still loading the dust rates and customer list'} —
           every UB gallon on this page is priced at $0 until they load.</div>`}
         <div class="dash-section-lbl">Revenue by Billing Book — ${thisYrStr}</div>
         <div class="proj-table-wrap">
@@ -5757,6 +5840,7 @@
       const _serverPMeff = _pmIsEmpty(_serverPM) ? null : _serverPM;
       const _pmLs = _pmLsGet();
       const _localPM = (_pmLs && _pmLs.pm && typeof _pmLs.pm === 'object') ? _pmLs.pm : null;
+      let _pmPushed = false;
       if (_localPM) {
         const remoteChanged = _serverPMeff && JSON.stringify(_serverPMeff) !== JSON.stringify(_pmLs.synced || null);
         if (remoteChanged) {
@@ -5764,12 +5848,16 @@
           _pmLsSave(true);                 // adopt the remote change as our baseline
         } else {
           Object.assign(profitMargin, _localPM);
-          if (JSON.stringify(_localPM) !== JSON.stringify(_serverPMeff)) pmScheduleSave(); // push rescued edits
+          if (JSON.stringify(_localPM) !== JSON.stringify(_serverPMeff)) { pmScheduleSave(); _pmPushed = true; } // push rescued edits
         }
       } else if (_serverPMeff) {
         Object.assign(profitMargin, _serverPMeff);
         _pmLsSave(true);                   // seed the cache from the server
       }
+      // What the server holds, as this tab shows it — unless a rescued edit
+      // is on its way there, which the poller must not overwrite: unknown
+      // until that save is answered (see _dustConfigAnswer).
+      _pmBase = _pmPushed ? null : _pmKey(profitMargin);
       if (lists && typeof lists === 'object') {
         dustLists.equipment = Array.isArray(lists.equipment) ? lists.equipment : [];
         dustLists.employees = Array.isArray(lists.employees) ? lists.employees : [];
@@ -5803,11 +5891,28 @@
     // that stood down without it.
     function _applyDustConfigLate(config) {
       applyDustConfig(config);
+      // A brand-new company's empty config is built from its rows here as in
+      // init() — once the rows themselves have loaded, or there is nothing to
+      // build from.
+      if (dustLoaded) _repairEmptyListsFromRows();
       if (materializeCompanyVehicleRates() && !_leavingPage) saveDustRows(rows);
       pmInitInputs();
       renderTable();
       if (!_leavingPage) autoSyncIntercompanyDust();
       refreshHomeDashboard();
+    }
+
+    // Auto-repair lists from row data when config comes back empty but rows
+    // exist — and only when it did come back. Lists that never loaded are
+    // not empty, they are unknown, and rebuilding them from rows would
+    // replace every customer (and its rates) with a fresh-id copy. init()
+    // runs it, and so does a config that loads late (_applyDustConfigLate).
+    function _repairEmptyListsFromRows() {
+      const listsEmpty = dustLists.companies.length === 0 && dustLists.equipment.length === 0;
+      if (dustConfigLoaded && !_leavingPage && listsEmpty && rows.length > 0) {
+        syncListsFromImport(rows);
+        dustConfigPut();
+      }
     }
 
     // The first read failed: try again soon rather than leave the page locked
@@ -5859,16 +5964,7 @@
 
       // A page on its way out (see _leavingPage) paints what it read but
       // writes nothing: not the repair, the rate back-fill or the mirror below.
-
-      // Auto-repair lists from row data when config comes back empty but rows
-      // exist — and only when it did come back. Lists that never loaded are
-      // not empty, they are unknown, and rebuilding them from rows would
-      // replace every customer (and its rates) with a fresh-id copy.
-      const listsEmpty = dustLists.companies.length === 0 && dustLists.equipment.length === 0;
-      if (dustConfigLoaded && !_leavingPage && listsEmpty && rows.length > 0) {
-        syncListsFromImport(rows);
-        dustConfigPut();
-      }
+      _repairEmptyListsFromRows();
 
       // Back-fill blank vehicle rates from each customer's V1/V2 defaults so
       // previously-entered rows reflect the rate assigned to their company.
@@ -6103,6 +6199,13 @@
     // print (PDF) and email paths so both render identical data. Returns null
     // if the date range is invalid (after alerting the user).
     function _collectDustReportData() {
+      // Without the config every UB gallon prices at $0, and the report
+      // would go to the customer saying so. The scheduled path refuses the
+      // same state (registerAutoReports).
+      if (!dustConfigLoaded) {
+        alert('The dust rates and customer list have not loaded, so every UB gallon would show $0. Reload the page, then make the report.');
+        return null;
+      }
       const start    = document.getElementById('prtStart').value; // '' = open-ended
       const end      = document.getElementById('prtEnd').value;
       const selected = prtSelectedCustomers();                    // [] = all customers
@@ -7248,7 +7351,7 @@
       // A row added here could never be saved (see obSave), so say so rather
       // than let someone fill it in and lose it.
       if (!obLoaded) {
-        alert('Other Billing has not loaded, so a row added now could not be saved. Give it a moment, or reload the page if this keeps happening.');
+        alert('Other Billing has not loaded, so a row added now could not be saved. The page tries again every minute — or reload it.');
         return;
       }
       const countEl = document.getElementById('ob-bulk-add-count');
@@ -8632,7 +8735,7 @@
     function pcAddRow() {
       // Same as obAddRow: a row that could never be saved is not offered.
       if (!pcLoaded) {
-        alert('Product Cost Tracking has not loaded, so a row added now could not be saved. Give it a moment, or reload the page if this keeps happening.');
+        alert('Product Cost Tracking has not loaded, so a row added now could not be saved. The page tries again every minute — or reload it.');
         return;
       }
       const countEl = document.getElementById('pc-bulk-add-count');
@@ -9188,7 +9291,26 @@
           const ubMoved = serverUb != null && Math.abs(ubRate - ubRateBase) <= 1e-9
             && Math.abs(serverUb - ubRate) > 1e-9;
           if (serverUb != null) ubRateBase = serverUb;
+          // The profit margin on the same terms: unless this tab has an edit
+          // of its own the server has not taken (a debounce still open, or
+          // profitMargin moved off _pmBase). Never refreshed, a tab put its
+          // copy back with its next save of anything — over another tab's
+          // margin, or a blank one over a margin restored since it loaded.
+          // An empty margin on the server is never taken up.
+          const serverPM = (settings && settings.profit_margin && typeof settings.profit_margin === 'object'
+            && !_pmIsEmpty(settings.profit_margin)) ? settings.profit_margin : null;
+          const pmMoved = !!serverPM && !pmSaveTimer && _pmBase != null
+            && _pmKey(profitMargin) === _pmBase && _pmKey(serverPM) !== _pmBase;
           const listsSame = JSON.stringify(incoming) === JSON.stringify(dustLists);
+          if (listsSame && !ubMoved && !pmMoved) return;
+          if (pmMoved) {
+            Object.assign(profitMargin, serverPM);
+            _pmBase = _pmKey(profitMargin);
+            _pmLsSave(true);
+            pmInitInputs();
+            const pmPanel = document.getElementById('an-profit');
+            if (pmPanel && pmPanel.style.display !== 'none') renderProfitMargin();
+          }
           if (listsSame && !ubMoved) return;
           if (!listsSame) Object.assign(dustLists, incoming);
           if (ubMoved) {
@@ -9201,6 +9323,10 @@
           // the user isn't mid-edit, matching the row poll's render path.
           renderTable();
           refreshHomeDashboard();
+          // And Intercompany: this tab may have mirrored rows at the rate or
+          // customer rates it held until now. Nothing is written when the
+          // mirror already matches.
+          autoSyncIntercompanyDust();
         } catch { /* non-fatal */ }
       }
 
@@ -9358,11 +9484,34 @@
         return document.visibilityState === 'hidden' || !localStorage.getItem('fct_token');
       }
 
+      // A first read that failed is tried again on every cycle, through the
+      // loaders, which tell a book with no blob yet (empty) from a failed
+      // read: pollObRows' apiGet reads both as null, so an Other Billing book
+      // never written stayed unloaded, and Product Cost is not polled at all.
+      // Either way the tab stayed locked until a reload.
+      async function retryObLoad() {
+        try {
+          if (_isEditing() || obHasPendingSave()) return;
+          if (await obLoad()) {
+            obRenderTable();
+            autoSyncObIntercompany();
+            refreshHomeDashboard();
+          }
+        } catch { /* non-fatal */ }
+      }
+      async function retryPcLoad() {
+        try {
+          if (pcLoaded) return;
+          if (await pcLoad()) pcRenderTable();
+        } catch { /* non-fatal */ }
+      }
+
       async function pollAll() {
         if (_pollCycleBusy || _pollsSuspended()) return;
         _pollCycleBusy = true;
         try {
-          await Promise.allSettled([pollDustConfig(), pollDustRows(), pollIcSentMap(), pollObRows(), pollEesRows()]);
+          await Promise.allSettled([pollDustConfig(), pollDustRows(), pollIcSentMap(),
+                                    obLoaded ? pollObRows() : retryObLoad(), pollEesRows(), retryPcLoad()]);
         } finally {
           _pollCycleBusy = false;
         }

@@ -21,7 +21,11 @@
  * priced at $0 and employee_rates / cost_codes (kept only in the blob) were
  * gone. This drives the real handler against a real PostgreSQL and asserts,
  * after each save, what both blobs, dust_settings and the normalized tables
- * hold, and what a GET then hands back to the page.
+ * hold, and what a GET then hands back to the page. It also pins the rate
+ * rule's edges: a save that leaves the rate unchanged writes no rate (so a
+ * rate saved meanwhile stands), a body with no usable ub_rate changes none,
+ * a new rate is answered as dust_settings stores it, and the one entry of a
+ * sparse config can still be removed by a page that loaded it.
  */
 
 const fs     = require('fs');
@@ -46,13 +50,18 @@ const ROOT = path.resolve(__dirname, '..');
 // parallel, which a single pg Client only queues with a deprecation warning.
 let pool = null;
 
+// A case can set this to run something just before a statement the handler
+// sends, keyed on its text: another tab's save landing mid-request, say.
+let beforeStatement = null;
+
 // neon-serverless' tagged template, backed by pg: same contract (a Promise of
 // the row array), so the handler cannot tell the difference.
 function makeSql() {
   return (strings, ...values) => {
     let text = '';
     strings.forEach((s, i) => { text += s + (i < values.length ? '$' + (i + 1) : ''); });
-    return pool.query(text, values).then(r => r.rows);
+    const go = () => pool.query(text, values).then(r => r.rows);
+    return beforeStatement ? Promise.resolve(beforeStatement(text)).then(go) : go();
   };
 }
 
@@ -215,18 +224,18 @@ const FULL = {
   settings: { ub_rate: 0.35, profit_margin: PM_FULL },
   lists: {
     equipment: [
-      { id: 'e1', name: 'Distributor Truck 4000', unit_number: '4000', vehicle_rate: 99 },
-      { id: 'e2', name: 'Escort Vehicle 7549',    unit_number: '7549', vehicle_rate: 50 },
+      { id: 'dg-e1', name: 'Distributor Truck 4000', unit_number: '4000', vehicle_rate: 99 },
+      { id: 'dg-e2', name: 'Escort Vehicle 7549',    unit_number: '7549', vehicle_rate: 50 },
     ],
     employees: ['Alice Adams', 'Bob Baker', 'Carl Cole'],
     companies: [
-      { id: 'co-cnx', name: 'CNX', tier: '', v1_rate: 135, v2_rate: 60, ub_rate: null,
-        locations: [{ id: 'l1', name: 'Deer Lick', state: 'PA' }, { id: 'l2', name: 'Shirley', state: 'PA' }],
-        men: [{ id: 'p1', name: 'Steve Quinn' }, { id: 'p2', name: 'Al Dorsey' }] },
-      { id: 'co-ant', name: 'Antero', tier: '', v1_rate: 145, v2_rate: null, ub_rate: 1.55,
-        locations: [{ id: 'l3', name: 'Bear Hollow', state: 'WV' }],
-        men: [{ id: 'p3', name: 'Max Lockerbie' }] },
-      { id: 'co-eqt', name: 'EQT', tier: '', v1_rate: null, v2_rate: null, ub_rate: null,
+      { id: 'dg-co-cnx', name: 'CNX', tier: '', v1_rate: 135, v2_rate: 60, ub_rate: null,
+        locations: [{ id: 'dg-l1', name: 'Deer Lick', state: 'PA' }, { id: 'dg-l2', name: 'Shirley', state: 'PA' }],
+        men: [{ id: 'dg-p1', name: 'Steve Quinn' }, { id: 'dg-p2', name: 'Al Dorsey' }] },
+      { id: 'dg-co-ant', name: 'Antero', tier: '', v1_rate: 145, v2_rate: null, ub_rate: 1.55,
+        locations: [{ id: 'dg-l3', name: 'Bear Hollow', state: 'WV' }],
+        men: [{ id: 'dg-p3', name: 'Max Lockerbie' }] },
+      { id: 'dg-co-eqt', name: 'EQT', tier: '', v1_rate: null, v2_rate: null, ub_rate: null,
         locations: [], men: [] },
     ],
     materials: ['Ultra Bond', 'Calcium Chloride'],
@@ -253,11 +262,11 @@ const fromLoaded = (mutate) => {
 const SINGLE = {
   settings: { ub_rate: 0.35, profit_margin: PM_FULL },
   lists: {
-    equipment: [{ id: 'e1', name: 'Distributor Truck 4000', unit_number: '4000', vehicle_rate: 99 }],
+    equipment: [{ id: 'dg-e1', name: 'Distributor Truck 4000', unit_number: '4000', vehicle_rate: 99 }],
     employees: ['Alice Adams'],
-    companies: [{ id: 'co-cnx', name: 'CNX', tier: '', v1_rate: 135, v2_rate: 60, ub_rate: null,
-      locations: [{ id: 'l1', name: 'Deer Lick', state: 'PA' }, { id: 'l2', name: 'Shirley', state: 'PA' }],
-      men: [{ id: 'p1', name: 'Steve Quinn' }] }],
+    companies: [{ id: 'dg-co-cnx', name: 'CNX', tier: '', v1_rate: 135, v2_rate: 60, ub_rate: null,
+      locations: [{ id: 'dg-l1', name: 'Deer Lick', state: 'PA' }, { id: 'dg-l2', name: 'Shirley', state: 'PA' }],
+      men: [{ id: 'dg-p1', name: 'Steve Quinn' }] }],
     materials: ['Ultra Bond'],
     states: ['PA'],
     mu: ['gal'],
@@ -305,6 +314,10 @@ async function run() {
     const d = String(r.body && r.body.detail);
     assert('detail says what would have gone and to reload',
       /companies \(3\)/.test(d) && /employee rates \(2\)/.test(d) && /\$0\.35/.test(d) && /Reload the page/.test(d), d);
+    // The refused save is usually a row edit's, and the row itself was saved:
+    // "Nothing was saved ... make your change again" had people redo it.
+    assert('detail says the tracking rows are not affected, not that nothing was saved',
+      /Tracking rows save separately and are not affected/.test(d) && !/Nothing was saved/.test(d), d);
     assertUnchanged('incident payload', before, await snapshot());
     const g = await assertGet('incident payload', GET_FULL);
     assert('GET still carries profit_margin, employee_rates and the company tree',
@@ -337,7 +350,7 @@ async function run() {
     const after = await snapshot();
     assertUnchanged('single-entry lists', before, after);
     assert('the lone company keeps both locations and its man',
-      same(after.companies, ['co-cnx']) && same(after.locations, ['l1', 'l2']) && same(after.personnel, ['p1']));
+      same(after.companies, ['dg-co-cnx']) && same(after.locations, ['dg-l1', 'dg-l2']) && same(after.personnel, ['dg-p1']));
     await assertGet('single-entry lists', { ub_rate: 0.35, companies: 1, materials: 1, employee_rates: 1, cost_codes: 1 });
   }
 
@@ -493,6 +506,83 @@ async function run() {
       same(s.settingsBlob, before.settingsBlob) && s.settingsAt === before.settingsAt);
     assert('list edit landed', same(s.employees, ['Alice Adams', 'Bob Baker']));
     await assertGet('one side only', Object.assign({}, GET_FULL, { employees: 2 }));
+  }
+
+  console.log('\n[11] a settings save with no usable ub_rate');
+  {
+    // It once read as 0, and with a base present 0 is a deliberate change:
+    // a save meant only for the profit margin zeroed the rate.
+    for (const [label, ub] of [['missing', undefined], ['null', null], ['empty string', '']]) {
+      await seed(FULL);
+      const settings = { profit_margin: Object.assign({}, PM_FULL, { base_rate: 2.2 }), ub_rate_base: 0.35 };
+      if (ub !== undefined) settings.ub_rate = ub;
+      const r = await put({ settings });
+      assert(`ub_rate ${label}, base 0.35: 200 with the stored 0.35`, r.statusCode === 200 && rateOf(r) === 0.35,
+        `${r.statusCode} ${JSON.stringify(r.body)}`);
+      const s = await snapshot();
+      assert(`  ub_rate ${label}: 0.35 kept in dust_settings and the blob`, s.rate === 0.35 && s.settingsBlob.ub_rate === 0.35,
+        `${s.rate} / ${s.settingsBlob.ub_rate}`);
+      assert(`  ub_rate ${label}: the profit margin it carried was saved`, s.settingsBlob.profit_margin.base_rate === 2.2);
+    }
+  }
+
+  console.log('\n[12] a rate saved by another tab while an unchanged-rate save is running');
+  {
+    // Tab B (rate untouched, base 0.35) saves a list edit. Its PUT reads the
+    // stored 0.35; tab A's change to 0.50 lands before B writes anything.
+    // B used to write the 0.35 it had read back over A's 0.50.
+    await seed(FULL);
+    let fired = false;
+    beforeStatement = async text => {
+      if (fired || !/INSERT INTO (app_data|dust_settings)/.test(text)) return;
+      fired = true;
+      await q(`UPDATE dust_settings SET ub_rate = 0.5 WHERE company_code = $1`, [CO]);
+      await q(`UPDATE app_data SET value = jsonb_set(value, '{ub_rate}', '0.5') WHERE key = $1`, [`${CO}:dust_settings`]);
+    };
+    let r;
+    try { r = await put(fromLoaded(b => { b.lists.states = ['PA', 'WV', 'OH']; })); }
+    finally { beforeStatement = null; }
+    assert('the other tab\'s save did land mid-request (the case means something)', fired);
+    assert('B: 200, answering with the rate stored now, 0.50', r.statusCode === 200 && rateOf(r) === 0.5,
+      `${r.statusCode} ${JSON.stringify(r.body)}`);
+    const s = await snapshot();
+    assert('0.50 stands in dust_settings and the blob', s.rate === 0.5 && s.settingsBlob.ub_rate === 0.5,
+      `${s.rate} / ${s.settingsBlob.ub_rate}`);
+    assert('B\'s list edit and profit margin landed', same(s.states, ['PA', 'WV', 'OH'])
+      && same(s.settingsBlob.profit_margin, PM_FULL));
+  }
+
+  console.log('\n[13] a new rate with more decimals than dust_settings keeps');
+  {
+    await seed(FULL);
+    const r = await put(fromLoaded(b => { b.settings.ub_rate = 0.12345; }));
+    const s = await snapshot();
+    assert('the answer, the blob and dust_settings all say 0.1235',
+      r.statusCode === 200 && rateOf(r) === 0.1235 && s.settingsBlob.ub_rate === 0.1235 && s.rate === 0.1235,
+      `${JSON.stringify(r.body)} / blob ${s.settingsBlob.ub_rate} / table ${s.rate}`);
+  }
+
+  console.log('\n[14] removing the only entry a sparse config holds');
+  {
+    // A company still being set up: a rate and one state, every list else
+    // empty. Removing the state empties every list — which the blank rule
+    // refused every time, reload or not.
+    const SPARSE = clone(FULL);
+    SPARSE.lists = { equipment: [], employees: [], companies: [], materials: [], states: ['PA'], mu: [],
+                     employee_rates: {}, cost_codes: [] };
+    await seed(SPARSE);
+    let before = await snapshot();
+    let r = await put({ settings: { ub_rate: 0.35, profit_margin: PM_FULL },
+                        lists: Object.assign(clone(SPARSE.lists), { states: [] }) });
+    assert('from a page that cannot show it loaded (no base): still 409', r.statusCode === 409
+      && same(r.body.refused, ['blank_lists']), `${r.statusCode} ${JSON.stringify(r.body)}`);
+    assertUnchanged('sparse config, no base', before, await snapshot());
+    r = await put({ settings: { ub_rate: 0.35, ub_rate_base: 0.35, profit_margin: PM_FULL },
+                    lists: Object.assign(clone(SPARSE.lists), { states: [] }) });
+    assert('from a page that loaded it (base sent): 200', r.statusCode === 200, `${r.statusCode} ${JSON.stringify(r.body)}`);
+    const s = await snapshot();
+    assert('the state is gone from the table and the blob', s.states.length === 0 && same(s.listsBlob.states, []),
+      JSON.stringify(s.states));
   }
 
   console.log('\n────────────────────────────────────────');

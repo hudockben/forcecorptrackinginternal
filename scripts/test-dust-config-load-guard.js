@@ -31,7 +31,18 @@
  *   - Other Billing and Product Cost refuse to add (and save) rows after a
  *     failed load;
  *   - a page being redirected away (another division picked) writes nothing;
- *   - the profit margin's local-cache rescue still pushes, once loaded.
+ *   - the profit margin's local-cache rescue still pushes, once loaded;
+ *   - a tab holding an old UB rate mirrors Intercompany at the stored one
+ *     (its row edit waits for the config save's answer; the poll re-mirrors),
+ *     and a tab loaded at a stored $0 never voids a UB-only entry;
+ *   - an emptied or half-typed UB box is not a $0 rate, and a committed $0
+ *     asks first;
+ *   - the hide flush, sent while a UB change is still out, still reads as
+ *     the change it is; list removals queued behind a slow save reach the
+ *     server one step at a time;
+ *   - a config that loads late and empty still builds its lists; Other
+ *     Billing and Product Cost retry a failed first read; the poller takes
+ *     up the profit margin; Print/Email refuse to price UB at $0.
  */
 
 const fs   = require('fs');
@@ -120,8 +131,11 @@ function makeCtl(over = {}) {
     cfgPut: 'ok',        // 'ok' | 'defer' | <status>
     refusal: null,       // body for a 4xx config PUT
     storedUb: UB_RATE,
+    storedPm: PM,        // the profit margin a good config GET answers
     obGet: 'ok', pcGet: 'ok',
+    obMissing: false,    // the Other Billing blob does not exist yet (200, value null)
     deferred: [],        // resolvers for cfgPut 'defer'
+    ic: JSON.parse(JSON.stringify(IC_ENTRIES)),   // the Intercompany billing record: writes land here
     log: [],             // every request: { method, url, body, keepalive }
   }, over);
 }
@@ -155,7 +169,7 @@ function stubFetch(ctl) {
         if (ctl.cfgGet === 'hang') return new Promise(() => {});
         if (ctl.cfgGet !== 'ok') return res(ctl.cfgGet, { error: 'boom' });
         if (ctl.cfgBody) return res(200, ctl.cfgBody);
-        return res(200, { ...CONFIG(), settings: { ...CONFIG().settings, ub_rate: ctl.storedUb } });
+        return res(200, { ...CONFIG(), settings: { ub_rate: ctl.storedUb, profit_margin: ctl.storedPm } });
       }
       if (ctl.cfgPut === 'defer') return new Promise(done => ctl.deferred.push(() => done(cfgAnswer(body))));
       if (ctl.cfgPut !== 'ok') return res(ctl.cfgPut, ctl.refusal || { error: 'boom' });
@@ -169,12 +183,16 @@ function stubFetch(ctl) {
     const m = /\/api\/data\/([^?]+)/.exec(u);
     if (m) {
       const key = decodeURIComponent(m[1]);
-      if (method !== 'GET') return res(200, { ok: true });
+      if (method !== 'GET') {
+        if (key === IC_KEY && body && Array.isArray(body.value)) ctl.ic = body.value;
+        return res(200, { ok: true });
+      }
       if (key === OB_KEY && ctl.obGet !== 'ok') return res(500, { error: 'boom' });
       if (key === PC_KEY && ctl.pcGet !== 'ok') return res(500, { error: 'boom' });
+      if (key === OB_KEY && ctl.obMissing) return res(200, { value: null, updated_at: null });
       const value = {
         [OB_KEY]: OB_ROWS, [PC_KEY]: PC_ROWS,
-        fct_intercompany_companies: IC_COMPANIES, [IC_KEY]: IC_ENTRIES,
+        fct_intercompany_companies: IC_COMPANIES, [IC_KEY]: ctl.ic,
       }[key];
       return res(200, { value: value === undefined ? null : JSON.parse(JSON.stringify(value)),
                         updated_at: '2026-10-01T00:00:00.000Z' });
@@ -278,7 +296,22 @@ async function main() {
     assert('Manage Lists is disabled', (doc.getElementById('manageListsBtn') || {}).disabled === true);
     assert('Repair Lists is disabled', doc.getElementById('repairBtn').disabled === true);
     assert('the profit margin inputs are disabled',
-      [...doc.querySelectorAll('.pm-input, .pm-card-input, .pm-pill')].every(el => el.disabled));
+      [...doc.querySelectorAll('#an-profit .pm-input, #an-profit .pm-card-input, #an-profit .pm-pill')].every(el => el.disabled));
+    // Actual Profit Margin reuses .pm-pill for a view toggle saved nowhere.
+    assert('  but not the Actual Profit Margin basis toggle',
+      [...doc.querySelectorAll('#an-actual .pm-pill')].length === 2
+      && [...doc.querySelectorAll('#an-actual .pm-pill')].every(el => !el.disabled));
+
+    console.log('\n[the Print and Email reports refuse to price UB at $0]');
+    win.__alerts.length = 0;
+    win.open = () => { win.__opened = true; return null; };
+    win.openReportEmailModal = () => { win.__emailed = true; };
+    ev('generateDustReport()');
+    ev('emailDustReport()');
+    assert('neither the PDF nor the email went out', !win.__opened && !win.__emailed);
+    assert('  and both say why', win.__alerts.length === 2 && win.__alerts.every(a => /have not loaded/.test(a)),
+      win.__alerts.join(' | '));
+    win.__alerts.length = 0;
 
     console.log('\n[(a) a hide and an unload send no config]');
     setVisibility('hidden');
@@ -398,6 +431,10 @@ async function main() {
     assert('the editors are locked while it loads',
       doc.getElementById('ubRateInput').disabled && (doc.getElementById('manageListsBtn') || {}).disabled === true);
     assert('  without crying failure yet', (doc.getElementById('dustConfigBanner') || {}).hidden === true);
+    ev('refreshHomeDashboard()');
+    const home = doc.getElementById('home-content').textContent;
+    assert('  nor does the home dashboard: it says the rates are still loading',
+      /Still loading the dust rates/.test(home) && !/Could not read the dust rates/.test(home), home.slice(0, 300));
     setVisibility('hidden');
     win.dispatchEvent(new win.Event('beforeunload'));
     await sleep(50);
@@ -575,6 +612,243 @@ async function main() {
     assert('init() still builds the lists from the rows and saves them',
       put && put.body.lists.companies.map(c => c.name).sort().join() === 'Antero,CNX',
       put && JSON.stringify(put.body.lists.companies.map(c => c.name)));
+    dom.window.close();
+  }
+
+  // ── G2. …and when that empty config loads late ───────────────────────────
+  {
+    const ctl = makeCtl({ cfgGet: 503, cfgBody: { settings: { ub_rate: 0, profit_margin: null },
+      lists: { equipment: [], employees: [], companies: [], materials: [], states: [], mu: [],
+               employee_rates: {}, cost_codes: [] } } });
+    const { dom, ev } = await boot(ctl);
+    await until(() => ev('_dustConfigReadFailed'));
+    ctl.cfgGet = 'ok';
+    await until(() => ev('dustConfigLoaded'), 4000);
+    await until(() => cfgPuts(ctl).length > 0, 2000);
+    console.log('\n[a company with nothing stored yet, whose first read failed]');
+    const put = cfgPuts(ctl)[0];
+    assert('the late load builds the lists from the rows too, and saves them',
+      put && put.body.lists.companies.map(c => c.name).sort().join() === 'Antero,CNX',
+      put ? JSON.stringify(put.body.lists.companies.map(c => c.name)) : 'no config PUT');
+    dom.window.close();
+  }
+
+  // ── H. A tab holding an old rate mirrors Intercompany at the stored one ────
+  {
+    const ctl = makeCtl();
+    const { dom, ev, setVisibility } = await boot(ctl);
+    await until(() => ev('dustConfigLoaded') && ev('dustLoaded'));
+    await sleep(400);   // init()'s own mirror, at 0.35
+    console.log('\n[another tab changed the rate; this one edits a row before its poll]');
+    // The other tab's own mirror priced the UB-only row at 0.50 (600). This
+    // tab still holds 0.35, and its row edit used to mirror before the
+    // config save's answer told it the stored rate — putting 420 back.
+    ctl.storedUb = 0.5;
+    let n = puts(ctl, new RegExp(IC_KEY)).length;
+    // The real config PUT is the slow one (it rewrites every customer), the
+    // Intercompany reads are quick GETs: hold its answer back a while.
+    ctl.cfgPut = 'defer';
+    ev("set(rows.findIndex(r => r.id === 'r-veh'), 'inv_number', 'INV-9')");
+    await until(() => ctl.deferred.length === 1, 3000);
+    await sleep(400);
+    ctl.deferred.shift()();
+    ctl.cfgPut = 'ok';
+    await until(() => ev('ubRate') === 0.5, 3000);
+    await sleep(700);
+    const ubTotal = w => ((w.body.value || []).find(e => e.source_id === 'r-ub') || {}).total;
+    let totals = puts(ctl, new RegExp(IC_KEY)).slice(n).map(ubTotal);
+    assert('the row edit\'s config save took up the stored 0.50', ev('ubRate') === 0.5 && ev('ubRateBase') === 0.5);
+    assert('Intercompany was written, never at the old rate: r-ub at 600, not 420',
+      totals.length > 0 && totals.every(t => t === 600), JSON.stringify(totals));
+
+    console.log('\n[the poll brings in another rate: Intercompany follows]');
+    ctl.storedUb = 0.48;
+    n = puts(ctl, new RegExp(IC_KEY)).length;
+    ev('_configChangedAt = 0');
+    setVisibility('visible');
+    await until(() => puts(ctl, new RegExp(IC_KEY)).length > n, 2000);
+    totals = puts(ctl, new RegExp(IC_KEY)).slice(n).map(ubTotal);
+    assert('the poll took up 0.48 and mirrored at it (r-ub 576)', ev('ubRate') === 0.48
+      && totals.length > 0 && totals.every(t => t === 576), `${ev('ubRate')} ${JSON.stringify(totals)}`);
+    dom.window.close();
+  }
+
+  // ── I. Loaded at a stored $0 (after the blank save, before the restore) ────
+  {
+    const ctl = makeCtl({ storedUb: 0 });
+    const { dom, ev } = await boot(ctl);
+    await until(() => ev('dustConfigLoaded') && ev('dustLoaded'));
+    await sleep(400);
+    ev("set(rows.findIndex(r => r.id === 'r-veh'), 'inv_number', 'INV-7')");
+    await sleep(1500);
+    console.log('\n[a tab loaded at the $0 a blank save left behind]');
+    const writes = puts(ctl, new RegExp(IC_KEY));
+    assert('the mirror did run and write (the case means something)', writes.length > 0);
+    assert('the UB-only row\'s entry is kept as it was: same id, still 420 — not voided at $0',
+      writes.every(w => { const e = (w.body.value || []).find(x => x.source_id === 'r-ub');
+                          return !!e && e.id === 'e-ub' && e.total === 420 && e.ub_total === 420; }),
+      JSON.stringify(writes.map(w => (w.body.value || []).find(x => x.source_id === 'r-ub') || null)));
+    dom.window.close();
+  }
+
+  // ── J. An emptied or half-typed UB box is not a rate ──────────────────────
+  {
+    const ctl = makeCtl();
+    const { dom, win, doc, ev, setVisibility } = await boot(ctl);
+    await until(() => ev('dustConfigLoaded') && ev('dustLoaded'));
+    await sleep(400);
+    const el = doc.getElementById('ubRateInput');
+    const input  = v => { el.value = v; el.dispatchEvent(new win.Event('input',  { bubbles: true })); };
+    const change = v => { el.value = v; el.dispatchEvent(new win.Event('change', { bubbles: true })); };
+    console.log('\n[the UB box cleared to retype it, inside a row edit\'s debounce]');
+    let n = cfgPuts(ctl).length;
+    const icBefore = puts(ctl, new RegExp(IC_KEY)).length;
+    ev("set(rows.findIndex(r => r.id === 'r-veh'), 'inv_number', 'INV-8')");
+    input('');
+    assert('an emptied box leaves the rate at 0.35', ev('ubRate') === UB_RATE, String(ev('ubRate')));
+    input('0');
+    assert('  and so does the "0" on the way to "0.50"', ev('ubRate') === UB_RATE, String(ev('ubRate')));
+    await until(() => cfgPuts(ctl).length > n, 3000);
+    const p = cfgPuts(ctl)[n];
+    assert('the row edit\'s config save carries 0.35 against base 0.35 — not a deliberate $0',
+      p && p.body.settings.ub_rate === UB_RATE && p.body.settings.ub_rate_base === UB_RATE,
+      p && JSON.stringify(p.body.settings));
+    assert('  the server still holds 0.35', ctl.storedUb === UB_RATE, String(ctl.storedUb));
+    await sleep(500);
+    const ic = puts(ctl, new RegExp(IC_KEY)).slice(icBefore);
+    assert('  and Intercompany kept the UB-only row at 420',
+      ic.length > 0 && ic.every(w => ((w.body.value || []).find(e => e.source_id === 'r-ub') || {}).total === 420),
+      JSON.stringify(ic.map(w => ((w.body.value || []).find(e => e.source_id === 'r-ub') || null))));
+
+    console.log('\n[…or cleared, and the tab hidden to look the new rate up]');
+    input('');
+    n = cfgPuts(ctl).length;
+    setVisibility('hidden');
+    await sleep(50);
+    const f = cfgPuts(ctl).slice(n).find(q => q.keepalive);
+    assert('the hide flush carries 0.35 against base 0.35', f && f.body.settings.ub_rate === UB_RATE
+      && f.body.settings.ub_rate_base === UB_RATE, f && JSON.stringify(f.body.settings));
+    setVisibility('visible');
+    await sleep(100);
+
+    console.log('\n[committing the box]');
+    n = cfgPuts(ctl).length;
+    change('');
+    assert('an empty box committed puts the rate back in it', el.value === '0.35' && ev('ubRate') === UB_RATE, el.value);
+    win.confirm = () => false;
+    change('0');
+    assert('a $0 rate asks first; cancelled, nothing changes', el.value === '0.35' && ev('ubRate') === UB_RATE, el.value);
+    await sleep(1200);
+    assert('  and nothing was saved', cfgPuts(ctl).length === n, String(cfgPuts(ctl).length - n));
+    win.confirm = () => true;
+    change('0');
+    await until(() => ctl.storedUb === 0, 3000);
+    assert('confirmed, $0 is saved as the deliberate change it is', ev('ubRate') === 0 && ctl.storedUb === 0);
+    dom.window.close();
+  }
+
+  // ── K. The hide flush while a UB change is still on its way ───────────────
+  {
+    const ctl = makeCtl();
+    const { dom, win, doc, ev, setVisibility } = await boot(ctl);
+    await until(() => ev('dustConfigLoaded') && ev('dustLoaded'));
+    await sleep(400);
+    ctl.cfgPut = 'defer';
+    typeUb(win, doc, '0.50');
+    await until(() => ctl.deferred.length === 1, 3000);   // the 0.50 save is out, unanswered
+    typeUb(win, doc, '0.35');                              // typed back, then the tab hidden
+    setVisibility('hidden');
+    await sleep(50);
+    console.log('\n[a rate typed back while its change is still out, then the tab hidden]');
+    const ka = cfgPuts(ctl).filter(q => q.keepalive).pop();
+    assert('the flush carries 0.35', ka && ka.body.settings.ub_rate === UB_RATE, ka && JSON.stringify(ka.body.settings));
+    assert('  against the rate of the save still out (0.50), so it reads as the change it is',
+      ka && ka.body.settings.ub_rate_base === 0.5, ka && JSON.stringify(ka.body.settings));
+    for (let i = 0; i < 20 && ctl.deferred.length; i++) { ctl.deferred.shift()(); await sleep(30); }
+    await sleep(100);
+    assert('the server takes the 0.50 save, then the flush: it ends on 0.35, the last rate typed',
+      ctl.storedUb === UB_RATE, String(ctl.storedUb));
+    dom.window.close();
+  }
+
+  // ── L. List removals queued behind a config save that is still out ────────
+  {
+    const ctl = makeCtl();
+    const { dom, ev } = await boot(ctl);
+    await until(() => ev('dustConfigLoaded') && ev('dustLoaded'));
+    await sleep(400);
+    ctl.cfgPut = 'defer';
+    const n = cfgPuts(ctl).length;
+    ev('saveLists()');   // any config save already out: a row edit's, a rate's
+    await until(() => ctl.deferred.length === 1, 2000);
+    ev("removeListItem('materials', 'ClearFrac')");
+    ev("removeListItem('materials', 'Calcium Chloride')");
+    for (let i = 0; i < 40 && (cfgPuts(ctl).length < n + 3 || ctl.deferred.length); i++) {
+      if (ctl.deferred.length) ctl.deferred.shift()();
+      await sleep(30);
+    }
+    console.log('\n[two removals queued behind a save still out]');
+    const sent = cfgPuts(ctl).slice(n).map(q => q.body.lists.materials);
+    // Sent as the lists stood at send time, both queued saves carried [] —
+    // 2 -> 0 in one step, which the server refuses as a stale tab's wipe.
+    assert('each reaches the server as its own step: 2, then 1, then 0',
+      JSON.stringify(sent) === JSON.stringify([['ClearFrac', 'Calcium Chloride'], ['Calcium Chloride'], []]),
+      JSON.stringify(sent));
+    dom.window.close();
+  }
+
+  // ── N. Other Billing and Product Cost: a failed first read is retried ─────
+  {
+    const ctl = makeCtl({ obGet: 500, pcGet: 500 });
+    const { dom, ev, setVisibility } = await boot(ctl);
+    await until(() => ev('dustConfigLoaded') && ev('dustLoaded'));
+    await sleep(300);
+    console.log('\n[Other Billing and Product Cost, after a failed first read]');
+    assert('neither loaded', ev('obLoaded') === false && ev('pcLoaded') === false);
+    ctl.obGet = 'ok'; ctl.obMissing = true;   // and Other Billing has no blob yet: an empty book
+    ctl.pcGet = 'ok';
+    setVisibility('visible');                  // a returning tab polls at once
+    await until(() => ev('obLoaded') && ev('pcLoaded'), 3000);
+    assert('the poll loads Other Billing, a book with no blob yet as an empty one',
+      ev('obLoaded') === true && ev('obRows.length') === 0);
+    assert('  and Product Cost, which nothing read again before', ev('pcLoaded') === true
+      && ev('pcRows.length') === PC_ROWS.length);
+    dom.window.close();
+  }
+
+  // ── O. The poller refreshes the profit margin ─────────────────────────────
+  {
+    const BLANK_PM = { base_gal: null, base_rate: null, soap_gal: null, soap_rate: null, water_gal: null,
+                       water_rate: null, mix_parts: null, charge_basis: 'invoice', charge: null };
+    const ctl = makeCtl({ storedPm: BLANK_PM });
+    const { dom, doc, ev, setVisibility } = await boot(ctl);
+    await until(() => ev('dustConfigLoaded') && ev('dustLoaded'));
+    await sleep(400);
+    console.log('\n[a tab that loaded the blank margin, then the margin is restored]');
+    assert('loaded blank', ev('profitMargin.base_gal') === null);
+    ctl.storedPm = PM;   // recovery.sql — or another tab — sets it
+    const poll = async () => { ev('_configChangedAt = 0'); setVisibility('visible'); await sleep(400); };
+    await poll();
+    assert('the poll takes it up', ev('profitMargin.base_gal') === 275 && ev('profitMargin.charge_basis') === 'ub'
+      && doc.getElementById('pm-base-gal').value === '275');
+    let n = cfgPuts(ctl).length;
+    ev("set(rows.findIndex(r => r.id === 'r-veh'), 'inv_number', 'INV-5')");
+    await until(() => cfgPuts(ctl).length > n, 3000);
+    const p = cfgPuts(ctl)[n];
+    assert('  so the next row edit carries it, not the blank one back over it',
+      p && p.body.settings.profit_margin.base_gal === 275, p && JSON.stringify(p.body.settings.profit_margin));
+    await sleep(300);
+
+    console.log('\n[…but not over a margin edit the server never took]');
+    ctl.cfgPut = 500;
+    doc.getElementById('pm-base-gal').value = '300';
+    ev('pmOnInput()');
+    await sleep(1000);
+    await until(() => ev('_configPutInFlight') === 0 && ev('pmSaveTimer') === null, 5000);
+    ctl.cfgPut = 'ok';
+    ctl.storedPm = { ...PM, base_gal: 280 };
+    await poll();
+    assert('the unsaved 300 stays', ev('profitMargin.base_gal') === 300, String(ev('profitMargin.base_gal')));
     dom.window.close();
   }
 

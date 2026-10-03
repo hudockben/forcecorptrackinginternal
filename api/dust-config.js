@@ -226,6 +226,12 @@ module.exports = async (req, res) => {
       const refused = [];
       const emptied = [];
 
+      // The rate this save carries, and ub_rate_base: the rate this tab last
+      // got from the server (see the UB rule below). Only a page that loaded
+      // its config sends a base, which the list rule also relies on.
+      const incomingRate = settings ? safeFloat(settings.ub_rate)      : null;
+      const base         = settings ? safeFloat(settings.ub_rate_base) : null;
+
       // Lists. Stored size is the larger of the blob and the normalized table,
       // because after the blank save the blob itself was empty while the
       // tables still held everything. Arrays are sized after the same null/''
@@ -255,12 +261,18 @@ module.exports = async (req, res) => {
         // has to let through so items can still be removed one at a time.
         const blank = sizes.every(s => s.incoming === 0);
         const held  = sizes.filter(s => s.stored > 0);
-        if (blank && held.length) refused.push('blank_lists');
+        // The one exception: the whole config holds a single entry (one state,
+        // say, on a company still being set up), and a page that loaded it
+        // removes it. Without this that entry could never be deleted, reload
+        // or not. The incident's blank save carried no base.
+        const lastEntry = base !== null && held.reduce((n, s) => n + s.stored, 0) <= 1;
+        const blanked = blank && held.length > 0 && !lastEntry;
+        if (blanked) refused.push('blank_lists');
         // Any one list going from several entries to none in a single save is
         // a stale or half-loaded tab, not a user deleting items (2 -> 1 -> 0).
         const wiped = sizes.filter(s => s.stored > 1 && s.incoming === 0);
         wiped.forEach(s => refused.push('empty_' + s.key));
-        (blank && held.length ? held : wiped).forEach(s => emptied.push(`${s.label} (${s.stored})`));
+        (blanked ? held : wiped).forEach(s => emptied.push(`${s.label} (${s.stored})`));
       }
 
       // UB rate. ub_rate_base is the rate this tab last got from the server.
@@ -268,19 +280,28 @@ module.exports = async (req, res) => {
       // so the stored one stands (another tab may have changed it since). A
       // different value is an edit and is written, including a deliberate 0.
       // A page too old to send a base can't say which, so it can't zero a
-      // stored rate.
+      // stored rate. A body with no usable ub_rate at all changes nothing:
+      // it once read as 0, so a settings save meant only for the profit
+      // margin, sent with a base, zeroed the rate.
+      // keepRate: the stored rate stands, and this save writes no rate at all
+      // (see the writes below), so a rate another tab saves while this
+      // request is running is not put back to the one read above.
       let rate = storedRate;
-      if (settings) {
-        const incoming = safeFloat(settings.ub_rate) ?? 0;
-        const base     = safeFloat(settings.ub_rate_base);
-        if (force)                                rate = incoming;
-        else if (base !== null)                   rate = Math.abs(incoming - base) < 1e-9 ? storedRate : incoming;
-        else if (storedRate > 0 && incoming <= 0) refused.push('zero_ub_rate');
-        else                                      rate = incoming;
+      let keepRate = true;
+      if (settings && incomingRate !== null) {
+        if (force)                                    { rate = incomingRate; keepRate = false; }
+        else if (base !== null) {
+          if (Math.abs(incomingRate - base) >= 1e-9)  { rate = incomingRate; keepRate = false; }
+        }
+        else if (storedRate > 0 && incomingRate <= 0) refused.push('zero_ub_rate');
+        else                                          { rate = incomingRate; keepRate = false; }
       }
 
       // Refuse the whole save, writing nothing. The detail is shown on the
-      // page, so it speaks to the person rather than offering ?force=1.
+      // page, so it speaks to the person rather than offering ?force=1. The
+      // refused save is often a row edit's: the row itself went to
+      // /api/dust-rows and was saved, so the text must not send anyone off to
+      // make it again.
       if (refused.length) {
         const parts = [];
         if (emptied.length) parts.push(`emptied ${emptied.join(', ')}`);
@@ -288,27 +309,43 @@ module.exports = async (req, res) => {
         console.warn(`[dust-config] refused PUT for ${companyCode}: ${refused.join(', ')}`);
         return res.status(409).json({
           error:  'Refusing to wipe dust config',
-          detail: `Nothing was saved: this save would have ${parts.join(' and ')}. `
-                + 'Reload the page to get the current dust settings, then make your change again.',
+          detail: `The dust settings were not saved: this page's copy of them would have ${parts.join(' and ')}. `
+                + 'Tracking rows save separately and are not affected. Reload the page to get the current '
+                + 'dust settings, then redo only a change to the UB rate, Manage Lists or the profit margin.',
           refused,
         });
       }
 
-      // ub_rate_base is this request's bookkeeping, not a setting, and the
-      // blob carries the same rate as dust_settings.
+      // ub_rate_base is this request's bookkeeping, not a setting. ub_rate
+      // here is only what a record written for the first time gets; the
+      // writes below decide what an existing one holds.
       let storeSettings = null;
       if (settings) {
         storeSettings = Object.assign({}, settings, { ub_rate: rate });
         delete storeSettings.ub_rate_base;
       }
 
-      // Write blobs in parallel (safety net during migration window)
+      // Write blobs in parallel (safety net during migration window).
+      // Settings blob: a kept rate leaves the stored blob's own ub_rate in
+      // place (another tab's newer rate stays); a new one is rounded the way
+      // dust_settings.ub_rate (NUMERIC(10,4)) rounds it, so the two agree.
       await Promise.all([
-        storeSettings && sql`
-          INSERT INTO app_data (key, value, updated_at)
-          VALUES (${companyCode + ':dust_settings'}, ${JSON.stringify(storeSettings)}::jsonb, NOW())
-          ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-        `,
+        storeSettings && (keepRate
+          ? sql`
+              INSERT INTO app_data (key, value, updated_at)
+              VALUES (${companyCode + ':dust_settings'}, ${JSON.stringify(storeSettings)}::jsonb, NOW())
+              ON CONFLICT (key) DO UPDATE SET
+                value = EXCLUDED.value || jsonb_build_object('ub_rate',
+                          COALESCE(NULLIF(app_data.value->'ub_rate', 'null'::jsonb), EXCLUDED.value->'ub_rate')),
+                updated_at = NOW()
+            `
+          : sql`
+              INSERT INTO app_data (key, value, updated_at)
+              VALUES (${companyCode + ':dust_settings'},
+                      ${JSON.stringify(storeSettings)}::jsonb || jsonb_build_object('ub_rate', round(${rate}::numeric, 4)),
+                      NOW())
+              ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+            `),
         lists && sql`
           INSERT INTO app_data (key, value, updated_at)
           VALUES (${companyCode + ':dust_lists'}, ${JSON.stringify(lists)}::jsonb, NOW())
@@ -316,10 +353,11 @@ module.exports = async (req, res) => {
         `,
       ]);
 
-      await _syncToTables(sql, companyCode, storeSettings, lists);
+      const savedRate = await _syncToTables(sql, companyCode, storeSettings, lists, keepRate);
 
-      // The page keeps this as its next ub_rate_base.
-      return res.json({ ok: true, settings: { ub_rate: rate } });
+      // The page keeps this as its next ub_rate_base: the rate dust_settings
+      // holds now, as stored, not the one this request read or sent.
+      return res.json({ ok: true, settings: { ub_rate: savedRate ?? storedRate } });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
@@ -332,11 +370,13 @@ module.exports = async (req, res) => {
 
 // ── Sync helpers ────────────────────────────────────────────────────────────
 
-async function _syncToTables(sql, companyCode, settings, lists) {
+// Returns the UB rate dust_settings holds afterwards (null when settings was
+// not synced).
+async function _syncToTables(sql, companyCode, settings, lists, keepRate = false) {
   // A PUT that carried only one side passes null for the other; that side's
   // tables are left as they are.
-  await Promise.all([
-    settings && _syncSettings(sql, companyCode, settings),
+  const [rate] = await Promise.all([
+    settings ? _syncSettings(sql, companyCode, settings, keepRate) : null,
     ...(lists ? [
       _syncEquipment(sql, companyCode, lists.equipment || []),
       _syncDropdownList(sql, companyCode, 'dust_employees', lists.employees || []),
@@ -346,15 +386,28 @@ async function _syncToTables(sql, companyCode, settings, lists) {
       _syncCompanies(sql, companyCode, lists.companies || []),
     ] : []),
   ]);
+  return rate;
 }
 
-async function _syncSettings(sql, companyCode, settings) {
+// keepRate: the save did not change the rate, so an existing row keeps the
+// rate it holds at the moment of this write, which may be newer than the one
+// the PUT read; settings.ub_rate is only used when there is no row yet.
+async function _syncSettings(sql, companyCode, settings, keepRate = false) {
   const rate = safeFloat(settings.ub_rate) ?? 0;
-  await sql`
-    INSERT INTO dust_settings (company_code, ub_rate, updated_at)
-    VALUES (${companyCode}, ${rate}, NOW())
-    ON CONFLICT (company_code) DO UPDATE SET ub_rate = EXCLUDED.ub_rate, updated_at = NOW()
-  `;
+  const rows = keepRate
+    ? await sql`
+        INSERT INTO dust_settings (company_code, ub_rate, updated_at)
+        VALUES (${companyCode}, ${rate}, NOW())
+        ON CONFLICT (company_code) DO UPDATE SET updated_at = NOW()
+        RETURNING ub_rate
+      `
+    : await sql`
+        INSERT INTO dust_settings (company_code, ub_rate, updated_at)
+        VALUES (${companyCode}, ${rate}, NOW())
+        ON CONFLICT (company_code) DO UPDATE SET ub_rate = EXCLUDED.ub_rate, updated_at = NOW()
+        RETURNING ub_rate
+      `;
+  return rows && rows.length ? (parseFloat(rows[0].ub_rate) || 0) : null;
 }
 
 async function _syncEquipment(sql, companyCode, equipment) {
