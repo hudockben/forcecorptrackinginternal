@@ -828,6 +828,85 @@ async function main() {
     dom.window.close();
   }
 
+  // ── J3. …nor is the change Chromium fires when the WINDOW loses focus ─────
+  {
+    const ctl = makeCtl();
+    const { dom, win, doc, ev, setVisibility } = await boot(ctl);
+    await until(() => ev('dustConfigLoaded') && ev('dustLoaded'));
+    await sleep(400);
+    const el = doc.getElementById('ubRateInput');
+    const input = v => { el.value = v; el.dispatchEvent(new win.Event('input', { bubbles: true })); };
+    const ubOf  = w => ((w.body.value || []).find(e => e.source_id === 'r-ub') || {}).total;
+    // What Chromium does on a switch to another tab or window with the box
+    // focused: change, then blur, on the box — which stays
+    // document.activeElement — with document.hasFocus() false.
+    let winFocus = true;
+    doc.hasFocus = () => winFocus;
+    const leaveWindow = () => {
+      winFocus = false;
+      el.dispatchEvent(new win.Event('change', { bubbles: true }));
+      el.dispatchEvent(new win.Event('blur'));
+    };
+    let confirms = 0;
+    win.confirm = () => { confirms++; return false; };
+
+    console.log('\n[0.35 backspaced to 0.3 on the way to 0.38, then another tab looked at]');
+    el.focus();
+    input('0.3');
+    let n = cfgPuts(ctl).length;
+    const icN = puts(ctl, new RegExp(IC_KEY)).length;
+    leaveWindow();
+    assert('the rate is still 0.35', ev('ubRate') === UB_RATE, String(ev('ubRate')));
+    setVisibility('hidden');
+    await sleep(1200);   // past a save's debounce
+    const f = cfgPuts(ctl).slice(n).find(q => q.keepalive);
+    assert('the hide flush carries 0.35 against base 0.35', f && f.body.settings.ub_rate === UB_RATE
+      && f.body.settings.ub_rate_base === UB_RATE, f && JSON.stringify(f.body.settings));
+    assert('  no other save went out; the server still holds 0.35',
+      cfgPuts(ctl).slice(n).every(q => q.keepalive) && ctl.storedUb === UB_RATE,
+      JSON.stringify(cfgPuts(ctl).slice(n).map(q => q.body.settings.ub_rate)));
+    assert('  Intercompany is not repriced (r-ub stays 420)',
+      puts(ctl, new RegExp(IC_KEY)).slice(icN).every(w => ubOf(w) === 420),
+      JSON.stringify(puts(ctl, new RegExp(IC_KEY)).slice(icN).map(ubOf)));
+    assert('  the box keeps what was typed', el.value === '0.3', el.value);
+
+    console.log('\n[back, 0.38 finished and the box left]');
+    winFocus = true;
+    setVisibility('visible');
+    input('0.38');
+    el.dispatchEvent(new win.Event('change', { bubbles: true }));
+    el.blur();
+    await until(() => ctl.storedUb === 0.38, 3000);
+    assert('0.38 is the rate, and saved', ev('ubRate') === 0.38 && ctl.storedUb === 0.38 && el.value === '0.38',
+      `${ev('ubRate')} / ${ctl.storedUb} / ${el.value}`);
+
+    console.log('\n[select-all, "0" on the way to 0.40, then the window left]');
+    el.focus();
+    input('0');
+    leaveWindow();
+    assert('no $0 question is put to a window being left', confirms === 0, String(confirms));
+    assert('  and the rate is still 0.38', ev('ubRate') === 0.38, String(ev('ubRate')));
+    winFocus = true;
+    el.dispatchEvent(new win.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    assert('back, Enter commits it — which asks first (Chromium fires no second change)', confirms === 1,
+      String(confirms));
+    assert('  cancelled, the box is back at 0.38', ev('ubRate') === 0.38 && el.value === '0.38',
+      `${ev('ubRate')} / ${el.value}`);
+    el.blur();
+
+    console.log('\n[a rate typed, the window left, then the box left on return]');
+    el.focus();
+    input('0.4');
+    leaveWindow();
+    assert('held while away', ev('ubRate') === 0.38, String(ev('ubRate')));
+    winFocus = true;
+    el.blur();
+    await until(() => ctl.storedUb === 0.4, 3000);
+    assert('leaving the box commits it, as without the switch', ev('ubRate') === 0.4 && ctl.storedUb === 0.4,
+      `${ev('ubRate')} / ${ctl.storedUb}`);
+    dom.window.close();
+  }
+
   // ── K. The hide flush while a UB change is still on its way ───────────────
   {
     const ctl = makeCtl();
@@ -897,6 +976,73 @@ async function main() {
     const later = cfgPuts(ctl)[m];
     assert('  once the server has them, a later save names none', later && Array.isArray(later.body.lists_removed)
       && later.body.lists_removed.length === 0, later && JSON.stringify(later.body.lists_removed));
+    dom.window.close();
+  }
+
+  // ── L2. A removal's name lasts until the server has that removal ──────────
+  {
+    const ctl = makeCtl();
+    const { dom, ev, setVisibility } = await boot(ctl);
+    await until(() => ev('dustConfigLoaded') && ev('dustLoaded'));
+    await sleep(400);
+    const removedOf = q => JSON.stringify(q && q.body.lists_removed);
+
+    console.log('\n[two customers removed, one save each; the tab hidden while the second is out]');
+    ctl.cfgPut = 'defer';
+    let n = cfgPuts(ctl).length;
+    ev("removeListItem('companies', 'co-1')");
+    await until(() => ctl.deferred.length === 1, 2000);
+    ev("removeListItem('companies', 'co-2')");   // queued behind the first
+    ctl.deferred.shift()();                       // the first is answered 200
+    await until(() => ctl.deferred.length === 1 && cfgPuts(ctl).length === n + 2, 2000);
+    setVisibility('hidden');
+    await sleep(50);
+    const flush = cfgPuts(ctl).slice(n).find(q => q.keepalive);
+    assert('the flush still names the customer list: its last removal is not saved yet',
+      removedOf(flush) === '["companies"]', removedOf(flush));
+    while (ctl.deferred.length) { ctl.deferred.shift()(); await sleep(30); }
+    dom.window.close();
+  }
+  {
+    const ctl = makeCtl();
+    const { dom, ev, setVisibility } = await boot(ctl);
+    await until(() => ev('dustConfigLoaded') && ev('dustLoaded'));
+    await sleep(400);
+    const removedOf = q => JSON.stringify(q && q.body.lists_removed);
+    console.log('\n[…and when that second save fails]');
+    ctl.cfgPut = 'defer';
+    let n = cfgPuts(ctl).length;
+    ev("removeListItem('companies', 'co-1')");
+    await until(() => ctl.deferred.length === 1, 2000);
+    ev("removeListItem('companies', 'co-2')");
+    ctl.cfgPut = 500;                             // the second save's three tries fail
+    ctl.deferred.shift()();
+    await until(() => ev('_configPutInFlight') === 0, 5000);
+    ctl.cfgPut = 'ok';
+    n = cfgPuts(ctl).length;
+    ev('saveLists()');
+    await until(() => cfgPuts(ctl).length > n, 2000);
+    assert('the next save names it too, so the server takes the last customer\'s removal',
+      removedOf(cfgPuts(ctl)[n]) === '["companies"]', removedOf(cfgPuts(ctl)[n]));
+    await until(() => ev('_configPutInFlight') === 0, 2000);
+
+    console.log('\n[a removal refused, then the poll puts the lists back]');
+    ctl.cfgPut = 409;
+    ctl.refusal = { error: 'Refusing to wipe dust config', detail: 'REFUSED', refused: ['blank_lists'] };
+    ev("removeListItem('states', 'PA')");
+    await until(() => ev('_configPutInFlight') === 0, 2000);
+    ctl.cfgPut = 'ok';
+    ev('_configChangedAt = 0');
+    setVisibility('visible');                     // a returning tab polls at once
+    await until(() => ev('dustLists.states.includes("PA")'), 2000);
+    assert('the poll put PA back', ev('dustLists.states.includes("PA")') === true);
+    n = cfgPuts(ctl).length;
+    ev('saveLists()');
+    await until(() => cfgPuts(ctl).length > n, 2000);
+    // Still named, a blank save from this tab would delete the first state
+    // another tab adds after it, which this tab never saw.
+    assert('  a later save names no list: that removal is no longer this tab\'s',
+      removedOf(cfgPuts(ctl)[n]) === '[]', removedOf(cfgPuts(ctl)[n]));
     dom.window.close();
   }
 

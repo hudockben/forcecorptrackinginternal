@@ -1474,7 +1474,8 @@
         <span class="ub-rate-sym">$</span>
         <input class="ub-rate-input" type="number" id="ubRateInput"
           step="0.01" min="0" placeholder="0.00"
-          oninput="_liveUbRate(this.value)" onchange="onUbRateChange(this.value)" onblur="_ubBlur()" />
+          oninput="_liveUbRate(this.value)" onchange="onUbRateChange(this.value)" onblur="_ubBlur()"
+          onkeydown="if (event.key === 'Enter' && _ubChangeHeld) onUbRateChange(this.value)" />
         <span class="ub-rate-sym">/ gal</span>
       </div>
     </div>
@@ -3012,11 +3013,20 @@
     // holds something there — this tab deleted the last entry, rather than
     // never having seen it (a page that loaded the lists empty, before
     // another tab added the first one).
-    const _listsRemoved = new Set();
+    //
+    // Each name maps to the number of the latest removal from that list, and
+    // a save's answer forgets a name only when no removal from that list has
+    // come since the save's snapshot. Two removals from one list, one save
+    // each: the first save's answer must not forget the name the second
+    // still needs. Forgotten, and the second save failed, every later save
+    // from this tab emptied that list without naming it, and was refused.
+    const _listsRemoved = new Map();
+    let _listsRemovedN = 0;
 
-    // `lists` and `removed` are the snapshots dustConfigPut took when the
-    // save was asked for; `base` overrides ub_rate_base (the unload flush,
-    // see dustConfigPut).
+    // `lists` and `removed` (the [list, removal number] pairs of
+    // _listsRemoved) are the snapshots dustConfigPut took when the save was
+    // asked for; `base` overrides ub_rate_base (the unload flush, see
+    // dustConfigPut).
     function _dustConfigBody(keepalive, lists = dustLists, base = ubRateBase, removed = [..._listsRemoved]) {
       const init = {
         method: 'PUT',
@@ -3029,7 +3039,7 @@
         body: JSON.stringify({
           settings: { ub_rate: ubRate, profit_margin: profitMargin, ub_rate_base: base },
           lists,
-          lists_removed: removed,
+          lists_removed: removed.map(([k]) => k),
         }),
       };
       if (keepalive) init.keepalive = true;
@@ -3058,7 +3068,8 @@
       if (r.ok) {
         const body = await r.json().catch(() => null);
         if (!body) return null;
-        sentRemoved.forEach(k => _listsRemoved.delete(k));   // the server has those removals now
+        // The server has those removals now — unless the list had another since.
+        sentRemoved.forEach(([k, n]) => { if (_listsRemoved.get(k) === n) _listsRemoved.delete(k); });
         const stored = parseFloat(body.settings && body.settings.ub_rate);
         ubRateBase = isFinite(stored) ? stored : sentUb;
         if (sentPm) _pmBase = sentPm;   // every settings save writes the margin it carries
@@ -5072,8 +5083,9 @@
     function removeListItem(type, id) {
       // Named in the save (lists_removed), so a removal of a list's last
       // entry is told from a tab that never saw that entry — see _listsRemoved.
-      _listsRemoved.add(type);
-      if (type === 'employees') _listsRemoved.add('employee_rates');
+      const n = ++_listsRemovedN;
+      _listsRemoved.set(type, n);
+      if (type === 'employees') _listsRemoved.set('employee_rates', n);
       if (type === 'states') {
         // id here is the abbreviation string
         dustLists.states = dustLists.states.filter(s => s !== id);
@@ -5203,8 +5215,22 @@
       _paintUbTotals();
     }
 
+    // Chromium fires change, then blur, on the box when the WINDOW loses
+    // focus (a switch to another tab or window) while the box keeps it. The
+    // office has not left the box, and what it holds may be half-typed —
+    // '0.3' on the way from 0.35 to 0.38, which that change committed and
+    // the hide flush or the next save stored. So that change is held, and
+    // replayed when the box is really left (blur) or Enter is pressed:
+    // Chromium fires no second change for text it has already reported.
+    let _ubChangeHeld = false;
+    function _ubWindowLeft() {
+      return !document.hasFocus() && document.activeElement === document.getElementById('ubRateInput');
+    }
+
     function onUbRateChange(val) {
       if (!dustConfigLoaded) return;
+      if (_ubWindowLeft()) { _ubChangeHeld = true; return; }
+      _ubChangeHeld = false;
       _ubTyped = null;
       const v = parseFloat(val);
       // Left empty (or not a number): the rate is unchanged, so say so.
@@ -5223,7 +5249,11 @@
 
     // Left with no change event — the text is back to what it was when the
     // box was focused — the edit is over: box and totals show ubRate again.
+    // Not when only the window was left (see _ubChangeHeld); a change held
+    // then is committed now.
     function _ubBlur() {
+      if (_ubWindowLeft()) return;
+      if (_ubChangeHeld) { onUbRateChange(document.getElementById('ubRateInput').value); return; }
       if (_ubTyped == null) return;
       _ubTyped = null;
       _showUbRate();
@@ -9371,6 +9401,13 @@
           const pmMoved = !!serverPM && !pmSaveTimer && _pmBase != null
             && _pmKey(profitMargin) === _pmBase && _pmKey(serverPM) !== _pmBase;
           const listsSame = JSON.stringify(incoming) === JSON.stringify(dustLists);
+          // This tab now holds the server's lists (it already did, or takes
+          // them up below), and no save of its own is out: a list named in
+          // _listsRemoved is a removal whose save was refused or failed —
+          // the poll puts that entry back — or one the server has anyway.
+          // Kept, it let a later blank save from this tab delete the first
+          // entry another tab adds to that list, which this tab never saw.
+          _listsRemoved.clear();
           if (listsSame && !ubMoved && !pmMoved) return;
           if (pmMoved) {
             Object.assign(profitMargin, serverPM);
