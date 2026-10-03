@@ -24,8 +24,10 @@
  * hold, and what a GET then hands back to the page. It also pins the rate
  * rule's edges: a save that leaves the rate unchanged writes no rate (so a
  * rate saved meanwhile stands), a body with no usable ub_rate changes none,
- * a new rate is answered as dust_settings stores it, and the one entry of a
- * sparse config can still be removed by a page that loaded it.
+ * a new rate is answered as dust_settings stores it, and the last entry of a
+ * sparse config can still be removed by a page that loaded it and names the
+ * lists it removed from — while a page that loaded the lists empty cannot
+ * delete the first entry another tab has added since.
  */
 
 const fs     = require('fs');
@@ -578,11 +580,59 @@ async function run() {
       && same(r.body.refused, ['blank_lists']), `${r.statusCode} ${JSON.stringify(r.body)}`);
     assertUnchanged('sparse config, no base', before, await snapshot());
     r = await put({ settings: { ub_rate: 0.35, ub_rate_base: 0.35, profit_margin: PM_FULL },
-                    lists: Object.assign(clone(SPARSE.lists), { states: [] }) });
-    assert('from a page that loaded it (base sent): 200', r.statusCode === 200, `${r.statusCode} ${JSON.stringify(r.body)}`);
+                    lists: Object.assign(clone(SPARSE.lists), { states: [] }), lists_removed: ['states'] });
+    assert('from a page that loaded it and removed it (base sent, states named): 200', r.statusCode === 200,
+      `${r.statusCode} ${JSON.stringify(r.body)}`);
     const s = await snapshot();
     assert('the state is gone from the table and the blob', s.states.length === 0 && same(s.listsBlob.states, []),
       JSON.stringify(s.states));
+  }
+
+  console.log('\n[15] a page that loaded the lists empty, after another tab added the first entry');
+  {
+    // Tab A loads a company still being set up: a rate, every list empty.
+    // Tab B adds its first customer, with a well pad and a company man. A's
+    // next save (its hide flush, say, before its poll caught up) carries A's
+    // empty lists and a base — and names no list it removed from.
+    const EMPTY = clone(FULL);
+    EMPTY.lists = { equipment: [], employees: [], companies: [], materials: [], states: [], mu: [],
+                    employee_rates: {}, cost_codes: [] };
+    await seed(EMPTY);
+    const onlyCnx = Object.assign(clone(EMPTY.lists), { companies: [clone(FULL.lists.companies[0])] });
+    let r = await put({ settings: { ub_rate: 0.35, ub_rate_base: 0.35, profit_margin: PM_FULL }, lists: onlyCnx });
+    assert('tab B adds CNX: 200', r.statusCode === 200, `${r.statusCode} ${JSON.stringify(r.body)}`);
+    const before = await snapshot();
+    r = await put({ settings: { ub_rate: 0.35, ub_rate_base: 0.35, profit_margin: PM_FULL },
+                    lists: clone(EMPTY.lists), lists_removed: [] });
+    assert('tab A\'s blank save: 409 blank_lists', r.statusCode === 409 && same(r.body.refused, ['blank_lists']),
+      `${r.statusCode} ${JSON.stringify(r.body)}`);
+    const s = await snapshot();
+    assertUnchanged('tab A\'s blank save', before, s);
+    assert('  CNX, its well pads and its company men are still there',
+      same(s.companies, ['dg-co-cnx']) && same(s.locations, ['dg-l1', 'dg-l2']) && same(s.personnel, ['dg-p1', 'dg-p2']),
+      JSON.stringify([s.companies, s.locations, s.personnel]));
+    r = await put({ settings: { ub_rate: 0.35, ub_rate_base: 0.35, profit_margin: PM_FULL },
+                    lists: clone(EMPTY.lists), lists_removed: ['states'] });
+    assert('  and naming some other list does not get it through: 409', r.statusCode === 409,
+      `${r.statusCode} ${JSON.stringify(r.body)}`);
+  }
+
+  console.log('\n[16] removing the only employee, who has a labor rate');
+  {
+    // The employee and the rate count as two entries, so a cap of one entry
+    // refused this every time, reload or not.
+    const LONE = clone(FULL);
+    LONE.lists = { equipment: [], employees: ['Alice Adams'], companies: [], materials: [], states: [], mu: [],
+                   employee_rates: { 'Alice Adams': 30 }, cost_codes: [] };
+    await seed(LONE);
+    const r = await put({ settings: { ub_rate: 0.35, ub_rate_base: 0.35, profit_margin: PM_FULL },
+                          lists: Object.assign(clone(LONE.lists), { employees: [], employee_rates: {} }),
+                          lists_removed: ['employees', 'employee_rates'] });
+    assert('removed by a page that loaded it: 200', r.statusCode === 200, `${r.statusCode} ${JSON.stringify(r.body)}`);
+    const s = await snapshot();
+    assert('  Alice and her rate are gone from the table and the blob', s.employees.length === 0
+      && same(s.listsBlob.employees, []) && same(s.listsBlob.employee_rates, {}),
+      JSON.stringify([s.employees, s.listsBlob.employees, s.listsBlob.employee_rates]));
   }
 
   console.log('\n────────────────────────────────────────');

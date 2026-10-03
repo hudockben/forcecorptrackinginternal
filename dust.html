@@ -1474,7 +1474,7 @@
         <span class="ub-rate-sym">$</span>
         <input class="ub-rate-input" type="number" id="ubRateInput"
           step="0.01" min="0" placeholder="0.00"
-          oninput="_liveUbRate(this.value)" onchange="onUbRateChange(this.value)" />
+          oninput="_liveUbRate(this.value)" onchange="onUbRateChange(this.value)" onblur="_ubBlur()" />
         <span class="ub-rate-sym">/ gal</span>
       </div>
     </div>
@@ -2760,16 +2760,17 @@
         const prev = bySourceId.get(row.id);
 
         // UB gallons priced at $0 mean the rate is missing, not that the UB
-        // is free: a blank or half-typed UB box, a tab still holding the $0 a
-        // blank config save left behind, a config that never loaded. Repricing
-        // an entry that billed UB from that would rewrite it to ub_total 0 —
-        // or, for a UB-only row, void it, and with it the entry's id, sent_at
-        // and the invoice/payment dates entered in Intercompany, which the
-        // entry re-created later does not have. So it is left exactly as it
-        // is until the row prices its UB again.
-        if (prev && c.gallons > 0 && !(ubRateForRow(row) > 0) && (parseFloat(prev.ub_total) || 0) > 0) continue;
+        // is free: a tab still holding the $0 a blank config save left
+        // behind, a config that never loaded. Repricing an entry that billed
+        // UB from that would rewrite it to ub_total 0 — or, for a UB-only
+        // row, void it, and with it the entry's id, sent_at and the
+        // invoice/payment dates entered in Intercompany, which the entry
+        // re-created later does not have. So its UB figures stay as they
+        // were until the row prices its UB again; everything else on the row
+        // (invoice number and status, date, vehicles) still syncs.
+        const keepUb = !!prev && c.gallons > 0 && !(ubRateForRow(row) > 0) && (parseFloat(prev.ub_total) || 0) > 0;
 
-        if (!(c.invTotal > 0)) {
+        if (!keepUb && !(c.invTotal > 0)) {
           // Row is intrinsically no longer billable (rates/gallons cleared).
           // Void any stale entry so IC never bills a figure the row no longer has.
           if (prev) {
@@ -2811,6 +2812,11 @@
           sent_at: sentAt,
           sent_by: (user?.username) || '',
         };
+        if (keepUb) {
+          entry.gallons_ub = prev.gallons_ub;
+          entry.ub_total   = prev.ub_total;
+          entry.total      = round2(c.vehTotal + (parseFloat(prev.ub_total) || 0));
+        }
 
         // Claiming a physical job key is manual-rows-only, here as above — see
         // _icJobKey. Without this the FIRST injected row of a multi-haul day
@@ -3000,9 +3006,18 @@
     // for that answer to learn the new base — see dustConfigPut.
     let _ubSending = null;
 
-    // `lists` is the snapshot dustConfigPut took when the save was asked for;
-    // `base` overrides ub_rate_base (the unload flush, see dustConfigPut).
-    function _dustConfigBody(keepalive, lists = dustLists, base = ubRateBase) {
+    // The lists this tab removed an entry from (removeListItem) that the
+    // server has not yet taken a save of. Sent as lists_removed: the server
+    // lets a save empty every list only when it names each list that still
+    // holds something there — this tab deleted the last entry, rather than
+    // never having seen it (a page that loaded the lists empty, before
+    // another tab added the first one).
+    const _listsRemoved = new Set();
+
+    // `lists` and `removed` are the snapshots dustConfigPut took when the
+    // save was asked for; `base` overrides ub_rate_base (the unload flush,
+    // see dustConfigPut).
+    function _dustConfigBody(keepalive, lists = dustLists, base = ubRateBase, removed = [..._listsRemoved]) {
       const init = {
         method: 'PUT',
         headers: AUTH_HDR(),
@@ -3014,6 +3029,7 @@
         body: JSON.stringify({
           settings: { ub_rate: ubRate, profit_margin: profitMargin, ub_rate_base: base },
           lists,
+          lists_removed: removed,
         }),
       };
       if (keepalive) init.keepalive = true;
@@ -3032,24 +3048,24 @@
 
     // Read the server's answer to a config save. A 2xx carries the UB rate
     // now stored, which becomes this tab's ub_rate_base; when it is not what
-    // this tab sent (another tab changed it, and this one did not) and the
-    // box has not been touched since the save went out, the page takes it up
-    // so its totals price at the rate that is actually stored. A 4xx is the
+    // this tab sent (another tab changed it, and this one did not) and no
+    // other rate was committed here since the save went out, the page takes
+    // it up so its totals price at the rate that is actually stored (a rate
+    // still being typed in the box keeps its text). A 4xx is the
     // server refusing the save — 409 when it would have emptied the lists or
     // zeroed the rate — and its reason goes on screen. Anything else is null.
-    async function _dustConfigAnswer(r, sentUb, sentPm) {
+    async function _dustConfigAnswer(r, sentUb, sentPm, sentRemoved = []) {
       if (r.ok) {
         const body = await r.json().catch(() => null);
         if (!body) return null;
+        sentRemoved.forEach(k => _listsRemoved.delete(k));   // the server has those removals now
         const stored = parseFloat(body.settings && body.settings.ub_rate);
         ubRateBase = isFinite(stored) ? stored : sentUb;
         if (sentPm) _pmBase = sentPm;   // every settings save writes the margin it carries
         if (isFinite(stored) && Math.abs(stored - sentUb) > 1e-9
             && Math.abs(ubRate - sentUb) <= 1e-9) {
           ubRate = stored;
-          document.getElementById('ubRateInput').value = ubRate.toFixed(2);
-          rows.forEach((_, i) => refreshCalcCells(i));
-          refreshAllTotals();
+          _showUbRate();
           // Intercompany may have been mirrored at the rate this tab held
           // until now; mirror again at the stored one (it queues behind a
           // sync already running).
@@ -3088,10 +3104,10 @@
       // as "unchanged" and the save still out would win. Against that save's
       // rate instead, it reads as the change it is.
       if (opts.keepalive) {
-        const sentUb = ubRate, sentPm = _pmKey(profitMargin);
+        const sentUb = ubRate, sentPm = _pmKey(profitMargin), removed = [..._listsRemoved];
         const base = (_ubSending != null && Math.abs(ubRate - _ubSending) > 1e-9) ? _ubSending : ubRateBase;
-        return fetch('/api/dust-config', _dustConfigBody(true, dustLists, base))
-          .then(r => _dustConfigAnswer(r, sentUb, sentPm)).catch(() => null)
+        return fetch('/api/dust-config', _dustConfigBody(true, dustLists, base, removed))
+          .then(r => _dustConfigAnswer(r, sentUb, sentPm, removed)).catch(() => null)
           .finally(() => { _configPutInFlight = Math.max(0, _configPutInFlight - 1); });
       }
 
@@ -3103,6 +3119,7 @@
       // queue still delivers them in order, so the last write is the final
       // list.
       const listsSnap = JSON.parse(JSON.stringify(dustLists));
+      const removedSnap = [..._listsRemoved];
 
       // Retry a few times so a transient network/server error doesn't silently
       // drop the edit (saves were previously fire-and-forget with no retry).
@@ -3115,8 +3132,8 @@
             try {
               const sentUb = ubRate, sentPm = _pmKey(profitMargin);
               _ubSending = (ubRateBase == null || Math.abs(sentUb - ubRateBase) > 1e-9) ? sentUb : null;
-              const r = await fetch('/api/dust-config', _dustConfigBody(false, listsSnap));
-              if (r.ok || (r.status >= 400 && r.status < 500)) return await _dustConfigAnswer(r, sentUb, sentPm);
+              const r = await fetch('/api/dust-config', _dustConfigBody(false, listsSnap, ubRateBase, removedSnap));
+              if (r.ok || (r.status >= 400 && r.status < 500)) return await _dustConfigAnswer(r, sentUb, sentPm, removedSnap);
             } catch { /* network error — fall through to retry */ }
             await new Promise(res => setTimeout(res, 400 * (attempt + 1)));
           }
@@ -5053,6 +5070,10 @@
     }
 
     function removeListItem(type, id) {
+      // Named in the save (lists_removed), so a removal of a list's last
+      // entry is told from a tab that never saw that entry — see _listsRemoved.
+      _listsRemoved.add(type);
+      if (type === 'employees') _listsRemoved.add('employee_rates');
       if (type === 'states') {
         // id here is the abbreviation string
         dustLists.states = dustLists.states.filter(s => s !== id);
@@ -5143,39 +5164,69 @@
     /* ═══════════════════════════════════════════
        UB RATE
     ═══════════════════════════════════════════ */
+    // What is typed in the box is not the rate until it is committed (the
+    // change event). Until then it is held here, and only the on-screen
+    // totals preview it; ubRate, which every save sends and the
+    // Intercompany mirror prices at, stays the committed rate. Read as the
+    // rate, each step of clearing the box went out with whatever save fired
+    // next (a row's debounce, the hide flush): '' or '0' as a deliberate $0,
+    // and '0.3' on the way from '0.35' to empty as $0.30. null: no edit.
+    let _ubTyped = null;
+
+    // Repaint the totals: at the typed rate while the box holds one above
+    // $0, else at ubRate. ubRate is swapped only for this synchronous
+    // repaint, so nothing that saves or mirrors can read the typed rate.
+    function _paintUbTotals() {
+      const committed = ubRate, typed = parseFloat(_ubTyped);
+      if (typed > 0) ubRate = typed;
+      try {
+        rows.forEach((_, i) => refreshCalcCells(i));
+        refreshAllTotals();
+      } finally {
+        ubRate = committed;
+      }
+    }
+
+    // Put ubRate in the box and the totals — but not over an edit still
+    // being typed, which keeps its text and its preview.
+    function _showUbRate() {
+      if (_ubTyped == null) document.getElementById('ubRateInput').value = ubRate.toFixed(2);
+      _paintUbTotals();
+    }
+
     // Both stand down until the config loads (the box is disabled until then
     // too): a rate typed over the unloaded 0 would go out as a deliberate
     // change on the next save that could.
-    //
-    // The live preview only follows a rate above $0. Clearing the box to
-    // retype it, or passing through '0' or '0.' on the way to '0.50', is not
-    // a rate — read as one, it went out as a deliberate $0 with the next save
-    // that happened to fire (a row's debounce, the hide flush), and the
-    // server stores a deliberate $0. A $0 rate is set by committing it.
     function _liveUbRate(val) {
       if (!dustConfigLoaded) return;
-      const v = parseFloat(val);
-      if (!(v > 0)) return;
-      ubRate = v;
-      rows.forEach((_, i) => refreshCalcCells(i));
-      refreshAllTotals();
+      _ubTyped = String(val);
+      _paintUbTotals();
     }
 
     function onUbRateChange(val) {
       if (!dustConfigLoaded) return;
-      const el = document.getElementById('ubRateInput');
+      _ubTyped = null;
       const v = parseFloat(val);
       // Left empty (or not a number): the rate is unchanged, so say so.
-      if (!isFinite(v) || v < 0) { el.value = ubRate.toFixed(2); return; }
+      if (!isFinite(v) || v < 0) { _showUbRate(); return; }
       if (v === 0 && ubRate > 0
-          && !confirm('Set the default UB gallon rate to $0? Every customer without its own UB $/gal will bill its UB gallons at $0.')) {
-        el.value = ubRate.toFixed(2);
+          && !confirm('Set the default UB gallon rate to $0? UB gallons of every customer without its own '
+                    + 'UB $/gal will price at $0, and new rows will bill no UB. Intercompany entries that '
+                    + 'already bill UB keep their UB amounts.')) {
+        _showUbRate();
         return;
       }
       ubRate = v;
-      rows.forEach((_, i) => refreshCalcCells(i));
-      refreshAllTotals();
+      _paintUbTotals();
       scheduleSave();
+    }
+
+    // Left with no change event — the text is back to what it was when the
+    // box was focused — the edit is over: box and totals show ubRate again.
+    function _ubBlur() {
+      if (_ubTyped == null) return;
+      _ubTyped = null;
+      _showUbRate();
     }
 
     // Lock or unlock the config editors and say why. While the config has not
@@ -6886,7 +6937,9 @@
         if (el) el.value = (profitMargin[f] == null ? '' : profitMargin[f]);
       });
       const basis = profitMargin.charge_basis || 'invoice';
-      document.querySelectorAll('.pm-pill').forEach(p =>
+      // The calculator's pills only: Actual Profit Margin (#an-actual) has
+      // its own basis toggle on .pm-pill too (see renderDustConfigState).
+      document.querySelectorAll('#an-profit .pm-pill').forEach(p =>
         p.classList.toggle('active', p.dataset.basis === basis));
       const wrap = document.getElementById('pm-custom-wrap');
       if (wrap) wrap.style.display = basis === 'custom' ? '' : 'none';
@@ -6914,7 +6967,7 @@
       if (!dustConfigLoaded) return;
       profitMargin.charge_basis = b;
       _pmLsSave(false);
-      document.querySelectorAll('.pm-pill').forEach(p =>
+      document.querySelectorAll('#an-profit .pm-pill').forEach(p =>
         p.classList.toggle('active', p.dataset.basis === b));
       const wrap = document.getElementById('pm-custom-wrap');
       if (wrap) wrap.style.display = b === 'custom' ? '' : 'none';
@@ -7296,6 +7349,16 @@
         }
       } catch { /* non-fatal */ }
       return true;
+    }
+
+    // Every read of the book before it has loaded goes through here, so only
+    // one is ever out: the poll's retry (retryObLoad) shares the first read
+    // when it is still out. Two reads landing one after the other each set
+    // obRows, and the later one dropped a row added in between, which the
+    // next save then deleted.
+    let _obLoading = null;
+    function obLoadOnce() {
+      return _obLoading || (_obLoading = obLoad().finally(() => { _obLoading = null; }));
     }
 
     async function obSave(opts = {}) {
@@ -8168,7 +8231,7 @@
     // Load Other Billing rows in the background after main init, then backfill:
     // mirror any existing qualifying rows into Intercompany Billing (covers rows
     // that predate auto-sync and ones whose send never landed).
-    obLoad().then(() => {
+    obLoadOnce().then(() => {
       obRenderTable();
       autoSyncObIntercompany();
       // The Home dashboard counts this book's revenue, and it painted before
@@ -8716,6 +8779,12 @@
       } catch { return false; }
     }
 
+    // One read at a time, for obLoadOnce's reason (retryPcLoad).
+    let _pcLoading = null;
+    function pcLoadOnce() {
+      return _pcLoading || (_pcLoading = pcLoad().finally(() => { _pcLoading = null; }));
+    }
+
     async function pcSave(opts = {}) {
       if (!pcLoaded) return false;   // see pcLoad
       try { return await apiPut(PC_KEY, pcRows, opts); }
@@ -8960,7 +9029,7 @@
     }
 
     // Load Product Cost rows in the background after main init
-    pcLoad().then(pcRenderTable);
+    pcLoadOnce().then(pcRenderTable);
 
     // Flush pending PC save on unload — keepalive lets the request survive
     // the navigation; without it the browser may cancel it mid-flight.
@@ -9492,7 +9561,7 @@
       async function retryObLoad() {
         try {
           if (_isEditing() || obHasPendingSave()) return;
-          if (await obLoad()) {
+          if (await obLoadOnce()) {
             obRenderTable();
             autoSyncObIntercompany();
             refreshHomeDashboard();
@@ -9502,7 +9571,7 @@
       async function retryPcLoad() {
         try {
           if (pcLoaded) return;
-          if (await pcLoad()) pcRenderTable();
+          if (await pcLoadOnce()) pcRenderTable();
         } catch { /* non-fatal */ }
       }
 

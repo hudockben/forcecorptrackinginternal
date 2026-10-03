@@ -261,11 +261,17 @@ module.exports = async (req, res) => {
         // has to let through so items can still be removed one at a time.
         const blank = sizes.every(s => s.incoming === 0);
         const held  = sizes.filter(s => s.stored > 0);
-        // The one exception: the whole config holds a single entry (one state,
-        // say, on a company still being set up), and a page that loaded it
-        // removes it. Without this that entry could never be deleted, reload
-        // or not. The incident's blank save carried no base.
-        const lastEntry = base !== null && held.reduce((n, s) => n + s.stored, 0) <= 1;
+        // The one exception: a page that loaded its config (it sends a base)
+        // deletes the last entry of every list still holding one — one state,
+        // say, on a company still being set up, or its one employee with the
+        // labor rate that goes with them. The page names the lists it removed
+        // entries from (lists_removed); without this that entry could never
+        // be deleted, reload or not. A page that never saw the entry — it
+        // loaded the lists empty before another tab added it — names nothing,
+        // and its blank save is refused like the incident's, which carried
+        // no base.
+        const removedLists = Array.isArray(body.lists_removed) ? body.lists_removed : [];
+        const lastEntry = base !== null && held.every(s => removedLists.includes(s.key));
         const blanked = blank && held.length > 0 && !lastEntry;
         if (blanked) refused.push('blank_lists');
         // Any one list going from several entries to none in a single save is

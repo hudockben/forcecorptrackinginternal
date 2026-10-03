@@ -49,7 +49,7 @@ const fs   = require('fs');
 const path = require('path');
 const { JSDOM, VirtualConsole } = require('jsdom');
 
-const HTML_PATH = path.resolve(__dirname, '../dust.html');
+const HTML_PATH = process.env.DUST_HTML || path.resolve(__dirname, '../dust.html');
 const OB_KEY    = 'dust_other_billing_rows';
 const PC_KEY    = 'dust_product_cost_rows';
 const IC_KEY    = 'fct_intercompany_billing_entries';
@@ -132,8 +132,9 @@ function makeCtl(over = {}) {
     refusal: null,       // body for a 4xx config PUT
     storedUb: UB_RATE,
     storedPm: PM,        // the profit margin a good config GET answers
-    obGet: 'ok', pcGet: 'ok',
+    obGet: 'ok', pcGet: 'ok',   // 'ok' | 'hold' | <status>
     obMissing: false,    // the Other Billing blob does not exist yet (200, value null)
+    held: [],            // releases for Other Billing / Product Cost reads on 'hold'
     deferred: [],        // resolvers for cfgPut 'defer'
     ic: JSON.parse(JSON.stringify(IC_ENTRIES)),   // the Intercompany billing record: writes land here
     log: [],             // every request: { method, url, body, keepalive }
@@ -186,6 +187,10 @@ function stubFetch(ctl) {
       if (method !== 'GET') {
         if (key === IC_KEY && body && Array.isArray(body.value)) ctl.ic = body.value;
         return res(200, { ok: true });
+      }
+      if ((key === OB_KEY && ctl.obGet === 'hold') || (key === PC_KEY && ctl.pcGet === 'hold')) {
+        const value = JSON.parse(JSON.stringify(key === OB_KEY ? OB_ROWS : PC_ROWS));
+        return new Promise(done => ctl.held.push(() => done(res(200, { value, updated_at: '2026-10-01T00:00:00.000Z' }))));
       }
       if (key === OB_KEY && ctl.obGet !== 'ok') return res(500, { error: 'boom' });
       if (key === PC_KEY && ctl.pcGet !== 'ok') return res(500, { error: 'boom' });
@@ -517,11 +522,22 @@ async function main() {
     await until(() => ctl.deferred.length === 1, 2000);
     const el = doc.getElementById('ubRateInput');
     el.value = '0.60';
-    el.dispatchEvent(new win.Event('input', { bubbles: true }));
+    el.dispatchEvent(new win.Event('input', { bubbles: true }));   // being typed, not committed yet
     ctl.deferred.shift()();
     await pending;
-    assert('the box keeps what was typed', ev('ubRate') === 0.6 && el.value === '0.60', `${ev('ubRate')} ${el.value}`);
-    assert('  and the base moves to the stored rate, so the next save writes it', ev('ubRateBase') === 0.55);
+    assert('the box keeps what is being typed', el.value === '0.60', el.value);
+    assert('  the stored 0.55 becomes the rate and the base', ev('ubRate') === 0.55 && ev('ubRateBase') === 0.55,
+      `${ev('ubRate')} / ${ev('ubRateBase')}`);
+    // Committed, and its save refused: a change of this tab's the server
+    // does not have.
+    ctl.cfgPut = 409;
+    let n2 = cfgPuts(ctl).length;
+    el.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await until(() => cfgPuts(ctl).length > n2 && ev('saveTimer') === null && ev('_configPutInFlight') === 0, 3000);
+    const put60 = cfgPuts(ctl)[n2];
+    assert('  committed, 0.60 is the rate and goes out as a change against base 0.55', ev('ubRate') === 0.6
+      && put60 && put60.body.settings.ub_rate === 0.6 && put60.body.settings.ub_rate_base === 0.55,
+      put60 && JSON.stringify(put60.body.settings));
     ctl.cfgPut = 'ok';
 
     console.log('\n[the poller refreshes the rate — but not over an unsaved change]');
@@ -538,6 +554,10 @@ async function main() {
     assert('  while the base follows the server', ev('ubRateBase') === 0.45);
     el.value = '0.45';            // typed back to what the server holds: nothing unsaved now
     el.dispatchEvent(new win.Event('input', { bubbles: true }));
+    el.dispatchEvent(new win.Event('change', { bubbles: true }));
+    n2 = cfgPuts(ctl).length;
+    await until(() => cfgPuts(ctl).length > n2 && ev('saveTimer') === null && ev('_configPutInFlight') === 0, 3000);
+    await sleep(100);
     ctl.storedUb = 0.48;
     await poll();
     assert('with nothing unsaved, the poll brings in another tab\'s rate',
@@ -688,6 +708,16 @@ async function main() {
       writes.every(w => { const e = (w.body.value || []).find(x => x.source_id === 'r-ub');
                           return !!e && e.id === 'e-ub' && e.total === 420 && e.ub_total === 420; }),
       JSON.stringify(writes.map(w => (w.body.value || []).find(x => x.source_id === 'r-ub') || null)));
+
+    console.log('\n[…while the office keeps working on that row]');
+    const n = puts(ctl, new RegExp(IC_KEY)).length;
+    ev("set(rows.findIndex(r => r.id === 'r-ub'), 'inv_number', 'INV-12')");
+    await until(() => puts(ctl, new RegExp(IC_KEY)).length > n, 3000);
+    await sleep(300);
+    const e = ctl.ic.find(x => x.source_id === 'r-ub');
+    assert('its invoice number still reaches Intercompany; only its UB figures stay (e-ub, 1200 gal, 420)',
+      !!e && e.id === 'e-ub' && e.inv_number === 'INV-12' && e.total === 420 && e.ub_total === 420
+        && e.gallons_ub === '1200', JSON.stringify(e));
     dom.window.close();
   }
 
@@ -747,6 +777,57 @@ async function main() {
     dom.window.close();
   }
 
+  // ── J2. …nor is any step of clearing it one keystroke at a time ──────────
+  {
+    const ctl = makeCtl();
+    const { dom, win, doc, ev, setVisibility } = await boot(ctl);
+    await until(() => ev('dustConfigLoaded') && ev('dustLoaded'));
+    await sleep(400);
+    const el = doc.getElementById('ubRateInput');
+    const input  = v => { el.value = v; el.dispatchEvent(new win.Event('input',  { bubbles: true })); };
+    const change = v => { el.value = v; el.dispatchEvent(new win.Event('change', { bubbles: true })); };
+    const ubTot  = () => doc.getElementById('tot-ub').textContent;
+    const ubOf   = w => ((w.body.value || []).find(e => e.source_id === 'r-ub') || {}).total;
+    console.log('\n[0.35 backspaced empty — 0.3, 0., 0, \'\' — then the tab hidden]');
+    for (const v of ['0.3', '0.', '0', '']) input(v);
+    assert('the rate is still 0.35: the 0.3 on the way was not one', ev('ubRate') === UB_RATE, String(ev('ubRate')));
+    let n = cfgPuts(ctl).length;
+    setVisibility('hidden');
+    await sleep(50);
+    const f = cfgPuts(ctl).slice(n).find(q => q.keepalive);
+    assert('the hide flush carries 0.35 against base 0.35', f && f.body.settings.ub_rate === UB_RATE
+      && f.body.settings.ub_rate_base === UB_RATE, f && JSON.stringify(f.body.settings));
+    assert('  the server still holds 0.35', ctl.storedUb === UB_RATE, String(ctl.storedUb));
+    setVisibility('visible');
+    await sleep(100);
+
+    console.log('\n[…then left empty]');
+    change('');
+    assert('the box shows 0.35 again, the rate it still is', el.value === '0.35' && ev('ubRate') === UB_RATE,
+      `${el.value} / ${ev('ubRate')}`);
+    assert('  and so do the totals (UB $420.00)', ubTot() === '$420.00', ubTot());
+
+    console.log('\n[a rate half-typed while a row edit saves]');
+    n = cfgPuts(ctl).length;
+    const icN = puts(ctl, new RegExp(IC_KEY)).length;
+    ev("set(rows.findIndex(r => r.id === 'r-veh'), 'inv_number', 'INV-8')");
+    input('0.3');
+    assert('the totals preview it (UB $360.00)', ubTot() === '$360.00', ubTot());
+    await until(() => cfgPuts(ctl).length > n, 3000);
+    const p = cfgPuts(ctl)[n];
+    assert('the row edit\'s config save carries 0.35 against base 0.35', p && p.body.settings.ub_rate === UB_RATE
+      && p.body.settings.ub_rate_base === UB_RATE, p && JSON.stringify(p.body.settings));
+    await sleep(500);
+    const ic = puts(ctl, new RegExp(IC_KEY)).slice(icN);
+    assert('  and Intercompany is priced at 0.35 (r-ub 420)', ic.length > 0 && ic.every(w => ubOf(w) === 420),
+      JSON.stringify(ic.map(ubOf)));
+    assert('  the box keeps what is being typed', el.value === '0.3', el.value);
+    el.dispatchEvent(new win.Event('blur'));   // typed back to where it began: no change event
+    assert('left with no change, box and totals are back at 0.35', el.value === '0.35' && ubTot() === '$420.00'
+      && ev('ubRate') === UB_RATE, `${el.value} / ${ubTot()}`);
+    dom.window.close();
+  }
+
   // ── K. The hide flush while a UB change is still on its way ───────────────
   {
     const ctl = makeCtl();
@@ -794,6 +875,28 @@ async function main() {
     assert('each reaches the server as its own step: 2, then 1, then 0',
       JSON.stringify(sent) === JSON.stringify([['ClearFrac', 'Calcium Chloride'], ['Calcium Chloride'], []]),
       JSON.stringify(sent));
+    // The server lets a save empty every list only when it names each list
+    // still holding something — the last entry removed here, not one this
+    // tab never saw.
+    const named = cfgPuts(ctl).slice(n).map(q => q.body.lists_removed);
+    assert('  the removals name the list they removed from', JSON.stringify(named)
+      === JSON.stringify([[], ['materials'], ['materials']]), JSON.stringify(named));
+    ctl.cfgPut = 'ok';
+    await sleep(100);
+    let m = cfgPuts(ctl).length;
+    ev("removeListItem('employees', 'Pat Reilly')");
+    await until(() => cfgPuts(ctl).length > m, 2000);
+    const emp = cfgPuts(ctl)[m];
+    assert('  an employee\'s removal names the labor rates too',
+      emp && JSON.stringify([...(emp.body.lists_removed || [])].sort()) === JSON.stringify(['employee_rates', 'employees']),
+      emp && JSON.stringify(emp.body.lists_removed));
+    await sleep(200);
+    m = cfgPuts(ctl).length;
+    ev('saveLists()');
+    await until(() => cfgPuts(ctl).length > m, 2000);
+    const later = cfgPuts(ctl)[m];
+    assert('  once the server has them, a later save names none', later && Array.isArray(later.body.lists_removed)
+      && later.body.lists_removed.length === 0, later && JSON.stringify(later.body.lists_removed));
     dom.window.close();
   }
 
@@ -816,6 +919,34 @@ async function main() {
     dom.window.close();
   }
 
+  // ── N2. …but never alongside the page's own first read ───────────────────
+  {
+    const ctl = makeCtl({ obGet: 'hold', pcGet: 'hold' });
+    const { dom, ev, setVisibility } = await boot(ctl);
+    await until(() => ev('dustConfigLoaded') && ev('dustLoaded'));
+    await until(() => ctl.held.length === 2, 2000);   // the first reads of both books, still out
+    console.log('\n[a returning tab polls while the first reads of Other Billing and Product Cost are out]');
+    setVisibility('visible');
+    await sleep(300);
+    const reads = k => ctl.log.filter(q => q.method === 'GET' && q.url.includes('/api/data/' + k)).length;
+    assert('one read of each book is out, not two', reads(OB_KEY) === 1 && reads(PC_KEY) === 1,
+      `${reads(OB_KEY)} / ${reads(PC_KEY)}`);
+    ctl.held.splice(0, 2).forEach(go => go());        // the first reads land
+    await until(() => ev('obLoaded') && ev('pcLoaded'), 2000);
+    ev('obAddRow()');
+    ev('pcAddRow()');
+    const obAdded = ev('obRows[0].id'), pcAdded = ev('pcRows[0].id');
+    ctl.held.splice(0).forEach(go => go());           // anything else still out lands after that
+    await sleep(1500);                                // past the 900ms save debounce
+    const lastPut = k => puts(ctl, new RegExp(k)).pop();
+    const has = (w, id) => !!w && (w.body.value || []).some(r => r.id === id);
+    assert('a row added once they loaded is still there, and saved',
+      ev(`obRows.some(r => r.id === '${obAdded}')`) && ev(`pcRows.some(r => r.id === '${pcAdded}')`)
+        && has(lastPut(OB_KEY), obAdded) && has(lastPut(PC_KEY), pcAdded),
+      `${ev('obRows.length')} / ${ev('pcRows.length')}`);
+    dom.window.close();
+  }
+
   // ── O. The poller refreshes the profit margin ─────────────────────────────
   {
     const BLANK_PM = { base_gal: null, base_rate: null, soap_gal: null, soap_rate: null, water_gal: null,
@@ -831,6 +962,9 @@ async function main() {
     await poll();
     assert('the poll takes it up', ev('profitMargin.base_gal') === 275 && ev('profitMargin.charge_basis') === 'ub'
       && doc.getElementById('pm-base-gal').value === '275');
+    const actualOn = [...doc.querySelectorAll('#an-actual .pm-pill.active')].map(p => p.dataset.basis);
+    assert('  and leaves the Actual Profit Margin toggle as it was', JSON.stringify(actualOn) === JSON.stringify([ev('apmBasis')]),
+      `${JSON.stringify(actualOn)} vs ${ev('apmBasis')}`);
     let n = cfgPuts(ctl).length;
     ev("set(rows.findIndex(r => r.id === 'r-veh'), 'inv_number', 'INV-5')");
     await until(() => cfgPuts(ctl).length > n, 3000);
