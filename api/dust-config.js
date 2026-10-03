@@ -1,7 +1,11 @@
 'use strict';
 /**
  * GET  /api/dust-config  — settings + lists for the company
- * PUT  /api/dust-config  — full sync: { settings: { ub_rate }, lists: { equipment, employees, companies, materials, states, mu } }
+ * PUT  /api/dust-config  — full sync: { settings: { ub_rate, profit_margin, ub_rate_base },
+ *                          lists: { equipment, employees, companies, materials, states, mu, employee_rates, cost_codes } }
+ *   Refuses with 409 (writing nothing) a save that would blank the lists or
+ *   zero the UB rate over stored values; ?force=1 overrides. Answers
+ *   { ok, settings: { ub_rate } } with the rate now in effect.
  *
  * Source of truth: dust_settings, dust_equipment, dust_companies,
  *   dust_company_locations, dust_company_personnel, dropdown_lists tables.
@@ -180,27 +184,142 @@ module.exports = async (req, res) => {
 
     // ── PUT ────────────────────────────────────────────────────────────────
     if (req.method === 'PUT') {
-      const { settings, lists } = req.body || {};
-      const safeSettings = (settings && typeof settings === 'object') ? settings : { ub_rate: 0 };
-      const safeLists    = (lists    && typeof lists    === 'object') ? lists    : { equipment: [], employees: [], companies: [], materials: [], states: [], mu: [] };
+      const body  = req.body || {};
+      const force = !!req.query && req.query.force === '1';
+      // A side the body doesn't carry is left exactly as stored. Both used to
+      // default to { ub_rate: 0 } and six empty lists, so a body missing one
+      // half silently zeroed or emptied that half.
+      const isObj    = v => !!v && typeof v === 'object' && !Array.isArray(v);
+      const settings = isObj(body.settings) ? body.settings : null;
+      const lists    = isObj(body.lists)    ? body.lists    : null;
+
+      // Read what is stored before writing anything. A page that saves before
+      // its config has loaded (or after the load failed) sends its blank
+      // starting state: UB rate 0, every list empty. That once replaced both
+      // blobs, zeroed dust_settings.ub_rate and lost employee_rates and
+      // cost_codes, which live only in the blob; the per-table count > 1
+      // guards further down saved the rest, but only for lists of 2 or more.
+      // The legacy unscoped blobs are read for the same reason GET reads them:
+      // a company still served from them has that data, even if no scoped
+      // row exists yet.
+      const [blobSettings, blobLists, blobSettingsLegacy, blobListsLegacy, rateRows, countRows, dropdownRows] = await Promise.all([
+        sql`SELECT value FROM app_data WHERE key = ${companyCode + ':dust_settings'}`,
+        sql`SELECT value FROM app_data WHERE key = ${companyCode + ':dust_lists'}`,
+        sql`SELECT value FROM app_data WHERE key = 'dust_settings'`,
+        sql`SELECT value FROM app_data WHERE key = 'dust_lists'`,
+        sql`SELECT ub_rate FROM dust_settings WHERE company_code = ${companyCode}`,
+        sql`SELECT (SELECT COUNT(*)::int FROM dust_equipment WHERE company_code = ${companyCode}) AS equipment,
+                   (SELECT COUNT(*)::int FROM dust_companies WHERE company_code = ${companyCode}) AS companies`,
+        sql`SELECT list_name, COUNT(*)::int AS count FROM dropdown_lists
+            WHERE company_code = ${companyCode}
+              AND list_name = ANY(${['dust_employees', 'dust_materials', 'dust_states', 'dust_mu']})
+            GROUP BY list_name`,
+      ]);
+      const _asObj       = r => (r?.value && typeof r.value === 'object') ? r.value : null;
+      const prevSettings = _asObj(blobSettings[0]) || _asObj(blobSettingsLegacy[0]) || {};
+      const prevLists    = _asObj(blobLists[0])    || _asObj(blobListsLegacy[0])    || {};
+      // The rate a reader sees today: the normalized row when there is one,
+      // else the blob's copy (GET's own order).
+      const storedRate = rateRows.length ? (parseFloat(rateRows[0].ub_rate) || 0)
+                                         : (safeFloat(prevSettings.ub_rate) ?? 0);
+
+      const refused = [];
+      const emptied = [];
+
+      // Lists. Stored size is the larger of the blob and the normalized table,
+      // because after the blank save the blob itself was empty while the
+      // tables still held everything. Arrays are sized after the same null/''
+      // filter _syncDropdownList applies; employee_rates by its key count.
+      if (lists && !force) {
+        const _size  = v => Array.isArray(v) ? v.filter(x => x != null && x !== '').length
+                          : isObj(v) ? Object.keys(v).length : 0;
+        const _ddCnt = n => (dropdownRows.find(r => r.list_name === n) || {}).count || 0;
+        const sizes = [
+          ['equipment',      'equipment',      countRows[0].equipment],
+          ['companies',      'companies',      countRows[0].companies],
+          ['employees',      'employees',      _ddCnt('dust_employees')],
+          ['materials',      'materials',      _ddCnt('dust_materials')],
+          ['states',         'states',         _ddCnt('dust_states')],
+          ['mu',             'MU',             _ddCnt('dust_mu')],
+          ['cost_codes',     'cost codes',     0],
+          ['employee_rates', 'employee rates', 0],
+        ].map(([key, label, normCount]) => ({
+          key, label,
+          stored:   Math.max(_size(prevLists[key]), normCount),
+          incoming: _size(lists[key]),
+        }));
+
+        // A save where every list is empty is never a real edit once anything
+        // is stored: deleting the last item of one list still sends the
+        // others. This also covers lists of exactly 1, which the rule below
+        // has to let through so items can still be removed one at a time.
+        const blank = sizes.every(s => s.incoming === 0);
+        const held  = sizes.filter(s => s.stored > 0);
+        if (blank && held.length) refused.push('blank_lists');
+        // Any one list going from several entries to none in a single save is
+        // a stale or half-loaded tab, not a user deleting items (2 -> 1 -> 0).
+        const wiped = sizes.filter(s => s.stored > 1 && s.incoming === 0);
+        wiped.forEach(s => refused.push('empty_' + s.key));
+        (blank && held.length ? held : wiped).forEach(s => emptied.push(`${s.label} (${s.stored})`));
+      }
+
+      // UB rate. ub_rate_base is the rate this tab last got from the server.
+      // Sending it back unchanged means the user didn't touch the rate here,
+      // so the stored one stands (another tab may have changed it since). A
+      // different value is an edit and is written, including a deliberate 0.
+      // A page too old to send a base can't say which, so it can't zero a
+      // stored rate.
+      let rate = storedRate;
+      if (settings) {
+        const incoming = safeFloat(settings.ub_rate) ?? 0;
+        const base     = safeFloat(settings.ub_rate_base);
+        if (force)                                rate = incoming;
+        else if (base !== null)                   rate = Math.abs(incoming - base) < 1e-9 ? storedRate : incoming;
+        else if (storedRate > 0 && incoming <= 0) refused.push('zero_ub_rate');
+        else                                      rate = incoming;
+      }
+
+      // Refuse the whole save, writing nothing. The detail is shown on the
+      // page, so it speaks to the person rather than offering ?force=1.
+      if (refused.length) {
+        const parts = [];
+        if (emptied.length) parts.push(`emptied ${emptied.join(', ')}`);
+        if (refused.includes('zero_ub_rate')) parts.push(`set the UB gallon rate from $${storedRate} to $0`);
+        console.warn(`[dust-config] refused PUT for ${companyCode}: ${refused.join(', ')}`);
+        return res.status(409).json({
+          error:  'Refusing to wipe dust config',
+          detail: `Nothing was saved: this save would have ${parts.join(' and ')}. `
+                + 'Reload the page to get the current dust settings, then make your change again.',
+          refused,
+        });
+      }
+
+      // ub_rate_base is this request's bookkeeping, not a setting, and the
+      // blob carries the same rate as dust_settings.
+      let storeSettings = null;
+      if (settings) {
+        storeSettings = Object.assign({}, settings, { ub_rate: rate });
+        delete storeSettings.ub_rate_base;
+      }
 
       // Write blobs in parallel (safety net during migration window)
       await Promise.all([
-        sql`
+        storeSettings && sql`
           INSERT INTO app_data (key, value, updated_at)
-          VALUES (${companyCode + ':dust_settings'}, ${JSON.stringify(safeSettings)}::jsonb, NOW())
+          VALUES (${companyCode + ':dust_settings'}, ${JSON.stringify(storeSettings)}::jsonb, NOW())
           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
         `,
-        sql`
+        lists && sql`
           INSERT INTO app_data (key, value, updated_at)
-          VALUES (${companyCode + ':dust_lists'}, ${JSON.stringify(safeLists)}::jsonb, NOW())
+          VALUES (${companyCode + ':dust_lists'}, ${JSON.stringify(lists)}::jsonb, NOW())
           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
         `,
       ]);
 
-      await _syncToTables(sql, companyCode, safeSettings, safeLists);
+      await _syncToTables(sql, companyCode, storeSettings, lists);
 
-      return res.json({ ok: true });
+      // The page keeps this as its next ub_rate_base.
+      return res.json({ ok: true, settings: { ub_rate: rate } });
     }
 
     return res.status(405).json({ error: 'Method not allowed' });
@@ -214,14 +333,18 @@ module.exports = async (req, res) => {
 // ── Sync helpers ────────────────────────────────────────────────────────────
 
 async function _syncToTables(sql, companyCode, settings, lists) {
+  // A PUT that carried only one side passes null for the other; that side's
+  // tables are left as they are.
   await Promise.all([
-    _syncSettings(sql, companyCode, settings),
-    _syncEquipment(sql, companyCode, lists.equipment || []),
-    _syncDropdownList(sql, companyCode, 'dust_employees', lists.employees || []),
-    _syncDropdownList(sql, companyCode, 'dust_materials', lists.materials || []),
-    _syncDropdownList(sql, companyCode, 'dust_states',    lists.states    || []),
-    _syncDropdownList(sql, companyCode, 'dust_mu',        lists.mu        || []),
-    _syncCompanies(sql, companyCode, lists.companies || []),
+    settings && _syncSettings(sql, companyCode, settings),
+    ...(lists ? [
+      _syncEquipment(sql, companyCode, lists.equipment || []),
+      _syncDropdownList(sql, companyCode, 'dust_employees', lists.employees || []),
+      _syncDropdownList(sql, companyCode, 'dust_materials', lists.materials || []),
+      _syncDropdownList(sql, companyCode, 'dust_states',    lists.states    || []),
+      _syncDropdownList(sql, companyCode, 'dust_mu',        lists.mu        || []),
+      _syncCompanies(sql, companyCode, lists.companies || []),
+    ] : []),
   ]);
 }
 
