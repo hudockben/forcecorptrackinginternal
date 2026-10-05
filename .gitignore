@@ -11,3 +11,7 @@ api/node_modules/
 # tidied up by hand. A stray one was committed once already.
 .scratch-*.js
 .mobile-shoot.js
+
+# The record scripts/backfill-po-unit-cost-tax.js --apply writes of what it
+# changed. Live company data — keep it, but never commit it.
+po-unit-cost-backfill-*.json

@@ -515,10 +515,15 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
   assert('as Material',                    row.field_type === 'Material');
   assert('carries the codes',              row.cost_code === '420' && row.sub_code === 'Base');
   assert('carries vendor and PO number',   row.supplier === 'Acme' && row.po_num === 'PO-0001');
-  assert('quantity and unit cost copied',  Number(row.units_purchased) === 10 && Number(row.unit_cost) === 2.5);
+  assert('quantity copied',                Number(row.units_purchased) === 10);
   // 10 × 2.50 = 25.00, plus 6% tax = 26.50. The job is charged the tax too,
   // which is what the division tabs do.
   assert('material cost includes the tax', Math.abs(Number(row.material_cost) - 26.5) < 0.001);
+  // …and so does the unit cost, or the row reads 10 × $2.50 = $26.50 and the
+  // cost tab drops the tax the next time either figure is edited there.
+  assert('unit cost includes the tax',     Number(row.unit_cost) === 2.65, row.unit_cost);
+  assert('units × unit cost is the material cost',
+    Math.abs(Number(row.units_purchased) * Number(row.unit_cost) - Number(row.material_cost)) < 0.001);
   assert('the line is linked back to the row', po.lines[0].po_row_id === row.row_id);
 
   // Re-saving the same order must not create a second row.
@@ -1127,6 +1132,17 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
     poSync.lineTax({ qty: '10', unit_cost: '10', tax: '3.21' }) === 3.21);
   assert('zero percent is zero, not a fallback',
     poSync.lineTax({ qty: '10', unit_cost: '10', tax: '3.21', tax_pct: '0' }) === 0);
+  // The screenshot case: 63.82 t at $16.00 with 6% tax is $1,082.39 — $16.96 a ton.
+  assert('unit cost with a percentage tax',
+    poSync.lineUnitCostWithTax({ qty: '63.82', unit_cost: '16', tax_pct: '6' }) === 16.96);
+  assert('no tax leaves the unit cost alone',
+    poSync.lineUnitCostWithTax({ qty: '63.82', unit_cost: '16', tax_pct: '' }) === 16);
+  assert('a legacy dollar tax is spread over the quantity',
+    poSync.lineUnitCostWithTax({ qty: '10', unit_cost: '10', tax: '3.21' }) === 10.321);
+  assert('with no quantity the percentage applies to the price',
+    poSync.lineUnitCostWithTax({ qty: '', unit_cost: '20', tax_pct: '6' }) === 21.2);
+  assert('rounded to the four places the column stores',
+    poSync.lineUnitCostWithTax({ qty: '7', unit_cost: '15.37', tax_pct: '6' }) === 16.2922);
   assert('a quantity alone is costable',  poSync.lineHasCost({ qty: '1' }) === true);
   assert('a unit cost alone is costable', poSync.lineHasCost({ unit_cost: '5' }) === true);
   assert('an empty line is not',          poSync.lineHasCost({ qty: '', unit_cost: '' }) === false);

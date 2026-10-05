@@ -11153,6 +11153,20 @@ function _recalcLineTax(line) {
   line.tax = t ? String(t) : '';
 }
 
+// What one unit costs the job once tax is on it — the unit cost a delivery's
+// cost row carries. The row's material cost already includes the tax, so its
+// unit cost has to as well: otherwise it reads 63.82 × $16.00 = $1,082.39, and
+// the cost tab, which re-derives material cost as units × unit cost the moment
+// either is edited, drops the tax off the job. The tax is spread over the
+// quantity, so a legacy flat-dollar tax lands the same way a percentage does.
+// Four places, which is what daily_tracking.unit_cost stores. Mirrors
+// lineUnitCostWithTax in api/lib/po-sync.js.
+function _lineUnitCostWithTax(line) {
+  const uc = _poNum0(line.unit_cost), qty = _poNum0(line.qty);
+  const out = qty ? uc + _lineTax(line) / qty : uc * (1 + (_lineTaxPct(line) || 0) / 100);
+  return Math.round(out * 1e4) / 1e4;
+}
+
 function _poTotals(po) {
   let qty = 0, amt = 0, tax = 0;
   (po.lines || []).forEach(l => {
@@ -11344,7 +11358,7 @@ async function _syncPOLineToRow(po, line) {
   r.date           = line.date     || '';
   r.employee       = line.employee || '';
   r.units_purchased= line.qty      || '';
-  r.unit_cost      = line.unit_cost|| '';
+  r.unit_cost      = line.unit_cost ? String(_lineUnitCostWithTax(line)) : '';
   r.material_cost  = String(_lineAmt(line) + _lineTax(line));
   drPutNow(r.id, r);
   renderDailyTable(po.project_id);
@@ -11367,7 +11381,7 @@ function _ensurePOLineRow(po, line) {
     supplier:        po.supplier   || '',
     po_num:          po.po_number  || '',
     units_purchased: line.qty      || '',
-    unit_cost:       line.unit_cost|| '',
+    unit_cost:       line.unit_cost ? String(_lineUnitCostWithTax(line)) : '',
     material_cost:   String(_lineAmt(line) + _lineTax(line)),
     field_type:      'Material',
   };
@@ -11682,7 +11696,9 @@ function renderPOTab() {
             <td style="padding:0.3rem 0.5rem;min-width:120px">${inp('invoice_num','text',line.invoice_num,po.id,line.id,'placeholder="Invoice / Ticket #"')}</td>
             <td style="padding:0.3rem 0.5rem;min-width:115px">${inp('date','date',line.date,po.id,line.id)}</td>
             <td style="padding:0.3rem 0.5rem;min-width:70px">${inp('qty','number',line.qty,po.id,line.id,'step="any" placeholder="0"')}</td>
-            <td style="padding:0.3rem 0.5rem;min-width:90px">${inp('unit_cost','number',line.unit_cost,po.id,line.id,'step="any" placeholder="0.00"')}</td>
+            <td style="padding:0.3rem 0.5rem;min-width:90px">${inp('unit_cost','number',line.unit_cost,po.id,line.id,'step="any" placeholder="0.00"')}
+              <div id="po-line-uct-${esc(line.id)}" title="Unit cost with tax — what the job's cost row is charged per unit" style="text-align:right;font-size:0.62rem;color:var(--muted);padding-right:0.6rem">${lineTax > 0 ? '$'+fmt(_lineUnitCostWithTax(line))+' w/ tax' : ''}</div>
+            </td>
             <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--green);font-size:0.8rem" id="po-line-amt-${esc(line.id)}">${lineAmt > 0 ? '$'+fmt(lineAmt) : '—'}</td>
             <td style="padding:0.3rem 0.5rem;min-width:95px">
               <div style="display:flex;align-items:center;gap:0.15rem">
@@ -11897,6 +11913,8 @@ function _handlePOEvent(e) {
       if (amtEl) amtEl.textContent = la > 0 ? '$'+fmt(la) : '—';
       if (taxEl) taxEl.textContent = lt > 0 ? '$'+fmt(lt) : '';
       if (totEl) totEl.textContent = (la+lt) > 0 ? '$'+fmt(la+lt) : '—';
+      const uctEl = document.getElementById('po-line-uct-' + lineId);
+      if (uctEl) uctEl.textContent = lt > 0 ? '$'+fmt(_lineUnitCostWithTax(line))+' w/ tax' : '';
       // Update running totals on header row
       const tot = _poTotals(po);
       const hAmt = document.getElementById('po-amt-' + poId);

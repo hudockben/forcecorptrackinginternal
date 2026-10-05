@@ -180,7 +180,7 @@ assert('a phone gets cards instead of the thirteen-column table',
 console.log('\n[line math agrees with the division tabs]');
 {
   const ctx = vm.createContext({});
-  NUM_FNS.concat(['lineAmt', 'lineTaxPct', 'lineTax', 'recalcLineTax', 'poTotals']).forEach(name => {
+  NUM_FNS.concat(['lineAmt', 'lineTaxPct', 'lineTax', 'lineUnitCostWithTax', 'recalcLineTax', 'poTotals']).forEach(name => {
     vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx);
   });
   const run = expr => vm.runInContext(expr, ctx);
@@ -208,7 +208,38 @@ console.log('\n[line math agrees with the division tabs]');
 
   const tot = run("poTotals({lines:[{qty:'2',unit_cost:'10',tax_pct:'5'},{qty:'1',unit_cost:'20',tax_pct:'5'}]})");
   assert('order totals sum the deliveries', tot.qty === 3 && tot.amt === 40 && Math.abs(tot.total - 42) < 1e-9);
+
+  // The unit cost shown under the price is the one the job's cost row carries,
+  // so it has to agree with the server's figure for the same line.
+  const poSync = require('../api/lib/po-sync');
+  [
+    { qty: '63.82', unit_cost: '16',    tax_pct: '6' },
+    { qty: '7',     unit_cost: '15.37', tax_pct: '6' },
+    { qty: '10',    unit_cost: '10',    tax: '3.21' },
+    { qty: '',      unit_cost: '20',    tax_pct: '6' },
+    { qty: '5',     unit_cost: '12',    tax_pct: '' },
+  ].forEach(l => {
+    const page = run('lineUnitCostWithTax(' + JSON.stringify(l) + ')');
+    assert('unit cost with tax matches the server for ' + JSON.stringify(l),
+      page === poSync.lineUnitCostWithTax(l), page + ' vs ' + poSync.lineUnitCostWithTax(l));
+  });
 }
+
+console.log('\n[the division tabs carry the tax into the cost row\'s unit cost]');
+['paving.html', 'tracker.html', 'kiewit-pinetree.html'].forEach(file => {
+  const src = read(file);
+  const ctx = vm.createContext({});
+  ['_normalizeNumeric', '_poNum', '_poNum0', '_lineAmt', '_lineTaxPct', '_lineTax', '_lineUnitCostWithTax']
+    .forEach(name => vm.runInContext(requireFn(src, name, file), ctx));
+  const poSync = require('../api/lib/po-sync');
+  const l = { qty: '63.82', unit_cost: '16', tax_pct: '6' };
+  assert(file + ': same figure as the server',
+    vm.runInContext('_lineUnitCostWithTax(' + JSON.stringify(l) + ')', ctx) === poSync.lineUnitCostWithTax(l));
+  assert(file + ': an existing cost row is given it',
+    /r\.unit_cost      = line\.unit_cost \? String\(_lineUnitCostWithTax\(line\)\) : '';/.test(src));
+  assert(file + ': and so is a new one',
+    /unit_cost:       line\.unit_cost \? String\(_lineUnitCostWithTax\(line\)\) : '',/.test(src));
+});
 
 console.log('\n[the cascade]');
 {
@@ -1422,6 +1453,7 @@ console.log('\n[a cost row this page has not loaded — run]');
     function renderDailyTable() {}
     function _lineAmt(l) { return (parseFloat(l.qty)||0) * (parseFloat(l.unit_cost)||0); }
     function _lineTax() { return 0; }
+    function _lineUnitCostWithTax(l) { return parseFloat(l.unit_cost) || 0; }
   `, ctx);
   vm.runInContext('async ' + requireFn(read('tracker.html'), '_syncPOLineToRow', 'tracker.html'), ctx);
   await vm.runInContext(`_syncPOLineToRow(

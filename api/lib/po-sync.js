@@ -98,6 +98,34 @@ function lineTax(line) {
 }
 
 /**
+ * What one unit of a delivery actually costs the job once tax is on it.
+ *
+ * The cost row's material_cost includes the tax, so its unit_cost has to as
+ * well — a row reading 63.82 t at $16.00 but $1,082.39 doesn't add up, and the
+ * job's cost tab re-derives material cost as units × unit cost the moment
+ * anyone touches either, which silently dropped the tax off the job. With the
+ * tax folded in here, units × unit cost comes back to the line total.
+ *
+ * Spreads the line's tax over its quantity, so a legacy flat-dollar tax lands
+ * the same way a percentage does. With no quantity there is nothing to spread
+ * over; the percentage, if any, is applied straight to the price.
+ *
+ * Rounded to four places, which is what daily_tracking.unit_cost stores.
+ */
+function lineUnitCostWithTax(line) {
+  if (!line) return 0;
+  const uc  = floatOrZero(line.unit_cost);
+  const qty = floatOrZero(line.qty);
+  let out;
+  if (qty) out = uc + lineTax(line) / qty;
+  else {
+    const pct = safeFloat(line.tax_pct);
+    out = uc * (1 + (pct || 0) / 100);
+  }
+  return Math.round(out * 1e4) / 1e4;
+}
+
+/**
  * Does this delivery line cost the job? The frontend creates a daily row the
  * moment a line has a quantity or a unit cost, and not before — an empty line
  * someone added and never filled in should not show up on the job's cost tab.
@@ -452,7 +480,7 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
         ${date}, 'Material', ${line.employee || null},
         ${po.cost_code || null}, ${po.sub_code || null},
         ${po.title || null}, ${po.supplier || null}, ${po.po_number || null},
-        ${floatOrZero(line.qty)}, ${floatOrZero(line.unit_cost)}, ${cost}
+        ${floatOrZero(line.qty)}, ${lineUnitCostWithTax(line)}, ${cost}
       )
       ON CONFLICT (row_id) DO UPDATE SET
         project_id      = EXCLUDED.project_id,
@@ -819,6 +847,7 @@ module.exports = {
   blobKeyFor,
   lineAmt,
   lineTax,
+  lineUnitCostWithTax,
   lineHasCost,
   isInjectedRowId,
   readPOBlob,
