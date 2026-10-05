@@ -861,6 +861,8 @@
       white-space: nowrap;
     }
     .btn-pdf:hover { background: rgba(167,139,250,0.1); border-color: var(--accent); }
+    .btn-xlsx { color: var(--green); border-color: rgba(34,197,94,0.4); }
+    .btn-xlsx:hover { background: rgba(34,197,94,0.1); border-color: var(--green); }
     .rpt-body { padding: 1.25rem 1.25rem 3rem; }
     .rpt-info { font-size: 0.68rem; color: var(--muted); white-space: nowrap; }
 
@@ -1145,6 +1147,8 @@
         </div>
         <button class="btn-run-report" onclick="runJobSummaryReport()">Run Report</button>
         <button class="btn-pdf" id="jsPdfBtn" style="display:none" onclick="downloadJobSummaryPdf()">&#8659; Download PDF</button>
+        <button class="btn-pdf btn-xlsx" id="jsXlsxBtn" style="display:none" onclick="downloadJobSummaryXlsx()"
+          title="Download this report as an Excel workbook (.xlsx) — real numbers and dates, with the totals as formulas so it can be worked in">&#8659; Download Excel</button>
         <div class="tab-bar-spacer"></div>
         <div class="rpt-info" id="jsReportInfo"></div>
       </div>
@@ -3866,6 +3870,11 @@
     // True once a Job Summary report is on screen, so a preset click can
     // refresh it instead of leaving stale figures under a new date range.
     let _jsHasRun = false;
+    // The figures the report on screen was built from, for the Excel export.
+    // Null whenever no report is on screen — a run in flight, an error, or a
+    // window with nothing in it — so the export can never hand over a table
+    // other than the one being looked at.
+    let _jsReport = null;
 
     function initReportsTab() {
       const startEl = document.getElementById('jsStartDate');
@@ -3933,6 +3942,369 @@
       const rangeEl   = document.getElementById('jsPrintRange');
       if (rangeEl) rangeEl.textContent = startDate + ' – ' + endDate;
       window.print();
+    }
+
+    /* ── Job Summary → Excel ──────────────────────────────────────────────
+       The report as a workbook to keep working in, not a picture of the
+       table: one row per job with Division and Job # in columns of their own
+       so they sort and filter, dates as real dates, money and hours as plain
+       numbers, and Total Amount and the totals row as formulas — change a
+       figure and everything downstream follows. The totals use SUBTOTAL, so
+       filtering to one division turns them into that division's subtotal.
+       The on-screen division subtotals become a By Division sheet of SUMIFs
+       rather than rows wedged into the data, where a sort would scatter them.
+
+       Built from what the report rendered (_jsReport), not the date boxes, so
+       editing a date without re-running cannot label the file with a window
+       it does not hold. Written by hand because this page loads no libraries:
+       a ZIP of XML parts with stored (uncompressed) entries — the same
+       approach as the exports in payroll.html and divisions.html. */
+    const JSX_CRC = (() => {
+      const t = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        t[i] = c >>> 0;
+      }
+      return t;
+    })();
+
+    function jsxZip(files) {
+      const enc = new TextEncoder();
+      const chunks = [], central = [];
+      let offset = 0;
+      for (const f of files) {
+        const name = enc.encode(f.name);
+        const data = enc.encode(f.data);
+        let crc = 0xFFFFFFFF;
+        for (let i = 0; i < data.length; i++) crc = JSX_CRC[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+        crc = (crc ^ 0xFFFFFFFF) >>> 0;
+
+        const local = new Uint8Array(30 + name.length);
+        const lv = new DataView(local.buffer);
+        lv.setUint32(0, 0x04034b50, true);   // local file header
+        lv.setUint16(4, 20, true);           // version needed
+        lv.setUint16(6, 0x0800, true);       // UTF-8 names
+        lv.setUint32(14, crc, true);
+        lv.setUint32(18, data.length, true); // stored: compressed = uncompressed
+        lv.setUint32(22, data.length, true);
+        lv.setUint16(26, name.length, true);
+        local.set(name, 30);
+        chunks.push(local, data);
+
+        const cd = new Uint8Array(46 + name.length);
+        const cv = new DataView(cd.buffer);
+        cv.setUint32(0, 0x02014b50, true);   // central directory entry
+        cv.setUint16(4, 20, true);
+        cv.setUint16(6, 20, true);
+        cv.setUint16(8, 0x0800, true);
+        cv.setUint32(16, crc, true);
+        cv.setUint32(20, data.length, true);
+        cv.setUint32(24, data.length, true);
+        cv.setUint16(28, name.length, true);
+        cv.setUint32(42, offset, true);
+        cd.set(name, 46);
+        central.push(cd);
+        offset += local.length + data.length;
+      }
+      const cdSize = central.reduce((n, c) => n + c.length, 0);
+      const end = new Uint8Array(22);
+      const ev = new DataView(end.buffer);
+      ev.setUint32(0, 0x06054b50, true);     // end of central directory
+      ev.setUint16(8, files.length, true);
+      ev.setUint16(10, files.length, true);
+      ev.setUint32(12, cdSize, true);
+      ev.setUint32(16, offset, true);
+      return new Blob(chunks.concat(central, [end]),
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    }
+
+    const jsxEsc = s => String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      // XML 1.0 cannot carry these, and Excel refuses the whole file over one.
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+
+    function jsxCol(n) {
+      let s = '';
+      for (; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
+      return s;
+    }
+
+    // Days since 1899-12-30, read off the ISO date's own fields so a work date
+    // never slips a day through the local-time parser.
+    function jsxDate(iso) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(iso || ''));
+      return m ? Math.round(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000) + 25569 : null;
+    }
+
+    // Style indices into JSX_STYLES' cellXfs.
+    const JSX = {
+      title: 1, sub: 2, head: 3, headR: 4, text: 5, date: 6, money: 7, moneyDash: 8,
+      hours: 9, moneyTot: 10, totText: 11, totMoney: 12, totMoneyDash: 13, totHours: 14,
+    };
+
+    // Lowboy and Tri Axle read "—" for zero, as on screen, while the cell
+    // still holds a 0 that sums. The thin dark rule over the totals row is
+    // the table's tfoot.
+    const JSX_STYLES =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+        '<numFmts count="4">' +
+          '<numFmt numFmtId="164" formatCode="&quot;$&quot;#,##0.00"/>' +
+          '<numFmt numFmtId="165" formatCode="#,##0.0"/>' +
+          '<numFmt numFmtId="166" formatCode="yyyy-mm-dd"/>' +
+          '<numFmt numFmtId="167" formatCode="&quot;$&quot;#,##0.00;-&quot;$&quot;#,##0.00;&quot;—&quot;"/>' +
+        '</numFmts>' +
+        '<fonts count="5">' +
+          '<font><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><b/><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><b/><sz val="15"/><color rgb="FF1F2A44"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><sz val="10"/><color rgb="FF6B7280"/><name val="Calibri"/><family val="2"/></font>' +
+        '</fonts>' +
+        '<fills count="4">' +
+          '<fill><patternFill patternType="none"/></fill>' +
+          '<fill><patternFill patternType="gray125"/></fill>' +
+          '<fill><patternFill patternType="solid"><fgColor rgb="FF1F2A44"/><bgColor indexed="64"/></patternFill></fill>' +
+          '<fill><patternFill patternType="solid"><fgColor rgb="FFEDEFF3"/><bgColor indexed="64"/></patternFill></fill>' +
+        '</fills>' +
+        '<borders count="2">' +
+          '<border><left/><right/><top/><bottom/><diagonal/></border>' +
+          '<border><left/><right/><top style="thin"><color rgb="FF1F2A44"/></top><bottom/><diagonal/></border>' +
+        '</borders>' +
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+        '<cellXfs count="15">' +
+          '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+          '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+          '<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+          '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/>' +
+          '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="right"/></xf>' +
+          '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+          '<xf numFmtId="166" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
+          '<xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
+          '<xf numFmtId="167" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
+          '<xf numFmtId="165" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>' +
+          '<xf numFmtId="164" fontId="1" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1"/>' +
+          '<xf numFmtId="0" fontId="1" fillId="3" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>' +
+          '<xf numFmtId="164" fontId="1" fillId="3" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
+          '<xf numFmtId="167" fontId="1" fillId="3" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
+          '<xf numFmtId="165" fontId="1" fillId="3" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
+        '</cellXfs>' +
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+      '</styleSheet>';
+
+    // A cell is { v, s } — a string or number value — or { f, v, s } for a
+    // formula, where v is the value it works out to. Excel recalculates on
+    // open regardless; the cached value is what a preview pane or a phone
+    // shows without ever running the formula.
+    function jsxRow(r, cells) {
+      return `<row r="${r}">` + cells.map((c, i) => {
+        if (!c) return '';
+        const ref = jsxCol(i + 1) + r;
+        const st  = c.s ? ` s="${c.s}"` : '';
+        const num = v => Math.round(Number(v) * 1e6) / 1e6;
+        if (c.f) return `<c r="${ref}"${st}><f>${jsxEsc(c.f)}</f><v>${num(c.v)}</v></c>`;
+        if (typeof c.v === 'number') {
+          return isFinite(c.v) ? `<c r="${ref}"${st}><v>${num(c.v)}</v></c>` : `<c r="${ref}"${st}/>`;
+        }
+        if (c.v == null || c.v === '') return `<c r="${ref}"${st}/>`;
+        return `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${jsxEsc(c.v)}</t></is></c>`;
+      }).join('') + '</row>';
+    }
+
+    function jsxSheet({ widths, rows, headRow, filterRef, textRef, landscape }) {
+      const last = jsxCol(widths.length) + rows.length;
+      return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+          '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' +
+          `<dimension ref="A1:${last}"/>` +
+          // The header row stays put while scrolling — the sticky <thead>.
+          '<sheetViews><sheetView workbookViewId="0">' +
+            `<pane ySplit="${headRow}" topLeftCell="A${headRow + 1}" activePane="bottomLeft" state="frozen"/>` +
+            `<selection pane="bottomLeft" activeCell="A${headRow + 1}" sqref="A${headRow + 1}"/>` +
+          '</sheetView></sheetViews>' +
+          '<sheetFormatPr defaultRowHeight="15"/>' +
+          '<cols>' + widths.map((w, i) =>
+            `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('') + '</cols>' +
+          '<sheetData>' + rows.map((cells, i) => jsxRow(i + 1, cells)).join('') + '</sheetData>' +
+          (filterRef ? `<autoFilter ref="${filterRef}"/>` : '') +
+          '<pageMargins left="0.4" right="0.4" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>' +
+          `<pageSetup orientation="${landscape ? 'landscape' : 'portrait'}" fitToWidth="1" fitToHeight="0"/>` +
+          // A job number is an identifier — kept as text so 02611 keeps its
+          // zero and lookups match — so Excel's "number stored as text" flag
+          // on every one of them is noise.
+          (textRef ? `<ignoredErrors><ignoredError sqref="${textRef}" numberStoredAsText="1"/></ignoredErrors>` : '') +
+        '</worksheet>';
+    }
+
+    function jsxWorkbook(sheets) {
+      const n = sheets.length;
+      const rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+      const ct  = 'application/vnd.openxmlformats-officedocument.spreadsheetml';
+      const names = sheets.map((s, i) => s.printTitles
+        ? `<definedName name="_xlnm.Print_Titles" localSheetId="${i}">'${s.name}'!$${s.printTitles}:$${s.printTitles}</definedName>` : '').join('');
+      return jsxZip([
+        { name: '[Content_Types].xml', data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+            '<Default Extension="xml" ContentType="application/xml"/>' +
+            `<Override PartName="/xl/workbook.xml" ContentType="${ct}.sheet.main+xml"/>` +
+            sheets.map((_, i) =>
+              `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="${ct}.worksheet+xml"/>`).join('') +
+            `<Override PartName="/xl/styles.xml" ContentType="${ct}.styles+xml"/>` +
+          '</Types>' },
+        { name: '_rels/.rels', data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+            `<Relationship Id="rId1" Type="${rel}/officeDocument" Target="xl/workbook.xml"/>` +
+          '</Relationships>' },
+        { name: 'xl/workbook.xml', data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="${rel}">` +
+            '<bookViews><workbookView activeTab="0"/></bookViews>' +
+            '<sheets>' + sheets.map((s, i) =>
+              `<sheet name="${jsxEsc(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('') + '</sheets>' +
+            (names ? `<definedNames>${names}</definedNames>` : '') +
+            '<calcPr calcId="124519" fullCalcOnLoad="1"/>' +
+          '</workbook>' },
+        { name: 'xl/_rels/workbook.xml.rels', data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+            sheets.map((_, i) =>
+              `<Relationship Id="rId${i + 1}" Type="${rel}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('') +
+            `<Relationship Id="rId${n + 1}" Type="${rel}/styles" Target="styles.xml"/>` +
+          '</Relationships>' },
+        { name: 'xl/styles.xml', data: JSX_STYLES },
+        ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: s.xml })),
+      ]);
+    }
+
+    function buildJobSummaryXlsx(rep) {
+      const SHEET = 'Job Summary';
+      const HEAD_ROW = 4, FIRST = HEAD_ROW + 1;
+      const lastData = HEAD_ROW + rep.rows.length;
+      const totRow = lastData + 1;
+      // Columns F–I are the four costs, J their total, K hours.
+      const COST_COLS = ['F', 'G', 'H', 'I'];
+      const SUM_COLS  = ['F', 'G', 'H', 'I', 'J', 'K'];
+      const KEYS      = { F: 'laborCost', G: 'equipCost', H: 'lowboyCost', I: 'triAxleCost', J: 'total', K: 'hoursWorked' };
+      const sumKey = k => rep.rows.reduce((s, r) => s + (r[k] || 0), 0);
+
+      // The same count the toolbar reads beside the report.
+      const summary = [
+        rep.startDate + ' – ' + rep.endDate,
+        rep.projects + ' project' + (rep.projects !== 1 ? 's' : ''),
+        rep.entries + ' entries',
+        ...(rep.infillEntries ? [rep.infillEntries + ' infill'] : []),
+      ].join('  ·  ');
+
+      const rows = [
+        [{ v: 'Job Summary Report', s: JSX.title }],
+        [{ v: summary, s: JSX.sub }],
+        [],
+        ['Division', 'Project', 'Job #', 'First Date', 'Last Date', 'Labor Costs', 'Equipment Costs',
+         'Lowboy Costs', 'Tri Axle Costs', 'Total Amount', 'Hours Worked']
+          .map((v, i) => ({ v, s: i >= 3 ? JSX.headR : JSX.head })),
+      ];
+      rep.rows.forEach((r, i) => {
+        const n = FIRST + i;
+        // A date range the table shows as one day when a job only worked one.
+        const first = r.minDate || rep.startDate;
+        const last  = r.maxDate || rep.endDate;
+        rows.push([
+          { v: r.divLabel, s: JSX.text },
+          { v: r.name, s: JSX.text },
+          { v: r.jobNo || '', s: JSX.text },
+          { v: jsxDate(first), s: JSX.date },
+          { v: jsxDate(last),  s: JSX.date },
+          { v: r.laborCost,   s: JSX.money },
+          { v: r.equipCost,   s: JSX.money },
+          { v: r.lowboyCost,  s: JSX.moneyDash },
+          { v: r.triAxleCost, s: JSX.moneyDash },
+          { f: `SUM(F${n}:I${n})`, v: r.laborCost + r.equipCost + r.lowboyCost + r.triAxleCost, s: JSX.moneyTot },
+          { v: r.hoursWorked, s: JSX.hours },
+        ]);
+      });
+      // SUBTOTAL(109, …) skips rows a filter hides, so the totals follow
+      // whatever slice of the report is showing.
+      const totStyle = c => c === 'H' || c === 'I' ? JSX.totMoneyDash : c === 'K' ? JSX.totHours : JSX.totMoney;
+      rows.push([
+        { v: 'TOTALS', s: JSX.totText }, { v: '', s: JSX.totText }, { v: '', s: JSX.totText },
+        { v: '', s: JSX.totText }, { v: '', s: JSX.totText },
+        ...SUM_COLS.map(c => ({ f: `SUBTOTAL(109,${c}${FIRST}:${c}${lastData})`, v: sumKey(KEYS[c]), s: totStyle(c) })),
+      ]);
+
+      const sheets = [{
+        name: SHEET, printTitles: HEAD_ROW,
+        xml: jsxSheet({
+          widths: [16, 40, 10, 12, 12, 15, 17, 15, 15, 16, 14],
+          rows, headRow: HEAD_ROW, landscape: true,
+          // The filter covers the jobs and stops above the totals, so a sort
+          // never carries the totals row into the middle of the data.
+          filterRef: `A${HEAD_ROW}:K${lastData}`,
+          textRef: `C${FIRST}:C${lastData}`,
+        }),
+      }];
+
+      // By Division — the table's subtotal rows, worked off the first sheet
+      // so an edit there carries through. Only when the report spans more
+      // than one division; with one, it would just repeat the totals row.
+      if (rep.divisions.length > 1) {
+        const rng = c => `'${SHEET}'!$${c}$${FIRST}:$${c}$${lastData}`;
+        const dRows = [
+          [{ v: 'Job Summary — By Division', s: JSX.title }],
+          [{ v: rep.startDate + ' – ' + rep.endDate, s: JSX.sub }],
+          [],
+          ['Division', 'Projects', 'Labor Costs', 'Equipment Costs', 'Lowboy Costs', 'Tri Axle Costs',
+           'Total Amount', 'Hours Worked'].map((v, i) => ({ v, s: i >= 1 ? JSX.headR : JSX.head })),
+        ];
+        const dStyle = c => c === 'H' || c === 'I' ? JSX.moneyDash : c === 'K' ? JSX.hours
+                          : c === 'J' ? JSX.moneyTot : JSX.money;
+        rep.divisions.forEach((d, i) => {
+          const n = FIRST + i;
+          const mine = rep.rows.filter(r => r.division === d.key);
+          dRows.push([
+            { v: d.label, s: JSX.text },
+            // Infill production is not a project — the same "N projects + infill"
+            // count the subtotal row reads.
+            { f: `COUNTIFS(${rng('A')},$A${n},${rng('B')},"<>Rubber Infill Production")`,
+              v: mine.filter(r => !r.infill).length },
+            ...SUM_COLS.map(c => ({
+              f: `SUMIF(${rng('A')},$A${n},${rng(c)})`,
+              v: mine.reduce((s, r) => s + (r[KEYS[c]] || 0), 0), s: dStyle(c),
+            })),
+          ]);
+        });
+        const dLast = HEAD_ROW + rep.divisions.length;
+        dRows.push([
+          { v: 'TOTALS', s: JSX.totText },
+          { f: `SUM(B${FIRST}:B${dLast})`, v: rep.projects, s: JSX.totText },
+          ...['C', 'D', 'E', 'F', 'G', 'H'].map((c, i) => ({
+            f: `SUM(${c}${FIRST}:${c}${dLast})`, v: sumKey(KEYS[SUM_COLS[i]]), s: totStyle(SUM_COLS[i]),
+          })),
+        ]);
+        sheets.push({
+          name: 'By Division',
+          xml: jsxSheet({ widths: [18, 10, 15, 17, 15, 15, 16, 14], rows: dRows, headRow: HEAD_ROW, landscape: true }),
+        });
+      }
+      return jsxWorkbook(sheets);
+    }
+
+    function downloadJobSummaryXlsx() {
+      const rep = _jsReport;
+      if (!rep || !rep.rows.length) return;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(buildJobSummaryXlsx(rep));
+      a.download = `job-summary-${rep.startDate}_to_${rep.endDate}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // On a timer, not at once: Safari reads the blob after click() returns,
+      // and revoking it first downloads an empty file.
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     }
 
     function switchRptSubTab(sub) {
@@ -4372,10 +4744,13 @@
       }
 
       _jsHasRun = true;
+      _jsReport = null;
       const btn    = document.querySelector('.btn-run-report');
       const pdfBtnL = document.getElementById('jsPdfBtn');
+      const xlsxBtnL = document.getElementById('jsXlsxBtn');
       if (btn)     btn.disabled = true;
       if (pdfBtnL) pdfBtnL.style.display = 'none';
+      if (xlsxBtnL) xlsxBtnL.style.display = 'none';
       resultsEl.innerHTML = '<div class="ci-empty"><strong>Loading</strong>Fetching project data…</div>';
       if (infoEl) infoEl.textContent = '';
 
@@ -4670,6 +5045,8 @@
         const invCnt = invRows.length;
         if (infoEl)  infoEl.textContent = pCnt + ' project' + (pCnt !== 1 ? 's' : '') + ' · ' + dailyRows.length + ' entries' + (invCnt ? ' · ' + invCnt + ' infill' : '');
         if (pdfBtn)  pdfBtn.style.display = '';
+        const xlsxBtn = document.getElementById('jsXlsxBtn');
+        if (xlsxBtn) xlsxBtn.style.display = '';
 
         function renderInfillRow(row) {
           if (!row) return '';
@@ -4753,6 +5130,25 @@
         // represented, otherwise a subtotal just duplicates the grand total.
         const groupByDiv = activeDivs.length > 1;
 
+        // The rows in the order the table lays them out — division by
+        // division, infill at the foot of Turf, or at the very end when there
+        // is no Turf job to sit under — kept for the Excel export.
+        const infillXlsx = infillRow && {
+          ...infillRow, name: 'Rubber Infill Production', jobNo: '', infill: true,
+          division: 'turf', divLabel: 'Turf', lowboyCost: 0, triAxleCost: 0,
+        };
+        const xlsxRows = [];
+        DIV_GROUPS.forEach(d => {
+          projByDiv[d.key].forEach(r => xlsxRows.push({ ...r, divLabel: d.label }));
+          if (d.key === 'turf' && infillXlsx && projByDiv.turf.length) xlsxRows.push(infillXlsx);
+        });
+        if (infillXlsx && !projByDiv.turf.length) xlsxRows.push(infillXlsx);
+        _jsReport = {
+          startDate, endDate, rows: xlsxRows,
+          projects: pCnt, entries: dailyRows.length, infillEntries: invCnt,
+          divisions: DIV_GROUPS.filter(d => xlsxRows.some(r => r.division === d.key)),
+        };
+
         let bodyHtml;
         if (groupByDiv) {
           bodyHtml = activeDivs.map(d => {
@@ -4806,6 +5202,9 @@
           + '</tr></tfoot></table></div>';
 
       } catch (err) {
+        _jsReport = null;
+        const xlsxBtnE = document.getElementById('jsXlsxBtn');
+        if (xlsxBtnE) xlsxBtnE.style.display = 'none';
         resultsEl.innerHTML = '<div class="ci-empty"><strong>Error</strong>' + escT(err.message) + '</div>';
       } finally {
         if (btn) btn.disabled = false;
