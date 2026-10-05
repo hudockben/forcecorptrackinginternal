@@ -343,6 +343,22 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
     assert('the groups\' addresses are folded into one list, case-insensitively',
       JSON.stringify(r.emails.slice().sort()) === JSON.stringify(['office@example.com', 'pm1@example.com', 'pm2@example.com']),
       JSON.stringify(r.emails));
+    assert('…with nothing left off', Array.isArray(r.invalid) && r.invalid.length === 0, JSON.stringify(r.invalid));
+
+    // Saved before the check was strict: an address the mail service refuses,
+    // which would stop the email going to anybody on it.
+    const gBad = await grp('Safety Report Group', ['bhudock@example.com', 'abotsford@forcecorporation..com', 'Abotsford@ForceCorporation..com']);
+    const rb = await runner.recipientsFor(sql, CO, [gBad, g2]);
+    assert('an address the mail service would refuse is kept off the list',
+      JSON.stringify(rb.emails) === '["bhudock@example.com","office@example.com","pm1@example.com"]', JSON.stringify(rb.emails));
+    assert('…and handed back once, with its group, to be named',
+      JSON.stringify(rb.invalid) === '[{"email":"abotsford@forcecorporation..com","group":"Safety Report Group"}]', JSON.stringify(rb.invalid));
+    const gAllBad = await grp('Typos', ['abotsford@forcecorporation..com', 'pm.@example.com']);
+    res = await runner.runSchedule(sql, { ...sched, group_ids: [gAllBad] }, { now: new Date() });
+    assert('a group with no address left to send to fails, naming each one and the fix',
+      res.status === 'failed' && res.message === 'Nobody to send to. Left off abotsford@forcecorporation..com (Typos), pm.@example.com (Typos) '
+        + '— not valid email addresses; fix them with Edit on the group.', res.message);
+    await client.query('DELETE FROM report_recipient_groups WHERE id = ANY($1)', [[gBad, gAllBad]]);
   }
 
   console.log('\nSend now');

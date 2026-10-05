@@ -588,11 +588,11 @@ async function cleanUp() {
     ok('…without ticking or unticking the group', opened.ticked === true);
     if (shots) await page.screenshot({ path: path.join(shots, 'ar-group-edit.png'), fullPage: false });
 
-    await page.$eval('#ar-ng-emails', el => { el.value = 'pm@example.com\nnot-an-address'; });
+    await page.$eval('#ar-ng-emails', el => { el.value = 'pm@example.com\nsuper@example..com'; });
     await page.evaluate(() => arSaveGroup());
     await page.waitForFunction(() => document.getElementById('ar-ng-result').textContent, { timeout: 8000 }).catch(() => {});
     ok('a bad address is refused and named, and nothing is saved',
-      /not-an-address/.test(await page.$eval('#ar-ng-result', e => e.textContent))
+      /super@example\.\.com/.test(await page.$eval('#ar-ng-result', e => e.textContent))
         && JSON.stringify((await groupRow()).emails) === '["pm@example.com","super@example.com"]',
       await page.$eval('#ar-ng-result', e => e.textContent));
 
