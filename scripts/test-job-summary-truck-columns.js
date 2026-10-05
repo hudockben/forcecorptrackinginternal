@@ -151,6 +151,8 @@ vm.runInContext([
   lift('escT'),
   lift('jsTruckColumn'),
   lift('jsAddMachineCost'),
+  'let _jsReport = null;',
+  lift('jsClearExport'),
   // fnSource lifts from `function`, so the async keyword has to be put back.
   'async ' + lift('runJobSummaryReport'),
 ].join('\n'), ctx);
