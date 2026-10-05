@@ -4325,6 +4325,37 @@
       window.print();
     }
 
+    /* Which Job Summary column a machine's cost belongs in: 'lowboy',
+       'triAxle', or '' for plain Equipment. Read off the equipment's name,
+       because that is the one thing every source of a truck row carries.
+
+       Hauls used to reach a job only through the Trucking tab, whose rows are
+       tagged job_class "Trucking", and only those rows were sorted into the
+       truck columns. Payroll-approved timesheet rows carry the driver's own
+       job class instead, so a "Triaxle Dump" or "Lowboy" approved onto a job
+       landed in Equipment and the two truck columns read "—" on every job.
+       The truck is the truck whoever logged it, so every row is read here.
+
+       A Trucking-tagged row is a known truck and keeps the loose 'tri' match
+       it always had. Any other row needs "tri-axle" spelled out — on a turf
+       job, 'tri' alone is a Triplex mower, a line Striper or an Electric box. */
+    function jsTruckColumn(equipment, truckingRow) {
+      const e = String(equipment == null ? '' : equipment);
+      if (/low[\s-]?boy/i.test(e)) return 'lowboy';
+      if (truckingRow ? /tri/i.test(e) : /\btri[\s-]?axle/i.test(e)) return 'triAxle';
+      return '';
+    }
+
+    /* Book one machine cost onto a project's report entry. A truck the
+       columns cannot name (a quad-axle, a flatbed) is still a cost to the
+       job, so it goes to Equipment rather than out of the total. */
+    function jsAddMachineCost(entry, equipment, cost, truckingRow) {
+      const col = jsTruckColumn(equipment, truckingRow);
+      if (col === 'lowboy')       entry.lowboyCost  += cost;
+      else if (col === 'triAxle') entry.triAxleCost += cost;
+      else                        entry.equipCost   += cost;
+    }
+
     async function runJobSummaryReport() {
       const startDate = document.getElementById('jsStartDate').value;
       const endDate   = document.getElementById('jsEndDate').value;
@@ -4507,16 +4538,9 @@
           const eto  = parseFloat(row.equip_total_override) || 0;
           entry.laborCost += rate * lh;
           entry.hoursWorked += lh;
-          if ((row.job_class || '').toLowerCase() === 'trucking') {
-            // Classify trucking rows by equipment type so manually-entered
-            // daily rows (with no trucking_entry) are still captured.
-            const truckCost = eto || (euc * eh);
-            const equip = (row.equipment || '').toLowerCase();
-            if (equip.includes('lowboy'))     entry.lowboyCost  += truckCost;
-            else if (equip.includes('tri'))   entry.triAxleCost += truckCost;
-          } else {
-            entry.equipCost += eto || (euc * eh);
-          }
+          // Sorted by the machine, not the job class — see jsTruckColumn.
+          jsAddMachineCost(entry, row.equipment, eto || (euc * eh),
+            (row.job_class || '').toLowerCase() === 'trucking');
         });
 
         // Only count trucking_entries that don't already have a daily-row mirror
@@ -4529,9 +4553,7 @@
           setDiv(entry, t._division);
           trackDate(entry, t.date);
           const cost = (parseFloat(t.rate) || 0) * (parseFloat(t.hours) || 0);
-          const type = (t.truck_type || '').toLowerCase();
-          if (type.includes('lowboy'))     entry.lowboyCost  += cost;
-          else if (type.includes('tri'))   entry.triAxleCost += cost;
+          jsAddMachineCost(entry, t.truck_type, cost, true);
         });
 
         // Infill inventory entries — labor, equipment, and material costs
