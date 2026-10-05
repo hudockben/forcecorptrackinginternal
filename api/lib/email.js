@@ -13,7 +13,15 @@ const MAX_HTML_BYTES = 1_500_000;   // ~1.5 MB raw HTML; Resend itself caps high
 const MAX_ATTACHMENTS = 6;          // per send
 const MAX_ATTACH_BYTES = 8_000_000; // ~8 MB total decoded; Resend caps at 40 MB/message
 const MAX_SUMMARY_METRICS = 12;     // key figures shown above the attachment note
-const EMAIL_RE = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/;
+// An address the mail service will take. Resend refuses a whole send when any
+// one address on it is malformed — a recipient group holding
+// "name@forcecorporation..com" sent its report to nobody — so a dot at either
+// end of the name, two dots in a row, an empty or hyphen-edged domain label,
+// and parts past the RFC 5321 lengths (64 name, 63 label, 254 whole) are
+// turned away here, where the address can be named. Otherwise the same
+// characters as ever: nothing this accepts was refused before.
+// report-email.js carries a copy for the Email Report modal.
+const EMAIL_RE = /^(?=.{1,254}$)(?=[^@]{1,64}@)[A-Za-z0-9_%+\-]+(?:\.[A-Za-z0-9_%+\-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/;
 
 // Inline images / small docs only — keeps the endpoint from relaying arbitrary
 // binaries. Extension → MIME sent to Resend for the attachment's content_type.

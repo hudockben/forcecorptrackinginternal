@@ -42,7 +42,9 @@
     return false;
   }
 
-  const EMAIL_RE = /^[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}$/;
+  // The server's check (api/lib/email.js), so an address the send would be
+  // refused over is caught here, by name.
+  const EMAIL_RE = /^(?=.{1,254}$)(?=[^@]{1,64}@)[A-Za-z0-9_%+\-]+(?:\.[A-Za-z0-9_%+\-]+)*@(?:[A-Za-z0-9](?:[A-Za-z0-9\-]{0,61}[A-Za-z0-9])?\.)+[A-Za-z]{2,63}$/;
   function isValidEmail(e) { return typeof e === 'string' && EMAIL_RE.test(e.trim()); }
 
   function esc(s) {
@@ -321,7 +323,12 @@
   function onAddGroup(g) {
     const before = state.recipients.length;
     (g.emails || []).forEach(addEmail);
-    if (state.recipients.length === before) {
+    // A saved address the send would be refused over is left off, by name —
+    // not dropped without a word.
+    const bad = (g.emails || []).map(e => String(e || '').trim().toLowerCase()).filter(e => e && !isValidEmail(e));
+    if (bad.length) {
+      setStatus(`Left off ${bad.join(', ')} — not a valid email address. Edit the group to fix it.`, 'error');
+    } else if (state.recipients.length === before) {
       setStatus('Those addresses were already added.');
     } else {
       setStatus('');

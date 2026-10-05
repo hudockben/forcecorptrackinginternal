@@ -275,8 +275,11 @@ module.exports = async (req, res) => {
         ok: true,
         divisions,
         schedules: rows.filter(r => visible.has(r.division)).map(shape),
+        // The addresses too, so the editor can open a group to fix a typo
+        // in it rather than have it made again. Admins only, as all of this is.
         groups: groups.map(g => ({
           id: Number(g.id), name: g.name,
+          emails: Array.isArray(g.emails) ? g.emails : [],
           count: Array.isArray(g.emails) ? g.emails.length : 0,
           report_type: g.report_type, project_id: g.project_id,
         })),

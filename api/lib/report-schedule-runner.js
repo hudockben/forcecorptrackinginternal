@@ -125,25 +125,42 @@ async function loadRunAs(sql, sched) {
  * Every address on the schedule's groups, de-duplicated, in the order the
  * groups were picked, plus how many groups have gone. Not capped: past the
  * fifty one email can carry, deliverReport sends it as several.
+ *
+ * An address the mail service would refuse — saved before the check was as
+ * strict as it is — is kept off the list, since one would stop the email
+ * going to anybody, and comes back in `invalid` with its group's name so the
+ * run can say who was left off.
  */
 async function recipientsFor(sql, companyCode, groupIds) {
   const ids = (Array.isArray(groupIds) ? groupIds : []).map(Number).filter(Number.isFinite);
-  if (!ids.length) return { emails: [], groups: [], missing: 0 };
+  if (!ids.length) return { emails: [], invalid: [], groups: [], missing: 0 };
   const rows = (await sql`
     SELECT id, name, emails FROM report_recipient_groups
      WHERE company_code = ${companyCode} AND id = ANY(${ids})`)
     .sort((a, b) => ids.indexOf(Number(a.id)) - ids.indexOf(Number(b.id)));
   const seen = new Set();
   const emails = [];
+  const invalid = [];
   for (const g of rows) {
     for (const raw of (Array.isArray(g.emails) ? g.emails : [])) {
       const e = String(raw || '').trim().toLowerCase();
-      if (!e || seen.has(e) || !isValidEmail(e)) continue;
+      if (!e || seen.has(e)) continue;
       seen.add(e);
-      emails.push(e);
+      if (isValidEmail(e)) emails.push(e);
+      else invalid.push({ email: e, group: g.name });
     }
   }
-  return { emails, groups: rows.map(g => g.name), missing: ids.length - rows.length };
+  return { emails, invalid, groups: rows.map(g => g.name), missing: ids.length - rows.length };
+}
+
+/** The addresses recipientsFor left off, for a run's message. */
+function leftOffText(invalid) {
+  if (!invalid || !invalid.length) return '';
+  const shown = invalid.slice(0, 5).map(x => `${x.email} (${x.group})`).join(', ')
+    + (invalid.length > 5 ? ` and ${invalid.length - 5} more` : '');
+  return invalid.length === 1
+    ? `Left off ${shown} — not a valid email address; fix it with Edit on the group.`
+    : `Left off ${shown} — not valid email addresses; fix them with Edit on the group.`;
 }
 
 /**
@@ -663,10 +680,12 @@ async function runSchedule(sql, sched, ctx = {}) {
   let recips;
   try { recips = await recipientsFor(sql, sched.company_code, sched.group_ids); }
   catch (err) { return fail(`Could not read its recipient groups: ${err.message}`); }
+  const leftOff = leftOffText(recips.invalid);
   if (!recips.emails.length) {
-    return fail(recips.missing
-      ? 'Its recipient group was deleted. Pick another group.'
-      : 'Its recipient groups have no addresses on them.');
+    return fail(recips.invalid.length ? `Nobody to send to. ${leftOff}`
+      : recips.missing
+        ? 'Its recipient group was deleted. Pick another group.'
+        : 'Its recipient groups have no addresses on them.');
   }
   result.recipientCount = recips.emails.length;
 
@@ -938,7 +957,7 @@ async function runSchedule(sql, sched, ctx = {}) {
       : left
         ? `${plural(left, 'more job')} ${left === 1 ? 'goes' : 'go'} out at the next pass, in a few minutes.`
         : 'It will be tried again at the next pass, in a few minutes.';
-    result.message = `${soFar}${why}${problems.length ? ' ' + problems.join('; ') : ''}`;
+    result.message = `${soFar}${why}${problems.length ? ' ' + problems.join('; ') : ''}${leftOff ? ' ' + leftOff : ''}`;
     return result;
   }
 
@@ -954,19 +973,23 @@ async function runSchedule(sql, sched, ctx = {}) {
   const passes = prev.passes ? ` (over ${prev.passes + 1} runs)` : '';
   const tail = [...allProblems, ...(stopped ? [stopped] : []), ...notes];
   if (allSent && !allProblems.length && !stopped) {
-    result.status = 'sent';
+    // Everything went — but to somebody short when an address was left off,
+    // so the row still asks to be looked at.
+    result.status = leftOff ? 'partial' : 'sent';
     result.message = (allSent === 1 ? `Sent to ${to}.` : `Sent ${allSent} reports to ${to}${passes}.`)
       + (notes.length ? ` ${notes.join('; ')}` : '')
-      + (skipped.length ? ` Skipped — ${skipped.join('; ')}` : '');
+      + (skipped.length ? ` Skipped — ${skipped.join('; ')}` : '')
+      + (leftOff ? ` ${leftOff}` : '');
   } else if (allSent) {
     result.status = 'partial';
-    result.message = `Sent ${allSent} of ${allAttempted + unsent} to ${to}${passes}. ${tail.join('; ')}`;
+    result.message = `Sent ${allSent} of ${allAttempted + unsent} to ${to}${passes}. ${tail.join('; ')}${leftOff ? ' ' + leftOff : ''}`;
   } else if (!allProblems.length && (skipped.length || stopped)) {
     result.status = 'skipped';
-    result.message = stopped && !skipped.length ? stopped : `Nothing to send — ${[...skipped, ...(stopped ? [stopped] : [])].join('; ')}`;
+    result.message = (stopped && !skipped.length ? stopped : `Nothing to send — ${[...skipped, ...(stopped ? [stopped] : [])].join('; ')}`)
+      + (leftOff ? ` ${leftOff}` : '');
   } else {
     result.status = 'failed';
-    result.message = tail.length ? tail.join('; ') : 'The page built no report.';
+    result.message = (tail.length ? tail.join('; ') : 'The page built no report.') + (leftOff ? ` ${leftOff}` : '');
   }
   return result;
 }

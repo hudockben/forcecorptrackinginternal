@@ -800,6 +800,22 @@ function pngSize(dataUrl) {
       (sbuf.toString('latin1').match(/\/MediaBox\s*\[[^\]]*\]/) || [])[0]);
     ok('…with who has not signed in the email body', /Not Signed/.test((SENT[0] || {}).html || ''));
     if (process.env.SHOT_DIR && sbuf.length) fs.writeFileSync(path.join(process.env.SHOT_DIR, 'safety-signoff.pdf'), sbuf);
+    // What production found: one typo on the group, and the mail service
+    // refused the whole send — nobody got the sheet. Now the rest get it, and
+    // the run names the address.
+    const typoSql = (strings, ...vals) => /FROM report_recipient_groups/.test(strings.join('?'))
+      ? Promise.resolve([{ id: 1, name: 'Safety Report Group',
+          emails: ['bhudock@forcecorporation.com', 'abotsford@forcecorporation..com', 'goakes@forcecorporation.com'] }])
+      : fakeSql(strings, ...vals);
+    SENT.length = 0;
+    res = await runSchedule(typoSql, safetySched, { baseUrl, browser, now: new Date() });
+    ok('a typo on the group no longer stops the sheet: the rest of the group gets it',
+      SENT.length === 1 && JSON.stringify(SENT[0].to) === '["bhudock@forcecorporation.com","goakes@forcecorporation.com"]',
+      JSON.stringify(SENT.map(s => s.to)));
+    ok('…and the run reads partly sent, naming the address and the fix',
+      res.status === 'partial' && res.recipientCount === 2
+        && res.message === 'Sent to 2 recipients. Left off abotsford@forcecorporation..com (Safety Report Group) — not a valid email address; fix it with Edit on the group.',
+      JSON.stringify(res));
     // Crew hold the division to sign; only a supervisor may read the report.
     const crewSql = (strings, ...vals) => /u\.division_roles/.test(strings.join('?'))
       ? Promise.resolve([{ division_roles: { safety: 'level1' }, divisions: null, role: 'user', is_platform_admin: false,
