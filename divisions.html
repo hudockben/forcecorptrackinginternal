@@ -902,6 +902,10 @@
     .modal label.ar-check:hover { background: rgba(255,255,255,0.03); }
     .modal label.ar-check input { width: auto; accent-color: var(--green); margin: 0; }
     .ar-check .ar-count { margin-left: auto; font-size: 0.66rem; color: #8b8b9a; white-space: nowrap; }
+    .ar-group-row { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
+    .modal .ar-group-row label.ar-check { flex: 1; min-width: 0; }
+    .ar-group-row .ar-link-btn { flex: none; padding: 0.25rem 0.3rem; }
+    .ar-ng-heading { font-size: 0.72rem; font-weight: 700; color: var(--text); }
     .ar-picks-wrap { margin-top: 0.7rem; }
     .ar-picks-head { display: flex; align-items: center; gap: 0.9rem; flex-wrap: wrap; margin-bottom: 0.35rem; }
     .ar-picks-title { font-size: 0.68rem; color: #9a9aaa; text-transform: uppercase; letter-spacing: 0.04em; margin-right: auto; }
@@ -1990,16 +1994,18 @@
           <div class="ar-groups" id="ar-groups"></div>
           <button type="button" class="ar-link-btn" id="ar-newgroup-btn" onclick="arToggleNewGroup()">+ New recipient group</button>
           <div class="ar-newgroup" id="ar-newgroup">
+            <div class="ar-ng-heading" id="ar-ng-heading">New recipient group</div>
             <div>
               <label for="ar-ng-name">Group name</label>
-              <input id="ar-ng-name" type="text" placeholder="e.g. Maple Ave Stakeholders" autocomplete="off" />
+              <input id="ar-ng-name" type="text" maxlength="120" placeholder="e.g. Maple Ave Stakeholders" autocomplete="off" />
             </div>
             <div>
               <label for="ar-ng-emails">Email addresses</label>
               <textarea id="ar-ng-emails" placeholder="pm@example.com, owner@example.com"></textarea>
+              <div class="ar-hint" id="ar-ng-hint" style="display:none">One per line, or separated by commas. Saving changes the group for every report sent to it.</div>
             </div>
             <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
-              <button type="button" class="mu-tool-btn primary" onclick="arSaveNewGroup()">Save Group</button>
+              <button type="button" class="mu-tool-btn primary" id="ar-ng-save" onclick="arSaveGroup()">Save Group</button>
               <button type="button" class="mu-cancel-btn" style="padding:0.4rem 0.8rem" onclick="arToggleNewGroup(false)">Cancel</button>
               <span id="ar-ng-result" class="modal-result"></span>
             </div>
@@ -3367,6 +3373,7 @@
     let arDays     = new Set([1]);
     const arSendingIds = new Set();   // Send now presses still in flight, so a redraw cannot re-arm the button
     let arSavingGroup  = false;
+    let arEditingGroupId = null;      // the group the group form is open on; null for a new one
     const arProjects = {};      // division → jobs, for the editor's job picker
     const AR_DAY_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
     const AR_DAY_INIT  = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
@@ -3970,25 +3977,58 @@
         wrap.innerHTML = '<div class="ar-hint" style="padding:0.3rem">No recipient groups yet — add one below.</div>';
         return;
       }
+      // Edit sits beside the label, not in it — inside, a click on it would
+      // also tick or untick the group.
       wrap.innerHTML = groups.map(g => `
-        <label class="ar-check">
-          <input type="checkbox" value="${g.id}" ${keep.has(g.id) ? 'checked' : ''} onchange="arUpdateSummary()" />
-          <span>${escHtml(g.name)}</span>
-          <span class="ar-count">${g.count} ${g.count === 1 ? 'address' : 'addresses'}</span>
-        </label>`).join('');
+        <div class="ar-group-row">
+          <label class="ar-check">
+            <input type="checkbox" value="${g.id}" ${keep.has(g.id) ? 'checked' : ''} onchange="arUpdateSummary()" />
+            <span>${escHtml(g.name)}</span>
+            <span class="ar-count">${g.count} ${g.count === 1 ? 'address' : 'addresses'}</span>
+          </label>
+          <button type="button" class="ar-link-btn ar-group-edit" onclick="arEditGroup(${g.id})"
+            aria-label="Edit the addresses on ${escHtml(g.name)}">Edit</button>
+        </div>`).join('');
     }
 
     function arToggleNewGroup(open) {
       const box = document.getElementById('ar-newgroup');
       const show = open === undefined ? !box.classList.contains('open') : open;
+      // Closing an edit leaves none of that group behind for the next "+ New".
+      if (!show && arEditingGroupId !== null) {
+        arEditingGroupId = null;
+        document.getElementById('ar-ng-name').value = '';
+        document.getElementById('ar-ng-emails').value = '';
+        document.getElementById('ar-ng-emails').removeAttribute('rows');
+      }
+      const editing = ((arData && arData.groups) || []).find(g => g.id === arEditingGroupId);
       box.classList.toggle('open', show);
+      document.getElementById('ar-ng-heading').textContent = editing ? `Edit ${editing.name}` : 'New recipient group';
+      document.getElementById('ar-ng-save').textContent = editing ? 'Save Changes' : 'Save Group';
+      document.getElementById('ar-ng-hint').style.display = editing ? '' : 'none';
       document.getElementById('ar-newgroup-btn').style.display = show ? 'none' : '';
       document.getElementById('ar-ng-result').textContent = '';
-      if (show) document.getElementById('ar-ng-name').focus();
+      if (show) document.getElementById(editing ? 'ar-ng-emails' : 'ar-ng-name').focus();
     }
 
-    async function arSaveNewGroup() {
+    // Open the group form on a saved group, one address to a line, so a typo
+    // in one of them is fixed where it is.
+    function arEditGroup(id) {
+      if (arSavingGroup) return;
+      const g = ((arData && arData.groups) || []).find(x => x.id === id);
+      if (!g) return;
+      arEditingGroupId = id;
+      const emails = Array.isArray(g.emails) ? g.emails : [];
+      document.getElementById('ar-ng-name').value = g.name;
+      const box = document.getElementById('ar-ng-emails');
+      box.value = emails.join('\n');
+      box.rows = Math.min(12, Math.max(3, emails.length + 1));
+      arToggleNewGroup(true);
+    }
+
+    async function arSaveGroup() {
       if (arSavingGroup) return;   // a double-click would make the group twice
+      const editId = arEditingGroupId;
       const name = document.getElementById('ar-ng-name').value.trim();
       const emails = document.getElementById('ar-ng-emails').value.split(/[,;\s]+/).map(s => s.trim().toLowerCase()).filter(Boolean);
       const out = document.getElementById('ar-ng-result');
@@ -3997,22 +4037,29 @@
       if (!emails.length) { out.textContent = 'Add at least one email address.'; return; }
       arSavingGroup = true;
       try {
-        const res = await fetch('/api/email/recipient-groups', {
-          method: 'POST',
+        const res = await fetch(editId === null ? '/api/email/recipient-groups' : `/api/email/recipient-groups?id=${editId}`, {
+          method: editId === null ? 'POST' : 'PUT',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ name, emails }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
         const g = data.group;
-        arData.groups.push({ id: Number(g.id), name: g.name, count: (g.emails || []).length });
+        const saved = { id: Number(g.id), name: g.name, emails: g.emails || [], count: (g.emails || []).length };
+        const at = arData.groups.findIndex(x => x.id === saved.id);
+        if (at === -1) arData.groups.push(saved);
+        else arData.groups[at] = { ...arData.groups[at], ...saved };
         arData.groups.sort((a, b) => a.name.localeCompare(b.name));
         const checked = [...document.querySelectorAll('#ar-groups input:checked')].map(i => Number(i.value));
-        arRenderGroups(checked.concat(Number(g.id)));
+        // A new group is ticked for the schedule being made; an edited one
+        // stays as it was.
+        arRenderGroups(editId === null ? checked.concat(saved.id) : checked);
         document.getElementById('ar-ng-name').value = '';
         document.getElementById('ar-ng-emails').value = '';
         arToggleNewGroup(false);
         arUpdateSummary();
+        // The list's rows name each schedule's groups with their counts.
+        if (editId !== null) renderAutoReports();
       } catch (err) {
         out.textContent = err.message;
       } finally {

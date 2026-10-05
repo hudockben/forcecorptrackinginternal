@@ -387,7 +387,7 @@ async function cleanUp() {
     await page.click('#ar-newgroup-btn');
     await page.type('#ar-ng-name', 'Dust Office');
     await page.type('#ar-ng-emails', 'dust@example.com, Billing@Example.com');
-    await page.evaluate(() => arSaveNewGroup());
+    await page.evaluate(() => arSaveGroup());
     await page.waitForFunction(() => [...document.querySelectorAll('#ar-groups label')].some(l => /Dust Office/.test(l.textContent)), { timeout: 8000 }).catch(() => {});
     const ng = await db.q("SELECT * FROM report_recipient_groups WHERE company_code = $1 AND name = 'Dust Office'", [CO]);
     ok('is saved with its addresses', ng.length === 1 && JSON.stringify(ng[0].emails) === '["dust@example.com","billing@example.com"]', JSON.stringify(ng[0] && ng[0].emails));
@@ -563,6 +563,67 @@ async function cleanUp() {
     await page.click(`.ar-row[data-id="${made.id}"] .user-del-btn`);
     await page.waitForFunction(id => !document.querySelector(`.ar-row[data-id="${id}"]`), { timeout: 8000 }, made.id).catch(() => {});
     ok('asks, then deletes', dialogs.length === 1 && !(await db.schedules()).some(r => r.id === made.id));
+
+    console.log('\nEditing a recipient group');
+    const turfRow = (await db.schedules()).find(r => r.report_type === 'turf_daily_pm');
+    const groupRow = () => db.q('SELECT * FROM report_recipient_groups WHERE id = $1', [g1]).then(r => r[0]);
+    const groupsBefore = (await db.q('SELECT id FROM report_recipient_groups WHERE company_code = $1', [CO])).length;
+    await page.evaluate(id => arEdit(id), Number(turfRow.id));
+    await page.waitForFunction(id => document.querySelector(`#ar-groups input[value="${id}"]`), { timeout: 8000 }, g1).catch(() => {});
+    ok('every group in the picker has an Edit beside it',
+      await page.$$eval('#ar-groups .ar-group-row', rs => rs.length > 1 && rs.every(r => r.querySelector('.ar-group-edit'))));
+    const editBtn = `#ar-groups .ar-group-row:has(input[value="${g1}"]) .ar-group-edit`;
+    await page.click(editBtn);
+    const opened = await page.evaluate(id => ({
+      open:    document.getElementById('ar-newgroup').classList.contains('open'),
+      heading: document.getElementById('ar-ng-heading').textContent,
+      name:    document.getElementById('ar-ng-name').value,
+      emails:  document.getElementById('ar-ng-emails').value,
+      save:    document.getElementById('ar-ng-save').textContent,
+      ticked:  document.querySelector(`#ar-groups input[value="${id}"]`).checked,
+    }), g1);
+    ok('Edit opens the group with its name and its addresses, one to a line',
+      opened.open && opened.heading === 'Edit Paving PMs' && opened.name === 'Paving PMs'
+        && opened.emails === 'pm@example.com\nsuper@example.com' && opened.save === 'Save Changes', JSON.stringify(opened));
+    ok('…without ticking or unticking the group', opened.ticked === true);
+    if (shots) await page.screenshot({ path: path.join(shots, 'ar-group-edit.png'), fullPage: false });
+
+    await page.$eval('#ar-ng-emails', el => { el.value = 'pm@example.com\nnot-an-address'; });
+    await page.evaluate(() => arSaveGroup());
+    await page.waitForFunction(() => document.getElementById('ar-ng-result').textContent, { timeout: 8000 }).catch(() => {});
+    ok('a bad address is refused and named, and nothing is saved',
+      /not-an-address/.test(await page.$eval('#ar-ng-result', e => e.textContent))
+        && JSON.stringify((await groupRow()).emails) === '["pm@example.com","super@example.com"]',
+      await page.$eval('#ar-ng-result', e => e.textContent));
+
+    await page.$eval('#ar-ng-emails', el => { el.value = 'pm@example.com\nsuper@example.com\nOwner@Example.com'; });
+    await page.evaluate(() => arSaveGroup());
+    await page.waitForFunction(() => !document.getElementById('ar-newgroup').classList.contains('open'), { timeout: 8000 }).catch(() => {});
+    const editedGroup = await groupRow();
+    ok('Save Changes updates the same group in place',
+      editedGroup && editedGroup.name === 'Paving PMs' && JSON.stringify(editedGroup.emails) === '["pm@example.com","super@example.com","owner@example.com"]'
+        && (await db.q('SELECT id FROM report_recipient_groups WHERE company_code = $1', [CO])).length === groupsBefore,
+      JSON.stringify(editedGroup && editedGroup.emails));
+    ok('…the picker shows the new count, still ticked',
+      await page.$eval(`#ar-groups .ar-group-row:has(input[value="${g1}"])`, r => /3 addresses/.test(r.textContent) && r.querySelector('input').checked));
+    ok('…and the schedule\'s row in the list says so',
+      /Paving PMs \(3\)/.test(await page.$eval(`.ar-row[data-id="${Number(turfRow.id)}"]`, r => r.innerText)));
+
+    await page.click(editBtn);
+    await page.$eval('#ar-ng-emails', el => { el.value = 'someone-else@example.com'; });
+    await page.evaluate(() => arToggleNewGroup(false));
+    ok('Cancel on an edit saves nothing',
+      JSON.stringify((await groupRow()).emails) === '["pm@example.com","super@example.com","owner@example.com"]');
+    await page.click('#ar-newgroup-btn');
+    const fresh = await page.evaluate(() => ({
+      heading: document.getElementById('ar-ng-heading').textContent,
+      name:    document.getElementById('ar-ng-name').value,
+      emails:  document.getElementById('ar-ng-emails').value,
+      save:    document.getElementById('ar-ng-save').textContent,
+    }));
+    ok('…and "+ New recipient group" afterwards opens empty, as a new group',
+      fresh.heading === 'New recipient group' && !fresh.name && !fresh.emails && fresh.save === 'Save Group', JSON.stringify(fresh));
+    await page.evaluate(() => { arToggleNewGroup(false); arCloseForm(); });
 
     console.log('\nOn a phone');
     await page.setViewport({ width: 390, height: 844 });
