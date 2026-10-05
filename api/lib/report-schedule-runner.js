@@ -974,15 +974,17 @@ async function runSchedule(sql, sched, ctx = {}) {
   const tail = [...allProblems, ...(stopped ? [stopped] : []), ...notes];
   if (allSent && !allProblems.length && !stopped) {
     // Everything went — but to somebody short when an address was left off,
-    // so the row still asks to be looked at.
+    // so the row still asks to be looked at. Who was left off comes straight
+    // after the lead, where the row's two lines and the stored 2000
+    // characters cannot lose it behind a long list of skipped jobs.
     result.status = leftOff ? 'partial' : 'sent';
     result.message = (allSent === 1 ? `Sent to ${to}.` : `Sent ${allSent} reports to ${to}${passes}.`)
+      + (leftOff ? ` ${leftOff}` : '')
       + (notes.length ? ` ${notes.join('; ')}` : '')
-      + (skipped.length ? ` Skipped — ${skipped.join('; ')}` : '')
-      + (leftOff ? ` ${leftOff}` : '');
+      + (skipped.length ? ` Skipped — ${skipped.join('; ')}` : '');
   } else if (allSent) {
     result.status = 'partial';
-    result.message = `Sent ${allSent} of ${allAttempted + unsent} to ${to}${passes}. ${tail.join('; ')}${leftOff ? ' ' + leftOff : ''}`;
+    result.message = `Sent ${allSent} of ${allAttempted + unsent} to ${to}${passes}.${leftOff ? ' ' + leftOff : ''} ${tail.join('; ')}`;
   } else if (!allProblems.length && (skipped.length || stopped)) {
     result.status = 'skipped';
     result.message = (stopped && !skipped.length ? stopped : `Nothing to send — ${[...skipped, ...(stopped ? [stopped] : [])].join('; ')}`)

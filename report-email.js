@@ -206,19 +206,29 @@
     });
   }
 
+  // Adds every valid address in `raw`; returns how many it added and the
+  // ones it refused, so a typo in a pasted list is named, not lost.
   function addEmail(raw) {
-    if (!raw) return;
+    const out = { added: 0, bad: [] };
+    if (!raw) return out;
     const parts = String(raw).split(/[,;\s]+/).map(s => s.trim()).filter(Boolean);
-    let added = 0;
     for (const p of parts) {
       const lc = p.toLowerCase();
-      if (!isValidEmail(lc)) continue;
+      if (!isValidEmail(lc)) { if (!out.bad.includes(p)) out.bad.push(p); continue; }
       if (state.recipients.includes(lc)) continue;
       state.recipients.push(lc);
-      added++;
+      out.added++;
     }
-    if (added) renderChips();
-    return added;
+    if (out.added) renderChips();
+    return out;
+  }
+
+  // A saved group's addresses the send would be refused over are left off —
+  // said so, with who can fix them.
+  function leftOffNote(bad) {
+    const many = bad.length > 1;
+    return `Left off ${bad.join(', ')} — ${many ? 'not valid email addresses' : 'not a valid email address'}. `
+      + (state.serverIsAdmin ? `Edit the group to fix ${many ? 'them' : 'it'}.` : 'Ask an admin to fix the group.');
   }
 
   // ── Saved groups ────────────────────────────────────────────────────
@@ -248,16 +258,19 @@
         if (state.projectId && !state.recipients.length) {
           const matched = state.groups.filter(g => g.project_id === state.projectId);
           let added = 0;
+          const bad = [];
           for (const g of matched) {
             for (const e of (g.emails || [])) {
               const lc = String(e || '').trim().toLowerCase();
-              if (!isValidEmail(lc)) continue;
+              if (!lc) continue;
+              if (!isValidEmail(lc)) { if (!bad.includes(lc)) bad.push(lc); continue; }
               if (state.recipients.includes(lc)) continue;
               state.recipients.push(lc);
               added++;
             }
           }
           if (added) renderChips();
+          if (bad.length) setStatus(leftOffNote(bad), 'error');
         }
       }
     } catch (err) {
@@ -322,12 +335,12 @@
 
   function onAddGroup(g) {
     const before = state.recipients.length;
-    (g.emails || []).forEach(addEmail);
-    // A saved address the send would be refused over is left off, by name —
-    // not dropped without a word.
-    const bad = (g.emails || []).map(e => String(e || '').trim().toLowerCase()).filter(e => e && !isValidEmail(e));
+    const bad = [];
+    for (const e of (g.emails || [])) {
+      for (const b of addEmail(String(e || '')).bad) if (!bad.includes(b.toLowerCase())) bad.push(b.toLowerCase());
+    }
     if (bad.length) {
-      setStatus(`Left off ${bad.join(', ')} — not a valid email address. Edit the group to fix it.`, 'error');
+      setStatus(leftOffNote(bad), 'error');
     } else if (state.recipients.length === before) {
       setStatus('Those addresses were already added.');
     } else {
@@ -582,20 +595,23 @@
     document.getElementById('rem-cancel').onclick = close;
     document.getElementById('rem-send').onclick   = onSend;
     document.getElementById('rem-save-group').onclick = onSaveAsGroup;
-    document.getElementById('rem-add').onclick = () => {
-      const inp = document.getElementById('rem-input');
-      const v = inp.value;
-      const added = addEmail(v);
-      if (added > 0) { inp.value = ''; setStatus(''); }
-      else if (v) setStatus('No valid emails to add.', 'error');
-    };
+    // Typed or pasted: the good addresses become chips; any the send would
+    // be refused over stay in the box, named, to be corrected.
     const inp = document.getElementById('rem-input');
+    const addTyped = quiet => {
+      const v = inp.value;
+      const { added, bad } = addEmail(v);
+      if (bad.length) {
+        inp.value = bad.join(', ');
+        setStatus(`Not added: ${bad.join(', ')} — ${bad.length > 1 ? 'not valid email addresses' : 'not a valid email address'}.`, 'error');
+      } else if (added > 0) { inp.value = ''; setStatus(''); }
+      else if (v && !quiet) setStatus('No valid emails to add.', 'error');
+    };
+    document.getElementById('rem-add').onclick = () => addTyped(false);
     inp.onkeydown = ev => {
       if (ev.key === 'Enter' || ev.key === ',') {
         ev.preventDefault();
-        const v = inp.value;
-        const added = addEmail(v);
-        if (added > 0) { inp.value = ''; setStatus(''); }
+        addTyped(true);
       }
     };
     // Click outside to close (but only if click is on the dim backdrop, not the dialog).

@@ -816,6 +816,14 @@ function pngSize(dataUrl) {
       res.status === 'partial' && res.recipientCount === 2
         && res.message === 'Sent to 2 recipients. Left off abotsford@forcecorporation..com (Safety Report Group) — not a valid email address; fix it with Edit on the group.',
       JSON.stringify(res));
+    // An email per job: who was left off still leads, ahead of anything else
+    // the run has to say, where the row's two lines show it.
+    SENT.length = 0;
+    res = await runSchedule(typoSql, sched, { baseUrl, browser, now: new Date() });
+    ok('…and with an email per job, who was left off comes right after what was sent',
+      res.status === 'partial' && SENT.length === 2
+        && res.message.startsWith('Sent 2 reports to 2 recipients. Left off abotsford@forcecorporation..com (Safety Report Group)'),
+      JSON.stringify(res));
     // Crew hold the division to sign; only a supervisor may read the report.
     const crewSql = (strings, ...vals) => /u\.division_roles/.test(strings.join('?'))
       ? Promise.resolve([{ division_roles: { safety: 'level1' }, divisions: null, role: 'user', is_platform_admin: false,
