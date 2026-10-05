@@ -89,31 +89,75 @@ const ms = Number(process.hrtime.bigint() - t0) / 1e6;
 ok(`${hostile.length * 200} long, hostile strings in ${ms.toFixed(0)} ms`, ms < 500);
 
 (async () => {
-  console.log('\nThe Email Report modal, adding a saved group');
-  // A group saved before the check was strict still holds its typo. Adding it
-  // leaves that address off, and says which — not dropped without a word.
+  // The Email Report modal, in jsdom, over a stubbed groups list. A group saved
+  // before the check was strict still holds its typo; whichever way its
+  // addresses come in, the typo is left off and named — never dropped without
+  // a word.
   const { JSDOM } = require('jsdom');
-  const dom = new JSDOM('<!doctype html><html><body></body></html>', { runScripts: 'outside-only', url: 'http://localhost/' });
-  const w = dom.window;
-  w.localStorage.setItem('fct_token', 'test-token');
-  w.localStorage.setItem('fct_user', JSON.stringify({ role: 'admin' }));
-  w.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true, isAdmin: true, groups: [{
-    id: 7, name: 'Safety Report Group', project_id: null, report_type: null,
-    emails: ['bhudock@forcecorporation.com', 'abotsford@forcecorporation..com', 'goakes@forcecorporation.com'],
-  }] }) });
-  w.eval(src);
-  w.openReportEmailModal({ reportType: 'executive', getHTML: () => '<p>x</p>' });
-  for (let i = 0; i < 50 && !w.document.querySelector('.rem-group-act[data-act="add"]'); i++) await new Promise(r => setTimeout(r, 10));
-  const add = w.document.querySelector('.rem-group-act[data-act="add"]');
-  ok('the group is offered', Boolean(add));
-  if (add) add.click();
-  const chips = [...w.document.querySelectorAll('#rem-chips > span')].map(c => c.firstChild.textContent.trim());
-  ok('its good addresses become recipients, the typo does not',
-    JSON.stringify(chips) === '["bhudock@forcecorporation.com","goakes@forcecorporation.com"]', JSON.stringify(chips));
-  const status = (w.document.getElementById('rem-status') || {}).textContent || '';
+  const TYPO_GROUP = { id: 7, name: 'Safety Report Group', project_id: null, report_type: null,
+    emails: ['bhudock@forcecorporation.com', 'abotsford@forcecorporation..com', 'goakes@forcecorporation.com'] };
+  async function openModal({ groups = [TYPO_GROUP], isAdmin = true, projectId = null } = {}) {
+    const dom = new JSDOM('<!doctype html><html><body></body></html>', { runScripts: 'outside-only', url: 'http://localhost/' });
+    const w = dom.window;
+    w.localStorage.setItem('fct_token', 'test-token');
+    w.localStorage.setItem('fct_user', JSON.stringify({ role: isAdmin ? 'admin' : 'user' }));
+    w.fetch = async () => ({ ok: true, status: 200, json: async () => ({ ok: true, isAdmin, groups }) });
+    w.eval(src);
+    w.openReportEmailModal({ reportType: 'executive', projectId, getHTML: () => '<p>x</p>' });
+    for (let i = 0; i < 50 && !w.document.querySelector('.rem-group-act[data-act="add"]'); i++) await new Promise(r => setTimeout(r, 10));
+    const $ = id => w.document.getElementById(id);
+    return {
+      w,
+      chips:  () => [...w.document.querySelectorAll('#rem-chips > span')].map(c => c.firstChild.textContent.trim()),
+      status: () => ($('rem-status') || {}).textContent || '',
+      input:  () => $('rem-input').value,
+      type:   v => { $('rem-input').value = v; },
+      enter:  () => $('rem-input').dispatchEvent(new w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true })),
+      add:    () => $('rem-add').click(),
+      addGroup: () => w.document.querySelector('.rem-group-act[data-act="add"]').click(),
+    };
+  }
+  const GOOD2 = '["bhudock@forcecorporation.com","goakes@forcecorporation.com"]';
+
+  console.log('\nThe Email Report modal, adding a saved group');
+  let m = await openModal();
+  ok('the group is offered', Boolean(m.w.document.querySelector('.rem-group-act[data-act="add"]')));
+  m.addGroup();
+  ok('its good addresses become recipients, the typo does not', JSON.stringify(m.chips()) === GOOD2, JSON.stringify(m.chips()));
   ok('…and the modal says which was left off, and how to fix it',
-    status === 'Left off abotsford@forcecorporation..com — not a valid email address. Edit the group to fix it.', status);
-  w.close();
+    m.status() === 'Left off abotsford@forcecorporation..com — not a valid email address. Edit the group to fix it.', m.status());
+  m.w.close();
+
+  m = await openModal({ isAdmin: false, groups: [{ ...TYPO_GROUP, emails: [...TYPO_GROUP.emails, 'pm.@forcecorporation.com'] }] });
+  m.addGroup();
+  ok('someone who cannot edit groups is told to ask an admin, and two typos read as two',
+    m.status() === 'Left off abotsford@forcecorporation..com, pm.@forcecorporation.com — not valid email addresses. Ask an admin to fix the group.',
+    m.status());
+  m.w.close();
+
+  console.log('\nThe Email Report modal, opened on a job with a group tied to it');
+  m = await openModal({ projectId: 'P1', groups: [{ ...TYPO_GROUP, project_id: 'P1' }] });
+  ok('the job\'s group is filled in without its typo', JSON.stringify(m.chips()) === GOOD2, JSON.stringify(m.chips()));
+  ok('…and says so, before anyone presses Send',
+    m.status() === 'Left off abotsford@forcecorporation..com — not a valid email address. Edit the group to fix it.', m.status());
+  m.w.close();
+
+  console.log('\nThe Email Report modal, addresses typed or pasted');
+  const PASTE = 'bhudock@forcecorporation.com; abotsford@forcecorporation..com, goakes@forcecorporation.com';
+  for (const [how, go] of [['Add', mm => mm.add()], ['Enter', mm => mm.enter()]]) {
+    m = await openModal({ groups: [] });
+    m.type(PASTE);
+    go(m);
+    ok(`${how}: a pasted list's good addresses become recipients`, JSON.stringify(m.chips()) === GOOD2, JSON.stringify(m.chips()));
+    ok(`${how}: …the typo stays in the box to be corrected, and is named`,
+      m.input() === 'abotsford@forcecorporation..com'
+        && m.status() === 'Not added: abotsford@forcecorporation..com — not a valid email address.', JSON.stringify([m.input(), m.status()]));
+    m.type('abotsford@forcecorporation.com');
+    go(m);
+    ok(`${how}: …and once corrected it goes in, and the box clears`,
+      m.chips().includes('abotsford@forcecorporation.com') && m.input() === '' && m.status() === '', JSON.stringify([m.chips(), m.input(), m.status()]));
+    m.w.close();
+  }
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
