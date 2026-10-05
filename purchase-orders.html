@@ -800,6 +800,17 @@ function num0(v)    { const f = num(v); return isNaN(f) ? 0 : f; }
 function lineAmt(l)    { return num0(l.qty) * num0(l.unit_cost); }
 function lineTaxPct(l) { const p = num(l.tax_pct); return isNaN(p) ? null : p; }
 function lineTax(l)    { const p = lineTaxPct(l); return p === null ? num0(l.tax) : lineAmt(l) * p / 100; }
+/**
+ * What one unit costs the job once tax is on it. The cost row a delivery puts
+ * on the job carries this as its unit cost (lineUnitCostWithTax in
+ * api/lib/po-sync.js), so it is shown under the price that was typed.
+ */
+function lineUnitCostWithTax(l) {
+  const uc = num0(l.unit_cost), qty = num0(l.qty);
+  const out = qty ? uc + lineTax(l) / qty : uc * (1 + (lineTaxPct(l) || 0) / 100);
+  return Math.round(out * 1e4) / 1e4;
+}
+function uctLabel(l) { return lineTax(l) !== 0 ? '$' + fmt(lineUnitCostWithTax(l)) + ' w/ tax' : ''; }
 function recalcLineTax(l) {
   if (l.tax_pct == null) return;
   const p = lineTaxPct(l);
@@ -1550,6 +1561,7 @@ function updateTotalsInPlace(po, line) {
       set(sfc + '-amt-' + line.id, amt !== 0 ? '$' + fmt(amt) : '—');
       set(sfc + '-tax-' + line.id, tax !== 0 ? '$' + fmt(tax) : '');
       set(sfc + '-tot-' + line.id, (amt + tax) !== 0 ? '$' + fmt(amt + tax) : '—');
+      set(sfc + '-uct-' + line.id, uctLabel(line));
     });
   }
 
@@ -2133,7 +2145,10 @@ function lineRowsHTML(po, surface) {
       '<td style="min-width:120px">' + inp('invoice_num','text', l.invoice_num, 'placeholder="Invoice / Ticket #"') + '</td>' +
       '<td style="min-width:118px">' + inp('date','date', l.date) + '</td>' +
       '<td style="min-width:74px">'  + inp('qty','number', l.qty, 'step="any" placeholder="0"') + '</td>' +
-      '<td style="min-width:92px">'  + inp('unit_cost','number', l.unit_cost, 'step="any" placeholder="0.00"') + '</td>' +
+      '<td style="min-width:92px">'  + inp('unit_cost','number', l.unit_cost, 'step="any" placeholder="0.00"') +
+        '<div class="r" style="font-size:0.62rem;color:var(--muted);padding-right:0.6rem" id="' + cell('uct', l.id) + '"' +
+          ' title="Unit cost with tax — what the job\'s cost row is charged per unit">' + esc(uctLabel(l)) + '</div>' +
+      '</td>' +
       '<td class="r" style="color:var(--ok)" id="' + cell('amt', l.id) + '">' + (amt !== 0 ? '$' + fmt(amt) : '—') + '</td>' +
       '<td style="min-width:92px">' +
         '<div style="display:flex;align-items:center;gap:0.15rem">' +
