@@ -625,6 +625,39 @@ async function cleanUp() {
       fresh.heading === 'New recipient group' && !fresh.name && !fresh.emails && fresh.save === 'Save Group', JSON.stringify(fresh));
     await page.evaluate(() => { arToggleNewGroup(false); arCloseForm(); });
 
+    console.log('\nThe picker, with real group names, laptop to phone');
+    const longNames = ['Superintendents', 'Engineering/Inspection', 'forcecorporation-safety-signoff-distribution-list',
+      'Maple Avenue Reconstruction Stakeholders, Owners and Inspectors'];
+    for (const [i, n] of longNames.entries()) {
+      await client.query('INSERT INTO report_recipient_groups (company_code, name, emails) VALUES ($1, $2, $3)',
+        [CO, n, JSON.stringify(Array.from({ length: [10, 12, 9, 50][i] }, (_, k) => `p${k}@example.com`))]);
+    }
+    await page.evaluate(() => loadAutoReports({ quiet: true }));
+    await page.evaluate(id => arEdit(id), Number(turfRow.id));
+    await page.waitForFunction(n => document.querySelectorAll('#ar-groups .ar-group-row').length >= n, { timeout: 8000 }, longNames.length + 2).catch(() => {});
+    const measure = () => page.evaluate(() => {
+      const box = document.getElementById('ar-groups');
+      const rows = [...box.querySelectorAll('.ar-group-row')].map(r => {
+        const count = r.querySelector('.ar-count').getBoundingClientRect();
+        const edit  = r.querySelector('.ar-group-edit').getBoundingClientRect();
+        const row   = r.getBoundingClientRect();
+        return { name: r.querySelector('label span').textContent, clash: Math.round(count.right - edit.left), spill: Math.round(edit.right - row.right), editH: Math.round(edit.height) };
+      });
+      const body = document.getElementById('muBody');
+      return { rows, boxFits: box.scrollWidth <= box.clientWidth + 1, bodyFits: body.scrollWidth <= body.clientWidth + 1 };
+    });
+    for (const [w, h] of [[1280, 800], [1024, 768], [390, 844]]) {
+      await page.setViewport({ width: w, height: h });
+      await sleep(250);
+      const m = await measure();
+      const bad = m.rows.filter(r => r.clash > 0 || r.spill > 0 || r.editH > 30);
+      ok(`at ${w}px every group's count clears its Edit, nothing spills`, m.rows.length >= longNames.length + 2 && !bad.length && m.boxFits && m.bodyFits,
+        JSON.stringify({ bad, boxFits: m.boxFits, bodyFits: m.bodyFits }));
+      if (shots) await page.screenshot({ path: path.join(shots, `ar-groups-${w}.png`), fullPage: false });
+    }
+    await page.setViewport({ width: 1440, height: 1000 });
+    await page.evaluate(() => arCloseForm());
+
     console.log('\nOn a phone');
     await page.setViewport({ width: 390, height: 844 });
     await sleep(300);

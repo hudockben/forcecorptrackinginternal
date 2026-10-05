@@ -902,8 +902,12 @@
     .modal label.ar-check:hover { background: rgba(255,255,255,0.03); }
     .modal label.ar-check input { width: auto; accent-color: var(--green); margin: 0; }
     .ar-check .ar-count { margin-left: auto; font-size: 0.66rem; color: #8b8b9a; white-space: nowrap; }
+    /* Wider columns than the job picker's: each group also carries an Edit. */
+    #ar-groups { grid-template-columns: repeat(auto-fill, minmax(min(250px, 100%), 1fr)); }
     .ar-group-row { display: flex; align-items: center; gap: 0.35rem; min-width: 0; }
     .modal .ar-group-row label.ar-check { flex: 1; min-width: 0; }
+    /* A name too long for its column wraps, rather than push the count under Edit. */
+    .ar-group-row label.ar-check > span:not(.ar-count) { min-width: 0; overflow-wrap: anywhere; }
     .ar-group-row .ar-link-btn { flex: none; padding: 0.25rem 0.3rem; }
     .ar-ng-heading { font-size: 0.72rem; font-weight: 700; color: var(--text); }
     .ar-picks-wrap { margin-top: 0.7rem; }
@@ -3983,7 +3987,7 @@
         <div class="ar-group-row">
           <label class="ar-check">
             <input type="checkbox" value="${g.id}" ${keep.has(g.id) ? 'checked' : ''} onchange="arUpdateSummary()" />
-            <span>${escHtml(g.name)}</span>
+            <span>${escHtml(g.name).replace(/\//g, '/<wbr>')}</span>
             <span class="ar-count">${g.count} ${g.count === 1 ? 'address' : 'addresses'}</span>
           </label>
           <button type="button" class="ar-link-btn ar-group-edit" onclick="arEditGroup(${g.id})"
