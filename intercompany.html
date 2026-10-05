@@ -4142,8 +4142,13 @@
       const n = sheets.length;
       const rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
       const ct  = 'application/vnd.openxmlformats-officedocument.spreadsheetml';
-      const names = sheets.map((s, i) => s.printTitles
-        ? `<definedName name="_xlnm.Print_Titles" localSheetId="${i}">'${s.name}'!$${s.printTitles}:$${s.printTitles}</definedName>` : '').join('');
+      // _FilterDatabase is the name Excel writes beside every autoFilter.
+      // Excel copes without it; LibreOffice drops the filter dropdowns.
+      const abs = ref => ref.replace(/([A-Z]+)(\d+)/g, '$$$1$$$2');
+      const names = sheets.map((s, i) =>
+        (s.filterRef ? `<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">'${jsxEsc(s.name)}'!${abs(s.filterRef)}</definedName>` : '') +
+        (s.printTitles ? `<definedName name="_xlnm.Print_Titles" localSheetId="${i}">'${jsxEsc(s.name)}'!$${s.printTitles}:$${s.printTitles}</definedName>` : '')
+      ).join('');
       return jsxZip([
         { name: '[Content_Types].xml', data:
           '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
@@ -4236,14 +4241,14 @@
         ...SUM_COLS.map(c => ({ f: `SUBTOTAL(109,${c}${FIRST}:${c}${lastData})`, v: sumKey(KEYS[c]), s: totStyle(c) })),
       ]);
 
+      // The filter covers the jobs and stops above the totals, so a sort
+      // never carries the totals row into the middle of the data.
+      const filterRef = `A${HEAD_ROW}:K${lastData}`;
       const sheets = [{
-        name: SHEET, printTitles: HEAD_ROW,
+        name: SHEET, printTitles: HEAD_ROW, filterRef,
         xml: jsxSheet({
           widths: [16, 40, 10, 12, 12, 15, 17, 15, 15, 16, 14],
-          rows, headRow: HEAD_ROW, landscape: true,
-          // The filter covers the jobs and stops above the totals, so a sort
-          // never carries the totals row into the middle of the data.
-          filterRef: `A${HEAD_ROW}:K${lastData}`,
+          rows, headRow: HEAD_ROW, landscape: true, filterRef,
           textRef: `C${FIRST}:C${lastData}`,
         }),
       }];
@@ -4267,10 +4272,11 @@
           const mine = rep.rows.filter(r => r.division === d.key);
           dRows.push([
             { v: d.label, s: JSX.text },
-            // Infill production is not a project — the same "N projects + infill"
-            // count the subtotal row reads.
-            { f: `COUNTIFS(${rng('A')},$A${n},${rng('B')},"<>Rubber Infill Production")`,
-              v: mine.filter(r => !r.infill).length },
+            // A plain count, not a formula: the sheet has nothing that tells
+            // the infill row from a job except its name, and a job can be
+            // called anything — including the infill row's name. The same
+            // "N projects + infill" the subtotal row reads.
+            { v: mine.filter(r => !r.infill).length },
             ...SUM_COLS.map(c => ({
               f: `SUMIF(${rng('A')},$A${n},${rng(c)})`,
               v: mine.reduce((s, r) => s + (r[KEYS[c]] || 0), 0), s: dStyle(c),
@@ -4728,12 +4734,27 @@
       else                        entry.equipCost   += cost;
     }
 
+    /* Nothing on screen to download. Every path that swaps the table for a
+       message comes through here — a bad date range, the loading state, No
+       Data, an error — so the buttons and _jsReport never outlive the table
+       they describe. No Data needs it as much as the start of a run does:
+       preset chips start a run while another is in flight, and the slower
+       one can land last, over a table the faster one just rendered. */
+    function jsClearExport() {
+      _jsReport = null;
+      ['jsPdfBtn', 'jsXlsxBtn'].forEach(id => {
+        const b = document.getElementById(id);
+        if (b) b.style.display = 'none';
+      });
+    }
+
     async function runJobSummaryReport() {
       const startDate = document.getElementById('jsStartDate').value;
       const endDate   = document.getElementById('jsEndDate').value;
       const resultsEl = document.getElementById('jsSummaryBody');
       const infoEl    = document.getElementById('jsReportInfo');
 
+      jsClearExport();
       if (!startDate || !endDate) {
         resultsEl.innerHTML = '<div class="ci-empty"><strong>Date Range Required</strong>Please select both Start Date and End Date.</div>';
         return;
@@ -4744,13 +4765,8 @@
       }
 
       _jsHasRun = true;
-      _jsReport = null;
       const btn    = document.querySelector('.btn-run-report');
-      const pdfBtnL = document.getElementById('jsPdfBtn');
-      const xlsxBtnL = document.getElementById('jsXlsxBtn');
       if (btn)     btn.disabled = true;
-      if (pdfBtnL) pdfBtnL.style.display = 'none';
-      if (xlsxBtnL) xlsxBtnL.style.display = 'none';
       resultsEl.innerHTML = '<div class="ci-empty"><strong>Loading</strong>Fetching project data…</div>';
       if (infoEl) infoEl.textContent = '';
 
@@ -5029,6 +5045,7 @@
           resultsEl.innerHTML = '<div class="ci-empty"><strong>No Data</strong>'
             + 'No project entries found between ' + startDate + ' and ' + endDate + '.</div>';
           if (infoEl) infoEl.textContent = '';
+          jsClearExport();
           return;
         }
 
@@ -5202,9 +5219,7 @@
           + '</tr></tfoot></table></div>';
 
       } catch (err) {
-        _jsReport = null;
-        const xlsxBtnE = document.getElementById('jsXlsxBtn');
-        if (xlsxBtnE) xlsxBtnE.style.display = 'none';
+        jsClearExport();
         resultsEl.innerHTML = '<div class="ci-empty"><strong>Error</strong>' + escT(err.message) + '</div>';
       } finally {
         if (btn) btn.disabled = false;
