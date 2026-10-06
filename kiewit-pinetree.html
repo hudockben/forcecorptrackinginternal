@@ -18887,6 +18887,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
   const totLabel = isFiltered ? 'Project Totals (All Cost Codes)' : 'Totals';
 
   let rowsHTML = '';
+  let anyUnitCost = false;   // any printed cost code carries a $/unit — see below
 
   const r = (v, cls = '') => `<td class="num${cls ? ' '+cls : ''}">${v}</td>`;
   const dash = '—';
@@ -18914,13 +18915,9 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     // column onto every other row of the report.
     const gPct = bidGroupPct(gItems, projId);
     const gDays = daysWorkedForGroup(gItems, projId);
-    rowsHTML += `<tr class="group-hdr"><td colspan="16"><strong>${esc(costCode) || '(No Code)'}</strong>`
-      + (gPct ? ` <span style="font-weight:400;color:#166534">· ${gPct.pct.toFixed(1)}% complete</span>`
-              + `<span style="font-weight:400;color:#666"> · ${gPct.done}/${gPct.total} sub code${gPct.total !== 1 ? 's' : ''} done</span>` : '')
-      + (gDays ? `<span style="font-weight:400;color:#1d4ed8"> · ${gDays} day${gDays !== 1 ? 's' : ''} worked</span>` : '')
-      + `</td></tr>`;
 
     let gBid = 0, gActual = 0, gHrs = 0, gProj = 0;
+    let gRowsHTML = '';
     gItems.forEach(b => {
       const baseBidQty = parseFloat(b.quantity) || 0;
       const coQtyDelta = (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
@@ -18944,7 +18941,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
 
       gBid += bidTot; gActual += actual; gHrs += cumHrs; gProj += proj;
 
-      rowsHTML += `<tr>
+      gRowsHTML += `<tr>
         <td class="sub">${esc(b.sub_code) || dash}</td>
         <td style="font-size:8px;color:#555;text-align:center">${esc(b.unit||'')}</td>
         ${r(bidQty ? qfmt(bidQty) : dash)}
@@ -18962,6 +18959,20 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
         ${dateCells(b)}
       </tr>`;
     });
+
+    // The cost-code header row goes in above its sub codes, but is written
+    // once they are totalled: like the green bar on screen, it carries the
+    // section's cost per unit — "100 SY @ $711.05/SY" — which divides the
+    // Actual Cost on the Total row below by the quantity entered for the
+    // section on the bid page. Nothing prints for a section with none.
+    const gUC = _bidGroupMeasure(p, costCode);
+    if (gUC.qty > 0) anyUnitCost = true;
+    rowsHTML += `<tr class="group-hdr"><td colspan="16"><strong>${esc(costCode) || '(No Code)'}</strong>`
+      + (gPct ? ` <span style="font-weight:400;color:#166534">· ${gPct.pct.toFixed(1)}% complete</span>`
+              + `<span style="font-weight:400;color:#666"> · ${gPct.done}/${gPct.total} sub code${gPct.total !== 1 ? 's' : ''} done</span>` : '')
+      + (gDays ? `<span style="font-weight:400;color:#1d4ed8"> · ${gDays} day${gDays !== 1 ? 's' : ''} worked</span>` : '')
+      + (gUC.qty > 0 ? `<span class="grp-uc"> · ${qfmt(gUC.qty)} ${_cbEsc(gUC.unit)} @ <strong>${_cbEsc(_bidGroupUnitCostText(gActual, gUC.qty, gUC.unit))}</strong></span>` : '')
+      + `</td></tr>` + gRowsHTML;
 
     const gDiff    = gBid - gActual;
     const gDiffCls = gDiff >= 0 ? 'under' : 'over';
@@ -19044,6 +19055,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     td.over  { color: #991b1b; text-align: right; }
     td.actual { text-align: right; color: #92400e; }
     tr.group-hdr td { background: #e8f5e9; font-size: 9px; padding: 4px 5px; }
+    tr.group-hdr .grp-uc { font-weight: 400; color: #92400e; }
     tr.subtotal td { background: #f5f5f5; font-style: italic; font-size: 9px; border-top: 1px solid #aaa; }
     tr.totals td { font-weight: 700; font-size: 10px; background: #f9f9f9; border-top: 2px solid #999; }
     @page { size: landscape; margin: 1cm; }
@@ -19078,6 +19090,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     </tr></tfoot>
   </table>
   <p class="note">Start and Target Date come from the daily sheets — the first and the latest day work was booked to the sub code. Dates in italics are the sheets'; a date in plain type was entered by hand and stands ahead of them.</p>
+  ${anyUnitCost ? `<p class="note">The "@ $/unit" on a cost code's header row is its Actual Cost divided by the quantity entered for that section on the bid page: the section's own size, not a total of its sub codes, which are measured in their own units.</p>` : ''}
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
 

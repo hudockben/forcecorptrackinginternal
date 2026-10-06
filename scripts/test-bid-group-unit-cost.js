@@ -20,7 +20,9 @@
  *      quantity without rebuilding the table (which would take the cursor out
  *      of the box), and a rename or delete of the cost code carries it along.
  *   3. Structural — both header layouts carry the chip, and it is filled from
- *      the same totals the section's Total row prints.
+ *      the same totals the section's Total row prints. The printed bid report
+ *      (also what the Email button and the scheduled auto-report send) carries
+ *      the same figure on its cost-code header rows.
  */
 
 const fs   = require('fs');
@@ -291,6 +293,28 @@ for (const page of PAGES) {
     /\.bid-group-hdr select\.bid-grp-uc-unit \{ width: auto;/.test(src));
   assert('the style it needs ships with the page',
     /\.bid-grp-uc \{/.test(src) && /\.bid-grp-uc\.uc-empty > :not\(\.bid-grp-uc-add\) \{ display: none; \}/.test(src));
+
+  // ── The printed / emailed bid report ──────────────────────────────────────
+  // Print, the Email button and the scheduled auto-report all build it here.
+  console.log('  — the bid report (print, email, auto-report)');
+  const pdf = extractFunction(src, 'exportBidPDF');
+  assert('it reads the same stored quantity the bar does',
+    /const gUC = _bidGroupMeasure\(p, costCode\);/.test(pdf));
+  assert('it divides the section\'s Actual Cost with the bar\'s own helper',
+    /_bidGroupUnitCostText\(gActual, gUC\.qty, gUC\.unit\)/.test(pdf));
+  assert('it prints "qty unit @ $/unit" on the cost-code header row',
+    /\(gUC\.qty > 0 \? `<span class="grp-uc"> · \$\{qfmt\(gUC\.qty\)\} \$\{_cbEsc\(gUC\.unit\)\} @ <strong>/.test(pdf));
+  const hdrAt = pdf.indexOf('rowsHTML += `<tr class="group-hdr">');
+  assert('the header row is written once the section is totalled',
+    hdrAt > pdf.indexOf('gBid += bidTot; gActual += actual;') && hdrAt < pdf.indexOf('rowsHTML += `<tr class="subtotal">'));
+  assert('…and still lands above its sub codes',
+    /\+ `<\/td><\/tr>` \+ gRowsHTML;/.test(pdf) && (pdf.match(/gRowsHTML \+= `<tr>/g) || []).length === 1
+    && !/[^g]rowsHTML \+= `<tr>\n\s*<td class="sub">/.test(pdf));
+  assert('the explanation prints only on a report that carries a figure',
+    /\$\{anyUnitCost \? `<p class="note">The "@ \$\/unit" on a cost code's header row is its Actual Cost/.test(pdf)
+    && /if \(gUC\.qty > 0\) anyUnitCost = true;/.test(pdf));
+  assert('the figure prints in the report\'s actual-cost colour',
+    /tr\.group-hdr \.grp-uc \{ font-weight: 400; color: #92400e; \}/.test(pdf) && /td\.actual \{[^}]*color: #92400e/.test(pdf));
   w.close();
 }
 
