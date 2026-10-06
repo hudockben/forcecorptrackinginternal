@@ -742,6 +742,32 @@
     .bid-grp-docs.has-docs { opacity: 1; color: #5a9a5a; }
     .bid-grp-docs:hover { background: #1e3a1e; border-color: #2a4a2a; color: var(--green); opacity: 1; }
     .bid-grp-docs:focus-visible { opacity: 1; outline: 1px solid var(--green); outline-offset: 1px; }
+    /* Cost per unit of measure on the cost-code header — see _bidGroupUnitCostHTML().
+       A section with no quantity yet is one faint "+ Cost / SY" that lights with
+       the row, the same as the folder chip beside it. Once it has a quantity it
+       stays lit: then it is a figure worth reading from across the table. */
+    .bid-grp-uc { margin-left: 0.75rem; color: var(--muted); font-weight: 500; font-size: 0.66rem; vertical-align: middle; white-space: nowrap; cursor: default; }
+    .bid-grp-uc::before { content: '\00b7'; margin-right: 0.5rem; opacity: 0.55; }
+    .bid-grp-uc-val { color: var(--yellow); font-weight: 700; font-size: 0.72rem; font-variant-numeric: tabular-nums; }
+    .bid-grp-uc-at { margin: 0 0.3rem; }
+    .bid-group-hdr input.bid-grp-uc-qty { width: 3.6rem; background: transparent; border: none; border-bottom: 1px dashed #2a4a2a;
+      border-radius: 0; outline: none; color: var(--text); font-family: inherit; font-size: 0.7rem; font-variant-numeric: tabular-nums;
+      text-align: right; padding: 0 2px; -moz-appearance: textfield; }
+    .bid-group-hdr input.bid-grp-uc-qty::-webkit-inner-spin-button,
+    .bid-group-hdr input.bid-grp-uc-qty::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+    .bid-group-hdr input.bid-grp-uc-qty:focus { border-bottom-color: var(--green); background: #1a2a1a; }
+    /* Sized here, not by the page-wide `td select`, which would stretch it to
+       the width of the whole bar. */
+    .bid-group-hdr select.bid-grp-uc-unit { width: auto; background: #111c11; border: none; border-bottom: 1px dashed #2a4a2a;
+      border-radius: 0; color: var(--muted); font-family: inherit; font-size: 0.66rem; padding: 0 2px; margin-left: 0.2rem; cursor: pointer; }
+    .bid-group-hdr select.bid-grp-uc-unit:focus { border-bottom-color: var(--green); background: #1a2a1a; }
+    .bid-grp-uc-add { background: none; border: 1px solid transparent; color: #4a6a4a; font-family: inherit; font-size: 0.66rem;
+      font-weight: 600; padding: 0.1rem 0.4rem; border-radius: 3px; cursor: pointer; line-height: 1; }
+    .bid-grp-uc-add:hover { background: #1e3a1e; border-color: #2a4a2a; color: var(--green); }
+    .bid-grp-uc.uc-empty { opacity: 0.35; transition: opacity 0.12s; }
+    .bid-group-hdr:hover .bid-grp-uc.uc-empty, .bid-grp-uc.uc-empty:focus-within { opacity: 1; }
+    .bid-grp-uc.uc-empty > :not(.bid-grp-uc-add) { display: none; }
+    .bid-grp-uc:not(.uc-empty) > .bid-grp-uc-add { display: none; }
     .bid-grp-pct.gp-done   { color: #4ade80; }
     .bid-grp-pct.gp-active { color: var(--blue); }
     .bid-grp-pct.gp-none   { color: var(--muted); }
@@ -8518,6 +8544,110 @@ function _bidGroupDocsHTML(projId, costCode) {
     onclick="event.stopPropagation();openBidGroupDocs(this.dataset.bidDocsProj,this.dataset.bidDocsCode)">&#128193;${n || ''}</button>`;
 }
 
+/* Cost per unit of measure on the cost-code header: what a section has cost,
+   divided by a quantity typed for the section as a whole — "Full Depth
+   Pavement · 100 SY @ $711.05/SY". The sub codes under a section are bought and
+   placed in their own units (tons of base, tons of top, hours of labor), so
+   none of them is the section's size; that is typed once here, against the cost
+   code, and kept on the project under 'bid-group-measures'.
+
+   The cost divided is the Actual Cost on the section's Total row, off the same
+   visible sub codes, so the header and the Total row never disagree about what
+   the section has cost. A readonly table prints nothing until a quantity has
+   been entered. */
+const BID_GROUP_UNIT_DEFAULT = 'SY';
+
+function _bidGroupMeasure(p, costCode) {
+  const all = p && p['bid-group-measures'];
+  // Own keys only — cost codes are free text, and a section called
+  // "constructor" must not read Object's constructor back as its quantity.
+  const m = all && Object.prototype.hasOwnProperty.call(all, costCode) ? all[costCode] : null;
+  return { qty: m ? (parseFloat(m.qty) || 0) : 0, unit: (m && m.unit) || BID_GROUP_UNIT_DEFAULT };
+}
+
+function _bidGroupUnitCostText(cost, qty, unit) {
+  return qty > 0 && cost ? `$${fmt(cost / qty)}/${unit}` : `—/${unit}`;
+}
+
+/* The working behind the figure, on hover. Projected and bid ride along when
+   they say something the actual does not: a section still being built has only
+   part of its cost in, so its to-date figure reads low until it is finished. */
+function _bidGroupUnitCostTip(t, qty, unit) {
+  if (!(qty > 0)) {
+    return `Enter this section's measured quantity — e.g. 100 ${unit} — and its actual cost is divided by it to give a cost per ${unit}.`;
+  }
+  const q   = `${qfmt(qty)} ${unit}`;
+  const per = v => `$${fmt(v / qty)}/${unit}`;
+  const lines = [`Actual cost $${fmt(t.actual)} ÷ ${q} = ${per(t.actual)}`];
+  if (!t.allDone && t.proj && Math.abs(t.proj - t.actual) >= 0.005) {
+    lines.push(`Projected at completion $${fmt(t.proj)} ÷ ${q} = ${per(t.proj)}`);
+  }
+  if (t.bid) lines.push(`Bid $${fmt(t.bid)} ÷ ${q} = ${per(t.bid)}`);
+  lines.push(`The quantity is the section's own size, typed here — it is not added up from the sub codes, which are measured in their own units.`);
+  return lines.join('\n');
+}
+
+function _bidGroupUnitCostHTML(projId, costCode, t, readonly) {
+  const { qty, unit } = _bidGroupMeasure(getProj(projId), costCode);
+  const val = _bidGroupUnitCostText(t.actual, qty, unit);
+  const tip = _bidGroupUnitCostTip(t, qty, unit);
+  if (readonly) {
+    if (!(qty > 0)) return '';
+    return `<span class="bid-grp-uc" title="${_cbEsc(tip)}">${qfmt(qty)} ${_cbEsc(unit)}<span class="bid-grp-uc-at">@</span><span class="bid-grp-uc-val">${_cbEsc(val)}</span></span>`;
+  }
+  const units = UNIT_OPTS.filter(u => u && u !== 'LS');
+  if (!units.includes(unit)) units.push(unit);
+  // Project, cost code and the section's totals travel in data attributes, so
+  // an edit can redraw the figure in place — rebuilding the table on every
+  // keystroke would take the cursor out of the box being typed in. The cost
+  // code is read back out of the dataset rather than written into a handler,
+  // for the same reason as the folder chip above.
+  return `<span class="bid-grp-uc${qty > 0 ? '' : ' uc-empty'}" title="${_cbEsc(tip)}"
+    data-uc-project="${_cbEsc(projId)}" data-uc-code="${_cbEsc(costCode)}"
+    data-uc-actual="${t.actual || 0}" data-uc-bid="${t.bid || 0}" data-uc-projected="${t.proj || 0}" data-uc-done="${t.allDone ? 1 : 0}"
+    onclick="event.stopPropagation()" onfocusout="_bidGroupMeasureBlur(this,event)">
+    <button class="bid-grp-uc-add" onclick="_bidGroupMeasureOpen(this)">+ Cost / ${_cbEsc(unit)}</button>
+    <input class="bid-grp-uc-qty" type="number" min="0" step="any" placeholder="Qty" value="${qty > 0 ? qty : ''}"
+      oninput="_bidGroupMeasureEdit(this)" onkeydown="if(event.key==='Enter')this.blur()"><select class="bid-grp-uc-unit"
+      onchange="_bidGroupMeasureEdit(this)">${units.map(u => `<option value="${_cbEsc(u)}"${u === unit ? ' selected' : ''}>${_cbEsc(u)}</option>`).join('')}</select><span
+      class="bid-grp-uc-at">@</span><span class="bid-grp-uc-val">${_cbEsc(val)}</span>
+  </span>`;
+}
+
+function _bidGroupMeasureOpen(btn) {
+  const wrap = btn.closest('.bid-grp-uc'); if (!wrap) return;
+  wrap.classList.remove('uc-empty');
+  wrap.querySelector('.bid-grp-uc-qty').focus();
+}
+
+// Leaving the chip with no quantity in it folds it back to "+ Cost / SY".
+// Moving between its own box and dropdown is not leaving it.
+function _bidGroupMeasureBlur(wrap, ev) {
+  if (ev.relatedTarget && wrap.contains(ev.relatedTarget)) return;
+  if (!(parseFloat(wrap.querySelector('.bid-grp-uc-qty').value) > 0)) wrap.classList.add('uc-empty');
+}
+
+function _bidGroupMeasureEdit(el) {
+  const wrap = el.closest('.bid-grp-uc'); if (!wrap) return;
+  const p = getProj(wrap.dataset.ucProject); if (!p) return;
+  const code = wrap.dataset.ucCode;
+  const qty  = parseFloat(wrap.querySelector('.bid-grp-uc-qty').value) || 0;
+  const unit = wrap.querySelector('.bid-grp-uc-unit').value || BID_GROUP_UNIT_DEFAULT;
+  if (!p['bid-group-measures'] || typeof p['bid-group-measures'] !== 'object') p['bid-group-measures'] = {};
+  if (qty > 0) p['bid-group-measures'][code] = { qty, unit };
+  else delete p['bid-group-measures'][code];
+  saveProject(p.id);
+  const t = {
+    actual:  parseFloat(wrap.dataset.ucActual)    || 0,
+    bid:     parseFloat(wrap.dataset.ucBid)       || 0,
+    proj:    parseFloat(wrap.dataset.ucProjected) || 0,
+    allDone: wrap.dataset.ucDone === '1',
+  };
+  wrap.querySelector('.bid-grp-uc-val').textContent = _bidGroupUnitCostText(t.actual, qty, unit);
+  wrap.querySelector('.bid-grp-uc-add').textContent = `+ Cost / ${unit}`;
+  wrap.title = _bidGroupUnitCostTip(t, qty, unit);
+}
+
 function actualForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
   const proj = getProj(projId);
@@ -8959,6 +9089,8 @@ function renderBidFooter(projId, opts = {}) {
 function removeBidGroup(projId, costCode) {
   const p = getProj(projId); if (!p) return;
   p.bidItems = (p.bidItems || []).filter(b => b.cost_code !== costCode);
+  const ms = p['bid-group-measures'];
+  if (ms && Object.prototype.hasOwnProperty.call(ms, costCode)) delete ms[costCode];
   saveProject(projId);
   renderBidTable(projId);
 }
@@ -8966,6 +9098,14 @@ function removeBidGroup(projId, costCode) {
 function updateBidGroupCode(projId, oldCode, newCode) {
   const p = getProj(projId); if (!p) return;
   (p.bidItems || []).forEach(b => { if (b.cost_code === oldCode) b.cost_code = newCode; });
+  // The section's measured quantity is keyed by its cost code, so it follows
+  // the rename. Renaming onto a code that already has one merges the two
+  // sections, and the one being merged into keeps its own.
+  const ms = p['bid-group-measures'];
+  if (ms && oldCode !== newCode && Object.prototype.hasOwnProperty.call(ms, oldCode)) {
+    if (!Object.prototype.hasOwnProperty.call(ms, newCode)) ms[newCode] = ms[oldCode];
+    delete ms[oldCode];
+  }
   saveProject(projId);
   renderBidTable(projId);
 }
@@ -10174,7 +10314,7 @@ function renderBidTable(projId, opts = {}) {
           <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
           <strong>${esc(costCode) || '(No Code)'}</strong>
           <span style="font-weight:400;color:var(--muted);font-size:0.72rem;margin-left:0.75rem">${groupItems.length} sub code${groupItems.length!==1?'s':''}</span>
-          ${gPctHTML}${gDaysHTML}${gDocsHTML}
+          ${gPctHTML}${gDaysHTML}${gDocsHTML}<span class="bid-grp-uc-slot"></span>
         </td>`
       : `<td colspan="${COLS}">
           <span class="bid-group-toggle" id="btog-${groupId}">▼</span>
@@ -10182,7 +10322,7 @@ function renderBidTable(projId, opts = {}) {
             onclick="event.stopPropagation()"
             onchange="updateBidGroupCode('${projId}','${escJs(costCode)}',this.value)">
           <button class="bid-add-sub" onclick="event.stopPropagation();addBidSubCode('${projId}','${escJs(costCode)}')">+ Sub Code</button>
-          ${gPctHTML}${gDaysHTML}${gDocsHTML}
+          ${gPctHTML}${gDaysHTML}${gDocsHTML}<span class="bid-grp-uc-slot"></span>
           <button class="del-btn" style="float:right;margin-top:0.1rem" title="Delete entire group"
             onclick="event.stopPropagation();if(confirm('Delete all sub codes under \\'${escJs(costCode)}\\'?'))removeBidGroup('${projId}','${escJs(costCode)}')">✕</button>
         </td>`;
@@ -10305,6 +10445,14 @@ function renderBidTable(projId, opts = {}) {
            }</td>`;
       tbody.appendChild(childTr);
     });
+
+    // The header's cost per unit divides the section's Actual Cost, which is
+    // only known once the rows above have been totalled — so the header was
+    // drawn with an empty slot and is filled here, rather than walking the
+    // daily rows a second time to reach the same total early.
+    const ucSlot = hdrTr.querySelector('.bid-grp-uc-slot');
+    if (ucSlot) ucSlot.outerHTML = _bidGroupUnitCostHTML(projId, costCode,
+      { actual: gActual, bid: gBidTotal, proj: gProj, allDone: !!(gPct && gPct.allDone) }, readonly);
 
     // ── Group subtotal row ──
     const gDiff    = gBidTotal - gActual;
@@ -18956,6 +19104,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
   const totLabel = isFiltered ? 'Project Totals (All Cost Codes)' : 'Totals';
 
   let rowsHTML = '';
+  let anyUnitCost = false;   // any printed cost code carries a $/unit — see below
 
   const r = (v, cls = '') => `<td class="num${cls ? ' '+cls : ''}">${v}</td>`;
   const dash = '—';
@@ -18983,13 +19132,9 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     // column onto every other row of the report.
     const gPct = bidGroupPct(gItems, projId);
     const gDays = daysWorkedForGroup(gItems, projId);
-    rowsHTML += `<tr class="group-hdr"><td colspan="16"><strong>${esc(costCode) || '(No Code)'}</strong>`
-      + (gPct ? ` <span style="font-weight:400;color:#166534">· ${gPct.pct.toFixed(1)}% complete</span>`
-              + `<span style="font-weight:400;color:#666"> · ${gPct.done}/${gPct.total} sub code${gPct.total !== 1 ? 's' : ''} done</span>` : '')
-      + (gDays ? `<span style="font-weight:400;color:#1d4ed8"> · ${gDays} day${gDays !== 1 ? 's' : ''} worked</span>` : '')
-      + `</td></tr>`;
 
     let gBid = 0, gActual = 0, gHrs = 0, gProj = 0;
+    let gRowsHTML = '';
     gItems.forEach(b => {
       const baseBidQty = parseFloat(b.quantity) || 0;
       const coQtyDelta = (b.change_orders || []).reduce((s, co) => s + (parseFloat(co.qty_delta) || 0), 0);
@@ -19013,7 +19158,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
 
       gBid += bidTot; gActual += actual; gHrs += cumHrs; gProj += proj;
 
-      rowsHTML += `<tr>
+      gRowsHTML += `<tr>
         <td class="sub">${esc(b.sub_code) || dash}</td>
         <td style="font-size:8px;color:#555;text-align:center">${esc(b.unit||'')}</td>
         ${r(bidQty ? qfmt(bidQty) : dash)}
@@ -19031,6 +19176,20 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
         ${dateCells(b)}
       </tr>`;
     });
+
+    // The cost-code header row goes in above its sub codes, but is written
+    // once they are totalled: like the green bar on screen, it carries the
+    // section's cost per unit — "100 SY @ $711.05/SY" — which divides the
+    // Actual Cost on the Total row below by the quantity entered for the
+    // section on the bid page. Nothing prints for a section with none.
+    const gUC = _bidGroupMeasure(p, costCode);
+    if (gUC.qty > 0) anyUnitCost = true;
+    rowsHTML += `<tr class="group-hdr"><td colspan="16"><strong>${esc(costCode) || '(No Code)'}</strong>`
+      + (gPct ? ` <span style="font-weight:400;color:#166534">· ${gPct.pct.toFixed(1)}% complete</span>`
+              + `<span style="font-weight:400;color:#666"> · ${gPct.done}/${gPct.total} sub code${gPct.total !== 1 ? 's' : ''} done</span>` : '')
+      + (gDays ? `<span style="font-weight:400;color:#1d4ed8"> · ${gDays} day${gDays !== 1 ? 's' : ''} worked</span>` : '')
+      + (gUC.qty > 0 ? `<span class="grp-uc"> · ${qfmt(gUC.qty)} ${_cbEsc(gUC.unit)} @ <strong>${_cbEsc(_bidGroupUnitCostText(gActual, gUC.qty, gUC.unit))}</strong></span>` : '')
+      + `</td></tr>` + gRowsHTML;
 
     const gDiff    = gBid - gActual;
     const gDiffCls = gDiff >= 0 ? 'under' : 'over';
@@ -19113,6 +19272,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     td.over  { color: #991b1b; text-align: right; }
     td.actual { text-align: right; color: #92400e; }
     tr.group-hdr td { background: #e8f5e9; font-size: 9px; padding: 4px 5px; }
+    tr.group-hdr .grp-uc { font-weight: 400; color: #92400e; }
     tr.subtotal td { background: #f5f5f5; font-style: italic; font-size: 9px; border-top: 1px solid #aaa; }
     tr.totals td { font-weight: 700; font-size: 10px; background: #f9f9f9; border-top: 2px solid #999; }
     @page { size: landscape; margin: 1cm; }
@@ -19147,6 +19307,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
     </tr></tfoot>
   </table>
   <p class="note">Start and Target Date come from the daily sheets — the first and the latest day work was booked to the sub code. Dates in italics are the sheets'; a date in plain type was entered by hand and stands ahead of them.</p>
+  ${anyUnitCost ? `<p class="note">The "@ $/unit" on a cost code's header row is its Actual Cost divided by the quantity entered for that section on the bid page: the section's own size, not a total of its sub codes, which are measured in their own units.</p>` : ''}
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
 
