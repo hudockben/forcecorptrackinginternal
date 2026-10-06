@@ -52,9 +52,10 @@ const HAUL_FIELD_TYPE_RE = /^haul\s*[—–-]\s/i;
 // intercompany.html: "tri-axle" spelled out, because on a turf job "tri" alone
 // is a Triplex mower or a line Striper. "Pickup Truck" is a crew truck, not
 // trucking, so the word "truck" is deliberately not enough.
+const TRUCK_NAME_RES = [/low[\s-]?boy/i, /\btri[\s-]?axle/i];
 function isTruckName(equipment) {
   const e = String(equipment == null ? '' : equipment);
-  return /low[\s-]?boy/i.test(e) || /\btri[\s-]?axle/i.test(e);
+  return TRUCK_NAME_RES.some(re => re.test(e));
 }
 
 // Is this daily_tracking row payroll trucking?
@@ -63,24 +64,41 @@ function isTruckName(equipment) {
 //    that survives a lost link). A manual row with job class Trucking is
 //    usually one this tab's own entry made, and listing it would show it twice.
 //  - a haul the driver called a haul, always.
-//  - otherwise the truck has to be ON the row: named AND priced. Every split
-//    row starts with the driver's truck named at 0 hours, so a named truck on
-//    his travel row is not trucking.
-//  - and it has to be a truck: the driver's job class is Trucking, or the
-//    unit is a Tri-Axle / Lowboy.
+//  - never a row the approver answered "not a haul" (is_haul = false): the
+//    driver was out of the truck and working the site.
+//  - otherwise the truck has to be ON the row, by payroll's own test
+//    (truckOnRow in api/timesheet-entries.js): named AND priced — every split
+//    row starts with his truck named at 0 hours, so a named truck on his travel
+//    row is not trucking — and it has to be THE truck. A Tri-Axle or Lowboy is
+//    one by name. Any other unit counts only for a Trucking-class driver, and
+//    only when it is the truck he named on his timesheet (truck_unit): the
+//    roller he ran on site after hauling in is not, and neither is a pickup.
+//
+// `r.truck_unit` comes from the entry (LEFT JOIN in the query below).
 function isPayrollTruckingRow(r) {
   if (!r) return false;
   if (r.timesheet_entry_id == null && !isInjectedRowId(r.row_id)) return false;
   if (HAUL_FIELD_TYPE_RE.test(String(r.field_type || '').trim())) return true;
-  const named  = String(r.equipment || '').trim() !== '';
+  if (r.is_haul === false) return false;
+  const unit   = String(r.equipment || '').trim();
   const priced = (parseFloat(r.equip_hours) || 0) > 0
               || (parseFloat(r.equip_total_override) || 0) > 0;
-  if (!named || !priced) return false;
+  if (!unit || !priced) return false;
+  if (isTruckName(unit)) return true;
+  const named = String(r.truck_unit || '').trim();
   return String(r.job_class || '').trim().toLowerCase() === 'trucking'
-      || isTruckName(r.equipment);
+      && named !== '' && unit.toLowerCase() === named.toLowerCase();
 }
 
-// Enough for years of one division's hauls; the tab pages them 20 at a time.
+// The same rule in SQL, so the LIMIT below counts trucking rows rather than
+// candidates — a haul day is three split rows (travel, haul, travel) and only
+// one is trucking. The patterns go in as parameters: a backslash written into
+// the sql`` template is not the backslash Postgres would see.
+const SQL_HAUL_RE  = '^\\s*haul\\s*[—–-]\\s';
+const SQL_TRUCK_RE = 'low[\\s-]?boy|\\mtri[\\s-]?axle';
+
+// Enough for years of one division's trucking; the tab pages it 20 at a time
+// and says so when the newest TRUCKING_ROW_LIMIT are all it was sent.
 const TRUCKING_ROW_LIMIT = 5000;
 
 // The Neon HTTP driver returns DATE columns as JavaScript Date objects, not strings.
@@ -214,23 +232,37 @@ module.exports = async (req, res) => {
       const offsetVal = Math.max(parseInt(qOffset) || 0, 0);
 
       // Payroll trucking for the division's Trucking tab — see
-      // isPayrollTruckingRow. The WHERE clause is a loose superset of that
-      // rule so the table scan stays narrow; the rule itself runs below.
+      // isPayrollTruckingRow, which the WHERE clause restates and which still
+      // runs on what comes back.
       if (trucking === '1' || trucking === 'true') {
         const found = await sql`
-          SELECT row_id, project_id, date, field_type, employee, cost_code, sub_code,
-                 job_class, rate, labor_hours, equipment, equip_unit_cost, equip_hours,
-                 material, supplier, po_num, units_purchased, unit_cost, material_cost,
-                 quantity, equip_total_override, total_cost_override, num_laborers,
-                 timesheet_entry_id
-          FROM daily_tracking
-          WHERE company_code = ${companyCode} AND division = ${division}
-            AND (timesheet_entry_id IS NOT NULL OR row_id LIKE 'ts%')
-            AND (field_type ILIKE 'haul%'
-                 OR LOWER(TRIM(COALESCE(job_class, ''))) = 'trucking'
-                 OR equipment ILIKE '%boy%'
-                 OR equipment ILIKE '%axle%')
-          ORDER BY date DESC NULLS LAST, created_at DESC
+          SELECT dt.row_id, dt.project_id, dt.date, dt.field_type, dt.employee,
+                 dt.cost_code, dt.sub_code, dt.job_class, dt.rate, dt.labor_hours,
+                 dt.equipment, dt.equip_unit_cost, dt.equip_hours, dt.material,
+                 dt.supplier, dt.po_num, dt.units_purchased, dt.unit_cost,
+                 dt.material_cost, dt.quantity, dt.equip_total_override,
+                 dt.total_cost_override, dt.num_laborers, dt.timesheet_entry_id,
+                 dt.is_haul, te.truck_unit
+          FROM daily_tracking dt
+          LEFT JOIN timesheet_entries te
+                 ON te.id = dt.timesheet_entry_id AND te.company_code = dt.company_code
+          WHERE dt.company_code = ${companyCode} AND dt.division = ${division}
+            AND (dt.timesheet_entry_id IS NOT NULL OR dt.row_id LIKE 'ts%')
+            AND (
+              COALESCE(dt.field_type, '') ~* ${SQL_HAUL_RE}
+              OR (
+                dt.is_haul IS DISTINCT FROM FALSE
+                AND TRIM(COALESCE(dt.equipment, '')) <> ''
+                AND (COALESCE(dt.equip_hours, 0) > 0 OR COALESCE(dt.equip_total_override, 0) > 0)
+                AND (
+                  dt.equipment ~* ${SQL_TRUCK_RE}
+                  OR (LOWER(TRIM(COALESCE(dt.job_class, ''))) = 'trucking'
+                      AND TRIM(COALESCE(te.truck_unit, '')) <> ''
+                      AND LOWER(TRIM(dt.equipment)) = LOWER(TRIM(te.truck_unit)))
+                )
+              )
+            )
+          ORDER BY dt.date DESC NULLS LAST, dt.created_at DESC
           LIMIT ${TRUCKING_ROW_LIMIT}
         `;
         return res.json({

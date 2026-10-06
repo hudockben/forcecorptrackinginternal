@@ -4622,7 +4622,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
       if (_t === 'supplier')  renderSupplierTab();
       if (_t === 'po')        renderPOTab();
       if (_t === 'docs')      renderDocsTab();
-      if (_t === 'trucking')  renderTruckingTab();
+      if (_t === 'trucking')  _trOpenTab();
       if (_t === 'mob-entry') renderMobileEntryForm();
     }, 0);
   });
@@ -12190,16 +12190,48 @@ function _trSubCodeOpts(tr) {
    read-only here — hours, driver, truck and date change in Payroll, and cost /
    sub code in the job's Daily Tracking, as for any payroll row.
 
-   Daily rows are not polled, so the tab fetches these itself: when it is drawn
-   with a list older than TR_PAYROLL_STALE_MS, and on every data poll while it
-   is the open tab. */
+   Daily rows are not polled, so the tab fetches these itself: whenever the tab
+   is opened or a job's Daily Tracking is closed over it (_trOpenTab), when it is
+   drawn with a list older than TR_PAYROLL_STALE_MS, and on every data poll
+   while it is the open tab. */
 let _trPayrollRows      = [];
 let _trPayrollLoaded    = false;
 let _trPayrollFailed    = false;
 let _trPayrollBusy      = false;
 let _trPayrollAt        = 0;
 let _trPayrollUndrawn   = false;
+let _trPayrollMore      = false;   // the server sent its cap; older rows were left off
+let _trPayrollFollowups = 0;
 const TR_PAYROLL_STALE_MS = 30000;
+const TR_PAYROLL_FOLLOWUP_MS  = 3000;
+const TR_PAYROLL_FOLLOWUP_MAX = 10;
+
+// Daily-row ids with a write from this page still on its way to the server: a
+// debounced PUT not yet fired, or one queued in the write-ahead log (read from
+// its in-memory cache).
+function _trPendingRowIds() {
+  const ids = new Set(Object.keys(_drSavePending || {}));
+  const wal = _walRead();
+  Object.keys(wal || {}).forEach(k => { if (k.startsWith('put_')) ids.add(k.slice(4)); });
+  return ids;
+}
+
+// The tab was opened, or a job's Daily Tracking was closed over it — likely
+// after editing one of these rows' codes there. Fetch now, not in 30s.
+function _trOpenTab() {
+  _trPayrollAt = 0;
+  renderTruckingTab();
+}
+
+// When the user stops typing in one of this tab's own entries, draw what a
+// refresh held back meanwhile. Waits past the combobox's own 120ms blur commit
+// (cbOnBlur), which a redraw would otherwise throw away with the field.
+function _trDrawHeldBack() {
+  if (!_trPayrollUndrawn) return;
+  setTimeout(() => {
+    if (_trPayrollUndrawn && activeTab === 'trucking' && !_trIsEditingEntry()) renderTruckingTab();
+  }, 300);
+}
 
 // Someone is typing in one of this tab's own entries. A redraw would take the
 // field out from under them; the search box is safe (the redraw refocuses it).
@@ -12211,7 +12243,10 @@ function _trIsEditingEntry() {
 async function _trRefreshPayroll() {
   if (_trPayrollBusy || _AUTO_REPORT) return;
   _trPayrollBusy = true;
-  const before = JSON.stringify([_trPayrollLoaded, _trPayrollFailed, _trPayrollRows]);
+  const before = JSON.stringify([_trPayrollLoaded, _trPayrollFailed, _trPayrollMore, _trPayrollRows]);
+  // A write from this page to one of these rows that has not landed yet means
+  // the server may still answer with the value from before it.
+  let racing = false;
   try {
     const r = await fetch(`${API_BASE}/daily-rows?division=${DIVISION}&trucking=1`, {
       headers: { 'Authorization': `Bearer ${fctToken}` }
@@ -12220,8 +12255,11 @@ async function _trRefreshPayroll() {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
     _trPayrollRows   = Array.isArray(data.rows) ? data.rows : [];
+    _trPayrollMore   = !!data.hasMore;
     _trPayrollLoaded = true;
     _trPayrollFailed = false;
+    const pending = _trPendingRowIds();
+    racing = pending.size > 0 && _trPayrollRows.some(r => pending.has(String(r.id)));
   } catch (err) {
     // A failed read is not "no payroll trucking" — keep what was last shown.
     console.warn('[trucking] payroll rows:', err.message);
@@ -12230,18 +12268,36 @@ async function _trRefreshPayroll() {
     _trPayrollBusy = false;
     _trPayrollAt   = Date.now();
   }
-  if (JSON.stringify([_trPayrollLoaded, _trPayrollFailed, _trPayrollRows]) !== before) _trPayrollUndrawn = true;
+  if (JSON.stringify([_trPayrollLoaded, _trPayrollFailed, _trPayrollMore, _trPayrollRows]) !== before) _trPayrollUndrawn = true;
   if (_trPayrollUndrawn && activeTab === 'trucking' && !_trIsEditingEntry()) renderTruckingTab();
+  // Ask again shortly, so the list catches up once those writes land. Bounded,
+  // so a write stuck in the log does not refetch for ever.
+  if (racing && _trPayrollFollowups < TR_PAYROLL_FOLLOWUP_MAX) {
+    _trPayrollFollowups++;
+    setTimeout(() => { if (activeTab === 'trucking') { _trPayrollAt = 0; _trRefreshPayroll(); } }, TR_PAYROLL_FOLLOWUP_MS);
+  } else if (!racing) {
+    _trPayrollFollowups = 0;
+  }
 }
 
 // Payroll rows in the shape this tab's entries have, so the filters, search,
 // paging and CSV read both alike. A row whose job is not in this division's
 // project list (deleted, or not this user's to see) is left out, as it is from
 // Daily Tracking.
+//
+// A row this page has edited in Daily Tracking (cost code, sub code, quantity)
+// and not yet saved reads from memory, so the edit shows here at once instead
+// of after the next fetch. Every other row reads from the fetch — memory is not
+// polled, so it would show another user's edits late.
 function _trPayrollEntries() {
+  const pending = _trPayrollRows.length ? _trPendingRowIds() : new Set();
   return _trPayrollRows
     .filter(r => r && getProj(r._projectId))
-    .map(r => {
+    .map(fetched => {
+      const live = pending.has(String(fetched.id))
+        ? (getProj(fetched._projectId).dailyRows || []).find(x => String(x.id) === String(fetched.id))
+        : null;
+      const r = live ? Object.assign({}, fetched, live, { _projectId: fetched._projectId }) : fetched;
       const rate  = parseFloat(r.equip_unit_cost) || 0;
       const hours = parseFloat(r.equip_hours)     || 0;
       return {
@@ -12552,7 +12608,8 @@ function renderTruckingTab() {
     : !_trPayrollLoaded
     ? 'Loading payroll trucking from Daily Tracking…'
     : nPayroll
-    ? `Includes ${nPayroll} trucking row${nPayroll === 1 ? '' : 's'} auto-inserted into Daily Tracking by payroll approvals, marked <span class="row-badge-injected" style="cursor:default">TS</span> — read-only here.`
+    ? `Includes ${_trPayrollMore ? 'the newest ' : ''}${nPayroll} trucking row${nPayroll === 1 ? '' : 's'} auto-inserted into Daily Tracking by payroll approvals, marked <span class="row-badge-injected" style="cursor:default">TS</span> — read-only here.`
+      + (_trPayrollMore ? ' Older ones are not listed; they are still in each job\'s Daily Tracking.' : '')
     : '';
   root.innerHTML = `
     <div style="padding:1.5rem">
@@ -13042,8 +13099,18 @@ function renderInventoryTab() {
 
 document.getElementById('trucking-root').addEventListener('click', e => {
   const btn = e.target.closest && e.target.closest('[data-tr-open-proj]');
-  if (btn) openDailyView(btn.dataset.trOpenProj);
+  if (!btn) return;
+  // Daily rows are loaded once at boot, and the row clicked may have been
+  // approved since. openDailyView only reloads a job with no rows in memory,
+  // so reload the rest here.
+  const projId = btn.dataset.trOpenProj;
+  const p = getProj(projId);
+  const had = !!(p && Array.isArray(p.dailyRows) && p.dailyRows.length);
+  openDailyView(projId);
+  if (had) reloadDailyRows(projId);
 });
+
+document.getElementById('trucking-root').addEventListener('focusout', _trDrawHeldBack);
 
 document.getElementById('trucking-root').addEventListener('input', e => {
   const el = e.target;
@@ -20924,6 +20991,7 @@ function openDailyView(projId) {
 
 function closeDailyView() {
   document.getElementById('daily-fullscreen').style.display = 'none';
+  if (activeTab === 'trucking') _trOpenTab();
   document.getElementById('daily-filter-dd').style.display = 'none';
   dailyFilters = {};
   // Reset PV preview state
