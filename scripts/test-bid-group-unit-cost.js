@@ -67,11 +67,19 @@ function extractLine(src, startsWith) {
 }
 
 /* The helpers run inside a jsdom window, so the edit handlers get a real
-   closest() / querySelector() / focus() to work against. */
+   closest() / querySelector() / focus() to work against. Scripts run
+   'dangerously' so the chip's own inline onclick / oninput / onchange /
+   onfocusout fire on dispatched events — the wiring is tested, not just the
+   functions it is meant to call. The header row gets the same click-to-
+   collapse the bid table gives it, so a click that leaks out of the chip
+   shows up as a collapsed section. */
 function load(src) {
-  const dom = new JSDOM('<!doctype html><table><tbody><tr class="bid-group-hdr"><td id="cell"></td></tr></tbody></table>',
-    { runScripts: 'outside-only' });
+  const dom = new JSDOM('<!doctype html><table><tbody><tr class="bid-group-hdr" data-collapsed="0"><td id="cell"></td></tr></tbody></table>',
+    { runScripts: 'dangerously' });
   const w = dom.window;
+  w.confirm = () => true;
+  const hdr = w.document.querySelector('tr.bid-group-hdr');
+  hdr.addEventListener('click', () => { hdr.dataset.collapsed = hdr.dataset.collapsed === '1' ? '0' : '1'; });
   w.eval(`
     let _proj = null, _saves = 0, _renders = 0;
     function setProj(p) { _proj = p; }
@@ -92,23 +100,27 @@ function load(src) {
     ${extractFunction(src, '_bidGroupMeasureBlur')}
     ${extractFunction(src, '_bidGroupMeasureEdit')}
     ${extractFunction(src, 'removeBidGroup')}
+    ${extractFunction(src, 'removeBidItem')}
     ${extractFunction(src, 'updateBidGroupCode')}
     window.__t = { setProj, counts, BID_GROUP_UNIT_DEFAULT, _bidGroupMeasure, _bidGroupUnitCostText,
       _bidGroupUnitCostTip, _bidGroupUnitCostHTML, _bidGroupMeasureOpen, _bidGroupMeasureBlur,
-      _bidGroupMeasureEdit, removeBidGroup, updateBidGroupCode };
+      _bidGroupMeasureEdit, removeBidGroup, removeBidItem, updateBidGroupCode };
   `);
-  return { w, doc: w.document, t: w.__t };
+  return { w, doc: w.document, t: w.__t, hdr };
 }
 
 // ── Fixtures — the section from the request ─────────────────────────────────
 const FDP    = 'Full Depth Pavement';
 const TOTALS = { actual: 71104.85, bid: 0, proj: 71104.85, allDone: true };
+// A section still being built: actual, projected and bid all differ, so a
+// figure that divided the wrong one of them reads a different number.
+const LIVE   = { actual: 35000, bid: 60000, proj: 70000, allDone: false };
 const proj   = measures => ({ id: 'p1', bidItems: [], 'bid-group-measures': measures });
 
 for (const page of PAGES) {
   console.log(`\n[${page.file}]`);
   const src = fs.readFileSync(path.resolve(__dirname, '..', page.file), 'utf8');
-  const { w, doc, t } = load(src);
+  const { w, doc, t, hdr } = load(src);
   const U = page.unit;
   const cell = doc.getElementById('cell');
   const draw = (code, totals, readonly) => {
@@ -161,6 +173,20 @@ for (const page of PAGES) {
   assert('editable: the quantity is in the box', el.querySelector('.bid-grp-uc-qty').value === '100');
   assert('editable: the unit is picked', el.querySelector('.bid-grp-uc-unit').value === 'SY');
   assert('editable: the figure is $711.05/SY', el.querySelector('.bid-grp-uc-val').textContent === '$711.05/SY');
+  // The user's call: the bar divides ACTUAL cost. On a section still being
+  // built the three totals differ, so dividing projected ($700) or bid ($600)
+  // instead would print a different number here.
+  assert('a section still being built divides its actual cost — readonly',
+    draw(FDP, LIVE, true).querySelector('.bid-grp-uc-val').textContent === '$350.00/SY');
+  el = draw(FDP, LIVE, false);
+  assert('…and editable', el.querySelector('.bid-grp-uc-val').textContent === '$350.00/SY',
+    el.querySelector('.bid-grp-uc-val').textContent);
+  el.querySelector('.bid-grp-uc-qty').value = '50';
+  t._bidGroupMeasureEdit(el.querySelector('.bid-grp-uc-qty'));
+  assert('…and when the quantity is retyped', el.querySelector('.bid-grp-uc-val').textContent === '$700.00/SY',
+    el.querySelector('.bid-grp-uc-val').textContent);
+  t.setProj(proj({ [FDP]: { qty: 100, unit: 'SY' } }));
+  el = draw(FDP, TOTALS, false);
   const opts = [...el.querySelectorAll('.bid-grp-uc-unit option')].map(o => o.value);
   assert('the units are the bid table\'s own, less blank and lump sum',
     opts.includes('SY') && opts.includes('SF') && opts.includes('TON') && !opts.includes('') && !opts.includes('LS'),
@@ -245,6 +271,49 @@ for (const page of PAGES) {
   t._bidGroupMeasureEdit(el.querySelector('.bid-grp-uc-qty'));
   assert('a malformed store is replaced, not written into', p['bid-group-measures'][FDP].qty === 5);
 
+  // The same journey again, driven only by events on the page's own markup:
+  // nothing below calls a chip function directly, so a handler that is
+  // missing, misnamed or passed the wrong argument fails here.
+  console.log('  — the chip\'s own wiring');
+  // blur does not bubble — the same as in a browser, so the handler has to be
+  // on the element that loses focus, not on the chip around it.
+  const fire = (node, type, init = {}) => {
+    const Ctor = type === 'blur' ? w.FocusEvent : type === 'click' ? w.MouseEvent : w.Event;
+    node.dispatchEvent(new Ctor(type, Object.assign({ bubbles: type !== 'blur', cancelable: true }, init)));
+  };
+  p = { id: 'p1', bidItems: [] };
+  t.setProj(p);
+  hdr.dataset.collapsed = '0';
+  el = draw(FDP, LIVE, false);
+  fire(el.querySelector('.bid-grp-uc-add'), 'click');
+  assert('clicking "+ Cost" opens the box', !el.classList.contains('uc-empty'));
+  assert('…without folding the section up', hdr.dataset.collapsed === '0');
+  const wq = el.querySelector('.bid-grp-uc-qty'), wu = el.querySelector('.bid-grp-uc-unit');
+  fire(wq, 'click');
+  fire(wu, 'click');
+  assert('clicking into the box or the dropdown leaves the section open', hdr.dataset.collapsed === '0');
+  wq.value = '100'; fire(wq, 'input');
+  assert('typing stores the quantity', p['bid-group-measures'] && p['bid-group-measures'][FDP]
+    && p['bid-group-measures'][FDP].qty === 100, JSON.stringify(p['bid-group-measures']));
+  assert('…and redraws the figure off actual cost', el.querySelector('.bid-grp-uc-val').textContent === `$350.00/${U}`,
+    el.querySelector('.bid-grp-uc-val').textContent);
+  wu.value = 'SF'; fire(wu, 'change');
+  assert('picking a unit stores it', p['bid-group-measures'][FDP].unit === 'SF');
+  assert('…and the figure follows', el.querySelector('.bid-grp-uc-val').textContent === '$350.00/SF');
+  fire(wq, 'blur', { relatedTarget: wu });
+  assert('tabbing from the box to the dropdown keeps it open', !el.classList.contains('uc-empty'));
+  fire(wq, 'blur', { relatedTarget: null });
+  assert('leaving with a quantity in keeps it lit', !el.classList.contains('uc-empty'));
+  wq.value = ''; fire(wq, 'input');
+  fire(wq, 'blur', { relatedTarget: null });
+  assert('clearing the box and clicking away folds it back to "+ Cost"',
+    el.classList.contains('uc-empty') && !(FDP in p['bid-group-measures']));
+  el.classList.remove('uc-empty');
+  fire(wu, 'blur', { relatedTarget: null });
+  assert('…and so does clicking away from the dropdown', el.classList.contains('uc-empty'));
+  fire(el, 'click');
+  assert('no click anywhere on the chip reaches the header', hdr.dataset.collapsed === '0');
+
   // ── Renaming and deleting the cost code ───────────────────────────────────
   console.log('  — renaming and deleting the section');
   const items = () => [{ id: 'a', cost_code: FDP }, { id: 'b', cost_code: 'Inlet Repair' }];
@@ -279,12 +348,42 @@ for (const page of PAGES) {
   assert('deleting a section takes its quantity with it',
     JSON.stringify(p['bid-group-measures']) === JSON.stringify({ 'Inlet Repair': { qty: 4, unit: 'EA' } }));
 
+  // A section also goes when its last line is deleted with the row ✕. Its
+  // quantity must go with it: left behind, it sat out of sight and replaced
+  // the quantity on whatever section was next renamed onto that code.
+  const both = () => ({ [FDP]: { qty: 100, unit: 'SY' }, 'Inlet Repair': { qty: 4, unit: 'EA' } });
+  p = { id: 'p1', bidItems: [{ id: 'a', cost_code: FDP }, { id: 'a2', cost_code: FDP }, { id: 'b', cost_code: 'Inlet Repair' }],
+        'bid-group-measures': both() };
+  t.setProj(p);
+  t.removeBidItem('p1', 'a2');
+  assert('deleting one of a section\'s lines keeps its quantity', p['bid-group-measures'][FDP].qty === 100);
+  t.removeBidItem('p1', 'b');
+  assert('deleting a section\'s last line takes its quantity with it',
+    JSON.stringify(p['bid-group-measures']) === JSON.stringify({ [FDP]: { qty: 100, unit: 'SY' } }),
+    JSON.stringify(p['bid-group-measures']));
+
+  // Leftovers can still come from a Procore or Copy Bid replace. Renaming onto
+  // one is not a merge: the bar the user can see keeps its quantity.
+  p = { id: 'p1', bidItems: [{ id: 'a', cost_code: FDP }], 'bid-group-measures': both() };
+  t.setProj(p);
+  t.updateBidGroupCode('p1', FDP, 'Inlet Repair');
+  assert('renaming onto a code with only a leftover quantity keeps the one on screen',
+    JSON.stringify(p['bid-group-measures']) === JSON.stringify({ 'Inlet Repair': { qty: 100, unit: 'SY' } }),
+    JSON.stringify(p['bid-group-measures']));
+  p = { id: 'p1', bidItems: [{ id: 'a', cost_code: FDP }], 'bid-group-measures': { 'Inlet Repair': { qty: 4, unit: 'EA' } } };
+  t.setProj(p);
+  t.updateBidGroupCode('p1', FDP, 'Inlet Repair');
+  assert('…and a section with no quantity does not pick the leftover up',
+    JSON.stringify(p['bid-group-measures']) === '{}', JSON.stringify(p['bid-group-measures']));
+
   // ── 3. Wiring ─────────────────────────────────────────────────────────────
   console.log('  — wiring');
   const render = extractFunction(src, 'renderBidTable');
   assert('both the read-only and editable headers carry the chip, after the folder',
     (render.match(/\$\{gPctHTML\}\$\{gDaysHTML\}\$\{gDocsHTML\}<span class="bid-grp-uc-slot"><\/span>/g) || []).length === 2);
   const fill = render.indexOf('_bidGroupUnitCostHTML(projId, costCode,');
+  assert('the slot it fills is the one the header draws',
+    /const ucSlot = hdrTr\.querySelector\('\.bid-grp-uc-slot'\);\s*if \(ucSlot\) ucSlot\.outerHTML = _bidGroupUnitCostHTML\(/.test(render));
   assert('it divides the same totals the section\'s Total row prints',
     /_bidGroupUnitCostHTML\(projId, costCode,\s*\{ actual: gActual, bid: gBidTotal, proj: gProj, allDone: !!\(gPct && gPct\.allDone\) \}, readonly\)/.test(render));
   assert('…filled in once those totals are added up',
@@ -322,7 +421,8 @@ for (const page of PAGES) {
 // but matching edits keeps them in step.
 console.log('\n[the three pages agree]');
 const NAMES = ['_bidGroupMeasure', '_bidGroupUnitCostText', '_bidGroupUnitCostTip', '_bidGroupUnitCostHTML',
-  '_bidGroupMeasureOpen', '_bidGroupMeasureBlur', '_bidGroupMeasureEdit', 'updateBidGroupCode', 'removeBidGroup'];
+  '_bidGroupMeasureOpen', '_bidGroupMeasureBlur', '_bidGroupMeasureEdit', 'updateBidGroupCode', 'removeBidGroup',
+  'removeBidItem'];
 const srcs = PAGES.map(pg => fs.readFileSync(path.resolve(__dirname, '..', pg.file), 'utf8'));
 for (const name of NAMES) {
   const bodies = srcs.map(s => extractFunction(s, name));

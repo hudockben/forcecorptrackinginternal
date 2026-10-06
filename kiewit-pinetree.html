@@ -8129,6 +8129,13 @@ function removeBidItem(projId, itemId) {
   const label = item ? (item.sub_code || 'this line') : 'this line';
   if (!confirm(`Are you sure you want to delete "${label}"?`)) return;
   p.bidItems = p.bidItems.filter(b => b.id !== itemId);
+  // The section's last line going takes the section with it, so its measured
+  // quantity goes too — the same as the group's own ✕. Left behind it would
+  // sit out of sight and turn up on whatever section next takes that name.
+  const ms = p['bid-group-measures'];
+  const code = item ? (item.cost_code || '') : null;
+  if (ms && code !== null && Object.prototype.hasOwnProperty.call(ms, code)
+      && !p.bidItems.some(b => (b.cost_code || '') === code)) delete ms[code];
   saveProject(projId);
   renderBidTable(projId);
 }
@@ -8502,11 +8509,12 @@ function _bidGroupUnitCostHTML(projId, costCode, t, readonly) {
   return `<span class="bid-grp-uc${qty > 0 ? '' : ' uc-empty'}" title="${_cbEsc(tip)}"
     data-uc-project="${_cbEsc(projId)}" data-uc-code="${_cbEsc(costCode)}"
     data-uc-actual="${t.actual || 0}" data-uc-bid="${t.bid || 0}" data-uc-projected="${t.proj || 0}" data-uc-done="${t.allDone ? 1 : 0}"
-    onclick="event.stopPropagation()" onfocusout="_bidGroupMeasureBlur(this,event)">
+    onclick="event.stopPropagation()">
     <button class="bid-grp-uc-add" onclick="_bidGroupMeasureOpen(this)">+ Cost / ${_cbEsc(unit)}</button>
     <input class="bid-grp-uc-qty" type="number" min="0" step="any" placeholder="Qty" value="${qty > 0 ? qty : ''}"
-      oninput="_bidGroupMeasureEdit(this)" onkeydown="if(event.key==='Enter')this.blur()"><select class="bid-grp-uc-unit"
-      onchange="_bidGroupMeasureEdit(this)">${units.map(u => `<option value="${_cbEsc(u)}"${u === unit ? ' selected' : ''}>${_cbEsc(u)}</option>`).join('')}</select><span
+      oninput="_bidGroupMeasureEdit(this)" onkeydown="if(event.key==='Enter')this.blur()"
+      onblur="_bidGroupMeasureBlur(this.closest('.bid-grp-uc'),event)"><select class="bid-grp-uc-unit"
+      onchange="_bidGroupMeasureEdit(this)" onblur="_bidGroupMeasureBlur(this.closest('.bid-grp-uc'),event)">${units.map(u => `<option value="${_cbEsc(u)}"${u === unit ? ' selected' : ''}>${_cbEsc(u)}</option>`).join('')}</select><span
       class="bid-grp-uc-at">@</span><span class="bid-grp-uc-val">${_cbEsc(val)}</span>
   </span>`;
 }
@@ -8518,7 +8526,9 @@ function _bidGroupMeasureOpen(btn) {
 }
 
 // Leaving the chip with no quantity in it folds it back to "+ Cost / SY".
-// Moving between its own box and dropdown is not leaving it.
+// Moving between its own box and dropdown is not leaving it. Wired to blur on
+// both rather than focusout on the chip: an inline onfocusout is not a
+// standard handler attribute, and not every browser runs one.
 function _bidGroupMeasureBlur(wrap, ev) {
   if (ev.relatedTarget && wrap.contains(ev.relatedTarget)) return;
   if (!(parseFloat(wrap.querySelector('.bid-grp-uc-qty').value) > 0)) wrap.classList.add('uc-empty');
@@ -8985,14 +8995,24 @@ function removeBidGroup(projId, costCode) {
 
 function updateBidGroupCode(projId, oldCode, newCode) {
   const p = getProj(projId); if (!p) return;
+  // Whether a section already lives under the new name — read before the
+  // rename, which would otherwise make the answer always yes.
+  const targetLive = (p.bidItems || []).some(b => (b.cost_code || '') === newCode);
   (p.bidItems || []).forEach(b => { if (b.cost_code === oldCode) b.cost_code = newCode; });
   // The section's measured quantity is keyed by its cost code, so it follows
-  // the rename. Renaming onto a code that already has one merges the two
-  // sections, and the one being merged into keeps its own.
+  // the rename. Renaming onto a live section merges the two, and the one being
+  // merged into keeps its own. A quantity stored under the new name with no
+  // section behind it is a leftover (a Procore or Copy Bid replace, say) and
+  // never outranks the one the user can see on the bar being renamed.
   const ms = p['bid-group-measures'];
-  if (ms && oldCode !== newCode && Object.prototype.hasOwnProperty.call(ms, oldCode)) {
-    if (!Object.prototype.hasOwnProperty.call(ms, newCode)) ms[newCode] = ms[oldCode];
-    delete ms[oldCode];
+  if (ms && oldCode !== newCode) {
+    const has = c => Object.prototype.hasOwnProperty.call(ms, c);
+    if (has(oldCode)) {
+      if (!targetLive || !has(newCode)) ms[newCode] = ms[oldCode];
+      delete ms[oldCode];
+    } else if (!targetLive && has(newCode)) {
+      delete ms[newCode];
+    }
   }
   saveProject(projId);
   renderBidTable(projId);
