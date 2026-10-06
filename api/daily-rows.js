@@ -38,6 +38,51 @@ function isInjectedRowId(id) {
   return /^ts\d+-/.test(String(id == null ? '' : id));
 }
 
+// ── Payroll trucking (GET ?trucking=1) ─────────────────────────────────────
+// A division's Trucking tab lists its own entries AND the trucking a payroll
+// approval auto-inserted into a job's Daily Tracking, so the office can scan
+// all of that division's trucking in one place. These rules decide which
+// injected rows count as trucking.
+//
+// Mirrors HAUL_FIELD_TYPE_RE in api/timesheet-entries.js — the stamp payroll
+// puts on a row the driver called a haul.
+const HAUL_FIELD_TYPE_RE = /^haul\s*[—–-]\s/i;
+
+// A truck by name, whoever logged it. Same rule as jsTruckColumn in
+// intercompany.html: "tri-axle" spelled out, because on a turf job "tri" alone
+// is a Triplex mower or a line Striper. "Pickup Truck" is a crew truck, not
+// trucking, so the word "truck" is deliberately not enough.
+function isTruckName(equipment) {
+  const e = String(equipment == null ? '' : equipment);
+  return /low[\s-]?boy/i.test(e) || /\btri[\s-]?axle/i.test(e);
+}
+
+// Is this daily_tracking row payroll trucking?
+//
+//  - only rows payroll injected (timesheet_entry_id, or the "ts<id>-" row id
+//    that survives a lost link). A manual row with job class Trucking is
+//    usually one this tab's own entry made, and listing it would show it twice.
+//  - a haul the driver called a haul, always.
+//  - otherwise the truck has to be ON the row: named AND priced. Every split
+//    row starts with the driver's truck named at 0 hours, so a named truck on
+//    his travel row is not trucking.
+//  - and it has to be a truck: the driver's job class is Trucking, or the
+//    unit is a Tri-Axle / Lowboy.
+function isPayrollTruckingRow(r) {
+  if (!r) return false;
+  if (r.timesheet_entry_id == null && !isInjectedRowId(r.row_id)) return false;
+  if (HAUL_FIELD_TYPE_RE.test(String(r.field_type || '').trim())) return true;
+  const named  = String(r.equipment || '').trim() !== '';
+  const priced = (parseFloat(r.equip_hours) || 0) > 0
+              || (parseFloat(r.equip_total_override) || 0) > 0;
+  if (!named || !priced) return false;
+  return String(r.job_class || '').trim().toLowerCase() === 'trucking'
+      || isTruckName(r.equipment);
+}
+
+// Enough for years of one division's hauls; the tab pages them 20 at a time.
+const TRUCKING_ROW_LIMIT = 5000;
+
 // The Neon HTTP driver returns DATE columns as JavaScript Date objects, not strings.
 // String(dateObj) gives locale-dependent text like "Thu Apr 24 2025 ..." which
 // <input type="date"> cannot parse.  toISOString() always gives YYYY-MM-DDTHH:mm:ss.sssZ.
@@ -164,9 +209,35 @@ module.exports = async (req, res) => {
   try {
     // ── GET — fetch rows ───────────────────────────────────────────────────
     if (req.method === 'GET') {
-      const { projectId, since, limit: qLimit, offset: qOffset } = req.query;
+      const { projectId, since, limit: qLimit, offset: qOffset, trucking } = req.query;
       const limitVal  = Math.min(Math.max(parseInt(qLimit)  || 10000, 1), 50000);
       const offsetVal = Math.max(parseInt(qOffset) || 0, 0);
+
+      // Payroll trucking for the division's Trucking tab — see
+      // isPayrollTruckingRow. The WHERE clause is a loose superset of that
+      // rule so the table scan stays narrow; the rule itself runs below.
+      if (trucking === '1' || trucking === 'true') {
+        const found = await sql`
+          SELECT row_id, project_id, date, field_type, employee, cost_code, sub_code,
+                 job_class, rate, labor_hours, equipment, equip_unit_cost, equip_hours,
+                 material, supplier, po_num, units_purchased, unit_cost, material_cost,
+                 quantity, equip_total_override, total_cost_override, num_laborers,
+                 timesheet_entry_id
+          FROM daily_tracking
+          WHERE company_code = ${companyCode} AND division = ${division}
+            AND (timesheet_entry_id IS NOT NULL OR row_id LIKE 'ts%')
+            AND (field_type ILIKE 'haul%'
+                 OR LOWER(TRIM(COALESCE(job_class, ''))) = 'trucking'
+                 OR equipment ILIKE '%boy%'
+                 OR equipment ILIKE '%axle%')
+          ORDER BY date DESC NULLS LAST, created_at DESC
+          LIMIT ${TRUCKING_ROW_LIMIT}
+        `;
+        return res.json({
+          rows:    found.filter(isPayrollTruckingRow).map(dbRowToFrontend),
+          hasMore: found.length === TRUCKING_ROW_LIMIT,
+        });
+      }
 
       let rows;
       if (projectId && since) {
@@ -432,6 +503,7 @@ module.exports = async (req, res) => {
   }
 };
 
-// Internal helpers exposed for unit testing only (scripts/test-injected-row-guard.js).
+// Internal helpers exposed for unit testing only (scripts/test-injected-row-guard.js,
+// scripts/test-trucking-payroll-view.js).
 // Not part of the HTTP contract — do not depend on these from other endpoints.
-module.exports._test = { isInjectedRowId };
+module.exports._test = { isInjectedRowId, isPayrollTruckingRow, isTruckName };

@@ -12177,6 +12177,145 @@ function _trSubCodeOpts(tr) {
   return `<option value="">— select —</option>` + opts;
 }
 
+/* ── Payroll trucking (read-only) ──
+   Trucking a payroll approval auto-inserted into a job's Daily Tracking — a
+   driver's haul with his Tri-Axle or Lowboy on the row. Listed here beside
+   this tab's own entries so the division's trucking reads in one place, the
+   way an order raised on the Purchase Orders page shows in this division's
+   Purchase Orders tab. Which rows count is the server's call
+   (isPayrollTruckingRow in api/daily-rows.js).
+
+   Kept in a list of its own, never in truckingEntries: that list is what
+   saveTruckingEntries PUTs back, and these rows belong to payroll. They are
+   read-only here — hours, driver, truck and date change in Payroll, and cost /
+   sub code in the job's Daily Tracking, as for any payroll row.
+
+   Daily rows are not polled, so the tab fetches these itself: when it is drawn
+   with a list older than TR_PAYROLL_STALE_MS, and on every data poll while it
+   is the open tab. */
+let _trPayrollRows      = [];
+let _trPayrollLoaded    = false;
+let _trPayrollFailed    = false;
+let _trPayrollBusy      = false;
+let _trPayrollAt        = 0;
+let _trPayrollUndrawn   = false;
+const TR_PAYROLL_STALE_MS = 30000;
+
+// Someone is typing in one of this tab's own entries. A redraw would take the
+// field out from under them; the search box is safe (the redraw refocuses it).
+function _trIsEditingEntry() {
+  const el = document.activeElement;
+  return !!(el && el.dataset && el.dataset.trField && el.closest && el.closest('#trucking-root'));
+}
+
+async function _trRefreshPayroll() {
+  if (_trPayrollBusy || _AUTO_REPORT) return;
+  _trPayrollBusy = true;
+  const before = JSON.stringify([_trPayrollLoaded, _trPayrollFailed, _trPayrollRows]);
+  try {
+    const r = await fetch(`${API_BASE}/daily-rows?division=${DIVISION}&trucking=1`, {
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    });
+    if (r.status === 401) { logout(); return; }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    _trPayrollRows   = Array.isArray(data.rows) ? data.rows : [];
+    _trPayrollLoaded = true;
+    _trPayrollFailed = false;
+  } catch (err) {
+    // A failed read is not "no payroll trucking" — keep what was last shown.
+    console.warn('[trucking] payroll rows:', err.message);
+    _trPayrollFailed = true;
+  } finally {
+    _trPayrollBusy = false;
+    _trPayrollAt   = Date.now();
+  }
+  if (JSON.stringify([_trPayrollLoaded, _trPayrollFailed, _trPayrollRows]) !== before) _trPayrollUndrawn = true;
+  if (_trPayrollUndrawn && activeTab === 'trucking' && !_trIsEditingEntry()) renderTruckingTab();
+}
+
+// Payroll rows in the shape this tab's entries have, so the filters, search,
+// paging and CSV read both alike. A row whose job is not in this division's
+// project list (deleted, or not this user's to see) is left out, as it is from
+// Daily Tracking.
+function _trPayrollEntries() {
+  return _trPayrollRows
+    .filter(r => r && getProj(r._projectId))
+    .map(r => {
+      const rate  = parseFloat(r.equip_unit_cost) || 0;
+      const hours = parseFloat(r.equip_hours)     || 0;
+      return {
+        id:                 'ts:' + r.id,
+        _payroll:           true,
+        _total:             (parseFloat(r.equip_total_override) || 0) || rate * hours,
+        timesheet_entry_id: r.timesheet_entry_id || '',
+        tr_number:          'TS',
+        project_id:         r._projectId,
+        driver:             r.employee  || '',
+        truck_type:         r.equipment || '',
+        material_hauled:    r.material  || '',
+        loads:              (parseFloat(r.quantity) || 0) ? String(parseFloat(r.quantity)) : '',
+        rate:               rate  ? String(rate)  : '',
+        hours:              hours ? String(hours) : '',
+        date:               String(r.date || '').slice(0, 10),
+        cost_code:          r.cost_code || '',
+        sub_code:           r.sub_code  || '',
+        status:             'payroll',
+        notes:              r.field_type || '',
+      };
+    });
+}
+
+function _trTotal(tr) {
+  if (tr._payroll) return tr._total;
+  return (parseFloat(tr.rate) || 0) * (parseFloat(tr.hours) || 0);
+}
+
+// Everything the tab lists: its own entries and payroll's, newest date first.
+// Same-day rows keep the order they had — this tab's newest entry first, then
+// payroll's. A copy: truckingEntries itself is never reordered.
+function _trAllEntries() {
+  return truckingEntries.slice().reverse().concat(_trPayrollEntries())
+    .map((tr, i) => ({ tr, i, d: String(tr.date || '') }))
+    .sort((a, b) => (a.d < b.d ? 1 : a.d > b.d ? -1 : a.i - b.i))
+    .map(x => x.tr);
+}
+
+// One payroll row, drawn read-only. The job name opens its Daily Tracking for
+// anyone whose role can see Cost Tracking.
+function _trPayrollRowHTML(tr) {
+  const proj = getProj(tr.project_id) || {};
+  const projName = proj['project-name'] || 'Untitled';
+  const code = [tr.cost_code, tr.sub_code].filter(Boolean).join(' / ');
+  const bi = (proj.bidItems || []).find(b => (b.cost_code || '') === tr.cost_code && (b.sub_code || '') === tr.sub_code);
+  const subLabel = code && bi && bi.description ? code + ' — ' + bi.description : code;
+  const num = v => v === '' ? '' : qfmt(parseFloat(v));
+  const d = /^(\d{4})-(\d{2})-(\d{2})$/.exec(tr.date);
+  const dateText = d ? `${d[2]}/${d[3]}/${d[1]}` : tr.date;
+  const canOpen = !perm.visibleTabs || perm.visibleTabs.has('cost');
+  const td = (html, style = '') => `<td style="padding:0.35rem 0.6rem;font-size:0.8rem;color:var(--text)${style}">${html}</td>`;
+  const projHTML = canOpen
+    ? `<button type="button" data-tr-open-proj="${esc(tr.project_id)}" title="Open this job's Daily Tracking"
+         style="background:none;border:none;padding:0;color:var(--text);font:inherit;font-size:0.8rem;cursor:pointer;text-align:left;text-decoration:underline dotted;text-underline-offset:3px">${escT(projName)}</button>`
+    : escT(projName);
+  return `<tr class="tr-payroll-row" style="border-bottom:1px solid var(--border);background:rgba(59,130,246,0.05)">
+    ${td(`<span class="row-badge-injected" title="Auto-inserted into Daily Tracking by a payroll approval${tr.timesheet_entry_id ? ' (timesheet entry #' + esc(tr.timesheet_entry_id) + ')' : ''}. Read-only here: hours, driver, truck and date change in Payroll; cost and sub code in the job's Daily Tracking.">TS</span>`, ';white-space:nowrap')}
+    ${td(projHTML, ';min-width:160px')}
+    ${td(escT(subLabel), ';min-width:180px')}
+    ${td(escT(tr.driver), ';min-width:140px')}
+    ${td(escT(tr.truck_type), ';min-width:140px')}
+    ${td(escT(tr.material_hauled), ';min-width:150px')}
+    ${td(num(tr.loads), ';min-width:65px;text-align:right')}
+    ${td(num(tr.rate), ';min-width:85px;text-align:right')}
+    ${td(num(tr.hours), ';min-width:75px;text-align:right')}
+    ${td('$' + fmt(tr._total), ';text-align:right;color:var(--yellow);font-weight:600;white-space:nowrap')}
+    ${td(escT(dateText), ';min-width:110px;white-space:nowrap')}
+    ${td(escT(tr.notes), ';min-width:130px;color:var(--muted)')}
+    ${td('Payroll<div style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem">Approved timesheet</div>', ';min-width:140px;color:#93c5fd')}
+    <td></td>
+  </tr>`;
+}
+
 /* ── Trucking filter state ── */
 let trFilters  = {};
 let trSearch   = '';
@@ -12200,7 +12339,7 @@ function _trFieldVal(tr, field) {
 
 function applyTRFilters() {
   const q = trSearch.trim().toLowerCase();
-  return truckingEntries.filter(tr => {
+  return _trAllEntries().filter(tr => {
     for (const [field, valueSet] of Object.entries(trFilters)) {
       if (!valueSet || valueSet.size === 0) continue;
       if (!valueSet.has(_trFieldVal(tr, field))) return false;
@@ -12240,7 +12379,7 @@ function exportTRCSV() {
     const loads = parseFloat(tr.loads) || 0;
     const rate  = parseFloat(tr.rate)  || 0;
     const hours = parseFloat(tr.hours) || 0;
-    lines.push([tr.tr_number, projName, tr.driver||'', tr.truck_type||'', tr.material_hauled||'', loads, rate.toFixed(2), hours, (rate * hours).toFixed(2), tr.date||'', tr.sub_code||'', tr.status||'', tr.notes||''].map(escape).join(','));
+    lines.push([tr.tr_number, projName, tr.driver||'', tr.truck_type||'', tr.material_hauled||'', loads, rate.toFixed(2), hours, _trTotal(tr).toFixed(2), tr.date||'', tr.sub_code||'', tr.status||'', tr.notes||''].map(escape).join(','));
   });
   const blob = new Blob([lines.join('\r\n')], {type:'text/csv'});
   const a = document.createElement('a');
@@ -12252,7 +12391,7 @@ function exportTRCSV() {
 
 function openTRFilter(field, btn) {
   _trffField = field;
-  const unique = [...new Set(truckingEntries.map(tr => _trFieldVal(tr, field)))].sort();
+  const unique = [...new Set(_trAllEntries().map(tr => _trFieldVal(tr, field)))].sort();
   const active = trFilters[field] || null;
   _trffPending = active ? new Set(active) : null;
 
@@ -12313,6 +12452,8 @@ function renderTruckingTab() {
   if (!root) return;
 
   const searchWasFocused = document.activeElement?.classList?.contains('tr-global-search');
+  _trPayrollUndrawn = false;
+  if (Date.now() - _trPayrollAt > TR_PAYROLL_STALE_MS) _trRefreshPayroll();
 
   const thf = (label, key, right) => {
     const active = trFilters[key] ? ' active' : '';
@@ -12324,7 +12465,9 @@ function renderTruckingTab() {
   const th = (label, right) =>
     `<th style="padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;border-bottom:1px solid var(--border);white-space:nowrap${right?';text-align:right':''}">${label}</th>`;
 
-  const filteredTRs = applyTRFilters().slice().reverse();
+  const filteredTRs = applyTRFilters();
+  const nPayroll    = _trPayrollEntries().length;
+  const allCount    = truckingEntries.length + nPayroll;
 
   const totalPages = Math.max(1, Math.ceil(filteredTRs.length / TR_PAGE_SIZE));
   if (_trPage >= totalPages) _trPage = totalPages - 1;
@@ -12332,11 +12475,12 @@ function renderTruckingTab() {
   const pageStart = _trPage * TR_PAGE_SIZE;
   const pageTRs   = filteredTRs.slice(pageStart, pageStart + TR_PAGE_SIZE);
 
-  const bodyHTML = truckingEntries.length === 0
+  const bodyHTML = allCount === 0
     ? `<tr><td colspan="14" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No trucking entries yet. Click + New Entry to begin.</td></tr>`
     : filteredTRs.length === 0
     ? `<tr><td colspan="14" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">No trucking entries match the current filters.</td></tr>`
     : pageTRs.map(tr => {
+        if (tr._payroll) return _trPayrollRowHTML(tr);
         const loads = parseFloat(tr.loads) || 0;
         const rate  = parseFloat(tr.rate)  || 0;
         const hours = parseFloat(tr.hours) || 0;
@@ -12403,10 +12547,17 @@ function renderTruckingTab() {
       <button class="btn btn-ghost" style="font-size:0.8rem;padding:0.3rem 0.75rem" onclick="_trChangePage(1)" ${_trPage >= totalPages - 1 ? 'disabled' : ''}>Next &rarr;</button>
     </div>` : `<div style="font-size:0.72rem;color:var(--muted);margin-top:0.5rem;text-align:center">${filteredTRs.length} entr${filteredTRs.length === 1 ? 'y' : 'ies'}</div>`);
 
+  const payrollNote = _trPayrollFailed && !_trPayrollLoaded
+    ? 'Payroll trucking could not be loaded — showing this tab\'s entries only. It retries on the next refresh.'
+    : !_trPayrollLoaded
+    ? 'Loading payroll trucking from Daily Tracking…'
+    : nPayroll
+    ? `Includes ${nPayroll} trucking row${nPayroll === 1 ? '' : 's'} auto-inserted into Daily Tracking by payroll approvals, marked <span class="row-badge-injected" style="cursor:default">TS</span> — read-only here.`
+    : '';
   root.innerHTML = `
     <div style="padding:1.5rem">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.85rem">
-        <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Trucking</span>
+        <div><span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Trucking</span>${payrollNote ? `<div style="font-size:0.72rem;color:var(--muted);margin-top:0.25rem">${payrollNote}</div>` : ''}</div>
         <div style="display:flex;gap:0.5rem;align-items:center">
           ${hasFilters ? `<button class="btn" onclick="trFilters={};trSearch='';_trPage=0;renderTruckingTab()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:var(--border);color:var(--muted)">Clear Filters</button>` : ''}
           <button class="btn" onclick="exportTRCSV()" style="font-size:0.75rem;padding:0.35rem 0.75rem;background:#7a5c00;color:#fff">&#8595; Export CSV</button>
@@ -12888,6 +13039,11 @@ function renderInventoryTab() {
       </div>
     </div>`;
 }
+
+document.getElementById('trucking-root').addEventListener('click', e => {
+  const btn = e.target.closest && e.target.closest('[data-tr-open-proj]');
+  if (btn) openDailyView(btn.dataset.trOpenProj);
+});
 
 document.getElementById('trucking-root').addEventListener('input', e => {
   const el = e.target;
@@ -22975,6 +23131,12 @@ const _bootReady = (async () => {
     if (activeTab === 'trucking') renderTruckingTab();
   }
 
+  // Payroll's trucking rows live in Daily Tracking, which this poll does not
+  // reload — so the Trucking tab fetches its own while it is open.
+  async function _pollPayrollTrucking() {
+    if (activeTab === 'trucking') await _trRefreshPayroll();
+  }
+
   async function _pollInventory() {
     const got = await apiGetChecked('fct_kiewit_inventory');
     // A failed read is not an empty list — see _pollCostRows.
@@ -23056,6 +23218,7 @@ const _bootReady = (async () => {
         _pollCostRows(),
         _pollPurchaseOrders(),
         _pollTrucking(),
+        _pollPayrollTrucking(),
         _pollCrm(),
         _pollSoe(),
         _pollProjects(),
