@@ -15071,6 +15071,13 @@
         // which boxes are even on screen.
         if (!haulTouched.has(leg.key + '|dest')) leg.dest = legDest(row);
         for (const f of HAUL_FIELDS) haulSet(leg, f, domId[f], legStr(row[f]));
+        // The trucking rate an Other Billing haul was billing at when this
+        // opened — the office's override, when one stands. Sent back on save so
+        // the server can tell a rate the approver changed (payroll's answer
+        // wins, even its own original figure) from one left as it was (the
+        // office's stands). See "The manual trucking rate override" in
+        // api/lib/dust-ob-injected.js.
+        if (legDest(row) === 'ob') leg.trucking_rate_shown = legStr(row.trucking_rate);
       });
     }
 
@@ -15695,6 +15702,8 @@
                 mu:             leg.mu,
                 price_per_unit: leg.price_per_unit,
                 trucking_rate:  leg.trucking_rate,
+                ...(leg.trucking_rate_shown !== undefined
+                  ? { trucking_rate_shown: leg.trucking_rate_shown } : {}),
               }
             : {
                 dest:        'dust',

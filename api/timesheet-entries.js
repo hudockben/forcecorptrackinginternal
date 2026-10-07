@@ -196,7 +196,9 @@ const {
   obRowId,
   obRowIndexFromId,
   deleteObRows,
-  applyObPriceOverride,
+  applyObOverrides,
+  obTruckingRateOverrideOutranked,
+  OB_TRK_RATE_OVERRIDE,
 } = require('./lib/dust-ob-injected');
 // The tag EES Other rows carry in the shared Intercompany list. Named off the
 // shared enum rather than spelled out at each use: the string appeared inline
@@ -3332,6 +3334,10 @@ function validateDustLeg(raw) {
     ['gallons_bags',   DUST_GALLONS_MAX, 'gallons_bags'],
     ['price_per_unit', DUST_RATE_MAX,    'price_per_unit'],
     ['trucking_rate',  DUST_RATE_MAX,    'trucking_rate'],
+    // Not a column: the trucking rate Edit Row's box showed when it opened,
+    // which tells re-injection whether the approver changed it. Read by
+    // insertObRows only; buildObRow never stores it.
+    ['trucking_rate_shown', DUST_RATE_MAX, 'trucking_rate_shown'],
   ]) {
     if (!has(key)) continue;
     const { value, error } = dustNum(t[key], max, label);
@@ -4027,18 +4033,27 @@ async function insertObRows(sql, companyCode, entry, legs, flags = {}) {
         for (const f of OB_TAB_FIELDS) {
           if (prev[f] !== undefined && prev[f] !== null && prev[f] !== '') row[f] = prev[f];
         }
+        // Payroll stays the primary source of the trucking rate: an override the
+        // office typed in the tab stands only until payroll changes the rate.
+        // Edit Row sends the rate its box showed, so a box the approver changed
+        // — to anything, payroll's own original figure included — outranks the
+        // office's. See "The manual trucking rate override" in
+        // api/lib/dust-ob-injected.js.
+        if (obTruckingRateOverrideOutranked(prev, row.trucking_rate, fields.trucking_rate_shown)) {
+          delete row[OB_TRK_RATE_OVERRIDE];
+        }
       }
-      // The backup price the office typed in the tab is one of those carried
-      // fields, so settle price_per_unit from it before the row is stored — the
-      // second of the two writers named in "The manual price override"
-      // (api/lib/dust-ob-injected.js). Without this a re-approval would write
-      // payroll's figure into the column everything prices a delivery off while
-      // the override sat beside it doing nothing, and a delivery the office had
-      // already invoiced would silently change price because an unrelated
-      // correction was made upstream. Run on every row, not just the carried
-      // ones: it is idempotent, and it is what drops an override the approver
-      // has now adopted.
-      applyObPriceOverride(row);
+      // The backup price and trucking rate the office typed in the tab are
+      // among those carried fields, so settle price_per_unit and trucking_rate
+      // from them before the row is stored — the second of the two writers named
+      // in "The manual price override" (api/lib/dust-ob-injected.js). Without
+      // this a re-approval would write payroll's figure into the columns
+      // everything prices a delivery off while the override sat beside them
+      // doing nothing, and a delivery the office had already invoiced would
+      // silently change price because an unrelated correction was made
+      // upstream. Run on every row, not just the carried ones: it is idempotent,
+      // and it is what drops an override the approver has now adopted.
+      applyObOverrides(row);
       rows.push(row);
     }
   }
