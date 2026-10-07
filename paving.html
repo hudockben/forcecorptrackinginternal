@@ -19846,6 +19846,57 @@ function _finIsTravel(r) {
 // Hours as the spreadsheet showed them — 52.5, 1,279.25 — with no padding zeros.
 const _finHours = v => Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
 
+/* ── OT hours, from payroll ───────────────────────────────────────────────
+   Overtime is not on the daily rows: whether an hour is overtime depends on
+   the employee's whole Monday–Sunday week across every job he worked, which
+   only payroll sees. /api/job-overtime measures each week the way payroll
+   does and credits the hours past forty to the jobs they were worked on, then
+   hands back a running total per job. It is read again on every visit to the
+   tab, so the column grows as each week's timesheets come in. */
+let finOt = null;            // Map of job id → { otHours, weeks, lastWeek, lastWeekOt }, once read
+let _finOtState = 'idle';    // 'loading' | 'ready' | 'failed' | 'denied'
+
+// Excel and Print wait for the first read: taken before it lands, every job
+// would go out reading as no overtime. A read that hangs gives up after 20s
+// rather than holding them shut.
+// 'idle' counts: the first draw comes a moment before the read starts.
+const _finOtPending = () => (_finOtState === 'idle' || _finOtState === 'loading') && !finOt;
+function _finSyncOtButtons() {
+  ['fin-excel', 'fin-print'].forEach(id => {
+    const b = document.getElementById(id);
+    if (b) b.disabled = _finOtPending();
+  });
+}
+
+async function _finLoadOt() {
+  // Refused is an answer about the account, not a hiccup: asking again on every
+  // redraw would only be refused again.
+  if (_finOtState === 'loading' || _finOtState === 'denied') return;
+  _finOtState = 'loading';
+  _finSyncOtButtons();
+  const ctl = new AbortController();
+  const giveUp = setTimeout(() => ctl.abort(), 20000);
+  try {
+    const r = await fetch(`${API_BASE}/job-overtime?division=${encodeURIComponent(DIVISION)}`, {
+      headers: { 'Authorization': `Bearer ${fctToken}` }, signal: ctl.signal,
+    });
+    if (r.status === 403) { _finOtState = 'denied'; finOt = null; }
+    else {
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const body = await r.json();
+      finOt = new Map(Object.entries((body && body.jobs) || {}));
+      _finOtState = 'ready';
+    }
+  } catch (err) {
+    console.warn('[financials] overtime read failed:', err.message);
+    // Figures already read stay up; with none, the column says it could not load.
+    _finOtState = finOt ? 'ready' : 'failed';
+  }
+  clearTimeout(giveUp);
+  _finSyncOtButtons();
+  _renderFinancialsTable();
+}
+
 // Every job, computed and sorted. Filtering happens separately so the filter
 // controls can list every value that exists, not just the ones surviving the
 // current filter.
@@ -19909,6 +19960,10 @@ function _financialsRows() {
       pctDone:  gpE ? gpE.pct : null,
       sqft: parseFloat(p['sqft']) || 0,
       invoiced, netProfit, manHours, bonus,
+      // null until payroll's figures are in, so a column still loading is not
+      // read as a job with no overtime.
+      otHours: finOt ? ((finOt.get(String(p.id)) || {}).otHours || 0) : null,
+      ot:      finOt ? (finOt.get(String(p.id)) || null) : null,
       bonusPerHour: bonus !== null && manHours ? bonus / manHours : null,
     };
   });
@@ -20092,6 +20147,7 @@ function _financialsTotals(rows) {
     invoiced:    sum('invoiced'),
     netProfit:   withInvoice.length ? withInvoice.reduce((s, r) => s + r.netProfit, 0) : null,
     manHours:    sum('manHours'),
+    otHours:     finOt ? sum('otHours') : null,
     bonus,
     bonusPerHour: bonus !== null && bonusHours ? bonus / bonusHours : null,
     noInvoice:   rows.length - withInvoice.length,
@@ -20214,9 +20270,9 @@ function renderFinancials(opts = {}) {
       </span>
       <button class="btn btn-ghost" style="font-size:0.74rem;padding:0.22rem 0.6rem" onclick="finClearFilters()">Clear</button>
       <div style="margin-left:auto;display:flex;gap:0.5rem">
-        <button class="btn btn-ghost" style="font-size:0.74rem;padding:0.22rem 0.6rem"
+        <button id="fin-excel" class="btn btn-ghost" style="font-size:0.74rem;padding:0.22rem 0.6rem"${_finOtPending() ? ' disabled' : ''}
           title="Download the rows below as a spreadsheet (CSV, opens in Excel)" onclick="exportFinancialsCSV()">&#8681; Excel</button>
-        <button class="btn btn-ghost" style="font-size:0.74rem;padding:0.22rem 0.6rem"
+        <button id="fin-print" class="btn btn-ghost" style="font-size:0.74rem;padding:0.22rem 0.6rem"${_finOtPending() ? ' disabled' : ''}
           title="Open a printable copy of the rows below — use your browser's Save as PDF" onclick="printFinancials()">&#128424; Print / PDF</button>
       </div>
     </div>
@@ -20225,6 +20281,7 @@ function renderFinancials(opts = {}) {
 
   _renderFinancialsTable();
   if (opts.fresh || !_finBonusFromServer) _finLoadBonus();
+  if (opts.fresh || _finOtState === 'idle' || _finOtState === 'failed') _finLoadOt();
 }
 
 // The three percentages behind Bonus Amount, on one line above the table.
@@ -20263,6 +20320,9 @@ function _renderFinancialsTable() {
   const area    = v => v ? fmt(v, 0) : dash;
   const hours   = v => v ? _finHours(v) : dash;
   const perHour = v => v === null ? '' : ` <span style="font-size:0.7em;opacity:0.8">(${signed(v)}/hr)</span>`;
+  // Payroll's overtime: "…" while it loads, a dash for none or a failed read.
+  const otCell  = v => v === null ? `<span style="color:var(--muted)">${_finOtState === 'failed' || _finOtState === 'denied' ? '—' : '…'}</span>` : hours(v);
+  const otTitle = o => o ? ` title="${o.weeks} week${o.weeks === 1 ? '' : 's'} with overtime · latest the week of ${_finFmtDate(o.lastWeek)} (${_finHours(o.lastWeekOt)} h)"` : '';
   // A thin rule ahead of Invoiced sets the billed-to-date figures apart from
   // the projection ones.
   const split   = 'border-left:1px solid var(--border);';
@@ -20308,6 +20368,7 @@ function _renderFinancialsTable() {
       <td class="pt-num" style="${split}color:var(--blue)">${money(r.invoiced)}</td>
       <td class="pt-num" style="${profCol(r.netProfit)}">${r.netProfit === null ? '—' : signed(r.netProfit) + pctSpan(r.netProfit, r.invoiced)}</td>
       <td class="pt-num">${hours(r.manHours)}</td>
+      <td class="pt-num"${otTitle(r.ot)}>${otCell(r.otHours)}</td>
       <td class="pt-num" style="${profCol(r.bonus)}">${r.bonus === null ? '—' : signed(r.bonus) + perHour(r.bonusPerHour)}</td>
     </tr>`).join('');
 
@@ -20331,6 +20392,7 @@ function _renderFinancialsTable() {
           <th style="${split}" title="Billed to date — entered on the project card under Contract &amp; Financials">Invoiced</th>
           <th title="Invoiced less actual cost; the margin is on the invoiced amount">Net Profit</th>
           <th title="Labor hours booked to the job, travel left out">Man Hours</th>
+          <th title="From payroll: hours past 40 in an employee's Monday–Sunday week, credited to the job they were worked on — added up over every week">OT Hours</th>
           <th title="${b.share}% of the net profit left after ${b.overhead}% overhead and the ${b.target}% profit target come off the invoiced amount">Bonus Amount</th>
         </tr></thead>
         <tbody>${body}</tbody>
@@ -20349,6 +20411,7 @@ function _renderFinancialsTable() {
           <td class="pt-num" style="${split}color:var(--blue)">${money(t.invoiced)}</td>
           <td class="pt-num" style="${profCol(t.netProfit)}">${t.netProfit === null ? '—' : signed(t.netProfit) + pctSpan(t.netProfit, t.invoiced)}</td>
           <td class="pt-num">${hours(t.manHours)}</td>
+          <td class="pt-num">${otCell(t.otHours)}</td>
           <td class="pt-num" style="${profCol(t.bonus)}">${t.bonus === null ? '—' : signed(t.bonus) + perHour(t.bonusPerHour)}</td>
         </tr></tfoot>
       </table>
@@ -20361,6 +20424,10 @@ function _renderFinancialsTable() {
       <br>Net Profit is <strong>invoiced</strong> less actual cost. Bonus Amount is ${b.share}% of the net profit left after
       ${b.overhead}% overhead and the ${b.target}% profit target come off the invoiced amount; a job below that line shows a
       negative bonus, which nets against the total. Man Hours leave out travel.
+      OT Hours come from payroll — the hours past 40 in each employee's Monday–Sunday week, counted across every job
+      they worked and credited to the job that took them past it, as Payroll ▸ Reports ▸ Projects does — and add up week
+      over week.${_finOtState === 'failed' ? ' <strong>They could not be loaded just now; reopen this tab to try again.</strong>'
+             : _finOtState === 'denied' ? ' <strong>Your role in this division does not include payroll’s overtime figures.</strong>' : ''}
       ${t.noInvoice ? `${t.noInvoice} job${t.noInvoice === 1 ? ' has' : 's have'} nothing invoiced yet, so ${t.noInvoice === 1 ? 'it is' : 'they are'} left out of the Net Profit and Bonus totals.` : ''}
       ${ranged ? `The date range keeps the jobs with a daily entry dated inside it. Every other column is still the whole job;
         <strong>Actual in Range</strong> is the cost of just the entries dated inside the range.` : ''}
@@ -20371,7 +20438,7 @@ function _renderFinancialsTable() {
 // Column order is shared by the table, the export and the print view. A date
 // range adds Actual in Range straight after Actual in all three.
 const FIN_COLUMNS = ['Job Name', 'Job #', 'Status', FIN_AREA_LABEL, 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'GP Earned to Date',
-                     'Invoiced', 'Net Profit', 'Man Hours', 'Bonus Amount'];
+                     'Invoiced', 'Net Profit', 'Man Hours', 'OT Hours', 'Bonus Amount'];
 const _finColumns = ranged => ranged
   ? FIN_COLUMNS.flatMap(c => c === 'Actual' ? [c, 'Actual in Range'] : [c])
   : FIN_COLUMNS;
@@ -20402,13 +20469,13 @@ function exportFinancialsCSV() {
     q(r.name), q(r.job), q(r.status), plain(r.sqft),
     m(r.contract), m(r.bid), m(r.actual), ...(ranged ? [m(r.rangeActual)] : []),
     m(r.projected), n(r.profit), n(r.gpEarned),
-    m(r.invoiced), n(r.netProfit), plain(r.manHours), n(r.bonus),
+    m(r.invoiced), n(r.netProfit), plain(r.manHours), plain(r.otHours), n(r.bonus),
     r.firstDate, r.lastDate, r.firstDate ? r.daysWorked : '',
   ].join(',')));
   const t = _financialsTotals(rows);
   lines.push(['Totals', '', '', plain(t.sqft), m(t.contract), m(t.bid), m(t.actual), ...(ranged ? [m(t.rangeActual)] : []),
     m(t.projected), n(t.profit), n(t.gpEarned),
-    m(t.invoiced), n(t.netProfit), plain(t.manHours), n(t.bonus), '', '', ''].join(','));
+    m(t.invoiced), n(t.netProfit), plain(t.manHours), plain(t.otHours), n(t.bonus), '', '', ''].join(','));
 
   const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
@@ -20454,6 +20521,7 @@ function printFinancials() {
       <td class="n split">${money(r.invoiced)}</td>
       <td class="n ${tone(r.netProfit)}">${signed(r.netProfit)}${pct(r.netProfit, r.invoiced)}</td>
       <td class="n">${hours(r.manHours)}</td>
+      <td class="n">${r.otHours === null ? (_finOtPending() ? '…' : '—') : hours(r.otHours)}</td>
       <td class="n ${tone(r.bonus)}">${signed(r.bonus)}${perHr(r.bonusPerHour)}</td>
     </tr>`).join('');
 
@@ -20496,7 +20564,7 @@ function printFinancials() {
       <th class="n">Contract Value</th><th class="n">Bid Budget</th><th class="n">Actual</th>
       ${ranged ? '<th class="n">Actual in Range</th>' : ''}
       <th class="n">Projected Cost</th><th class="n">Projected Profit</th><th class="n">GP Earned to Date</th>
-      <th class="n split">Invoiced</th><th class="n">Net Profit</th><th class="n">Man Hours</th><th class="n">Bonus Amount</th>
+      <th class="n split">Invoiced</th><th class="n">Net Profit</th><th class="n">Man Hours</th><th class="n">OT Hours</th><th class="n">Bonus Amount</th>
     </tr></thead>
     <tbody>${body}</tbody>
     <tfoot><tr>
@@ -20512,10 +20580,11 @@ function printFinancials() {
       <td class="n split">${money(t.invoiced)}</td>
       <td class="n">${signed(t.netProfit)}${pct(t.netProfit, t.invoiced)}</td>
       <td class="n">${hours(t.manHours)}</td>
+      <td class="n">${t.otHours === null ? (_finOtPending() ? '…' : '—') : hours(t.otHours)}</td>
       <td class="n">${signed(t.bonus)}${perHr(t.bonusPerHour)}</td>
     </tr></tfoot>
   </table>
-  <p class="note">Projected Profit is contract value minus projected final cost. GP Earned to Date is the contract earned so far (cost to date over projected cost) less cost to date — blank until a job has spend, contract minus final cost once it is complete.${t.noContract ? ` ${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount and ${t.noContract === 1 ? 'is' : 'are'} excluded from both profit totals.` : ''} Net Profit is invoiced less actual cost. Bonus Amount is ${b.share}% of the net profit left after ${b.overhead}% overhead and the ${b.target}% profit target come off the invoiced amount; a job below that line shows a negative bonus, which nets against the total. Man Hours leave out travel.${t.noInvoice ? ` ${t.noInvoice} job${t.noInvoice === 1 ? ' has' : 's have'} nothing invoiced yet and ${t.noInvoice === 1 ? 'is' : 'are'} left out of the Net Profit and Bonus totals.` : ''}${ranged ? ' The date range keeps the jobs with a daily entry dated inside it; every other column is the whole job, and Actual in Range is the cost of just the entries dated inside the range.' : ''}${filterNote ? ' Totals cover the filtered rows only.' : ''}</p>
+  <p class="note">Projected Profit is contract value minus projected final cost. GP Earned to Date is the contract earned so far (cost to date over projected cost) less cost to date — blank until a job has spend, contract minus final cost once it is complete.${t.noContract ? ` ${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount and ${t.noContract === 1 ? 'is' : 'are'} excluded from both profit totals.` : ''} Net Profit is invoiced less actual cost. Bonus Amount is ${b.share}% of the net profit left after ${b.overhead}% overhead and the ${b.target}% profit target come off the invoiced amount; a job below that line shows a negative bonus, which nets against the total. Man Hours leave out travel. OT Hours are payroll's: each employee's hours past 40 in a Monday–Sunday week, credited to the job they were worked on and added up over every week${_finOtState === 'ready' ? '' : ' (not available for this printout)'}.${t.noInvoice ? ` ${t.noInvoice} job${t.noInvoice === 1 ? ' has' : 's have'} nothing invoiced yet and ${t.noInvoice === 1 ? 'is' : 'are'} left out of the Net Profit and Bonus totals.` : ''}${ranged ? ' The date range keeps the jobs with a daily entry dated inside it; every other column is the whole job, and Actual in Range is the cost of just the entries dated inside the range.' : ''}${filterNote ? ' Totals cover the filtered rows only.' : ''}</p>
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`);
   win.document.close();
