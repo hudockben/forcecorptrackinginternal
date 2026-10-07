@@ -15077,7 +15077,13 @@
         // wins, even its own original figure) from one left as it was (the
         // office's stands). See "The manual trucking rate override" in
         // api/lib/dust-ob-injected.js.
-        if (legDest(row) === 'ob') leg.trucking_rate_shown = legStr(row.trucking_rate);
+        // The row's id goes with it: removing a haul moves the ones below it up
+        // a slot, and the server must not read a moved haul's figure against
+        // the row that used to be there.
+        if (legDest(row) === 'ob') {
+          leg.trucking_rate_shown     = legStr(row.trucking_rate);
+          leg.trucking_rate_shown_row = legStr(row.id);
+        }
       });
     }
 
@@ -15703,7 +15709,8 @@
                 price_per_unit: leg.price_per_unit,
                 trucking_rate:  leg.trucking_rate,
                 ...(leg.trucking_rate_shown !== undefined
-                  ? { trucking_rate_shown: leg.trucking_rate_shown } : {}),
+                  ? { trucking_rate_shown:     leg.trucking_rate_shown,
+                      trucking_rate_shown_row: leg.trucking_rate_shown_row } : {}),
               }
             : {
                 dest:        'dust',

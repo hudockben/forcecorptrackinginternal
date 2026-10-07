@@ -3309,6 +3309,10 @@ function validateDustLeg(raw) {
   // columns, and vice versa. Validated either way so a bad number is a 400
   // before anything is written rather than after the tracking half already is.
   if (has('trailer_number')) fields.trailer_number = safeStr(t.trailer_number, 100) || '';
+  // Not a column: the Other Billing row this haul opened from in Edit Row, so
+  // insertObRows can tell a haul that moved up a slot from the one that was
+  // there. Read by insertObRows only; buildObRow never stores it.
+  if (has('trucking_rate_shown_row')) fields.trucking_rate_shown_row = safeStr(t.trucking_rate_shown_row, 100) || '';
   if (has('material'))       fields.material       = safeStr(t.material, 200)       || '';
   if (has('mu'))             fields.mu             = safeStr(t.mu, 100)             || '';
 
@@ -4039,7 +4043,14 @@ async function insertObRows(sql, companyCode, entry, legs, flags = {}) {
         // — to anything, payroll's own original figure included — outranks the
         // office's. See "The manual trucking rate override" in
         // api/lib/dust-ob-injected.js.
-        if (obTruckingRateOverrideOutranked(prev, row.trucking_rate, fields.trucking_rate_shown)) {
+        //
+        // A haul that opened in Edit Row as a different row — the approver
+        // removed one above it, so it moved up into this slot — never showed
+        // this row's rate, and the override here was the office's answer for
+        // the haul that used to be in it. It does not ride along.
+        const moved = fields.trucking_rate_shown_row !== undefined
+          && fields.trucking_rate_shown_row !== row.id;
+        if (moved || obTruckingRateOverrideOutranked(prev, row.trucking_rate, fields.trucking_rate_shown)) {
           delete row[OB_TRK_RATE_OVERRIDE];
         }
       }

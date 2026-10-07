@@ -213,7 +213,14 @@ function applyObPriceOverride(row) {
  * A tab that loaded the row before payroll changed it cannot bring a dropped
  * override back either: the page only sends an override in the first save
  * after somebody edits it (dust.html, _obSavePayload), so a stale copy is
- * never replayed.
+ * never replayed — and a page cached from before that, which resends every key
+ * it loaded, is caught by obTruckingRateOverrideReplayed.
+ *
+ * Edit Row also sends the id of the row each haul opened from
+ * (trucking_rate_shown_row). Removing a haul moves the ones below it up a
+ * slot, and an override carried in by position was the office's answer for
+ * the haul that used to be there — so a haul that opened as a different row
+ * drops it.
  */
 const OB_TRK_RATE_OVERRIDE = 'trucking_rate_override';
 const OB_TRK_RATE_PAYROLL  = 'trucking_rate_payroll';
@@ -280,10 +287,33 @@ function obTruckingRateOverrideOutranked(prev, fresh, shown) {
   return !sameObTruckingRate(prev[OB_TRK_RATE_PAYROLL], fresh);
 }
 
+/**
+ * Whether a tab save's trucking rate override is a replay rather than an edit.
+ *
+ * The current page sends an override only in the save right after somebody
+ * edits it, and never sends trucking_rate_payroll (dust.html, _obSavePayload).
+ * A row that still carries trucking_rate_payroll comes from a page that resends
+ * every key it loaded — one cached from before — so the override on it is just
+ * what the server had when that page loaded. Replaying it could put back an
+ * override payroll has since replaced, so the server keeps its own.
+ */
+function obTruckingRateOverrideReplayed(incoming) {
+  return !!incoming && typeof incoming === 'object'
+    && Object.prototype.hasOwnProperty.call(incoming, OB_TRK_RATE_PAYROLL);
+}
+
 // Both overrides, in the one call each writer makes. The guard's `derive` and
 // re-injection both use this, so neither can settle one number and miss the
-// other.
-function applyObOverrides(row) {
+// other. The guard also passes the row the tab sent and the server's copy, so
+// a replayed trucking override (above) is put back to the server's state.
+function applyObOverrides(row, incoming, server) {
+  if (server && typeof server === 'object' && obTruckingRateOverrideReplayed(incoming)) {
+    if (Object.prototype.hasOwnProperty.call(server, OB_TRK_RATE_OVERRIDE)) {
+      row[OB_TRK_RATE_OVERRIDE] = server[OB_TRK_RATE_OVERRIDE];
+    } else {
+      delete row[OB_TRK_RATE_OVERRIDE];
+    }
+  }
   applyObPriceOverride(row);
   applyObTruckingRateOverride(row);
   return row;
@@ -540,6 +570,7 @@ module.exports = {
   sameObTruckingRate,
   applyObTruckingRateOverride,
   obTruckingRateOverrideOutranked,
+  obTruckingRateOverrideReplayed,
   applyObOverrides,
   MAX_OB_ROWS,
   needsObRow,

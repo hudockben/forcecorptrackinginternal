@@ -6,7 +6,7 @@ const { guardInjectedBlobWrite } = require('../lib/injected-blob-guard');
 // Dust Other Billing carries payroll-injected rows but, unlike the Truck
 // Tracking and Dust Control Tracking grids, is read straight off this generic
 // blob endpoint — so its read-time orphan sweep has to live here.
-const { sweepInjectedObRows } = require('../lib/dust-ob-injected');
+const { sweepInjectedObRows, OB_BLOB_KEY } = require('../lib/dust-ob-injected');
 const {
   requireAuth,
   hasDivisionAccess,
@@ -289,7 +289,17 @@ module.exports = async (req, res) => {
     // A no-op for every key that carries no injected rows.
     let stored = value;
     try { stored = await guardInjectedBlobWrite(sql, payload.companyCode, key, value); }
-    catch (err) { console.error('[injected-blob-guard] PUT', key, err.message); }
+    catch (err) {
+      console.error('[injected-blob-guard] PUT', key, err.message);
+      // Other Billing's page leaves every office override nobody has edited
+      // off its saves (dust.html, _obSavePayload) and counts on the guard to
+      // keep the server's copy — stored unguarded, that save would erase them.
+      // So this key is refused instead; the page keeps its edits marked and
+      // sends them again on its next save.
+      if (key === OB_BLOB_KEY) {
+        return res.status(503).json({ error: 'Could not check payroll rows — not saved, try again' });
+      }
+    }
 
     await sql`
       INSERT INTO app_data (key, value, updated_at)

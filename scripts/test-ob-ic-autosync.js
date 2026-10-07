@@ -579,6 +579,8 @@ const obIn = state => state.store.fct_intercompany_billing_entries.filter(e => e
       let obSaveTimer = null;
       let obSaving = false;
       const obDeletedIds = new Set();
+      // Override edits marked to send (dust.html obSave); the poll clears them.
+      const obOverrideDirty = new Map();
       const OB_KEY = 'dust_other_billing_rows';
       const document = { getElementById: () => null };
       const _isEditing = () => state.editing;
@@ -605,6 +607,7 @@ const obIn = state => state.store.fct_intercompany_billing_entries.filter(e => e
         queueDelete: id => obDeletedIds.add(id),
         clearDeletes: () => obDeletedIds.clear(),
         pending: () => obHasPendingSave(),
+        dirty: () => obOverrideDirty,
       };
     `)(state);
     return { state, api };
@@ -674,6 +677,23 @@ const obIn = state => state.store.fct_intercompany_billing_entries.filter(e => e
     // brings in a payroll approval has to repaint it too — and must do so
     // AFTER the sync, so a render error cannot suppress the mirror.
     assert('home dashboard repainted', state.homeRenders === 1, String(state.homeRenders));
+  }
+
+  console.log('\n[poller — an override edit left marked by a failed save is forgotten]');
+  {
+    // A save that failed (or whose answer was lost) leaves its override edits
+    // marked. Once the poll has the server's copy, a later save would otherwise
+    // send the server's own figure back as if somebody had just typed it.
+    const { api } = buildPoller([rowA]);
+    api.setRows([rowA]);
+    api.dirty().set('tso-41-1|trucking_rate_override', 3);
+    await api.poll();
+    assert('the poll clears the markers, even when nothing changed', api.dirty().size === 0);
+    const { api: busy } = buildPoller([rowA, rowB]);
+    busy.dirty().set('tso-41-1|trucking_rate_override', 4);
+    busy.setTimer(1);                           // a save still pending
+    await busy.poll();
+    assert('but not while a save is still pending', busy.dirty().size === 1);
   }
 
   console.log('\n[concurrency — the write carries the value it was based on]');

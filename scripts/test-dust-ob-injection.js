@@ -474,7 +474,7 @@ console.log('Dust timesheet → Other Billing injection\n');
         material: pre.material, gallons_bags: pre.gallons_bags, mu: pre.mu,
         price_per_unit: pre.price_per_unit,
         trucking_rate: rate === undefined ? pre.trucking_rate : rate,
-        trucking_rate_shown: pre.trucking_rate, ...extra,
+        trucking_rate_shown: pre.trucking_rate, trucking_rate_shown_row: pre.id, ...extra,
       }] });
       if (error) throw new Error(error);
       await insertObRows(sql, CO, ENTRY, rows);
@@ -531,7 +531,8 @@ console.log('Dust timesheet → Other Billing injection\n');
     const before = (await obSplitForEntry(sql, CO, ENTRY)).rows[0];   // shows 150
     officeSets(160);
     const { rows: staleRows } = validateDustInjection({ rows: [{ ...before, dest: 'ob',
-      trucking_rate: before.trucking_rate, trucking_rate_shown: before.trucking_rate }] });
+      trucking_rate: before.trucking_rate, trucking_rate_shown: before.trucking_rate,
+      trucking_rate_shown_row: before.id }] });
     await insertObRows(sql, CO, ENTRY, staleRows);
     assert('a modal opened before the override, saved untouched, leaves it standing',
       obRow(store, 1).trucking_rate === 160 && obRow(store, 1).trucking_rate_override === 160,
@@ -555,6 +556,41 @@ console.log('Dust timesheet → Other Billing injection\n');
 
     assert('the shown figure is validated like a rate',
       !!validateDustInjection({ rows: [{ dest: 'ob', trucking_rate_shown: -1 }] }).error);
+  }
+
+  console.log('\n[an override does not ride onto a haul that moved up a slot]');
+  {
+    const { sql, store } = makeSql(FIXTURE);
+    // Two deliveries for the same customer: haul 1 at 121, haul 2 at 150.
+    const legs = [
+      { dest: 'ob', location: 'Bear Hollow', material: 'ClearFrac', gallons_bags: 387,
+        mu: 'GAL', price_per_unit: 1.28, trucking_rate: 121, start_time: '07:00', end_time: '09:30' },
+      { dest: 'ob', location: 'Bear Hollow', material: 'ClearFrac', gallons_bags: 400,
+        mu: 'GAL', price_per_unit: 1.28, trucking_rate: 150, start_time: '10:00', end_time: '12:00' },
+    ];
+    await insertObRows(sql, CO, ENTRY, legs);
+    // The office overrides haul 1 to 135.
+    const list = obRows(store).slice();
+    list[0] = { ...list[0], trucking_rate_override: 135, trucking_rate_payroll: 121, trucking_rate: 135 };
+    store.appData.set(OB_KEY, list);
+    // Edit Row opens on both, the approver removes haul 1 and saves haul 2
+    // untouched. Haul 2 is re-posted in slot 1.
+    const pre = (await obSplitForEntry(sql, CO, ENTRY)).rows;
+    const h2 = pre.find(r => r.leg === 2);
+    const { rows } = validateDustInjection({ rows: [{
+      dest: 'ob', company: h2.company, location: h2.location, state: h2.state,
+      start_time: h2.start_time, end_time: h2.end_time, material: h2.material,
+      gallons_bags: h2.gallons_bags, mu: h2.mu, price_per_unit: h2.price_per_unit,
+      trucking_rate: h2.trucking_rate, trucking_rate_shown: h2.trucking_rate,
+      trucking_rate_shown_row: h2.id,
+    }] });
+    await insertObRows(sql, CO, ENTRY, rows);
+    assert('one row is left', obRows(store).length === 1);
+    assert('it bills haul 2\'s own rate, not haul 1\'s override',
+      Number(obRow(store, 1).trucking_rate) === 150 && !('trucking_rate_override' in obRow(store, 1)),
+      JSON.stringify(obRow(store, 1)));
+    assert('and the row id is never stored with it',
+      !('trucking_rate_shown_row' in obRow(store, 1)));
   }
 
   // ── 7c) …but not onto a different haul ────────────────────────────────────

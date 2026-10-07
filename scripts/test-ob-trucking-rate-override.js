@@ -39,7 +39,7 @@ const { JSDOM } = require('jsdom');
 const {
   OB_TAB_FIELDS, OB_TRK_RATE_OVERRIDE, OB_TRK_RATE_PAYROLL, OB_TRK_RATE_MAX,
   normalizeObTruckingRate, sameObTruckingRate, applyObTruckingRateOverride,
-  obTruckingRateOverrideOutranked, applyObOverrides,
+  obTruckingRateOverrideOutranked, obTruckingRateOverrideReplayed, applyObOverrides,
 } = require('../api/lib/dust-ob-injected.js');
 const { guardConfigFor, mergeInjectedRows } = require('../api/lib/injected-blob-guard.js');
 
@@ -169,9 +169,10 @@ function newPage(rows) {
     const server = [{ id: 'tso-41-1', customer: 'CNX', gallons_bags: 387, price_per_unit: 1.28,
                       trucking_hrs: 2.5, trucking_rate: 121, inv_number: '' }];
 
-    // The office types 135 — the page records payroll's 121 beside it.
+    // The office types 135. The page sends the override and leaves payroll's
+    // figure off (the server keeps its own).
     const [landed] = mergeInjectedRows(server, [{ ...server[0], trucking_rate: 135,
-      [OB_TRK_RATE_OVERRIDE]: 135, [OB_TRK_RATE_PAYROLL]: 121, trucking_hrs: 99 }], cfg);
+      [OB_TRK_RATE_OVERRIDE]: 135, trucking_hrs: 99 }], cfg);
     assert('the office\'s rate lands',
       landed.trucking_rate === 135 && landed[OB_TRK_RATE_OVERRIDE] === 135);
     assert('with payroll\'s rate behind it', landed[OB_TRK_RATE_PAYROLL] === 121);
@@ -214,11 +215,31 @@ function newPage(rows) {
     // A rate the office types after payroll's change is a new answer, and goes
     // in over payroll's CURRENT figure — never the one the tab last saw.
     const [fresh] = mergeInjectedRows(afterPayroll,
-      [{ ...server[0], trucking_rate: 150, [OB_TRK_RATE_OVERRIDE]: 150, [OB_TRK_RATE_PAYROLL]: 121 }], cfg);
+      [{ ...server[0], trucking_rate: 150, [OB_TRK_RATE_OVERRIDE]: 150 }], cfg);
     assert('a new override typed in an older tab still lands',
       fresh.trucking_rate === 150 && fresh[OB_TRK_RATE_OVERRIDE] === 150, JSON.stringify(fresh));
     assert('recorded over payroll\'s current rate, not the tab\'s stale one',
       fresh[OB_TRK_RATE_PAYROLL] === 140);
+
+    // A page cached from before this resends every key it loaded — the
+    // override AND payroll's figure behind it. Its override is a replay, never
+    // an edit, so the server's state is kept whatever it is.
+    const replay = { ...server[0], trucking_rate: 135,
+                     [OB_TRK_RATE_OVERRIDE]: 135, [OB_TRK_RATE_PAYROLL]: 121, inv_number: 'INV-10' };
+    assert('a row carrying payroll\'s figure is recognised as a replay',
+      obTruckingRateOverrideReplayed(replay) && !obTruckingRateOverrideReplayed({ [OB_TRK_RATE_OVERRIDE]: 135 }));
+    const [replayed] = mergeInjectedRows(afterPayroll, [replay], cfg);
+    assert('an older page cannot put back an override payroll replaced',
+      replayed.trucking_rate === 140 && !(OB_TRK_RATE_OVERRIDE in replayed), JSON.stringify(replayed));
+    assert('while its other edit lands', replayed.inv_number === 'INV-10');
+    const [kept3] = mergeInjectedRows(
+      [{ ...server[0], trucking_rate: 150, [OB_TRK_RATE_OVERRIDE]: 150, [OB_TRK_RATE_PAYROLL]: 140 }],
+      [replay], cfg);
+    assert('nor overwrite an override set since it loaded',
+      kept3.trucking_rate === 150 && kept3[OB_TRK_RATE_OVERRIDE] === 150, JSON.stringify(kept3));
+    const [same3] = mergeInjectedRows(held, [replay], cfg);
+    assert('and replaying the state the server still has changes nothing',
+      same3.trucking_rate === 135 && same3[OB_TRK_RATE_OVERRIDE] === 135);
   }
 
   // ── 4. The page ──────────────────────────────────────────────────────────
@@ -241,12 +262,14 @@ function newPage(rows) {
     assert('and what payroll has', /payroll \$121\.00/.test(note), note);
     assert('with one click back to it', /obClearTruckingRateOverride\(0\)/.test(note), note);
 
-    // What the page then saves is what the guard needs to land the rate.
-    const [stored] = mergeInjectedRows(
-      [{ ...locked, trucking_rate: 121, [OB_TRK_RATE_OVERRIDE]: undefined }].map(r => {
-        const c = { ...r }; delete c[OB_TRK_RATE_OVERRIDE]; delete c[OB_TRK_RATE_PAYROLL]; return c;
-      }),
-      [JSON.parse(JSON.stringify(locked))], guardConfigFor('dust_other_billing_rows'));
+    // What the page then saves — the override, payroll's figure left off — is
+    // what the guard needs to land the rate.
+    const serverCopy = { ...locked, trucking_rate: 121 };
+    delete serverCopy[OB_TRK_RATE_OVERRIDE]; delete serverCopy[OB_TRK_RATE_PAYROLL];
+    const sentCopy = JSON.parse(JSON.stringify(locked));
+    delete sentCopy[OB_TRK_RATE_PAYROLL];
+    const [stored] = mergeInjectedRows([serverCopy], [sentCopy],
+      guardConfigFor('dust_other_billing_rows'));
     assert('and the save it makes lands on the server', stored.trucking_rate === 135);
 
     page.obClearTruckingRateOverride(0);
@@ -294,14 +317,19 @@ function newPage(rows) {
     assert('Edit Row is pre-filled from the posted (derived) rate',
       /trucking_rate:\s+n\(r\.trucking_rate\),/.test(TS));
     assert('re-injection lets payroll outrank a carried override, told what Edit Row showed',
-      /if \(obTruckingRateOverrideOutranked\(prev, row\.trucking_rate, fields\.trucking_rate_shown\)\) \{\s*\n\s*delete row\[OB_TRK_RATE_OVERRIDE\];/.test(TS));
+      /if \(moved \|\| obTruckingRateOverrideOutranked\(prev, row\.trucking_rate, fields\.trucking_rate_shown\)\) \{\s*\n\s*delete row\[OB_TRK_RATE_OVERRIDE\];/.test(TS));
+    assert('and drops one carried onto a haul that moved up a slot',
+      /const moved = fields\.trucking_rate_shown_row !== undefined\s*\n\s*&& fields\.trucking_rate_shown_row !== row\.id;/.test(TS));
+    const KEYROUTE = read('api/data/[key].js');
+    assert('an Other Billing save the guard cannot check is refused, not stored unguarded',
+      /if \(key === OB_BLOB_KEY\) \{\s*\n\s*return res\.status\(503\)/.test(KEYROUTE));
     assert('the shown figure is validated with the other rates',
       /\['trucking_rate_shown', DUST_RATE_MAX, 'trucking_rate_shown'\]/.test(TS));
     const PAYROLL = read('payroll.html');
-    assert('Edit Row records what its trucking rate box showed',
-      /if \(legDest\(row\) === 'ob'\) leg\.trucking_rate_shown = legStr\(row\.trucking_rate\);/.test(PAYROLL));
-    assert('and sends it with the haul',
-      /trucking_rate_shown: leg\.trucking_rate_shown/.test(PAYROLL));
+    assert('Edit Row records what its trucking rate box showed, and on which row',
+      /if \(legDest\(row\) === 'ob'\) \{\s*\n\s*leg\.trucking_rate_shown\s+= legStr\(row\.trucking_rate\);\s*\n\s*leg\.trucking_rate_shown_row = legStr\(row\.id\);/.test(PAYROLL));
+    assert('and sends it with the haul, with the row it came from',
+      /trucking_rate_shown:\s+leg\.trucking_rate_shown,\s*\n\s*trucking_rate_shown_row: leg\.trucking_rate_shown_row/.test(PAYROLL));
     assert('the page sends an override only in the save after it is edited',
       /apiPut\(OB_KEY, _obSavePayload\(sending\), opts\)/.test(DUST));
     assert('and settles both overrides before storing', /applyObOverrides\(row\);/.test(TS));

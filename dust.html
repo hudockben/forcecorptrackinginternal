@@ -7419,15 +7419,20 @@
       if (row && obIsInjectedRow(row)) obOverrideDirty.set(`${row.id}|${field}`, ++_obOverrideGen);
     }
     // What a save sends: obRows as they are, minus any override nobody has
-    // edited since the last save. The rows in memory keep theirs.
+    // edited since the last save, and minus payroll's figures behind the
+    // overrides — the server keeps its own, and a row that still carries
+    // trucking_rate_payroll is how it recognises a page that resends whatever
+    // it loaded (obTruckingRateOverrideReplayed). The rows in memory keep both.
     function _obSavePayload(sending) {
       return obRows.map(r => {
         if (!obIsInjectedRow(r)) return r;
         let out = null;
+        const drop = f => { if (!out) out = { ...r }; delete out[f]; };
         for (const f of [OB_PRICE_OVERRIDE, OB_TRK_RATE_OVERRIDE]) {
-          if (!Object.prototype.hasOwnProperty.call(r, f) || sending.has(`${r.id}|${f}`)) continue;
-          if (!out) out = { ...r };
-          delete out[f];
+          if (Object.prototype.hasOwnProperty.call(r, f) && !sending.has(`${r.id}|${f}`)) drop(f);
+        }
+        for (const f of [OB_PRICE_PAYROLL, OB_TRK_RATE_PAYROLL]) {
+          if (Object.prototype.hasOwnProperty.call(r, f)) drop(f);
         }
         return out || r;
       });
@@ -7672,9 +7677,10 @@
 
     /**
      * Live totals as the office types, without repainting the box under the
-     * cursor. Nothing is saved here: the commit path (onchange →
-     * obSetPriceOverride) is what validates, repaints and schedules the write,
-     * exactly as _obLiveSet stands beside obSet on a hand-added row.
+     * cursor. Nothing is saved or marked to send here: the commit path
+     * (onchange → obSetPriceOverride) is what validates, repaints, marks and
+     * schedules the write, exactly as _obLiveSet stands beside obSet on a
+     * hand-added row — so a figure typed and then undone sends nothing.
      */
     function _obLivePriceOverride(idx, value) {
       const row = obRows[idx];
@@ -7682,7 +7688,6 @@
       if (_obPriceVal(value) === null) return;
       row[OB_PRICE_OVERRIDE] = value;
       _obApplyPriceOverride(row);
-      _obMarkOverrideDirty(row, OB_PRICE_OVERRIDE);
       const note = document.getElementById(`ob-price-ovr-${idx}`);
       if (note) note.innerHTML = _obPriceNote(row, idx);
       obRefreshCalcCells(idx);
@@ -7797,7 +7802,6 @@
       if (_obPriceVal(value) === null) return;
       row[OB_TRK_RATE_OVERRIDE] = value;
       _obApplyTrkRateOverride(row);
-      _obMarkOverrideDirty(row, OB_TRK_RATE_OVERRIDE);
       const note = document.getElementById(`ob-trate-ovr-${idx}`);
       if (note) note.innerHTML = _obTrkRateNote(row, idx);
       obRefreshCalcCells(idx);
@@ -7896,7 +7900,6 @@
       obRows[idx][field] = value;
       if (field === OB_PRICE_OVERRIDE) _obApplyPriceOverride(obRows[idx]);
       if (field === OB_TRK_RATE_OVERRIDE) _obApplyTrkRateOverride(obRows[idx]);
-      if (field === OB_PRICE_OVERRIDE || field === OB_TRK_RATE_OVERRIDE) _obMarkOverrideDirty(obRows[idx], field);
       if (OB_CALC_FIELDS.includes(field)) {
         obRefreshCalcCells(idx);
         obRefreshTotals();
@@ -9715,6 +9718,11 @@
           // Re-check after the round-trip: the user may have edited or deleted
           // while it was in flight, which would make `incoming` stale.
           if (_isEditing() || obHasPendingSave()) return;
+          // An override still marked to send here belongs to a save that failed
+          // or whose answer was lost: the server either holds it already or
+          // the edit is about to be replaced below. Left marked, a later save
+          // would send the server's own figure back as if it were an edit.
+          obOverrideDirty.clear();
           if (JSON.stringify(incoming) === JSON.stringify(obRows)) return;
           obRows = incoming;
           obLoaded = true;

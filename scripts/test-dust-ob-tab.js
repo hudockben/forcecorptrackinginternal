@@ -286,6 +286,8 @@ async function main() {
   let sent = sentRow(await lastObWrite());
   assert('the save after the edit carries the override',
     sent.trucking_rate_override === 135, JSON.stringify(sent));
+  assert('but never payroll\'s figure behind it — the server keeps its own',
+    !('trucking_rate_payroll' in sent) && !('price_per_unit_payroll' in sent), JSON.stringify(sent));
   // An unrelated edit afterwards must not re-send it: a tab that loaded the row
   // before Payroll changed the rate would otherwise put a dropped override back.
   win.eval(`obSet(${iIdx}, 'inv_number', 'INV-78')`);
@@ -302,6 +304,13 @@ async function main() {
   sent = sentRow(await lastObWrite());
   assert('and a later save does not send it again',
     !('trucking_rate_override' in sent) && sent.comments === 'PO 13', JSON.stringify(sent));
+  // Typed and undone without leaving the box: input events only, no change.
+  win.eval(`_obLiveTruckingRateOverride(${iIdx}, '200')`);
+  win.eval(`_obLiveTruckingRateOverride(${iIdx}, '95')`);
+  win.eval(`obSet(${iIdx}, 'comments', 'PO 14')`);
+  sent = sentRow(await lastObWrite());
+  assert('a figure typed and undone sends nothing',
+    !('trucking_rate_override' in sent) && sent.comments === 'PO 14', JSON.stringify(sent));
 
   console.log('\n[the hand-added row is untouched]');
   for (const col of LOCKED.concat('price_per_unit', 'trucking_rate')) {
