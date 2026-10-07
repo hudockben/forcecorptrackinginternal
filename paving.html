@@ -7747,7 +7747,7 @@ function addProject() {
     'client':'','gc':'','pm':'','super':'','estimator':'','client-contact':'',
     'address':'','city-state':'','start-date':'','end-date':'','contract-days':'',
     'contract-amount':'','revised-amount':'','retention':'','scope':'','notes':'',
-    'sqft': '',
+    'sqft': '', 'invoiced': '',
     prevailing_wage: false, assigned_employees: [], assigned_equipment: []
   };
   projectsList.push(p);
@@ -10720,6 +10720,10 @@ function projectCardHTML(p) {
         <div class="info-field"><label>Retention %</label>
           <input type="number" value="${esc(p['retention']||'')}" placeholder="10" step="any" min="0" max="100"
             oninput="updateProjectField('${p.id}','retention',this.value)"></div>
+        <div class="info-field"><label>Invoiced to Date</label>
+          <input type="number" value="${esc(p['invoiced']||'')}" placeholder="0.00" step="any" min="0"
+            title="Billed to date — Analytics ▸ Financials figures Net Profit and Bonus from this"
+            oninput="updateProjectField('${p.id}','invoiced',this.value)"></div>
         <div class="info-field"><label>Total Bid Cost</label>
           <input type="text" value="${totalBid?'$'+fmt(totalBid):''}" disabled
             style="color:#86efac;cursor:default" placeholder="Sum of bid items below"></div>
@@ -19663,12 +19667,107 @@ function _scpSetTier(t) {
    by quarter, and a profit of contract-minus-one-quarter's-spend means
    nothing), so the range adds an Actual in Range column alongside them for
    the spend dated inside it. Every row also carries the dates it was worked,
-   because months on nobody remembers when a job was in the ground. */
+   because months on nobody remembers when a job was in the ground.
+
+   Invoiced, Net Profit, Man Hours and Bonus Amount are the job-close figures
+   the office used to keep on a spreadsheet. They read what has actually been
+   billed rather than the projection: Net Profit is invoiced less actual cost,
+   and the bonus is a share of whatever net profit is left once overhead and
+   the company's target margin come off the invoiced amount —
+
+     Bonus = share × (Net Profit − (overhead % + target %) × Invoiced)
+
+   A job under that line posts a negative bonus, which nets off the total the
+   way the spreadsheet's did. The three percentages are set once per division
+   in the strip above the table, not per job. */
+// Per division: where the bonus percentages are saved, and what the project
+// card calls the job's area.
+const FIN_SETTINGS_KEY = 'fct_paving_fin_settings';
+const FIN_AREA_LABEL   = 'Sq Yd';
 // names / statuses: Set of picked values, or null for "all". A Set is only
 // stored when it genuinely excludes something — see applyFinFilter().
 // from / to: 'YYYY-MM-DD' bounds of the date range, '' where open-ended.
 // preset: the range-menu entry that set them, 'custom' once typed by hand.
 let finFilters = { q: '', statuses: null, names: null, from: '', to: '', preset: '' };
+
+/* ── Bonus percentages ────────────────────────────────────────────────────
+   The spreadsheet's figures are the defaults, so the column reads right the
+   first time it is opened. Edits show at once from a local copy and reach the
+   server after a pause; the server copy wins when the tab is opened, so every
+   computer in the division works to the same percentages. */
+const FIN_BONUS_DEFAULTS = { overhead: 6, target: 15, share: 50 };
+
+// Every figure a percentage from 0 to 100. A missing or unreadable one falls
+// back to its default rather than to zero — a blank overhead would otherwise
+// be paid straight out as bonus.
+function _finCleanBonus(v) {
+  const out = { ...FIN_BONUS_DEFAULTS };
+  if (v && typeof v === 'object') Object.keys(out).forEach(k => {
+    const n = parseFloat(v[k]);
+    if (Number.isFinite(n)) out[k] = Math.min(100, Math.max(0, n));
+  });
+  return out;
+}
+
+let finBonus = (() => {
+  try { return _finCleanBonus(JSON.parse(localStorage.getItem(FIN_SETTINGS_KEY) || 'null')); }
+  catch { return { ...FIN_BONUS_DEFAULTS }; }
+})();
+let _finBonusLoaded = false;
+let _finBonusSaveTimer = null;
+let _finBonusEdits = 0;
+
+// Once per page, on the first visit to the tab. A failed read is tried again
+// on the next visit; an edit made while the read was out is not overwritten.
+async function _finLoadBonus() {
+  if (_finBonusLoaded) return;
+  _finBonusLoaded = true;
+  const edits = _finBonusEdits;
+  const { ok, value } = await apiGetChecked(FIN_SETTINGS_KEY);
+  if (!ok) { _finBonusLoaded = false; return; }
+  if (edits !== _finBonusEdits) return;
+  // Nothing saved yet is the defaults, not whatever this browser last cached
+  // — the cache may be another company's.
+  const next = _finCleanBonus(value);
+  try { localStorage.setItem(FIN_SETTINGS_KEY, JSON.stringify(next)); } catch {}
+  if (Object.keys(next).every(k => next[k] === finBonus[k])) return;
+  finBonus = next;
+  renderFinancials();
+}
+
+// Typing redraws the table only, so the cursor stays in the box. A box left
+// blank or unreadable is put back to the figure in use when it loses focus.
+function finSetBonus(key, raw, el) {
+  const n = parseFloat(raw);
+  if (!Number.isFinite(n)) { if (el) el.value = finBonus[key]; return; }
+  const v = Math.min(100, Math.max(0, n));
+  if (el && v !== n) el.value = v;
+  if (v === finBonus[key]) return;
+  finBonus = { ...finBonus, [key]: v };
+  _finBonusEdits++;
+  try { localStorage.setItem(FIN_SETTINGS_KEY, JSON.stringify(finBonus)); } catch {}
+  clearTimeout(_finBonusSaveTimer);
+  _finBonusSaveTimer = setTimeout(() => { _finBonusSaveTimer = null; apiPut(FIN_SETTINGS_KEY, finBonus); }, 600);
+  _renderFinancialsTable();
+}
+
+// The spreadsheet's "50% Excess Bonus" for one job.
+function _finBonusFor(net, invoiced, s = finBonus) {
+  return (s.share / 100) * (net - (s.overhead + s.target) / 100 * invoiced);
+}
+
+// Travel hours stay out of Man Hours. A row is travel by the rule payroll
+// prices it by (isTravelSplitRow in api/timesheet-entries.js): the Travel flag
+// payroll stamps as its field type, or "travel" as a word in its cost or sub
+// code — paving books it under codes like "19mm - Travel".
+const FIN_TRAVEL_RE = /\btravel\b/i;
+function _finIsTravel(r) {
+  return r.field_type === 'Travel'
+    || FIN_TRAVEL_RE.test(String(r.sub_code || ''))
+    || FIN_TRAVEL_RE.test(String(r.cost_code || ''));
+}
+// Hours as the spreadsheet showed them — 52.5, 1,279.25 — with no padding zeros.
+const _finHours = v => Number(v).toLocaleString('en-US', { maximumFractionDigits: 2 });
 
 // Every job, computed and sorted. Filtering happens separately so the filter
 // controls can list every value that exists, not just the ones surviving the
@@ -19684,11 +19783,12 @@ function _financialsRows() {
     // date, so narrowing the date range never has to re-cost a row. A row
     // only marks its date as worked when something is on it — a blank row
     // keyed and never filled in would otherwise pull a job into this month.
-    let actual = 0;
+    let actual = 0, manHours = 0;
     const byDate = new Map();
     (p.dailyRows || []).forEach(r => {
       const cost = dailyRowCost(r);
       actual += cost;
+      if (!_finIsTravel(r)) manHours += parseFloat(r.labor_hours) || 0;
       const d = /^\d{4}-\d{2}-\d{2}/.test(r.date || '') ? r.date.slice(0, 10) : '';
       const work = _rowIsWorkDay(r);
       if (!d || !(cost || work)) return;
@@ -19700,6 +19800,11 @@ function _financialsRows() {
     const dates     = [...byDate.keys()].sort();
     const projected = projectedCostForProject(p);
     const gpE       = gpEarnedToDate(contract, actual, projected);
+    // Nothing invoiced means nothing to take a profit or a bonus from yet, so
+    // both stay blank rather than posting the whole cost as a loss.
+    const invoiced  = parseFloat(p['invoiced']) || 0;
+    const netProfit = invoiced ? invoiced - actual : null;
+    const bonus     = invoiced ? _finBonusFor(netProfit, invoiced) : null;
     return {
       id: p.id,
       name:   p['project-name'] || 'Untitled Project',
@@ -19725,6 +19830,9 @@ function _financialsRows() {
       gpEarned: gpE ? gpE.gp : null,
       earned:   gpE ? gpE.earned : 0,
       pctDone:  gpE ? gpE.pct : null,
+      sqft: parseFloat(p['sqft']) || 0,
+      invoiced, netProfit, manHours, bonus,
+      bonusPerHour: bonus !== null && manHours ? bonus / manHours : null,
     };
   });
 
@@ -19888,7 +19996,12 @@ function _financialsTotals(rows) {
   const sum = k => rows.reduce((s, r) => s + (r[k] || 0), 0);
   const withContract = rows.filter(r => r.profit    !== null);
   const withSpend    = rows.filter(r => r.gpEarned  !== null);
+  const withInvoice  = rows.filter(r => r.netProfit !== null);
+  const bonus        = withInvoice.length ? withInvoice.reduce((s, r) => s + r.bonus, 0) : null;
+  // Per hour over the hours of the jobs that carry a bonus, not every job's.
+  const bonusHours   = withInvoice.reduce((s, r) => s + r.manHours, 0);
   return {
+    sqft:      sum('sqft'),
     contract:  sum('contract'),
     bid:       sum('bid'),
     actual:    sum('actual'),
@@ -19899,6 +20012,12 @@ function _financialsTotals(rows) {
     gpEarned:    withSpend.length    ? withSpend.reduce((s, r) => s + r.gpEarned, 0) : null,
     gpBase:      withSpend.reduce((s, r) => s + r.earned, 0),
     noContract:  rows.length - withContract.length,
+    invoiced:    sum('invoiced'),
+    netProfit:   withInvoice.length ? withInvoice.reduce((s, r) => s + r.netProfit, 0) : null,
+    manHours:    sum('manHours'),
+    bonus,
+    bonusPerHour: bonus !== null && bonusHours ? bonus / bonusHours : null,
+    noInvoice:   rows.length - withInvoice.length,
   };
 }
 
@@ -20023,9 +20142,29 @@ function renderFinancials() {
           title="Open a printable copy of the rows below — use your browser's Save as PDF" onclick="printFinancials()">&#128424; Print / PDF</button>
       </div>
     </div>
+    ${_finBonusStripHTML(inp)}
     <div id="fin-table"></div>`;
 
   _renderFinancialsTable();
+  _finLoadBonus();
+}
+
+// The three percentages behind Bonus Amount, on one line above the table.
+// Read-only for anyone who cannot edit projects.
+function _finBonusStripHTML(inp) {
+  const can = perm.canEdit;
+  const box = (k, label, title) => `<label style="display:inline-flex;align-items:center;gap:0.35rem" title="${title}">
+      ${label}
+      <input id="fin-bonus-${k}" type="number" min="0" max="100" step="0.5" value="${finBonus[k]}"${can ? '' : ' disabled'}
+        style="${inp};width:4.2rem;text-align:right"
+        oninput="finSetBonus('${k}', this.value)" onchange="finSetBonus('${k}', this.value, this)">%</label>`;
+  return `<div style="display:flex;gap:1.1rem;align-items:center;flex-wrap:wrap;margin-bottom:0.75rem;font-size:0.78rem;color:var(--muted)">
+      <span style="font-size:0.72rem;text-transform:uppercase;letter-spacing:0.05em">Bonus:</span>
+      ${box('overhead', 'Overhead', 'Company overhead, as a share of the invoiced amount')}
+      ${box('target',   'Profit target', 'The margin the company keeps before any bonus is paid')}
+      ${box('share',    'Bonus share', 'The share of net profit above overhead + target paid out as bonus')}
+      <span style="font-size:0.72rem">of the net profit left after overhead + target${can ? '' : ' · set by a project editor'}</span>
+    </div>`;
 }
 
 function _renderFinancialsTable() {
@@ -20037,10 +20176,18 @@ function _renderFinancialsTable() {
 
   const rows = _financialsFiltered(all);
 
-  const money   = v => v ? '$' + fmt(v) : '<span style="color:var(--muted)">—</span>';
+  const dash    = '<span style="color:var(--muted)">—</span>';
+  const money   = v => v ? '$' + fmt(v) : dash;
   const signed  = v => v >= 0 ? '$' + fmt(v) : '-$' + fmt(Math.abs(v));
   const profCol = v => v == null ? 'color:var(--muted)' : v >= 0 ? 'color:var(--green)' : 'color:var(--red)';
   const pctSpan = (v, base) => base ? ` <span style="font-size:0.7em;opacity:0.8">(${(v / base * 100).toFixed(1)}%)</span>` : '';
+  const area    = v => v ? fmt(v, 0) : dash;
+  const hours   = v => v ? _finHours(v) : dash;
+  const perHour = v => v === null ? '' : ` <span style="font-size:0.7em;opacity:0.8">(${signed(v)}/hr)</span>`;
+  // A thin rule ahead of Invoiced sets the billed-to-date figures apart from
+  // the projection ones.
+  const split   = 'border-left:1px solid var(--border);';
+  const b       = finBonus;
 
   const statusCell = r => r.status
     ? `<span class="proj-badge ${statusBadgeClass(r.status)}">${esc(r.status)}</span>`
@@ -20071,6 +20218,7 @@ function _renderFinancialsTable() {
       </td>
       <td class="pt-num">${r.job ? esc(r.job) : '<span style="color:var(--muted)">—</span>'}</td>
       <td>${statusCell(r)}</td>
+      <td class="pt-num">${area(r.sqft)}</td>
       <td class="pt-num" style="color:var(--blue)">${money(r.contract)}</td>
       <td class="pt-num" style="color:var(--green)">${money(r.bid)}</td>
       <td class="pt-num" style="color:var(--yellow)">${money(r.actual)}</td>
@@ -20078,6 +20226,10 @@ function _renderFinancialsTable() {
       <td class="pt-num">${money(r.projected)}</td>
       <td class="pt-num" style="${profCol(r.profit)}">${r.profit === null ? '—' : signed(r.profit) + pctSpan(r.profit, r.contract)}</td>
       <td class="pt-num" style="${profCol(r.gpEarned)}"${r.gpEarned === null ? '' : ` title="${(r.pctDone * 100).toFixed(1)}% complete · $${fmt(r.earned)} of the contract earned"`}>${r.gpEarned === null ? '—' : signed(r.gpEarned) + pctSpan(r.gpEarned, r.earned)}</td>
+      <td class="pt-num" style="${split}color:var(--blue)">${money(r.invoiced)}</td>
+      <td class="pt-num" style="${profCol(r.netProfit)}">${r.netProfit === null ? '—' : signed(r.netProfit) + pctSpan(r.netProfit, r.invoiced)}</td>
+      <td class="pt-num">${hours(r.manHours)}</td>
+      <td class="pt-num" style="${profCol(r.bonus)}">${r.bonus === null ? '—' : signed(r.bonus) + perHour(r.bonusPerHour)}</td>
     </tr>`).join('');
 
   const t = _financialsTotals(rows);
@@ -20089,6 +20241,7 @@ function _renderFinancialsTable() {
           <th>Job Name</th>
           <th>Job #</th>
           <th>Status</th>
+          <th title="Field area, from the project card">${FIN_AREA_LABEL}</th>
           <th>Contract Value</th>
           <th>Bid Budget</th>
           <th>Actual</th>
@@ -20096,12 +20249,17 @@ function _renderFinancialsTable() {
           <th title="Estimated final cost — never less than what has already been spent">Projected Cost</th>
           <th title="Contract minus projected final cost">Projected Profit</th>
           <th title="Contract earned so far (cost to date ÷ projected cost) less cost to date. Contract minus final cost once the job is complete.">GP Earned to Date</th>
+          <th style="${split}" title="Billed to date — entered on the project card under Contract &amp; Financials">Invoiced</th>
+          <th title="Invoiced less actual cost; the margin is on the invoiced amount">Net Profit</th>
+          <th title="Labor hours booked to the job, travel left out">Man Hours</th>
+          <th title="${b.share}% of the net profit left after ${b.overhead}% overhead and the ${b.target}% profit target come off the invoiced amount">Bonus Amount</th>
         </tr></thead>
         <tbody>${body}</tbody>
         <tfoot><tr style="border-top:2px solid var(--border);font-weight:700">
           <td>Totals</td>
           <td></td>
           <td></td>
+          <td class="pt-num">${area(t.sqft)}</td>
           <td class="pt-num" style="color:var(--blue)">${money(t.contract)}</td>
           <td class="pt-num" style="color:var(--green)">${money(t.bid)}</td>
           <td class="pt-num" style="color:var(--yellow)">${money(t.actual)}</td>
@@ -20109,6 +20267,10 @@ function _renderFinancialsTable() {
           <td class="pt-num">${money(t.projected)}</td>
           <td class="pt-num" style="${t.profit === null ? 'color:var(--muted)' : profCol(t.profit)}">${t.profit === null ? '—' : signed(t.profit) + pctSpan(t.profit, t.profitBase)}</td>
           <td class="pt-num" style="${t.gpEarned === null ? 'color:var(--muted)' : profCol(t.gpEarned)}">${t.gpEarned === null ? '—' : signed(t.gpEarned) + pctSpan(t.gpEarned, t.gpBase)}</td>
+          <td class="pt-num" style="${split}color:var(--blue)">${money(t.invoiced)}</td>
+          <td class="pt-num" style="${profCol(t.netProfit)}">${t.netProfit === null ? '—' : signed(t.netProfit) + pctSpan(t.netProfit, t.invoiced)}</td>
+          <td class="pt-num">${hours(t.manHours)}</td>
+          <td class="pt-num" style="${profCol(t.bonus)}">${t.bonus === null ? '—' : signed(t.bonus) + perHour(t.bonusPerHour)}</td>
         </tr></tfoot>
       </table>
     </div>
@@ -20117,6 +20279,10 @@ function _renderFinancialsTable() {
       GP Earned to Date is the gross profit on the work done <strong>so far</strong>: the contract earned in proportion to
       cost to date over projected cost, less cost to date. Blank until a job has spend; contract minus final cost once it is complete.
       ${t.noContract ? `${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount, so ${t.noContract === 1 ? 'it is' : 'they are'} excluded from both profit totals.` : ''}
+      <br>Net Profit is <strong>invoiced</strong> less actual cost. Bonus Amount is ${b.share}% of the net profit left after
+      ${b.overhead}% overhead and the ${b.target}% profit target come off the invoiced amount; a job below that line shows a
+      negative bonus, which nets against the total. Man Hours leave out travel.
+      ${t.noInvoice ? `${t.noInvoice} job${t.noInvoice === 1 ? ' has' : 's have'} nothing invoiced yet, so ${t.noInvoice === 1 ? 'it is' : 'they are'} left out of the Net Profit and Bonus totals.` : ''}
       ${ranged ? `The date range keeps the jobs with a daily entry dated inside it. Every other column is still the whole job;
         <strong>Actual in Range</strong> is the cost of just the entries dated inside the range.` : ''}
       ${_finFiltered() ? 'Totals cover the filtered rows only — as do the Excel export and the printout.' : ''}
@@ -20125,7 +20291,8 @@ function _renderFinancialsTable() {
 
 // Column order is shared by the table, the export and the print view. A date
 // range adds Actual in Range straight after Actual in all three.
-const FIN_COLUMNS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'GP Earned to Date'];
+const FIN_COLUMNS = ['Job Name', 'Job #', 'Status', FIN_AREA_LABEL, 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'GP Earned to Date',
+                     'Invoiced', 'Net Profit', 'Man Hours', 'Bonus Amount'];
 const _finColumns = ranged => ranged
   ? FIN_COLUMNS.flatMap(c => c === 'Actual' ? [c, 'Actual in Range'] : [c])
   : FIN_COLUMNS;
@@ -20149,17 +20316,20 @@ function exportFinancialsCSV() {
   };
   const n = v => (v === null || v === undefined) ? '' : Number(v).toFixed(2);
   const m = v => v ? Number(v).toFixed(2) : '';   // blank where the table shows —
+  const plain = v => v ? String(Math.round(v * 100) / 100) : '';   // area and hours, likewise
   const ranged = _finHasRange();
   const lines = [_finColumns(ranged).concat(FIN_WORKED_COLUMNS).map(q).join(',')];
   rows.forEach(r => lines.push([
-    q(r.name), q(r.job), q(r.status),
+    q(r.name), q(r.job), q(r.status), plain(r.sqft),
     m(r.contract), m(r.bid), m(r.actual), ...(ranged ? [m(r.rangeActual)] : []),
     m(r.projected), n(r.profit), n(r.gpEarned),
+    m(r.invoiced), n(r.netProfit), plain(r.manHours), n(r.bonus),
     r.firstDate, r.lastDate, r.firstDate ? r.daysWorked : '',
   ].join(',')));
   const t = _financialsTotals(rows);
-  lines.push(['Totals', '', '', m(t.contract), m(t.bid), m(t.actual), ...(ranged ? [m(t.rangeActual)] : []),
-    m(t.projected), n(t.profit), n(t.gpEarned), '', '', ''].join(','));
+  lines.push(['Totals', '', '', plain(t.sqft), m(t.contract), m(t.bid), m(t.actual), ...(ranged ? [m(t.rangeActual)] : []),
+    m(t.projected), n(t.profit), n(t.gpEarned),
+    m(t.invoiced), n(t.netProfit), plain(t.manHours), n(t.bonus), '', '', ''].join(','));
 
   const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
   const a = document.createElement('a');
@@ -20183,12 +20353,18 @@ function printFinancials() {
   const money  = v => v ? '$' + fmt(v) : '—';
   const signed = v => v === null ? '—' : (v >= 0 ? '$' + fmt(v) : '-$' + fmt(Math.abs(v)));
   const pct    = (v, base) => (v !== null && base) ? ` (${(v / base * 100).toFixed(1)}%)` : '';
+  const area   = v => v ? fmt(v, 0) : '—';
+  const hours  = v => v ? _finHours(v) : '—';
+  const perHr  = v => v === null ? '' : ` (${signed(v)}/hr)`;
+  const tone   = v => v === null ? '' : v >= 0 ? 'pos' : 'neg';
   const ranged = _finHasRange();
+  const b      = finBonus;
 
   const body = rows.map(r => `<tr>
       <td>${esc2(r.name)}${r.firstDate ? `<div class="worked">${esc2(_finWorkedText(r))}</div>` : ''}</td>
       <td>${esc2(r.job) || '—'}</td>
       <td>${esc2(r.status) || '—'}</td>
+      <td class="n">${area(r.sqft)}</td>
       <td class="n">${money(r.contract)}</td>
       <td class="n">${money(r.bid)}</td>
       <td class="n">${money(r.actual)}</td>
@@ -20196,6 +20372,10 @@ function printFinancials() {
       <td class="n">${money(r.projected)}</td>
       <td class="n ${r.profit    === null ? '' : r.profit    >= 0 ? 'pos' : 'neg'}">${signed(r.profit)}${pct(r.profit, r.contract)}</td>
       <td class="n ${r.gpEarned  === null ? '' : r.gpEarned  >= 0 ? 'pos' : 'neg'}">${signed(r.gpEarned)}${pct(r.gpEarned, r.earned)}</td>
+      <td class="n split">${money(r.invoiced)}</td>
+      <td class="n ${tone(r.netProfit)}">${signed(r.netProfit)}${pct(r.netProfit, r.invoiced)}</td>
+      <td class="n">${hours(r.manHours)}</td>
+      <td class="n ${tone(r.bonus)}">${signed(r.bonus)}${perHr(r.bonusPerHour)}</td>
     </tr>`).join('');
 
   const filterNote = [
@@ -20223,21 +20403,26 @@ function printFinancials() {
     tfoot td { border-top: 2px solid #999; border-bottom: none; font-weight: 700; }
     .pos { color: #15803d; } .neg { color: #b91c1c; }
     tbody tr:nth-child(even) { background: #fafafa; }
+    th.split, td.split { border-left: 1px solid #bbb; }
     p.note { margin-top: 10px; font-size: 8px; color: #555; line-height: 1.5; }
+    @page { size: landscape; margin: 0.4in; }
     @media print { body { padding: 0; } thead { display: table-header-group; } tr { break-inside: avoid; } }
   </style></head><body>
   <h2>Financials — ${esc2(_finDivisionLabel())}</h2>
-  <p class="meta">${rows.length} job${rows.length === 1 ? '' : 's'} &nbsp;·&nbsp; printed ${esc2(new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }))}${filterNote ? ' &nbsp;·&nbsp; ' + filterNote : ''}</p>
+  <p class="meta">${rows.length} job${rows.length === 1 ? '' : 's'} &nbsp;·&nbsp; printed ${esc2(new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }))}${filterNote ? ' &nbsp;·&nbsp; ' + filterNote : ''}
+    &nbsp;·&nbsp; Bonus: ${b.overhead}% overhead, ${b.target}% profit target, ${b.share}% share</p>
   <table>
     <thead><tr>
-      <th>Job Name</th><th>Job #</th><th>Status</th>
+      <th>Job Name</th><th>Job #</th><th>Status</th><th class="n">${esc2(FIN_AREA_LABEL)}</th>
       <th class="n">Contract Value</th><th class="n">Bid Budget</th><th class="n">Actual</th>
       ${ranged ? '<th class="n">Actual in Range</th>' : ''}
       <th class="n">Projected Cost</th><th class="n">Projected Profit</th><th class="n">GP Earned to Date</th>
+      <th class="n split">Invoiced</th><th class="n">Net Profit</th><th class="n">Man Hours</th><th class="n">Bonus Amount</th>
     </tr></thead>
     <tbody>${body}</tbody>
     <tfoot><tr>
       <td>Totals</td><td></td><td></td>
+      <td class="n">${area(t.sqft)}</td>
       <td class="n">${money(t.contract)}</td>
       <td class="n">${money(t.bid)}</td>
       <td class="n">${money(t.actual)}</td>
@@ -20245,9 +20430,13 @@ function printFinancials() {
       <td class="n">${money(t.projected)}</td>
       <td class="n">${signed(t.profit)}${pct(t.profit, t.profitBase)}</td>
       <td class="n">${signed(t.gpEarned)}${pct(t.gpEarned, t.gpBase)}</td>
+      <td class="n split">${money(t.invoiced)}</td>
+      <td class="n">${signed(t.netProfit)}${pct(t.netProfit, t.invoiced)}</td>
+      <td class="n">${hours(t.manHours)}</td>
+      <td class="n">${signed(t.bonus)}${perHr(t.bonusPerHour)}</td>
     </tr></tfoot>
   </table>
-  <p class="note">Projected Profit is contract value minus projected final cost. GP Earned to Date is the contract earned so far (cost to date over projected cost) less cost to date — blank until a job has spend, contract minus final cost once it is complete.${t.noContract ? ` ${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount and ${t.noContract === 1 ? 'is' : 'are'} excluded from both profit totals.` : ''}${ranged ? ' The date range keeps the jobs with a daily entry dated inside it; every other column is the whole job, and Actual in Range is the cost of just the entries dated inside the range.' : ''}${filterNote ? ' Totals cover the filtered rows only.' : ''}</p>
+  <p class="note">Projected Profit is contract value minus projected final cost. GP Earned to Date is the contract earned so far (cost to date over projected cost) less cost to date — blank until a job has spend, contract minus final cost once it is complete.${t.noContract ? ` ${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount and ${t.noContract === 1 ? 'is' : 'are'} excluded from both profit totals.` : ''} Net Profit is invoiced less actual cost. Bonus Amount is ${b.share}% of the net profit left after ${b.overhead}% overhead and the ${b.target}% profit target come off the invoiced amount; a job below that line shows a negative bonus, which nets against the total. Man Hours leave out travel.${t.noInvoice ? ` ${t.noInvoice} job${t.noInvoice === 1 ? ' has' : 's have'} nothing invoiced yet and ${t.noInvoice === 1 ? 'is' : 'are'} left out of the Net Profit and Bonus totals.` : ''}${ranged ? ' The date range keeps the jobs with a daily entry dated inside it; every other column is the whole job, and Actual in Range is the cost of just the entries dated inside the range.' : ''}${filterNote ? ' Totals cover the filtered rows only.' : ''}</p>
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`);
   win.document.close();
@@ -23658,7 +23847,7 @@ function _resolveImportProject(nameFromCSV, globalProjId) {
         'gc': '', 'pm': '', 'super': '', 'estimator': '', 'client-contact': '',
         'address': '', 'city-state': '', 'start-date': '', 'end-date': '',
         'contract-days': '', 'contract-amount': '', 'revised-amount': '',
-        'retention': '', 'scope': '', 'notes': '', 'sqft': '',
+        'retention': '', 'scope': '', 'notes': '', 'sqft': '', 'invoiced': '',
         prevailing_wage: false, assigned_employees: [], assigned_equipment: []
       };
       projectsList.push(newProj);

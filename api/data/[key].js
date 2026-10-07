@@ -18,7 +18,10 @@ const {
   CROSS_DIVISION_CONTRIBUTORS,
 } = require('../lib/auth');
 
-const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders', 'fct_presence', 'fct_trucking', 'fct_inventory', 'fct_scale_manual', 'fct_soe_units', 'fct_truck_division', 'fct_truck_division_lists', 'fct_trucking_schedule', 'fct_trucking_labor_schedule'];
+// fct_fin_settings: turf's Analytics ▸ Financials bonus percentages. Paving
+// and kiewit keep theirs under their own prefixes (fct_paving_fin_settings,
+// fct_kiewit_fin_settings), which the patterns below already admit.
+const ALLOWED_KEYS = ['fct_projects', 'fct_projects_index', 'fct_lists', 'fct_cost_rows', 'fct_purchase_orders', 'fct_presence', 'fct_trucking', 'fct_inventory', 'fct_scale_manual', 'fct_soe_units', 'fct_truck_division', 'fct_truck_division_lists', 'fct_trucking_schedule', 'fct_trucking_labor_schedule', 'fct_fin_settings'];
 // The divisions' pick-list blobs: one object holding the employee roster, the
 // equipment list, suppliers, cost codes and the rest, each as an array. A PUT
 // may not empty any of those arrays that holds more than one entry — see the
