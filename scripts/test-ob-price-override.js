@@ -233,8 +233,21 @@ function newPage(rows) {
 
     page.obClearPriceOverride(0);
     assert('clearing the box takes payroll\'s price back', locked.price_per_unit === 0.42);
-    assert('and drops the receipt',
-      !(OB_PRICE_OVERRIDE in locked) && !(OB_PRICE_PAYROLL in locked));
+    assert('and drops the receipt, leaving an explicit blank for the save to carry',
+      locked[OB_PRICE_OVERRIDE] === '' && !(OB_PRICE_PAYROLL in locked));
+
+    // The save that clear produces has to clear the SERVER's copy too. The
+    // guard replays only office columns the save carries, so a deleted key
+    // would leave the override standing there and the next load would put it
+    // straight back on screen.
+    const srvRow = { id: 'tso-41-1', customer: 'CNX', gallons_bags: 4000, trucking_hrs: 10,
+                     trucking_rate: 95, price_per_unit: 1.42,
+                     [OB_PRICE_OVERRIDE]: 1.42, [OB_PRICE_PAYROLL]: 0.42 };
+    const [afterClear] = mergeInjectedRows([srvRow], [JSON.parse(JSON.stringify(locked))],
+      guardConfigFor('dust_other_billing_rows'));
+    assert('and the save it makes clears the server\'s override too',
+      afterClear.price_per_unit === 0.42 && !(OB_PRICE_OVERRIDE in afterClear),
+      JSON.stringify(afterClear));
     assert('the note goes with it', page._obPriceNote(locked, 0) === '');
 
     // Junk is refused rather than saved — the server would drop it, and a price

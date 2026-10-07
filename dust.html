@@ -1149,10 +1149,11 @@
        or the row silently stops being billed. */
     .ic-sent-chip.ic-removed-chip { color: var(--muted); }
 
-    /* The one open box on a payroll-injected Other Billing row: the backup
-       price per gal/bag. A dashed underline so it reads as deliberately open
-       rather than as a cell somebody forgot to lock, and the note under it
-       when the office's figure and payroll's disagree. */
+    /* The open boxes on a payroll-injected Other Billing row: the backup
+       price per gal/bag and the backup trucking $/hr. A dashed underline so
+       they read as deliberately open rather than as cells somebody forgot to
+       lock, and the note under each when the office's figure and payroll's
+       disagree. */
     .sheet-table td.ob-ovr { padding: 0 0.1rem; }
     .sheet-table td.ob-ovr input {
       height: auto; padding: 0.15rem 0.32rem;
@@ -7440,7 +7441,8 @@
        A day split across hauls posts one per haul (ids "tso-<entryId>-1",
        "tso-<entryId>-2"… — see api/lib/dust-ob-injected.js). They render locked,
        and the server refuses this tab's writes against every column but the
-       invoice number and the comment.
+       invoice number, the comment and the two overrides (price per gal/bag and
+       trucking $/hr).
 
        Kept in step with isInjectedObRowId in api/lib/dust-ob-injected.js and
        with the "tso-" prefix in api/lib/injected-blob-guard.js. */
@@ -7568,7 +7570,12 @@
         : row.price_per_unit;
       const v = _obPriceVal(row[OB_PRICE_OVERRIDE]);
       if (v === null || v === '' || _obSamePrice(v, payroll)) {
-        delete row[OB_PRICE_OVERRIDE];
+        // Left as an explicit blank rather than deleted when the row carried
+        // one: the server only replays an office column the save actually
+        // sends (injected-blob-guard), so a deleted key would leave the
+        // override standing on the server's copy and the next load would put
+        // it straight back. A row that never had one is left without the key.
+        if (Object.prototype.hasOwnProperty.call(row, OB_PRICE_OVERRIDE)) row[OB_PRICE_OVERRIDE] = '';
         delete row[OB_PRICE_PAYROLL];
         row.price_per_unit = payroll == null ? '' : payroll;
       } else {
@@ -7643,22 +7650,133 @@
       obRefreshTotals();
     }
 
+    /* ═══════════════════════════════════════════
+       MANUAL TRUCKING RATE OVERRIDE  (payroll-injected rows)
+       The same override on the row's other rate: trucking $/hr. Payroll fills it
+       from the approve modal and stays its primary source — but a rate typed
+       wrong at approval, or left blank, used to mean finding the entry in
+       Payroll's Edit Row before the invoice could go out. The box is open here
+       now, stored as trucking_rate_override beside payroll's figure, with
+       trucking_rate derived from the pair (api/lib/dust-ob-injected.js, "The
+       manual trucking rate override"), so the trucking total, Intercompany and
+       every report keep reading trucking_rate and know nothing about this.
+
+       Payroll stays primary: the server drops this override the moment
+       payroll's own rate changes (somebody retyped it in Edit Row), and a save
+       from a tab that loaded before that change cannot put it back.
+    ═══════════════════════════════════════════ */
+
+    const OB_TRK_RATE_OVERRIDE = 'trucking_rate_override';
+    const OB_TRK_RATE_PAYROLL  = 'trucking_rate_payroll';
+
+    /** Is a trucking rate override standing on this row? Same gate as the price. */
+    function _obHasTrkRateOverride(row) {
+      if (!row || !obIsInjectedRow(row)) return false;
+      const v = _obPriceVal(row[OB_TRK_RATE_OVERRIDE]);
+      return v !== '' && v !== null;
+    }
+
+    /** Payroll's own trucking rate — behind the override when one stands. */
+    function _obPayrollTrkRate(row) {
+      if (!row) return '';
+      return _obHasTrkRateOverride(row)
+        ? (row[OB_TRK_RATE_PAYROLL] == null ? '' : row[OB_TRK_RATE_PAYROLL])
+        : row.trucking_rate;
+    }
+
+    /** Settle trucking_rate from the override, exactly as the server will on save. */
+    function _obApplyTrkRateOverride(row) {
+      if (!row) return;
+      const payroll = Object.prototype.hasOwnProperty.call(row, OB_TRK_RATE_PAYROLL)
+        ? row[OB_TRK_RATE_PAYROLL]
+        : row.trucking_rate;
+      const v = _obPriceVal(row[OB_TRK_RATE_OVERRIDE]);
+      if (v === null || v === '' || _obSamePrice(v, payroll)) {
+        // An explicit blank, not a deleted key — see _obApplyPriceOverride.
+        if (Object.prototype.hasOwnProperty.call(row, OB_TRK_RATE_OVERRIDE)) row[OB_TRK_RATE_OVERRIDE] = '';
+        delete row[OB_TRK_RATE_PAYROLL];
+        row.trucking_rate = payroll == null ? '' : payroll;
+      } else {
+        row[OB_TRK_RATE_OVERRIDE] = v;
+        // Payroll's figure is also what the server checks this override was set
+        // against, so it is kept on the row the save sends.
+        row[OB_TRK_RATE_PAYROLL]  = payroll == null ? '' : payroll;
+        row.trucking_rate         = v;
+      }
+    }
+
+    /** The note under an overridden trucking rate — see _obPriceNote. */
+    function _obTrkRateNote(row, idx) {
+      if (!_obHasTrkRateOverride(row)) return '';
+      const pay  = _obPriceVal(_obPayrollTrkRate(row));
+      const has  = pay !== '' && pay !== null;
+      const said = has ? money(pay) : '';
+      const label = has ? `&#8635; set here &middot; payroll ${esc(said)}` : '&#8635; set here';
+      const title = has
+        ? `Set in this tab, not in Payroll. Payroll has ${said}/hr on this haul — click to bill payroll's rate instead. Changing the rate in Payroll's Edit Row also replaces this one.`
+        : 'Set in this tab, not in Payroll. Payroll has no trucking rate on this haul — click to clear this one and leave it unrated.';
+      return `<span onclick="obClearTruckingRateOverride(${idx})" title="${esc(title)}" style="cursor:pointer;font-size:0.6rem;color:#fbbf24">${label}</span>`;
+    }
+
+    /** Repaint one row's trucking rate box, its note and its totals after a change. */
+    function _obPaintTrkRate(idx) {
+      const row = obRows[idx];
+      if (!row) return;
+      const box = document.getElementById(`ob-trate-${idx}`);
+      if (box) box.value = row.trucking_rate == null ? '' : row.trucking_rate;
+      const note = document.getElementById(`ob-trate-ovr-${idx}`);
+      if (note) note.innerHTML = _obTrkRateNote(row, idx);
+      obRefreshCalcCells(idx);
+      obRefreshTotals();
+    }
+
+    /**
+     * Rate a locked row's trucking from the tab. Refuses anything that is not a
+     * rate and puts the box back; a blank clears the override and returns
+     * payroll's rate.
+     */
+    function obSetTruckingRateOverride(idx, value) {
+      const row = obRows[idx];
+      if (!row || !obIsInjectedRow(row)) return;
+      if (_obPriceVal(value) === null) { _obPaintTrkRate(idx); return; }
+      row[OB_TRK_RATE_OVERRIDE] = value;
+      _obApplyTrkRateOverride(row);
+      _obPaintTrkRate(idx);
+      obScheduleSave();
+    }
+
+    function obClearTruckingRateOverride(idx) { obSetTruckingRateOverride(idx, ''); }
+
+    /** Live totals as the office types — see _obLivePriceOverride. */
+    function _obLiveTruckingRateOverride(idx, value) {
+      const row = obRows[idx];
+      if (!row || !obIsInjectedRow(row)) return;
+      if (_obPriceVal(value) === null) return;
+      row[OB_TRK_RATE_OVERRIDE] = value;
+      _obApplyTrkRateOverride(row);
+      const note = document.getElementById(`ob-trate-ovr-${idx}`);
+      if (note) note.innerHTML = _obTrkRateNote(row, idx);
+      obRefreshCalcCells(idx);
+      obRefreshTotals();
+    }
+
     // The columns the dust office still owns on a payroll row: the invoice it
-    // bills under, the note against it, and the backup price (see "MANUAL PRICE
-    // OVERRIDE" above — the override, never price_per_unit itself, which stays
-    // payroll's to correct). Mirrors OB_TAB_FIELDS in
+    // bills under, the note against it, the backup price and the backup
+    // trucking rate (see "MANUAL PRICE OVERRIDE" and "MANUAL TRUCKING RATE
+    // OVERRIDE" above — the overrides, never price_per_unit or trucking_rate
+    // themselves, which stay payroll's to correct). Mirrors OB_TAB_FIELDS in
     // api/lib/dust-ob-injected.js, which is what the server replays from this
     // tab's saves and what re-injection preserves — anything not on this list
     // is silently discarded on the way in, so offering it here would be a box
     // that looks editable and never saves.
-    const OB_TAB_FIELDS = ['inv_number', 'comments', OB_PRICE_OVERRIDE];
+    const OB_TAB_FIELDS = ['inv_number', 'comments', OB_PRICE_OVERRIDE, OB_TRK_RATE_OVERRIDE];
 
-    // The columns a change to which moves this row's money. The override is one
-    // of them by way of price_per_unit, which is derived from it before the
-    // totals are read back.
+    // The columns a change to which moves this row's money. The overrides are
+    // among them by way of price_per_unit and trucking_rate, which are derived
+    // from them before the totals are read back.
     const OB_CALC_FIELDS = [
       'gallons_bags', 'price_per_unit', 'trucking_hrs', 'trucking_rate',
-      OB_PRICE_OVERRIDE,
+      OB_PRICE_OVERRIDE, OB_TRK_RATE_OVERRIDE,
     ];
 
     function obSet(idx, field, value) {
@@ -7672,6 +7790,7 @@
       // box uses — a row saved with an override and a price that disagree would
       // bill one figure and report another until the next re-injection.
       if (field === OB_PRICE_OVERRIDE) _obApplyPriceOverride(obRows[idx]);
+      if (field === OB_TRK_RATE_OVERRIDE) _obApplyTrkRateOverride(obRows[idx]);
       if (OB_CALC_FIELDS.includes(field)) {
         obRefreshCalcCells(idx);
         obRefreshTotals();
@@ -7731,6 +7850,7 @@
       if (obIsInjectedRow(obRows[idx]) && !OB_TAB_FIELDS.includes(field)) return;
       obRows[idx][field] = value;
       if (field === OB_PRICE_OVERRIDE) _obApplyPriceOverride(obRows[idx]);
+      if (field === OB_TRK_RATE_OVERRIDE) _obApplyTrkRateOverride(obRows[idx]);
       if (OB_CALC_FIELDS.includes(field)) {
         obRefreshCalcCells(idx);
         obRefreshTotals();
@@ -7884,19 +8004,21 @@
           </div>`;
 
         // Payroll-injected rows are locked here: every column but the invoice
-        // number, the comment and the price was filled in when a supervisor
+        // number, the comment, the price and the trucking rate was filled in when a supervisor
         // approved the driver's timesheet and billed that haul as material, and
         // the only correct way to change or remove one is to go back there.
         // Leaving them editable would mean two sources of truth for the same
         // delivery — and the server discards the edit anyway, replaying its own
-        // copy of these columns over any save from this tab. The price is the
-        // exception, and an override rather than an exception to that rule: see
-        // "MANUAL PRICE OVERRIDE" above.
+        // copy of these columns over any save from this tab. The price and the
+        // trucking rate are the exceptions, and overrides rather than exceptions
+        // to that rule: see "MANUAL PRICE OVERRIDE" and "MANUAL TRUCKING RATE
+        // OVERRIDE" above.
         const obInjected = obIsInjectedRow(row);
         const obRo = (v, cls) =>
           `<td class="${cls}" style="color:var(--text);font-size:0.72rem;padding:0.3rem 0.4rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(v == null || v === '' ? '—' : String(v))}</td>`;
-        const obLockTitle = 'Posted from an approved timesheet entry — edit it in Payroll, not here. The price per gal/bag is the exception: it can be set here as an override.';
+        const obLockTitle = 'Posted from an approved timesheet entry — edit it in Payroll, not here. The price per gal/bag and the trucking $/hr are the exceptions: they can be set here as overrides.';
         const obPriceTitle = 'Manual override — payroll owns this price, but you can price the delivery here if it came over without one, or bill it at a different figure. Clear the box to go back to payroll\'s.';
+        const obTrkRateTitle = 'Manual override — pulled from the payroll entry, but you can bill the trucking at a different rate here. Clear the box to go back to payroll\'s; changing the rate in Payroll\'s Edit Row replaces this one.';
         const obTsBadge   = `<span title="${obLockTitle}" style="display:inline-block;font-size:0.53rem;letter-spacing:0.06em;text-transform:uppercase;font-weight:700;color:#a5b4fc;background:rgba(165,180,252,0.12);border:1px solid rgba(165,180,252,0.35);border-radius:3px;padding:0.02rem 0.26rem;white-space:nowrap">&#8592; Timesheet</span>`;
 
         const expanded = obExpanded.has(row.id);
@@ -7940,7 +8062,7 @@
             ? obRo(row.trucking_hrs, 'cw-rate')
             : `<td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_hrs||'')}" oninput="_obLiveSet(${idx},'trucking_hrs',this.value)" onchange="obSet(${idx},'trucking_hrs',this.value)"></td>`}
           ${obInjected
-            ? obRo(row.trucking_rate, 'cw-rate')
+            ? `<td class="cw-rate ob-ovr"><input type="number" id="ob-trate-${idx}" step="0.01" min="0" value="${esc(row.trucking_rate == null ? '' : String(row.trucking_rate))}" placeholder="0.00" title="${obTrkRateTitle}" oninput="_obLiveTruckingRateOverride(${idx},this.value)" onchange="obSetTruckingRateOverride(${idx},this.value)"><div class="ob-ovr-note" id="ob-trate-ovr-${idx}">${_obTrkRateNote(row, idx)}</div></td>`
             : `<td class="cw-rate"><input type="number" step="0.01" min="0" value="${esc(row.trucking_rate||'')}" oninput="_obLiveSet(${idx},'trucking_rate',this.value)" onchange="obSet(${idx},'trucking_rate',this.value)"></td>`}
           <td class="cw-loc"><input type="text" value="${esc(row.comments||'')}" placeholder="Notes…" oninput="obSet(${idx},'comments',this.value)"></td>
           <td class="calc cw-inv${c.total ? '' : ' empty'}">${c.total ? money(c.total) : '—'}${icChip}${obInjected ? `<div style="margin-top:0.15rem">${obTsBadge}</div>` : ''}</td>

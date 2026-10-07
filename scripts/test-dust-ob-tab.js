@@ -16,8 +16,9 @@
  *   - every payroll-owned column of the injected row is read-only text,
  *   - the invoice number and the comment are still inputs, because the dust
  *     office bills on them,
- *   - the price per gal/bag is a real box too, and typing in it goes in as an
- *     override beside payroll's figure rather than on top of it,
+ *   - the price per gal/bag and the trucking $/hr are real boxes too, and
+ *     typing in them goes in as an override beside payroll's figure rather
+ *     than on top of it,
  *   - the delete button is a padlock,
  *   - the hand-added row beside it is untouched — every cell still editable,
  *     still deletable.
@@ -164,11 +165,12 @@ async function main() {
   };
 
   console.log('\n[the payroll row is locked]');
-  // price_per_unit is not on the list: it is the one payroll column the office
-  // can still set, as an override. See "the office can still price it" below.
+  // price_per_unit and trucking_rate are not on the list: they are the payroll
+  // columns the office can still set, as overrides. See "the office can still
+  // price it" and "the office can still rate the trucking" below.
   const LOCKED = ['date', 'driver', 'truck_number', 'trailer_number', 'customer',
                   'destination', 'state', 'material', 'gallons_bags', 'mu',
-                  'trucking_hrs', 'trucking_rate'];
+                  'trucking_hrs'];
   for (const col of LOCKED) {
     assert(`${col} is read-only text`, !editable(injected, col),
       cell(injected, col) ? cell(injected, col).innerHTML.slice(0, 80) : 'no cell');
@@ -219,11 +221,13 @@ async function main() {
   assert('and the note says whose number it is',
     /set here/.test(doc.getElementById('ob-price-ovr-' + iIdx).innerHTML));
 
-  // Clearing the box hands the number back to payroll.
+  // Clearing the box hands the number back to payroll. The override is left
+  // as an explicit blank so the save carries it — the server only replays an
+  // office column the save actually sends.
   win.eval(`obClearPriceOverride(${iIdx})`);
   assert('clearing it returns payroll\'s price', priced().price_per_unit === 0.42);
   assert('and drops the receipt',
-    !('price_per_unit_override' in priced()) && !('price_per_unit_payroll' in priced()));
+    priced().price_per_unit_override === '' && !('price_per_unit_payroll' in priced()));
   assert('the box shows it again',
     cell(injected, 'price_per_unit').querySelector('input').value === '0.42');
   assert('and the note is gone',
@@ -232,10 +236,46 @@ async function main() {
   // Junk is refused rather than saved as a price the server would drop.
   win.eval(`obSetPriceOverride(${iIdx}, '-5')`);
   assert('a negative price is refused', priced().price_per_unit === 0.42);
-  assert('and the override is not stored', !('price_per_unit_override' in priced()));
+  assert('and the override is not stored', !priced().price_per_unit_override);
+
+  console.log('\n[the office can still rate the trucking]');
+  assert('the trucking $/hr is a real box', editable(injected, 'trucking_rate'));
+  const rateBox = () => cell(injected, 'trucking_rate').querySelector('input');
+  assert('showing payroll\'s rate', rateBox().value === '95', rateBox().value);
+  assert('and saying it is an override pulled from payroll',
+    /override/i.test(rateBox().getAttribute('title') || '')
+    && /payroll/i.test(rateBox().getAttribute('title') || ''), rateBox().getAttribute('title'));
+  assert('nothing under it while the office and payroll agree',
+    doc.getElementById('ob-trate-ovr-' + iIdx).innerHTML === '');
+
+  win.eval(`obSetTruckingRateOverride(${iIdx}, '135')`);
+  assert('the override is what is stored',
+    priced().trucking_rate_override === 135, JSON.stringify(priced()));
+  assert('payroll\'s rate is kept beside it', priced().trucking_rate_payroll === 95);
+  assert('and trucking_rate is derived from the pair', priced().trucking_rate === 135);
+  // 4,000 gal at payroll's 0.42 = $1,680 of material, plus 10 trucking hours
+  // at the office's 135.
+  assert('the row total follows it',
+    cell(injected, 'total').textContent.startsWith('$3,030.00'),
+    cell(injected, 'total').textContent);
+  assert('and the note says whose rate it is',
+    /set here/.test(doc.getElementById('ob-trate-ovr-' + iIdx).innerHTML)
+    && /payroll \$95\.00/.test(doc.getElementById('ob-trate-ovr-' + iIdx).innerHTML),
+    doc.getElementById('ob-trate-ovr-' + iIdx).innerHTML);
+
+  win.eval(`obClearTruckingRateOverride(${iIdx})`);
+  assert('clearing it returns payroll\'s rate', priced().trucking_rate === 95);
+  assert('and leaves an explicit blank for the save to carry',
+    priced().trucking_rate_override === '' && !('trucking_rate_payroll' in priced()));
+  assert('the box shows payroll\'s rate again', rateBox().value === '95');
+  assert('and the note is gone', doc.getElementById('ob-trate-ovr-' + iIdx).innerHTML === '');
+
+  win.eval(`obSetTruckingRateOverride(${iIdx}, '-5')`);
+  assert('a negative rate is refused', priced().trucking_rate === 95);
+  assert('and no override is stored', !priced().trucking_rate_override);
 
   console.log('\n[the hand-added row is untouched]');
-  for (const col of LOCKED.concat('price_per_unit')) {
+  for (const col of LOCKED.concat('price_per_unit', 'trucking_rate')) {
     assert(`${col} is still editable`, editable(manual, col));
   }
   assert('and it can still be deleted', !!cell(manual, 'del').querySelector('button'));
@@ -243,6 +283,10 @@ async function main() {
   const m = JSON.parse(win.eval("JSON.stringify(obRows.find(r => r.id === 'm8x2p1'))"));
   assert('its price is edited outright, never overridden',
     m.price_per_unit === '0.99' && !('price_per_unit_override' in m));
+  win.eval(`obSet(obRows.findIndex(r => r.id === 'm8x2p1'), 'trucking_rate', '110')`);
+  const m2 = JSON.parse(win.eval("JSON.stringify(obRows.find(r => r.id === 'm8x2p1'))"));
+  assert('and so is its trucking rate',
+    m2.trucking_rate === '110' && !('trucking_rate_override' in m2));
 
   console.log('\n[a locked cell cannot be written even from script]');
   const before = win.eval("JSON.stringify(obRows.find(r => r.id === 'tso-41-1'))");

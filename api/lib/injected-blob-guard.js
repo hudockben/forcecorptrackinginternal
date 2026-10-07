@@ -30,7 +30,8 @@
  * the trucking office fills in the invoice sub-row (QB number, invoiced/sent
  * dates, paid status) on a locked payroll row, and prices an unpriced haul
  * through the backup fee; the dust office does the same on Other Billing with
- * the invoice number, the note and the backup price per gal/bag. Those are
+ * the invoice number, the note, the backup price per gal/bag and the backup
+ * trucking $/hr. Those are
  * replayed from the incoming copy onto the server's row, the same way dust's
  * EES tab replays its rate column, and anything they decide (`derive`) is
  * recomputed here from the server's row rather than trusted from the client.
@@ -56,7 +57,7 @@ const {
 } = require('./truck-injected');
 // Same rule, same reason, for the Dust Other Billing grid: OB_TAB_FIELDS is
 // what re-injection preserves, so it is also what a tab save may overwrite.
-const { OB_TAB_FIELDS, applyObPriceOverride } = require('./dust-ob-injected');
+const { OB_TAB_FIELDS, applyObOverrides } = require('./dust-ob-injected');
 // Quarry Sales is not payroll's, but it is the same problem: the field posts a
 // row into a grid the office saves whole, so SALES_TAB_FIELDS names the one
 // column the office still owns on it.
@@ -84,12 +85,13 @@ const INJECTED_BLOBS = {
   fct_quarry_daily:    { prefix: 'tsq-', tabFields: [] },
   fct_quarry_crushing: { prefix: 'tsq-', tabFields: [] },
   // The dust office still bills on a payroll row here — the invoice number, the
-  // note against it and the backup price are its columns, and stay editable in
-  // the tab. price_per_unit is derived from that override the same way haul_fee
-  // is from trucking's, so the one column everything downstream prices a
-  // delivery off is right in the blob rather than in each reader. See "The
-  // manual price override" in dust-ob-injected.js.
-  dust_other_billing_rows: { prefix: 'tso-', tabFields: OB_TAB_FIELDS, derive: applyObPriceOverride },
+  // note against it, the backup price and the backup trucking rate are its
+  // columns, and stay editable in the tab. price_per_unit and trucking_rate are
+  // derived from those overrides the same way haul_fee is from trucking's, so
+  // the columns everything downstream prices a delivery off are right in the
+  // blob rather than in each reader. See "The manual price override" and "The
+  // manual trucking rate override" in dust-ob-injected.js.
+  dust_other_billing_rows: { prefix: 'tso-', tabFields: OB_TAB_FIELDS, derive: applyObOverrides },
   // Sales Tracking. The only rows here that aren't the tab's own come from the
   // Quarry Sales form, and the office prices them — so price per ton is the
   // one column a tab save may write on one.
@@ -138,8 +140,10 @@ function mergeInjectedRows(serverRows, incomingRows, cfg) {
     // Then whatever those columns decide is recomputed from the server's row —
     // never taken from the client, which is the whole point of the guard. A
     // save that edits the backup fee and one that came from a client too old to
-    // know about it land the same number either way.
-    if (cfg.derive) cfg.derive(out);
+    // know about it land the same number either way. The incoming row and the
+    // server's copy are passed along for a hook that has to tell a stale replay
+    // from a fresh edit (Other Billing's trucking rate, which payroll outranks).
+    if (cfg.derive) cfg.derive(out, row, srv);
     merged.push(out);
     placed.add(id);
   }

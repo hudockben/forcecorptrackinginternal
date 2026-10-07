@@ -181,14 +181,137 @@ function applyObPriceOverride(row) {
   return row;
 }
 
+/* ── The manual trucking rate override ─────────────────────────────────────
+ *
+ * The same override, on the other number a delivery bills by: trucking $/hr.
+ * Payroll's approve modal asks for it per leg, and it was otherwise reachable
+ * only through Payroll's Edit Row — so a rate typed wrong at approval (or one
+ * left blank) meant hunting the entry down in Payroll before the invoice could
+ * go out. The box is open on a locked row now, kept beside payroll's figure
+ * exactly as the price is:
+ *
+ *   trucking_rate_override — what the office typed here (on OB_TAB_FIELDS).
+ *   trucking_rate_payroll  — payroll's own figure, kept only while an override
+ *                            is standing.
+ *   trucking_rate          — DERIVED: the override when one stands, payroll's
+ *                            otherwise. The tab's trucking total, dust-metrics,
+ *                            Intercompany and its mirror, the audit diff and
+ *                            payroll's Edit Row all go on reading this column.
+ *
+ * One difference from the price, and it is deliberate: payroll stays the
+ * PRIMARY source of this rate. An override stands only until payroll's own
+ * figure changes — re-injection drops it the moment the entry comes back with
+ * a rate other than the one the override was set against (see
+ * obTruckingRateOverrideOutranked). That is safe here because nothing upstream
+ * restates the rate by accident: Edit Row fills its Trucking $/hr box from the
+ * posted row, so a save that only fixes the hours sends the override's own
+ * figure back — payroll adopts it — and only a rate somebody actually retyped
+ * in Payroll moves payroll's number.
+ */
+const OB_TRK_RATE_OVERRIDE = 'trucking_rate_override';
+const OB_TRK_RATE_PAYROLL  = 'trucking_rate_payroll';
+
+// trucking_rate is NUMERIC(10,4) in the Intercompany mirror too
+// (api/lib/sync-normalized.js), and DUST_RATE_MAX in api/timesheet-entries.js
+// is the same ceiling, so one gate serves both numbers.
+const OB_TRK_RATE_MAX = OB_PRICE_MAX;
+
+function normalizeObTruckingRate(v) {
+  const r = normalizeObPrice(v);
+  return r.error ? { error: `trucking_rate must be a number between 0 and ${OB_TRK_RATE_MAX}` } : r;
+}
+
+function sameObTruckingRate(a, b) { return sameObPrice(a, b); }
+
+/**
+ * Settle `trucking_rate` on one injected row from the override standing against
+ * it. Same rules, and the same idempotence, as applyObPriceOverride.
+ */
+function applyObTruckingRateOverride(row) {
+  if (!row || typeof row !== 'object') return row;
+
+  const payroll = Object.prototype.hasOwnProperty.call(row, OB_TRK_RATE_PAYROLL)
+    ? row[OB_TRK_RATE_PAYROLL]
+    : row.trucking_rate;
+  const { value, error } = normalizeObTruckingRate(row[OB_TRK_RATE_OVERRIDE]);
+
+  if (error || value === '' || sameObTruckingRate(value, payroll)) {
+    delete row[OB_TRK_RATE_OVERRIDE];
+    delete row[OB_TRK_RATE_PAYROLL];
+    row.trucking_rate = payroll == null ? '' : payroll;
+    return row;
+  }
+
+  row[OB_TRK_RATE_OVERRIDE] = value;
+  row[OB_TRK_RATE_PAYROLL]  = payroll == null ? '' : payroll;
+  row.trucking_rate         = value;
+  return row;
+}
+
+/**
+ * Whether re-injection should drop a carried trucking rate override because
+ * payroll has since changed its own figure. `prev` is the row as stored before
+ * this injection, `fresh` is payroll's rate as the entry now states it.
+ *
+ * Only an override that is actually standing on `prev` is ever outranked —
+ * trucking_rate_payroll is present only then — and only by a payroll rate that
+ * differs from the one recorded behind it.
+ */
+function obTruckingRateOverrideOutranked(prev, fresh) {
+  if (!prev || typeof prev !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(prev, OB_TRK_RATE_PAYROLL)) return false;
+  return !sameObTruckingRate(prev[OB_TRK_RATE_PAYROLL], fresh);
+}
+
+/**
+ * Whether a tab save's trucking rate override was set against a payroll rate
+ * the server no longer has — the tab loaded the row, Payroll then changed the
+ * rate (which dropped the override on re-injection), and the tab is now saving
+ * its stale copy back. Payroll is primary, so that override must not return.
+ *
+ * The tab sends trucking_rate_payroll beside any override it holds (it is what
+ * the override was set against); the server's current payroll figure is its
+ * own trucking_rate_payroll while an override stands there, its trucking_rate
+ * otherwise. A blank override is never stale: clearing always goes through.
+ */
+function obTruckingRateOverrideStale(incoming, server) {
+  if (!incoming || typeof incoming !== 'object' || !server || typeof server !== 'object') return false;
+  if (!Object.prototype.hasOwnProperty.call(incoming, OB_TRK_RATE_PAYROLL)) return false;
+  const { value, error } = normalizeObTruckingRate(incoming[OB_TRK_RATE_OVERRIDE]);
+  if (error || value === '') return false;
+  const serverPayroll = Object.prototype.hasOwnProperty.call(server, OB_TRK_RATE_PAYROLL)
+    ? server[OB_TRK_RATE_PAYROLL]
+    : server.trucking_rate;
+  return !sameObTruckingRate(incoming[OB_TRK_RATE_PAYROLL], serverPayroll);
+}
+
+// Both overrides, in the one call each writer makes. The guard's `derive` and
+// re-injection both use this, so neither can settle one number and miss the
+// other. The guard also passes the incoming row and the server's copy, so a
+// trucking rate override from a tab that read the row before Payroll changed
+// the rate is put back to the server's answer instead of replayed.
+function applyObOverrides(row, incoming, server) {
+  if (incoming && server && obTruckingRateOverrideStale(incoming, server)) {
+    if (Object.prototype.hasOwnProperty.call(server, OB_TRK_RATE_OVERRIDE)) {
+      row[OB_TRK_RATE_OVERRIDE] = server[OB_TRK_RATE_OVERRIDE];
+    } else {
+      delete row[OB_TRK_RATE_OVERRIDE];
+    }
+  }
+  applyObPriceOverride(row);
+  applyObTruckingRateOverride(row);
+  return row;
+}
+
 /**
  * The columns the dust office owns on a row payroll owns.
  *
  * Everything else on an injected row renders locked in the tab — it came off
  * the timesheet or out of the approve modal, and payroll is where it is
  * corrected. These are the office's: the invoice number it bills under, the
- * note it writes against that invoice, and the backup price (see "The manual
- * price override" above). Re-injection preserves them and overwrites the rest,
+ * note it writes against that invoice, the backup price (see "The manual
+ * price override" above) and the backup trucking rate (see "The manual
+ * trucking rate override"). Re-injection preserves them and overwrites the rest,
  * or correcting a haul's hours quietly wipes the invoice number off a row that
  * was already sent. Same rule, and the same reason, as DUST_TAB_FIELDS on the
  * tracking side and TRUCK_TAB_FIELDS on the trucking one.
@@ -196,12 +319,12 @@ function applyObPriceOverride(row) {
  * `comments` is seeded from the driver's notes on a first injection and then
  * belongs to the office — see insertObRows.
  *
- * The override, not price_per_unit itself: a tab that could write the price
- * outright would also freeze payroll out of it, because this list is what
- * re-injection PRESERVES — a price on it could never be corrected from the
- * timesheet again.
+ * The overrides, not price_per_unit or trucking_rate themselves: a tab that
+ * could write either outright would also freeze payroll out of it, because this
+ * list is what re-injection PRESERVES — a number on it could never be corrected
+ * from the timesheet again.
  */
-const OB_TAB_FIELDS = ['inv_number', 'comments', OB_PRICE_OVERRIDE];
+const OB_TAB_FIELDS = ['inv_number', 'comments', OB_PRICE_OVERRIDE, OB_TRK_RATE_OVERRIDE];
 
 /**
  * True when this entry can post Other Billing rows at all.
@@ -424,6 +547,15 @@ module.exports = {
   normalizeObPrice,
   sameObPrice,
   applyObPriceOverride,
+  OB_TRK_RATE_OVERRIDE,
+  OB_TRK_RATE_PAYROLL,
+  OB_TRK_RATE_MAX,
+  normalizeObTruckingRate,
+  sameObTruckingRate,
+  applyObTruckingRateOverride,
+  obTruckingRateOverrideOutranked,
+  obTruckingRateOverrideStale,
+  applyObOverrides,
   MAX_OB_ROWS,
   needsObRow,
   obRowIdPrefix,
