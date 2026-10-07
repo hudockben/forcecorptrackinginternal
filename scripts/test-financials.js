@@ -49,7 +49,7 @@ const DIVISION = {
   'kiewit-pinetree.html': { area: 'Sq Yd', key: 'fct_kiewit_fin_settings', division: 'kiewit' },
 };
 const finHeaders = file => ['Job Name', 'Job #', 'Status', DIVISION[file].area, 'Contract Value', 'Bid Budget', 'Actual',
-  'Projected Cost', 'Projected Profit', 'GP Earned to Date', 'Invoiced', 'Net Profit', 'Man Hours', 'Bonus Amount'];
+  'Projected Cost', 'Projected Profit', 'GP Earned to Date', 'Invoiced', 'Net Profit', 'Man Hours', 'OT Hours', 'Bonus Amount'];
 // The export carries the worked dates as columns of their own after the money.
 const WORKED_HEADERS = ['First Worked', 'Last Worked', 'Days Worked'];
 
@@ -93,6 +93,8 @@ function contractHelperCode(src) {
 // opts.server   — what the server hands back for it: { ok, value }, or a
 //                 function returning that (or a promise of it)
 // opts.put      — a function standing in for the save's promise
+// opts.ot       — what /api/job-overtime answers: { jobs } or { status } for a
+//                 failure, or a function returning that (or a promise of it)
 function loadFinancials(file, projects, opts = {}) {
   const src   = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
   const start = src.indexOf('/* ── Financials ───');
@@ -106,7 +108,7 @@ function loadFinancials(file, projects, opts = {}) {
   const preset = { value: '', style: {} };
   // rowCost counts how often the per-project cost walk runs, which is how the
   // cost of a re-render is measured below.
-  const captured = { csv: null, print: '', alerts: [], download: null, rowCost: 0, puts: [], gets: [] };
+  const captured = { csv: null, print: '', alerts: [], download: null, rowCost: 0, puts: [], gets: [], fetches: [] };
   // The bonus boxes and their note, as the page's DOM would hold them, so the
   // in-place updates can be read back. listeners: unload/visibility hooks.
   const boxes = { overhead: { value: '', disabled: true }, target: { value: '', disabled: true },
@@ -134,6 +136,7 @@ function loadFinancials(file, projects, opts = {}) {
     'actualForBidItem', 'runningQtyForBidItem', 'bidItemComplete', 'getProj',
     'dwWrite', 'dwBrand',
     'perm', 'localStorage', 'apiGetChecked', 'apiPut', 'setTimeout', 'clearTimeout',
+    'fetch', 'API_BASE', 'fctToken', 'DIVISION',
     `${code}
      return {
        renderFinancials, exportFinancialsCSV, printFinancials,
@@ -200,6 +203,13 @@ function loadFinancials(file, projects, opts = {}) {
     },
     (fn) => { timers.set(++timerId, fn); return timerId; },
     (id) => { timers.delete(id); },
+    async (url, init) => {
+      captured.fetches.push({ url, auth: init && init.headers && init.headers.Authorization });
+      const o = typeof opts.ot === 'function' ? await opts.ot() : (opts.ot || { jobs: {} });
+      if (o.status && o.status !== 200) return { ok: false, status: o.status, json: async () => ({}) };
+      return { ok: true, status: 200, json: async () => ({ division: DIVISION[file].division, jobs: o.jobs }) };
+    },
+    '/api', 'tok.en.x', DIVISION[file].division,
   );
 
   return {
@@ -735,7 +745,7 @@ for (const file of FILES) {
   assert('  and totals across the rows shown', qfoot.includes('$3,200.00') && qfoot.includes('$5,700.00'), qfoot);
   const ths = (qh.match(/<th[ >]/g) || []).length;
   const tds = (spq.match(/<td[ >]/g) || []).length;
-  assert(`  every header has a cell under it (${ths} headers, ${tds} cells)`, ths === tds && ths === 15);
+  assert(`  every header has a cell under it (${ths} headers, ${tds} cells)`, ths === tds && ths === 16);
   assert('  and the note says the other columns are still whole-job', /Every other column is still the whole job/.test(qh));
 
   console.log('  — presets —');
@@ -905,7 +915,7 @@ for (const file of FILES) {
     && html.indexOf('>Man Hours</th>') < html.indexOf('>Bonus Amount</th>'));
   const ths = (html.match(/<th[ >]/g) || []).length;
   assert(`  every header has a cell under it, in the body and the totals (${ths})`,
-    ths === 14 && (rowIn('Sheet Row Three').match(/<td[ >]/g) || []).length === ths
+    ths === 15 && (rowIn('Sheet Row Three').match(/<td[ >]/g) || []).length === ths
     && (foot.match(/<td[ >]/g) || []).length === ths);
   assert('  there is no column for the overhead itself', !/>Overhead<\/th>|>FTSI Overhead<\/th>/.test(html));
 
@@ -1369,6 +1379,87 @@ async function settingsFromServer() {
   }
 }
 
+// ── OT Hours, from payroll ──────────────────────────────────────────────────
+// The column reads /api/job-overtime (scripts/test-job-overtime.js pins the
+// arithmetic). Here: it shows "…" until the figures are in rather than a
+// zero nobody measured, says so when the read fails, reads again each time
+// the tab is opened — so it grows week over week — and the export and the
+// printout carry the same figures.
+async function overtimeColumn() {
+  console.log('\n══════════ OT hours ══════════');
+  for (const file of FILES) {
+    console.log(`\n[${file}]`);
+    const div = DIVISION[file].division;
+    const rowIn = (html, name) => { const i = html.indexOf(name); return html.slice(html.lastIndexOf('<tr', i), html.indexOf('</tr>', i)); };
+    const footOf = html => html.slice(html.indexOf('<tfoot>'), html.indexOf('</tfoot>'));
+    let answer = { jobs: {
+      r3: { otHours: 12.5, weeks: 3, lastWeek: '2026-09-28', lastWeekOt: 4 },
+      rl: { otHours: 420, weeks: 30, lastWeek: '2025-08-04', lastWeekOt: 18.5 },
+    } };
+    const o = loadFinancials(file, BILLED, { ot: () => answer });
+    o.renderFinancials();
+    assert('the column is there, between Man Hours and Bonus Amount',
+      o.html().indexOf('>Man Hours</th>') < o.html().indexOf('>OT Hours</th>')
+      && o.html().indexOf('>OT Hours</th>') < o.html().indexOf('>Bonus Amount</th>'));
+    assert('  it shows … until payroll\'s figures are in, not a zero',
+      /<td class="pt-num"><span style="color:var\(--muted\)">…<\/span><\/td>/.test(rowIn(o.html(), 'Sheet Row Three')));
+    await settle();
+    assert('it reads this division\'s overtime, signed in',
+      o.captured.fetches.length === 1 && o.captured.fetches[0].url === `/api/job-overtime?division=${div}`
+      && o.captured.fetches[0].auth === 'Bearer tok.en.x', JSON.stringify(o.captured.fetches));
+    const r3 = rowIn(o.html(), 'Sheet Row Three');
+    assert('a job shows its running total of overtime', />12\.5<\/td>/.test(r3), r3);
+    assert('  with the weeks behind it on hover',
+      r3.includes('title="3 weeks with overtime · latest the week of Sep 28, 2026 (4 h)"'), r3);
+    assert('a job payroll has no overtime for shows a dash', /<td class="pt-num"><span style="color:var\(--muted\)">—<\/span><\/td>\s*<td class="pt-num" style="color:var\(--muted\)">—<\/td>/.test(rowIn(o.html(), 'Not Invoiced')),
+      rowIn(o.html(), 'Not Invoiced'));
+    assert('the total adds the jobs up', footOf(o.html()).includes('>432.5<'), footOf(o.html()));
+    assert('the note says where the figures come from', /OT Hours come from payroll/.test(o.html()));
+
+    o.exportFinancialsCSV();
+    const xl = o.captured.csv.replace(/^﻿/, '').split('\r\n');
+    const col = xl[0].split(',').indexOf('OT Hours');
+    const cellOf = name => xl.find(l => l.startsWith(name)).split(',')[col];
+    assert('Excel carries it, blank where there is none',
+      col === xl[0].split(',').indexOf('Man Hours') + 1 && cellOf('Sheet Row Three') === '12.5' && cellOf('Sheet Row Loss') === '420'
+      && cellOf('Not Invoiced') === '' && cellOf('Totals') === '432.5', xl.join(' | '));
+    o.printFinancials();
+    const pd = o.captured.print;
+    assert('the printout carries it', pd.includes('<th class="n">OT Hours</th>') && pd.includes('>12.5</td>') && pd.includes('>432.5</td>'));
+
+    console.log('  — week over week —');
+    o.renderFinancials();
+    await settle();
+    assert('a redraw from a filter change does not read again', o.captured.fetches.length === 1);
+    answer = { jobs: { ...answer.jobs, r3: { otHours: 16.5, weeks: 4, lastWeek: '2026-10-05', lastWeekOt: 4 } } };
+    o.renderFinancials({ fresh: true });
+    await settle();
+    assert('opening the tab again reads it again, so the week just approved is added',
+      o.captured.fetches.length === 2 && />16\.5<\/td>/.test(rowIn(o.html(), 'Sheet Row Three')));
+
+    console.log('  — when payroll cannot be read —');
+    let fail = true;
+    const f = loadFinancials(file, BILLED, { ot: () => (fail ? { status: 500 } : answer) });
+    f.renderFinancials();
+    await settle();
+    assert('a failed read shows a dash, not a zero, and says so',
+      /<td class="pt-num"><span style="color:var\(--muted\)">—<\/span><\/td>/.test(rowIn(f.html(), 'Sheet Row Three'))
+      && /They could not be loaded just now/.test(f.html()));
+    f.exportFinancialsCSV();
+    const fx = f.captured.csv.replace(/^﻿/, '').split('\r\n');
+    assert('  and exports blank', fx.slice(1).every(l => l.split(',')[fx[0].split(',').indexOf('OT Hours')] === ''));
+    fail = false;
+    f.renderFinancials();
+    await settle();
+    assert('  the next redraw tries again', f.captured.fetches.length === 2 && />16\.5<\/td>/.test(rowIn(f.html(), 'Sheet Row Three')));
+    fail = true;
+    f.renderFinancials({ fresh: true });
+    await settle();
+    assert('a later failure keeps the figures already read',
+      />16\.5<\/td>/.test(rowIn(f.html(), 'Sheet Row Three')) && !/could not be loaded/.test(f.html()));
+  }
+}
+
 // The data API only stores keys it knows. Turf's key had to be added to its
 // list; paving's and kiewit's ride the division prefixes, which also decide
 // who may read them. Exercised through the real handler and the real division
@@ -1425,6 +1516,7 @@ async function settingsKeyOnServer() {
 
 (async () => {
   await settingsFromServer();
+  await overtimeColumn();
   await settingsKeyOnServer();
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
