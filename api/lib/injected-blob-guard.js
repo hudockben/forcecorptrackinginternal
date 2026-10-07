@@ -140,10 +140,8 @@ function mergeInjectedRows(serverRows, incomingRows, cfg) {
     // Then whatever those columns decide is recomputed from the server's row —
     // never taken from the client, which is the whole point of the guard. A
     // save that edits the backup fee and one that came from a client too old to
-    // know about it land the same number either way. The incoming row and the
-    // server's copy are passed along for a hook that has to tell a stale replay
-    // from a fresh edit (Other Billing's trucking rate, which payroll outranks).
-    if (cfg.derive) cfg.derive(out, row, srv);
+    // know about it land the same number either way.
+    if (cfg.derive) cfg.derive(out);
     merged.push(out);
     placed.add(id);
   }

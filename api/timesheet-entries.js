@@ -3334,6 +3334,10 @@ function validateDustLeg(raw) {
     ['gallons_bags',   DUST_GALLONS_MAX, 'gallons_bags'],
     ['price_per_unit', DUST_RATE_MAX,    'price_per_unit'],
     ['trucking_rate',  DUST_RATE_MAX,    'trucking_rate'],
+    // Not a column: the trucking rate Edit Row's box showed when it opened,
+    // which tells re-injection whether the approver changed it. Read by
+    // insertObRows only; buildObRow never stores it.
+    ['trucking_rate_shown', DUST_RATE_MAX, 'trucking_rate_shown'],
   ]) {
     if (!has(key)) continue;
     const { value, error } = dustNum(t[key], max, label);
@@ -4030,12 +4034,14 @@ async function insertObRows(sql, companyCode, entry, legs, flags = {}) {
           if (prev[f] !== undefined && prev[f] !== null && prev[f] !== '') row[f] = prev[f];
         }
         // Payroll stays the primary source of the trucking rate: an override the
-        // office typed in the tab stands only until payroll's own figure moves.
-        // `row` still carries payroll's rate as the entry states it now, so a
-        // rate that differs from the one the override was set against means
-        // somebody retyped it in Payroll, and that answer wins. See "The manual
-        // trucking rate override" in api/lib/dust-ob-injected.js.
-        if (obTruckingRateOverrideOutranked(prev, row.trucking_rate)) delete row[OB_TRK_RATE_OVERRIDE];
+        // office typed in the tab stands only until payroll changes the rate.
+        // Edit Row sends the rate its box showed, so a box the approver changed
+        // — to anything, payroll's own original figure included — outranks the
+        // office's. See "The manual trucking rate override" in
+        // api/lib/dust-ob-injected.js.
+        if (obTruckingRateOverrideOutranked(prev, row.trucking_rate, fields.trucking_rate_shown)) {
+          delete row[OB_TRK_RATE_OVERRIDE];
+        }
       }
       // The backup price and trucking rate the office typed in the tab are
       // among those carried fields, so settle price_per_unit and trucking_rate

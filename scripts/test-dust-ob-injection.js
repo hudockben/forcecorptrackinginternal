@@ -462,8 +462,31 @@ console.log('Dust timesheet → Other Billing injection\n');
       obRow(store, 1).price_per_unit === 1.42);
   }
 
-  console.log('\n[a trucking rate the office set stands until payroll changes its own]');
+  console.log('\n[a trucking rate the office set stands until payroll changes it]');
   {
+    // Edit Row sends what it would send: every box pre-filled from the posted
+    // row (obSplitForEntry), plus trucking_rate_shown — what the rate box showed.
+    const editRow = async (rate, extra = {}) => {
+      const pre = (await obSplitForEntry(sql, CO, ENTRY)).rows[0];
+      const { rows, error } = validateDustInjection({ rows: [{
+        dest: 'ob', company: pre.company, location: pre.location, state: pre.state,
+        start_time: pre.start_time, end_time: pre.end_time, vehicle1: pre.vehicle1,
+        material: pre.material, gallons_bags: pre.gallons_bags, mu: pre.mu,
+        price_per_unit: pre.price_per_unit,
+        trucking_rate: rate === undefined ? pre.trucking_rate : rate,
+        trucking_rate_shown: pre.trucking_rate, ...extra,
+      }] });
+      if (error) throw new Error(error);
+      await insertObRows(sql, CO, ENTRY, rows);
+      return pre;
+    };
+    const officeSets = (rate) => {
+      const list = obRows(store).slice();
+      const payroll = list[0].trucking_rate;
+      list[0] = { ...list[0], trucking_rate_override: rate, trucking_rate_payroll: payroll,
+                  trucking_rate: rate };
+      store.appData.set(OB_KEY, list);
+    };
     const { sql, store } = makeSql(FIXTURE);
     // Approved at 121/hr — the wrong rate.
     const legs = [{ dest: 'ob', location: 'Bear Hollow', material: 'ClearFrac',
@@ -472,44 +495,66 @@ console.log('Dust timesheet → Other Billing injection\n');
     assert('it lands at payroll\'s rate', Number(obRow(store, 1).trucking_rate) === 121);
 
     // The office bills it at 135 from the tab.
-    const list = obRows(store).slice();
-    list[0] = { ...list[0], trucking_rate_override: 135, trucking_rate_payroll: 121,
-                trucking_rate: 135 };
-    store.appData.set(OB_KEY, list);
+    officeSets(135);
+    const shownPre = (await obSplitForEntry(sql, CO, ENTRY)).rows[0];
+    assert('Edit Row shows the rate the row bills at', shownPre.trucking_rate === '135');
 
-    // Payroll corrects the gallons — nothing to do with the rate — and
-    // re-approves. The office's rate stands.
-    await insertObRows(sql, CO, ENTRY, [{ ...legs[0], gallons_bags: 400 }]);
-    assert('the correction lands', obRow(store, 1).gallons_bags === 400);
-    assert('and the office\'s rate still bills',
-      obRow(store, 1).trucking_rate === 135, JSON.stringify(obRow(store, 1)));
-    assert('recorded as an override, payroll\'s rate behind it',
-      obRow(store, 1).trucking_rate_override === 135
-      && Number(obRow(store, 1).trucking_rate_payroll) === 121);
-
-    // Payroll retypes the rate in Edit Row. Payroll is the primary source: its
-    // new figure replaces the office's.
-    await insertObRows(sql, CO, ENTRY, [{ ...legs[0], gallons_bags: 400, trucking_rate: 140 }]);
-    assert('a rate payroll changed outranks the override',
-      Number(obRow(store, 1).trucking_rate) === 140, JSON.stringify(obRow(store, 1)));
+    // The approver opens Edit Row and types payroll's own 121 back: payroll is
+    // the primary source, so its figure wins — its original one included.
+    await editRow(121);
+    assert('payroll typing its original rate back outranks the office',
+      Number(obRow(store, 1).trucking_rate) === 121, JSON.stringify(obRow(store, 1)));
     assert('and the override is gone',
-      !('trucking_rate_override' in obRow(store, 1))
-      && !('trucking_rate_payroll' in obRow(store, 1)));
+      !('trucking_rate_override' in obRow(store, 1)) && !('trucking_rate_payroll' in obRow(store, 1)));
+    assert('the column is never stored with the shown figure',
+      !('trucking_rate_shown' in obRow(store, 1)));
 
-    // Set again, then Edit Row is saved with its pre-filled box — the posted
-    // rate — so payroll adopts the office's figure.
-    const again = obRows(store).slice();
-    again[0] = { ...again[0], trucking_rate_override: 150, trucking_rate_payroll: 140,
-                 trucking_rate: 150 };
-    store.appData.set(OB_KEY, again);
-    await insertObRows(sql, CO, ENTRY, [{ ...legs[0], gallons_bags: 400, trucking_rate: 150 }]);
-    assert('an override payroll has adopted is dropped and the rate kept',
-      Number(obRow(store, 1).trucking_rate) === 150
-      && !('trucking_rate_override' in obRow(store, 1)));
-    // Edit Row reads the rate it pre-fills from the posted row.
-    const split = await obSplitForEntry(sql, CO, ENTRY);
-    assert('Edit Row is offered the rate the row bills at',
-      split.rows[0].trucking_rate === '150', JSON.stringify(split.rows[0]));
+    // Any other figure wins too.
+    officeSets(135);
+    await editRow(140);
+    assert('a new payroll rate outranks the override',
+      Number(obRow(store, 1).trucking_rate) === 140 && !('trucking_rate_override' in obRow(store, 1)));
+
+    // Edit Row saved to fix the gallons, rate box left alone: the office's rate
+    // keeps billing (payroll has adopted it).
+    officeSets(150);
+    await editRow(undefined, { gallons_bags: 400 });
+    assert('a save that leaves the rate box alone keeps the office\'s rate',
+      Number(obRow(store, 1).trucking_rate) === 150 && obRow(store, 1).gallons_bags === 400,
+      JSON.stringify(obRow(store, 1)));
+    assert('as payroll\'s own now — nothing left to override',
+      !('trucking_rate_override' in obRow(store, 1)));
+
+    // An Edit Row opened BEFORE the office's override and saved untouched
+    // afterwards shows the old rate and sends it back unchanged. Nobody changed
+    // the rate in Payroll, so the office's override stands.
+    const before = (await obSplitForEntry(sql, CO, ENTRY)).rows[0];   // shows 150
+    officeSets(160);
+    const { rows: staleRows } = validateDustInjection({ rows: [{ ...before, dest: 'ob',
+      trucking_rate: before.trucking_rate, trucking_rate_shown: before.trucking_rate }] });
+    await insertObRows(sql, CO, ENTRY, staleRows);
+    assert('a modal opened before the override, saved untouched, leaves it standing',
+      obRow(store, 1).trucking_rate === 160 && obRow(store, 1).trucking_rate_override === 160,
+      JSON.stringify(obRow(store, 1)));
+
+    // Payroll clearing the rate in Edit Row is an answer too.
+    await editRow('');
+    assert('payroll clearing the rate outranks the override as well',
+      obRow(store, 1).trucking_rate === '' && !('trucking_rate_override' in obRow(store, 1)),
+      JSON.stringify(obRow(store, 1)));
+
+    // A payroll page that predates trucking_rate_shown: the override stands
+    // while payroll's rate is the one recorded behind it, and goes when it moves.
+    officeSets(135);
+    await insertObRows(sql, CO, ENTRY, [{ ...legs[0], gallons_bags: 400, trucking_rate: '' }]);
+    assert('an older payroll page restating the same rate leaves the override',
+      obRow(store, 1).trucking_rate === 135, JSON.stringify(obRow(store, 1)));
+    await insertObRows(sql, CO, ENTRY, [{ ...legs[0], gallons_bags: 400, trucking_rate: 125 }]);
+    assert('and a different one outranks it',
+      Number(obRow(store, 1).trucking_rate) === 125 && !('trucking_rate_override' in obRow(store, 1)));
+
+    assert('the shown figure is validated like a rate',
+      !!validateDustInjection({ rows: [{ dest: 'ob', trucking_rate_shown: -1 }] }).error);
   }
 
   // ── 7c) …but not onto a different haul ────────────────────────────────────

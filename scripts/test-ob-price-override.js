@@ -85,6 +85,7 @@ function newPage(rows) {
     obRows: rows,
     saves: 0,
     obScheduleSave() { sandbox.saves++; },
+    _obMarkOverrideDirty() {},
     obRefreshCalcCells() {}, obRefreshTotals() {},
     obIsInjectedRow: r => /^tso-\d+-/.test(String((r && r.id) || '')),
     rate4: n => '$' + Number(n).toLocaleString('en-US',

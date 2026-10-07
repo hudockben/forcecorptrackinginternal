@@ -15,10 +15,11 @@
  *
  * What this pins:
  *   1. the derivation (api/lib/dust-ob-injected.js) in isolation,
- *   2. payroll outranking an override on re-injection,
+ *   2. payroll outranking an override on re-injection — any rate the approver
+ *      types in Edit Row, its own original one included,
  *   3. a tab save (injected-blob-guard): the office's rate lands, clearing it
- *      sticks, and a tab that loaded before payroll changed the rate cannot
- *      put a dropped override back,
+ *      sticks, and a save that leaves the override off (the page only sends
+ *      one right after it is edited) cannot disturb the server's,
  *   4. the page (dust.html): its gate is the server's, and the box is wired to
  *      the override rather than to trucking_rate,
  *   5. the readers downstream still bill off trucking_rate.
@@ -38,7 +39,7 @@ const { JSDOM } = require('jsdom');
 const {
   OB_TAB_FIELDS, OB_TRK_RATE_OVERRIDE, OB_TRK_RATE_PAYROLL, OB_TRK_RATE_MAX,
   normalizeObTruckingRate, sameObTruckingRate, applyObTruckingRateOverride,
-  obTruckingRateOverrideOutranked, obTruckingRateOverrideStale, applyObOverrides,
+  obTruckingRateOverrideOutranked, applyObOverrides,
 } = require('../api/lib/dust-ob-injected.js');
 const { guardConfigFor, mergeInjectedRows } = require('../api/lib/injected-blob-guard.js');
 
@@ -66,6 +67,8 @@ function newPage(rows) {
     obRows: rows,
     saves: 0,
     obScheduleSave() { sandbox.saves++; },
+    dirty: [],
+    _obMarkOverrideDirty(row, field) { sandbox.dirty.push(`${row.id}|${field}`); },
     obRefreshCalcCells() {}, obRefreshTotals() {},
     obIsInjectedRow: r => /^tso-\d+-/.test(String((r && r.id) || '')),
     money: n => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }),
@@ -132,19 +135,26 @@ function newPage(rows) {
   }
 
   // ── 2. Payroll is primary ────────────────────────────────────────────────
-  console.log('\n[payroll outranks an override when its own rate changes]');
+  console.log('\n[payroll outranks an override whenever it changes the rate]');
   {
     const prev = { trucking_rate: 135, [OB_TRK_RATE_OVERRIDE]: 135, [OB_TRK_RATE_PAYROLL]: 121 };
-    assert('an unchanged payroll rate leaves the override standing',
+    // Edit Row says what its box showed (the billed 135).
+    assert('the approver typing payroll\'s original rate back outranks it',
+      obTruckingRateOverrideOutranked(prev, 121, 135) === true);
+    assert('so does any other figure', obTruckingRateOverrideOutranked(prev, 140, '135') === true);
+    assert('and clearing the box', obTruckingRateOverrideOutranked(prev, '', 135) === true);
+    assert('a box left as it showed leaves the override (payroll adopts it)',
+      obTruckingRateOverrideOutranked(prev, '135.00', 135) === false);
+    assert('a modal opened before the override, saved untouched, leaves it',
+      obTruckingRateOverrideOutranked(prev, 121, 121) === false);
+    // An older payroll page sends no shown figure: the recorded basis decides.
+    assert('without a shown figure, payroll restating its rate leaves the override',
       obTruckingRateOverrideOutranked(prev, '121') === false);
-    assert('a changed payroll rate outranks it',
-      obTruckingRateOverrideOutranked(prev, 140) === true);
-    assert('Edit Row saving the posted rate (adoption) counts as a change, and agrees anyway',
-      obTruckingRateOverrideOutranked(prev, 135) === true);
+    assert('and a changed rate outranks it', obTruckingRateOverrideOutranked(prev, 140) === true);
     assert('a row with no override standing is never outranked',
-      obTruckingRateOverrideOutranked({ trucking_rate: 121 }, 140) === false);
+      obTruckingRateOverrideOutranked({ trucking_rate: 121 }, 140, 121) === false);
     assert('and no prior row means nothing to outrank',
-      obTruckingRateOverrideOutranked(null, 140) === false);
+      obTruckingRateOverrideOutranked(null, 140, 121) === false);
   }
 
   // ── 3. A tab save ────────────────────────────────────────────────────────
@@ -190,31 +200,25 @@ function newPage(rows) {
     assert('typing payroll\'s figure back clears it as well',
       typedBack.trucking_rate === 121 && !(OB_TRK_RATE_OVERRIDE in typedBack));
 
-    // The stale tab: it loaded the row while the override (135 over 121) stood.
-    // Payroll then retyped the rate as 140 in Edit Row, which dropped the
-    // override. The tab, unaware, saves its copy back on an unrelated edit.
+    // A save that leaves the override off — every save but the one right after
+    // the office edits it — keeps the server's state, whatever it is. This is
+    // what keeps a tab that loaded before Payroll changed the rate from
+    // putting a dropped override back.
     const afterPayroll = [{ ...server[0], trucking_rate: 140 }];
-    const staleSave = [{ ...held[0], inv_number: 'INV-9' }];
-    assert('the stale save is recognised as stale',
-      obTruckingRateOverrideStale(staleSave[0], afterPayroll[0]) === true);
-    const [stale] = mergeInjectedRows(afterPayroll, staleSave, cfg);
-    assert('it cannot put the dropped override back — payroll\'s 140 stands',
-      stale.trucking_rate === 140 && !(OB_TRK_RATE_OVERRIDE in stale), JSON.stringify(stale));
-    assert('while its unrelated edit still lands', stale.inv_number === 'INV-9');
+    const [untouched] = mergeInjectedRows(afterPayroll,
+      [{ ...server[0], trucking_rate: 135, [OB_TRK_RATE_PAYROLL]: 121, inv_number: 'INV-9' }], cfg);
+    assert('a save without the override leaves payroll\'s new rate',
+      untouched.trucking_rate === 140 && !(OB_TRK_RATE_OVERRIDE in untouched), JSON.stringify(untouched));
+    assert('while its other edit lands', untouched.inv_number === 'INV-9');
 
-    // The same stale tab clearing the box is harmless and goes through.
-    const [staleClear] = mergeInjectedRows(afterPayroll,
-      [{ ...server[0], trucking_rate: 121, [OB_TRK_RATE_OVERRIDE]: '' }], cfg);
-    assert('a clear from a stale tab leaves payroll\'s rate', staleClear.trucking_rate === 140);
-
-    // A stale tab must not wipe an override another device set on top of
-    // payroll's new figure either: the server's own override is kept.
-    const otherDevice = [{ ...server[0], trucking_rate: 150,
-                           [OB_TRK_RATE_OVERRIDE]: 150, [OB_TRK_RATE_PAYROLL]: 140 }];
-    const [kept2] = mergeInjectedRows(otherDevice, staleSave, cfg);
-    assert('a stale save leaves another device\'s override standing',
-      kept2.trucking_rate === 150 && kept2[OB_TRK_RATE_OVERRIDE] === 150
-      && kept2[OB_TRK_RATE_PAYROLL] === 140, JSON.stringify(kept2));
+    // A rate the office types after payroll's change is a new answer, and goes
+    // in over payroll's CURRENT figure — never the one the tab last saw.
+    const [fresh] = mergeInjectedRows(afterPayroll,
+      [{ ...server[0], trucking_rate: 150, [OB_TRK_RATE_OVERRIDE]: 150, [OB_TRK_RATE_PAYROLL]: 121 }], cfg);
+    assert('a new override typed in an older tab still lands',
+      fresh.trucking_rate === 150 && fresh[OB_TRK_RATE_OVERRIDE] === 150, JSON.stringify(fresh));
+    assert('recorded over payroll\'s current rate, not the tab\'s stale one',
+      fresh[OB_TRK_RATE_PAYROLL] === 140);
   }
 
   // ── 4. The page ──────────────────────────────────────────────────────────
@@ -228,6 +232,7 @@ function newPage(rows) {
     page.obSetTruckingRateOverride(0, '135');
     assert('typing a rate stores an override, not a rate',
       locked[OB_TRK_RATE_OVERRIDE] === 135 && locked.trucking_rate === 135);
+    assert('and marks it for the next save', page.dirty.includes('tso-41-1|trucking_rate_override'));
     assert('payroll\'s rate is kept beside it', locked[OB_TRK_RATE_PAYROLL] === 121);
     assert('and the edit is saved', page.saves === 1);
 
@@ -251,9 +256,10 @@ function newPage(rows) {
     assert('the note goes with it', page._obTrkRateNote(locked, 0) === '');
     assert('and the box shows payroll\'s rate', doc.getElementById('ob-trate-0').value === '121');
 
-    const before = page.saves;
+    const before = page.saves, marked = page.dirty.length;
     page.obSetTruckingRateOverride(0, '-5');
     assert('a negative rate is refused', locked.trucking_rate === 121 && page.saves === before);
+    assert('and marks nothing to send', page.dirty.length === marked);
     page.obSetTruckingRateOverride(0, 'abc');
     assert('so is one that is not a number', locked.trucking_rate === 121 && page.saves === before);
 
@@ -287,8 +293,17 @@ function newPage(rows) {
       !AUDIT.includes(OB_TRK_RATE_OVERRIDE) && !AUDIT.includes(OB_TRK_RATE_PAYROLL));
     assert('Edit Row is pre-filled from the posted (derived) rate',
       /trucking_rate:\s+n\(r\.trucking_rate\),/.test(TS));
-    assert('re-injection lets payroll outrank a carried override',
-      /if \(obTruckingRateOverrideOutranked\(prev, row\.trucking_rate\)\) delete row\[OB_TRK_RATE_OVERRIDE\];/.test(TS));
+    assert('re-injection lets payroll outrank a carried override, told what Edit Row showed',
+      /if \(obTruckingRateOverrideOutranked\(prev, row\.trucking_rate, fields\.trucking_rate_shown\)\) \{\s*\n\s*delete row\[OB_TRK_RATE_OVERRIDE\];/.test(TS));
+    assert('the shown figure is validated with the other rates',
+      /\['trucking_rate_shown', DUST_RATE_MAX, 'trucking_rate_shown'\]/.test(TS));
+    const PAYROLL = read('payroll.html');
+    assert('Edit Row records what its trucking rate box showed',
+      /if \(legDest\(row\) === 'ob'\) leg\.trucking_rate_shown = legStr\(row\.trucking_rate\);/.test(PAYROLL));
+    assert('and sends it with the haul',
+      /trucking_rate_shown: leg\.trucking_rate_shown/.test(PAYROLL));
+    assert('the page sends an override only in the save after it is edited',
+      /apiPut\(OB_KEY, _obSavePayload\(sending\), opts\)/.test(DUST));
     assert('and settles both overrides before storing', /applyObOverrides\(row\);/.test(TS));
   }
 

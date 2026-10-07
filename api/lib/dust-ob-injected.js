@@ -199,14 +199,21 @@ function applyObPriceOverride(row) {
  *                            payroll's Edit Row all go on reading this column.
  *
  * One difference from the price, and it is deliberate: payroll stays the
- * PRIMARY source of this rate. An override stands only until payroll's own
- * figure changes — re-injection drops it the moment the entry comes back with
- * a rate other than the one the override was set against (see
- * obTruckingRateOverrideOutranked). That is safe here because nothing upstream
- * restates the rate by accident: Edit Row fills its Trucking $/hr box from the
- * posted row, so a save that only fixes the hours sends the override's own
- * figure back — payroll adopts it — and only a rate somebody actually retyped
- * in Payroll moves payroll's number.
+ * PRIMARY source of this rate. An override stands only until payroll changes
+ * the rate. Edit Row fills its Trucking $/hr box from the posted row — the
+ * rate the haul bills at, the override when one stands — and sends back what
+ * the box showed (trucking_rate_shown), so re-injection can tell the two cases
+ * apart (see obTruckingRateOverrideOutranked):
+ *
+ *   - the approver changed the box → payroll's figure wins, whatever it is,
+ *     including payroll's own original rate;
+ *   - they left it alone (a save that only fixes the hours) → the office's
+ *     rate stands; if the box showed the override, payroll has adopted it.
+ *
+ * A tab that loaded the row before payroll changed it cannot bring a dropped
+ * override back either: the page only sends an override in the first save
+ * after somebody edits it (dust.html, _obSavePayload), so a stale copy is
+ * never replayed.
  */
 const OB_TRK_RATE_OVERRIDE = 'trucking_rate_override';
 const OB_TRK_RATE_PAYROLL  = 'trucking_rate_payroll';
@@ -250,54 +257,33 @@ function applyObTruckingRateOverride(row) {
 
 /**
  * Whether re-injection should drop a carried trucking rate override because
- * payroll has since changed its own figure. `prev` is the row as stored before
- * this injection, `fresh` is payroll's rate as the entry now states it.
+ * payroll has changed the rate. `prev` is the row as stored before this
+ * injection, `fresh` is payroll's rate as the approver just sent it, and
+ * `shown` is the rate Edit Row's box showed when it opened (the row's billed
+ * rate — the override, when one stands).
  *
- * Only an override that is actually standing on `prev` is ever outranked —
- * trucking_rate_payroll is present only then — and only by a payroll rate that
- * differs from the one recorded behind it.
+ * Only an override actually standing on `prev` is ever outranked —
+ * trucking_rate_payroll is present only then.
+ *
+ *   shown sent      → outranked when the approver changed the box. Any figure
+ *                     they typed wins, payroll's own original one included; a
+ *                     box left as it was keeps the office's rate (and if it
+ *                     showed the override, payroll has just adopted it).
+ *   shown not sent  → a payroll page that predates it: outranked when the rate
+ *                     differs from the payroll figure recorded behind the
+ *                     override.
  */
-function obTruckingRateOverrideOutranked(prev, fresh) {
+function obTruckingRateOverrideOutranked(prev, fresh, shown) {
   if (!prev || typeof prev !== 'object') return false;
   if (!Object.prototype.hasOwnProperty.call(prev, OB_TRK_RATE_PAYROLL)) return false;
+  if (shown !== undefined) return !sameObTruckingRate(shown, fresh);
   return !sameObTruckingRate(prev[OB_TRK_RATE_PAYROLL], fresh);
-}
-
-/**
- * Whether a tab save's trucking rate override was set against a payroll rate
- * the server no longer has — the tab loaded the row, Payroll then changed the
- * rate (which dropped the override on re-injection), and the tab is now saving
- * its stale copy back. Payroll is primary, so that override must not return.
- *
- * The tab sends trucking_rate_payroll beside any override it holds (it is what
- * the override was set against); the server's current payroll figure is its
- * own trucking_rate_payroll while an override stands there, its trucking_rate
- * otherwise. A blank override is never stale: clearing always goes through.
- */
-function obTruckingRateOverrideStale(incoming, server) {
-  if (!incoming || typeof incoming !== 'object' || !server || typeof server !== 'object') return false;
-  if (!Object.prototype.hasOwnProperty.call(incoming, OB_TRK_RATE_PAYROLL)) return false;
-  const { value, error } = normalizeObTruckingRate(incoming[OB_TRK_RATE_OVERRIDE]);
-  if (error || value === '') return false;
-  const serverPayroll = Object.prototype.hasOwnProperty.call(server, OB_TRK_RATE_PAYROLL)
-    ? server[OB_TRK_RATE_PAYROLL]
-    : server.trucking_rate;
-  return !sameObTruckingRate(incoming[OB_TRK_RATE_PAYROLL], serverPayroll);
 }
 
 // Both overrides, in the one call each writer makes. The guard's `derive` and
 // re-injection both use this, so neither can settle one number and miss the
-// other. The guard also passes the incoming row and the server's copy, so a
-// trucking rate override from a tab that read the row before Payroll changed
-// the rate is put back to the server's answer instead of replayed.
-function applyObOverrides(row, incoming, server) {
-  if (incoming && server && obTruckingRateOverrideStale(incoming, server)) {
-    if (Object.prototype.hasOwnProperty.call(server, OB_TRK_RATE_OVERRIDE)) {
-      row[OB_TRK_RATE_OVERRIDE] = server[OB_TRK_RATE_OVERRIDE];
-    } else {
-      delete row[OB_TRK_RATE_OVERRIDE];
-    }
-  }
+// other.
+function applyObOverrides(row) {
   applyObPriceOverride(row);
   applyObTruckingRateOverride(row);
   return row;
@@ -554,7 +540,6 @@ module.exports = {
   sameObTruckingRate,
   applyObTruckingRateOverride,
   obTruckingRateOverrideOutranked,
-  obTruckingRateOverrideStale,
   applyObOverrides,
   MAX_OB_ROWS,
   needsObRow,

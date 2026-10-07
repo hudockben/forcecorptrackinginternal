@@ -7403,12 +7403,49 @@
       return _obLoading || (_obLoading = obLoad().finally(() => { _obLoading = null; }));
     }
 
+    // The office overrides on payroll rows (price per gal/bag, trucking $/hr)
+    // that changed since the last save the server took, keyed
+    // `${row.id}|${field}` → edit generation. An override goes out only in the
+    // save right after somebody edits it; every other save leaves it off, and
+    // the server keeps its own copy (injected-blob-guard replays only what a
+    // save carries). Otherwise a tab that loaded a row before Payroll changed
+    // its trucking rate would put back the override Payroll just dropped, and a
+    // box cleared here once would go on clearing whatever another device set
+    // since. The generation keeps an edit made while a save is in flight for
+    // the next save.
+    const obOverrideDirty = new Map();
+    let _obOverrideGen = 0;
+    function _obMarkOverrideDirty(row, field) {
+      if (row && obIsInjectedRow(row)) obOverrideDirty.set(`${row.id}|${field}`, ++_obOverrideGen);
+    }
+    // What a save sends: obRows as they are, minus any override nobody has
+    // edited since the last save. The rows in memory keep theirs.
+    function _obSavePayload(sending) {
+      return obRows.map(r => {
+        if (!obIsInjectedRow(r)) return r;
+        let out = null;
+        for (const f of [OB_PRICE_OVERRIDE, OB_TRK_RATE_OVERRIDE]) {
+          if (!Object.prototype.hasOwnProperty.call(r, f) || sending.has(`${r.id}|${f}`)) continue;
+          if (!out) out = { ...r };
+          delete out[f];
+        }
+        return out || r;
+      });
+    }
+
     async function obSave(opts = {}) {
       // Rows that never loaded are not an empty book: saving now would write
       // whatever this tab added as the whole of it.
       if (!obLoaded) return false;
       obSaving = true;
-      try { return await apiPut(OB_KEY, obRows, opts); }
+      const sending = new Map(obOverrideDirty);
+      try {
+        const ok = await apiPut(OB_KEY, _obSavePayload(sending), opts);
+        if (ok) {
+          for (const [k, gen] of sending) if (obOverrideDirty.get(k) === gen) obOverrideDirty.delete(k);
+        }
+        return ok;
+      }
       catch { return false; }
       finally { obSaving = false; }
     }
@@ -7626,6 +7663,7 @@
       if (_obPriceVal(value) === null) { _obPaintPrice(idx); return; }
       row[OB_PRICE_OVERRIDE] = value;
       _obApplyPriceOverride(row);
+      _obMarkOverrideDirty(row, OB_PRICE_OVERRIDE);
       _obPaintPrice(idx);
       obScheduleSave();
     }
@@ -7644,6 +7682,7 @@
       if (_obPriceVal(value) === null) return;
       row[OB_PRICE_OVERRIDE] = value;
       _obApplyPriceOverride(row);
+      _obMarkOverrideDirty(row, OB_PRICE_OVERRIDE);
       const note = document.getElementById(`ob-price-ovr-${idx}`);
       if (note) note.innerHTML = _obPriceNote(row, idx);
       obRefreshCalcCells(idx);
@@ -7661,9 +7700,10 @@
        manual trucking rate override"), so the trucking total, Intercompany and
        every report keep reading trucking_rate and know nothing about this.
 
-       Payroll stays primary: the server drops this override the moment
-       payroll's own rate changes (somebody retyped it in Edit Row), and a save
-       from a tab that loaded before that change cannot put it back.
+       Payroll stays primary: the server drops this override when the rate is
+       changed in Payroll's Edit Row, and a tab that loaded before that change
+       cannot put it back — an override is only sent in the save right after it
+       is edited (_obSavePayload).
     ═══════════════════════════════════════════ */
 
     const OB_TRK_RATE_OVERRIDE = 'trucking_rate_override';
@@ -7698,8 +7738,6 @@
         row.trucking_rate = payroll == null ? '' : payroll;
       } else {
         row[OB_TRK_RATE_OVERRIDE] = v;
-        // Payroll's figure is also what the server checks this override was set
-        // against, so it is kept on the row the save sends.
         row[OB_TRK_RATE_PAYROLL]  = payroll == null ? '' : payroll;
         row.trucking_rate         = v;
       }
@@ -7710,7 +7748,11 @@
       if (!_obHasTrkRateOverride(row)) return '';
       const pay  = _obPriceVal(_obPayrollTrkRate(row));
       const has  = pay !== '' && pay !== null;
-      const said = has ? money(pay) : '';
+      // Cents, with up to four places when the rate carries them — the gate
+      // compares to four, so a note rounded to two could read as the same rate.
+      const said = has
+        ? '$' + Number(pay).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 4 })
+        : '';
       const label = has ? `&#8635; set here &middot; payroll ${esc(said)}` : '&#8635; set here';
       const title = has
         ? `Set in this tab, not in Payroll. Payroll has ${said}/hr on this haul — click to bill payroll's rate instead. Changing the rate in Payroll's Edit Row also replaces this one.`
@@ -7741,6 +7783,7 @@
       if (_obPriceVal(value) === null) { _obPaintTrkRate(idx); return; }
       row[OB_TRK_RATE_OVERRIDE] = value;
       _obApplyTrkRateOverride(row);
+      _obMarkOverrideDirty(row, OB_TRK_RATE_OVERRIDE);
       _obPaintTrkRate(idx);
       obScheduleSave();
     }
@@ -7754,6 +7797,7 @@
       if (_obPriceVal(value) === null) return;
       row[OB_TRK_RATE_OVERRIDE] = value;
       _obApplyTrkRateOverride(row);
+      _obMarkOverrideDirty(row, OB_TRK_RATE_OVERRIDE);
       const note = document.getElementById(`ob-trate-ovr-${idx}`);
       if (note) note.innerHTML = _obTrkRateNote(row, idx);
       obRefreshCalcCells(idx);
@@ -7791,6 +7835,7 @@
       // bill one figure and report another until the next re-injection.
       if (field === OB_PRICE_OVERRIDE) _obApplyPriceOverride(obRows[idx]);
       if (field === OB_TRK_RATE_OVERRIDE) _obApplyTrkRateOverride(obRows[idx]);
+      if (field === OB_PRICE_OVERRIDE || field === OB_TRK_RATE_OVERRIDE) _obMarkOverrideDirty(obRows[idx], field);
       if (OB_CALC_FIELDS.includes(field)) {
         obRefreshCalcCells(idx);
         obRefreshTotals();
@@ -7851,6 +7896,7 @@
       obRows[idx][field] = value;
       if (field === OB_PRICE_OVERRIDE) _obApplyPriceOverride(obRows[idx]);
       if (field === OB_TRK_RATE_OVERRIDE) _obApplyTrkRateOverride(obRows[idx]);
+      if (field === OB_PRICE_OVERRIDE || field === OB_TRK_RATE_OVERRIDE) _obMarkOverrideDirty(obRows[idx], field);
       if (OB_CALC_FIELDS.includes(field)) {
         obRefreshCalcCells(idx);
         obRefreshTotals();

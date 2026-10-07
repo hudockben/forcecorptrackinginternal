@@ -274,6 +274,35 @@ async function main() {
   assert('a negative rate is refused', priced().trucking_rate === 95);
   assert('and no override is stored', !priced().trucking_rate_override);
 
+  console.log('\n[an override is sent in the save after it is edited, and only then]');
+  // The debounced save fires 900ms after the last edit.
+  const lastObWrite = async () => {
+    await sleep(1150);
+    const w = writes.filter(x => x.key === OB_KEY);
+    return w.length ? w[w.length - 1].value : null;
+  };
+  const sentRow = (value) => (value || []).find(r => r.id === 'tso-41-1') || {};
+  win.eval(`obSetTruckingRateOverride(${iIdx}, '135')`);
+  let sent = sentRow(await lastObWrite());
+  assert('the save after the edit carries the override',
+    sent.trucking_rate_override === 135, JSON.stringify(sent));
+  // An unrelated edit afterwards must not re-send it: a tab that loaded the row
+  // before Payroll changed the rate would otherwise put a dropped override back.
+  win.eval(`obSet(${iIdx}, 'inv_number', 'INV-78')`);
+  sent = sentRow(await lastObWrite());
+  assert('a later unrelated save leaves the override off',
+    !('trucking_rate_override' in sent) && sent.inv_number === 'INV-78', JSON.stringify(sent));
+  assert('and the price override too', !('price_per_unit_override' in sent));
+  assert('while the row on screen keeps it', priced().trucking_rate_override === 135);
+  // Clearing is an edit, so its blank goes out once — and only once.
+  win.eval(`obClearTruckingRateOverride(${iIdx})`);
+  sent = sentRow(await lastObWrite());
+  assert('clearing sends an explicit blank', sent.trucking_rate_override === '', JSON.stringify(sent));
+  win.eval(`obSet(${iIdx}, 'comments', 'PO 13')`);
+  sent = sentRow(await lastObWrite());
+  assert('and a later save does not send it again',
+    !('trucking_rate_override' in sent) && sent.comments === 'PO 13', JSON.stringify(sent));
+
   console.log('\n[the hand-added row is untouched]');
   for (const col of LOCKED.concat('price_per_unit', 'trucking_rate')) {
     assert(`${col} is still editable`, editable(manual, col));
