@@ -102,11 +102,24 @@ async function handler(req, res) {
     const sql = neon(process.env.DATABASE_URL);
     // Every counted day of every employee who has ever booked one to this
     // division — in ANY division, because the forty is counted across all of
-    // them. id and created_at are the tiebreaks weeklyOvertime orders a
-    // shared date by, and the reason they are selected.
+    // them. The column list is api/executive/report.js's, for its reasons:
     const entries = await sql`
-      SELECT id, username, entry_type, status, work_date, created_at,
-             division, job_id, computed_hours, travel_hours
+      SELECT id, username, entry_type, status, division, job_id,
+             -- ::text, or the driver hands DATE back as a JS Date, weekStartOf
+             -- cannot read it, and every day is dropped as undated.
+             work_date::text                AS work_date,
+             -- The tiebreaks weeklyOvertime orders a shared date by, cast so
+             -- both sort the same characters the Payroll page does.
+             created_at::text               AS created_at,
+             computed_hours::float          AS computed_hours,
+             travel_hours::float            AS travel_hours,
+             -- Not read by the overtime total, but by the prevailing/standard
+             -- split of it: every payroll-metrics consumer carries them, so
+             -- none can quietly disagree with the Payroll page.
+             haul_type,
+             haul_hours::float              AS haul_hours,
+             haul_off_site_hours::float     AS haul_off_site_hours,
+             time_off_hours::float          AS time_off_hours
       FROM timesheet_entries
       WHERE company_code = ${payload.companyCode}
         AND entry_type   = 'daily'

@@ -112,7 +112,8 @@ function loadFinancials(file, projects, opts = {}) {
   // The bonus boxes and their note, as the page's DOM would hold them, so the
   // in-place updates can be read back. listeners: unload/visibility hooks.
   const boxes = { overhead: { value: '', disabled: true }, target: { value: '', disabled: true },
-                  share: { value: '', disabled: true }, note: { textContent: '' } };
+                  share: { value: '', disabled: true }, note: { textContent: '' },
+                  excel: { disabled: true }, print: { disabled: true } };
   const listeners = {};
   const on = (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); };
   const doc = { visibilityState: 'visible' };
@@ -171,6 +172,8 @@ function loadFinancials(file, projects, opts = {}) {
         'fin-bonus-target': boxes.target,
         'fin-bonus-share': boxes.share,
         'fin-bonus-note': boxes.note,
+        'fin-excel': boxes.excel,
+        'fin-print': boxes.print,
       }[id] || null),
       addEventListener: on,
       get visibilityState() { return doc.visibilityState; },
@@ -205,7 +208,10 @@ function loadFinancials(file, projects, opts = {}) {
     (id) => { timers.delete(id); },
     async (url, init) => {
       captured.fetches.push({ url, auth: init && init.headers && init.headers.Authorization });
-      const o = typeof opts.ot === 'function' ? await opts.ot() : (opts.ot || { jobs: {} });
+      // Honours the abort the page sends when a read hangs, as fetch does.
+      const signal = init && init.signal;
+      const aborted = new Promise((_, reject) => signal && signal.addEventListener('abort', () => reject(new Error('aborted'))));
+      const o = await Promise.race([typeof opts.ot === 'function' ? opts.ot() : (opts.ot || { jobs: {} }), aborted]);
       if (o.status && o.status !== 200) return { ok: false, status: o.status, json: async () => ({}) };
       return { ok: true, status: 200, json: async () => ({ division: DIVISION[file].division, jobs: o.jobs }) };
     },
@@ -1436,6 +1442,40 @@ async function overtimeColumn() {
     await settle();
     assert('opening the tab again reads it again, so the week just approved is added',
       o.captured.fetches.length === 2 && />16\.5<\/td>/.test(rowIn(o.html(), 'Sheet Row Three')));
+
+    console.log('  — Excel and Print wait for it —');
+    const w = loadFinancials(file, BILLED, { ot: () => answer });
+    w.renderFinancials();
+    assert('while the first read is out, Excel and Print are held',
+      /id="fin-excel"[^>]*disabled/.test(w.bar()) && /id="fin-print"[^>]*disabled/.test(w.bar()));
+    await settle();
+    assert('  and released where they stand once it lands', w.boxes.excel.disabled === false && w.boxes.print.disabled === false);
+    w.renderFinancials({ fresh: true });
+    assert('  a re-read does not hold them again — the figures already read go out',
+      !/id="fin-excel"[^>]*disabled/.test(w.bar()));
+    await settle();
+
+    const hang = loadFinancials(file, BILLED, { ot: () => new Promise(() => {}) });
+    hang.renderFinancials();
+    await settle();
+    assert('a read that hangs keeps them held for now', hang.boxes.excel.disabled === true && hang.pendingTimers() === 1);
+    hang.flushTimers();                 // the 20-second give-up
+    await settle();
+    assert('  but gives up, says so, and lets them go',
+      hang.boxes.excel.disabled === false && /They could not be loaded just now/.test(hang.html()));
+
+    console.log('  — refused —');
+    const no = loadFinancials(file, BILLED, { ot: { status: 403 } });
+    no.renderFinancials();
+    await settle();
+    assert('a role payroll\'s figures are refused to is told so, not to try again',
+      /does not include payroll’s overtime figures/.test(no.html()) && !/try again/.test(no.html())
+      && /<td class="pt-num"><span style="color:var\(--muted\)">—<\/span><\/td>/.test(rowIn(no.html(), 'Sheet Row Three')));
+    no.renderFinancials();
+    no.renderFinancials({ fresh: true });
+    await settle();
+    assert('  and is not asked again on every redraw', no.captured.fetches.length === 1);
+    assert('  while Excel and Print still work', no.boxes.excel.disabled === false);
 
     console.log('  — when payroll cannot be read —');
     let fail = true;

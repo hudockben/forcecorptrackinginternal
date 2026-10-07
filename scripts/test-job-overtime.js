@@ -179,6 +179,60 @@ const week = (username, monday, hoursEach, division, job_id) => [0, 1, 2, 3, 4].
   assert('a database failure says so rather than answering no overtime', down.code === 500 && !down.body.jobs, JSON.stringify(down));
   DB_FAILS = false;
 
+  // ── Through the real database driver ─────────────────────────────────────
+  // The mock above hands back whatever the fixtures hold, and the fixtures hold
+  // dates as text. The real driver does not: it parses each column by its
+  // Postgres type, and a DATE comes back as a JS Date that weekStartOf cannot
+  // read — every day dropped, every job "no overtime", a clean 200. So the
+  // handler is run once more on the real @neondatabase/serverless, with only
+  // Neon's HTTP answer faked, typing each column the way Postgres would given
+  // the casts the query actually asks for.
+  console.log('\n[through the real database driver]');
+  {
+    const { neonConfig } = require('@neondatabase/serverless');
+    let sent = '';
+    neonConfig.fetchFunction = async (url, init) => {
+      const { query } = JSON.parse(init.body);
+      sent = query;
+      const cast = (col, to) => new RegExp(`\\b${col}::${to}\\b`).test(query);
+      const fields = [
+        ['id', 20], ['username', 25], ['entry_type', 25], ['status', 25], ['division', 25], ['job_id', 25],
+        ['work_date', cast('work_date', 'text') ? 25 : 1082],            // DATE unless cast
+        ['created_at', cast('created_at', 'text') ? 25 : 1184],           // TIMESTAMPTZ unless cast
+        ['computed_hours', cast('computed_hours', 'float') ? 701 : 1700], // NUMERIC (a string) unless cast
+        ['travel_hours', cast('travel_hours', 'float') ? 701 : 1700],
+      ];
+      const days = ['2026-08-31', '2026-09-01', '2026-09-02', '2026-09-03', '2026-09-04'];
+      const body = {
+        command: 'SELECT', rowCount: days.length, rowAsArray: true,
+        fields: fields.map(([name, dataTypeID]) => ({ name, dataTypeID })),
+        rows: days.map((d, i) => [String(i + 1), 'sam', 'daily', 'approved', 'turf', '101', d, `${d} 17:00:00+00`, '10', '0']),
+      };
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    };
+    const prevUrl = process.env.DATABASE_URL;
+    process.env.DATABASE_URL = 'postgres://u:p@ep-test.us-east-2.aws.neon.tech/db';
+    const handlerPath = path.resolve(__dirname, '..', 'api', 'job-overtime.js');
+    delete require.cache[handlerPath];
+    Module._load = function (request, parent) {
+      if (parent && /job-overtime\.js$/.test(parent.filename) && request === './lib/auth') {
+        return { ...realAuth, requireDivision: async () => ({ payload: { companyCode: 'ACME', isPlatformAdmin: true }, division: 'turf' }) };
+      }
+      return origLoad.apply(this, arguments);
+    };
+    const live = require(handlerPath);
+    Module._load = origLoad;
+    const out = await new Promise(resolve => {
+      const res = { setHeader() {}, status(c) { this._c = c; return this; }, json(o) { resolve({ code: this._c || 200, body: o }); }, end() {} };
+      live({ method: 'GET', query: { division: 'turf' }, headers: {} }, res);
+    });
+    assert('a week of 50 hours read through the real driver posts its 10 hours of overtime',
+      out.code === 200 && out.body.jobs['101'] && out.body.jobs['101'].otHours === 10, JSON.stringify(out));
+    assert('  because the query asks for the dates as text', /work_date::text\s+AS work_date/.test(sent), sent.slice(0, 200));
+    process.env.DATABASE_URL = prevUrl;
+    delete neonConfig.fetchFunction;
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => { console.error(err); process.exit(1); });
