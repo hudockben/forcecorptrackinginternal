@@ -40,7 +40,16 @@ const BRANDING = (() => {
 })();
 
 const FILES = ['tracker.html', 'paving.html', 'kiewit-pinetree.html'];
-const FIN_HEADERS = ['Job Name', 'Job #', 'Status', 'Contract Value', 'Bid Budget', 'Actual', 'Projected Cost', 'Projected Profit', 'GP Earned to Date'];
+// Each division's project card names the job's area in its own unit — turf
+// keys square feet, paving and kiewit square yards — and saves its bonus
+// percentages under its own key.
+const DIVISION = {
+  'tracker.html':         { area: 'Sq Ft', key: 'fct_fin_settings',        division: 'turf' },
+  'paving.html':          { area: 'Sq Yd', key: 'fct_paving_fin_settings', division: 'paving' },
+  'kiewit-pinetree.html': { area: 'Sq Yd', key: 'fct_kiewit_fin_settings', division: 'kiewit' },
+};
+const finHeaders = file => ['Job Name', 'Job #', 'Status', DIVISION[file].area, 'Contract Value', 'Bid Budget', 'Actual',
+  'Projected Cost', 'Projected Profit', 'GP Earned to Date', 'Invoiced', 'Net Profit', 'Man Hours', 'Bonus Amount'];
 // The export carries the worked dates as columns of their own after the money.
 const WORKED_HEADERS = ['First Worked', 'Last Worked', 'Days Worked'];
 
@@ -79,7 +88,12 @@ function contractHelperCode(src) {
   return CONTRACT_HELPERS.map(n => extractFunction(src, n)).join('\n');
 }
 
-function loadFinancials(file, projects) {
+// opts.canEdit  — the viewer's perm.canEdit (default true)
+// opts.cache    — what localStorage already holds for the settings key
+// opts.server   — what the server hands back for it: { ok, value }, or a
+//                 function returning that (or a promise of it)
+// opts.put      — a function standing in for the save's promise
+function loadFinancials(file, projects, opts = {}) {
   const src   = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
   const start = src.indexOf('/* ── Financials ───');
   const end   = src.indexOf('function renderSubCodePerf');
@@ -92,7 +106,19 @@ function loadFinancials(file, projects) {
   const preset = { value: '', style: {} };
   // rowCost counts how often the per-project cost walk runs, which is how the
   // cost of a re-render is measured below.
-  const captured = { csv: null, print: '', alerts: [], download: null, rowCost: 0 };
+  const captured = { csv: null, print: '', alerts: [], download: null, rowCost: 0, puts: [], gets: [] };
+  // The bonus boxes and their note, as the page's DOM would hold them, so the
+  // in-place updates can be read back. listeners: unload/visibility hooks.
+  const boxes = { overhead: { value: '', disabled: true }, target: { value: '', disabled: true },
+                  share: { value: '', disabled: true }, note: { textContent: '' } };
+  const listeners = {};
+  const on = (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); };
+  const doc = { visibilityState: 'visible' };
+  const store = new Map(opts.cache === undefined ? [] : [[DIVISION[file].key, JSON.stringify(opts.cache)]]);
+  // Timers are held rather than run, so a test decides when the debounced
+  // save lands.
+  const timers = new Map();
+  let timerId = 0;
   // Enough of the job-name dropdown for its real open/apply/clear to run.
   const dd = {
     panel:  { style: { display: 'none' } },
@@ -107,9 +133,12 @@ function loadFinancials(file, projects) {
     'dailyRowCost', 'fmt', 'esc',
     'actualForBidItem', 'runningQtyForBidItem', 'bidItemComplete', 'getProj',
     'dwWrite', 'dwBrand',
+    'perm', 'localStorage', 'apiGetChecked', 'apiPut', 'setTimeout', 'clearTimeout',
     `${code}
      return {
        renderFinancials, exportFinancialsCSV, printFinancials,
+       bonus: () => finBonus, setBonus: finSetBonus, loadBonus: _finLoadBonus, bonusFor: _finBonusFor,
+       settingsKey: FIN_SETTINGS_KEY, isTravel: _finIsTravel,
        setFilters: f => { finFilters = { q: f.q || '', statuses: f.statuses || null, names: f.names || null,
                                          from: f.from || '', to: f.to || '', preset: f.preset || '' }; },
        range: () => ({ from: finFilters.from, to: finFilters.to, preset: finFilters.preset }),
@@ -135,12 +164,19 @@ function loadFinancials(file, projects) {
         'finff-search': dd.search,
         'finff-all': dd.all,
         'fin-preset': preset,
+        'fin-bonus-overhead': boxes.overhead,
+        'fin-bonus-target': boxes.target,
+        'fin-bonus-share': boxes.share,
+        'fin-bonus-note': boxes.note,
       }[id] || null),
+      addEventListener: on,
+      get visibilityState() { return doc.visibilityState; },
       // The job-name checklist queries its boxes by class.
       querySelectorAll: sel => (sel === '.finff-val-cb' ? dd.boxes : []),
       createElement: () => ({ href: '', download: '', click() { captured.download = this.download; } }),
     },
-    { open: () => ({ document: { write: (...chunks) => { captured.print += chunks.join(''); }, close() {} } }) },
+    { open: () => ({ document: { write: (...chunks) => { captured.print += chunks.join(''); }, close() {} } }),
+      addEventListener: on },
     m => captured.alerts.push(m),
     function (parts) { captured.csv = parts.join(''); },
     { createObjectURL: () => 'blob:stub', revokeObjectURL: () => {} },
@@ -152,6 +188,18 @@ function loadFinancials(file, projects) {
     (b, id) => !!b._done,
     () => null,
     BRANDING.dwWrite, BRANDING.dwBrand,
+    { canEdit: opts.canEdit !== false },
+    { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)) },
+    async key => {
+      captured.gets.push(key);
+      return typeof opts.server === 'function' ? opts.server() : (opts.server || { ok: true, value: null });
+    },
+    (key, value, o) => {
+      captured.puts.push({ key, value: JSON.parse(JSON.stringify(value)), keepalive: !!(o && o.keepalive) });
+      return opts.put ? opts.put() : undefined;
+    },
+    (fn) => { timers.set(++timerId, fn); return timerId; },
+    (id) => { timers.delete(id); },
   );
 
   return {
@@ -159,6 +207,13 @@ function loadFinancials(file, projects) {
     captured,
     dd,
     preset,
+    store,
+    boxes,
+    // What the browser does when the page is closed or hidden.
+    fire: (type, state) => { if (state) doc.visibilityState = state; (listeners[type] || []).forEach(f => f()); },
+    // Run whatever is waiting — the debounced settings save.
+    flushTimers: () => { const fns = [...timers.values()]; timers.clear(); fns.forEach(f => f()); },
+    pendingTimers: () => timers.size,
     // Stand the checklist up as if the user had ticked these boxes, so Apply's
     // real logic runs against it.
     tickBoxes: (names, ticked) => {
@@ -167,6 +222,7 @@ function loadFinancials(file, projects) {
     },
     // What the user sees: filter bar plus the table it controls.
     html: () => bar.innerHTML + table.innerHTML,
+    bar: () => bar.innerHTML,
   };
 }
 
@@ -326,7 +382,8 @@ for (const file of FILES) {
     /id="analytics-item-financials" onclick="analyticsSwitchTab\('financials'\)"/.test(src));
   assert('the panel exists', /<div class="tab-panel" id="tab-financials">/.test(src)
     && /id="fin-content"/.test(src));
-  assert('switching to it renders', /if \(tab === 'financials'\) renderFinancials\(\);/.test(src));
+  // fresh: opening the tab re-reads the saved bonus percentages.
+  assert('switching to it renders', /if \(tab === 'financials'\) renderFinancials\(\{ fresh: true \}\);/.test(src));
   assert('restricted roles do not get it',
     /'financials'\]/.test(src) || /!perm\.visibleTabs\.has\('financials'\)/.test(src));
 }
@@ -392,7 +449,7 @@ for (const file of FILES) {
   pick.exportFinancialsCSV();
   const pkCsv = pick.captured.csv.split('\r\n');
   assert('the export ships only the picked jobs', pkCsv.length === 4, pkCsv.length + ' lines');
-  assert('  and totals them', pkCsv[3].startsWith('Totals,,,689312.32'));
+  assert('  and totals them', pkCsv[3].startsWith('Totals,,,,689312.32'), pkCsv[3]);
   pick.printFinancials();
   assert('the printout carries only the picked jobs',
     pick.captured.print.includes('Saint Edmunds Field') && !pick.captured.print.includes('Half Built Job'));
@@ -511,7 +568,7 @@ for (const file of FILES) {
   const csvRows = csv.split('\r\n');
   assert('the export produces a CSV', !!csv);
   assert('  headers match the table, then the worked dates',
-    csvRows[0].replace(/^﻿/, '') === FIN_HEADERS.concat(WORKED_HEADERS).join(','), csvRows[0]);
+    csvRows[0].replace(/^﻿/, '') === finHeaders(file).concat(WORKED_HEADERS).join(','), csvRows[0]);
   assert('  one row per job plus a header and a totals row', csvRows.length === JOBS.length + 2);
   assert('  numbers go out raw so Excel can total them',
     /,479312\.32,375931\.05,261562\.30,/.test(csv), csvRows[1]);
@@ -520,10 +577,10 @@ for (const file of FILES) {
   // Read by position: the worked-date columns after the profits are blank on
   // an undated job too, so a trailing ',,' alone would prove nothing.
   const ncCells = csvRows.find(l => l.startsWith('No Contract Yet')).split(',');
-  const col = h => FIN_HEADERS.indexOf(h);
+  const col = h => finHeaders(file).indexOf(h);
   assert('  a not-applicable profit is blank, not zero',
     ncCells[col('Projected Profit')] === '' && ncCells[col('GP Earned to Date')] === '', ncCells.join(','));
-  assert('  the last row totals', csvRows[csvRows.length - 1].startsWith('Totals,,,2489312.32'));
+  assert('  the last row totals', csvRows[csvRows.length - 1].startsWith('Totals,,,,2489312.32'), csvRows[csvRows.length - 1]);
   assert('  a name containing a comma is quoted', (() => {
     const m = loadFinancials(file, [job({ id: 'q', name: 'Smith, Jones & Co', job: '1', status: 'In Progress', contract: 100, bid: 90, actual: 80 })]);
     m.renderFinancials(); m.exportFinancialsCSV();
@@ -534,8 +591,7 @@ for (const file of FILES) {
   // A cost the table shows as "—" must not export as 0.00. Zero and
   // not-entered are different claims, and the export is what gets summed.
   assert('  a cost the table dashes exports blank, not 0.00',
-    csvRows.find(l => l.startsWith('No Contract Yet')).startsWith('No Contract Yet,1044,In Progress,,'),
-    csvRows.find(l => l.startsWith('No Contract Yet')));
+    ncCells[col('Contract Value')] === '' && ncCells[col('Bid Budget')] === '50000.00', ncCells.join(','));
   assert('  but a genuine $0.00 profit still exports as 0.00', (() => {
     const m = loadFinancials(file, [job({ id: 'be', name: 'Break Even', job: '1', status: 'Complete', contract: 5000, bid: 5000, actual: 5000 })]);
     m.renderFinancials(); m.exportFinancialsCSV();
@@ -547,7 +603,7 @@ for (const file of FILES) {
   expFiltered.exportFinancialsCSV();
   const fcsv = expFiltered.captured.csv.split('\r\n');
   assert('a filtered export ships only the filtered rows', fcsv.length === 3, `${fcsv.length} lines`);
-  assert('  and its totals match the filtered set', fcsv[2].startsWith('Totals,,,210000.00'));
+  assert('  and its totals match the filtered set', fcsv[2].startsWith('Totals,,,,210000.00'), fcsv[2]);
 
   console.log('  — print view —');
   const pr = withFilters({ q: '' });
@@ -563,7 +619,7 @@ for (const file of FILES) {
     /data-dw-brand/.test(doc) && /DataWatch/.test(doc),
     'printFinancials writes through dwWrite');
   assert('  it prints itself on load', /window\.print\(\)/.test(doc));
-  assert('  it carries every column', FIN_HEADERS.every(h => doc.includes(`>${h}</th>`)));
+  assert('  it carries every column', finHeaders(file).every(h => doc.includes(`>${h}</th>`)));
   assert('  every job is on it', JOBS.every(j => doc.includes(j['project-name'])));
   assert('  it totals', doc.includes('$2,489,312.32'));
   assert('  it prints on white, not the dark app theme', /background:\s*#fff/.test(doc));
@@ -679,7 +735,7 @@ for (const file of FILES) {
   assert('  and totals across the rows shown', qfoot.includes('$3,200.00') && qfoot.includes('$5,700.00'), qfoot);
   const ths = (qh.match(/<th[ >]/g) || []).length;
   const tds = (spq.match(/<td[ >]/g) || []).length;
-  assert(`  every header has a cell under it (${ths} headers, ${tds} cells)`, ths === tds && ths === 10);
+  assert(`  every header has a cell under it (${ths} headers, ${tds} cells)`, ths === tds && ths === 15);
   assert('  and the note says the other columns are still whole-job', /Every other column is still the whole job/.test(qh));
 
   console.log('  — presets —');
@@ -789,6 +845,208 @@ for (const file of FILES) {
   const pdThs = (pd.match(/<th[ >]/g) || []).length;
   const pdRow = pd.slice(pd.indexOf('<tbody>'), pd.indexOf('</tr>', pd.indexOf('<tbody>')));
   assert(`  every header has a cell under it (${pdThs} headers)`, (pdRow.match(/<td[ >]/g) || []).length === pdThs);
+}
+
+// ── Invoiced, Net Profit, Man Hours and Bonus Amount ────────────────────────
+// The job-close figures the office kept on its spreadsheet. Two rows are
+// copied straight off the Turf 2025 tab, so the arithmetic is pinned to
+// numbers somebody already checked by hand:
+//
+//   $5,620.86 invoiced, $3,931.54 cost  → $1,689.32 net (30.05%),
+//     bonus $254.47 over 52.5 hours = $4.85/hr
+//   $543,043.98 invoiced, $524,878.85 cost → $18,165.13 net (3.35%),
+//     bonus -$47,937.05 over 1,279.25 hours = -$37.47/hr
+//
+// at the sheet's 6% overhead, 15% target and 50% share. The loss row is the
+// point: the sheet nets it against the total, so the total here must too.
+console.log('\n══════════ invoiced, net profit, man hours and bonus ══════════');
+
+// Travel in every form payroll books it, each carrying hours and no cost, so
+// a travel row that leaked into Man Hours would show without moving Actual.
+const TRAVEL_ROWS = [
+  { cost_code: 'CC',     sub_code: 'Travel',        cost: 0, labor_hours: 3 },
+  { cost_code: 'CC',     sub_code: '19mm - Travel', cost: 0, labor_hours: 2 },
+  { cost_code: 'TRAVEL', sub_code: 'Drive',         cost: 0, labor_hours: 1.5 },
+  { cost_code: 'CC',     sub_code: 'S1', field_type: 'Travel', cost: 0, labor_hours: 4 },
+];
+const billed = (o) => ({
+  id: o.id, 'project-name': o.name, 'job-number': o.job, status: 'Complete',
+  'contract-amount': o.contract, sqft: o.sqft, invoiced: o.invoiced,
+  bidItems: [{ cost_code: 'CC', sub_code: 'S1', quantity: 1, unit_cost: o.actual, _actual: o.actual, _rqty: 1, _done: true }],
+  dailyRows: [{ cost_code: 'CC', sub_code: 'S1', cost: o.actual, labor_hours: o.hours }].concat(o.extra || []),
+});
+const BILLED = [
+  billed({ id: 'r3', name: 'Sheet Row Three', job: '25003', contract: 5620.86, invoiced: '5620.86', actual: 3931.54,
+           sqft: '1788', hours: 52.5, extra: TRAVEL_ROWS }),
+  billed({ id: 'rl', name: 'Sheet Row Loss',  job: '25002', contract: 513163.34, invoiced: '543043.98', actual: 524878.85,
+           sqft: '11583', hours: 1279.25 }),
+  billed({ id: 'ni', name: 'Not Invoiced',    job: '25001', contract: 9000, invoiced: '', actual: 2000, hours: 10 }),
+];
+
+for (const file of FILES) {
+  console.log(`\n[${file}]`);
+  const area = DIVISION[file].area;
+  const m = loadFinancials(file, BILLED);
+  m.renderFinancials();
+  const html = m.html();
+  const rowIn = name => { const i = html.indexOf(name); return html.slice(html.lastIndexOf('<tr', i), html.indexOf('</tr>', i)); };
+  const foot = html.slice(html.indexOf('<tfoot>'), html.indexOf('</tfoot>'));
+
+  console.log('  — the columns —');
+  for (const h of [area, 'Invoiced', 'Net Profit', 'Man Hours', 'Bonus Amount']) {
+    assert(`the table has a ${h} column`, html.includes(`>${h}</th>`));
+  }
+  assert('  the area sits after Status and the billed figures after GP Earned to Date',
+    html.indexOf('>Status</th>') < html.indexOf(`>${area}</th>`)
+    && html.indexOf(`>${area}</th>`) < html.indexOf('>Contract Value</th>')
+    && html.indexOf('>GP Earned to Date</th>') < html.indexOf('>Invoiced</th>')
+    && html.indexOf('>Invoiced</th>') < html.indexOf('>Net Profit</th>')
+    && html.indexOf('>Net Profit</th>') < html.indexOf('>Man Hours</th>')
+    && html.indexOf('>Man Hours</th>') < html.indexOf('>Bonus Amount</th>'));
+  const ths = (html.match(/<th[ >]/g) || []).length;
+  assert(`  every header has a cell under it, in the body and the totals (${ths})`,
+    ths === 14 && (rowIn('Sheet Row Three').match(/<td[ >]/g) || []).length === ths
+    && (foot.match(/<td[ >]/g) || []).length === ths);
+  assert('  there is no column for the overhead itself', !/>Overhead<\/th>|>FTSI Overhead<\/th>/.test(html));
+
+  console.log('  — the spreadsheet row —');
+  const r3 = rowIn('Sheet Row Three');
+  assert(`shows its ${area}`, r3.includes('>1,788<'), r3);
+  assert('shows what was invoiced', r3.includes('$5,620.86'));
+  assert('Net Profit is invoiced less actual, with its margin on invoiced',
+    /\$1,689\.32 <span[^>]*>\(30\.1%\)/.test(r3), r3);
+  assert('Bonus Amount matches the sheet to the cent', r3.includes('$254.47'), r3);
+  assert('  with the bonus per man hour beside it', r3.includes('($4.85/hr)'), r3);
+  assert('Man Hours leave out every kind of travel row', r3.includes('>52.5<'), r3);
+  assert('  while the travel rows still cost what they cost', r3.includes('$3,931.54'));
+
+  console.log('  — the loss row —');
+  const rl = rowIn('Sheet Row Loss');
+  assert('a job under the line posts a negative bonus, as the sheet does',
+    rl.includes('-$47,937.05') && rl.includes('(-$37.47/hr)'), rl);
+  assert('  in red', /color:var\(--red\)">-\$47,937\.05/.test(rl), rl);
+  assert('  on a positive net profit', /\$18,165\.13 <span[^>]*>\(3\.3%\)/.test(rl), rl);
+  assert('hours keep their quarters', rl.includes('>1,279.25<'));
+
+  console.log('  — nothing invoiced —');
+  const ni = rowIn('Not Invoiced');
+  assert('net profit and bonus are blank, not the cost posted as a loss',
+    !ni.includes('-$2,000.00') && (ni.match(/>—</g) || []).length >= 3, ni);
+  assert('  its man hours still show', ni.includes('>10<'));
+  assert('  and the note says why it is left out of the totals', /1 job has nothing invoiced yet/.test(html));
+
+  console.log('  — totals —');
+  assert('area totals', foot.includes('>13,371<'), foot);
+  assert('invoiced totals', foot.includes('$548,664.84'));
+  assert('net profit totals the invoiced jobs, margin on what they billed',
+    /\$19,854\.45 <span[^>]*>\(3\.6%\)/.test(foot), foot);
+  assert('the bonus total nets the loss off the gain', foot.includes('-$47,682.58'), foot);
+  assert('  per hour over the invoiced jobs\' hours only', foot.includes('(-$35.80/hr)'), foot);
+  assert('man hours total every job', foot.includes('>1,341.75<'), foot);
+
+  console.log('  — what counts as travel —');
+  assert('a sub code of Travel', m.isTravel({ sub_code: ' travel ' }));
+  assert('  a paving code ending in Travel', m.isTravel({ sub_code: '19mm - Travel' }));
+  assert('  a travel cost code', m.isTravel({ cost_code: 'Travel', sub_code: 'Pickup' }));
+  assert('  payroll\'s Travel flag', m.isTravel({ field_type: 'Travel', sub_code: 'Laser Grading' }));
+  assert('  but not a word that merely starts with it', !m.isTravel({ sub_code: 'Form Traveler' }));
+  assert('  nor an ordinary labor row', !m.isTravel({ cost_code: 'CC', sub_code: 'S1', field_type: 'Labor' }));
+
+  console.log('  — the bonus percentages —');
+  assert('the strip offers all three, at the sheet\'s figures',
+    /id="fin-bonus-overhead"[^>]*value="6"/.test(html) && /id="fin-bonus-target"[^>]*value="15"/.test(html)
+    && /id="fin-bonus-share"[^>]*value="50"/.test(html), html.slice(0, 2500));
+  assert('  above the table', html.indexOf('fin-bonus-overhead') < html.indexOf('<table'));
+  // Until the saved figures are read, a save would send this browser's guess.
+  assert('  locked until the saved figures have been read',
+    ['overhead', 'target', 'share'].every(k => new RegExp(`id="fin-bonus-${k}"[^>]*disabled`).test(html))
+    && html.includes('loading the saved figures'));
+  assert('the Bonus header spells out the formula in use',
+    html.includes('title="50% of the net profit left after 6% overhead and the 15% profit target come off the invoiced amount">Bonus Amount'));
+  assert('its settings key belongs to this division', m.settingsKey === DIVISION[file].key, m.settingsKey);
+  assert('the table scrolls inside a wrapper that shows its scrollbar and pins the job name',
+    html.includes('class="proj-table-wrap fin-table-wrap"'));
+
+  console.log('  — to the cent —');
+  // A job billed at exactly its cost: the float sum of the costs runs a hair
+  // over the invoice, which used to print as a red -$0.00.
+  const even = loadFinancials(file, [{
+    id: 'be', 'project-name': 'Billed At Cost', 'job-number': '1', status: 'Complete', 'contract-amount': 6000, invoiced: '5125.70',
+    bidItems: [{ cost_code: 'CC', sub_code: 'S1', quantity: 1, unit_cost: 5125.70, _actual: 5125.70, _rqty: 1, _done: true }],
+    dailyRows: [1840.25, 2310.10, 975.35].map(c => ({ cost_code: 'CC', sub_code: 'S1', cost: c })),
+  }]);
+  even.renderFinancials();
+  even.exportFinancialsCSV();
+  const evenRow = (h => h.slice(h.lastIndexOf('<tr', h.indexOf('Billed At Cost')), h.indexOf('</tr>', h.indexOf('Billed At Cost'))))(even.html());
+  assert('a job billed at exactly its cost nets $0.00, not -$0.00',
+    /color:var\(--green\)">\$0\.00 <span[^>]*>\(0\.0%\)/.test(evenRow) && !evenRow.includes('-$0.00'), evenRow);
+  const evenCsv = even.captured.csv.replace(/^\uFEFF/, '').split('\r\n');
+  assert('  and exports 0.00', evenCsv[1].split(',')[evenCsv[0].split(',').indexOf('Net Profit')] === '0.00', evenCsv[1]);
+  // 50% × (102,685.22 − 21% × 172,085) = 33,273.685 — a half cent, which the
+  // on-screen formatter and toFixed used to round apart.
+  const half = loadFinancials(file, [billed({ id: 'hc', name: 'Half Cent', job: '2', contract: 172085, invoiced: '172085', actual: 69399.78, hours: 100 })]);
+  half.renderFinancials();
+  half.exportFinancialsCSV();
+  half.printFinancials();
+  const halfCsv = half.captured.csv.replace(/^\uFEFF/, '').split('\r\n');
+  const bonusCol = halfCsv[0].split(',').indexOf('Bonus Amount');
+  assert('a half-cent bonus reads the same on screen, in Excel and on paper',
+    half.html().includes('$33,273.69') && halfCsv[1].split(',')[bonusCol] === '33273.69'
+    && halfCsv[2].split(',')[bonusCol] === '33273.69' && half.captured.print.includes('$33,273.69'),
+    halfCsv[1] + ' / ' + halfCsv[2]);
+
+  console.log('  — excel —');
+  const x = loadFinancials(file, BILLED);
+  x.renderFinancials();
+  x.exportFinancialsCSV();
+  const xl = x.captured.csv.replace(/^﻿/, '').split('\r\n');
+  const xh = xl[0].split(',');
+  const cell = (line, h) => line.split(',')[xh.indexOf(h)];
+  const x3 = xl.find(l => l.startsWith('Sheet Row Three'));
+  assert('the export carries the new columns in the table\'s order',
+    xl[0] === finHeaders(file).concat(WORKED_HEADERS).join(','), xl[0]);
+  assert('  as raw numbers',
+    cell(x3, area) === '1788' && cell(x3, 'Invoiced') === '5620.86' && cell(x3, 'Net Profit') === '1689.32'
+    && cell(x3, 'Man Hours') === '52.5' && cell(x3, 'Bonus Amount') === '254.47', x3);
+  assert('  a negative bonus goes out negative',
+    cell(xl.find(l => l.startsWith('Sheet Row Loss')), 'Bonus Amount') === '-47937.05');
+  const xni = xl.find(l => l.startsWith('Not Invoiced'));
+  assert('  nothing invoiced exports blanks, not zeros',
+    cell(xni, 'Invoiced') === '' && cell(xni, 'Net Profit') === '' && cell(xni, 'Bonus Amount') === ''
+    && cell(xni, 'Man Hours') === '10', xni);
+  const xt = xl[xl.length - 1];
+  assert('  and the totals row totals them',
+    cell(xt, area) === '13371' && cell(xt, 'Invoiced') === '548664.84' && cell(xt, 'Net Profit') === '19854.45'
+    && cell(xt, 'Man Hours') === '1341.75' && cell(xt, 'Bonus Amount') === '-47682.58', xt);
+  assert('  every line has as many cells as the header', xl.every(l => l.split(',').length === xh.length));
+
+  console.log('  — print —');
+  x.printFinancials();
+  const pd = x.captured.print;
+  assert('the printout carries the new columns', finHeaders(file).every(h => pd.includes(`>${h}</th>`)));
+  assert('  with the bonus and its rate per hour', pd.includes('$254.47 ($4.85/hr)') && pd.includes('-$47,937.05 (-$37.47/hr)'));
+  assert('  the percentages it was worked out at', pd.includes('Bonus: 6% overhead, 15% profit target, 50% share'));
+  assert('  on a landscape page, since fourteen columns do not fit across a portrait one',
+    /@page\s*\{\s*size:\s*landscape/.test(pd));
+  const pdThs = (pd.match(/<th[ >]/g) || []).length;
+  const pdRow = pd.slice(pd.indexOf('<tbody>'), pd.indexOf('</tr>', pd.indexOf('<tbody>')));
+  const pdFoot = pd.slice(pd.indexOf('<tfoot>'), pd.indexOf('</tfoot>'));
+  assert(`  every header has a cell under it (${pdThs})`,
+    (pdRow.match(/<td[ >]/g) || []).length === pdThs && (pdFoot.match(/<td[ >]/g) || []).length === pdThs);
+}
+
+// Where the figures are keyed in: the invoiced amount on the project card,
+// next to the contract it is billed against.
+console.log('\n[the project card takes the invoiced amount]');
+for (const file of FILES) {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  const sec = src.slice(src.indexOf('Contract &amp; Financials</div>'), src.indexOf('Scope &amp; Notes</div>'));
+  assert(`${file}: Contract & Financials has an Invoiced to Date box`,
+    sec.includes('<label>Invoiced to Date</label>')
+    && sec.includes(`value="\${esc(p['invoiced']||'')}"`)
+    && sec.includes(`oninput="updateProjectField('\${p.id}','invoiced',this.value)"`), sec.slice(0, 300));
+  assert(`  ${file}: and a new project starts with it blank`,
+    (src.match(/'sqft': '', 'invoiced': '',/g) || []).length === 2);
 }
 
 // A removed helper still called from somewhere is a runtime ReferenceError the
@@ -943,5 +1201,231 @@ for (const file of ['trucking.html', 'dust.html', 'quarry.html', 'intercompany.h
     !/analytics-item-financials/.test(src) && !/bidItems/.test(src));
 }
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+// ── The percentages, from the server, and editing them ──────────────────────
+// Every computer in a division has to work the bonus out at the same
+// percentages, so the server copy is read on every visit to the tab. A save
+// sends all three figures, so nothing may be saved until a read has worked —
+// otherwise this browser's cached copy, or the defaults, would be written over
+// the division's real percentages.
+const settle = () => new Promise(r => setImmediate(r));
+
+async function settingsFromServer() {
+  console.log('\n══════════ bonus percentages: reading, editing, saving ══════════');
+  for (const file of FILES) {
+    console.log(`\n[${file}]`);
+    const key = DIVISION[file].key;
+    const ALL = ['overhead', 'target', 'share'];
+
+    console.log('  — reading —');
+    const a = loadFinancials(file, BILLED, { server: { ok: true, value: { overhead: 8, target: 15, share: 50 } } });
+    a.renderFinancials();
+    const barBefore = a.bar();
+    await settle();
+    assert('the saved percentages replace the defaults', a.bonus().overhead === 8, JSON.stringify(a.bonus()));
+    assert('  read from this division\'s key', a.captured.gets[0] === key, a.captured.gets.join(','));
+    // 50% × (1,689.32 − 23% × 5,620.86) = 198.26
+    assert('  the table is redrawn at them', a.html().includes('$198.26'));
+    assert('  the boxes are filled in and unlocked where they stand',
+      a.boxes.overhead.value === 8 && ALL.every(k => a.boxes[k].disabled === false)
+      && !/loading|couldn/.test(a.boxes.note.textContent), JSON.stringify(a.boxes));
+    // Rebuilding the bar would throw the cursor out of the search or date box
+    // the user may be typing in when the read lands.
+    assert('  without rebuilding the filter bar', a.bar() === barBefore);
+    assert('  and this browser keeps a copy for next time', JSON.parse(a.store.get(key)).overhead === 8);
+    a.renderFinancials();
+    await settle();
+    assert('a redraw from a filter change does not read again', a.captured.gets.length === 1);
+    a.renderFinancials({ fresh: true });
+    await settle();
+    assert('  opening the tab again does, so a page left open sees another computer\'s change',
+      a.captured.gets.length === 2);
+
+    const b = loadFinancials(file, BILLED, { cache: { overhead: 9, target: 20, share: 40 }, server: { ok: true, value: null } });
+    assert('the browser copy is shown until the server answers', b.bonus().overhead === 9);
+    b.renderFinancials();
+    await settle();
+    assert('  but nothing saved on the server means the defaults, not that copy — it may be another company\'s',
+      JSON.stringify(b.bonus()) === JSON.stringify({ overhead: 6, target: 15, share: 50 }), JSON.stringify(b.bonus()));
+
+    const junk = loadFinancials(file, BILLED, { server: { ok: true, value: { overhead: 'abc', target: 250, share: null } } });
+    junk.renderFinancials();
+    await settle();
+    assert('a malformed saved value falls back field by field, held to 0–100',
+      JSON.stringify(junk.bonus()) === JSON.stringify({ overhead: 6, target: 100, share: 50 }), JSON.stringify(junk.bonus()));
+
+    console.log('  — a failed read —');
+    const c = loadFinancials(file, BILLED, { cache: { overhead: 6, target: 15, share: 50 }, server: { ok: false, value: null } });
+    c.renderFinancials();
+    await settle();
+    assert('the first read failing leaves the boxes locked',
+      ALL.every(k => c.boxes[k].disabled === true) && /couldn’t load the saved figures/.test(c.boxes.note.textContent),
+      JSON.stringify(c.boxes));
+    c.setBonus('share', '40', { value: '40' });
+    c.flushTimers();
+    assert('  so nothing guessed is ever saved over the server copy',
+      c.captured.puts.length === 0 && c.bonus().share === 50, JSON.stringify(c.captured.puts));
+    c.renderFinancials();
+    await settle();
+    assert('  and the next redraw tries again', c.captured.gets.length === 2);
+
+    let failNext = false;
+    const c2 = loadFinancials(file, BILLED, { server: () => failNext ? { ok: false, value: null } : { ok: true, value: { overhead: 7, target: 15, share: 50 } } });
+    c2.renderFinancials();
+    await settle();
+    failNext = true;
+    c2.renderFinancials({ fresh: true });
+    await settle();
+    assert('a later read failing keeps the figures already read, and the boxes usable',
+      c2.bonus().overhead === 7 && ALL.every(k => c2.boxes[k].disabled === false) && !/couldn/.test(c2.boxes.note.textContent));
+
+    console.log('  — editing —');
+    const e = loadFinancials(file, BILLED);
+    e.renderFinancials();
+    await settle();
+    e.setBonus('overhead', '7');
+    // 50% × (1,689.32 − 22% × 5,620.86) = 226.37
+    assert('changing the overhead recomputes the bonus at once', e.html().includes('$226.37'));
+    assert('  and the header follows it', e.html().includes('after 7% overhead'));
+    assert('  it is remembered in this browser straight away', JSON.parse(e.store.get(key)).overhead === 7);
+    assert('  but not sent while the box is still being typed in', e.captured.puts.length === 0 && e.pendingTimers() === 1);
+    e.setBonus('target', '1');
+    e.setBonus('target', '16');
+    assert('  further keystrokes wait on the same save', e.pendingTimers() === 1);
+    e.flushTimers();
+    assert('  then one save carries all of them, under the division\'s key',
+      e.captured.puts.length === 1 && e.captured.puts[0].key === key
+      && JSON.stringify(e.captured.puts[0].value) === JSON.stringify({ overhead: 7, target: 16, share: 50 }),
+      JSON.stringify(e.captured.puts));
+    e.setBonus('target', '20');
+    e.setBonus('target', '20', { value: '20' });
+    assert('leaving the box saves at once rather than after the pause',
+      e.captured.puts.length === 2 && e.captured.puts[1].value.target === 20 && e.pendingTimers() === 0);
+
+    const box = { value: '' };
+    e.setBonus('share', '', box);
+    assert('a box left blank changes nothing and is put back', e.bonus().share === 50 && box.value === 50);
+    const big = { value: '150' };
+    e.setBonus('share', '150', big);
+    assert('a share over 100% is held at 100%', e.bonus().share === 100 && big.value === 100);
+    e.setBonus('overhead', '-4');
+    assert('  and a negative overhead at zero', e.bonus().overhead === 0);
+
+    const ro = loadFinancials(file, BILLED, { canEdit: false });
+    ro.renderFinancials();
+    await settle();
+    assert('someone who cannot edit projects sees the figures but cannot change them',
+      ALL.every(k => ro.boxes[k].disabled === true) && /set by a project editor/.test(ro.boxes.note.textContent));
+
+    console.log('  — closing the page —');
+    for (const [label, fireIt] of [['closed', u => u.fire('beforeunload')], ['hidden', u => u.fire('visibilitychange', 'hidden')]]) {
+      const u = loadFinancials(file, BILLED);
+      u.renderFinancials();
+      await settle();
+      u.setBonus('target', '20');
+      fireIt(u);
+      assert(`an edit still waiting goes out when the page is ${label}, as a request that outlives it`,
+        u.captured.puts.length === 1 && u.captured.puts[0].value.target === 20 && u.captured.puts[0].keepalive
+        && u.pendingTimers() === 0, JSON.stringify(u.captured.puts));
+    }
+    const idle = loadFinancials(file, BILLED);
+    idle.renderFinancials();
+    await settle();
+    idle.fire('beforeunload');
+    assert('  and nothing is sent when nothing is waiting', idle.captured.puts.length === 0);
+
+    console.log('  — a read and a save at the same time —');
+    // The first read answers at once; the second is held open until letGo.
+    let letGo;
+    const held = new Promise(r => { letGo = r; });
+    let reads = 0;
+    const d = loadFinancials(file, BILLED, { server: () => (++reads === 1 ? { ok: true, value: null } : held) });
+    d.renderFinancials();
+    await settle();
+    d.renderFinancials({ fresh: true });
+    d.setBonus('overhead', '7');
+    letGo({ ok: true, value: { overhead: 9, target: 15, share: 50 } });
+    await settle();
+    assert('an edit typed while a re-read was out is not overwritten by it', d.bonus().overhead === 7, JSON.stringify(d.bonus()));
+
+    const g = loadFinancials(file, BILLED);
+    g.renderFinancials();
+    await settle();
+    g.setBonus('overhead', '7');
+    g.renderFinancials({ fresh: true });
+    await settle();
+    assert('a re-read is skipped while a save is still waiting', g.captured.gets.length === 1 && g.bonus().overhead === 7);
+
+    let landed;
+    const h = loadFinancials(file, BILLED, { put: () => new Promise(r => { landed = r; }) });
+    h.renderFinancials();
+    await settle();
+    h.setBonus('overhead', '7', { value: '7' });
+    h.renderFinancials({ fresh: true });
+    await settle();
+    assert('a re-read waits for a save still on its way', h.captured.gets.length === 1);
+    landed();
+    await settle();
+    assert('  and goes ahead once it has landed', h.captured.gets.length === 2);
+  }
+}
+
+// The data API only stores keys it knows. Turf's key had to be added to its
+// list; paving's and kiewit's ride the division prefixes, which also decide
+// who may read them. Exercised through the real handler and the real division
+// rules — only the database and the token check are stood in for.
+async function settingsKeyOnServer() {
+  console.log('\n══════════ the data API takes each division\'s key ══════════');
+  const Module = require('module');
+  const authLib = require(path.resolve(__dirname, '../api/lib/auth.js'));
+  const writes = [];
+  let payload = null;
+  const origLoad = Module._load;
+  Module._load = function (req, parent) {
+    if (req === '@neondatabase/serverless') {
+      return { neon: () => (strings, ...vals) => {
+        const q = strings.join('?');
+        if (/^\s*INSERT INTO app_data/.test(q)) writes.push({ key: vals[0], value: JSON.parse(vals[1]) });
+        return Promise.resolve([]);
+      } };
+    }
+    if (req === '../lib/auth' && parent && /[\\/]data[\\/]/.test(parent.filename)) {
+      return { ...authLib, requireAuth: async () => payload };
+    }
+    return origLoad.apply(this, arguments);
+  };
+  const handlerPath = path.resolve(__dirname, '../api/data/[key].js');
+  delete require.cache[handlerPath];
+  const handler = require(handlerPath);
+  Module._load = origLoad;
+
+  const call = (method, key, body) => new Promise(resolve => {
+    const res = {
+      setHeader() {}, status(c) { this._c = c; return this; },
+      json(o) { resolve({ code: this._c || 200, body: o }); }, end() { resolve({ code: this._c || 200 }); },
+    };
+    handler({ method, query: { key }, headers: {}, body }, res);
+  });
+
+  for (const file of FILES) {
+    const { key, division } = DIVISION[file];
+    console.log(`\n[${file} → ${key}]`);
+    payload = { companyCode: 'ACME', divisionRoles: { [division]: 'level3' } };
+    const got = await call('GET', key);
+    assert('a user of the division can read it', got.code === 200, JSON.stringify(got));
+    const put = await call('PUT', key, { value: { overhead: 7, target: 15, share: 50 } });
+    assert('  and save it', put.code === 200 && writes.some(w => w.key === `ACME:${key}` && w.value.overhead === 7),
+      JSON.stringify(put));
+    assert('  the division the key belongs to is this one', (authLib.divisionForKey(key) || 'turf') === division);
+    const other = ['turf', 'paving', 'kiewit'].find(d => d !== division);
+    payload = { companyCode: 'ACME', divisionRoles: { [division]: 'no_access', [other]: 'admin' } };
+    const denied = await call('GET', key);
+    assert(`  someone with only ${other} access cannot`, denied.code === 403, JSON.stringify(denied));
+  }
+}
+
+(async () => {
+  await settingsFromServer();
+  await settingsKeyOnServer();
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+})().catch(err => { console.error(err); process.exit(1); });
