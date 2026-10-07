@@ -90,7 +90,9 @@ function contractHelperCode(src) {
 
 // opts.canEdit  — the viewer's perm.canEdit (default true)
 // opts.cache    — what localStorage already holds for the settings key
-// opts.server   — what the server hands back for it: { ok, value }
+// opts.server   — what the server hands back for it: { ok, value }, or a
+//                 function returning that (or a promise of it)
+// opts.put      — a function standing in for the save's promise
 function loadFinancials(file, projects, opts = {}) {
   const src   = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
   const start = src.indexOf('/* ── Financials ───');
@@ -105,6 +107,13 @@ function loadFinancials(file, projects, opts = {}) {
   // rowCost counts how often the per-project cost walk runs, which is how the
   // cost of a re-render is measured below.
   const captured = { csv: null, print: '', alerts: [], download: null, rowCost: 0, puts: [], gets: [] };
+  // The bonus boxes and their note, as the page's DOM would hold them, so the
+  // in-place updates can be read back. listeners: unload/visibility hooks.
+  const boxes = { overhead: { value: '', disabled: true }, target: { value: '', disabled: true },
+                  share: { value: '', disabled: true }, note: { textContent: '' } };
+  const listeners = {};
+  const on = (type, fn) => { (listeners[type] = listeners[type] || []).push(fn); };
+  const doc = { visibilityState: 'visible' };
   const store = new Map(opts.cache === undefined ? [] : [[DIVISION[file].key, JSON.stringify(opts.cache)]]);
   // Timers are held rather than run, so a test decides when the debounced
   // save lands.
@@ -155,12 +164,19 @@ function loadFinancials(file, projects, opts = {}) {
         'finff-search': dd.search,
         'finff-all': dd.all,
         'fin-preset': preset,
+        'fin-bonus-overhead': boxes.overhead,
+        'fin-bonus-target': boxes.target,
+        'fin-bonus-share': boxes.share,
+        'fin-bonus-note': boxes.note,
       }[id] || null),
+      addEventListener: on,
+      get visibilityState() { return doc.visibilityState; },
       // The job-name checklist queries its boxes by class.
       querySelectorAll: sel => (sel === '.finff-val-cb' ? dd.boxes : []),
       createElement: () => ({ href: '', download: '', click() { captured.download = this.download; } }),
     },
-    { open: () => ({ document: { write: (...chunks) => { captured.print += chunks.join(''); }, close() {} } }) },
+    { open: () => ({ document: { write: (...chunks) => { captured.print += chunks.join(''); }, close() {} } }),
+      addEventListener: on },
     m => captured.alerts.push(m),
     function (parts) { captured.csv = parts.join(''); },
     { createObjectURL: () => 'blob:stub', revokeObjectURL: () => {} },
@@ -178,7 +194,10 @@ function loadFinancials(file, projects, opts = {}) {
       captured.gets.push(key);
       return typeof opts.server === 'function' ? opts.server() : (opts.server || { ok: true, value: null });
     },
-    (key, value) => { captured.puts.push({ key, value: JSON.parse(JSON.stringify(value)) }); },
+    (key, value, o) => {
+      captured.puts.push({ key, value: JSON.parse(JSON.stringify(value)), keepalive: !!(o && o.keepalive) });
+      return opts.put ? opts.put() : undefined;
+    },
     (fn) => { timers.set(++timerId, fn); return timerId; },
     (id) => { timers.delete(id); },
   );
@@ -189,6 +208,9 @@ function loadFinancials(file, projects, opts = {}) {
     dd,
     preset,
     store,
+    boxes,
+    // What the browser does when the page is closed or hidden.
+    fire: (type, state) => { if (state) doc.visibilityState = state; (listeners[type] || []).forEach(f => f()); },
     // Run whatever is waiting — the debounced settings save.
     flushTimers: () => { const fns = [...timers.values()]; timers.clear(); fns.forEach(f => f()); },
     pendingTimers: () => timers.size,
@@ -200,6 +222,7 @@ function loadFinancials(file, projects, opts = {}) {
     },
     // What the user sees: filter bar plus the table it controls.
     html: () => bar.innerHTML + table.innerHTML,
+    bar: () => bar.innerHTML,
   };
 }
 
@@ -359,7 +382,8 @@ for (const file of FILES) {
     /id="analytics-item-financials" onclick="analyticsSwitchTab\('financials'\)"/.test(src));
   assert('the panel exists', /<div class="tab-panel" id="tab-financials">/.test(src)
     && /id="fin-content"/.test(src));
-  assert('switching to it renders', /if \(tab === 'financials'\) renderFinancials\(\);/.test(src));
+  // fresh: opening the tab re-reads the saved bonus percentages.
+  assert('switching to it renders', /if \(tab === 'financials'\) renderFinancials\(\{ fresh: true \}\);/.test(src));
   assert('restricted roles do not get it',
     /'financials'\]/.test(src) || /!perm\.visibleTabs\.has\('financials'\)/.test(src));
 }
@@ -933,43 +957,43 @@ for (const file of FILES) {
     /id="fin-bonus-overhead"[^>]*value="6"/.test(html) && /id="fin-bonus-target"[^>]*value="15"/.test(html)
     && /id="fin-bonus-share"[^>]*value="50"/.test(html), html.slice(0, 2500));
   assert('  above the table', html.indexOf('fin-bonus-overhead') < html.indexOf('<table'));
-  assert('  editable by anyone who can edit projects', !/id="fin-bonus-overhead"[^>]*disabled/.test(html));
+  // Until the saved figures are read, a save would send this browser's guess.
+  assert('  locked until the saved figures have been read',
+    ['overhead', 'target', 'share'].every(k => new RegExp(`id="fin-bonus-${k}"[^>]*disabled`).test(html))
+    && html.includes('loading the saved figures'));
   assert('the Bonus header spells out the formula in use',
     html.includes('title="50% of the net profit left after 6% overhead and the 15% profit target come off the invoiced amount">Bonus Amount'));
   assert('its settings key belongs to this division', m.settingsKey === DIVISION[file].key, m.settingsKey);
+  assert('the table scrolls inside a wrapper that shows its scrollbar and pins the job name',
+    html.includes('class="proj-table-wrap fin-table-wrap"'));
 
-  const e = loadFinancials(file, BILLED);
-  e.renderFinancials();
-  e.setBonus('overhead', '7');
-  // 50% × (1,689.32 − 22% × 5,620.86) = 226.37
-  assert('changing the overhead recomputes the bonus at once', e.html().includes('$226.37'));
-  assert('  and the header follows it', e.html().includes('after 7% overhead'));
-  assert('  it is remembered in this browser straight away',
-    JSON.parse(e.store.get(DIVISION[file].key)).overhead === 7);
-  assert('  but not sent while the box is still being typed in',
-    e.captured.puts.length === 0 && e.pendingTimers() === 1);
-  e.setBonus('target', '1');
-  e.setBonus('target', '16');
-  assert('  further keystrokes wait on the same save', e.pendingTimers() === 1);
-  e.flushTimers();
-  assert('  then one save carries all of them, under the division\'s key',
-    e.captured.puts.length === 1 && e.captured.puts[0].key === DIVISION[file].key
-    && JSON.stringify(e.captured.puts[0].value) === JSON.stringify({ overhead: 7, target: 16, share: 50 }),
-    JSON.stringify(e.captured.puts));
-
-  const box = { value: '' };
-  e.setBonus('share', '', box);
-  assert('a box left blank changes nothing and is put back', e.bonus().share === 50 && box.value === 50);
-  const big = { value: '150' };
-  e.setBonus('share', '150', big);
-  assert('a share over 100% is held at 100%', e.bonus().share === 100 && big.value === 100);
-  e.setBonus('overhead', '-4');
-  assert('  and a negative overhead at zero', e.bonus().overhead === 0);
-
-  const ro = loadFinancials(file, BILLED, { canEdit: false });
-  ro.renderFinancials();
-  assert('someone who cannot edit projects sees the figures but cannot change them',
-    ['overhead', 'target', 'share'].every(k => new RegExp(`id="fin-bonus-${k}"[^>]*disabled`).test(ro.html())));
+  console.log('  — to the cent —');
+  // A job billed at exactly its cost: the float sum of the costs runs a hair
+  // over the invoice, which used to print as a red -$0.00.
+  const even = loadFinancials(file, [{
+    id: 'be', 'project-name': 'Billed At Cost', 'job-number': '1', status: 'Complete', 'contract-amount': 6000, invoiced: '5125.70',
+    bidItems: [{ cost_code: 'CC', sub_code: 'S1', quantity: 1, unit_cost: 5125.70, _actual: 5125.70, _rqty: 1, _done: true }],
+    dailyRows: [1840.25, 2310.10, 975.35].map(c => ({ cost_code: 'CC', sub_code: 'S1', cost: c })),
+  }]);
+  even.renderFinancials();
+  even.exportFinancialsCSV();
+  const evenRow = (h => h.slice(h.lastIndexOf('<tr', h.indexOf('Billed At Cost')), h.indexOf('</tr>', h.indexOf('Billed At Cost'))))(even.html());
+  assert('a job billed at exactly its cost nets $0.00, not -$0.00',
+    /color:var\(--green\)">\$0\.00 <span[^>]*>\(0\.0%\)/.test(evenRow) && !evenRow.includes('-$0.00'), evenRow);
+  const evenCsv = even.captured.csv.replace(/^\uFEFF/, '').split('\r\n');
+  assert('  and exports 0.00', evenCsv[1].split(',')[evenCsv[0].split(',').indexOf('Net Profit')] === '0.00', evenCsv[1]);
+  // 50% × (102,685.22 − 21% × 172,085) = 33,273.685 — a half cent, which the
+  // on-screen formatter and toFixed used to round apart.
+  const half = loadFinancials(file, [billed({ id: 'hc', name: 'Half Cent', job: '2', contract: 172085, invoiced: '172085', actual: 69399.78, hours: 100 })]);
+  half.renderFinancials();
+  half.exportFinancialsCSV();
+  half.printFinancials();
+  const halfCsv = half.captured.csv.replace(/^\uFEFF/, '').split('\r\n');
+  const bonusCol = halfCsv[0].split(',').indexOf('Bonus Amount');
+  assert('a half-cent bonus reads the same on screen, in Excel and on paper',
+    half.html().includes('$33,273.69') && halfCsv[1].split(',')[bonusCol] === '33273.69'
+    && halfCsv[2].split(',')[bonusCol] === '33273.69' && half.captured.print.includes('$33,273.69'),
+    halfCsv[1] + ' / ' + halfCsv[2]);
 
   console.log('  — excel —');
   const x = loadFinancials(file, BILLED);
@@ -1177,51 +1201,171 @@ for (const file of ['trucking.html', 'dust.html', 'quarry.html', 'intercompany.h
     !/analytics-item-financials/.test(src) && !/bidItems/.test(src));
 }
 
-// ── The percentages, from the server ────────────────────────────────────────
+// ── The percentages, from the server, and editing them ──────────────────────
 // Every computer in a division has to work the bonus out at the same
-// percentages, so the server copy wins when the tab opens — except over an
-// edit typed while that read was still out.
+// percentages, so the server copy is read on every visit to the tab. A save
+// sends all three figures, so nothing may be saved until a read has worked —
+// otherwise this browser's cached copy, or the defaults, would be written over
+// the division's real percentages.
+const settle = () => new Promise(r => setImmediate(r));
+
 async function settingsFromServer() {
-  console.log('\n══════════ bonus percentages from the server ══════════');
+  console.log('\n══════════ bonus percentages: reading, editing, saving ══════════');
   for (const file of FILES) {
     console.log(`\n[${file}]`);
     const key = DIVISION[file].key;
+    const ALL = ['overhead', 'target', 'share'];
 
+    console.log('  — reading —');
     const a = loadFinancials(file, BILLED, { server: { ok: true, value: { overhead: 8, target: 15, share: 50 } } });
-    await a.loadBonus();
+    a.renderFinancials();
+    const barBefore = a.bar();
+    await settle();
     assert('the saved percentages replace the defaults', a.bonus().overhead === 8, JSON.stringify(a.bonus()));
     assert('  read from this division\'s key', a.captured.gets[0] === key, a.captured.gets.join(','));
     // 50% × (1,689.32 − 23% × 5,620.86) = 198.26
-    assert('  and the table is redrawn at them', a.html().includes('$198.26'));
+    assert('  the table is redrawn at them', a.html().includes('$198.26'));
+    assert('  the boxes are filled in and unlocked where they stand',
+      a.boxes.overhead.value === 8 && ALL.every(k => a.boxes[k].disabled === false)
+      && !/loading|couldn/.test(a.boxes.note.textContent), JSON.stringify(a.boxes));
+    // Rebuilding the bar would throw the cursor out of the search or date box
+    // the user may be typing in when the read lands.
+    assert('  without rebuilding the filter bar', a.bar() === barBefore);
     assert('  and this browser keeps a copy for next time', JSON.parse(a.store.get(key)).overhead === 8);
-    await a.loadBonus();
-    assert('it is read once a page, not on every redraw', a.captured.gets.length === 1);
+    a.renderFinancials();
+    await settle();
+    assert('a redraw from a filter change does not read again', a.captured.gets.length === 1);
+    a.renderFinancials({ fresh: true });
+    await settle();
+    assert('  opening the tab again does, so a page left open sees another computer\'s change',
+      a.captured.gets.length === 2);
 
     const b = loadFinancials(file, BILLED, { cache: { overhead: 9, target: 20, share: 40 }, server: { ok: true, value: null } });
-    assert('the browser copy is used until the server answers', b.bonus().overhead === 9);
-    await b.loadBonus();
+    assert('the browser copy is shown until the server answers', b.bonus().overhead === 9);
+    b.renderFinancials();
+    await settle();
     assert('  but nothing saved on the server means the defaults, not that copy — it may be another company\'s',
       JSON.stringify(b.bonus()) === JSON.stringify({ overhead: 6, target: 15, share: 50 }), JSON.stringify(b.bonus()));
 
-    const c = loadFinancials(file, BILLED, { server: { ok: false, value: null } });
-    await c.loadBonus();
-    await c.loadBonus();
-    assert('a failed read keeps what it has and tries again next time',
-      c.bonus().overhead === 6 && c.captured.gets.length === 2);
-
-    let release;
-    const d = loadFinancials(file, BILLED, { server: () => new Promise(r => { release = r; }) });
-    d.renderFinancials();
-    const pending = d.loadBonus();
-    d.setBonus('overhead', '7');
-    release({ ok: true, value: { overhead: 9, target: 15, share: 50 } });
-    await pending;
-    assert('an edit typed while the read was out is not overwritten by it', d.bonus().overhead === 7, JSON.stringify(d.bonus()));
-
     const junk = loadFinancials(file, BILLED, { server: { ok: true, value: { overhead: 'abc', target: 250, share: null } } });
-    await junk.loadBonus();
+    junk.renderFinancials();
+    await settle();
     assert('a malformed saved value falls back field by field, held to 0–100',
       JSON.stringify(junk.bonus()) === JSON.stringify({ overhead: 6, target: 100, share: 50 }), JSON.stringify(junk.bonus()));
+
+    console.log('  — a failed read —');
+    const c = loadFinancials(file, BILLED, { cache: { overhead: 6, target: 15, share: 50 }, server: { ok: false, value: null } });
+    c.renderFinancials();
+    await settle();
+    assert('the first read failing leaves the boxes locked',
+      ALL.every(k => c.boxes[k].disabled === true) && /couldn’t load the saved figures/.test(c.boxes.note.textContent),
+      JSON.stringify(c.boxes));
+    c.setBonus('share', '40', { value: '40' });
+    c.flushTimers();
+    assert('  so nothing guessed is ever saved over the server copy',
+      c.captured.puts.length === 0 && c.bonus().share === 50, JSON.stringify(c.captured.puts));
+    c.renderFinancials();
+    await settle();
+    assert('  and the next redraw tries again', c.captured.gets.length === 2);
+
+    let failNext = false;
+    const c2 = loadFinancials(file, BILLED, { server: () => failNext ? { ok: false, value: null } : { ok: true, value: { overhead: 7, target: 15, share: 50 } } });
+    c2.renderFinancials();
+    await settle();
+    failNext = true;
+    c2.renderFinancials({ fresh: true });
+    await settle();
+    assert('a later read failing keeps the figures already read, and the boxes usable',
+      c2.bonus().overhead === 7 && ALL.every(k => c2.boxes[k].disabled === false) && !/couldn/.test(c2.boxes.note.textContent));
+
+    console.log('  — editing —');
+    const e = loadFinancials(file, BILLED);
+    e.renderFinancials();
+    await settle();
+    e.setBonus('overhead', '7');
+    // 50% × (1,689.32 − 22% × 5,620.86) = 226.37
+    assert('changing the overhead recomputes the bonus at once', e.html().includes('$226.37'));
+    assert('  and the header follows it', e.html().includes('after 7% overhead'));
+    assert('  it is remembered in this browser straight away', JSON.parse(e.store.get(key)).overhead === 7);
+    assert('  but not sent while the box is still being typed in', e.captured.puts.length === 0 && e.pendingTimers() === 1);
+    e.setBonus('target', '1');
+    e.setBonus('target', '16');
+    assert('  further keystrokes wait on the same save', e.pendingTimers() === 1);
+    e.flushTimers();
+    assert('  then one save carries all of them, under the division\'s key',
+      e.captured.puts.length === 1 && e.captured.puts[0].key === key
+      && JSON.stringify(e.captured.puts[0].value) === JSON.stringify({ overhead: 7, target: 16, share: 50 }),
+      JSON.stringify(e.captured.puts));
+    e.setBonus('target', '20');
+    e.setBonus('target', '20', { value: '20' });
+    assert('leaving the box saves at once rather than after the pause',
+      e.captured.puts.length === 2 && e.captured.puts[1].value.target === 20 && e.pendingTimers() === 0);
+
+    const box = { value: '' };
+    e.setBonus('share', '', box);
+    assert('a box left blank changes nothing and is put back', e.bonus().share === 50 && box.value === 50);
+    const big = { value: '150' };
+    e.setBonus('share', '150', big);
+    assert('a share over 100% is held at 100%', e.bonus().share === 100 && big.value === 100);
+    e.setBonus('overhead', '-4');
+    assert('  and a negative overhead at zero', e.bonus().overhead === 0);
+
+    const ro = loadFinancials(file, BILLED, { canEdit: false });
+    ro.renderFinancials();
+    await settle();
+    assert('someone who cannot edit projects sees the figures but cannot change them',
+      ALL.every(k => ro.boxes[k].disabled === true) && /set by a project editor/.test(ro.boxes.note.textContent));
+
+    console.log('  — closing the page —');
+    for (const [label, fireIt] of [['closed', u => u.fire('beforeunload')], ['hidden', u => u.fire('visibilitychange', 'hidden')]]) {
+      const u = loadFinancials(file, BILLED);
+      u.renderFinancials();
+      await settle();
+      u.setBonus('target', '20');
+      fireIt(u);
+      assert(`an edit still waiting goes out when the page is ${label}, as a request that outlives it`,
+        u.captured.puts.length === 1 && u.captured.puts[0].value.target === 20 && u.captured.puts[0].keepalive
+        && u.pendingTimers() === 0, JSON.stringify(u.captured.puts));
+    }
+    const idle = loadFinancials(file, BILLED);
+    idle.renderFinancials();
+    await settle();
+    idle.fire('beforeunload');
+    assert('  and nothing is sent when nothing is waiting', idle.captured.puts.length === 0);
+
+    console.log('  — a read and a save at the same time —');
+    // The first read answers at once; the second is held open until letGo.
+    let letGo;
+    const held = new Promise(r => { letGo = r; });
+    let reads = 0;
+    const d = loadFinancials(file, BILLED, { server: () => (++reads === 1 ? { ok: true, value: null } : held) });
+    d.renderFinancials();
+    await settle();
+    d.renderFinancials({ fresh: true });
+    d.setBonus('overhead', '7');
+    letGo({ ok: true, value: { overhead: 9, target: 15, share: 50 } });
+    await settle();
+    assert('an edit typed while a re-read was out is not overwritten by it', d.bonus().overhead === 7, JSON.stringify(d.bonus()));
+
+    const g = loadFinancials(file, BILLED);
+    g.renderFinancials();
+    await settle();
+    g.setBonus('overhead', '7');
+    g.renderFinancials({ fresh: true });
+    await settle();
+    assert('a re-read is skipped while a save is still waiting', g.captured.gets.length === 1 && g.bonus().overhead === 7);
+
+    let landed;
+    const h = loadFinancials(file, BILLED, { put: () => new Promise(r => { landed = r; }) });
+    h.renderFinancials();
+    await settle();
+    h.setBonus('overhead', '7', { value: '7' });
+    h.renderFinancials({ fresh: true });
+    await settle();
+    assert('a re-read waits for a save still on its way', h.captured.gets.length === 1);
+    landed();
+    await settle();
+    assert('  and goes ahead once it has landed', h.captured.gets.length === 2);
   }
 }
 
