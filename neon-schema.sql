@@ -463,6 +463,9 @@ ALTER TABLE purchase_orders   DROP CONSTRAINT IF EXISTS purchase_orders_division
 -- Purchase Orders tab without a second copy to reconcile. 'quarry' is a
 -- purchasing division with no jobs — its orders are filed here but never cost
 -- a job, so daily_tracking_division_chk below deliberately does not admit it.
+-- 'dust' is a purchasing division with no jobs too. daily_tracking admits it
+-- for reasons of its own, but po-sync never writes a purchase-order cost row
+-- there: a dust order carries no job (PO_JOB_DIVISIONS in api/lib/auth.js).
 ALTER TABLE purchase_orders   ADD  CONSTRAINT purchase_orders_division_chk   CHECK (division IN ('turf','dust','paving','kiewit','trucking','intercompany','quarry','purchase_orders'));
 
 ALTER TABLE trucking_entries  DROP CONSTRAINT IF EXISTS trucking_entries_division_chk;

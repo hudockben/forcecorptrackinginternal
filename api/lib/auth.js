@@ -37,12 +37,13 @@ const RESTRICTED_DIVISIONS = new Set(['timesheet', 'payroll', 'fuel', 'fuel_admi
 // of these lives in THAT division's purchase-order list — there is no second
 // copy to reconcile, which is what makes "shows up in the division's own tab"
 // true by construction rather than by a sync job.
-const PO_SOURCE_DIVISIONS = ['turf', 'paving', 'kiewit', 'quarry'];
+const PO_SOURCE_DIVISIONS = ['turf', 'paving', 'kiewit', 'quarry', 'dust'];
 
 // The source divisions that keep a JOB ledger an order can be charged to.
-// Quarry is a source division without one: it has no projects and no bid
-// items, so an order filed there carries no job and no cost rows — and
-// daily_tracking's CHECK does not admit it, so one that tried would 500.
+// Quarry and dust are source divisions without one: neither has projects or
+// bid items, so an order filed there carries no job and no cost rows. For
+// quarry daily_tracking's CHECK would refuse the row outright; dust is
+// admitted there, but with no job to charge, a row would belong to nothing.
 const PO_JOB_DIVISIONS = ['turf', 'paving', 'kiewit'];
 
 // Where a general (non-job) purchase order is filed. Orders with no division

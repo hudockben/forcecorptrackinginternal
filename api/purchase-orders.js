@@ -9,10 +9,12 @@
  * division's list and rewrites the whole thing.
  *
  * POST and DELETE exist for central purchasing (purchase-orders.html), which
- * writes into turf, paving, kiewit and quarry and so must never rewrite a list it does
- * not own — a full PUT from it would erase whatever that division's own tab had
- * saved since it loaded. They touch one order, under a compare-and-set, and
- * reconcile that order's job cost rows server-side. See api/lib/po-sync.js.
+ * writes into turf, paving, kiewit, quarry and dust and so must never rewrite a
+ * list it does not own — a full PUT from it would erase whatever that division's
+ * own tab had saved since it loaded. They touch one order, under a compare-and-set,
+ * and reconcile that order's job cost rows server-side. See api/lib/po-sync.js.
+ * Dust's own Purchase Orders tab saves through them too: its list is shared with
+ * purchasing from the start, so it never had a full-list save to keep.
  *
  * Read and single-order write resolve access through canAccessPODivision, so a
  * purchasing user reaches the source divisions' lists. The full-list PUT keeps
@@ -51,15 +53,16 @@ const { numeric } = require('./lib/numeric');
 
 // The only divisions a purchase order can be stored under — the source
 // divisions plus the general purchasing list. purchase_orders_division_chk is
-// written to match. daily_tracking_division_chk admits only the job divisions,
-// which is why po-sync clears the job on a quarry or general order.
+// written to match. Only the job divisions keep a ledger an order can charge,
+// which is why po-sync clears the job on a quarry, dust or general order.
 const PO_STORABLE = PO_SOURCE_DIVISIONS.concat([PO_GENERAL_DIVISION]);
 
 // The lists the full-list PUT may replace: the ones it always could. That PUT
-// is the division tabs' save, and quarry has no Purchase Orders tab — its only
-// writer is central purchasing, one order at a time through POST and DELETE.
-// Letting quarry through would hand any quarry role, view-only included, a way
-// to replace every order purchasing filed there in one call.
+// is the job division tabs' save. Quarry has no Purchase Orders tab, and dust's
+// saves one order at a time through POST and DELETE exactly as purchasing does,
+// so neither list has a full-list writer. Letting either through would hand any
+// role there, view-only included, a way to replace every order filed in it in
+// one call.
 const PO_PUTTABLE = PO_JOB_DIVISIONS.concat([PO_GENERAL_DIVISION]);
 
 // ./lib/numeric, not a bare parseFloat: these are figures somebody typed, and
@@ -107,7 +110,7 @@ async function _guardFor(req, res) {
     return null;
   }
   if (req.method === 'PUT' && !PO_PUTTABLE.includes(guarded.division)) {
-    res.status(400).json({ error: 'This division\'s purchase orders are saved one at a time from Purchase Orders' });
+    res.status(400).json({ error: 'This division\'s purchase orders are saved one order at a time, not as a whole list' });
     return null;
   }
   return guarded;

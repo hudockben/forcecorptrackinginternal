@@ -1241,6 +1241,78 @@
     .save-dot.saved   { background: var(--green); }
     .save-dot.error   { background: var(--red); }
 
+    /* ── Purchase Orders tab ──
+       The same sheet look as the other tabs. An order is one row; its
+       deliveries open underneath it in a nested table, the way the invoice
+       panel opens under a tracking row. */
+    .dpo-search {
+      min-width: 220px; flex: 0 1 300px;
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text); font-size: 0.72rem; font-family: inherit;
+      padding: 0.3rem 0.55rem; outline: none;
+    }
+    .dpo-search:focus { border-color: var(--amber); }
+    .dpo-filter {
+      background: var(--surface2); border: 1px solid var(--border); border-radius: 4px;
+      color: var(--text); font-size: 0.7rem; font-family: inherit;
+      padding: 0.28rem 0.4rem; outline: none; cursor: pointer;
+    }
+    .dpo-filter:focus { border-color: var(--amber); }
+    .dpo-note { font-size: 0.68rem; color: var(--muted); }
+    .dpo-banner {
+      padding: 0.45rem 1.25rem; font-size: 0.72rem; line-height: 1.45;
+      border-bottom: 1px solid var(--border);
+      background: rgba(251,191,36,0.06); color: var(--amber);
+    }
+    .dpo-banner.err { background: rgba(239,68,68,0.08); color: #f87171; }
+    .dpo-banner[hidden] { display: none; }
+    .sheet-table td.dpo-ro {
+      padding: 0.3rem 0.45rem; color: var(--text); font-size: 0.74rem;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 260px;
+    }
+    .sheet-table td.dpo-ro:empty::after { content: '—'; color: var(--muted); }
+    .dpo-status-cell { padding: 0 !important; }
+    .dpo-status-cell select { height: 30px; }
+    /* A box with a note under it: the box gives up the height the note needs,
+       rather than the note being clipped by the 30px row. */
+    .sheet-table td.dpo-noted select,
+    .sheet-table td.dpo-noted input { height: 22px; }
+    .dpo-status-meta {
+      font-size: 0.56rem; color: var(--muted); padding: 0 0.42rem 0.18rem;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 150px;
+    }
+    .dpo-status-badge {
+      display: inline-block; font-size: 0.56rem; font-weight: 700;
+      letter-spacing: 0.07em; text-transform: uppercase;
+      padding: 0.12rem 0.4rem; border-radius: 3px; margin: 0 0.42rem;
+    }
+    .dpo-status-badge.pending  { background: rgba(251,191,36,0.15); color: var(--amber); }
+    .dpo-status-badge.approved { background: rgba(34,197,94,0.15);  color: var(--green); }
+    .dpo-status-badge.closed   { background: rgba(102,102,102,0.2); color: #9a9a9a; }
+    .dpo-clip-btn {
+      background: none; border: 1px solid transparent; border-radius: 3px;
+      color: var(--muted); cursor: pointer; font-size: 0.74rem;
+      padding: 0.12rem 0.35rem; white-space: nowrap; line-height: 1.2;
+    }
+    .dpo-clip-btn:hover { color: var(--amber); border-color: var(--border); }
+    .dpo-clip-btn.has { color: var(--amber); }
+    .dpo-lines-row > td { padding: 0 !important; background: #0d0d14; }
+    .dpo-lines { padding: 0.55rem 0.9rem 0.75rem 2.4rem; }
+    .dpo-lines-hdr {
+      font-size: 0.58rem; font-weight: 700; letter-spacing: 0.12em;
+      text-transform: uppercase; color: #60a5fa; margin-bottom: 0.35rem;
+    }
+    /* The nested table's header must not stick to the top of the scroll area
+       over the orders' own header. */
+    .dpo-line-table thead tr.col-row th { position: static; }
+    .dpo-line-table { min-width: 0; }
+    .dpo-uct { display: block; font-size: 0.56rem; color: var(--muted); padding: 0 0.42rem 0.12rem; }
+    .dpo-uct:empty { display: none; }
+    .dpo-empty {
+      text-align: center; padding: 2.2rem 1rem !important;
+      color: var(--muted); font-size: 0.78rem; white-space: normal;
+    }
+
     /* ── Print / PDF export ─────────────────────────────────────────── */
     @media print {
       @page { margin: 0.7in 0.6in; }
@@ -1438,6 +1510,7 @@
     <button class="tab-btn" data-tab="product-cost">Product Cost Tracking</button>
     <button class="tab-btn" data-tab="other-billing">Other Billing</button>
     <button class="tab-btn" data-tab="ees-other">EES Other</button>
+    <button class="tab-btn" data-tab="purchase-orders">Purchase Orders</button>
     <button class="tab-btn" data-tab="analytics">Analytics</button>
     <button class="tab-btn" data-tab="reports">Reports</button>
   </nav>
@@ -2109,6 +2182,100 @@
   </div><!-- /tab-product-cost -->
 
   <!-- ══════════════════════════════════════════════
+       PURCHASE ORDERS TAB
+       Dust's own purchase-order list — the SAME list central purchasing
+       (purchase-orders.html) files a Dust Control order into, so the two
+       screens show one set of orders with nothing to reconcile. Saved one
+       order at a time through POST / DELETE /api/purchase-orders, as
+       purchasing saves; the full-list PUT is refused for dust. Dust has no
+       jobs, so an order here never carries one and never costs a job.
+  ══════════════════════════════════════════════ -->
+  <div class="tab-panel" id="tab-purchase-orders">
+
+    <!-- Toolbar -->
+    <div class="toolbar">
+      <button class="btn-add" id="dpoNewBtn" type="button">+ New PO</button>
+      <input type="search" id="dpoSearch" class="dpo-search"
+        placeholder="Search PO #, material, supplier, invoice…" aria-label="Search purchase orders">
+      <select id="dpoStatusFilter" class="dpo-filter" aria-label="Filter by status">
+        <option value="">All statuses</option>
+        <option value="pending">Pending</option>
+        <option value="approved">Approved</option>
+        <option value="closed">Closed</option>
+      </select>
+      <button class="btn-ghost" id="dpoExportBtn" type="button">↓ Export CSV</button>
+      <span class="row-count" id="dpoCount">0 orders</span>
+      <span class="dpo-note">
+        Shared with the Purchase Orders division — an order raised there under Dust Control shows here, and one raised here shows there.
+      </span>
+    </div>
+
+    <!-- Load failures, permission notes and save errors. -->
+    <div class="dpo-banner" id="dpoBanner" hidden></div>
+
+    <!-- Totals bar — across the orders the search and filter leave showing -->
+    <div class="totals-bar">
+      <div class="tot-item">
+        <span class="tot-label">Pending</span>
+        <span class="tot-val" id="dpo-tot-pending">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Ordered</span>
+        <span class="tot-val" id="dpo-tot-amt">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Tax</span>
+        <span class="tot-val" id="dpo-tot-tax">—</span>
+      </div>
+      <div class="tot-item">
+        <span class="tot-label">Total</span>
+        <span class="tot-val" id="dpo-tot-total">—</span>
+      </div>
+    </div>
+
+    <!-- Table -->
+    <div class="table-wrap">
+      <table class="sheet-table" id="dpoTable">
+        <thead>
+          <tr class="group-row">
+            <th class="cw-expand"></th>
+            <th class="g-entry"  colspan="2">Order</th>
+            <th class="g-cust"   colspan="3">Purchase</th>
+            <th class="g-v1"     colspan="1">Status</th>
+            <th class="g-totals" colspan="5">Deliveries</th>
+            <th class="g-del"    colspan="2"></th>
+          </tr>
+          <tr class="col-row">
+            <th class="cw-expand"></th>
+            <th class="cw-unit">PO #</th>
+            <th class="cw-date">Date</th>
+            <th class="cw-veh">Material / Description</th>
+            <th class="cw-co">Supplier</th>
+            <th class="cw-loc">Notes</th>
+            <th class="cw-mu">Status</th>
+            <th class="cw-unit calc-hdr">Count</th>
+            <th class="cw-rate calc-hdr">Qty</th>
+            <th class="cw-inv calc-hdr">Amount</th>
+            <th class="cw-rate calc-hdr">Tax</th>
+            <th class="cw-inv calc-hdr">Total</th>
+            <th class="cw-unit" title="Receipts and paperwork attached to the order">Files</th>
+            <th class="cw-del"></th>
+          </tr>
+        </thead>
+        <tbody id="dpoTbody">
+          <tr><td colspan="14" class="dpo-empty">Loading purchase orders…</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <!-- Suggestions for the free-text boxes. Filled by the tab's render. -->
+    <datalist id="dpoMaterialList"></datalist>
+    <datalist id="dpoSupplierList"></datalist>
+    <datalist id="dpoEmployeeList"></datalist>
+
+  </div><!-- /tab-purchase-orders -->
+
+  <!-- ══════════════════════════════════════════════
        REPORTS TAB — Audit Log
   ══════════════════════════════════════════════ -->
   <div class="tab-panel" id="tab-reports">
@@ -2411,6 +2578,7 @@
   <script src="report-branding.js" defer></script>
   <script src="report-email.js" defer></script>
   <script src="mathis.js" defer></script>
+  <script src="documents.js" defer></script>
 
   <script>
     /* ═══════════════════════════════════════════
@@ -9885,6 +10053,864 @@
 
       heartbeat();
       setInterval(heartbeat, HEARTBEAT_MS);
+    })();
+
+    /* ═══════════════════════════════════════════
+       PURCHASE ORDERS
+       Dust's purchase-order list is the one central purchasing files a
+       Dust Control order into (app_data fct_purchase_orders:dust), so this
+       tab and purchase-orders.html are two screens over one set of orders.
+       That is the whole of the sync: there is no second copy.
+
+       Because two screens write the list, this one saves exactly the way
+       purchasing does — ONE order at a time, through POST and DELETE
+       /api/purchase-orders, never by putting the whole list back. The
+       server merges each save into the stored list under a compare-and-set
+       and keeps any delivery this page had not seen, so an edit here can
+       never erase one made there. The full-list PUT is refused for dust.
+
+       Dust has no jobs, so an order here carries no job and no codes and
+       never writes a cost row (po-sync clears one if sent). Its paperwork
+       sits on the paperclip, in the dust document vault, where purchasing
+       files a receipt photographed against the same order.
+    ═══════════════════════════════════════════ */
+    (function dustPurchaseOrders() {
+      const DPO_DIVISION = 'dust';
+      const DPO_POLL_MS  = 60_000;
+      const DPO_STATUSES = ['pending', 'approved', 'closed'];
+      const panel = document.getElementById('tab-purchase-orders');
+      const tbody = document.getElementById('dpoTbody');
+      if (!panel || !tbody) return;
+
+      /* ── Who may do what ──
+         Mirrors poCapabilities() in api/lib/auth.js, which is what decides:
+         the caller's own dust level, or their purchasing level — dust is one
+         of the divisions purchasing raises orders against. Level 2 adds and
+         edits, Level 3 deletes. Read off divisionRoles, never off user.role:
+         that is the caller's TURF role, and would answer about the wrong
+         division. A token with no map at all falls back the way the
+         server's levelFor() does. */
+      function _dpoLevelIn(div) {
+        if (!user) return 'no_access';
+        if (user.isPlatformAdmin) return 'admin';
+        const dr = user.divisionRoles;
+        if (dr && typeof dr === 'object') {
+          const r = dr[div];
+          return (r && r !== 'no_access') ? r : 'no_access';
+        }
+        const reach = Array.isArray(user.allowedDivisions) && user.allowedDivisions.length
+          ? user.allowedDivisions.includes(div)
+          : div === 'turf';
+        return reach ? (user.role || 'level1') : 'no_access';
+      }
+      const dpoCaps = (() => {
+        const own = _dpoLevelIn(DPO_DIVISION);
+        const via = _dpoLevelIn('purchase_orders');
+        const up  = l => ['admin', 'level3', 'level2'].includes(l);
+        const man = l => ['admin', 'level3'].includes(l);
+        return {
+          canEdit:   up(own) || up(via),
+          canDelete: man(own) || man(via),
+          // The paperwork lives in dust's own vault. Filing in it travels with
+          // the order; renaming and destroying files stays with dust's own
+          // roles, the way api/documents.js decides it.
+          docs: { canUpload: up(own) || up(via), canManage: man(own), canDelete: own === 'admin' },
+        };
+      })();
+
+      /* ── State ── */
+      let dpoOrders  = [];          // the stored list, in stored order
+      let dpoLoaded  = false;       // a genuine read has happened
+      let dpoLoadErr = '';
+      let dpoPolling = false;
+      let dpoSearch  = '';
+      let dpoStatus  = '';
+      const dpoExpanded = new Set();
+      // Ids the server has stored, from a read or a confirmed save. Deleting an
+      // order that never reached it is a local removal — asking the server to
+      // delete it would fail, and the row would be stuck on screen for good.
+      const dpoStored   = new Set();
+      const dpoTimers   = {};       // debounced saves, per order
+      const dpoChain    = {};       // the save in flight, per order — saves queue, never race
+      const dpoUnsaved  = new Set();// last save failed; the poll retries it and keeps the local copy
+      const dpoDeletedLines = {};   // deliveries removed here, until a save confirms it
+      const dpoDeleting = new Set();// delete in progress: no save may resurrect the order
+      const dpoDeferred = new Set();// edits typed while a delete was in flight
+      let   dpoInflight = 0;
+      // Bumped by every write that reaches the server, so a poll can tell its
+      // fetch predates one and must not adopt what it read.
+      let   dpoEpoch    = 0;
+
+      /* ── Reading a typed number ──
+         _normalizeNumeric is this page's copy of api/lib/numeric.js, the one
+         the server reads the same orders with. The line math is the same as
+         purchase-orders.html's and the server's (lineAmt / lineTax in
+         api/lib/po-sync.js): tax is typed as a percentage of qty × unit cost,
+         and the dollar figure it comes to is kept in `tax` alongside it. */
+      function _dpoNum(v)  { return parseFloat(_normalizeNumeric(v)); }
+      function _dpoNum0(v) { const f = _dpoNum(v); return isNaN(f) ? 0 : f; }
+      function dpoLineAmt(l)    { return _dpoNum0(l.qty) * _dpoNum0(l.unit_cost); }
+      function dpoLineTaxPct(l) { const p = _dpoNum(l.tax_pct); return isNaN(p) ? null : p; }
+      function dpoLineTax(l)    { const p = dpoLineTaxPct(l); return p === null ? _dpoNum0(l.tax) : dpoLineAmt(l) * p / 100; }
+      function dpoRecalcLineTax(l) {
+        if (l.tax_pct == null) return;
+        const p = dpoLineTaxPct(l);
+        const t = p === null ? 0 : dpoLineAmt(l) * p / 100;
+        l.tax = t ? String(t) : '';
+      }
+      function dpoUnitCostWithTax(l) {
+        const uc = _dpoNum0(l.unit_cost), qty = _dpoNum0(l.qty);
+        const out = qty ? uc + dpoLineTax(l) / qty : uc * (1 + (dpoLineTaxPct(l) || 0) / 100);
+        return Math.round(out * 1e4) / 1e4;
+      }
+      function dpoTotals(po) {
+        let qty = 0, amt = 0, tax = 0;
+        (po.lines || []).forEach(l => { qty += _dpoNum0(l.qty); amt += dpoLineAmt(l); tax += dpoLineTax(l); });
+        return { qty, amt, tax, total: amt + tax };
+      }
+      function dpoNewLine() {
+        return { id: uid(), invoice_num: '', date: todayStr(), qty: '', unit_cost: '', tax: '', tax_pct: '', employee: '', po_row_id: null };
+      }
+      function dpoMoney(n) { return money(Math.round((Number(n) || 0) * 100) / 100); }
+      function dpoQty(n) {
+        const v = Number(n) || 0;
+        return v % 1 === 0 ? v.toLocaleString('en-US') : v.toLocaleString('en-US', { maximumFractionDigits: 3 });
+      }
+
+      /**
+       * The upgrade every PO screen applies on read: an order from before the
+       * lines[] format, and a flat dollar tax converted to the percentage it
+       * works out to. Mirrors migratePO in purchase-orders.html, so an old
+       * order reads the same here as there.
+       */
+      function dpoMigrate(po) {
+        if (!po.lines) {
+          const hasData = po.qty || po.unit_cost;
+          po.lines = hasData ? [{
+            id: uid(), invoice_num: '', date: po.date_created || todayStr(),
+            qty: po.qty || '', unit_cost: po.unit_cost || '', tax: po.tax || '',
+            employee: po.employee || '', po_row_id: po.po_row_id || null,
+          }] : [];
+        }
+        (po.lines || []).forEach(l => {
+          if (!l || l.tax_pct != null) return;
+          const t = _dpoNum0(l.tax);
+          if (t <= 0) { l.tax_pct = ''; return; }
+          const amt = dpoLineAmt(l);
+          if (amt <= 0) return;
+          const pct = Math.round(t / amt * 1e6) / 1e4;
+          if (Math.abs(amt * pct / 100 - t) >= 0.005) return;
+          l.tax_pct = String(pct);
+          dpoRecalcLineTax(l);
+        });
+        return po;
+      }
+
+      /* Purchase orders are listed newest first by when they were raised.
+         uid() starts with Date.now() in base 36, and every page mints PO ids with
+         it, so an order's id carries its creation time through every edit and every
+         move between lists. Nothing else does: each stored list is appended to — a
+         move appends too, and a stale save puts the orders it had not seen last —
+         po_number is per division and renumbered on a move, and the Date field is
+         editable and takes a scanned receipt's date. An id that does not decode
+         falls back to that Date, then to list position. Keep this identical in
+         tracker.html, paving.html, kiewit-pinetree.html and purchase-orders.html. */
+      function _poCreatedMs(po) {
+        const id = String((po && po.id) || '');
+        if (/^[0-9a-z]{9,}$/.test(id)) {
+          const t = parseInt(id.slice(0, 8), 36);
+          if (t >= Date.UTC(2020, 0, 1) && t <= Date.now() + 864e5) return t;
+        }
+        const d = String((po && po.date_created) || '');
+        const t = /^\d{4}-\d{2}-\d{2}$/.test(d) ? Date.parse(d + 'T12:00:00') : NaN;
+        return isNaN(t) ? -Infinity : t;
+      }
+
+      /** A newest-first copy of `list`. The list itself is never reordered: it is
+       *  what the poll compares and what a save sends back. */
+      function _poNewestFirst(list) {
+        return list.map((po, i) => ({ po, i, t: _poCreatedMs(po) }))
+          .sort((a, b) => (b.t - a.t) || (b.i - a.i))
+          .map(x => x.po);
+      }
+
+      /**
+       * The next number in dust's sequence. Purchasing numbers a Dust Control
+       * order off this same list (nextPONumber in purchase-orders.html), so an
+       * order raised on either screen continues the one sequence.
+       */
+      function dpoNextNumber() {
+        const nums = dpoOrders.map(po => {
+          const m = String(po.po_number || '').match(/^PO-(\d+)$/);
+          return m ? parseInt(m[1], 10) : 0;
+        });
+        const next = nums.length ? Math.max.apply(null, nums) + 1 : 1;
+        return 'PO-' + String(next).padStart(4, '0');
+      }
+
+      function dpoFind(id) { return dpoOrders.find(p => p.id === id) || null; }
+
+      /** The first element under `root` whose `attr` is exactly `value`. Compared
+       *  as a string rather than built into a selector, so an id needs no escaping. */
+      function dpoByAttr(root, sel, attr, value) {
+        return [...root.querySelectorAll(sel)].find(el => el.getAttribute(attr) === String(value)) || null;
+      }
+
+      /** Somebody is in the middle of a field on THIS tab. Typing on another
+       *  tab is no reason to hold back a refresh of this one. */
+      function dpoTyping() {
+        const el = document.activeElement;
+        return Boolean(el) && panel.contains(el)
+          && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+      }
+
+      /* ── Banner ── */
+      let _dpoFlashTimer = null;
+      let _dpoFlash = null;       // { text, kind } — a passing message over the standing note
+      function dpoStandingNote() {
+        if (dpoLoadErr) return { text: 'The dust purchase orders could not be loaded: ' + dpoLoadErr + ' — retrying every minute.', kind: 'err' };
+        if (!dpoCaps.canEdit) return { text: 'You can read these purchase orders but not change them. Adding and editing an order needs Level 2 in Dust Control.', kind: '' };
+        return null;
+      }
+      function dpoRenderBanner() {
+        const el = document.getElementById('dpoBanner');
+        if (!el) return;
+        const msg = _dpoFlash || dpoStandingNote();
+        el.hidden = !msg;
+        el.className = 'dpo-banner' + (msg && msg.kind === 'err' ? ' err' : '');
+        el.textContent = msg ? msg.text : '';
+      }
+      function dpoFlash(text, kind) {
+        _dpoFlash = { text, kind: kind || '' };
+        dpoRenderBanner();
+        clearTimeout(_dpoFlashTimer);
+        _dpoFlashTimer = setTimeout(() => { _dpoFlash = null; dpoRenderBanner(); }, kind === 'err' ? 8000 : 4000);
+      }
+
+      /* ── Server ── */
+      async function dpoApi(method, path, body, opts) {
+        const init = { method, headers: { 'Authorization': `Bearer ${token}` } };
+        if (body !== undefined) {
+          init.headers['Content-Type'] = 'application/json';
+          init.body = JSON.stringify(body);
+        }
+        if (opts && opts.keepalive) init.keepalive = true;
+        const r = await fetch('/api' + path, init);
+        if (r.status === 401) { signOut(); throw new Error('Signed out'); }
+        const text = await r.text();
+        let data = null;
+        try { data = text ? JSON.parse(text) : null; } catch { /* a non-JSON error page */ }
+        if (!r.ok) throw new Error((data && (data.detail || data.error)) || ('HTTP ' + r.status));
+        return data;
+      }
+
+      /** What is sent for an order: everything but this page's own `_` keys. */
+      function dpoPayload(po) {
+        const out = {};
+        Object.keys(po).forEach(k => { if (k.charAt(0) !== '_') out[k] = po[k]; });
+        return out;
+      }
+      function dpoDeletedFor(poId) {
+        return dpoDeletedLines[poId] ? [...dpoDeletedLines[poId]] : [];
+      }
+
+      /* ── Save — one order at a time, as purchasing saves ── */
+      function dpoSave(po, opts) {
+        // On its way out: do not resurrect it, but remember an edit was made in
+        // case the delete fails and the order survives after all.
+        if (dpoDeleting.has(po.id)) { dpoDeferred.add(po.id); return; }
+        clearTimeout(dpoTimers[po.id]);
+        dpoTimers[po.id] = setTimeout(() => {
+          dpoSaveNow(po).catch(() => { /* reported in dpoWrite; dpoUnsaved holds it */ });
+        }, (opts && opts.immediate) ? 0 : 600);
+      }
+
+      /** Never two saves of one order at once: a second queues behind the first. */
+      function dpoSaveNow(po) {
+        if (dpoDeleting.has(po.id)) return Promise.reject(new Error('That order is being deleted'));
+        const prior = dpoChain[po.id] || Promise.resolve();
+        const next = prior.catch(() => {}).then(() => dpoWrite(po));
+        dpoChain[po.id] = next.catch(() => {});
+        return next;
+      }
+
+      async function dpoWrite(po) {
+        clearTimeout(dpoTimers[po.id]);
+        delete dpoTimers[po.id];
+        dpoInflight++;
+        setSaveState('saving');
+        try {
+          const sent = dpoDeletedFor(po.id);
+          const res = await dpoApi('POST', '/purchase-orders?division=' + DPO_DIVISION, {
+            purchaseOrder:  dpoPayload(po),
+            deletedLineIds: sent,
+          });
+          // Those removals are on the server now; anything removed since stays queued.
+          if (dpoDeletedLines[po.id]) {
+            sent.forEach(id => dpoDeletedLines[po.id].delete(id));
+            if (!dpoDeletedLines[po.id].size) delete dpoDeletedLines[po.id];
+          }
+          dpoStored.add(po.id);
+          dpoUnsaved.delete(po.id);
+          // Deliveries somebody else recorded on this order — on the Purchase
+          // Orders page, or another dust screen — while this tab held an older
+          // copy. The server kept them; show them too, unless a field here is
+          // mid-edit, in which case the next refresh brings them in.
+          if (res && res.mergedLines > 0 && res.purchaseOrder && Array.isArray(res.purchaseOrder.lines)
+              && !dpoTyping()) {
+            po.lines = dpoMigrate({ lines: res.purchaseOrder.lines }).lines;
+            dpoFlash(res.mergedLines + ' ' + (res.mergedLines === 1 ? 'delivery was' : 'deliveries were') +
+              ' added to ' + (po.po_number || 'this order') + ' by someone else — shown now.');
+            dpoRender();
+          }
+          dpoEpoch++;
+          dpoInflight = Math.max(0, dpoInflight - 1);
+          if (dpoInflight === 0) setSaveState('saved');
+          return po;
+        } catch (err) {
+          dpoUnsaved.add(po.id);
+          dpoEpoch++;
+          dpoInflight = Math.max(0, dpoInflight - 1);
+          setSaveState('error');
+          dpoFlash('Could not save ' + (po.po_number || 'the order') + ': ' + err.message + ' — it will be retried.', 'err');
+          throw err;
+        }
+      }
+
+      /* ── Edits ── */
+      function dpoNew() {
+        if (!dpoCaps.canEdit) return;
+        // A list that did not load is not an empty one: numbering off it would
+        // start at PO-0001 in a division that may already have one.
+        if (!dpoLoaded) {
+          dpoFlash('The dust purchase orders have not loaded yet, so a new one cannot be numbered. Try again in a moment.', 'err');
+          return;
+        }
+        const po = {
+          id:           uid(),
+          po_number:    dpoNextNumber(),
+          title:        '',
+          supplier:     '',
+          status:       'pending',
+          date_created: todayStr(),
+          project_id:   '',
+          cost_code:    '',
+          sub_code:     '',
+          notes:        '',
+          lines:        [dpoNewLine()],
+        };
+        dpoOrders.push(po);
+        dpoExpanded.add(po.id);
+        dpoSave(po, { immediate: true });
+        // A new order would be hidden by a search or a status filter it does
+        // not match yet, which reads as the button doing nothing.
+        dpoSearch = ''; dpoStatus = '';
+        const s = document.getElementById('dpoSearch');       if (s) s.value = '';
+        const f = document.getElementById('dpoStatusFilter'); if (f) f.value = '';
+        dpoRender();
+        const row = dpoByAttr(tbody, 'tr[data-po-id]', 'data-po-id', po.id);
+        const first = row && row.querySelector('input[data-f="title"]');
+        if (first) first.focus();
+      }
+
+      function dpoSetField(po, field, value) {
+        if (!dpoCaps.canEdit) return;
+        if (field === 'status') {
+          if (!DPO_STATUSES.includes(value) || po.status === value) return;
+          po.status_changed_at = new Date().toISOString();
+          po.status_changed_by = (user && (user.name || user.username)) || '';
+        }
+        po[field] = value;
+        dpoSave(po, field === 'status' ? { immediate: true } : undefined);
+        if (field === 'status') dpoRender();
+      }
+
+      function dpoSetLineField(po, line, field, value) {
+        if (!dpoCaps.canEdit) return;
+        line[field] = value;
+        if (field === 'qty' || field === 'unit_cost' || field === 'tax_pct') dpoRecalcLineTax(line);
+        dpoSave(po);
+        dpoUpdateFigures(po, line);
+      }
+
+      function dpoAddLine(po) {
+        if (!dpoCaps.canEdit) return;
+        if (!Array.isArray(po.lines)) po.lines = [];
+        po.lines.push(dpoNewLine());
+        dpoExpanded.add(po.id);
+        dpoSave(po);
+        dpoRender();
+      }
+
+      function dpoDeleteLine(po, lineId) {
+        if (!dpoCaps.canEdit) return;
+        // Remembered until the save lands. The server keeps any stored delivery
+        // a save does not send, so without this the removal would be undone.
+        (dpoDeletedLines[po.id] || (dpoDeletedLines[po.id] = new Set())).add(lineId);
+        po.lines = (po.lines || []).filter(l => l.id !== lineId);
+        dpoSave(po, { immediate: true });
+        dpoRender();
+      }
+
+      async function dpoDeletePO(poId) {
+        const po = dpoFind(poId);
+        if (!po || !dpoCaps.canDelete || dpoDeleting.has(poId)) return;
+        if (!confirm('Delete ' + (po.po_number || 'this order') + '? It is removed from Purchase Orders too.')) return;
+
+        dpoDeleting.add(poId);
+        try {
+          clearTimeout(dpoTimers[poId]);
+          delete dpoTimers[poId];
+          // A first save still on the wire will have stored the order a moment
+          // from now; let it settle before deciding there is nothing to delete.
+          if (dpoChain[poId]) { try { await dpoChain[poId]; } catch { /* it failed: nothing stored */ } }
+
+          if (dpoStored.has(poId)) {
+            setSaveState('saving');
+            try {
+              await dpoApi('DELETE', '/purchase-orders?division=' + DPO_DIVISION + '&id=' + encodeURIComponent(poId));
+            } catch (err) {
+              setSaveState('error');
+              dpoFlash('Not deleted: ' + err.message, 'err');
+              return;   // the order stays; the finally below re-queues any edit made meanwhile
+            }
+            dpoEpoch++;
+          }
+          dpoOrders = dpoOrders.filter(p => p.id !== poId);
+          dpoExpanded.delete(poId);
+          dpoStored.delete(poId);
+          dpoUnsaved.delete(poId);
+          dpoDeferred.delete(poId);
+          delete dpoChain[poId];
+          delete dpoDeletedLines[poId];
+          setSaveState('saved');
+          dpoRender();
+        } finally {
+          dpoDeleting.delete(poId);
+          if (dpoDeferred.has(poId)) {
+            dpoDeferred.delete(poId);
+            const still = dpoFind(poId);
+            if (still) dpoSave(still, { immediate: true });
+          }
+        }
+      }
+
+      /* ── Read / refresh ──
+         The first read, then every minute: an order raised or changed on the
+         Purchase Orders page reaches this tab on its own, the same interval
+         the other division tabs refresh their purchase orders on. An order
+         with a save queued, or one whose save failed, keeps its LOCAL copy —
+         the server's is older — and a save that failed is retried here first. */
+      async function dpoRefresh(opts) {
+        const initial = Boolean(opts && opts.initial);
+        if (_leavingPage || !localStorage.getItem('fct_token')) return;
+        if (!initial && document.visibilityState === 'hidden') return;
+        if (dpoPolling) return;
+        dpoPolling = true;
+        try {
+          for (const id of [...dpoUnsaved]) {
+            const po = dpoFind(id);
+            if (!po) { dpoUnsaved.delete(id); continue; }
+            try { await dpoSaveNow(po); } catch { /* stays queued for the next tick */ }
+          }
+          if (dpoLoaded && (dpoInflight > 0 || dpoTyping())) return;
+
+          const epochAtFetch = dpoEpoch;
+          let incoming;
+          try {
+            const data = await dpoApi('GET', '/purchase-orders?division=' + DPO_DIVISION);
+            incoming = (data && Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [])
+              .filter(po => po && po.id)
+              .map(dpoMigrate);
+          } catch (err) {
+            if (!dpoLoaded) { dpoLoadErr = err.message; dpoRender(); }
+            return;
+          }
+
+          const pending = new Set(Object.keys(dpoTimers).concat([...dpoUnsaved]));
+          const merged = incoming.map(po => (pending.has(po.id) && dpoFind(po.id)) || po);
+          // An order raised here and not stored yet is not dropped for being absent.
+          dpoOrders.forEach(po => {
+            if (pending.has(po.id) && !merged.some(p => p.id === po.id)) merged.push(po);
+          });
+
+          if (dpoLoaded && JSON.stringify(merged) === JSON.stringify(dpoOrders)) return;
+          // The fetch took time: a keystroke, or a whole save, may have landed
+          // while it was out. Adopting a list read before that save would put
+          // the order back the way it was. A skipped tick costs a minute.
+          if (dpoLoaded && (dpoTyping() || dpoInflight > 0 || dpoEpoch !== epochAtFetch)) return;
+
+          dpoStored.clear();
+          incoming.forEach(po => dpoStored.add(po.id));
+          dpoOrders  = merged;
+          dpoLoaded  = true;
+          dpoLoadErr = '';
+          dpoRender();
+        } finally {
+          dpoPolling = false;
+        }
+      }
+
+      /* ── Paperclip ── */
+      let _dpoDocsConfigured = false;
+      let _dpoDocCountsLoaded = false;
+      function dpoDocsReady() {
+        if (!window.FCTDocuments) return false;
+        if (!_dpoDocsConfigured) {
+          FCTDocuments.configure({
+            division:          DPO_DIVISION,
+            // Dust has no jobs: every order's paperwork is filed in the
+            // division's General / Non-Job area.
+            getProjectId:      () => null,
+            getProjectName:    () => 'Dust Control',
+            getCostCodes:      () => [],
+            getPurchaseOrders: () => dpoOrders.map(po => ({
+              id: po.id, po_number: po.po_number, supplier: po.supplier, project_id: null,
+            })),
+            perm: dpoCaps.docs,
+            onChange: () => dpoRender(),
+          });
+          _dpoDocsConfigured = true;
+        }
+        return true;
+      }
+      function dpoOpenDocs(po) {
+        if (!dpoDocsReady()) { dpoFlash('Attachments are still loading. Try again in a moment.', 'err'); return; }
+        if (!dpoStored.has(po.id)) {
+          dpoFlash('Save ' + (po.po_number || 'the order') + ' first — a document can only be attached to an order the server has.', 'err');
+          return;
+        }
+        FCTDocuments.openAttach({ id: po.id, po_number: po.po_number, supplier: po.supplier, project_id: null });
+      }
+
+      /* ── Filtering, totals, export ── */
+      function dpoVisible() {
+        const q = dpoSearch.trim().toLowerCase();
+        return dpoOrders.filter(po => {
+          if (dpoStatus && (po.status || 'pending') !== dpoStatus) return false;
+          if (!q) return true;
+          const lineHay = (po.lines || []).map(l => [l.invoice_num, l.employee, l.date].join(' ')).join(' ');
+          return [po.po_number, po.title, po.supplier, po.status, po.notes, po.date_created, lineHay]
+            .join(' ').toLowerCase().includes(q);
+        });
+      }
+
+      function dpoRenderTotals(list) {
+        let amt = 0, tax = 0, pending = 0;
+        list.forEach(po => {
+          const t = dpoTotals(po);
+          amt += t.amt; tax += t.tax;
+          if ((po.status || 'pending') === 'pending') pending++;
+        });
+        const set = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+        set('dpo-tot-pending', dpoLoaded ? String(pending) : '—');
+        set('dpo-tot-amt',     dpoLoaded ? dpoMoney(amt) : '—');
+        set('dpo-tot-tax',     dpoLoaded ? dpoMoney(tax) : '—');
+        set('dpo-tot-total',   dpoLoaded ? dpoMoney(amt + tax) : '—');
+        const n = list.length, all = dpoOrders.length;
+        set('dpoCount', n === all ? n + (n === 1 ? ' order' : ' orders') : n + ' of ' + all + ' orders');
+      }
+
+      function dpoExportCSV() {
+        const list = _poNewestFirst(dpoVisible());
+        const headers = ['PO #', 'Date', 'Material / Description', 'Supplier', 'Status', 'Notes',
+                         'Invoice #', 'Delivery Date', 'Qty', 'Unit Cost', 'Amount', 'Tax %', 'Tax', 'Total', 'Received By'];
+        // A supplier stored as =HYPERLINK(...) would run the moment the file is
+        // opened. A leading apostrophe defuses it — not on a plain number,
+        // which it would turn into text and drop out of every column sum.
+        const NUMERIC = /^-?\d+(\.\d+)?([eE][-+]?\d+)?$/;
+        const cell = v => {
+          let t = String(v ?? '');
+          if (/^[=+\-@\t\r]/.test(t) && !NUMERIC.test(t)) t = "'" + t;
+          return '"' + t.replace(/"/g, '""') + '"';
+        };
+        const out = [headers.map(cell).join(',')];
+        list.forEach(po => {
+          const head = [po.po_number || '', po.date_created || '', po.title || '', po.supplier || '',
+                        po.status || 'pending', po.notes || ''];
+          const lines = po.lines || [];
+          if (!lines.length) { out.push(head.concat(['', '', '', '', '', '', '', '', '']).map(cell).join(',')); return; }
+          lines.forEach((l, i) => {
+            const amt = dpoLineAmt(l), t = dpoLineTax(l), pct = dpoLineTaxPct(l);
+            out.push((i === 0 ? head : head.map(() => '')).concat([
+              l.invoice_num || '', l.date || '',
+              _dpoNum0(l.qty) || '', _dpoNum0(l.unit_cost) || '',
+              amt.toFixed(2), pct === null ? '' : pct, t.toFixed(2), (amt + t).toFixed(2),
+              l.employee || '',
+            ]).map(cell).join(','));
+          });
+        });
+        const blob = new Blob([out.join('\r\n')], { type: 'text/csv' });
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'dust_purchase_orders.csv';
+        a.click();
+        URL.revokeObjectURL(a.href);
+      }
+
+      /* ── Render ── */
+      function dpoFillDatalists() {
+        const fill = (id, values) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          const seen = new Set(), opts = [];
+          values.forEach(v => {
+            const s = String(v == null ? '' : (typeof v === 'object' ? v.name || '' : v)).trim();
+            if (!s || seen.has(s.toLowerCase())) return;
+            seen.add(s.toLowerCase());
+            opts.push('<option value="' + esc(s) + '"></option>');
+          });
+          el.innerHTML = opts.join('');
+        };
+        const pcSuppliers = (() => { try { return pcRows.map(r => r && r.supplier); } catch { return []; } })();
+        fill('dpoMaterialList', (dustLists.materials || []).concat(dpoOrders.map(po => po.title)));
+        fill('dpoSupplierList', dpoOrders.map(po => po.supplier).concat(pcSuppliers));
+        fill('dpoEmployeeList', dustLists.employees || []);
+      }
+
+      /** A stored YYYY-MM-DD as the date boxes show it, for the read-only view. */
+      function dpoDate(v) {
+        const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v || ''));
+        return m ? m[2] + '/' + m[3] + '/' + m[1] : String(v || '');
+      }
+
+      function dpoStatusMeta(po) {
+        if (!po.status_changed_at) return '';
+        const d = new Date(po.status_changed_at);
+        if (isNaN(d)) return '';
+        return (po.status_changed_by ? po.status_changed_by + ' · ' : '') +
+          d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      }
+
+      function dpoOrderRowHTML(po) {
+        const ed = dpoCaps.canEdit;
+        const open = dpoExpanded.has(po.id);
+        const t = dpoTotals(po);
+        const status = DPO_STATUSES.includes(po.status) ? po.status : 'pending';
+        const docs = (window.FCTDocuments && _dpoDocsConfigured) ? FCTDocuments.poCount(po.id) : 0;
+        const inp = (field, type, extra) => ed
+          ? '<td><input type="' + type + '" data-f="' + field + '" value="' + esc(po[field] || '') + '"' + (extra || '') + '></td>'
+          : '<td class="dpo-ro">' + esc(type === 'date' ? dpoDate(po[field]) : (po[field] || '')) + '</td>';
+        const meta = dpoStatusMeta(po);
+        const statusCell = ed
+          ? '<td class="dpo-status-cell' + (meta ? ' dpo-noted' : '') + '"><select data-f="status" aria-label="Status">' +
+              DPO_STATUSES.map(s => '<option value="' + s + '"' + (s === status ? ' selected' : '') + '>' +
+                s.charAt(0).toUpperCase() + s.slice(1) + '</option>').join('') +
+            '</select>' + (meta ? '<div class="dpo-status-meta" title="' + esc(meta) + '">' + esc(meta) + '</div>' : '') + '</td>'
+          : '<td class="dpo-status-cell"><span class="dpo-status-badge ' + status + '">' + status + '</span>' +
+              (meta ? '<div class="dpo-status-meta">' + esc(meta) + '</div>' : '') + '</td>';
+        const calc = v => '<td class="calc' + (v ? '' : ' empty') + '">';
+        return '<tr data-po-id="' + esc(po.id) + '">' +
+          '<td class="cw-expand"><button type="button" class="expand-btn' + (open ? ' open' : '') +
+            '" data-act="toggle" title="' + (open ? 'Hide' : 'Show') + ' deliveries" aria-expanded="' + open + '">▶</button></td>' +
+          inp('po_number', 'text', ' size="8" aria-label="PO number"') +
+          inp('date_created', 'date', ' aria-label="Date"') +
+          inp('title', 'text', ' size="18" list="dpoMaterialList" placeholder="What is being bought" aria-label="Material or description"') +
+          inp('supplier', 'text', ' size="14" list="dpoSupplierList" placeholder="Supplier" aria-label="Supplier"') +
+          inp('notes', 'text', ' size="14" placeholder="Notes" aria-label="Notes"') +
+          statusCell +
+          calc((po.lines || []).length) + (po.lines || []).length + '</td>' +
+          calc(t.qty) + '<span data-calc="qty">' + (t.qty ? dpoQty(t.qty) : '—') + '</span></td>' +
+          calc(t.amt) + '<span data-calc="amt">' + dpoMoney(t.amt) + '</span></td>' +
+          calc(t.tax) + '<span data-calc="tax">' + dpoMoney(t.tax) + '</span></td>' +
+          calc(t.total) + '<span data-calc="total">' + dpoMoney(t.total) + '</span></td>' +
+          '<td style="text-align:center"><button type="button" class="dpo-clip-btn' + (docs ? ' has' : '') +
+            '" data-act="docs" title="Receipts and paperwork">📎' + (docs ? ' ' + docs : '') + '</button></td>' +
+          '<td class="del-col">' + (dpoCaps.canDelete
+            ? '<button type="button" class="del-btn" data-act="del-po" title="Delete this order">✕</button>' : '') + '</td>' +
+        '</tr>' +
+        (open ? dpoLinesRowHTML(po) : '');
+      }
+
+      function dpoLinesRowHTML(po) {
+        const ed = dpoCaps.canEdit;
+        const lines = po.lines || [];
+        const cellIn = (l, field, type, extra) => ed
+          ? '<td><input type="' + type + '" data-lf="' + field + '" value="' + esc(l[field] || '') + '"' + (extra || '') + '></td>'
+          : '<td class="dpo-ro">' + esc(type === 'date' ? dpoDate(l[field]) : (l[field] || '')) + '</td>';
+        const body = lines.length ? lines.map(l => {
+          const amt = dpoLineAmt(l), tax = dpoLineTax(l);
+          const uct = tax !== 0 ? '$' + dpoUnitCostWithTax(l).toFixed(2) + ' w/ tax' : '';
+          return '<tr data-line-id="' + esc(l.id) + '">' +
+            cellIn(l, 'invoice_num', 'text', ' size="10" placeholder="Invoice #" aria-label="Invoice number"') +
+            cellIn(l, 'date', 'date', ' aria-label="Delivery date"') +
+            cellIn(l, 'qty', 'text', ' size="7" inputmode="decimal" placeholder="0" aria-label="Quantity"') +
+            (ed
+              ? '<td class="dpo-noted"><input type="text" data-lf="unit_cost" size="7" inputmode="decimal" placeholder="0.00" value="' + esc(l.unit_cost || '') +
+                  '" aria-label="Unit cost"><span class="dpo-uct" data-calc="uct">' + uct + '</span></td>'
+              : '<td class="dpo-ro">' + esc(l.unit_cost || '') + '</td>') +
+            cellIn(l, 'tax_pct', 'text', ' size="4" inputmode="decimal" placeholder="0" aria-label="Tax percent"') +
+            '<td class="calc' + (tax ? '' : ' empty') + '"><span data-calc="tax">' + dpoMoney(tax) + '</span></td>' +
+            '<td class="calc' + (amt + tax ? '' : ' empty') + '"><span data-calc="total">' + dpoMoney(amt + tax) + '</span></td>' +
+            cellIn(l, 'employee', 'text', ' size="14" list="dpoEmployeeList" placeholder="Received by" aria-label="Received by"') +
+            '<td class="del-col">' + (ed ? '<button type="button" class="del-btn" data-act="del-line" title="Remove this delivery">✕</button>' : '') + '</td>' +
+          '</tr>';
+        }).join('') : '<tr><td colspan="9" class="dpo-empty" style="padding:0.8rem !important">No deliveries recorded on this order yet.</td></tr>';
+        return '<tr class="dpo-lines-row" data-lines-for="' + esc(po.id) + '"><td colspan="14"><div class="dpo-lines">' +
+          '<div class="dpo-lines-hdr">Deliveries — ' + esc(po.po_number || 'this order') + '</div>' +
+          '<table class="sheet-table dpo-line-table"><thead><tr class="col-row">' +
+            '<th class="cw-unit">Invoice #</th><th class="cw-date">Delivery Date</th><th class="cw-rate">Qty</th>' +
+            '<th class="cw-rate">Unit Cost</th><th class="cw-rate">Tax %</th><th class="cw-rate calc-hdr">Tax</th>' +
+            '<th class="cw-inv calc-hdr">Line Total</th><th class="cw-cm">Received By</th><th class="cw-del"></th>' +
+          '</tr></thead><tbody>' + body + '</tbody>' +
+          (ed ? '<tfoot><tr class="add-row-foot"><td colspan="9"><button type="button" class="add-row-foot-btn" data-act="add-line">+ Add delivery</button></td></tr></tfoot>' : '') +
+          '</table></div></td></tr>';
+      }
+
+      function dpoRender() {
+        dpoRenderBanner();
+        const newBtn = document.getElementById('dpoNewBtn');
+        if (newBtn) newBtn.style.display = dpoCaps.canEdit ? '' : 'none';
+        dpoFillDatalists();
+
+        // The paperclip counts, fetched once the tab is first drawn and kept
+        // current by documents.js through onChange.
+        if (!_dpoDocCountsLoaded && panel.classList.contains('active') && dpoDocsReady()) {
+          _dpoDocCountsLoaded = true;
+          FCTDocuments.refreshPoCounts().then(() => dpoRender());
+        }
+
+        const list = _poNewestFirst(dpoVisible());
+        dpoRenderTotals(list);
+        if (!dpoLoaded) {
+          tbody.innerHTML = '<tr><td colspan="14" class="dpo-empty">' +
+            (dpoLoadErr ? 'Purchase orders could not be loaded. Retrying…' : 'Loading purchase orders…') + '</td></tr>';
+          return;
+        }
+        if (!list.length) {
+          tbody.innerHTML = '<tr><td colspan="14" class="dpo-empty">' +
+            (dpoOrders.length
+              ? 'No purchase orders match the search or filter.'
+              : 'No purchase orders yet.' + (dpoCaps.canEdit ? ' Use + New PO to raise one, or raise one under Dust Control on the Purchase Orders page.' : '')) +
+            '</td></tr>';
+          return;
+        }
+        tbody.innerHTML = list.map(dpoOrderRowHTML).join('');
+      }
+
+      /** Recompute the figures one keystroke changed, in place, so the box being
+       *  typed in keeps its focus and caret. */
+      function dpoUpdateFigures(po, line) {
+        const row = dpoByAttr(tbody, 'tr[data-po-id]', 'data-po-id', po.id);
+        if (row) {
+          const t = dpoTotals(po);
+          const put = (k, v) => {
+            const el = row.querySelector('[data-calc="' + k + '"]');
+            if (el) { el.textContent = v; el.parentElement.classList.toggle('empty', !parseFloat(String(v).replace(/[^0-9.-]/g, ''))); }
+          };
+          put('qty', t.qty ? dpoQty(t.qty) : '—');
+          put('amt', dpoMoney(t.amt)); put('tax', dpoMoney(t.tax)); put('total', dpoMoney(t.total));
+        }
+        const linesRow = line && dpoByAttr(tbody, 'tr[data-lines-for]', 'data-lines-for', po.id);
+        const lr = linesRow && dpoByAttr(linesRow, 'tr[data-line-id]', 'data-line-id', line.id);
+        if (lr) {
+          const amt = dpoLineAmt(line), tax = dpoLineTax(line);
+          const set = (k, v) => { const el = lr.querySelector('[data-calc="' + k + '"]'); if (el) el.textContent = v; };
+          set('tax', dpoMoney(tax));
+          set('total', dpoMoney(amt + tax));
+          set('uct', tax !== 0 ? '$' + dpoUnitCostWithTax(line).toFixed(2) + ' w/ tax' : '');
+        }
+        dpoRenderTotals(_poNewestFirst(dpoVisible()));
+      }
+
+      /* ── Wiring ──
+         Delegated from the panel, with the order and delivery read off data-
+         attributes. Nothing a user typed — an id included — is ever written
+         into a handler's source. */
+      function dpoFromEvent(e) {
+        const row = e.target.closest('tr[data-po-id], tr[data-lines-for]');
+        if (!row) return {};
+        const linesRow = e.target.closest('tr[data-lines-for]');
+        const po = dpoFind(linesRow ? linesRow.getAttribute('data-lines-for') : row.getAttribute('data-po-id'));
+        const lineTr = linesRow ? e.target.closest('tr[data-line-id]') : null;
+        const line = po && lineTr ? (po.lines || []).find(l => l.id === lineTr.getAttribute('data-line-id')) || null : null;
+        return { po, line, lineId: lineTr ? lineTr.getAttribute('data-line-id') : null };
+      }
+
+      tbody.addEventListener('input', e => {
+        const { po, line } = dpoFromEvent(e);
+        if (!po) return;
+        const lf = e.target.getAttribute('data-lf');
+        const f  = e.target.getAttribute('data-f');
+        if (lf && line) dpoSetLineField(po, line, lf, e.target.value);
+        else if (f && f !== 'status') dpoSetField(po, f, e.target.value);
+      });
+      tbody.addEventListener('change', e => {
+        const { po } = dpoFromEvent(e);
+        if (po && e.target.getAttribute('data-f') === 'status') dpoSetField(po, 'status', e.target.value);
+      });
+      tbody.addEventListener('click', e => {
+        const btn = e.target.closest('[data-act]');
+        if (!btn) return;
+        const { po, lineId } = dpoFromEvent(e);
+        if (!po) return;
+        const act = btn.getAttribute('data-act');
+        if (act === 'toggle') {
+          if (dpoExpanded.has(po.id)) dpoExpanded.delete(po.id); else dpoExpanded.add(po.id);
+          dpoRender();
+        } else if (act === 'add-line') dpoAddLine(po);
+        else if (act === 'del-line' && lineId) dpoDeleteLine(po, lineId);
+        else if (act === 'del-po') dpoDeletePO(po.id);
+        else if (act === 'docs') dpoOpenDocs(po);
+      });
+
+      document.getElementById('dpoNewBtn')?.addEventListener('click', dpoNew);
+      document.getElementById('dpoExportBtn')?.addEventListener('click', dpoExportCSV);
+      document.getElementById('dpoSearch')?.addEventListener('input', e => { dpoSearch = e.target.value; dpoRender(); });
+      document.getElementById('dpoStatusFilter')?.addEventListener('change', e => { dpoStatus = e.target.value; dpoRender(); });
+      // Opening the tab draws it, and is also the moment it is most worth
+      // being current — so it reads the list again rather than waiting out
+      // the rest of the minute.
+      document.querySelector('[data-tab="purchase-orders"]')?.addEventListener('click', () => {
+        dpoRender();
+        dpoRefresh();
+      });
+
+      setInterval(() => dpoRefresh(), DPO_POLL_MS);
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') { dpoRefresh(); return; }
+        // Backgrounded: send what is still waiting on its debounce now, while
+        // the page can still see the answer. A phone that switches apps never
+        // fires beforeunload.
+        if (_leavingPage) return;
+        Object.keys(dpoTimers).forEach(id => {
+          const po = dpoFind(id);
+          if (po) dpoSaveNow(po).catch(() => {});
+        });
+      });
+      // Closing the tab: debounced saves AND failed ones, as keepalive requests
+      // the browser delivers after the page is gone. An order being deleted is
+      // left alone — its keepalive save would outlive the DELETE and recreate it.
+      window.addEventListener('beforeunload', () => {
+        if (_leavingPage) return;
+        const outstanding = new Set(Object.keys(dpoTimers).concat([...dpoUnsaved]));
+        outstanding.forEach(id => {
+          if (dpoDeleting.has(id)) return;
+          const po = dpoFind(id);
+          if (!po) return;
+          clearTimeout(dpoTimers[id]);
+          try {
+            fetch('/api/purchase-orders?division=' + DPO_DIVISION, {
+              method: 'POST', keepalive: true,
+              headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+              body: JSON.stringify({ purchaseOrder: dpoPayload(po), deletedLineIds: dpoDeletedFor(id) }),
+            });
+          } catch { /* the tab is closing; nothing more to do */ }
+        });
+      });
+
+      // Read for the scheduled-report harness and the tests; nothing on the page uses it.
+      window._dustPO = {
+        get orders()  { return dpoOrders; },
+        get loaded()  { return dpoLoaded; },
+        get caps()    { return dpoCaps; },
+        refresh:      dpoRefresh,
+        render:       dpoRender,
+        nextNumber:   dpoNextNumber,
+      };
+
+      dpoRender();
+      if (!_leavingPage) dpoRefresh({ initial: true });
     })();
 
     /* ═══════════════════════════════════════════

@@ -47,7 +47,7 @@ console.log('\n[the division is registered everywhere it has to be]');
   const auth = read('api/lib/auth.js');
   assert('in the canonical division list',   /const ALL_DIVISIONS = \[[^\]]*'purchase_orders'/.test(auth));
   assert('with the divisions it buys for',
-    /const PO_SOURCE_DIVISIONS = \['turf', 'paving', 'kiewit', 'quarry'\]/.test(auth));
+    /const PO_SOURCE_DIVISIONS = \['turf', 'paving', 'kiewit', 'quarry', 'dust'\]/.test(auth));
   assert('of which only the ones with jobs can be charged',
     /const PO_JOB_DIVISIONS = \['turf', 'paving', 'kiewit'\]/.test(auth));
 
@@ -472,8 +472,8 @@ console.log('\n[rights are per division, not per page]');
     /if \(dr && typeof dr === 'object'\) \{[\s\S]{0,160}return \(r && r !== 'no_access'\) \? r : 'no_access';/.test(PAGE));
   assert('rights are computed per division', /function capsFor\(division\)/.test(PAGE));
   assert('the page\'s source-division list matches the server\'s',
-    /const PO_SOURCE = \['turf', 'paving', 'kiewit', 'quarry'\];/.test(PAGE) &&
-    JSON.stringify(require('../api/lib/auth').PO_SOURCE_DIVISIONS) === JSON.stringify(['turf','paving','kiewit','quarry']));
+    /const PO_SOURCE = \['turf', 'paving', 'kiewit', 'quarry', 'dust'\];/.test(PAGE) &&
+    JSON.stringify(require('../api/lib/auth').PO_SOURCE_DIVISIONS) === JSON.stringify(['turf','paving','kiewit','quarry','dust']));
   assert('and so does its list of divisions with jobs',
     /const PO_JOB = \['turf', 'paving', 'kiewit'\];/.test(PAGE) &&
     JSON.stringify(require('../api/lib/auth').PO_JOB_DIVISIONS) === JSON.stringify(['turf','paving','kiewit']));
@@ -484,13 +484,26 @@ console.log('\n[rights are per division, not per page]');
   assert('and gives it its own chip colour',
     /const DIV_COLORS = \{[^}]*quarry: 'var\(--div-quarry\)'[^}]*\};/.test(PAGE) &&
     /--div-quarry:\s*#f97316;/.test(PAGE));
+  assert('the page names dust for a catalogue failure',
+    /const PO_SOURCE_LABELS = \{[^}]*dust: 'Dust Control'[^}]*\};/.test(PAGE));
+  assert('and gives it dust\'s own colour from the divisions page',
+    /const DIV_COLORS = \{[^}]*dust: 'var\(--div-dust\)'[^}]*\};/.test(PAGE) &&
+    /--div-dust:\s*#fbbf24;/.test(PAGE) &&
+    /dust: \{[\s\S]{0,300}color:\s+'#fbbf24'/.test(read('divisions.html')));
   // Quarry has no Purchase Orders tab, so the attachments sheet must not send
-  // anyone looking for a paperclip there.
+  // anyone looking for a paperclip there. Dust does have one — and has no jobs
+  // — so the promise follows the tab, not the jobs.
   {
     const sub = (PAGE.match(/'<div class="sub">Filed under '[\s\S]{0,700}?'<\/div>'/) || [''])[0];
     assert('the attachments sheet only promises a tab to divisions that have one',
-      /po\._division === GENERAL \|\| hasJobs\(po\._division\)/.test(sub) &&
+      /po\._division === GENERAL \|\| hasOwnTab\(po\._division\)/.test(sub) &&
       /has no Purchase Orders tab of its own/.test(sub), sub.slice(0, 300));
+    assert('and those are the job divisions plus dust',
+      /const PO_TAB = \['turf', 'paving', 'kiewit', 'dust'\];/.test(PAGE) &&
+      /function hasOwnTab\(divKey\) \{ return PO_TAB\.includes\(divKey\); \}/.test(PAGE));
+    assert('and dust\'s own page really has the tab',
+      /data-tab="purchase-orders">Purchase Orders<\/button>/.test(read('dust.html')) &&
+      /id="tab-purchase-orders"/.test(read('dust.html')));
   }
   assert('and GENERAL is declared before capsFor reads it',
     PAGE.indexOf('const GENERAL') < PAGE.indexOf('function capsFor'));
@@ -501,8 +514,8 @@ console.log('\n[rights are per division, not per page]');
     const DIVISION = 'purchase_orders';
     const GENERAL  = 'purchase_orders';
     // Lifted from the page rather than restated, so the two cannot drift.
-    const PO_SOURCE = ['turf', 'paving', 'kiewit', 'quarry'];
-    const PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree', quarry: 'Quarry' };
+    const PO_SOURCE = ['turf', 'paving', 'kiewit', 'quarry', 'dust'];
+    const PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree', quarry: 'Quarry', dust: 'Dust Control' };
     let sourceDivs = [{ division: 'paving', label: 'Paving', projects: [] }];
     let fctUser = null;
   `, ctx);
@@ -525,7 +538,8 @@ console.log('\n[rights are per division, not per page]');
   const buyer = { divisionRoles: { purchase_orders: 'level3' } };
   assert('a purchasing level3 reaches the general list', caps(buyer, 'purchase_orders').canDelete === true);
   assert('and the job divisions',                        caps(buyer, 'paving').canDelete === true);
-  assert('but not a division outside the carve-out',     caps(buyer, 'dust').canDelete === false);
+  assert('and dust, now purchasing buys for it',         caps(buyer, 'dust').canDelete === true);
+  assert('but not a division outside the carve-out',     caps(buyer, 'trucking').canDelete === false);
 
   const viewer = { divisionRoles: { purchase_orders: 'level1' } };
   assert('a view-only purchasing user edits nothing', caps(viewer, 'paving').canEdit === false);
@@ -929,8 +943,8 @@ console.log('\n[load failures do not corrupt numbering]');
     const ctx = vm.createContext({ console });
     vm.runInContext(`
       const GENERAL = 'purchase_orders';
-      const PO_SOURCE = ['turf', 'paving', 'kiewit', 'quarry'];
-      const PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree', quarry: 'Quarry' };
+      const PO_SOURCE = ['turf', 'paving', 'kiewit', 'quarry', 'dust'];
+      const PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree', quarry: 'Quarry', dust: 'Dust Control' };
       let sourceDivs = [];          // the catalogue failed
     `, ctx);
     ['listDivs', 'divMeta', 'divLabel', 'listKeys']
@@ -938,12 +952,14 @@ console.log('\n[load failures do not corrupt numbering]');
     const r = e => vm.runInContext(e, ctx);
     assert('a catalogue failure still fetches every list',
       JSON.stringify(r('listKeys()')) ===
-      JSON.stringify(['turf', 'paving', 'kiewit', 'quarry', 'purchase_orders']), JSON.stringify(r('listKeys()')));
+      JSON.stringify(['turf', 'paving', 'kiewit', 'quarry', 'dust', 'purchase_orders']), JSON.stringify(r('listKeys()')));
     assert('and every division is still offered, so no order is mislabelled',
       JSON.stringify(r('listDivs().map(d => d.division)')) ===
-      JSON.stringify(['turf', 'paving', 'kiewit', 'quarry']), JSON.stringify(r('listDivs()')));
+      JSON.stringify(['turf', 'paving', 'kiewit', 'quarry', 'dust']), JSON.stringify(r('listDivs()')));
     assert('quarry included, under its real name',
       r("divLabel('quarry')") === 'Quarry', r("divLabel('quarry')"));
+    assert('dust included, under its real name',
+      r("divLabel('dust')") === 'Dust Control', r("divLabel('dust')"));
     assert('under its real name, not its key',
       r("divLabel('kiewit')") === 'Kiewit Pinetree', r("divLabel('kiewit')"));
     // The job and code pickers are the only things that genuinely need the
@@ -1921,15 +1937,16 @@ console.log('\n[cost / sub code, vendor and received by are typeahead pickers]')
 
   const harness = [
     `var GENERAL = 'purchase_orders';
-     var PO_SOURCE = ['turf', 'paving', 'kiewit', 'quarry'];
+     var PO_SOURCE = ['turf', 'paving', 'kiewit', 'quarry', 'dust'];
      var PO_JOB = ['turf', 'paving', 'kiewit'];
-     var PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree', quarry: 'Quarry' };
+     var PO_TAB = ['turf', 'paving', 'kiewit', 'dust'];
+     var PO_SOURCE_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree', quarry: 'Quarry', dust: 'Dust Control' };
      var sourceDivs = [{ division: 'paving', label: 'Paving', projects: [{ id: 'p1', name: 'Route 9', jobNumber: '2201', codes: [
        { cost_code: '100', sub_code: 'Mobilization', description: '' },
        { cost_code: '420', sub_code: 'Base',    description: 'Stone base' },
        { cost_code: '420', sub_code: 'Surface', description: 'Asphalt surface' },
        { cost_code: '510', sub_code: 'Stone',   description: 'Rip rap' },
-     ] }] }, { division: 'quarry', label: 'Quarry', projects: [] }];
+     ] }] }, { division: 'quarry', label: 'Quarry', projects: [] }, { division: 'dust', label: 'Dust Control', projects: [] }];
      var catalog = {
        vendors:   [{ name: 'Fastenal' }, { name: 'Home Depot' }, { name: 'Tri-State Aggregates & Supply Co' }],
        employees: [{ name: 'Dana Ruiz' }, { name: 'Lee Park' }],
@@ -1937,7 +1954,7 @@ console.log('\n[cost / sub code, vendor and received by are typeahead pickers]')
      var purchaseOrders = [{ id: 'po1', po_number: 'PO-0001', _division: 'paving', project_id: 'p1',
        cost_code: '420', sub_code: 'Base', supplier: 'Home Depot', lines: [{ id: 'l1', employee: '' }] }];
      var fctUser = { username: 'tester' };
-     var DIV_COLORS = { turf: 'var(--div-turf)', paving: 'var(--div-paving)', kiewit: 'var(--div-kiewit)', quarry: 'var(--div-quarry)' };
+     var DIV_COLORS = { turf: 'var(--div-turf)', paving: 'var(--div-paving)', kiewit: 'var(--div-kiewit)', quarry: 'var(--div-quarry)', dust: 'var(--div-dust)' };
      var saves = [], renders = 0;
      function capsFor() { return { canEdit: true, canDelete: true }; }
      function savePO(po, opts) {
@@ -2205,6 +2222,19 @@ console.log('\n[cost / sub code, vendor and received by are typeahead pickers]')
   assert('a quarry order\'s row has no job picker', !/<select/.test(qJob) && /No jobs in Quarry/.test(qJob), qJob);
   assert('  nor a code picker', !/class="cb/.test(qCode) && />—</.test(qCode), qCode);
   assert('  and its chip is quarry\'s colour', /var\(--div-quarry\)/.test(window.eval("divChipHTML('quarry')")));
+
+  // ── Dust: no jobs either, but a Purchase Orders tab of its own ──
+  window.eval("onScanDivision('dust')");
+  assert('the scan sheet has no job to offer in dust',
+    scProj.disabled && scProj.options.length === 1 && scProj.options[0].text === 'No jobs in Dust Control',
+    scProj.innerHTML);
+  assert('  and its code box stays shut', sc.disabled && sc.placeholder === '—', sc.placeholder);
+  const dustPO = { id: 'd1', _division: 'dust', project_id: '', cost_code: '', sub_code: '', lines: [] };
+  const dJob  = window.eval('projectSelectHTML(' + JSON.stringify(dustPO) + ')');
+  const dCode = window.eval('subCodePickerHTML(' + JSON.stringify(dustPO) + ')');
+  assert('a dust order\'s row has no job picker', !/<select/.test(dJob) && /No jobs in Dust Control/.test(dJob), dJob);
+  assert('  nor a code picker', !/class="cb/.test(dCode) && />—</.test(dCode), dCode);
+  assert('  and its chip is dust\'s colour', /var\(--div-dust\)/.test(window.eval("divChipHTML('dust')")));
 }
 
 console.log(`\n${failed === 0 ? 'All checks passed.' : failed + ' check(s) failed.'}`);

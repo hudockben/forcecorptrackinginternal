@@ -242,11 +242,12 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end();
 
-  // Central purchasing raises orders in turf, paving, kiewit and quarry without holding
-  // a role in any of them, and a receipt it photographs has to file in the
-  // order's own division or that division's tab shows an empty paperclip. So
-  // the division check runs in two stages: the ordinary one first, and only if
-  // that fails, a carve-out limited to one named purchase order.
+  // Central purchasing raises orders in turf, paving, kiewit, quarry and dust
+  // without holding a role in any of them, and a receipt it photographs has to
+  // file in the order's own division or that division's tab shows an empty
+  // paperclip. So the division check runs in two stages: the ordinary one
+  // first, and only if that fails, a carve-out limited to one named purchase
+  // order.
   const payload = await requireAuth(req, res);
   if (!payload) return;
   const { companyCode } = payload;

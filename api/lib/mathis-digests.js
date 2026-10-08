@@ -1797,11 +1797,12 @@ async function personalDigest(c) {
 // ── The router ─────────────────────────────────────────────────────────────
 
 const PURCHASING_LIMITS = [
-  'These are purchase orders across every division this user can reach, plus the general (non-job) list. An order tied to a division is stored in THAT division\'s own list, so what is counted here is the same order that division\'s own Purchase Orders tab shows — never a second copy, and never a total to add to that division\'s own. Quarry is the exception to the tab: it has no Purchase Orders tab of its own, so its orders are seen only here.',
+  'These are purchase orders across every division this user can reach, plus the general (non-job) list. An order tied to a division is stored in THAT division\'s own list, so what is counted here is the same order that division\'s own Purchase Orders tab shows — never a second copy, and never a total to add to that division\'s own. Quarry is the exception to the tab: it has no Purchase Orders tab of its own, so its orders are seen only here. Dust Control does have one, and it shows the same dust orders counted here.',
   'A purchase order\'s value is what was ORDERED — quantity times unit cost, plus tax, across its delivery lines. It is not what has been spent, not what has been invoiced, and it must never be added to a job\'s actual cost, which already counts the delivered material.',
   'An order with no job is a general purchase and is a normal, finished state — not an incomplete order and not something to flag as missing a job.',
   'An order with no division is a company-level general purchase. It belongs to no job ledger at all.',
   'Quarry orders never carry a job — the quarry has no jobs to charge — so every one of them counts toward generalCount by design. They are still filed under Quarry (byDivision.quarry), not general no-division purchases, and they are not part of the quarry\'s own cost-per-ton or break-even figures, which never read purchase orders.',
+  'Dust Control orders never carry a job either — dust has no jobs to charge — so they too count toward generalCount by design. They are filed under Dust Control (byDivision.dust), not general no-division purchases, and they are not part of the dust division\'s Product Cost Tracking or its Cost to Make / UB gallon figures, which never read purchase orders.',
   'byDivision counts where each order is FILED, which is the division whose books it lands in. It is not who raised it.',
   'Only the divisions this user can reach are here. A total described as company-wide would be wrong whenever their access is partial — say which divisions it covers.',
 ];
@@ -1811,13 +1812,14 @@ const PURCHASING_LIMITS = [
  *
  * Every other digest answers for one division. This one is a roll-up across
  * several by design, because that is what the division IS: a buyer raising
- * orders against turf, paving, kiewit and quarry needs to see them side by side, and
- * seeing one at a time would be the same view their own tabs already give.
+ * orders against turf, paving, kiewit, quarry and dust needs to see them side
+ * by side, and seeing one at a time would be the same view their own tabs
+ * already give.
  *
  * It stays defensible because the widening is bounded by the same rule that
- * bounds the page — canAccessPODivision, which reaches the four source divisions
- * and the general list and nothing else — and because purchase orders are all
- * it ever reads. No bids, no daily rows, no pay.
+ * bounds the page — canAccessPODivision, which reaches the five source
+ * divisions and the general list and nothing else — and because purchase
+ * orders are all it ever reads. No bids, no daily rows, no pay.
  */
 async function purchasingDigest(c) {
   const divisions = auth.PO_SOURCE_DIVISIONS

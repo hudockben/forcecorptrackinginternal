@@ -149,7 +149,7 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
   {
     const handler = loadEndpoint({ roles: { purchase_orders: 'level3' } });
     const res = makeRes();
-    await handler({ method: 'GET', query: { division: 'dust' }, headers: AUTHED }, res);
+    await handler({ method: 'GET', query: { division: 'trucking' }, headers: AUTHED }, res);
     check('but not a division outside its reach', res.statusCode === 403);
   }
   {
@@ -191,7 +191,7 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
   {
     const handler = loadEndpoint({ roles: { purchase_orders: 'level3' } });
     const res = makeRes();
-    await handler({ method: 'POST', query: { division: 'dust' }, headers: AUTHED, body: { purchaseOrder: PO } }, res);
+    await handler({ method: 'POST', query: { division: 'trucking' }, headers: AUTHED, body: { purchaseOrder: PO } }, res);
     check('and it cannot be one outside purchasing\'s reach', res.statusCode === 403);
   }
   {
@@ -218,7 +218,7 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
   {
     const handler = loadEndpoint({ roles: { purchase_orders: 'level3' } });
     const res = makeRes();
-    await handler({ method: 'POST', query: { division: 'turf', from: 'dust' }, headers: AUTHED,
+    await handler({ method: 'POST', query: { division: 'turf', from: 'trucking' }, headers: AUTHED,
                     body: { purchaseOrder: PO } }, res);
     check('but not one it cannot reach', res.statusCode === 403, JSON.stringify(res.body));
   }
@@ -453,6 +453,100 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
     const res = makeRes();
     await handler({ method: 'GET', query: { division: 'quarry' }, headers: AUTHED }, res);
     check('but the scale house cannot', res.statusCode === 403, JSON.stringify(res.body));
+  }
+
+  console.log('\n[dust: its own tab and purchasing write one list, one order at a time]');
+  {
+    // Dust's Purchase Orders tab saves through POST and DELETE exactly as
+    // purchasing does, so nothing legitimately PUTs dust's whole list — and a
+    // PUT would let any dust role, view-only included, replace every order
+    // purchasing filed there in one call.
+    for (const level of ['level1', 'level3', 'admin']) {
+      const calls = [];
+      const sqlCalls = [];
+      const handler = loadEndpoint({ roles: { dust: level }, calls,
+        sqlStub: async (...a) => { sqlCalls.push(a); return []; } });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'dust', force: '1' }, headers: AUTHED,
+                      body: { purchaseOrders: [] } }, res);
+      check(`a dust ${level} cannot replace dust's whole list`, res.statusCode === 400,
+        res.statusCode + ' ' + JSON.stringify(res.body));
+      check(`  and nothing is written for the ${level}`, sqlCalls.length === 0 && calls.length === 0,
+        sqlCalls.length + ' sql call(s)');
+    }
+  }
+  {
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' } });
+    const res = makeRes();
+    await handler({ method: 'PUT', query: { division: 'dust' }, headers: AUTHED,
+                    body: { purchaseOrders: [] } }, res);
+    check('nor can central purchasing', res.statusCode === 400 || res.statusCode === 403,
+      res.statusCode + ' ' + JSON.stringify(res.body));
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { dust: 'level2' }, calls });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'dust' }, headers: AUTHED,
+                    body: { purchaseOrder: PO, deletedLineIds: ['gone'] } }, res);
+    check('a level2 dust user saves an order from the dust tab', res.statusCode === 200, JSON.stringify(res.body));
+    check('  filed under dust', calls[0] && calls[0].args.division === 'dust',
+      JSON.stringify(calls[0] && calls[0].args.division));
+    check('  with the deliveries it removed passed through',
+      calls[0] && JSON.stringify(calls[0].args.deletedLineIds) === JSON.stringify(['gone']),
+      JSON.stringify(calls[0] && calls[0].args.deletedLineIds));
+  }
+  {
+    const handler = loadEndpoint({ roles: { dust: 'level1' } });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'dust' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('a view-only dust user cannot', res.statusCode === 403, JSON.stringify(res.body));
+  }
+  {
+    const handler = loadEndpoint({ roles: { dust: 'level1' } });
+    const res = makeRes();
+    await handler({ method: 'GET', query: { division: 'dust' }, headers: AUTHED }, res);
+    check('but can read dust\'s orders', res.statusCode === 200, JSON.stringify(res.body));
+  }
+  {
+    const handler = loadEndpoint({ roles: { dust: 'level2' } });
+    const res = makeRes();
+    await handler({ method: 'DELETE', query: { division: 'dust', id: 'po1' }, headers: AUTHED }, res);
+    check('a level2 dust user cannot delete an order', res.statusCode === 403, JSON.stringify(res.body));
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { dust: 'level3' }, calls });
+    const res = makeRes();
+    await handler({ method: 'DELETE', query: { division: 'dust', id: 'po1' }, headers: AUTHED }, res);
+    check('a level3 dust user can', res.statusCode === 200, JSON.stringify(res.body));
+    check('  from dust\'s own list', calls[0] && calls[0].fn === 'removePO' && calls[0].args.division === 'dust');
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' }, calls });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'dust' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('purchasing may raise an order under Dust Control', res.statusCode === 200, JSON.stringify(res.body));
+    check('  into the same list the dust tab reads', calls[0] && calls[0].args.division === 'dust');
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' }, calls });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'paving', from: 'dust' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('and move one out of dust onto a job division', res.statusCode === 200
+      && calls[0] && calls[0].args.from === 'dust' && calls[0].args.division === 'paving',
+      JSON.stringify(res.body));
+  }
+  {
+    const handler = loadEndpoint({ roles: { paving: 'level3' } });
+    const res = makeRes();
+    await handler({ method: 'GET', query: { division: 'dust' }, headers: AUTHED }, res);
+    check('a paving user still cannot read dust\'s orders', res.statusCode === 403, JSON.stringify(res.body));
   }
 
   console.log('\n[the basics]');

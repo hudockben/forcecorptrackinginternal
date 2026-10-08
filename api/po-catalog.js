@@ -28,12 +28,15 @@ const {
 // of live job ids at <prefix>projects_index, and the dropdown lists — vendors
 // and employees among them — at <prefix>lists. Quarry has the lists blob
 // (fct_quarry_lists, employees but no suppliers) and no jobs at all, so only
-// the PO_JOB_DIVISIONS have their projects read.
+// the PO_JOB_DIVISIONS have their projects read. Dust is the same shape: its
+// lists blob is dust_lists — the copy api/dust-config.js rewrites in full on
+// every save — with employees and no suppliers, and it has no jobs.
 const DIVISION_BLOBS = {
   turf:   { prefix: 'fct_',        label: 'Turf Management' },
   paving: { prefix: 'fct_paving_', label: 'Paving' },
   kiewit: { prefix: 'fct_kiewit_', label: 'Kiewit Pinetree' },
   quarry: { prefix: 'fct_quarry_', label: 'Quarry' },
+  dust:   { prefix: 'dust_',       label: 'Dust Control' },
 };
 
 // A job blob can be large and a division can have many. This caps how many are

@@ -196,11 +196,14 @@ PO_SOURCE_DIVISIONS.forEach(d => {
   assert(`purchasing reaches ${d}`, canAccessPODivision(purchasing, d) === true);
 });
 assert('purchasing reaches its own general list', canAccessPODivision(purchasing, PO_GENERAL_DIVISION) === true);
-assert('purchasing does NOT reach dust',          canAccessPODivision(purchasing, 'dust') === false);
 assert('purchasing does NOT reach trucking',      canAccessPODivision(purchasing, 'trucking') === false);
 assert('purchasing reaches quarry',                canAccessPODivision(purchasing, 'quarry') === true);
 assert('which is a source division without jobs',
   PO_SOURCE_DIVISIONS.includes('quarry') && !PO_JOB_DIVISIONS.includes('quarry'));
+assert('purchasing reaches dust',                  canAccessPODivision(purchasing, 'dust') === true);
+assert('which is a source division without jobs too',
+  PO_SOURCE_DIVISIONS.includes('dust') && !PO_JOB_DIVISIONS.includes('dust'));
+assert('a dust user reaches dust\'s own orders',   canAccessPODivision(dustOnly, 'dust') === true);
 assert('every job division is a source division',
   PO_JOB_DIVISIONS.every(d => PO_SOURCE_DIVISIONS.includes(d)));
 assert('purchasing does NOT reach quarry sales',  canAccessPODivision(purchasing, 'quarry_sales') === false);
@@ -264,7 +267,8 @@ console.log('\n[poCapabilities — reaching a division is not permission to writ
     [{ purchase_orders: 'level2' }, 'paving'], [{ purchase_orders: 'level1' }, 'paving'],
     [{ paving: 'level1', purchase_orders: 'admin' }, 'paving'],
     [{ paving: 'admin' }, 'paving'], [{ paving: 'level1' }, 'paving'],
-    [{ purchase_orders: 'admin' }, 'dust'],
+    [{ purchase_orders: 'admin' }, 'dust'], [{ purchase_orders: 'admin' }, 'trucking'],
+    [{ dust: 'level2' }, 'dust'], [{ dust: 'admin' }, 'dust'],
   ].forEach(([roles, div]) => {
     const c = cap(roles, div);
     const coherent = (c.level === 'admin') === c.canDelete
@@ -276,17 +280,37 @@ console.log('\n[poCapabilities — reaching a division is not permission to writ
     cap({ paving: 'admin' }, 'paving').canDelete === true);
 
   assert('and none of it reaches a division outside the carve-out',
-    cap({ purchase_orders: 'admin' }, 'dust').canUpload === false);
+    cap({ purchase_orders: 'admin' }, 'trucking').canUpload === false);
+
+  // Dust is inside the carve-out now: purchasing raises and manages its orders
+  // the way it does paving's, and dust's own roles answer for themselves on
+  // dust's own Purchase Orders tab.
+  assert('a level2 purchasing user can write dust orders',
+    cap({ purchase_orders: 'level2' }, 'dust').canUpload === true);
+  assert('a level3 purchasing user can delete them',
+    cap({ purchase_orders: 'level3' }, 'dust').canManage === true);
+  assert('but never destroys a file in dust\'s vault',
+    cap({ purchase_orders: 'admin' }, 'dust').canDelete === false);
+  assert('a view-only dust user cannot write dust orders',
+    cap({ dust: 'level1' }, 'dust').canUpload === false);
+  assert('a level2 dust user can, from dust\'s own tab',
+    cap({ dust: 'level2' }, 'dust').canUpload === true &&
+    cap({ dust: 'level2' }, 'dust').canManage === false);
+  assert('and a level3 dust user can delete them',
+    cap({ dust: 'level3' }, 'dust').canManage === true);
   assert('a user with no roles gets nothing',
     cap({}, 'paving').canUpload === false);
 }
 
 console.log('\n[poDivisionsFor]');
-assert('purchasing sees all five lists',
-  JSON.stringify(poDivisionsFor(purchasing)) === JSON.stringify(['turf','paving','kiewit','quarry','purchase_orders']));
+assert('purchasing sees all six lists',
+  JSON.stringify(poDivisionsFor(purchasing)) === JSON.stringify(['turf','paving','kiewit','quarry','dust','purchase_orders']));
 assert('paving user sees only paving',
   JSON.stringify(poDivisionsFor(pavingOnly)) === JSON.stringify(['paving']));
-assert('dust user sees none', poDivisionsFor(dustOnly).length === 0);
+assert('dust user sees only dust',
+  JSON.stringify(poDivisionsFor(dustOnly)) === JSON.stringify(['dust']));
+assert('a trucking user sees none',
+  poDivisionsFor({ username: 'trk', companyCode: 'FCT', divisionRoles: { trucking: 'level3' } }).length === 0);
 
 // ════════════════════════════════════════════════════════════════════════════
 function fakeRes() {
@@ -337,9 +361,12 @@ async function guardChecks() {
   assert('purchasing passes for paving', g.out && g.out.division === 'paving');
 
   g = await guardWith(purchasing, { division: 'dust' });
-  assert('purchasing 403s for dust', g.out === null && g.res.code === 403);
+  assert('purchasing passes for dust', g.out && g.out.division === 'dust');
+
+  g = await guardWith(purchasing, { division: 'trucking' });
+  assert('purchasing 403s for trucking', g.out === null && g.res.code === 403);
   assert('the 403 names no division',
-    g.res.body && !/dust/i.test(JSON.stringify(g.res.body)));
+    g.res.body && !/trucking/i.test(JSON.stringify(g.res.body)));
 
   g = await guardWith(purchasing, {});
   assert('a missing division is 400, not a turf default', g.out === null && g.res.code === 400);
@@ -867,6 +894,52 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
   await poSync.removePO(st.sql, { companyCode: 'FCT', division: 'quarry', poId: 'q3' });
   assert('nor can deleting the order', st.daily.has('PAVROW'));
 
+  console.log('\n[a dust order carries no job]');
+  // Dust is a source division with no projects. daily_tracking's CHECK DOES
+  // admit dust, so nothing at the database would stop a cost row being written
+  // — the clearing in syncPOCostRows is the only thing that does, and a row
+  // there would charge a job dust does not have.
+  st = makeStore();
+  po = makePO({ id: 'd1', project_id: 'nojob', lines: [{ id: 'L1', qty: '40', unit_cost: '2.5' }] });
+  const dRes = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po });
+  assert('the dust order is stored', dRes.ok === true && st.getBlob(KEY('dust')).length === 1);
+  assert('with its job cleared', po.project_id === '' && st.getBlob(KEY('dust'))[0].project_id === '');
+  assert('and no cost row written', st.daily.size === 0, JSON.stringify([...st.daily.values()]));
+  assert('and it is mirrored under dust', st.poRows.has('d1') && st.poRows.get('d1').division === 'dust',
+    JSON.stringify(st.poRows.get('d1')));
+
+  // Moved there from a paving job on the Purchase Orders page: the job's rows
+  // go, and none come back.
+  st = makeStore();
+  po = makePO({ id: 'd2', project_id: 'pav1', lines: [{ id: 'L1', qty: '2', unit_cost: '5' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'paving', po });
+  assert('starts on a paving job', st.daily.size === 1);
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po, from: 'paving' });
+  assert('moving it to dust takes its cost off the paving job', st.daily.size === 0,
+    JSON.stringify([...st.daily.values()]));
+  assert('and it lives in dust\'s list alone',
+    st.getBlob(KEY('dust')).length === 1 && st.getBlob(KEY('paving')).length === 0);
+
+  // The dust tab and purchasing write the same list. A delivery purchasing
+  // recorded while the tab held an older copy survives the tab's next save,
+  // and one the tab deliberately removed stays removed.
+  st = makeStore();
+  po = makePO({ id: 'd3', lines: [{ id: 'L1', qty: '1', unit_cost: '10' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po });
+  const fromPurchasing = makePO({ id: 'd3', lines: [{ id: 'L1', qty: '1', unit_cost: '10' }, { id: 'L2', qty: '3', unit_cost: '4' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: fromPurchasing });
+  const staleTab = makePO({ id: 'd3', title: 'Edited on the dust tab', lines: [{ id: 'L1', qty: '1', unit_cost: '10' }] });
+  const tabSave = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: staleTab });
+  const afterTab = st.getBlob(KEY('dust'))[0];
+  assert('a delivery purchasing added survives the dust tab\'s stale save',
+    afterTab.lines.some(l => l.id === 'L2') && afterTab.title === 'Edited on the dust tab',
+    JSON.stringify(afterTab));
+  assert('and the tab is told about it', tabSave.mergedLines === 1, JSON.stringify(tabSave.mergedLines));
+  const removing = makePO({ id: 'd3', lines: [{ id: 'L1', qty: '1', unit_cost: '10' }] });
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: removing, deletedLineIds: ['L2'] });
+  assert('while a delivery the tab removed stays removed',
+    !st.getBlob(KEY('dust'))[0].lines.some(l => l.id === 'L2'), JSON.stringify(st.getBlob(KEY('dust'))[0].lines));
+
   console.log('\n[a client copy that lost its row link]');
   // The link from a delivery line to the job cost row it created lives in the
   // ORDER, and the client only learns a newly minted one from the save's
@@ -1076,7 +1149,7 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
   assert('no order id, no carve-out', scope === null);
 
   scope = await poSync.resolvePODocScope(st.sql,
-    Object.assign({ payload: purchasing, division: 'dust', poId: 'real' }, args));
+    Object.assign({ payload: purchasing, division: 'trucking', poId: 'real' }, args));
   assert('never applies to a division outside purchasing\'s reach', scope === null);
 
   // Holding a role here is NOT a disqualification. It used to be, and it made a
