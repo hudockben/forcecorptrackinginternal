@@ -35,6 +35,12 @@ const assert = (msg, cond, detail) => {
 
 const PAGE = read('purchase-orders.html');
 
+// The three-way merge helpers _savePOWrite and the poll call — the field lists,
+// baseOf, setBase and takeKeptEdits — lifted as one region so the sandboxes
+// that run the save and the poll have them.
+const MERGE_HELPERS = sliceSource(PAGE, 'const MERGE_HEADER_GROUPS = [', 'function poPayload(po) {',
+  'merge helpers', ['function takeKeptEdits', 'function setBase', 'function baseOf']);
+
 // The line math sits on top of the page's own number reading — a comma in a
 // money field is read the same way here, in the division tabs and on the
 // server. Any context that runs lineAmt / lineTax needs these three lifted
@@ -150,7 +156,7 @@ assert('permissions come from the per-division map, not the turf role',
 assert('it reads the catalogue from one endpoint, not the project blobs',
   PAGE.includes("api('GET', '/po-catalog')") && !/fct_paving_project_/.test(PAGE));
 assert('it saves one order at a time',
-  /api\('POST', qs, \{\s*purchaseOrder: poPayload\(po\),/.test(PAGE));
+  /const payload = poPayload\(po\);[\s\S]{0,200}api\('POST', qs, \{\s*purchaseOrder: payload,/.test(PAGE));
 
 // This is the invariant the whole design rests on. A full-list PUT from here
 // would erase whatever the division's own tab had saved since this page loaded.
@@ -1024,9 +1030,14 @@ console.log('\n[deliveries this page did not know about]');
     /sentDeletions\.forEach\(id => _deletedLines\[po\.id\]\.delete\(id\)\);/.test(PAGE));
   assert('deleting the order drops its pending removals',
     (PAGE.match(/delete _deletedLines\[poId\];/g) || []).length === 2);
-  // A merge means the list on screen is short — show what arrived.
+  // A merge means the list on screen is short — show what arrived. ADDED to
+  // the local lines, never in place of them: an edit made while the save was
+  // in the air lives only there, and a removal still pending stays removed.
   assert('merged deliveries are taken on screen',
-    /if \(res\.mergedLines > 0 && !isTyping\(\)\)/.test(PAGE));
+    /if \(res\.mergedLines > 0\) \{[\s\S]{0,400}po\.lines = \(po\.lines \|\| \[\]\)\.concat\(extra\);[\s\S]{0,300}if \(!isTyping\(\)\) render\(\);/.test(PAGE));
+  assert('without replacing the lines the user has',
+    !/po\.lines = res\.purchaseOrder\.lines;/.test(PAGE) &&
+    /!have\.has\(l\.id\) && !gone\.has\(l\.id\)/.test(PAGE));
   assert('but never while the user is mid-edit', /function isTyping\(\)/.test(PAGE));
   assert('and the poll shares that same test', /const isEditing = isTyping;/.test(PAGE));
 }
@@ -1532,6 +1543,7 @@ console.log('\n[a keystroke while a delete is in flight]');
     function deletedLinesFor() { return []; }
     async function api(method, path) { calls.push(method + ' ' + path); return {}; }
   `, ctx);
+  vm.runInContext(MERGE_HELPERS, ctx);
   ['savePO', '_savePONow', '_savePOWrite', 'deletePO', 'setField']
     .forEach(n => {
       const src = requireFn(PAGE, n, 'purchase-orders.html');
@@ -1594,6 +1606,7 @@ console.log('\n[a keystroke while a delete is in flight]');
     function deletedLinesFor() { return []; }
     async function api(method, path) { calls.push(method + ' ' + path); return {}; }
   `, ctx2);
+  vm.runInContext(MERGE_HELPERS, ctx2);
   ['savePO', '_savePONow', '_savePOWrite', 'deletePO']
     .forEach(n => vm.runInContext(
       (/^(deletePO|_savePOWrite)$/.test(n) ? 'async ' : '') +
@@ -1665,6 +1678,7 @@ console.log('\n[a keystroke while a delete is in flight]');
       return {};
     }
   `, ctx3);
+  vm.runInContext(MERGE_HELPERS, ctx3);
   ['savePO', '_savePONow', '_savePOWrite', 'deletePO', 'setField']
     .forEach(n => vm.runInContext(
       (/^(deletePO|_savePOWrite)$/.test(n) ? 'async ' : '') +
@@ -1769,6 +1783,7 @@ console.log('\n[a poll whose fetch predates a save that landed]');
     `, ctx);
     // requireFn brace-matches from `function <name>`, so the `async` in front of
     // the declaration is not part of what it returns. Put it back.
+    vm.runInContext(MERGE_HELPERS, ctx);
     vm.runInContext('async ' + requireFn(PAGE, 'poll', 'purchase-orders.html'), ctx);
     await vm.runInContext('poll()', ctx);
     return {
@@ -1815,6 +1830,7 @@ console.log('\n[a poll whose fetch predates a save that landed]');
       function render() { renders++; }
       async function api() { return { purchaseOrders: [{ id:'p1', po_number:'PO-0001', lines:[] }] }; }
     `, ctx);
+    vm.runInContext(MERGE_HELPERS, ctx);
     vm.runInContext('async ' + requireFn(PAGE, 'poll', 'purchase-orders.html'), ctx);
     await vm.runInContext('poll()', ctx);
     assert('a list the poll fetched is marked loaded',

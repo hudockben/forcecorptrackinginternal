@@ -549,9 +549,40 @@ module.exports = async (req, res) => {
       if (req.query.from && !from) {
         return res.status(400).json({ error: 'Unknown `from` division' });
       }
-      if (from && from !== division && !canAccessPODivision(payload, from)) {
-        return res.status(403).json({ error: 'You do not have access to the division this order is moving from' });
+      // Moving an order takes it out of the list it is in and, for a job order,
+      // deletes that job's cost rows — a WRITE to that division, so it needs
+      // the right to change orders there, not just to see them. Reach alone let
+      // a view-only role empty another division's list through this arm: a
+      // dust level2 who could only read turf moved turf's orders into dust,
+      // and the turf job lost their material cost.
+      if (from && from !== division && !poCapabilities(payload, from).canUpload) {
+        return res.status(403).json({ error: 'You do not have permission to move orders out of the division they are in' });
       }
+
+      // An order this list does not hold but another one does was re-filed
+      // there after this caller read it. Storing it here as well would put
+      // the one order in two lists — two division tabs, two numbers — and
+      // deleting it from one would leave the other. Refused, saying where it
+      // went when the caller may see that list, so the screen can let it go.
+      if (!from || from === division) {
+        const movedTo = await _filedElsewhere(sql, companyCode, division, String(po.id));
+        if (movedTo) {
+          const visible = canAccessPODivision(payload, movedTo);
+          return res.status(409).json({
+            error: 'Purchase order moved',
+            detail: 'This order has been moved to another list since it was loaded, so it was not saved here.',
+            moved: true,
+            division: visible ? movedTo : null,
+            label: visible ? (PO_LIST_LABELS[movedTo] || movedTo) : null,
+          });
+        }
+      }
+
+      // The order as this caller last read it, when it says. With it, a field
+      // the caller left alone keeps whatever somebody else has saved there
+      // since — see keepOthersEdits in api/lib/po-sync.js.
+      const rawBase = (req.body || {}).base;
+      const base = rawBase && typeof rawBase === 'object' && !Array.isArray(rawBase) ? rawBase : null;
 
       const result = await poSync.upsertPO(sql, {
         companyCode,
@@ -559,6 +590,7 @@ module.exports = async (req, res) => {
         po: { ...po, lines: Array.isArray(po.lines) ? po.lines : [] },
         from,
         deletedLineIds,
+        base,
       });
       if (!result.ok) {
         return res.status(409).json({
@@ -580,6 +612,7 @@ module.exports = async (req, res) => {
         rows: result.rows,
         staleCopy: Boolean(result.staleCopy),
         mergedLines: result.mergedLines || 0,
+        keptEdits: result.keptEdits || 0,
       });
     }
 
@@ -618,6 +651,37 @@ module.exports = async (req, res) => {
     return res.status(500).json({ error: `Could not ${doing}. Try again.` });
   }
 };
+
+// What the lists are called on screen, for the "moved to …" answer.
+const PO_LIST_LABELS = {
+  turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree',
+  quarry: 'Quarry', dust: 'Dust Control', purchase_orders: 'General',
+};
+
+/**
+ * The OTHER list an order is filed in, when the target list does not hold it —
+ * or null: it is in the target list, in no list (a new order), or the probe
+ * failed. Failing open keeps a save working exactly as it did before this
+ * check existed; the check only ever adds a refusal.
+ */
+async function _filedElsewhere(sql, companyCode, division, poId) {
+  if (!poId) return null;
+  const prefix = `${companyCode}:fct_purchase_orders:`;
+  try {
+    const rows = await sql`
+      SELECT key FROM app_data
+      WHERE  key = ANY(${PO_STORABLE.map(d => prefix + d)})
+        AND  jsonb_typeof(value) = 'array'
+        AND  value @> ${JSON.stringify([{ id: poId }])}::jsonb
+    `;
+    const found = (rows || []).map(r => String(r.key).slice(prefix.length));
+    if (!found.length || found.includes(division)) return null;
+    return found[0];
+  } catch (err) {
+    console.error('[purchase-orders] could not check where the order is filed:', err.message);
+    return null;
+  }
+}
 
 async function _syncPOs(sql, companyCode, division, list) {
   const incomingIds = list.map(p => p && p.id).filter(Boolean);

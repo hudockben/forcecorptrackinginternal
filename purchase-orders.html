@@ -741,7 +741,12 @@ async function api(method, path, body) {
   try { data = text ? JSON.parse(text) : null; } catch { /* non-JSON error page */ }
   if (!res.ok) {
     const msg = (data && (data.detail || data.error)) || ('HTTP ' + res.status);
-    throw new Error(msg);
+    // The status and body travel with the error, so a caller can tell one kind
+    // of refusal from another — a 409 'moved' is not a save to retry.
+    const e = new Error(msg);
+    e.status = res.status;
+    e.data = data;
+    throw e;
   }
   return data;
 }
@@ -1025,6 +1030,7 @@ async function loadPurchaseOrders() {
       // in that division's own tab. It is stripped before every save so it
       // never reaches the blob the division tabs round-trip.
       list.forEach(po => {
+        setBase(po, po);
         po._division = key;
         // Where the server ALREADY has this order. Re-tying it to another
         // division sends this as `from` so the order moves lists instead of
@@ -1142,6 +1148,63 @@ const _deleting = new Set();
 // later and the only thing the page had said was "Not deleted".
 const _deferredSaves = new Set();
 
+/* ── The order as this page last read it ──
+   Sent with every save as `base`, so the server can keep what somebody else
+   changed on a field this page left alone — a dust clerk's new supplier, a
+   division tab's approval — instead of this page's older copy putting the old
+   value back. Mirrors MERGE_HEADER_GROUPS / MERGE_LINE_KEYS in
+   api/lib/po-sync.js. Taken from the server's copy BEFORE migratePO, so the
+   tax-percentage upgrade counts as this page's own change. Non-enumerable, so
+   it never reaches a payload and never reads as a change in the poll. */
+const MERGE_HEADER_GROUPS = [
+  ['po_number'], ['date_created'], ['title'], ['supplier'], ['notes'],
+  ['status', 'status_changed_at', 'status_changed_by'],
+  ['project_id', 'cost_code', 'sub_code'],
+];
+const MERGE_LINE_KEYS = ['invoice_num', 'date', 'qty', 'unit_cost', 'tax', 'tax_pct', 'employee'];
+function sameVal(a, b) { return String(a == null ? '' : a) === String(b == null ? '' : b); }
+function baseOf(po) {
+  const out = {};
+  MERGE_HEADER_GROUPS.forEach(g => g.forEach(k => { if (po && po[k] !== undefined) out[k] = po[k]; }));
+  out.lines = (po && Array.isArray(po.lines) ? po.lines : []).filter(l => l && l.id).map(l => {
+    const c = { id: l.id };
+    MERGE_LINE_KEYS.forEach(k => { if (l[k] !== undefined) c[k] = l[k]; });
+    return c;
+  });
+  return out;
+}
+function setBase(po, raw) {
+  Object.defineProperty(po, '_base', { value: baseOf(raw), writable: true, enumerable: false, configurable: true });
+}
+/**
+ * After a save the server says kept somebody else's changes, take them on
+ * screen — on the fields and deliveries not edited here while the save was in
+ * the air; those are this page's newer word and are left alone.
+ */
+function takeKeptEdits(po, sent, stored) {
+  let took = 0;
+  MERGE_HEADER_GROUPS.forEach(g => {
+    const stillAsSent = g.every(k => sameVal(po[k], sent[k]));
+    const differs     = g.some(k => !sameVal(stored[k], sent[k]));
+    if (stillAsSent && differs) { g.forEach(k => { po[k] = stored[k]; }); took++; }
+  });
+  const storedById = new Map((stored.lines || []).filter(l => l && l.id).map(l => [String(l.id), l]));
+  const sentById   = new Map((sent.lines || []).filter(l => l && l.id).map(l => [String(l.id), l]));
+  po.lines = (po.lines || []).filter(l => {
+    const was = l && l.id ? sentById.get(String(l.id)) : null;
+    if (!was) return true;
+    const stillAsSent = MERGE_LINE_KEYS.every(k => sameVal(l[k], was[k]));
+    const st = storedById.get(String(l.id));
+    if (!st) { if (stillAsSent) { took++; return false; } return true; }   // removed elsewhere
+    if (stillAsSent && MERGE_LINE_KEYS.some(k => !sameVal(st[k], was[k]))) {
+      MERGE_LINE_KEYS.forEach(k => { l[k] = st[k]; });
+      took++;
+    }
+    return true;
+  });
+  return took;
+}
+
 function poPayload(po) {
   const out = {};
   Object.keys(po).forEach(k => { if (k.charAt(0) !== '_') out[k] = po[k]; });
@@ -1204,9 +1267,13 @@ async function _savePOWrite(po) {
     const qs = '/purchase-orders?division=' + encodeURIComponent(po._division)
              + (from && from !== po._division ? '&from=' + encodeURIComponent(from) : '');
     const sentDeletions = deletedLinesFor(po.id);
+    const payload = poPayload(po);
+    const sentCopy = baseOf(payload);
     const res = await api('POST', qs, {
-      purchaseOrder: poPayload(po),
+      purchaseOrder: payload,
       deletedLineIds: sentDeletions,
+      // Not on a move: the server judges a move on its own, not field by field.
+      base: (from && from !== po._division) ? null : (po._base || null),
     });
 
     // The deletions this save carried are now on the server, so stop resending
@@ -1214,6 +1281,18 @@ async function _savePOWrite(po) {
     if (_deletedLines[po.id]) {
       sentDeletions.forEach(id => _deletedLines[po.id].delete(id));
       if (!_deletedLines[po.id].size) delete _deletedLines[po.id];
+    }
+
+    // Changes somebody else made that the server kept rather than let this
+    // save overwrite: shown here too, so the next save does not send this
+    // page's older values for them. Then what the server holds now is what the
+    // next save is judged against.
+    if (res && res.purchaseOrder) {
+      if (res.keptEdits > 0 && takeKeptEdits(po, sentCopy, res.purchaseOrder) > 0) {
+        toast('Changes made to ' + (po.po_number || 'this order') + ' elsewhere were kept alongside yours — shown now.');
+        if (!isTyping()) render();
+      }
+      setBase(po, res.purchaseOrder);
     }
 
     // The server mints a po_row_id for any delivery line it created a job cost
@@ -1229,12 +1308,20 @@ async function _savePOWrite(po) {
       // Deliveries somebody else recorded on this order while this page held an
       // older copy. The server kept them rather than letting this save drop
       // them; take them on screen too, so the list stops being short and the
-      // user can see what arrived.
-      if (res.mergedLines > 0 && !isTyping()) {
-        po.lines = res.purchaseOrder.lines;
-        toast(res.mergedLines + ' ' + (res.mergedLines === 1 ? 'delivery was' : 'deliveries were') +
-              ' added to ' + (po.po_number || 'this order') + ' by someone else — shown now.');
-        render();
+      // user can see what arrived. ADDED to the lines here, never in place of
+      // them: a quantity corrected or a delivery removed while this save was
+      // in the air lives only in the local copy, and replacing it with the
+      // response wrote the old figure, or the removed delivery, back next save.
+      if (res.mergedLines > 0) {
+        const have = new Set((po.lines || []).map(l => l && l.id));
+        const gone = _deletedLines[po.id] || new Set();
+        const extra = res.purchaseOrder.lines.filter(l => l && l.id && !have.has(l.id) && !gone.has(l.id));
+        if (extra.length) {
+          po.lines = (po.lines || []).concat(extra);
+          toast(extra.length + ' ' + (extra.length === 1 ? 'delivery was' : 'deliveries were') +
+                ' added to ' + (po.po_number || 'this order') + ' by someone else — shown now.');
+          if (!isTyping()) render();
+        }
       }
     }
     // Only once the server confirms the order is out of the list it came from.
@@ -1258,6 +1345,29 @@ async function _savePOWrite(po) {
     if (_inflight === 0) showSave('saved', 'Saved');
     return po;
   } catch (err) {
+    // Re-filed under another list since this page read it — on another
+    // purchasing screen. Saving it again here would put it in two lists, so the
+    // server refuses; retrying would only be refused again. The page lets go of
+    // its copy and the next refresh shows the order where it now is.
+    if (err && err.data && err.data.moved) {
+      _unsaved.delete(po.id);
+      delete _deletedLines[po.id];
+      if (err.data.division) {
+        po._division = err.data.division;
+        _savedDivision[po.id] = err.data.division;
+      } else {
+        purchaseOrders = purchaseOrders.filter(p => p.id !== po.id);
+        expanded.delete(po.id);
+        delete _savedDivision[po.id];
+      }
+      _saveEpoch++;
+      _inflight = Math.max(0, _inflight - 1);
+      if (_inflight === 0) showSave('saved', 'Saved');
+      toast((po.po_number || 'That order') + ' was moved to ' + (err.data.label || 'another list') +
+            ' by someone else, so your last change to it was not saved. It is shown where it is now.', 'err');
+      render();
+      throw err;
+    }
     // Remembered, so the poll keeps this copy instead of replacing it with the
     // server's older one, and retries it on the next tick.
     _unsaved.add(po.id);
@@ -1306,6 +1416,7 @@ window.addEventListener('beforeunload', () => {
         body: JSON.stringify({
           purchaseOrder:  poPayload(po),
           deletedLineIds: deletedLinesFor(id),
+          base: (from && from !== po._division) ? null : (po._base || null),
         }),
       });
     } catch { /* the tab is closing; nothing useful to do */ }
@@ -1392,6 +1503,10 @@ async function deletePO(poId) {
   // keystroke in either window arms a save that outlives the row.
   _deleting.add(poId);
   try {
+    // An edit still waiting on its debounce is cancelled here — remembered, so
+    // that if the delete fails and the order stays, it is still saved rather
+    // than quietly replaced by the server's copy at the next refresh.
+    if (_saveTimers[poId]) _deferredSaves.add(poId);
     clearTimeout(_saveTimers[poId]);
     delete _saveTimers[poId];
 
@@ -3355,7 +3470,7 @@ document.addEventListener('keydown', e => {
         // both left it out — all telling the user to reload a list they could
         // already see.
         loadedLists.add(key);
-        list.forEach(po => { po._division = key; migratePO(po); });
+        list.forEach(po => { setBase(po, po); po._division = key; migratePO(po); });
         return list;
       }));
     } catch (err) {

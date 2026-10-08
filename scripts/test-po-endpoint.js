@@ -549,6 +549,129 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
     check('a paving user still cannot read dust\'s orders', res.statusCode === 403, JSON.stringify(res.body));
   }
 
+  console.log('\n[moving an order needs the right to change the list it leaves]');
+  {
+    // Taking an order out of a list deletes it there — and, for a job order,
+    // its cost rows. Reach alone used to be enough, so a view-only role could
+    // empty another division's list through the move arm.
+    const calls = [];
+    const handler = loadEndpoint({ roles: { dust: 'level2', turf: 'level1' }, calls });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'dust', from: 'turf' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('a view-only turf role cannot pull a turf order into dust', res.statusCode === 403, JSON.stringify(res.body));
+    check('  and nothing is written', calls.length === 0, JSON.stringify(calls.map(c => c.fn)));
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { dust: 'level1', turf: 'level2' }, calls });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'turf', from: 'dust' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('nor can a view-only dust role empty dust\'s list into turf', res.statusCode === 403, JSON.stringify(res.body));
+    check('  and nothing is written', calls.length === 0);
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level2' }, calls });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'paving', from: 'dust' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('a level2 purchasing user still re-files an order, as the page lets them',
+      res.statusCode === 200 && calls[0] && calls[0].args.from === 'dust', JSON.stringify(res.body));
+  }
+
+  console.log('\n[an order re-filed elsewhere is not stored in a second list]');
+  {
+    // The dust tab saves without `from`. If purchasing re-filed the order
+    // after the tab read it, saving it into dust again would leave the one
+    // order in two lists.
+    const calls = [];
+    const probes = [];
+    const handler = loadEndpoint({ roles: { dust: 'level2', purchase_orders: 'level1' }, calls,
+      sqlStub: async (strings, ...vals) => {
+        const q = strings.join('?');
+        if (/jsonb_typeof\(value\) = 'array'/.test(q)) { probes.push(vals); return [{ key: 'FCT:fct_purchase_orders:purchase_orders' }]; }
+        return [];
+      } });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'dust' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('a save of an order now filed in another list is refused', res.statusCode === 409, JSON.stringify(res.body));
+    check('  saying it moved, and where', res.body && res.body.moved === true
+      && res.body.division === 'purchase_orders' && res.body.label === 'General', JSON.stringify(res.body));
+    check('  and nothing is written', calls.length === 0);
+    check('  the probe looked for this order\'s id in every list',
+      probes[0] && JSON.parse(probes[0][1])[0].id === 'po1' && probes[0][0].length === 6, JSON.stringify(probes[0]));
+  }
+  {
+    const handler = loadEndpoint({ roles: { dust: 'level2' },
+      sqlStub: async (strings) => (/jsonb_typeof/.test(strings.join('?')) ? [{ key: 'FCT:fct_purchase_orders:paving' }] : []) });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'dust' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('a list the caller cannot see is not named', res.statusCode === 409
+      && res.body.division === null && res.body.label === null, JSON.stringify(res.body));
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { dust: 'level2' }, calls,
+      sqlStub: async (strings) => (/jsonb_typeof/.test(strings.join('?'))
+        ? [{ key: 'FCT:fct_purchase_orders:dust' }, { key: 'FCT:fct_purchase_orders:paving' }] : []) });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'dust' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('an order this list still holds saves as ever — a half-landed move leaves it in both',
+      res.statusCode === 200 && calls[0] && calls[0].fn === 'upsertPO', JSON.stringify(res.body));
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { dust: 'level2' }, calls,
+      sqlStub: async (strings) => { if (/jsonb_typeof/.test(strings.join('?'))) throw new Error('db down'); return []; } });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'dust' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('a probe that fails does not stop the save', res.statusCode === 200 && calls.length === 1,
+      JSON.stringify(res.body));
+  }
+  {
+    const calls = [];
+    let probed = false;
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' }, calls,
+      sqlStub: async (strings) => { if (/jsonb_typeof/.test(strings.join('?'))) { probed = true; return [{ key: 'FCT:fct_purchase_orders:dust' }]; } return []; } });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'paving', from: 'dust' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('a move that names where the order is coming from is not refused', res.statusCode === 200 && !probed,
+      JSON.stringify(res.body));
+  }
+
+  console.log('\n[the order as the caller read it travels to the merge]');
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { dust: 'level2' }, calls,
+      upsertResult: { ok: true, purchaseOrder: PO, rows: {}, keptEdits: 2 } });
+    const res = makeRes();
+    const base = { status: 'pending', lines: [] };
+    await handler({ method: 'POST', query: { division: 'dust' }, headers: AUTHED,
+                    body: { purchaseOrder: PO, base } }, res);
+    check('the base reaches upsertPO', calls[0] && JSON.stringify(calls[0].args.base) === JSON.stringify(base),
+      JSON.stringify(calls[0] && calls[0].args.base));
+    check('and what it kept is reported back', res.body && res.body.keptEdits === 2, JSON.stringify(res.body));
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { dust: 'level2' }, calls });
+    for (const bad of ['a string', ['an', 'array'], 42]) {
+      calls.length = 0;
+      const res = makeRes();
+      await handler({ method: 'POST', query: { division: 'dust' }, headers: AUTHED,
+                      body: { purchaseOrder: PO, base: bad } }, res);
+      check(`a base that is ${Array.isArray(bad) ? 'an array' : typeof bad} is ignored, not trusted`,
+        res.statusCode === 200 && calls[0] && calls[0].args.base === null, JSON.stringify(calls[0] && calls[0].args.base));
+    }
+  }
+
   console.log('\n[the basics]');
   {
     const handler = loadEndpoint({ roles: { turf: 'level3' } });

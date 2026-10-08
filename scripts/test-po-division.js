@@ -940,6 +940,94 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
   assert('while a delivery the tab removed stays removed',
     !st.getBlob(KEY('dust'))[0].lines.some(l => l.id === 'L2'), JSON.stringify(st.getBlob(KEY('dust'))[0].lines));
 
+  console.log('\n[a save from an older copy keeps what somebody else changed]');
+  {
+    // The dust tab reads the order, purchasing approves it, then the dust tab
+    // saves a note from its older copy — sending the order as it read it.
+    st = makeStore();
+    po = makePO({ id: 'm1', title: 'UB', supplier: 'Acme', status: 'pending', notes: '',
+                  lines: [{ id: 'L1', qty: '4', unit_cost: '10' }, { id: 'L2', qty: '1', unit_cost: '5' }] });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: JSON.parse(JSON.stringify(po)) });
+    const base = JSON.parse(JSON.stringify(st.getBlob(KEY('dust'))[0]));
+
+    const approved = JSON.parse(JSON.stringify(base));
+    approved.status = 'approved'; approved.status_changed_by = 'buyer'; approved.status_changed_at = '2026-10-08T12:00:00Z';
+    approved.lines[1].qty = '3';                             // purchasing corrects L2
+    approved.lines = approved.lines.filter(l => l.id !== 'L1').concat([]);   // ...and removes L1
+    approved.lines.unshift({ id: 'L1', qty: '4', unit_cost: '10' });        // (kept for now)
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: approved });
+
+    const stale = JSON.parse(JSON.stringify(base));
+    stale.notes = 'typed on the older copy';
+    const r = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: stale, base });
+    const after = st.getBlob(KEY('dust'))[0];
+    assert('the note this writer typed is saved', after.notes === 'typed on the older copy');
+    assert('the approval it never touched is kept, with who and when',
+      after.status === 'approved' && after.status_changed_by === 'buyer' && after.status_changed_at === '2026-10-08T12:00:00Z',
+      JSON.stringify(after));
+    assert('a delivery corrected elsewhere keeps the correction',
+      after.lines.find(l => l.id === 'L2').qty === '3', JSON.stringify(after.lines));
+    assert('and the save says it kept them', r.keptEdits === 2, String(r.keptEdits));
+
+    // A field the writer DID change is its own to set, whatever happened since.
+    const base2 = JSON.parse(JSON.stringify(st.getBlob(KEY('dust'))[0]));
+    const other = JSON.parse(JSON.stringify(base2)); other.supplier = 'Set by purchasing';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: other });
+    const mine = JSON.parse(JSON.stringify(base2)); mine.supplier = 'Set by dust';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: mine, base: base2 });
+    assert('both changed it: the later save wins, as before', st.getBlob(KEY('dust'))[0].supplier === 'Set by dust');
+
+    // A delivery somebody else removed, which this writer left alone, stays removed.
+    const base3 = JSON.parse(JSON.stringify(st.getBlob(KEY('dust'))[0]));
+    const removed = JSON.parse(JSON.stringify(base3)); removed.lines = removed.lines.filter(l => l.id !== 'L1');
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: removed, deletedLineIds: ['L1'] });
+    const stale3 = JSON.parse(JSON.stringify(base3)); stale3.title = 'retitled';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: stale3, base: base3 });
+    assert('a delivery removed elsewhere is not put back by an older copy that left it alone',
+      !st.getBlob(KEY('dust'))[0].lines.some(l => l.id === 'L1') && st.getBlob(KEY('dust'))[0].title === 'retitled',
+      JSON.stringify(st.getBlob(KEY('dust'))[0].lines.map(l => l.id)));
+    // ...but one this writer edited is its word.
+    const base4 = JSON.parse(JSON.stringify(st.getBlob(KEY('dust'))[0]));
+    const gone = JSON.parse(JSON.stringify(base4)); gone.lines = gone.lines.filter(l => l.id !== 'L2');
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: gone, deletedLineIds: ['L2'] });
+    const edited = JSON.parse(JSON.stringify(base4)); edited.lines.find(l => l.id === 'L2').qty = '9';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: edited, base: base4 });
+    assert('a delivery this writer edited after it was removed elsewhere comes back with the edit',
+      (st.getBlob(KEY('dust'))[0].lines.find(l => l.id === 'L2') || {}).qty === '9');
+
+    // No base: exactly the old behaviour — the whole order as sent.
+    const base5 = JSON.parse(JSON.stringify(st.getBlob(KEY('dust'))[0]));
+    const changed5 = JSON.parse(JSON.stringify(base5)); changed5.status = 'closed';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: changed5 });
+    const noBase = JSON.parse(JSON.stringify(base5)); noBase.notes = 'no base sent';
+    const r5 = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: noBase });
+    assert('a writer that sends no base is treated as before', st.getBlob(KEY('dust'))[0].status === base5.status && r5.keptEdits === 0);
+
+    // A job order: the job and its codes move together, and the cost rows are
+    // written from the merged order.
+    st = makeStore();
+    po = makePO({ id: 'j1', project_id: 'job1', cost_code: '420', sub_code: 'Base', title: 'Stone',
+                  lines: [{ id: 'L1', qty: '2', unit_cost: '5' }] });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'paving', po: JSON.parse(JSON.stringify(po)) });
+    const jb = JSON.parse(JSON.stringify(st.getBlob(KEY('paving'))[0]));
+    const recoded = JSON.parse(JSON.stringify(jb)); recoded.cost_code = '510'; recoded.sub_code = 'Stone';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'paving', po: recoded });
+    const jStale = JSON.parse(JSON.stringify(jb)); jStale.title = 'Stone, #57';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'paving', po: jStale, base: jb });
+    const jAfter = st.getBlob(KEY('paving'))[0];
+    assert('a recode made elsewhere survives an older copy\'s save', jAfter.cost_code === '510' && jAfter.sub_code === 'Stone'
+      && jAfter.title === 'Stone, #57', JSON.stringify(jAfter));
+    const jRow = [...st.daily.values()][0];
+    assert('and the job\'s cost row carries the merged order', jRow && jRow.cost_code === '510' && jRow.material === 'Stone, #57',
+      JSON.stringify(jRow));
+
+    // A move is judged on its own, not field by field.
+    const moveBase = JSON.parse(JSON.stringify(jAfter));
+    const moved = JSON.parse(JSON.stringify(jAfter)); moved.project_id = '';
+    const rm = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'dust', po: moved, from: 'paving', base: moveBase });
+    assert('a move ignores the base', rm.ok && rm.keptEdits === 0 && st.getBlob(KEY('dust')).length === 1);
+  }
+
   console.log('\n[a client copy that lost its row link]');
   // The link from a delivery line to the job cost row it created lives in the
   // ORDER, and the client only learns a newly minted one from the save's

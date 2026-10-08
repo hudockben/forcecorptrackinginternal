@@ -1304,6 +1304,7 @@
     }
     /* The nested table's header must not stick to the top of the scroll area
        over the orders' own header. */
+    .dpo-line-table thead,
     .dpo-line-table thead tr.col-row th { position: static; }
     .dpo-line-table { min-width: 0; }
     .dpo-uct { display: block; font-size: 0.56rem; color: var(--muted); padding: 0 0.42rem 0.12rem; }
@@ -10111,10 +10112,16 @@
         return {
           canEdit:   up(own) || up(via),
           canDelete: man(own) || man(via),
-          // The paperwork lives in dust's own vault. Filing in it travels with
-          // the order; renaming and destroying files stays with dust's own
-          // roles, the way api/documents.js decides it.
-          docs: { canUpload: up(own) || up(via), canManage: man(own), canDelete: own === 'admin' },
+          // The paperwork lives in dust's own vault, and here it is reached on
+          // the caller's DUST role alone. Purchasing's way in is a carve-out
+          // for one named order (resolvePODocScope), and documents.js does not
+          // name the order on its upload calls — so a purchasing role attaches
+          // receipts from the Purchase Orders page, not from here.
+          docs: { canUpload: up(own), canManage: man(own), canDelete: own === 'admin' },
+          // Edits orders here only through a purchasing role: told where to
+          // attach a receipt rather than shown a sheet with no attach button.
+          docsViaPurchasingOnly: !up(own) && up(via),
+          hasPurchasingRole: via !== 'no_access',
         };
       })();
 
@@ -10237,10 +10244,12 @@
       /**
        * The next number in dust's sequence. Purchasing numbers a Dust Control
        * order off this same list (nextPONumber in purchase-orders.html), so an
-       * order raised on either screen continues the one sequence.
+       * order raised on either screen continues the one sequence. `extra` is a
+       * fresh read of the stored list, so a number taken elsewhere since this
+       * tab last refreshed is not handed out a second time.
        */
-      function dpoNextNumber() {
-        const nums = dpoOrders.map(po => {
+      function dpoNextNumber(extra) {
+        const nums = dpoOrders.concat(Array.isArray(extra) ? extra : []).map(po => {
           const m = String(po.po_number || '').match(/^PO-(\d+)$/);
           return m ? parseInt(m[1], 10) : 0;
         });
@@ -10256,12 +10265,35 @@
         return [...root.querySelectorAll(sel)].find(el => el.getAttribute(attr) === String(value)) || null;
       }
 
-      /** Somebody is in the middle of a field on THIS tab. Typing on another
-       *  tab is no reason to hold back a refresh of this one. */
+      /** Somebody is in the middle of a box a re-render would destroy — one in
+       *  the orders table. The search box and status filter sit outside it and
+       *  survive a render, and typing on another tab is no reason either: a
+       *  guard that counted those held off every refresh for as long as the
+       *  filter kept focus. */
       function dpoTyping() {
         const el = document.activeElement;
-        return Boolean(el) && panel.contains(el)
+        return Boolean(el) && tbody.contains(el)
           && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+      }
+
+      /**
+       * Redraw the table — now, or once focus has left it. For redraws nobody
+       * asked for (paperclip counts arriving, an upload finishing, deliveries
+       * merged in from elsewhere): rebuilding the rows under a box being typed
+       * in drops the caret and sends the rest of the typing nowhere.
+       */
+      let _dpoRepaintQueued = false;
+      function dpoRepaint() {
+        if (!dpoTyping()) { dpoRender(); return; }
+        if (_dpoRepaintQueued) return;
+        _dpoRepaintQueued = true;
+        const onOut = () => setTimeout(() => {
+          if (dpoTyping()) return;             // moved to another box in the table: keep waiting
+          tbody.removeEventListener('focusout', onOut);
+          _dpoRepaintQueued = false;
+          dpoRender();
+        }, 0);
+        tbody.addEventListener('focusout', onOut);
       }
 
       /* ── Banner ── */
@@ -10300,7 +10332,12 @@
         const text = await r.text();
         let data = null;
         try { data = text ? JSON.parse(text) : null; } catch { /* a non-JSON error page */ }
-        if (!r.ok) throw new Error((data && (data.detail || data.error)) || ('HTTP ' + r.status));
+        if (!r.ok) {
+          const e = new Error((data && (data.detail || data.error)) || ('HTTP ' + r.status));
+          e.status = r.status;
+          e.data = data;
+          throw e;
+        }
         return data;
       }
 
@@ -10312,6 +10349,70 @@
       }
       function dpoDeletedFor(poId) {
         return dpoDeletedLines[poId] ? [...dpoDeletedLines[poId]] : [];
+      }
+
+      /* ── The order as this tab last read it ──
+         Sent with every save as `base`, so the server can keep what somebody
+         else changed on a field this tab left alone — purchasing approving an
+         order while a note is typed here — instead of this tab's older copy
+         putting the old value back. Mirrors MERGE_HEADER_GROUPS and
+         MERGE_LINE_KEYS in api/lib/po-sync.js. Taken from the server's copy
+         BEFORE dpoMigrate, so the tax-percentage upgrade counts as this tab's
+         own change, not somebody else's. */
+      const DPO_MERGE_HEADER_GROUPS = [
+        ['po_number'], ['date_created'], ['title'], ['supplier'], ['notes'],
+        ['status', 'status_changed_at', 'status_changed_by'],
+        ['project_id', 'cost_code', 'sub_code'],
+      ];
+      const DPO_MERGE_LINE_KEYS = ['invoice_num', 'date', 'qty', 'unit_cost', 'tax', 'tax_pct', 'employee'];
+      function dpoSame(a, b) { return String(a == null ? '' : a) === String(b == null ? '' : b); }
+      function dpoBaseOf(po) {
+        const out = {};
+        DPO_MERGE_HEADER_GROUPS.forEach(g => g.forEach(k => { if (po && po[k] !== undefined) out[k] = po[k]; }));
+        out.lines = (po && Array.isArray(po.lines) ? po.lines : []).filter(l => l && l.id).map(l => {
+          const c = { id: l.id };
+          DPO_MERGE_LINE_KEYS.forEach(k => { if (l[k] !== undefined) c[k] = l[k]; });
+          return c;
+        });
+        return out;
+      }
+      /** A server copy, with its base remembered, upgraded for this screen. */
+      function dpoAdopt(raw) {
+        const po = JSON.parse(JSON.stringify(raw));
+        Object.defineProperty(po, '_base', { value: dpoBaseOf(raw), writable: true, enumerable: false, configurable: true });
+        return dpoMigrate(po);
+      }
+      function dpoSetBase(po, raw) {
+        Object.defineProperty(po, '_base', { value: dpoBaseOf(raw), writable: true, enumerable: false, configurable: true });
+      }
+
+      /**
+       * After a save the server says kept somebody else's changes, take them on
+       * screen — on the fields and deliveries not edited here while the save
+       * was in the air; those are this tab's newer word and are left alone.
+       */
+      function dpoTakeKept(po, sent, stored) {
+        let took = 0;
+        DPO_MERGE_HEADER_GROUPS.forEach(g => {
+          const stillAsSent = g.every(k => dpoSame(po[k], sent[k]));
+          const differs     = g.some(k => !dpoSame(stored[k], sent[k]));
+          if (stillAsSent && differs) { g.forEach(k => { po[k] = stored[k]; }); took++; }
+        });
+        const storedById = new Map((stored.lines || []).filter(l => l && l.id).map(l => [String(l.id), l]));
+        const sentById   = new Map((sent.lines || []).filter(l => l && l.id).map(l => [String(l.id), l]));
+        po.lines = (po.lines || []).filter(l => {
+          const was = l && l.id ? sentById.get(String(l.id)) : null;
+          if (!was) return true;
+          const stillAsSent = DPO_MERGE_LINE_KEYS.every(k => dpoSame(l[k], was[k]));
+          const st = storedById.get(String(l.id));
+          if (!st) { if (stillAsSent) { took++; return false; } return true; }   // removed elsewhere
+          if (stillAsSent && DPO_MERGE_LINE_KEYS.some(k => !dpoSame(st[k], was[k]))) {
+            DPO_MERGE_LINE_KEYS.forEach(k => { l[k] = st[k]; });
+            took++;
+          }
+          return true;
+        });
+        return took;
       }
 
       /* ── Save — one order at a time, as purchasing saves ── */
@@ -10341,9 +10442,12 @@
         setSaveState('saving');
         try {
           const sent = dpoDeletedFor(po.id);
+          const payload = dpoPayload(po);
+          const sentCopy = dpoBaseOf(payload);
           const res = await dpoApi('POST', '/purchase-orders?division=' + DPO_DIVISION, {
-            purchaseOrder:  dpoPayload(po),
+            purchaseOrder:  payload,
             deletedLineIds: sent,
+            base:           po._base || null,
           });
           // Those removals are on the server now; anything removed since stays queued.
           if (dpoDeletedLines[po.id]) {
@@ -10352,43 +10456,97 @@
           }
           dpoStored.add(po.id);
           dpoUnsaved.delete(po.id);
+          if (res && res.purchaseOrder) {
+            // Changes somebody else made that the server kept rather than let
+            // this save overwrite: shown here too, so the next save does not
+            // send this tab's older values for them.
+            if (res.keptEdits > 0 && dpoTakeKept(po, sentCopy, res.purchaseOrder) > 0) {
+              dpoFlash('Changes made to ' + (po.po_number || 'this order') + ' elsewhere were kept alongside yours — shown now.');
+              dpoRepaint();
+            }
+            // What the server holds now is what the next save is judged against.
+            dpoSetBase(po, res.purchaseOrder);
+          }
           // Deliveries somebody else recorded on this order — on the Purchase
           // Orders page, or another dust screen — while this tab held an older
-          // copy. The server kept them; show them too, unless a field here is
-          // mid-edit, in which case the next refresh brings them in.
-          if (res && res.mergedLines > 0 && res.purchaseOrder && Array.isArray(res.purchaseOrder.lines)
-              && !dpoTyping()) {
-            po.lines = dpoMigrate({ lines: res.purchaseOrder.lines }).lines;
-            dpoFlash(res.mergedLines + ' ' + (res.mergedLines === 1 ? 'delivery was' : 'deliveries were') +
-              ' added to ' + (po.po_number || 'this order') + ' by someone else — shown now.');
-            dpoRender();
+          // copy. The server kept them; take them in too. ADDED to the local
+          // lines, never in place of them: this save has been in the air, and
+          // a quantity corrected or a delivery removed meanwhile lives only in
+          // the local copy — replacing it with the response would write the
+          // old figure, or the removed delivery, back on the next save.
+          if (res && res.mergedLines > 0 && res.purchaseOrder && Array.isArray(res.purchaseOrder.lines)) {
+            const have = new Set((po.lines || []).map(l => l && l.id));
+            const gone = dpoDeletedLines[po.id] || new Set();
+            const extra = res.purchaseOrder.lines.filter(l => l && l.id && !have.has(l.id) && !gone.has(l.id));
+            if (extra.length) {
+              po.lines = (Array.isArray(po.lines) ? po.lines : []).concat(dpoMigrate({ lines: extra }).lines);
+              dpoFlash(extra.length + ' ' + (extra.length === 1 ? 'delivery was' : 'deliveries were') +
+                ' added to ' + (po.po_number || 'this order') + ' by someone else — shown now.');
+              dpoRepaint();
+            }
           }
           dpoEpoch++;
           dpoInflight = Math.max(0, dpoInflight - 1);
           if (dpoInflight === 0) setSaveState('saved');
           return po;
         } catch (err) {
-          dpoUnsaved.add(po.id);
           dpoEpoch++;
           dpoInflight = Math.max(0, dpoInflight - 1);
+          // Re-filed under another list on the Purchase Orders page since this
+          // tab read it. Saving it here again would leave it in both lists, so
+          // the server refuses, and the order is no longer a dust order: it
+          // leaves this tab, and the edit goes with it — retrying would only be
+          // refused again.
+          if (err && err.data && err.data.moved) {
+            dpoForget(po.id);
+            if (dpoInflight === 0) setSaveState('saved');
+            dpoFlash((po.po_number || 'That order') + ' has been moved out of Dust Control on the Purchase Orders page' +
+              (err.data.label ? ' (to ' + err.data.label + ')' : '') + ', so it is no longer listed here. Your last change to it was not saved.', 'err');
+            dpoRender();
+            throw err;
+          }
+          dpoUnsaved.add(po.id);
           setSaveState('error');
           dpoFlash('Could not save ' + (po.po_number || 'the order') + ': ' + err.message + ' — it will be retried.', 'err');
           throw err;
         }
       }
 
+      /** Drop every trace of an order from this tab. */
+      function dpoForget(poId) {
+        clearTimeout(dpoTimers[poId]);
+        delete dpoTimers[poId];
+        dpoOrders = dpoOrders.filter(p => p.id !== poId);
+        dpoExpanded.delete(poId);
+        dpoStored.delete(poId);
+        dpoUnsaved.delete(poId);
+        dpoDeferred.delete(poId);
+        delete dpoDeletedLines[poId];
+      }
+
       /* ── Edits ── */
-      function dpoNew() {
-        if (!dpoCaps.canEdit) return;
+      let _dpoCreating = false;
+      async function dpoNew() {
+        if (!dpoCaps.canEdit || _dpoCreating) return;
         // A list that did not load is not an empty one: numbering off it would
         // start at PO-0001 in a division that may already have one.
         if (!dpoLoaded) {
           dpoFlash('The dust purchase orders have not loaded yet, so a new one cannot be numbered. Try again in a moment.', 'err');
           return;
         }
+        // Number off the list as stored NOW, not as this tab last saw it: its
+        // refresh stands down while a box in the table has focus, so purchasing
+        // or another dust screen may have taken the next number since.
+        _dpoCreating = true;
+        let stored = [];
+        try {
+          const data = await dpoApi('GET', '/purchase-orders?division=' + DPO_DIVISION);
+          stored = data && Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+        } catch { /* number off what is on screen; the refresh catches up */ }
+        finally { _dpoCreating = false; }
         const po = {
           id:           uid(),
-          po_number:    dpoNextNumber(),
+          po_number:    dpoNextNumber(stored),
           title:        '',
           supplier:     '',
           status:       'pending',
@@ -10425,9 +10583,23 @@
         if (field === 'status') dpoRender();
       }
 
+      // The delivery figures purchase-orders.html edits in type="number" boxes.
+      const DPO_NUMERIC_LINE_FIELDS = ['qty', 'unit_cost', 'tax_pct'];
+      /**
+       * A typed figure in the form a number box holds it: '1,500' -> '1500',
+       * '$2.10' -> '2.1', '6%' -> '6'. Stored that way because purchasing shows
+       * these in number boxes, and a number box shows anything else as blank —
+       * the delivery's quantity and price vanished there while its total still
+       * counted them. Text that reads as no number at all is kept as typed.
+       */
+      function dpoCanonicalNumber(value) {
+        const f = _dpoNum(value);
+        return isNaN(f) ? String(value == null ? '' : value).trim() : String(f);
+      }
+
       function dpoSetLineField(po, line, field, value) {
         if (!dpoCaps.canEdit) return;
-        line[field] = value;
+        line[field] = DPO_NUMERIC_LINE_FIELDS.includes(field) ? dpoCanonicalNumber(value) : value;
         if (field === 'qty' || field === 'unit_cost' || field === 'tax_pct') dpoRecalcLineTax(line);
         dpoSave(po);
         dpoUpdateFigures(po, line);
@@ -10459,6 +10631,9 @@
 
         dpoDeleting.add(poId);
         try {
+          // An edit still waiting on its debounce is cancelled here — remembered,
+          // so that if the delete fails and the order stays, it is still saved.
+          if (dpoTimers[poId]) dpoDeferred.add(poId);
           clearTimeout(dpoTimers[poId]);
           delete dpoTimers[poId];
           // A first save still on the wire will have stored the order a moment
@@ -10521,7 +10696,7 @@
             const data = await dpoApi('GET', '/purchase-orders?division=' + DPO_DIVISION);
             incoming = (data && Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [])
               .filter(po => po && po.id)
-              .map(dpoMigrate);
+              .map(dpoAdopt);
           } catch (err) {
             if (!dpoLoaded) { dpoLoadErr = err.message; dpoRender(); }
             return;
@@ -10568,7 +10743,7 @@
               id: po.id, po_number: po.po_number, supplier: po.supplier, project_id: null,
             })),
             perm: dpoCaps.docs,
-            onChange: () => dpoRender(),
+            onChange: () => dpoRepaint(),
           });
           _dpoDocsConfigured = true;
         }
@@ -10581,6 +10756,9 @@
           return;
         }
         FCTDocuments.openAttach({ id: po.id, po_number: po.po_number, supplier: po.supplier, project_id: null });
+        if (dpoCaps.docsViaPurchasingOnly) {
+          dpoFlash('Your Dust Control role can view this order\'s documents but not add them. Attach a receipt to it from the Purchase Orders page.');
+        }
       }
 
       /* ── Filtering, totals, export ── */
@@ -10730,7 +10908,7 @@
           : '<td class="dpo-ro">' + esc(type === 'date' ? dpoDate(l[field]) : (l[field] || '')) + '</td>';
         const body = lines.length ? lines.map(l => {
           const amt = dpoLineAmt(l), tax = dpoLineTax(l);
-          const uct = tax !== 0 ? '$' + dpoUnitCostWithTax(l).toFixed(2) + ' w/ tax' : '';
+          const uct = tax !== 0 ? dpoMoney(dpoUnitCostWithTax(l)) + ' w/ tax' : '';
           return '<tr data-line-id="' + esc(l.id) + '">' +
             cellIn(l, 'invoice_num', 'text', ' size="10" placeholder="Invoice #" aria-label="Invoice number"') +
             cellIn(l, 'date', 'date', ' aria-label="Delivery date"') +
@@ -10767,7 +10945,7 @@
         // current by documents.js through onChange.
         if (!_dpoDocCountsLoaded && panel.classList.contains('active') && dpoDocsReady()) {
           _dpoDocCountsLoaded = true;
-          FCTDocuments.refreshPoCounts().then(() => dpoRender());
+          FCTDocuments.refreshPoCounts().then(() => dpoRepaint());
         }
 
         const list = _poNewestFirst(dpoVisible());
@@ -10781,7 +10959,9 @@
           tbody.innerHTML = '<tr><td colspan="14" class="dpo-empty">' +
             (dpoOrders.length
               ? 'No purchase orders match the search or filter.'
-              : 'No purchase orders yet.' + (dpoCaps.canEdit ? ' Use + New PO to raise one, or raise one under Dust Control on the Purchase Orders page.' : '')) +
+              : 'No purchase orders yet.' + (dpoCaps.canEdit
+                  ? ' Use + New PO to raise one' + (dpoCaps.hasPurchasingRole ? ', or raise one under Dust Control on the Purchase Orders page.' : '.')
+                  : '')) +
             '</td></tr>';
           return;
         }
@@ -10805,10 +10985,15 @@
         const lr = linesRow && dpoByAttr(linesRow, 'tr[data-line-id]', 'data-line-id', line.id);
         if (lr) {
           const amt = dpoLineAmt(line), tax = dpoLineTax(line);
-          const set = (k, v) => { const el = lr.querySelector('[data-calc="' + k + '"]'); if (el) el.textContent = v; };
-          set('tax', dpoMoney(tax));
-          set('total', dpoMoney(amt + tax));
-          set('uct', tax !== 0 ? '$' + dpoUnitCostWithTax(line).toFixed(2) + ' w/ tax' : '');
+          const set = (k, v, empty) => {
+            const el = lr.querySelector('[data-calc="' + k + '"]');
+            if (!el) return;
+            el.textContent = v;
+            if (empty !== undefined) el.parentElement.classList.toggle('empty', empty);
+          };
+          set('tax', dpoMoney(tax), !tax);
+          set('total', dpoMoney(amt + tax), !(amt + tax));
+          set('uct', tax !== 0 ? dpoMoney(dpoUnitCostWithTax(line)) + ' w/ tax' : '');
         }
         dpoRenderTotals(_poNewestFirst(dpoVisible()));
       }
@@ -10836,8 +11021,13 @@
         else if (f && f !== 'status') dpoSetField(po, f, e.target.value);
       });
       tbody.addEventListener('change', e => {
-        const { po } = dpoFromEvent(e);
+        const { po, line } = dpoFromEvent(e);
         if (po && e.target.getAttribute('data-f') === 'status') dpoSetField(po, 'status', e.target.value);
+        // Leaving a figure box shows it the way it was stored — '1,500' as 1500.
+        const lf = e.target.getAttribute('data-lf');
+        if (line && DPO_NUMERIC_LINE_FIELDS.includes(lf) && e.target.value !== String(line[lf] ?? '')) {
+          e.target.value = line[lf] ?? '';
+        }
       });
       tbody.addEventListener('click', e => {
         const btn = e.target.closest('[data-act]');
@@ -10873,7 +11063,11 @@
         // the page can still see the answer. A phone that switches apps never
         // fires beforeunload.
         if (_leavingPage) return;
-        Object.keys(dpoTimers).forEach(id => {
+        // Debounced saves AND ones that failed: the minute refresh that retries
+        // a failed save stands down while the page is hidden, and a phone may
+        // discard a hidden page without ever showing it again.
+        new Set(Object.keys(dpoTimers).concat([...dpoUnsaved])).forEach(id => {
+          if (dpoDeleting.has(id)) return;
           const po = dpoFind(id);
           if (po) dpoSaveNow(po).catch(() => {});
         });
@@ -10893,7 +11087,7 @@
             fetch('/api/purchase-orders?division=' + DPO_DIVISION, {
               method: 'POST', keepalive: true,
               headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
-              body: JSON.stringify({ purchaseOrder: dpoPayload(po), deletedLineIds: dpoDeletedFor(id) }),
+              body: JSON.stringify({ purchaseOrder: dpoPayload(po), deletedLineIds: dpoDeletedFor(id), base: po._base || null }),
             });
           } catch { /* the tab is closing; nothing more to do */ }
         });
@@ -10906,6 +11100,7 @@
         get caps()    { return dpoCaps; },
         refresh:      dpoRefresh,
         render:       dpoRender,
+        repaint:      dpoRepaint,
         nextNumber:   dpoNextNumber,
       };
 

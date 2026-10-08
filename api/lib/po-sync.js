@@ -578,6 +578,76 @@ function unseenLines(po, priorCopies, deletedLineIds) {
   return keep;
 }
 
+/*
+ * A save carries the WHOLE order, so a writer holding an older copy used to
+ * put back every field it had not touched: a dust clerk adding a note undid
+ * the approval purchasing had just given, and purchasing correcting a price
+ * undid the dust tab's new supplier. The pages hold copies for a while — their
+ * refresh stands down while someone is typing — so this was the normal case,
+ * not a race.
+ *
+ * A writer that sends `base` — the order as it last read it — gets a
+ * three-way merge instead: a field it left as it found it, and somebody else
+ * has changed since, keeps the stored value. A field it did change is its own
+ * to set, as before. Fields that only mean something together move together:
+ * the status with who changed it and when, the job with its codes, and a
+ * delivery line as a whole (qty, price and tax are one figure). A delivery the
+ * writer left alone and somebody else removed stays removed. A writer that
+ * sends no base is treated exactly as before.
+ */
+const MERGE_HEADER_GROUPS = [
+  ['po_number'], ['date_created'], ['title'], ['supplier'], ['notes'],
+  ['status', 'status_changed_at', 'status_changed_by'],
+  ['project_id', 'cost_code', 'sub_code'],
+];
+const MERGE_LINE_KEYS = ['invoice_num', 'date', 'qty', 'unit_cost', 'tax', 'tax_pct', 'employee'];
+
+function sameValue(a, b) {
+  return String(a == null ? '' : a) === String(b == null ? '' : b);
+}
+
+/**
+ * Keep what somebody else changed since `base` wherever `po` left it as it was
+ * in `base`. Mutates `po`; answers how many fields, lines or removals it kept.
+ */
+function keepOthersEdits(po, base, stored) {
+  if (!po || !base || typeof base !== 'object' || !stored) return 0;
+  let kept = 0;
+  for (const group of MERGE_HEADER_GROUPS) {
+    const untouched = group.every(k => sameValue(po[k], base[k]));
+    const changed   = group.some(k => !sameValue(stored[k], base[k]));
+    if (untouched && changed) {
+      group.forEach(k => { po[k] = stored[k]; });
+      kept++;
+    }
+  }
+  const byId = list => new Map((Array.isArray(list) ? list : [])
+    .filter(l => l && l.id).map(l => [String(l.id), l]));
+  const baseLines = byId(base.lines);
+  const storedLines = byId(stored.lines);
+  if (Array.isArray(po.lines) && baseLines.size) {
+    const next = [];
+    for (const l of po.lines) {
+      const b  = l && l.id ? baseLines.get(String(l.id)) : null;
+      if (!b) { next.push(l); continue; }
+      const untouched = MERGE_LINE_KEYS.every(k => sameValue(l[k], b[k]));
+      if (!untouched) { next.push(l); continue; }
+      const st = storedLines.get(String(l.id));
+      if (!st) { kept++; continue; }                 // removed elsewhere, left alone here
+      if (MERGE_LINE_KEYS.some(k => !sameValue(st[k], b[k]))) {
+        const merged = { ...l };
+        MERGE_LINE_KEYS.forEach(k => { merged[k] = st[k]; });
+        next.push(merged);
+        kept++;
+        continue;
+      }
+      next.push(l);
+    }
+    po.lines = next;
+  }
+  return kept;
+}
+
 /**
  * Save one purchase order into `division`'s list.
  *
@@ -589,8 +659,10 @@ function unseenLines(po, priorCopies, deletedLineIds) {
  * `from` names the division the order was stored under before this save, when
  * purchasing re-tied it to a different one. The order is removed from that list
  * in the same call, so it can never exist in two divisions at once.
+ *
+ * `base` is the order as the caller last read it; see keepOthersEdits.
  */
-async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }) {
+async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, base }) {
   const prevDivision = from && from !== division ? from : null;
 
   // Every list this order might already be stored in. The target's copy matters
@@ -610,6 +682,12 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }
     prevPO = sourceCopy;
     if (sourceCopy) priorCopies.push(sourceCopy);
   }
+
+  // What somebody else changed since this caller read the order, on fields it
+  // left alone — see keepOthersEdits. Before the cost rows are reconciled, so
+  // they are written from the merged order. Not on a move: the copy being left
+  // is the one the caller read, and the move itself is the change.
+  const keptEdits = (base && targetCopy && !prevDivision) ? keepOthersEdits(po, base, targetCopy) : 0;
 
   // Deliveries somebody else added while this caller was holding a stale copy.
   // Merged back BEFORE the cost rows are reconciled, so their rows are not read
@@ -742,6 +820,9 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }
     // So the caller can show what it had not heard about, instead of silently
     // carrying on with a list it now knows is short.
     mergedLines: recovered.length + lateMerged,
+    // Fields, deliveries or removals somebody else made that this save kept
+    // rather than overwrote. The caller's copy is behind on those.
+    keptEdits,
     rows: { removed, written: rows.written, writtenIds: rows.writtenIds },
   };
 }
@@ -842,6 +923,7 @@ async function resolvePODocScope(sql, { payload, division, poId, companyCode, ca
 module.exports = {
   CAS_ATTEMPTS,
   unseenLines,
+  keepOthersEdits,
   findPOInDivision,
   resolvePODocScope,
   blobKeyFor,
