@@ -13,6 +13,13 @@
       --bg:#0a0a0f; --surface:#14141d; --surface2:#1c1c28; --border:#2a2a3a;
       --accent:#22c55e; --accent-d:#15803d; --text:#e8e8ee; --muted:#888;
       --green:#22c55e; --amber:#facc15; --blue:#60a5fa; --red:#ef4444;
+      /* The sign rate's two squares. Red against green is the one pair the
+         commonest colour blindness cannot tell apart — and a crew is mostly
+         men, one in twelve of whom has it — so the squares carry a tick and a
+         cross as well, and the red is a step darker than --red to put a
+         difference in lightness between the two, not only in hue. Measured
+         against the deuteranope simulation: ΔE 7.4 with --red, 13.3 with this. */
+      --sq-yes:#22c55e; --sq-no:#dc2626;
     }
     html, body { height:100%; }
     body {
@@ -38,14 +45,19 @@
     .icon-btn:hover, .icon-btn:active { color:var(--text); border-color:#555; }
 
     /* ── Tabs ── */
+    /* Three tabs on the supervisor's side no longer fit a phone in every case,
+       so the row scrolls rather than squeezing a label onto two lines. */
     .tabs {
       display:flex; gap:0.4rem; padding:0.7rem 1rem 0; max-width:1100px; margin:0 auto;
       border-bottom:1px solid var(--border);
+      overflow-x:auto; scrollbar-width:none;
     }
+    .tabs::-webkit-scrollbar { display:none; }
     .tab {
       background:none; border:none; border-bottom:2px solid transparent; color:var(--muted);
       padding:0.55rem 0.9rem; font-size:0.72rem; font-weight:700; letter-spacing:0.1em;
       text-transform:uppercase; cursor:pointer; font-family:inherit;
+      flex:none; white-space:nowrap;
     }
     .tab.active { color:var(--accent); border-bottom-color:var(--accent); }
 
@@ -280,6 +292,148 @@
     }
     .sig-print:hover { color:var(--text); border-color:#555; }
 
+    /* ── Sign rate ── */
+    /* While a new range loads, the last one stays on screen, dimmed, rather
+       than the grid blinking out and the page jumping. */
+    #rateBody { display:flex; flex-direction:column; gap:0.85rem; transition:opacity .15s; }
+    #rateBody.stale { opacity:0.45; pointer-events:none; }
+    .rate-sum {
+      background:var(--surface); border:1px solid var(--border); border-radius:10px; padding:0.9rem;
+      display:grid; grid-template-columns:minmax(210px, 1fr) 2fr; gap:0.9rem 1.4rem; align-items:center;
+    }
+    .rate-sum .k {
+      display:block; font-size:0.62rem; letter-spacing:0.1em; text-transform:uppercase;
+      color:var(--muted); font-weight:600;
+    }
+    .rate-hero .v { font-size:3.2rem; font-weight:700; line-height:1.05; margin:0.1rem 0 0.45rem; }
+    .rate-hero .bar { height:8px; border-radius:4px; overflow:hidden; }
+    .rate-hero .s { font-size:0.75rem; color:var(--muted); margin-top:0.45rem; }
+    .rate-stats { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:0.6rem; }
+    .rate-stat { background:var(--surface2); border-radius:8px; padding:0.6rem 0.7rem; min-width:0; }
+    .rate-stat .v { display:block; font-size:1.4rem; font-weight:700; margin-top:0.15rem; }
+    .rate-stat .s { display:block; font-size:0.7rem; color:var(--muted); margin-top:0.1rem; overflow-wrap:anywhere; }
+
+    .rate-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+    .rate-legend {
+      display:flex; flex-wrap:wrap; gap:0.4rem 1.1rem; align-items:center;
+      padding:0.7rem 0.9rem; border-bottom:1px solid var(--border); font-size:0.75rem; color:var(--muted);
+    }
+    .rate-legend .key { display:inline-flex; align-items:center; gap:0.4rem; color:var(--text); font-weight:600; }
+    .rate-legend .key .sq { width:16px; height:16px; background-size:10px 10px; }
+    .rate-legend .hint { margin-left:auto; }
+    /* A long roster scrolls inside the card with the form headings held at
+       the top and the form rates at the bottom — the frozen panes of the
+       workbook — so a square near the end of the list still has a heading. */
+    .rate-scroll { overflow:auto; max-height:78vh; -webkit-overflow-scrolling:touch; }
+
+    /* Separate borders, not collapsed: a collapsed border does not travel
+       with a sticky cell, and the names column would leave its rules behind. */
+    .rate-grid { --emp-w:210px; --pct-w:88px; border-collapse:separate; border-spacing:0; font-size:0.8rem; }
+    .rate-grid th, .rate-grid td { padding:0; background:var(--surface); border-bottom:1px solid var(--border); }
+    .rate-grid th { font-weight:inherit; text-align:inherit; }
+    /* The person and their rate stay put while the forms scroll past them. */
+    .rate-grid .emp {
+      position:sticky; left:0; z-index:2; text-align:left;
+      width:var(--emp-w); min-width:var(--emp-w); max-width:var(--emp-w);
+      padding:0.3rem 0.6rem 0.3rem 0.9rem;
+    }
+    .rate-grid .pct {
+      position:sticky; left:var(--emp-w); z-index:2; text-align:right;
+      width:var(--pct-w); min-width:var(--pct-w); max-width:var(--pct-w);
+      padding:0.3rem 0.7rem 0.3rem 0.4rem; border-right:1px solid var(--border);
+    }
+    .rate-grid thead th { position:sticky; top:0; z-index:3; }
+    .rate-grid tfoot th, .rate-grid tfoot td { position:sticky; bottom:0; z-index:3; }
+    .rate-grid thead .emp, .rate-grid thead .pct,
+    .rate-grid tfoot .emp, .rate-grid tfoot .pct { z-index:4; }
+    .rate-grid thead .emp, .rate-grid thead .pct { vertical-align:bottom; padding-bottom:0.35rem; }
+    /* A definite width, not just the cell's: a table column ignores max-width
+       and grows to its longest line, and a long login would push the names
+       column out from under the rate column pinned beside it. */
+    .rate-grid tbody .emp .u,
+    .rate-grid tbody .emp .f {
+      display:block; width:calc(var(--emp-w) - 1.5rem);
+      overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+    }
+    .rate-grid tbody .emp .u { font-weight:600; }
+    .rate-grid tbody .emp .f { font-size:0.7rem; color:var(--muted); }
+    /* The count, then the percent at the cell's right edge, where a column of
+       them lines up; the meter under both. One line of figures keeps a row to
+       the height of the name beside it. */
+    .rate-grid tbody .pct .pl { display:flex; justify-content:flex-end; align-items:baseline; gap:0.4rem; white-space:nowrap; }
+    .rate-grid tbody .pct .p { font-weight:700; font-size:0.9rem; font-variant-numeric:tabular-nums; }
+    .rate-grid tbody .pct .n { font-size:0.66rem; color:var(--muted); font-variant-numeric:tabular-nums; }
+    .meter { display:block; height:4px; margin:4px 0 1px; border-radius:2px; background:var(--surface2); overflow:hidden; }
+    .meter > i { display:block; height:100%; background:var(--accent); }
+
+    .sort-btn {
+      background:none; border:none; color:var(--muted); font-family:inherit; font-size:0.62rem; font-weight:700;
+      letter-spacing:0.1em; text-transform:uppercase; cursor:pointer; padding:0.3rem 0;
+    }
+    .sort-btn:hover { color:var(--text); }
+    .sort-btn.on { color:var(--accent); }
+
+    /* A form's title and week, turned on their side so a quarter of weekly
+       forms fits across a laptop — the training-matrix layout a safety
+       supervisor already reads. Long titles end in an ellipsis; the whole
+       title is a hover or a tap away, and in the printout and the workbook. */
+    .rate-grid thead .doc { width:34px; min-width:34px; height:172px; padding:0.5rem 0 0.4rem; vertical-align:bottom; text-align:center; }
+    .rate-grid .dh {
+      writing-mode:vertical-rl; transform:rotate(180deg); display:inline-block;
+      max-height:158px; text-align:start; line-height:1.25;
+    }
+    .rate-grid .dh .dt,
+    .rate-grid .dh .dw { display:block; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-height:158px; }
+    .rate-grid .dh .dt { font-weight:700; font-size:0.72rem; color:var(--text); }
+    .rate-grid .dh .dw { font-size:0.64rem; color:var(--muted); }
+    /* With only a handful of forms there is room to set them upright, and
+       they share the card's width rather than leaving most of it empty. A
+       phone keeps them on their side, where a few columns still fit. */
+    @media (min-width:900px) {
+      .rate-grid.few { width:100%; table-layout:fixed; }
+      .rate-grid.few thead .doc { width:auto; min-width:0; height:auto; padding:0.6rem 0.55rem 0.5rem; }
+      .rate-grid.few .dh { writing-mode:horizontal-tb; transform:none; display:block; max-height:none; text-align:center; }
+      .rate-grid.few .dh .dt { white-space:normal; max-height:none; overflow-wrap:anywhere;
+                               display:-webkit-box; -webkit-line-clamp:3; -webkit-box-orient:vertical; }
+      .rate-grid.few .dh .dw { white-space:normal; max-height:none; margin-top:2px; }
+    }
+
+    .rate-grid td.c { text-align:center; padding:0.3rem 0.4rem; }
+    .sq {
+      display:inline-block; width:22px; height:22px; border-radius:5px; vertical-align:middle;
+      background-position:center; background-repeat:no-repeat; background-size:14px 14px;
+    }
+    .sq.yes {
+      background-color:var(--sq-yes);
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%2304180c' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='4 12 10 18 20 6'/%3E%3C/svg%3E");
+    }
+    .sq.no {
+      background-color:var(--sq-no); background-size:11px 11px;
+      background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='3.5' stroke-linecap='round'%3E%3Cpath d='M5 5l14 14M19 5L5 19'/%3E%3C/svg%3E");
+    }
+    /* High-contrast mode strips backgrounds, which would leave empty boxes. */
+    @media (forced-colors: active) { .sq { forced-color-adjust:none; } }
+    .rate-grid tbody tr:hover > * { background:var(--surface2); }
+    .rate-grid td.c:hover .sq, .rate-grid td.c.tipped .sq { box-shadow:0 0 0 2px var(--surface2), 0 0 0 4px var(--text); }
+    .rate-grid tfoot th, .rate-grid tfoot td {
+      border-bottom:none; border-top:1px solid var(--border); padding-top:0.5rem; padding-bottom:0.5rem;
+      font-size:0.68rem; color:var(--muted); font-variant-numeric:tabular-nums;
+    }
+    .rate-grid tfoot td.fr { text-align:center; padding-left:0.15rem; padding-right:0.15rem; }
+    .rate-grid tfoot .pct { font-weight:700; color:var(--text); }
+
+    /* One tooltip for the whole grid, filled with textContent — every line in
+       it is a title or a name somebody typed. */
+    .rate-tip {
+      position:fixed; z-index:95; pointer-events:none; max-width:260px;
+      background:var(--surface2); border:1px solid #3a3a4e; border-radius:8px; padding:0.55rem 0.7rem;
+      font-size:0.75rem; line-height:1.4; color:var(--text); box-shadow:0 8px 24px rgba(0,0,0,0.55);
+    }
+    .rate-tip[hidden] { display:none; }
+    .rate-tip strong { display:block; font-size:0.82rem; margin-bottom:0.1rem; }
+    .rate-tip span { display:block; color:var(--muted); overflow-wrap:anywhere; }
+    .rate-tip span.who { color:var(--text); }
+
     /* ── Phone ───────────────────────────────────────────────────────────
        The crew are on phones, in gloves, outdoors. Apple and Google both put
        the minimum comfortable target at 44px; the compact desktop controls
@@ -291,6 +445,7 @@
       .tab        { min-height:48px; padding-left:1rem; padding-right:1rem; }
       .btn-ghost  { min-height:44px; }
       .sig-print  { min-height:44px; padding:0.5rem 0.75rem; }
+      .sort-btn   { min-height:44px; }
       .ack input[type=checkbox] { width:30px; height:30px; min-height:30px; }
       /* A file picker under 16px makes iOS zoom the whole page on focus and
          leaves it zoomed. Every other control here is already 16px. */
@@ -318,12 +473,25 @@
          left the title a column three words wide. It takes its own row. */
       .rep-head { flex-wrap:wrap; }
       .rep-head .rep-print { flex:1 0 100%; }
+      /* "Employee Sign Rate" is the desktop label; a phone has room for the
+         words that tell the three tabs apart. */
+      .tab-long { display:none; }
+      /* The sticky columns give back most of their width, or a phone would
+         see names and no squares. */
+      .rate-grid { --emp-w:124px; --pct-w:64px; }
+      .rate-grid .emp { padding-left:0.6rem; }
+      .rate-grid .pct { padding-right:0.45rem; }
+      .rate-hero .v { font-size:2.6rem; }
+      .rate-legend .hint { margin-left:0; flex-basis:100%; }
+    }
+    @media (max-width: 720px) {
+      .rate-sum { grid-template-columns:1fr; }
     }
 
     /* A filename or a pasted title with no spaces in it must not push the
        layout sideways on a 320px screen. */
     .card-title, .card-meta, .card-desc,
-    .rep-head .t .n, .rep-head .t .s, .rep-list li .who { overflow-wrap:anywhere; }
+    .rep-head .t .n, .rep-head .t .s, .rep-list li .who, .rate-stat .k { overflow-wrap:anywhere; }
 
     .toast {
       position:fixed; left:50%; bottom:calc(1.2rem + env(safe-area-inset-bottom,0));
@@ -350,11 +518,13 @@
   <div class="tabs">
     <button class="tab active" id="tabDocs" onclick="switchTab('docs')">Documents</button>
     <button class="tab" id="tabReport" style="display:none" onclick="switchTab('report')">Sign-Off Report</button>
+    <button class="tab" id="tabRate" style="display:none" onclick="switchTab('rate')"><span class="tab-long">Employee </span>Sign Rate</button>
   </div>
 
   <main>
     <div class="panel active" id="panelDocs"></div>
     <div class="panel" id="panelReport"></div>
+    <div class="panel" id="panelRate"></div>
   </main>
 
   <div class="overlay" id="viewer">
@@ -371,6 +541,7 @@
   </div>
 
   <div class="toast" id="toast"></div>
+  <div class="rate-tip" id="rateTip" role="tooltip" hidden></div>
 
   <script src="auto-report.js"></script>
   <script>
@@ -405,6 +576,8 @@
       docs: null, docsError: null, docsLoading: true,
       report: null, reportError: null, reportLoading: false, reportOpen: new Set(),
       detail: {},        // documentId -> the signatures WITH their drawn marks
+      rate: null, rateError: null, rateLoading: false,   // the sign rate grid (rateModel)
+      rateSort: 'name',  // 'name' | 'low' | 'high'
       showArchived: false,
       statement: '',
       storageConfigured: true,
@@ -491,9 +664,13 @@
       state.tab = tab;
       document.getElementById('tabDocs').classList.toggle('active', tab === 'docs');
       document.getElementById('tabReport').classList.toggle('active', tab === 'report');
+      document.getElementById('tabRate').classList.toggle('active', tab === 'rate');
       document.getElementById('panelDocs').classList.toggle('active', tab === 'docs');
       document.getElementById('panelReport').classList.toggle('active', tab === 'report');
+      document.getElementById('panelRate').classList.toggle('active', tab === 'rate');
+      hideRateTip();
       if (tab === 'report' && !state.report && !state.reportLoading) loadReport();
+      if (tab === 'rate' && !state.rate && !state.rateLoading) loadRate();
     }
 
     /* ═══════ Documents ═══════ */
@@ -511,6 +688,7 @@
           // submission 403s.
           canManage = Boolean(data.permissions.canManage);
           document.getElementById('tabReport').style.display = canManage ? '' : 'none';
+          document.getElementById('tabRate').style.display   = canManage ? '' : 'none';
           document.getElementById('levelBadge').textContent = canManage ? 'Supervisor' : 'Crew';
         }
       } catch (err) {
@@ -713,6 +891,7 @@
         document.getElementById('upFile').value  = '';
         toast('Posted. The crew can sign it now.');
         state.report = null;   // the report is stale the moment a form lands
+        state.rate   = null;   // and so is every rate it is a column of
         await loadDocs();
       } catch (err) {
         if (ticket && ticket.storageKey) {
@@ -733,6 +912,7 @@
         await api('DELETE', '/safety-documents?id=' + encodeURIComponent(id) + (restoring ? '&restore=1' : ''));
         toast(restoring ? 'Restored.' : 'Archived.');
         state.report = null;
+        state.rate   = null;
         await loadDocs();
       } catch (err) {
         toast(err.message, true);
@@ -992,6 +1172,7 @@
         doc.mySignature = { fullName: out.signature.fullName, signedAt: out.signature.signedAt };
         toast(out.alreadySigned ? 'You had already signed this one.' : 'Signed. Thank you.');
         state.report = null;
+        state.rate   = null;
         closeViewer();
         renderDocs();
         loadDocs();
@@ -1380,10 +1561,12 @@
 
     // forEmail: the copy Auto Reports sends, which nobody prints from — no
     // Print bar, no print dialog. The PDF is made from it on the server.
-    function printShell(title, body, forEmail) {
+    // css: anything a printout needs on top of the sheets' own — the sign
+    // rate's landscape page and its grid.
+    function printShell(title, body, forEmail, css) {
       return `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
         <title>${esc(title)}</title>
-        <style>${PRINT_CSS}</style></head>
+        <style>${PRINT_CSS}${css || ''}</style></head>
         <body>
           ${forEmail ? '' : `<div class="bar no-print">
             <button onclick="window.print()">Print / Save as PDF</button>
@@ -1582,10 +1765,10 @@
       catch { /* closed, or between documents */ }
     }
 
-    function fillPrintWindow(w, title, body) {
+    function fillPrintWindow(w, title, body, css) {
       if (w.closed) return;   // they closed it while it was being prepared
       w.document.open();
-      dwWrite(w, printShell(title, body));
+      dwWrite(w, printShell(title, body, false, css));
       w.document.close();
       try { w.focus(); } catch { /* the browser's call */ }
     }
@@ -1846,6 +2029,850 @@
       });
     })();
 
+    /* ═══════ Sign rate ═══════ */
+    /* The sign-off report turned on its side: one row per person on the Safety
+       Center roster, one column per form, and whether they signed it where the
+       two meet. The percentage beside each name is the share of the range's
+       forms that person has signed; the overall rate is every square at once —
+       signatures collected over signatures expected.
+
+       It is built in the page from the sign-off report's own read — the roster
+       and who signed each form — so the two tabs cannot disagree: a column is
+       green for exactly the people the sign-off report counts against that
+       form, and red for exactly the ones it lists under Still to sign.
+
+       Two rules decide what is counted, and the tab says both:
+         - Archived forms are in. Archiving is how a supervisor closes a week
+           out, and a rate that dropped each week once it was tidied away would
+           only ever measure the forms still being chased — the ones most
+           likely to be short. A form archived before anybody signed it was
+           taken down rather than closed out, and stays out: the rule the
+           emailed sign-off report applies.
+         - The roster is today's, as on the sign-off report. Everyone granted
+           the Safety Center is counted against every form in the range,
+           someone granted it last week included. */
+
+    // Forms up to this many across set their titles upright on a wide screen.
+    const RATE_FEW_DOCS = 6;
+
+    // A share as a whole percent that never claims more than it is. 199 of
+    // 200 rounds to a 100 that reads as "nothing to chase" while a square is
+    // still red, and one signature in three hundred to a 0 that reads as
+    // "nobody signed". Null when there is nothing to divide by.
+    function pctOf(n, d) {
+      if (!d) return null;
+      if (n >= d) return 100;
+      if (n <= 0) return 0;
+      return Math.min(99, Math.max(1, Math.round((n / d) * 100)));
+    }
+    const pctText = p => (p == null ? '—' : p + '%');
+    const plural  = (n, one, many) => n + ' ' + (n === 1 ? one : (many || one + 's'));
+
+    /* The grid, from one /safety-signatures?scope=report read. Forms run
+       oldest to newest, left to right, as a calendar does; people come in the
+       roster's own order. `at` is when the figures were read — the printout
+       and the workbook carry it, since either can outlive the screen. */
+    function rateModel(data, at) {
+      const all    = data.documents || [];
+      const groups = all.filter(g => !(g.document.archivedAt && !(g.signed || []).length)).sort(byWeek);
+      // Keyed by account: a signature whose login has since been removed has
+      // no user id, and nobody on today's roster can be that person.
+      const byDoc  = groups.map(g => new Map((g.signed || [])
+        .filter(s => s.userId != null).map(s => [s.userId, s])));
+      const people = (data.roster || []).map((r, i) => {
+        const marks = byDoc.map(m => m.get(r.userId) || null);
+        // The name they typed last, to put a person to a login.
+        let latest = null;
+        marks.forEach(s => {
+          if (s && (!latest || Date.parse(s.signedAt) > Date.parse(latest.signedAt))) latest = s;
+        });
+        return {
+          i, userId: r.userId, username: r.username,
+          fullName: latest ? latest.fullName || '' : '',
+          marks, signed: marks.filter(Boolean).length, expected: groups.length,
+        };
+      });
+      const docs = groups.map((g, c) => ({
+        doc: g.document,
+        signed: people.reduce((n, p) => n + (p.marks[c] ? 1 : 0), 0),
+        expected: people.length,
+      }));
+      return {
+        at: at || new Date().toISOString(),
+        docs, people,
+        signed:     people.reduce((n, p) => n + p.signed, 0),
+        expected:   people.length * docs.length,
+        allSigned:  people.filter(p => p.expected && p.signed === p.expected).length,
+        noneSigned: people.filter(p => p.expected && p.signed === 0).length,
+        withdrawn:  all.length - groups.length,
+      };
+    }
+
+    // The order the grid, the printout and the workbook all list people in.
+    function ratePeople(m) {
+      const byName = (a, b) => String(a.username).toLowerCase().localeCompare(String(b.username).toLowerCase());
+      const share  = p => (p.expected ? p.signed / p.expected : -1);
+      const list   = m.people.slice();
+      if (state.rateSort === 'low')  return list.sort((a, b) => share(a) - share(b) || byName(a, b));
+      if (state.rateSort === 'high') return list.sort((a, b) => share(b) - share(a) || byName(a, b));
+      return list.sort(byName);
+    }
+
+    // The weeks a model covers, as a file name reads them.
+    function rateFileStem(m) {
+      const weeks = m.docs.map(d => d.doc.weekOf).sort();
+      return weeks[0] === weeks[weeks.length - 1] ? weeks[0] : `${weeks[0]} to ${weeks[weeks.length - 1]}`;
+    }
+
+    // Every Apply takes a ticket, so a slow read of one range landing after
+    // the read of the next cannot paint the old range over the new one.
+    let rateSeq = 0;
+
+    async function loadRate() {
+      const seq = ++rateSeq;
+      state.rateLoading = true; state.rateError = null; renderRate();
+      const from  = (document.getElementById('rateFrom') || {}).value || '';
+      const to    = (document.getElementById('rateTo')   || {}).value || '';
+      const parts = ['scope=report', 'include=archived'];
+      if (from) parts.push('from=' + encodeURIComponent(from));
+      if (to)   parts.push('to=' + encodeURIComponent(to));
+      try {
+        const data = await api('GET', '/safety-signatures?' + parts.join('&'));
+        if (seq !== rateSeq) return;
+        state.rate = rateModel(data);
+      } catch (err) {
+        if (seq !== rateSeq) return;
+        // Nothing left behind to export: Excel and Print would otherwise hand
+        // out a range the screen no longer shows.
+        state.rate = null;
+        state.rateError = err.message;
+      }
+      state.rateLoading = false;
+      renderRate();
+    }
+
+    // Built once, so a re-sort or a reload never clears the weeks somebody
+    // has typed — or takes the focus out of the box they are typing in.
+    function rateToolbarHTML() {
+      return `
+        <div class="form-card">
+          <h2>Employee sign rate</h2>
+          <div class="toolbar">
+            <div class="row">
+              <label for="rateFrom">From week</label>
+              <input id="rateFrom" type="date" />
+            </div>
+            <div class="row">
+              <label for="rateTo">To week</label>
+              <input id="rateTo" type="date" />
+            </div>
+            <button class="btn btn-primary" onclick="loadRate()">Apply</button>
+            <button class="btn btn-ghost" onclick="downloadRateXlsx()">Download Excel</button>
+            <button class="btn btn-ghost" onclick="printRate()">Print / PDF</button>
+          </div>
+          <span class="fld-note">Everyone on the Safety Center roster today is counted against every form in the
+            range, including archived forms — archiving closes a week out, it does not excuse it — and forms
+            posted before they were added. Leave both weeks blank for every form posted.</span>
+        </div>`;
+    }
+
+    function renderRate() {
+      const el = document.getElementById('panelRate');
+      hideRateTip();
+      if (!canManage) {
+        el.innerHTML = `<div class="empty">The sign rate report is for safety supervisors.</div>`;
+        return;
+      }
+      if (!document.getElementById('rateBody')) el.innerHTML = rateToolbarHTML() + '<div id="rateBody"></div>';
+      const body = document.getElementById('rateBody');
+      const m = state.rate;
+      body.classList.toggle('stale', Boolean(state.rateLoading && m));
+
+      if (state.rateLoading && !m) {
+        body.innerHTML = `<div class="empty">Loading the sign rate…</div>`;
+      } else if (state.rateError) {
+        body.innerHTML = `<div class="empty"><strong>Could not load the sign rate.</strong>${esc(state.rateError)}<br><br>
+          <button class="btn btn-primary" onclick="loadRate()">Try again</button></div>`;
+      } else if (!m) {
+        body.innerHTML = '';
+      } else if (!m.docs.length) {
+        body.innerHTML = `<div class="empty"><strong>No forms in that range.</strong>
+          Post a form on the Documents tab and it will show up here.</div>`;
+      } else if (!m.people.length) {
+        body.innerHTML = `<div class="empty"><strong>Nobody is on the Safety Center roster.</strong>
+          Grant the division in Manage Users and the people expected to sign will show up here.</div>`;
+      } else {
+        const old  = body.querySelector('.rate-scroll');
+        const keep = old && m.drawn ? { x: old.scrollLeft, y: old.scrollTop } : null;
+        body.innerHTML = rateSummaryHTML(m) + rateGridHTML(m);
+        // A new range opens on its latest forms — on the right, where a
+        // calendar puts them; a re-sort leaves the grid where it was.
+        const sc = body.querySelector('.rate-scroll');
+        if (sc) {
+          sc.scrollLeft = keep ? keep.x : sc.scrollWidth;
+          if (keep) sc.scrollTop = keep.y;
+        }
+        m.drawn = true;
+      }
+    }
+
+    function rateSummaryHTML(m) {
+      const p = pctOf(m.signed, m.expected);
+      const n = m.people.length;
+      const gone = m.withdrawn
+        ? ` &middot; ${plural(m.withdrawn, 'form')} archived unsigned, not counted` : '';
+      return `
+        <div class="rate-sum">
+          <div class="rate-hero">
+            <span class="k">Overall sign rate</span>
+            <div class="v">${pctText(p)}</div>
+            <div class="bar"><span style="width:${p || 0}%"></span></div>
+            <div class="s">${m.signed} of ${m.expected} signatures &middot; ${plural(n, 'employee')} &times; ${plural(m.docs.length, 'form')}</div>
+          </div>
+          <div class="rate-stats">
+            <div class="rate-stat"><span class="k">Forms</span><span class="v">${m.docs.length}</span>
+              <span class="s">${esc(rangeLabel(m.docs.map(d => d.doc.weekOf)))}${gone}</span></div>
+            <div class="rate-stat"><span class="k">Signed every form</span><span class="v">${m.allSigned}</span>
+              <span class="s">of ${plural(n, 'employee')}</span></div>
+            <div class="rate-stat"><span class="k">Signed none</span><span class="v">${m.noneSigned}</span>
+              <span class="s">of ${plural(n, 'employee')}</span></div>
+          </div>
+        </div>`;
+    }
+
+    function rateGridHTML(m) {
+      const byName = state.rateSort === 'name';
+      const arrow  = state.rateSort === 'high' ? ' ▼' : ' ▲';
+      const sorted = on => (!on ? 'none' : state.rateSort === 'high' ? 'descending' : 'ascending');
+      const head = `
+        <tr>
+          <th class="emp" scope="col" aria-sort="${sorted(byName)}"><button class="sort-btn${byName ? ' on' : ''}"
+              data-act="rate-sort" data-sort="name" title="Sort by name">Employee${byName ? ' ▲' : ''}</button></th>
+          <th class="pct" scope="col" aria-sort="${sorted(!byName)}"><button class="sort-btn${byName ? '' : ' on'}"
+              data-act="rate-sort" data-sort="rate" title="Sort by sign rate">Rate${byName ? '' : arrow}</button></th>
+          ${m.docs.map((d, c) => `<th class="doc" scope="col" data-c="${c}"><div class="dh"><span class="dt">${
+            esc(d.doc.title)}</span><span class="dw">${esc(weekLabel(d.doc.weekOf))}</span></div></th>`).join('')}
+        </tr>`;
+      const rows = ratePeople(m).map(p => {
+        const pc = pctOf(p.signed, p.expected);
+        return `
+        <tr>
+          <th class="emp" scope="row"><span class="u">${esc(p.username)}</span>${
+            p.fullName ? `<span class="f">${esc(p.fullName)}</span>` : ''}</th>
+          <td class="pct"><span class="pl"><span class="n">${p.signed}/${p.expected}</span><span class="p">${pctText(pc)}</span></span><span class="meter"><i style="width:${pc || 0}%"></i></span></td>
+          ${p.marks.map((s, c) => `<td class="c" data-r="${p.i}" data-c="${c}"><span class="sq ${s ? 'yes' : 'no'}" role="img" aria-label="${
+            s ? 'Signed' : 'Not signed'}"></span></td>`).join('')}
+        </tr>`;
+      }).join('');
+      const foot = `
+        <tr>
+          <th class="emp" scope="row">Form sign rate</th>
+          <td class="pct">${pctText(pctOf(m.signed, m.expected))}</td>
+          ${m.docs.map((d, c) => `<td class="fr" data-c="${c}">${pctText(pctOf(d.signed, d.expected))}</td>`).join('')}
+        </tr>`;
+      return `
+        <div class="rate-card">
+          <div class="rate-legend">
+            <span class="key"><span class="sq yes" aria-hidden="true"></span>Signed</span>
+            <span class="key"><span class="sq no" aria-hidden="true"></span>Not signed</span>
+            <span class="hint">Hover or tap a square for who, which form and when.</span>
+          </div>
+          <div class="rate-scroll">
+            <table class="rate-grid${m.docs.length <= RATE_FEW_DOCS ? ' few' : ''}"
+                   aria-label="Sign rate: a row for each employee, a column for each form, signed or not signed where they meet">
+              <thead>${head}</thead>
+              <tbody>${rows}</tbody>
+              <tfoot>${foot}</tfoot>
+            </table>
+          </div>
+        </div>`;
+    }
+
+    /* ── The tooltip ── */
+    /* A hover on a mouse; a tap on a phone, which has no hover. It adds the
+       time and the typed name and nothing the grid needs it for: the grid is
+       a real table, and a screen reader reads each square as Signed or Not
+       signed under its form and beside its person. */
+    let rateTipFor = null;
+    let rateLastPointer = 'mouse';
+
+    function rateTipLines(cell) {
+      const m = state.rate;
+      const c = Number(cell.getAttribute('data-c'));
+      const d = m && m.docs[c];
+      if (!d) return null;
+      const lines = [];
+      if (cell.hasAttribute('data-r')) {
+        const p = m.people[Number(cell.getAttribute('data-r'))];
+        if (!p) return null;
+        const s = p.marks[c];
+        lines.push({ t: s ? 'Signed ' + stamp(s.signedAt) : 'Not signed', strong: true });
+        lines.push({ t: p.username + (s && s.fullName ? ' — signed as ' + s.fullName : ''), cls: 'who' });
+      } else {
+        lines.push({ t: `${d.signed} of ${d.expected} signed · ${pctText(pctOf(d.signed, d.expected))}`, strong: true });
+      }
+      lines.push({ t: d.doc.title, cls: 'who' });
+      lines.push({ t: weekLabel(d.doc.weekOf) + (d.doc.archivedAt ? ' · archived' : '') });
+      return lines;
+    }
+
+    function showRateTip(cell) {
+      const tip   = document.getElementById('rateTip');
+      const lines = tip && cell ? rateTipLines(cell) : null;
+      if (!lines) return hideRateTip();
+      tip.textContent = '';
+      lines.forEach(l => {
+        const el = document.createElement(l.strong ? 'strong' : 'span');
+        if (l.cls) el.className = l.cls;
+        el.textContent = l.t;
+        tip.appendChild(el);
+      });
+      if (rateTipFor && rateTipFor !== cell) rateTipFor.classList.remove('tipped');
+      rateTipFor = cell;
+      cell.classList.add('tipped');
+      tip.hidden = false;
+      // Above the square where it fits, below where it does not, and never
+      // off either side of the screen.
+      const r = cell.getBoundingClientRect();
+      const left  = r.left + r.width / 2 - tip.offsetWidth / 2;
+      const above = r.top - tip.offsetHeight - 8;
+      tip.style.left = Math.max(8, Math.min(left, window.innerWidth - tip.offsetWidth - 8)) + 'px';
+      tip.style.top  = (above >= 8 ? above : r.bottom + 8) + 'px';
+    }
+
+    function hideRateTip() {
+      const tip = document.getElementById('rateTip');
+      if (tip) tip.hidden = true;
+      if (rateTipFor) rateTipFor.classList.remove('tipped');
+      rateTipFor = null;
+    }
+
+    /* ── Print / PDF ── */
+    /* The grid on landscape pages, the overall rate on the first. A page holds
+       about thirty forms across; more continue on further pages, each with the
+       names and rates down its side again, so no square on paper is without a
+       person. A long roster runs down the page and repeats the column heads on
+       every sheet of it. It prints what the screen shows — the same range, in
+       the same order — and says when those figures were read.
+
+       Twenty-eight is what fits: the number, name and rate columns take 3in of
+       the 10.2in a landscape page prints, and a form's column a quarter inch. */
+    const RATE_PRINT_COLS = 28;
+
+    const RATE_PRINT_CSS = `
+      @page { size: landscape; margin: 0.4in; }
+      .rsum { display: flex; gap: 14px; align-items: stretch; margin: 12px 0 10px; }
+      .rsum .meta { flex: 1; margin: 0; }
+      .hero { flex: none; width: 2.3in; border: 1px solid #d1d5db; border-radius: 6px; padding: 9px 12px; }
+      .hero .big { display: block; font-size: 34px; font-weight: 800; line-height: 1.05; margin: 2px 0 6px; }
+      .hero .track { height: 6px; border-radius: 3px; background: #e5e7eb; overflow: hidden; }
+      .hero .track i { display: block; height: 100%; background: #16a34a; }
+      .hero .sub { display: block; margin-top: 5px; font-size: 9.5px; color: #374151; }
+      .key { display: flex; gap: 16px; align-items: center; margin: 0 0 8px; font-size: 10px; color: #374151; }
+      .key span { display: inline-flex; align-items: center; gap: 5px; font-weight: 600; }
+      .cont { margin: -4px 0 10px; color: #374151; }
+      .rnote { margin: -2px 0 9px; font-size: 8.5px; line-height: 1.45; color: #6b7280; }
+      table.rgrid { width: auto; border-collapse: separate; border-spacing: 0; }
+      table.rgrid th, table.rgrid td { padding: 2px 5px; border-bottom: 1px solid #e5e7eb; }
+      table.rgrid thead th { border-bottom: 2px solid #111; vertical-align: bottom; }
+      /* One line a person — the name they typed after their login, the count
+         before their rate — so a crew of fifty is two pages, not three. */
+      table.rgrid .emp { width: 1.75in; }
+      table.rgrid .nm { width: 1.75in; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+      table.rgrid .nm b { font-size: 10.5px; }
+      table.rgrid .nm small, table.rgrid td.pct small { color: #6b7280; font-size: 8.5px; margin-left: 4px; }
+      table.rgrid .pct { width: 0.72in; text-align: right; white-space: nowrap; border-right: 1px solid #d1d5db; padding-right: 7px; }
+      table.rgrid td.pct b { font-size: 11px; font-variant-numeric: tabular-nums; }
+      table.rgrid td.pct small { margin: 0 4px 0 0; font-variant-numeric: tabular-nums; }
+      table.rgrid th.doc { width: 0.24in; min-width: 0.24in; max-width: 0.24in; height: 1.5in; padding: 0 0 4px; text-align: center; }
+      table.rgrid .dh {
+        writing-mode: vertical-rl; transform: rotate(180deg); display: inline-block; text-align: start;
+        max-height: 1.42in; white-space: nowrap; letter-spacing: 0; text-transform: none; line-height: 1.2;
+      }
+      table.rgrid .dh b, table.rgrid .dh span { display: block; overflow: hidden; text-overflow: ellipsis; max-height: 1.42in; }
+      table.rgrid .dh b { font-size: 8px; color: #111; }
+      table.rgrid .dh span { font-size: 7.5px; color: #6b7280; font-weight: 600; }
+      table.rgrid.few { width: 100%; table-layout: fixed; }
+      table.rgrid.few th.doc { width: auto; min-width: 0; max-width: none; height: auto; padding: 4px 4px 5px; }
+      table.rgrid.few .dh { writing-mode: horizontal-tb; transform: none; display: block; white-space: normal; max-height: none; text-align: center; }
+      table.rgrid.few .dh b, table.rgrid.few .dh span { max-height: none; overflow-wrap: anywhere; }
+      table.rgrid td.c { text-align: center; padding: 1.5px 0; }
+      table.rgrid tr.tot td { border-top: 2px solid #111; border-bottom: none; font-weight: 700; }
+      table.rgrid tr.tot td.fr { text-align: center; font-size: 8px; padding: 4px 0; font-variant-numeric: tabular-nums; }
+      /* Green-600 and red-700, each with a white mark: both clear 3:1 on the
+         paper and on each other's mark, and stay apart for a deuteranope. The
+         mark is what still says which is which on a black-and-white printer. */
+      .sq { display: inline-block; width: 0.17in; height: 0.17in; border-radius: 3px; vertical-align: middle;
+            background-position: center; background-repeat: no-repeat; background-size: 72% 72%; }
+      .sq.yes {
+        background-color: #16a34a;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='4 12 10 18 20 6'/%3E%3C/svg%3E");
+      }
+      .sq.no {
+        background-color: #b91c1c; background-size: 58% 58%;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-width='3.5' stroke-linecap='round'%3E%3Cpath d='M5 5l14 14M19 5L5 19'/%3E%3C/svg%3E");
+      }
+    `;
+
+    // How the figures are counted, under the legend on the first page — read
+    // before the grid rather than after it, and never a page of its own when
+    // the last table happens to end at the foot of one.
+    function rateNoteHTML(m) {
+      const one = m.withdrawn === 1;
+      return `<p class="rnote">Green squares are signed, red squares are not. Everyone on the Safety Center roster
+        when these figures were read is counted against every form in the range, archived forms included${m.withdrawn
+          ? ` — ${plural(m.withdrawn, 'form')} archived before anyone signed ${one ? 'it is' : 'them are'} left out` : ''}.
+        Each person's rate is the share of those forms they have signed; the overall rate is every signature
+        collected over every one expected. Signatures are collected electronically in the DataWatch Safety Center.</p>`;
+    }
+
+    function rateSheetsHTML(m, info) {
+      const people = ratePeople(m);
+      const p      = pctOf(m.signed, m.expected);
+      const few    = m.docs.length <= RATE_FEW_DOCS;
+      const key    = `<div class="key"><span><i class="sq yes"></i>Signed</span><span><i class="sq no"></i>Not signed</span></div>`;
+      const spans  = [];
+      for (let a = 0; a < m.docs.length; a += RATE_PRINT_COLS) spans.push([a, Math.min(m.docs.length, a + RATE_PRINT_COLS)]);
+
+      return spans.map(([a, b], k) => {
+        const cols = m.docs.slice(a, b);
+        const top = k === 0
+          ? `<h1>${esc(rangeLabel(m.docs.map(d => d.doc.weekOf)))}</h1>
+             <div class="rsum">
+               <div class="hero"><span class="k">Overall sign rate</span><span class="big">${pctText(p)}</span>
+                 <div class="track"><i style="width:${p || 0}%"></i></div>
+                 <span class="sub">${m.signed} of ${m.expected} signatures</span></div>
+               <div class="meta">
+                 <div><span class="k">Forms</span><span class="v">${m.docs.length}</span></div>
+                 <div><span class="k">Employees</span><span class="v">${m.people.length}</span></div>
+                 <div><span class="k">Signed every form</span><span class="v">${m.allSigned}</span></div>
+                 <div><span class="k">Signed none</span><span class="v">${m.noneSigned}</span></div>
+                 <div><span class="k">Figures as of</span><span class="v">${esc(stamp(m.at, true))}</span></div>
+                 ${printedCell(info)}
+               </div>
+             </div>`
+          : `<h1>Employee sign rate — continued</h1>
+             <p class="cont">Forms ${a + 1}–${b} of ${m.docs.length} &middot; ${esc(rangeLabel(cols.map(d => d.doc.weekOf)))}</p>`;
+        return `
+          <section class="sheet">
+            ${printHead(info, 'Employee sign rate')}
+            ${top}
+            ${key}
+            ${k === 0 ? rateNoteHTML(m) : ''}
+            <table class="rgrid${few ? ' few' : ''}">
+              <thead><tr>
+                <th class="n">#</th><th class="emp">Employee</th><th class="pct">Rate</th>
+                ${cols.map(d => `<th class="doc"><div class="dh"><b>${esc(d.doc.title)}</b><span>${
+                  esc(weekLabel(d.doc.weekOf))}</span></div></th>`).join('')}
+              </tr></thead>
+              <tbody>${people.map((x, i) => `
+                <tr>
+                  <td class="n">${i + 1}</td>
+                  <td class="emp"><div class="nm"><b>${esc(x.username)}</b>${x.fullName ? `<small>${esc(x.fullName)}</small>` : ''}</div></td>
+                  <td class="pct"><small>${x.signed}/${x.expected}</small><b>${pctText(pctOf(x.signed, x.expected))}</b></td>
+                  ${x.marks.slice(a, b).map(s => `<td class="c"><i class="sq ${s ? 'yes' : 'no'}"></i></td>`).join('')}
+                </tr>`).join('')}
+                <tr class="tot">
+                  <td class="n"></td><td class="emp">Form sign rate</td><td class="pct">${pctText(p)}</td>
+                  ${cols.map(d => `<td class="fr">${pctText(pctOf(d.signed, d.expected))}</td>`).join('')}
+                </tr>
+              </tbody>
+            </table>
+          </section>`;
+      }).join('');
+    }
+
+    function printRate() {
+      const m = state.rate;
+      if (state.rateLoading) return toast('Still loading the sign rate…');
+      if (!m || !m.docs.length || !m.people.length) return toast('Nothing to print yet.', true);
+      const w = openPrintWindow('the sign rate');
+      if (!w) return;
+      fillPrintWindow(w, `Employee sign rate — ${rateFileStem(m)}`, rateSheetsHTML(m, printInfo()), RATE_PRINT_CSS);
+    }
+
+    /* ── Excel ── */
+    /* A real .xlsx, written by hand like every other export in this app — the
+       page loads no libraries, and a stored (uncompressed) zip is a valid
+       archive that needs no compressor. Mirrors the writer in intercompany.html.
+
+       The squares are Yes / No in Excel's own Good and Bad colours, so the
+       sheet still reads in black and white, and filters and COUNTIF work on
+       words. Every rate is a formula over those cells, carrying the value it
+       works out to for a preview pane that never runs it — clear a cell for a
+       form somebody started after, and their rate, the form's and the overall
+       one all recalculate without it. */
+    const XL_CRC = (() => {
+      const t = new Uint32Array(256);
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        t[i] = c >>> 0;
+      }
+      return t;
+    })();
+
+    function xlZip(files) {
+      const enc = new TextEncoder();
+      const chunks = [], central = [];
+      let offset = 0;
+      for (const f of files) {
+        const name = enc.encode(f.name);
+        const data = enc.encode(f.data);
+        let crc = 0xFFFFFFFF;
+        for (let i = 0; i < data.length; i++) crc = XL_CRC[(crc ^ data[i]) & 0xFF] ^ (crc >>> 8);
+        crc = (crc ^ 0xFFFFFFFF) >>> 0;
+
+        const local = new Uint8Array(30 + name.length);
+        const lv = new DataView(local.buffer);
+        lv.setUint32(0, 0x04034b50, true);   // local file header
+        lv.setUint16(4, 20, true);           // version needed
+        lv.setUint16(6, 0x0800, true);       // UTF-8 names
+        lv.setUint32(14, crc, true);
+        lv.setUint32(18, data.length, true); // stored: compressed = uncompressed
+        lv.setUint32(22, data.length, true);
+        lv.setUint16(26, name.length, true);
+        local.set(name, 30);
+        chunks.push(local, data);
+
+        const cd = new Uint8Array(46 + name.length);
+        const cv = new DataView(cd.buffer);
+        cv.setUint32(0, 0x02014b50, true);   // central directory entry
+        cv.setUint16(4, 20, true);
+        cv.setUint16(6, 20, true);
+        cv.setUint16(8, 0x0800, true);
+        cv.setUint32(16, crc, true);
+        cv.setUint32(20, data.length, true);
+        cv.setUint32(24, data.length, true);
+        cv.setUint16(28, name.length, true);
+        cv.setUint32(42, offset, true);
+        cd.set(name, 46);
+        central.push(cd);
+        offset += local.length + data.length;
+      }
+      const cdSize = central.reduce((n, c) => n + c.length, 0);
+      const end = new Uint8Array(22);
+      const ev = new DataView(end.buffer);
+      ev.setUint32(0, 0x06054b50, true);     // end of central directory
+      ev.setUint16(8, files.length, true);
+      ev.setUint16(10, files.length, true);
+      ev.setUint32(12, cdSize, true);
+      ev.setUint32(16, offset, true);
+      return new Blob(chunks.concat(central, [end]),
+        { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    }
+
+    const xlEsc = s => String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&apos;')
+      // Excel refuses a workbook carrying a control character. A line break
+      // is not one — the form headings use it.
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+
+    function xlCol(n) {
+      let s = '';
+      while (n > 0) { const r = (n - 1) % 26; s = String.fromCharCode(65 + r) + s; n = (n - r - 1) / 26; }
+      return s;
+    }
+
+    // Excel counts days from 1899-12-30. Read off the date's own digits rather
+    // than a local Date, so a week never slides a day.
+    function xlDate(ymd) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(ymd || ''));
+      return m ? Math.round(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000) + 25569 : '';
+    }
+
+    // Style indices into XL_STYLES' cellXfs.
+    const XL = {
+      title: 1, sub: 2, bold: 3, head: 4, headDoc: 5, headNum: 6, text: 7, pct: 8, int: 9,
+      yes: 10, no: 11, totText: 12, totPct: 13, totPctC: 14, totInt: 15, hero: 16, date: 17,
+    };
+
+    // numFmt 164 is a whole percent with pctOf()'s honesty at the top end:
+    // anything short of every signature shows 99% at most, never a rounded
+    // 100%. The cell still holds the exact share underneath.
+    const XL_STYLES =
+      '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+        '<numFmts count="2">' +
+          '<numFmt numFmtId="164" formatCode="[=1]0%;[&gt;=0.99]&quot;99%&quot;;0%"/>' +
+          '<numFmt numFmtId="165" formatCode="mmm d, yyyy"/>' +
+        '</numFmts>' +
+        '<fonts count="8">' +
+          '<font><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><b/><sz val="11"/><color rgb="FF1F2937"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><b/><sz val="16"/><color rgb="FF1F2A44"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><sz val="10"/><color rgb="FF6B7280"/><name val="Calibri"/><family val="2"/></font>' +
+          // Excel's own Good and Bad, text and fill, so the squares read the
+          // way every conditional format in every other workbook does.
+          '<font><b/><sz val="11"/><color rgb="FF006100"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><b/><sz val="11"/><color rgb="FF9C0006"/><name val="Calibri"/><family val="2"/></font>' +
+          '<font><b/><sz val="20"/><color rgb="FF1F2A44"/><name val="Calibri"/><family val="2"/></font>' +
+        '</fonts>' +
+        '<fills count="6">' +
+          '<fill><patternFill patternType="none"/></fill>' +
+          '<fill><patternFill patternType="gray125"/></fill>' +
+          '<fill><patternFill patternType="solid"><fgColor rgb="FF1F2A44"/><bgColor indexed="64"/></patternFill></fill>' +
+          '<fill><patternFill patternType="solid"><fgColor rgb="FFC6EFCE"/><bgColor indexed="64"/></patternFill></fill>' +
+          '<fill><patternFill patternType="solid"><fgColor rgb="FFFFC7CE"/><bgColor indexed="64"/></patternFill></fill>' +
+          '<fill><patternFill patternType="solid"><fgColor rgb="FFEDEFF3"/><bgColor indexed="64"/></patternFill></fill>' +
+        '</fills>' +
+        '<borders count="4">' +
+          '<border><left/><right/><top/><bottom/><diagonal/></border>' +
+          '<border><left/><right/><top/><bottom style="hair"><color rgb="FFC9CEDA"/></bottom><diagonal/></border>' +
+          '<border><left/><right/><top style="thin"><color rgb="FF9AA1AE"/></top><bottom/><diagonal/></border>' +
+          // A white rule round each Yes / No: the gap between squares on screen.
+          '<border><left style="thin"><color rgb="FFFFFFFF"/></left><right style="thin"><color rgb="FFFFFFFF"/></right>' +
+            '<top style="thin"><color rgb="FFFFFFFF"/></top><bottom style="thin"><color rgb="FFFFFFFF"/></bottom><diagonal/></border>' +
+        '</borders>' +
+        '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
+        '<cellXfs count="18">' +
+          '<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>' +
+          '<xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+          '<xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+          '<xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/>' +
+          '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1">' +
+            '<alignment horizontal="left" vertical="bottom" wrapText="1"/></xf>' +
+          // 5 — a form's heading, turned to read bottom to top like the screen's.
+          '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1">' +
+            '<alignment horizontal="center" vertical="bottom" textRotation="90" wrapText="1"/></xf>' +
+          '<xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1">' +
+            '<alignment horizontal="right" vertical="bottom" wrapText="1"/></xf>' +
+          '<xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1"/>' +
+          '<xf numFmtId="164" fontId="1" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyFont="1" applyBorder="1"/>' +
+          '<xf numFmtId="1" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1"/>' +
+          // 10, 11 — Yes and No.
+          '<xf numFmtId="0" fontId="5" fillId="3" borderId="3" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">' +
+            '<alignment horizontal="center" vertical="center"/></xf>' +
+          '<xf numFmtId="0" fontId="6" fillId="4" borderId="3" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">' +
+            '<alignment horizontal="center" vertical="center"/></xf>' +
+          '<xf numFmtId="0" fontId="1" fillId="5" borderId="2" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/>' +
+          '<xf numFmtId="164" fontId="1" fillId="5" borderId="2" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
+          '<xf numFmtId="164" fontId="1" fillId="5" borderId="2" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1">' +
+            '<alignment horizontal="center"/></xf>' +
+          '<xf numFmtId="1" fontId="1" fillId="5" borderId="2" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1" applyBorder="1"/>' +
+          '<xf numFmtId="164" fontId="7" fillId="0" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyAlignment="1">' +
+            '<alignment horizontal="left" vertical="center"/></xf>' +
+          '<xf numFmtId="165" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1">' +
+            '<alignment horizontal="left"/></xf>' +
+        '</cellXfs>' +
+        '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>' +
+      '</styleSheet>';
+
+    // A cell is { v, s } — a string or a number — or { f, v, s }: a formula and
+    // the value it works out to, which Excel recalculates on open and a
+    // preview pane or a phone shows without ever running the formula.
+    function xlRow(r, cells, ht) {
+      const num = v => Math.round(Number(v) * 1e6) / 1e6;
+      return `<row r="${r}"${ht ? ` ht="${ht}" customHeight="1"` : ''}>` + cells.map((c, i) => {
+        if (!c) return '';
+        const ref = xlCol(i + 1) + r;
+        const st  = c.s ? ` s="${c.s}"` : '';
+        if (c.f) {
+          return typeof c.v === 'number'
+            ? `<c r="${ref}"${st}><f>${xlEsc(c.f)}</f><v>${num(c.v)}</v></c>`
+            : `<c r="${ref}"${st} t="str"><f>${xlEsc(c.f)}</f><v>${xlEsc(c.v)}</v></c>`;
+        }
+        if (typeof c.v === 'number') return isFinite(c.v) ? `<c r="${ref}"${st}><v>${num(c.v)}</v></c>` : `<c r="${ref}"${st}/>`;
+        if (c.v == null || c.v === '') return `<c r="${ref}"${st}/>`;
+        return `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${xlEsc(c.v)}</t></is></c>`;
+      }).join('') + '</row>';
+    }
+
+    // freeze: [columns, rows] held still while the rest scrolls.
+    function xlSheet({ widths, rows, heights, freeze, filterRef, landscape }) {
+      const [fx, fy] = freeze;
+      const tl = xlCol(fx + 1) + (fy + 1);
+      const pane = fx
+        ? `<pane xSplit="${fx}" ySplit="${fy}" topLeftCell="${tl}" activePane="bottomRight" state="frozen"/>` +
+          '<selection pane="topRight"/><selection pane="bottomLeft"/>' +
+          `<selection pane="bottomRight" activeCell="${tl}" sqref="${tl}"/>`
+        : `<pane ySplit="${fy}" topLeftCell="${tl}" activePane="bottomLeft" state="frozen"/>` +
+          `<selection pane="bottomLeft" activeCell="${tl}" sqref="${tl}"/>`;
+      return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
+          '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>' +
+          `<dimension ref="A1:${xlCol(widths.length)}${rows.length}"/>` +
+          `<sheetViews><sheetView showGridLines="0" workbookViewId="0">${pane}</sheetView></sheetViews>` +
+          '<sheetFormatPr defaultRowHeight="15"/>' +
+          '<cols>' + widths.map((w, i) =>
+            `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('') + '</cols>' +
+          '<sheetData>' + rows.map((cells, i) => xlRow(i + 1, cells, heights && heights[i + 1])).join('') + '</sheetData>' +
+          (filterRef ? `<autoFilter ref="${filterRef}"/>` : '') +
+          '<pageMargins left="0.4" right="0.4" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>' +
+          `<pageSetup orientation="${landscape ? 'landscape' : 'portrait'}" fitToWidth="1" fitToHeight="0"/>` +
+        '</worksheet>';
+    }
+
+    function xlWorkbook(sheets) {
+      const n   = sheets.length;
+      const rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
+      const ct  = 'application/vnd.openxmlformats-officedocument.spreadsheetml';
+      // _FilterDatabase is the name Excel writes beside every autoFilter.
+      // Excel copes without it; LibreOffice drops the filter dropdowns.
+      const abs = ref => ref.replace(/([A-Z]+)(\d+)/g, '$$$1$$$2');
+      const names = sheets.map((s, i) => {
+        const q = `'${xlEsc(s.name)}'!`;
+        const titles = [
+          s.titleCols ? `${q}$${s.titleCols.replace(':', ':$')}` : '',
+          s.titleRow ? `${q}$${s.titleRow}:$${s.titleRow}` : '',
+        ].filter(Boolean).join(',');
+        return (s.filterRef ? `<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">${q}${abs(s.filterRef)}</definedName>` : '')
+          + (titles ? `<definedName name="_xlnm.Print_Titles" localSheetId="${i}">${titles}</definedName>` : '');
+      }).join('');
+      return xlZip([
+        { name: '[Content_Types].xml', data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
+            '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
+            '<Default Extension="xml" ContentType="application/xml"/>' +
+            `<Override PartName="/xl/workbook.xml" ContentType="${ct}.sheet.main+xml"/>` +
+            sheets.map((_, i) =>
+              `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="${ct}.worksheet+xml"/>`).join('') +
+            `<Override PartName="/xl/styles.xml" ContentType="${ct}.styles+xml"/>` +
+          '</Types>' },
+        { name: '_rels/.rels', data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+            `<Relationship Id="rId1" Type="${rel}/officeDocument" Target="xl/workbook.xml"/>` +
+          '</Relationships>' },
+        { name: 'xl/workbook.xml', data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="${rel}">` +
+            '<bookViews><workbookView activeTab="0"/></bookViews>' +
+            '<sheets>' + sheets.map((s, i) =>
+              `<sheet name="${xlEsc(s.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('') + '</sheets>' +
+            (names ? `<definedNames>${names}</definedNames>` : '') +
+            '<calcPr calcId="124519" fullCalcOnLoad="1"/>' +
+          '</workbook>' },
+        { name: 'xl/_rels/workbook.xml.rels', data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+          '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+            sheets.map((_, i) =>
+              `<Relationship Id="rId${i + 1}" Type="${rel}/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('') +
+            `<Relationship Id="rId${n + 1}" Type="${rel}/styles" Target="styles.xml"/>` +
+          '</Relationships>' },
+        { name: 'xl/styles.xml', data: XL_STYLES },
+        ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: s.xml })),
+      ]);
+    }
+
+    /* Two sheets. Sign Rate is the grid: a person a row, a form a column, the
+       person and their rate frozen at the left and the form headings across
+       the top. Forms lists the forms one per row — the headings in full, which
+       a narrow turned column cannot always hold — counted off the grid, so a
+       cell cleared there carries through. The text above each table is kept
+       inside its frozen columns: a line that ran past them would be cut off at
+       the freeze. */
+    function buildRateXlsx(m, info) {
+      const people  = ratePeople(m);
+      const share   = (n, d) => (d ? n / d : 0);
+      const HEAD    = 8, FIRST = HEAD + 1, LAST = HEAD + people.length, TOT = LAST + 1;
+      const docCol  = c => xlCol(6 + c);                   // forms start in column F
+      const lastDoc = docCol(m.docs.length - 1);
+      const across  = r => `F${r}:${lastDoc}${r}`;
+      const down    = col => `${col}${FIRST}:${col}${LAST}`;
+      const weeks   = m.docs.map(d => d.doc.weekOf);
+      const company = info.company || 'Safety Center';
+
+      const grid = [
+        [{ v: 'Employee Sign Rate', s: XL.title }],
+        [{ v: company, s: XL.bold }],
+        [{ v: rangeLabel(weeks), s: XL.sub }],
+        [{ v: 'Overall sign rate', s: XL.bold },
+         { f: `C${TOT}`, v: share(m.signed, m.expected), s: XL.hero },
+         { f: `D${TOT}&" of "&E${TOT}`, v: `${m.signed} of ${m.expected}`, s: XL.sub }],
+        [{ v: `${plural(m.docs.length, 'form')} · ${plural(people.length, 'employee')}`, s: XL.sub }],
+        [{ v: 'Yes = signed · No = not signed', s: XL.sub }],
+        [{ v: `Figures as of ${stamp(m.at, true)}`, s: XL.sub }],
+        [
+          { v: 'Employee', s: XL.head }, { v: 'Name (as signed)', s: XL.head },
+          { v: 'Sign rate', s: XL.headNum }, { v: 'Signed', s: XL.headNum }, { v: 'Forms', s: XL.headNum },
+          ...m.docs.map(d => ({ v: `${d.doc.title}\n${weekLabel(d.doc.weekOf)}`, s: XL.headDoc })),
+        ],
+      ];
+      people.forEach((x, i) => {
+        const r = FIRST + i;
+        grid.push([
+          { v: x.username, s: XL.text },
+          { v: x.fullName, s: XL.text },
+          { f: `IF(E${r},D${r}/E${r},"")`, v: share(x.signed, x.expected), s: XL.pct },
+          { f: `COUNTIF(${across(r)},"Yes")`, v: x.signed, s: XL.int },
+          { f: `COUNTA(${across(r)})`, v: x.expected, s: XL.int },
+          ...x.marks.map(s => (s ? { v: 'Yes', s: XL.yes } : { v: 'No', s: XL.no })),
+        ]);
+      });
+      grid.push([
+        { v: 'Form sign rate', s: XL.totText }, { v: '', s: XL.totText },
+        { f: `IF(E${TOT},D${TOT}/E${TOT},"")`, v: share(m.signed, m.expected), s: XL.totPct },
+        { f: `SUM(${down('D')})`, v: m.signed, s: XL.totInt },
+        { f: `SUM(${down('E')})`, v: m.expected, s: XL.totInt },
+        ...m.docs.map((d, c) => {
+          const col = docCol(c);
+          return { f: `IF(COUNTA(${down(col)}),COUNTIF(${down(col)},"Yes")/COUNTA(${down(col)}),"")`,
+                   v: share(d.signed, d.expected), s: XL.totPctC };
+        }),
+      ]);
+
+      const FH = 5;
+      const gone = m.withdrawn
+        ? ` — ${plural(m.withdrawn, 'form')} archived before anyone signed ${m.withdrawn === 1 ? 'it is' : 'them are'} left out` : '';
+      const forms = [
+        [{ v: 'Forms in this report', s: XL.title }],
+        [{ v: `${company} · ${rangeLabel(weeks)}`, s: XL.sub }],
+        [{ v: 'Everyone on the Safety Center roster is counted against every form in the range, archived forms included' + gone + '.', s: XL.sub }],
+        [{ v: 'Signed and Expected are counted off the Sign Rate sheet, so a cell cleared there carries through here.', s: XL.sub }],
+        ['Week of', 'Form', 'Posted by', 'Archived', 'Signed', 'Expected', 'Sign rate']
+          .map((v, i) => ({ v, s: i >= 4 ? XL.headNum : XL.head })),
+      ];
+      m.docs.forEach((d, c) => {
+        const r   = FH + 1 + c;
+        const rng = `'Sign Rate'!$${docCol(c)}$${FIRST}:$${docCol(c)}$${LAST}`;
+        forms.push([
+          { v: xlDate(d.doc.weekOf), s: XL.date },
+          { v: d.doc.title, s: XL.text },
+          { v: d.doc.uploadedBy || '', s: XL.text },
+          { v: d.doc.archivedAt ? xlDate(ymdOf(d.doc.archivedAt)) : '', s: XL.date },
+          { f: `COUNTIF(${rng},"Yes")`, v: d.signed, s: XL.int },
+          { f: `COUNTA(${rng})`, v: d.expected, s: XL.int },
+          { f: `IF(F${r},E${r}/F${r},"")`, v: share(d.signed, d.expected), s: XL.pct },
+        ]);
+      });
+      const FL = FH + m.docs.length, FT = FL + 1;
+      forms.push([
+        { v: 'All forms', s: XL.totText }, { v: '', s: XL.totText }, { v: '', s: XL.totText }, { v: '', s: XL.totText },
+        { f: `SUM(E${FH + 1}:E${FL})`, v: m.signed, s: XL.totInt },
+        { f: `SUM(F${FH + 1}:F${FL})`, v: m.expected, s: XL.totInt },
+        { f: `IF(F${FT},E${FT}/F${FT},"")`, v: share(m.signed, m.expected), s: XL.totPct },
+      ]);
+
+      const gridFilter  = `A${HEAD}:${lastDoc}${LAST}`;
+      const formsFilter = `A${FH}:G${FL}`;
+      return xlWorkbook([
+        { name: 'Sign Rate', filterRef: gridFilter, titleCols: 'A:C', titleRow: HEAD,
+          xml: xlSheet({ widths: [20, 22, 11, 9, 9, ...m.docs.map(() => 7)], rows: grid,
+                         heights: { [HEAD]: 165 }, freeze: [3, HEAD], filterRef: gridFilter, landscape: true }) },
+        { name: 'Forms', filterRef: formsFilter, titleRow: FH,
+          xml: xlSheet({ widths: [14, 44, 16, 14, 9, 10, 11], rows: forms,
+                         freeze: [0, FH], filterRef: formsFilter, landscape: false }) },
+      ]);
+    }
+
+    function downloadRateXlsx() {
+      const m = state.rate;
+      if (state.rateLoading) return toast('Still loading the sign rate…');
+      if (!m || !m.docs.length || !m.people.length) return toast('Nothing to export yet.', true);
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(buildRateXlsx(m, printInfo()));
+      a.download = `safety-sign-rate-${rateFileStem(m).replace(' to ', '_to_')}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Revoked on a timer: Safari reads the blob after the click returns.
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    }
+
     /* ═══════ Nav ═══════ */
     function goToDivisions() { localStorage.removeItem('fct_division'); window.location.replace('divisions.html'); }
     function signOut() {
@@ -1896,6 +2923,47 @@
       }
     });
 
+    // The sign rate's sort buttons, and a tap on a square — the only hover a
+    // phone has. A second tap on the same square puts the tooltip away.
+    delegate('panelRate', function (e) {
+      const hit = e.target.closest('[data-act], td.c, th.doc, td.fr');
+      if (!hit || !this.contains(hit)) return;
+      if (hit.getAttribute('data-act') === 'rate-sort') {
+        // Rate goes lowest first — who to chase — and the next press flips it.
+        state.rateSort = hit.getAttribute('data-sort') === 'name' ? 'name'
+          : state.rateSort === 'low' ? 'high' : 'low';
+        renderRate();
+        return;
+      }
+      if (rateLastPointer === 'touch' && rateTipFor === hit) hideRateTip();
+      else showRateTip(hit);
+    });
+
+    // On a mouse the tooltip follows the pointer. A touch is left to the tap
+    // above: a finger sends over and out together, which would flash it.
+    (function () {
+      const panel  = document.getElementById('panelRate');
+      const cellOf = e => (e.target.closest ? e.target.closest('td.c, th.doc, td.fr') : null);
+      panel.addEventListener('pointerover', e => {
+        if (e.pointerType === 'touch') return;
+        const cell = cellOf(e);
+        if (cell && panel.contains(cell) && cell !== rateTipFor) showRateTip(cell);
+      });
+      panel.addEventListener('pointerout', e => {
+        if (e.pointerType === 'touch') return;
+        const cell = cellOf(e);
+        if (cell && cell === rateTipFor && !cell.contains(e.relatedTarget)) hideRateTip();
+      });
+      // A press anywhere else, or anything that moves the grid out from under
+      // it, takes the tooltip down.
+      document.addEventListener('pointerdown', e => {
+        rateLastPointer = e.pointerType || 'mouse';
+        if (!(e.target.closest && e.target.closest('#panelRate td.c, #panelRate th.doc, #panelRate td.fr'))) hideRateTip();
+      }, true);
+      window.addEventListener('scroll', hideRateTip, true);
+      window.addEventListener('resize', hideRateTip);
+    })();
+
     // The one signal available that the document was actually put in front of
     // them. Delegated on the overlay so it survives the body being re-rendered.
     document.getElementById('viewer').addEventListener('click', function (e) {
@@ -1907,6 +2975,7 @@
       }
     });
     document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') hideRateTip();
       if (e.key === 'Escape' && document.getElementById('viewer').classList.contains('open')) closeViewer();
     });
 
@@ -1921,6 +2990,7 @@
       }
       document.getElementById('levelBadge').textContent = canManage ? 'Supervisor' : 'Crew';
       document.getElementById('tabReport').style.display = canManage ? '' : 'none';
+      document.getElementById('tabRate').style.display   = canManage ? '' : 'none';
     })();
 
     loadDocs();
