@@ -2107,7 +2107,578 @@ function pageTests() {
     }
   }
 
-  return Promise.all(done);
+  // ── Sign rate ──────────────────────────────────────────────────────────
+  // The sign-off report turned on its side: a person a row, a form a column,
+  // green or red where they meet. It is built in the page from the report's
+  // own read, and most of what is worth pinning is that the two cannot
+  // disagree about a count — plus the two rules that decide what counts at
+  // all: an archived form that was signed is in, one archived before anyone
+  // signed it is out.
+  //
+  // Run once everything above has settled, not alongside it. "Print all reads
+  // at most four documents at once" counts reads inside a fixed window, and a
+  // dozen more pages booting and drawing grids in that window starved it of a
+  // read every time. Nothing below waits on the clock that way: every stubbed
+  // read answers in microtasks, ahead of any timer.
+  function signRateTests() {
+    const done = [];
+    const STATEMENT = safetyLib.SIGNATURE_STATEMENT;
+    const SUPERVISOR = {
+      username: 'dsimmons', companyName: 'Force Corp',
+      divisionRoles: { safety: 'level3' }, isPlatformAdmin: false,
+    };
+    const settle = (ms = 20) => new Promise(r => setTimeout(r, ms));
+    const DOC3 = '33333333-3333-4333-8333-333333333333';
+    const DOC4 = '44444444-4444-4444-8444-444444444444';
+    const meta = (id, title, weekOf, archivedAt = null) => ({
+      id, title, weekOf, filename: 'form.pdf', uploadedBy: 'dsimmons',
+      uploadedAt: weekOf + 'T12:00:00Z', archivedAt,
+    });
+    // The roster in its own order — by login, as requiredSigners reads it.
+    const ROSTER = [
+      { userId: 1, username: 'dsimmons', level: 'level3' },
+      { userId: 2, username: 'jhauser',  level: 'level1' },
+      { userId: 3, username: 'mreyes',   level: 'level1' },
+      { userId: 4, username: 'twhite',   level: 'level1' },
+    ];
+    const sig = (userId, fullName, signedAt) => ({
+      userId, username: (ROSTER.find(r => r.userId === userId) || {}).username || 'gone',
+      fullName, signedAt, statement: STATEMENT, hasDrawnSignature: false, onRoster: true,
+    });
+    // Shaped the way api/safety-signatures.js answers: signedCount counts only
+    // roster members, and outstanding is the roster minus who signed.
+    const grp = (doc, signed) => {
+      const by = new Set(signed.map(s => s.userId));
+      const covered = signed.filter(s => ROSTER.some(r => r.userId === s.userId)).length;
+      return {
+        document: doc, expectedCount: ROSTER.length, signedCount: covered,
+        outstandingCount: ROSTER.length - covered, percentSigned: Math.round(covered / ROSTER.length * 100),
+        signed, outstanding: ROSTER.filter(r => !by.has(r.userId)).map(r => ({ ...r })),
+      };
+    };
+    // Newest first, the order the server sends.
+    const RATE = { statement: STATEMENT, roster: ROSTER, documents: [
+      grp(meta(DOC1, 'Tailgate — Trenching', '2026-09-14'),
+        [sig(2, 'Jesse Hauser', '2026-09-15T13:00:00.000Z'), sig(3, 'Marco Reyes', '2026-09-15T14:00:00.000Z')]),
+      // Archived once it was signed: a week closed out, and counted.
+      grp(meta(DOC2, 'Tailgate — Heat Illness', '2026-09-07', '2026-09-12T10:00:00Z'),
+        [sig(1, 'Dan Simmons', '2026-09-08T11:00:00.000Z'), sig(2, 'J. Hauser', '2026-09-08T13:00:00.000Z')]),
+      // Archived before anybody signed it: taken down, never counted.
+      grp(meta(DOC3, 'Posted in error', '2026-09-07', '2026-09-07T15:00:00Z'), []),
+      // Signed by one person on the roster and by a login since removed, whose
+      // row has no user id left to match anybody on today's roster.
+      grp(meta(DOC4, 'Tailgate — Silica', '2026-08-31'),
+        [sig(2, 'Jesse Hauser', '2026-09-01T09:00:00.000Z'),
+         { ...sig(9, 'Gone Person', '2026-09-01T10:00:00.000Z'), userId: null, username: 'gone', onRoster: false }]),
+    ] };
+    // What that works out to:
+    //   columns   Silica (Aug 31), Heat Illness (Sep 7), Trenching (Sep 14)
+    //   dsimmons  no  yes no   1/3  33%
+    //   jhauser   yes yes yes  3/3 100%
+    //   mreyes    no  no  yes  1/3  33%
+    //   twhite    no  no  no   0/3   0%
+    //   per form  1/4 2/4 2/4  → 25% 50% 50%;  overall 5 of 12 → 42%
+
+    const rowOf  = (doc, login) => [...doc.querySelectorAll('.rate-grid tbody tr')]
+      .find(tr => (tr.querySelector('.emp .u') || {}).textContent === login);
+    const marks  = tr => [...tr.querySelectorAll('td.c .sq')].map(s => (s.classList.contains('yes') ? 'Y' : 'N')).join('');
+    const logins = doc => [...doc.querySelectorAll('.rate-grid tbody .emp .u')].map(e => e.textContent);
+    const titleOf = html => (/<title>([^<]*)<\/title>/.exec(html) || [])[1];
+
+    function popupsOn(win) {
+      const opened = [];
+      win.open = () => {
+        const p = {
+          closed: false, writes: [],
+          get html() { return this.writes.join(''); },
+          document: {
+            open() { p.writes = []; }, write(...chunks) { p.writes.push(chunks.join('')); },
+            close() {}, getElementById: () => null,
+          },
+          focus() {}, print() {}, close() { p.closed = true; },
+        };
+        opened.push(p);
+        return p;
+      };
+      return opened;
+    }
+
+    // What the download hands the browser: the Blob's bytes and the anchor's
+    // file name, caught before jsdom tries to navigate to a blob: URL.
+    function downloadsOn(win) {
+      const got = [];
+      win.Blob = function (parts, opts) {
+        this.parts = parts; this.type = opts && opts.type;
+        got.push(this);
+      };
+      win.URL.createObjectURL = () => 'blob:test';
+      win.URL.revokeObjectURL = () => {};
+      win.HTMLAnchorElement.prototype.click = function () { got.name = this.download; };
+      return got;
+    }
+    const bytesOf = blob => Buffer.concat(blob.parts.map(p => Buffer.from(Array.from(p))));
+
+    // A stored zip read back the way a spreadsheet reader would: each entry
+    // by its local header, its CRC checked against its bytes.
+    const CRC = (() => {
+      const t = [];
+      for (let i = 0; i < 256; i++) {
+        let c = i;
+        for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        t.push(c >>> 0);
+      }
+      return t;
+    })();
+    const crc32 = buf => {
+      let c = 0xFFFFFFFF;
+      for (const b of buf) c = CRC[(c ^ b) & 0xFF] ^ (c >>> 8);
+      return (c ^ 0xFFFFFFFF) >>> 0;
+    };
+    function unzip(buf) {
+      const files = {};
+      let off = 0;
+      while (off + 30 <= buf.length && buf.readUInt32LE(off) === 0x04034b50) {
+        const size = buf.readUInt32LE(off + 18), nameLen = buf.readUInt16LE(off + 26), extra = buf.readUInt16LE(off + 28);
+        const name = buf.slice(off + 30, off + 30 + nameLen).toString('utf8');
+        const data = buf.slice(off + 30 + nameLen + extra, off + 30 + nameLen + extra + size);
+        files[name] = { data, text: data.toString('utf8'), crcOk: crc32(data) === buf.readUInt32LE(off + 14) };
+        off += 30 + nameLen + extra + size;
+      }
+      const eocd = buf.length - 22;
+      files.__entries = buf.readUInt32LE(eocd) === 0x06054b50 ? buf.readUInt16LE(eocd + 10) : -1;
+      return files;
+    }
+    const wellFormed = xml => {
+      const d = new (new JSDOM('').window.DOMParser)().parseFromString(xml, 'application/xml');
+      return d.getElementsByTagName('parsererror').length === 0;
+    };
+    // The cells of one sheet row as { ref: { s, v, f, t } }.
+    function cellsOf(sheetXml, r) {
+      const row = (new RegExp(`<row r="${r}"[^>]*>([\\s\\S]*?)</row>`).exec(sheetXml) || [])[1] || '';
+      const out = {};
+      for (const m of row.matchAll(/<c r="([A-Z]+\d+)"([^>]*?)(?:\/>|>([\s\S]*?)<\/c>)/g)) {
+        const attrs = m[2], body = m[3] || '';
+        out[m[1].replace(/\d+$/, '')] = {
+          s: (/ s="(\d+)"/.exec(attrs) || [])[1],
+          t: (/ t="(\w+)"/.exec(attrs) || [])[1],
+          f: ((/<f>([\s\S]*?)<\/f>/.exec(body) || [])[1] || '').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&'),
+          v: ((/<v>([\s\S]*?)<\/v>/.exec(body) || /<t[^>]*>([\s\S]*?)<\/t>/.exec(body) || [])[1] || '')
+            .replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&'),
+        };
+      }
+      return out;
+    }
+
+    // Who sees it.
+    {
+      const crew = boot({ username: 'jhauser', divisionRoles: { safety: 'level1' }, isPlatformAdmin: false }, DOCS_CREW, RATE);
+      const sup  = boot(SUPERVISOR, DOCS_SUPER, RATE);
+      done.push(new Promise(resolve => setTimeout(() => {
+        assert('a laborer is not offered the sign rate tab',
+          crew.doc.getElementById('tabRate').style.display === 'none');
+        assert('  a supervisor is', sup.doc.getElementById('tabRate').style.display !== 'none');
+        crew.win.switchTab('rate');
+        assert('  and a laborer who reaches the panel anyway is told whose it is',
+          /for safety supervisors/.test(crew.doc.getElementById('panelRate').textContent));
+        resolve();
+      }, 30)));
+    }
+
+    // The grid itself.
+    {
+      const { win, doc, calls } = boot(SUPERVISOR, DOCS_SUPER, RATE);
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('rate');
+        await settle();
+        const reads = calls.map(c => c.url).filter(u => /safety-signatures/.test(u));
+        assert('the sign rate reads the sign-off report, archived forms included',
+          reads.some(u => /scope=report/.test(u) && /include=archived/.test(u)), reads.join(' | '));
+        assert('  and opens on the tab it was asked for',
+          doc.getElementById('tabRate').classList.contains('active')
+          && doc.getElementById('panelRate').classList.contains('active')
+          && !doc.getElementById('panelReport').classList.contains('active'));
+
+        const heads = [...doc.querySelectorAll('.rate-grid thead th.doc')]
+          .map(th => th.querySelector('.dt').textContent + ' ' + th.querySelector('.dw').textContent);
+        assert('a column per form, oldest week first, each headed by its title and week',
+          heads.join(' | ') === 'Tailgate — Silica Week of Aug 31, 2026 | Tailgate — Heat Illness Week of Sep 7, 2026 | Tailgate — Trenching Week of Sep 14, 2026',
+          heads.join(' | '));
+        assert('  the form archived once signed among them, and the one archived unsigned left out',
+          heads.some(h => /Heat Illness/.test(h)) && !heads.some(h => /Posted in error/.test(h)));
+        assert('a row per person on the roster, by login',
+          logins(doc).join() === 'dsimmons,jhauser,mreyes,twhite', logins(doc).join());
+        assert('  and nobody else — not the removed login that signed a form',
+          !/Gone Person|>gone</.test(doc.getElementById('panelRate').innerHTML));
+
+        const grid = ['dsimmons', 'jhauser', 'mreyes', 'twhite'].map(u => u + ':' + marks(rowOf(doc, u))).join(' ');
+        assert('a square where each person meets each form, green where they signed it',
+          grid === 'dsimmons:NYN jhauser:YYY mreyes:NNY twhite:NNN', grid);
+        {
+          const sq = doc.querySelector('.rate-grid tbody td.c .sq');
+          assert('  each saying so in words as well as colour',
+            sq.getAttribute('role') === 'img' && /^(Signed|Not signed)$/.test(sq.getAttribute('aria-label')));
+          const css = page.replace(/\/\*[\s\S]*?\*\//g, '');
+          assert('  and in a glyph, not colour alone: a tick on green, a cross on red',
+            /\.sq\.yes\s*\{[^}]*polyline/.test(css) && /\.sq\.no\s*\{[^}]*path d=/.test(css));
+        }
+
+        const pctCell = u => {
+          const td = rowOf(doc, u).querySelector('td.pct');
+          return td.querySelector('.n').textContent + ' ' + td.querySelector('.p').textContent;
+        };
+        assert('beside each name, their sign rate and the count behind it',
+          pctCell('jhauser') === '3/3 100%' && pctCell('dsimmons') === '1/3 33%' && pctCell('twhite') === '0/3 0%',
+          ['dsimmons', 'jhauser', 'twhite'].map(pctCell).join(' | '));
+        assert('  with the name they last typed under the login',
+          rowOf(doc, 'jhauser').querySelector('.emp .f').textContent === 'Jesse Hauser'
+          && !rowOf(doc, 'twhite').querySelector('.emp .f'));
+        // jsdom has no layout, so this pins the cause instead: a table column
+        // ignores max-width and grows to its longest line, and a long login
+        // would push the names out from under the rate column pinned beside
+        // them. The lines carry a width of their own so they end in an ellipsis.
+        assert('  a long login ends in an ellipsis rather than widening the pinned names column',
+          /\.rate-grid tbody \.emp \.u,\s*\.rate-grid tbody \.emp \.f \{[^}]*width:calc\(var\(--emp-w\)[^}]*text-overflow:ellipsis/
+            .test(page.replace(/\/\*[\s\S]*?\*\//g, '')));
+
+        const hero = doc.querySelector('.rate-hero');
+        assert('the overall sign rate sits above the grid',
+          !!hero && hero.querySelector('.v').textContent === '42%'
+          && doc.querySelector('.rate-sum').compareDocumentPosition(doc.querySelector('.rate-grid')) === win.Node.DOCUMENT_POSITION_FOLLOWING,
+          hero && hero.textContent.replace(/\s+/g, ' '));
+        assert('  as signatures collected over signatures expected',
+          /5 of 12 signatures/.test(hero.textContent) && /4 employees × 3 forms/.test(hero.textContent.replace(/\s+/g, ' ')));
+        {
+          const stats = [...doc.querySelectorAll('.rate-stat')]
+            .map(s => ['.k', '.v', '.s'].map(q => s.querySelector(q).textContent.trim()).join(' '));
+          assert('  beside who signed every form, and who signed none',
+            stats.some(t => /^Signed every form 1 of 4 employees/.test(t)) && stats.some(t => /^Signed none 1 of 4 employees/.test(t)),
+            stats.join(' | '));
+          assert('  and how many forms that is, the one archived unsigned owned up to',
+            stats.some(t => /^Forms 3 Weeks of Aug 31, 2026 – Sep 14, 2026 · 1 form archived unsigned, not counted/.test(t)),
+            stats.join(' | '));
+        }
+
+        // The two tabs cannot disagree: a column has exactly the green squares
+        // the sign-off report counts against that form.
+        {
+          const cols = [...doc.querySelectorAll('.rate-grid thead th.doc')].map((th, c) => {
+            const col = [...doc.querySelectorAll(`.rate-grid tbody td.c[data-c="${c}"] .sq`)];
+            return { title: th.querySelector('.dt').textContent, yes: col.filter(s => s.classList.contains('yes')).length, no: col.filter(s => s.classList.contains('no')).length };
+          });
+          const off = cols.filter(c => {
+            const g = RATE.documents.find(x => x.document.title === c.title);
+            return !g || g.signedCount !== c.yes || g.outstandingCount !== c.no;
+          });
+          assert('every column agrees with the sign-off report: green for its signed, red for its still to sign',
+            cols.length === 3 && off.length === 0, JSON.stringify(off));
+        }
+        const foot = [...doc.querySelectorAll('.rate-grid tfoot td')].map(td => td.textContent.trim());
+        assert('the foot of each column is that form\'s rate, beside the overall one',
+          foot.join(' ') === '42% 25% 50% 50%', foot.join(' '));
+
+        // Never more than it is.
+        assert('a rate is never rounded up to 100 while anyone is still to sign',
+          win.pctOf(199, 200) === 99 && win.pctOf(5, 5) === 100);
+        assert('  nor down to 0 once anyone has signed',
+          win.pctOf(1, 300) === 1 && win.pctOf(0, 5) === 0);
+        assert('  and is a dash, not 0%, with nothing to count', win.pctOf(0, 0) === null && win.eval('pctText(null)') === '—');
+
+        // Sorting: lowest first, then flipped, then back to names.
+        const rateBtn = () => doc.querySelector('[data-act="rate-sort"][data-sort="rate"]');
+        rateBtn().dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+        assert('sorting by rate puts who to chase first',
+          logins(doc).join() === 'twhite,dsimmons,mreyes,jhauser', logins(doc).join());
+        assert('  and says so where a screen reader looks',
+          doc.querySelector('.rate-grid thead th.pct').getAttribute('aria-sort') === 'ascending');
+        rateBtn().dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+        assert('  a second press flips it',
+          logins(doc).join() === 'jhauser,dsimmons,mreyes,twhite'
+          && doc.querySelector('.rate-grid thead th.pct').getAttribute('aria-sort') === 'descending', logins(doc).join());
+        doc.querySelector('[data-act="rate-sort"][data-sort="name"]').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+        assert('  and Employee puts the names back in order',
+          logins(doc).join() === 'dsimmons,jhauser,mreyes,twhite', logins(doc).join());
+        assert('  every row still holding its own squares after all that',
+          marks(rowOf(doc, 'jhauser')) === 'YYY' && marks(rowOf(doc, 'twhite')) === 'NNN');
+
+        // The tooltip: a tap on a phone, a hover on a mouse.
+        {
+          const tip = doc.getElementById('rateTip');
+          const cell = (u, c) => rowOf(doc, u).querySelector(`td.c[data-c="${c}"]`);
+          cell('twhite', 2).dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+          assert('a square tells who, which form, and that it is not signed',
+            !tip.hidden && /^Not signed/.test(tip.textContent) && /twhite/.test(tip.textContent)
+            && /Tailgate — Trenching/.test(tip.textContent) && /Week of Sep 14, 2026/.test(tip.textContent),
+            tip.textContent);
+          cell('jhauser', 1).dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+          assert('  or when it was signed, and as whom',
+            /^Signed Sep 8, 2026/.test(tip.textContent) && /signed as J\. Hauser/.test(tip.textContent)
+            && /archived/.test(tip.textContent), tip.textContent);
+          doc.querySelector('.rate-grid tfoot td.fr[data-c="0"]').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+          assert('  and a form\'s rate, its count', /^1 of 4 signed · 25%/.test(tip.textContent), tip.textContent);
+          win.switchTab('report');
+          assert('  gone the moment the tab is left', tip.hidden);
+          win.switchTab('rate');
+        }
+        resolve();
+      }, 30)));
+    }
+
+    // Whatever is in a title, a login or a typed name is shown as text — on
+    // the grid, in the tooltip, on paper and in the workbook.
+    {
+      const nasty = 'Trench <img src=x onerror=alert(1)> & "co"';
+      const login = 'rook<img src=y onerror=alert(2)>';
+      const evil  = { statement: STATEMENT,
+        roster: [{ userId: 7, username: login, level: 'level1' }],
+        documents: [{
+          document: meta(DOC1, nasty, '2026-09-14'), expectedCount: 1, signedCount: 1, outstandingCount: 0,
+          signed: [{ ...sig(7, 'Name <script>alert(3)</script>', '2026-09-15T13:00:00Z'), username: login }], outstanding: [],
+        }] };
+      const { win, doc } = boot(SUPERVISOR, DOCS_SUPER, evil);
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('rate');
+        await settle();
+        const panel = doc.getElementById('panelRate');
+        assert('a title, a login and a typed name on the grid are text, never markup',
+          !panel.querySelector('img, script') && panel.textContent.includes(nasty)
+          && panel.textContent.includes(login) && panel.textContent.includes('Name <script>alert(3)</script>'));
+        panel.querySelector('td.c').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+        const tip = doc.getElementById('rateTip');
+        assert('  and in the tooltip', !tip.querySelector('img, script') && tip.textContent.includes(nasty));
+
+        const popups = popupsOn(win);
+        win.printRate();
+        const html = popups[0] ? popups[0].html : '';
+        assert('  and on paper',
+          html.includes('Trench &lt;img src=x onerror=alert(1)&gt; &amp; &quot;co&quot;')
+          && !/<img src=[xy]/.test(html) && !/<script>alert/.test(html));
+
+        const got = downloadsOn(win);
+        win.downloadRateXlsx();
+        const files = got[0] ? unzip(bytesOf(got[0])) : {};
+        const parts = Object.keys(files).filter(k => k.endsWith('.xml') || k.endsWith('.rels'));
+        assert('  and in the workbook, every part of which is well-formed XML',
+          parts.length === 7 && parts.every(k => wellFormed(files[k].text))
+          && /Trench &lt;img src=x onerror=alert\(1\)&gt; &amp; &quot;co&quot;/.test(files['xl/worksheets/sheet1.xml'].text),
+          parts.filter(k => !wellFormed(files[k].text)).join());
+        resolve();
+      }, 30)));
+    }
+
+    // Print / PDF.
+    {
+      const { win } = boot(SUPERVISOR, DOCS_SUPER, RATE);
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('rate');
+        await settle();
+        const popups = popupsOn(win);
+        win.printRate();
+        const html = popups[0] ? popups[0].html : '';
+        assert('Print / PDF opens one window, titled for the file it will be saved as',
+          popups.length === 1 && titleOf(html) === 'Employee sign rate — 2026-08-31 to 2026-09-14', titleOf(html));
+        assert('  on landscape pages, written through dwWrite under the company\'s name',
+          /@page \{ size: landscape;/.test(html) && /data-dw-brand/.test(html) && />Force Corp</.test(html));
+        assert('  leading with the overall sign rate',
+          /<span class="big">42%<\/span>/.test(html) && /5 of 12 signatures/.test(html));
+        assert('  over the same grid: every person, a square each per form',
+          ['dsimmons', 'jhauser', 'mreyes', 'twhite'].every(u => html.includes(`<b>${u}</b>`))
+          && (html.match(/<td class="c"><i class="sq yes"><\/i>/g) || []).length === 5
+          && (html.match(/<td class="c"><i class="sq no"><\/i>/g) || []).length === 7);
+        assert('  headed by each form\'s title and week',
+          /<b>Tailgate — Silica<\/b><span>Week of Aug 31, 2026<\/span>/.test(html));
+        assert('  each person\'s rate beside their name, and each form\'s at the foot',
+          /<small>3\/3<\/small><b>100%<\/b>/.test(html)
+          && /Form sign rate<\/td><td class="pct">42%<\/td>\s*<td class="fr">25%<\/td><td class="fr">50%<\/td><td class="fr">50%<\/td>/.test(html));
+        assert('  saying what was counted, and what was left out',
+          /archived forms included — 1 form archived before anyone signed it is left out/.test(html.replace(/\s+/g, ' ')));
+        assert('  and when the figures were read', /Figures as of/.test(html));
+        resolve();
+      }, 30)));
+    }
+
+    // More forms than a page holds across continue on further pages, each
+    // with the names down its side again.
+    {
+      const many = [];
+      for (let i = 0; i < 30; i++) {
+        const wk = new Date(Date.UTC(2026, 0, 5 + 7 * i)).toISOString().slice(0, 10);
+        many.push(grp(meta(`5555555${String(i).padStart(2, '0')}-5555-4555-8555-555555555555`, `Week ${i + 1}`, wk),
+          i % 2 ? [sig(2, 'Jesse Hauser', wk + 'T13:00:00Z')] : []));
+      }
+      const { win } = boot(SUPERVISOR, DOCS_SUPER, { statement: STATEMENT, roster: ROSTER, documents: many });
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('rate');
+        await settle();
+        const popups = popupsOn(win);
+        win.printRate();
+        const html = popups[0] ? popups[0].html : '';
+        const sheets = html.split('<section class="sheet">').slice(1);
+        assert('thirty forms print as two runs of columns',
+          sheets.length === 2 && (sheets[0].match(/<th class="doc">/g) || []).length === 28
+          && (sheets[1].match(/<th class="doc">/g) || []).length === 2, String(sheets.length));
+        assert('  the second saying which forms it carries',
+          /Employee sign rate — continued/.test(sheets[1]) && /Forms 29–30 of 30/.test(sheets[1]));
+        assert('  and both naming every person, so no square on paper is without one',
+          sheets.every(s => ['dsimmons', 'jhauser', 'mreyes', 'twhite'].every(u => s.includes(`<b>${u}</b>`))));
+        assert('  the overall rate stated once, on the first',
+          /class="big"/.test(sheets[0]) && !/class="big"/.test(sheets[1]));
+        resolve();
+      }, 30)));
+    }
+
+    // Excel.
+    {
+      const { win } = boot(SUPERVISOR, DOCS_SUPER, RATE);
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('rate');
+        await settle();
+        const got = downloadsOn(win);
+        win.downloadRateXlsx();
+        assert('Download Excel hands over one workbook, named for the weeks it covers',
+          got.length === 1 && got.name === 'safety-sign-rate-2026-08-31_to_2026-09-14.xlsx'
+          && got[0].type === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', String(got.name));
+        const files = got[0] ? unzip(bytesOf(got[0])) : {};
+        const names = Object.keys(files).filter(k => k !== '__entries');
+        assert('  a sound zip: every part where its directory says, each matching its checksum',
+          names.length === 7 && files.__entries === 7 && names.every(k => files[k].crcOk), names.join());
+        const book = (files['xl/workbook.xml'] || {}).text || '';
+        const s1 = (files['xl/worksheets/sheet1.xml'] || {}).text || '';
+        const s2 = (files['xl/worksheets/sheet2.xml'] || {}).text || '';
+        const styles = (files['xl/styles.xml'] || {}).text || '';
+        assert('  two sheets: the grid, and the forms in full',
+          /<sheet name="Sign Rate"/.test(book) && /<sheet name="Forms"/.test(book));
+        assert('  recalculated on open, with the filters LibreOffice needs a name for',
+          /fullCalcOnLoad="1"/.test(book) && /_xlnm\._FilterDatabase/.test(book) && /_xlnm\.Print_Titles/.test(book));
+
+        const head = cellsOf(s1, 8);
+        assert('the grid\'s heading row: the person, their rate, then a column per form, oldest first',
+          head.A.v === 'Employee' && head.C.v === 'Sign rate'
+          && head.F.v === 'Tailgate — Silica\nWeek of Aug 31, 2026' && head.H.v === 'Tailgate — Trenching\nWeek of Sep 14, 2026'
+          && !head.I, JSON.stringify(head));
+        assert('  frozen so the names and the headings stay on screen', /<pane xSplit="3" ySplit="8"/.test(s1));
+
+        // Rows follow the screen's order: by login.
+        const row = r => cellsOf(s1, r);
+        const jh = row(10), tw = row(12);
+        assert('each person\'s squares are Yes and No, in Excel\'s own Good and Bad',
+          jh.A.v === 'jhauser' && ['F', 'G', 'H'].every(c => jh[c].v === 'Yes' && jh[c].s === '10')
+          && tw.A.v === 'twhite' && ['F', 'G', 'H'].every(c => tw[c].v === 'No' && tw[c].s === '11'),
+          JSON.stringify({ jh, tw }));
+        assert('  styled green and red, and a percent that never rounds up to 100',
+          /<fgColor rgb="FFC6EFCE"\/>/.test(styles) && /<fgColor rgb="FFFFC7CE"\/>/.test(styles)
+          && styles.includes('formatCode="[=1]0%;[&gt;=0.99]&quot;99%&quot;;0%"'));
+        assert('their rate is a formula over those squares, carrying what it works out to',
+          jh.C.f === 'IF(E10,D10/E10,"")' && Number(jh.C.v) === 1
+          && jh.D.f === 'COUNTIF(F10:H10,"Yes")' && jh.D.v === '3' && jh.E.f === 'COUNTA(F10:H10)' && jh.E.v === '3'
+          && row(9).A.v === 'dsimmons' && Math.abs(Number(row(9).C.v) - 1 / 3) < 1e-6,
+          JSON.stringify(jh));
+        const tot = row(13);
+        assert('the foot is each form\'s rate, and the overall one',
+          tot.A.v === 'Form sign rate' && tot.D.f === 'SUM(D9:D12)' && tot.D.v === '5' && tot.E.v === '12'
+          && Math.abs(Number(tot.C.v) - 5 / 12) < 1e-6
+          && tot.F.f === 'IF(COUNTA(F9:F12),COUNTIF(F9:F12,"Yes")/COUNTA(F9:F12),"")' && Number(tot.F.v) === 0.25,
+          JSON.stringify(tot));
+        const top = row(4);
+        assert('the overall sign rate leads the sheet, worked off that foot',
+          top.A.v === 'Overall sign rate' && top.B.f === 'C13' && Math.abs(Number(top.B.v) - 5 / 12) < 1e-6
+          && top.C.v === '5 of 12', JSON.stringify(top));
+
+        const f6 = cellsOf(s2, 6), f7 = cellsOf(s2, 7);
+        assert('the Forms sheet lists each form with its week as a real date',
+          f6.B.v === 'Tailgate — Silica' && f6.A.v === String(Math.round(Date.UTC(2026, 7, 31) / 86400000) + 25569)
+          && f7.B.v === 'Tailgate — Heat Illness' && f7.D.v !== '', JSON.stringify(f6));
+        assert('  counted off the grid, so a square cleared there carries through',
+          f6.E.f === `COUNTIF('Sign Rate'!$F$9:$F$12,"Yes")` && f6.E.v === '1' && f6.F.v === '4', JSON.stringify(f6));
+        assert('  and owning up to the form left out',
+          /1 form archived before anyone signed it is left out/.test(s2));
+        resolve();
+      }, 30)));
+    }
+
+    // Nothing to count: say so, and hand out nothing.
+    {
+      const { win, doc } = boot(SUPERVISOR, DOCS_SUPER, { statement: STATEMENT, roster: ROSTER, documents: [] });
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('rate');
+        await settle();
+        assert('a range with no forms says so', /No forms in that range/.test(doc.getElementById('panelRate').textContent));
+        const popups = popupsOn(win), got = downloadsOn(win);
+        win.printRate();
+        win.downloadRateXlsx();
+        assert('  and neither prints nor downloads an empty grid',
+          popups.length === 0 && got.length === 0 && /Nothing to export yet/.test(doc.getElementById('toast').textContent));
+        resolve();
+      }, 30)));
+    }
+    {
+      const { win, doc } = boot(SUPERVISOR, DOCS_SUPER, RATE, { fail: url => /scope=report/.test(url) });
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('rate');
+        await settle();
+        assert('a failed read says so, with a way to try again',
+          /Could not load the sign rate/.test(doc.getElementById('panelRate').textContent)
+          && !!doc.querySelector('#rateBody button[onclick="loadRate()"]'));
+        const got = downloadsOn(win);
+        win.downloadRateXlsx();
+        assert('  and leaves nothing behind to export', got.length === 0);
+        resolve();
+      }, 30)));
+    }
+
+    // The weeks typed in are the weeks read — and a slow read of one range
+    // landing after the read of the next does not paint the old one back.
+    {
+      const { win, doc } = boot(SUPERVISOR, DOCS_SUPER, RATE);
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('rate');
+        await settle();
+        const urls = [];
+        const pending = [];
+        win.fetch = url => {
+          urls.push(String(url));
+          return new Promise(res => pending.push(body => res({ ok: true, status: 200, json: () => Promise.resolve(body) })));
+        };
+        doc.getElementById('rateFrom').value = '2026-09-07';
+        doc.getElementById('rateTo').value = '2026-09-14';
+        win.loadRate();                        // the first range — answers last
+        doc.getElementById('rateFrom').value = '2026-08-31';
+        win.loadRate();                        // the second — answers first
+        assert('the weeks typed in go to the server',
+          /from=2026-09-07/.test(urls[0]) && /to=2026-09-14/.test(urls[0]) && /from=2026-08-31/.test(urls[1]), urls.join(' | '));
+        assert('  and the grid stays up, dimmed, while the new range loads',
+          doc.getElementById('rateBody').classList.contains('stale') && !!doc.querySelector('.rate-grid'));
+        pending[1]({ ...RATE, documents: RATE.documents.slice(0, 1) });
+        await settle();
+        pending[0](RATE);
+        await settle();
+        const heads = [...doc.querySelectorAll('.rate-grid thead th.doc .dt')].map(e => e.textContent);
+        assert('a slow answer for an older range does not paint over the newer one',
+          heads.join() === 'Tailgate — Trenching' && !doc.getElementById('rateBody').classList.contains('stale'), heads.join());
+        assert('  and the weeks somebody typed survive the redraw',
+          doc.getElementById('rateFrom').value === '2026-08-31' && doc.getElementById('rateTo').value === '2026-09-14');
+        resolve();
+      }, 30)));
+    }
+
+    // Anything that changes a count makes the grid read again next time.
+    {
+      const { win } = boot(SUPERVISOR, DOCS_SUPER, RATE);
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('rate');
+        await settle();
+        assert('the grid is held once read', win.eval('state.rate !== null'));
+        await win.archiveDoc(DOC1, false);
+        assert('  and let go the moment a form is archived', win.eval('state.rate === null'));
+        resolve();
+      }, 30)));
+    }
+    assert('posting and signing let it go too',
+      /state\.report = null;\s+\/\/ the report is stale the moment a form lands\s+state\.rate\s+= null;/.test(page)
+      && /toast\(out\.alreadySigned[^\n]*\n\s*state\.report = null;\s*\n\s*state\.rate\s+= null;/.test(page));
+    return Promise.all(done);
+  }
+
+  return Promise.all(done).then(signRateTests);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
