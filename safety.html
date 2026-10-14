@@ -313,6 +313,42 @@
     .rate-stat .v { display:block; font-size:1.4rem; font-weight:700; margin-top:0.15rem; }
     .rate-stat .s { display:block; font-size:0.7rem; color:var(--muted); margin-top:0.1rem; overflow-wrap:anywhere; }
 
+    /* Forms counted: one line, opening to a box per form. */
+    .rate-forms { background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+    .rate-forms-head {
+      width:100%; display:flex; align-items:center; gap:0.6rem; padding:0.75rem 0.9rem; text-align:left;
+      background:none; border:none; color:var(--text); font-family:inherit; cursor:pointer;
+    }
+    .rate-forms-head:disabled { cursor:default; color:var(--text); }
+    .rate-forms-head .k {
+      font-size:0.62rem; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); font-weight:700;
+    }
+    .rate-forms-head .v { flex:1; font-size:0.85rem; font-weight:600; }
+    .rate-forms-head .go {
+      flex:none; font-size:0.62rem; letter-spacing:0.08em; text-transform:uppercase; color:var(--accent); font-weight:700;
+    }
+    .rate-forms.open .chev { transform:rotate(90deg); }
+    .rate-forms-body { padding:0 0.9rem 0.85rem; display:flex; flex-direction:column; gap:0.55rem; }
+    .rate-forms-list { list-style:none; display:flex; flex-direction:column; gap:0.3rem; }
+    /* A <label>, so the whole row is the target — and so it inherits the
+       global caption style written for field names, undone here the way the
+       acknowledgement's is. */
+    .rate-forms-list label {
+      display:grid; grid-template-columns:auto 1fr auto; gap:0.1rem 0.7rem; align-items:center;
+      padding:0.5rem 0.65rem; background:var(--surface2); border-radius:7px; cursor:pointer;
+      font-size:0.82rem; font-weight:400; line-height:1.35; text-transform:none; letter-spacing:normal; color:var(--text);
+    }
+    /* Native, so it ticks and unticks the way every checkbox does; dark, so
+       an unticked one is not a white square on this surface. */
+    .rate-forms-list input {
+      grid-row:1 / span 2; width:18px; height:18px; margin:0; cursor:pointer;
+      accent-color:var(--accent); color-scheme:dark;
+    }
+    .rate-forms-list .ft { font-weight:600; overflow-wrap:anywhere; }
+    .rate-forms-list .fw { grid-column:2; font-size:0.72rem; color:var(--muted); }
+    .rate-forms-list .fc { grid-column:3; grid-row:1 / span 2; font-size:0.72rem; color:var(--muted); text-align:right; }
+    .rate-forms-list li.out .ft { color:var(--muted); text-decoration:line-through; }
+
     .rate-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
     .rate-legend {
       display:flex; flex-wrap:wrap; gap:0.4rem 1.1rem; align-items:center;
@@ -446,6 +482,9 @@
       .btn-ghost  { min-height:44px; }
       .sig-print  { min-height:44px; padding:0.5rem 0.75rem; }
       .sort-btn   { min-height:44px; }
+      .rate-forms-head { min-height:48px; }
+      .rate-forms-list label { min-height:48px; }
+      .rate-forms-list input { width:22px; height:22px; }
       .ack input[type=checkbox] { width:30px; height:30px; min-height:30px; }
       /* A file picker under 16px makes iOS zoom the whole page on focus and
          leaves it zoomed. Every other control here is already 16px. */
@@ -483,6 +522,9 @@
       .rate-grid .pct { padding-right:0.45rem; }
       .rate-hero .v { font-size:2.6rem; }
       .rate-legend .hint { margin-left:0; flex-basis:100%; }
+      /* The count drops under the week rather than squeezing the title. */
+      .rate-forms-list label { grid-template-columns:auto 1fr; }
+      .rate-forms-list .fc { grid-column:2; grid-row:auto; text-align:left; }
     }
     @media (max-width: 720px) {
       .rate-sum { grid-template-columns:1fr; }
@@ -578,6 +620,7 @@
       detail: {},        // documentId -> the signatures WITH their drawn marks
       rate: null, rateError: null, rateLoading: false,   // the sign rate grid (rateModel)
       rateSort: 'name',  // 'name' | 'low' | 'high'
+      rateFormsOpen: false,   // the Forms counted list, expanded
       showArchived: false,
       statement: '',
       storageConfigured: true,
@@ -2041,13 +2084,17 @@
        green for exactly the people the sign-off report counts against that
        form, and red for exactly the ones it lists under Still to sign.
 
-       Two rules decide what is counted, and the tab says both:
+       Three rules decide what is counted, and the tab says all of them:
          - Archived forms are in. Archiving is how a supervisor closes a week
            out, and a rate that dropped each week once it was tidied away would
            only ever measure the forms still being chased — the ones most
            likely to be short. A form archived before anybody signed it was
            taken down rather than closed out, and stays out: the rule the
            emailed sign-off report applies.
+         - A form a supervisor has left out is out. That is for the forms the
+           archive rule cannot catch — posted to try the Safety Center out and
+           signed by whoever was trying it — and it is a choice made on the
+           tab, by name, stored on the form with who made it and when.
          - The roster is today's, as on the sign-off report. Everyone granted
            the Safety Center is counted against every form in the range,
            someone granted it last week included. */
@@ -2071,10 +2118,17 @@
     /* The grid, from one /safety-signatures?scope=report read. Forms run
        oldest to newest, left to right, as a calendar does; people come in the
        roster's own order. `at` is when the figures were read — the printout
-       and the workbook carry it, since either can outlive the screen. */
+       and the workbook carry it, since either can outlive the screen.
+
+       `forms` is every form a supervisor can choose between, left-out ones
+       included, so one can be put back; only the counted ones become `docs`,
+       the grid's columns. The read itself is kept as `data`, so a form left
+       out or put back redraws from it without reading every signature again. */
     function rateModel(data, at) {
       const all    = data.documents || [];
-      const groups = all.filter(g => !(g.document.archivedAt && !(g.signed || []).length)).sort(byWeek);
+      const shown  = all.filter(g => !(g.document.archivedAt && !(g.signed || []).length)).sort(byWeek);
+      const groups = shown.filter(g => !g.document.excludedFromRate);
+      const onRoster = new Set((data.roster || []).map(r => r.userId));
       // Keyed by account: a signature whose login has since been removed has
       // no user id, and nobody on today's roster can be that person.
       const byDoc  = groups.map(g => new Map((g.signed || [])
@@ -2098,13 +2152,20 @@
         expected: people.length,
       }));
       return {
+        data,
         at: at || new Date().toISOString(),
         docs, people,
         signed:     people.reduce((n, p) => n + p.signed, 0),
         expected:   people.length * docs.length,
         allSigned:  people.filter(p => p.expected && p.signed === p.expected).length,
         noneSigned: people.filter(p => p.expected && p.signed === 0).length,
-        withdrawn:  all.length - groups.length,
+        withdrawn:  all.length - shown.length,
+        forms: shown.map(g => ({
+          doc: g.document,
+          signed: (g.signed || []).filter(s => s.userId != null && onRoster.has(s.userId)).length,
+          expected: onRoster.size,
+        })),
+        leftOut: shown.filter(g => g.document.excludedFromRate).map(g => g.document),
       };
     }
 
@@ -2195,16 +2256,20 @@
           <button class="btn btn-primary" onclick="loadRate()">Try again</button></div>`;
       } else if (!m) {
         body.innerHTML = '';
-      } else if (!m.docs.length) {
+      } else if (!m.forms.length) {
         body.innerHTML = `<div class="empty"><strong>No forms in that range.</strong>
           Post a form on the Documents tab and it will show up here.</div>`;
       } else if (!m.people.length) {
         body.innerHTML = `<div class="empty"><strong>Nobody is on the Safety Center roster.</strong>
           Grant the division in Manage Users and the people expected to sign will show up here.</div>`;
+      } else if (!m.docs.length) {
+        // Held open: the list is the only way back from here.
+        body.innerHTML = rateFormsHTML(m, true) + `<div class="empty"><strong>Every form in this range is
+          left out of the sign rate.</strong>Tick a form above to count it again.</div>`;
       } else {
         const old  = body.querySelector('.rate-scroll');
         const keep = old && m.drawn ? { x: old.scrollLeft, y: old.scrollTop } : null;
-        body.innerHTML = rateSummaryHTML(m) + rateGridHTML(m);
+        body.innerHTML = rateSummaryHTML(m) + rateFormsHTML(m) + rateGridHTML(m);
         // A new range opens on its latest forms — on the right, where a
         // calendar puts them; a re-sort leaves the grid where it was.
         const sc = body.querySelector('.rate-scroll');
@@ -2238,6 +2303,78 @@
               <span class="s">of ${plural(n, 'employee')}</span></div>
           </div>
         </div>`;
+    }
+
+    /* Which forms count: every one in the range unless a supervisor has left
+       it out — a form posted to try the Safety Center out, whose test
+       signatures keep it in the rate even once it is archived. One line until
+       it is wanted, and that line always says how many are left out, so a rate
+       with weeks taken out of it never passes for one without. */
+    function rateFormsHTML(m, forceOpen) {
+      const open = forceOpen || state.rateFormsOpen;
+      const out  = m.leftOut.length;
+      const rows = m.forms.map(f => {
+        const d = f.doc, left = Boolean(d.excludedFromRate);
+        const why = left
+          ? `Left out${d.rateExcludedBy ? ' by ' + esc(d.rateExcludedBy) : ''}${
+              d.rateExcludedAt ? ', ' + esc(dayLabel(ymdOf(d.rateExcludedAt))) : ''}`
+          : `${f.signed}/${f.expected} signed`;
+        return `
+          <li class="${left ? 'out' : ''}"><label>
+            <input type="checkbox" data-act="rate-count" data-doc-id="${esc(d.id)}"${left ? '' : ' checked'} />
+            <span class="ft">${esc(d.title)}</span>
+            <span class="fw">${esc(weekLabel(d.weekOf))}</span>
+            <span class="fc">${why}</span>
+          </label></li>`;
+      }).join('');
+      return `
+        <div class="rate-forms${open ? ' open' : ''}">
+          <button class="rate-forms-head" type="button" data-act="rate-forms" aria-expanded="${open ? 'true' : 'false'}"${
+            forceOpen ? ' disabled' : ''}>
+            <span class="chev">&#9656;</span>
+            <span class="k">Forms counted</span>
+            <span class="v">${m.forms.length - out} of ${m.forms.length}${out ? ` &middot; ${out} left out` : ''}</span>
+            ${forceOpen ? '' : `<span class="go">${open ? 'Done' : 'Choose forms'}</span>`}
+          </button>
+          ${open ? `
+          <div class="rate-forms-body">
+            <span class="fld-note">Untick a form to leave it out of the sign rate — one posted to try the Safety
+              Center out, say. It stays on the Sign-Off Report, and every signature on it is kept.</span>
+            <ul class="rate-forms-list">${rows}</ul>
+          </div>` : ''}
+        </div>`;
+    }
+
+    // Leave a form out of the sign rate, or count it again. What the server
+    // answers is what gets drawn: the flag lands on the form in the read the
+    // grid was built from, and the grid is rebuilt from that — the signatures
+    // need no second read for a choice that changes none of them.
+    async function setFormCounted(id, counted, box) {
+      const m = state.rate;
+      const g = m && (m.data.documents || []).find(x => x.document.id === id);
+      if (!g) return;
+      box.disabled = true;
+      try {
+        const out = await api('PUT', '/safety-documents?id=' + encodeURIComponent(id), { excludeFromRate: !counted });
+        const d = out.document || {};
+        Object.assign(g.document, {
+          excludedFromRate: Boolean(d.excludedFromRate),
+          rateExcludedAt:   d.rateExcludedAt || null,
+          rateExcludedBy:   d.rateExcludedBy || null,
+        });
+        toast(d.excludedFromRate ? 'Left out of the sign rate.' : 'Counted in the sign rate again.');
+        // Another range landed while this was saving, read before the flag
+        // was stored, perhaps: read it again rather than redraw a stale one.
+        if (state.rate !== m) return loadRate();
+        state.rate = rateModel(m.data, m.at);
+        state.rate.drawn = m.drawn;
+        renderRate();
+      } catch (err) {
+        // Back to what the server still holds.
+        box.checked = !counted;
+        box.disabled = false;
+        toast(err.message, true);
+      }
     }
 
     function rateGridHTML(m) {
@@ -2422,6 +2559,8 @@
       return `<p class="rnote">Green squares are signed, red squares are not. Everyone on the Safety Center roster
         when these figures were read is counted against every form in the range, archived forms included${m.withdrawn
           ? ` — ${plural(m.withdrawn, 'form')} archived before anyone signed ${one ? 'it is' : 'them are'} left out` : ''}.
+        ${m.leftOut.length ? `Left out of the rate by a safety supervisor: ${m.leftOut.map(d =>
+          `${esc(d.title)} (${esc(weekLabel(d.weekOf))})`).join(', ')}.` : ''}
         Each person's rate is the share of those forms they have signed; the overall rate is every signature
         collected over every one expected. Signatures are collected electronically in the DataWatch Safety Center.</p>`;
     }
@@ -2846,6 +2985,18 @@
         { f: `SUM(F${FH + 1}:F${FL})`, v: m.expected, s: XL.totInt },
         { f: `IF(F${FT},E${FT}/F${FT},"")`, v: share(m.signed, m.expected), s: XL.totPct },
       ]);
+      // Below the totals, so nothing above moves and nothing here is summed:
+      // the forms a supervisor took out of the rate, by name, with who and when.
+      if (m.leftOut.length) {
+        forms.push([], [{ v: 'Left out of the sign rate by a safety supervisor — not counted above', s: XL.bold }]);
+        forms.push(['Week of', 'Form', 'Left out by', 'Left out on'].map(v => ({ v, s: XL.head })));
+        m.leftOut.forEach(d => forms.push([
+          { v: xlDate(d.weekOf), s: XL.date },
+          { v: d.title, s: XL.text },
+          { v: d.rateExcludedBy || '', s: XL.text },
+          { v: d.rateExcludedAt ? xlDate(ymdOf(d.rateExcludedAt)) : '', s: XL.date },
+        ]));
+      }
 
       const gridFilter  = `A${HEAD}:${lastDoc}${LAST}`;
       const formsFilter = `A${FH}:G${FL}`;
@@ -2928,15 +3079,26 @@
     delegate('panelRate', function (e) {
       const hit = e.target.closest('[data-act], td.c, th.doc, td.fr');
       if (!hit || !this.contains(hit)) return;
-      if (hit.getAttribute('data-act') === 'rate-sort') {
+      const act = hit.getAttribute('data-act');
+      if (act === 'rate-sort') {
         // Rate goes lowest first — who to chase — and the next press flips it.
         state.rateSort = hit.getAttribute('data-sort') === 'name' ? 'name'
           : state.rateSort === 'low' ? 'high' : 'low';
         renderRate();
         return;
       }
+      if (act === 'rate-forms') {
+        state.rateFormsOpen = !state.rateFormsOpen;
+        renderRate();
+        return;
+      }
+      if (act) return;   // a box in Forms counted, which answers on change below
       if (rateLastPointer === 'touch' && rateTipFor === hit) hideRateTip();
       else showRateTip(hit);
+    });
+    document.getElementById('panelRate').addEventListener('change', function (e) {
+      const box = e.target.closest && e.target.closest('input[data-act="rate-count"]');
+      if (box && this.contains(box)) setFormCounted(box.getAttribute('data-doc-id'), box.checked, box);
     });
 
     // On a mouse the tooltip follows the pointer. A touch is left to the tap

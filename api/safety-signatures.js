@@ -100,6 +100,11 @@ function docOut(row) {
     uploadedBy: row.uploaded_by || null,
     uploadedAt: row.uploaded_at || null,
     archivedAt: row.archived_at || null,
+    // The Employee Sign Rate leaves these out; nothing on the sign-off
+    // report changes for them. See rate_excluded_at in neon-schema.sql.
+    excludedFromRate: Boolean(row.rate_excluded_at),
+    rateExcludedAt:   row.rate_excluded_at || null,
+    rateExcludedBy:   row.rate_excluded_by || null,
   };
 }
 
