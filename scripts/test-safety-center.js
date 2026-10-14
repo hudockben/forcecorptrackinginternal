@@ -224,6 +224,24 @@ function sql(strings, ...values) {
     Object.assign(row, { archived_at: null, archived_by: null });
     return Promise.resolve([row]);
   }
+  // Left out of the sign rate. COALESCE, as the real statement does: a second
+  // leave-out keeps the first time and name rather than restamping them.
+  if (/^UPDATE safety_documents SET rate_excluded_at = COALESCE\(rate_excluded_at, NOW\(\)\), rate_excluded_by = COALESCE\(rate_excluded_by, \?\)/.test(flat)) {
+    const [by, id, company_code] = v;
+    const row = DB.docs.find(d => d.id === id && d.company_code === company_code);
+    if (!row) return Promise.resolve([]);
+    if (!row.rate_excluded_at) row.rate_excluded_at = new Date();
+    if (!row.rate_excluded_by) row.rate_excluded_by = by;
+    row.updated_at = new Date();
+    return Promise.resolve([row]);
+  }
+  if (/^UPDATE safety_documents SET rate_excluded_at = NULL, rate_excluded_by = NULL/.test(flat)) {
+    const [id, company_code] = v;
+    const row = DB.docs.find(d => d.id === id && d.company_code === company_code);
+    if (!row) return Promise.resolve([]);
+    Object.assign(row, { rate_excluded_at: null, rate_excluded_by: null, updated_at: new Date() });
+    return Promise.resolve([row]);
+  }
 
   // ── safety_signatures ──
   if (/^SELECT document_id, full_name, signed_at FROM safety_signatures/.test(flat)) {
@@ -608,6 +626,84 @@ async function seedTwoDocs() {
     method: 'POST',
     body: postBody(DOC2, { title: 'Tailgate — Heat Illness', weekOf: '2026-09-21' }),
   });
+}
+
+// A form posted to try the Safety Center out, and signed by whoever was trying
+// it, sits in the sign rate for good: archiving does not take it out, because
+// a form archived WITH signatures is a week closed out. So a supervisor can
+// leave one out by name — on the record, and touching nothing else.
+async function rateExclusionTests() {
+  console.log('\n[a form can be left out of the sign rate — by a supervisor, on the record]');
+  await seedTwoDocs();
+  await call(sigHandler, LAB_A, { method: 'POST', body: { documentId: DOC1, fullName: 'Jesse Hauser', acknowledged: true } });
+  const row = () => DB.docs.find(d => d.id === DOC1);
+  const put = (user, body, id = DOC1) => call(docsHandler, user, { method: 'PUT', query: { id }, body });
+  const before = { title: row().title, week: ymd(row().week_of) };
+
+  {
+    const r = await put(LAB_A, { excludeFromRate: true });
+    assert('a laborer cannot leave a form out of the sign rate', r.statusCode === 403, String(r.statusCode));
+    assert('  and nothing is written', !row().rate_excluded_at);
+  }
+  {
+    const codes = [];
+    for (const bad of ['yes', 1, null, 'false']) codes.push((await put(SUPER, { excludeFromRate: bad })).statusCode);
+    assert('anything but true or false is refused, not guessed at',
+      codes.every(c => c === 400) && !row().rate_excluded_at, codes.join());
+  }
+  {
+    const r = await put(SUPER, { excludeFromRate: true });
+    assert('a supervisor can leave one out',
+      r.statusCode === 200 && r.body.document.excludedFromRate === true, JSON.stringify(r.body).slice(0, 200));
+    assert('  on the record: who, and when',
+      row().rate_excluded_by === 'dsimmons' && row().rate_excluded_at instanceof Date
+      && r.body.document.rateExcludedBy === 'dsimmons' && !!r.body.document.rateExcludedAt);
+    assert('  and nothing else about the form changes',
+      row().title === before.title && ymd(row().week_of) === before.week && !row().archived_at);
+  }
+  {
+    const first = row().rate_excluded_at;
+    DB.users.push({ id: 7, username: 'kboss', company_code: COMPANY, division_roles: { safety: 'admin' }, is_platform_admin: false });
+    await new Promise(r => setTimeout(r, 5));
+    await put({ id: 7, username: 'kboss', division_roles: { safety: 'admin' } }, { excludeFromRate: true });
+    assert('leaving it out a second time keeps who first did it, and when',
+      row().rate_excluded_by === 'dsimmons' && row().rate_excluded_at === first, row().rate_excluded_by);
+    // Off the roster again, or the counts below would have a fifth signer.
+    DB.users = DB.users.filter(u => u.id !== 7);
+  }
+  {
+    await put(SUPER, { title: 'Tailgate — Trenching (rev)' });
+    assert('retitling a form leaves it out still', !!row().rate_excluded_at && row().title === 'Tailgate — Trenching (rev)');
+  }
+  {
+    const rep = (await call(sigHandler, SUPER, { query: { scope: 'report' } })).body.documents;
+    const g1 = rep.find(g => g.document.id === DOC1), g2 = rep.find(g => g.document.id === DOC2);
+    assert('the report read carries it, form by form',
+      g1.document.excludedFromRate === true && g1.document.rateExcludedBy === 'dsimmons'
+      && !!g1.document.rateExcludedAt && g2.document.excludedFromRate === false);
+    assert('  and the sign-off report itself is just as it was',
+      g1.signedCount === 1 && g1.signed.length === 1 && g1.outstandingCount === 3, JSON.stringify(g1).slice(0, 160));
+    const card = (await call(docsHandler, SUPER, {})).body.documents.find(d => d.id === DOC1);
+    assert('  the documents list carries it too', card.excludedFromRate === true && card.signedCount === 1);
+  }
+  {
+    DB.docs.push({ ...row(), id: 'other-company-doc', company_code: 'OTH', storage_key: 'k-other', rate_excluded_at: null, rate_excluded_by: null });
+    const r = await put(SUPER, { excludeFromRate: true }, 'other-company-doc');
+    assert('another company\'s form is not found, and not touched',
+      r.statusCode === 404 && !DB.docs.find(d => d.id === 'other-company-doc').rate_excluded_at, String(r.statusCode));
+  }
+  {
+    const r = await put(SUPER, { excludeFromRate: false });
+    assert('counting it again clears who and when together',
+      r.statusCode === 200 && r.body.document.excludedFromRate === false
+      && row().rate_excluded_at === null && row().rate_excluded_by === null);
+  }
+  {
+    const schema = read('neon-schema.sql');
+    assert('the columns are in the schema, added so an existing database picks them up',
+      /ALTER TABLE safety_documents ADD COLUMN IF NOT EXISTS rate_excluded_at TIMESTAMPTZ;/.test(schema)
+      && /ALTER TABLE safety_documents ADD COLUMN IF NOT EXISTS rate_excluded_by TEXT;/.test(schema));
+  }
 }
 
 async function signTests() {
@@ -2660,6 +2756,147 @@ function pageTests() {
       }, 30)));
     }
 
+    // Forms counted: leaving a form out, and putting it back. The form left
+    // out here was posted to try the Safety Center out — archived, but signed
+    // by whoever was trying it, so the archive rule alone keeps it in.
+    const TEST = '66666666-6666-4666-8666-666666666666';
+    const testDoc = {
+      ...meta(TEST, 'Testing <b>1</b>', '2026-08-24', '2026-08-25T10:00:00Z'),
+      excludedFromRate: true, rateExcludedAt: '2026-10-14T12:00:00Z', rateExcludedBy: 'dsimmons<i>',
+    };
+    const WITH_TEST = { ...RATE, documents: [...RATE.documents, grp(testDoc, [sig(1, 'Dan Simmons', '2026-08-24T15:00:00.000Z')])] };
+    // The server's answer to a leave-out, recorded; or a failure, on demand.
+    function putsOn(win) {
+      const puts = [];
+      const realFetch = win.fetch;
+      win.fetch = (url, init) => {
+        if (/\/safety-documents\?id=/.test(String(url)) && init && init.method === 'PUT') {
+          const body = JSON.parse(init.body);
+          puts.push({ id: decodeURIComponent(/id=([^&]+)/.exec(String(url))[1]), body });
+          if (puts.fail) return Promise.resolve({ ok: false, status: 500, json: () => Promise.resolve({ error: 'Server error' }) });
+          const out = body.excludeFromRate;
+          return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ ok: true, document: {
+            id: puts[puts.length - 1].id, excludedFromRate: out,
+            rateExcludedAt: out ? '2026-10-14T12:00:00Z' : null, rateExcludedBy: out ? 'dsimmons' : null,
+          } }) });
+        }
+        return realFetch(url, init);
+      };
+      return puts;
+    }
+    const docHeads = doc => [...doc.querySelectorAll('.rate-grid thead th.doc .dt')].map(e => e.textContent);
+    const formRows = doc => [...doc.querySelectorAll('.rate-forms-list li')].map(li => ({
+      title: li.querySelector('.ft').textContent, on: li.querySelector('input').checked,
+      note: li.querySelector('.fc').textContent, id: li.querySelector('input').getAttribute('data-doc-id'),
+    }));
+    {
+      const { win, doc, calls } = boot(SUPERVISOR, DOCS_SUPER, WITH_TEST);
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('rate');
+        await settle();
+        assert('a form left out is not a column, and the rate is as if it were never posted',
+          docHeads(doc).join() === 'Tailgate — Silica,Tailgate — Heat Illness,Tailgate — Trenching'
+          && doc.querySelector('.rate-hero .v').textContent === '42%', docHeads(doc).join());
+        assert('  while the line above the grid says one is left out, even with the list shut',
+          doc.querySelector('.rate-forms-head .v').textContent.replace(/\s+/g, ' ') === '3 of 4 · 1 left out'
+          && !doc.querySelector('.rate-forms-list'), doc.querySelector('.rate-forms-head .v').textContent);
+
+        doc.querySelector('[data-act="rate-forms"]').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+        const rows = formRows(doc);
+        assert('opening it lists every form, oldest first, a box ticked for each one counted',
+          rows.map(r => `${r.on ? '☑' : '☐'} ${r.title}`).join(' | ')
+            === '☐ Testing <b>1</b> | ☑ Tailgate — Silica | ☑ Tailgate — Heat Illness | ☑ Tailgate — Trenching',
+          rows.map(r => `${r.on ? '☑' : '☐'} ${r.title}`).join(' | '));
+        assert('  the one left out saying who left it out, and when',
+          rows[0].note === 'Left out by dsimmons<i>, Oct 14, 2026', rows[0].note);
+        assert('  the rest how far along each is', rows[1].note === '1/4 signed' && rows[2].note === '2/4 signed');
+        assert('  every title and name in it shown as text',
+          !doc.querySelector('.rate-forms-list b, .rate-forms-list i'));
+        assert('  the form archived unsigned still nowhere to be seen', !rows.some(r => /Posted in error/.test(r.title)));
+
+        // Leave Silica out.
+        const puts = putsOn(win);
+        const reads = () => calls.filter(c => /scope=report/.test(c.url)).length;
+        const readsBefore = reads();
+        const box = id => doc.querySelector(`input[data-act="rate-count"][data-doc-id="${id}"]`);
+        box(DOC4).checked = false;
+        box(DOC4).dispatchEvent(new win.Event('change', { bubbles: true }));
+        await settle();
+        assert('unticking a form saves it as left out',
+          puts.length === 1 && puts[0].id === DOC4 && puts[0].body.excludeFromRate === true, JSON.stringify(puts));
+        assert('  and the grid redraws without it, rate and all',
+          docHeads(doc).join() === 'Tailgate — Heat Illness,Tailgate — Trenching'
+          && doc.querySelector('.rate-hero .v').textContent === '50%'
+          && /4 of 8 signatures/.test(doc.querySelector('.rate-hero').textContent), docHeads(doc).join());
+        assert('  without reading every signature again', reads() === readsBefore, `${reads()} reads`);
+        assert('  with the list still open, saying so',
+          !!doc.querySelector('.rate-forms-list')
+          && doc.querySelector('.rate-forms-head .v').textContent.replace(/\s+/g, ' ') === '2 of 4 · 2 left out'
+          && /Left out of the sign rate/.test(doc.getElementById('toast').textContent));
+
+        // Put the test form back.
+        box(TEST).checked = true;
+        box(TEST).dispatchEvent(new win.Event('change', { bubbles: true }));
+        await settle();
+        assert('ticking one counts it again',
+          puts.length === 2 && puts[1].id === TEST && puts[1].body.excludeFromRate === false
+          && docHeads(doc).join() === 'Testing <b>1</b>,Tailgate — Heat Illness,Tailgate — Trenching', docHeads(doc).join());
+        assert('  its squares back in the grid', marks(rowOf(doc, 'dsimmons')) === 'YYN', marks(rowOf(doc, 'dsimmons')));
+
+        // A save that fails puts the box back.
+        puts.fail = true;
+        box(DOC1).checked = false;
+        box(DOC1).dispatchEvent(new win.Event('change', { bubbles: true }));
+        await settle();
+        assert('a save that fails puts the box back, says so, and leaves the grid alone',
+          box(DOC1).checked === true && !box(DOC1).disabled
+          && /Server error/.test(doc.getElementById('toast').textContent)
+          && docHeads(doc).includes('Tailgate — Trenching'));
+        resolve();
+      }, 30)));
+    }
+
+    // The printout and the workbook name what was left out, so a sheet with
+    // weeks taken out of it never passes for one without.
+    {
+      const { win } = boot(SUPERVISOR, DOCS_SUPER, WITH_TEST);
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('rate');
+        await settle();
+        const popups = popupsOn(win);
+        win.printRate();
+        const html = popups[0] ? popups[0].html : '';
+        assert('the printout leaves the form out of the grid, and says so by name',
+          !/<th class="doc"><div class="dh"><b>Testing/.test(html)
+          && /Left out of the rate by a safety supervisor: Testing &lt;b&gt;1&lt;\/b&gt; \(Week of Aug 24, 2026\)\./.test(html.replace(/\s+/g, ' ')));
+        const got = downloadsOn(win);
+        win.downloadRateXlsx();
+        const files = got[0] ? unzip(bytesOf(got[0])) : {};
+        const s1 = (files['xl/worksheets/sheet1.xml'] || {}).text || '';
+        const s2 = (files['xl/worksheets/sheet2.xml'] || {}).text || '';
+        assert('  and so does the workbook: no column for it, a line for it on Forms',
+          !/Testing/.test(s1) && /Left out of the sign rate by a safety supervisor/.test(s2)
+          && /Testing &lt;b&gt;1&lt;\/b&gt;/.test(s2) && /dsimmons&lt;i&gt;/.test(s2) && wellFormed(s2));
+        resolve();
+      }, 30)));
+    }
+
+    // Every form left out: nothing to rate, and the list held open — it is
+    // the only way back.
+    {
+      const allOut = { ...RATE, documents: RATE.documents.map(g => ({ ...g, document: { ...g.document, excludedFromRate: true } })) };
+      const { win, doc } = boot(SUPERVISOR, DOCS_SUPER, allOut);
+      done.push(new Promise(resolve => setTimeout(async () => {
+        win.switchTab('rate');
+        await settle();
+        assert('with every form left out it says so, and shows the list to put one back',
+          /Every form in this range is\s+left out of the sign rate/.test(doc.getElementById('panelRate').textContent)
+          && formRows(doc).length === 3 && !doc.querySelector('.rate-grid')
+          && doc.querySelector('[data-act="rate-forms"]').disabled === true);
+        resolve();
+      }, 30)));
+    }
+
     // Anything that changes a count makes the grid read again next time.
     {
       const { win } = boot(SUPERVISOR, DOCS_SUPER, RATE);
@@ -2996,6 +3233,7 @@ function pickerTests() {
   await signTests();
   await listAndReportTests();
   await agreementTests();
+  await rateExclusionTests();
   await currentAccessTests();
   await fileTests();
   await pageTests();

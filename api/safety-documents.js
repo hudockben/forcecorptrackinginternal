@@ -9,6 +9,7 @@
  *   GET    /api/safety-documents?action=count     how many this caller owes
  *   POST   /api/safety-documents                  register an uploaded file
  *   PUT    /api/safety-documents?id=X             retitle / re-date one
+ *          { excludeFromRate: true|false }        leave it out of the sign rate, or count it again
  *   DELETE /api/safety-documents?id=X             archive one
  *
  * The FILE never passes through here. The browser asks
@@ -69,6 +70,9 @@ function toDocument(row, extra = {}) {
     uploadedAt:  row.uploaded_at || null,
     archivedAt:  row.archived_at || null,
     archivedBy:  row.archived_by || null,
+    excludedFromRate: Boolean(row.rate_excluded_at),
+    rateExcludedAt:   row.rate_excluded_at || null,
+    rateExcludedBy:   row.rate_excluded_by || null,
     ...extra,
   };
 }
@@ -343,6 +347,34 @@ module.exports = async (req, res) => {
       if (!id) return res.status(400).json({ error: 'id is required' });
 
       const body = req.body || {};
+
+      // Counted in the Employee Sign Rate, or left out of it — a form posted
+      // to test the Safety Center, say. Its own write, apart from the title
+      // and the week: it is a different question, and sending one should
+      // never rewrite the other. Leaving out keeps the FIRST time and name,
+      // so a second tap does not restamp who decided it; counting again
+      // clears both. The form and its signatures are untouched either way.
+      if (body.excludeFromRate !== undefined) {
+        if (typeof body.excludeFromRate !== 'boolean') {
+          return res.status(400).json({ error: 'excludeFromRate must be true or false' });
+        }
+        const [updated] = body.excludeFromRate
+          ? await sql`
+              UPDATE safety_documents
+              SET    rate_excluded_at = COALESCE(rate_excluded_at, NOW()),
+                     rate_excluded_by = COALESCE(rate_excluded_by, ${payload.username || null}),
+                     updated_at = NOW()
+              WHERE  id = ${id} AND company_code = ${companyCode}
+              RETURNING *`
+          : await sql`
+              UPDATE safety_documents
+              SET    rate_excluded_at = NULL, rate_excluded_by = NULL, updated_at = NOW()
+              WHERE  id = ${id} AND company_code = ${companyCode}
+              RETURNING *`;
+        if (!updated) return res.status(404).json({ error: 'Document not found' });
+        return res.json({ ok: true, document: toDocument(updated) });
+      }
+
       const [existing] = await sql`
         SELECT * FROM safety_documents WHERE id = ${id} AND company_code = ${companyCode}
       `;

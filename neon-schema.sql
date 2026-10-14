@@ -2553,6 +2553,16 @@ CREATE INDEX IF NOT EXISTS idx_safety_docs_live
 -- that is already somebody's signed document.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_safety_docs_key ON safety_documents(storage_key);
 
+-- Left out of the Employee Sign Rate by a safety supervisor: a form posted to
+-- try the Safety Center out, say, which the test signatures on it would
+-- otherwise keep in the rate even once archived. Who and when are kept beside
+-- it, because leaving a week out changes a figure people are judged by.
+-- Nothing else reads it: the form, its signatures and the sign-off report are
+-- exactly as they were. Idempotent, so an existing database picks the columns
+-- up the next time run-schema runs.
+ALTER TABLE safety_documents ADD COLUMN IF NOT EXISTS rate_excluded_at TIMESTAMPTZ;
+ALTER TABLE safety_documents ADD COLUMN IF NOT EXISTS rate_excluded_by TEXT;
+
 -- One row per person per document. The UNIQUE index is the whole point: a
 -- signature is an assertion about one reader and one document, so a second
 -- tap of the button cannot produce a second one, and the report can count
