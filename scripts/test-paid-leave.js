@@ -563,22 +563,23 @@ console.log('\n[the timesheet form asks how long the day off is]');
     /id="seg-off-len"/.test(TS) && /setOffLen\('half'\)/.test(TS));
   assert('  with a full day and a half day as the two named answers',
     /OFF_LEN_HOURS = \{ full: 8, half: 4 \}/.test(TS));
-  assert('  and an Other box for the lengths in between',
-    /id="f-off-hours"/.test(TS) && /setOffLen\('other'\)/.test(TS));
+  assert('  and a Date range for a stretch of days off, filed as full days',
+    /setOffLen\('range'\)">Date range</.test(TS)
+    && /if \(offLen === 'range'\) return \{ hours: OFF_LEN_HOURS\.full \};/.test(TS));
   assert('the payload always sends the hours, so a half day cannot be filed as a whole one',
     /time_off_hours: len\.hours/.test(TS));
   assert('  and the form validates the box before sending it',
     /function offHoursValue\(\)/.test(TS) && /between 0 and 24/.test(TS));
 
-  // "Other" seeds the box from the answer being LEFT, not from a constant. Read
-  // after offLen is reassigned it is always 'other', so the seed could only be a
-  // full day: a man who picked Half day and then tapped Other to adjust it found
-  // 8 in the box, and submitting without typing — the numeric keypad covers the
-  // field on a phone — filed a whole paid day on an entry he had already told
-  // the form was half of one. Four hours of pay, from a default.
-  assert('"Other" seeds from the answer being left, not always a full day',
-    /const prev = offLen;/.test(TS)
-    && /OFF_LEN_HOURS\[prev\] != null \? OFF_LEN_HOURS\[prev\] : OFF_LEN_HOURS\.full/.test(TS));
+  // The hours box used to sit behind an "Other" button, and a tap on it had to
+  // seed the box from the answer being left — seeding from a constant filed a
+  // whole paid day on an entry the man had already called half of one. "Other"
+  // is now "Date range", so no tap opens the box at all: the one way in is a
+  // draft saved through it, which reopens on its own figure. Nothing seeds it.
+  assert('no button opens the hours box, so it is never seeded with a default',
+    !/setOffLen\('other'/.test(TS)
+    && !/onclick="setOffLen\('custom'\)"/.test(TS)
+    && (TS.match(/setOffLen\('custom'\)/g) || []).length === 1);
 
   // The control's default lives in a variable, not in the markup, so something
   // has to light it. resetForm() is not called at load, so without this the
@@ -590,7 +591,8 @@ console.log('\n[the timesheet form asks how long the day off is]');
 
   // Loading a saved draft must agree with the sheet about what it says.
   assert('a saved draft reopens on the length it was saved with',
-    /savedOff === OFF_LEN_HOURS\.half/.test(TS) && /setOffLen\('other', false\)/.test(TS));
+    /savedOff === OFF_LEN_HOURS\.half/.test(TS)
+    && /box\.value = String\(savedOff\);\s*setOffLen\('custom'\);/.test(TS));
 
   // And payroll must be able to correct one.
   const PAY = fs.readFileSync(path.join(ROOT, 'payroll.html'), 'utf8');
