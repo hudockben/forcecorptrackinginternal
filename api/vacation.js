@@ -303,7 +303,9 @@ async function setHours(sql, payload, q, body, res) {
   const company = payload.companyCode;
   const year = parseYear(q.year);
   if (year == null) return res.status(400).json({ ok: false, error: `year must be between ${MIN_YEAR} and ${MAX_YEAR}` });
-  const userId = /^\d+$/.test(String(q.user_id || '')) ? Number(q.user_id) : null;
+  // Nine digits at most: users.id is an INTEGER, and a number past it is no
+  // login anybody has — a 404 below, not a database error.
+  const userId = /^\d{1,9}$/.test(String(q.user_id || '')) ? Number(q.user_id) : null;
   if (userId == null) return res.status(400).json({ ok: false, error: 'user_id is required' });
   const parsed = parseHours(body);
   if (parsed.error) return res.status(400).json({ ok: false, error: parsed.error });

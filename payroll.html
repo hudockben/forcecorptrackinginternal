@@ -3426,6 +3426,7 @@
     //     boxes re-render from allEntries without refetching, so stale rows
     //     would be drawn back over the failure as if they were current.
     let entriesFetchSeq  = 0;      // bumped per request; older replies are dropped
+    let entriesLoadedSeq = 0;      // the request whose answer (rows or failure) is on screen
     let entriesLoadError = null;   // message from the last failed load, else null
     // The date range and division the rows IN MEMORY were fetched with — which
     // is not necessarily what the filter bar says. The boxes re-render from
@@ -4188,6 +4189,11 @@
         allEntries = Array.isArray(data.entries) ? data.entries : [];
         loadedScope = { from, to, division };
         entriesLoadError = null;
+        entriesLoadedSeq = seq;
+        // Every load reads the vacation banks again, changed rows or not: an
+        // admin may have changed someone's hours since, and a read that failed
+        // last time gets its retry here rather than never.
+        vacSig = null;
         // Diagnostic log so the empty-Pending case is easy to debug from DevTools.
         console.log('[payroll] GET', url, '→', res.status, 'entries:', allEntries.length,
           'statuses:', allEntries.reduce((m, e) => { m[e.status]=(m[e.status]||0)+1; return m; }, {}));
@@ -4205,6 +4211,7 @@
         loadedScope = { from: '', to: '', division: '' };
         selectedIds.clear();
         entriesLoadError = err.message || 'Failed to load time entries';
+        entriesLoadedSeq = seq;
         filterAndRender();
       }
     }
@@ -9017,6 +9024,9 @@
       }));
       if (seq !== vacSeq) return;
       vacBanks = next;
+      // Not over a load that is still coming in, or over its failure notice:
+      // the rows that load draws carry the notes anyway.
+      if (entriesLoadError || entriesLoadedSeq !== entriesFetchSeq) return;
       if (currentTab === 'pending' || currentTab === 'approved') renderRows();
     }
 
@@ -9034,6 +9044,9 @@
     function vacationNoteHtml(e) {
       const v = vacationStanding(e);
       if (!v) return '';
+      // An unpaid day takes nothing, so a bank already spent before it is not
+      // its doing — and "Leaves −8 h" is not a sentence.
+      if (v.after < 0 && v.over <= 0) return '';
       const b = v.bank;
       const title = `${e.username}'s vacation for ${v.year}: ${vacFmt(b.hours)} h for the year, `
         + `${vacFmt(b.approved)} h approved, ${vacFmt(b.pending)} h waiting for approval (this day included). `
@@ -10490,11 +10503,15 @@
     function routeBulkApprove(entries, scopeLabel) {
       const anyInject = entries.some(e =>
         entryNeedsSplit(e) || entryNeedsQuarry(e) || entryNeedsTrucking(e));
+      const vacOver = vacationOverConfirm(entries);
       if (!anyInject) {
-        if (!confirm(`Approve ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}?` + vacationOverConfirm(entries))) return;
+        if (!confirm(`Approve ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}?` + vacOver)) return;
         runApprovals(entries.map(e => e.id));
         return;
       }
+      // The approval window approves the time off in it as-is, so a vacation
+      // day past someone's hours is said before it opens.
+      if (vacOver && !confirm(`Open the approval window for ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}?` + vacOver)) return;
       openBulkApprove(entries, scopeLabel);
     }
 

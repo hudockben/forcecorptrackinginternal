@@ -73,10 +73,14 @@
        there when the office tracks it. Amber once it is spent past zero. */
     .vac-chip { font-size: 0.62rem; white-space: nowrap; }
     .vac-chip.over { color: #fbbf24; }
-    /* A narrow phone with Switch showing has no room for it; the Time Off
-       form still says it. */
-    @media (max-width: 380px) {
+    /* A phone with Switch showing has no room for it, and nor does the
+       narrowest phone without it: the line would fold Sign Out in two and
+       grow the sticky header. The Time Off form still says it. */
+    @media (max-width: 400px) {
       .header-right.with-switch .vac-chip { display: none; }
+    }
+    @media (max-width: 340px) {
+      .vac-chip { display: none; }
     }
     .icon-btn {
       background: none;
@@ -2096,11 +2100,14 @@
       renderVacationHint();
     }
 
-    // Every year already on screen, this one first — after anything is sent or
-    // deleted, which is when what is left changes.
+    // Every year already on screen or being asked for, this one first — after
+    // anything is sent or deleted, which is when what is left changes. Four
+    // years to a request (the API's limit), as many requests as that takes.
     function refreshVacation() {
-      const known = Object.keys(vacBalances).map(Number).filter(y => y !== thisYear());
-      return loadVacation([thisYear(), ...known]);
+      const years = [...new Set([thisYear(), ...Object.keys(vacBalances), ...Object.keys(vacAsked)].map(Number))];
+      const asks = [];
+      for (let i = 0; i < years.length; i += 4) asks.push(loadVacation(years.slice(i, i + 4)));
+      return Promise.all(asks);
     }
 
     function renderVacationChip() {

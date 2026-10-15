@@ -126,7 +126,9 @@ const RANGE = [0, 1, 2, 3].map(n => dayAfter(MON, n));
   const adminId = await user('benadmin', 'admin', ADMIN_ROLES);
   const zachId  = await user('brewerzach', 'level1', FIELD_ROLES);
   const zach2Id = await user('zbrewer', 'level1', FIELD_ROLES);
-  const allenId = await user('strickallen', 'level1', FIELD_ROLES);
+  // Allen also has turf, so his Timesheet header carries Switch as well.
+  const ALLEN_ROLES = { timesheet: 'level1', turf: 'level1' };
+  const allenId = await user('strickallen', 'level1', ALLEN_ROLES);
   await client.query(`INSERT INTO employees (company_code, name, is_supervisor) VALUES
       ($1, 'Zach Brewer', FALSE), ($1, 'Allen Strick', FALSE), ($1, 'benadmin', TRUE)`, [CO]);
   const entry = (uid, username, date, status, hours) => q(
@@ -144,6 +146,7 @@ const RANGE = [0, 1, 2, 3].map(n => dayAfter(MON, n));
   });
   const ADMIN = sign(adminId, 'benadmin', 'admin', ADMIN_ROLES);
   const FIELD = sign(zachId, 'brewerzach', 'level1', FIELD_ROLES);
+  const ALLEN = sign(allenId, 'strickallen', 'level1', ALLEN_ROLES);
 
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   const base = 'http://127.0.0.1:' + server.address().port;
@@ -290,10 +293,42 @@ const RANGE = [0, 1, 2, 3].map(n => dayAfter(MON, n));
       await field.$eval('#vacChip', e => e.textContent));
     const hdr = await field.evaluate(() => { const h = document.querySelector('header'); return { sw: h.scrollWidth, cw: h.clientWidth, h: h.getBoundingClientRect().height }; });
     ok('  and the header still fits a phone', hdr.sw <= hdr.cw + 1 && hdr.h < 80, JSON.stringify(hdr));
+    // The longest line it is likely to say, on the narrowest phones that show it.
+    const longest = [];
+    for (const width of [341, 360, 375, 390]) {
+      await field.setViewport({ width, height: 844 });
+      longest.push(await field.evaluate(w => {
+        document.getElementById('vacChip').textContent = 'Vacation: 123.25 h over';
+        const b = [...document.querySelectorAll('header .icon-btn')].find(x => x.offsetParent);
+        const page = document.documentElement;
+        return { w, signOutH: Math.round(b.getBoundingClientRect().height), sideways: page.scrollWidth > page.clientWidth };
+      }, width));
+    }
+    ok('  even "Vacation: 123.25 h over" leaves Sign Out on one line, with no sideways scroll',
+      longest.every(m => m.signOutH <= 34 && !m.sideways), JSON.stringify(longest));
+    await field.setViewport({ width: 390, height: 844 });
+    await field.evaluate(() => renderVacationChip());
     if (shots) await field.screenshot({ path: path.join(shots, 'vacation-timesheet.png') });
     const filed = await q(`SELECT id, work_date::text AS d, status FROM timesheet_entries WHERE company_code = $1 AND user_id = $2
                            AND work_date >= $3::date AND work_date <= $4::date ORDER BY work_date`, [CO, zachId, RANGE[0], RANGE[3]]);
     ok('  four submitted rows, one a day', filed.length === 4 && filed.every(r => r.status === 'submitted'), JSON.stringify(filed));
+
+    console.log('\nThe Timesheet, with Switch in the header too');
+    for (const width of [390, 430]) {
+      const allen = await open(ALLEN, 'timesheet.html', { width, height: 844 });
+      await allen.waitForFunction(() => document.getElementById('vacChip').textContent !== '', { timeout: 8000 }).catch(() => {});
+      const m = await allen.evaluate(() => {
+        const btns = [...document.querySelectorAll('header .icon-btn')].filter(b => b.offsetParent);
+        const chip = document.getElementById('vacChip');
+        return { switchShown: btns.length === 2, btnH: Math.max(...btns.map(b => Math.round(b.getBoundingClientRect().height))),
+                 headerH: Math.round(document.querySelector('header').getBoundingClientRect().height),
+                 chip: chip.hidden || getComputedStyle(chip).display === 'none' ? '' : chip.textContent };
+      });
+      ok(`at ${width}px Switch and Sign Out stay one line each`, m.switchShown && m.btnH <= 34, JSON.stringify(m));
+      if (width === 390) ok('  and on a 390px phone the vacation line gives way to them', m.chip === '', JSON.stringify(m));
+      else ok('  and at 430px there is room for it', m.chip === 'Vacation: 80 h left', JSON.stringify(m));
+      if (shots) await allen.screenshot({ path: path.join(shots, `vacation-timesheet-switch-${width}.png`), clip: { x: 0, y: 0, width, height: 120 } });
+    }
 
     // ── Payroll ────────────────────────────────────────────────────────────
     console.log('\nPayroll');

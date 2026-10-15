@@ -4395,9 +4395,22 @@
     // the tab is always about one year, stepped with ‹ and ›. A box saves when
     // it is left (or on Enter); Escape puts it back; emptying a box that had
     // hours asks first, because that stops tracking the person for the year.
-    let vacPeople  = [];                          // from /api/vacation?year=
-    let vacYear    = new Date().getFullYear();
-    let vacLoadSeq = 0;                           // the latest read wins
+    //
+    // The boxes are text, not type=number: a number box steps on the arrow
+    // keys and its spinner and fires `change` there and then, so a stray ↓
+    // while scrolling the list saved someone at 0 h, and it reads a typo such
+    // as "4-" as empty — which here means "stop tracking".
+    //
+    // A save belongs to the year on its row, and the list it lands in may not
+    // be that one any more: the admin can step the year, or reopen the tab,
+    // while it is in flight. So a read waits for the saves in flight before it
+    // asks — and asks after committing the box being typed in — and a save
+    // that finishes under a different list redraws nothing.
+    let vacPeople     = [];                       // from /api/vacation?year=
+    let vacYear       = new Date().getFullYear();
+    let vacLoadedYear = null;                     // the year vacPeople is, or null while loading
+    let vacLoadSeq    = 0;                        // the latest read wins
+    const vacSaving   = new Set();                // saves in flight
 
     // 8 → "8", 7.5 → "7.5": hours as people say them.
     function vacFmt(h) { return String(Math.round(Number(h) * 100) / 100); }
@@ -4417,12 +4430,25 @@
 
     async function loadVacationList() {
       const seq   = ++vacLoadSeq;
+      const year  = vacYear;
       const tbody = document.getElementById('vacListBody');
-      document.getElementById('vac-year-label').textContent = vacYear;
-      document.querySelectorAll('#mu-panel-vacation .vac-year-word').forEach(el => { el.textContent = vacYear; });
+      // The box being typed in is committed first — its save starts here, for
+      // its own row's year — so the read below sees it, and the box is not
+      // dropped mid-word when the table is replaced.
+      const typing = document.activeElement;
+      if (typing && typing.classList && typing.classList.contains('vac-input')) typing.blur();
+      // Nothing from the old list stays on screen to be acted on: not its
+      // count, and not a Copy button counting last year's people.
+      vacLoadedYear = null;
+      vacPeople = [];
+      renderVacationTools();
+      document.getElementById('vac-year-label').textContent = year;
+      document.querySelectorAll('#mu-panel-vacation .vac-year-word').forEach(el => { el.textContent = year; });
       tbody.innerHTML = '<tr><td colspan="3" class="mu-empty-cell">Loading…</td></tr>';
       try {
-        const res  = await fetch('/api/vacation?year=' + vacYear, { headers: { Authorization: `Bearer ${token}` } });
+        await Promise.allSettled([...vacSaving]);
+        if (seq !== vacLoadSeq) return;
+        const res  = await fetch('/api/vacation?year=' + year, { headers: { Authorization: `Bearer ${token}` } });
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error || 'Failed to load vacation hours');
         if (seq !== vacLoadSeq) return;
@@ -4431,6 +4457,7 @@
           user_id: Number(p.user_id),
           also:    Array.isArray(p.also) ? p.also : [],
         }));
+        vacLoadedYear = year;
         renderVacationList();
       } catch (err) {
         if (seq !== vacLoadSeq) return;
@@ -4498,8 +4525,8 @@
             ${sub.length ? `<div class="sch-sub">${escHtml(sub.join(' · '))}</div>` : ''}
           </td>
           <td>
-            <input type="number" class="vac-input" inputmode="decimal" min="0" max="1000" step="0.5"
-                   value="${tracked ? escHtml(vacFmt(p.hours)) : ''}" placeholder="—" data-uid="${p.user_id}"${setBy}
+            <input type="text" class="vac-input" inputmode="decimal" autocomplete="off" maxlength="7"
+                   value="${tracked ? escHtml(vacFmt(p.hours)) : ''}" placeholder="—" data-uid="${p.user_id}" data-year="${vacYear}"${setBy}
                    aria-label="Vacation hours for ${escHtml(vacName(p))} in ${vacYear}"
                    onchange="vacSave(this)" onkeydown="vacKey(event, this)" />${
               tracked ? `<span class="vac-days">${vacDays(p.hours)}</span>` : ''}
@@ -4521,11 +4548,27 @@
     }
 
     // One row redrawn in place, not the table: the box the admin has just
-    // tabbed into must keep its focus while the one they left saves.
+    // tabbed into must keep its focus — and what is typed in it — while the
+    // one they left saves. A row the filters no longer show (Over only, after
+    // its hours went up) is taken out the same way, so the count and the rows
+    // still agree.
     function vacRedrawRow(p) {
       const tr = document.querySelector(`#vacListBody tr[data-uid="${p.user_id}"]`);
-      if (tr) tr.outerHTML = vacRowHtml(p);
-      renderVacationTools();
+      if (tr) {
+        if (visibleVacationPeople().includes(p)) tr.outerHTML = vacRowHtml(p);
+        else tr.remove();
+      }
+      if (!document.querySelector('#vacListBody tr[data-uid]')) renderVacationList();
+      else renderVacationTools();
+    }
+
+    // The box's text as hours: { hours } (null when empty), or { error }.
+    function vacParse(raw) {
+      const s = String(raw == null ? '' : raw).trim();
+      if (s === '') return { hours: null };
+      if (!/^\d{1,4}(\.\d{0,2})?$|^\.\d{1,2}$/.test(s)) return { error: true };
+      const n = Number(s);
+      return Number.isFinite(n) && n >= 0 && n <= 1000 ? { hours: Math.round(n * 100) / 100 } : { error: true };
     }
 
     function vacKey(e, el) {
@@ -4542,48 +4585,58 @@
     }
 
     async function vacSave(el) {
-      const p = vacPeople.find(x => x.user_id === Number(el.dataset.uid));
+      const year = Number(el.dataset.year);
+      const uid  = Number(el.dataset.uid);
+      // Only against the list the box was drawn from.
+      if (year !== vacLoadedYear) return;
+      const p = vacPeople.find(x => x.user_id === uid);
       if (!p) return;
       const result = document.getElementById('vac-result');
-      const raw    = String(el.value || '').trim();
       const before = p.hours;
       const putBack = () => { el.value = before != null ? vacFmt(before) : ''; };
-      if (raw === '' && before == null) return;
-      if (raw !== '' && before != null && Number(raw) === Number(before)) return;
-      if (raw === '') {
-        const ask = `Stop tracking vacation for ${vacName(p)} in ${vacYear}?\n\n`
-          + `Their ${vacFmt(before)} h for ${vacYear} are removed, and the Timesheet stops showing them what is left. `
+      const typed  = vacParse(el.value);
+      if (typed.error) {
+        putBack();
+        result.style.color = '#ef4444';
+        result.textContent = 'Vacation hours must be a number from 0 to 1000.';
+        return;
+      }
+      if (typed.hours == null && before == null) return;
+      if (typed.hours != null && before != null && typed.hours === Number(before)) { putBack(); return; }
+      if (typed.hours == null) {
+        const ask = `Stop tracking vacation for ${vacName(p)} in ${year}?\n\n`
+          + `Their ${vacFmt(before)} h for ${year} are removed, and the Timesheet stops showing them what is left. `
           + 'The vacation they have filed is not touched.';
         if (!confirm(ask)) { putBack(); return; }
-      } else {
-        const n = Number(raw);
-        if (!Number.isFinite(n) || n < 0 || n > 1000) {
-          putBack();
-          result.style.color = '#ef4444';
-          result.textContent = 'Vacation hours must be a number from 0 to 1000.';
-          return;
-        }
       }
       el.disabled = true;
       result.style.color = 'var(--muted)';
       result.textContent = 'Saving…';
+      let done;
+      const flight = new Promise(r => { done = r; });
+      vacSaving.add(flight);
       try {
-        const res = await fetch(`/api/vacation?user_id=${p.user_id}&year=${vacYear}`, {
+        const res = await fetch(`/api/vacation?user_id=${uid}&year=${year}`, {
           method:  'PUT',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body:    JSON.stringify({ hours: raw === '' ? null : Number(raw) }),
+          body:    JSON.stringify({ hours: typed.hours }),
         });
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error || 'Save failed');
-        Object.assign(p, {
-          hours: data.hours, approved: data.approved, pending: data.pending, left: data.left,
-          set_by: data.set_by, updated_at: data.updated_at,
-        });
-        vacRedrawRow(p);
+        // The list on screen now, if it is still this year's: the one the box
+        // came from may have been replaced while this was in flight.
+        const cur = year === vacLoadedYear ? vacPeople.find(x => x.user_id === uid) : null;
+        if (cur) {
+          Object.assign(cur, {
+            hours: data.hours, approved: data.approved, pending: data.pending, left: data.left,
+            set_by: data.set_by, updated_at: data.updated_at,
+          });
+          vacRedrawRow(cur);
+        }
         result.style.color = 'var(--green)';
         result.textContent = data.hours == null
-          ? `${vacName(p)}: vacation not tracked for ${vacYear}.`
-          : `${vacName(p)}: ${vacFmt(data.hours)} h for ${vacYear}, ${data.left < 0 ? vacFmt(-data.left) + ' h over' : vacFmt(data.left) + ' h left'}.`;
+          ? `${vacName(p)}: vacation not tracked for ${year}.`
+          : `${vacName(p)}: ${vacFmt(data.hours)} h for ${year}, ${data.left < 0 ? vacFmt(-data.left) + ' h over' : vacFmt(data.left) + ' h left'}.`;
         const said = result.textContent;
         setTimeout(() => { if (result.textContent === said) result.textContent = ''; }, 3000);
       } catch (err) {
@@ -4591,16 +4644,20 @@
         el.disabled = false;
         result.style.color = '#ef4444';
         result.textContent = err.message;
+      } finally {
+        vacSaving.delete(flight);
+        done();
       }
     }
 
     async function vacCopyLastYear() {
+      if (vacLoadedYear !== vacYear) return;     // still loading the year shown
       const n = vacPeople.filter(p => p.prev && p.hours == null).length;
       if (!n) return;
-      const from = vacYear - 1;
-      const ask = `Give the ${n} ${n === 1 ? 'person' : 'people'} with no hours set for ${vacYear} the hours they had for ${from}?\n\n`
+      const to = vacYear, from = to - 1;
+      const ask = `Give the ${n} ${n === 1 ? 'person' : 'people'} with no hours set for ${to} the hours they had for ${from}?\n\n`
         + `Each ${from} number is copied as it stands, including any hours carried over into it. `
-        + `Nobody who already has hours for ${vacYear} is changed.`;
+        + `Nobody who already has hours for ${to} is changed.`;
       if (!confirm(ask)) return;
       const btn    = document.getElementById('vac-copy-btn');
       const result = document.getElementById('vac-result');
@@ -4608,14 +4665,14 @@
       result.style.color = 'var(--muted)';
       result.textContent = 'Copying…';
       try {
-        const res = await fetch(`/api/vacation?action=copy&from=${from}&to=${vacYear}`, {
+        const res = await fetch(`/api/vacation?action=copy&from=${from}&to=${to}`, {
           method: 'POST', headers: { Authorization: `Bearer ${token}` },
         });
         const data = await res.json();
         if (!res.ok || !data.ok) throw new Error(data.error || 'Copy failed');
         await loadVacationList();
         result.style.color = 'var(--green)';
-        result.textContent = `Copied ${from} hours to ${data.copied} ${data.copied === 1 ? 'person' : 'people'} for ${vacYear}.`;
+        result.textContent = `Copied ${from} hours to ${data.copied} ${data.copied === 1 ? 'person' : 'people'} for ${to}.`;
       } catch (err) {
         result.style.color = '#ef4444';
         result.textContent = err.message;

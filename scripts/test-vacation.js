@@ -189,6 +189,7 @@ const vac = (id, date, status, hours, extra) => ({ id, user_id: 9, entry_type: '
     for (const [qy, body, why] of [
       [{ user_id: '9', year: '26' },   { hours: 8 },    'a year that is not a year'],
       [{ user_id: 'x', year: '2026' }, { hours: 8 },    'a user that is not a number'],
+      [{ user_id: '99999999999', year: '2026' }, { hours: 8 }, 'a user id past any INTEGER'],
       [{ year: '2026' },               { hours: 8 },    'no user'],
       [{ user_id: '9', year: '2026' }, {},              'no hours at all'],
       [{ user_id: '9', year: '2026' }, { hours: 2000 }, 'too many hours'],
@@ -437,6 +438,69 @@ const vac = (id, date, status, hours, extra) => ({ id, user_id: 9, entry_type: '
     assert('  having said it copies each number as it stands', /copied as it stands, including any hours carried over into it/.test(w.confirmed[w.confirmed.length - 1]));
     eq('  and says how many', doc.getElementById('vac-result').textContent, `Copied ${Y - 1} hours to 1 person for ${Y}.`);
 
+    // Typos are typos, not "stop tracking"; and the box does not step.
+    ({ w, doc, calls } = buildTab(okList()));
+    w.eval("switchUserSubTab('vacation')");
+    await settle();
+    box = doc.querySelector('#vacListBody tr[data-uid="9"] input.vac-input');
+    eq('the box is text, so arrow keys and a spinner cannot save a number by themselves', box.type, 'text');
+    for (const bad of ['4-', '4.5.', '1e3', 'ten', '-8', '1,000']) {
+      box.value = bad;
+      await w.vacSave(box);
+    }
+    eq('  a typo puts the box back and says so — no confirm, no save',
+      [box.value, w.confirmed.length, calls.filter(c => c.method === 'PUT').length, doc.getElementById('vac-result').textContent],
+      ['40', 0, 0, 'Vacation hours must be a number from 0 to 1000.']);
+    box.value = '40.0';
+    await w.vacSave(box);
+    eq('  the same number written differently sends nothing', [calls.filter(c => c.method === 'PUT').length, box.value], [0, '40']);
+
+    // A save still in flight when the year is stepped: the next read waits for
+    // it, and its answer redraws nothing in the other year.
+    let finishPut;
+    const putDone = new Promise(r => { finishPut = r; });
+    ({ w, doc, calls } = buildTab((url, opts) => okList()(url, opts)));
+    const plainFetch = w.fetch;
+    w.fetch = async (url, opts) => {
+      if (opts && opts.method === 'PUT') {
+        calls.push({ url: String(url), method: 'PUT', body: JSON.parse(opts.body) });
+        await putDone;
+        return { ok: true, status: 200, json: async () => ({ ok: true, hours: 80, approved: 0, pending: 0, left: 80 }) };
+      }
+      return plainFetch(url, opts);
+    };
+    w.eval("switchUserSubTab('vacation')");
+    await settle();
+    box = doc.querySelector('#vacListBody tr[data-uid="12"] input.vac-input');
+    box.value = '80';
+    const saving = w.vacSave(box);
+    w.vacStepYear(1);
+    await settle();
+    eq('stepping the year while a save is out: the next year is not read until it lands',
+      calls.map(c => `${c.method} ${c.url}`), [`GET /api/vacation?year=${Y}`, `PUT /api/vacation?user_id=12&year=${Y}`]);
+    eq('  and nothing from the old year is left to act on meanwhile',
+      [doc.getElementById('vac-copy-btn').style.display, doc.getElementById('vac-count').textContent], ['none', '']);
+    finishPut();
+    await saving;
+    await settle();
+    eq('  then it is', calls[calls.length - 1].url, `/api/vacation?year=${Y + 1}`);
+    eq('  the save says which year it was for', doc.getElementById('vac-result').textContent, `Allen Strick: 80 h for ${Y}, 80 h left.`);
+    eq('  and drew nothing into the other year’s table', rowsOf(doc).find(r => r.uid === '12').left, 'Not tracked');
+
+    // Over only keeps its count true when a save takes someone out of it.
+    ({ w, doc, calls } = buildTab((url, opts) => opts.method === 'PUT'
+      ? { status: 200, body: { ok: true, hours: 40, approved: 16, pending: 0, left: 24 } } : okList()(url, opts)));
+    w.eval("switchUserSubTab('vacation')");
+    await settle();
+    doc.getElementById('vac-over-only').checked = true;
+    w.renderVacationList();
+    box = doc.querySelector('#vacListBody tr[data-uid="13"] input.vac-input');
+    box.value = '40';
+    await w.vacSave(box);
+    eq('raising the only person over takes their row out of Over only, and the count agrees',
+      [rowsOf(doc).length, doc.querySelector('#vacListBody td').textContent, doc.getElementById('vac-count').textContent],
+      [0, 'No one matches.', '0 of 4 people']);
+
     ({ w, doc, calls } = buildTab(() => ({ status: 500, body: { ok: false, error: 'Database error' } })));
     w.eval("switchUserSubTab('vacation')");
     await settle();
@@ -547,6 +611,15 @@ const vac = (id, date, status, hours, extra) => ({ id, user_id: 9, entry_type: '
     await over.w.refreshVacation();
     eq('over, in amber, in the header', [over.doc.getElementById('vacChip').textContent, over.doc.getElementById('vacChip').classList.contains('over')], ['Vacation: 8 h over', true]);
 
+    const many = buildSheet(bank({}));
+    // vacBalances is the slice's own const; seed it through the page's loader.
+    await many.w.loadVacation([2027, 2028, 2029, 2030]);
+    await many.w.loadVacation([2031]);
+    many.asked.length = 0;
+    await many.w.refreshVacation();
+    eq('after a send, every year the page holds is read again, four to a request',
+      many.asked, ['/api/vacation?mine=1&years=2026,2027,2028,2029', '/api/vacation?mine=1&years=2030,2031']);
+
     const submit = requireFn(TS_SCRIPT, 'submitEntry');
     assert('the submit confirm adds the overage, and still lets it go', /for \(const o of vacationOverage\(\)\)/.test(submit) && /You can still send it/.test(submit));
     assert('every load of the list reads the banks again', /refreshVacation\(\);/.test(requireFn(TS_SCRIPT, 'loadEntries')));
@@ -563,7 +636,8 @@ const vac = (id, date, status, hours, extra) => ({ id, user_id: 9, entry_type: '
       const w = dom.window;
       const asked = [];
       w.fetch = async url => { asked.push(String(url)); const a = answer(String(url)); return { ok: a.status === 200, status: a.status, json: async () => a.body }; };
-      w.eval("var allEntries = []; var currentTab = 'pending'; var renders = 0; function renderRows() { renders++; maybeRefreshVacation(); } function authHeaders() { return {}; }");
+      w.eval("var allEntries = []; var currentTab = 'pending'; var renders = 0; var entriesLoadError = null, entriesLoadedSeq = 0, entriesFetchSeq = 0;"
+        + " function renderRows() { renders++; maybeRefreshVacation(); } function authHeaders() { return {}; }");
       // var, not const: each eval is its own scope for let and const.
       w.eval(PAY_SCRIPT.match(/const PAID_LEAVE_HOURS = [^;]+;/)[0].replace('const ', 'var '));
       const maxLeave = PAY_SCRIPT.match(/const MAX_LEAVE_HOURS = [^;]+;/);
@@ -571,9 +645,10 @@ const vac = (id, date, status, hours, extra) => ({ id, user_id: 9, entry_type: '
       w.eval(requireFn(PAY_SCRIPT, 'leaveHoursOf'));
       w.eval(requireFn(PAY_SCRIPT, 'escapeHtml'));
       w.eval(requireFn(PAY_SCRIPT, 'prettyDate'));
-      // vacBanks lifted to var so the test can reach in and shape a bank.
+      // vacBanks and vacSig lifted to var so the test can reach in — shape a
+      // bank, or clear the signature the way applyFilters does on a load.
       w.eval(sliceSource(PAY_SCRIPT, '// ── Vacation banks ─', 'function prettyDate(s)', 'the vacation flags', 'vacationOverConfirm')
-        .replace('let vacBanks', 'var vacBanks'));
+        .replace(/let (vacBanks|vacSig)\b/g, 'var $1'));
       return { w, asked };
     }
     const E = (id, date, status, hours, extra) => ({ id: String(id), user_id: 9, username: 'brewerzach', entry_type: 'time_off', time_off_type: 'vacation',
@@ -626,6 +701,71 @@ const vac = (id, date, status, hours, extra) => ({ id, user_id: 9, entry_type: '
     w.renderRows();
     await settle();
     eq('a refused read draws nothing, and nothing breaks', w.vacationNoteHtml(w.allEntries[0]), '');
+
+    // An unpaid day after the bank is spent takes nothing: no "Leaves −8 h".
+    ({ w, asked } = buildPay(() => ({ status: 200, body: { ok: true, balances: { 9: { hours: 8, approved: 16, pending: 0, left: -8, after: { 5: -8 } } } } })));
+    w.allEntries = [E(5, '2026-03-02', 'submitted', 0)];
+    w.eval('allEntries = window.allEntries');
+    w.renderRows();
+    await settle();
+    eq('an unpaid day after the bank is spent carries no note', w.vacationNoteHtml(w.allEntries[0]), '');
+
+    // A read that lands while the next load is still coming in draws nothing.
+    let hold;
+    const held = new Promise(r => { hold = r; });
+    ({ w, asked } = buildPay(() => ({ status: 200, body: BANK })));
+    w.fetch = async url => { asked.push(String(url)); await held; return { ok: true, status: 200, json: async () => BANK }; };
+    w.allEntries = [E(5, '2026-03-02', 'submitted', 8)];
+    w.eval('allEntries = window.allEntries');
+    w.renderRows();
+    w.eval('entriesFetchSeq = 1');          // Apply pressed: a load is in flight
+    const drawn = w.eval('renders');
+    hold();
+    await settle();
+    eq('a bank read landing during an entries load does not redraw over "Loading…"', w.eval('renders'), drawn);
+    w.eval('entriesLoadedSeq = 1; entriesLoadError = "Failed"');
+    w.eval('vacSig = null'); w.renderRows();
+    await settle();
+    eq('  nor over a load that failed', w.eval('renders'), drawn + 1);
+
+    // A failed read is retried by the next load, not never.
+    let fail = true;
+    ({ w, asked } = buildPay(() => fail ? { status: 500, body: { ok: false } } : { status: 200, body: BANK }));
+    w.allEntries = [E(5, '2026-03-02', 'submitted', 8)];
+    w.eval('allEntries = window.allEntries');
+    w.renderRows();
+    await settle();
+    fail = false;
+    w.renderRows();
+    await settle();
+    eq('a failed read is not retried by every redraw', asked.length, 1);
+    assert('  but every entries load reads the banks again', /entriesLoadedSeq = seq;\s*\/\/[^\n]*\n(\s*\/\/[^\n]*\n)*\s*vacSig = null;/.test(requireFn(PAY_SCRIPT, 'applyFilters')));
+    w.eval('vacSig = null');               // what applyFilters does on a load
+    w.renderRows();
+    await settle();
+    eq('  and the next load does read them', [asked.length, w.vacationNoteHtml(w.allEntries[0]) !== ''], [2, true]);
+
+    // Bulk approve that goes through the approval window says it too.
+    ({ w, asked } = buildPay(() => ({ status: 200, body: BANK })));
+    w.eval(requireFn(PAY_SCRIPT, 'routeBulkApprove'));
+    w.eval("var opened = 0, ran = 0, asks = []; function entryNeedsSplit(e) { return e.entry_type === 'daily'; } function entryNeedsQuarry() { return false; }"
+      + " function entryNeedsTrucking() { return false; } function openBulkApprove() { opened++; } function runApprovals() { ran++; }"
+      + " var confirmAnswer = true; function confirm(m) { asks.push(m); return confirmAnswer; }");
+    w.allEntries = [E(7, '2026-03-04', 'submitted', 8), { id: '50', entry_type: 'daily', division: 'paving', work_date: '2026-03-04', status: 'submitted' }];
+    w.eval('allEntries = window.allEntries');
+    w.renderRows();
+    await settle();
+    w.routeBulkApprove(w.allEntries, 'all pending in view');
+    const ask = w.eval('asks[0]') || '';
+    assert('bulk approve through the approval window says which vacation day goes over first',
+      /^Open the approval window for 2 entries\?\n\nThis vacation day goes past the hours set in Manage System:\n• brewerzach, .+: 8 h over 2026 vacation$/.test(ask), JSON.stringify(ask));
+    eq('  and opens it on yes', w.eval('opened'), 1);
+    w.eval('confirmAnswer = false; asks = []');
+    w.routeBulkApprove(w.allEntries, 'all pending in view');
+    eq('  and not on no', w.eval('opened'), 1);
+    w.eval('asks = []');
+    w.routeBulkApprove([w.allEntries[1]], '1 selected');
+    eq('  nothing extra to ask when no vacation goes over', [w.eval('asks.length'), w.eval('opened')], [0, 2]);
 
     const grid = requireFn(PAY_SCRIPT, 'renderRows');
     assert('the grid draws the note under the type, and reads the banks on every redraw',
