@@ -148,6 +148,14 @@
       grid-template-columns: 1fr 1fr;
       gap: 0.7rem;
     }
+    .row-2.one { grid-template-columns: 1fr; }
+    /* Two date boxes side by side on a phone. A plain 1fr track will not go
+       below a date input's own minimum width, so on a 375px screen the last
+       day pushed past the card's edge; minmax(0, …) lets both boxes share the
+       row instead. */
+    #off-dates { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+    #off-dates.one { grid-template-columns: minmax(0, 1fr); }
+    #off-dates input { min-width: 0; }
     /* Whether the unit typed above is one the trucking office's list knows.
        Their tab shows a unit's number beside it by matching the name, so a
        near-miss reads fine here and arrives there unrecognised — amber says so
@@ -812,26 +820,40 @@
             <div class="pill" data-val="holiday"    onclick="setOffType('holiday')">Holiday</div>
           </div>
         </div>
-        <div class="row">
-          <label for="f-off-date">Date</label>
-          <input type="date" id="f-off-date" />
+        <!-- One date, or — on "Date range" — the first and last day side by
+             side. Sharing the row keeps the page from jumping when the range
+             is picked: the second box takes half of a row that is already
+             there instead of pushing everything below it down. -->
+        <div class="row-2 one" id="off-dates">
+          <div class="row">
+            <label for="f-off-date" id="lbl-off-date">Date</label>
+            <input type="date" id="f-off-date" oninput="onOffDatesChange()" />
+          </div>
+          <div class="row" id="row-off-date-end" style="display:none">
+            <label for="f-off-date-end">Last day</label>
+            <input type="date" id="f-off-date-end" oninput="onOffDatesChange()" />
+          </div>
         </div>
         <!-- How long the day off is. Full day is preselected because it is what
              nearly every day off is, and because leaving it unanswered would
              make the common case slower for the sake of the rare one — the
              opposite trade to the haul question, which has no safe default.
-             "Other" reveals a box rather than offering a third fixed length:
-             the office has seen two, six and seven-and-a-half, and a list long
-             enough to hold them all is worse than a number pad. -->
+             "Date range" is a week of vacation in one go: every weekday from
+             the first day to the last is filed as its own full day, instead of
+             the man filling this form in once per day. -->
         <div class="row">
           <label>How long</label>
           <div class="seg seg-3" id="seg-off-len">
             <button type="button" data-val="full" onclick="setOffLen('full')">Full day</button>
             <button type="button" data-val="half" onclick="setOffLen('half')">Half day</button>
-            <button type="button" data-val="other" onclick="setOffLen('other')">Other</button>
+            <button type="button" data-val="range" onclick="setOffLen('range')">Date range</button>
           </div>
           <div class="hint" id="off-len-hint">A full day is paid at 8 hours, a half day at 4.</div>
         </div>
+        <!-- Only ever shown for a draft saved with a length that is neither a
+             full day nor a half — the form used to offer an "Other" box, and a
+             draft filed through it must reopen on the hours it was saved with,
+             not quietly become eight. -->
         <div class="row" id="row-off-hours" style="display:none">
           <label for="f-off-hours">Hours</label>
           <input type="number" inputmode="decimal" min="0" max="24" step="0.25" id="f-off-hours" placeholder="e.g. 6" />
@@ -2000,38 +2022,26 @@
     }
 
     // ── How long the day off is ────────────────────────────────────────────
-    // 'full' | 'half' | 'other'. Full day is the default, so a man filing an
-    // ordinary vacation day touches nothing; the other two are there because
-    // half days happen and the office has seen every length in between.
+    // 'full' | 'half' | 'range'. Full day is the default, so a man filing an
+    // ordinary vacation day touches nothing; half days happen; and 'range' is
+    // a stretch of days off — November 5th to the 12th — filed in one go
+    // rather than once per day.
     //
-    // The two fixed answers carry their own hours — a half day is not "half of
-    // whatever the shift was", it is four — and 'other' hands the question to
-    // the box below the control.
+    // The fixed answers carry their own hours — a half day is not "half of
+    // whatever the shift was", it is four — and every day of a range is a
+    // full one. A range is not one long entry: it becomes one entry per day,
+    // because every report, the payroll sheet and the scheduler all read time
+    // off a day at a time, and an entry per day is what they already know.
+    //
+    // There is a fourth state no button offers: 'custom', for a draft saved
+    // through the "Other" box this control used to have. It reopens on the
+    // hours it was saved with, in the box, until he picks one of the three.
     let offLen = 'full';
     const OFF_LEN_HOURS = { full: 8, half: 4 };
 
-    // `focus` is false when the form is being filled in by code — loading a
-    // draft or resetting. Pulling the caret into the hours box because a saved
-    // entry happened to be six hours long would move the page under a man who
-    // only tapped one of his own entries to look at it.
-    function setOffLen(v, focus = true) {
-      // The answer he is LEAVING, captured before it is overwritten. Read after
-      // the assignment below it is always 'other', so the seed could only ever
-      // be a full day — and a man who picked Half day and then tapped Other to
-      // adjust it found 8 in the box, not 4. Submitting without typing (the
-      // numeric keypad covers the field on a phone) filed a whole paid day on
-      // an entry he had already told the form was a half one.
-      const prev = offLen;
-      offLen = (v === 'half' || v === 'other') ? v : 'full';
+    function setOffLen(v) {
+      offLen = (v === 'half' || v === 'range' || v === 'custom') ? v : 'full';
       renderOffLen();
-      if (offLen === 'other' && focus) {
-        const box = document.getElementById('f-off-hours');
-        // Seed it from the answer he is leaving, so "Other" opens on a number
-        // he recognises instead of an empty box he has to guess the shape of.
-        if (!box.value) box.value = String(OFF_LEN_HOURS[prev] != null ? OFF_LEN_HOURS[prev] : OFF_LEN_HOURS.full);
-        box.focus();
-        box.select();
-      }
     }
 
     function renderOffLen() {
@@ -2043,19 +2053,95 @@
         b.classList.toggle('off', !on);
       });
       const row = document.getElementById('row-off-hours');
-      if (row) row.style.display = offLen === 'other' ? 'flex' : 'none';
-      const hint = document.getElementById('off-len-hint');
-      if (hint) {
-        hint.textContent = offLen === 'other'
-          ? 'Type the paid hours for this day below.'
-          : 'A full day is paid at 8 hours, a half day at 4.';
-      }
+      if (row) row.style.display = offLen === 'custom' ? 'flex' : 'none';
+      const range = offLen === 'range';
+      const dates = document.getElementById('off-dates');
+      if (dates) dates.classList.toggle('one', !range);
+      const endRow = document.getElementById('row-off-date-end');
+      if (endRow) endRow.style.display = range ? 'flex' : 'none';
+      const lbl = document.getElementById('lbl-off-date');
+      if (lbl) lbl.textContent = range ? 'First day' : 'Date';
+      onOffDatesChange();
     }
+
+    // The hint under the control. On a range it says what the form is about
+    // to file — how many days, and the hours they come to — so a week that
+    // picked the wrong month reads wrong here, before it is submitted.
+    function onOffDatesChange() {
+      const first = document.getElementById('f-off-date');
+      const last  = document.getElementById('f-off-date-end');
+      // The picker for the last day opens on the first, not on today.
+      if (first && last) last.min = first.value || '';
+      const hint = document.getElementById('off-len-hint');
+      if (!hint) return;
+      if (offLen === 'custom') {
+        hint.textContent = 'This draft was saved with its own hours, below. Pick Full day or Half day to change it.';
+        return;
+      }
+      if (offLen !== 'range') {
+        hint.textContent = 'A full day is paid at 8 hours, a half day at 4.';
+        return;
+      }
+      if (!first || !last || !first.value || !last.value) {
+        hint.textContent = 'Pick the first and last day off. Each weekday in between is filed as a full day (8 hours); Saturdays and Sundays are skipped.';
+        return;
+      }
+      const r = offRangeDays(first.value, last.value);
+      if (r.error) { hint.textContent = r.error; return; }
+      const n = r.days.length;
+      hint.textContent = `${n} ${n === 1 ? 'day' : 'days'} off, ${prettyDate(first.value)} to ${prettyDate(last.value)}`
+        + ` — each filed as a full day, ${(n * OFF_LEN_HOURS.full).toFixed(2)} hours in all.`
+        + (r.skipped ? ` ${r.skipped} weekend ${r.skipped === 1 ? 'day' : 'days'} skipped.` : '');
+    }
+
+    // The days a range files, or an error to show instead. Weekdays only: a
+    // week off is five days of vacation, not seven, and filing the Saturday
+    // and Sunday would pay sixteen hours nobody was owed. A Saturday off on its
+    // own is still filed as a single Full day.
+    //
+    // Counted in UTC so a daylight-saving change inside the range (early
+    // November, the very week this was asked for) cannot make a day 23 hours
+    // long and skip or repeat a date.
+    const MAX_OFF_RANGE_DAYS = 31;
+    function offRangeDays(first, last) {
+      if (!first) return { error: 'Pick the first day off.' };
+      if (!last)  return { error: 'Pick the last day off.' };
+      const DAY = 86400000;
+      const a = Date.parse(first + 'T00:00:00Z');
+      const b = Date.parse(last  + 'T00:00:00Z');
+      if (!Number.isFinite(a) || !Number.isFinite(b)) return { error: 'Pick the first and last day off.' };
+      if (b < a) return { error: 'The last day is before the first day.' };
+      const span = Math.round((b - a) / DAY) + 1;
+      // A slip of the year on the picker turns a week into a twelvemonth of
+      // entries. A month is longer than any stretch the office files at once.
+      if (span > MAX_OFF_RANGE_DAYS) {
+        return { error: `A date range can cover at most ${MAX_OFF_RANGE_DAYS} days. File longer time off in two pieces.` };
+      }
+      const days = [];
+      for (let t = a; t <= b; t += DAY) {
+        const wd = new Date(t).getUTCDay();
+        if (wd === 0 || wd === 6) continue;
+        days.push(new Date(t).toISOString().slice(0, 10));
+      }
+      if (!days.length) {
+        return { error: 'That range is only a weekend, so there is nothing to file. Use Full day for a Saturday or Sunday off.' };
+      }
+      return { days, skipped: span - days.length };
+    }
+
+    // Which form block a day of a range is written through. The first day
+    // shares block 0 with a single day off, so a draft opened from the list
+    // and widened into a range updates the row it came from. The rest get keys
+    // of their own: the daily form numbers its split jobs 1, 2, 3…, and a range
+    // saved as a draft and then switched to Daily must not have its days
+    // picked up and rewritten as those jobs.
+    function offBlock(n) { return n === 0 ? 0 : 'off' + n; }
 
     // The hours this form is asking the API for, or an error to show instead.
     // Kept in one place so the payload and the validation cannot disagree.
     function offHoursValue() {
-      if (offLen !== 'other') return { hours: OFF_LEN_HOURS[offLen] };
+      if (offLen === 'range') return { hours: OFF_LEN_HOURS.full };
+      if (offLen !== 'custom') return { hours: OFF_LEN_HOURS[offLen] };
       const raw = (document.getElementById('f-off-hours').value || '').trim();
       if (raw === '') return { error: 'How many hours is the day off?' };
       const n = Number(raw);
@@ -2903,7 +2989,9 @@
         // before the question existed, and it means a full day — the same
         // reading every report gives it, so the form cannot disagree with the
         // sheet about a draft the man is looking at. A length that is neither
-        // 8 nor 4 opens the box with the number already in it.
+        // 8 nor 4 was saved through the old "Other" box, and opens that box
+        // with the number already in it rather than turning into a full day.
+        // A day of a range is a full day like any other, and opens as one.
         {
           const savedOff = e.time_off_hours == null ? null : Number(e.time_off_hours);
           const box = document.getElementById('f-off-hours');
@@ -2915,7 +3003,7 @@
             setOffLen('half');
           } else {
             box.value = String(savedOff);
-            setOffLen('other', false);
+            setOffLen('custom');
           }
         }
         const offSupSel = document.getElementById('f-off-supervisor');
@@ -2986,6 +3074,7 @@
       offType = null;
       document.querySelectorAll('#off-pills .pill').forEach(p => p.classList.remove('active'));
       document.getElementById('f-off-date').value = todayStr();
+      document.getElementById('f-off-date-end').value = '';
       // Back to a full day, which is what a blank form should be asking for.
       document.getElementById('f-off-hours').value = '';
       setOffLen('full');
@@ -3029,7 +3118,14 @@
       if (currentType === 'time_off') {
         if (!offType) return { error: 'Pick a time-off type.' };
         const d = document.getElementById('f-off-date').value;
-        if (!d) return { error: 'Pick a date.' };
+        if (!d) return { error: offLen === 'range' ? 'Pick the first day off.' : 'Pick a date.' };
+        // One day, or every weekday of the range — one entry each.
+        let days = [d];
+        if (offLen === 'range') {
+          const r = offRangeDays(d, document.getElementById('f-off-date-end').value);
+          if (r.error) return { error: r.error };
+          days = r.days;
+        }
         const offSupSel = document.getElementById('f-off-supervisor');
         const offSupId  = offSupSel.value;
         if (!offSupId) return { error: 'Pick a supervisor.' };
@@ -3037,19 +3133,24 @@
         const offSupName = offSupOpt ? offSupOpt.dataset.name || offSupOpt.textContent : '';
         const len = offHoursValue();
         if (len.error) return { error: len.error };
-        return { list: [{ block: 0, label: 'Time off', data: {
-          entry_type: 'time_off',
-          work_date: d,
-          time_off_type: offType,
-          // Always sent, never left off. The API reads an absent value as "a
-          // full day" for the sake of entries filed before the question
-          // existed, so a form that asked and then stayed quiet about a half
-          // day would have it paid as a whole one.
-          time_off_hours: len.hours,
-          supervisor_id: offSupId,
-          supervisor_name: offSupName,
-          notes: document.getElementById('f-off-notes').value || '',
-        }}]};
+        return { list: days.map((day, n) => ({
+          block: offBlock(n),
+          // A range names the day, so a failure on one of them says which.
+          label: days.length > 1 ? prettyDate(day) : 'Time off',
+          data: {
+            entry_type: 'time_off',
+            work_date: day,
+            time_off_type: offType,
+            // Always sent, never left off. The API reads an absent value as "a
+            // full day" for the sake of entries filed before the question
+            // existed, so a form that asked and then stayed quiet about a half
+            // day would have it paid as a whole one.
+            time_off_hours: len.hours,
+            supervisor_id: offSupId,
+            supervisor_name: offSupName,
+            notes: document.getElementById('f-off-notes').value || '',
+          },
+        }))};
       }
 
       // ── Day-level fields, shared by every job block ──
@@ -3303,9 +3404,10 @@
       if (!beginWrite()) return;
 
       try {
+        await dropStaleOffDays(list);
         for (const item of list) await writeEntry(item.data, item.block);
         msg.textContent = list.length > 1
-          ? `Saved ${list.length} draft entries — one per job.`
+          ? `Saved ${list.length} draft entries — one per ${listUnit()}.`
           : 'Saved as draft.';
         msg.classList.add('success');
         markAsDraft();
@@ -3325,13 +3427,18 @@
       msg.className = 'msg';
       if (error) { msg.textContent = error; msg.classList.add('error'); return; }
 
+      // A range spells out the days it is about to file — the first and the
+      // last — since a wrong month is easier to see as dates than as a count.
+      const span = list.length > 1 && currentType === 'time_off'
+        ? ` (${list[0].label} to ${list[list.length - 1].label})` : '';
       const confirmText = list.length > 1
-        ? `Submit ${list.length} entries — one for each job? You won't be able to edit them after this — only an admin can.`
+        ? `Submit ${list.length} entries — one for each ${listUnit()}${span}? You won't be able to edit them after this — only an admin can.`
         : "Submit this entry? You won't be able to edit it after this — only an admin can.";
       if (!confirm(confirmText)) return;
       if (!beginWrite()) return;
 
       try {
+        await dropStaleOffDays(list);
         // Write every block out as a draft first. Each write adopts the row it
         // just created BEFORE anything else runs — without that, a submit that
         // failed left the form full but pinned to nothing, so pressing Submit
@@ -3426,7 +3533,7 @@
       const ids = savedIds();
       if (!ids.length) return;
       if (!confirm(ids.length > 1
-        ? `Delete all ${ids.length} draft entries for this day? This cannot be undone.`
+        ? `Delete all ${ids.length} draft entries for ${currentType === 'time_off' ? 'these days' : 'this day'}? This cannot be undone.`
         : 'Delete this draft entry? This cannot be undone.')) return;
       if (blockedByWrite('delete') || !beginWrite()) return;
       const failed = [];
@@ -3451,6 +3558,36 @@
         const msg = document.getElementById('formMsg');
         msg.className = 'msg error';
         msg.textContent = `Some drafts could not be deleted (${failed.join('; ')}). They are still in the list below.`;
+      }
+    }
+
+    // What one entry of a multi-entry save stands for: a job of a split day,
+    // or a day of a date range.
+    function listUnit() { return currentType === 'time_off' ? 'day' : 'job'; }
+
+    // A range saved as a draft and then shortened — or put back to a single
+    // day — has rows on the list for days it no longer covers. They are this
+    // form's own drafts and the man has just said he is not taking those days,
+    // so they go before the rest is written; left behind they would sit in the
+    // list as days off he never meant to ask for, one tap from being submitted.
+    // A delete that fails stops the save, with the row still pinned, so the
+    // next press tries it again rather than forgetting it.
+    async function dropStaleOffDays(list) {
+      if (currentType !== 'time_off') return;
+      const keep = new Set(list.map(item => String(item.block)));
+      for (const key of Object.keys(editingIds)) {
+        if (!/^off\d+$/.test(key) || keep.has(key)) continue;
+        const rowId = editingIds[key];
+        if (rowId) {
+          const res = await fetch('/api/timesheet-entries?id=' + encodeURIComponent(rowId), {
+            method: 'DELETE', headers: authHeaders(),
+          });
+          const j = await res.json().catch(() => ({}));
+          if (!res.ok || !j.ok) {
+            throw new Error(`Could not remove a day that is no longer in the range: ${j.error || 'delete failed'}`);
+          }
+        }
+        delete editingIds[key];
       }
     }
 
