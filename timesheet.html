@@ -63,8 +63,21 @@
     .user-chip {
       font-size: 0.72rem;
       color: var(--muted);
+      display: flex;
+      flex-direction: column;
+      align-items: flex-end;
+      line-height: 1.25;
     }
     .user-chip strong { color: var(--text); font-weight: 600; }
+    /* What is left of this year's vacation, under the name: small, and only
+       there when the office tracks it. Amber once it is spent past zero. */
+    .vac-chip { font-size: 0.62rem; white-space: nowrap; }
+    .vac-chip.over { color: #fbbf24; }
+    /* A narrow phone with Switch showing has no room for it; the Time Off
+       form still says it. */
+    @media (max-width: 380px) {
+      .header-right.with-switch .vac-chip { display: none; }
+    }
     .icon-btn {
       background: none;
       border: 1px solid var(--border);
@@ -391,6 +404,7 @@
       color: var(--muted);
       line-height: 1.45;
     }
+    .hint.vac-hint.over { color: #fbbf24; }
 
     /* ── Action buttons ── */
     .btn-row {
@@ -854,6 +868,9 @@
             <button type="button" data-val="range" onclick="setOffLen('range')">Date range</button>
           </div>
           <div class="hint" id="off-len-hint">A full day is paid at 8 hours, a half day at 4.</div>
+          <!-- What is left of the year's vacation, and what this request
+               leaves. Only on Vacation, and only when the office tracks it. -->
+          <div class="hint vac-hint" id="off-vac-hint" hidden></div>
         </div>
         <!-- Only ever shown for a draft saved with a length that is neither a
              full day nor a half — the form used to offer an "Other" box, and a
@@ -861,7 +878,7 @@
              not quietly become eight. -->
         <div class="row" id="row-off-hours" style="display:none">
           <label for="f-off-hours">Hours</label>
-          <input type="number" inputmode="decimal" min="0" max="24" step="0.25" id="f-off-hours" placeholder="e.g. 6" />
+          <input type="number" inputmode="decimal" min="0" max="24" step="0.25" id="f-off-hours" placeholder="e.g. 6" oninput="renderVacationHint()" />
           <div class="hint">Paid hours for this day. 0 records a day off with no pay.</div>
         </div>
         <div class="row">
@@ -929,9 +946,10 @@
       // Show "Switch" only when this user has more than just timesheet
       if (isPlatformAdmin || otherDivisions.length > 0) {
         document.getElementById('switchBtn').style.display = '';
+        document.querySelector('header .header-right').classList.add('with-switch');
       }
       document.getElementById('userChip').innerHTML =
-        `<strong>${escapeHtml(user.username)}</strong>`;
+        `<strong>${escapeHtml(user.username)}</strong><span class="vac-chip" id="vacChip" hidden></span>`;
       // Defer to a microtask so the `let` declarations further down in
       // this script (scopeUnbounded, supervisors, etc.) finish their TDZ
       // before init() / loadEntries() read them.
@@ -2024,6 +2042,152 @@
       document.querySelectorAll('#off-pills .pill').forEach(p => {
         p.classList.toggle('active', p.dataset.val === t);
       });
+      renderVacationHint();
+    }
+
+    // ── Vacation left ──────────────────────────────────────────────────────
+    // The office can give a login a bank of vacation hours for each calendar
+    // year (Manage System → Vacation). What is left of it is counted by the
+    // server — api/vacation.js — off the vacation this login has SENT: a
+    // request comes off the moment it is submitted, and goes back if the
+    // office deletes it. A draft has not been sent and comes off nothing.
+    //
+    // Said quietly, in two places, and only when the office tracks it: under
+    // the name in the header, and on the Time Off form when Vacation is
+    // picked, where it also says what the request being filled in would
+    // leave. Going over is allowed — it is said, in amber, and the office sees
+    // it too — never refused. A balance that cannot be read shows nothing:
+    // it is a courtesy, not a gate on filing.
+    const vacBalances = {};   // year → { tracked, hours, approved, pending, left }, or null when unreadable
+    const vacAsked    = {};   // year → the request that last asked for it
+    let vacAskSeq     = 0;
+
+    const thisYear = () => Number(todayStr().slice(0, 4));
+    function vacFmt(h) { return String(Math.round(Number(h) * 100) / 100); }
+    function vacDays(h) {
+      const d = Math.round(Math.abs(Number(h)) / 8 * 100) / 100;
+      return `${d} ${d === 1 ? 'day' : 'days'}`;
+    }
+    function vacBreakdown(y, b) {
+      return `${y}: ${vacFmt(b.hours)} h for the year − ${vacFmt(b.approved)} h approved`
+        + ` − ${vacFmt(b.pending)} h waiting for approval = `
+        + (b.left < 0 ? `${vacFmt(-b.left)} h over` : `${vacFmt(b.left)} h left (${vacDays(b.left)})`);
+    }
+
+    async function loadVacation(years) {
+      const want = [...new Set(years)].filter(y => Number.isInteger(y) && y >= 2000 && y <= 2100).slice(0, 4);
+      if (!want.length) return;
+      const n = ++vacAskSeq;
+      want.forEach(y => { vacAsked[y] = n; });
+      let got = null;
+      try {
+        const res = await fetch('/api/vacation?mine=1&years=' + want.join(','), { headers: authHeaders() });
+        const j = await res.json().catch(() => ({}));
+        if (res.ok && j.ok && j.balances) got = j.balances;
+      } catch { /* shown as nothing */ }
+      // A later ask for the same year owns it: an answer from before a submit
+      // must not land over the one from after.
+      want.forEach(y => {
+        if (vacAsked[y] !== n) return;
+        delete vacAsked[y];
+        vacBalances[y] = got ? (got[y] || { tracked: false }) : null;
+      });
+      renderVacationChip();
+      renderVacationHint();
+    }
+
+    // Every year already on screen, this one first — after anything is sent or
+    // deleted, which is when what is left changes.
+    function refreshVacation() {
+      const known = Object.keys(vacBalances).map(Number).filter(y => y !== thisYear());
+      return loadVacation([thisYear(), ...known]);
+    }
+
+    function renderVacationChip() {
+      const el = document.getElementById('vacChip');
+      if (!el) return;
+      const y = thisYear();
+      const b = vacBalances[y];
+      if (!b || !b.tracked) { el.hidden = true; return; }
+      el.textContent = b.left < 0 ? `Vacation: ${vacFmt(-b.left)} h over` : `Vacation: ${vacFmt(b.left)} h left`;
+      el.classList.toggle('over', b.left < 0);
+      el.title = vacBreakdown(y, b);
+      el.hidden = false;
+    }
+
+    // The days and hours the form would file as vacation, by year — or an
+    // empty list while it does not say yet. Read the way buildPayloads reads
+    // it, without its questions about the supervisor.
+    function formVacationByYear() {
+      const out = new Map();
+      if (offType !== 'vacation') return out;
+      const first = document.getElementById('f-off-date').value;
+      if (!first) return out;
+      let days = [first];
+      if (offLen === 'range') {
+        const r = offRangeDays(first, document.getElementById('f-off-date-end').value);
+        if (r.error) return out;
+        days = r.days;
+      }
+      const len = offHoursValue();
+      if (len.error) return out;
+      for (const d of days) {
+        const y = Number(d.slice(0, 4));
+        out.set(y, Math.round(((out.get(y) || 0) + len.hours) * 100) / 100);
+      }
+      return out;
+    }
+
+    // What the request leaves in each year it touches, or null when it fits
+    // or nothing is known. { year, left, take, after }.
+    function vacationOverage() {
+      const over = [];
+      for (const [y, take] of formVacationByYear()) {
+        const b = vacBalances[y];
+        if (!b || !b.tracked || !(take > 0)) continue;
+        const after = Math.round((b.left - take) * 100) / 100;
+        if (after < 0) over.push({ year: y, left: b.left, take, after });
+      }
+      return over;
+    }
+
+    function renderVacationHint() {
+      const el = document.getElementById('off-vac-hint');
+      if (!el) return;
+      if (offType !== 'vacation') { el.hidden = true; return; }
+      const byYear = formVacationByYear();
+      const years = byYear.size ? [...byYear.keys()].sort() : [thisYear()];
+      const parts = [], titles = [];
+      let over = false;
+      for (const y of years) {
+        if (!(y in vacBalances)) {
+          if (!(y in vacAsked)) loadVacation([y]);
+          continue;
+        }
+        const b = vacBalances[y];
+        if (!b || !b.tracked) continue;
+        let s = b.left < 0
+          ? `Vacation for ${y}: ${vacFmt(-b.left)} h over.`
+          : `Vacation for ${y}: ${vacFmt(b.left)} h left (${vacDays(b.left)}).`;
+        const take = byYear.get(y) || 0;
+        if (take > 0) {
+          const after = Math.round((b.left - take) * 100) / 100;
+          if (after >= 0) {
+            s += ` This takes ${vacFmt(take)} h, leaving ${vacFmt(after)} h (${vacDays(after)}).`;
+          } else {
+            over = true;
+            s += ` This takes ${vacFmt(take)} h, which puts you ${vacFmt(-after)} h over.`
+              + ' You can still send it — the office will see it.';
+          }
+        }
+        parts.push(s);
+        titles.push(vacBreakdown(y, b));
+      }
+      if (!parts.length) { el.hidden = true; return; }
+      el.textContent = parts.join(' ');
+      el.title = titles.join('\n');
+      el.classList.toggle('over', over);
+      el.hidden = false;
     }
 
     // ── How long the day off is ────────────────────────────────────────────
@@ -2085,6 +2249,9 @@
       const first = document.getElementById('f-off-date');
       const last  = document.getElementById('f-off-date-end');
       const hint = document.getElementById('off-len-hint');
+      // First, because every branch below returns early: whatever changed the
+      // dates or the length changed what this request takes off.
+      renderVacationHint();
       if (!hint) return;
       if (offLen === 'custom') {
         hint.textContent = 'This draft was saved with its own hours, below. Pick Full day or Half day to change it.';
@@ -2701,6 +2868,11 @@
 
       entries.sort((a, b) => (b.work_date || '').localeCompare(a.work_date || ''));
       entriesCache = entries;
+
+      // Every send and delete comes back through here, and each one can change
+      // what is left of the year's vacation. Not waited on: the list is not
+      // held up for it.
+      refreshVacation();
 
       try {
         renderEntries();
@@ -3443,9 +3615,17 @@
       // last — since a wrong month is easier to see as dates than as a count.
       const span = list.length > 1 && currentType === 'time_off'
         ? ` (${list[0].label} to ${list[list.length - 1].label})` : '';
-      const confirmText = list.length > 1
+      let confirmText = list.length > 1
         ? `Submit ${list.length} entries — one for each ${listUnit()}${span}? You won't be able to edit them after this — only an admin can.`
         : "Submit this entry? You won't be able to edit it after this — only an admin can.";
+      // Going over the year's vacation is allowed, and said before it is sent.
+      if (currentType === 'time_off') {
+        for (const o of vacationOverage()) {
+          confirmText += `\n\nThis puts you ${vacFmt(-o.after)} h over your vacation for ${o.year}`
+            + ` (${vacFmt(Math.max(o.left, 0))} h left, this takes ${vacFmt(o.take)} h).`
+            + ' You can still send it — the office will see it.';
+        }
+      }
       if (!confirm(confirmText)) return;
       if (!beginWrite()) return;
 

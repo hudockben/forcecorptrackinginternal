@@ -352,16 +352,22 @@ console.log('\n[every consumer of payrollMetrics is fed haul_type]');
     // masking this block exists to prevent. So: all-star files pass, and any
     // file with an explicit list must name the column in one of them.
     const allStar  = cols.every(c => /\*/.test(c));
-    const explicit = cols.some(c => !/\*/.test(c) && /\bhaul_type\b/.test(c));
-    assert(`  ${rel} passes haul_type through to payrollMetrics`,
+    // The haul columns matter to what splits HOURS — payrollMetrics and
+    // weeklyOvertime. A file that only borrows the day-off rule (leaveHoursOf,
+    // as api/vacation.js does for the vacation banks) reads no haul, and is
+    // held to the time_off_hours check below, which is the one that bites it.
+    const splitsHours = /\bpayrollMetrics\s*\(|\bweeklyOvertime\s*\(/.test(s);
+    const explicit = !splitsHours || cols.some(c => !/\*/.test(c) && /\bhaul_type\b/.test(c));
+    assert(splitsHours ? `  ${rel} passes haul_type through to payrollMetrics`
+                       : `  ${rel} splits no hours, so needs no haul columns`,
       allStar || explicit,
       `column lists: ${cols.map(c => c.replace(/\s+/g, ' ').trim().slice(0, 90)).join(' || ')}`);
     // And haul_hours with it, for the same reason and with the same failure
     // mode: without it every row arrives looking un-split, so a driver who
     // hauled to the job and then worked it is reported wholly at standard
     // while the Payroll page pays part of his day at prevailing.
-    const explicitHours = cols.some(c => !/\*/.test(c) && /\bhaul_hours\b/.test(c));
-    assert(`  ${rel} passes haul_hours through as well`,
+    const explicitHours = !splitsHours || cols.some(c => !/\*/.test(c) && /\bhaul_hours\b/.test(c));
+    if (splitsHours) assert(`  ${rel} passes haul_hours through as well`,
       allStar || explicitHours,
       `column lists: ${cols.map(c => c.replace(/\s+/g, ' ').trim().slice(0, 90)).join(' || ')}`);
     // And time_off_hours, which fails the same way and costs more. Every reader

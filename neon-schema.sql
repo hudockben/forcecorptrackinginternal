@@ -2686,3 +2686,48 @@ CREATE TABLE IF NOT EXISTS data_backup_lock (
     holder    TEXT        NOT NULL,
     locked_at TIMESTAMPTZ NOT NULL
 );
+
+-- ─────────────────────────────────────────────────
+-- VACATION ALLOWANCES (Manage System → Vacation)
+-- ─────────────────────────────────────────────────
+-- How many hours of vacation a login gets for a calendar year. The bank resets
+-- every January 1: a year's hours are spent only by vacation dated in that
+-- year, and nothing left over rolls into the next unless an admin puts it into
+-- the next year's number.
+--
+-- Only the allowance is stored. What has been spent is worked out on every
+-- read from timesheet_entries — vacation rows that are submitted or approved,
+-- at the hours leaveHoursOf in api/lib/payroll-metrics.js reads off them — so
+-- it is never a second figure that can drift from the first. Payroll denies a
+-- request by deleting it, and the hours come back because the row is gone, an
+-- edit to a request's hours is the new figure at once, and an un-approve leaves
+-- them held. See api/vacation.js, which is the one place the arithmetic lives.
+--
+-- Per LOGIN, not per person: a login is what files a vacation row and owns it
+-- (timesheet_entries.user_id), whereas the roster pairs logins with people by
+-- matching names, and an answer that can change must not be what decides whose
+-- bank a day comes out of. Deleting a login takes its timesheet history with
+-- it, and its allowances go the same way.
+--
+-- No row means vacation is not tracked for that login and year, and nothing
+-- anywhere shows a balance. Zero is a real answer: tracked, with no hours.
+CREATE TABLE IF NOT EXISTS vacation_allowances (
+    id                BIGSERIAL     PRIMARY KEY,
+    company_code      TEXT          NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    user_id           INTEGER       NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    year              INTEGER       NOT NULL CHECK (year BETWEEN 2000 AND 2100),
+    hours             NUMERIC(7,2)  NOT NULL CHECK (hours >= 0 AND hours <= 1000),
+    set_by_user_id    INTEGER,
+    set_by_name       TEXT,
+    created_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+    UNIQUE (company_code, user_id, year)
+);
+
+CREATE INDEX IF NOT EXISTS idx_vacation_allowances_year
+    ON vacation_allowances (company_code, year);
+
+-- What the balance reads: one login's vacation rows in one year.
+CREATE INDEX IF NOT EXISTS idx_ts_vacation
+    ON timesheet_entries (company_code, user_id, work_date)
+    WHERE entry_type = 'time_off' AND time_off_type = 'vacation';

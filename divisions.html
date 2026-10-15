@@ -657,6 +657,46 @@
     .sch-sub { font-size: 0.66rem; color: var(--muted); margin-top: 0.15rem; }
     .sup-table tr.sch-off .dir-name > span { color: var(--muted); }
 
+    /* Manage Users → Vacation: three columns, so it holds its shape on a phone
+       — what is approved and waiting goes under the name, not beside it. */
+    .vac-wrap { max-width: 720px; }
+    .vac-table col.c-vac-name  { width: auto; }
+    .vac-table col.c-vac-hours { width: 150px; }
+    .vac-table col.c-vac-left  { width: 112px; }
+    .vac-table td { vertical-align: middle; }
+    .vac-table th:last-child, .vac-table td:last-child { text-align: right; }
+    .modal .vac-table input.vac-input {
+      width: 72px; padding: 0.3rem 0.4rem; font-size: 0.8rem; text-align: right;
+    }
+    .modal .vac-table input.vac-input::placeholder { color: #4a4a5a; }
+    .vac-days { font-size: 0.62rem; color: var(--muted); margin-left: 0.35rem; white-space: nowrap; }
+    .vac-left { font-weight: 700; white-space: nowrap; }
+    .vac-left.over { color: #ef4444; }
+    .vac-left.none { color: var(--muted); font-weight: 400; font-size: 0.72rem; }
+    .vac-left-days { font-size: 0.62rem; color: var(--muted); margin-top: 0.1rem; white-space: nowrap; }
+    .vac-year {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      font-size: 0.8rem; font-weight: 700; white-space: nowrap;
+    }
+    .vac-step {
+      background: none; border: 1px solid var(--border); color: var(--muted);
+      border-radius: 4px; width: 26px; height: 26px; cursor: pointer;
+      font-size: 0.95rem; line-height: 1; font-family: inherit;
+    }
+    .vac-step:hover { color: var(--text); border-color: #555; }
+    .vac-tools { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; margin-top: -0.35rem; }
+    .vac-check {
+      display: flex; align-items: center; gap: 0.4rem; font-size: 0.68rem; color: var(--muted);
+      text-transform: uppercase; letter-spacing: 0.06em; white-space: nowrap; cursor: pointer;
+    }
+    .modal .vac-check input { width: auto; }
+    @media (max-width: 640px) {
+      .vac-table col.c-vac-hours { width: 90px; }
+      .vac-table col.c-vac-left  { width: 88px; }
+      .vac-days { display: block; margin: 0.15rem 0 0; }
+      .vac-left.none { white-space: normal; }
+    }
+
     /* ── Team Directory table ──
        Narrower than the Manage Users matrix: five columns, not seventeen. */
     .dir-modal { max-width: 1040px; }
@@ -1078,11 +1118,14 @@
       .modal { height: 100vh; max-height: 100vh; border-radius: 0; border: none; }
       .mu-legend { display: none; }
       .modal-header, .mu-subtabs, .mu-body { padding-left: 1rem; padding-right: 1rem; }
-      /* Four tabs on one line: tighter, never wrapped, and the strip scrolls
-         sideways on its own rather than pushing the last tab off the screen. */
+      /* Five tabs on one line: tighter, never wrapped, and the strip scrolls
+         sideways on its own rather than pushing the last tab off the screen.
+         Auto Reports is just Reports here — the room the fifth tab needs. */
       .mu-subtabs { overflow-x: auto; scrollbar-width: none; }
       .mu-subtabs::-webkit-scrollbar { display: none; }
-      .mu-subtab-btn { white-space: nowrap; flex-shrink: 0; padding: 0.55rem 0.55rem; letter-spacing: 0.05em; }
+      .mu-subtab-btn { white-space: nowrap; flex-shrink: 0; padding: 0.55rem 0.38rem; letter-spacing: 0.03em; font-size: 0.66rem; }
+      .mu-subtab-count { margin-left: 0.25rem; }
+      .mu-tab-long { display: none; }
       .mu-search { max-width: none; flex-basis: 100%; }
       .modal .mu-filter { flex: 1 1 45%; min-width: 0; }
     }
@@ -1458,7 +1501,8 @@
         <button class="mu-subtab-btn active" id="muTabBtnUsers"       onclick="switchUserSubTab('users')">Users<span class="mu-subtab-count" id="muTabCountUsers"></span></button>
         <button class="mu-subtab-btn"        id="muTabBtnSupervisors" onclick="switchUserSubTab('supervisors')">Roles</button>
         <button class="mu-subtab-btn"        id="muTabBtnScheduler"   onclick="switchUserSubTab('scheduler')">Scheduler</button>
-        <button class="mu-subtab-btn"        id="muTabBtnReports"     onclick="switchUserSubTab('reports')">Auto Reports<span class="mu-subtab-count" id="muTabCountReports" style="display:none"></span></button>
+        <button class="mu-subtab-btn"        id="muTabBtnReports"     onclick="switchUserSubTab('reports')"><span class="mu-tab-long">Auto </span>Reports<span class="mu-subtab-count" id="muTabCountReports" style="display:none"></span></button>
+        <button class="mu-subtab-btn"        id="muTabBtnVacation"    onclick="switchUserSubTab('vacation')">Vacation</button>
       </div>
 
       <div class="mu-body" id="muBody">
@@ -2060,6 +2104,65 @@
           </div>
         </div>
       </div><!-- /#mu-panel-reports -->
+
+      <!-- ── Vacation sub-panel ──
+           Each Timesheet login's vacation hours for a year, and what is left of
+           them. Per LOGIN, the way the Roles tab is: a login is what files a
+           vacation day, so it is whose bank the day comes out of. The person a
+           login was matched to is shown beside it, and two logins that are the
+           same man say so — his vacation would come out of two banks. -->
+      <div class="mu-panel" id="mu-panel-vacation">
+        <div class="mu-toolbar">
+          <div class="mu-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+            </svg>
+            <input type="text" id="vac-search" placeholder="Search people…" oninput="renderVacationList()" aria-label="Search people" />
+          </div>
+          <div class="vac-year" role="group" aria-label="Year">
+            <button type="button" class="vac-step" onclick="vacStepYear(-1)" aria-label="Previous year">&#8249;</button>
+            <span id="vac-year-label"></span>
+            <button type="button" class="vac-step" onclick="vacStepYear(1)" aria-label="Next year">&#8250;</button>
+          </div>
+          <span class="mu-count" id="vac-count"></span>
+        </div>
+
+        <div class="mu-note">
+          The hours of vacation each person gets for <strong class="vac-year-word"></strong>.
+          Vacation they send in on the Timesheet comes off as soon as it is sent,
+          and comes back if Payroll deletes the request. A full day is 8 h, a half
+          day 4; sick days and holidays don’t count. They see what is left on
+          their Timesheet, and Payroll sees any request that goes over. Each year
+          starts fresh on January 1 — put any hours you carry over into the new
+          year’s number. Leave the box empty for anyone whose vacation you don’t
+          track.
+        </div>
+
+        <div class="vac-tools">
+          <label class="vac-check">
+            <input type="checkbox" id="vac-over-only" onchange="renderVacationList()" /> Over only
+          </label>
+          <button type="button" class="mu-tool-btn primary" id="vac-copy-btn" style="display:none" onclick="vacCopyLastYear()"></button>
+        </div>
+
+        <div class="mu-table-wrap vac-wrap">
+          <table class="user-table vac-table">
+            <colgroup><col class="c-vac-name" /><col class="c-vac-hours" /><col class="c-vac-left" /></colgroup>
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Hours for <span class="vac-year-word"></span></th>
+                <th scope="col">Left</th>
+              </tr>
+            </thead>
+            <tbody id="vacListBody">
+              <tr><td colspan="3" class="mu-empty-cell">Loading…</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div id="vac-result" class="modal-result"></div>
+      </div><!-- /#mu-panel-vacation -->
 
       </div><!-- /.mu-body -->
     </div>
@@ -2736,7 +2839,7 @@
     }
 
     // Sub-tab → the suffix its button and panel ids carry.
-    const MU_SUBTABS = { users: 'Users', supervisors: 'Supervisors', scheduler: 'Scheduler', reports: 'Reports' };
+    const MU_SUBTABS = { users: 'Users', supervisors: 'Supervisors', scheduler: 'Scheduler', reports: 'Reports', vacation: 'Vacation' };
 
     function switchUserSubTab(tab) {
       muActiveSubTab = tab;
@@ -2750,6 +2853,8 @@
       if (tab === 'scheduler') loadSchedulerList();
       // Read again on every visit too: a report may have gone out since.
       if (tab === 'reports') { loadAutoReports(); arStartPolling(); } else arStopPolling();
+      // And here: a request sent or deleted since changes what is left.
+      if (tab === 'vacation') loadVacationList();
       if (tab === 'supervisors' && !supervisorsLoaded) {
         supervisorsLoaded = true;
         const search = document.getElementById('sup-search');
@@ -4283,6 +4388,241 @@
         Array.from({ length: 31 }, (_, i) => [i + 1, arOrdinal(i + 1)]).concat([[-1, 'Last day']]), 1);
       arRenderDays();
     })();
+
+    // ── Vacation sub-panel (inside Manage Users modal) ──────────────────────
+    // Each Timesheet login's vacation hours for a year — see api/vacation.js,
+    // which is where the arithmetic lives. The bank resets every January 1, so
+    // the tab is always about one year, stepped with ‹ and ›. A box saves when
+    // it is left (or on Enter); Escape puts it back; emptying a box that had
+    // hours asks first, because that stops tracking the person for the year.
+    let vacPeople  = [];                          // from /api/vacation?year=
+    let vacYear    = new Date().getFullYear();
+    let vacLoadSeq = 0;                           // the latest read wins
+
+    // 8 → "8", 7.5 → "7.5": hours as people say them.
+    function vacFmt(h) { return String(Math.round(Number(h) * 100) / 100); }
+    function vacDays(h) {
+      const d = Math.round(Math.abs(Number(h)) / 8 * 100) / 100;
+      return `${d} ${d === 1 ? 'day' : 'days'}`;
+    }
+    const vacName = p => p.person || p.username;
+
+    function vacStepYear(step) {
+      const next = vacYear + step;
+      if (next < 2000 || next > 2100) return;
+      vacYear = next;
+      document.getElementById('vac-result').textContent = '';
+      loadVacationList();
+    }
+
+    async function loadVacationList() {
+      const seq   = ++vacLoadSeq;
+      const tbody = document.getElementById('vacListBody');
+      document.getElementById('vac-year-label').textContent = vacYear;
+      document.querySelectorAll('#mu-panel-vacation .vac-year-word').forEach(el => { el.textContent = vacYear; });
+      tbody.innerHTML = '<tr><td colspan="3" class="mu-empty-cell">Loading…</td></tr>';
+      try {
+        const res  = await fetch('/api/vacation?year=' + vacYear, { headers: { Authorization: `Bearer ${token}` } });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || 'Failed to load vacation hours');
+        if (seq !== vacLoadSeq) return;
+        vacPeople = (Array.isArray(data.people) ? data.people : []).map(p => ({
+          ...p,
+          user_id: Number(p.user_id),
+          also:    Array.isArray(p.also) ? p.also : [],
+        }));
+        renderVacationList();
+      } catch (err) {
+        if (seq !== vacLoadSeq) return;
+        vacPeople = [];
+        renderVacationTools();
+        tbody.innerHTML = `<tr><td colspan="3" class="mu-empty-cell" style="color:#ef4444">${escHtml(err.message)}</td></tr>`;
+      }
+    }
+
+    // Shared by the table and its count so the two can't disagree.
+    function visibleVacationPeople() {
+      const q        = (document.getElementById('vac-search').value || '').toLowerCase().trim();
+      const overOnly = document.getElementById('vac-over-only').checked;
+      let list = vacPeople;
+      if (q)        list = list.filter(p => [p.person, p.username, ...p.also].some(v => String(v || '').toLowerCase().includes(q)));
+      if (overOnly) list = list.filter(p => p.left != null && p.left < 0);
+      return list;
+    }
+
+    // The count, and Copy — which offers last year's hours to everyone who
+    // had them and has nothing set for this year, however many that is.
+    function renderVacationTools() {
+      const count   = document.getElementById('vac-count');
+      const list    = visibleVacationPeople();
+      const tracked = vacPeople.filter(p => p.hours != null).length;
+      const over    = vacPeople.filter(p => p.left != null && p.left < 0).length;
+      count.textContent = vacPeople.length
+        ? (list.length === vacPeople.length
+            ? `${tracked} of ${vacPeople.length} tracked` + (over ? ` · ${over} over` : '')
+            : `${list.length} of ${vacPeople.length} people`)
+        : '';
+      const copyable = vacPeople.filter(p => p.prev && p.hours == null).length;
+      const btn = document.getElementById('vac-copy-btn');
+      btn.style.display = copyable ? '' : 'none';
+      btn.textContent = `Copy ${vacYear - 1} hours to ${copyable} ${copyable === 1 ? 'person' : 'people'}`;
+      btn.title = `Everyone with hours for ${vacYear - 1} and none yet for ${vacYear} gets the same number`;
+    }
+
+    function vacRowHtml(p) {
+      const sub = [];
+      if (p.person) sub.push('login: ' + p.username);
+      if (p.approved || p.pending) {
+        sub.push([p.approved ? `${vacFmt(p.approved)} h approved` : '',
+                  p.pending  ? `${vacFmt(p.pending)} h waiting for approval` : ''].filter(Boolean).join(', '));
+      }
+      if (p.prev) {
+        const was = p.prev.left == null ? ''
+          : p.prev.left < 0 ? `, ${vacFmt(-p.prev.left)} h over` : `, ${vacFmt(p.prev.left)} h unused`;
+        sub.push(`${vacYear - 1}: ${vacFmt(p.prev.hours)} h${was}`);
+      }
+      if (p.also.length) sub.push('also files as ' + p.also.join(', '));
+      if (!p.timesheet)  sub.push('not on the Timesheet');
+
+      const tracked = p.hours != null;
+      const left = !tracked
+        ? '<span class="vac-left none">Not tracked</span>'
+        : p.left < 0
+          ? `<div class="vac-left over">${vacFmt(-p.left)} h over</div><div class="vac-left-days">${vacDays(p.left)}</div>`
+          : `<div class="vac-left">${vacFmt(p.left)} h</div><div class="vac-left-days">${vacDays(p.left)}</div>`;
+      const setBy = tracked && p.set_by ? ` title="Set by ${escHtml(p.set_by)}"` : '';
+      return `
+        <tr data-uid="${p.user_id}">
+          <td>
+            <div class="dir-name"><span>${escHtml(vacName(p))}</span></div>
+            ${sub.length ? `<div class="sch-sub">${escHtml(sub.join(' · '))}</div>` : ''}
+          </td>
+          <td>
+            <input type="number" class="vac-input" inputmode="decimal" min="0" max="1000" step="0.5"
+                   value="${tracked ? escHtml(vacFmt(p.hours)) : ''}" placeholder="—" data-uid="${p.user_id}"${setBy}
+                   aria-label="Vacation hours for ${escHtml(vacName(p))} in ${vacYear}"
+                   onchange="vacSave(this)" onkeydown="vacKey(event, this)" />${
+              tracked ? `<span class="vac-days">${vacDays(p.hours)}</span>` : ''}
+          </td>
+          <td>${left}</td>
+        </tr>`;
+    }
+
+    function renderVacationList() {
+      const tbody = document.getElementById('vacListBody');
+      const list  = visibleVacationPeople();
+      renderVacationTools();
+      if (!list.length) {
+        tbody.innerHTML = `<tr><td colspan="3" class="mu-empty-cell">${
+          vacPeople.length ? 'No one matches.' : 'No one has the Timesheet yet. Give a login Timesheet access on the Users tab and they show up here.'}</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = list.map(vacRowHtml).join('');
+    }
+
+    // One row redrawn in place, not the table: the box the admin has just
+    // tabbed into must keep its focus while the one they left saves.
+    function vacRedrawRow(p) {
+      const tr = document.querySelector(`#vacListBody tr[data-uid="${p.user_id}"]`);
+      if (tr) tr.outerHTML = vacRowHtml(p);
+      renderVacationTools();
+    }
+
+    function vacKey(e, el) {
+      if (e.key === 'Enter') { e.preventDefault(); el.blur(); return; }
+      if (e.key === 'Escape') {
+        // Swallowed here, so a stray Escape puts the box back rather than
+        // closing the whole window.
+        e.preventDefault();
+        e.stopPropagation();
+        const p = vacPeople.find(x => x.user_id === Number(el.dataset.uid));
+        el.value = p && p.hours != null ? vacFmt(p.hours) : '';
+        el.blur();
+      }
+    }
+
+    async function vacSave(el) {
+      const p = vacPeople.find(x => x.user_id === Number(el.dataset.uid));
+      if (!p) return;
+      const result = document.getElementById('vac-result');
+      const raw    = String(el.value || '').trim();
+      const before = p.hours;
+      const putBack = () => { el.value = before != null ? vacFmt(before) : ''; };
+      if (raw === '' && before == null) return;
+      if (raw !== '' && before != null && Number(raw) === Number(before)) return;
+      if (raw === '') {
+        const ask = `Stop tracking vacation for ${vacName(p)} in ${vacYear}?\n\n`
+          + `Their ${vacFmt(before)} h for ${vacYear} are removed, and the Timesheet stops showing them what is left. `
+          + 'The vacation they have filed is not touched.';
+        if (!confirm(ask)) { putBack(); return; }
+      } else {
+        const n = Number(raw);
+        if (!Number.isFinite(n) || n < 0 || n > 1000) {
+          putBack();
+          result.style.color = '#ef4444';
+          result.textContent = 'Vacation hours must be a number from 0 to 1000.';
+          return;
+        }
+      }
+      el.disabled = true;
+      result.style.color = 'var(--muted)';
+      result.textContent = 'Saving…';
+      try {
+        const res = await fetch(`/api/vacation?user_id=${p.user_id}&year=${vacYear}`, {
+          method:  'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body:    JSON.stringify({ hours: raw === '' ? null : Number(raw) }),
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || 'Save failed');
+        Object.assign(p, {
+          hours: data.hours, approved: data.approved, pending: data.pending, left: data.left,
+          set_by: data.set_by, updated_at: data.updated_at,
+        });
+        vacRedrawRow(p);
+        result.style.color = 'var(--green)';
+        result.textContent = data.hours == null
+          ? `${vacName(p)}: vacation not tracked for ${vacYear}.`
+          : `${vacName(p)}: ${vacFmt(data.hours)} h for ${vacYear}, ${data.left < 0 ? vacFmt(-data.left) + ' h over' : vacFmt(data.left) + ' h left'}.`;
+        const said = result.textContent;
+        setTimeout(() => { if (result.textContent === said) result.textContent = ''; }, 3000);
+      } catch (err) {
+        putBack();
+        el.disabled = false;
+        result.style.color = '#ef4444';
+        result.textContent = err.message;
+      }
+    }
+
+    async function vacCopyLastYear() {
+      const n = vacPeople.filter(p => p.prev && p.hours == null).length;
+      if (!n) return;
+      const from = vacYear - 1;
+      const ask = `Give the ${n} ${n === 1 ? 'person' : 'people'} with no hours set for ${vacYear} the hours they had for ${from}?\n\n`
+        + `Each ${from} number is copied as it stands, including any hours carried over into it. `
+        + `Nobody who already has hours for ${vacYear} is changed.`;
+      if (!confirm(ask)) return;
+      const btn    = document.getElementById('vac-copy-btn');
+      const result = document.getElementById('vac-result');
+      btn.disabled = true;
+      result.style.color = 'var(--muted)';
+      result.textContent = 'Copying…';
+      try {
+        const res = await fetch(`/api/vacation?action=copy&from=${from}&to=${vacYear}`, {
+          method: 'POST', headers: { Authorization: `Bearer ${token}` },
+        });
+        const data = await res.json();
+        if (!res.ok || !data.ok) throw new Error(data.error || 'Copy failed');
+        await loadVacationList();
+        result.style.color = 'var(--green)';
+        result.textContent = `Copied ${from} hours to ${data.copied} ${data.copied === 1 ? 'person' : 'people'} for ${vacYear}.`;
+      } catch (err) {
+        result.style.color = '#ef4444';
+        result.textContent = err.message;
+      } finally {
+        btn.disabled = false;
+      }
+    }
 
     // ── Excel export ────────────────────────────────────────────────────────
     // A real .xlsx rather than a CSV renamed: usernames that look like dates

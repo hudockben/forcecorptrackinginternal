@@ -670,7 +670,7 @@ async function cleanUp() {
       const r = b.getBoundingClientRect();
       return { text: b.innerText.trim(), h: Math.round(r.height), right: Math.round(r.right) };
     }));
-    ok('the four tabs stay on one line each, all on screen',
+    ok('the five tabs stay on one line each, all on screen',
       tabs.every(t => t.h <= tabs[0].h && t.right <= 390), JSON.stringify(tabs));
     if (shots) await page.screenshot({ path: path.join(shots, 'ar-phone.png'), fullPage: false });
 
