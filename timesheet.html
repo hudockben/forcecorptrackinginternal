@@ -156,6 +156,11 @@
     #off-dates { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     #off-dates.one { grid-template-columns: minmax(0, 1fr); }
     #off-dates input { min-width: 0; }
+    /* Below 360px two boxes still fit, but too narrowly to read: the calendar
+       icon sits over the last digit of the year (10/15/202). Stacked there. */
+    @media (max-width: 359px) {
+      #off-dates { grid-template-columns: minmax(0, 1fr); }
+    }
     /* Whether the unit typed above is one the trucking office's list knows.
        Their tab shows a unit's number beside it by matching the name, so a
        near-miss reads fine here and arrives there unrecognised — amber says so
@@ -2067,11 +2072,18 @@
     // The hint under the control. On a range it says what the form is about
     // to file — how many days, and the hours they come to — so a week that
     // picked the wrong month reads wrong here, before it is submitted.
+    //
+    // It must never touch the date boxes themselves — it runs on every
+    // keystroke typed into them. It used to set the last day's `min` to the
+    // first day, so the picker would open on the right month, and Chrome
+    // rebuilds a date box whose min is assigned, even to the value it already
+    // holds. Typing 11/12/2026 went: the first digit of the year made the value
+    // 0002-11-12, that fired this, the min was set, and the next digit wiped
+    // the month and day. A last day before the first is caught by
+    // offRangeDays and said in this hint instead.
     function onOffDatesChange() {
       const first = document.getElementById('f-off-date');
       const last  = document.getElementById('f-off-date-end');
-      // The picker for the last day opens on the first, not on today.
-      if (first && last) last.min = first.value || '';
       const hint = document.getElementById('off-len-hint');
       if (!hint) return;
       if (offLen === 'custom') {

@@ -61,6 +61,7 @@ function classList(initial = []) {
 
 function sandbox() {
   const els = {};
+  const attrWrites = [];
   const el = id => {
     if (els[id]) return els[id];
     const e = { id, style: {}, value: '', min: '', textContent: '',
@@ -70,6 +71,20 @@ function sandbox() {
       e.querySelectorAll = () => e.buttons;
     }
     if (id === 'off-dates') e.classList.add('one');   // as the markup ships
+    // The two date boxes record any write to their min or max. Chrome rebuilds
+    // a date box whose min is assigned — even to the value it already has —
+    // and wipes whatever is half-typed in it, so the handler that runs on
+    // every keystroke must never make one.
+    if (id === 'f-off-date' || id === 'f-off-date-end') {
+      for (const attr of ['min', 'max']) {
+        let v = '';
+        Object.defineProperty(e, attr, {
+          get: () => v,
+          set: x => { attrWrites.push(`${id}.${attr}=${x}`); v = x; },
+        });
+      }
+      e.setAttribute = (n, x) => attrWrites.push(`${id}.setAttribute(${n}, ${x})`);
+    }
     if (id === 'f-off-supervisor') {
       e.value = '7';
       e.selectedIndex = 0;
@@ -88,7 +103,7 @@ function sandbox() {
       fetches.push({ url, method: opts && opts.method });
       return { ok: sb.__deleteOk, json: async () => (sb.__deleteOk ? { ok: true } : { error: 'nope' }) };
     },
-    __els: els, __fetches: fetches,
+    __els: els, __fetches: fetches, __attrWrites: attrWrites,
   };
   vm.createContext(sb);
   // Everything from the length control's state down to the hours it asks the
@@ -244,7 +259,6 @@ console.log('\n[the control shows the range, and what it will file]');
   assert('  beside the first, which is relabelled',
     !$('off-dates').classList.contains('one') && $('lbl-off-date').textContent === 'First day');
   assert('  the hours box stays hidden', $('row-off-hours').style.display === 'none');
-  assert('  the last-day picker opens on the first day', $('f-off-date-end').min === '2026-11-05');
   assert('  the hint asks for both days before there are two',
     /Pick the first and last day/.test($('off-len-hint').textContent));
 
@@ -259,6 +273,22 @@ console.log('\n[the control shows the range, and what it will file]');
   sb.onOffDatesChange();
   assert('a backwards range says so in the hint, before Submit',
     /before the first/.test($('off-len-hint').textContent));
+
+  // The bug this guards: typing 11/12/2026 into the last day, the first digit
+  // of the year made the value 0002-11-12, the handler set the box's min, and
+  // the next digit wiped the month and day. Walk the same keystrokes through.
+  for (const v of ['0002-11-12', '0020-11-12', '0202-11-12', '2026-11-12']) {
+    $('f-off-date-end').value = v;
+    sb.onOffDatesChange();
+  }
+  for (const v of ['0002-11-05', '0020-11-05', '0202-11-05', '2026-11-05']) {
+    $('f-off-date').value = v;
+    sb.onOffDatesChange();
+  }
+  assert('typing a date never writes to either date box\'s min or max',
+    sb.__attrWrites.length === 0, sb.__attrWrites.join(', '));
+  assert('  and the handler has no assignment to a min, max or value in it',
+    !/\.(min|max|value)\s*=(?!=)/.test(requireFn(SRC, 'onOffDatesChange', 'timesheet.html')));
 
   sb.setOffLen('full');
   assert('back on Full day the second picker goes and the label is Date again',
