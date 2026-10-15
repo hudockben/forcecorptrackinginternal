@@ -156,6 +156,11 @@
     #off-dates { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
     #off-dates.one { grid-template-columns: minmax(0, 1fr); }
     #off-dates input { min-width: 0; }
+    /* Below 360px two boxes still fit, but too narrowly to read: the calendar
+       icon sits over the last digit of the year (10/15/202). Stacked there. */
+    @media (max-width: 359px) {
+      #off-dates { grid-template-columns: minmax(0, 1fr); }
+    }
     /* Whether the unit typed above is one the trucking office's list knows.
        Their tab shows a unit's number beside it by matching the name, so a
        near-miss reads fine here and arrives there unrecognised — amber says so

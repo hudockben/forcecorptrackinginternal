@@ -46,8 +46,8 @@ const ok = (l, c, d) => { if (c) { passed++; console.log('  ✓ ' + l); } else {
 const USER = { id: 7, username: 'hudockben', role: 'admin', companyCode: 'FCT',
                isPlatformAdmin: true, allowedDivisions: ['timesheet', 'payroll', 'turf'] };
 
-async function boot(browser) {
-  const page = await browser.newPage({ viewport: { width: 700, height: 1000 } });
+async function boot(browser, width = 700) {
+  const page = await browser.newPage({ viewport: { width, height: 1000 } });
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
   await page.addInitScript(u => {
@@ -114,6 +114,24 @@ async function typeDate(page, sel, digits) {
     const nextYear = await typeDate(page, '#f-off-date-end', '01082027');
     ok('a last day in the next year types through', nextYear === '2027-01-08', nextYear);
 
+    // Half a last day, left for the first, then finished. A box holding only
+    // a month and a day has no value yet, so nothing on the page can put it
+    // back if it is rebuilt — and ANY min write rebuilds it, even one made
+    // from the first box's handler, or on focus when he comes back to it.
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    await page.$eval('#f-off-date-end', e => { e.value = ''; });
+    await page.focus('#f-off-date-end');
+    for (const ch of '1113') await page.keyboard.type(ch);
+    await typeDate(page, '#f-off-date', '11052026');
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    await page.focus('#f-off-date-end');
+    await page.keyboard.press('ArrowRight');
+    await page.keyboard.press('ArrowRight');
+    for (const ch of '2026') await page.keyboard.type(ch);
+    const resumed = await page.$eval('#f-off-date-end', e => e.value);
+    ok('a half-typed last day keeps its month and day while the first is typed, and finishes',
+      resumed === '2026-11-13', JSON.stringify(resumed));
+
     // An earlier last day is still typeable — the hint, not the box, says it
     // is wrong.
     const before = await typeDate(page, '#f-off-date-end', '11022026');
@@ -132,6 +150,25 @@ async function typeDate(page, sel, digits) {
     await page.click('#seg-off-len button[data-val="range"]');
     await page.click('#seg-off-len button[data-val="full"]');
     ok('  and survives switching to Date range and back', await page.$eval('#f-off-date', e => e.value) === '2026-11-05');
+    ok('no page errors', errors.length === 0, errors.join(' | '));
+    await page.close();
+  }
+
+  // Two boxes side by side down to 360px; below that the calendar icon sat
+  // over the last digit of the year, so they stack.
+  console.log('\n[the two boxes fit a phone]');
+  for (const [w, stacked] of [[375, false], [320, true]]) {
+    const { page, errors } = await boot(browser, w);
+    await page.click('#seg-off-len button[data-val="range"]');
+    const [a, b] = await Promise.all(['#f-off-date', '#f-off-date-end'].map(sel =>
+      page.$eval(sel, e => { const r = e.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, w: r.width }; })));
+    const scrollW = await page.evaluate(() => document.documentElement.scrollWidth);
+    ok(`${w}px: ${stacked ? 'stacked' : 'side by side'}`,
+      stacked ? b.top >= a.bottom : Math.abs(a.top - b.top) < 1, JSON.stringify({ a, b }));
+    ok(`  no sideways scroll at ${w}px`, scrollW <= w, scrollW);
+    // The year's last digit went under the icon at about 121px; 141px (a
+    // 360px screen) reads in full.
+    ok(`  each box wide enough to read the year (>= 135px)`, a.w >= 135 && b.w >= 135, `${a.w} / ${b.w}`);
     ok('no page errors', errors.length === 0, errors.join(' | '));
     await page.close();
   }

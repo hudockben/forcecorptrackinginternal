@@ -83,6 +83,7 @@ function sandbox() {
           set: x => { attrWrites.push(`${id}.${attr}=${x}`); v = x; },
         });
       }
+      e.setAttribute = (n, x) => attrWrites.push(`${id}.setAttribute(${n}, ${x})`);
     }
     if (id === 'f-off-supervisor') {
       e.value = '7';
