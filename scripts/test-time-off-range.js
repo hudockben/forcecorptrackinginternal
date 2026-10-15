@@ -116,6 +116,8 @@ function sandbox() {
     requireFn(SRC, 'listUnit',         'timesheet.html'),
     // Lifted from the word `function`, so the `async` in front is put back.
     'async ' + requireFn(SRC, 'dropStaleOffDays', 'timesheet.html'),
+    // The vacation note under the length control — scripts/test-vacation.js.
+    'function renderVacationHint() {}',
     // The page's `let`s live in the script scope, not on the sandbox object.
     `let currentType = 'time_off', offType = 'vacation', editingIds = {};`,
     `globalThis.__state = () => ({ offLen, currentType, editingIds });`,

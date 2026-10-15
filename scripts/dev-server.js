@@ -68,6 +68,7 @@ app.all('/api/timesheet-jobs',          require('../api/timesheet-jobs'));
 app.all('/api/timesheet-job-costcodes', require('../api/timesheet-job-costcodes'));
 app.all('/api/timesheet-supervisors',   require('../api/timesheet-supervisors'));
 app.all('/api/timesheet-audit-log',     require('../api/timesheet-audit-log'));
+app.all('/api/vacation',                require('../api/vacation'));
 
 /** Overtime per job, from payroll — the Financials tab's OT Hours column */
 app.all('/api/job-overtime', require('../api/job-overtime'));

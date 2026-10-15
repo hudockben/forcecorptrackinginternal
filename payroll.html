@@ -2131,6 +2131,10 @@
        leave wears on the Hours Report, so the same fact reads the same way
        wherever payroll happens to be looking at it. */
     .leave-hrs { color: var(--teal); font-weight: 600; }
+    /* Under a waiting vacation request: what it leaves of the person's year,
+       or — in red — how far past it this request goes. See vacationNoteHtml. */
+    .vac-note { font-size: 0.72rem; color: var(--muted); margin-top: 0.15rem; white-space: nowrap; }
+    .vac-note.over { color: var(--red); font-weight: 600; }
 
     /* ── Split-day chip ──
        This entry is one job of a day the worker split across several. Same
@@ -3422,6 +3426,7 @@
     //     boxes re-render from allEntries without refetching, so stale rows
     //     would be drawn back over the failure as if they were current.
     let entriesFetchSeq  = 0;      // bumped per request; older replies are dropped
+    let entriesLoadedSeq = 0;      // the request whose answer (rows or failure) is on screen
     let entriesLoadError = null;   // message from the last failed load, else null
     // The date range and division the rows IN MEMORY were fetched with — which
     // is not necessarily what the filter bar says. The boxes re-render from
@@ -4184,6 +4189,11 @@
         allEntries = Array.isArray(data.entries) ? data.entries : [];
         loadedScope = { from, to, division };
         entriesLoadError = null;
+        entriesLoadedSeq = seq;
+        // Every load reads the vacation banks again, changed rows or not: an
+        // admin may have changed someone's hours since, and a read that failed
+        // last time gets its retry here rather than never.
+        vacSig = null;
         // Diagnostic log so the empty-Pending case is easy to debug from DevTools.
         console.log('[payroll] GET', url, '→', res.status, 'entries:', allEntries.length,
           'statuses:', allEntries.reduce((m, e) => { m[e.status]=(m[e.status]||0)+1; return m; }, {}));
@@ -4201,6 +4211,7 @@
         loadedScope = { from: '', to: '', division: '' };
         selectedIds.clear();
         entriesLoadError = err.message || 'Failed to load time entries';
+        entriesLoadedSeq = seq;
         filterAndRender();
       }
     }
@@ -8776,6 +8787,9 @@
     }
 
     function renderRows() {
+      // Every approve, delete, edit and reload comes through here; whichever
+      // changed a vacation request, the banks are read again.
+      maybeRefreshVacation();
       const tbody = document.getElementById('rowsBody');
       const status = tabStatus();
       const allRows = filtered.filter(e => e.status === status);
@@ -8927,7 +8941,7 @@
             <td class="td-narrow">${isPending ? `<input type="checkbox" data-id="${e.id}" ${sel ? 'checked' : ''} onchange="toggleRow('${e.id}')" />` : ''}</td>
             <td><strong>${escapeHtml(e.username)}</strong></td>
             <td>${prettyDate(e.work_date)}</td>
-            <td>${type}</td>
+            <td>${type}${vacationNoteHtml(e)}</td>
             <td>${escapeHtml(division)}</td>
             <td>${escapeHtml(job)}${splitChip}</td>
             <td>${prevailingWageHtml(e)}</td>
@@ -8961,6 +8975,99 @@
         `;
       }).join('');
       updateBulk();
+    }
+
+    // ── Vacation banks ───────────────────────────────────────────────────────
+    // A login can have a bank of vacation hours for each calendar year
+    // (Manage System → Vacation; the arithmetic is api/vacation.js). A request
+    // comes off it when it is sent, so by the time it is waiting here it is
+    // already counted, and a request past the bank still arrives — the office
+    // asked for those to be allowed and flagged, not refused.
+    //
+    // What is drawn is per REQUEST, not per person: under each waiting vacation
+    // day, what is left of the person's year once it is taken — approved days
+    // first, then the waiting ones in date order — or, in red, how far past the
+    // bank this day goes. A person over by eight hours with two waiting days
+    // has one of them over, not both, and that is the one being decided.
+    //
+    // Read again whenever a vacation request in the loaded set changes — a
+    // delete (the way a request is denied) gives hours back, an approve moves a
+    // day ahead of the waiting ones, an edit changes its hours. A read that
+    // fails draws nothing: the flag is advice, not a gate.
+    let vacBanks = {};        // year → { <user_id>: { hours, approved, pending, left, after: { <entry id>: h } } }
+    let vacSig   = null;
+    let vacSeq   = 0;
+
+    const isVacationEntry = e => e && e.entry_type === 'time_off' && e.time_off_type === 'vacation';
+    function vacFmt(h) { return String(Math.round(Number(h) * 100) / 100); }
+
+    function maybeRefreshVacation() {
+      const sig = allEntries.filter(e => e && e.entry_type === 'time_off')
+        .map(e => [e.id, e.status, e.work_date, e.time_off_type, e.time_off_hours].join(':'))
+        .sort().join('|');
+      if (sig === vacSig) return;
+      vacSig = sig;
+      refreshVacation();
+    }
+
+    async function refreshVacation() {
+      const seq = ++vacSeq;
+      const years = [...new Set(allEntries.filter(isVacationEntry)
+        .map(e => String(e.work_date || '').slice(0, 4)).filter(y => /^\d{4}$/.test(y)))];
+      const next = {};
+      await Promise.all(years.map(async y => {
+        try {
+          const res = await fetch(`/api/vacation?view=payroll&year=${y}`, { headers: authHeaders() });
+          const j = await res.json().catch(() => ({}));
+          if (res.ok && j.ok && j.balances) next[y] = j.balances;
+        } catch { /* drawn as nothing */ }
+      }));
+      if (seq !== vacSeq) return;
+      vacBanks = next;
+      // Not over a load that is still coming in, or over its failure notice:
+      // the rows that load draws carry the notes anyway.
+      if (entriesLoadError || entriesLoadedSeq !== entriesFetchSeq) return;
+      if (currentTab === 'pending' || currentTab === 'approved') renderRows();
+    }
+
+    /** { year, after, over, bank } for a waiting vacation request in a tracked bank, else null. */
+    function vacationStanding(e) {
+      if (!isVacationEntry(e) || e.status !== 'submitted') return null;
+      const year = String(e.work_date || '').slice(0, 4);
+      const bank = vacBanks[year] && vacBanks[year][e.user_id];
+      if (!bank || !bank.after || bank.after[e.id] == null) return null;
+      const after = Number(bank.after[e.id]);
+      const over  = after < 0 ? Math.min(leaveHoursOf(e), -after) : 0;
+      return { year, after, over, bank };
+    }
+
+    function vacationNoteHtml(e) {
+      const v = vacationStanding(e);
+      if (!v) return '';
+      // An unpaid day takes nothing, so a bank already spent before it is not
+      // its doing — and "Leaves −8 h" is not a sentence.
+      if (v.after < 0 && v.over <= 0) return '';
+      const b = v.bank;
+      const title = `${e.username}'s vacation for ${v.year}: ${vacFmt(b.hours)} h for the year, `
+        + `${vacFmt(b.approved)} h approved, ${vacFmt(b.pending)} h waiting for approval (this day included). `
+        + `Taking approved days first and then the waiting ones in date order, `
+        + (v.after < 0 ? `this day puts them ${vacFmt(-v.after)} h over.` : `this day leaves ${vacFmt(v.after)} h.`)
+        + ' Approving it is still allowed.';
+      return v.over > 0
+        ? `<div class="vac-note over" title="${escapeHtml(title)}">${vacFmt(v.over)} h over ${v.year} vacation</div>`
+        : `<div class="vac-note" title="${escapeHtml(title)}">Leaves ${vacFmt(v.after)} h of ${v.year} vacation</div>`;
+    }
+
+    // The sentence an approve confirm gains when any of the days being
+    // approved goes past somebody's bank. Approving is still allowed.
+    function vacationOverConfirm(entries) {
+      const over = (entries || []).map(e => ({ e, v: vacationStanding(e) })).filter(x => x.v && x.v.over > 0);
+      if (!over.length) return '';
+      const lines = over.slice(0, 8).map(({ e, v }) =>
+        `• ${e.username}, ${prettyDate(e.work_date)}: ${vacFmt(v.over)} h over ${v.year} vacation`);
+      if (over.length > 8) lines.push(`• and ${over.length - 8} more`);
+      return `\n\n${over.length === 1 ? 'This vacation day goes' : `${over.length} of these vacation days go`}`
+        + ` past the hours set in Manage System:\n${lines.join('\n')}`;
     }
 
     function prettyDate(s) {
@@ -10356,7 +10463,7 @@
         openTruckingModal(e, 'approve');
         return;
       }
-      if (!confirm('Approve this entry?')) return;
+      if (!confirm('Approve this entry?' + vacationOverConfirm([e]))) return;
       try {
         const res = await fetch('/api/timesheet-entries?action=approve&id=' + encodeURIComponent(id), {
           method: 'POST', headers: authHeaders(),
@@ -10396,11 +10503,15 @@
     function routeBulkApprove(entries, scopeLabel) {
       const anyInject = entries.some(e =>
         entryNeedsSplit(e) || entryNeedsQuarry(e) || entryNeedsTrucking(e));
+      const vacOver = vacationOverConfirm(entries);
       if (!anyInject) {
-        if (!confirm(`Approve ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}?`)) return;
+        if (!confirm(`Approve ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}?` + vacOver)) return;
         runApprovals(entries.map(e => e.id));
         return;
       }
+      // The approval window approves the time off in it as-is, so a vacation
+      // day past someone's hours is said before it opens.
+      if (vacOver && !confirm(`Open the approval window for ${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}?` + vacOver)) return;
       openBulkApprove(entries, scopeLabel);
     }
 

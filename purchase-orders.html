@@ -978,7 +978,7 @@ async function loadCatalog() {
   const editable = PO_SOURCE.concat([GENERAL]).filter(d => capsFor(d).canEdit);
   const named = d => (d === GENERAL ? 'general (non-job)' : divLabel(d));
   if (!editable.length) {
-    notes.push('You can read purchase orders here but not change them. Ask an administrator for a higher level under Manage Users.');
+    notes.push('You can read purchase orders here but not change them. Ask an administrator for a higher level under Manage System.');
   } else if (!editable.includes(GENERAL)) {
     notes.push('You can raise orders in ' + editable.map(named).join(', ') +
                ', but not general (non-job) ones — those need a Purchase Orders role.');
