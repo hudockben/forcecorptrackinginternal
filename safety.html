@@ -1381,7 +1381,7 @@
             <button class="btn btn-ghost" onclick="printReport()">Print all / PDF</button>
           </div>
           <span class="fld-note">Everyone granted the Safety Center is expected to sign. Grant or remove the
-            division in Manage Users to change who appears here.</span>
+            division in Manage System to change who appears here.</span>
         </div>`;
 
       if (state.reportLoading && !state.report) {
@@ -2261,7 +2261,7 @@
           Post a form on the Documents tab and it will show up here.</div>`;
       } else if (!m.people.length) {
         body.innerHTML = `<div class="empty"><strong>Nobody is on the Safety Center roster.</strong>
-          Grant the division in Manage Users and the people expected to sign will show up here.</div>`;
+          Grant the division in Manage System and the people expected to sign will show up here.</div>`;
       } else if (!m.docs.length) {
         // Held open: the list is the only way back from here.
         body.innerHTML = rateFormsHTML(m, true) + `<div class="empty"><strong>Every form in this range is

@@ -1435,12 +1435,14 @@
         <div class="user-label" id="userLabel"></div>
         <span class="platform-badge" id="platformBadge" style="display:none">Platform Admin</span>
       </div>
-      <button class="add-user-btn" id="addUserBtn"        style="display:none" onclick="openUserModal()">+ Manage Users</button>
+      <button class="add-user-btn" id="addUserBtn"        style="display:none" onclick="openUserModal()">+ Manage System</button>
       <button class="sign-out-btn" onclick="signOut()">Sign Out</button>
     </div>
   </header>
 
   <!-- ── Manage Users modal (with a Roles sub-tab) ──
+       On screen it is Manage System, button and title. Comments and tests across
+       the code still say Manage Users, and the ids (addUserBtn, mu-*) kept it.
        The sub-tab was called "Supervisors" when the supervisor flag was the only
        thing on it. It now also carries Driver, which decides whether the
        Timesheet asks someone the hauling question — and a toggle nobody can find
@@ -1448,7 +1450,7 @@
   <div class="modal-backdrop" id="userModalBackdrop">
     <div class="modal" role="dialog" aria-modal="true" aria-labelledby="muTitle" onclick="event.stopPropagation()">
       <div class="modal-header">
-        <div class="modal-title" id="muTitle">Manage Users</div>
+        <div class="modal-title" id="muTitle">Manage System</div>
         <button class="modal-close" onclick="closeUserModal()" aria-label="Close">&#10005;</button>
       </div>
 
@@ -4561,7 +4563,7 @@
       if (search) search.value = '';
       document.getElementById('dir-act-head').textContent = dirCanEdit ? 'Edit' : '';
       document.getElementById('dir-note').textContent = dirCanEdit
-        ? 'Edit a row to add a cell number, an email address, or who that person reports to. The Supervisor and Driver badges come from Manage Users → Roles.'
+        ? 'Edit a row to add a cell number, an email address, or who that person reports to. The Supervisor and Driver badges come from Manage System → Roles.'
         : 'Cell numbers and reporting lines are maintained by your administrator.';
       document.getElementById('dirBody').scrollTop = 0;
       // Returned rather than dropped so a caller can wait for the roster —

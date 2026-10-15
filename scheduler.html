@@ -1156,7 +1156,7 @@ function keptOffBooked() {
   return [...seen].sort((a, b) => a.localeCompare(b));
 }
 // One wording, for the toasts that refuse somebody and the ones that count them.
-function keptOffWhy(name) { return name + ' is off the Scheduler (Manage Users → Scheduler)'; }
+function keptOffWhy(name) { return name + ' is off the Scheduler (Manage System → Scheduler)'; }
 function keptOffNote(n) { return n ? ' · ' + n + ' kept off the Scheduler' : ''; }
 // ── Login names ─────────────────────────────────────────────────────────────
 // The roster the board is sent is PEOPLE. A login's Supervisor or Driver row —
@@ -1223,7 +1223,7 @@ function loginReviewHtml() {
       '<button class="btn primary" onclick="moveLoginBookings()">Move to employee names</button></div>'
     : '<div class="proj ok">No bookings or saved crews are under a login name.</div>';
   return '<div class="modal"><div class="modal-head"><div style="font-weight:700">Login names</div><button class="x" onclick="closeLoginReview()">✕</button></div><div class="modal-body">'+
-    '<div class="muted" style="font-size:0.74rem;margin-bottom:0.6rem">Manage Users → Roles keeps each login’s Supervisor and Driver setting under its username, which put people on this list twice. Each login below is shown as the employee it was matched to by name, with that role. The logins themselves are unchanged — Timesheet and Payroll still use them.'+
+    '<div class="muted" style="font-size:0.74rem;margin-bottom:0.6rem">Manage System → Roles keeps each login’s Supervisor and Driver setting under its username, which put people on this list twice. Each login below is shown as the employee it was matched to by name, with that role. The logins themselves are unchanged — Timesheet and Payroll still use them.'+
       (admin ? ' Where the name gets it wrong, or cannot tell, pick the employee the login belongs to. “Not on the crew list” is for a login that is not crew, such as an office login with a role.'
              : ' Only an admin can change who a login is.')+'</div>'+
     move+
@@ -2017,7 +2017,7 @@ function renderJobBoard() {
   // Kept off the Scheduler: said, so a name somebody expects in the crew panel
   // is accounted for rather than missing — and warned, where one is booked.
   const keptAll = state.board.offScheduler || [], keptIn = keptOffBooked();
-  if (keptAll.length) notes.push('<span title="'+esc('Switched off in Manage Users \u2192 Scheduler: '+keptAll.map(e => e.name).join(', '))+'">\ud83d\udeab '+keptAll.length+' '+(keptAll.length>1?'people':'person')+' kept off the Scheduler in Manage Users</span>');
+  if (keptAll.length) notes.push('<span title="'+esc('Switched off in Manage System \u2192 Scheduler: '+keptAll.map(e => e.name).join(', '))+'">\ud83d\udeab '+keptAll.length+' '+(keptAll.length>1?'people':'person')+' kept off the Scheduler in Manage System</span>');
   if (keptIn.length) notes.push('<span class="warn" title="'+esc(keptIn.join(', '))+'">\u26a0 '+keptIn.length+' booked '+rangeWords()+' '+(keptIn.length>1?'are':'is')+' off the Scheduler \u00b7 <span class="lnk" onclick="state.view=\'crew\';render()">see By Crew</span></span>');
   // Booked on a day they are approved off for the whole of: made before the day
   // off was approved, or missed. Said here so it is fixed on the board rather
@@ -2563,7 +2563,7 @@ function renderCrewBoard() {
   if (kept.length) {
     const collapsed = !!state.grpCol['keptoff'];
     const headCells = ds.map(d => { const n = kept.filter(nm => assignmentsFor(d, nm).length).length; return '<td class="cnt-cell'+(n?' has':'')+'">'+(n||'·')+'</td>'; }).join('');
-    body += '<tr class="grp-row" onclick="toggleGrp(\'keptoff\')"><td class="lead-col grp-lead" title="Switched off in Manage Users → Scheduler, and still booked"><span class="caret">'+(collapsed?'▸':'▾')+'</span> <span class="warn">⚠ Off the Scheduler</span> <span class="muted">('+kept.length+')</span></td>'+headCells+'</tr>';
+    body += '<tr class="grp-row" onclick="toggleGrp(\'keptoff\')"><td class="lead-col grp-lead" title="Switched off in Manage System → Scheduler, and still booked"><span class="caret">'+(collapsed?'▸':'▾')+'</span> <span class="warn">⚠ Off the Scheduler</span> <span class="muted">('+kept.length+')</span></td>'+headCells+'</tr>';
     if (!collapsed) body += kept.map(n => rowFor(n, 'emp', { label:'off the Scheduler' })).join('');
   }
   return html + '<div class="board-wrap"><table class="board crew"><thead><tr><th class="lead-col">Crew / Equipment</th>'+dayHeaders(days,ds,tStr)+'</tr></thead><tbody>'+body+'</tbody></table></div>';
