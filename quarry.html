@@ -9427,10 +9427,15 @@ ${sections}
       });
 
       let list = [...parts.values()];
-      if (day.tons > 0) {
+      // Shares come off the products that made tons. A negative-tons row (a
+      // correction) takes tons back but no cost, so the shares still add up
+      // to exactly the day's cost — never 2× the day for one product and −1×
+      // for the other.
+      const madeTons = list.reduce((s, p) => s + Math.max(p.tons, 0), 0);
+      if (madeTons > 0) {
         // The day's cost over the day's tons, whichever row it was typed on.
         list.forEach(p => {
-          const share = p.tons / day.tons;
+          const share = Math.max(p.tons, 0) / madeTons;
           p.cost = day.cost * share; p.labor = day.labor * share; p.fuel = day.fuel * share;
         });
         // Hours crushing go with the product that crushed them — unless the
@@ -9438,13 +9443,15 @@ ${sections}
         // made tons has none), in which case the day's hours split by tons.
         const rowLevelOk = list.every(p => (p.tons > 0) ? p.hoursCrushing > 0 : p.hoursCrushing <= 0);
         if (day.hoursCrushing > 0 && !rowLevelOk) {
-          list.forEach(p => { p.hoursCrushing = day.hoursCrushing * p.tons / day.tons; });
+          list.forEach(p => { p.hoursCrushing = day.hoursCrushing * Math.max(p.tons, 0) / madeTons; });
         }
       } else {
         // Nothing crushed: each row's cost stays with its own product.
         list.forEach(p => { p.cost = p.rowCost; p.labor = p.rowLabor; p.fuel = p.rowFuel; });
       }
-      const live = p => p.tons > 0 || p.loads > 0 || p.hoursCrushing > 0 || p.cost > 0;
+      // Anything non-zero stays — a negative correction included — so the
+      // section's totals are the same rows the rest of Analytics totals.
+      const live = p => p.tons !== 0 || p.loads !== 0 || p.hoursCrushing !== 0 || p.cost !== 0;
       const kept = list.filter(live);
       // A day that is only a note (a blank row with a comment) still has to
       // reach the chart, so it keeps its main product's (empty) share.
@@ -9553,25 +9560,38 @@ ${sections}
 
       // X keys: every month of the picked year (gaps are real — no crushing),
       // or every month from first to last for All Years; By Product steps
-      // through the crushing days themselves.
+      // through the crushing days themselves — a day at a pit, the same unit
+      // as the Crushing tab, so a breakdown at one pit is never averaged into
+      // a normal day at the other just because they share a date.
+      // Years are padded to four digits to match the dates' own 'YYYY-MM'
+      // (a date typed with a two-digit year is stored as '0026-…').
+      const ym = (y, m) => `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}`;
       let xKeys = [];
       if (byMonth) {
         if (ctx.singleYear) {
-          xKeys = MONTH_VALUES.map(mm => `${ctx.singleYear}-${mm}`);
+          xKeys = MONTH_VALUES.map(mm => ym(ctx.singleYear, mm));
         } else if (dated.length) {
           const first = dated[0].date.slice(0, 7), last = dated[dated.length - 1].date.slice(0, 7);
           let [y, m] = first.split('-').map(Number);
           const [ly, lm] = last.split('-').map(Number);
-          while (y < ly || (y === ly && m <= lm)) {
-            xKeys.push(`${y}-${String(m).padStart(2, '0')}`);
-            m++; if (m > 12) { m = 1; y++; }
+          // A typo'd year can stretch the span to thousands of months; past
+          // twenty years, chart only the months that actually crushed.
+          if ((ly - y) * 12 + (lm - m) < 240) {
+            while (y < ly || (y === ly && m <= lm)) {
+              xKeys.push(ym(y, m));
+              m++; if (m > 12) { m = 1; y++; }
+            }
+          } else {
+            xKeys = [...new Set(dated.map(d => d.date.slice(0, 7)))].sort();
           }
         }
       } else {
-        xKeys = [...new Set(dated.map(d => d.date))].sort();
+        // `dated` is already in date-then-pit order (cpBuildContext).
+        xKeys = [...new Set(dated.map(d => d.key))];
       }
       const xIndex = new Map(xKeys.map((k, i) => [k, i]));
-      const bucketOf = d => xIndex.get(byMonth ? d.date.slice(0, 7) : d.date);
+      const bucketOf = d => xIndex.get(byMonth ? d.date.slice(0, 7) : d.key);
+      const dayOf = new Map(dated.map(d => [d.key, d]));
 
       const focus = xKeys.map(() => cpEmptyAgg());
       const seriesAggs = new Map();
@@ -9628,15 +9648,19 @@ ${sections}
           const [y, m] = k.split('-');
           return MONTH_LABELS[Number(m) - 1] + (multiYear ? ` ’${y.slice(2)}` : '');
         }
-        return cpShortDate(k, false) + (multiYear ? ` ’${k.slice(2, 4)}` : '');
+        const date = dayOf.get(k).date;
+        return cpShortDate(date, false) + (multiYear ? ` ’${date.slice(2, 4)}` : '');
       });
       const xFull = xKeys.map(k => {
-        if (byMonth) { const [y, m] = k.split('-'); return `${MONTH_NAMES[Number(m) - 1]} ${y}`; }
-        return crushDayLabel(k);
+        if (byMonth) { const [y, m] = k.split('-'); return `${MONTH_NAMES[Number(m) - 1]} ${Number(y)}`; }
+        return crushDayLabel(dayOf.get(k).date);
       });
+      // What the tooltip names beside the x: the picked pit(s) for a month,
+      // the day's own pit for a crushing day.
+      const xWhere = xKeys.map(k => byMonth ? ctx.locLabel : dayOf.get(k).location);
 
       return {
-        metricKey, metric, byMonth, xKeys, xShort, xFull, focus, series, avg,
+        metricKey, metric, byMonth, xKeys, xShort, xFull, xWhere, focus, series, avg,
         // Months are time: a month a product skipped breaks its line. Crushing
         // days are a sequence: a product's line runs on to its next day.
         connectAbsent: !byMonth,
@@ -9654,14 +9678,20 @@ ${sections}
       const step = nice * mag;
       return { max: step * ticks, step, ticks };
     }
+    // Decimals come from the step itself, so a gridline at 2.5 or 7.5 is
+    // labelled 2.5 / 7.5 — never rounded to the 3 and 8 it is not on.
     function cpAxisLabel(metric, v, step) {
       const k = Math.abs(v) >= 10000;
+      const stepTxt = String(Number(step.toFixed(6)));
+      const dp = stepTxt.includes('.') ? stepTxt.length - stepTxt.indexOf('.') - 1 : 0;
       if (metric.money) {
         if (k) return '$' + (v / 1000).toLocaleString('en-US', { maximumFractionDigits: 1 }) + 'k';
-        return '$' + v.toLocaleString('en-US', { minimumFractionDigits: step < 1 ? 2 : 0, maximumFractionDigits: step < 1 ? 2 : 0 });
+        // Cents print as two places ($2.50, not $2.5).
+        const md = dp ? Math.max(2, dp) : 0;
+        return '$' + v.toLocaleString('en-US', { minimumFractionDigits: md, maximumFractionDigits: md });
       }
       if (k) return (v / 1000).toLocaleString('en-US', { maximumFractionDigits: 1 }) + 'k';
-      return v.toLocaleString('en-US', { maximumFractionDigits: step < 1 ? 2 : 0 });
+      return v.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
     }
 
     // Inline-SVG line chart. Colours are themeable so the same drawing works on
@@ -9771,7 +9801,7 @@ ${sections}
     // then the notes — the part a red point is there to deliver.
     function cpTooltipHtml(model, ctx, i) {
       const mk = model.metricKey;
-      const head = `${escapeHtml(model.xFull[i])} <span>· ${escapeHtml(ctx.locLabel)}</span>`;
+      const head = `${escapeHtml(model.xFull[i])} <span>· ${escapeHtml(model.xWhere[i])}</span>`;
       const rows = model.series.filter(s => !s.hidden && s.present[i]).map(s =>
         `<div class="cp-tip-row"><span class="cp-tip-key" style="color:${s.color}${s.dashed ? ';border-top-style:dashed' : ''}"></span>`
         + `<strong>${escapeHtml(cpFmtUnit(mk, s.values[i]))}</strong><span class="nm">${escapeHtml(s.name)}</span></div>`).join('');
@@ -9787,10 +9817,11 @@ ${sections}
       let notes = '';
       if (a.notes.length) {
         const MAX = 4;
-        const allLocs = !crushProd.location;
+        // A crushing-day point is one pit, already named in the head.
+        const showLoc = model.byMonth && !crushProd.location;
         notes = '<div class="cp-tip-notes">' + a.notes.slice(0, MAX).map(n => {
           const prods = n.day.parts.map(p => ctx.productName(p.key)).join(', ');
-          const when = [model.byMonth ? cpShortDate(n.day.date, false) : '', prods, allLocs ? n.day.location : '']
+          const when = [model.byMonth ? cpShortDate(n.day.date, false) : '', prods, showLoc ? n.day.location : '']
             .filter(Boolean).join(' · ');
           return `<div class="cp-tip-note"><span class="when">📝 ${escapeHtml(when)}</span>${escapeHtml(n.text)}</div>`;
         }).join('')
@@ -9853,14 +9884,22 @@ ${sections}
         if (sx < geo.mL || sx > geo.mL + geo.plotW) return -1;
         return Math.min(geo.N - 1, Math.max(0, Math.floor((sx - geo.mL) / geo.band)));
       };
+      // A click or tap focuses the SVG too (it is tabindex=0). That focus is
+      // not the keyboard arriving, so it must not pop the first point's tip —
+      // least of all after a tap on the axis gutter that just closed one. On
+      // touch the focus lands after the finger lifts, so the window runs from
+      // the last press or release rather than ending with the event.
+      let pointerAt = -Infinity;
+      const pointerFocus = () => Date.now() - pointerAt < 800;
       svg.addEventListener('pointermove', e => show(idxAt(e), e.clientY));
-      svg.addEventListener('pointerdown', e => show(idxAt(e), e.clientY));
+      svg.addEventListener('pointerdown', e => { pointerAt = Date.now(); show(idxAt(e), e.clientY); });
+      svg.addEventListener('pointerup', () => { pointerAt = Date.now(); });
       // A finger lifting fires pointerleave at once — keep the tip up for touch.
       svg.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') hide(); });
       svg.addEventListener('blur', hide);
       // Keyboard: same readout as hover, stepping point to point.
       const firstWithData = () => Math.max(0, model.focus.findIndex(cpHasData));
-      svg.addEventListener('focus', () => { if (cur < 0) show(firstWithData(), null); });
+      svg.addEventListener('focus', () => { if (cur < 0 && !pointerFocus()) show(firstWithData(), null); });
       svg.addEventListener('keydown', e => {
         if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
           e.preventDefault();
@@ -10178,6 +10217,9 @@ ${sections}
     }
     function setCrushProdProduct(product) {
       crushProd.product = String(product || '');
+      // Asking for a product is asking to see it — even one switched off in
+      // the legend earlier, which would otherwise chart as nothing at all.
+      crushProd.hidden.delete(crushProd.product);
       renderCrushProduction();
     }
     // A row in Crushing by Product: chart that product day by day.
@@ -10185,6 +10227,7 @@ ${sections}
       const key = (crushProd.productRowKeys || [])[idx];
       if (key == null) return;
       crushProd.product = key;
+      crushProd.hidden.delete(key);
       setCrushProdView('product');
     }
     function toggleCrushProdSeries(idx) {

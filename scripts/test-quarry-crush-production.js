@@ -208,6 +208,13 @@ async function main() {
   doc.body.dispatchEvent(new win.MouseEvent('pointerdown', { bubbles: true }));
   check('tapping outside closes it', tip.classList.contains('is-on'), false);
 
+  // A click on the axis gutter focuses the SVG too — that must not pop a tip.
+  svg.dispatchEvent(new win.MouseEvent('pointerdown', { clientX: 20, clientY: 100, bubbles: true }));
+  svg.dispatchEvent(new win.FocusEvent('focus'));
+  check('a click on the axis gutter does not open the first month', tip.classList.contains('is-on'), false);
+  svg.dispatchEvent(new win.FocusEvent('blur'));
+  await sleep(850);
+
   // Keyboard: same readout, arrows skip empty months.
   svg.dispatchEvent(new win.FocusEvent('focus'));
   check('focus opens the first month with crushing', tip.querySelector('.cp-tip-head').textContent.startsWith('March'), true);
@@ -316,6 +323,105 @@ async function main() {
   check('first five get colours, the rest fold into Other', legend2(), 'All products | P1 | P2 | P3 | P4 | P5 | Other products');
   win2.setCrushProdProduct('p7');
   check('a picked sixth-or-later product is named, not "Other"', legend2(), 'P7');
+
+  // ── Regressions found by review ──
+  console.log('\n— Review regressions —');
+  const fix = (rows) => {
+    const d = loadPage({ ...BLOBS, fct_quarry_crushing: rows });
+    return d;
+  };
+  const ready = async (w) => {
+    for (let i = 0; i < 80 && !/Rows/i.test(w.document.getElementById('crushSummary')?.textContent || ''); i++) await sleep(25);
+    w.switchTab('analytics');
+    await sleep(80);
+  };
+  const svgTexts = (d) => [...d.querySelectorAll('#cpChartWrap svg text')].map(t => t.textContent);
+
+  // 1. Two pits crushing on the same date are two crushing days, not one point.
+  {
+    const w = fix([
+      { id: 's1', date: '2026-03-12', locationName: 'Homer City',   productName: '2B', hourlyRate: 26, hours: 8, loadsToCrusher: 25, tonsPerLoad: 20, hoursCrushing: 5, comments: 'Jaw plate cracked' },
+      { id: 's2', date: '2026-03-12', locationName: 'McGees Mills', productName: '2B', hourlyRate: 26, hours: 8, loadsToCrusher: 15, tonsPerLoad: 20, hoursCrushing: 3 },
+      { id: 's3', date: '2026-03-13', locationName: 'McGees Mills', productName: '2B', hourlyRate: 26, hours: 8, loadsToCrusher: 20, tonsPerLoad: 20, hoursCrushing: 4 },
+    ]).window;
+    await ready(w);
+    w.setYearFilter('analytics', '2026');
+    w.setCrushProdView('product');
+    w.setCrushProdMetric('tons');
+    const d = w.document;
+    check('same date, two pits → two points', svgTexts(d).filter(t => /^Mar \d+$/.test(t)).join(','), 'Mar 12,Mar 12,Mar 13');
+    check('average is per crushing day, matching the KPI', svgTexts(d).includes('Avg 400 tons'), true);
+    check('…which the KPI tile agrees with', d.getElementById('cpKpiTonsSub').textContent, '400 tons / crushing day');
+    check('only the broken pit\'s day is red', [...d.querySelectorAll('#cpChartWrap svg circle')].filter(c => c.getAttribute('fill') === '#ef4444').length, 1);
+    const s = d.querySelector('#cpChartWrap svg');
+    const n = 3, pw = Number(s.getAttribute('width')) - 80;
+    s.dispatchEvent(new w.MouseEvent('pointermove', { clientX: 62 + 0.5 * (pw / n), clientY: 100, bubbles: true }));
+    check('the tooltip names the day\'s own pit', d.querySelector('#cpChartWrap .cp-tip-head').textContent, 'Thu, Mar 12, 2026 · Homer City');
+    check('…and shows that pit\'s tons alone', d.querySelector('#cpChartWrap .cp-tip-row strong').textContent, '500 tons');
+  }
+
+  // 2. A product hidden in the legend comes back when it is picked.
+  {
+    win.setYearFilter('analytics', '2026');
+    win.setCrushProdView('month');
+    win.setCrushProdProduct('');
+    const idx2b = [...doc.querySelectorAll('#cpLegend .cp-leg:not(.is-static)')].findIndex(b => b.textContent.trim() === '2B');
+    win.toggleCrushProdSeries(idx2b);
+    win.setCrushProdView('product');
+    const row2b = rowsOf('#analyticsCrushProductTable').find(tr => cells(tr)[0] === '2B');
+    row2b.click();
+    check('picking a hidden product charts it', !!doc.querySelector('#cpChartWrap svg'), true);
+    check('…and its legend entry is on', doc.querySelector('#cpLegend .cp-leg').classList.contains('is-off'), false);
+    win.setCrushProdProduct('');
+    win.setCrushProdView('month');
+  }
+
+  // 3. A 2.5 tick step labels its gridlines 2.5 / 7.5, not 3 / 8.
+  {
+    const w = fix([
+      { id: 't1', date: '2026-03-05', locationName: 'Homer City', productName: '2A', hourlyRate: 26, hours: 8, loadsToCrusher: 1, tonsPerLoad: 26 },
+      { id: 't2', date: '2026-04-05', locationName: 'Homer City', productName: '2A', hourlyRate: 26, hours: 8, loadsToCrusher: 2, tonsPerLoad: 26 },
+    ]).window;
+    await ready(w);
+    w.setYearFilter('analytics', '2026');
+    const ticks = svgTexts(w.document).filter(t => t.startsWith('$'));
+    check('money ticks on a 2.5 step', ticks.join(','), '$0.00,$2.50,$5.00,$7.50,$10.00');
+    w.setCrushProdMetric('hoursCrushing');
+  }
+
+  // 4. A negative-tons correction never doubles the day's cost.
+  {
+    const w = fix([
+      { id: 'n1', date: '2026-04-05', locationName: 'Homer City', productName: '2A', hourlyRate: 26, hours: 8, loadsToCrusher: 10, tonsPerLoad: 20 },
+      { id: 'n2', date: '2026-04-05', locationName: 'Homer City', productName: '2B', hourlyRate: 26, hours: 8, loadsToCrusher: -5, tonsPerLoad: 20 },
+    ]).window;
+    await ready(w);
+    w.setYearFilter('analytics', '2026');
+    const d = w.document;
+    check('section cost = the day\'s cost', d.getElementById('cpKpiCost').textContent, '$416.00');
+    check('section tons = the day\'s tons', d.getElementById('cpKpiTons').textContent, '100');
+    check('…the same figure the rest of Analytics shows', d.getElementById('anKpiCostSub').textContent, 'Daily $0.00 · Crushing $416.00');
+  }
+
+  // 5. A date typed with a two-digit year still reaches the chart.
+  {
+    const w = fix([
+      { id: 'y1', date: '0026-03-12', locationName: 'Homer City', productName: '2A', hourlyRate: 26, hours: 8, loadsToCrusher: 10, tonsPerLoad: 20, hoursCrushing: 2, comments: 'typo year' },
+      { id: 'y2', date: '2026-03-12', locationName: 'Homer City', productName: '2A', hourlyRate: 26, hours: 8, loadsToCrusher: 10, tonsPerLoad: 20, hoursCrushing: 2 },
+    ]).window;
+    await ready(w);
+    w.setYearFilter('analytics', '26');
+    const d = w.document;
+    check('year 26 is charted, not "no entries"', !!d.querySelector('#cpChartWrap svg'), true);
+    // One product → one line (no All products blend), so one red point.
+    check('…with its note point', [...d.querySelectorAll('#cpChartWrap svg circle')].filter(c => c.getAttribute('fill') === '#ef4444').length, 1);
+    w.setYearFilter('analytics', 'all');
+    const months = svgTexts(d).filter(t => /’\d\d$/.test(t));
+    check('All Years over a 2,000-year typo charts only crushed months', months.join(','), 'Mar ’26,Mar ’26');
+  }
+
+  const regErrors = (win.__errors || []).filter(Boolean);
+  check('no script errors in the regressions', regErrors.length ? regErrors.join(' | ') : 0, 0);
 
   console.log(failures ? `\n${failures} check(s) FAILED` : '\nAll checks passed');
   process.exit(failures ? 1 : 0);
