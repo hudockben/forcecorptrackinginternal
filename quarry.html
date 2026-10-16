@@ -778,6 +778,112 @@
     }
     #analyticsPdfBtn, #breakevenPdfBtn, #breakevenEmailBtn { display: inline-flex; align-items: center; gap: 0.4rem; }
 
+    /* ── Analytics → Crushing Production (by month / by product) ──
+       Product colours are the validated categorical order (blue, aqua, yellow,
+       violet, green) stepped for this dark surface. Red is NOT a series colour
+       here: it is reserved for "this point has a note", and a noted point also
+       carries a size + white ring so it never rests on hue alone. */
+    .cp-filters {
+      display: flex; align-items: center; gap: 0.6rem 1rem; flex-wrap: wrap;
+      margin-bottom: 0.85rem;
+    }
+    .cp-seg {
+      display: inline-flex; border: 1px solid var(--border); border-radius: 5px;
+      overflow: hidden; background: var(--bg);
+    }
+    .cp-seg-btn {
+      font-family: inherit; font-size: 0.66rem; font-weight: 700; letter-spacing: 0.08em;
+      text-transform: uppercase; color: var(--muted); background: none; border: none;
+      padding: 0.45rem 0.85rem; cursor: pointer; transition: color 0.15s, background 0.15s;
+    }
+    .cp-seg-btn + .cp-seg-btn { border-left: 1px solid var(--border); }
+    .cp-seg-btn:hover { color: var(--text); }
+    .cp-seg-btn.active { color: var(--accent); background: rgba(249,115,22,0.10); }
+    .cp-seg-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+    .cp-filters-note { font-size: 0.68rem; color: var(--muted); }
+    .cp-kpis { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+    @media (max-width: 1300px) { .cp-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+    @media (max-width: 700px)  { .cp-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+    .cp-chart-head {
+      display: flex; align-items: flex-start; justify-content: space-between;
+      gap: 0.5rem 1.25rem; flex-wrap: wrap; margin-bottom: 0.4rem;
+    }
+    .cp-chart-head .home-panel-title { margin-bottom: 0.3rem; }
+    .cp-legend { display: flex; flex-wrap: wrap; gap: 0.35rem 0.9rem; font-size: 0.72rem; color: #c3c2b7; }
+    .cp-leg {
+      display: inline-flex; align-items: center; gap: 0.4rem; background: none; border: none;
+      font-family: inherit; font-size: inherit; color: inherit; cursor: pointer; padding: 0.1rem 0;
+    }
+    .cp-leg:hover { color: var(--text); }
+    .cp-leg.is-off { color: var(--muted); text-decoration: line-through; }
+    .cp-leg.is-off .cp-leg-line { opacity: 0.3; }
+    .cp-leg.is-static { cursor: default; }
+    .cp-leg-line { display: inline-block; width: 18px; height: 0; border-top: 2px solid currentColor; }
+    .cp-leg-line.is-dashed { border-top-style: dashed; }
+    .cp-leg-dot {
+      display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+      background: #ef4444; box-shadow: 0 0 0 2px #f5f5f5;
+    }
+    .cp-chart-wrap { position: relative; width: 100%; min-height: 120px; }
+    .cp-chart-wrap svg { display: block; width: 100%; height: auto; touch-action: pan-y; }
+    .cp-chart-wrap svg:focus { outline: none; }
+    .cp-chart-wrap svg:focus-visible { outline: 1px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+    .cp-chart-empty { font-size: 0.78rem; color: var(--muted); text-align: center; padding: 2.5rem 1rem; }
+    .cp-chart-foot { font-size: 0.68rem; color: var(--muted); margin-top: 0.45rem; line-height: 1.5; }
+    .cp-tip {
+      position: absolute; z-index: 20; pointer-events: none; display: none;
+      min-width: 220px; max-width: 340px;
+      background: #1a1a26; border: 1px solid #3a3a4e; border-radius: 6px;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.45);
+      padding: 0.6rem 0.7rem; font-size: 0.74rem; color: var(--text); line-height: 1.4;
+    }
+    .cp-tip.is-on { display: block; }
+    .cp-tip-head { font-weight: 700; margin-bottom: 0.35rem; }
+    .cp-tip-head span { font-weight: 400; color: var(--muted); }
+    .cp-tip-row { display: flex; align-items: center; gap: 0.45rem; margin: 0.15rem 0; }
+    .cp-tip-row strong { font-variant-numeric: tabular-nums; min-width: 4.5rem; }
+    .cp-tip-row .nm { color: #c3c2b7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .cp-tip-key { display: inline-block; width: 12px; height: 0; border-top: 2px solid currentColor; flex-shrink: 0; }
+    .cp-tip-stats {
+      margin-top: 0.4rem; padding-top: 0.4rem; border-top: 1px solid var(--border);
+      color: #c3c2b7; font-size: 0.7rem; font-variant-numeric: tabular-nums;
+    }
+    .cp-tip-notes { margin-top: 0.45rem; display: flex; flex-direction: column; gap: 0.3rem; }
+    .cp-tip-note {
+      border-left: 3px solid #ef4444; background: rgba(239,68,68,0.10);
+      padding: 0.3rem 0.45rem; border-radius: 0 4px 4px 0; white-space: pre-wrap; word-break: break-word;
+    }
+    .cp-tip-note .when { display: block; font-size: 0.64rem; color: #fca5a5; font-weight: 700; letter-spacing: 0.03em; }
+    .cp-tip-more { font-size: 0.66rem; color: var(--muted); }
+    .cp-swatch {
+      display: inline-block; width: 14px; height: 0; border-top: 2px solid currentColor;
+      vertical-align: middle; margin-right: 0.45rem;
+    }
+    .cp-swatch.is-dashed { border-top-style: dashed; }
+    .cp-note-count { color: #fca5a5; font-weight: 700; white-space: nowrap; cursor: help; }
+    .cp-note-count::before {
+      content: ''; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+      background: #ef4444; margin-right: 0.35rem; vertical-align: 1px;
+    }
+    .cp-none { color: var(--muted); }
+    .home-yoy tbody tr.cp-row-total td { border-top: 2px solid var(--border); font-weight: 700; background: #14141d; }
+    .home-yoy tbody tr.cp-pick { cursor: pointer; }
+    .home-yoy tbody tr.cp-pick:hover td { background: var(--surface2); }
+    .home-yoy tbody tr.cp-pick.is-picked td { background: rgba(249,115,22,0.07); }
+    .cp-title-sub { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--muted); }
+    .cp-notes-wrap { max-height: 420px; overflow: auto; }
+    .cp-notes-table tbody td.cp-note-text {
+      text-align: left; white-space: pre-wrap; word-break: break-word;
+      min-width: 260px; max-width: 520px; font-weight: 400;
+    }
+    .cp-notes-table thead th:nth-child(2),
+    .cp-notes-table thead th:nth-child(3),
+    .cp-notes-table thead th:nth-child(4),
+    .cp-notes-table tbody td:nth-child(2),
+    .cp-notes-table tbody td:nth-child(3) { text-align: left; }
+    .cp-notes-table tbody td:first-child { white-space: nowrap; }
+    .cp-note-by { display: block; font-size: 0.64rem; color: var(--muted); margin-top: 0.1rem; }
+
     .sales-table-wrap {
       border: 1px solid var(--border); border-radius: 6px;
       overflow: auto; background: var(--surface);
@@ -1939,6 +2045,137 @@
           tons to crusher × (1 − loss %). Saved automatically and applied across the Home and Analytics dashboards.
         </div>
         <div class="loss-editor" id="analyticsLossEditor"></div>
+      </div>
+
+      <!-- ── Crushing Production: by month / by product, with the notes ── -->
+      <div class="home-section-label">Crushing Production</div>
+      <div class="cp-filters">
+        <div class="cp-seg" role="group" aria-label="Crushing production view">
+          <button type="button" class="cp-seg-btn active" data-view="month" aria-pressed="true" onclick="setCrushProdView('month')">By Month</button>
+          <button type="button" class="cp-seg-btn" data-view="product" aria-pressed="false" onclick="setCrushProdView('product')">By Product</button>
+        </div>
+        <label class="year-filter-wrap">Metric
+          <select class="year-filter-select" id="cpMetric" onchange="setCrushProdMetric(this.value)"></select>
+        </label>
+        <label class="year-filter-wrap">Location
+          <select class="year-filter-select" id="cpLocation" onchange="setCrushProdLocation(this.value)"></select>
+        </label>
+        <label class="year-filter-wrap">Product
+          <select class="year-filter-select" id="cpProduct" onchange="setCrushProdProduct(this.value)"></select>
+        </label>
+        <span class="cp-filters-note" id="cpFiltersNote"></span>
+      </div>
+
+      <div class="kpi-grid cp-kpis">
+        <div class="kpi-tile is-accent">
+          <div class="kpi-label">Cost / Ton</div>
+          <div class="kpi-value" id="cpKpiCpt">—</div>
+          <div class="kpi-sub" id="cpKpiCptSub">Crushing cost ÷ tons crushed</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Tons Crushed</div>
+          <div class="kpi-value" id="cpKpiTons">0</div>
+          <div class="kpi-sub" id="cpKpiTonsSub">Loads × tons / load</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Loads to Crusher</div>
+          <div class="kpi-value" id="cpKpiLoads">0</div>
+          <div class="kpi-sub" id="cpKpiLoadsSub">—</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Total Cost</div>
+          <div class="kpi-value" id="cpKpiCost">$0.00</div>
+          <div class="kpi-sub" id="cpKpiCostSub">Labor $0 · Fuel $0</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Tons / Hour</div>
+          <div class="kpi-value" id="cpKpiTph">—</div>
+          <div class="kpi-sub" id="cpKpiTphSub">0 hrs crushing</div>
+        </div>
+        <div class="kpi-tile">
+          <div class="kpi-label">Crushing Days</div>
+          <div class="kpi-value" id="cpKpiDays">0</div>
+          <div class="kpi-sub" id="cpKpiDaysSub">0 with notes</div>
+        </div>
+      </div>
+
+      <div class="home-panel cp-chart-panel" style="margin-bottom: 1.1rem">
+        <div class="cp-chart-head">
+          <div class="home-panel-title" id="cpChartTitle">Crushing Production</div>
+          <div class="cp-legend" id="cpLegend"></div>
+        </div>
+        <div class="cp-chart-wrap" id="cpChartWrap"></div>
+        <div class="cp-chart-foot" id="cpChartFoot"></div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem" id="cpMonthPanel">
+        <div class="home-panel-title">Crushing by Month</div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="analyticsCrushMonthTable">
+            <thead>
+              <tr>
+                <th>Month</th>
+                <th style="text-align:left">Products</th>
+                <th>Days</th>
+                <th>Loads</th>
+                <th>Tons</th>
+                <th>Tons / Load</th>
+                <th>Hrs Crushing</th>
+                <th>Tons / Hr</th>
+                <th>Labor</th>
+                <th>Fuel</th>
+                <th>Total Cost</th>
+                <th>Cost / Ton</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.1rem; display:none" id="cpProductPanel">
+        <div class="home-panel-title">Crushing by Product</div>
+        <div style="overflow:auto">
+          <table class="home-yoy" id="analyticsCrushProductTable">
+            <thead>
+              <tr>
+                <th>Product</th>
+                <th>Days</th>
+                <th>Loads</th>
+                <th>Tons</th>
+                <th>% of Tons</th>
+                <th>Tons / Load</th>
+                <th>Hrs Crushing</th>
+                <th>Tons / Hr</th>
+                <th>Total Cost</th>
+                <th>Cost / Ton</th>
+                <th>Notes</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="home-panel" style="margin-bottom: 1.4rem">
+        <div class="home-panel-title">Crushing Notes <span class="cp-title-sub">· the comments typed on Crushing Tracking, with that day’s numbers</span></div>
+        <div class="cp-notes-wrap">
+          <table class="home-yoy cp-notes-table" id="analyticsCrushNotesTable">
+            <thead>
+              <tr>
+                <th>Date</th>
+                <th>Location</th>
+                <th>Product</th>
+                <th>Note</th>
+                <th>Tons</th>
+                <th>Tons / Hr</th>
+                <th>Cost / Ton</th>
+              </tr>
+            </thead>
+            <tbody></tbody>
+          </table>
+        </div>
       </div>
 
       <div class="home-panel" style="margin-bottom: 1.1rem">
@@ -8681,6 +8918,7 @@ ${sections}
       renderAnalyticsTask(a);
       renderAnalyticsEmployee(a);
       renderAnalyticsCrush(byLoc);
+      renderCrushProduction();
       renderAnalyticsYoy();
     }
 
@@ -9031,6 +9269,985 @@ ${sections}
       tbody.innerHTML = html;
     }
 
+    // ── Analytics → Crushing Production ────────────────────────
+    // Cost / ton, loads, tons, tons / hour and cost for the crushing plant,
+    // charted By Month or By Product, with every comment typed on Crushing
+    // Tracking pinned to the point it explains. A red point means somebody wrote
+    // a note on that day — "pulley belts broke on the 206 conveyor" is why the
+    // rate fell out of range, and it belongs on the dip, not in a grid three
+    // tabs away.
+    //
+    // The unit is the crushing DAY at a pit, exactly as the Crushing tab groups
+    // it (crushDayKey): the crew's labour and the loads that went to the crusher
+    // sit on different rows, so a day's cost only means something against the
+    // day's tons. A day's cost is split across the products it made by their
+    // share of its tons, so each product carries the day's blended cost / ton —
+    // the figure the Crushing tab prints on the day's header. A row with no
+    // product of its own counts toward the day's main product (most tons), so
+    // the crew's rows land with the material they were making.
+    const CP_UNTAGGED_KEY = '__untagged__';
+    const CP_OTHER_KEY    = '__other__';
+    const CP_ALL_KEY      = '__all__';
+    const CP_NONE_LOC     = '__none__';
+    const CP_UNTAGGED     = '— Untagged —';
+    // Validated categorical order (scripts: dataviz validate_palette) for this
+    // dark surface and for the white PDF. Red is deliberately absent — it marks
+    // a note. Past five products the rest fold into one "Other products" line.
+    const CP_COLORS       = ['#3987e5', '#199e70', '#c98500', '#9085e9', '#008300'];
+    const CP_COLORS_PRINT = ['#2a78d6', '#1baf7a', '#eda100', '#6250d6', '#008300'];
+    const CP_NEUTRAL       = '#8b8b99';
+    const CP_NEUTRAL_PRINT = '#6b7280';
+    const CP_NOTE_RED     = '#ef4444';
+    const CP_METRICS = {
+      costPerTon:    { label: 'Cost / Ton',       unit: '/ton', money: true, ratio: true,
+                       get: a => a.tons > 0 ? a.cost / a.tons : null },
+      tons:          { label: 'Tons Crushed',     unit: ' tons',
+                       get: a => a.tons },
+      loads:         { label: 'Loads to Crusher', unit: ' loads',
+                       get: a => a.loads },
+      tonsPerHour:   { label: 'Tons / Hour',      unit: ' t/hr', ratio: true,
+                       get: a => a.hoursCrushing > 0 ? a.tons / a.hoursCrushing : null },
+      cost:          { label: 'Total Cost',       unit: '', money: true,
+                       get: a => a.cost },
+      hoursCrushing: { label: 'Hours Crushing',   unit: ' hrs',
+                       get: a => a.hoursCrushing },
+    };
+    const crushProd = {
+      view: 'month',          // 'month' | 'product'
+      metric: 'costPerTon',
+      location: '',           // '' = all pits, else the pit's lower-cased name (CP_NONE_LOC = no pit)
+      product: '',            // '' = all products, else a product key (cpProductKey)
+      hidden: new Set(),      // series keys switched off from the legend
+      ctx: null,              // last computed context, so a resize can redraw without recomputing
+    };
+
+    function cpProductKey(name) {
+      const k = String(name == null ? '' : name).trim().toLowerCase();
+      return k || CP_UNTAGGED_KEY;
+    }
+    function cpLocKey(row) {
+      const k = String((row && row.locationName) || '').trim().toLowerCase();
+      return k || CP_NONE_LOC;
+    }
+    function cpFmt(metric, v) {
+      if (v == null || !Number.isFinite(v)) return '—';
+      return CP_METRICS[metric].money ? formatMoney(v) : formatTons(v);
+    }
+    function cpFmtUnit(metric, v) {
+      const txt = cpFmt(metric, v);
+      return txt === '—' ? txt : txt + CP_METRICS[metric].unit;
+    }
+    function cpIsDate(s) { return /^\d{4}-\d{2}-\d{2}$/.test(String(s || '')); }
+    // "2026-03-12" → "Mar 12" (no Date(): a bare ISO date parses as UTC midnight).
+    function cpShortDate(s, withYear) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(s || ''));
+      if (!m) return 'No date';
+      const mo = Number(m[2]) - 1;
+      return `${MONTH_LABELS[mo] || m[2]} ${Number(m[3])}${withYear ? `, ${m[1]}` : ''}`;
+    }
+
+    function cpEmptyAgg() {
+      return {
+        cost: 0, labor: 0, fuel: 0, tons: 0, loads: 0, hoursCrushing: 0,
+        dayKeys: new Set(), notedDays: new Set(), productKeys: new Map(), notes: [],
+      };
+    }
+    // Fold one product's share of one day into an aggregate. A day's notes are
+    // the day's, so they are added once per aggregate however many of its
+    // products land in it.
+    function cpAdd(agg, part, day) {
+      agg.cost += part.cost; agg.labor += part.labor; agg.fuel += part.fuel;
+      agg.tons += part.tons; agg.loads += part.loads; agg.hoursCrushing += part.hoursCrushing;
+      agg.productKeys.set(part.key, (agg.productKeys.get(part.key) || 0) + part.tons);
+      if (!agg.dayKeys.has(day.key)) {
+        agg.dayKeys.add(day.key);
+        if (day.notes.length) {
+          agg.notedDays.add(day.key);
+          day.notes.forEach(n => agg.notes.push({ day, text: n.text, by: n.by }));
+        }
+      }
+    }
+    function cpHasData(agg) { return !!agg && agg.dayKeys.size > 0; }
+
+    // One crushing day at one pit → its totals, its notes, and its split by
+    // product. Rows are the day's raw Crushing Tracking rows.
+    function cpSplitDay(key, rows) {
+      const num = v => Number.isFinite(Number(v)) ? Number(v) : 0;
+      const first = rows[0] || {};
+      // The products the day's rows name, and the tons each carried. The main
+      // product (most tons; most rows on a tie, e.g. a day that crushed
+      // nothing) is where the rows that name none are counted.
+      const named = new Map();
+      rows.forEach(r => {
+        if (!String(r.productName || '').trim()) return;
+        const k = cpProductKey(r.productName);
+        const e = named.get(k) || { tons: 0, rows: 0 };
+        e.tons += crushCalc(r).estimatedTons;
+        e.rows++;
+        named.set(k, e);
+      });
+      let mainKey = CP_UNTAGGED_KEY, best = null;
+      named.forEach((e, k) => {
+        if (!best || e.tons > best.tons || (e.tons === best.tons && e.rows > best.rows)) { best = e; mainKey = k; }
+      });
+
+      const parts = new Map();
+      const day = {
+        key, date: String(first.date || '').trim(),
+        location: String(first.locationName || '').trim() || NO_LOCATION,
+        locKey: cpLocKey(first),
+        cost: 0, labor: 0, fuel: 0, tons: 0, loads: 0, hoursCrushing: 0,
+        notes: [], parts: [],
+      };
+      const seenNotes = new Set();
+      rows.forEach(r => {
+        const c = crushCalc(r);
+        const k = String(r.productName || '').trim() ? cpProductKey(r.productName) : mainKey;
+        let p = parts.get(k);
+        if (!p) {
+          p = { key: k, tons: 0, loads: 0, hoursCrushing: 0, cost: 0, labor: 0, fuel: 0,
+                rowCost: 0, rowLabor: 0, rowFuel: 0 };
+          parts.set(k, p);
+        }
+        p.tons          += c.estimatedTons;
+        p.loads         += num(r.loadsToCrusher);
+        p.hoursCrushing += num(r.hoursCrushing);
+        p.rowCost       += c.totalCost;
+        p.rowLabor      += c.totalPayroll;
+        p.rowFuel       += c.totalFuel;
+        day.cost  += c.totalCost;  day.labor += c.totalPayroll; day.fuel += c.totalFuel;
+        day.tons  += c.estimatedTons;
+        day.loads += num(r.loadsToCrusher);
+        day.hoursCrushing += num(r.hoursCrushing);
+        const text = typeof r.comments === 'string' ? r.comments.trim() : '';
+        if (text && !seenNotes.has(text.toLowerCase())) {
+          seenNotes.add(text.toLowerCase());
+          day.notes.push({ text, by: String(r.employeeName || '').trim() });
+        }
+      });
+
+      let list = [...parts.values()];
+      // Shares come off the products that made tons. A negative-tons row (a
+      // correction) takes tons back but no cost, so the shares still add up
+      // to exactly the day's cost — never 2× the day for one product and −1×
+      // for the other.
+      const madeTons = list.reduce((s, p) => s + Math.max(p.tons, 0), 0);
+      if (madeTons > 0) {
+        // The day's cost over the day's tons, whichever row it was typed on.
+        list.forEach(p => {
+          const share = Math.max(p.tons, 0) / madeTons;
+          p.cost = day.cost * share; p.labor = day.labor * share; p.fuel = day.fuel * share;
+        });
+        // Hours crushing go with the product that crushed them — unless the
+        // hours were typed on a row that crushed nothing (or a product that
+        // made tons has none), in which case the day's hours split by tons.
+        const rowLevelOk = list.every(p => (p.tons > 0) ? p.hoursCrushing > 0 : p.hoursCrushing <= 0);
+        if (day.hoursCrushing > 0 && !rowLevelOk) {
+          list.forEach(p => { p.hoursCrushing = day.hoursCrushing * Math.max(p.tons, 0) / madeTons; });
+        }
+      } else {
+        // Nothing crushed: each row's cost stays with its own product.
+        list.forEach(p => { p.cost = p.rowCost; p.labor = p.rowLabor; p.fuel = p.rowFuel; });
+      }
+      // Anything non-zero stays — a negative correction included — so the
+      // section's totals are the same rows the rest of Analytics totals.
+      const live = p => p.tons !== 0 || p.loads !== 0 || p.hoursCrushing !== 0 || p.cost !== 0;
+      const kept = list.filter(live);
+      // A day that is only a note (a blank row with a comment) still has to
+      // reach the chart, so it keeps its main product's (empty) share.
+      if (!kept.length && day.notes.length) kept.push(parts.get(mainKey) || list[0]);
+      day.parts = kept;
+      return day;
+    }
+
+    // Everything the section draws, for the Analytics year and this section's
+    // location / product picks.
+    function cpBuildContext() {
+      const yearRows = crushRows.filter(r => r && rowMatchesYear('analytics', r));
+
+      // Display names: the Manage Lists spelling wins, then the first one typed.
+      const names = new Map();
+      (quarryLists.product || []).forEach(it => {
+        const nm = String((it && it.name) || '').trim();
+        if (nm && !names.has(cpProductKey(nm))) names.set(cpProductKey(nm), nm);
+      });
+      crushRows.forEach(r => {
+        const nm = String((r && r.productName) || '').trim();
+        if (nm && !names.has(cpProductKey(nm))) names.set(cpProductKey(nm), nm);
+      });
+      const productName = k => k === CP_UNTAGGED_KEY ? CP_UNTAGGED : (names.get(k) || k);
+
+      // Day groups across every pit in the year.
+      const byKey = new Map();
+      yearRows.forEach(r => {
+        const k = crushDayKey(r);
+        const list = byKey.get(k);
+        if (list) list.push(r); else byKey.set(k, [r]);
+      });
+      const allDays = [...byKey.entries()]
+        .map(([k, rows]) => cpSplitDay(k, rows))
+        .filter(d => d.parts.length);
+      allDays.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0)
+        || (a.locKey < b.locKey ? -1 : a.locKey > b.locKey ? 1 : 0));
+
+      // Colours follow the product, never its rank: slots go in the order each
+      // product was first crushed this year, and a location / product pick
+      // never repaints one. Untagged is not a product and never takes a slot.
+      const slotOf = new Map();
+      allDays.forEach(d => d.parts.forEach(p => {
+        if (p.key !== CP_UNTAGGED_KEY && !slotOf.has(p.key)) slotOf.set(p.key, slotOf.size);
+      }));
+
+      // Pits in the year, for the Location picker.
+      const locs = new Map();
+      allDays.forEach(d => { if (!locs.has(d.locKey)) locs.set(d.locKey, d.location); });
+      if (crushProd.location && !locs.has(crushProd.location)) crushProd.location = '';
+      const days = crushProd.location ? allDays.filter(d => d.locKey === crushProd.location) : allDays;
+
+      // Products at the picked pit(s), for the Product picker and its table.
+      const productsHere = new Map();
+      days.forEach(d => d.parts.forEach(p => {
+        const e = productsHere.get(p.key) || cpEmptyAgg();
+        cpAdd(e, p, d);
+        productsHere.set(p.key, e);
+      }));
+      if (crushProd.product && !productsHere.has(crushProd.product)) crushProd.product = '';
+
+      const productMatch = p => !crushProd.product || p.key === crushProd.product;
+      const total = cpEmptyAgg();
+      days.forEach(d => d.parts.forEach(p => { if (productMatch(p)) cpAdd(total, p, d); }));
+
+      return {
+        yearRows, allDays, days, locs, slotOf, productsHere, productMatch, total, productName,
+        yearLabel: yearFilterLabel('analytics'),
+        singleYear: yearFilters.analytics && yearFilters.analytics !== 'all' ? Number(yearFilters.analytics) : null,
+        locLabel: crushProd.location ? (locs.get(crushProd.location) || '') : 'All Locations',
+      };
+    }
+
+    // Series identity: a slotted product is itself; the rest share one line —
+    // unless one product is picked, which is then its own (neutral) line.
+    function cpSeriesKeyOf(ctx, productKey) {
+      if (productKey === CP_UNTAGGED_KEY) return CP_UNTAGGED_KEY;
+      if (crushProd.product) return productKey;
+      const slot = ctx.slotOf.get(productKey);
+      return (slot != null && slot < CP_COLORS.length) ? productKey : CP_OTHER_KEY;
+    }
+    function cpSeriesStyle(ctx, seriesKey, print) {
+      const colors  = print ? CP_COLORS_PRINT : CP_COLORS;
+      const neutral = print ? CP_NEUTRAL_PRINT : CP_NEUTRAL;
+      if (seriesKey === CP_ALL_KEY)      return { color: print ? '#111111' : '#e0e0e0', width: 2.75, dashed: false };
+      if (seriesKey === CP_UNTAGGED_KEY) return { color: neutral, width: 2, dashed: true };
+      if (seriesKey === CP_OTHER_KEY)    return { color: neutral, width: 2, dashed: false };
+      const slot = ctx.slotOf.get(seriesKey);
+      return { color: colors[slot] || neutral, width: 2, dashed: false };
+    }
+    function cpSeriesName(ctx, seriesKey) {
+      if (seriesKey === CP_ALL_KEY)   return 'All products';
+      if (seriesKey === CP_OTHER_KEY) return 'Other products';
+      return ctx.productName(seriesKey);
+    }
+
+    // The chart's data: x positions, one aggregate per x for the focus (what
+    // the filters selected) and one per x per series.
+    function cpBuildModel(ctx, opts) {
+      opts = opts || {};
+      const print = !!opts.print;
+      const metricKey = crushProd.metric;
+      const metric = CP_METRICS[metricKey];
+      const byMonth = crushProd.view === 'month';
+      const dated = ctx.days.filter(d => cpIsDate(d.date) && d.parts.some(ctx.productMatch));
+
+      // X keys: every month of the picked year (gaps are real — no crushing),
+      // or every month from first to last for All Years; By Product steps
+      // through the crushing days themselves — a day at a pit, the same unit
+      // as the Crushing tab, so a breakdown at one pit is never averaged into
+      // a normal day at the other just because they share a date.
+      // Years are padded to four digits to match the dates' own 'YYYY-MM'
+      // (a date typed with a two-digit year is stored as '0026-…').
+      const ym = (y, m) => `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}`;
+      let xKeys = [];
+      if (byMonth) {
+        if (ctx.singleYear) {
+          xKeys = MONTH_VALUES.map(mm => ym(ctx.singleYear, mm));
+        } else if (dated.length) {
+          const first = dated[0].date.slice(0, 7), last = dated[dated.length - 1].date.slice(0, 7);
+          let [y, m] = first.split('-').map(Number);
+          const [ly, lm] = last.split('-').map(Number);
+          // A typo'd year can stretch the span to thousands of months; past
+          // twenty years, chart only the months that actually crushed.
+          if ((ly - y) * 12 + (lm - m) < 240) {
+            while (y < ly || (y === ly && m <= lm)) {
+              xKeys.push(ym(y, m));
+              m++; if (m > 12) { m = 1; y++; }
+            }
+          } else {
+            xKeys = [...new Set(dated.map(d => d.date.slice(0, 7)))].sort();
+          }
+        }
+      } else {
+        // `dated` is already in date-then-pit order (cpBuildContext).
+        xKeys = [...new Set(dated.map(d => d.key))];
+      }
+      const xIndex = new Map(xKeys.map((k, i) => [k, i]));
+      const bucketOf = d => xIndex.get(byMonth ? d.date.slice(0, 7) : d.key);
+      const dayOf = new Map(dated.map(d => [d.key, d]));
+
+      const focus = xKeys.map(() => cpEmptyAgg());
+      const seriesAggs = new Map();
+      const ensureSeries = sk => {
+        if (!seriesAggs.has(sk)) seriesAggs.set(sk, xKeys.map(() => cpEmptyAgg()));
+        return seriesAggs.get(sk);
+      };
+      dated.forEach(d => {
+        const i = bucketOf(d);
+        if (i == null) return;
+        d.parts.forEach(p => {
+          if (!ctx.productMatch(p)) return;
+          cpAdd(focus[i], p, d);
+          cpAdd(ensureSeries(cpSeriesKeyOf(ctx, p.key))[i], p, d);
+        });
+      });
+
+      // Legend order is colour order: slotted products, then Other, Untagged.
+      const order = sk => sk === CP_OTHER_KEY ? 1e6 : sk === CP_UNTAGGED_KEY ? 1e6 + 1 : (ctx.slotOf.get(sk) || 0);
+      const seriesKeys = [...seriesAggs.keys()].sort((a, b) => order(a) - order(b));
+      const series = seriesKeys.map(sk => ({ key: sk, aggs: seriesAggs.get(sk) }));
+      // By Month across several products leads with the blend of them all.
+      if (byMonth && !crushProd.product && series.length > 1) {
+        series.unshift({ key: CP_ALL_KEY, aggs: focus });
+      }
+      series.forEach(s => {
+        Object.assign(s, cpSeriesStyle(ctx, s.key, print));
+        s.name    = cpSeriesName(ctx, s.key);
+        s.present = s.aggs.map(cpHasData);
+        s.values  = s.aggs.map(a => cpHasData(a) ? metric.get(a) : null);
+        s.noted   = s.aggs.map(a => a.notes.length > 0);
+        s.hidden  = !print && crushProd.hidden.has(s.key);
+      });
+
+      // One line on screen → show its average, so a point out of range reads
+      // as out of range. A ratio's average is the ratio of the totals.
+      const visible = series.filter(s => !s.hidden);
+      let avg = null;
+      if (visible.length === 1) {
+        const sum = cpEmptyAgg();
+        let points = 0;
+        visible[0].aggs.forEach(a => {
+          if (!cpHasData(a)) return;
+          points++;
+          sum.cost += a.cost; sum.tons += a.tons; sum.loads += a.loads; sum.hoursCrushing += a.hoursCrushing;
+        });
+        const v = metric.ratio ? metric.get(sum) : (points ? metric.get(sum) / points : null);
+        if (v != null && Number.isFinite(v) && points > 1) avg = { value: v, label: 'Avg ' + cpFmtUnit(metricKey, v) };
+      }
+
+      const multiYear = !ctx.singleYear;
+      const xShort = xKeys.map(k => {
+        if (byMonth) {
+          const [y, m] = k.split('-');
+          return MONTH_LABELS[Number(m) - 1] + (multiYear ? ` ’${y.slice(2)}` : '');
+        }
+        const date = dayOf.get(k).date;
+        return cpShortDate(date, false) + (multiYear ? ` ’${date.slice(2, 4)}` : '');
+      });
+      const xFull = xKeys.map(k => {
+        if (byMonth) { const [y, m] = k.split('-'); return `${MONTH_NAMES[Number(m) - 1]} ${Number(y)}`; }
+        return crushDayLabel(dayOf.get(k).date);
+      });
+      // What the tooltip names beside the x: the picked pit(s) for a month,
+      // the day's own pit for a crushing day.
+      const xWhere = xKeys.map(k => byMonth ? ctx.locLabel : dayOf.get(k).location);
+
+      return {
+        metricKey, metric, byMonth, xKeys, xShort, xFull, xWhere, focus, series, avg,
+        // Months are time: a month a product skipped breaks its line. Crushing
+        // days are a sequence: a product's line runs on to its next day.
+        connectAbsent: !byMonth,
+        dense: xKeys.length > 60,
+      };
+    }
+
+    function cpNiceScale(max) {
+      const ticks = 4;
+      if (!(max > 0)) return { max: 1, step: 0.25, ticks };
+      const raw = (max * 1.08) / ticks;
+      const mag = Math.pow(10, Math.floor(Math.log10(raw)));
+      const n = raw / mag;
+      const nice = n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10;
+      const step = nice * mag;
+      return { max: step * ticks, step, ticks };
+    }
+    // Decimals come from the step itself, so a gridline at 2.5 or 7.5 is
+    // labelled 2.5 / 7.5 — never rounded to the 3 and 8 it is not on.
+    function cpAxisLabel(metric, v, step) {
+      const k = Math.abs(v) >= 10000;
+      const stepTxt = String(Number(step.toFixed(6)));
+      const dp = stepTxt.includes('.') ? stepTxt.length - stepTxt.indexOf('.') - 1 : 0;
+      if (metric.money) {
+        if (k) return '$' + (v / 1000).toLocaleString('en-US', { maximumFractionDigits: 1 }) + 'k';
+        // Cents print as two places ($2.50, not $2.5).
+        const md = dp ? Math.max(2, dp) : 0;
+        return '$' + v.toLocaleString('en-US', { minimumFractionDigits: md, maximumFractionDigits: md });
+      }
+      if (k) return (v / 1000).toLocaleString('en-US', { maximumFractionDigits: 1 }) + 'k';
+      return v.toLocaleString('en-US', { minimumFractionDigits: dp, maximumFractionDigits: dp });
+    }
+
+    // Inline-SVG line chart. Colours are themeable so the same drawing works on
+    // the dark page and in the white PDF. Returns { svg, geo } — geo is what
+    // the hover layer needs to map a pointer back to a point.
+    function buildCrushProdChartSVG(model, opts) {
+      opts = opts || {};
+      const T = Object.assign({
+        grid: '#23232f', axis: '#3a3a4a', text: '#9aa0a6', surface: '#111118',
+        ring: '#f5f5f5', avg: '#c3c2b7', xhair: '#6b6b80',
+      }, opts.theme || {});
+      const W = Math.max(320, Math.round(opts.width || 900));
+      const H = Math.round(opts.height || (W < 560 ? 240 : 300));
+      const narrow = W < 560;
+      const mL = narrow ? 46 : 62, mR = narrow ? 10 : 18, mT = 14, mB = 34;
+      const plotW = W - mL - mR, plotH = H - mT - mB;
+      const N = model.xKeys.length;
+      const band = N ? plotW / N : plotW;
+      const visible = model.series.filter(s => !s.hidden);
+
+      let maxV = 0;
+      visible.forEach(s => s.values.forEach(v => { if (v != null && v > maxV) maxV = v; }));
+      if (model.avg && model.avg.value > maxV) maxV = model.avg.value;
+      const sc = cpNiceScale(maxV);
+      const x = i => mL + (i + 0.5) * band;
+      const y = v => mT + (1 - v / sc.max) * plotH;
+      const f = n => n.toFixed(1);
+
+      let out = '';
+      // Recessive grid: solid hairlines, labels in muted ink.
+      for (let t = 0; t <= sc.ticks; t++) {
+        const v = sc.step * t, gy = f(y(v));
+        out += `<line x1="${mL}" y1="${gy}" x2="${W - mR}" y2="${gy}" stroke="${t === 0 ? T.axis : T.grid}" stroke-width="1"/>`
+             + `<text x="${mL - 8}" y="${f(y(v) + 4)}" text-anchor="end" font-size="11" fill="${T.text}" style="font-variant-numeric:tabular-nums">${escapeHtml(cpAxisLabel(model.metric, v, sc.step))}</text>`;
+      }
+      // X labels, thinned to what fits.
+      const fit = Math.max(1, Math.floor(plotW / (model.byMonth ? 44 : 58)));
+      const every = Math.max(1, Math.ceil(N / fit));
+      model.xShort.forEach((lbl, i) => {
+        if (i % every !== 0) return;
+        out += `<text x="${f(x(i))}" y="${H - mB + 18}" text-anchor="middle" font-size="11" fill="${T.text}">${escapeHtml(lbl)}</text>`;
+      });
+
+      // Average reference — dashed, because it is a threshold, not data.
+      if (model.avg) {
+        const ay = f(y(model.avg.value));
+        out += `<line x1="${mL}" y1="${ay}" x2="${W - mR}" y2="${ay}" stroke="${T.avg}" stroke-width="1" stroke-dasharray="5 4" opacity="0.8"/>`;
+      }
+
+      // Lines. A month a product skipped breaks its line; on the crushing-day
+      // axis it runs on to the product's next day. A point with no value (a
+      // day that crushed nothing has no cost / ton) always breaks it.
+      const lineFor = s => {
+        const segs = [];
+        let cur = [];
+        s.present.forEach((has, i) => {
+          if (!has) { if (!model.connectAbsent && cur.length) { segs.push(cur); cur = []; } return; }
+          const v = s.values[i];
+          if (v == null) { if (cur.length) segs.push(cur); cur = []; return; }
+          cur.push(`${f(x(i))},${f(y(v))}`);
+        });
+        if (cur.length) segs.push(cur);
+        return segs.map(pts => pts.length === 1
+          ? `<circle cx="${pts[0].split(',')[0]}" cy="${pts[0].split(',')[1]}" r="2.5" fill="${s.color}"/>`
+          : `<polyline fill="none" stroke="${s.color}" stroke-width="${s.width}" stroke-linejoin="round" stroke-linecap="round"${s.dashed ? ' stroke-dasharray="6 4"' : ''} points="${pts.join(' ')}"/>`).join('');
+      };
+      // The emphasis line (All products) draws last so it sits on top.
+      const drawOrder = visible.slice().sort((a, b) => (a.key === CP_ALL_KEY) - (b.key === CP_ALL_KEY));
+      drawOrder.forEach(s => { out += lineFor(s); });
+
+      // Plain points (skipped when the day axis is too dense to read them).
+      if (!model.dense) {
+        drawOrder.forEach(s => s.values.forEach((v, i) => {
+          if (v == null || !s.present[i] || s.noted[i]) return;
+          out += `<circle cx="${f(x(i))}" cy="${f(y(v))}" r="3.25" fill="${s.color}" stroke="${T.surface}" stroke-width="1.5"/>`;
+        }));
+      }
+      // The average's label goes over the lines, haloed in the surface colour
+      // so a line crossing it can't eat the text.
+      if (model.avg) {
+        out += `<text x="${W - mR - 4}" y="${f(y(model.avg.value) - 6)}" text-anchor="end" font-size="11" fill="${T.avg}" stroke="${T.surface}" stroke-width="4" stroke-linejoin="round" paint-order="stroke">${escapeHtml(model.avg.label)}</text>`;
+      }
+      // Noted points last, on top of everything: red, larger, ringed. A note on
+      // a day with no value (nothing crushed) sits on the baseline, hollow.
+      drawOrder.forEach(s => s.values.forEach((v, i) => {
+        if (!s.present[i] || !s.noted[i]) return;
+        if (v == null) {
+          out += `<circle cx="${f(x(i))}" cy="${f(y(0))}" r="5" fill="${T.surface}" stroke="${CP_NOTE_RED}" stroke-width="2.25"/>`;
+        } else {
+          out += `<circle cx="${f(x(i))}" cy="${f(y(v))}" r="5.75" fill="${CP_NOTE_RED}" stroke="${T.ring}" stroke-width="2"/>`;
+        }
+      }));
+
+      let hover = '';
+      if (opts.interactive) {
+        hover = `<line class="cp-xhair" x1="0" y1="${mT}" x2="0" y2="${mT + plotH}" stroke="${T.xhair}" stroke-width="1" visibility="hidden"/>`
+              + `<g class="cp-hover-marks"></g>`
+              + `<rect x="${mL}" y="${mT}" width="${plotW}" height="${plotH}" fill="transparent"/>`;
+      }
+      const title = `${model.metric.label} ${model.byMonth ? 'by month' : 'by crushing day'}`;
+      const svg = `<svg viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" preserveAspectRatio="xMidYMid meet" role="img" aria-label="${escapeHtml(title)}"${opts.interactive ? ' tabindex="0"' : ''} xmlns="http://www.w3.org/2000/svg">`
+        + out + hover + `</svg>`;
+      return { svg, geo: { W, H, mL, mT, plotW, plotH, band, N, x, y } };
+    }
+
+    // The tooltip for one x: every visible series' value, the focus totals,
+    // then the notes — the part a red point is there to deliver.
+    function cpTooltipHtml(model, ctx, i) {
+      const mk = model.metricKey;
+      const head = `${escapeHtml(model.xFull[i])} <span>· ${escapeHtml(model.xWhere[i])}</span>`;
+      const rows = model.series.filter(s => !s.hidden && s.present[i]).map(s =>
+        `<div class="cp-tip-row"><span class="cp-tip-key" style="color:${s.color}${s.dashed ? ';border-top-style:dashed' : ''}"></span>`
+        + `<strong>${escapeHtml(cpFmtUnit(mk, s.values[i]))}</strong><span class="nm">${escapeHtml(s.name)}</span></div>`).join('');
+      const a = model.focus[i];
+      if (!cpHasData(a)) {
+        return `<div class="cp-tip-head">${head}</div><div class="cp-tip-stats">No crushing${model.byMonth ? ' this month' : ''}.</div>`;
+      }
+      const cpt = a.tons > 0 ? formatMoney(a.cost / a.tons) + '/ton' : 'no tons crushed';
+      const tph = a.hoursCrushing > 0 ? formatTons(a.tons / a.hoursCrushing) + ' t/hr' : '— t/hr';
+      const days = a.dayKeys.size;
+      const stats = `<div class="cp-tip-stats">${formatTons(a.tons)} tons · ${formatTons(a.loads)} loads · ${formatTons(a.hoursCrushing)} hrs crushing<br>`
+        + `${formatMoney(a.cost)} · ${escapeHtml(cpt)} · ${escapeHtml(tph)}${model.byMonth ? ` · ${days} day${days === 1 ? '' : 's'}` : ''}</div>`;
+      let notes = '';
+      if (a.notes.length) {
+        const MAX = 4;
+        // A crushing-day point is one pit, already named in the head.
+        const showLoc = model.byMonth && !crushProd.location;
+        notes = '<div class="cp-tip-notes">' + a.notes.slice(0, MAX).map(n => {
+          const prods = n.day.parts.map(p => ctx.productName(p.key)).join(', ');
+          const when = [model.byMonth ? cpShortDate(n.day.date, false) : '', prods, showLoc ? n.day.location : '']
+            .filter(Boolean).join(' · ');
+          return `<div class="cp-tip-note"><span class="when">📝 ${escapeHtml(when)}</span>${escapeHtml(n.text)}</div>`;
+        }).join('')
+        + (a.notes.length > MAX ? `<div class="cp-tip-more">+${a.notes.length - MAX} more in Crushing Notes below</div>` : '')
+        + '</div>';
+      }
+      return `<div class="cp-tip-head">${head}</div>${rows}${stats}${notes}`;
+    }
+
+    let cpTipHide = null;
+    function cpWireChart(wrap, model, ctx, geo) {
+      const svg = wrap.querySelector('svg');
+      const tip = wrap.querySelector('.cp-tip');
+      if (!svg || !tip || !geo.N) return;
+      const xhair = svg.querySelector('.cp-xhair');
+      const marks = svg.querySelector('.cp-hover-marks');
+      let cur = -1;
+      const scale = () => {
+        const r = svg.getBoundingClientRect();
+        return { r, k: r.width > 0 ? r.width / geo.W : 1 };
+      };
+      const hide = () => {
+        cur = -1;
+        tip.classList.remove('is-on');
+        if (xhair) xhair.setAttribute('visibility', 'hidden');
+        if (marks) marks.innerHTML = '';
+      };
+      const show = (i, clientY) => {
+        if (i < 0 || i >= geo.N) return hide();
+        const cx = geo.x(i);
+        if (i !== cur) {
+          cur = i;
+          if (xhair) { xhair.setAttribute('x1', cx.toFixed(1)); xhair.setAttribute('x2', cx.toFixed(1)); xhair.setAttribute('visibility', 'visible'); }
+          if (marks) {
+            marks.innerHTML = model.series.filter(s => !s.hidden && s.present[i]).map(s => {
+              const v = s.values[i];
+              const cy = geo.y(v == null ? 0 : v).toFixed(1);
+              return `<circle cx="${cx.toFixed(1)}" cy="${cy}" r="${s.noted[i] ? 8.5 : 5.5}" fill="none" stroke="${s.noted[i] ? CP_NOTE_RED : s.color}" stroke-width="2"/>`;
+            }).join('');
+          }
+          tip.innerHTML = cpTooltipHtml(model, ctx, i);
+          tip.classList.add('is-on');
+        }
+        // Beside the crosshair, flipped left near the right edge.
+        const { r, k } = scale();
+        const wr = wrap.getBoundingClientRect();
+        const px = (r.left - wr.left) + cx * k;
+        const tw = tip.offsetWidth || 260, th = tip.offsetHeight || 120;
+        let left = px + 14;
+        if (left + tw > wr.width) left = px - 14 - tw;
+        left = Math.max(0, left);
+        let top = clientY != null ? (clientY - wr.top) - th / 2 : 8;
+        top = Math.max(0, Math.min(top, Math.max(0, wr.height - th)));
+        tip.style.left = left + 'px';
+        tip.style.top = top + 'px';
+      };
+      const idxAt = e => {
+        const { r, k } = scale();
+        const sx = (e.clientX - r.left) / k;
+        if (sx < geo.mL || sx > geo.mL + geo.plotW) return -1;
+        return Math.min(geo.N - 1, Math.max(0, Math.floor((sx - geo.mL) / geo.band)));
+      };
+      // A click or tap focuses the SVG too (it is tabindex=0). That focus is
+      // not the keyboard arriving, so it must not pop the first point's tip —
+      // least of all after a tap on the axis gutter that just closed one. On
+      // touch the focus lands after the finger lifts, so the window runs from
+      // the last press or release rather than ending with the event.
+      let pointerAt = -Infinity;
+      const pointerFocus = () => Date.now() - pointerAt < 800;
+      svg.addEventListener('pointermove', e => show(idxAt(e), e.clientY));
+      svg.addEventListener('pointerdown', e => { pointerAt = Date.now(); show(idxAt(e), e.clientY); });
+      svg.addEventListener('pointerup', () => { pointerAt = Date.now(); });
+      // A finger lifting fires pointerleave at once — keep the tip up for touch.
+      svg.addEventListener('pointerleave', e => { if (e.pointerType === 'mouse') hide(); });
+      svg.addEventListener('blur', hide);
+      // Keyboard: same readout as hover, stepping point to point.
+      const firstWithData = () => Math.max(0, model.focus.findIndex(cpHasData));
+      svg.addEventListener('focus', () => { if (cur < 0 && !pointerFocus()) show(firstWithData(), null); });
+      svg.addEventListener('keydown', e => {
+        if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+          e.preventDefault();
+          const step = e.key === 'ArrowRight' ? 1 : -1;
+          let i = cur < 0 ? firstWithData() : cur + step;
+          // Skip empty months so the arrows land on crushing.
+          while (i >= 0 && i < geo.N && !cpHasData(model.focus[i])) i += step;
+          if (i >= 0 && i < geo.N) show(i, null);
+        } else if (e.key === 'Escape') {
+          hide();
+        }
+      });
+      cpTipHide = hide;
+    }
+    document.addEventListener('pointerdown', e => {
+      const wrap = document.getElementById('cpChartWrap');
+      if (cpTipHide && wrap && !wrap.contains(e.target)) cpTipHide();
+    });
+
+    function renderCrushProduction() {
+      if (!document.getElementById('cpChartWrap')) return;
+      const ctx = cpBuildContext();
+      crushProd.ctx = ctx;
+      cpRenderFilters(ctx);
+      cpRenderKpis(ctx);
+      cpRenderChart(ctx);
+      cpRenderMonthTable(ctx);
+      cpRenderProductTable(ctx);
+      cpRenderNotesTable(ctx);
+    }
+
+    function cpRenderFilters(ctx) {
+      document.querySelectorAll('.cp-seg-btn').forEach(b => {
+        const on = b.dataset.view === crushProd.view;
+        b.classList.toggle('active', on);
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+      const metricSel = document.getElementById('cpMetric');
+      if (metricSel) {
+        if (!metricSel.options.length) {
+          metricSel.innerHTML = Object.entries(CP_METRICS)
+            .map(([k, m]) => `<option value="${k}">${escapeHtml(m.label)}</option>`).join('');
+        }
+        metricSel.value = crushProd.metric;
+      }
+      const locSel = document.getElementById('cpLocation');
+      if (locSel) {
+        const opts = [...ctx.locs.entries()].sort((a, b) => a[1].localeCompare(b[1]));
+        locSel.innerHTML = `<option value="">All Locations</option>`
+          + opts.map(([k, nm]) => `<option value="${escapeHtml(k)}">${escapeHtml(nm)}</option>`).join('');
+        locSel.value = crushProd.location;
+      }
+      const prodSel = document.getElementById('cpProduct');
+      if (prodSel) {
+        const keys = [...ctx.productsHere.keys()].sort((a, b) => {
+          if (a === CP_UNTAGGED_KEY) return 1;
+          if (b === CP_UNTAGGED_KEY) return -1;
+          return (ctx.slotOf.get(a) || 0) - (ctx.slotOf.get(b) || 0);
+        });
+        prodSel.innerHTML = `<option value="">All Products</option>`
+          + keys.map(k => `<option value="${escapeHtml(k)}">${escapeHtml(ctx.productName(k))}</option>`).join('');
+        prodSel.value = crushProd.product;
+      }
+      const note = document.getElementById('cpFiltersNote');
+      if (note) note.textContent = `Year: ${ctx.yearLabel === 'all years' ? 'All Years' : ctx.yearLabel} (set at the top of the tab)`;
+    }
+
+    function cpRenderKpis(ctx) {
+      const t = ctx.total;
+      const setText = (id, txt) => { const el = document.getElementById(id); if (el) el.textContent = txt; };
+      const has = cpHasData(t);
+      setText('cpKpiCpt', has && t.tons > 0 ? formatMoney(t.cost / t.tons) : '—');
+      setText('cpKpiCptSub', has ? `${formatMoney(t.cost)} ÷ ${formatTons(t.tons)} tons` : 'Crushing cost ÷ tons crushed');
+      setText('cpKpiTons', formatTons(t.tons));
+      setText('cpKpiTonsSub', has && t.dayKeys.size ? `${formatTons(t.tons / t.dayKeys.size)} tons / crushing day` : 'Loads × tons / load');
+      setText('cpKpiLoads', formatTons(t.loads));
+      setText('cpKpiLoadsSub', t.loads > 0 ? `${formatTons(t.tons / t.loads)} tons / load avg` : '—');
+      setText('cpKpiCost', formatMoney(t.cost));
+      setText('cpKpiCostSub', `Labor ${formatMoney(t.labor)} · Fuel ${formatMoney(t.fuel)}`);
+      setText('cpKpiTph', t.hoursCrushing > 0 ? formatTons(t.tons / t.hoursCrushing) : '—');
+      setText('cpKpiTphSub', `${formatTons(t.hoursCrushing)} hrs crushing`);
+      setText('cpKpiDays', String(t.dayKeys.size));
+      setText('cpKpiDaysSub', `${t.notedDays.size} with notes`);
+    }
+
+    function cpRenderChart(ctx) {
+      const wrap = document.getElementById('cpChartWrap');
+      const legend = document.getElementById('cpLegend');
+      const title = document.getElementById('cpChartTitle');
+      const foot = document.getElementById('cpChartFoot');
+      if (!wrap) return;
+      if (cpTipHide) { cpTipHide(); cpTipHide = null; }
+      const model = cpBuildModel(ctx);
+      if (title) title.textContent = cpChartTitle(model, ctx);
+      const anyData = model.series.length && model.focus.some(cpHasData);
+      if (!anyData) {
+        wrap.innerHTML = `<div class="cp-chart-empty">${crushLoaded
+          ? `No crushing entries for ${escapeHtml(ctx.yearLabel)}${crushProd.location || crushProd.product ? ' with these picks' : ''}. Add rows on Crushing Tracking to chart them here.`
+          : 'Loading…'}</div>`;
+        if (legend) legend.innerHTML = '';
+        if (foot) foot.textContent = '';
+        return;
+      }
+      if (legend) {
+        // Handlers take an index, never the key: a product named "Mike's Mix"
+        // would end the JS string inside an onclick attribute.
+        crushProd.legendKeys = model.series.map(s => s.key);
+        const items = model.series.map((s, idx) =>
+          `<button type="button" class="cp-leg${s.hidden ? ' is-off' : ''}" style="color:${s.color}" aria-pressed="${s.hidden ? 'false' : 'true'}"`
+          + ` title="${s.hidden ? 'Show' : 'Hide'} ${escapeHtml(s.name)}" onclick="toggleCrushProdSeries(${idx})">`
+          + `<span class="cp-leg-line${s.dashed ? ' is-dashed' : ''}"></span><span style="color:#c3c2b7">${escapeHtml(s.name)}</span></button>`);
+        if (model.avg) items.push(`<span class="cp-leg is-static"><span class="cp-leg-line is-dashed" style="color:#c3c2b7;border-top-width:1px"></span>Average</span>`);
+        items.push(`<span class="cp-leg is-static"><span class="cp-leg-dot"></span>Has a note</span>`);
+        // A single series is named by the title; its legend is just the keys.
+        legend.innerHTML = items.join('');
+      }
+      const visibleCount = model.series.filter(s => !s.hidden).length;
+      if (!visibleCount) {
+        wrap.innerHTML = `<div class="cp-chart-empty">Every line is switched off — click a name in the legend to bring it back.</div>`;
+        if (foot) foot.textContent = '';
+        return;
+      }
+      const width = wrap.clientWidth || 900;
+      const { svg, geo } = buildCrushProdChartSVG(model, { width, interactive: true });
+      wrap.innerHTML = svg + `<div class="cp-tip" role="status" aria-live="polite"></div>`;
+      cpWireChart(wrap, model, ctx, geo);
+      if (foot) {
+        const noted = model.focus.reduce((n, a) => n + a.notedDays.size, 0);
+        foot.textContent = (model.byMonth
+            ? 'Each point is a month of crushing. '
+            : 'Each point is one crushing day. ')
+          + 'Cost / ton is the whole day’s cost (crew labor + fuel) ÷ the day’s tons, split across products by tons. '
+          + (noted
+            ? `Red points (${noted} day${noted === 1 ? '' : 's'}) carry a note from Crushing Tracking — hover or tap one to read why.`
+            : 'Red points mark days with a note on Crushing Tracking — none in this view.');
+      }
+    }
+
+    // The chart as it is set on screen (view, metric, pit, product), redrawn in
+    // print colours for the Analytics PDF. Every line prints, legend toggles
+    // aside; the notes the red points stand for follow it as a table.
+    function crushProdPdfSection() {
+      const ctx = cpBuildContext();
+      const model = cpBuildModel(ctx, { print: true });
+      if (!model.series.length || !model.focus.some(cpHasData)) return '';
+      const { svg } = buildCrushProdChartSVG(model, {
+        width: 1000, height: 300,
+        theme: { grid: '#e5e5e5', axis: '#999999', text: '#555555', surface: '#ffffff', ring: '#111111', avg: '#555555' },
+      });
+      const legend = model.series.map(s =>
+        `<span><span class="ln" style="border-top-color:${s.color}${s.dashed ? ';border-top-style:dashed' : ''}"></span>${escapeHtml(s.name)}</span>`).join('')
+        + (model.avg ? `<span><span class="ln" style="border-top:1px dashed #555"></span>${escapeHtml(model.avg.label)}</span>` : '')
+        + `<span><span class="dot"></span>Has a note &mdash; see Crushing Notes</span>`;
+      return `<h2>Crushing Production &mdash; ${escapeHtml(cpChartTitle(model, ctx))}</h2>`
+        + `<div class="chart-legend">${legend}</div><div class="chart">${svg}</div>`
+        + `<div class="chart-note">Cost / ton is each day’s whole cost (crew labor + fuel) ÷ that day’s tons, split across products by tons.</div>`;
+    }
+
+    function cpChartTitle(model, ctx) {
+      const prodLabel = crushProd.product ? ctx.productName(crushProd.product) : 'All Products';
+      return `${model.metric.label} ${model.byMonth ? 'by Month' : 'by Crushing Day'} · ${prodLabel} · ${ctx.locLabel}`;
+    }
+
+    function cpNotesTitle(ctx, agg, withDate) {
+      return agg.notes.map(n => (withDate ? cpShortDate(n.day.date, false) + ': ' : '') + n.text).join('\n');
+    }
+    function cpNotesCell(ctx, agg, withDate) {
+      if (!agg.notes.length) return '<span class="cp-none">—</span>';
+      return `<span class="cp-note-count" title="${escapeHtml(cpNotesTitle(ctx, agg, withDate))}">${agg.notes.length}</span>`;
+    }
+    function cpProductsList(ctx, agg) {
+      return [...agg.productKeys.entries()].sort((a, b) => b[1] - a[1]).map(([k]) => ctx.productName(k)).join(', ');
+    }
+
+    function cpRenderMonthTable(ctx) {
+      const tbody = document.querySelector('#analyticsCrushMonthTable tbody');
+      if (!tbody) return;
+      const COLS = 13;
+      const byMonth = new Map();
+      // Totalled off the same dated days as the rows, so it always foots.
+      const total = cpEmptyAgg();
+      ctx.days.forEach(d => {
+        if (!cpIsDate(d.date)) return;
+        const mk = d.date.slice(0, 7);
+        d.parts.forEach(p => {
+          if (!ctx.productMatch(p)) return;
+          if (!byMonth.has(mk)) byMonth.set(mk, cpEmptyAgg());
+          cpAdd(byMonth.get(mk), p, d);
+          cpAdd(total, p, d);
+        });
+      });
+      const keys = [...byMonth.keys()].sort();
+      if (!keys.length) {
+        tbody.innerHTML = `<tr><td colspan="${COLS}" class="home-empty">No crushing entries yet.</td></tr>`;
+        return;
+      }
+      const row = (label, a, isTotal, withDate) => {
+        const tpl = a.loads > 0 ? formatTons(a.tons / a.loads) : '—';
+        const tph = a.hoursCrushing > 0 ? formatTons(a.tons / a.hoursCrushing) : '—';
+        const cpt = a.tons > 0 ? formatMoney(a.cost / a.tons) : '—';
+        return `<tr${isTotal ? ' class="cp-row-total"' : ''}>
+          <td>${escapeHtml(label)}</td>
+          <td style="text-align:left;font-weight:400">${escapeHtml(isTotal ? `${a.productKeys.size} product${a.productKeys.size === 1 ? '' : 's'}` : cpProductsList(ctx, a))}</td>
+          <td>${a.dayKeys.size}</td>
+          <td>${formatTons(a.loads)}</td>
+          <td>${formatTons(a.tons)}</td>
+          <td>${tpl}</td>
+          <td>${formatTons(a.hoursCrushing)}</td>
+          <td>${tph}</td>
+          <td>${formatMoney(a.labor)}</td>
+          <td>${formatMoney(a.fuel)}</td>
+          <td>${formatMoney(a.cost)}</td>
+          <td>${cpt}</td>
+          <td>${cpNotesCell(ctx, a, withDate)}</td>
+        </tr>`;
+      };
+      const multiYear = !ctx.singleYear;
+      let html = keys.map(mk => {
+        const [y, m] = mk.split('-');
+        return row(MONTH_LABELS[Number(m) - 1] + (multiYear ? ' ' + y : ''), byMonth.get(mk), false, true);
+      }).join('');
+      if (keys.length > 1) html += row('Total', total, true, true);
+      tbody.innerHTML = html;
+    }
+
+    function cpRenderProductTable(ctx) {
+      const tbody = document.querySelector('#analyticsCrushProductTable tbody');
+      if (!tbody) return;
+      const COLS = 11;
+      // Every product at the picked pit(s), so the table doubles as the picker.
+      const entries = [...ctx.productsHere.entries()].sort((a, b) => {
+        if (a[0] === CP_UNTAGGED_KEY) return 1;
+        if (b[0] === CP_UNTAGGED_KEY) return -1;
+        return b[1].tons - a[1].tons;
+      });
+      if (!entries.length) {
+        tbody.innerHTML = `<tr><td colspan="${COLS}" class="home-empty">No crushing entries yet.</td></tr>`;
+        return;
+      }
+      const all = cpEmptyAgg();
+      ctx.days.forEach(d => d.parts.forEach(p => cpAdd(all, p, d)));
+      crushProd.productRowKeys = entries.map(([k]) => k);
+      const row = (key, label, a, isTotal, idx) => {
+        const st = isTotal ? null : cpSeriesStyle(ctx, cpSeriesKeyOf(ctx, key), false);
+        const swatch = st ? `<span class="cp-swatch${st.dashed ? ' is-dashed' : ''}" style="color:${st.color}"></span>` : '';
+        const pct = all.tons > 0 ? (a.tons / all.tons) * 100 : 0;
+        const tpl = a.loads > 0 ? formatTons(a.tons / a.loads) : '—';
+        const tph = a.hoursCrushing > 0 ? formatTons(a.tons / a.hoursCrushing) : '—';
+        const cpt = a.tons > 0 ? formatMoney(a.cost / a.tons) : '—';
+        const pick = isTotal ? '' : ` onclick="pickCrushProdProduct(${idx})" title="Chart ${escapeHtml(label)} day by day"`;
+        const cls = isTotal ? 'cp-row-total' : `cp-pick${crushProd.product === key ? ' is-picked' : ''}`;
+        return `<tr class="${cls}"${pick}>
+          <td>${swatch}${escapeHtml(label)}</td>
+          <td>${a.dayKeys.size}</td>
+          <td>${formatTons(a.loads)}</td>
+          <td>${formatTons(a.tons)}</td>
+          <td>${pct.toFixed(1)}%</td>
+          <td>${tpl}</td>
+          <td>${formatTons(a.hoursCrushing)}</td>
+          <td>${tph}</td>
+          <td>${formatMoney(a.cost)}</td>
+          <td>${cpt}</td>
+          <td>${cpNotesCell(ctx, a, true)}</td>
+        </tr>`;
+      };
+      let html = entries.map(([k, a], idx) => row(k, ctx.productName(k), a, false, idx)).join('');
+      if (entries.length > 1) html += row('', 'Total', all, true, -1);
+      tbody.innerHTML = html;
+    }
+
+    function cpRenderNotesTable(ctx) {
+      const tbody = document.querySelector('#analyticsCrushNotesTable tbody');
+      if (!tbody) return;
+      const noted = ctx.days
+        .filter(d => d.notes.length && d.parts.some(ctx.productMatch))
+        .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+      if (!noted.length) {
+        tbody.innerHTML = `<tr><td colspan="7" class="home-empty">No notes on crushing days in this view. Anything typed in the Comments column on Crushing Tracking shows up here and on the chart.</td></tr>`;
+        return;
+      }
+      tbody.innerHTML = noted.map(d => {
+        const prods = d.parts.map(p => ctx.productName(p.key)).join(', ');
+        const tph = d.hoursCrushing > 0 ? formatTons(d.tons / d.hoursCrushing) : '—';
+        const cpt = d.tons > 0 ? formatMoney(d.cost / d.tons) : '—';
+        const notes = d.notes.map(n =>
+          `<div>${escapeHtml(n.text)}${n.by ? `<span class="cp-note-by">${escapeHtml(n.by)}’s row</span>` : ''}</div>`).join('');
+        return `<tr>
+          <td>${escapeHtml(cpShortDate(d.date, true))}</td>
+          <td>${escapeHtml(d.location)}</td>
+          <td>${escapeHtml(prods)}</td>
+          <td class="cp-note-text">${notes}</td>
+          <td>${formatTons(d.tons)}</td>
+          <td>${tph}</td>
+          <td>${cpt}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    // ── Crushing Production controls ──
+    function setCrushProdView(view) {
+      crushProd.view = view === 'product' ? 'product' : 'month';
+      const mp = document.getElementById('cpMonthPanel');
+      const pp = document.getElementById('cpProductPanel');
+      if (mp) mp.style.display = crushProd.view === 'month' ? '' : 'none';
+      if (pp) pp.style.display = crushProd.view === 'product' ? '' : 'none';
+      renderCrushProduction();
+    }
+    function setCrushProdMetric(metric) {
+      if (CP_METRICS[metric]) crushProd.metric = metric;
+      renderCrushProduction();
+    }
+    function setCrushProdLocation(loc) {
+      crushProd.location = String(loc || '');
+      renderCrushProduction();
+    }
+    function setCrushProdProduct(product) {
+      crushProd.product = String(product || '');
+      // Asking for a product is asking to see it — even one switched off in
+      // the legend earlier, which would otherwise chart as nothing at all.
+      crushProd.hidden.delete(crushProd.product);
+      renderCrushProduction();
+    }
+    // A row in Crushing by Product: chart that product day by day.
+    function pickCrushProdProduct(idx) {
+      const key = (crushProd.productRowKeys || [])[idx];
+      if (key == null) return;
+      crushProd.product = key;
+      crushProd.hidden.delete(key);
+      setCrushProdView('product');
+    }
+    function toggleCrushProdSeries(idx) {
+      const key = (crushProd.legendKeys || [])[idx];
+      if (key == null) return;
+      if (crushProd.hidden.has(key)) crushProd.hidden.delete(key);
+      else crushProd.hidden.add(key);
+      if (crushProd.ctx) cpRenderChart(crushProd.ctx);
+    }
+    // Redraw at the new width (the SVG is drawn in real pixels so its text
+    // stays 11px instead of scaling with the window).
+    let cpResizeTimer = null;
+    window.addEventListener('resize', () => {
+      clearTimeout(cpResizeTimer);
+      cpResizeTimer = setTimeout(() => {
+        const panel = document.getElementById('tab-analytics');
+        if (crushProd.ctx && panel && panel.classList.contains('active')) cpRenderChart(crushProd.ctx);
+      }, 150);
+    });
+
     function renderAnalyticsYoy() {
       const tbody = document.querySelector('#analyticsYoyTable tbody');
       if (!tbody) return;
@@ -9132,6 +10349,10 @@ ${sections}
         cloneTable('#analyticsTaskTable',     'Task Breakdown (Daily Tracking)'),
         cloneTable('#analyticsEmployeeTable', 'Employee Hours & Payroll'),
         cloneTable('#analyticsCrushTable',    'Crushing Production Summary'),
+        crushProdPdfSection(),
+        cloneTable('#analyticsCrushMonthTable',   'Crushing by Month'),
+        cloneTable('#analyticsCrushProductTable', 'Crushing by Product'),
+        cloneTable('#analyticsCrushNotesTable',   'Crushing Notes'),
         cloneTable('#analyticsYoyTable',      'Year over Year'),
       ].join('');
 
@@ -9160,6 +10381,20 @@ ${sections}
   table.rep td.pos { color: #15803d; }
   table.rep td.neg { color: #b91c1c; }
   .empty-note { font-size: 10px; color: #888; padding: 6px 0; }
+  table.rep td.cp-note-text { text-align: left; white-space: normal; min-width: 260px; }
+  table.rep tr.cp-row-total td { font-weight: 700; border-top: 2px solid #999; }
+  .cp-swatch { display: inline-block; width: 14px; height: 0; border-top: 2px solid currentColor; vertical-align: middle; margin-right: 6px; }
+  .cp-swatch.is-dashed { border-top-style: dashed; }
+  .cp-note-count { color: #b91c1c; font-weight: 700; }
+  .cp-note-by { display: block; color: #777; font-size: 8.5px; }
+  .cp-none { color: #999; }
+  .chart { width: 100%; page-break-inside: avoid; }
+  .chart svg { width: 100%; height: auto; }
+  .chart-legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 9.5px; color: #555; margin: 0 0 4px; }
+  .chart-legend > span { display: inline-flex; align-items: center; gap: 5px; }
+  .chart-legend .ln { display: inline-block; width: 18px; height: 0; border-top: 2px solid #111; }
+  .chart-legend .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #ef4444; box-shadow: 0 0 0 1.5px #111; }
+  .chart-note { font-size: 9px; color: #666; margin: 2px 0 6px; }
   @page { size: landscape; margin: 0.4in; }
   @media print { body { padding: 0.1in; } }
 </style></head><body>
