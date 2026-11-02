@@ -3,7 +3,7 @@
  * Active/awarded jobs for a given division — used by the Timesheet field
  * form to populate the "which job did you work on?" dropdown.
  *
- *   GET /api/timesheet-jobs?division=<turf|dust|paving|trucking|quarry>
+ *   GET /api/timesheet-jobs?division=<turf|dust|paving|kiewit|trucking|quarry|safety>
  *     → { jobs: [{ id: string, label: string }, ...] }
  *
  * STRICTLY READ-ONLY. This endpoint does not write, modify, or migrate any
@@ -19,6 +19,8 @@
  *   quarry    → `quarry_locations` × two standing activities (Daily,
  *                Crushing) — one job per (activity, location); job_id encodes
  *                "<activity>:<locationId>" so approval routes to the right tab
+ *   safety    → the Safety Center's standing activities (SAFETY_JOBS in
+ *                api/lib/safety.js) — no table behind them, nothing to read
  *
  * "Active/awarded" = project status in {Awarded, In Progress, Substantially Complete}.
  * Empty/missing status is also included so older projects without a status set
@@ -27,8 +29,9 @@
 
 const { neon } = require('@neondatabase/serverless');
 const { requireAuth, hasDivisionAccess } = require('./lib/auth');
+const { SAFETY_JOBS } = require('./lib/safety');
 
-const SUPPORTED = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry'];
+const SUPPORTED = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'safety'];
 const ACTIVE_PROJECT_STATUSES = ['Awarded', 'In Progress', 'Substantially Complete'];
 
 /**
@@ -193,6 +196,13 @@ async function quarryJobs(sql, companyCode) {
   return jobs;
 }
 
+// The Safety Center's "jobs" are the kinds of safety work a day can be filed
+// against — see SAFETY_JOBS for why they are a standing list. Copies, so
+// nothing downstream can reach back into the shared definition.
+function safetyJobs() {
+  return SAFETY_JOBS.map(j => ({ id: j.id, label: j.label }));
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -233,6 +243,7 @@ module.exports = async (req, res) => {
     else if (division === 'trucking') jobs = await truckingJobs(sql, payload.companyCode);
     else if (division === 'dust')     jobs = await dustJobs(sql, payload.companyCode);
     else if (division === 'quarry')   jobs = await quarryJobs(sql, payload.companyCode);
+    else if (division === 'safety')   jobs = safetyJobs();
 
     return res.json({ jobs });
   } catch (err) {

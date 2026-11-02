@@ -62,8 +62,10 @@ assert('Edit Row stays gated on entryNeedsTrucking',
   /\$\{!isPending && entryNeedsTrucking\(e\) \?/.test(HTML));
 assert('Edit Row is gated on entryNeedsEes',
   /\$\{!isPending && entryNeedsEes\(e\) \?/.test(HTML));
-assert('the confirm text does not promise cost rows for time off',
-  /const injects = e\.entry_type !== 'time_off';/.test(HTML));
+// Whether the confirm promises a cost-row removal is the approve routing's own
+// answer (entryPostsRows), not a list of exceptions kept beside it.
+assert('the confirm text asks the approve routing whether rows were posted',
+  /const injects = entryPostsRows\(e\);/.test(HTML));
 
 // ─────────────────────────────────────────────────────────────────────
 // 2) BEHAVIOURAL — run the page's script against a mock DOM
@@ -200,6 +202,12 @@ const CASES = [
   { id: 'truck-1',     label: 'trucking daily',        edits: true,
     e: entry({ id: 'truck-1',  username: 'truckguy',   division: 'trucking',
                job_id: 'j-tk',  job_label: 'Some Haul' }) },
+  // Posts no row anywhere — the Safety Center reads approved time off the
+  // entry — so there is no row to edit, but it is an approval like any other
+  // and has to be possible to take back.
+  { id: 'safety-1',    label: 'Safety Center daily',   edits: false,
+    e: entry({ id: 'safety-1', username: 'safetyguy',  division: 'safety',
+               job_id: 'safety:training', job_label: 'Safety Training' }) },
   { id: 'off-1',       label: 'time off',              edits: false,
     e: entry({ id: 'off-1',    username: 'offguy',     division: 'turf',
                entry_type: 'time_off', time_off_type: 'vacation',
@@ -249,12 +257,71 @@ const prompts = [];
 sandbox.confirm = (msg) => { prompts.push(msg); return false; };  // false = don't fire the fetch
 run(`unapproveEntry('dust-ees')`);
 run(`unapproveEntry('off-1')`);
+run(`unapproveEntry('safety-1')`);
+run(`unapproveEntry('dust-nojob')`);
+run(`unapproveEntry('quarry-1')`);
 assert('a dust EES day is told its cost rows go',
   /remove the cost tracking rows injected into the Dust Control division/.test(prompts[0] || ''),
   prompts[0]);
 assert('time off is not promised a cost row removal',
   !/cost tracking rows/.test(prompts[1] || '') && /back into Pending/.test(prompts[1] || ''),
   prompts[1]);
+assert('a Safety Center day is not promised a cost row removal either',
+  !/cost tracking rows/.test(prompts[2] || ''), prompts[2]);
+assert('it is told the day leaves the Safety Center hours log and goes back to Pending',
+  /Safety Center's hours log/.test(prompts[2] || '') && /back into Pending/.test(prompts[2] || ''),
+  prompts[2]);
+// A dust day with no job posts nothing on approval (no Truck Tracking, no dust
+// grid, no EES Other row), and used to be promised a cost-row removal anyway.
+assert('a dust day with no job is not promised a cost row removal it never had',
+  !/cost tracking rows/.test(prompts[3] || '') && /back into Pending/.test(prompts[3] || ''), prompts[3]);
+assert('  while a day that did post rows still is',
+  /remove the cost tracking rows injected into the Quarry division/.test(prompts[4] || ''), prompts[4]);
+
+// ── Bulk approve's "No injection" card ──
+// The card is for entries with nothing to FILL IN, which is not the same as
+// entries that post nothing: a dust EES day lands on it and posts an EES Other
+// row. Built through the page's own buildBulkGroups, the way the modal is.
+console.log('\n[behavioural — the bulk approve note tells the truth]');
+{
+  const pick = id => Object.assign({}, CASES.find(c => c.id === id).e, { status: 'submitted' });
+  const note = ids => {
+    ctx.__es = ids.map(pick);
+    const html = String(run(
+      '(() => { const { groups } = buildBulkGroups(__es); return groups.map((g, i) => bulkGroupCard(g, i)).join(""); })()'));
+    const m = /<div class="bulk-note">([\s\S]*?)<\/div>/.exec(html);
+    return m ? m[1].replace(/\s+/g, ' ').trim() : '';
+  };
+  const ees = note(['dust-ees']);
+  assert('a dust EES day is not told "no cost row is injected" — it posts an EES Other row',
+    !/no cost row is injected/.test(ees) && /EES Other tab/.test(ees), ees);
+  const off = note(['off-1']);
+  assert('time off still is', /no cost row is injected/.test(off), off);
+  const safety = note(['safety-1']);
+  assert('a Safety Center day is told where its hours show',
+    /no cost row is injected/.test(safety) && /Safety Center's Hours tab/.test(safety), safety);
+  const mixed = note(['dust-ees', 'safety-1', 'off-1']);
+  assert('a mixed card counts each kind, in agreement',
+    /1 of them \(dust EES day\) posts a row/.test(mixed) && /1 of them is a Safety Center day/.test(mixed), mixed);
+}
+
+// ── The "Hours vary" flag ──
+// It compares a crew on one job on one day. A Safety Center activity is a kind
+// of work, not a site — two people under Safety Training on the same day can be
+// in different classes — so safety days sit the comparison out.
+console.log('\n[behavioural — hours vary is not flagged across safety days]');
+{
+  const flagged = es => [...run(`computeHoursMismatchFlags(${JSON.stringify(es)})`).keys()];
+  const day = (id, user, hours, over) => Object.assign(entry({
+    id, username: user, computed_hours: hours, status: 'submitted' }), over);
+  const safety = { division: 'safety', job_id: 'safety:training', job_label: 'Safety Training' };
+  const turf   = { division: 'turf', job_id: 'j-turf', job_label: 'Some Turf Job' };
+  const s = flagged([day('s1', 'osha', 8, safety), day('s2', 'forklift', 1, safety)]);
+  assert('an 8-hour class and a 1-hour refresher under Safety Training are not flagged', s.length === 0,
+    JSON.stringify(s));
+  const t = flagged([day('t1', 'a', 8, turf), day('t2', 'b', 8, turf), day('t3', 'c', 4, turf)]);
+  assert('  while a short day on a real job still is', t.length === 1 && t[0] === 't3', JSON.stringify(t));
+}
 
 
 // ── The sandbox still has everything the page reaches for ──

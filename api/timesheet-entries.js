@@ -131,6 +131,13 @@
  * is billed by the dust office off one of its own two grids. A dust entry with
  * no job stays isolated (status flip only).
  *
+ * Safety Center entries (division 'safety', on one of the standing activities
+ * in SAFETY_JOBS, api/lib/safety.js) inject nothing either: approval is the
+ * same status flip, through the same Pending Review and the same buttons as
+ * every other day. The Safety Center's Hours tab reads the approved ones
+ * straight out of this table (api/safety-hours.js), so un-approving or
+ * deleting one takes it off that tab with no row anywhere else to clean up.
+ *
  * Dust customer work is also the one place the route is finer than the entry.
  * The same driver, truck and clock window is either UB on a well pad or a
  * delivery of material, and the dust office invoices those off two different
@@ -206,8 +213,15 @@ const {
 // mirror into Intercompany as a division nothing rolls up.
 const { IC_SOURCES } = require('./lib/ic-sources');
 const IC_SOURCE_EES_OTHER = IC_SOURCES.DUST_EES_OTHER;
+// The Safety Center's division key and its standing activities — the only jobs
+// a safety day may be filed against. See safetyJobFor.
+const { SAFETY_DIVISION, SAFETY_JOBS } = require('./lib/safety');
 
-const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry'];
+// 'safety' is the Safety Center — see the header. It posts no cost row, so it
+// is deliberately absent from AUTO_INJECT_DIVISIONS and SPLIT_DEST_DIVISIONS
+// below: there is nothing for a cost code to code and nowhere for a split row
+// to be sent.
+const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'safety'];
 const VALID_TIME_OFF  = ['vacation', 'sick', 'jury_duty', 'bereavement', 'holiday'];
 
 // Auto-inject into daily_tracking is only meaningful for divisions whose cost
@@ -4698,7 +4712,43 @@ function normalizeSplitTag(body) {
   return { split_group_id: gid, split_index: index, split_count: count };
 }
 
-function normalizeEntryBody(body) {
+/**
+ * The job a Safety Center day may be filed against, and the label it is filed
+ * under. Returns { job_label } or { error }.
+ *
+ * Every other division's job is a project, a customer or a location that lives
+ * in that division's own data, and approval fails loudly on one that does not
+ * exist. A safety "job" is one of the standing activities in SAFETY_JOBS, and
+ * the Safety Center's Hours tab totals by it — so a day filed against anything
+ * else would be approved without complaint and turn up as an activity of its
+ * own, splitting the very totals the tab is for. Only the Timesheet's picker
+ * used to stop that, and a stale page or a hand-made request goes round it.
+ *
+ * The label is the list's, not the caller's: it is what payroll's grid shows
+ * for the day, and the id alone decides which activity the hours count under.
+ *
+ * An EDIT may keep the id the entry already carries even once it is no longer
+ * offered — an activity retired after a day was filed against it must not make
+ * that day impossible to correct. The label it was filed with goes with it.
+ */
+function safetyJobFor(job_id, job_label, existing) {
+  const known = SAFETY_JOBS.find(j => j.id === job_id);
+  if (known) return { job_label: known.label };
+  if (existing && existing.division === SAFETY_DIVISION && existing.entry_type === 'daily'
+      && String(existing.job_id || '') === job_id) {
+    return { job_label: existing.job_label || job_label };
+  }
+  return { error: 'Pick one of the Safety Center activities for a Safety Center day.' };
+}
+
+/**
+ * Normalize an entry body for a create or an edit.
+ *
+ * `existing` is the row being edited, when there is one. Only the Safety
+ * Center reads it, to let a day keep an activity that has since been retired
+ * (see safetyJobFor).
+ */
+function normalizeEntryBody(body, existing) {
   const entry_type = body.entry_type === 'time_off' ? 'time_off' : 'daily';
 
   const work_date = safeDate(body.work_date);
@@ -4781,8 +4831,13 @@ function normalizeEntryBody(body) {
   if (!division) return { error: 'division must be one of: ' + VALID_DIVISIONS.join(', ') };
 
   const job_id    = safeStr(body.job_id, 200);
-  const job_label = safeStr(body.job_label, 500);
+  let   job_label = safeStr(body.job_label, 500);
   if (!job_id || !job_label) return { error: 'job_id and job_label are required for a daily entry' };
+  if (division === SAFETY_DIVISION) {
+    const safetyJob = safetyJobFor(job_id, job_label, existing);
+    if (safetyJob.error) return { error: safetyJob.error };
+    job_label = safetyJob.job_label;
+  }
 
   const start_time = safeTime(body.start_time);
   const end_time   = safeTime(body.end_time);
@@ -4833,7 +4888,12 @@ function normalizeEntryBody(body) {
   //
   // The DESCRIPTION stays trucking-only: it belongs to the Truck Tracking row,
   // and a cost row has nowhere to show it.
-  const haulType   = safeHaulType(body.haul_type);
+  //
+  // A Safety Center day is never a haul. A driver is not asked on one, and an
+  // answer that arrives anyway (a mis-tap on an older page, a block moved to
+  // the Safety Center after it was answered) would have payrollMetrics count a
+  // classroom day as hours behind the wheel — so it is not kept.
+  const haulType   = division === SAFETY_DIVISION ? null : safeHaulType(body.haul_type);
   const isHaulUnit = !!haulType && AUTO_INJECT_DIVISIONS.includes(division);
   const truck_unit        = (isTruckRow || isHaulUnit) ? safeStr(body.truck_unit, 100) : null;
   const truck_description = isTruckRow ? safeStr(body.truck_description, 2000) : null;
@@ -7250,7 +7310,7 @@ module.exports = async (req, res) => {
         }
       }
 
-      const { data, error } = normalizeEntryBody(req.body || {});
+      const { data, error } = normalizeEntryBody(req.body || {}, existing);
       if (error) return res.status(400).json({ error });
 
       // Absent split keys on an edit mean "leave the tag as it is" — see
@@ -7330,9 +7390,11 @@ module.exports = async (req, res) => {
       // haul_type key — so without this an entry switched from a haul day to
       // time off would keep the answer, and carry it back into a later daily
       // edit that never asked for it, zeroing that block's labour rate.
-      // Division and job changes need no such gate: haul_type is tied to
-      // neither, so nothing about a re-categorization makes it stale.
+      // Division and job changes need no such gate — with one exception: a
+      // Safety Center day is never a haul (see normalizeEntryBody), so moving a
+      // day there clears the answer rather than keeping it.
       const keepHaul = data.entry_type === 'daily'
+        && data.division !== SAFETY_DIVISION
         && !Object.prototype.hasOwnProperty.call(body, 'haul_type');
 
       // A PROPOSAL describes one job on one day. coded_for_hours catches an

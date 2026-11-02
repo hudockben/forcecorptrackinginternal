@@ -101,10 +101,16 @@ function sandbox(isDriver, haulVals, blocks = [0], opts = {}) {
   // Everything that renders or writes this control comes across together.
   // Stubbing one of them would let the four drift apart unnoticed, which is the
   // failure this file exists to catch in the first place.
+  // Whether a block asks at all now depends on its division too (a Safety
+  // Center block does not), so the rule and its list come across with the
+  // rest — lifted from the page, not restated here.
+  const noHaul = /const NO_HAUL_DIVISIONS = \[[^\]]*\];/.exec(src);
+  if (!noHaul) throw new Error('NO_HAUL_DIVISIONS not found in timesheet.html');
   vm.runInContext(
-    `const HAUL_UNIT_DIVISIONS = ['turf','paving','kiewit'];\n` +
+    `const HAUL_UNIT_DIVISIONS = ['turf','paving','kiewit'];\n${noHaul[0]}\n` +
     `${fnSource('setHaul')}\n${fnSource('renderHaul')}\n` +
-    `${fnSource('applyHaulUnitVisibility')}\n${fnSource('applyHaulVisibility')}`, sb);
+    `${fnSource('applyHaulUnitVisibility')}\n${fnSource('applyHaulVisibility')}\n` +
+    `${fnSource('blockAsksHaul')}`, sb);
   return sb;
 }
 
@@ -206,6 +212,24 @@ console.log('\n[a non-driver]');
     sb.__els['row-haul-unit'].style.display === 'none');
 }
 
+console.log('\n[a driver on a Safety Center block]');
+
+{
+  // A tailgate or a class is never a haul, so the question is not put — and
+  // the answer he gave before moving the block there is kept, not wiped, in
+  // case he moves it back.
+  const sb = sandbox(true, { 0: 'off_site' }, [0], { division: 'safety' });
+  sb.applyHaulVisibility(0);
+  assert('is not asked whether it was a haul', sb.__els['row-haul'].style.display === 'none');
+  assert('  and the control is not rendered', sb.__els['seg-haul'] === undefined);
+  assert('  and no truck picker appears either', sb.__els['row-haul-unit'].style.display === 'none');
+  assert('  and his earlier answer is left alone', sb.haulVals[0] === 'off_site');
+  sb.__els.division.value = 'turf';
+  sb.applyHaulVisibility(0);
+  assert('moved back onto a job, the question returns with that answer lit',
+    sb.__els['row-haul'].style.display === 'flex' && lit(sb) === 'off_site');
+}
+
 console.log('\n[the form starts, adds and resets blocks unanswered]');
 
 // Source-pinned: these three are the only places a block's answer is seeded,
@@ -218,20 +242,22 @@ assert('resetForm clears back to unanswered',
 assert('a saved entry re-opens on the answer it was stored with',
   /haulVals\[i\] = e\.haul_type \|\| '';/.test(src));
 
-console.log('\n[what actually gets posted is decided by isDriver, not by haulVals]');
+console.log('\n[what actually gets posted is decided by who is asked, not by haulVals]');
 
 // This is why applyHaulVisibility does not need to clear anything: buildPayloads
 // reads isDriver directly. Pinned as source, because the three branches are the
 // contract the fix above relies on.
 const build = src.slice(src.indexOf('function buildPayloads('),
                         src.indexOf('function buildPayloads(') + 12000);
+// "Asks" is blockAsksHaul: a flagged driver, off the Safety Center — the
+// behavioural checks above pin what it answers.
 assert('a driver cannot save the day with the question unanswered',
-  /if \(isDriver && haulVals\[i\] == null\) \{/.test(build)
+  /if \(blockAsksHaul\(i\) && haulVals\[i\] == null\) \{/.test(build)
   && /Was this a haul\? Pick No, On site or To & from\./.test(build));
 assert('unknown roster (null) posts NO haul_type key, so the server keeps what it has',
   /haulKey: isDriver === null \? \{\}/.test(build));
-assert('a non-driver posts an explicit empty answer, which clears any stale value',
-  /const _haul\s*=\s*isDriver \? \(haulVals\[i\] \|\| ''\) : '';/.test(build)
+assert('a non-driver — or a driver on a block that does not ask — posts an explicit empty answer, which clears any stale value',
+  /const _haul\s*=\s*blockAsksHaul\(i\) \? \(haulVals\[i\] \|\| ''\) : '';/.test(build)
   && /\{ haul_type: _haul \}/.test(build));
 assert('the payload spreads that key rather than always sending the field',
   /\}, b\.haulKey, splitTagFor\(/.test(build));

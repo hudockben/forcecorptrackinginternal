@@ -36,6 +36,36 @@ const SIGNATURE_STATEMENT =
 const SUPERVISOR_LEVELS = ['admin', 'level3'];
 
 /**
+ * What a laborer can put safety time against on the Timesheet.
+ *
+ * The Safety Center is a division on the Timesheet's picker as well as a page:
+ * pick "Safety Center" and these are its jobs. The entry is stored under the
+ * same key as the page ('safety'), goes through payroll's Pending Review and
+ * approval like any other day, and the Safety Center's Hours tab reads the
+ * approved ones straight back out of timesheet_entries (api/safety-hours.js).
+ * Nothing is copied anywhere on approval, so there is no second record of the
+ * time that an un-approval or a delete could leave behind.
+ *
+ * Standing activities rather than a list somebody maintains, the way the two
+ * EES activities and quarry's Daily/Crushing are: safety time is one of a
+ * handful of kinds of work, and the Hours tab totals by them, which only means
+ * something if everyone files the same kind under the same name.
+ *
+ * The ids are what an entry stores, so once a day has been filed against one
+ * it must never be renamed or reused for a different activity — change the
+ * LABEL freely, retire an id by leaving it off this list (old entries keep
+ * the label they were filed with), and add new ones under new ids.
+ */
+const SAFETY_JOBS = Object.freeze([
+  { id: 'safety:meeting',     label: 'Safety Meeting / Tailgate' },
+  { id: 'safety:training',    label: 'Safety Training' },
+  { id: 'safety:orientation', label: 'New Hire Orientation' },
+  { id: 'safety:inspection',  label: 'Site Safety Inspection' },
+  { id: 'safety:incident',    label: 'Incident Investigation' },
+  { id: 'safety:other',       label: 'Other Safety Work' },
+].map(j => Object.freeze(j)));
+
+/**
  * What this caller may do in the Safety Center.
  *
  *   canView    open documents and sign them
@@ -203,6 +233,7 @@ function mondayOf(value) {
 
 module.exports = {
   SAFETY_DIVISION,
+  SAFETY_JOBS,
   SIGNATURE_STATEMENT,
   SUPERVISOR_LEVELS,
   safetyCapabilities,
