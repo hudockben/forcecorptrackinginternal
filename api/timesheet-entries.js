@@ -131,6 +131,13 @@
  * is billed by the dust office off one of its own two grids. A dust entry with
  * no job stays isolated (status flip only).
  *
+ * Safety Center entries (division 'safety', on one of the standing activities
+ * in SAFETY_JOBS, api/lib/safety.js) inject nothing either: approval is the
+ * same status flip, through the same Pending Review and the same buttons as
+ * every other day. The Safety Center's Hours tab reads the approved ones
+ * straight out of this table (api/safety-hours.js), so un-approving or
+ * deleting one takes it off that tab with no row anywhere else to clean up.
+ *
  * Dust customer work is also the one place the route is finer than the entry.
  * The same driver, truck and clock window is either UB on a well pad or a
  * delivery of material, and the dust office invoices those off two different
@@ -207,7 +214,11 @@ const {
 const { IC_SOURCES } = require('./lib/ic-sources');
 const IC_SOURCE_EES_OTHER = IC_SOURCES.DUST_EES_OTHER;
 
-const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry'];
+// 'safety' is the Safety Center — see the header. It posts no cost row, so it
+// is deliberately absent from AUTO_INJECT_DIVISIONS and SPLIT_DEST_DIVISIONS
+// below: there is nothing for a cost code to code and nowhere for a split row
+// to be sent.
+const VALID_DIVISIONS = ['turf', 'dust', 'paving', 'kiewit', 'trucking', 'quarry', 'safety'];
 const VALID_TIME_OFF  = ['vacation', 'sick', 'jury_duty', 'bereavement', 'holiday'];
 
 // Auto-inject into daily_tracking is only meaningful for divisions whose cost

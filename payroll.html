@@ -2976,6 +2976,7 @@
           <option value="kiewit">Kiewit Pinetree</option>
           <option value="trucking">Trucking</option>
           <option value="quarry">Quarry</option>
+          <option value="safety">Safety Center</option>
         </select>
       </div>
       <div class="filter-field">
@@ -9086,6 +9087,7 @@
       if (!d) return '';
       if (d === 'kiewit') return 'Kiewit Pinetree';
       if (d === 'dust')   return 'Dust Control';
+      if (d === 'safety') return 'Safety Center';
       return d.charAt(0).toUpperCase() + d.slice(1);
     }
     function prettyOff(t) {
@@ -10771,6 +10773,7 @@
               <option value="kiewit">Kiewit Pinetree</option>
               <option value="trucking">Trucking</option>
               <option value="quarry">Quarry</option>
+              <option value="safety">Safety Center</option>
             </select>
           </div>
           <div class="full">
@@ -13787,13 +13790,19 @@
       if (!e) return;
       // Time off injects no cost row anywhere, so promising to remove one would
       // be a lie; every daily division posts something. Say which it is.
-      const injects = e.entry_type !== 'time_off';
+      // The Safety Center is the other exception: it posts no row either — its
+      // Hours tab reads approved time straight from the entry — so what the
+      // un-approval actually does there is take the day off that tab.
+      const isSafety = e.entry_type === 'daily' && e.division === 'safety';
+      const injects = e.entry_type !== 'time_off' && !isSafety;
       if (!confirm(
         `Un-approve ${e.username}'s entry for ${prettyDate(e.work_date)}?\n\n` +
         (injects
           ? `This will remove the cost tracking rows injected into the ${prettyDiv(e.division)} division ` +
             `and put the entry back into Pending.`
-          : `The entry goes back into Pending for review.`)
+          : isSafety
+            ? `It comes off the Safety Center's hours log and goes back into Pending for review.`
+            : `The entry goes back into Pending for review.`)
       )) return;
       try {
         const res = await fetch('/api/timesheet-entries?action=unapprove&id=' + encodeURIComponent(id), {
@@ -16691,7 +16700,16 @@
         badgeClass = 'plain'; badgeText = 'No injection';
         title = 'Status-only entries';
         meta = `${days} ${days === 1 ? 'entry' : 'entries'} approved as-is`;
-        fields = `<div class="bulk-note">These entries just change status to approved — no cost row is injected.</div>`;
+        // Safety Center days land in this bucket, and they do go somewhere: the
+        // Safety Center's Hours tab counts a day the moment it is approved. Said
+        // here so "no cost row" is not read as "goes nowhere".
+        const safetyDays = g.entries.filter(e => e.entry_type === 'daily' && e.division === 'safety').length;
+        fields = `<div class="bulk-note">These entries just change status to approved — no cost row is injected.${
+          safetyDays
+            ? ` ${safetyDays === days ? (days === 1 ? 'It is a Safety Center day' : 'They are Safety Center days')
+                                      : `${safetyDays} of them ${safetyDays === 1 ? 'is a Safety Center day' : 'are Safety Center days'}`}
+               — approved, ${safetyDays === 1 ? 'it shows' : 'they show'} on the Safety Center's Hours tab.`
+            : ''}</div>`;
       }
 
       // A haul day whose row will carry a machine the driver never named. Bulk

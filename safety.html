@@ -45,7 +45,7 @@
     .icon-btn:hover, .icon-btn:active { color:var(--text); border-color:#555; }
 
     /* ── Tabs ── */
-    /* Three tabs on the supervisor's side no longer fit a phone in every case,
+    /* Four tabs on the supervisor's side no longer fit a phone in every case,
        so the row scrolls rather than squeezing a label onto two lines. */
     .tabs {
       display:flex; gap:0.4rem; padding:0.7rem 1rem 0; max-width:1100px; margin:0 auto;
@@ -470,6 +470,50 @@
     .rate-tip span { display:block; color:var(--muted); overflow-wrap:anywhere; }
     .rate-tip span.who { color:var(--text); }
 
+    /* ── Safety hours ── */
+    /* The summary at the top is the sign rate's own card (.rate-sum and its
+       stats), so the two supervisor tabs read alike. Everything else here is
+       this tab's. */
+    #hoursBody { display:flex; flex-direction:column; gap:0.85rem; transition:opacity .15s; }
+    #hoursBody.stale { opacity:0.45; pointer-events:none; }
+    .hrs-card { background:var(--surface); border:1px solid var(--border); border-radius:10px; overflow:hidden; }
+    .hrs-card h3 {
+      display:flex; align-items:baseline; gap:0.6rem; padding:0.75rem 0.9rem 0.55rem;
+      font-size:0.62rem; letter-spacing:0.12em; text-transform:uppercase; color:var(--muted); font-weight:700;
+    }
+    .hrs-card h3 .cnt { margin-left:auto; letter-spacing:0.04em; text-transform:none; font-weight:600; }
+    .hrs-acts { list-style:none; padding:0 0.9rem 0.85rem; display:flex; flex-direction:column; gap:0.55rem; }
+    .hrs-act { display:grid; grid-template-columns:minmax(0, 1fr) auto; gap:0.1rem 0.8rem; align-items:baseline; font-size:0.84rem; }
+    .hrs-act .l { font-weight:600; overflow-wrap:anywhere; }
+    .hrs-act .v { font-weight:700; font-variant-numeric:tabular-nums; white-space:nowrap; }
+    .hrs-act .v .n { font-weight:400; font-size:0.72rem; color:var(--muted); }
+    .hrs-act .meter { grid-column:1 / -1; height:6px; margin:0; }
+    /* An activity nobody did in the range stays listed — "no training this
+       month" is an answer too — but steps back. */
+    .hrs-act.none .l, .hrs-act.none .v { color:var(--muted); font-weight:500; }
+    /* Wide tables scroll inside their card, never the page. */
+    .hrs-scroll { overflow-x:auto; -webkit-overflow-scrolling:touch; }
+    .hrs-table { width:100%; border-collapse:collapse; font-size:0.8rem; }
+    .hrs-table th, .hrs-table td {
+      padding:0.5rem 0.7rem; border-top:1px solid var(--border); text-align:left; vertical-align:top; white-space:nowrap;
+    }
+    .hrs-table th {
+      font-size:0.6rem; letter-spacing:0.1em; text-transform:uppercase; color:var(--muted); font-weight:700;
+      background:var(--surface2);
+    }
+    .hrs-table .num { text-align:right; font-variant-numeric:tabular-nums; }
+    .hrs-table .sub { display:block; font-size:0.7rem; color:var(--muted); font-weight:400; }
+    /* Somebody's own words, so they wrap rather than stretch the table — and
+       the activity may take two lines, so the log fits a laptop's width
+       without its last column running off the card. */
+    .hrs-table td.notes { white-space:normal; min-width:160px; max-width:320px; color:var(--muted); overflow-wrap:anywhere; }
+    .hrs-table td.act { white-space:normal; min-width:120px; }
+    .hrs-table tbody tr:hover > td { background:var(--surface2); }
+    .hrs-table tfoot td { font-weight:700; background:var(--surface2); }
+    .hrs-pending { list-style:none; margin-top:0.55rem; display:flex; flex-direction:column; gap:0.25rem; font-size:0.8rem; }
+    .hrs-pending li { overflow-wrap:anywhere; }
+    .hrs-pending .muted { color:var(--muted); }
+
     /* ── Phone ───────────────────────────────────────────────────────────
        The crew are on phones, in gloves, outdoors. Apple and Google both put
        the minimum comfortable target at 44px; the compact desktop controls
@@ -512,8 +556,8 @@
          left the title a column three words wide. It takes its own row. */
       .rep-head { flex-wrap:wrap; }
       .rep-head .rep-print { flex:1 0 100%; }
-      /* "Employee Sign Rate" is the desktop label; a phone has room for the
-         words that tell the three tabs apart. */
+      /* "Employee Sign Rate" and "Safety Hours" are the desktop labels; a phone
+         has room for the words that tell the tabs apart. */
       .tab-long { display:none; }
       /* The sticky columns give back most of their width, or a phone would
          see names and no squares. */
@@ -561,12 +605,14 @@
     <button class="tab active" id="tabDocs" onclick="switchTab('docs')">Documents</button>
     <button class="tab" id="tabReport" style="display:none" onclick="switchTab('report')">Sign-Off Report</button>
     <button class="tab" id="tabRate" style="display:none" onclick="switchTab('rate')"><span class="tab-long">Employee </span>Sign Rate</button>
+    <button class="tab" id="tabHours" style="display:none" onclick="switchTab('hours')"><span class="tab-long">Safety </span>Hours</button>
   </div>
 
   <main>
     <div class="panel active" id="panelDocs"></div>
     <div class="panel" id="panelReport"></div>
     <div class="panel" id="panelRate"></div>
+    <div class="panel" id="panelHours"></div>
   </main>
 
   <div class="overlay" id="viewer">
@@ -621,6 +667,7 @@
       rate: null, rateError: null, rateLoading: false,   // the sign rate grid (rateModel)
       rateSort: 'name',  // 'name' | 'low' | 'high'
       rateFormsOpen: false,   // the Forms counted list, expanded
+      hours: null, hoursError: null, hoursLoading: false,   // the safety hours log (hoursModel)
       showArchived: false,
       statement: '',
       storageConfigured: true,
@@ -708,12 +755,15 @@
       document.getElementById('tabDocs').classList.toggle('active', tab === 'docs');
       document.getElementById('tabReport').classList.toggle('active', tab === 'report');
       document.getElementById('tabRate').classList.toggle('active', tab === 'rate');
+      document.getElementById('tabHours').classList.toggle('active', tab === 'hours');
       document.getElementById('panelDocs').classList.toggle('active', tab === 'docs');
       document.getElementById('panelReport').classList.toggle('active', tab === 'report');
       document.getElementById('panelRate').classList.toggle('active', tab === 'rate');
+      document.getElementById('panelHours').classList.toggle('active', tab === 'hours');
       hideRateTip();
       if (tab === 'report' && !state.report && !state.reportLoading) loadReport();
       if (tab === 'rate' && !state.rate && !state.rateLoading) loadRate();
+      if (tab === 'hours' && !state.hours && !state.hoursLoading) loadHours();
     }
 
     /* ═══════ Documents ═══════ */
@@ -732,6 +782,7 @@
           canManage = Boolean(data.permissions.canManage);
           document.getElementById('tabReport').style.display = canManage ? '' : 'none';
           document.getElementById('tabRate').style.display   = canManage ? '' : 'none';
+          document.getElementById('tabHours').style.display  = canManage ? '' : 'none';
           document.getElementById('levelBadge').textContent = canManage ? 'Supervisor' : 'Crew';
         }
       } catch (err) {
@@ -3024,6 +3075,349 @@
       setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     }
 
+    /* ═══════ Safety hours ═══════ */
+    /* The time the crew has put against safety work. A laborer files it on the
+       Timesheet like any other day — Safety Center as the division, one of the
+       standing activities as the job — and payroll approves it in the same
+       Pending Review, with the same buttons, as everything else. Approval is
+       what makes it count here.
+
+       It is read straight from payroll's own record of the day
+       (/api/safety-hours), not from a copy made at approval, so this tab and
+       payroll cannot disagree: un-approve or delete a day in payroll and it is
+       gone from here on the next Apply.
+
+       Submitted days still waiting on payroll are not in the totals. They are
+       named above them instead, so nobody reads a missing day as a day that
+       was never filed. */
+
+    const hrs = n => (Number(n) || 0).toFixed(2);
+
+    function addDaysStr(ds, n) {
+      const d = new Date(String(ds) + 'T12:00:00');
+      d.setDate(d.getDate() + n);
+      return dstr(d);
+    }
+
+    // This week and the three before it, Monday to Sunday — the weeks the rest
+    // of the Safety Center already files by.
+    function hoursDefaultRange() {
+      const mon = mondayOf(dstr(new Date()));
+      return { from: addDaysStr(mon, -21), to: addDaysStr(mon, 6) };
+    }
+
+    // "Mon, Nov 2, 2026" — the log is read a row at a time, and the weekday is
+    // what a supervisor remembers a tailgate by.
+    function hoursDay(ds) {
+      const d = new Date(String(ds) + 'T12:00:00');
+      if (isNaN(d.getTime())) return String(ds || '');
+      return d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric' });
+    }
+
+    function hoursRangeText(m) {
+      if (m.from && m.to) return dayLabel(m.from) + ' – ' + dayLabel(m.to);
+      if (m.from) return 'from ' + dayLabel(m.from);
+      if (m.to)   return 'through ' + dayLabel(m.to);
+      return 'all dates';
+    }
+
+    /* The tab's figures, from one /safety-hours read.
+
+       An activity is named by its id's CURRENT label where the id is a standing
+       one, so renaming an activity renames it everywhere at once; a day filed
+       against an id no longer offered keeps the label it was filed with. Every
+       standing activity is listed even when nothing was logged to it — "no
+       training this month" is a figure a safety supervisor wants to see. */
+    function hoursModel(data) {
+      const acts   = Array.isArray(data.activities) ? data.activities : [];
+      const labels = new Map(acts.map(a => [a.id, a.label]));
+      const shape  = e => Object.assign({}, e, {
+        activity: labels.get(e.jobId) || e.jobLabel || e.jobId || 'Safety work',
+        hours:    Number(e.hours) || 0,
+        travelHours: e.travelHours == null ? null : (Number(e.travelHours) || 0),
+      });
+      const entries = (data.entries || []).map(shape);
+      const pending = (data.pending || []).map(shape);
+
+      const byAct = new Map(acts.map(a => [a.id, { id: a.id, label: a.label, hours: 0, days: 0 }]));
+      const byPerson = new Map();
+      for (const e of entries) {
+        const ak = e.jobId || e.activity;
+        if (!byAct.has(ak)) byAct.set(ak, { id: ak, label: e.activity, hours: 0, days: 0 });
+        const a = byAct.get(ak);
+        a.hours += e.hours; a.days++;
+
+        // By account where there is one, so a person who changed the name they
+        // sign with is still one row.
+        const pk = e.userId != null ? 'u' + e.userId : 'n' + String(e.username || '').toLowerCase();
+        if (!byPerson.has(pk)) {
+          byPerson.set(pk, { username: e.username, fullName: e.fullName || '', hours: 0, travel: 0, days: 0, last: '' });
+        }
+        const p = byPerson.get(pk);
+        p.hours += e.hours; p.travel += e.travelHours || 0; p.days++;
+        if (String(e.workDate) > p.last) p.last = String(e.workDate);
+        if (!p.fullName && e.fullName) p.fullName = e.fullName;
+      }
+      const people = [...byPerson.values()].sort((a, b) =>
+        b.hours - a.hours || String(a.fullName || a.username).localeCompare(String(b.fullName || b.username)));
+
+      return {
+        from: data.from || null, to: data.to || null,
+        entries, pending, people,
+        activities: [...byAct.values()],
+        hours:  entries.reduce((s, e) => s + e.hours, 0),
+        travel: entries.reduce((s, e) => s + (e.travelHours || 0), 0),
+        truncated: Boolean(data.truncated),
+      };
+    }
+
+    // Every Apply takes a ticket, so a slow read of one range landing after
+    // the read of the next cannot paint the old range over the new one.
+    let hoursSeq = 0;
+
+    async function loadHours() {
+      const seq = ++hoursSeq;
+      state.hoursLoading = true; state.hoursError = null;
+      renderHours();   // draws the toolbar on the first visit, so the dates below exist
+      const from  = (document.getElementById('hrsFrom') || {}).value || '';
+      const to    = (document.getElementById('hrsTo')   || {}).value || '';
+      const parts = [];
+      if (from) parts.push('from=' + encodeURIComponent(from));
+      if (to)   parts.push('to=' + encodeURIComponent(to));
+      try {
+        const data = await api('GET', '/safety-hours' + (parts.length ? '?' + parts.join('&') : ''));
+        if (seq !== hoursSeq) return;
+        state.hours = hoursModel(data);
+      } catch (err) {
+        if (seq !== hoursSeq) return;
+        // Nothing left behind to export: the CSV would otherwise hand out a
+        // range the screen no longer shows.
+        state.hours = null;
+        state.hoursError = err.message;
+      }
+      state.hoursLoading = false;
+      renderHours();
+    }
+
+    // Built once, so a reload never clears the dates somebody has typed.
+    function hoursToolbarHTML() {
+      const r = hoursDefaultRange();
+      return `
+        <div class="form-card">
+          <h2>Safety hours</h2>
+          <div class="toolbar">
+            <div class="row">
+              <label for="hrsFrom">From</label>
+              <input id="hrsFrom" type="date" value="${esc(r.from)}" />
+            </div>
+            <div class="row">
+              <label for="hrsTo">To</label>
+              <input id="hrsTo" type="date" value="${esc(r.to)}" />
+            </div>
+            <button class="btn btn-primary" onclick="loadHours()">Apply</button>
+            <button class="btn btn-ghost" onclick="exportHoursCsv()">Export CSV</button>
+          </div>
+          <span class="fld-note">Time the crew files on the Timesheet with Safety Center as the division,
+            counted here once payroll approves it — the same approval as every other day. Hours are time on the
+            activity after any lunch break; travel is listed beside them. Leave both dates blank for everything.</span>
+        </div>`;
+    }
+
+    function renderHours() {
+      const el = document.getElementById('panelHours');
+      if (!canManage) {
+        el.innerHTML = `<div class="empty">The safety hours log is for safety supervisors.</div>`;
+        return;
+      }
+      if (!document.getElementById('hoursBody')) el.innerHTML = hoursToolbarHTML() + '<div id="hoursBody"></div>';
+      const body = document.getElementById('hoursBody');
+      const m = state.hours;
+      body.classList.toggle('stale', Boolean(state.hoursLoading && m));
+
+      if (state.hoursLoading && !m) {
+        body.innerHTML = `<div class="empty">Loading safety hours…</div>`;
+      } else if (state.hoursError) {
+        body.innerHTML = `<div class="empty"><strong>Could not load the safety hours.</strong>${esc(state.hoursError)}<br><br>
+          <button class="btn btn-primary" onclick="loadHours()">Try again</button></div>`;
+      } else if (!m) {
+        body.innerHTML = '';
+      } else {
+        body.innerHTML = hoursPendingHTML(m) + hoursTruncatedHTML(m) + (m.entries.length
+          ? hoursSummaryHTML(m) + hoursActivityHTML(m) + hoursPeopleHTML(m) + hoursLogHTML(m)
+          : `<div class="empty"><strong>No approved safety hours ${m.from || m.to ? 'for ' + esc(hoursRangeText(m)) : 'yet'}.</strong>
+               When somebody picks Safety Center as the division on the Timesheet and payroll approves the day,
+               it shows up here.</div>`);
+      }
+    }
+
+    // A person as the Safety Center knows them: the name they last signed a
+    // form with, and the login beneath it — or the login alone for somebody
+    // who has never signed one.
+    function hoursPersonHTML(p) {
+      return p.fullName
+        ? `${esc(p.fullName)}<span class="sub">${esc(p.username)}</span>`
+        : esc(p.username);
+    }
+
+    function hoursPendingHTML(m) {
+      const p = m.pending;
+      if (!p.length) return '';
+      const SHOW = 8;
+      const total = p.reduce((s, e) => s + e.hours, 0);
+      const items = p.slice(0, SHOW).map(e => `<li>${esc(e.fullName || e.username)} &middot; ${esc(hoursDay(e.workDate))}
+          &middot; ${esc(e.activity)} &middot; ${hrs(e.hours)} h${
+          e.supervisorName ? ` <span class="muted">(supervisor: ${esc(e.supervisorName)})</span>` : ''}</li>`).join('');
+      return `
+        <div class="notice">
+          <strong>${plural(p.length, 'entry', 'entries')} (${hrs(total)} h) in this range ${p.length === 1 ? 'is' : 'are'}
+            waiting on payroll approval.</strong>
+          ${p.length === 1 ? 'It counts' : 'They count'} here once payroll approves ${p.length === 1 ? 'it' : 'them'},
+          the same as any other day on the Timesheet.
+          <ul class="hrs-pending">${items}${p.length > SHOW ? `<li class="muted">…and ${p.length - SHOW} more</li>` : ''}</ul>
+        </div>`;
+    }
+
+    function hoursTruncatedHTML(m) {
+      if (!m.truncated) return '';
+      const n = m.entries.length + m.pending.length;
+      return `<div class="notice"><strong>This range holds more entries than one read returns.</strong>
+        Only the latest ${n} are shown, so the totals below stop short. Narrow the dates to see the rest.</div>`;
+    }
+
+    function hoursSummaryHTML(m) {
+      const n = m.people.length;
+      return `
+        <div class="rate-sum">
+          <div class="rate-hero">
+            <span class="k">Approved safety hours</span>
+            <div class="v">${hrs(m.hours)}</div>
+            <div class="s">${m.travel > 0.004 ? `+ ${hrs(m.travel)} h travel &middot; ` : ''}${esc(hoursRangeText(m))}</div>
+          </div>
+          <div class="rate-stats">
+            <div class="rate-stat"><span class="k">Employees</span><span class="v">${n}</span>
+              <span class="s">with safety time</span></div>
+            <div class="rate-stat"><span class="k">Avg per employee</span><span class="v">${hrs(n ? m.hours / n : 0)}</span>
+              <span class="s">hours</span></div>
+            <div class="rate-stat"><span class="k">Entries</span><span class="v">${m.entries.length}</span>
+              <span class="s">approved</span></div>
+          </div>
+        </div>`;
+    }
+
+    function hoursActivityHTML(m) {
+      const max = Math.max(0, ...m.activities.map(a => a.hours)) || 1;
+      const rows = m.activities.map(a => {
+        const share = pctOf(a.hours, m.hours);
+        return `
+          <li class="hrs-act${a.days ? '' : ' none'}">
+            <span class="l">${esc(a.label)}</span>
+            <span class="v">${hrs(a.hours)} h <span class="n">&middot; ${plural(a.days, 'entry', 'entries')}${
+              a.days && share != null ? ` &middot; ${share}%` : ''}</span></span>
+            <span class="meter"><i style="width:${((a.hours / max) * 100).toFixed(1)}%"></i></span>
+          </li>`;
+      }).join('');
+      return `<div class="hrs-card"><h3>By activity</h3><ul class="hrs-acts">${rows}</ul></div>`;
+    }
+
+    function hoursPeopleHTML(m) {
+      const rows = m.people.map(p => `
+        <tr>
+          <td>${hoursPersonHTML(p)}</td>
+          <td class="num">${p.days}</td>
+          <td class="num"><strong>${hrs(p.hours)}</strong></td>
+          <td class="num">${p.travel > 0.004 ? hrs(p.travel) : '—'}</td>
+          <td class="num">${esc(dayLabel(p.last))}</td>
+        </tr>`).join('');
+      return `
+        <div class="hrs-card">
+          <h3>By employee</h3>
+          <div class="hrs-scroll">
+            <table class="hrs-table">
+              <thead><tr><th>Employee</th><th class="num">Entries</th><th class="num">Hours</th>
+                <th class="num">Travel</th><th class="num">Last logged</th></tr></thead>
+              <tbody>${rows}</tbody>
+              <tfoot><tr><td>${plural(m.people.length, 'employee')}</td><td class="num">${m.entries.length}</td>
+                <td class="num">${hrs(m.hours)}</td><td class="num">${m.travel > 0.004 ? hrs(m.travel) : '—'}</td><td></td></tr></tfoot>
+            </table>
+          </div>
+        </div>`;
+    }
+
+    function hoursTimeText(e) {
+      const span = e.startTime && e.endTime ? `${e.startTime}–${e.endTime}` : '—';
+      return e.lunchBreak === true ? span + ' · lunch' : span;
+    }
+
+    function hoursLogHTML(m) {
+      const rows = m.entries.map(e => `
+        <tr>
+          <td>${esc(hoursDay(e.workDate))}</td>
+          <td>${hoursPersonHTML(e)}</td>
+          <td class="act">${esc(e.activity)}</td>
+          <td>${esc(hoursTimeText(e))}</td>
+          <td class="num"><strong>${hrs(e.hours)}</strong></td>
+          <td class="num">${e.travelHours > 0 ? hrs(e.travelHours) : '—'}</td>
+          <td>${esc(e.supervisorName || '—')}</td>
+          <td>${esc(e.approvedBy || '—')}${e.approvedAt
+            ? `<span class="sub" title="${esc(stamp(e.approvedAt))}">${esc(dayLabel(ymdOf(e.approvedAt)))}</span>` : ''}</td>
+          <td class="notes">${e.notes ? esc(e.notes) : ''}</td>
+        </tr>`).join('');
+      return `
+        <div class="hrs-card">
+          <h3>Hours log <span class="cnt">${plural(m.entries.length, 'entry', 'entries')}, newest first</span></h3>
+          <div class="hrs-scroll">
+            <table class="hrs-table">
+              <thead><tr><th>Date</th><th>Employee</th><th>Activity</th><th>Time</th><th class="num">Hours</th>
+                <th class="num">Travel</th><th>Supervisor</th><th>Approved</th><th>Notes</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>
+          </div>
+        </div>`;
+    }
+
+    /* The approved days, one row each, oldest first — the order a spreadsheet
+       is read in, and the one a training record is kept in. */
+    function exportHoursCsv() {
+      const m = state.hours;
+      if (!m || !m.entries.length) return toast('Nothing to export yet.', true);
+
+      const r2 = n => Math.round((Number(n) || 0) * 100) / 100;
+      const cell = v => {
+        if (typeof v === 'number') return Number.isFinite(v) ? String(v) : '';
+        let s = String(v == null ? '' : v);
+        // Notes are typed by whoever filed the day. One that opens with = + -
+        // or @ is run as a FORMULA when the file is opened in a spreadsheet,
+        // so it is made to read as text instead.
+        if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+        return /[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+      };
+      const lines = [[
+        'Date', 'Employee', 'Login', 'Activity', 'Start', 'End', 'Lunch', 'Hours', 'Travel', 'Total',
+        'Supervisor', 'Approved by', 'Approved at', 'Notes',
+      ].join(',')];
+      m.entries.slice()
+        .sort((a, b) => String(a.workDate).localeCompare(String(b.workDate))
+          || String(a.username).localeCompare(String(b.username))
+          || String(a.startTime || '').localeCompare(String(b.startTime || '')))
+        .forEach(e => lines.push([
+          e.workDate, e.fullName || '', e.username, e.activity, e.startTime || '', e.endTime || '',
+          e.lunchBreak === true ? 'Yes' : e.lunchBreak === false ? 'No' : '',
+          r2(e.hours), e.travelHours == null ? '' : r2(e.travelHours), r2(e.hours + (e.travelHours || 0)),
+          e.supervisorName || '', e.approvedBy || '', e.approvedAt ? stamp(e.approvedAt) : '', e.notes || '',
+        ].map(cell).join(',')));
+
+      // The byte-order mark is what makes Excel read the file as UTF-8, so a
+      // name with an accent in it does not come out as two characters of noise.
+      const blob = new Blob(['﻿' + lines.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'safety-hours-' + (m.from && m.to ? `${m.from}-to-${m.to}` : dstr(new Date())) + '.csv';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    }
+
     /* ═══════ Nav ═══════ */
     function goToDivisions() { localStorage.removeItem('fct_division'); window.location.replace('divisions.html'); }
     function signOut() {
@@ -3153,6 +3547,7 @@
       document.getElementById('levelBadge').textContent = canManage ? 'Supervisor' : 'Crew';
       document.getElementById('tabReport').style.display = canManage ? '' : 'none';
       document.getElementById('tabRate').style.display   = canManage ? '' : 'none';
+      document.getElementById('tabHours').style.display  = canManage ? '' : 'none';
     })();
 
     loadDocs();

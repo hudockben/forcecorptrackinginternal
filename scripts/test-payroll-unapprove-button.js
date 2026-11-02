@@ -62,8 +62,10 @@ assert('Edit Row stays gated on entryNeedsTrucking',
   /\$\{!isPending && entryNeedsTrucking\(e\) \?/.test(HTML));
 assert('Edit Row is gated on entryNeedsEes',
   /\$\{!isPending && entryNeedsEes\(e\) \?/.test(HTML));
-assert('the confirm text does not promise cost rows for time off',
-  /const injects = e\.entry_type !== 'time_off';/.test(HTML));
+// Time off, and the Safety Center — whose Hours tab reads approved time off the
+// entry itself rather than from a row posted at approval — inject nothing.
+assert('the confirm text does not promise cost rows for time off or a safety day',
+  /const injects = e\.entry_type !== 'time_off' && !isSafety;/.test(HTML));
 
 // ─────────────────────────────────────────────────────────────────────
 // 2) BEHAVIOURAL — run the page's script against a mock DOM
@@ -200,6 +202,12 @@ const CASES = [
   { id: 'truck-1',     label: 'trucking daily',        edits: true,
     e: entry({ id: 'truck-1',  username: 'truckguy',   division: 'trucking',
                job_id: 'j-tk',  job_label: 'Some Haul' }) },
+  // Posts no row anywhere — the Safety Center reads approved time off the
+  // entry — so there is no row to edit, but it is an approval like any other
+  // and has to be possible to take back.
+  { id: 'safety-1',    label: 'Safety Center daily',   edits: false,
+    e: entry({ id: 'safety-1', username: 'safetyguy',  division: 'safety',
+               job_id: 'safety:training', job_label: 'Safety Training' }) },
   { id: 'off-1',       label: 'time off',              edits: false,
     e: entry({ id: 'off-1',    username: 'offguy',     division: 'turf',
                entry_type: 'time_off', time_off_type: 'vacation',
@@ -249,12 +257,18 @@ const prompts = [];
 sandbox.confirm = (msg) => { prompts.push(msg); return false; };  // false = don't fire the fetch
 run(`unapproveEntry('dust-ees')`);
 run(`unapproveEntry('off-1')`);
+run(`unapproveEntry('safety-1')`);
 assert('a dust EES day is told its cost rows go',
   /remove the cost tracking rows injected into the Dust Control division/.test(prompts[0] || ''),
   prompts[0]);
 assert('time off is not promised a cost row removal',
   !/cost tracking rows/.test(prompts[1] || '') && /back into Pending/.test(prompts[1] || ''),
   prompts[1]);
+assert('a Safety Center day is not promised a cost row removal either',
+  !/cost tracking rows/.test(prompts[2] || ''), prompts[2]);
+assert('it is told the day leaves the Safety Center hours log and goes back to Pending',
+  /Safety Center's hours log/.test(prompts[2] || '') && /back into Pending/.test(prompts[2] || ''),
+  prompts[2]);
 
 
 // ── The sandbox still has everything the page reaches for ──

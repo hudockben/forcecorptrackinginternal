@@ -80,9 +80,10 @@ app.all('/api/fuel-audit-log',   require('../api/fuel-audit-log'));
 app.all('/api/fuel-vehicles',    require('../api/fuel-vehicles'));
 app.all('/api/fuel-statement-matches', require('../api/fuel-statement-matches'));
 
-/** Safety Center — the weekly tailgate form and who has signed it */
+/** Safety Center — the weekly tailgate form, who has signed it, and safety hours */
 app.all('/api/safety-documents',  require('../api/safety-documents'));
 app.all('/api/safety-signatures', require('../api/safety-signatures'));
+app.all('/api/safety-hours',      require('../api/safety-hours'));
 
 /** Quarry Sales — scale-house entry, straight into quarry Sales Tracking */
 app.all('/api/quarry-sales-submissions', require('../api/quarry-sales-submissions'));
