@@ -2036,10 +2036,27 @@
       const idxs = (i == null) ? blockOrder() : [i];
       for (const b of idxs) {
         const row = bel(b, 'row-haul');
-        if (row) row.style.display = isDriver ? 'flex' : 'none';
-        if (isDriver) renderHaul(b);
+        const ask = blockAsksHaul(b);
+        if (row) row.style.display = ask ? 'flex' : 'none';
+        if (ask) renderHaul(b);
         applyHaulUnitVisibility(b);
       }
+    }
+
+    // Divisions whose day is never a haul, so a driver is not asked about one
+    // there. A Safety Center block is a tailgate, a class or an inspection; a
+    // haul answer on it would only count classroom hours as hours behind the
+    // wheel, and the server stores none for a safety day anyway.
+    const NO_HAUL_DIVISIONS = ['safety'];
+
+    // Whether ONE block puts the haul question to the person filling it in:
+    // only a flagged driver, and only off the divisions above. Read off the
+    // block's own picker, so moving a block onto the Safety Center takes the
+    // question away and moving it off again brings it back — with whatever
+    // he had already answered, since this never touches haulVals.
+    function blockAsksHaul(i) {
+      const div = ((bel(i, 'division') || {}).value) || '';
+      return !!isDriver && !NO_HAUL_DIVISIONS.includes(div);
     }
 
     function setOffType(t) {
@@ -2606,8 +2623,10 @@
       // The truck picker is division-dependent too: moving a haul block onto a
       // division whose cost row has no equipment column must take it away
       // again, rather than leave a truck the approval has nowhere to put.
-      // applyHaulUnitVisibility refills it from the new division's list.
-      applyHaulUnitVisibility(i);
+      // applyHaulUnitVisibility refills it from the new division's list. The
+      // haul QUESTION follows the division as well — a Safety Center block does
+      // not ask it (blockAsksHaul) — and applyHaulVisibility redraws both.
+      applyHaulVisibility(i);
       // And so are the machines: each division keeps its own equipment list, so
       // a block moved from turf to paving has to be re-offered paving's. Above
       // the early return for a blank division, which is itself a change worth
@@ -3407,16 +3426,20 @@
         // A blank three-way used to save itself as "No", which billed an
         // off-site haul as prevailing site work and paid the man twice for the
         // same hours. Refusing the save is the cheaper failure by far.
-        if (isDriver && haulVals[i] == null) {
+        // A block that does not ask (a Safety Center one) cannot be left
+        // unanswered, so it is not held to it either.
+        if (blockAsksHaul(i) && haulVals[i] == null) {
           return { error: at(i, 'Was this a haul? Pick No, On site or To & from.') };
         }
         // A non-driver posts '' and the server stores null. Omitted entirely
         // when the roster flag is unknown, so the server keeps whatever is
-        // stored. '' is a real answer ("not a haul") and clears it.
+        // stored. '' is a real answer ("not a haul") and clears it — which is
+        // also what a driver's Safety Center block posts, whatever he answered
+        // before he moved it there.
         // The truck rides on truck_unit — it IS the unit — but only for a haul
         // on a division that has somewhere to put it. Everywhere else the
         // trucking/dust rules below own that field, untouched.
-        const _haul     = isDriver ? (haulVals[i] || '') : '';
+        const _haul     = blockAsksHaul(i) ? (haulVals[i] || '') : '';
         const _haulUnit = (isDriver && _haul && HAUL_UNIT_DIVISIONS.includes(div))
           ? (haulUnits[i] || '') : null;
         blocks.push({ i, div, jobId, jobLabel, start, end, equip: equipVals[i],

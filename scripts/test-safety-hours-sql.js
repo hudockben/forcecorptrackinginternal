@@ -245,6 +245,50 @@ async function run() {
     assert('  and waiting on payroll again', h.body.pending.length === 1 && h.body.pending[0].id === String(id));
   }
 
+  console.log('\n[payroll edits a safety day — the activity and the haul answer]');
+  {
+    // A day filed against an activity that has since been retired. Inserted
+    // directly: no current page can file one, which is the point.
+    const { rows: [old] } = await client.query(
+      `INSERT INTO timesheet_entries (company_code, user_id, username, entry_type, work_date, status,
+         division, job_id, job_label, start_time, end_time, computed_hours, supervisor_name)
+       VALUES ($1,$2,'strickallen','daily','2026-10-28','submitted','safety','safety:fit-test',
+               'Respirator Fit Test','13:00','14:00',1,'Steve Travis') RETURNING id`, [CO, LABORER.userId]);
+    const edit = over => Object.assign({}, DAY, { work_date: '2026-10-28', job_id: 'safety:fit-test',
+      job_label: 'Respirator Fit Test', start_time: '13:00', end_time: '14:30', lunch_break: false }, over);
+    const kept = await call(entries, PAYROLL, 'PUT', { id: String(old.id) }, edit());
+    const { rows: [k] } = await client.query('SELECT job_id, job_label, computed_hours FROM timesheet_entries WHERE id = $1', [old.id]);
+    assert('correcting the hours on a day filed under a retired activity still works',
+      kept.statusCode === 200 && k.job_id === 'safety:fit-test' && Number(k.computed_hours) === 1.5,
+      `${kept.statusCode} ${JSON.stringify(kept.body).slice(0, 160)}`);
+    assert('  and it keeps the label it was filed with', k.job_label === 'Respirator Fit Test', k.job_label);
+    const moved = await call(entries, PAYROLL, 'PUT', { id: String(old.id) }, edit({ job_id: 'safety:made-up', job_label: 'Made Up' }));
+    assert('but it cannot be moved onto an activity that does not exist', moved.statusCode === 400,
+      `${moved.statusCode} ${JSON.stringify(moved.body)}`);
+
+    // A driver's turf day with an off-site haul answer, which payroll then moves
+    // to the Safety Center. Payroll's Edit sends no haul_type key — on any other
+    // move that keeps the stored answer, and here it must not.
+    const { rows: [haul] } = await client.query(
+      `INSERT INTO timesheet_entries (company_code, user_id, username, entry_type, work_date, status,
+         division, job_id, job_label, start_time, end_time, computed_hours, supervisor_name, haul_type)
+       VALUES ($1,$2,'strickallen','daily','2026-10-29','submitted','turf','26019','Punxsy','07:00','09:00',2,
+               'Steve Travis','off_site') RETURNING id`, [CO, LABORER.userId]);
+    const toSafety = await call(entries, PAYROLL, 'PUT', { id: String(haul.id) },
+      Object.assign({}, DAY, { work_date: '2026-10-29', start_time: '07:00', end_time: '09:00', lunch_break: false }));
+    const { rows: [h] } = await client.query('SELECT division, haul_type FROM timesheet_entries WHERE id = $1', [haul.id]);
+    assert('a haul day moved to the Safety Center loses its haul answer',
+      toSafety.statusCode === 200 && h.division === 'safety' && h.haul_type === null,
+      `${toSafety.statusCode} ${JSON.stringify(h)} ${JSON.stringify(toSafety.body).slice(0, 120)}`);
+
+    // And the laborer's own create, with a haul answer from a driver's form.
+    const filed = await call(entries, LABORER, 'POST', {},
+      Object.assign({}, DAY, { work_date: '2026-10-30', haul_type: 'off_site' }));
+    const { rows: [f] } = await client.query('SELECT haul_type FROM timesheet_entries WHERE id = $1', [filed.body.entry.id]);
+    assert('a safety day filed with a haul answer stores none', filed.statusCode === 200 && f.haul_type === null,
+      JSON.stringify(f));
+  }
+
   console.log('\n[who may read it]');
   {
     const crew = await user(CO, 'jhauser', { timesheet: 'level1', safety: 'level1' });

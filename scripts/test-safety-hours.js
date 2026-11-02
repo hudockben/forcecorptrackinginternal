@@ -207,6 +207,48 @@ async function main() {
   assert('safety is not a destination a split row can be sent to — it posts no cost row',
     !SPLIT_DEST_DIVISIONS.includes('safety'));
 
+  // The activity is checked on the server, not just offered by the picker. The
+  // Hours tab totals by it, so a day filed against anything else would be
+  // approved without complaint and split those totals.
+  {
+    const { error } = normalizeEntryBody(Object.assign({}, DAY, { job_id: '26019', job_label: 'Punxsy Storage Lot' }));
+    assert('a safety day filed against a turf project is refused', /Safety Center activities/.test(error || ''), error);
+    const made = normalizeEntryBody(Object.assign({}, DAY, { job_id: 'safety:made-up', job_label: 'Made Up' }));
+    assert('  and so is an activity that does not exist', /Safety Center activities/.test(made.error || ''), made.error);
+    const spoofed = normalizeEntryBody(Object.assign({}, DAY, { job_label: 'Anything I like' }));
+    assert('a known activity is filed under the list\'s own label, whatever label was sent',
+      !spoofed.error && spoofed.data.job_label === 'Safety Training', spoofed.error || spoofed.data.job_label);
+    // Retired after the day was filed: the day must stay correctable.
+    const FILED = { entry_type: 'daily', division: 'safety', job_id: 'safety:fit-test', job_label: 'Respirator Fit Test' };
+    const kept = normalizeEntryBody(Object.assign({}, DAY, { job_id: 'safety:fit-test', job_label: 'x' }), FILED);
+    assert('an edit may keep an activity since retired, under the label it was filed with',
+      !kept.error && kept.data.job_label === 'Respirator Fit Test', kept.error || kept.data.job_label);
+    const fresh = normalizeEntryBody(Object.assign({}, DAY, { job_id: 'safety:fit-test', job_label: 'x' }));
+    assert('  but a new day cannot be filed against one', /Safety Center activities/.test(fresh.error || ''));
+    const moved = normalizeEntryBody(Object.assign({}, DAY, { job_id: 'safety:fit-test', job_label: 'x' }),
+      { entry_type: 'daily', division: 'turf', job_id: 'safety:fit-test' });
+    assert('  nor a day moved in from another division', /Safety Center activities/.test(moved.error || ''));
+  }
+  // A Safety Center day is never a haul. A driver is not asked on one, and an
+  // answer that arrives anyway is not kept, or payrollMetrics would count a
+  // classroom day as hours behind the wheel.
+  {
+    const s = normalizeEntryBody(Object.assign({}, DAY, { haul_type: 'off_site' }));
+    assert('a haul answer sent on a safety day is not kept', !s.error && s.data.haul_type === null,
+      s.error || s.data.haul_type);
+    const t = normalizeEntryBody(Object.assign({}, DAY, {
+      division: 'turf', job_id: '26019', job_label: 'Punxsy Storage Lot', haul_type: 'off_site' }));
+    assert('  while one on a job is', !t.error && t.data.haul_type === 'off_site', t.error || t.data.haul_type);
+  }
+  {
+    // The same refusal, through the endpoint: nothing is written.
+    CURRENT_SQL = recordingSql(() => []);
+    const r = await call(entriesHandler, LABORER, {
+      method: 'POST', body: Object.assign({}, DAY, { job_id: 'safety:made-up', job_label: 'Made Up' }) });
+    assert('the endpoint refuses that day before writing anything', r.statusCode === 400
+      && !CURRENT_SQL.calls.some(c => /^INSERT INTO timesheet_entries/.test(c.q)), `${r.statusCode} ${JSON.stringify(r.body)}`);
+  }
+
   console.log('\n[a Safety Center day — payroll approves it like any other]');
   // One submitted safety day, and a fake that keeps it in step with the
   // UPDATEs the handler sends, so what comes back is what was written.
@@ -561,7 +603,8 @@ async function main() {
             return ok({ documents: [], statement: 'I have read it.', storageConfigured: true,
                         permissions: { canManage: Boolean(canManage) } });
           }
-          if (u.startsWith('/api/safety-hours')) return ok(hours);
+          // A function answers each read afresh — what payroll approved since.
+          if (u.startsWith('/api/safety-hours')) return ok(typeof hours === 'function' ? hours() : hours);
           return ok({});
         };
         // The CSV download: keep the file, skip the navigation.
@@ -607,6 +650,10 @@ async function main() {
     const text = panel.textContent.replace(/\s+/g, ' ');
     assert('the total is the approved hours, and only those', /Approved safety hours 5\.50/.test(text), text.slice(0, 300));
     assert('  with the travel said beside it, not added in', /\+ 1\.00 h travel/.test(text));
+    // Payroll totals a day as work + travel; the tab says that figure as well,
+    // so the two can be checked against each other without arithmetic.
+    assert('  and the total with travel, the figure payroll shows', /\+ 1\.00 h travel = 6\.50 h total/.test(text),
+      text.slice(0, 300));
     assert('the day waiting on payroll is named, and kept out of the total',
       /1 entry \(2\.50 h\) in this range is waiting on payroll approval/.test(text), text.slice(0, 400));
 
@@ -627,6 +674,13 @@ async function main() {
     assert('  people most hours first, by the name they sign with',
       people.length === 2 && /^Josh Hauser/.test(people[0]) && /^strickallen/.test(people[1]), people.join(' | '));
     assert('  the login is still shown under a signed name', /jhauser/.test(people[0]));
+    const heads = [...tables[0].querySelectorAll('thead th')].map(th => th.textContent.trim());
+    const totalCol = heads.indexOf('Total');
+    const josh = tables[0].querySelector('tbody tr');
+    assert('  each person has a Total — work plus travel, the way payroll totals a day',
+      totalCol > -1 && josh.cells[totalCol].textContent.trim() === '5.00', heads.join('|'));
+    const foot = tables[0].querySelector('tfoot tr');
+    assert('  and so does the table', totalCol > -1 && foot.cells[totalCol].textContent.trim() === '6.50');
     const log = [...tables[1].querySelectorAll('tbody tr')];
     assert('  one log row per approved day, newest first',
       log.length === 3 && /Josh Hauser/.test(log[0].cells[1].textContent) && /Respirator/.test(log[2].cells[2].textContent));
@@ -644,7 +698,7 @@ async function main() {
     // exactly what consumes it, so a check on the decoded text could never see it.
     const bytes = blob ? new Uint8Array(await blob.arrayBuffer()) : new Uint8Array(0);
     const csv = blob ? await blob.text() : '';
-    const lines = csv.replace(/^﻿/, '').split('\r\n');
+    const lines = csv.replace(/^\uFEFF/, '').split('\r\n');
     assert('  marked UTF-8 for Excel', bytes[0] === 0xEF && bytes[1] === 0xBB && bytes[2] === 0xBF,
       [...bytes.slice(0, 3)].map(b => b.toString(16)).join(' '));
     assert('  a header and one line per approved day — the pending one is not in it', lines.length === 4, lines.length);
@@ -653,6 +707,48 @@ async function main() {
     assert('  with hours, travel and their total as numbers', /,4,1,5,/.test(lines[3]), lines[3]);
     assert('  and a note that opens like a formula is made to read as text',
       lines[3].includes(`"'=HYPERLINK(""http://evil"",""x"")`), lines[3]);
+    win.close();
+  }
+  const SUP_USER = { username: 'travissteve', companyCode: COMPANY, divisionRoles: { safety: 'level3' } };
+  {
+    // Payroll approves days while this page sits open. Coming back to the tab
+    // must show them, not the first read — the CSV is built from what is shown.
+    let reads = 0;
+    const later = Object.assign({}, HOURS_DATA, {
+      entries: HOURS_DATA.entries.concat([Object.assign({}, HOURS_DATA.pending[0],
+        { status: 'approved', approvedBy: 'office', approvedAt: '2026-11-02T18:00:00Z' })]),
+      pending: [],
+    });
+    const { win, doc, calls } = openSafety(SUP_USER, { canManage: true, hours: () => (reads++ === 0 ? HOURS_DATA : later) });
+    await settle();
+    win.switchTab('hours'); await settle();
+    win.switchTab('docs');  await settle();
+    win.switchTab('hours'); await settle();
+    const n = calls.filter(u => u.includes('/api/safety-hours')).length;
+    assert('coming back to the Hours tab reads the hours again', n === 2, `${n} reads`);
+    const text = doc.getElementById('panelHours').textContent.replace(/\s+/g, ' ');
+    assert('  and shows the day payroll approved in the meantime',
+      /Approved safety hours 8\.00/.test(text) && !/waiting on payroll/.test(text), text.slice(0, 300));
+    win.close();
+  }
+  {
+    // The Sign-Off Report's CSV goes out through the same writer as the hours
+    // one, so a name somebody TYPED under a signature cannot open as a formula
+    // in the office's spreadsheet either.
+    const { win, downloads } = openSafety(SUP_USER, { canManage: true });
+    await settle();
+    win.eval(`state.report = [{
+      document: { title: 'Ladders', weekOf: '2026-10-26' },
+      signed: [{ username: 'mallory', fullName: '=HYPERLINK("http://evil","x")',
+                 signedAt: '2026-10-27T12:00:00Z', hasDrawnSignature: false }],
+      outstanding: [{ username: 'twhite' }],
+    }];`);
+    win.exportReportCsv();
+    const blob = downloads.find(d => d && typeof d === 'object');
+    const csv = blob ? await blob.text() : '';
+    assert('the sign-off CSV keeps a typed name from opening as a formula',
+      csv.includes(`"'=HYPERLINK(""http://evil"",""x"")"`), csv);
+    assert('  and still lists who has not signed', /twhite,,Not signed/.test(csv), csv);
     win.close();
   }
   {
