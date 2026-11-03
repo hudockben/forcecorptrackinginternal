@@ -3951,12 +3951,19 @@ function buildObRow(entry, fields, index, opts, driver) {
 
   // The truck. Named the way dust names its vehicles in the modal, stored the
   // way the tab's dropdown holds it — by unit number — with the typed value
-  // kept when it matches nothing, so an off-roster truck still reads back.
+  // kept when there is no number to store, so the truck always reads back.
+  //
+  // "No number" includes a name that IS on the equipment list but has no unit
+  // number filled in. The tab's own import adds vehicles that way (a name off
+  // an imported row, unit left blank), and resolving to that blank posted every
+  // haul in the truck with an empty Truck # — the approver named the truck and
+  // the grid showed "—". A truck with a name and no number is still a truck.
   const truckName = fields.vehicle1 !== undefined ? fields.vehicle1 : (entry.truck_unit || '');
   const eq = truckName
     ? (opts.equipment || []).find(e => String(e.name).toLowerCase() === String(truckName).toLowerCase())
     : null;
-  const truckNumber = eq ? String(eq.unit_number || '') : (safeStr(truckName, 100) || '');
+  const eqUnit = eq ? (safeStr(eq.unit_number, 100) || '') : '';
+  const truckNumber = eqUnit || (safeStr(truckName, 100) || '');
 
   const pick = (key) => fields[key] !== undefined ? fields[key] : '';
 
@@ -4167,7 +4174,12 @@ async function obSplitForEntry(sql, companyCode, entry) {
       state:          r.state          || '',
       start_time:     hhmm(r.start_time),
       end_time:       hhmm(r.end_time),
-      vehicle1:       r.truck_number   || '',
+      // A row posted with no Truck # re-opens on the truck off the timesheet,
+      // so saving Edit Row repairs it. Rows posted before buildObRow stopped
+      // blanking a truck whose equipment entry had no unit number would
+      // otherwise re-open blank and save blank again, and the only way to fix
+      // each one would be to retype the truck by hand.
+      vehicle1:       r.truck_number   || entry.truck_unit || '',
       trailer_number: r.trailer_number || '',
       material:       r.material       || '',
       gallons_bags:   n(r.gallons_bags),
@@ -7169,8 +7181,10 @@ module.exports = async (req, res) => {
       // Quarry entries: return the injected quarry blob row (activity + its
       // value fields) so the payroll modal can pre-fill on re-edit. `id` MUST
       // be selected — quarrySplitForEntry keys the blob lookup on entry.id.
+      // truck_unit is read by obSplitForEntry: an Other Billing row posted with
+      // no Truck # re-opens on the timesheet's truck.
       const [entryRow] = await sql`
-        SELECT id, entry_type, division, job_id, job_label, split_destinations
+        SELECT id, entry_type, division, job_id, job_label, split_destinations, truck_unit
         FROM timesheet_entries
         WHERE id = ${id} AND company_code = ${companyCode}
       `;

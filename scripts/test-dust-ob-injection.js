@@ -307,6 +307,51 @@ console.log('Dust timesheet → Other Billing injection\n');
       row.start_time === '06:00' && row.end_time === '16:00');
   }
 
+  // ── 4b) A truck with no unit number keeps its name ────────────────────────
+  // The dust tab's import adds a vehicle to the equipment list by name with the
+  // unit left blank. Resolving a truck to that blank posted every haul in it
+  // with an empty Truck #, while payroll showed the truck the approver named.
+  console.log('\n[a truck with no unit number still reads back]');
+  {
+    const fixture = {
+      ...FIXTURE,
+      equipment: [...FIXTURE.equipment, { name: '4000 SPRAY', unit_number: '', vehicle_rate: null }],
+    };
+    const { sql, store } = makeSql(fixture);
+    const entry = { ...ENTRY, truck_unit: '4000 SPRAY' };
+
+    await insertObRows(sql, CO, entry, [{ dest: 'ob', vehicle1: '4000 SPRAY', material: 'ClearFrac' }]);
+    assert('an equipment entry with no number stores the truck as named',
+      obRow(store, 1).truck_number === '4000 SPRAY', obRow(store, 1).truck_number);
+
+    await insertObRows(sql, CO, entry, [{ dest: 'ob', material: 'ClearFrac' }]);
+    assert('and so does the timesheet\'s truck when the modal sends none',
+      obRow(store, 1).truck_number === '4000 SPRAY', obRow(store, 1).truck_number);
+
+    await insertObRows(sql, CO, entry, [{ dest: 'ob', vehicle1: 'Distributor Truck 4000', material: 'ClearFrac' }]);
+    assert('a truck that has a number is still stored by number',
+      obRow(store, 1).truck_number === '4000', obRow(store, 1).truck_number);
+
+    await insertObRows(sql, CO, entry, [{ dest: 'ob', vehicle1: 'Off Roster 77', material: 'ClearFrac' }]);
+    assert('an off-roster truck is stored as typed',
+      obRow(store, 1).truck_number === 'Off Roster 77', obRow(store, 1).truck_number);
+
+    // A row already posted with no Truck # (before this fix) re-opens on the
+    // timesheet's truck, so saving Edit Row repairs it.
+    obRow(store, 1).truck_number = '';
+    const { rows: back } = await obSplitForEntry(sql, CO, entry);
+    assert('a row posted blank re-opens on the timesheet\'s truck',
+      back[0].vehicle1 === '4000 SPRAY', back[0].vehicle1);
+    await insertObRows(sql, CO, entry, [{ ...back[0], dest: 'ob' }]);
+    assert('and saving it puts the truck back on the row',
+      obRow(store, 1).truck_number === '4000 SPRAY', obRow(store, 1).truck_number);
+
+    obRow(store, 1).truck_number = '3999';
+    const { rows: kept } = await obSplitForEntry(sql, CO, entry);
+    assert('a row that has a truck re-opens on its own truck',
+      kept[0].vehicle1 === '3999', kept[0].vehicle1);
+  }
+
   // ── 5) A day across both grids ────────────────────────────────────────────
   console.log('\n[a day split across both dust grids]');
   {
