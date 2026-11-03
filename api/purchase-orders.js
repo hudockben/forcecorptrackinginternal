@@ -25,9 +25,14 @@
  *
  * Frontend PO shape:
  *   { id, po_number, date_created, project_id, cost_code, sub_code, title,
- *     supplier, status, notes,
+ *     supplier, status, notes, status_changed_at, status_changed_by,
+ *     created_at, created_by,
  *     lines: [{ id, invoice_num, date, qty, unit_cost, tax, tax_pct, employee,
  *              po_row_id }] }
+ *
+ * `created_at` / `created_by` are who raised the order and when. Set once, the
+ * first time the order is stored, and kept from then on by every write here —
+ * see settleCreationStamp in api/lib/po-sync.js.
  *
  * `tax_pct` is what the user types (a percentage of qty × unit_cost); `tax` is
  * the dollar amount it works out to, kept in sync by the frontend. Only `tax`
@@ -218,6 +223,11 @@ module.exports = async (req, res) => {
         origin:            r.origin          || undefined,
         status_changed_at: r.status_changed_at ? String(r.status_changed_at) : undefined,
         status_changed_by: r.status_changed_by || undefined,
+        // The row's created_at is only the ORDER's creation time when the order
+        // was stamped; for one raised before that it is when the row was first
+        // written. created_by is what tells the two apart.
+        created_at:        r.created_by && r.created_at ? new Date(r.created_at).toISOString() : undefined,
+        created_by:        r.created_by      || undefined,
         lines:             linesByPO[r.id]   || [],
       }));
 
@@ -268,6 +278,9 @@ module.exports = async (req, res) => {
       const baseUpdatedAt = (req.body || {}).baseUpdatedAt || null;
       const baseTs = baseUpdatedAt ? Date.parse(baseUpdatedAt) : NaN;
       let toWrite = purchaseOrders;
+      // The list as stored before this save, once something has read it. The
+      // creation stamps below are settled against it.
+      let storedList = null;
       // Everything the merge arm put back, at any level. The response reports
       // the SUM, because the client withholds the new version whenever this is
       // non-zero — and a merge it is not told about is worse than no merge at
@@ -281,6 +294,7 @@ module.exports = async (req, res) => {
       if (!isNaN(baseTs) && req.query.force !== '1') {
         const cur = await sql`SELECT value, updated_at FROM app_data WHERE key = ${blobKey}`;
         const stored = cur.length && Array.isArray(cur[0].value) ? cur[0].value : [];
+        storedList = stored;
         // Compare instants, not strings — the driver hands back a Date and the
         // client always sends the ISO form, so the two never match textually.
         // Comparing them as text made `moved` true on EVERY save: a deleted
@@ -450,6 +464,17 @@ module.exports = async (req, res) => {
         }
       }
 
+      // Who raised each order, and when. A tab saves its whole list every time,
+      // so without this a copy that lacked an order's stamp — or said something
+      // else — would replace it. Settled against the stored list, read here if
+      // the merge above did not, and on ?force=1 too: forcing is about which
+      // orders survive, not about rewriting who raised them.
+      if (storedList === null) {
+        const cur = await sql`SELECT value FROM app_data WHERE key = ${blobKey}`;
+        storedList = cur.length && Array.isArray(cur[0].value) ? cur[0].value : [];
+      }
+      poSync.settleCreationStamps(toWrite, storedList, { username: payload.username });
+
       // Always write to the division-specific JSON blob first — source of truth.
       const written = await sql`
         INSERT INTO app_data (key, value, updated_at)
@@ -556,6 +581,9 @@ module.exports = async (req, res) => {
         po: { ...po, lines: Array.isArray(po.lines) ? po.lines : [] },
         from,
         deletedLineIds,
+        // Stamped as who raised the order only if it is new and the page sent
+        // no stamp of its own.
+        username: payload.username,
       });
       if (!result.ok) {
         return res.status(409).json({
@@ -660,11 +688,15 @@ async function _syncPOs(sql, companyCode, division, list) {
   for (const po of list) {
     if (!po || !po.id) continue;
 
+    // As in mirrorOnePO: the order's creation stamp where it has one, and the
+    // row's own first-written time where it does not.
+    const createdAt = poSync.safeTimestamp(po.created_at);
     await sql`
       INSERT INTO purchase_orders (
         id, company_code, division, po_num, title, supplier, project_id,
         cost_code, sub_code, status, notes, origin,
-        date_created, status_changed_at, status_changed_by, updated_at
+        date_created, status_changed_at, status_changed_by, updated_at,
+        created_at, created_by
       ) VALUES (
         ${po.id}, ${companyCode}, ${division},
         ${po.po_number      || ''},
@@ -679,7 +711,9 @@ async function _syncPOs(sql, companyCode, division, list) {
         ${safeDate(po.date_created)},
         ${po.status_changed_at || null},
         ${po.status_changed_by || null},
-        NOW()
+        NOW(),
+        COALESCE(${createdAt}::timestamptz, NOW()),
+        ${po.created_by     || null}
       )
       ON CONFLICT (id) DO UPDATE SET
         division           = EXCLUDED.division,
@@ -695,7 +729,9 @@ async function _syncPOs(sql, companyCode, division, list) {
         date_created       = EXCLUDED.date_created,
         status_changed_at  = EXCLUDED.status_changed_at,
         status_changed_by  = EXCLUDED.status_changed_by,
-        updated_at         = NOW()
+        updated_at         = NOW(),
+        created_at         = COALESCE(${createdAt}::timestamptz, purchase_orders.created_at),
+        created_by         = EXCLUDED.created_by
     `;
 
     // Bulk-wipe protection for delivery records: only wipe-and-reinsert

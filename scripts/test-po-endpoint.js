@@ -39,6 +39,10 @@ process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgresql://stub/neondb
 
 // The real division rules, so the stub cannot quietly disagree with them.
 const realAuth = require(authPath);
+// ...and the real po-sync, for what the handler runs in-line rather than
+// delegating: the creation-stamp helpers are pure, and stubbing them would let
+// the PUT arm's use of them go untested.
+const realPoSync = require(poSyncPath);
 
 /**
  * Load the handler with its dependencies swapped.
@@ -80,6 +84,9 @@ function loadEndpoint({ roles = {}, calls = null, upsertResult, removeResult, sq
   require.cache[poSyncPath] = {
     id: poSyncPath, filename: poSyncPath, loaded: true,
     exports: {
+      safeTimestamp:        realPoSync.safeTimestamp,
+      settleCreationStamp:  realPoSync.settleCreationStamp,
+      settleCreationStamps: realPoSync.settleCreationStamps,
       upsertPO: async (sql, args) => {
         if (calls) calls.push({ fn: 'upsertPO', args });
         return upsertResult !== undefined ? upsertResult : {
@@ -930,6 +937,117 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
       const ids = (sqlStub.written() || []).map(p => p.id);
       check('force=1 still means what it says', ids.length === 0, JSON.stringify(ids));
     }
+  }
+
+  console.log('\n[who raised an order, and when]');
+  {
+    // The division tabs save their whole list on every edit, so every order in
+    // it passes through here each time — and one copy without the stamp would
+    // have been enough to lose it.
+    const T_READ = '2026-11-03T12:00:00.000Z';
+    const T_NEW  = '2026-11-03T12:09:00.000Z';
+    const STAMP  = { created_at: '2026-10-30T15:45:00.000Z', created_by: 'farmerykaleb' };
+    const STORED = [
+      Object.assign({ id: 'stamped', po_number: 'PO-0001', lines: [] }, STAMP),
+      { id: 'legacy', po_number: 'PO-0002', lines: [] },
+    ];
+    const SENT = () => [
+      { id: 'stamped', po_number: 'PO-0001', title: 'edited', lines: [] },
+      { id: 'legacy', po_number: 'PO-0002', created_by: 'claimer', created_at: T_READ, lines: [] },
+      { id: 'from-an-old-tab', po_number: 'PO-0003', lines: [] },
+      { id: 'raised-here', po_number: 'PO-0004', created_by: 'hudockben',
+        created_at: '2026-11-03T12:01:02.003Z', lines: [] },
+    ];
+    function stub() {
+      const seen = [];
+      const sql = (strings, ...vals) => {
+        let q = ''; strings.forEach((x, i) => { q += x; if (i < vals.length) q += `$${i + 1}`; });
+        q = q.replace(/\s+/g, ' ').trim();
+        seen.push({ q, vals });
+        if (/^SELECT value, updated_at FROM app_data/.test(q)) {
+          return Promise.resolve([{ value: STORED, updated_at: new Date(T_READ) }]);
+        }
+        if (/^SELECT value FROM app_data/.test(q)) return Promise.resolve([{ value: STORED }]);
+        if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
+        if (/^SELECT COUNT\(\*\)::int AS count FROM po_deliveries/.test(q)) return Promise.resolve([{ count: 0 }]);
+        return Promise.resolve([]);
+      };
+      sql.written = () => {
+        const hit = seen.find(c => /^INSERT INTO app_data/.test(c.q));
+        return hit ? JSON.parse(hit.vals[1]) : null;
+      };
+      sql.mirrored = id => (seen.find(c => /^INSERT INTO purchase_orders/.test(c.q) && c.vals[0] === id) || {}).vals || [];
+      return sql;
+    }
+    const byId = list => Object.fromEntries((list || []).map(p => [p.id, p]));
+
+    // All three ways a full-list save reaches the write: through the merge's
+    // read, with no version to merge against, and forced.
+    for (const [label, query, extra] of [
+      ['an up-to-date tab', {}, { baseUpdatedAt: T_READ }],
+      ['a tab with no version', {}, {}],
+      ['a forced save', { force: '1' }, {}],
+    ]) {
+      const sqlStub = stub();
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: Object.assign({ division: 'turf' }, query), headers: AUTHED,
+                      body: Object.assign({ purchaseOrders: SENT() }, extra) }, res);
+      const w = byId(sqlStub.written());
+      check(`${label}: saved`, res.statusCode === 200, res.statusCode + ' ' + JSON.stringify(res.body));
+      check(`${label}: a copy without the stamp does not erase it`,
+        w.stamped && w.stamped.created_by === STAMP.created_by && w.stamped.created_at === STAMP.created_at
+        && w.stamped.title === 'edited', JSON.stringify(w.stamped));
+      check(`${label}: an order raised before the stamp cannot be claimed`,
+        w.legacy && !('created_by' in w.legacy) && !('created_at' in w.legacy), JSON.stringify(w.legacy));
+      check(`${label}: a new order a tab sent unstamped is stamped as the signed-in user`,
+        w['from-an-old-tab'] && w['from-an-old-tab'].created_by === 'u1'
+        && !isNaN(Date.parse(w['from-an-old-tab'].created_at)), JSON.stringify(w['from-an-old-tab']));
+      check(`${label}: a new order keeps the stamp its page gave it`,
+        w['raised-here'] && w['raised-here'].created_by === 'hudockben'
+        && w['raised-here'].created_at === '2026-11-03T12:01:02.003Z', JSON.stringify(w['raised-here']));
+      check(`${label}: the mirror row gets the stamp`,
+        sqlStub.mirrored('raised-here').includes('hudockben')
+        && sqlStub.mirrored('raised-here').includes('2026-11-03T12:01:02.003Z'),
+        JSON.stringify(sqlStub.mirrored('raised-here')));
+      check(`${label}: and not the claim`, !sqlStub.mirrored('legacy').includes('claimer'),
+        JSON.stringify(sqlStub.mirrored('legacy')));
+      // Stamping is not merging: the tab adopts the new version as usual.
+      check(`${label}: nothing is reported as merged`, res.body && res.body.merged === 0, JSON.stringify(res.body));
+    }
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' }, calls });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'paving' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res);
+    check('a single-order save passes on who is saving, for a new order\'s stamp',
+      calls[0] && calls[0].args.username === 'u1', JSON.stringify(calls[0] && calls[0].args.username));
+  }
+  {
+    // The recovery read, with the blob gone: the stamp comes back from the
+    // mirror — and the row's own created_at is NOT passed off as one.
+    const rows = [
+      { id: 'p1', po_num: 'PO-0001', status: 'approved', created_by: 'farmerykaleb',
+        created_at: new Date('2026-10-30T15:45:00.000Z') },
+      { id: 'p2', po_num: 'PO-0002', status: 'pending', created_by: null,
+        created_at: new Date('2026-07-01T00:00:00.000Z') },
+    ];
+    const sqlStub = (strings) => {
+      const q = strings.join('?').replace(/\s+/g, ' ').trim();
+      if (/^SELECT \* FROM purchase_orders/.test(q)) return Promise.resolve(rows);
+      return Promise.resolve([]);
+    };
+    const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+    const res = makeRes();
+    await handler({ method: 'GET', query: { division: 'turf' }, headers: AUTHED }, res);
+    const got = Object.fromEntries(((res.body && res.body.purchaseOrders) || []).map(p => [p.id, p]));
+    check('the recovery read returns who raised an order, and when',
+      got.p1 && got.p1.created_by === 'farmerykaleb' && got.p1.created_at === '2026-10-30T15:45:00.000Z',
+      JSON.stringify(got.p1));
+    check('and gives no creation time for an order nobody stamped',
+      got.p2 && got.p2.created_at === undefined && got.p2.created_by === undefined, JSON.stringify(got.p2));
   }
 
   console.log(`\n${passed} passed, ${failed} failed.`);

@@ -11342,6 +11342,13 @@ function _poTotals(po) {
   return { qty, amt, tax, total: amt + tax };
 }
 
+// The date and time a purchase-order byline shows. Two share the status
+// cell: who raised the order, and who set the status it is in.
+function _poStampWhen(d) {
+  return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) + ' ' +
+         d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+}
+
 function addPO() {
   const po = {
     id:           uid(),
@@ -11353,6 +11360,10 @@ function addPO() {
     project_id:   '',
     cost_code:    '',
     sub_code:     '',
+    // Who raised it and when — the "Created" line under its status. Stamped
+    // here so it shows at once; the server keeps it unchanged from then on.
+    created_at:   new Date().toISOString(),
+    created_by:   fctUser ? (fctUser.name || fctUser.username || '') : '',
     lines:        [],
   };
   purchaseOrders.push(po);
@@ -11815,13 +11826,24 @@ function renderPOTab() {
         const statusOpts = [['pending','Pending'],['approved','Approved'],['closed','Closed']];
 
         const statusColor = po.status==='approved' ? '#86efac' : po.status==='closed' ? 'var(--muted)' : 'var(--yellow)';
+        // Two bylines share this cell — who raised the order, then who set the
+        // status it is in — so each leads with what it records. An order raised
+        // before the creation stamp existed has no "Created" line.
+        let createdMeta = '';
+        const cd = po.created_at ? new Date(po.created_at) : null;
+        if (cd && !isNaN(cd)) {
+          const by = po.created_by ? escT(po.created_by)+' &middot; ' : '';
+          createdMeta = `<div id="po-created-meta-${esc(po.id)}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem;white-space:nowrap"><b style="font-weight:600">Created</b> ${by}${_poStampWhen(cd)}</div>`;
+        }
+        const statusLabel = (statusOpts.find(([v]) => v === (po.status || 'pending')) || [null, 'Status'])[1];
+        const metaGap = createdMeta ? '0.05rem' : '0.2rem';
         let statusMeta = '';
         if (po.status_changed_at) {
           const d=new Date(po.status_changed_at);
           const who = po.status_changed_by ? escT(po.status_changed_by)+' &middot; ' : '';
-          statusMeta = `<div id="po-status-meta-${esc(po.id)}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem;white-space:nowrap">${who}${d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})} ${d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'})}</div>`;
+          statusMeta = `<div id="po-status-meta-${esc(po.id)}" style="font-size:0.6rem;color:var(--muted);margin-top:${metaGap};white-space:nowrap"><b style="font-weight:600">${escT(statusLabel)}</b> ${who}${_poStampWhen(d)}</div>`;
         } else {
-          statusMeta = `<div id="po-status-meta-${esc(po.id)}" style="font-size:0.6rem;color:var(--muted);margin-top:0.2rem"></div>`;
+          statusMeta = `<div id="po-status-meta-${esc(po.id)}" style="font-size:0.6rem;color:var(--muted);margin-top:${metaGap}"></div>`;
         }
 
         // Badge showing delivery count
@@ -11845,7 +11867,7 @@ function renderPOTab() {
           <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.8rem;color:var(--muted)" id="po-qty-${esc(po.id)}">${tot.qty > 0 ? fmt(tot.qty) : '—'}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;white-space:nowrap" id="po-amt-${esc(po.id)}">${tot.amt > 0 ? '$'+fmt(tot.amt) : '—'}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${esc(po.id)}">${tot.total > 0 ? '$'+fmt(tot.total) : '—'}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:140px;color:${statusColor}" onclick="event.stopPropagation()">${selOpts('status',statusOpts,po.status,po.id,null)}${statusMeta}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:140px;color:${statusColor}" onclick="event.stopPropagation()">${selOpts('status',statusOpts,po.status,po.id,null)}${createdMeta}${statusMeta}</td>
           <td style="padding:0.25rem 0.4rem;text-align:center" onclick="event.stopPropagation()">
             <button data-po-docs="${esc(po.id)}" onclick="openPODocs(this.dataset.poDocs)" title="${docCount ? `${docCount} attached document${docCount === 1 ? '' : 's'}` : 'Attach a document'}"
               style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;padding:0.15rem 0.4rem;
@@ -12182,10 +12204,15 @@ function _handlePOEvent(e) {
     po.status_changed_by = fctUser ? (fctUser.name || fctUser.username || '') : '';
     const metaEl = document.getElementById('po-status-meta-' + poId);
     if (metaEl) {
-      const d = new Date(po.status_changed_at);
-      metaEl.textContent = (po.status_changed_by ? po.status_changed_by + ' · ' : '') +
-        d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}) + ' ' +
-        d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'});
+      // Led by the status it now records, as the rendered byline is. The
+      // "Created" line above it is its own element and is left alone.
+      const label = document.createElement('b');
+      label.style.fontWeight = '600';
+      label.textContent = (el.options && el.selectedIndex >= 0) ? el.options[el.selectedIndex].text : 'Status';
+      metaEl.textContent = '';
+      metaEl.append(label, ' ' + (po.status_changed_by ? po.status_changed_by + ' · ' : '') +
+        _poStampWhen(new Date(po.status_changed_at)));
+      metaEl.style.whiteSpace = 'nowrap';
     }
   }
 

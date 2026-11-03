@@ -427,6 +427,12 @@ CREATE INDEX IF NOT EXISTS idx_po_company_division ON purchase_orders(company_co
 -- belongs to; this says who typed it, which is what the division's tab needs in
 -- order to label an order that arrived from somewhere else.
 ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS origin TEXT;
+-- Who raised the order (its creation stamp, shown under its status beside the
+-- status-change byline). The stamp's time goes in the row's own created_at,
+-- which for an order raised before the stamp existed stays the time the row was
+-- first written — so created_at is the order's creation time only where this
+-- column is set.
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS created_by TEXT;
 
 -- trucking_entries: add tr_row_id, status audit, and division columns
 ALTER TABLE trucking_entries ADD COLUMN IF NOT EXISTS tr_row_id          TEXT;
