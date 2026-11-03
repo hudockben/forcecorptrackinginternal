@@ -1147,6 +1147,109 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
   assert('a unit cost alone is costable', poSync.lineHasCost({ unit_cost: '5' }) === true);
   assert('an empty line is not',          poSync.lineHasCost({ qty: '', unit_cost: '' }) === false);
 
+  console.log('\n[who raised an order, and when]');
+  {
+    const S = poSync.settleCreationStamp;
+    const T = '2026-11-03T14:05:12.345Z';
+
+    // A new order keeps the stamp the page put on it — what is on screen is
+    // what gets stored.
+    let p = S({ id: 'n1', created_at: T, created_by: 'hudockben' }, null, { username: 'someone-else' });
+    assert('a new order keeps the page\'s own stamp',
+      p.created_at === T && p.created_by === 'hudockben', JSON.stringify(p));
+
+    // A tab still running the code from before the stamp existed sends none.
+    const before = Date.now();
+    p = S({ id: 'n2' }, null, { username: 'buyer' });
+    const t = Date.parse(p.created_at);
+    assert('a new order sent with no stamp gets the signed-in user', p.created_by === 'buyer', JSON.stringify(p));
+    assert('  and the server\'s clock, as an ISO time',
+      t >= before && t <= Date.now() && p.created_at === new Date(t).toISOString(), p.created_at);
+
+    p = S({ id: 'n3', created_at: 'yesterday-ish', created_by: 'x' }, null, { username: 'buyer' });
+    assert('a time that does not read as one is replaced, not stored',
+      !isNaN(Date.parse(p.created_at)) && p.created_by === 'x', JSON.stringify(p));
+    p = S({ id: 'n4', created_by: '   ' }, null, {});
+    assert('no name and nobody signed in leaves created_by off', !('created_by' in p), JSON.stringify(p));
+    p = S({ id: 'n5', created_by: '  ' + 'a'.repeat(500) + '  ' }, null, {});
+    assert('a name is trimmed and capped', p.created_by.length === 200 && p.created_by[0] === 'a');
+
+    // Already stored: the stored stamp stands, whatever the save says.
+    const stored = { id: 's1', created_at: T, created_by: 'hudockben' };
+    p = S({ id: 's1', created_by: 'impostor', created_at: '2020-01-01T00:00:00.000Z' }, stored, { username: 'impostor' });
+    assert('a save cannot rewrite who raised an order, or when',
+      p.created_by === 'hudockben' && p.created_at === T, JSON.stringify(p));
+    p = S({ id: 's1', title: 'edited' }, stored, { username: 'buyer' });
+    assert('nor drop it by leaving it out', p.created_by === 'hudockben' && p.created_at === T, JSON.stringify(p));
+
+    // Stored before the stamp existed: nobody can claim it afterwards.
+    p = S({ id: 'old', created_by: 'buyer', created_at: T }, { id: 'old' }, { username: 'buyer' });
+    assert('an order raised before the stamp cannot be claimed by saving it',
+      !('created_by' in p) && !('created_at' in p), JSON.stringify(p));
+    p = S({ id: 'old', title: 'x' }, { id: 'old' }, { username: 'buyer' });
+    assert('  and saving it adds nothing', !('created_by' in p) && !('created_at' in p), JSON.stringify(p));
+
+    // The list form the full-list PUT uses.
+    const list = [{ id: 'a' }, { id: 'b', created_by: 'tab', created_at: T }, { id: 'c', created_by: 'forged' }];
+    poSync.settleCreationStamps(list, [{ id: 'c', created_by: 'orig', created_at: T }, { id: 'gone' }], { username: 'u' });
+    assert('settleCreationStamps: a new order with no stamp gets one',
+      list[0].created_by === 'u' && !isNaN(Date.parse(list[0].created_at)), JSON.stringify(list[0]));
+    assert('  a new order with one keeps it', list[1].created_by === 'tab' && list[1].created_at === T);
+    assert('  a stored order keeps the stored one', list[2].created_by === 'orig' && list[2].created_at === T);
+  }
+  {
+    // Through upsertPO — how the Purchase Orders page saves.
+    let st = makeStore();
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'paving', po: makePO({ id: 'raised' }), username: 'buyer' });
+    let saved = st.getBlob(KEY('paving'))[0];
+    assert('upsertPO stamps a new order the page sent unstamped',
+      saved.created_by === 'buyer' && !isNaN(Date.parse(saved.created_at)), JSON.stringify(saved));
+    const stampedAt = saved.created_at;
+
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'paving',
+      po: makePO({ id: 'raised', title: 'Edited' }), username: 'someone' });
+    saved = st.getBlob(KEY('paving'))[0];
+    assert('a later save by somebody else keeps who raised it',
+      saved.created_by === 'buyer' && saved.created_at === stampedAt && saved.title === 'Edited', JSON.stringify(saved));
+
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf',
+      po: makePO({ id: 'raised', created_by: 'mover' }), from: 'paving', username: 'mover' });
+    saved = (st.getBlob(KEY('turf')) || [])[0] || {};
+    assert('moving the order to another division carries its stamp',
+      saved.created_by === 'buyer' && saved.created_at === stampedAt, JSON.stringify(saved));
+
+    // Two first saves of one new order — a closing tab's keepalive save racing
+    // the ordinary one. Whichever is stored first, its stamp stands.
+    st = makeStore();
+    st.onNextWrite(() => {
+      st.setBlob(KEY('paving'), [makePO({ id: 'twice', created_by: 'first', created_at: '2026-11-03T10:00:00.000Z' })]);
+    });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'paving', po: makePO({ id: 'twice' }), username: 'second' });
+    saved = st.getBlob(KEY('paving')).find(p => p.id === 'twice');
+    assert('a first save that loses the race keeps the winner\'s stamp',
+      saved.created_by === 'first' && saved.created_at === '2026-11-03T10:00:00.000Z', JSON.stringify(saved));
+  }
+  {
+    // The mirror row carries it — and a time that does not read as one is
+    // never handed to Postgres to cast, where it would fail the whole save.
+    const calls = [];
+    const cap = (strings, ...vals) => {
+      calls.push({ q: strings.join('$').replace(/\s+/g, ' '), vals });
+      return Promise.resolve([]);
+    };
+    await poSync.mirrorOnePO(cap, 'FCT', 'paving',
+      makePO({ id: 'm1', created_by: 'buyer', created_at: '2026-11-03T14:05:12.345Z' }));
+    const ins = calls.find(c => /INSERT INTO purchase_orders/.test(c.q));
+    assert('the mirror row is written with created_by',
+      Boolean(ins) && /created_at, created_by/.test(ins.q) && ins.vals.includes('buyer'), ins && ins.q);
+    assert('  and the stamp\'s time', Boolean(ins) && ins.vals.includes('2026-11-03T14:05:12.345Z'));
+    calls.length = 0;
+    await poSync.mirrorOnePO(cap, 'FCT', 'paving', makePO({ id: 'm2', created_at: 'not a time' }));
+    const ins2 = calls.find(c => /INSERT INTO purchase_orders/.test(c.q));
+    assert('an unreadable time reaches the mirror as null',
+      Boolean(ins2) && !ins2.vals.includes('not a time'), ins2 && JSON.stringify(ins2.vals));
+  }
+
   console.log('\n[blob keys]');
   assert('key is company:blob:division',
     poSync.blobKeyFor('FCT', 'paving') === 'FCT:fct_purchase_orders:paving');

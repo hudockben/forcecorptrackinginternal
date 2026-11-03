@@ -614,7 +614,7 @@ console.log('\n[the division tabs and a crafted id]');
         vm.runInContext("escT('a & b')", ectx) === 'a &amp; b');
     }
     // Every purchase-order value that lands in a text node goes through escT.
-    ['po.po_number', 'po.title', 'po.supplier', 'po.status', 'po.status_changed_by']
+    ['po.po_number', 'po.title', 'po.supplier', 'po.status', 'po.status_changed_by', 'po.created_by']
       .forEach(field => {
         const textSinks = (src.match(new RegExp('>\\$\\{esc\\(' + field.replace('.', '\\.'), 'g')) || []);
         assert(`${f}: ${field} never reaches a text node through esc`,
@@ -1419,6 +1419,176 @@ console.log('\n[the poll that picks up division-tab edits]');
   assert('an order raised here and not yet stored is not dropped',
     byId.new && byId.new.title === 'raised here, not stored yet', JSON.stringify(byId.new));
   assert('and nothing is duplicated', merged.length === 4, JSON.stringify(merged.map(p => p.id)));
+}
+
+console.log('\n[who raised an order, and when]');
+{
+  // The "Created" byline sits under the status, beside the status-change one,
+  // on this page and on the three division tabs. Both are run here, not read.
+  const T1 = '2026-10-30T15:45:00.000Z';   // raised
+  const T2 = '2026-11-03T14:05:00.000Z';   // status set
+  const day  = iso => new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  const time = iso => new Date(iso).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  const evil = '<img src=x onerror=alert(1)>';
+
+  // ── This page ──
+  const statuses = (PAGE.match(/const PO_STATUSES = (\[[^\n]*\]);/) || [])[1];
+  assert('one status list feeds both the dropdown and the byline',
+    Boolean(statuses) && /const opts = PO_STATUSES\s*\.map\(/.test(PAGE));
+  const ctx = vm.createContext({});
+  vm.runInContext('const PO_STATUSES = ' + statuses + ';', ctx);
+  ['esc', 'stampLineHTML', 'stampsHTML'].forEach(n => vm.runInContext(requireFn(PAGE, n, 'purchase-orders.html'), ctx));
+  const stampsOf = po => vm.runInContext('stampsHTML(' + JSON.stringify(po) + ')', ctx);
+  const bylines = po => [...new JSDOM(stampsOf(po)).window.document.querySelectorAll('.stamp')]
+    .map(el => ({ text: el.textContent, title: el.getAttribute('title') }));
+
+  let got = bylines({ id: 'a', status: 'approved', created_at: T1, created_by: 'hudockben',
+                      status_changed_at: T2, status_changed_by: 'farmerykaleb' });
+  assert('two bylines, each saying what it is: who raised it, then who set its status',
+    got.length === 2 && got[0].text === 'Created hudockben · ' + day(T1)
+    && got[1].text === 'Approved farmerykaleb · ' + day(T2), JSON.stringify(got));
+  assert('  with the time on hover',
+    got[0].title === 'Created by hudockben · ' + day(T1) + ', ' + time(T1), got[0].title);
+  got = bylines({ id: 'b', status: 'pending', created_at: T1, created_by: 'hudockben' });
+  assert('an order whose status nobody has changed shows who raised it',
+    got.length === 1 && got[0].text === 'Created hudockben · ' + day(T1), JSON.stringify(got));
+  got = bylines({ id: 'c', status: 'closed', status_changed_at: T2, status_changed_by: 'farmerykaleb' });
+  assert('an order raised before the stamp existed shows only its status byline',
+    got.length === 1 && got[0].text === 'Closed farmerykaleb · ' + day(T2), JSON.stringify(got));
+  assert('  and one with neither shows nothing', bylines({ id: 'd', status: 'pending' }).length === 0);
+  assert('a time that does not read as one is left out rather than shown as "Invalid Date"',
+    bylines({ id: 'e', created_at: 'garbage', created_by: 'x' }).length === 0);
+  got = bylines({ id: 'f', created_at: T1 });
+  assert('a stamp with no name still says when',
+    got.length === 1 && got[0].text === 'Created ' + day(T1), JSON.stringify(got));
+  const evilHtml = stampsOf({ id: 'g', created_at: T1, created_by: evil });
+  assert('the name is escaped',
+    new JSDOM(evilHtml).window.document.querySelectorAll('img').length === 0
+    && bylines({ id: 'g', created_at: T1, created_by: evil })[0].text.includes(evil), evilHtml);
+  assert('the bylines sit under the status dropdown in the table',
+    /const meta = stampsHTML\(po\);/.test(PAGE) && /'<td>' \+ statusSelectHTML\(po\) \+ meta \+ '<\/td>'/.test(PAGE));
+  assert('  and under Status on a phone card',
+    /<label>Status<\/label>' \+ statusSelectHTML\(po\) \+ stampsHTML\(po\) \+ '<\/div>'/.test(PAGE));
+
+  // + New PO stamps it, and the stamp goes out with the save.
+  const nctx = vm.createContext({});
+  vm.runInContext(`
+    const perm = { canEdit: true };
+    const fctUser = { username: 'hudockben' };
+    let purchaseOrders = [], page = 3;
+    const expanded = new Set();
+    let saved = null;
+    function defaultNewDivision() { return 'purchase_orders'; }
+    function nextPONumber() { return 'PO-0042'; }
+    function uid() { return 'id' + purchaseOrders.length; }
+    function localDateStr() { return '2026-11-03'; }
+    function newLine() { return { id: 'L1' }; }
+    function savePO(po) { saved = po; }
+    function render() {}
+    function toast() {}
+  `, nctx);
+  ['newPO', 'poPayload'].forEach(n => vm.runInContext(requireFn(PAGE, n, 'purchase-orders.html'), nctx));
+  const t0 = Date.now();
+  const raised = vm.runInContext('newPO()', nctx);
+  assert('+ New PO stamps who raised the order', raised && raised.created_by === 'hudockben', JSON.stringify(raised));
+  assert('  and when', Date.parse(raised.created_at) >= t0 && Date.parse(raised.created_at) <= Date.now(),
+    raised && raised.created_at);
+  const sent = vm.runInContext('poPayload(saved)', nctx);
+  assert('  and both go out with the save', sent.created_by === 'hudockben' && sent.created_at === raised.created_at,
+    JSON.stringify(sent));
+
+  // ...and so does a scanned receipt that raises a new order.
+  const scanNew = sliceSource(PAGE,
+    '      po = {\n        id:           uid(),\n        po_number:    nextPONumber(divKey),',
+    '        _division:    divKey,', 'the order a scan raises', ['origin:']);
+  assert('a scanned receipt that raises an order is stamped the same way',
+    /created_at:\s+new Date\(\)\.toISOString\(\)/.test(scanNew)
+    && /created_by:\s+\(fctUser && fctUser\.username\) \|\| ''/.test(scanNew), scanNew);
+
+  // ── The division tabs ──
+  const when = iso => day(iso) + ' ' + time(iso);
+  ['tracker.html', 'paving.html', 'kiewit-pinetree.html'].forEach(f => {
+    const src = read(f);
+
+    // + New PO stamps it before the save that stores it.
+    const actx = vm.createContext({});
+    vm.runInContext(`
+      const fctUser = { username: 'farmerykaleb' };
+      let purchaseOrders = [], poPage = 2;
+      const _poExpanded = new Set();
+      let savedWith = null;
+      function uid() { return 'id' + Math.random().toString(36).slice(2); }
+      function nextPONumber() { return 'PO-0007'; }
+      function _localDateStr() { return '2026-11-03'; }
+      function savePurchaseOrders() { savedWith = JSON.parse(JSON.stringify(purchaseOrders)); }
+      function renderPOTab() {}
+    `, actx);
+    vm.runInContext(requireFn(src, 'addPO', f), actx);
+    const t1 = Date.now();
+    vm.runInContext('addPO()', actx);
+    const stored = (vm.runInContext('savedWith', actx) || [])[0] || {};
+    assert(`${f}: + New PO stamps who raised the order, in the save`,
+      stored.created_by === 'farmerykaleb', JSON.stringify(stored));
+    assert(`${f}:   and when`, Date.parse(stored.created_at) >= t1 && Date.parse(stored.created_at) <= Date.now(),
+      stored.created_at);
+
+    // The status cell, lifted from renderPOTab and run.
+    const block = sliceSource(src, "        const statusOpts = [['pending','Pending']",
+      '        // Badge showing delivery count', `${f} status cell`, ['statusMeta = ']);
+    const rctx = vm.createContext({});
+    ['esc', 'escT', '_poStampWhen'].forEach(n => vm.runInContext(requireFn(src, n, f), rctx));
+    const cellOf = po => vm.runInContext('(function (po) {\n' + block + '\nreturn createdMeta + statusMeta;\n})('
+      + JSON.stringify(po) + ')', rctx);
+    const lines = po => [...new JSDOM(cellOf(po)).window.document.body.children]
+      .map(el => el.textContent).filter(Boolean);
+
+    let cell = lines({ id: 'a', status: 'approved', created_at: T1, created_by: 'hudockben',
+                       status_changed_at: T2, status_changed_by: 'farmerykaleb' });
+    assert(`${f}: the status cell shows who raised the order, then who set its status`,
+      cell.length === 2 && cell[0] === 'Created hudockben · ' + when(T1)
+      && cell[1] === 'Approved farmerykaleb · ' + when(T2), JSON.stringify(cell));
+    cell = lines({ id: 'b', status: 'pending', created_at: T1, created_by: 'hudockben' });
+    assert(`${f}:   only the first when the status was never changed`,
+      cell.length === 1 && cell[0] === 'Created hudockben · ' + when(T1), JSON.stringify(cell));
+    cell = lines({ id: 'c', status: 'closed', status_changed_at: T2, status_changed_by: 'x' });
+    assert(`${f}:   only the second for an order raised before the stamp`,
+      cell.length === 1 && cell[0] === 'Closed x · ' + when(T2), JSON.stringify(cell));
+    assert(`${f}:   and nothing for an unreadable time`,
+      lines({ id: 'd', status: 'pending', created_at: 'garbage', created_by: 'x' }).length === 0);
+    const evilCell = cellOf({ id: 'e', status: 'pending', created_at: T1, created_by: evil });
+    assert(`${f}: the name is escaped as text`,
+      new JSDOM(evilCell).window.document.querySelectorAll('img').length === 0, evilCell);
+
+    // Changing the status repaints its own byline in place. The Created line is
+    // a separate element, so it survives.
+    const dom = new JSDOM('<!doctype html><body>' +
+      '<select data-po-id="a" data-po-field="status"><option value="pending">Pending</option>' +
+      '<option value="approved">Approved</option><option value="closed">Closed</option></select>' +
+      '<div id="po-created-meta-a">Created hudockben</div><div id="po-status-meta-a"></div></body>');
+    const hctx = vm.createContext({ document: dom.window.document, console });
+    vm.runInContext(`
+      const fctUser = { username: 'farmerykaleb' };
+      let purchaseOrders = [{ id: 'a', status: 'pending', project_id: '', lines: [],
+                              created_at: '${T1}', created_by: 'hudockben' }];
+      let saves = 0;
+      function savePurchaseOrders() { saves++; }
+      function _syncPOHeaderToLines() { return Promise.resolve(); }
+      function renderProjectPOs() {}
+    `, hctx);
+    ['_poStampWhen', '_handlePOEvent'].forEach(n => vm.runInContext(requireFn(src, n, f), hctx));
+    dom.window.document.querySelector('select').value = 'closed';
+    vm.runInContext('_handlePOEvent({ type: "change", target: document.querySelector("select") })', hctx);
+    const meta = dom.window.document.getElementById('po-status-meta-a');
+    const po = vm.runInContext('purchaseOrders[0]', hctx);
+    assert(`${f}: a status change repaints its byline under the new status's name`,
+      meta.textContent === 'Closed farmerykaleb · ' + when(po.status_changed_at)
+      && meta.querySelector('b') && meta.querySelector('b').textContent === 'Closed', meta.innerHTML);
+    assert(`${f}:   leaves the Created line alone`,
+      dom.window.document.getElementById('po-created-meta-a').textContent === 'Created hudockben');
+    assert(`${f}:   keeps who raised the order`,
+      po.created_by === 'hudockben' && po.created_at === T1 && vm.runInContext('saves', hctx) === 1,
+      JSON.stringify(po));
+  });
 }
 
 // Async, so it and the summary that follows run inside one IIFE — this file is

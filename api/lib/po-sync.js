@@ -134,6 +134,79 @@ function lineHasCost(line) {
   return Boolean(line && (line.qty || line.unit_cost));
 }
 
+// ── Who raised an order, and when ───────────────────────────────────────────
+// created_at / created_by sit beside status_changed_at / status_changed_by and
+// are shown in the same place, under the order's status. The page that raises
+// an order stamps them, the same way a status change is stamped, so the line is
+// on screen at once. What the server adds is that the stamp is written ONCE:
+// every save carries the order whole, and a copy that lacked the stamp or said
+// something else would otherwise overwrite who raised it.
+
+/** An ISO timestamp for `v`, or null when it does not read as a time. */
+function safeTimestamp(v) {
+  if (v == null || v === '') return null;
+  const t = Date.parse(String(v));
+  return isNaN(t) ? null : new Date(t).toISOString();
+}
+
+const CREATION_KEYS = ['created_at', 'created_by'];
+
+/**
+ * Settle `po`'s creation stamp before it is stored. Mutates and returns `po`.
+ *
+ * `stored` is the copy of this order the server already holds, or null when
+ * this save is the one that brings the order into being.
+ *
+ *  - Already stored: the stored stamp stands, whatever the request says — and
+ *    an order stored without one (anything raised before the stamp existed)
+ *    stays without one. Saving an order can neither rewrite who raised it nor
+ *    claim an old one.
+ *  - New: the page's own stamp is kept, so the order reads the same stored as
+ *    it did on screen, and an order a stale tab puts back after a delete keeps
+ *    the stamp it was raised with. A page that sent none — a tab still running
+ *    the code from before this change — gets the signed-in user and the
+ *    server's clock instead of no stamp at all.
+ *
+ * The page's word is taken for a new order's stamp exactly as it is for the
+ * status byline beside it.
+ */
+function settleCreationStamp(po, stored, { username } = {}) {
+  if (!po || typeof po !== 'object') return po;
+  if (stored) {
+    for (const k of CREATION_KEYS) {
+      const v = stored[k];
+      if (v != null && v !== '') { if (po[k] !== v) po[k] = v; }
+      else if (k in po) delete po[k];
+    }
+    return po;
+  }
+  const at = safeTimestamp(po.created_at) || new Date().toISOString();
+  if (po.created_at !== at) po.created_at = at;
+  const sent = typeof po.created_by === 'string' ? po.created_by.trim().slice(0, 200) : '';
+  const by = sent || String(username || '').trim();
+  if (by) { if (po.created_by !== by) po.created_by = by; }
+  else if ('created_by' in po) delete po.created_by;
+  return po;
+}
+
+/**
+ * The same for every order in a list about to replace `storedList` — the
+ * division tabs' full-list save. Orders are matched to their stored copies by
+ * id, and an order carried over from the stored list unchanged comes out as it
+ * went in.
+ */
+function settleCreationStamps(list, storedList, ctx) {
+  const byId = new Map();
+  for (const p of (Array.isArray(storedList) ? storedList : [])) {
+    if (p && p.id != null && !byId.has(String(p.id))) byId.set(String(p.id), p);
+  }
+  for (const po of (Array.isArray(list) ? list : [])) {
+    if (!po || po.id == null) continue;
+    settleCreationStamp(po, byId.get(String(po.id)) || null, ctx);
+  }
+  return list;
+}
+
 /**
  * Read a division's purchase-order list along with the timestamp to compare
  * against when writing it back. `exists` distinguishes an absent row from one
@@ -216,11 +289,17 @@ async function mutatePOBlob(sql, blobKey, mutate) {
 // the full-list PUT does — that would wipe every order purchasing did not send.
 
 async function mirrorOnePO(sql, companyCode, division, po) {
+  // The row's created_at is the order's own creation stamp when it has one. An
+  // order raised before the stamp existed keeps the time its row was first
+  // written, and created_by stays empty — see the fallback in
+  // api/purchase-orders.js, which reports the one only alongside the other.
+  const createdAt = safeTimestamp(po.created_at);
   await sql`
     INSERT INTO purchase_orders (
       id, company_code, division, po_num, title, supplier, project_id,
       cost_code, sub_code, status, notes, origin,
-      date_created, status_changed_at, status_changed_by, updated_at
+      date_created, status_changed_at, status_changed_by, updated_at,
+      created_at, created_by
     ) VALUES (
       ${po.id}, ${companyCode}, ${division},
       ${po.po_number      || ''},
@@ -235,7 +314,9 @@ async function mirrorOnePO(sql, companyCode, division, po) {
       ${safeDate(po.date_created)},
       ${po.status_changed_at || null},
       ${po.status_changed_by || null},
-      NOW()
+      NOW(),
+      COALESCE(${createdAt}::timestamptz, NOW()),
+      ${po.created_by     || null}
     )
     ON CONFLICT (id) DO UPDATE SET
       division           = EXCLUDED.division,
@@ -251,7 +332,9 @@ async function mirrorOnePO(sql, companyCode, division, po) {
       date_created       = EXCLUDED.date_created,
       status_changed_at  = EXCLUDED.status_changed_at,
       status_changed_by  = EXCLUDED.status_changed_by,
-      updated_at         = NOW()
+      updated_at         = NOW(),
+      created_at         = COALESCE(${createdAt}::timestamptz, purchase_orders.created_at),
+      created_by         = EXCLUDED.created_by
     WHERE purchase_orders.company_code = ${companyCode}
   `;
 
@@ -590,7 +673,7 @@ function unseenLines(po, priorCopies, deletedLineIds) {
  * purchasing re-tied it to a different one. The order is removed from that list
  * in the same call, so it can never exist in two divisions at once.
  */
-async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }) {
+async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, username }) {
   const prevDivision = from && from !== division ? from : null;
 
   // Every list this order might already be stored in. The target's copy matters
@@ -610,6 +693,10 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }
     prevPO = sourceCopy;
     if (sourceCopy) priorCopies.push(sourceCopy);
   }
+
+  // Who raised it and when, from whichever copy is already stored — a move
+  // carries the stamp with it. Only an order stored nowhere is new.
+  settleCreationStamp(po, priorCopies.find(c => c.created_at) || priorCopies[0] || null, { username });
 
   // Deliveries somebody else added while this caller was holding a stale copy.
   // Merged back BEFORE the cost rows are reconciled, so their rows are not read
@@ -645,6 +732,10 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds }
   const saved = await mutatePOBlob(sql, blobKeyFor(companyCode, division), list => {
     const idx = list.findIndex(p => p && p.id === po.id);
     if (idx === -1) return [...list, po];
+
+    // Stored since the read at the top — the same new order's first save, from
+    // another request, landing first. The stamp it was stored with stands.
+    if (list[idx].created_at) settleCreationStamp(po, list[idx]);
 
     // Idempotent across retries: unseenLines skips any id already in po.lines.
     const late = unseenLines(po, [list[idx]], deletedLineIds);
@@ -841,6 +932,9 @@ async function resolvePODocScope(sql, { payload, division, poId, companyCode, ca
 
 module.exports = {
   CAS_ATTEMPTS,
+  safeTimestamp,
+  settleCreationStamp,
+  settleCreationStamps,
   unseenLines,
   findPOInDivision,
   resolvePODocScope,
