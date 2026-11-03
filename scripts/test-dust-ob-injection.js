@@ -336,19 +336,42 @@ console.log('Dust timesheet → Other Billing injection\n');
     assert('an off-roster truck is stored as typed',
       obRow(store, 1).truck_number === 'Off Roster 77', obRow(store, 1).truck_number);
 
-    // A row already posted with no Truck # (before this fix) re-opens on the
-    // timesheet's truck, so saving Edit Row repairs it.
+    // Every row records the truck as the approver named it, so Edit Row
+    // re-opens on that answer rather than on the unit number it resolved to.
+    await insertObRows(sql, CO, entry, [{ dest: 'ob', vehicle1: 'Distributor Truck 4000', material: 'ClearFrac' }]);
+    assert('the row keeps the truck as named beside its unit number',
+      obRow(store, 1).truck_name === 'Distributor Truck 4000' && obRow(store, 1).truck_number === '4000',
+      JSON.stringify([obRow(store, 1).truck_name, obRow(store, 1).truck_number]));
+    const { rows: named } = await obSplitForEntry(sql, CO, entry);
+    assert('and re-opens on the name, which saves back to the same number',
+      named[0].vehicle1 === 'Distributor Truck 4000', named[0].vehicle1);
+
+    // A truck cleared on purpose stays cleared: it re-opens blank, and a save
+    // that only corrects something else does not bring it back.
+    await insertObRows(sql, CO, entry, [{ dest: 'ob', vehicle1: '', material: 'ClearFrac' }]);
+    assert('clearing the truck posts no Truck #', obRow(store, 1).truck_number === '', obRow(store, 1).truck_number);
+    const { rows: cleared } = await obSplitForEntry(sql, CO, entry);
+    assert('a truck cleared on purpose re-opens cleared',
+      cleared[0].vehicle1 === '', cleared[0].vehicle1);
+    await insertObRows(sql, CO, entry, [{ ...cleared[0], dest: 'ob', gallons_bags: 50 }]);
+    assert('and an unrelated correction leaves it cleared',
+      obRow(store, 1).truck_number === '', obRow(store, 1).truck_number);
+
+    // A row posted blank BEFORE this fix carries no truck_name. It re-opens on
+    // the timesheet's truck, so saving Edit Row repairs it.
     obRow(store, 1).truck_number = '';
+    delete obRow(store, 1).truck_name;
     const { rows: back } = await obSplitForEntry(sql, CO, entry);
-    assert('a row posted blank re-opens on the timesheet\'s truck',
+    assert('an old row posted blank re-opens on the timesheet\'s truck',
       back[0].vehicle1 === '4000 SPRAY', back[0].vehicle1);
     await insertObRows(sql, CO, entry, [{ ...back[0], dest: 'ob' }]);
     assert('and saving it puts the truck back on the row',
       obRow(store, 1).truck_number === '4000 SPRAY', obRow(store, 1).truck_number);
 
     obRow(store, 1).truck_number = '3999';
+    delete obRow(store, 1).truck_name;
     const { rows: kept } = await obSplitForEntry(sql, CO, entry);
-    assert('a row that has a truck re-opens on its own truck',
+    assert('an old row that has a truck re-opens on its own truck',
       kept[0].vehicle1 === '3999', kept[0].vehicle1);
   }
 

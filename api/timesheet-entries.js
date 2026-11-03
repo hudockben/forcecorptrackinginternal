@@ -3934,6 +3934,14 @@ async function matchDustEmployee(sql, companyCode, name) {
  * leg billed, and without them re-opening Edit Row could not put a material
  * haul back on screen as the haul it was. The tab renders by column name and
  * the audit diffs a fixed field list, so both ignore them.
+ *
+ * truck_name is kept the same way and for the same reason: it is the truck as
+ * the approver named it, before it was resolved to a unit number, so Edit Row
+ * re-opens on exactly that answer — a truck cleared on purpose included. The
+ * unit number alone cannot say which: a blank truck_number is a deliberate
+ * clear on a row that carries truck_name, and on one that predates it may be
+ * the blank this function used to post for a truck with no unit number (see
+ * obSplitForEntry).
  */
 function buildObRow(entry, fields, index, opts, driver) {
   const hhmm = v => String(v || '').slice(0, 5);
@@ -3986,6 +3994,7 @@ function buildObRow(entry, fields, index, opts, driver) {
     comments:       entry.notes || '',
     start_time:     startTime,
     end_time:       endTime,
+    truck_name:     safeStr(truckName, 200) || '',
   };
 }
 
@@ -4174,12 +4183,21 @@ async function obSplitForEntry(sql, companyCode, entry) {
       state:          r.state          || '',
       start_time:     hhmm(r.start_time),
       end_time:       hhmm(r.end_time),
-      // A row posted with no Truck # re-opens on the truck off the timesheet,
-      // so saving Edit Row repairs it. Rows posted before buildObRow stopped
-      // blanking a truck whose equipment entry had no unit number would
-      // otherwise re-open blank and save blank again, and the only way to fix
-      // each one would be to retype the truck by hand.
-      vehicle1:       r.truck_number   || entry.truck_unit || '',
+      // The truck as the approver named it (truck_name, see buildObRow), so a
+      // truck cleared on purpose re-opens cleared rather than being suggested
+      // back at them — the rule haulLegFromDustRow in payroll.html states for
+      // every posted answer.
+      //
+      // A row that predates truck_name has only the unit number. When that is
+      // blank too it re-opens on the timesheet's truck, so saving Edit Row
+      // repairs it: buildObRow used to post a blank Truck # for a truck whose
+      // equipment entry had no unit number, and those rows would otherwise
+      // re-open blank and save blank again. Such a row cannot be told from a
+      // truck cleared on purpose before truck_name existed; the repair wins,
+      // and the box shows the truck before anything is saved.
+      vehicle1: Object.prototype.hasOwnProperty.call(r, 'truck_name')
+        ? String(r.truck_name == null ? '' : r.truck_name)
+        : (r.truck_number || (entry && entry.truck_unit) || ''),
       trailer_number: r.trailer_number || '',
       material:       r.material       || '',
       gallons_bags:   n(r.gallons_bags),
