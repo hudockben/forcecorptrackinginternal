@@ -3934,6 +3934,14 @@ async function matchDustEmployee(sql, companyCode, name) {
  * leg billed, and without them re-opening Edit Row could not put a material
  * haul back on screen as the haul it was. The tab renders by column name and
  * the audit diffs a fixed field list, so both ignore them.
+ *
+ * truck_name is kept the same way and for the same reason: it is the truck as
+ * the approver named it, before it was resolved to a unit number, so Edit Row
+ * re-opens on exactly that answer — a truck cleared on purpose included. The
+ * unit number alone cannot say which: a blank truck_number is a deliberate
+ * clear on a row that carries truck_name, and on one that predates it may be
+ * the blank this function used to post for a truck with no unit number (see
+ * obSplitForEntry).
  */
 function buildObRow(entry, fields, index, opts, driver) {
   const hhmm = v => String(v || '').slice(0, 5);
@@ -3951,12 +3959,19 @@ function buildObRow(entry, fields, index, opts, driver) {
 
   // The truck. Named the way dust names its vehicles in the modal, stored the
   // way the tab's dropdown holds it — by unit number — with the typed value
-  // kept when it matches nothing, so an off-roster truck still reads back.
+  // kept when there is no number to store, so the truck always reads back.
+  //
+  // "No number" includes a name that IS on the equipment list but has no unit
+  // number filled in. The tab's own import adds vehicles that way (a name off
+  // an imported row, unit left blank), and resolving to that blank posted every
+  // haul in the truck with an empty Truck # — the approver named the truck and
+  // the grid showed "—". A truck with a name and no number is still a truck.
   const truckName = fields.vehicle1 !== undefined ? fields.vehicle1 : (entry.truck_unit || '');
   const eq = truckName
     ? (opts.equipment || []).find(e => String(e.name).toLowerCase() === String(truckName).toLowerCase())
     : null;
-  const truckNumber = eq ? String(eq.unit_number || '') : (safeStr(truckName, 100) || '');
+  const eqUnit = eq ? (safeStr(eq.unit_number, 100) || '') : '';
+  const truckNumber = eqUnit || (safeStr(truckName, 100) || '');
 
   const pick = (key) => fields[key] !== undefined ? fields[key] : '';
 
@@ -3979,6 +3994,7 @@ function buildObRow(entry, fields, index, opts, driver) {
     comments:       entry.notes || '',
     start_time:     startTime,
     end_time:       endTime,
+    truck_name:     safeStr(truckName, 200) || '',
   };
 }
 
@@ -4167,7 +4183,21 @@ async function obSplitForEntry(sql, companyCode, entry) {
       state:          r.state          || '',
       start_time:     hhmm(r.start_time),
       end_time:       hhmm(r.end_time),
-      vehicle1:       r.truck_number   || '',
+      // The truck as the approver named it (truck_name, see buildObRow), so a
+      // truck cleared on purpose re-opens cleared rather than being suggested
+      // back at them — the rule haulLegFromDustRow in payroll.html states for
+      // every posted answer.
+      //
+      // A row that predates truck_name has only the unit number. When that is
+      // blank too it re-opens on the timesheet's truck, so saving Edit Row
+      // repairs it: buildObRow used to post a blank Truck # for a truck whose
+      // equipment entry had no unit number, and those rows would otherwise
+      // re-open blank and save blank again. Such a row cannot be told from a
+      // truck cleared on purpose before truck_name existed; the repair wins,
+      // and the box shows the truck before anything is saved.
+      vehicle1: Object.prototype.hasOwnProperty.call(r, 'truck_name')
+        ? String(r.truck_name == null ? '' : r.truck_name)
+        : (r.truck_number || (entry && entry.truck_unit) || ''),
       trailer_number: r.trailer_number || '',
       material:       r.material       || '',
       gallons_bags:   n(r.gallons_bags),
@@ -7169,8 +7199,10 @@ module.exports = async (req, res) => {
       // Quarry entries: return the injected quarry blob row (activity + its
       // value fields) so the payroll modal can pre-fill on re-edit. `id` MUST
       // be selected — quarrySplitForEntry keys the blob lookup on entry.id.
+      // truck_unit is read by obSplitForEntry: an Other Billing row posted with
+      // no Truck # re-opens on the timesheet's truck.
       const [entryRow] = await sql`
-        SELECT id, entry_type, division, job_id, job_label, split_destinations
+        SELECT id, entry_type, division, job_id, job_label, split_destinations, truck_unit
         FROM timesheet_entries
         WHERE id = ${id} AND company_code = ${companyCode}
       `;

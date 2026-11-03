@@ -235,6 +235,45 @@ async function actionRoutingTests() {
   await handler({ method: 'GET', query: { action: 'split', id: '5' }, body: {} }, denied);
   assert('a field account is refused', denied.statusCode === 403, JSON.stringify(denied.body));
   assert('and no lookup runs at all', !sawAnyQuery);
+
+  // A dust material haul posted to Other Billing before buildObRow stopped
+  // blanking a truck whose equipment entry had no unit number: no Truck #, and
+  // no truck_name either. Edit Row repairs it only if this lookup hands
+  // obSplitForEntry the entry's truck_unit — so the mock answers with just the
+  // columns the SELECT names, and dropping truck_unit from it fails here.
+  console.log('\n[GET ?action=split — an Other Billing row posted with no truck]');
+  NEXT_AUTH = ADMIN;
+  const DUST_ENTRY = {
+    id: 9, entry_type: 'daily', division: 'dust', job_id: 'co-1', job_label: 'LP Mineral',
+    split_destinations: null, truck_unit: '4000 SPRAY', status: 'approved', username: 'barrmike',
+  };
+  const OB_ROWS = [{
+    id: 'tso-9-1', customer: 'LP Mineral', destination: 'Ash Grove', state: 'WV',
+    truck_number: '', trailer_number: '', material: 'Ultrabond 2000', gallons_bags: 2899,
+    mu: 'Gallons', price_per_unit: 1.28, trucking_rate: 135, start_time: '08:00', end_time: '16:30',
+  }];
+  CURRENT_SQL = (strings, ...values) => {
+    const q = strings.join('?').replace(/\s+/g, ' ').trim();
+    if (q.startsWith('SELECT id, entry_type, division')) {
+      const cols = q.slice('SELECT '.length, q.indexOf(' FROM ')).split(',').map(s => s.trim());
+      return Promise.resolve([Object.fromEntries(cols.map(c => [c, DUST_ENTRY[c]]))]);
+    }
+    if (q.startsWith('SELECT value FROM app_data') && values[0] === 'FCT:dust_other_billing_rows') {
+      return Promise.resolve([{ value: OB_ROWS }]);
+    }
+    return Promise.resolve([]);
+  };
+  const dustRes = {
+    statusCode: 200, body: null,
+    setHeader() {}, status(c) { this.statusCode = c; return this; },
+    json(b) { this.body = b; return this; }, end() { return this; },
+  };
+  await handler({ method: 'GET', query: { action: 'split', id: '9' }, body: {} }, dustRes);
+  const ob = dustRes.body && dustRes.body.dust && dustRes.body.dust.ob_rows;
+  assert('the dust haul answers with its Other Billing row',
+    Array.isArray(ob) && ob.length === 1, JSON.stringify(dustRes.body).slice(0, 160));
+  assert('which re-opens on the timesheet\'s truck, so saving repairs it',
+    ob && ob[0] && ob[0].vehicle1 === '4000 SPRAY', ob && ob[0] && JSON.stringify(ob[0].vehicle1));
 }
 
 // The other half of what was on the screen: four identical submitted rows for
