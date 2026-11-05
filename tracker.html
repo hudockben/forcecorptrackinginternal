@@ -923,11 +923,44 @@
        booked to it — see _bidMaterialTagHTML(). Inline badges in a plain block,
        so a line carrying only ✓ Complete draws exactly as it did before. */
     .bid-sub-tags { margin-top: 0.18rem; }
-    .bid-sub-tags > span + span { margin-left: 0.25rem; }
-    .bid-mat-tag { display: inline-block; font-size: 0.56rem; font-weight: 700; color: var(--yellow);
+    .bid-sub-tags > * + * { margin-left: 0.25rem; }
+    /* A button, so a tap opens its list (an iPad shows no hover tooltip) and the
+       keyboard can reach it, dressed to match the ✓ Complete badge beside it. */
+    .bid-mat-tag { display: inline-block; position: relative; margin: 0; font-family: inherit; line-height: inherit;
+      font-size: 0.56rem; font-weight: 700; color: var(--yellow);
       background: rgba(234,179,8,0.12); border: 1px solid rgba(234,179,8,0.4); border-radius: 3px;
       padding: 0.06rem 0.34rem; white-space: nowrap; letter-spacing: 0.02em;
-      font-variant-numeric: tabular-nums; cursor: help; }
+      font-variant-numeric: tabular-nums; cursor: pointer; -webkit-appearance: none; appearance: none;
+      -webkit-tap-highlight-color: rgba(234,179,8,0.25); }
+    .bid-mat-tag:hover, .bid-mat-tag[aria-expanded="true"] { background: rgba(234,179,8,0.22); }
+    .bid-mat-tag:focus-visible { outline: 1px solid var(--yellow); outline-offset: 1px; }
+    /* A fingertip needs more than a badge this small. On a touch screen the tap
+       target reaches past its edges: further down than up, because the sub
+       code box sits just above it. */
+    @media (pointer: coarse) {
+      .bid-mat-tag::after { content: ''; position: absolute; top: -3px; right: -4px; bottom: -8px; left: -4px; }
+    }
+    /* The list a tap on the tag opens — see _bidMatPopOpen(). It hangs off
+       <body>, so the page's own table and td rules (no wrapping, a border on
+       every cell) are put back to what a list wants. */
+    .bid-mat-pop { position: fixed; z-index: 520; width: max-content; max-width: min(540px, calc(100vw - 16px));
+      max-height: min(60vh, 440px); overflow: auto; -webkit-overflow-scrolling: touch;
+      background: var(--surface); color: var(--text); border: 1px solid rgba(234,179,8,0.45); border-radius: 6px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.55); font-size: 0.74rem; }
+    .bmp-head { position: sticky; top: 0; display: flex; align-items: baseline; gap: 0.5rem;
+      padding: 0.5rem 0.35rem 0.5rem 0.7rem; background: var(--surface); border-bottom: 1px solid var(--border); color: var(--muted); }
+    .bmp-head strong { color: var(--yellow); white-space: nowrap; }
+    .bmp-close { margin-left: auto; align-self: center; background: none; border: none; color: var(--muted);
+      font-size: 0.85rem; line-height: 1; padding: 0.2rem 0.4rem; cursor: pointer; }
+    .bmp-close:hover { color: var(--text); }
+    .bid-mat-pop table { border-collapse: collapse; width: 100%; min-width: 0; white-space: normal; }
+    .bid-mat-pop td { border: none; border-top: 1px solid var(--border); padding: 0.4rem 0.7rem; vertical-align: top; text-align: left; }
+    .bid-mat-pop tr:first-child td { border-top: none; }
+    .bmp-date { white-space: nowrap; color: var(--muted); font-variant-numeric: tabular-nums; }
+    .bmp-from { white-space: nowrap; }
+    .bmp-sub { font-size: 0.68rem; color: var(--muted); }
+    .bmp-sub.bmp-missing { color: #fbbf24; }
+    .bid-mat-pop td.bmp-amt { text-align: right; white-space: nowrap; color: var(--yellow); font-variant-numeric: tabular-nums; }
     /* Rolled-up percent complete on the cost-code header — see bidGroupPct() */
     .bid-grp-pct { display: inline-flex; align-items: center; gap: 0.4rem; margin-left: 0.9rem; font-size: 0.68rem; font-weight: 600; vertical-align: middle; white-space: nowrap; }
     .bid-grp-pct-bar { width: 62px; height: 6px; flex-shrink: 0; border: 1px solid #2a4a2a; border-radius: 3px; background: #0b140b; overflow: hidden; }
@@ -13452,8 +13485,8 @@ function actualForBidItem(b, projId) {
   }, 0);
 }
 
-/* Material booked to a bid line: the material_cost on every job row its cost
-   code and sub code match. Same rows, by the same wildcard rule, as
+/* Material booked to a bid line: the material on every job row its cost code
+   and sub code match. Same rows, by the same wildcard rule, as
    actualForBidItem(), so the figure is the material share of the Actual Cost
    beside it. A line with none is labor and equipment only: no material, and so
    no invoice, has been booked to it yet. A trucking row names the material it
@@ -13480,6 +13513,24 @@ function _bidMaterialSources() {
   return { po, inv };
 }
 
+/* How much of a job row's cost, as dailyRowCost() puts it into Actual Cost, is
+   material. A row priced by its own parts carries its material whole. A row
+   priced by an imported Total Cost carries only what that total has room for
+   once the row's own labor and equipment are out of it: a spreadsheet total
+   that never included the material does not put it in the Actual Cost, so the
+   tag must not say it does. A credit is bounded the same way, from below. */
+function _rowMaterialInCost(r) {
+  const mat = parseFloat(r.material_cost) || 0;
+  if (!mat) return 0;
+  const c    = calcDaily(r);
+  const room = dailyRowCost(r) - c.labor_cost - c.equip_total;
+  // Priced by its own parts, the room is the material itself, give or take
+  // floating-point dust; only an imported total can leave less.
+  if (Math.abs(room - mat) < 0.005) return mat;
+  const share = mat > 0 ? Math.min(mat, Math.max(0, room)) : Math.max(mat, Math.min(0, room));
+  return Math.round(share * 100) / 100 || 0;
+}
+
 function materialForBidItem(b, projId, src) {
   const out = { total: 0, entries: [] };
   if (!b || (!b.cost_code && !b.sub_code)) return out;
@@ -13488,8 +13539,7 @@ function materialForBidItem(b, projId, src) {
   rows.forEach(r => {
     if (!((b.cost_code ? r.cost_code === b.cost_code : true) &&
           (b.sub_code  ? r.sub_code  === b.sub_code  : true))) return;
-    // Read the way calcDaily() reads it, so the two never disagree.
-    const amount = parseFloat(r.material_cost) || 0;
+    const amount = _rowMaterialInCost(r);
     if (!amount) return;
     if (!src) src = _bidMaterialSources();
     out.total += amount;
@@ -13508,6 +13558,7 @@ function _bidMaterialEntry(r, amount, src) {
   const viaPO  = src.po.get(id);
   const viaInv = src.inv.get(id);
   const day    = _dailySortDate(r.date, '');
+  const onRow  = parseFloat(r.material_cost) || 0;
   let from, invoice = null;   // null: this source has no invoice # to report
   if (viaPO) {
     // Numbers are minted as PO-0001; one typed bare gets the "PO" it lacks.
@@ -13527,14 +13578,21 @@ function _bidMaterialEntry(r, amount, src) {
     supplier: String(r.supplier || (viaPO && viaPO.po.supplier) || '').trim(),
     what:     String(r.material || (viaPO && viaPO.po.title) || '').trim(),
     amount,
+    // The row's own material figure, when its imported total holds only part
+    // of it — so the list can say why it differs from Daily Tracking.
+    onRow: Math.abs(onRow - amount) >= 0.005 ? onRow : null,
   };
 }
 
 function _bidMatMoney(v) { return (v < 0 ? '-$' : '$') + fmt(Math.abs(v)); }
 
+function _bidMatAmountText(e) {
+  return _bidMatMoney(e.amount) + (e.onRow == null ? '' : ` of ${_bidMatMoney(e.onRow)} (capped by its imported Total Cost)`);
+}
+
 // How many entries the tooltip lists before it counts the rest. A sub code fed
 // by a standing order collects dozens of tickets, and a tooltip taller than the
-// screen shows none of them.
+// screen shows none of them. The list a tap opens scrolls, and shows them all.
 const BID_MAT_TIP_MAX = 12;
 
 function _bidMaterialTip(m) {
@@ -13542,20 +13600,156 @@ function _bidMaterialTip(m) {
   const lines = [`Material on this sub code: ${_bidMatMoney(m.total)} from ${n} entr${n === 1 ? 'y' : 'ies'} (part of its Actual Cost)`];
   m.entries.slice(0, BID_MAT_TIP_MAX).forEach(e => {
     const from = e.from + (e.invoice === null ? '' : e.invoice ? ' \u00b7 Inv ' + e.invoice : ' \u00b7 no invoice #');
-    lines.push([e.date || 'no date', from, e.supplier, e.what, _bidMatMoney(e.amount)].filter(Boolean).join(' \u00b7 '));
+    lines.push([e.date || 'no date', from, e.supplier, e.what, _bidMatAmountText(e)].filter(Boolean).join(' \u00b7 '));
   });
   if (n > BID_MAT_TIP_MAX) {
-    lines.push(`\u2026and ${n - BID_MAT_TIP_MAX} more. Daily Tracking and Purchase Orders list them all.`);
+    lines.push(`\u2026and ${n - BID_MAT_TIP_MAX} more. Click the tag to see them all.`);
   }
   return lines.join('\n');
 }
 
 /* The yellow tag under a sub code's name, or nothing when no material is
-   booked to it. Yellow, because material is yellow everywhere else on the page
-   and it is part of the yellow Actual Cost figure on the same row. */
-function _bidMaterialTagHTML(m) {
+   booked to it. Yellow, like the Actual Cost figure on the same row that it is
+   part of. Hovering shows the list as a tooltip; clicking or tapping opens it
+   as a panel. The job and line ride in data attributes, read back out of the
+   dataset, so no free text ever reaches the handler string. */
+function _bidMaterialTagHTML(m, projId, itemId) {
   if (!m || !m.entries.length) return '';
-  return `<span class="bid-mat-tag" title="${_cbEsc(_bidMaterialTip(m))}">Material ${_bidMatMoney(m.total)}</span>`;
+  return `<button type="button" class="bid-mat-tag" aria-expanded="false" title="${_cbEsc(_bidMaterialTip(m))}"`
+    + ` data-mat-proj="${_cbEsc(projId)}" data-mat-item="${_cbEsc(itemId)}"`
+    + ` onclick="event.stopPropagation();_bidMatPopToggle(this)">Material ${_bidMatMoney(m.total)}</button>`;
+}
+
+/* ── The material list, on a tap ──────────────────────────────────────────────
+   A hover tooltip is all a mouse needs, and an iPad never shows one. A tap or
+   click on the tag opens the same list as a panel beside it, read fresh from
+   the job at that moment and with every entry, scrolling if it is long. Its
+   invoice numbers can be selected and copied, which a tooltip's cannot. It
+   closes on a tap anywhere else, the ✕, Esc, a scroll, a resize, or focus
+   moving away. */
+let _bidMatPop = null;   // { el, btn, and the listeners that close it }
+
+function _bidMatPopToggle(btn) {
+  if (_bidMatPop && _bidMatPop.btn === btn) { _bidMatPopClose(); return; }
+  _bidMatPopOpen(btn);
+}
+
+function _bidMatPopOpen(btn) {
+  _bidMatPopClose();
+  const p = getProj(btn.dataset.matProj);
+  const b = p && (p.bidItems || []).find(x => String(x.id) === btn.dataset.matItem);
+  if (!b) return;
+  const m = materialForBidItem(b, p.id);
+  if (!m.entries.length) return;
+  const el = document.createElement('div');
+  el.className = 'bid-mat-pop';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', 'Material on ' + (b.sub_code || b.cost_code));
+  el.innerHTML = _bidMatPopHTML(m);
+  document.body.appendChild(el);
+  _bidMatPopPlace(el, btn);
+  btn.setAttribute('aria-expanded', 'true');
+  // The hover tooltip would only cover the panel with the same list.
+  if (btn.hasAttribute('title')) { btn.dataset.matTip = btn.title; btn.removeAttribute('title'); }
+  const outside = t => !el.contains(t) && !btn.contains(t);
+  const pop = {
+    el, btn,
+    down:   e => { if (outside(e.target)) _bidMatPopClose(); },
+    key:    e => { if (e.key === 'Escape') { _bidMatPopClose(); btn.focus(); } },
+    scroll: e => { if (!el.contains(e.target)) _bidMatPopClose(); },
+    focus:  e => { if (outside(e.target)) _bidMatPopClose(); },
+  };
+  el.querySelector('.bmp-close').onclick = () => _bidMatPopClose();
+  document.addEventListener('pointerdown', pop.down, true);
+  document.addEventListener('keydown', pop.key, true);
+  document.addEventListener('scroll', pop.scroll, true);
+  document.addEventListener('focusin', pop.focus, true);
+  window.addEventListener('resize', _bidMatPopClose);
+  _bidMatPop = pop;
+}
+
+function _bidMatPopClose() {
+  const pop = _bidMatPop;
+  if (!pop) return;
+  _bidMatPop = null;
+  document.removeEventListener('pointerdown', pop.down, true);
+  document.removeEventListener('keydown', pop.key, true);
+  document.removeEventListener('scroll', pop.scroll, true);
+  document.removeEventListener('focusin', pop.focus, true);
+  window.removeEventListener('resize', _bidMatPopClose);
+  pop.el.remove();
+  pop.btn.setAttribute('aria-expanded', 'false');
+  if (pop.btn.dataset.matTip != null) { pop.btn.title = pop.btn.dataset.matTip; delete pop.btn.dataset.matTip; }
+}
+
+function _bidMatPopHTML(m) {
+  const n = m.entries.length;
+  const rows = m.entries.map(e => {
+    const inv = e.invoice === null ? ''
+      : e.invoice ? `<div class="bmp-sub">Inv ${_cbEsc(e.invoice)}</div>`
+      : '<div class="bmp-sub bmp-missing">no invoice #</div>';
+    const what = e.what ? `<div class="bmp-sub">${_cbEsc(e.what)}</div>` : '';
+    const part = e.onRow == null ? ''
+      : `<div class="bmp-sub">of ${_cbEsc(_bidMatMoney(e.onRow))} on the row, capped by its imported Total Cost</div>`;
+    return `<tr><td class="bmp-date">${_cbEsc(e.date || 'no date')}</td>`
+      + `<td><div class="bmp-from">${_cbEsc(e.from)}</div>${inv}</td>`
+      + `<td>${_cbEsc(e.supplier || '\u2014')}${what}</td>`
+      + `<td class="bmp-amt">${_cbEsc(_bidMatMoney(e.amount))}${part}</td></tr>`;
+  }).join('');
+  return `<div class="bmp-head"><span><strong>Material ${_cbEsc(_bidMatMoney(m.total))}</strong> \u00b7 `
+    + `${n} entr${n === 1 ? 'y' : 'ies'}, part of this sub code's Actual Cost</span>`
+    + `<button type="button" class="bmp-close" aria-label="Close">\u2715</button></div>`
+    + `<table><tbody>${rows}</tbody></table>`;
+}
+
+/* Under the tag, its left edge on the tag's, kept inside the window: above the
+   tag when there is no room below, and wherever it fits when there is neither. */
+function _bidMatPopPlace(el, btn) {
+  const r   = btn.getBoundingClientRect();
+  const vw  = document.documentElement.clientWidth  || window.innerWidth;
+  const vh  = document.documentElement.clientHeight || window.innerHeight;
+  const w   = el.offsetWidth, h = el.offsetHeight, gap = 6, pad = 8;
+  const left = Math.max(pad, Math.min(r.left, vw - w - pad));
+  let top = r.bottom + gap;
+  if (top + h > vh - pad) top = r.top - gap - h >= pad ? r.top - gap - h : Math.max(pad, vh - h - pad);
+  el.style.left = Math.round(left) + 'px';
+  el.style.top  = Math.round(top) + 'px';
+}
+
+/* ── Keeping an open bid's tags current ───────────────────────────────────────
+   The tags take their PO, invoice and inventory numbers from the purchase-order
+   and inventory lists, which the 60-second poll replaces when someone changes
+   them elsewhere: central purchasing adding the invoice # to a delivery, say.
+   The poll redraws only its own tab, so an open bid went on showing the old
+   numbers. Now a polled change to an order or inventory entry on the job whose
+   bid is open redraws that bid, but never under someone typing in it or
+   reading the material list: it waits, checking every two seconds, until they
+   are done, and drops the redraw if the bid is closed first. */
+let _bidMatRefreshFor = null, _bidMatRefreshTimer = null;
+
+function _bidMatListChanged(before, after) {
+  const id = bidViewProjId;
+  if (!id) return;
+  const mine = list => JSON.stringify((Array.isArray(list) ? list : []).filter(x => x && x.project_id === id));
+  if (mine(before) === mine(after)) return;
+  _bidMatRefreshFor = id;
+  _bidMatRefreshDue();
+}
+
+function _bidMatRefreshDue() {
+  clearTimeout(_bidMatRefreshTimer);
+  _bidMatRefreshTimer = null;
+  const id = _bidMatRefreshFor;
+  // Closed, or moved on to another job, which draws fresh when it opens.
+  if (!id || id !== bidViewProjId) { _bidMatRefreshFor = null; return; }
+  const tbody = document.getElementById('btbody-' + id);
+  if (!tbody) { _bidMatRefreshFor = null; return; }
+  if (_bidMatPop || tbody.contains(document.activeElement)) {
+    _bidMatRefreshTimer = setTimeout(_bidMatRefreshDue, 2000);
+    return;
+  }
+  _bidMatRefreshFor = null;
+  renderBidTable(id);
 }
 
 function runningQtyForBidItem(b, projId) {
@@ -15291,7 +15485,7 @@ function renderBidTable(projId, opts = {}) {
       const _doneTag = _biDone
         ? `<span style="display:inline-block;font-size:0.56rem;font-weight:700;color:#4ade80;background:rgba(34,197,94,0.14);border:1px solid rgba(34,197,94,0.4);border-radius:3px;padding:0.06rem 0.34rem;white-space:nowrap;letter-spacing:0.02em" title="Marked complete in the schedule">✓ Complete</span>`
         : '';
-      const _matTag  = _bidMaterialTagHTML(materialForBidItem(b, projId, matSrc));
+      const _matTag  = _bidMaterialTagHTML(materialForBidItem(b, projId, matSrc), projId, b.id);
       const _subTags = (_doneTag || _matTag) ? `<div class="bid-sub-tags">${_doneTag}${_matTag}</div>` : '';
       const calcCellsA = `
         <td class="bid-calc">${rqty ? qfmt(rqty) : '—'}</td>
@@ -26773,6 +26967,7 @@ function openBidView(projId) {
 }
 
 function closeBidView() {
+  _bidMatPopClose();   // its tag is leaving the screen with the table
   // Flush any in-flight debounced bid-item edits (start/target dates, qty,
   // unit cost) before the view closes — otherwise navigating back within
   // the 600ms debounce window drops the save.
@@ -30219,8 +30414,10 @@ const _bootReady = (async () => {
     // while still showing the old one, so its next save skipped the merge that
     // protects orders raised elsewhere and erased them.
     _poBaseUpdatedAt = data.updatedAt || _poBaseUpdatedAt;
+    const _poBefore = purchaseOrders;
     purchaseOrders = incoming;
     if (activeTab === 'po') renderPOTab();
+    _bidMatListChanged(_poBefore, incoming);   // an open bid's material tags
   }
 
   async function _pollTrucking() {
@@ -30249,9 +30446,11 @@ const _bootReady = (async () => {
     const incoming = Array.isArray(got.value) ? got.value : [];
     if (JSON.stringify(incoming) === JSON.stringify(inventoryEntries)) { _inventoryLoaded = true; return; }
     if (_isEditing()) return; // don't overwrite pending edits
+    const _invBefore = inventoryEntries;
     inventoryEntries = incoming;
     _inventoryLoaded = true;
     if (activeTab === 'inventory') renderInventoryTab();
+    _bidMatListChanged(_invBefore, incoming);   // an open bid's material tags
   }
 
   async function _pollCrm() {
