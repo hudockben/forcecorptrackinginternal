@@ -119,6 +119,9 @@ function page(SRC, L, { respond, local = null, editing = false, tab = L.tab }) {
     _isEditing: () => editing,
     activeTab: tab,
     [L.render]: () => draws.push(L.render),
+    // The inventory poll also tells an open bid view its list changed; no bid
+    // is open here. scripts/test-bid-material-tag.js covers that hand-off.
+    _bidMatListChanged: () => {},
   };
   const code = [
     extractFunction(SRC, 'apiGetChecked'),
