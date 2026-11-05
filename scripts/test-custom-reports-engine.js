@@ -65,7 +65,8 @@ const LIFT = ['dailyRowCost', 'calcDaily', 'bidItemComplete', '_bidCsKey', 'bidP
 // Paving quotes its contract through its change-order helpers; the PO line
 // math lives where the PO tab does.
 const OPTIONAL = ['projectContract', 'originalContract', 'revisedContract', 'contractCOTotal', 'contractCOs',
-  '_lineAmt', '_lineTax', '_lineTaxPct', '_poNum', '_poNum0', '_normalizeNumeric'];
+  '_lineAmt', '_lineTax', '_lineTaxPct', '_poNum', '_poNum0', '_normalizeNumeric',
+  '_localDateStr', '_usHolidays', '_isHoliday', '_addWorkingDays', '_poTotals'];
 function pageEngine(file) {
   const SRC = fs.readFileSync(path.join(ROOT, file), 'utf8');
   const haul = /const HAUL_FIELD_TYPE_RE\s*=\s*([^;]+);/.exec(SRC);
@@ -77,6 +78,7 @@ function pageEngine(file) {
     'var projectsList = [];',
     'var pvPreview = { active: false, rate: 0 };',
     'var _bidCsComplete = {};',
+    'var _holidayCache = {};',
     `var HAUL_FIELD_TYPE_RE = ${haul ? haul[1] : '/^haul\\s*[—–-]\\s/i'};`,
     ...LIFT.concat(have).map(n => requireFn(SRC, n, file)),
   ].join('\n'), ctx, { filename: file });
@@ -87,7 +89,7 @@ function pageEngine(file) {
     bidProjectPct: fn('bidProjectPct'), bidGroupPct: fn('bidGroupPct'), projForBidItem: fn('projForBidItem'),
     projectedCostForProject: fn('projectedCostForProject'), gpEarnedToDate: fn('gpEarnedToDate'),
     bidContractFigures: fn('bidContractFigures'), projIsDone: fn('projIsDone'),
-    lineAmt: fn('_lineAmt'), lineTax: fn('_lineTax'),
+    lineAmt: fn('_lineAmt'), lineTax: fn('_lineTax'), addWorkingDays: fn('_addWorkingDays'),
   };
   return { ctx, helpers, file };
 }
@@ -557,7 +559,7 @@ function deepNear(a, b, at = '') {
     // 350, 0 (Nov 3, 4 h) = 1,050 TON on 5 work days → 210 / day. Best day
     // Nov 2 (350) over Oct 27 (300). Bid 2,000 + CO 100 = 2,100, installed
     // 1,050 → 1,050 left ÷ 210 = exactly 5 days. Thu Nov 5 + 5 workdays →
-    // Fri 6, Mon 9, Tue 10, Wed 11, Thu 12.
+    // Fri 6, Mon 9, Tue 10, (Wed 11 is Veterans Day) Thu 12, Fri 13.
     const def = one('production_kpis', { columns: PE.CATALOG.production_kpis.columns.map(c => c.key), options: { totals: true } },
       { dates: { preset: 'last_30' }, includeInternal: true });
     const sd = PE.buildSectionData(def.sections[0], def, mk(def, ['p1']));
@@ -570,7 +572,7 @@ function deepNear(a, b, at = '') {
       base.qty_period === 1050 && base.days_period === 5);
     assert('avg / day = 210, best day = 350', base.avg_per_day === 210 && base.best_day === 350);
     assert('remaining 1,050 ÷ 210 → est. days left 5', base.remaining_qty === 1050 && base.est_days_left === 5);
-    assert('projected finish Thu Nov 12 (Mon–Fri, over a weekend)', base.projected_finish === '2026-11-12', base.projected_finish);
+    assert('projected finish Fri Nov 13 (over a weekend and Veterans Day, as the pages count)', base.projected_finish === '2026-11-13', base.projected_finish);
     assert('units per man-hour = 1,050 ÷ 51 h', near(base.labor_hours, 51) && near(base.units_per_mh, 1050 / 51));
     // 471.30 + 400 + 424.17 + (320 + 1,234.57 material) + 471.30 + 160
     assert('cost per unit = $3,481.34 ÷ 1,050', near(base.cost_per_unit, 3481.34 / 1050), base.cost_per_unit);
@@ -581,18 +583,18 @@ function deepNear(a, b, at = '') {
       { dates: { preset: 'custom', from: '2026-10-28', to: '2026-11-03' }, includeInternal: true });
     const mid = rowsOf(PE.buildSectionData(midDef.sections[0], midDef, mk(midDef, ['p1']))).find(r => r.sub_code === 'Base Course');
     assert('avg crew counts only the period\'s work days: 4 ÷ 4 = 1.0', mid.days_period === 4 && near(mid.crew_avg, 1), J(mid));
-    assert('Surface Course: 120 in a day, 480 left → 4 days → Wed Nov 11',
-      surf.avg_per_day === 120 && surf.remaining_qty === 480 && surf.est_days_left === 4 && surf.projected_finish === '2026-11-11');
+    assert('Surface Course: 120 in a day, 480 left → 4 days → Thu Nov 12 (Veterans Day skipped)',
+      surf.avg_per_day === 120 && surf.remaining_qty === 480 && surf.est_days_left === 4 && surf.projected_finish === '2026-11-12');
     assert('a cost-code-only line takes both sub codes: 800 LF, 1,200 left → ceil(1.5) = 2 → Mon Nov 9',
       strp.qty_period === 800 && strp.best_day === 800 && strp.est_days_left === 2 && strp.projected_finish === '2026-11-09');
     const tot = sd.blocks[0].totals;
     assert('totals: mixed units listed per unit, days across lines distinct, finish = the last line\'s',
       tot.qty_period === '1,170 TON · 800 LF' && tot.days_period === 6 && tot.est_days_left === 5
-        && tot.projected_finish === '2026-11-12' && tot.avg_per_day === null && near(tot.labor_hours, 51 + 8 + 8), J(tot));
+        && tot.projected_finish === '2026-11-13' && tot.avg_per_day === null && near(tot.labor_hours, 51 + 8 + 8), J(tot));
 
     // A finished line has nothing left and no finish date; Friday + 1 is Monday.
     const fri = PE.buildSectionData(def.sections[0], def, mk(def, ['p1'], { today: '2026-11-06' }));
-    assert('from a Friday, one workday lands on Monday', rowsOf(fri).find(r => r.sub_code === 'Surface Course').projected_finish === '2026-11-12'
+    assert('from a Friday, one workday lands on Monday', rowsOf(fri).find(r => r.sub_code === 'Surface Course').projected_finish === '2026-11-13'
       && rowsOf(fri).find(r => r.cost_code === 'Striping').projected_finish === '2026-11-10');
     const millDef = one('production_kpis', null, { dates: { preset: 'custom', from: '2026-10-01', to: '2026-10-10' } });
     const mill = rowsOf(PE.buildSectionData(millDef.sections[0], millDef, mk(millDef, ['p1'])))[0];
@@ -601,23 +603,23 @@ function deepNear(a, b, at = '') {
     // A week stepped from a weekend must not land on the weekend.
     const sat = PE.buildSectionData(def.sections[0], def, mk(def, ['p1'], { today: '2026-11-07' }));
     const sun = PE.buildSectionData(def.sections[0], def, mk(def, ['p1'], { today: '2026-11-08' }));
-    assert('from a Saturday or a Sunday, 5 workdays is the next Friday',
-      rowsOf(sat).find(r => r.sub_code === 'Base Course').projected_finish === '2026-11-13'
-        && rowsOf(sun).find(r => r.sub_code === 'Base Course').projected_finish === '2026-11-13',
+    assert('from a Saturday or a Sunday, 5 workdays (one a holiday) is the Monday after next',
+      rowsOf(sat).find(r => r.sub_code === 'Base Course').projected_finish === '2026-11-16'
+        && rowsOf(sun).find(r => r.sub_code === 'Base Course').projected_finish === '2026-11-16',
       rowsOf(sat).find(r => r.sub_code === 'Base Course').projected_finish);
 
     // Decimal units: 0.1 MI on each of four days against a 1.6 MI bid leaves
     // 1.2 MI at 0.1 a day — 12 days. In floating point that division comes to
     // 12.000000000000002, and a bare ceil would say 13. Thu Nov 5 + 12
-    // workdays (crossing two weekends) = Mon Nov 23.
+    // workdays (crossing two weekends and Veterans Day) = Tue Nov 24.
     const mi = { id: 'mi', 'project-name': 'Trail', bidItems: [{ cost_code: 'Trail', sub_code: 'Grade', unit: 'MI', quantity: '1.6', unit_cost: '1' }],
       dailyRows: ['2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05'].map(date =>
         ({ date, cost_code: 'Trail', sub_code: 'Grade', quantity: '0.1', labor_hours: '8' })) };
     const miDef = one('production_kpis', null, { dates: { preset: 'this_week' } });
     const miRow = rowsOf(PE.buildSectionData(miDef.sections[0], miDef,
       PE.makeContext(miDef, { getProjects: () => [mi] }, { pickedIds: ['mi'], today: TODAY })))[0];
-    assert('decimal units: 1.2 MI left at 0.1 MI / day is 12 days, not 13 off a float tail → Mon Nov 23',
-      miRow && miRow.est_days_left === 12 && miRow.projected_finish === '2026-11-23', J(miRow));
+    assert('decimal units: 1.2 MI left at 0.1 MI / day is 12 days, not 13 off a float tail → Tue Nov 24',
+      miRow && miRow.est_days_left === 12 && miRow.projected_finish === '2026-11-24', J(miRow));
   }
 
   section('Bid progress, date-bounded');
@@ -988,7 +990,7 @@ function deepNear(a, b, at = '') {
     const pk = wb.sheets['Production Rates'];
     const fin = findCell(pk, 'Projected Finish'), psub = findCell(pk, 'Sub Code');
     const pRow = +Object.keys(pk).find(r => r.startsWith(psub.col) && pk[r].v === 'Base Course').replace(/\D+/g, '');
-    assert('dates are real date serials under a date format', pk[fin.col + pRow].v === serial('2026-11-12')
+    assert('dates are real date serials under a date format', pk[fin.col + pRow].v === serial('2026-11-13')
       && wb.styles[pk[fin.col + pRow].s] === 'mmm d, yyyy');
     const co = wb.sheets['Change Orders'];
     const qc = findCell(co, 'Qty Change');
@@ -1006,7 +1008,7 @@ function deepNear(a, b, at = '') {
       totRow && bpc[bq.col + totRow].t === 'inlineStr' && bpc[bq.col + totRow].v === '2,700 TON · 5,800 SY · 2,000 LF'
         && matTot && mat[mq.col + matTot.replace(/\D+/g, '')].v === 42.5,
       totRow && JSON.stringify(bpc[bq.col + totRow]));
-    assert('file name: <title>-<date>.xlsx, sanitised', PE.xlsxFileName(nd, ctx) === 'Weekly-Progress-Update-A-2026-11-05.xlsx'
+    assert('file name: <title>-<date>.xlsx, sanitised (tagged INTERNAL here)', PE.xlsxFileName(nd, ctx) === 'Weekly-Progress-Update-A-INTERNAL-2026-11-05.xlsx'
       && PE.xlsxFileName(PE.defaultDefinition(), { today: TODAY }) === 'Custom-Report-2026-11-05.xlsx');
     // Same bytes with or without TextEncoder: the bare-vm encoder is exact.
     const withTE = bareEngine({ TextEncoder }).FCTReportEngine;
@@ -1017,6 +1019,266 @@ function deepNear(a, b, at = '') {
     assert('the built-in UTF-8 encoder matches TextEncoder byte for byte (emoji, lone surrogate)', a.equals(b) && !workbook(b).bad.length);
     const empty = workbook(PE.buildXlsx(PE.defaultDefinition(), mk({}, [])));
     assert('a report with no table sections is still a valid one-sheet workbook', !empty.bad.length && empty.names.join() === 'Report');
+  }
+
+  section('Figures where bid lines overlap, ranges are in the past, and holidays fall');
+  {
+    const PAGES = ['tracker.html', 'paving.html', 'kiewit-pinetree.html'];
+    const envs = PAGES.map(f => pageEngine(f));
+    const noHelp = { file: 'no helpers', ctx: bareEngine(), helpers: undefined };
+    const engines = envs.concat([noHelp]);
+    const makeIn = (env, def, data, opts) => env.ctx.FCTReportEngine.makeContext(def,
+      cfgFor(env, data), Object.assign({ today: TODAY, now: NOW }, opts || {}));
+    const withData = (env, data, fn) => {
+      const prev = env.ctx.projectsList;
+      env.ctx.projectsList = data.projects;
+      try { return fn(); } finally { env.ctx.projectsList = prev; }
+    };
+
+    // ── Overlapping lines (the "+ Sub Code" shape): each row counted once ──
+    const overlap = (blankUnit, rows) => ({
+      projects: [{ id: 'ov', 'project-name': 'Overlap Job', status: 'In Progress',
+        bidItems: [
+          blankUnit ? { id: 'o1', cost_code: 'Striping', sub_code: '', unit: '', quantity: '', unit_cost: '' }
+            : { id: 'o1', cost_code: 'Striping', sub_code: '', unit: 'LF', quantity: '2000', unit_cost: '1' },
+          { id: 'o2', cost_code: 'Striping', sub_code: 'Thermo', unit: 'LF', quantity: '500', unit_cost: '2' },
+        ],
+        dailyRows: rows }],
+      pos: [], trucks: [],
+    });
+    const ovRows = [
+      { id: 'q1', date: '2026-11-02', cost_code: 'Striping', sub_code: 'Thermo', quantity: '300', labor_hours: '8', rate: '30', employee: 'A' },
+      { id: 'q2', date: '2026-11-03', cost_code: 'Striping', sub_code: 'Paint', quantity: '200', labor_hours: '4', rate: '30', employee: 'B' },
+    ];
+    for (const env of engines) {
+      const PE2 = env.ctx.FCTReportEngine;
+      const data = overlap(false, ovRows);
+      const def = PE2.normalizeDefinition({ title: 'Overlap', dates: { preset: 'this_week' }, includeInternal: true,
+        sections: [PE2.newSection('summary_kpis'), Object.assign(PE2.newSection('bid_progress'), {
+          columns: ['cost_code', 'sub_code', 'unit', 'bid_qty', 'installed_to_date', 'installed_period', 'remaining_qty', 'actual_cost', 'labor_hours'] }),
+        PE2.newSection('daily_production')] });
+      withData(env, data, () => {
+        const ctx = makeIn(env, def, data, { pickedIds: ['ov'] });
+        const sum = rowsOf(PE2.buildSectionData(def.sections[0], def, ctx))[0];
+        const bp = PE2.buildSectionData(def.sections[1], def, ctx).blocks[0].totals;
+        const dp = PE2.buildSectionData(def.sections[2], def, ctx).blocks[0].totals;
+        assert(`${env.file}: summary Qty Installed = Daily Production total = 500, not 800`,
+          sum.qty_period === 500 && dp.quantity === 500, `${sum.qty_period} / ${dp.quantity}`);
+        assert(`${env.file}: bid-progress totals count each shared row once (installed 500, this period 500, remaining not invented)`,
+          bp.installed_to_date === 500 && bp.installed_period === 500 && bp.remaining_qty === null, JSON.stringify(J(bp)));
+        assert(`${env.file}: …and the cost and hours behind them once ($360, 12 h)`,
+          near(bp.actual_cost, 360) && near(bp.labor_hours, 12), JSON.stringify(J(bp)));
+        if (env.helpers) {
+          const b = data.projects[0].bidItems;
+          assert(`${env.file}: each line's own figure is still the page's (500 and 300)`,
+            near(env.ctx.runningQtyForBidItem(b[0], 'ov'), 500) && near(env.ctx.runningQtyForBidItem(b[1], 'ov'), 300)
+              && rowsOf(PE2.buildSectionData(def.sections[1], def, ctx)).map(r => r.installed_to_date).join() === '500,300');
+        }
+        const html = PE2.buildReportHtml(def, ctx);
+        assert(`${env.file}: the printed strip says 500 LF`, /500 LF/.test(html) && !/800 LF/.test(html));
+      });
+      // A blank-unit wildcard line, as "+ Sub Code" leaves it.
+      const blank = overlap(true, [ovRows[0], Object.assign({}, ovRows[1], { sub_code: 'Thermo' })]);
+      withData(env, blank, () => {
+        const ctx = makeIn(env, def, blank, { pickedIds: ['ov'] });
+        const sd = PE2.buildSectionData(def.sections[0], def, ctx);
+        const row = sd.blocks[0].groups[0].rows[0];
+        assert(`${env.file}: a blank-unit line beside it adds no unlabelled extra figure (500 LF, nothing else)`,
+          row.cells.qty_period === 500 && row.unit === 'LF', JSON.stringify(J(row)));
+      });
+    }
+
+    // ── Projected cost on a past range is today's figure (paving helpers) ──
+    const pav = envs[1];
+    const PP = pav.ctx.FCTReportEngine;
+    const realNow = new Date();
+    const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const projData = {
+      projects: [{ id: 'pj', 'project-name': 'Proj Job', status: 'In Progress',
+        bidItems: [{ id: 'g1', cost_code: 'CC2', sub_code: 'S2', unit: 'TON', quantity: '300', unit_cost: '60',
+          start_date: '2026-10-01', target_date: '2026-12-31' }],
+        dailyRows: [
+          { id: 'z1', date: '2026-10-10', cost_code: 'CC2', sub_code: 'S2', quantity: '40', labor_hours: '50', rate: '30' },
+          { id: 'z2', date: '2026-11-03', cost_code: 'CC2', sub_code: 'S2', quantity: '10', labor_hours: '10', rate: '50' },
+        ] }],
+      pos: [], trucks: [],
+    };
+    const snap = PP.STARTERS.find(s => s.id === 'internal_cost_snapshot').definition;
+    for (const preset of ['job_to_date', 'last_month']) {
+      const def = PP.normalizeDefinition(Object.assign(J(snap), { dates: { preset, from: '', to: '' } }));
+      withData(pav, projData, () => {
+        const ctx = makeIn(pav, def, projData, { pickedIds: ['pj'], now: realNow });
+        const row = rowsOf(PP.buildSectionData(def.sections[1], def, ctx))[0];
+        const tot = PP.buildSectionData(def.sections[1], def, ctx).blocks[0].totals;
+        const sum = rowsOf(PP.buildSectionData(def.sections[0], def, ctx))[0];
+        const b = projData.projects[0].bidItems[0];
+        const want = pav.ctx.projForBidItem(b, pav.ctx.actualForBidItem(b, 'pj'), pav.ctx.runningQtyForBidItem(b, 'pj'), 300, 18000, false);
+        const rel = (a, x) => Math.abs(a - x) <= 1e-4 * Math.max(1, Math.abs(x));
+        assert(`${preset}: a line's Projected Cost is the page's projection today (${want.toFixed(2)})`,
+          rel(row.projected_cost, want), `${row.projected_cost} vs ${want}`);
+        assert(`${preset}: bid-progress Totals projected cost = the summary strip's (no off-bid spend here)`,
+          rel(tot.projected_cost, sum.projected_cost), `${tot.projected_cost} vs ${sum.projected_cost}`);
+      });
+    }
+
+    // ── The fallback projection measures time as the page does ──
+    const NE2 = bareEngine().FCTReportEngine;
+    for (const back of [10, 1, 0]) {
+      const start = new Date(realNow.getFullYear(), realNow.getMonth(), realNow.getDate() - back);
+      const end = new Date(realNow.getFullYear(), realNow.getMonth(), realNow.getDate() + 20);
+      const dd = {
+        projects: [{ id: 'fp', 'project-name': 'Fallback Job', status: 'In Progress',
+          bidItems: [{ id: 'f1', cost_code: 'Mill', sub_code: 'M', unit: 'SY', quantity: '1000', unit_cost: '30',
+            start_date: iso(start), target_date: iso(end) }],
+          dailyRows: [{ id: 'fr', date: iso(start), cost_code: 'Mill', sub_code: 'M', quantity: '100', total_cost: '6000' }] }],
+        pos: [], trucks: [],
+      };
+      const def = PP.normalizeDefinition({ title: 'F', includeInternal: true, sections: [
+        Object.assign(PP.newSection('bid_progress'), { columns: ['sub_code', 'projected_cost'] }),
+        Object.assign(PP.newSection('summary_kpis'), { columns: ['projected_cost'] })] });
+      withData(pav, dd, () => {
+        const today = iso(realNow);
+        const c1 = PP.makeContext(def, cfgFor(pav, dd), { pickedIds: ['fp'], today, now: new Date() });
+        const c2 = NE2.makeContext(def, cfgFor({}, dd), { pickedIds: ['fp'], today, now: new Date() });
+        const a = rowsOf(PP.buildSectionData(def.sections[0], def, c1))[0].projected_cost;
+        const b = rowsOf(NE2.buildSectionData(def.sections[0], def, c2))[0].projected_cost;
+        const sa = rowsOf(PP.buildSectionData(def.sections[1], def, c1))[0].projected_cost;
+        const sb = rowsOf(NE2.buildSectionData(def.sections[1], def, c2))[0].projected_cost;
+        const rel = (x, y) => Math.abs(x - y) <= 1e-3 * Math.max(1, Math.abs(y));
+        assert(`a dated line started ${back} day(s) ago: the fallback projection equals the page helper's (line and job)`,
+          rel(a, b) && rel(sa, sb), `${a} vs ${b}; ${sa} vs ${sb}`);
+      });
+    }
+
+    // ── Projected finish skips the pages' holidays; past ten years it is "—" ──
+    const prodData = (left, perDay, today) => {
+      const yday = (() => { const t = Date.UTC(+today.slice(0, 4), +today.slice(5, 7) - 1, +today.slice(8, 10)) - 86400000;
+        return new Date(t).toISOString().slice(0, 10); })();
+      return { projects: [{ id: 'pr', 'project-name': 'Prod', status: 'In Progress',
+        bidItems: [{ id: 'k1', cost_code: 'Seal', sub_code: 'Coat', unit: 'SY', quantity: String(left + perDay), unit_cost: '1' }],
+        dailyRows: [{ id: 'kr', date: yday, cost_code: 'Seal', sub_code: 'Coat', quantity: String(perDay), labor_hours: '8' }] }],
+        pos: [], trucks: [] };
+    };
+    const cases = [
+      ['2026-11-05', 500, 100, '2026-11-13', 'Veterans Day'], ['2026-11-05', 2000, 100, '2026-12-07', 'Veterans Day and Thanksgiving'],
+      ['2026-11-20', 500, 100, '2026-11-30', 'Thanksgiving'], ['2026-12-21', 500, 100, '2026-12-29', 'Christmas'],
+      ['2026-11-05', 100000, 1, null, 'past the ten-year cap'],
+    ];
+    for (const env of [pav, noHelp]) {
+      const E2 = env.ctx.FCTReportEngine;
+      const def = E2.normalizeDefinition({ title: 'P', dates: { preset: 'last_7' },
+        sections: [Object.assign(E2.newSection('production_kpis'), { options: { totals: true } })] });
+      for (const [today, left, perDay, want, why] of cases) {
+        const dd = prodData(left, perDay, today);
+        withData(env, dd, () => {
+          const ctx = E2.makeContext(def, cfgFor(env, dd), { pickedIds: ['pr'], today, now: NOW });
+          const sd = E2.buildSectionData(def.sections[0], def, ctx);
+          const row = rowsOf(sd)[0];
+          if (want) {
+            assert(`${env.file}: ${left} left at ${perDay}/day from ${today} finishes ${want} (${why})`,
+              row && row.projected_finish === want && sd.blocks[0].totals.projected_finish === want, row && row.projected_finish);
+          } else {
+            const html = E2.buildReportHtml(def, ctx);
+            assert(`${env.file}: ${left} left at ${perDay}/day has no finish and no days-left (${why}), printed "—", never NaN`,
+              row && row.projected_finish === null && row.est_days_left === null && sd.blocks[0].totals.projected_finish === null
+                && !/NaN|2[1-9]\d\d-/.test(html), row && JSON.stringify(row));
+          }
+        });
+      }
+    }
+    if (pav.helpers.addWorkingDays) {
+      assert('the engine\'s fallback calendar is the page\'s, day for day, through 2027',
+        (() => {
+          const NE3 = bareEngine().FCTReportEngine;
+          const def = NE3.normalizeDefinition({ title: 'P', dates: { preset: 'last_7' }, sections: [NE3.newSection('production_kpis')] });
+          for (let t = Date.UTC(2026, 0, 1); t < Date.UTC(2028, 0, 1); t += 86400000 * 3) {
+            const today = new Date(t).toISOString().slice(0, 10);
+            const dd = prodData(700, 100, today);
+            const got = rowsOf(NE3.buildSectionData(def.sections[0], def, NE3.makeContext(def, cfgFor({}, dd), { pickedIds: ['pr'], today })))[0];
+            if (!got || got.projected_finish !== pav.helpers.addWorkingDays(today, 7)) return false;
+          }
+          return true;
+        })());
+    }
+
+    // ── Bid-progress Totals % rolls up by cost code, as bidProjectPct does ──
+    const pctData = {
+      projects: [{ id: 'pc', 'project-name': 'Pct Job', status: 'In Progress',
+        bidItems: [
+          { id: 'c1', cost_code: 'CC1', sub_code: 'S1', unit: 'EA', quantity: '10', unit_cost: '100' },
+          { id: 'c2', cost_code: 'CC1', sub_code: 'S2', unit: 'EA', quantity: '10', unit_cost: '100' },
+          { id: 'c3', cost_code: 'CC2', sub_code: 'S3', unit: 'EA', quantity: '10', unit_cost: '100' },
+        ],
+        dailyRows: [
+          { id: 'w1', date: '2026-11-02', cost_code: 'CC1', sub_code: 'S1', quantity: '10', labor_hours: '1' },
+          { id: 'w2', date: '2026-11-02', cost_code: 'CC1', sub_code: 'S2', quantity: '10', labor_hours: '1' },
+        ] }],
+      pos: [], trucks: [],
+    };
+    for (const env of [pav, noHelp]) {
+      const E2 = env.ctx.FCTReportEngine;
+      const def = E2.normalizeDefinition(J(E2.STARTERS.find(st => st.id === 'customer_progress').definition));
+      withData(env, pctData, () => {
+        const ctx = E2.makeContext(def, cfgFor(env, pctData), { pickedIds: ['pc'], today: TODAY, now: NOW });
+        const sum = rowsOf(E2.buildSectionData(def.sections[1], def, ctx))[0];
+        const tot = E2.buildSectionData(def.sections[2], def, ctx).blocks[0].totals;
+        const pagePct = env.helpers ? env.ctx.bidProjectPct('pc').pct : 66.6;
+        const html = E2.buildReportHtml(def, ctx);
+        assert(`${env.file}: bid-progress Totals % = summary % = bidProjectPct (66.6), not a flat 66.7`,
+          near(tot.pct_complete, pagePct) && near(sum.pct_complete, pagePct) && near(pagePct, 66.6),
+          `${tot.pct_complete} / ${sum.pct_complete} / ${pagePct}`);
+        assert(`${env.file}: …so the printed report says 66.6% and never 66.7%`, /66\.6%/.test(html) && !/66\.7%/.test(html));
+      });
+    }
+
+    // ── A tax-only PO line counts; the blank line still does not ──
+    const poData = {
+      projects: [{ id: 'po', 'project-name': 'PO Job', bidItems: [], dailyRows: [] }],
+      pos: [{ id: 'P1', po_number: 'PO-1', title: 'Base', supplier: 'S', project_id: 'po', lines: [
+        { id: 'a', date: '2026-11-02', qty: '20', unit_cost: '50', tax_pct: '6' },
+        { id: 'b', date: '2026-11-02', qty: '', unit_cost: '', tax: '35' },
+        { id: 'c', date: '2026-11-03', qty: '1250.5', unit_cost: '48.00' },
+        { id: 'd', date: '2026-11-04', invoice_num: '', qty: '', unit_cost: '', tax: '', tax_pct: '' },
+      ] }],
+      trucks: [],
+    };
+    for (const env of [pav, noHelp]) {
+      const E2 = env.ctx.FCTReportEngine;
+      const def = E2.normalizeDefinition({ title: 'M', includeInternal: true, sections: [
+        Object.assign(E2.newSection('materials'), { columns: ['date', 'qty', 'tax', 'line_total'] })] });
+      const ctx = E2.makeContext(def, cfgFor(env, poData), { pickedIds: ['po'], today: TODAY, now: NOW });
+      const sd = E2.buildSectionData(def.sections[0], def, ctx);
+      const want = env.helpers ? env.ctx._poTotals(poData.pos[0]) : { tax: 95, total: 61119 };
+      assert(`${env.file}: materials Tax and Line Total equal the PO page's totals ($95 / $61,119), blank line left out`,
+        near(sd.blocks[0].totals.tax, want.tax) && near(sd.blocks[0].totals.line_total, want.total) && near(want.tax, 95)
+          && rowsOf(sd).length === 3, `${sd.blocks[0].totals.tax} / ${sd.blocks[0].totals.line_total} / ${rowsOf(sd).length} rows`);
+    }
+
+    // ── Every sheet of an internal workbook says so; a customer one never ──
+    {
+      const intDef = allColumnsDef(PE, { includeInternal: true, title: 'Weekly Progress Update' });
+      const wbI = workbook(PE.buildXlsx(intDef, mk(intDef, ['p1'])));
+      const sheetParts = Object.keys(wbI.parts).filter(n => /^xl\/worksheets\/sheet\d+\.xml$/.test(n));
+      assert('internal workbook: every sheet carries the INTERNAL warning row and page header',
+        sheetParts.length > 2 && sheetParts.every(n => {
+          const cells = Object.values(readSheet(wbI.parts[n])).map(c => c.v);
+          return cells.some(v => /^INTERNAL — contains cost data/.test(v || '')) && /<oddHeader>[^<]*INTERNAL/.test(wbI.parts[n]);
+        }) && !wbI.bad.length, sheetParts.filter(n => !wbI.parts[n].includes('INTERNAL')).join());
+      const bpc = wbI.sheets['Bid Item Progress'], head = findCell(bpc, 'Cost Code');
+      assert('…the header row is still the frozen, repeated one', head
+        && wbI.parts['xl/worksheets/sheet2.xml'].includes(`ySplit="${head.row}"`)
+        && wbI.parts['xl/workbook.xml'].includes(`'Bid Item Progress'!$${head.row}:$${head.row}`));
+      assert('…and the file name says INTERNAL', /-INTERNAL-\d{4}-\d{2}-\d{2}\.xlsx$/.test(PE.xlsxFileName(intDef, mk(intDef, ['p1']))),
+        PE.xlsxFileName(intDef, mk(intDef, ['p1'])));
+      const safeDef = allColumnsDef(PE, { includeInternal: false, title: 'Weekly Progress Update' });
+      const wbS = workbook(PE.buildXlsx(safeDef, mk(safeDef, ['p1'])));
+      assert('customer-safe workbook: no sheet mentions INTERNAL, and neither does the file name',
+        Object.keys(wbS.parts).filter(n => /worksheets/.test(n)).every(n => !wbS.parts[n].includes('INTERNAL'))
+          && PE.xlsxFileName(safeDef, mk(safeDef, ['p1'])) === 'Weekly-Progress-Update-2026-11-05.xlsx');
+      // A role that cannot see costs cannot make an internal workbook either.
+      const noCost = mk(intDef, ['p1'], null, { perm: { role: 'level1', canSeeCosts: false, canSeeFinancials: false } });
+      assert('…nor for a role whose internal columns are all hidden', !/INTERNAL/.test(PE.xlsxFileName(intDef, noCost)));
+    }
   }
 
   section('Big jobs stay fast');

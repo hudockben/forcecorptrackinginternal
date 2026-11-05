@@ -126,22 +126,58 @@
     return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())}`;
   }
 
-  // n working days (Mon–Fri) after `iso`. Any seven days in a row hold
-  // exactly five weekdays, so whole weeks are stepped at once and only the
-  // last one to five workdays are walked — a slow item a year out costs
-  // nothing. Those last few are always walked, never stepped as a week: a
-  // week from a Saturday lands on a Saturday, a day past the fifth workday.
+  /* The pages' working-day calendar (_usHolidays / _addWorkingDays): Mon–Fri
+     less the US federal holidays — the fixed ones moved to the Friday or
+     Monday they are observed on, and MLK, Presidents, Memorial, Labor,
+     Columbus and Thanksgiving days. The Schedule Estimator, the Gantt and
+     the PDFs all count with it, so a projected finish here lands on the day
+     the company's own schedule shows. Restated on UTC date fields, and the
+     same way round as the page: a set per year holding only dates labelled
+     with that year (a Saturday New Year's observed on Dec 31 is filed under
+     the year it belongs to — a weekend, so it never moves a date). */
+  const HOLIDAYS = new Map();
+  function holidaysOf(year) {
+    let h = HOLIDAYS.get(year);
+    if (h) return h;
+    h = new Set();
+    const iso = (m, d) => `${year}-${p2(m)}-${p2(d)}`;
+    const fixedObs = (m, d) => {
+      const w = weekday(iso(m, d));
+      const shifted = addDays(iso(m, d), w === 0 ? 1 : w === 6 ? -1 : 0);
+      return `${year}-${shifted.slice(5)}`;
+    };
+    const nth = (m, wd, n) => {
+      const first = weekday(iso(m, 1));
+      return iso(m, 1 + ((wd - first + 7) % 7) + (n - 1) * 7);
+    };
+    const last = (m, wd) => {
+      const end = addDays(m === 12 ? `${year + 1}-01-01` : iso(m + 1, 1), -1);
+      return addDays(end, -((weekday(end) - wd + 7) % 7));
+    };
+    [fixedObs(1, 1), fixedObs(7, 4), fixedObs(11, 11), fixedObs(12, 25),
+      nth(1, 1, 3), nth(2, 1, 3), last(5, 1), nth(9, 1, 1), nth(10, 1, 2), nth(11, 4, 4)].forEach(x => h.add(x));
+    HOLIDAYS.set(year, h);
+    return h;
+  }
+  const isHoliday = iso => holidaysOf(+iso.slice(0, 4)).has(iso);
+
+  // The page's own cap: past ten years of work days a projection is no date.
+  const MAX_WORKDAYS = 3650;
+
+  /* n working days after `iso`, or null when n is not a number or is past
+     MAX_WORKDAYS — the page prints "—" then rather than a finish centuries
+     out (or, once a Date overflows, "NaN-NaN-NaN"). A fraction rounds up. */
   function addWorkdays(iso, n) {
-    n = Math.max(0, Math.floor(n));
-    if (!n) return iso;
-    const weeks = Math.floor((n - 1) / 5);
-    let d = addDays(iso, weeks * 7);
-    for (let left = n - weeks * 5; left > 0;) {
-      d = addDays(d, 1);
-      const w = weekday(d);
-      if (w !== 0 && w !== 6) left--;
+    if (typeof n !== 'number' || !isFinite(n) || n > MAX_WORKDAYS || !isIso(iso)) return null;
+    let left = Math.ceil(Math.max(0, n));
+    let t = utc(iso);
+    while (left > 0) {
+      t += DAY_MS;
+      const w = new Date(t).getUTCDay();
+      if (w === 0 || w === 6) continue;
+      if (!isHoliday(fromUtc(t))) left--;
     }
-    return d;
+    return fromUtc(t);
   }
 
   function fmtDate(iso) {
@@ -693,12 +729,19 @@
     return num(b.quantity) + (Array.isArray(b.change_orders) ? b.change_orders : [])
       .reduce((s, co) => s + num(co && co.qty_delta), 0);
   }
-  function ownProjFor(b, actual, rqty, bidQty, bidTot, isComplete, today) {
+  /* projForBidItem restated. Time is measured as the page measures it: from
+     local midnight of the line's start date to the moment the report is
+     made, in fractional days — so a line started this morning projects off
+     the hours it has run, not off a whole day it has not had yet. */
+  const localMidnight = iso => new Date(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)).getTime();
+  function ownProjFor(b, actual, rqty, bidQty, bidTot, isComplete, now) {
     if (!(actual > 0)) return bidTot;
     if (isComplete) return actual;
     const s = dayOf(b.start_date), e = dayOf(b.target_date);
     if (s && e) {
-      const elapsed = daysBetween(s, today), total = daysBetween(s, e);
+      const at = now instanceof Date && !isNaN(now) ? now.getTime() : Date.now();
+      const start = localMidnight(s);
+      const elapsed = (at - start) / DAY_MS, total = (localMidnight(e) - start) / DAY_MS;
       if (elapsed > 0 && total > 0) return Math.max(actual, (actual / elapsed) * total);
     }
     if (rqty > 0) return Math.max(actual, (actual / rqty) * bidQty);
@@ -734,9 +777,16 @@
       projectPct(p) {
         return tryHelper(h.bidProjectPct, [p.id], x => x === null || (isObj(x) && isNum(x.pct)));
       },
-      projFor(b, actual, rqty, bidQty, bidTot, done, today) {
+      projFor(b, actual, rqty, bidQty, bidTot, done, now) {
         const v = tryHelper(h.projForBidItem, [b, actual, rqty, bidQty, bidTot, done], isNum);
-        return v !== undefined ? v : ownProjFor(b, actual, rqty, bidQty, bidTot, done, today);
+        return v !== undefined ? v : ownProjFor(b, actual, rqty, bidQty, bidTot, done, now);
+      },
+      // The page's _addWorkingDays: Mon–Fri less its holidays, null past the
+      // ten-year cap. Ours restates it when the page does not pass it.
+      workdays(iso, n) {
+        if (typeof n !== 'number' || !isFinite(n) || n > MAX_WORKDAYS) return null;
+        const v = tryHelper(h.addWorkingDays, [iso, n], x => x === null || isIso(x));
+        return v !== undefined ? v : addWorkdays(iso, n);
       },
       projectedCost(p) { return tryHelper(h.projectedCostForProject, [p], isNum); },
       gp(contract, actual, projected) {
@@ -829,6 +879,9 @@
       else if (b.sub_code) { if (!unitSC.has(b.sub_code)) unitSC.set(b.sub_code, u); }
     });
     ix = { p, facts, byCC, bySC, byPair, maxDate, items, unitPair, unitCC, unitSC, stats: new Map(), job: null };
+    // Each row's unit, by the same rule the daily table uses, worked out once:
+    // whatever adds rows up across bid lines counts each row once, under it.
+    facts.forEach(f => { const u = unitForRow(ix, f.r); f.on = u.on; f.unit = u.unit; });
     st.jobs.set(key, ix);
     return ix;
   }
@@ -894,7 +947,10 @@
       // line is complete — the last day worked on an open line is no target.
       start: dayOf(b.start_date) || worked[0] || '',
       target: dayOf(b.target_date) || (complete ? worked[worked.length - 1] || '' : ''),
-      projected: H.projFor(b, costEnd, qtyEnd, bidQty, bidTotal, projDone || complete, ctx.today),
+      // Today's projection, whatever the range — the figure the bid page and
+      // the summary strip show. Spend to the range end over time to today
+      // matched neither.
+      projected: H.projFor(b, costAll, qtyAll, bidQty, bidTotal, projDone || complete, ctx.now),
     };
     ix.stats.set(b, s);
     return s;
@@ -941,11 +997,17 @@
     });
     const stats = ix.items.map(b => itemStats(ctx, ix, b));
     let bidBudget = 0, done = 0;
+    stats.forEach(s => { bidBudget += s.bidTotal; if (s.complete) done++; });
+    // Quantity installed in the period, one row at a time — the rows the Daily
+    // Production table lists, under the unit it lists them in. Adding up each
+    // bid line's quantity instead counted a row twice wherever two lines take
+    // it (a cost-code-only line beside a cost code + sub code one, which is
+    // what "+ Sub Code" leaves until it is filled in), and dropped rows on no
+    // line at all.
     const qtyByUnit = new Map();
-    stats.forEach(s => {
-      bidBudget += s.bidTotal;
-      if (s.complete) done++;
-      if (s.qtyP) qtyByUnit.set(s.unit, (qtyByUnit.get(s.unit) || 0) + s.qtyP);
+    ix.facts.forEach(f => {
+      if (!f.inP || !f.qty) return;
+      qtyByUnit.set(f.unit, (qtyByUnit.get(f.unit) || 0) + f.qty);
     });
     // As of the range's end. When nothing is dated after it, that IS the
     // job to date, and the page's own bidProjectPct says it.
@@ -971,7 +1033,7 @@
     if (jobDone(ctx, ix.p)) return actualAll;
     const H = helpersOf(ctx), done = jobDone(ctx, ix.p);
     const sumLines = stats.reduce((t, s) =>
-      t + H.projFor(s.b, s.costAll, s.qtyAll, s.bidQty, s.bidTotal, done || s.complete, ctx.today), 0);
+      t + H.projFor(s.b, s.costAll, s.qtyAll, s.bidQty, s.bidTotal, done || s.complete, ctx.now), 0);
     const off = new Map();
     ix.facts.forEach(f => {
       if (!f.cost || unitForRow(ix, f.r).on) return;
@@ -1101,18 +1163,46 @@
           cost_per_unit: s.qtyEnd > 0 ? s.costEnd / s.qtyEnd : null,
           units_per_mh: s.hrsEnd > 0 ? s.qtyEnd / s.hrsEnd : null,
         },
-        m: { unit: s.unit, pct: itemPctParts(s), days: s.daysEnd, emps: s.empsEnd, status: s.status, cc: txt(b.cost_code) },
+        m: { unit: s.unit, pct: itemPctParts(s), days: s.daysEnd, emps: s.empsEnd, status: s.status, cc: txt(b.cost_code),
+          rows: rowsForItem(ix, b) },
         job: p,
       });
     });
     return out;
+  }
+  /* The rows behind a set of bid-progress records, each once — or null when
+     no row is shared, so the plain per-line sums stand (they ARE the rows).
+     A cost-code-only line takes every row on its code, so beside a cost code
+     + sub code line the two share rows, and adding the lines up would count
+     those rows twice. */
+  function sharedRows(recs) {
+    const seen = new Set();
+    let shared = false;
+    recs.forEach(r => (r.m.rows || []).forEach(f => { if (seen.has(f)) shared = true; else seen.add(f); }));
+    return shared ? [...seen] : null;
+  }
+  function factQty(facts, pick) {
+    const m = new Map();
+    facts.forEach(f => { if (pick(f) && f.qty) m.set(f.unit, (m.get(f.unit) || 0) + f.qty); });
+    if (!m.size) return 0;
+    if (m.size === 1) return [...m][0][1];
+    return unitList(m);
   }
   function bidProgressAgg(recs) {
     const c = {};
     const one = singleUnit(recs);
     ['bid_qty', 'installed_to_date', 'installed_period', 'remaining_qty'].forEach(k => { c[k] = qtyBy(recs, k, recUnit).v; });
     c.unit = one;
-    const pr = rollPct(recs.map(r => r.m.pct));
+    // % complete the way bidProjectPct rolls it: each cost code first (held
+    // at 99.9 until all its lines are signed off), then the codes weighed
+    // into the whole — within each job on a combined report.
+    const byCode = new Map();
+    recs.forEach(r => {
+      const k = jobKey(r.job) + '\u0000' + r.m.cc;
+      if (!byCode.has(k)) byCode.set(k, []);
+      byCode.get(k).push(r.m.pct);
+    });
+    const pr = rollPct([...byCode.values()].map(rollPct).filter(Boolean));
     c.pct_complete = pr ? pr.pct : null;
     const st = new Set(recs.map(r => r.m.status));
     // A totals / subtotal line only states a status every item shares — a
@@ -1123,7 +1213,22 @@
     c.days_worked = unionSize(recs, 'days');
     ['bid_total', 'actual_cost', 'variance', 'projected_cost', 'labor_hours'].forEach(k => { c[k] = sumOf(recs, k); });
     c.crew_size = unionSize(recs, 'emps');
-    const inst = sumOf(recs, 'installed_to_date');
+    let inst = sumOf(recs, 'installed_to_date');
+    const rows = sharedRows(recs);
+    if (rows) {
+      // Lines that share rows: what went in, what it cost and the hours are
+      // the rows', counted once (to the range end, as each line's are).
+      // Remaining has no single answer when two lines claim the same
+      // quantity, so the total does not invent one.
+      const toEnd = rows.filter(f => f.toEnd);
+      c.installed_to_date = factQty(toEnd, () => true);
+      c.installed_period = factQty(rows, f => f.inP);
+      c.remaining_qty = null;
+      c.actual_cost = toEnd.reduce((t, f) => t + f.cost, 0);
+      c.labor_hours = toEnd.reduce((t, f) => t + f.hrs, 0);
+      c.variance = (c.bid_total || 0) - c.actual_cost;
+      inst = typeof c.installed_to_date === 'number' ? c.installed_to_date : 0;
+    }
     c.cost_per_unit = one !== null && inst > 0 ? c.actual_cost / inst : null;
     c.units_per_mh = one !== null && c.labor_hours > 0 ? inst / c.labor_hours : null;
     return c;
@@ -1131,10 +1236,11 @@
 
   /* The production-rate view: per bid item worked in the period, how much a
      day, the best day, and — off what is left on the line TODAY — how many
-     work days to go and the Mon–Fri date that lands on. Remaining is today's,
+     work days to go and the working day (Mon–Fri, less the pages' holidays)
+     that lands on. Remaining is today's,
      not the range end's, because the finish is projected forward from today. */
   function productionRecs(ctx, p, opts) {
-    const ix = jobIndex(ctx, p);
+    const ix = jobIndex(ctx, p), H = helpersOf(ctx);
     const codes = opts.costCodes && opts.costCodes.length ? new Set(opts.costCodes) : null;
     const out = [];
     ix.items.forEach(b => {
@@ -1149,14 +1255,17 @@
       const remaining = s.remainingNow;
       // The epsilon keeps 1.2 MI left at 0.1 a day at 12 days: the division
       // comes out 12.000000000000002, and a bare ceil would say 13.
-      const est = remaining <= 0 ? 0 : avg > 0 ? Math.ceil(remaining / avg - 1e-9) : null;
+      let est = remaining <= 0 ? 0 : avg > 0 ? Math.ceil(remaining / avg - 1e-9) : null;
+      // Past the page's ten-year cap there is no honest number of days left
+      // either: both print "—", as the Schedule Estimator does.
+      if (est !== null && est > MAX_WORKDAYS) est = null;
       let crew = 0;
       s.empsByDayP.forEach(e => { crew += e.size; });
       out.push({
         c: {
           cost_code: txt(b.cost_code), sub_code: txt(b.sub_code), description: txt(b.description) || null, unit: s.unit,
           qty_period: s.qtyP, days_period: days, avg_per_day: avg, best_day: best, remaining_qty: remaining,
-          est_days_left: est, projected_finish: est > 0 ? addWorkdays(ctx.today, est) : null,
+          est_days_left: est, projected_finish: est > 0 ? H.workdays(ctx.today, est) : null,
           labor_hours: s.hrsP, units_per_mh: s.hrsP > 0 ? s.qtyP / s.hrsP : null,
           cost_per_unit: s.qtyP > 0 ? s.costP / s.qtyP : null, crew_avg: crew / days,
         },
@@ -1177,7 +1286,7 @@
     // The job finishes when its last line does.
     const ests = recs.map(r => r.c.est_days_left);
     c.est_days_left = ests.some(v => v === null) ? null : Math.max(0, ...ests);
-    c.projected_finish = c.est_days_left > 0 ? addWorkdays(ctx.today, c.est_days_left) : null;
+    c.projected_finish = c.est_days_left > 0 ? helpersOf(ctx).workdays(ctx.today, c.est_days_left) : null;
     // Day-by-day across the lines, keyed by job so two jobs' Mondays stay two.
     const byDay = new Map(), crewByDay = new Map();
     recs.forEach(r => {
@@ -1278,8 +1387,10 @@
       const date = dayOf(l.date);
       if (!inPeriod(range, date)) return;
       const qty = poNum(l.qty), amt = H.lineAmt(l), tax = H.lineTax(l);
-      // The PO page adds a blank delivery line with every new order.
-      if (!qty && !amt && !txt(l.invoice_num)) return;
+      // The PO page adds a blank delivery line with every new order. A line
+      // carrying only a tax or freight dollar figure is not blank: the PO
+      // page's totals count its tax, so this does too.
+      if (!qty && !amt && !tax && !txt(l.invoice_num)) return;
       out.push({
         c: {
           date: date || null, po_number: txt(po.po_number), supplier: txt(po.supplier), material: txt(po.title),
@@ -1758,7 +1869,9 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
     if (txt(h.preparedFor)) meta.push('Prepared for ' + txt(h.preparedFor));
     if (txt(h.preparedBy)) meta.push('Prepared by ' + txt(h.preparedBy));
 
-    const mast = `<div class="masthead" data-dw-brand>
+    // data-cr-internal tells the server, as well as the reader, that this copy
+    // carries internal columns: the email path logs the send from it.
+    const mast = `<div class="masthead" data-dw-brand${internal ? ' data-cr-internal="1"' : ''}>
   <div><div class="mast-word">DataWatch</div><div class="mast-sub">${escHtml(divisionSub(ctx))}</div></div>
   <div class="mast-meta">${internal ? '<div class="mast-internal">INTERNAL — contains cost data. Not for customer distribution.</div>' : ''}
     <div class="mast-rpt">${escHtml(title)}</div>${h.showGenerated ? `<div class="mast-date">Generated ${escHtml(fmtStamp(ctx.now))}</div>` : ''}</div>
@@ -1961,6 +2074,8 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
     return `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${xesc(c.v)}</t></is></c>`;
   }
 
+  const INTERNAL_NOTE = 'INTERNAL — contains cost data. Not for customer distribution.';
+  const INTERNAL_HEADER = 'INTERNAL — Not for customer distribution';
   function sheetXml(rows, widths, headRow, view) {
     const ncol = Math.max(1, widths.length);
     const pane = headRow
@@ -1980,6 +2095,8 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
       }).join('') + '</sheetData>'
       + '<pageMargins left="0.4" right="0.4" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>'
       + `<pageSetup orientation="${view.landscape ? 'landscape' : 'portrait'}" fitToWidth="1" fitToHeight="0"/>`
+      // An internal workbook says so at the top of every printed page too.
+      + (view.internal ? `<headerFooter><oddHeader>${xesc('&C&"-,Bold"' + INTERNAL_HEADER)}</oddHeader></headerFooter>` : '')
       + '</worksheet>';
   }
 
@@ -2048,7 +2165,7 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
     const R = [];
     R.push({ cells: [{ v: title, s: S.title }], ht: 22 });
     R.push({ cells: [{ v: 'DataWatch — ' + divisionSub(ctx), s: S.sub }] });
-    if (internal) R.push({ cells: [{ v: 'INTERNAL — contains cost data. Not for customer distribution.', s: S.warn }] });
+    if (internal) R.push({ cells: [{ v: INTERNAL_NOTE, s: S.warn }] });
     R.push({ cells: [] });
     const kv = (k, v) => R.push({ cells: [{ v: k, s: S.key }, v && typeof v === 'object' ? v : { v, s: S.val }] });
     kv('Jobs', jobs.length ? jobs.map(jobLabel).join('; ') : 'No jobs selected');
@@ -2082,7 +2199,7 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
     });
     if (txt(h.footer)) { R.push({ cells: [] }); kv('Note', txt(h.footer)); }
     const landscape = d.orientation === 'landscape';
-    const sheets = [{ name: 'Report', xml: sheetXml(R, [24, 70], 0, { selected: true, landscape }), head: 0 }];
+    const sheets = [{ name: 'Report', xml: sheetXml(R, [24, 70], 0, { selected: true, landscape, internal }), head: 0 }];
 
     // ── One sheet per table section ──
     d.sections.forEach((s, i) => {
@@ -2094,6 +2211,10 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
       const cols = addJob ? [JOB_COL].concat(sd.columns) : sd.columns;
       const rows = [];
       rows.push({ cells: [{ v: sd.title, s: S.title }], ht: 20 });
+      // The sheets that hold the costs, rates and names are the ones that get
+      // copied out on their own, so each carries the warning, not just the
+      // cover sheet.
+      if (internal) rows.push({ cells: [{ v: INTERNAL_NOTE, s: S.warn }] });
       rows.push({ cells: [{ v: [jobs.length === 1 ? jobLabel(jobs[0]) : `${jobs.length} jobs`, (ctx.range || {}).label].join(' · '), s: S.sub }] });
       rows.push({ cells: [] });
       rows.push({ cells: cols.map(c => ({ v: c.label, s: NUMERIC[c.type] ? S.headR : S.head })), ht: 30 });
@@ -2127,7 +2248,7 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
         }
       });
       if (!any) rows.push({ cells: [{ v: `No ${NOUN[sd.type] || 'data'} for this report.`, s: S.sub }] });
-      sheets.push({ name: sheetName(sd.title, used), xml: sheetXml(rows, widths, headRow, { selected: false, landscape }), head: headRow });
+      sheets.push({ name: sheetName(sd.title, used), xml: sheetXml(rows, widths, headRow, { selected: false, landscape, internal }), head: headRow });
     });
 
     const rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -2163,11 +2284,14 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
     ].concat(sheets.map((sh, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: sh.xml }))));
   }
 
-  // "<title>-<YYYY-MM-DD>.xlsx", safe on every file system.
+  // "<title>-<YYYY-MM-DD>.xlsx", safe on every file system — and
+  // "<title>-INTERNAL-<date>.xlsx" when it carries internal columns, so the
+  // file says what it is wherever it ends up attached.
   function xlsxFileName(def, ctx) {
     const d = normalizeDefinition(def);
     const base = reportTitle(d, ctx || {}).replace(/[^A-Za-z0-9 _-]+/g, ' ').trim().replace(/\s+/g, '-').slice(0, 80).replace(/-+$/, '');
-    return `${base || 'report'}-${(ctx && isIso(ctx.today)) ? ctx.today : localToday()}.xlsx`;
+    const tag = hasInternal(d, (ctx && ctx.perm) || {}) ? '-INTERNAL' : '';
+    return `${base || 'report'}${tag}-${(ctx && isIso(ctx.today)) ? ctx.today : localToday()}.xlsx`;
   }
 
   // ── Starter templates ──────────────────────────────────────────────────

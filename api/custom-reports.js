@@ -45,98 +45,33 @@
 // did it have our costs on it?". It is written after the send has already
 // happened, so it is forgiving where it safely can be: a report_id the caller
 // cannot see is stored as NULL rather than refused, because failing the log
-// would not un-send the email.
+// would not un-send the email. An emailed custom report is logged by
+// api/email/send-report.js itself, as it goes out; ?action=run is how a print
+// or a download is logged (and an email, when the server could not log it).
+// A user may log RUN_RATE_LIMIT runs a minute — far more than anyone prints —
+// and definition snapshots older than two years are emptied as runs come in.
 
 const { neon } = require('@neondatabase/serverless');
 const {
   requireDivision, levelFor, isSalesIn, accessFromRow, hasDivisionAccess,
 } = require('./lib/auth');
 
-// The divisions whose pages carry Custom Reporting. They share one data model,
-// which is what lets one report builder serve all three.
-const DIVISIONS = ['turf', 'paving', 'kiewit'];
+const {
+  DIVISIONS, RUN_RATE_LIMIT,
+  cleanStr, oneLine, readDefinition, toId, readRun, shapeRun, recentRunCount, insertRun, pruneSnapshots,
+} = require('./lib/custom-report-runs');
 
 const MAX_NAME             = 120;
 const MAX_DESCRIPTION      = 500;
-const MAX_DEFINITION_BYTES = 64 * 1024;
-// A definition is a few levels deep (sections → columns / labels / options).
-// Anything far deeper is not one, and walking it is how a request gets to
-// exhaust the stack.
-const MAX_DEPTH            = 32;
 const LIST_CAP             = 500;
 const RUNS_CAP             = 200;
 const RESTORE_DAYS         = 30;
 const PURGE_DAYS           = 90;
-const RUN_ACTIONS          = ['print', 'email', 'excel'];
-const MAX_RUN_JOBS         = 500;
-const MAX_RUN_RECIPIENTS   = 50;
-const MAX_SUBJECT          = 300;
-const MAX_REPORT_NAME      = 200;
 
-// ── Cleaning what the browser sends ──────────────────────────────────────
-// Postgres refuses a NUL character in TEXT and JSONB, and half a surrogate
-// pair in JSONB. Either can arrive in a pasted job name or a copied note, and
-// would turn a save — or worse, the log of a send that already went — into a
-// 500. They are dropped; nobody types them on purpose.
-const BAD_CHARS = /\u0000|[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/g;
-const cleanStr = s => String(s).replace(BAD_CHARS, '');
-
-// One line of text (names, subjects): control characters become spaces.
-function oneLine(v, max) {
-  if (typeof v !== 'string' && typeof v !== 'number') return '';
-  return cleanStr(v).replace(/[\u0001-\u001f\u007f]+/g, ' ').trim().slice(0, max);
-}
-
-// A copy of plain JSON data with the characters above removed, as { value },
-// or { tooDeep } when it nests deeper than any definition does.
-function cleanJson(v, depth = 0) {
-  if (depth > MAX_DEPTH) return { tooDeep: true };
-  if (typeof v === 'string') return { value: cleanStr(v) };
-  if (Array.isArray(v)) {
-    const out = [];
-    for (const x of v) {
-      const c = cleanJson(x, depth + 1);
-      if (c.tooDeep) return c;
-      out.push(c.value === undefined ? null : c.value);
-    }
-    return { value: out };
-  }
-  if (v && typeof v === 'object') {
-    const out = {};
-    for (const [k, x] of Object.entries(v)) {
-      // A "__proto__" key from JSON.parse would become this copy's prototype
-      // when assigned, lending it properties the stored JSON does not have.
-      if (x === undefined || typeof x === 'function' || k === '__proto__') continue;
-      const c = cleanJson(x, depth + 1);
-      if (c.tooDeep) return c;
-      out[cleanStr(k)] = c.value;
-    }
-    return { value: out };
-  }
-  if (typeof v === 'number') return { value: Number.isFinite(v) ? v : null };
-  if (typeof v === 'boolean' || v === null) return { value: v };
-  return { value: undefined };
-}
-
-const isPlainObject = v => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
-
-/**
- * A report definition fit to store, as { value, json }, or { status, error }.
- * Saved reports must be v1 — the only shape the builder reads; the run log
- * keeps whatever snapshot it was given (requireV false).
- */
-function readDefinition(raw, { requireV = true } = {}) {
-  if (!isPlainObject(raw)) return { status: 400, error: 'definition must be an object' };
-  let json;
-  try { json = JSON.stringify(raw); } catch { return { status: 400, error: 'definition is not valid JSON' }; }
-  if (Buffer.byteLength(json, 'utf8') > MAX_DEFINITION_BYTES) {
-    return { status: 413, error: 'Report definition is too large' };
-  }
-  const c = cleanJson(raw);
-  if (c.tooDeep) return { status: 400, error: 'definition is nested too deeply' };
-  if (requireV && c.value.v !== 1) return { status: 400, error: 'Unsupported report definition version (expected v: 1)' };
-  return { value: c.value, json: JSON.stringify(c.value) };
-}
+// Cleaning what the browser sends — NUL characters, half surrogate pairs,
+// control characters in one-line text, over-deep or over-size definitions —
+// lives in lib/custom-report-runs.js, shared with the email path that logs
+// custom-report sends itself.
 
 function readName(raw) {
   const name = oneLine(raw, Infinity);
@@ -158,40 +93,6 @@ function readVisibility(raw, fallback) {
   if (raw === 'private' || raw === 'shared') return { value: raw };
   return { error: 'visibility must be private or shared' };
 }
-
-// A YYYY-MM-DD that is a real calendar day, or null. Postgres would refuse
-// 2026-02-30 with a 500; this refuses it with a 400 that says why.
-function readDate(raw) {
-  if (raw === undefined || raw === null || raw === '') return { value: null };
-  if (typeof raw !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(raw)) return { error: 'Dates must be YYYY-MM-DD' };
-  const d = new Date(raw + 'T00:00:00Z');
-  const y = Number(raw.slice(0, 4));
-  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== raw || y < 1900 || y > 2999) {
-    return { error: 'Dates must be YYYY-MM-DD' };
-  }
-  return { value: raw };
-}
-
-// A list of short strings, capped. Job ids and names stay aligned position
-// for position — the history pairs them — so nothing is dropped from those.
-function readList(raw, max, maxLen, what) {
-  if (raw === undefined || raw === null) return { value: [] };
-  if (!Array.isArray(raw)) return { error: `${what} must be a list` };
-  if (raw.length > max) return { error: `Too many ${what} (max ${max})` };
-  return { value: raw.map(x => oneLine(x, maxLen)) };
-}
-
-function readRecipients(raw) {
-  const r = readList(raw, MAX_RUN_RECIPIENTS, 254, 'recipients');
-  if (r.error) return r;
-  return { value: [...new Set(r.value.map(e => e.toLowerCase()).filter(Boolean))] };
-}
-
-const toId = v => {
-  if (typeof v !== 'string' && typeof v !== 'number') return null;
-  const n = Number(v);
-  return Number.isSafeInteger(n) && n > 0 ? n : null;
-};
 
 const flag = v => v === true || v === '1' || v === 'true';
 
@@ -236,27 +137,6 @@ function shape(r, me, canShare) {
     deleted_by_username: r.deleted_by_username || null,
     mine:                ownedBy(r, me),
     can_edit:            mayEdit(r, me, canShare),
-  };
-}
-
-const asArray = v => (Array.isArray(v) ? v : []);
-
-function shapeRun(r) {
-  return {
-    id:                Number(r.id),
-    report_id:         r.report_id == null ? null : Number(r.report_id),
-    report_name:       r.report_name,
-    action:            r.action,
-    project_ids:       asArray(r.project_ids),
-    project_names:     asArray(r.project_names),
-    date_from:         r.date_from || null,
-    date_to:           r.date_to || null,
-    recipients:        asArray(r.recipients),
-    subject:           r.subject,
-    included_internal: Boolean(r.included_internal),
-    run_by_user_id:    r.run_by_user_id == null ? null : Number(r.run_by_user_id),
-    run_by_username:   r.run_by_username,
-    created_at:        r.created_at,
   };
 }
 
@@ -371,56 +251,20 @@ module.exports = async (req, res) => {
 
     // ── POST ?action=run — log a print / email / Excel download ────────
     if (req.method === 'POST' && q.action === 'run') {
-      const b = req.body || {};
-      if (!RUN_ACTIONS.includes(b.action)) {
-        return res.status(400).json({ ok: false, error: 'action must be print, email or excel' });
+      const r = readRun(req.body);
+      if (r.error) return res.status(r.status).json({ ok: false, error: r.error });
+      // Every division user may log a run, so a cheap per-user limit keeps a
+      // script from filling the history admins read (and the database). A
+      // person printing and downloading never comes near it.
+      if ((await recentRunCount(sql, company, me.userId)) >= RUN_RATE_LIMIT) {
+        return res.status(429).json({ ok: false, error: 'Too many reports logged — try again in a minute.' });
       }
-      const ids = readList(b.project_ids, MAX_RUN_JOBS, 120, 'jobs');
-      if (ids.error) return res.status(400).json({ ok: false, error: ids.error });
-      const names = readList(b.project_names, MAX_RUN_JOBS, 200, 'job names');
-      if (names.error) return res.status(400).json({ ok: false, error: names.error });
-      const recipients = readRecipients(b.recipients);
-      if (recipients.error) return res.status(400).json({ ok: false, error: recipients.error });
-      const from = readDate(b.date_from);
-      const to   = readDate(b.date_to);
-      if (from.error || to.error) return res.status(400).json({ ok: false, error: from.error || to.error });
-      let defJson = '{}';
-      if (b.definition !== undefined && b.definition !== null) {
-        const d = readDefinition(b.definition, { requireV: false });
-        if (d.error) return res.status(d.status).json({ ok: false, error: d.error });
-        defJson = d.json;
-      }
-      const reportName = oneLine(b.report_name, MAX_REPORT_NAME) || 'Untitled report';
-      const subject    = oneLine(b.subject, MAX_SUBJECT) || null;
-      // Junk is the same as none: the log must not fail a send over it.
-      const reportId   = toId(b.report_id);
-
-      // One statement, so the report's run count and the history row cannot
-      // disagree. The UPDATE matches only a report the caller can see; when it
-      // matches nothing the run is still logged, against no report.
-      const rows = await sql`
-        WITH bumped AS (
-          UPDATE custom_reports
-             SET last_run_at = NOW(), run_count = run_count + 1
-           WHERE id = ${reportId}::bigint AND company_code = ${company} AND division = ${division}
-             AND deleted_at IS NULL
-             AND (visibility = 'shared' OR owner_user_id = ${me.userId})
-          RETURNING id
-        )
-        INSERT INTO custom_report_runs
-          (report_id, company_code, division, report_name, action, project_ids, project_names,
-           date_from, date_to, recipients, subject, included_internal, definition,
-           run_by_user_id, run_by_username)
-        VALUES
-          ((SELECT id FROM bumped), ${company}, ${division}, ${reportName}, ${b.action},
-           ${JSON.stringify(ids.value)}::jsonb, ${JSON.stringify(names.value)}::jsonb,
-           ${from.value}::date, ${to.value}::date, ${JSON.stringify(recipients.value)}::jsonb,
-           ${subject}, ${b.included_internal === true}, ${defJson}::jsonb,
-           ${me.userId}, ${me.username})
-        RETURNING id, report_id, report_name, action, project_ids, project_names,
-                  to_char(date_from, 'YYYY-MM-DD') AS date_from, to_char(date_to, 'YYYY-MM-DD') AS date_to,
-                  recipients, subject, included_internal, run_by_user_id, run_by_username, created_at`;
-      return res.status(201).json({ ok: true, run: shapeRun(rows[0]) });
+      const run = await insertRun(sql, { company, division, me, run: r.value });
+      // Old definition snapshots are emptied as new runs come in. Never
+      // fatal — the run the user asked to log is already logged.
+      try { await pruneSnapshots(sql, company, division); }
+      catch (err) { console.error('[custom-reports] snapshot prune failed:', err.message); }
+      return res.status(201).json({ ok: true, run });
     }
 
     // ── POST ?action=restore&id=N — out of Recently Deleted ────────────

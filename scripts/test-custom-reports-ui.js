@@ -527,6 +527,10 @@ function seed(srv) {
     assert('…defaulting to the name in the bar', m.querySelector('#cr-m-name').value === 'Customer Progress Update');
     assert('…offering "Share with division" to an admin', !!m.querySelector('#cr-m-share'));
     assert('focus is in the name box', h.document.activeElement === m.querySelector('#cr-m-name'));
+    const keepBox = m.querySelector('#cr-m-savejobs');
+    assert('with one job picked it offers to keep it with the report, ticked',
+      keepBox && keepBox.checked && /Keep this job with the report/.test(m.textContent), m.textContent.slice(0, 200));
+    if (keepBox) keepBox.checked = false;   // this one stays a template
     m.querySelector('#cr-m-name').value = 'Route 30 weekly';
     m.querySelector('[data-m="ok"]').click();
     await tick();
@@ -585,15 +589,24 @@ function seed(srv) {
     assert('Email opens the shared email modal', h.email.length === 1);
     const em = h.email[0];
     assert('…as a paving_custom_report', em.reportType === 'paving_custom_report');
-    assert('…for 2 jobs, with no single project id', em.projectId === null && em.projectName === '2 jobs');
+    assert('…for 2 jobs, with no single project id, and no project name for the server to swap a typed subject for',
+      em.projectId === null && em.projectName === null);
+    assert('…describing the send for the server-side history (jobs, dates, snapshot, internal flag)',
+      em.customReport && em.customReport.report_id === h.S().doc.id && JSON.stringify(em.customReport.project_ids) === '["p1","p2"]'
+        && em.customReport.date_from === '2026-10-01' && em.customReport.definition.v === 1 && em.customReport.included_internal === false
+        && !('recipients' in em.customReport) && !('action' in em.customReport), JSON.stringify(em.customReport && Object.keys(em.customReport)));
     assert('…subject "<title> — <jobs>"', em.defaultSubject === 'Route 30 — Week 44 — 2 jobs', em.defaultSubject);
     assert('…and the report HTML on demand, branded', typeof em.getHTML === 'function' && /data-dw-brand/.test(em.getHTML()));
     const runsBefore = h.srv.calls('POST', e => e.q.action === 'run').length;
     assert('…with an onSent callback for the send history', typeof em.onSent === 'function');
     if (typeof em.onSent === 'function') await em.onSent({ recipients: ['owner@acme.com'], subject: 'Week 44', recipientCount: 1, pdfAttached: true });
     run = h.srv.calls('POST', e => e.q.action === 'run').pop();
-    assert('onSent logs an email run with recipients and subject', h.srv.calls('POST', e => e.q.action === 'run').length === runsBefore + 1
+    assert('onSent logs an email run with recipients and subject when the server did not', h.srv.calls('POST', e => e.q.action === 'run').length === runsBefore + 1
       && run.body.action === 'email' && run.body.recipients[0] === 'owner@acme.com' && run.body.subject === 'Week 44');
+    if (typeof em.onSent === 'function') await em.onSent({ recipients: ['owner@acme.com'], subject: 'Week 44', recipientCount: 1, pdfAttached: true, logged: true, runId: 9 });
+    await tick();
+    assert('…and logs nothing more when the server already recorded the send (one row either way)',
+      h.srv.calls('POST', e => e.q.action === 'run').length === runsBefore + 1);
 
     section('Outputs — Excel');
     h.click(h.act('excel'));
@@ -969,6 +982,451 @@ function seed(srv) {
   }
 
   // ════════════════════════════════════════════════════════════════════
+  // A PUT the test holds until it says go: the user keeps working while it
+  // is out.
+  const holdPuts = srv => {
+    const gate = { held: [], release() { const g = this.held.splice(0); g.forEach(fn => fn()); } };
+    const real = srv.handle;
+    srv.handle = (url, init) => {
+      if (init && init.method === 'PUT') {
+        return new Promise(resolve => gate.held.push(() => resolve(real(url, init))));
+      }
+      return real(url, init);
+    };
+    return gate;
+  };
+  const twoReports = () => {
+    const srv = makeServer();
+    srv.add({ id: 11, name: 'Acme customer update', definition: { v: 1, title: 'Acme Weekly', jobs: { mode: 'saved', ids: ['p1'] },
+      sections: [{ type: 'job_info', columns: ['project-name', 'client'] }, { type: 'notes', text: 'Paving starts Monday.' }] } });
+    srv.add({ id: 12, name: 'Internal cost check', definition: { v: 1, title: 'Internal Costs', includeInternal: true, jobs: { mode: 'saved', ids: ['p2'] },
+      sections: [{ type: 'daily_production', columns: ['date', 'employee', 'rate', 'labor_cost'], options: { summarize: false } }] } });
+    srv.seq = 100;
+    return srv;
+  };
+
+  section('Print fixes the report at the click (no swap while the old rows load)');
+  {
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const h = boot({ server: twoReports(), cfg: { ready: () => gate } });
+    await h.render();
+    h.click(h.$('[data-act="open"][data-id="11"]'));
+    h.click(h.act('print'));
+    assert('Print opens the window and says "Preparing"', h.opened.length === 1 && /Preparing your report/.test(h.opened[0].written));
+    h.click(h.$('[data-act="open"][data-id="12"]'));
+    assert('…another report is opened while it waits', h.S().doc.id === 12);
+    release();
+    await tick(8);
+    const w = h.opened[0];
+    assert('the window opened for the customer report is closed, not filled with the internal one',
+      w.closed === true && !/Internal Costs/.test(w.written) && !/INTERNAL — contains cost data/.test(w.written) && !/Eve Gray/.test(w.written),
+      w.written.slice(0, 200));
+    assert('…the user is told to click Print again', /click Print again/.test(h.toast()), h.toast());
+    assert('…and no print is logged', h.srv.calls('POST', e => e.q.action === 'run').length === 0);
+    h.close();
+  }
+  {
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const h = boot({ server: twoReports(), cfg: { ready: () => gate } });
+    await h.render();
+    h.click(h.$('[data-act="open"][data-id="11"]'));
+    h.click(h.act('print'));
+    h.click(h.$('#cr-step-3'));
+    h.type(h.$('[data-bind="title"]'), 'Edited while waiting');
+    release();
+    await tick(8);
+    const w = h.opened[0];
+    assert('control: staying on it prints the report as it was clicked (an edit during the wait is not in it)',
+      !w.closed && /Acme Weekly/.test(w.written) && !/Edited while waiting/.test(w.written) && /window\.print\(\)/.test(w.written));
+    const runs = h.srv.calls('POST', e => e.q.action === 'run');
+    assert('…and logs one print, against that report', runs.length === 1 && runs[0].body.report_id === 11 && runs[0].body.report_name === 'Acme customer update',
+      JSON.stringify(runs.map(r => r.body.report_id)));
+    h.close();
+  }
+  {
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const h = boot({ server: twoReports(), cfg: { ready: () => gate } });
+    await h.render();
+    h.click(h.$('[data-act="open"][data-id="11"]'));
+    h.click(h.act('print'));
+    h.click(h.act('doc-menu'));
+    h.click(h.mount.querySelector('.cr-menu [data-act="close"]'));
+    assert('…the report is closed while it waits', h.S().doc === null);
+    release();
+    await tick(8);
+    assert('closing the report meanwhile closes the window, with no "Cannot read properties" error',
+      h.opened[0].closed === true && !/Cannot read/.test(h.toast()) && /click Print again/.test(h.toast()), h.toast());
+    h.close();
+  }
+
+  section('Saving while typing — nothing typed during a save is lost');
+  {
+    const srv = twoReports();
+    const gate = holdPuts(srv);
+    const h = boot({ server: srv });
+    await h.render();
+    h.click(h.$('[data-act="open"][data-id="11"]'));
+    h.click(h.$('#cr-step-3'));
+    h.type(h.$('[data-bind="h-intro"]'), 'First line.');
+    h.click(h.act('save'));
+    await tick();
+    assert('the save is out', gate.held.length === 1 && h.S().saving === true);
+    h.type(h.$('[data-bind="h-footer"]'), 'Call Pat at the office.');
+    h.type(h.$('[data-bind="name"]'), 'Renamed During Save');
+    gate.release();
+    await tick(8);
+    const d = h.S().doc;
+    assert('the footer and the new name typed during the save are still there',
+      d.def.header.footer === 'Call Pat at the office.' && d.name === 'Renamed During Save'
+        && h.$('[data-bind="name"]').value === 'Renamed During Save' && h.$('[data-bind="h-footer"]').value === 'Call Pat at the office.');
+    assert('…the report is at version 2 and still says it has unsaved changes', d.version === 2 && !h.$('.cr-dirty').hidden && !h.act('save').disabled);
+    const before = h.confirms.length;
+    h.answers.push(false);
+    h.click(h.act('new'));
+    assert('…so leaving asks first', h.confirms.length === before + 1 && h.S().doc === d, h.confirms.slice(-1)[0]);
+    h.click(h.act('save'));
+    await tick();
+    gate.release();
+    await tick(8);
+    const put = h.srv.calls('PUT').pop();
+    assert('the next Save sends them, against version 2', put.body.version === 2 && put.body.name === 'Renamed During Save'
+      && put.body.definition.header.footer === 'Call Pat at the office.' && put.body.definition.header.intro === 'First line.', JSON.stringify(put.body).slice(0, 200));
+    assert('…and then it is clean', h.$('.cr-dirty').hidden && h.S().doc.version === 3);
+    h.close();
+  }
+
+  section('A save that lands after switching reports');
+  {
+    const srv = twoReports();
+    const gate = holdPuts(srv);
+    const h = boot({ server: srv });
+    await h.render();
+    h.click(h.$('[data-act="open"][data-id="11"]'));
+    h.click(h.$('#cr-step-3'));
+    h.type(h.$('[data-bind="h-intro"]'), 'Paving starts Monday.');
+    h.click(h.act('save'));
+    await tick();
+    const before = h.confirms.length;
+    h.click(h.$('[data-act="open"][data-id="12"]'));
+    assert('switching while the save is out does not offer to "discard" what is being saved', h.confirms.length === before && h.S().doc.id === 12,
+      h.confirms.slice(-1)[0]);
+    gate.release();
+    await tick(8);
+    const a = h.S().reports.find(r => r.id === 11);
+    assert('the saved copy is put in the list: version 2, with the intro', a && a.version === 2 && a.definition.header.intro === 'Paving starts Monday.',
+      a && JSON.stringify({ v: a.version }));
+    assert('…and the user is told it saved', /Saved “Acme customer update”/.test(h.toast()), h.toast());
+    h.click(h.$('[data-act="open"][data-id="11"]'));
+    assert('reopening it shows what was saved', h.S().doc.version === 2 && h.S().doc.def.header.intro === 'Paving starts Monday.');
+    h.click(h.$('#cr-step-3'));
+    h.type(h.$('[data-bind="h-footer"]'), 'More.');
+    h.click(h.act('save'));
+    await tick();
+    gate.release();
+    await tick(8);
+    assert('…and saving again is no false "someone else saved" (PUT with version 2)',
+      !h.modal() && h.srv.calls('PUT').pop().body.version === 2 && h.S().doc.version === 3);
+    h.close();
+  }
+
+  section('Leaving the page with an unsaved report');
+  {
+    const h = boot({ server: twoReports() });
+    await h.render();
+    const fire = () => { const e = new h.window.Event('beforeunload', { cancelable: true }); h.window.dispatchEvent(e); return e; };
+    let e = fire();
+    assert('no report open: nothing asks', !e.defaultPrevented);
+    h.click(h.$('[data-act="open"][data-id="11"]'));
+    e = fire();
+    assert('a clean report: nothing asks', !e.defaultPrevented);
+    h.click(h.$('#cr-step-3'));
+    h.type(h.$('[data-bind="h-intro"]'), 'Fifteen minutes of work');
+    e = fire();
+    assert('an unsaved report: the browser is asked to confirm leaving (Switch Division, Sign Out, refresh, close)',
+      e.defaultPrevented);
+    h.click(h.act('save'));
+    await tick(6);
+    e = fire();
+    assert('…not once it is saved', !e.defaultPrevented);
+
+    // An expired session: the open report is kept, then offered back.
+    h.type(h.$('[data-bind="h-footer"]'), 'Kept over the sign-out');
+    h.srv.next.push({ status: 401, body: { error: 'Unauthorized' } });
+    h.click(h.act('save'));
+    await tick(6);
+    const kept = h.window.sessionStorage.getItem('fct_cr_draft_paving');
+    assert('a 401 keeps the open report before handing over to the sign-out', h.authErrors === 1 && kept && /Kept over the sign-out/.test(kept));
+    const h2 = boot({ server: twoReports() });
+    h2.window.sessionStorage.setItem('fct_cr_draft_paving', kept);
+    await h2.render();
+    await tick(6);
+    const m = h2.modal();
+    assert('next time the tab opens it offers the report back', m && /Restore your unsaved report/.test(m.textContent) && /Acme customer update/.test(m.textContent));
+    [...m.querySelectorAll('[data-choice]')].find(b => /Restore/.test(b.textContent)).click();
+    await tick();
+    const d = h2.S().doc;
+    assert('Restore reopens it with the edits, against the saved copy, still unsaved',
+      d && d.id === 11 && d.def.header.footer === 'Kept over the sign-out' && !h2.$('.cr-dirty').hidden
+        && !h2.window.sessionStorage.getItem('fct_cr_draft_paving'));
+    h2.click(h2.act('save'));
+    await tick(6);
+    assert('…and Save puts it where it was going', h2.srv.calls('PUT').pop().body.definition.header.footer === 'Kept over the sign-out');
+    h.close(); h2.close();
+  }
+
+  section('Email checks the size limit before the recipients are typed');
+  {
+    const h = boot({ server: twoReports() });
+    await h.render();
+    h.click(h.$('[data-act="open"][data-id="11"]'));
+    const E = h.window.FCTReportEngine;
+    const real = E.buildReportHtml;
+    E.buildReportHtml = (...a) => real(...a).replace('</body>', '<p>' + 'x'.repeat(1500000) + '</p></body>');
+    h.click(h.act('email'));
+    await tick();
+    assert('a report over the limit does not open the email modal', h.email.length === 0);
+    assert('…it says how big, that it is too big to email, and what to do', /MB — too big to email/.test(h.toast()) && /Print \/ PDF/.test(h.toast())
+      && /fewer jobs/.test(h.toast()), h.toast());
+    const btn = h.document.querySelector('.cr-toast button');
+    assert('…with a "Print / PDF instead" button that prints it', btn && /Print \/ PDF instead/.test(btn.textContent) && (btn.click(), h.opened.length === 1));
+    E.buildReportHtml = real;
+    h.click(h.act('email'));
+    await tick();
+    assert('a normal-size report opens the modal', h.email.length === 1);
+    h.close();
+  }
+
+  section('Saving a job report keeps its jobs');
+  {
+    const h = boot({ server: makeServer() });
+    await h.render();
+    h.click(h.$('.cr-card[data-starter="customer_progress"]'));
+    h.$$('.cr-job input')[0].click();
+    const cb = h.$('[data-bind="save-jobs"]');
+    assert('the "Save these jobs" box sits with the job count, above the list',
+      cb && cb.closest('.cr-field') === h.$('.cr-joblist').closest('.cr-field')
+        && (cb.compareDocumentPosition(h.$('.cr-joblist')) & h.window.Node.DOCUMENT_POSITION_FOLLOWING));
+    h.click(h.act('save'));
+    await tick();
+    const m = h.modal();
+    assert('Save asks whether to keep the one job, ticked', m && m.querySelector('#cr-m-savejobs') && m.querySelector('#cr-m-savejobs').checked);
+    m.querySelector('#cr-m-name').value = 'Job 004 weekly update';
+    m.querySelector('[data-m="ok"]').click();
+    await tick();
+    const post = h.srv.calls('POST', e => !e.q.action).pop();
+    assert('…and saves them with it', post.body.definition.jobs.mode === 'saved' && JSON.stringify(post.body.definition.jobs.ids) === '["p1"]');
+    assert('the step ① box now shows it, and nothing is unsaved', h.$('[data-bind="save-jobs"]').checked && h.$('.cr-dirty').hidden);
+    const id = h.S().doc.id;
+    h.click(h.act('doc-menu'));
+    h.click(h.mount.querySelector('.cr-menu [data-act="close"]'));
+    h.click(h.$(`[data-act="open"][data-id="${id}"]`));
+    assert('reopened, it has its job', /1 job selected/.test(h.$('.cr-count').textContent) && h.$('.cr-callout').hidden);
+    // A user who unticked it in step ① is not overruled.
+    h.click(h.$('.cr-card[data-starter="haul_log"]') || h.$('[data-act="starter"][data-starter="haul_log"]'));
+    h.$$('.cr-job input')[0].click();
+    h.$('[data-bind="save-jobs"]').click();
+    h.$('[data-bind="save-jobs"]').click();
+    h.click(h.act('save'));
+    await tick();
+    const m2 = h.modal();
+    assert('…a box unticked in step ① comes unticked into the dialog', m2 && !m2.querySelector('#cr-m-savejobs').checked);
+    m2.querySelector('#cr-m-name').value = 'Haul template';
+    m2.querySelector('[data-m="ok"]').click();
+    await tick();
+    assert('…and saves a template', h.srv.calls('POST', e => !e.q.action).pop().body.definition.jobs.mode === 'pick');
+    h.close();
+  }
+
+  section('Double-clicks do not open and shut a dialog');
+  {
+    const h = boot({ server: makeServer() });
+    await h.render();
+    h.click(h.act('new'));
+    const save = h.act('save');
+    const ev = (el, type, detail) => el.dispatchEvent(new h.window.MouseEvent(type, { bubbles: true, cancelable: true, detail }));
+    ev(save, 'mousedown', 1); ev(save, 'mouseup', 1); ev(save, 'click', 1);
+    await tick();
+    const back = h.modal();
+    assert('the first click opens the name dialog', !!back);
+    ev(back, 'mousedown', 2); ev(back, 'mouseup', 2); ev(back, 'click', 2);
+    assert('the second click of the double-click, landing on the backdrop, leaves it open', !!h.modal());
+    h.click(h.act('save'));
+    await tick();
+    assert('…and a further Save does not stack a second dialog', h.document.querySelectorAll('.cr-modal').length === 1);
+    await sleep(550);
+    ev(back, 'mousedown', 1); ev(back, 'mouseup', 1); ev(back, 'click', 1);
+    assert('a deliberate click on the backdrop later still closes it', !h.modal());
+    h.close();
+  }
+
+  section('Preview: Fit or 100%, and a full-size tab');
+  {
+    const h = boot({ server: twoReports() });
+    await h.render();
+    h.click(h.$('[data-act="open"][data-id="11"]'));
+    await sleep(PREVIEW_WAIT);
+    const frame = () => h.$('.cr-frame');
+    assert('the preview has a Fit / 100% toggle, Fit pressed', h.$('[data-act="zoom"][data-zoom="fit"]').getAttribute('aria-pressed') === 'true');
+    h.click(h.$('[data-act="zoom"][data-zoom="100"]'));
+    assert('100%: the sheet at its printed width, not scaled, the pane scrolling',
+      frame().style.width === '816px' && !frame().style.transform && h.$('.cr-frame-wrap').classList.contains('cr-scroll')
+        && h.$('[data-act="zoom"][data-zoom="100"]').getAttribute('aria-pressed') === 'true', frame().getAttribute('style'));
+    assert('…and the choice is remembered', h.window.localStorage.getItem('fct_cr_preview_zoom') === '100');
+    h.click(h.$('[data-act="zoom"][data-zoom="fit"]'));
+    assert('Fit puts it back', !h.$('.cr-frame-wrap').classList.contains('cr-scroll') && h.window.localStorage.getItem('fct_cr_preview_zoom') === 'fit');
+    h.click(h.act('full-preview'));
+    assert('"Open full preview" opens the report in a new tab, without printing it',
+      h.opened.length === 1 && /Acme Weekly/.test(h.opened[0].written) && !/window\.print\(\)/.test(h.opened[0].written));
+    assert('…and logs nothing (nothing was sent)', h.srv.calls('POST', e => e.q.action === 'run').length === 0);
+    h.close();
+  }
+
+  section('Email and Excel while the old rows load: one click, one file');
+  {
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const h = boot({ server: twoReports(), cfg: { ready: () => gate } });
+    await h.render();
+    h.click(h.$('[data-act="open"][data-id="11"]'));
+    h.click(h.act('excel'));
+    await tick();
+    h.click(h.act('excel'));
+    h.click(h.act('excel'));
+    await tick();
+    assert('Excel says "Preparing…" and takes no more clicks', h.act('excel').disabled && /Preparing/.test(h.act('excel').textContent)
+      && h.downloads.length === 0);
+    assert('…and a toast says why', /Waiting for older daily entries/.test(h.toast()), h.toast());
+    h.click(h.act('email'));
+    await tick();
+    h.click(h.act('email'));
+    assert('Email does the same', h.act('email').disabled && /Preparing/.test(h.act('email').textContent));
+    release();
+    await tick(10);
+    assert('once the rows are in: exactly one download, one email modal', h.downloads.length === 1 && h.email.length === 1,
+      `${h.downloads.length} downloads, ${h.email.length} modals`);
+    assert('…one Excel run logged', h.srv.calls('POST', e => e.q.action === 'run' && e.body.action === 'excel').length === 1);
+    assert('…and the buttons are back', !h.act('excel').disabled && /Excel/.test(h.act('excel').textContent)
+      && !h.act('email').disabled && /Email/.test(h.act('email').textContent));
+    h.close();
+  }
+
+  section('A slow preview waits for typing to pause');
+  {
+    const h = boot({ server: twoReports() });
+    const E = h.window.FCTReportEngine;
+    const real = E.buildReportHtml;
+    let builds = 0;
+    E.buildReportHtml = (...a) => { builds++; const t = Date.now(); while (Date.now() - t < 300) { /* a big report */ } return real(...a); };
+    await h.render();
+    h.click(h.$('[data-act="open"][data-id="11"]'));
+    await sleep(50);
+    h.click(h.$('#cr-step-3'));
+    const intro = h.$('[data-bind="h-intro"]');
+    builds = 0;
+    let text = '';
+    for (const ch of 'hello') { text += ch; h.type(intro, text); await sleep(300); }
+    assert('five keystrokes 300 ms apart rebuild it at most twice, not five times', builds <= 2, `${builds} builds`);
+    intro.blur();
+    await sleep(1700);
+    assert('…and the preview catches up once typing stops', /hello/.test(h.srcdoc()));
+    E.buildReportHtml = real;
+    h.close();
+  }
+
+  section('Opening the tab before the jobs have loaded');
+  {
+    let release;
+    const gate = new Promise(r => { release = r; });
+    const live = [];
+    const all = fixture().projects;
+    const h = boot({ server: makeServer(), cfg: { ready: () => gate, getProjects: () => live } });
+    await h.render();
+    h.click(h.$('.cr-card[data-starter="customer_progress"]'));
+    assert('with no jobs yet it says they are loading, not that the division has none',
+      /Loading jobs/.test(h.$('.cr-joblist').textContent) && !/No jobs in this division/.test(h.$('.cr-joblist').textContent));
+    live.push(...all);
+    await sleep(700);
+    assert('when they arrive the list and the Client picker redraw, without the user changing step',
+      h.$$('.cr-job').length === 3 && !!h.$('[data-bind="jobs-client"]') && h.S().step === 1, h.$('.cr-joblist').textContent.slice(0, 80));
+    release();
+    await tick(6);
+    h.close();
+    let release2;
+    const gate2 = new Promise(r => { release2 = r; });
+    const h2 = boot({ server: makeServer(), cfg: { ready: () => gate2, getProjects: () => [] } });
+    await h2.render();
+    h2.click(h2.$('.cr-card[data-starter="customer_progress"]'));
+    release2();
+    await tick(8);
+    assert('a division that really has none says so once loading is done', /No jobs in this division yet/.test(h2.$('.cr-joblist').textContent));
+    h2.close();
+  }
+
+  section('Client…, All In Progress and Clear can be undone');
+  {
+    const h = boot({ server: makeServer() });
+    await h.render();
+    h.click(h.$('.cr-card[data-starter="customer_progress"]'));
+    const pickTwo = () => { h.click(h.act('jobs-clear')); h.$$('.cr-job input')[0].click(); h.$$('.cr-job input')[1].click(); };
+    const undo = () => { const b = h.document.querySelector('.cr-toast button'); if (b) b.click(); return !!b; };
+    pickTwo();
+    h.change(h.$('[data-bind="jobs-client"]'), 'Acme Township');
+    assert('Client… replaces the selection and says so, with Undo', /Selected 2 jobs for Acme Township/.test(h.toast())
+      && !!h.document.querySelector('.cr-toast button'));
+    assert('Undo puts back the two jobs picked by hand', undo() && JSON.stringify(h.S().doc.picked) === '["p1","p2"]'
+      && /2 jobs selected/.test(h.$('.cr-count').textContent));
+    h.click(h.act('jobs-clear'));
+    assert('Clear says how many it cleared, with Undo', /Cleared 2 jobs/.test(h.toast()) && h.S().doc.picked.length === 0);
+    assert('…and Undo brings them back', undo() && h.S().doc.picked.length === 2);
+    h.click(h.act('jobs-active'));
+    assert('All In Progress says what it did, with Undo', /Selected 2 In Progress jobs/.test(h.toast()));
+    h.change(h.$('[data-bind="jobs-client"]'), 'Beta Corp');
+    assert('…and the latest Undo restores what the latest pick replaced', undo() && JSON.stringify(h.S().doc.picked.slice().sort()) === '["p1","p2"]');
+    h.close();
+  }
+
+  section('Excel of an internal report asks first');
+  {
+    const h = boot({ server: twoReports() });
+    await h.render();
+    h.click(h.$('[data-act="open"][data-id="12"]'));
+    h.answers.push(false);
+    h.click(h.act('excel'));
+    await tick();
+    assert('downloading an internal workbook asks, naming what is in it', /workbook includes internal data/.test(h.confirms.slice(-1)[0] || ''));
+    assert('…and "no" downloads and logs nothing', h.downloads.length === 0 && h.blobs.length === 0
+      && h.srv.calls('POST', e => e.q.action === 'run').length === 0);
+    h.click(h.act('excel'));
+    await tick();
+    assert('"yes" downloads it, named INTERNAL', h.downloads.length === 1 && /-INTERNAL-\d{4}-\d{2}-\d{2}\.xlsx$/.test(h.downloads[0].name), h.downloads[0] && h.downloads[0].name);
+    h.click(h.$('[data-act="open"][data-id="11"]'));
+    const n = h.confirms.length;
+    h.click(h.act('excel'));
+    await tick();
+    assert('a customer-safe workbook downloads without asking', h.confirms.length === n && h.downloads.length === 2);
+    h.close();
+  }
+
+  section('Send History keeps the costs flag in view');
+  {
+    const h = boot({ server: twoReports() });
+    await h.render();
+    const css = h.document.getElementById('cr-styles').textContent;
+    assert('the history table wraps (it overrides the page\'s table{white-space:nowrap})',
+      /\.cr-table\{[^}]*white-space:normal[^}]*min-width:0/.test(css) && /data-label="Recipients"\][^{]*\{[^}]*overflow-wrap:anywhere/.test(css));
+    h.srv.runs.push({ id: 1, report_name: 'R', action: 'print', project_names: [], recipients: [], included_internal: false, created_at: '2026-11-04T15:00:00Z' });
+    h.click(h.act('history'));
+    await tick();
+    const heads = h.$$('.cr-table th').map(t => t.textContent);
+    assert('…and Data (Internal / Customer-safe) sits next to Action, ahead of the long columns',
+      heads.indexOf('Data') === heads.indexOf('Action') + 1 && heads.indexOf('Data') < heads.indexOf('Recipients'), heads.join(','));
+    h.close();
+  }
+
+  // ════════════════════════════════════════════════════════════════════
   section('Re-entrant renderTab');
   {
     const h = boot({ server: seed(makeServer()) });
@@ -1035,12 +1493,19 @@ async function browserCheck() {
     body{background:var(--bg);color:var(--text);font-family:system-ui,sans-serif;font-size:13px}
     .btn{padding:.4rem 1rem;font-size:.78rem;font-weight:600;border:none;border-radius:3px;cursor:pointer;display:inline-flex;align-items:center}
     .btn-green{background:var(--green-dim);color:#fff}.btn-ghost{background:var(--surface2);color:var(--text);border:1px solid var(--border)}
-    .tab-panel{display:none}.tab-panel.active{display:block}</style></head><body>
+    .tab-panel{display:none}.tab-panel.active{display:block}
+    table{border-collapse:collapse;min-width:100%;white-space:nowrap}</style></head><body>
     <div class="tab-panel active"><div id="cr-content" style="padding:1rem"></div></div>
     <script>${BRANDING}</script><script>${ENGINE}</script><script>${UI}</script>
     <script>
       const data = ${JSON.stringify(data)};
-      window.fetch = async () => ({ ok: true, status: 200, json: async () => ({ reports: [], canShare: true, me: { userId: 7, username: 'pat' } }) });
+      const RUNS = [{ id: 1, report_name: 'Owner update', action: 'email', subject: 'Weekly progress for the owner',
+        project_names: ['Route 30 Resurfacing', 'Elm Street Lot', 'Maple Avenue Reconstruction Phase Two', 'Borough Garage Lot'],
+        date_from: '2026-10-27', date_to: '2026-11-02', included_internal: true, run_by_username: 'pat', created_at: '2026-11-04T15:00:00Z',
+        recipients: ['project.manager.longname@acme-township.example.com', 'township.engineer@acme-township.example.com',
+          'construction.inspector@acme-township.example.com', 'accounts.payable@acme-township.example.com', 'owner.representative@acme-township.example.com'] }];
+      window.fetch = async (url) => ({ ok: true, status: 200, json: async () => (/runs=1/.test(String(url)) ? { runs: RUNS }
+        : { reports: [], canShare: true, me: { userId: 7, username: 'pat' } }) });
       FCTCustomReports.configure({ division: 'paving', divisionLabel: 'Paving', getToken: () => 't', user: { username: 'pat' },
         perm: { role: 'admin', canSeeCosts: true, canSeeFinancials: true }, areaUnit: 'SY', ready: () => Promise.resolve(),
         getProjects: () => data.projects, getPurchaseOrders: () => data.pos, getTruckingEntries: () => data.trucks, helpers: {} });
@@ -1071,8 +1536,57 @@ async function browserCheck() {
         assert('390px: "Reports" opens the rail above the editor', await p.isVisible('.cr-rail'));
         assert('390px: …still without sideways scroll', await wide() <= w, await wide());
       }
+      if (w === 1440) {
+        // The history: one email to five long addresses about four jobs fits
+        // the pane, and the Internal flag is on screen.
+        await p.click('[data-act="history"]');
+        await p.waitForSelector('.cr-table tbody tr');
+        const t = await p.evaluate(() => {
+          const wrap = document.querySelector('.cr-tablewrap'), table = wrap.querySelector('table');
+          const td = table.querySelector('td[data-label="Recipients"]');
+          const data = table.querySelector('td[data-label="Data"]').getBoundingClientRect();
+          return { tableW: table.scrollWidth, wrapW: wrap.clientWidth, ws: getComputedStyle(td).whiteSpace,
+            dataRight: data.right, wrapRight: wrap.getBoundingClientRect().right };
+        });
+        assert('1440px: Send History fits its pane, recipients wrapping, the Internal flag in view',
+          t.tableW <= t.wrapW + 1 && t.ws === 'normal' && t.dataRight <= t.wrapRight + 1, JSON.stringify(t));
+      }
       assert(`${w}px: no script errors`, errors.length === 0, errors.join('; '));
       await p.close();
+    }
+    // A 1280 px laptop: Fit would shrink the sheet past reading, so the
+    // preview shows it at its printed size and scrolls, every column on it.
+    {
+      const p = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+      await p.setContent(page);
+      await p.waitForSelector('.cr-card');
+      await p.click('.cr-card[data-starter="customer_progress"]');
+      await p.click('label.cr-job >> nth=0');
+      await p.waitForTimeout(400);
+      const f = await p.evaluate(() => {
+        const wrap = document.querySelector('.cr-frame-wrap'), frame = wrap.querySelector('.cr-frame');
+        return { scroll: wrap.classList.contains('cr-scroll'), width: frame.getBoundingClientRect().width, tf: frame.style.transform,
+          sw: wrap.scrollWidth, cw: wrap.clientWidth };
+      });
+      assert('1280px: the preview is the sheet at 100%, scrolling sideways in its pane, not reflowed and clipped',
+        f.scroll && Math.round(f.width) === 816 && !f.tf && f.sw > f.cw, JSON.stringify(f));
+      await p.close();
+      // 1440: Fit scales it; 100% shows it at its printed size.
+      const q = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+      await q.setContent(page);
+      await q.waitForSelector('.cr-card');
+      await q.click('.cr-card[data-starter="customer_progress"]');
+      await q.click('label.cr-job >> nth=0');
+      await q.waitForTimeout(400);
+      const fit = await q.evaluate(() => document.querySelector('.cr-frame').style.transform);
+      await q.click('[data-act="zoom"][data-zoom="100"]');
+      const full = await q.evaluate(() => {
+        const wrap = document.querySelector('.cr-frame-wrap'), frame = wrap.querySelector('.cr-frame');
+        return { tf: frame.style.transform, w: frame.getBoundingClientRect().width, sw: wrap.scrollWidth, cw: wrap.clientWidth };
+      });
+      assert('1440px: Fit scales the sheet; 100% shows it full width and scrolls', /scale\(/.test(fit) && !full.tf && Math.round(full.w) === 816
+        && full.sw > full.cw, `${fit} ${JSON.stringify(full)}`);
+      await q.close();
     }
   } finally {
     await browser.close();

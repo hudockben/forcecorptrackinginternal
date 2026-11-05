@@ -72,6 +72,7 @@ const HELPERS = {
   bidProjectPct: 'bidProjectPct', bidGroupPct: 'bidGroupPct', projForBidItem: 'projForBidItem',
   projectedCostForProject: 'projectedCostForProject', gpEarnedToDate: 'gpEarnedToDate',
   bidContractFigures: 'bidContractFigures', projIsDone: 'projIsDone', lineAmt: '_lineAmt', lineTax: '_lineTax',
+  addWorkingDays: '_addWorkingDays',
 };
 
 // menu: the Analytics menu (and with it Custom Reporting) is on screen.
@@ -105,7 +106,7 @@ const PAGES = [
   {
     file: 'kiewit-pinetree.html', division: 'kiewit', label: 'Kiewit Pinetree', area: 'SY',
     lastBefore: 'analytics-item-financials',
-    // Kiewit has no sales role, and its perm reads fctUser.role.
+    // Kiewit has no sales role; its perm reads the kiewit grant (_levelHere).
     roles: {
       admin:  { menu: true, share: true  },
       level3: { menu: true, share: true  },
@@ -198,11 +199,11 @@ function checkMarkup(page, src, doc) {
 }
 
 /* ── Who sees the item: the page's own visibility pass, per role ─────────── */
-function runVisibility(page, src, role) {
+function runVisibility(page, src, role, user) {
   const nav = sliceSource(src, '<nav class="tab-bar">', '</nav>', 'tab bar', 'analytics-item-customrpt') + '</nav>';
   const dom = new JSDOM(`<!DOCTYPE html><body>${nav}</body>`, { runScripts: 'outside-only' });
   const w = dom.window;
-  w.__user = userFor(page.division, role);
+  w.__user = user || userFor(page.division, role);
   w.eval([
     `const DIVISION = ${JSON.stringify(pageConst(src, 'DIVISION'))};`,
     'const fctUser = window.__user;',
@@ -289,7 +290,7 @@ function makeHarness(page, src, role, opts = {}) {
     setTimeout: (fn) => { timers.set(++nextTimer, fn); return nextTimer; },
     clearTimeout: (id) => { timers.delete(id); },
     document: { getElementById: id => (id === 'cr-content' ? root : null) },
-    __user: userFor(page.division, role),
+    __user: opts.user || userFor(page.division, role),
     __logouts: 0,
   });
   ctx.window = ctx;
@@ -430,6 +431,73 @@ async function checkAdapter(page, src, roleVis) {
   }
 }
 
+/* ── Grants that differ by division ──────────────────────────────────────
+   fctUser.role is the caller's TURF role (login.js copies divisionRoles.turf
+   into it), so a page that builds perm from it answers for the wrong
+   division. Each page must read its own grant first, as the server's
+   levelFor does — otherwise a turf admin with view access to Kiewit gets
+   contract and profit columns onto a printed or exported report. */
+function checkMixedGrants(page, src) {
+  const others = ['turf', 'paving', 'kiewit'].filter(d => d !== page.division);
+  const grant = (here, elsewhere) => {
+    const dr = { [page.division]: here };
+    others.forEach(d => { dr[d] = elsewhere; });
+    return dr;
+  };
+  const cases = [
+    { label: `${page.division} level1, admin everywhere else (account role admin)`,
+      user: { role: 'admin', divisionRoles: grant('level1', 'admin') },
+      want: { role: 'level1', fin: false, share: false } },
+    { label: `${page.division} level2, level3 everywhere else (account role level3)`,
+      user: { role: 'level3', divisionRoles: grant('level2', 'level3') },
+      want: { role: 'level2', fin: false, share: false } },
+    { label: `${page.division} admin, level1 everywhere else (account role level1)`,
+      user: { role: 'level1', divisionRoles: grant('admin', 'level1') },
+      want: { role: 'admin', fin: true, share: true } },
+    { label: 'a platform admin with no grant here and account role level1',
+      user: { role: 'level1', divisionRoles: grant('no_access', 'level1'), isPlatformAdmin: true },
+      want: { role: 'admin', fin: true, share: true } },
+  ];
+  if (page.division === 'kiewit') {
+    // Kiewit has no sales grant; a stray one must not read as full access.
+    cases.push({ label: 'a stray kiewit:\'sales\' grant reads as view-only level1',
+      user: { role: 'admin', divisionRoles: grant('sales', 'admin') },
+      want: { role: 'level1', fin: false, share: false } });
+  }
+  for (const c of cases) {
+    const user = Object.assign(userFor(page.division, c.user.role), c.user);
+    const h = makeHarness(page, src, c.user.role, { user });
+    h.run('renderCustomReports()');
+    const cfg = h.mod.configs[0];
+    const vis = runVisibility(page, src, c.user.role, user);
+    assert(`${c.label}: perm.role '${c.want.role}', canSeeFinancials ${c.want.fin}, canShare ${c.want.share}`,
+      cfg && cfg.perm.role === c.want.role && cfg.perm.canSeeFinancials === c.want.fin && cfg.perm.canShare === c.want.share,
+      cfg && JSON.stringify(cfg.perm));
+    assert(`${c.label}: the Financials item is ${c.want.fin ? 'shown' : 'hidden'} to match`, vis.financials === c.want.fin,
+      `Financials shown: ${vis.financials}`);
+    if (cfg && !c.want.fin) {
+      // And the engine, fed this perm, keeps every financial column out.
+      const E = loadEngine();
+      const def = { includeInternal: true };
+      const fin = [['job_info', 'contract'], ['job_info', 'retention'], ['job_info', 'invoiced'],
+        ['summary_kpis', 'contract'], ['summary_kpis', 'co_total'], ['summary_kpis', 'gp_earned'], ['change_orders', 'amount']];
+      const leaked = fin.filter(([t, k]) => E.columnState(t, k, def, cfg.perm) !== 'hidden');
+      assert(`${c.label}: the engine hides contract, retention, invoiced, CO and GP columns even with internal data on`,
+        !leaked.length, leaked.map(x => x.join('.')).join(', '));
+    }
+  }
+}
+
+let _engine = null;
+function loadEngine() {
+  if (_engine) return _engine;
+  const ctx = vm.createContext({ console });
+  ctx.window = ctx;
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'custom-reports-engine.js'), 'utf8'), ctx, { filename: 'custom-reports-engine.js' });
+  _engine = ctx.FCTReportEngine;
+  return _engine;
+}
+
 function checkWaiting(page, src) {
   // Not loaded yet: a loading line and one retry queued, however many clicks.
   const h = makeHarness(page, src, 'admin', { loaded: false });
@@ -498,6 +566,7 @@ function checkWaiting(page, src) {
     if (Object.keys(roleVis).length === Object.keys(page.roles).length) {
       await attemptAsync('adapter checks ran', () => checkAdapter(page, src, roleVis));
     }
+    attempt('mixed-grant checks ran', () => checkMixedGrants(page, src));
     attempt('wait checks ran', () => checkWaiting(page, src));
   }
 

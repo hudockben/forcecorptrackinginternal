@@ -4063,8 +4063,28 @@ function drDeleteBySubCode(subCode) {
    level2  — insert/edit daily rows & POs; cannot delete projects
    level1  — view-only: Project Dashboard & Purchase Orders
 ═══════════════════════════════════════════ */
+/* The caller's level IN KIEWIT, the way the server works it out
+ * (api/lib/auth.js levelFor): a platform admin is an admin, the per-division
+ * grant comes first, and the account role is only the fallback for a legacy
+ * token with no map. fctUser.role on its own is the caller's TURF role —
+ * login.js copies divisionRoles.turf into it for tracker.html — so a turf
+ * admin with a Kiewit view grant was given admin here: the Financials tab,
+ * and contract and profit figures on a printed or exported custom report.
+ * Kiewit has no sales grant (api/company/users.js refuses it), so anything
+ * that is not one of the four levels reads as level1, view-only. */
+function _levelHere() {
+  const KNOWN = ['admin', 'level3', 'level2', 'level1'];
+  const safe = v => (KNOWN.includes(v) ? v : 'level1');
+  if (!fctUser) return 'level1';
+  if (fctUser.isPlatformAdmin) return 'admin';
+  const dr = fctUser.divisionRoles;
+  const own = (dr && typeof dr === 'object') ? dr[DIVISION] : null;
+  if (own && own !== 'no_access') return safe(own);
+  return safe(fctUser.role || 'level1');
+}
+
 const perm = (() => {
-  const r = fctUser ? fctUser.role : 'level1';
+  const r = _levelHere();
   return {
     role:             r,
     isAdmin:          r === 'admin',
@@ -20842,6 +20862,9 @@ function renderCustomReports(isRetry) {
           dailyRowCost, calcDaily, bidItemComplete, bidProjectPct, bidGroupPct, projForBidItem,
           projectedCostForProject, gpEarnedToDate, bidContractFigures, projIsDone,
           lineAmt: _lineAmt, lineTax: _lineTax,
+          // The working-day calendar the Schedule Estimator counts with, so a
+          // projected finish skips the same holidays.
+          addWorkingDays: _addWorkingDays,
         },
         // A session that expires mid-save signs out the way every other call does.
         onAuthError:   () => logout(),

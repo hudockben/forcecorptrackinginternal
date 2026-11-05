@@ -2840,3 +2840,9 @@ CREATE TABLE IF NOT EXISTS custom_report_runs (
 
 CREATE INDEX IF NOT EXISTS idx_custom_report_runs_company ON custom_report_runs(company_code, division, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_custom_report_runs_report  ON custom_report_runs(report_id, created_at DESC);
+-- Logging is limited per user per minute (api/lib/custom-report-runs.js), and
+-- that check reads this. Definition snapshots over two years old are emptied
+-- as new runs come in; the partial index keeps that search to the rows still
+-- holding one.
+CREATE INDEX IF NOT EXISTS idx_custom_report_runs_user     ON custom_report_runs(company_code, run_by_user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_custom_report_runs_snapshot ON custom_report_runs(company_code, division, created_at) WHERE definition <> '{}'::jsonb;

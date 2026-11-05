@@ -44,15 +44,27 @@
 
   const Z = 10070;                // above documents.js (10060) and report-email.js (10050)
   const PREVIEW_DELAY = 250;      // ms of quiet after a change before the preview redraws
+  const PREVIEW_MAX_DELAY = 1500; // …stretched to twice a slow build, up to this
+  const SLOW_BUILD_MS = 120;      // a build this slow waits for typing to pause
+  const TYPING_IDLE   = 800;      // ms without a keystroke that counts as a pause
   const READY_WAIT_MS = 20000;    // longest a print / email / download waits for old daily rows
   const ENGINE_TRIES  = 50;       // × 200 ms — the deferred engine normally arrives first
   const MAX_JOBS      = 500;      // what the API will log against one run
   const MAX_SECTIONS  = 20;       // what normalizeDefinition keeps
   const SHEET_PX      = { portrait: 816, landscape: 1056 };   // a letter sheet, 96 px to the inch
   const MIN_FIT       = 0.55;     // below this a scaled page is too small to read
+  const PHONE_BELOW   = 900;      // a viewport narrower than this (a phone: the panes stack) reflows the report
+  const ZOOM_KEY      = 'fct_cr_preview_zoom';
+  // send-report refuses report HTML over 1.5 MB; the DataWatch band and the
+  // JSON around it need some of that.
+  const EMAIL_HTML_LIMIT = 1400000;
+  const SELECT_ALL_ASK = 50;      // "Select all shown" with no search asks first past this
+  const DRAFT_KEY     = 'fct_cr_draft_';  // + division: a report kept over a sign-out
 
   const INTERNAL_CONFIRM = 'This report will be able to show costs, rates, hours, employee names and profit. '
     + "Don't send it to a customer. Continue?";
+  const EXCEL_INTERNAL_CONFIRM = 'This workbook includes internal data — costs, rates, hours, employee names or profit. '
+    + 'Download it anyway? Do not send it to a customer.';
 
   let E = null;                   // window.FCTReportEngine, once it has loaded
 
@@ -84,7 +96,12 @@
     jobSearch: '',
     editLabel: null,              // { sec, key, orig } while a column label is being renamed
     saving: false,
+    saveSent: null,               // { doc, typedName, typedDesc, key } — what an in-flight save sent
+    busy: { email: false, excel: false },   // an output waiting on the old daily rows
     readyP: null, readyDone: false,
+    lastBuildMs: 0, lastTypeAt: 0,
+    lastJobCount: -1, jobWatch: 0,
+    zoom: 'fit',                  // the preview: 'fit' (scaled to the pane) or '100' (actual size)
     pvTimer: 0, pvScroll: 0,
     menuEl: null, menuTrigger: null,
     lastBanners: null, lastSteps: null,
@@ -167,6 +184,9 @@
     let data = null;
     try { data = await r.json(); } catch (_) { data = null; }
     if (r.status === 401) {
+      // The page's logout leaves the page. Keep the open report first, so it
+      // can be offered back after signing in rather than lost with the page.
+      saveDraft();
       try { if (typeof cfg.onAuthError === 'function') cfg.onAuthError(); } catch (_) { /* the page's problem */ }
       throw failure('Your session has expired. Please sign in again.', 401, data);
     }
@@ -201,7 +221,10 @@
       S.readyP = Promise.resolve(p).then(() => {}, () => {}).then(() => {
         S.readyDone = true;
         S.readyP = null;
-        if (S.doc && S.view === 'edit') schedulePreview(true);
+        if (!S.doc || S.view !== 'edit') return;
+        // Step ① drawn before the jobs were in ("Loading jobs…") is redrawn.
+        const stale = S.mount && (S.mount.querySelector('.cr-jobs-loading') || projects().length !== S.lastJobCount);
+        if (stale && S.step === 1) jobsArrived(); else schedulePreview(true);
       });
     }
     return S.readyP;
@@ -256,10 +279,83 @@
     if (!d) return false;
     return d.id ? isDirty(d) : d.touched;
   }
+  // Has the open report changed since the save now on its way was sent?
+  function changedSinceSent(d) {
+    const sent = S.saveSent;
+    if (!sent || sent.doc !== d) return true;
+    return d.name.trim() !== sent.typedName || txt(d.description) !== sent.typedDesc || defKey(d) !== sent.key;
+  }
   function okToLeave() {
+    const d = S.doc;
+    if (!d) return true;
+    const name = d.name.trim() || d.savedName || 'this report';
+    // A save on its way finishes whether or not the report stays open, so
+    // leaving loses nothing — unless something changed after it was sent.
+    if (S.saving && S.saveSent && S.saveSent.doc === d) {
+      if (!changedSinceSent(d)) return true;
+      return window.confirm(`"${name}" is still saving, but the changes you made after clicking Save will be lost. Leave anyway?`);
+    }
     if (!hasUnsavedWork()) return true;
-    const name = S.doc.name.trim() || S.doc.savedName || 'this report';
-    return window.confirm(`You have unsaved changes to "${name}". Discard them?`);
+    if (!window.confirm(`You have unsaved changes to "${name}". Discard them?`)) return false;
+    clearDraft();
+    return true;
+  }
+
+  // ── A report kept over a sign-out ───────────────────────────────────
+  // An expired session hands back to the page's logout, which leaves the
+  // page. The open report is kept in this tab's sessionStorage first and
+  // offered back the next time the tab opens. Per viewer, per tab, and
+  // best-effort: storage can be missing or full, and then it is simply not
+  // kept.
+  function draftKey() { return DRAFT_KEY + cfg.division; }
+  function saveDraft() {
+    const d = S.doc;
+    if (!d || !hasUnsavedWork()) return;
+    try {
+      sessionStorage.setItem(draftKey(), JSON.stringify({
+        at: Date.now(), id: d.id, starterId: d.starterId, name: d.name, description: d.description || '',
+        visibility: d.visibility, version: d.version, def: E.normalizeDefinition(d.def), saveJobs: !!d.saveJobs,
+        picked: d.picked.slice(0, MAX_JOBS),
+      }));
+    } catch (_) { /* not kept — nothing else to do */ }
+  }
+  function readDraft() {
+    try {
+      const raw = sessionStorage.getItem(draftKey());
+      const o = raw ? JSON.parse(raw) : null;
+      return o && typeof o === 'object' && o.def && typeof o.def === 'object' ? o : null;
+    } catch (_) { return null; }
+  }
+  function clearDraft() {
+    try { sessionStorage.removeItem(draftKey()); } catch (_) { /* nothing kept */ }
+  }
+  async function offerDraft() {
+    const o = readDraft();
+    if (!o || S.doc) return;
+    const name = txt(o.name) || 'Untitled report';
+    const choice = await choose('Restore your unsaved report?',
+      `“${name}” had unsaved changes when your session ended. Restore it, or discard those changes?`,
+      [{ label: 'Discard', value: 'discard' }, { label: 'Restore', value: 'restore', primary: true }]);
+    if (choice === 'discard') { clearDraft(); return; }
+    if (choice !== 'restore' || S.doc) return;
+    clearDraft();
+    const doc = blankDoc(o.def, {
+      id: o.id != null ? o.id : null, starterId: o.starterId || null, name: String(o.name || ''),
+      description: String(o.description || ''), visibility: o.visibility === 'shared' ? 'shared' : 'private',
+      version: Number(o.version) || 0, saveJobs: !!o.saveJobs,
+      picked: Array.isArray(o.picked) ? o.picked.slice(0, MAX_JOBS) : [], touched: true,
+    });
+    const r = doc.id != null ? S.reports.find(x => sameId(x.id, doc.id)) : null;
+    if (doc.id != null) {
+      // Against the copy that is saved now, so Save goes where it was going —
+      // and a version that has moved on meets the usual conflict question.
+      doc.can_edit = r ? !!r.can_edit : true;
+      doc.readOnly = !doc.can_edit;
+      doc.savedName = r ? r.name : '';
+      doc.savedDesc = r ? (r.description || '') : '';
+    }
+    startEditing(doc);
+    toast('Restored your unsaved report. Save it to keep it.');
   }
 
   function currentJobs() {
@@ -282,16 +378,26 @@
     if (!txt(d.header.preparedBy)) d.header.preparedBy = userName();
     return d;
   }
-  function buildCurrent(opts) {
-    const def = renderDefinition();
-    const ctx = E.makeContext(def, cfg, {
-      pickedIds: S.doc.picked.slice(0, MAX_JOBS),
-      reportName: S.doc.name.trim() || S.doc.savedName || '',
-      userName: userName(),
-    });
-    const html = opts && opts.html === false ? '' : E.buildReportHtml(def, ctx);
-    return { def, ctx, html };
+  /* What the open report is right now, frozen: the definition to print, the
+     picked jobs, and the names it is logged under. An output that has to
+     wait (for the older daily rows) builds from this, so the report that
+     comes out is the one that was clicked — not whatever is open, or has
+     been edited, by the time it is ready. */
+  function snapshot() {
+    const d = S.doc;
+    return {
+      doc: d, def: renderDefinition(), picked: d.picked.slice(0, MAX_JOBS),
+      reportName: d.name.trim() || d.savedName || '',
+      reportId: d.id != null ? d.id : null,
+      logName: d.savedName || d.name.trim(),
+    };
   }
+  function buildFrom(snap, opts) {
+    const ctx = E.makeContext(snap.def, cfg, { pickedIds: snap.picked, reportName: snap.reportName, userName: userName() });
+    const html = opts && opts.html === false ? '' : E.buildReportHtml(snap.def, ctx);
+    return { def: snap.def, ctx, html, snap };
+  }
+  function buildCurrent(opts) { return buildFrom(snapshot(), opts); }
 
   // ── Styles ──────────────────────────────────────────────────────────
   // Scoped under .cr-root (and .cr-modal / .cr-toast, which live on <body>).
@@ -404,6 +510,12 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
 .cr-frame-wrap{position:relative;overflow:hidden;height:72vh;min-height:420px;border-radius:4px;background:#fff}
 .cr-frame{display:block;width:100%;height:100%;border:0;background:#fff}
 .cr-frame.paged{transform-origin:0 0}
+.cr-frame-wrap.cr-scroll{overflow:auto}
+.cr-frame.actual{max-width:none}
+.cr-preview-tools{display:flex;gap:.35rem;align-items:center;flex-wrap:wrap}
+.cr-zoom{display:inline-flex;border:1px solid var(--crb);border-radius:4px;overflow:hidden}
+.cr-zoom button{background:none;border:0;color:var(--crt);font:inherit;font-size:.68rem;padding:.2rem .5rem;cursor:pointer;opacity:.7}
+.cr-zoom button[aria-pressed=true]{background:var(--crs2);opacity:1;font-weight:700;box-shadow:inset 0 -2px 0 var(--cra)}
 @media (min-width:1200px){
   .cr-body{grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
   .cr-preview{position:sticky;top:.5rem}
@@ -490,7 +602,12 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
 /* send history */
 .cr-hist-head{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap;margin-bottom:.4rem}
 .cr-tablewrap{overflow-x:auto;border:1px solid var(--crb);border-radius:6px;background:var(--crs);margin-top:.6rem}
-.cr-table{width:100%;border-collapse:collapse;font-size:.78rem}
+/* The pages set table{white-space:nowrap;min-width:100%} for their grids;
+   the history's job lists, subjects and recipients have to wrap, or the
+   columns that say who it went to and whether it carried our costs end up
+   off the side of the pane. */
+.cr-table{width:100%;border-collapse:collapse;font-size:.78rem;white-space:normal;min-width:0}
+.cr-table td[data-label="Recipients"],.cr-table td[data-label="Jobs"],.cr-table td[data-label="Report"]{overflow-wrap:anywhere;word-break:break-word}
 .cr-table th{text-align:left;font-size:.62rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;opacity:.7;padding:.5rem .6rem;border-bottom:1px solid var(--crb);white-space:nowrap}
 .cr-table td{padding:.5rem .6rem;border-bottom:1px solid var(--crb);vertical-align:top}
 .cr-table tr:last-child td{border-bottom:0}
@@ -770,12 +887,21 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
           <div class="cr-panel" role="tabpanel" id="cr-panel" aria-labelledby="cr-step-${S.step}">${panelHtml()}</div>
         </div>
         <section class="cr-preview" aria-label="Live preview">
-          <div class="cr-preview-head"><span class="cr-preview-title">Live preview</span><span class="cr-preview-note" aria-live="polite"></span></div>
+          <div class="cr-preview-head"><span class="cr-preview-title">Live preview</span><span class="cr-preview-note" aria-live="polite"></span>
+            <span class="cr-preview-tools">${zoomHtml()}
+              <button type="button" class="btn btn-ghost cr-sm" data-act="full-preview" data-fk="full-preview" title="Open the report full size in a new tab, without printing">Open full preview</button></span></div>
           <div class="cr-preview-hint" hidden></div>
           <div class="cr-frame-wrap"><iframe class="cr-frame" sandbox="allow-same-origin" title="Report preview — exactly what will print"></iframe></div>
         </section>
       </div>
     </div>`;
+  }
+
+  // Fit: the whole sheet scaled into the pane. 100%: the sheet at the size it
+  // prints, scrolling — for reading the figures on a laptop screen.
+  function zoomHtml() {
+    const b = (z, label, tip) => `<button type="button" data-act="zoom" data-zoom="${z}" data-fk="zoom-${z}" aria-pressed="${S.zoom === z}" title="${tip}">${label}</button>`;
+    return `<span class="cr-zoom" role="group" aria-label="Preview size">${b('fit', 'Fit', 'Fit the whole page in the pane')}${b('100', '100%', 'Show the page at its printed size')}</span>`;
   }
 
   function barHtml() {
@@ -851,6 +977,22 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         : d.visibility === 'shared' ? 'Save — updates the template for everyone in the division (Ctrl+S)'
         : 'Save (Ctrl+S)';
     }
+    // An output waiting on the older daily rows: its button says so and
+    // takes no more clicks, so an impatient second click is not a second file.
+    [['email', '&#9993; Email'], ['excel', '&#8681; Excel']].forEach(([k, label]) => {
+      const b = S.mount.querySelector(`[data-act="${k}"]`);
+      if (!b) return;
+      const busy = !!S.busy[k];
+      if (busy && b.getAttribute('aria-busy') !== 'true') {
+        b.disabled = true;
+        b.setAttribute('aria-busy', 'true');
+        b.textContent = 'Preparing…';
+      } else if (!busy && b.getAttribute('aria-busy') === 'true') {
+        b.disabled = false;
+        b.removeAttribute('aria-busy');
+        b.innerHTML = label;
+      }
+    });
     const ban = S.mount.querySelector('.cr-banners');
     const bh = bannersHtml();
     if (ban && bh !== S.lastBanners) { withFocus(ban, () => { ban.innerHTML = bh; }); S.lastBanners = bh; }
@@ -893,6 +1035,9 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     return `
       <div class="cr-field">
         <div class="cr-field-head"><span class="cr-label" id="cr-jobs-label">Jobs</span><span class="cr-count" aria-live="polite">${jobCountHtml()}</span></div>
+        <label class="cr-check cr-savejobs"><input type="checkbox" data-bind="save-jobs" data-fk="save-jobs"${d.saveJobs ? ' checked' : ''}>
+          <span><b>Save these jobs with the report</b>
+          <span class="cr-hint">Leave it off to keep the report a template — it opens with no jobs and you pick them each time you run it.</span></span></label>
         <p class="cr-callout"${askForJobs ? '' : ' hidden'}>Pick the jobs for this report — as many as you like.</p>
         <div class="cr-jobwarn">${clientWarnHtml()}</div>
         <div class="cr-jobtools">
@@ -933,10 +1078,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         <label class="cr-radio"><input type="radio" name="cr-orient" value="portrait" data-bind="orientation" data-fk="orient-portrait"${def.orientation === 'landscape' ? '' : ' checked'}> <span>Portrait</span></label>
         <label class="cr-radio"><input type="radio" name="cr-orient" value="landscape" data-bind="orientation" data-fk="orient-landscape"${def.orientation === 'landscape' ? ' checked' : ''}>
           <span>Landscape <span class="cr-hint-i">— better for wide tables</span></span></label>
-      </fieldset>
-      <label class="cr-check cr-savejobs"><input type="checkbox" data-bind="save-jobs" data-fk="save-jobs"${d.saveJobs ? ' checked' : ''}>
-        <span><b>Save these jobs with the report</b>
-        <span class="cr-hint">Leave it off to keep the report a template — it opens with no jobs and you pick them each time you run it.</span></span></label>`;
+      </fieldset>`;
   }
   function jobCountHtml() {
     const n = currentJobs().length;
@@ -955,7 +1097,13 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   }
   function jobListHtml() {
     const all = projects();
-    if (!all.length) return '<p class="cr-empty" style="padding:.7rem">No jobs in this division yet.</p>';
+    S.lastJobCount = all.length;
+    if (!all.length) {
+      // Opened before the page has its job list: say so, and redraw when the
+      // jobs arrive, rather than tell the user the division has none.
+      if (!S.readyDone) { watchJobs(); return '<p class="cr-empty cr-jobs-loading" style="padding:.7rem">Loading jobs…</p>'; }
+      return '<p class="cr-empty" style="padding:.7rem">No jobs in this division yet.</p>';
+    }
     const q = S.jobSearch.trim().toLowerCase();
     const picked = new Set(S.doc.picked.map(String));
     const shown = all.filter(p => matchJob(p, q));
@@ -968,6 +1116,25 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         <span class="cr-job-name">${esc(jobName(p))}</span>${meta ? `<span class="cr-job-meta">${esc(meta)}</span>` : ''}
       </label>`;
     }).join('');
+  }
+  function watchJobs() {
+    if (S.jobWatch) return;
+    S.jobWatch = setInterval(() => {
+      const n = projects().length;
+      if (!S.doc || S.view !== 'edit' || !S.mount || !S.mount.isConnected) { clearInterval(S.jobWatch); S.jobWatch = 0; return; }
+      if (!n && !S.readyDone) return;
+      clearInterval(S.jobWatch);
+      S.jobWatch = 0;
+      jobsArrived();
+    }, 500);
+  }
+  // The job list has changed size since step ① was drawn: redraw it (the
+  // Client picker with it), the step strip and the preview.
+  function jobsArrived() {
+    if (!S.doc || S.view !== 'edit') return;
+    if (S.step === 1) renderPanel();
+    updateChrome();
+    schedulePreview(true);
   }
   function renderJobList() {
     if (!S.mount) return;
@@ -1191,12 +1358,31 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   // ── Live preview ────────────────────────────────────────────────────
   // The exact print document in a sandboxed frame (no scripts run in it).
   // Redrawn a beat after the last change so typing does not rebuild a
-  // twenty-job report on every keystroke.
+  // twenty-job report on every keystroke. The beat stretches with the report:
+  // a build that takes 400 ms waits twice that, and while someone is typing
+  // into a text box a slow build waits for them to pause — a full rebuild on
+  // the main thread is a frozen text box.
   function schedulePreview(now) {
     if (!S.doc) return;
     clearTimeout(S.pvTimer);
-    S.pvTimer = setTimeout(renderPreview, now ? 0 : PREVIEW_DELAY);
+    const delay = now ? 0 : Math.max(PREVIEW_DELAY, Math.min(PREVIEW_MAX_DELAY, 2 * S.lastBuildMs));
+    S.pvTimer = setTimeout(previewDue, delay);
   }
+  function typingInBuilder() {
+    const a = document.activeElement;
+    return !!(a && S.mount && S.mount.contains(a) && (a.tagName === 'TEXTAREA'
+      || (a.tagName === 'INPUT' && /^(text|search|)$/.test(a.getAttribute('type') || ''))));
+  }
+  function previewDue() {
+    const since = Date.now() - S.lastTypeAt;
+    if (S.lastBuildMs >= SLOW_BUILD_MS && since < TYPING_IDLE && typingInBuilder()) {
+      clearTimeout(S.pvTimer);
+      S.pvTimer = setTimeout(previewDue, TYPING_IDLE - since);
+      return;
+    }
+    renderPreview();
+  }
+  const clock = () => (typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now());
   function renderPreview() {
     clearTimeout(S.pvTimer);
     S.pvTimer = 0;
@@ -1206,7 +1392,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const note = S.mount.querySelector('.cr-preview-note');
     if (!frame) return;
     let built;
-    try { built = buildCurrent(); }
+    const t0 = clock();
+    try { built = buildCurrent(); S.lastBuildMs = clock() - t0; }
     catch (err) {
       console.error('[custom-reports] preview failed:', err);
       if (hint) { hint.hidden = false; hint.textContent = 'The preview could not be drawn: ' + err.message; }
@@ -1234,7 +1421,10 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
      sheet and scaled down to the pane — a wide table then sits where it will
      on paper instead of running off the side of a narrow frame. On a phone a
      whole sheet would shrink past reading, so there the report reflows to
-     the pane (its own small-screen rule) and a wide table scrolls inside it. */
+     the pane (its own small-screen rule) and a wide table scrolls inside it.
+     100% — or a desktop pane too narrow for a readable Fit, like a 1280 px
+     laptop's — shows the sheet at its printed width and scrolls both ways, so
+     every column the user ticked is on the page, at a size they can read. */
   function fitPreview() {
     const frame = S.mount && S.mount.querySelector('.cr-frame');
     const wrap = frame && frame.parentElement;
@@ -1242,15 +1432,47 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const sheet = SHEET_PX[S.doc.def.orientation === 'landscape' ? 'landscape' : 'portrait'];
     const avail = wrap.clientWidth, tall = wrap.clientHeight;
     const k = avail / sheet;
-    if (!avail || !tall || k >= 1 || k < MIN_FIT) {
-      frame.classList.remove('paged');
+    const natural = () => {
+      frame.classList.remove('paged', 'actual');
+      wrap.classList.remove('cr-scroll');
       frame.style.width = frame.style.height = frame.style.transform = '';
-      return;
-    }
+    };
+    const actual = () => {
+      frame.classList.remove('paged');
+      frame.classList.add('actual');
+      wrap.classList.add('cr-scroll');
+      frame.style.transform = '';
+      frame.style.width = sheet + 'px';
+      frame.style.height = '100%';
+    };
+    if (S.zoom === '100') { actual(); return; }
+    const phone = (window.innerWidth || document.documentElement.clientWidth || 1024) < PHONE_BELOW;
+    if (!avail || !tall || phone || k >= 1) { natural(); return; }
+    if (k < MIN_FIT) { actual(); return; }
+    frame.classList.remove('actual');
+    wrap.classList.remove('cr-scroll');
     frame.classList.add('paged');
     frame.style.width = sheet + 'px';
     frame.style.height = Math.ceil(tall / k) + 'px';
     frame.style.transform = `scale(${k.toFixed(4)})`;
+  }
+  function setZoom(z) {
+    S.zoom = z === '100' ? '100' : 'fit';
+    try { localStorage.setItem(ZOOM_KEY, S.zoom); } catch (_) { /* a convenience only */ }
+    if (S.mount) S.mount.querySelectorAll('[data-act="zoom"]').forEach(b => b.setAttribute('aria-pressed', String(b.getAttribute('data-zoom') === S.zoom)));
+    fitPreview();
+  }
+  // The same report, full size in its own tab — no print dialog.
+  function openFullPreview() {
+    if (!S.doc) return;
+    const win = window.open('', '_blank');
+    if (!win) { alert('Your browser blocked the preview window. Allow pop-ups for this site and try again.'); return; }
+    let built;
+    try { built = buildCurrent(); }
+    catch (err) { try { win.close(); } catch (_) { /* fine */ } toast('Couldn’t build the report: ' + err.message, 'error'); return; }
+    const write = window.dwWrite || ((w, h) => w.document.write(h));
+    write(win, built.html);
+    win.document.close();
   }
 
   // Every edit ends here: remember the report was touched, then redraw what
@@ -1369,15 +1591,24 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     document.addEventListener('keydown', onKey, true);
     back.querySelector('[data-m="x"]').addEventListener('click', () => close());
     // Close on the backdrop only when the press started there, so a text
-    // selection dragged out of the name box does not dismiss the dialog.
+    // selection dragged out of the name box does not dismiss the dialog —
+    // and not in the first half second, nor on the second click of a
+    // double-click: the dialog opens under the pointer on the first click
+    // of a double-clicked Save, and the second would land on the backdrop.
+    const openedAt = Date.now();
     let pressedBack = false;
-    back.addEventListener('mousedown', e => { pressedBack = e.target === back; });
-    back.addEventListener('click', e => { if (e.target === back && pressedBack) close(); });
+    back.addEventListener('mousedown', e => { pressedBack = e.target === back && (e.detail || 1) <= 1 && Date.now() - openedAt > 500; });
+    back.addEventListener('click', e => {
+      if (e.target === back && pressedBack && (e.detail || 1) <= 1 && Date.now() - openedAt > 500) close();
+    });
     return { el: back, body: back.querySelector('.cr-modal-body'), close };
   }
 
-  /* Ask for a report name (and, for an admin / level 3, whether to share it).
-     o.onSubmit({ name, shared }) does the save and returns an error message
+  const modalOpen = () => !!document.querySelector('.cr-modal');
+
+  /* Ask for a report name (and, for an admin / level 3, whether to share it;
+     and, when jobs are picked, whether to keep them with the report).
+     o.onSubmit({ name, shared, saveJobs }) does the save and returns an error message
      to show — the dialog stays open on it, which is how a taken name gets
      re-prompted — or null when done. Resolves true once saved. */
   function askName(o) {
@@ -1388,6 +1619,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         <input id="cr-m-name" class="cr-input" maxlength="120" value="${esc(o.name || '')}" autocomplete="off" spellcheck="false">
         ${o.offerShare ? `<label class="cr-check"><input type="checkbox" id="cr-m-share"${o.shared ? ' checked' : ''}>
           <span><b>Share with division</b><span class="cr-hint">Everyone in ${esc(divLabel())} can run it. Only admins and level 3 users can change it.</span></span></label>` : ''}
+        ${o.jobsOffer ? `<label class="cr-check"><input type="checkbox" id="cr-m-savejobs"${o.jobsOffer.checked ? ' checked' : ''}>
+          <span><b>Keep ${o.jobsOffer.count === 1 ? 'this job' : `these ${o.jobsOffer.count} jobs`} with the report</b><span class="cr-hint">Otherwise it opens with no jobs and asks for them each time it is run.</span></span></label>` : ''}
         <p class="cr-m-err" role="alert" hidden></p>
         <div class="cr-m-btns">
           <button type="button" class="btn btn-ghost" data-m="cancel">Cancel</button>
@@ -1395,6 +1628,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         </div>`, () => resolve(false));
       const input = m.body.querySelector('#cr-m-name');
       const share = m.body.querySelector('#cr-m-share');
+      const keepJobs = m.body.querySelector('#cr-m-savejobs');
       const err = m.body.querySelector('.cr-m-err');
       const ok = m.body.querySelector('[data-m="ok"]');
       const show = msg => { err.textContent = msg; err.hidden = false; input.focus(); try { input.select(); } catch (_) { /* fine */ } };
@@ -1408,7 +1642,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         ok.disabled = true;
         ok.textContent = 'Saving…';
         let msg = null;
-        try { msg = await o.onSubmit({ name, shared: !!(share && share.checked) }); }
+        try { msg = await o.onSubmit({ name, shared: !!(share && share.checked), saveJobs: keepJobs ? keepJobs.checked : null }); }
         catch (e) { msg = e && e.message ? e.message : 'Something went wrong.'; }
         busy = false;
         ok.disabled = false;
@@ -1589,9 +1823,18 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   }
 
   // ── Saving ──────────────────────────────────────────────────────────
+  // What a save is about to send, taken before the request goes: the editor
+  // stays live while it is out, and only what was sent becomes "saved".
+  function sentSnapshot(d, def) {
+    return { doc: d, typedName: d.name.trim(), typedDesc: txt(d.description), key: JSON.stringify(def) };
+  }
+
   // The server's copy is now the clean one; the editor carries on with the
-  // same definition and the list shows the new name, badges and time.
-  function adoptSaved(report) {
+  // same definition and the list shows the new name, badges and time. Only
+  // what the save sent is clean: a field typed into while it was out keeps
+  // what was typed and stays unsaved, rather than being marked saved — or
+  // overwritten with the old name — and lost on the next click away.
+  function adoptSaved(report, sent) {
     const d = S.doc;
     d.id = report.id;
     d.starterId = null;
@@ -1602,20 +1845,34 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     d.owner_username = report.owner_username || d.owner_username;
     d.updated_by_username = report.updated_by_username || '';
     d.updated_at = report.updated_at || null;
-    d.name = report.name;
-    d.description = report.description || '';
     d.missing = 0;
-    markClean(d);
+    if (sent) {
+      if (d.name.trim() === sent.typedName) d.name = report.name;
+      if (txt(d.description) === sent.typedDesc) d.description = report.description || '';
+      d.savedName = report.name;
+      d.savedDesc = report.description || '';
+      d.savedDefKey = sent.key;
+      d.touched = false;
+    } else {
+      d.name = report.name;
+      d.description = report.description || '';
+      markClean(d);
+    }
     upsertReport(report);
+    clearDraft();
     const input = S.mount && S.mount.querySelector('[data-bind="name"]');
     if (input && input.value !== d.name) input.value = d.name;
+    const desc = S.mount && S.mount.querySelector('[data-bind="description"]');
+    if (desc && desc.value !== d.description) desc.value = d.description;
+    const keep = S.mount && S.mount.querySelector('[data-bind="save-jobs"]');
+    if (keep) keep.checked = !!d.saveJobs;
     renderRail();
     updateChrome();
   }
 
   async function save() {
     const d = S.doc;
-    if (!d || S.saving) return;
+    if (!d || S.saving || modalOpen()) return;
     if (!d.id) { await saveAs(true); return; }
     if (d.readOnly) {
       toast('Only an admin or level 3 user can change a shared template — Save As to make your own copy.', 'error');
@@ -1623,14 +1880,26 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     }
     if (!isDirty()) return;
     const name = d.name.trim() || d.savedName;
+    const def = defForSave();
+    const sent = sentSnapshot(d, def);
     S.saving = true;
+    S.saveSent = sent;
     updateChrome();
     let err = null;
     try {
-      const res = await api.update(d.id, { name, description: txt(d.description) || null, definition: defForSave(), version: d.version });
-      if (S.doc === d) { adoptSaved(res.report); toast(`Saved “${res.report.name}”.`); }
+      const res = await api.update(d.id, { name, description: sent.typedDesc || null, definition: def, version: d.version });
+      if (S.doc === d) { adoptSaved(res.report, sent); toast(`Saved “${res.report.name}”.`); }
+      else {
+        // They moved on while it was out. It saved all the same: put the new
+        // copy in the list, so reopening it shows what was saved (and its
+        // version), not the old copy and a false "someone else saved" later.
+        upsertReport(res.report);
+        renderRail();
+        toast(`Saved “${res.report.name}”.`);
+      }
     } catch (e) { err = e; }
     S.saving = false;
+    S.saveSent = null;
     updateChrome();
     if (!err || S.doc !== d) return;
     if (err.status === 409 && code(err) === 'version_conflict') { await onConflict(err.data && err.data.report); return; }
@@ -1653,22 +1922,31 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
      than "… (copy)". */
   async function saveAs(fresh, defaultName) {
     const d = S.doc;
-    if (!d) return false;
-    const def = defForSave();
+    if (!d || modalOpen()) return false;
     const current = d.name.trim() || txt(E.normalizeDefinition(d.def).title);
     // A name already typed into the bar is the name they want; otherwise a
     // copy of a saved report is offered as "… (copy)".
     const retyped = d.id && d.name.trim() && d.name.trim() !== d.savedName;
     const name = defaultName || (fresh || !d.id || retyped ? (current || 'Untitled report') : copyName(current || d.savedName || 'Untitled report', 1));
+    // Jobs are picked: the save itself asks whether to keep them, so "pick a
+    // job, Save" does not quietly store a template that reopens with none.
+    // Ticked for a report about one to three jobs — a report for one owner —
+    // unless the user has already said otherwise in step ①.
+    const nPicked = currentJobs().length;
+    const jobsOffer = nPicked ? { count: nPicked, checked: d.saveJobsSet ? !!d.saveJobs : (d.saveJobs || nPicked <= 3) } : null;
     return askName({
       title: fresh || !d.id ? 'Save report' : 'Save as a new report',
       name,
       offerShare: S.canShare,
       shared: false,
-      onSubmit: async ({ name: chosen, shared }) => {
+      jobsOffer,
+      onSubmit: async ({ name: chosen, shared, saveJobs }) => {
+        if (jobsOffer && saveJobs !== null && S.doc === d) d.saveJobs = !!saveJobs;
+        const def = defForSave(d);
+        const sent = sentSnapshot(d, def);
         try {
-          const res = await api.create({ name: chosen, description: txt(d.description) || null, visibility: shared ? 'shared' : 'private', definition: def });
-          if (S.doc === d) adoptSaved(res.report); else upsertReport(res.report);
+          const res = await api.create({ name: chosen, description: sent.typedDesc || null, visibility: shared ? 'shared' : 'private', definition: def });
+          if (S.doc === d) adoptSaved(res.report, sent); else upsertReport(res.report);
           toast(shared ? `Saved “${res.report.name}” and shared it with the division.` : `Saved “${res.report.name}”.`);
           return null;
         } catch (e) {
@@ -1728,6 +2006,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   }
 
   async function renameReport(r) {
+    if (modalOpen()) return;
     const open = S.doc && S.doc.id != null && sameId(S.doc.id, r.id) ? S.doc : null;
     await askName({
       title: 'Rename report', name: r.name, confirmLabel: 'Rename',
@@ -1764,6 +2043,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   }
 
   async function duplicateReport(r) {
+    if (modalOpen()) return;
     for (let i = 1; i <= 6; i++) {
       const name = copyName(r.name, i);
       try {
@@ -1823,13 +2103,15 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
 
   // The send history: what went out, to whom, with or without our costs on
   // it. Fire-and-forget — the print / email / download has already happened
-  // and a failed log must never look like a failed send.
-  function logRun(action, built, info) {
-    const d = S.doc;
+  // and a failed log must never look like a failed send. Everything is read
+  // off the build (and the snapshot it was built from), never off whatever
+  // report is open by the time the log goes.
+  function runBody(action, built, info) {
+    const snap = built.snap || {};
     const jobs = built.ctx.jobs.slice(0, MAX_JOBS);
-    const body = {
-      report_id: d && d.id != null ? d.id : null,
-      report_name: ((d && (d.savedName || d.name.trim())) || built.ctx.title || 'Untitled report').slice(0, 200),
+    return {
+      report_id: snap.reportId != null ? snap.reportId : null,
+      report_name: (snap.logName || built.ctx.title || 'Untitled report').slice(0, 200),
       action,
       project_ids: jobs.map(p => String(p.id)),
       project_names: jobs.map(p => jobName(p)),
@@ -1840,23 +2122,37 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       included_internal: E.hasInternal(built.def, perm()),
       definition: built.def,
     };
-    return api.run(body).then(res => {
-      const r = d && d.id != null ? S.reports.find(x => sameId(x.id, d.id)) : null;
-      if (r && res && res.run) { r.last_run_at = res.run.created_at; r.run_count = (Number(r.run_count) || 0) + 1; }
-      if (S.view === 'history') loadRuns();
+  }
+  // A run is on the record: move the list's counters, refresh the history.
+  function noteRun(built, createdAt) {
+    const id = built.snap && built.snap.reportId;
+    const r = id != null ? S.reports.find(x => sameId(x.id, id)) : null;
+    if (r) { r.last_run_at = createdAt || new Date().toISOString(); r.run_count = (Number(r.run_count) || 0) + 1; }
+    if (S.view === 'history') loadRuns();
+  }
+  function logRun(action, built, info) {
+    return api.run(runBody(action, built, info)).then(res => {
+      if (res && res.run) noteRun(built, res.run.created_at);
     }).catch(e => console.warn('[custom-reports] could not log the run:', e && e.message));
   }
 
   // Print / PDF. The window has to be opened inside the click itself or the
   // browser calls it a pop-up, so it opens first and the report is written
-  // into it once the full daily-row history is in.
+  // into it once the full daily-row history is in. What it prints is fixed at
+  // the click: if the report is closed or another opened in the meantime the
+  // window closes and says so, rather than print a different report into a
+  // tab the user believes holds the one they clicked.
   function doPrint() {
     if (!S.doc || !requireJobs()) return;
+    const d = S.doc;
+    let snap;
+    try { snap = snapshot(); }
+    catch (err) { toast('Couldn’t build the report: ' + err.message, 'error'); return; }
     const win = window.open('', '_blank');
     if (!win) { alert('Your browser blocked the print window. Allow pop-ups for this site and try again.'); return; }
     const go = () => {
       let built;
-      try { built = buildCurrent(); }
+      try { built = buildFrom(snap); }
       catch (err) { try { win.close(); } catch (_) { /* fine */ } toast('Couldn’t build the report: ' + err.message, 'error'); return; }
       const write = window.dwWrite || ((w, h) => w.document.write(h));
       write(win, built.html + '<script>window.onload=()=>{window.print()}<\/script>');
@@ -1870,43 +2166,85 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     } catch (_) { /* the real write follows */ }
     whenReady().then(() => {
       if (win.closed) return;
+      if (S.doc !== d) {
+        try { win.close(); } catch (_) { /* fine */ }
+        toast('The report changed while it was being prepared — click Print again.', 'error');
+        return;
+      }
       try { win.document.open(); } catch (_) { /* written fresh below */ }
       go();
     });
   }
 
+  function htmlBytes(html) {
+    try { if (typeof Blob === 'function') return new Blob([html]).size; } catch (_) { /* fall through */ }
+    try { return unescape(encodeURIComponent(html)).length; } catch (_) { return html.length * 3; }
+  }
+
+  // Email and Excel wait for the older daily rows like Print does, but have
+  // no window to show it in: the button says "Preparing…" and takes no more
+  // clicks until the file is ready, and a toast says why.
+  async function whenReadyFor(kind) {
+    if (S.readyDone) return;
+    S.busy[kind] = true;
+    updateChrome();
+    toast('Waiting for older daily entries — your report will be ready in a moment.');
+    try { await whenReady(); }
+    finally { S.busy[kind] = false; updateChrome(); }
+  }
+
   async function doEmail() {
-    if (!S.doc || !requireJobs()) return;
+    if (!S.doc || S.busy.email || !requireJobs()) return;
     if (typeof window.openReportEmailModal !== 'function') {
       alert('Email module is still loading — please try again in a moment.');
       return;
     }
     const d = S.doc;
-    await whenReady();
+    await whenReadyFor('email');
     if (S.doc !== d) return;
     let built;
     try { built = buildCurrent(); }
     catch (err) { toast('Couldn’t build the report: ' + err.message, 'error'); return; }
+    // send-report refuses anything bigger, and would say so only after the
+    // recipients are filled in. Say it now, with what to do instead.
+    const bytes = htmlBytes(built.html);
+    if (bytes > EMAIL_HTML_LIMIT) {
+      toast(`This report is ${(bytes / 1e6).toFixed(1)} MB — too big to email (the limit is 1.5 MB). Pick fewer jobs, set a shorter date range, `
+        + 'turn on “One row per day and sub code”, or use Print / PDF and attach the PDF.', 'error',
+      { label: 'Print / PDF instead', run: () => doPrint() });
+      return;
+    }
     // The one place a customer is most likely on the other end.
     if (E.hasInternal(built.def, perm())
       && !window.confirm('This report includes internal data — costs, rates, hours, employee names or profit. Email it anyway? Only send it inside the company.')) return;
     const jobs = built.ctx.jobs;
     const one = jobs.length === 1 ? jobs[0] : null;
     const jobLabel = one ? jobName(one) : `${jobs.length} jobs`;
+    const record = runBody('email', built);
+    delete record.action; delete record.recipients; delete record.subject;
     window.openReportEmailModal({
       reportType: `${cfg.division}_custom_report`,
       projectId: one ? one.id : null,
-      projectName: jobLabel,
+      // No project name: the server swaps any subject that does not contain
+      // it for "<label> — <name>", which would throw away the subject the
+      // user wrote for the customer. The default subject already names the jobs.
+      projectName: null,
       defaultSubject: `${built.ctx.title} — ${jobLabel}`,
       getHTML: () => built.html,
-      onSent: info => logRun('email', built, info),
+      // send-report records the send itself; the browser logs it only when
+      // the server could not, so it is on the record once either way.
+      customReport: record,
+      onSent: info => {
+        if (info && info.logged) { noteRun(built); return undefined; }
+        return logRun('email', built, info);
+      },
     });
   }
 
   async function doExcel() {
-    if (!S.doc || !requireJobs()) return;
+    if (!S.doc || S.busy.excel || !requireJobs()) return;
     const d = S.doc;
-    await whenReady();
+    await whenReadyFor('excel');
     if (S.doc !== d) return;
     let built, bytes;
     try {
@@ -1917,6 +2255,9 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       toast('This browser can’t download files from here.', 'error');
       return;
     }
+    // A workbook is the file most often attached to an email by hand, out of
+    // reach of the Email button's question — so it asks here too.
+    if (E.hasInternal(built.def, perm()) && !window.confirm(EXCEL_INTERNAL_CONFIRM)) return;
     const blob = new Blob([bytes], { type: E.XLSX_MIME || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -1955,15 +2296,15 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         <td data-label="Who">${esc(r.run_by_username || '—')}</td>
         <td data-label="Report"><div>${esc(r.report_name || '')}${r.subject ? `<span class="cr-hint">${esc(r.subject)}</span>` : ''}</div></td>
         <td data-label="Action" class="cr-nowrap">${ACTION_LABEL[r.action] || esc(r.action)}</td>
+        <td data-label="Data">${r.included_internal ? badge('&#128274; Internal', 'internal') : badge('Customer-safe', 'safe')}</td>
         <td data-label="Jobs" title="${esc(names.join(', '))}">${esc(jobs || '—')}</td>
         <td data-label="Dates" class="cr-nowrap">${esc(range)}</td>
         <td data-label="Recipients">${esc(to)}</td>
-        <td data-label="Data">${r.included_internal ? badge('&#128274; Internal', 'internal') : badge('Customer-safe', 'safe')}</td>
       </tr>`;
     }).join('');
     return head + `<div class="cr-tablewrap"><table class="cr-table">
       <thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">Report</th><th scope="col">Action</th>
-        <th scope="col">Jobs</th><th scope="col">Dates</th><th scope="col">Recipients</th><th scope="col">Data</th></tr></thead>
+        <th scope="col">Data</th><th scope="col">Jobs</th><th scope="col">Dates</th><th scope="col">Recipients</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
   }
 
@@ -2126,6 +2467,22 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     S.doc.picked = ids;
     jobsChanged(true);
   }
+  /* Client…, All In Progress and Clear replace the selection — a customer
+     report should not quietly gain another client's jobs — so each says what
+     it did and offers to put back the hand-picked list it replaced. */
+  function replaceJobs(list, message) {
+    const d = S.doc, prev = d.picked.slice();
+    selectJobs(list, true);
+    if (!message) return;
+    toast(message, null, prev.length ? {
+      label: 'Undo',
+      run: () => {
+        if (S.doc !== d) return;
+        d.picked = prev;
+        jobsChanged(true);   // redraws the list only where step ① is on screen
+      },
+    } : null);
+  }
 
   // ── Event wiring ────────────────────────────────────────────────────
   function onClick(e) {
@@ -2210,14 +2567,30 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       }
       // steps
       case 'step': goStep(Number(t.getAttribute('data-step'))); break;
-      case 'jobs-shown': selectJobs(projects().filter(p => matchJob(p, S.jobSearch.trim().toLowerCase())), false); break;
-      case 'jobs-clear': selectJobs([], true); break;
+      case 'jobs-shown': {
+        const q = S.jobSearch.trim().toLowerCase();
+        const list = projects().filter(p => matchJob(p, q));
+        const have = new Set(S.doc.picked.map(String));
+        const adding = list.filter(p => !have.has(String(p.id))).length;
+        // Every job in the division, by one click on an empty search, is
+        // rarely what a customer report wants — and a slow one to preview.
+        if (!q && adding > SELECT_ALL_ASK && !window.confirm(`Add all ${adding} jobs in ${divLabel()} to this report?`)) break;
+        selectJobs(list, false);
+        break;
+      }
+      case 'jobs-clear': {
+        const n = S.doc.picked.length;
+        replaceJobs([], n ? `Cleared ${plural(n, 'job')}.` : '');
+        break;
+      }
       case 'jobs-active': {
         const list = projects().filter(p => txt(p.status) === 'In Progress');
         if (!list.length) { toast('No jobs are In Progress.', 'error'); break; }
-        selectJobs(list, true);
+        replaceJobs(list, `Selected ${plural(list.length, 'In Progress job')}.`);
         break;
       }
+      case 'zoom': setZoom(t.getAttribute('data-zoom')); break;
+      case 'full-preview': openFullPreview(); break;
       case 'add-menu': addMenu(t); break;
       case 'add-section': addSection(t.getAttribute('data-type')); break;
       case 'sec-toggle':
@@ -2257,8 +2630,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         el.value = '';
         if (!c) break;
         const list = projects().filter(p => txt(p.client) === c);
-        selectJobs(list, true);
-        toast(`Selected ${plural(list.length, 'job')} for ${c}.`);
+        replaceJobs(list, `Selected ${plural(list.length, 'job')} for ${c}.`);
         break;
       }
       case 'preset': {
@@ -2277,7 +2649,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       case 'layout': def.layout = el.value === 'combined' ? 'combined' : 'separate'; changed({ panel: true }); break;
       case 'pagebreak': def.pageBreakPerJob = !!el.checked; changed(); break;
       case 'orientation': def.orientation = el.value === 'landscape' ? 'landscape' : 'portrait'; changed(); break;
-      case 'save-jobs': S.doc.saveJobs = !!el.checked; changed({ preview: false }); break;
+      case 'save-jobs': S.doc.saveJobs = !!el.checked; S.doc.saveJobsSet = true; changed({ preview: false }); break;
       case 'internal': setInternal(!!el.checked, el); break;
       case 'col': toggleColumn(sec, el.getAttribute('data-key'), !!el.checked, el); break;
       case 'opt': setOption(sec, el.getAttribute('data-key'), el); break;
@@ -2294,6 +2666,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (!bind) return;
     if (bind === 'rail-search') { S.search = el.value; renderRail(); return; }
     if (!S.doc) return;
+    S.lastTypeAt = Date.now();
     const def = S.doc.def;
     const sec = el.getAttribute('data-sec');
     switch (bind) {
@@ -2347,6 +2720,10 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
 
   function onFocusOut(e) {
     const el = e.target;
+    // A slow preview held back while typing draws as soon as the box is left.
+    if (S.pvTimer && S.lastBuildMs >= SLOW_BUILD_MS && el && el.getAttribute && el.getAttribute('data-bind')) {
+      setTimeout(() => { if (S.pvTimer && !typingInBuilder()) schedulePreview(true); }, 0);
+    }
     if (!el || !el.getAttribute || el.getAttribute('data-bind') !== 'col-label' || !S.editLabel) return;
     // Clicking away from the label box keeps what was typed.
     setTimeout(() => {
@@ -2392,6 +2769,14 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     // Menus are position:fixed, so a page scroll would leave one floating
     // away from its button. Scrolling inside the menu itself is fine.
     window.addEventListener('resize', () => { closeMenu(); if (S.view === 'edit') fitPreview(); });
+    // Switch Division, Sign Out, a refresh, closing the tab: the browser asks
+    // before an unsaved report goes with the page, as the pages already do
+    // for daily rows still being written.
+    window.addEventListener('beforeunload', e => {
+      if (!S.doc || !(hasUnsavedWork() || (S.saving && changedSinceSent(S.doc)))) return;
+      e.preventDefault();
+      e.returnValue = '';
+    });
     document.addEventListener('scroll', e => {
       if (S.menuEl && !(e.target && e.target.nodeType === 1 && S.menuEl.contains(e.target))) closeMenu();
     }, true);
@@ -2410,6 +2795,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     }
     if (!S.loaded) S.canShare = cfg.perm.canShare === true;
     if (!S.readyDone) S.readyP = null;
+    try { S.zoom = localStorage.getItem(ZOOM_KEY) === '100' ? '100' : 'fit'; } catch (_) { S.zoom = 'fit'; }
     S.configured = true;
   }
 
@@ -2438,7 +2824,10 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     wireGlobal();
     render();
     readyPromise();
-    loadList();
+    // A report kept when the last session ended is offered back once the
+    // list is in (so a saved one is matched to its saved copy).
+    const p = loadList();
+    if (!S.doc && readDraft()) Promise.resolve(p).then(() => { if (!S.doc && S.mount && S.mount.isConnected) offerDraft(); });
   }
 
   window.FCTCustomReports = {

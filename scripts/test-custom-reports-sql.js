@@ -40,6 +40,10 @@ if (!/test/i.test(dbName)) {
 }
 
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'custom-reports-test-secret';
+// send-report reads these when it loads; the Resend SDK itself is stubbed
+// below, so nothing leaves the box.
+process.env.RESEND_API_KEY = process.env.RESEND_API_KEY || 'test-resend-key';
+process.env.EMAIL_FROM_ADDRESS = process.env.EMAIL_FROM_ADDRESS || 'reports@example.com';
 
 const CO  = 'CRTEST';
 const CO2 = 'CRTEST2';
@@ -61,9 +65,28 @@ const realAuth = require(path.join(ROOT, 'api/lib/auth.js'));
 // account from the users table — the path production takes.
 let AUTH = null;
 let REAL_AUTH = false;
+// What reached the (stubbed) Resend SDK, and a switch to make the history
+// write fail the way a database blip would.
+const RESEND = { sent: [] };
+const DB = { failRunInsert: false };
 const origLoad = Module._load;
 Module._load = function (request, parent) {
-  if (request === '@neondatabase/serverless') return { neon: () => makeSql(client) };
+  if (request === '@neondatabase/serverless') {
+    return { neon: () => {
+      const sql = makeSql(client);
+      return (strings, ...values) => {
+        if (DB.failRunInsert && strings.join('?').includes('INSERT INTO custom_report_runs')) {
+          return Promise.reject(new Error('connection reset'));
+        }
+        return sql(strings, ...values);
+      };
+    } };
+  }
+  if (request === 'resend') {
+    return { Resend: class {
+      constructor() { this.emails = { send: async opts => { RESEND.sent.push(opts); return { data: { id: 'stub-' + RESEND.sent.length }, error: null }; } }; }
+    } };
+  }
   const from = parent && parent.filename ? parent.filename : '';
   if (request === './lib/auth' && /api[\\/]custom-reports\.js$/.test(from)) {
     return {
@@ -178,6 +201,7 @@ async function cleanUp() {
   const KIEWIT = await mk('kpm',    { kiewit: 'level3' });
   const PLAT   = await mk('platform', {}, { platform: true });
   const RIVAL  = await mk('rival',  { paving: 'admin', turf: 'admin' }, { co: CO2 });
+  const THROT  = await mk('throttler', { paving: 'level1', turf: 'level1' });
 
   // ─────────────────────────────────────────────────────────────────────
   console.log('The database itself');
@@ -203,11 +227,6 @@ async function cleanUp() {
     assert('so is a visibility that is neither private nor shared', await fails(() => ins({ visibility: 'public', name: 'Pub' }), '23514'));
     assert('a run action other than print / email / excel is refused by the table', await fails(() => client.query(
       "INSERT INTO custom_report_runs (company_code, division, report_name, action) VALUES ($1, 'paving', 'x', 'fax')", [CO]), '23514'));
-    const idx = (await client.query(
-      "SELECT indexname FROM pg_indexes WHERE tablename IN ('custom_reports','custom_report_runs') ORDER BY indexname")).rows.map(r => r.indexname);
-    assert('the list index, both name indexes and both run indexes exist',
-      ['idx_custom_reports_list', 'uq_custom_reports_shared_name', 'uq_custom_reports_private_name',
-        'idx_custom_report_runs_company', 'idx_custom_report_runs_report'].every(n => idx.includes(n)), idx.join(','));
     await client.query('DELETE FROM custom_reports WHERE company_code = $1', [CO]);
 
     // The section is split and run the way scripts/run-schema.js does it — on
@@ -226,8 +245,16 @@ async function cleanUp() {
       }
     }
     assert(`neon-schema.sql's section splits into ${stmts.length} statements that each run, twice, the run-schema way`,
-      stmts.length === 7 && okRuns === 14 && stmts.every(s => /^CREATE (TABLE|INDEX|UNIQUE INDEX) IF NOT EXISTS/.test(s)),
+      stmts.length === 9 && okRuns === 18 && stmts.every(s => /^CREATE (TABLE|INDEX|UNIQUE INDEX) IF NOT EXISTS/.test(s)),
       firstErr || `${stmts.length} statements, ${okRuns} ran`);
+    // Checked after the section has run, as a deploy runs it on top of the
+    // database that is already there.
+    const idx = (await client.query(
+      "SELECT indexname FROM pg_indexes WHERE tablename IN ('custom_reports','custom_report_runs') ORDER BY indexname")).rows.map(r => r.indexname);
+    assert('the list index, both name indexes and the four run indexes exist',
+      ['idx_custom_reports_list', 'uq_custom_reports_shared_name', 'uq_custom_reports_private_name',
+        'idx_custom_report_runs_company', 'idx_custom_report_runs_report', 'idx_custom_report_runs_user',
+        'idx_custom_report_runs_snapshot'].every(n => idx.includes(n)), idx.join(','));
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -709,6 +736,14 @@ async function cleanUp() {
     assert('a definition snapshot over 64 KB → 413', r.statusCode === 413, show(r));
     r = await run(ALICE, { included_internal: true, report_name: 'Internal one' });
     assert('the internal flag is kept', r.statusCode === 201 && r.body.run.included_internal === true, show(r));
+    r = await run(ALICE, { included_internal: false, report_name: 'Claims safe', action: 'email', definition: DEF({
+      includeInternal: true,
+      sections: [{ id: 's1', type: 'daily_production', title: '', columns: ['date', 'employee', 'rate', 'labor_cost'], labels: {}, options: {} }] }) });
+    assert('a run whose snapshot has internal data on is logged as internal, whatever the flag says',
+      r.statusCode === 201 && r.body.run.included_internal === true && (await dbRun(r.body.run.id)).included_internal === true, show(r));
+    r = await run(ALICE, { included_internal: false, report_name: 'Really safe' });
+    assert('…and a customer-safe snapshot with the flag off stays customer-safe',
+      r.statusCode === 201 && r.body.run.included_internal === false, show(r));
     await run(BOB, { report_name: 'Bob print' });
     await run(BOSS, { report_name: 'Turf run' }, 'turf');
 
@@ -752,6 +787,49 @@ async function cleanUp() {
       SELECT $1, 'kiewit', 'Bulk run ' || g, 'print', $2, 'kpm' FROM generate_series(1, 205) g`, [CO, KIEWIT.userId]);
     r = await call('GET', { division: 'kiewit', runs: '1' }, null, KIEWIT);
     assert('the history stops at 200', r.body.runs.length === 200, r.body.runs && r.body.runs.length);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nThe run log cannot be flooded, and old snapshots are let go');
+  {
+    const countFor = async uid => Number((await client.query(
+      'SELECT count(*) AS n FROM custom_report_runs WHERE run_by_user_id = $1', [uid])).rows[0].n);
+    let ok = 0;
+    for (let i = 0; i < 30; i++) {
+      const r = await run(THROT, { report_name: 'Flood ' + i });
+      if (r.statusCode === 201) ok++;
+    }
+    assert('30 runs in a row are all logged', ok === 30, `${ok} of 30`);
+    let r = await run(THROT, { report_name: 'Flood 31' });
+    assert('the 31st within the minute → 429, saying to wait', r.statusCode === 429 && /try again in a minute/i.test(r.body.error), show(r));
+    assert('…and writes no row', (await countFor(THROT.userId)) === 30);
+    r = await run(THROT, { report_name: 'Turf flood' }, 'turf');
+    assert('…in any division of the company (the limit is per person)', r.statusCode === 429, show(r));
+    r = await run(BOB, { report_name: 'Bob is fine' });
+    assert('another user is not held back', r.statusCode === 201, show(r));
+    await client.query("UPDATE custom_report_runs SET created_at = created_at - interval '2 minutes' WHERE run_by_user_id = $1", [THROT.userId]);
+    r = await run(THROT, { report_name: 'A minute later' });
+    assert('a minute later they can log again', r.statusCode === 201, show(r));
+
+    // Snapshots over two years old are emptied as runs come in — for this
+    // company and division only, and never the row itself.
+    const mkOld = async (division, auth, years) => {
+      const id = (await run(auth, { report_name: `Old ${division} ${years}y`, definition: DEF({ title: 'Old snapshot' }) }, division)).body.run.id;
+      await client.query(`UPDATE custom_report_runs SET created_at = NOW() - make_interval(days => $2) WHERE id = $1`, [id, Math.round(years * 365)]);
+      return id;
+    };
+    const oldPav  = await mkOld('paving', BOB, 3);
+    const newPav  = await mkOld('paving', BOB, 1);
+    const oldTurf = await mkOld('turf', BOSS, 3);
+    const oldRiv  = await mkOld('paving', RIVAL, 3);
+    r = await run(BOB, { report_name: 'Triggers the prune' });
+    assert('a new run still logs (201)', r.statusCode === 201, show(r));
+    const snap = async id => (await dbRun(id)).definition;
+    assert('a paving snapshot three years old is emptied, its row kept',
+      JSON.stringify(await snap(oldPav)) === '{}' && (await dbRun(oldPav)).report_name === 'Old paving 3y');
+    assert('…one a year old is kept', (await snap(newPav)).title === 'Old snapshot');
+    assert('…as are another division\'s and another company\'s', (await snap(oldTurf)).title === 'Old snapshot'
+      && (await snap(oldRiv)).title === 'Old snapshot');
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -825,12 +903,88 @@ async function cleanUp() {
   }
 
   // ─────────────────────────────────────────────────────────────────────
+  console.log('\nAn emailed custom report goes out as typed and logs itself');
+  {
+    const vm = require('vm');
+    const ectx = vm.createContext({});
+    ectx.window = ectx;
+    vm.runInContext(fs.readFileSync(path.join(ROOT, 'custom-reports-engine.js'), 'utf8'), ectx);
+    const E = ectx.FCTReportEngine;
+    const job = { id: 'm1', 'project-name': 'Route 30 Resurfacing', client: 'Acme Township', bidItems: [],
+      dailyRows: [{ date: '2026-11-02', cost_code: 'Paving', sub_code: 'Base', quantity: '10', labor_hours: '8', rate: '40', employee: 'Pat' }] };
+    const htmlFor = internal => {
+      const def = E.normalizeDefinition({ title: 'Weekly', includeInternal: internal, sections: [Object.assign(E.newSection('daily_production'),
+        { columns: internal ? ['date', 'quantity', 'employee', 'rate'] : ['date', 'quantity'] })] });
+      return E.buildReportHtml(def, E.makeContext(def, { getProjects: () => [job], perm: {} }, { pickedIds: ['m1'], today: '2026-11-05' }));
+    };
+    const internalHtml = htmlFor(true), safeHtml = htmlFor(false);
+    assert('the engine marks an internal report data-cr-internal, and only an internal one',
+      /data-cr-internal="1"/.test(internalHtml) && !/data-cr-internal/.test(safeHtml));
+
+    const rep = (await create(ALICE, { name: 'Emailed one' })).body.report;
+    const send = (body, auth = ALICE) => call('POST', {}, {
+      report_type: 'paving_custom_report', recipients: ['Owner@Example.com', 'gc@example.com'],
+      subject: 'Acme Township: weekly progress', project_name: null, attach_pdf: false, html: safeHtml, ...body,
+    }, auth, { h: sendReport });
+    const runsNamed = async name => (await client.query(
+      "SELECT *, to_char(date_from, 'YYYY-MM-DD') AS df FROM custom_report_runs WHERE company_code = $1 AND report_name = $2 ORDER BY id", [CO, name])).rows;
+
+    RESEND.sent = [];
+    let r = await send({ html: internalHtml, custom_report: {
+      report_id: rep.id, report_name: 'Emailed one', project_ids: ['m1'], project_names: ['Route 30 Resurfacing'],
+      date_from: '2026-11-02', date_to: '2026-11-08', included_internal: false, definition: DEF({ title: 'Emailed snapshot' }) } });
+    assert('the send answers 200, logged by the server', r.statusCode === 200 && r.body.ok && r.body.logged === true && r.body.run_id, show(r));
+    assert('the subject the user typed is the one that went out, and the one returned',
+      RESEND.sent.length === 1 && RESEND.sent[0].subject === 'Acme Township: weekly progress' && r.body.subject === 'Acme Township: weekly progress',
+      `${RESEND.sent[0] && RESEND.sent[0].subject} / ${r.body.subject}`);
+    let rows = await runsNamed('Emailed one');
+    assert('exactly one history row, an email, against the report',
+      rows.length === 1 && rows[0].action === 'email' && Number(rows[0].report_id) === rep.id && Number(rows[0].id) === Number(r.body.run_id), rows.length);
+    assert('…with the recipients as sent, the subject as sent, the jobs and the dates',
+      rows[0] && JSON.stringify(rows[0].recipients) === '["owner@example.com","gc@example.com"]'
+        && rows[0].subject === 'Acme Township: weekly progress' && JSON.stringify(rows[0].project_names) === '["Route 30 Resurfacing"]'
+        && rows[0].df === '2026-11-02' && rows[0].definition.title === 'Emailed snapshot' && rows[0].run_by_user_id === ALICE.userId, JSON.stringify(rows[0]));
+    assert('…marked internal off the HTML, though the browser said customer-safe', rows[0] && rows[0].included_internal === true);
+    assert('the report\'s run count moves', (await dbRow(rep.id)).run_count === 1);
+
+    r = await send({ custom_report: { report_name: 'Emailed safe', included_internal: false } });
+    rows = await runsNamed('Emailed safe');
+    assert('a customer-safe email is logged customer-safe', r.statusCode === 200 && rows.length === 1 && rows[0].included_internal === false, show(r));
+
+    r = await send({ subject: '', custom_report: { report_name: 'Emailed blank subject' } });
+    rows = await runsNamed('Emailed blank subject');
+    assert('an empty subject goes out as the label, and that is what is returned and logged',
+      r.body.subject === 'Custom Report — Paving' && RESEND.sent[RESEND.sent.length - 1].subject === 'Custom Report — Paving'
+        && rows[0] && rows[0].subject === 'Custom Report — Paving', `${r.body.subject} / ${rows[0] && rows[0].subject}`);
+
+    r = await send({ custom_report: { report_name: 'Emailed too many', project_ids: Array.from({ length: 501 }, (_, i) => 'p' + i) } });
+    rows = await runsNamed('Emailed too many');
+    assert('a description that will not store still logs the email, without it',
+      r.statusCode === 200 && r.body.logged === true && rows.length === 1 && rows[0].project_ids.length === 0, show(r));
+
+    r = await send({ custom_report: undefined });
+    rows = await runsNamed('Custom Report — Paving');
+    assert('a send with no description at all is logged under the report\'s label', r.body.logged === true && rows.length === 1, show(r));
+
+    DB.failRunInsert = true;
+    r = await send({ custom_report: { report_name: 'Emailed DB down' } });
+    DB.failRunInsert = false;
+    assert('when the history cannot be written the email still went: 200, logged false',
+      r.statusCode === 200 && r.body.ok === true && r.body.logged === false && (await runsNamed('Emailed DB down')).length === 0, show(r));
+
+    r = await call('POST', {}, { report_type: 'paving_daily_pm', recipients: ['a@example.com'], subject: 'PM', attach_pdf: false,
+      html: '<p>x</p>' }, BOSS, { h: sendReport });
+    assert('other report types are not logged here (no logged key), but do return the subject',
+      r.statusCode === 200 && !('logged' in r.body) && r.body.subject === 'PM', show(r));
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
   console.log('\nThe Email modal tells Custom Reporting what was sent (onSent)');
   {
     const { JSDOM } = require('jsdom');
     const src = fs.readFileSync(path.join(ROOT, 'report-email.js'), 'utf8');
     const tick = () => new Promise(r => setTimeout(r, 10));
-    async function sendWith({ reply, onSent, status = 200, closeMidSend = false }) {
+    async function sendWith({ reply, onSent, status = 200, closeMidSend = false, text, customReport }) {
       const dom = new JSDOM('<!doctype html><html><body></body></html>', { runScripts: 'outside-only', url: 'http://localhost/' });
       const w = dom.window;
       w.localStorage.setItem('fct_token', 'test-token');
@@ -840,6 +994,8 @@ async function cleanUp() {
         if (String(url).startsWith('/api/email/send-report')) {
           posts.push(JSON.parse(opts.body));
           if (closeMidSend) await new Promise(r => setTimeout(r, 50));
+          // A platform error page is text, not JSON.
+          if (text !== undefined) return { ok: false, status, text: async () => text, json: async () => JSON.parse(text) };
           return { ok: status === 200, status, json: async () => reply };
         }
         return { ok: true, status: 200, json: async () => ({ ok: true, isAdmin: false, groups: [] }) };
@@ -850,6 +1006,7 @@ async function cleanUp() {
       const opts = { reportType: 'paving_custom_report', projectId: null, projectName: '2 jobs',
         defaultSubject: 'Weekly — 2 jobs', getHTML: () => '<p>report</p>' };
       if (onSent !== undefined) opts.onSent = onSent;
+      if (customReport !== undefined) opts.customReport = customReport;
       w.openReportEmailModal(opts);
       const $ = id => w.document.getElementById(id);
       $('rem-input').value = 'Owner@Example.com, gc@example.com';
@@ -908,6 +1065,31 @@ async function cleanUp() {
       m.modalOpen === false && m.posts.length === 1 && calls.length === 1
         && JSON.stringify(calls[0].recipients) === '["owner@example.com","gc@example.com"]' && calls[0].subject === 'Weekly — 2 jobs',
       `${m.modalOpen} ${m.posts.length} ${JSON.stringify(calls)}`);
+
+    calls = [];
+    m = await sendWith({ reply: { ok: true, recipientCount: 2, pdfAttached: true, subject: 'Custom Report — Paving', logged: true, run_id: 41 },
+      onSent: info => calls.push(info), customReport: { report_id: 9, report_name: 'Weekly', project_ids: ['p1'] } });
+    assert('onSent records the subject the server says it sent, not just what was typed',
+      calls.length === 1 && calls[0].subject === 'Custom Report — Paving', JSON.stringify(calls[0]));
+    assert('…and whether the server logged the send itself (with its run id)',
+      calls[0] && calls[0].logged === true && calls[0].runId === 41, JSON.stringify(calls[0]));
+    assert('customReport rides along to send-report as custom_report',
+      m.posts[0] && m.posts[0].custom_report && m.posts[0].custom_report.report_id === 9
+        && JSON.stringify(m.posts[0].custom_report.project_ids) === '["p1"]', JSON.stringify(m.posts[0] && m.posts[0].custom_report));
+    calls = [];
+    m = await sendWith({ reply: { ok: true, recipientCount: 2, pdfAttached: true }, onSent: info => calls.push(info) });
+    assert('an older server that returns no subject: onSent falls back to the typed one, logged false',
+      calls[0] && calls[0].subject === 'Weekly — 2 jobs' && calls[0].logged === false && !('custom_report' in m.posts[0]), JSON.stringify(calls[0]));
+
+    calls = [];
+    m = await sendWith({ text: 'Request Entity Too Large\nFUNCTION_PAYLOAD_TOO_LARGE', status: 413, onSent: info => calls.push(info) });
+    assert('a plain-text 413 from the host reads as "too large to email", not a JSON parse error',
+      /Send failed: The report is too large to email/.test(m.status) && !/Unexpected token|JSON/.test(m.status) && calls.length === 0, m.status);
+    m = await sendWith({ reply: { ok: false, error: 'Report HTML is too large' }, status: 413 });
+    assert('…and so does send-report\'s own 413, with what to do about it',
+      /Send failed: The report is too large to email — narrow the date range, pick fewer jobs/.test(m.status), m.status);
+    m = await sendWith({ text: '<html>Gateway Timeout</html>', status: 504 });
+    assert('another non-JSON failure says its HTTP status', /Send failed: HTTP 504/.test(m.status) && m.sendDisabled === false, m.status);
 
     m = await sendWith({ reply: { ok: true, recipientCount: 2, pdfAttached: true } });
     assert('without onSent the modal sends exactly as it always has', /^Sent to 2 recipients\. PDF attached/.test(m.status) && m.posts.length === 1, m.status);

@@ -25982,6 +25982,9 @@ function renderCustomReports(isRetry) {
           dailyRowCost, calcDaily, bidItemComplete, bidProjectPct, bidGroupPct, projForBidItem,
           projectedCostForProject, gpEarnedToDate, bidContractFigures, projIsDone,
           lineAmt: _lineAmt, lineTax: _lineTax,
+          // The working-day calendar the Schedule Estimator counts with, so a
+          // projected finish skips the same holidays.
+          addWorkingDays: _addWorkingDays,
         },
         // A session that expires mid-save signs out the way every other call does.
         onAuthError:   () => logout(),

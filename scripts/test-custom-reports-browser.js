@@ -67,6 +67,11 @@ if (!/test/i.test(dbName)) {
 
 process.env.JWT_SECRET   = process.env.JWT_SECRET || 'custom-reports-browser-secret';
 process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://stubbed';
+// The real send-report handler runs too; only the Resend SDK at the very end
+// of it is stubbed, so nothing leaves the box.
+process.env.RESEND_API_KEY = process.env.RESEND_API_KEY || 'test-resend-key';
+process.env.EMAIL_FROM_ADDRESS = process.env.EMAIL_FROM_ADDRESS || 'reports@example.com';
+const RESENT = [];   // what reached the (stubbed) Resend SDK
 const SCREENS = process.env.CR_SCREENS ? path.resolve(process.env.CR_SCREENS) : '';
 
 const db = new Client({ connectionString: PG_URL });
@@ -84,9 +89,15 @@ function makeSql(c) {
 const origLoad = Module._load;
 Module._load = function (request) {
   if (request === '@neondatabase/serverless') return { neon: () => makeSql(db) };
+  if (request === 'resend') {
+    return { Resend: class {
+      constructor() { this.emails = { send: async o => { RESENT.push(o); return { data: { id: 'stub-' + RESENT.length }, error: null }; } }; }
+    } };
+  }
   return origLoad.apply(this, arguments);
 };
 const handler = require(path.join(ROOT, 'api/custom-reports.js'));
+const sendReport = require(path.join(ROOT, 'api/email/send-report.js'));
 const jwt     = require('jsonwebtoken');
 const { JSDOM } = require('jsdom');
 
@@ -171,12 +182,12 @@ function readBody(req) {
 }
 
 // Vercel hands a function req.query / req.body and a res with status().json().
-async function runHandler(req, res, u) {
+async function runHandler(req, res, u, fn = handler, log = CR_CALLS) {
   const raw = await readBody(req);
   let body;
   if (raw) { try { body = JSON.parse(raw); } catch { body = raw; } }
   const query = Object.fromEntries(u.searchParams);
-  CR_CALLS.push({ method: req.method, query, body });
+  log.push(fn === handler ? { method: req.method, query, body } : body);
   let status = 200;
   const out = {
     setHeader() {},
@@ -184,7 +195,7 @@ async function runHandler(req, res, u) {
     json(o) { json(res, o, status); return out; },
     end() { res.writeHead(status); res.end(); return out; },
   };
-  try { await handler({ method: req.method, query, body, headers: req.headers }, out); }
+  try { await fn({ method: req.method, query, body, headers: req.headers }, out); }
   catch (err) { json(res, { error: 'handler threw: ' + err.message }, 500); }
 }
 
@@ -193,11 +204,7 @@ const server = http.createServer(async (req, res) => {
   const p = decodeURIComponent(u.pathname);
   if (p === '/api/custom-reports') return runHandler(req, res, u);
   if (p.startsWith('/api/')) {
-    if (p === '/api/email/send-report' && req.method === 'POST') {
-      const raw = await readBody(req);
-      try { EMAILS.push(JSON.parse(raw)); } catch { EMAILS.push({ raw }); }
-      return json(res, { ok: true, recipientCount: 1, pdfAttached: false });
-    }
+    if (p === '/api/email/send-report' && req.method === 'POST') return runHandler(req, res, u, sendReport, EMAILS);
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return json(res, { ok: true });
     if (!/^Bearer .+\..+\..+/.test(String(req.headers.authorization || ''))) return json(res, { error: 'Unauthorized' }, 401);
     if (p === '/api/data/_batch') {
@@ -527,12 +534,15 @@ async function cleanUp() {
     }
     await popup.close().catch(() => {});
 
-    // Excel.
+    // Excel. An internal workbook asks first, like Email.
+    let excelAsk = '';
+    page.once('dialog', d => { excelAsk = d.message(); d.accept(); });
     const [dl] = await Promise.all([page.waitForEvent('download', { timeout: 30000 }), page.click('#cr-content [data-act="excel"]')]);
+    ok('Excel of an internal report asks before downloading', /workbook includes internal data/.test(excelAsk), excelAsk);
     const xlsxPath = path.join(tmp, 'report.xlsx');
     await dl.saveAs(xlsxPath);
     ok('Excel downloads a .xlsx named after the report and today',
-      new RegExp(`-${ymd(today)}\\.xlsx$`).test(dl.suggestedFilename()) && !/[<>:"/\\|?*]/.test(dl.suggestedFilename()),
+      new RegExp(`-INTERNAL-${ymd(today)}\\.xlsx$`).test(dl.suggestedFilename()) && !/[<>:"/\\|?*]/.test(dl.suggestedFilename()),
       dl.suggestedFilename());
     let parts = null;
     try { parts = unzip(fs.readFileSync(xlsxPath)); } catch (err) { ok('the workbook unzips', false, err.message); }
@@ -549,18 +559,28 @@ async function cleanUp() {
       ok('…with quantities as numbers, not text', /<c [^>]*>\s*<v>197<\/v>/.test(sheets));
     }
 
-    // Email, through the real modal, logged through onSent.
+    // Email, through the real modal and the real send-report handler, with a
+    // subject written for the customer.
     page.once('dialog', d => d.accept());   // "includes internal data — email it anyway?"
     await page.click('#cr-content [data-act="email"]');
     await page.waitForSelector('#rem-input', { timeout: 10000 });
+    ok('the email modal offers "<title> — 2 jobs" as the subject', (await page.inputValue('#rem-subject')) === `${TITLE} — 2 jobs`,
+      await page.inputValue('#rem-subject'));
     await page.fill('#rem-input', 'owner@maple.example');
     await page.press('#rem-input', 'Enter');
+    await page.fill('#rem-subject', 'Maple Township: weekly progress');
+    await page.uncheck('#rem-pdf');   // no Chrome-in-Chrome here; the PDF path has its own suite
+    const runPostsBefore = CR_CALLS.filter(c => c.method === 'POST' && c.query.action === 'run').length;
     await page.click('#rem-send');
-    await page.waitForFunction(() => /sent|recipient/i.test((document.getElementById('rem-status') || {}).textContent || ''), null, { timeout: 10000 }).catch(() => {});
+    await page.waitForFunction(() => /sent|recipient|failed/i.test((document.getElementById('rem-status') || {}).textContent || ''), null, { timeout: 10000 }).catch(() => {});
     const mail = EMAILS[EMAILS.length - 1];
     ok('Email goes out as a paving_custom_report with the branded report in it',
       mail && mail.report_type === 'paving_custom_report' && /data-dw-brand/.test(mail.html || ''),
       mail && JSON.stringify({ type: mail.report_type, len: (mail.html || '').length }));
+    ok('…with the subject the user typed and no project name for the server to swap it for',
+      mail && mail.subject === 'Maple Township: weekly progress' && !mail.project_name, mail && JSON.stringify({ s: mail.subject, p: mail.project_name }));
+    ok('…and that subject is what reached the mail service',
+      RESENT.length > 0 && RESENT[RESENT.length - 1].subject === 'Maple Township: weekly progress', RESENT.length && RESENT[RESENT.length - 1].subject);
 
     // The send history, as rows.
     let runs = [];
@@ -576,9 +596,13 @@ async function cleanUp() {
         && JSON.stringify(r.project_names) === JSON.stringify([JOB1, JOB2]) && r.report_name === REPORT));
     ok('…each marked as carrying internal data', runs.length > 0 && runs.every(r => r.included_internal === true));
     const mailRun = runs.find(r => r.action === 'email');
-    ok('…and the email row has who it went to and the subject (onSent)',
-      mailRun && JSON.stringify(mailRun.recipients) === JSON.stringify(['owner@maple.example']) && mailRun.subject === `${TITLE} — 2 jobs`,
+    ok('…and the email row has who it went to and the subject that went out',
+      mailRun && JSON.stringify(mailRun.recipients) === JSON.stringify(['owner@maple.example']) && mailRun.subject === 'Maple Township: weekly progress',
       mailRun && JSON.stringify({ to: mailRun.recipients, subject: mailRun.subject }));
+    ok('…written once, by the server as it sent the email (the browser did not log it again)',
+      runs.filter(r => r.action === 'email').length === 1
+        && CR_CALLS.filter(c => c.method === 'POST' && c.query.action === 'run').length === runPostsBefore,
+      `${runs.filter(r => r.action === 'email').length} email rows`);
     row = (await db.query('SELECT run_count, last_run_at FROM custom_reports WHERE id = $1', [reportId])).rows[0];
     ok('the report counts its runs', row && row.run_count === 3 && row.last_run_at, row && row.run_count);
     ok('every custom-reports call carried ?division=paving',
@@ -631,6 +655,18 @@ async function cleanUp() {
         html.match(/.{60}(Actual|\$2,400).{60}/) || String(kept));
     }
 
+    // Leaving with an unsaved report: the browser asks first.
+    await page.click('#cr-content [data-act="step"][data-step="3"]');
+    await page.fill('#cr-content [data-bind="h-footer"]', 'Unsaved footer');
+    await page.waitForSelector('#cr-content .cr-dirty', { state: 'visible' });
+    let leaveAsk = '';
+    page.once('dialog', d => { leaveAsk = d.type(); d.dismiss().catch(() => {}); });
+    await page.click('button:has-text("Switch Division")', { noWaitAfter: true });
+    await sleep(800);
+    ok('"Switch Division" with an unsaved report raises the browser\'s leave-page question, and staying keeps it',
+      leaveAsk === 'beforeunload' && /paving\.html/.test(page.url())
+        && (await page.inputValue('#cr-content [data-bind="h-footer"]')) === 'Unsaved footer', `${leaveAsk} ${page.url()}`);
+
     const ours = ourErrors(errors);
     ok('no page errors, and no console errors from the Custom Reporting files', ours.length === 0, ours.slice(0, 3).join(' | '));
     const others = errors.console.filter(t => !ours.includes(t));
@@ -678,6 +714,13 @@ async function cleanUp() {
         ok('…customer-safe', !html.includes(SECRET_NAME) && !/INTERNAL/.test(html));
       }
       ok(`the list was asked for division=${div}`, CR_CALLS.some(c => c.query.division === div));
+      if (div === 'turf') {
+        // A double-clicked Save: the dialog the first click opens stays open.
+        await page.dblclick('#cr-content [data-act="save"]');
+        await sleep(200);
+        ok('a double-clicked Save leaves its name dialog open', await page.locator('.cr-modal').count() === 1);
+        await page.keyboard.press('Escape');
+      }
       const o = ourErrors(errors);
       ok('no page errors, and no console errors from the Custom Reporting files', o.length === 0, o.slice(0, 3).join(' | '));
       await ctx.close();
