@@ -36,6 +36,7 @@ const VALID_REPORT_TYPES = new Set([
   'trucking_dispatch',
   'trucking_labor_dispatch',
   'crm_next_steps',
+  'turf_custom_report', 'paving_custom_report', 'kiewit_custom_report',
 ]);
 const MAX_NAME_LEN     = 120;
 const MAX_EMAILS       = 50;

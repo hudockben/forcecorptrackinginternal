@@ -2737,3 +2737,106 @@ CREATE INDEX IF NOT EXISTS idx_vacation_allowances_year
 CREATE INDEX IF NOT EXISTS idx_ts_vacation
     ON timesheet_entries (company_code, user_id, work_date)
     WHERE entry_type = 'time_off' AND time_off_type = 'vacation';
+
+-- ─────────────────────────────────────────────────
+-- CUSTOM REPORTS (Analytics → Custom Reporting)  api/custom-reports.js
+-- ─────────────────────────────────────────────────
+-- A report a PM builds for himself from a division's own data — which jobs,
+-- which dates, which sections and which columns — and saves under a name so
+-- next week's update is one click instead of an afternoon. The point of most
+-- of them is what they leave OUT: the customer gets quantities and progress,
+-- not what the work cost us.
+--
+-- Only the recipe is stored. `definition` is the builder's JSON (sections,
+-- columns, dates, header text, and the job ids when they are saved with the
+-- report); every figure on the page is worked out in the browser from the
+-- division's data at the moment the report is run, so a saved report never
+-- goes stale and never holds a number nobody can trace.
+--
+-- visibility: 'private' is the owner's alone. 'shared' is a division template
+-- everyone in the division can run, and only an admin or level3 there may
+-- create, change or delete one. A private report of someone else's is not
+-- visible to anybody else, admins included — it is his working copy.
+--
+-- kind and customer_safe are both derived from `definition` by the API, never
+-- taken from the browser: 'report' when the definition saves specific jobs,
+-- 'template' when the jobs are picked at run time; customer_safe is false once
+-- the definition switches internal data on, so the list can badge the ones
+-- that must not go to a customer.
+--
+-- version is the optimistic lock. Every save sends the version it opened and
+-- the UPDATE matches on it, so two people saving the same shared template
+-- cannot silently overwrite each other — the second is told and shown theirs.
+--
+-- Deleting is soft: deleted_at is set and the row waits 30 days in Recently
+-- Deleted, where it can be restored. Rows deleted more than 90 days ago are
+-- removed for good the next time anyone in that division deletes a report.
+--
+-- The unique indexes keep one LIVE shared template per name per division and
+-- one live private report per name per owner, compared trimmed and without
+-- case, so "Weekly Update" and " weekly update" are the same name. Deleted
+-- rows are outside both, which is why restoring can collide with a live row.
+-- ─────────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS custom_reports (
+    id                  BIGSERIAL PRIMARY KEY,
+    company_code        TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    division            TEXT        NOT NULL CHECK (division IN ('turf','paving','kiewit')),
+    name                TEXT        NOT NULL CHECK (char_length(btrim(name)) BETWEEN 1 AND 120),
+    description         TEXT,
+    visibility          TEXT        NOT NULL DEFAULT 'private' CHECK (visibility IN ('private','shared')),
+    kind                TEXT        NOT NULL DEFAULT 'template' CHECK (kind IN ('template','report')),
+    definition          JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    customer_safe       BOOLEAN     NOT NULL DEFAULT TRUE,
+    version             INTEGER     NOT NULL DEFAULT 1,
+    -- Who made it. Kept when a shared template is made private again, so it
+    -- goes back to its author rather than to whoever un-shared it.
+    owner_user_id       INTEGER     NOT NULL,
+    owner_username      TEXT,
+    updated_by_user_id  INTEGER,
+    updated_by_username TEXT,
+    last_run_at         TIMESTAMPTZ,
+    run_count           INTEGER     NOT NULL DEFAULT 0,
+    deleted_at          TIMESTAMPTZ,
+    deleted_by_username TEXT,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- The list the tab opens on: a division's live reports, newest change first.
+CREATE INDEX IF NOT EXISTS idx_custom_reports_list ON custom_reports(company_code, division, updated_at DESC) WHERE deleted_at IS NULL;
+-- One live shared template per name per division, one live private report per
+-- name per owner.
+CREATE UNIQUE INDEX IF NOT EXISTS uq_custom_reports_shared_name  ON custom_reports(company_code, division, lower(btrim(name))) WHERE deleted_at IS NULL AND visibility = 'shared';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_custom_reports_private_name ON custom_reports(company_code, division, owner_user_id, lower(btrim(name))) WHERE deleted_at IS NULL AND visibility = 'private';
+
+-- One row per time a custom report was printed, emailed or downloaded as a
+-- spreadsheet: which jobs, which dates, to whom, and whether internal figures
+-- were on it. This is what answers "what did we send the owner on the 14th,
+-- and did it have our costs on it?" — so the definition is snapshotted here as
+-- it was sent, and the names of the jobs with it, because the report may be
+-- edited or deleted since and a job renamed.
+--
+-- report_id is SET NULL rather than cascaded when a report is purged: the
+-- history of what went out outlives the recipe that produced it.
+CREATE TABLE IF NOT EXISTS custom_report_runs (
+    id                BIGSERIAL PRIMARY KEY,
+    report_id         BIGINT      REFERENCES custom_reports(id) ON DELETE SET NULL,
+    company_code      TEXT        NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+    division          TEXT        NOT NULL,
+    report_name       TEXT        NOT NULL,
+    action            TEXT        NOT NULL CHECK (action IN ('print','email','excel')),
+    project_ids       JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    project_names     JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    date_from         DATE,
+    date_to           DATE,
+    recipients        JSONB       NOT NULL DEFAULT '[]'::jsonb,
+    subject           TEXT,
+    included_internal BOOLEAN     NOT NULL DEFAULT FALSE,
+    definition        JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    run_by_user_id    INTEGER,
+    run_by_username   TEXT,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_custom_report_runs_company ON custom_report_runs(company_code, division, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_custom_report_runs_report  ON custom_report_runs(report_id, created_at DESC);

@@ -11,7 +11,16 @@
  *     getHTML,           // () => string  — caller renders the report HTML on demand
  *     getAttachments,    // optional () => [{filename, content(base64), contentId}]
  *                        //   inline images referenced from HTML via <img src="cid:contentId">
+ *     onSent,            // optional (info) => void — called once the server says the
+ *                        //   email went out (with or without a warning), with
+ *                        //   { recipients: [...], subject, recipientCount, pdfAttached }
  *   });
+ *
+ * onSent exists for Custom Reporting, which keeps a history of what was sent
+ * to whom. It is told only about a send that really happened, and anything it
+ * throws (or rejects with) is caught and logged: the email has already gone,
+ * and a broken history write must not leave the modal stuck mid-send with a
+ * live Send button inviting a duplicate.
  *
  * Pairs with report-branding.js, which stamps the DataWatch header on the
  * report before it is sent — the same header the print path uses.
@@ -427,6 +436,26 @@
   }
 
   // ── Status row + Send ───────────────────────────────────────────────
+  // The caller's onSent, told what went out. Called inside the send's own
+  // try block, so it is wrapped here: an exception escaping it would land in
+  // the "Send failed" branch and re-enable Send for an email already sent.
+  // `sent` is taken before the request goes, so closing the modal mid-send
+  // (which clears state) cannot lose the record of an email that did go.
+  function notifySent(sent, j) {
+    if (typeof sent.onSent !== 'function') return;
+    try {
+      const p = sent.onSent({
+        recipients:     sent.recipients,
+        subject:        sent.subject,
+        recipientCount: j.recipientCount,
+        pdfAttached:    !!j.pdfAttached,
+      });
+      if (p && typeof p.catch === 'function') p.catch(err => console.warn('[report-email] onSent failed:', err && err.message));
+    } catch (err) {
+      console.warn('[report-email] onSent failed:', err && err.message);
+    }
+  }
+
   function setStatus(msg, kind) {
     const el = document.getElementById('rem-status');
     if (!el) return;
@@ -479,6 +508,7 @@
     setStatus(attachPdf ? 'Rendering PDF and sending…' : 'Sending…');
     const sendBtn = document.getElementById('rem-send');
     if (sendBtn) { sendBtn.disabled = true; sendBtn.style.opacity = '0.6'; }
+    const sent = { onSent: state.onSent, recipients: state.recipients.slice(), subject };
 
     try {
       const r = await fetch('/api/email/send-report', {
@@ -499,6 +529,7 @@
       });
       const j = await r.json();
       if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP ' + r.status));
+      notifySent(sent, j);
       const who = `${j.recipientCount} recipient${j.recipientCount === 1 ? '' : 's'}`;
       if (j.warning) {
         // The email did go out, just not the way they asked. Leave the warning
@@ -641,6 +672,9 @@
     kiewit_bid_items:     'Bid Line Items vs Actuals — Kiewit Pinetree',
     kiewit_job_summary:   'Job Summary — Kiewit Pinetree',
     kiewit_construction_schedule: 'Construction Schedule — Kiewit Pinetree',
+    turf_custom_report:   'Custom Report — Turf',
+    paving_custom_report: 'Custom Report — Paving',
+    kiewit_custom_report: 'Custom Report — Kiewit Pinetree',
     dust_tracking_summary:'Dust Control Tracking Report',
     crm_next_steps:       'Next Steps Due — CRM',
   };
@@ -659,6 +693,7 @@
       getHTML:        typeof opts.getHTML === 'function' ? opts.getHTML : null,
       getAttachments: typeof opts.getAttachments === 'function' ? opts.getAttachments : null,
       getSummary:     typeof opts.getSummary === 'function' ? opts.getSummary : null,
+      onSent:         typeof opts.onSent === 'function' ? opts.onSent : null,
       recipients:     [],
       groups:         [],
       serverIsAdmin:  false,
