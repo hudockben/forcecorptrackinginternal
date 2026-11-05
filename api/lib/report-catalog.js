@@ -30,6 +30,14 @@ const REPORT_TYPES = {
   kiewit_bid_items:     { division: 'kiewit',    label: 'Bid Line Items vs Actuals — Kiewit Pinetree' },
   kiewit_job_summary:   { division: 'kiewit',    label: 'Job Summary — Kiewit Pinetree'               },
   kiewit_construction_schedule: { division: 'kiewit', label: 'Construction Schedule'                  },
+  // Analytics → Custom Reporting: whatever report the user built and named,
+  // emailed from the builder. Email only — they are not in SCHEDULE_DEFS:
+  // Auto Reports sends a report through the builder its page registers in
+  // window.dwAutoReport, and a custom report is a saved recipe with no such
+  // builder behind it.
+  turf_custom_report:   { division: 'turf',      label: 'Custom Report — Turf'                       },
+  paving_custom_report: { division: 'paving',    label: 'Custom Report — Paving'                     },
+  kiewit_custom_report: { division: 'kiewit',    label: 'Custom Report — Kiewit Pinetree'            },
   quarry_breakeven:     { division: 'quarry',    label: 'Quarry Break-Even Analysis'          },
   dust_tracking_summary:{ division: 'dust',      label: 'Dust Control Tracking Report'        },
   scheduler_dispatch:   { division: 'scheduler', label: 'Crew Dispatch Schedule'              },

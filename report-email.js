@@ -11,7 +11,22 @@
  *     getHTML,           // () => string  — caller renders the report HTML on demand
  *     getAttachments,    // optional () => [{filename, content(base64), contentId}]
  *                        //   inline images referenced from HTML via <img src="cid:contentId">
+ *     onSent,            // optional (info) => void — called once the server says the
+ *                        //   email went out (with or without a warning), with
+ *                        //   { recipients: [...], subject, recipientCount, pdfAttached,
+ *                        //     logged, runId } — subject is the one the server
+ *                        //   actually sent (an empty one becomes the report's
+ *                        //   label), falling back to what was typed; logged is
+ *                        //   true when the server wrote the send history itself
+ *     customReport,      // optional object — sent as `custom_report`: what a
+ *                        //   *_custom_report send records in the history
  *   });
+ *
+ * onSent exists for Custom Reporting, which keeps a history of what was sent
+ * to whom. It is told only about a send that really happened, and anything it
+ * throws (or rejects with) is caught and logged: the email has already gone,
+ * and a broken history write must not leave the modal stuck mid-send with a
+ * live Send button inviting a duplicate.
  *
  * Pairs with report-branding.js, which stamps the DataWatch header on the
  * report before it is sent — the same header the print path uses.
@@ -427,6 +442,37 @@
   }
 
   // ── Status row + Send ───────────────────────────────────────────────
+  // The caller's onSent, told what went out. Called inside the send's own
+  // try block, so it is wrapped here: an exception escaping it would land in
+  // the "Send failed" branch and re-enable Send for an email already sent.
+  // `sent` is taken before the request goes, so closing the modal mid-send
+  // (which clears state) cannot lose the record of an email that did go.
+  function notifySent(sent, j) {
+    if (typeof sent.onSent !== 'function') return;
+    try {
+      const p = sent.onSent({
+        recipients:     sent.recipients,
+        subject:        (j && typeof j.subject === 'string' && j.subject) || sent.subject,
+        recipientCount: j.recipientCount,
+        pdfAttached:    !!j.pdfAttached,
+        logged:         j.logged === true,
+        runId:          j.run_id == null ? null : j.run_id,
+      });
+      if (p && typeof p.catch === 'function') p.catch(err => console.warn('[report-email] onSent failed:', err && err.message));
+    } catch (err) {
+      console.warn('[report-email] onSent failed:', err && err.message);
+    }
+  }
+
+  const TOO_LARGE = 'The report is too large to email — narrow the date range, pick fewer jobs, or send it as a PDF from Print.';
+  // A response's JSON, or null when it has none.
+  async function readJson(r) {
+    try {
+      if (typeof r.text === 'function') { const t = await r.text(); return t ? JSON.parse(t) : null; }
+      return await r.json();
+    } catch (_) { return null; }
+  }
+
   function setStatus(msg, kind) {
     const el = document.getElementById('rem-status');
     if (!el) return;
@@ -479,6 +525,7 @@
     setStatus(attachPdf ? 'Rendering PDF and sending…' : 'Sending…');
     const sendBtn = document.getElementById('rem-send');
     if (sendBtn) { sendBtn.disabled = true; sendBtn.style.opacity = '0.6'; }
+    const sent = { onSent: state.onSent, recipients: state.recipients.slice(), subject };
 
     try {
       const r = await fetch('/api/email/send-report', {
@@ -495,10 +542,15 @@
           attach_pdf:   attachPdf,
           ...(summary.length ? { summary } : {}),
           ...(attachments.length ? { attachments } : {}),
+          ...(state.customReport ? { custom_report: state.customReport } : {}),
         }),
       });
-      const j = await r.json();
-      if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP ' + r.status));
+      // A platform error (a body over the host's size limit, a timeout) comes
+      // back as plain text, not JSON: say what happened rather than show a
+      // JSON parse error.
+      const j = (await readJson(r)) || { ok: false, error: r.status === 413 ? TOO_LARGE : ('HTTP ' + r.status) };
+      if (!r.ok || !j.ok) throw new Error((r.status === 413 && j.error === 'Report HTML is too large') ? TOO_LARGE : (j.error || ('HTTP ' + r.status)));
+      notifySent(sent, j);
       const who = `${j.recipientCount} recipient${j.recipientCount === 1 ? '' : 's'}`;
       if (j.warning) {
         // The email did go out, just not the way they asked. Leave the warning
@@ -641,6 +693,9 @@
     kiewit_bid_items:     'Bid Line Items vs Actuals — Kiewit Pinetree',
     kiewit_job_summary:   'Job Summary — Kiewit Pinetree',
     kiewit_construction_schedule: 'Construction Schedule — Kiewit Pinetree',
+    turf_custom_report:   'Custom Report — Turf',
+    paving_custom_report: 'Custom Report — Paving',
+    kiewit_custom_report: 'Custom Report — Kiewit Pinetree',
     dust_tracking_summary:'Dust Control Tracking Report',
     crm_next_steps:       'Next Steps Due — CRM',
   };
@@ -659,6 +714,8 @@
       getHTML:        typeof opts.getHTML === 'function' ? opts.getHTML : null,
       getAttachments: typeof opts.getAttachments === 'function' ? opts.getAttachments : null,
       getSummary:     typeof opts.getSummary === 'function' ? opts.getSummary : null,
+      onSent:         typeof opts.onSent === 'function' ? opts.onSent : null,
+      customReport:   opts.customReport && typeof opts.customReport === 'object' ? opts.customReport : null,
       recipients:     [],
       groups:         [],
       serverIsAdmin:  false,

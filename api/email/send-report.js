@@ -31,11 +31,27 @@
 //     attach_pdf?:  boolean,       // default true — render `html` to an attached PDF
 //     summary?:     [{ label, value, tone? }]  // key figures shown in the email body
 //                                              // tone: 'good' | 'bad' | 'actual'
+//
+//     custom_report?: { report_id?, report_name?, project_ids?, project_names?,
+//                       date_from?, date_to?, included_internal?, definition? }
+//                                  // a *_custom_report send: what to put in the
+//                                  // Custom Reporting send history
 //   }
 //
 // Response:
-//   { ok: true, id, recipientCount, pdfAttached, pdfPages?, warning? }
+//   { ok: true, id, recipientCount, pdfAttached, subject, pdfPages?, warning?,
+//     logged?, run_id? }
 //   | { ok: false, error: '...' }
+//
+// subject is the one the email actually went out with (an empty one becomes
+// the report's label). For a *_custom_report type the send is written to
+// custom_report_runs here, once the email has gone — the history that
+// answers "what did we send the owner, and did it have our costs on it?" — and
+// logged says whether that worked, so the browser logs it only when it did not.
+// included_internal is true when the caller says so, when the definition it
+// sent has internal data switched on, or when the HTML carries the engine's
+// data-cr-internal mark: whichever way, an email with our costs on it is
+// never recorded as customer-safe.
 
 const { requireAuth } = require('../lib/auth');
 const {
@@ -49,6 +65,41 @@ const { deliverReport } = require('../lib/report-delivery');
 // with the scheduled sends, which check the same thing for the account a
 // schedule runs as.
 const { REPORT_TYPES, mayUseDivision } = require('../lib/report-catalog');
+const { neon } = require('@neondatabase/serverless');
+const { readRun, insertRun, isPlainObject, INTERNAL_MARK } = require('../lib/custom-report-runs');
+
+/**
+ * Record an emailed custom report in its division's send history. Never
+ * throws and never fails the send — the email has already gone; on a failure
+ * the caller is told (logged: false) so the browser can log it instead.
+ */
+async function logCustomReportSend({ payload, division, body, html, recipients, subject, label }) {
+  const userId = Number(payload.userId);
+  if (!Number.isSafeInteger(userId) || !payload.companyCode) return { logged: false };
+  const cr = isPlainObject(body.custom_report) ? body.custom_report : {};
+  const internal = cr.included_internal === true || INTERNAL_MARK.test(html);
+  const base = { action: 'email', recipients, subject, included_internal: internal };
+  const described = {
+    report_id: cr.report_id, report_name: cr.report_name || label, project_ids: cr.project_ids,
+    project_names: cr.project_names, date_from: cr.date_from, date_to: cr.date_to, definition: cr.definition,
+  };
+  let r = readRun({ ...described, ...base });
+  // Something in the browser's description would not store (too many jobs, a
+  // bad date): log the email anyway, without it, rather than not at all.
+  if (r.error) r = readRun({ report_name: described.report_name, ...base });
+  if (r.error) return { logged: false };
+  try {
+    const sql = neon(process.env.DATABASE_URL);
+    const run = await insertRun(sql, {
+      company: payload.companyCode, division, me: { userId, username: payload.username || null }, run: r.value,
+    });
+    return { logged: true, runId: run.id };
+  } catch (err) {
+    console.error('[email/send-report] custom report history not written:', err.message,
+      'user=' + payload.username, 'company=' + payload.companyCode);
+    return { logged: false };
+  }
+}
 
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -155,12 +206,23 @@ module.exports = async (req, res) => {
     'pdf=' + (sent.pdfAttached ? (sent.pdfPages ? sent.pdfPages + 'p' : 'yes') : 'no')
   );
 
+  let history = null;
+  if (/_custom_report$/.test(report_type)) {
+    history = await logCustomReportSend({
+      payload, division: cfg.division, body, html, recipients: cleaned, subject: sent.subject, label: cfg.label,
+    });
+  }
+
   return res.json({
     ok:             true,
     id:             sent.id,
     recipientCount: cleaned.length,
     pdfAttached:    sent.pdfAttached,
+    // What it really went out as: an empty subject becomes the label, and
+    // the browser records this, not what was typed.
+    subject:        sent.subject,
     ...(sent.pdfPages ? { pdfPages: sent.pdfPages } : {}),
     ...(sent.warning ? { warning: sent.warning } : {}),
+    ...(history ? { logged: history.logged, ...(history.runId ? { run_id: history.runId } : {}) } : {}),
   });
 };

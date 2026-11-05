@@ -2616,6 +2616,8 @@
   <script src="report-email.js" defer></script>
   <script src="bid-xlsx.js" defer></script>
   <script src="documents.js" defer></script>
+  <script src="custom-reports-engine.js" defer></script>
+  <script src="custom-reports.js" defer></script>
   <script src="mathis.js" defer></script>
 </head>
 <body>
@@ -2658,6 +2660,7 @@
       <button class="admin-dropdown-item" id="analytics-item-scale"   onclick="analyticsSwitchTab('scale')">&#128200; Scale of Economy</button>
       <button class="admin-dropdown-item" id="analytics-item-subcode" onclick="analyticsSwitchTab('subcode')">&#128202; Sub Code Performance</button>
       <button class="admin-dropdown-item" id="analytics-item-financials" onclick="analyticsSwitchTab('financials')">&#128176; Financials</button>
+      <button class="admin-dropdown-item" id="analytics-item-customrpt" onclick="analyticsSwitchTab('customrpt')">&#128203; Custom Reporting</button>
     </div>
   </div>
   <div class="admin-dropdown-wrap">
@@ -2963,6 +2966,11 @@
 
 <div class="tab-panel" id="tab-subcode">
   <div id="scp-content" style="padding:1rem"><!-- rendered by JS --></div>
+</div>
+
+<!-- ══════════════ CUSTOM REPORTING TAB ══════════════ -->
+<div class="tab-panel" id="tab-customrpt">
+  <div id="cr-content" style="padding:1rem"><!-- rendered by custom-reports.js via renderCustomReports() --></div>
 </div>
 
 <!-- ══════════════ COST TRACKING TAB ══════════════ -->
@@ -4710,6 +4718,7 @@ function analyticsSwitchTab(tab) {
   if (tab === 'scale')    renderScaleOfEconomy();
   if (tab === 'subcode')  renderSubCodePerf();
   if (tab === 'financials') renderFinancials({ fresh: true });
+  if (tab === 'customrpt') renderCustomReports();
 }
 
 function adminSwitchTab(tab) {
@@ -20966,6 +20975,104 @@ function printFinancials() {
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`);
   win.document.close();
+}
+
+/* ── Custom Reporting ─────────────────────────────────────────────────────
+   Analytics → Custom Reporting. The office builds its own report out of this
+   division's jobs — the job card, progress against the bid, quantities put
+   down, deliveries, hauls, change orders, the schedule — saves it, and prints,
+   emails or exports it for a customer. All of that lives in custom-reports.js
+   (the builder) and custom-reports-engine.js (the figures), shared with the
+   other division pages. This end owns only the hand-over: where this page
+   keeps its jobs, POs and hauls, its own cost and progress functions, and who
+   is looking.
+
+   The page's own functions go across rather than letting the module work the
+   numbers out a second time, so a report a customer receives says what the
+   Project Dashboard says — the same wildcard cost-code matching, the same
+   imported row costs, the same % complete. A second copy of a rule is a second
+   place for it to drift.
+
+   Who sees what is settled here, from the same perm the rest of the page uses.
+   Internal columns (costs, rates, hours, names) stay locked in the module until
+   someone deliberately switches them on; contract and profit columns go further
+   and are stripped outright for the roles that cannot open Financials, even out
+   of a shared template. canShare is only a hint for the first paint — the
+   server's answer decides who may edit the division's shared templates. */
+let _crConfigured = false;   // handed over once; every getter reads live data
+let _crWaitTicks  = 0;       // bounded wait for the deferred custom-reports.js
+let _crWaitTimer  = null;
+
+function renderCustomReports(isRetry) {
+  const root = document.getElementById('cr-content');
+  if (!root) return;
+
+  if (!window.FCTCustomReports) {
+    // custom-reports.js is deferred, so a click landing before it has run finds
+    // nothing. Bounded like the Documents tab's wait — an open-ended chain never
+    // stops when the script failed to load — but counted per visit, so opening
+    // the tab again is a fresh try rather than an instant error. A wait the
+    // user has walked away from stops instead of painting into a hidden panel.
+    if (!isRetry) _crWaitTicks = 0;
+    if (++_crWaitTicks > 40) {          // ~6 seconds
+      root.innerHTML = '<div style="color:var(--red);padding:1.5rem">'
+        + 'Custom Reporting could not be loaded. Open the tab again to retry, or refresh the page.</div>';
+      return;
+    }
+    root.innerHTML = '<div style="color:var(--muted);padding:1.5rem">Loading Custom Reporting…</div>';
+    clearTimeout(_crWaitTimer);
+    _crWaitTimer = setTimeout(() => { if (activeTab === 'customrpt') renderCustomReports(true); }, 150);
+    return;
+  }
+  _crWaitTicks = 0;
+
+  try {
+    if (!_crConfigured) {
+      FCTCustomReports.configure({
+        division:      DIVISION,
+        divisionLabel: 'Paving',
+        apiBase:       API_BASE,
+        getToken:      () => fctToken,
+        user:          fctUser,
+        perm: {
+          role:             perm.role,
+          canSeeCosts:      perm.canSeeCosts !== false,
+          // The same rule that takes the Financials item off level1/level2.
+          canSeeFinancials: !perm.visibleTabs || perm.visibleTabs.has('financials'),
+          canShare:         ['admin', 'level3'].includes(perm.role),
+        },
+        // The unit the job card keeps its area in: square yards on paving.
+        areaUnit:      'SY',
+        // Settles once the jobs are in AND the daily rows older than 90 days
+        // have landed behind them — the promise the scheduled reports wait on.
+        // Before that, a "to date" figure would quietly leave out old work.
+        ready:         () => _bootReady.then(() => _drBackfillDone, () => _drBackfillDone),
+        // Getters, never copies: the poll reassigns these lists whenever
+        // someone else saves, and a report should print what is there now.
+        getProjects:        () => projectsList,
+        getPurchaseOrders:  () => purchaseOrders,
+        getTruckingEntries: () => truckingEntries,
+        helpers: {
+          dailyRowCost, calcDaily, bidItemComplete, bidProjectPct, bidGroupPct, projForBidItem,
+          projectedCostForProject, gpEarnedToDate, bidContractFigures, projIsDone,
+          lineAmt: _lineAmt, lineTax: _lineTax,
+          // The working-day calendar the Schedule Estimator counts with, so a
+          // projected finish skips the same holidays.
+          addWorkingDays: _addWorkingDays,
+        },
+        // A session that expires mid-save signs out the way every other call does.
+        onAuthError:   () => logout(),
+      });
+      _crConfigured = true;
+    }
+    FCTCustomReports.renderTab(root);
+  } catch (err) {
+    // The module is shared and loaded separately; if it throws, say so in the
+    // panel rather than leave the tab blank with the error only in the console.
+    console.error('[custom-reports]', err);
+    root.innerHTML = '<div style="color:var(--red);padding:1.5rem">'
+      + 'Custom Reporting hit an error and could not open. Refresh the page to try again.</div>';
+  }
 }
 
 function renderSubCodePerf() {

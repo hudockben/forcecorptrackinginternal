@@ -103,6 +103,9 @@ app.all('/api/email/send-report',       require('../api/email/send-report'));
 app.all('/api/email/recipient-groups',  require('../api/email/recipient-groups'));
 app.all('/api/email/report-schedules',  require('../api/email/report-schedules'));
 
+/** Custom Reporting — saved report definitions, shared templates and send history */
+app.all('/api/custom-reports', require('../api/custom-reports'));
+
 /** AI schedule analysis */
 app.post('/api/ai/schedule-analysis', require('../api/ai/schedule-analysis'));
 
