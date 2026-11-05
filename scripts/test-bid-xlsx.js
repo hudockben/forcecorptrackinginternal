@@ -34,10 +34,13 @@ function assert(label, cond, detail) {
 
 const ROOT   = path.resolve(__dirname, '..');
 const WRITER = fs.readFileSync(path.join(ROOT, 'bid-xlsx.js'), 'utf8');
+// Paving quotes the contract through its change-order helpers; the other two
+// read the contract fields straight, so a contract CO does not move theirs.
+const CO_HELPERS = ['contractCOs', 'contractCOTotal', 'originalContract', 'revisedContract', 'projectContract'];
 const PAGES  = [
-  { file: 'tracker.html',         area: 'SF', costTotal: 'Cost Total' },
-  { file: 'paving.html',          area: 'SY', costTotal: 'Bid Cost Total' },
-  { file: 'kiewit-pinetree.html', area: 'SY', costTotal: 'Bid Cost Total' },
+  { file: 'tracker.html',         area: 'SF', costTotal: 'Cost Total',     contract: 9000, extra: [] },
+  { file: 'paving.html',          area: 'SY', costTotal: 'Bid Cost Total', contract: 9500, extra: CO_HELPERS },
+  { file: 'kiewit-pinetree.html', area: 'SY', costTotal: 'Bid Cost Total', contract: 9000, extra: [] },
 ];
 
 // The page's bid figures, lifted rather than restated — a second copy of a
@@ -46,11 +49,12 @@ const LIFT = ['fmt', 'qfmt', 'actualForBidItem', 'runningQtyForBidItem', 'cumula
   'laborerCountForBidItem', '_rowIsWorkDay', '_workDaysForItems', 'daysWorkedForGroup', '_autoBidDates',
   'autoBidDates', '_bidCsKey', 'bidItemComplete', 'bidGroupPct', 'bidProjectPct', '_bidGroupMeasure',
   '_bidGroupUnitCostText', 'projIsDone', 'projForBidItem', 'projectedCostForProject', 'offBidForProject',
-  'generateBidXlsx'];
+  'bidContractFigures', 'generateBidXlsx'];
 
 // Dates long past, so a typed start/target never projects off today's date.
 const fixture = () => ({
   id: 'p1', 'project-name': 'Indiana Country Club', 'job-number': '26089', status: 'Active', sqft: '1556',
+  'contract-value': '9000', 'contract-cos': [{ amount: '500' }],
   'bid-group-measures': { Milling: { qty: 1556, unit: 'SY' } },
   bidItems: [
     { id: 'b1', cost_code: 'Milling', sub_code: 'Milling - Labor', unit: 'SY', quantity: '1556', unit_cost: '1.11', is_complete: true },
@@ -169,10 +173,11 @@ async function runPage(page) {
     'let _bidPDFProjId = null;',
     'const _bidCsComplete = {};',
     "const BID_GROUP_UNIT_DEFAULT = 'SY';",
-    ...LIFT.map(n => requireFn(SRC, n, page.file)),
+    ...LIFT.concat(page.extra).map(n => requireFn(SRC, n, page.file)),
   ].join('\n'), ctx);
   vm.runInContext(WRITER, ctx, { filename: 'bid-xlsx.js' });
 
+  let built = 0;
   async function build(codes) {
     checked = codes;
     calls.length = 0;
@@ -181,7 +186,7 @@ async function runPage(page) {
     const buf = Buffer.from(await calls[0].blob.arrayBuffer());
     if (process.env.BID_XLSX_OUT) {
       fs.mkdirSync(process.env.BID_XLSX_OUT, { recursive: true });
-      fs.writeFileSync(path.join(process.env.BID_XLSX_OUT, page.file.replace('.html', '') + '-' + codes.length + '.xlsx'), buf);
+      fs.writeFileSync(path.join(process.env.BID_XLSX_OUT, `${page.file.replace('.html', '')}-${++built}.xlsx`), buf);
     }
     const parts = unzip(buf);
     const bad = Object.entries(parts).filter(([, x]) => xmlDoc(x).getElementsByTagName('parsererror').length);
@@ -257,8 +262,55 @@ async function runPage(page) {
   assert('Totals % complete is the project roll-up', near(val('F' + tot), grand.pct.pct / 100));
   assert('a note says why the Totals row runs past the cost code totals',
     Object.values(cells).some(c => typeof c.v === 'string' && /every daily cost including any not booked to a bid line/.test(c.v)));
-  assert('contract value and profit stay off, as on the PDF',
-    !Object.values(cells).some(c => typeof c.v === 'string' && /contract|profit/i.test(c.v)));
+
+  // ── Contract and projected profit ──
+  const usd = v => (v < 0 ? '-$' : '$') + Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const profit = page.contract - grand.p;
+  const line = Object.values(cells).find(c => typeof c.v === 'string' && c.v.startsWith(page.extra.length ? 'Original Contract' : 'Contract Value'));
+  assert('the summary line quotes the contract as the page\'s bar does',
+    line && (page.extra.length
+      ? line.v.startsWith('Original Contract $9,000.00  ·  Change Orders (1) +$500.00  ·  Revised Contract $9,500.00  ·  Bid Budget')
+      : line.v.startsWith('Contract Value $9,000.00  ·  Bid Budget')), line && line.v);
+  assert('…and Projected Profit, contract less projected cost, with its percent',
+    line && line.v.includes(`Projected Profit ${usd(profit)} (${(profit / page.contract * 100).toFixed(1)}%)  ·  Project Complete`), line && line.v);
+  const finAt = label => +(Object.keys(cells).find(r => /^N\d+$/.test(r) && cells[r].v === label) || 'N0').slice(1);
+  const kRow = finAt(page.extra.length ? 'Revised Contract' : 'Contract Value');
+  const pRow = finAt('Projected Profit'), pctRow = finAt('Projected Profit %');
+  assert('under the Totals row, the contract sits in the Projected Cost column',
+    kRow > tot && near(val('O' + kRow), page.contract), `row ${kRow}: ${val('O' + kRow)}`);
+  if (page.extra.length) {
+    const oRow = finAt('Original Contract'), cRow = finAt('Change Orders (1)');
+    assert('…as Original, Change Orders and Revised once the job has contract COs',
+      oRow === tot + 1 && cRow === tot + 2 && kRow === tot + 3 && val('O' + oRow) === 9000 && val('O' + cRow) === 500
+        && cells['O' + kRow].f === `O${oRow}+O${cRow}`);
+  } else {
+    assert('…as a single Contract Value', kRow === tot + 1);
+  }
+  assert('Projected Profit is a formula: contract less the Totals row\'s Projected Cost',
+    pRow === kRow + 1 && cells['O' + pRow].f === `IF(O${kRow}=0,"",O${kRow}-O${tot})` && near(val('O' + pRow), profit),
+    `${cells['O' + pRow] && cells['O' + pRow].f} = ${val('O' + pRow)}`);
+  assert('…green when the job makes money, with its percent off the contract',
+    wb.styles[cells['O' + pRow].s].font.color === (profit >= 0 ? 'FF166534' : 'FF991B1B') && pctRow === pRow + 1
+      && cells['O' + pctRow].f === `IF(O${kRow}=0,"",O${pRow}/O${kRow})` && near(val('O' + pctRow), profit / page.contract)
+      && wb.styles[cells['O' + pctRow].s].fmt === '0.0%');
+  const BAR = requireFn(SRC, 'renderBidFooter');
+  assert('the summary bar and the workbook read the contract from one place',
+    page.extra.length ? /projectContract\(p\)/.test(BAR) && /value: projectContract\(p\)/.test(requireFn(SRC, 'bidContractFigures'))
+                      : /const contractVal = bidContractFigures\(p\)\.value;/.test(BAR));
+
+  // No contract keyed in: profit is left blank, not the whole job as a loss.
+  proj = fixture();
+  delete proj['contract-value'];
+  delete proj['contract-cos'];
+  const none = await build(ALL);
+  const nc = none.sheet.cells;
+  const nLine = Object.values(nc).find(c => typeof c.v === 'string' && c.v.startsWith('Contract Value'));
+  const nP = Object.keys(nc).find(r => /^N\d+$/.test(r) && nc[r].v === 'Projected Profit');
+  assert('with no contract, the line reads "—" for contract and profit',
+    nLine && nLine.v.startsWith('Contract Value —') && nLine.v.includes('Projected Profit —'), nLine && nLine.v);
+  assert('…and the Projected Profit cell stays blank until one is typed in',
+    nP && nc['O' + nP.slice(1)].v === '' && /^IF\(O\d+=0,"",/.test(nc['O' + nP.slice(1)].f));
+  proj = fixture();
 
   // Picking one cost code: the other drops out, the totals stay whole-job.
   const one = await build(['Milling']);

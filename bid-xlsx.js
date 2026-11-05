@@ -18,8 +18,11 @@
    written as figures rather than formulas, and a note under the table says so
    whenever it differs from the cost code totals above it.
 
-   Contract value and projected profit are left off, as they are on the PDF:
-   the report goes to people who should see cost against bid, not the margin.
+   Unlike the PDF, it carries the contract and the projected profit, as the
+   bid page's summary bar does: in the line over the table, and as figures
+   under the Totals row — Contract Value, then Projected Profit worked off it
+   and the Totals row's Projected Cost as a formula. The contract figures come
+   from the page's own bidContractFigures(), the one its summary bar reads.
 
    Written by hand like every other export in this app: a ZIP of XML parts
    with stored (uncompressed) entries, no library. */
@@ -220,6 +223,10 @@
       days:     daysWorkedForGroup(items, projId),
       laborers: new Set((p.dailyRows || []).map(r => r.employee).filter(Boolean)).size,
     };
+    // Contract − projected final cost, as the summary bar works it. No
+    // contract, no profit: a blank, not the whole projected cost as a loss.
+    const contract = bidContractFigures(p);
+    const profit   = contract.value ? contract.value - grand.proj : null;
 
     const visible = selectedCostCodes ? groupOrder.filter(cc => selectedCostCodes.has(cc || '')) : groupOrder;
     const projDone = projIsDone(p);
@@ -262,7 +269,7 @@
       sqft:  parseFloat(p['sqft']) || 0,
       filtered: !!(selectedCostCodes && visible.length < groupOrder.length),
       codeCount: groupOrder.length,
-      groups: groupsOut, grand,
+      groups: groupsOut, grand, contract, profit,
     };
   }
 
@@ -324,16 +331,26 @@
     const subLook = st.xf({ font: { sz: 10, color: INK.muted } });
     add([{ v: 'Exported ' + new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
       + (rep.filtered ? ` · ${rep.groups.length} of ${plural(rep.codeCount, 'cost code')}` : ''), s: subLook }]);
+    // In the summary bar's order: contract, the three costs, then profit and
+    // progress behind its divider.
+    const k = rep.contract;
     add([{ v: [
+      ...(k.coCount
+        ? ['Original Contract ' + (k.original ? money(k.original) : dash),
+           `Change Orders (${k.coCount}) ` + (k.coTotal >= 0 ? '+' : '') + money(k.coTotal),
+           'Revised Contract ' + (k.value ? money(k.value) : dash)]
+        : ['Contract Value ' + (k.value ? money(k.value) : dash)]),
       'Bid Budget ' + (g.bid ? money(g.bid) : dash),
       'Actual Cost ' + (g.actual ? money(g.actual) : dash),
       'Projected Cost ' + ((g.bid || g.proj) ? money(g.proj) : dash),
+      'Projected Profit ' + (rep.profit === null ? dash
+        : `${money(rep.profit)} (${(rep.profit / k.value * 100).toFixed(1)}%)`),
       'Project Complete ' + (g.pct ? `${g.pct.pct.toFixed(1)}% (${g.pct.done}/${plural(g.pct.total, 'cost code')} done)` : dash),
-    ].join('   ·   '), s: st.xf({ font: { b: true, sz: 11 } }) }]);
+    ].join('  ·  '), s: st.xf({ font: { b: true, sz: 11 } }) }]);
     if (rep.sqft > 0) {
       const bidPer = g.bid / rep.sqft, runPer = g.actual / rep.sqft, delta = bidPer - runPer;
-      add([{ v: `Cost / ${area} · ${fmt(rep.sqft)} ${areaLower}   ·   Bid ${money(bidPer)}/${areaLower}   ·   `
-        + `Running ${money(runPer)}/${areaLower}   ·   `
+      add([{ v: `Cost / ${area} · ${fmt(rep.sqft)} ${areaLower}  ·  Bid ${money(bidPer)}/${areaLower}  ·  `
+        + `Running ${money(runPer)}/${areaLower}  ·  `
         + (delta >= 0 ? `${money(delta)}/${areaLower} under bid` : `${money(-delta)}/${areaLower} over bid`),
         s: st.xf({ font: { sz: 11, color: delta >= 0 ? INK.under : INK.over } }) }]);
     }
@@ -418,6 +435,33 @@
     tot[14] = { v: g.proj,   s: projLook('tot', g.proj, g.bid) };
     tot[17] = { v: g.days,   s: look('tot', 'int') };
     add(tot);
+
+    // ── Contract and projected profit, stacked under the Projected Cost
+    //    they are worked against, labelled just to their left ──
+    const finRow = (label, cell) => {
+      const cells = [];
+      cells[13] = { v: label, s: st.xf({ font: { b: true }, align: 'right' }) };
+      cells[14] = cell;
+      return add(cells);
+    };
+    const finMoney = st.xf({ fmt: FMT.money });
+    let contractRow;
+    if (k.coCount) {
+      const o = finRow('Original Contract', { v: k.original, s: finMoney });
+      const c = finRow(`Change Orders (${k.coCount})`, { v: k.coTotal, s: finMoney });
+      contractRow = finRow('Revised Contract', { f: `${C.proj}${o}+${C.proj}${c}`, v: k.value, s: finMoney });
+    } else {
+      contractRow = finRow('Contract Value', { v: k.value, s: finMoney });
+    }
+    const kc = C.proj + contractRow;
+    const profitRow = finRow('Projected Profit', {
+      f: `IF(${kc}=0,"",${kc}-${C.proj}${tr})`, v: rep.profit === null ? '' : rep.profit,
+      s: st.xf({ fmt: FMT.money, font: { b: true, color: rep.profit === null || rep.profit >= 0 ? INK.under : INK.over } }),
+    });
+    finRow('Projected Profit %', {
+      f: `IF(${kc}=0,"",${C.proj}${profitRow}/${kc})`, v: rep.profit === null ? '' : rep.profit / k.value,
+      s: st.xf({ fmt: FMT.pct }),
+    });
 
     // ── Notes, as the PDF carries them ──
     const noteLook = st.xf({ font: { sz: 9, color: INK.muted } });
