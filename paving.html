@@ -2572,6 +2572,7 @@
   <script src="auto-report.js"></script>
   <script src="report-branding.js" defer></script>
   <script src="report-email.js" defer></script>
+  <script src="bid-xlsx.js" defer></script>
   <script src="documents.js" defer></script>
   <script src="mathis.js" defer></script>
 </head>
@@ -2753,6 +2754,7 @@
     <span id="bid-fs-title" style="font-weight:700;font-size:1rem;color:var(--text)"></span>
     <span id="bid-fs-offbid" style="display:none;color:#fbbf24;font-size:0.78rem;font-weight:600;cursor:help;margin-left:0.5rem;white-space:nowrap;"></span>
     <div style="margin-left:auto;display:flex;gap:0.5rem">
+      <button class="btn btn-ghost" id="bid-fs-xlsx" title="Download these bid items as an Excel workbook (.xlsx) — the same figures as the PDF, as real numbers and dates you can work in">&#8595; XLSX</button>
       <button class="btn btn-ghost" id="bid-fs-email">&#9993; Email</button>
       <button class="btn btn-ghost" id="bid-fs-pdf">&#8595; PDF</button>
       <button class="btn btn-ghost" id="bid-fs-copy" title="Copy these bid items into another project, or into a new one">&#10697; Copy Bid</button>
@@ -18481,6 +18483,12 @@ function showBidPDFOptions(projId, mode = 'pdf') {
       actionEl.innerHTML = '✉ Send Email';
       actionEl.setAttribute('onclick', 'generateBidEmail()');
     }
+  } else if (mode === 'xlsx') {
+    if (titleEl)  titleEl.textContent = 'Download Excel Workbook';
+    if (actionEl) {
+      actionEl.innerHTML = '↓ Download XLSX';
+      actionEl.setAttribute('onclick', 'generateBidXlsx()');
+    }
   } else {
     if (titleEl)  titleEl.textContent = 'Export PDF Report';
     if (actionEl) {
@@ -18539,6 +18547,22 @@ function generateBidPDF() {
   );
   closeBidPDFModal();
   exportBidPDF(projId, selected);
+}
+
+// The XLSX button: the same cost-code picker as the PDF, then the workbook
+// bid-xlsx.js writes off the same figures the PDF prints.
+function generateBidXlsx() {
+  if (!_bidPDFProjId) return;
+  if (typeof window.exportBidXlsx !== 'function') {
+    alert('The Excel export is still loading — please try again in a moment.');
+    return;
+  }
+  const projId = _bidPDFProjId;          // capture before closeBidPDFModal nulls it
+  const selected = new Set(
+    [...document.querySelectorAll('.bid-pdf-cc-chk:checked')].map(cb => cb.value)
+  );
+  closeBidPDFModal();
+  window.exportBidXlsx(projId, selected, { areaUnit: 'SY', costTotalLabel: 'Bid Cost Total' });
 }
 
 function generateBidEmail() {
@@ -21663,6 +21687,7 @@ function openBidView(projId) {
   document.getElementById('bid-fs-title').innerHTML = _fsTitleHTML(p, 'Bid Line Items vs Actuals');
   document.getElementById('bid-fs-add').onclick = () => { addBidItem(projId); };
   document.getElementById('bid-fs-pdf').onclick = () => showBidPDFOptions(projId, 'pdf');
+  document.getElementById('bid-fs-xlsx').onclick = () => showBidPDFOptions(projId, 'xlsx');
   document.getElementById('bid-fs-email').onclick = () => showBidPDFOptions(projId, 'email');
   document.getElementById('bid-fs-procore').onclick = () => showProcoreImport(projId);
   document.getElementById('bid-fs-copy').onclick = () => showBidCopy(projId);
