@@ -717,6 +717,15 @@
     .bid-group-total.bg-hidden { display: none; }
     .bid-add-sub { background: none; border: 1px solid #2a4a2a; color: #5a9a5a; font-size: 0.68rem; padding: 0.1rem 0.4rem; border-radius: 3px; cursor: pointer; margin-left: 0.8rem; }
     .bid-add-sub:hover { background: #1e3a1e; color: var(--green); }
+    /* Under a sub code's name in the bid table: ✓ Complete, and the material
+       booked to it — see _bidMaterialTagHTML(). Inline badges in a plain block,
+       so a line carrying only ✓ Complete draws exactly as it did before. */
+    .bid-sub-tags { margin-top: 0.18rem; }
+    .bid-sub-tags > span + span { margin-left: 0.25rem; }
+    .bid-mat-tag { display: inline-block; font-size: 0.56rem; font-weight: 700; color: var(--yellow);
+      background: rgba(234,179,8,0.12); border: 1px solid rgba(234,179,8,0.4); border-radius: 3px;
+      padding: 0.06rem 0.34rem; white-space: nowrap; letter-spacing: 0.02em;
+      font-variant-numeric: tabular-nums; cursor: help; }
     /* Rolled-up percent complete on the cost-code header — see bidGroupPct() */
     .bid-grp-pct { display: inline-flex; align-items: center; gap: 0.4rem; margin-left: 0.9rem; font-size: 0.68rem; font-weight: 600; vertical-align: middle; white-space: nowrap; }
     .bid-grp-pct-bar { width: 62px; height: 6px; flex-shrink: 0; border: 1px solid #2a4a2a; border-radius: 3px; background: #0b140b; overflow: hidden; }
@@ -8674,6 +8683,112 @@ function actualForBidItem(b, projId) {
   }, 0);
 }
 
+/* Material booked to a bid line: the material_cost on every job row its cost
+   code and sub code match. Same rows, by the same wildcard rule, as
+   actualForBidItem(), so the figure is the material share of the Actual Cost
+   beside it. A line with none is labor and equipment only: no material, and so
+   no invoice, has been booked to it yet. A trucking row names the material it
+   hauled but carries its cost as equipment, so it is not material here.
+
+   Each entry says where its money came from, which is what someone chasing the
+   paperwork needs: the PO and the invoice / ticket # its delivery line was
+   entered with, the inventory entry that drew it, or, for material typed
+   straight onto a job row, any PO # typed with it. Those links are kept on the
+   owners (a PO line's po_row_id, an inventory entry's inv_row_id), not on the
+   row, so they are looked up by row id. `src` is that lookup, from
+   _bidMaterialSources(); a caller drawing a whole table builds it once. */
+function _bidMaterialSources() {
+  const po = new Map(), inv = new Map();
+  // Compared as strings: a row id comes back from the server as text while the
+  // owner can still hold the number it was minted as.
+  const key = id => (id == null || id === '') ? null : String(id);
+  (Array.isArray(purchaseOrders) ? purchaseOrders : []).forEach(o => {
+    ((o && o.lines) || []).forEach(l => { const k = l && key(l.po_row_id); if (k) po.set(k, { po: o, line: l }); });
+  });
+  (Array.isArray(inventoryEntries) ? inventoryEntries : []).forEach(e => {
+    const k = e && key(e.inv_row_id); if (k) inv.set(k, e);
+  });
+  return { po, inv };
+}
+
+function materialForBidItem(b, projId, src) {
+  const out = { total: 0, entries: [] };
+  if (!b || (!b.cost_code && !b.sub_code)) return out;
+  const proj = getProj(projId);
+  const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
+  rows.forEach(r => {
+    if (!((b.cost_code ? r.cost_code === b.cost_code : true) &&
+          (b.sub_code  ? r.sub_code  === b.sub_code  : true))) return;
+    // Read the way calcDaily() reads it, so the two never disagree.
+    const amount = parseFloat(r.material_cost) || 0;
+    if (!amount) return;
+    if (!src) src = _bidMaterialSources();
+    out.total += amount;
+    out.entries.push(_bidMaterialEntry(r, amount, src));
+  });
+  // To the cent, and never -0: a return that cancels its delivery nets to
+  // $0.00, not -$0.00.
+  out.total = Math.round(out.total * 100) / 100 || 0;
+  // Oldest first, the order the invoices came in; undated entries last.
+  out.entries.sort((x, y) => (x.day && y.day) ? x.day.localeCompare(y.day) : (x.day ? -1 : y.day ? 1 : 0));
+  return out;
+}
+
+function _bidMaterialEntry(r, amount, src) {
+  const id     = String(r.id);
+  const viaPO  = src.po.get(id);
+  const viaInv = src.inv.get(id);
+  const day    = _dailySortDate(r.date, '');
+  let from, invoice = null;   // null: this source has no invoice # to report
+  if (viaPO) {
+    // Numbers are minted as PO-0001; one typed bare gets the "PO" it lacks.
+    const num = String(viaPO.po.po_number || '').trim();
+    from    = num ? (/^p\.?o/i.test(num) ? num : 'PO ' + num) : 'PO (no number)';
+    invoice = String(viaPO.line.invoice_num || '').trim();
+  } else if (viaInv) {
+    from = 'Inventory ' + (String(viaInv.inv_number || '').trim() || 'entry');
+  } else {
+    const ref = String(r.po_num || '').trim();
+    from = ref ? `Job row (ref ${ref})` : 'Job row \u2014 no PO';
+  }
+  return {
+    day,
+    date: day ? `${day.slice(5, 7)}/${day.slice(8, 10)}/${day.slice(0, 4)}` : String(r.date || '').trim(),
+    from, invoice,
+    supplier: String(r.supplier || (viaPO && viaPO.po.supplier) || '').trim(),
+    what:     String(r.material || (viaPO && viaPO.po.title) || '').trim(),
+    amount,
+  };
+}
+
+function _bidMatMoney(v) { return (v < 0 ? '-$' : '$') + fmt(Math.abs(v)); }
+
+// How many entries the tooltip lists before it counts the rest. A sub code fed
+// by a standing order collects dozens of tickets, and a tooltip taller than the
+// screen shows none of them.
+const BID_MAT_TIP_MAX = 12;
+
+function _bidMaterialTip(m) {
+  const n = m.entries.length;
+  const lines = [`Material on this sub code: ${_bidMatMoney(m.total)} from ${n} entr${n === 1 ? 'y' : 'ies'} (part of its Actual Cost)`];
+  m.entries.slice(0, BID_MAT_TIP_MAX).forEach(e => {
+    const from = e.from + (e.invoice === null ? '' : e.invoice ? ' \u00b7 Inv ' + e.invoice : ' \u00b7 no invoice #');
+    lines.push([e.date || 'no date', from, e.supplier, e.what, _bidMatMoney(e.amount)].filter(Boolean).join(' \u00b7 '));
+  });
+  if (n > BID_MAT_TIP_MAX) {
+    lines.push(`\u2026and ${n - BID_MAT_TIP_MAX} more. Daily Tracking and Purchase Orders list them all.`);
+  }
+  return lines.join('\n');
+}
+
+/* The yellow tag under a sub code's name, or nothing when no material is
+   booked to it. Yellow, because material is yellow everywhere else on the page
+   and it is part of the yellow Actual Cost figure on the same row. */
+function _bidMaterialTagHTML(m) {
+  if (!m || !m.entries.length) return '';
+  return `<span class="bid-mat-tag" title="${_cbEsc(_bidMaterialTip(m))}">Material ${_bidMatMoney(m.total)}</span>`;
+}
+
 function runningQtyForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
   const proj = getProj(projId);
@@ -10296,6 +10411,11 @@ function renderBidTable(projId, opts = {}) {
   const scFilter  = bidFilters.sub_code  || null;
   const visGroups = ccFilter ? groupOrder.filter(cc => ccFilter.has(cc || '')) : groupOrder;
 
+  // Which PO delivery line or inventory entry wrote each job row, looked up
+  // once for the whole table instead of once per sub code. Feeds the material
+  // tag under each sub code's name; see materialForBidItem().
+  const matSrc = _bidMaterialSources();
+
   visGroups.forEach(costCode => {
     const groupItems = groups[costCode];
     const prefix  = opts.tbodyId ? opts.tbodyId + '-' : '';
@@ -10405,9 +10525,14 @@ function renderBidTable(projId, opts = {}) {
       childTr.dataset.group = groupId;
 
       const _biDone = bidItemComplete(b, projId);
-      const _doneBadge = _biDone
-        ? `<div style="margin-top:0.18rem"><span style="display:inline-block;font-size:0.56rem;font-weight:700;color:#4ade80;background:rgba(34,197,94,0.14);border:1px solid rgba(34,197,94,0.4);border-radius:3px;padding:0.06rem 0.34rem;white-space:nowrap;letter-spacing:0.02em" title="Marked complete in the schedule">✓ Complete</span></div>`
+      // Under the sub code's name: ✓ Complete, and the material booked to it,
+      // so a line with invoices behind its Actual Cost can be told from
+      // labor-only work without opening it.
+      const _doneTag = _biDone
+        ? `<span style="display:inline-block;font-size:0.56rem;font-weight:700;color:#4ade80;background:rgba(34,197,94,0.14);border:1px solid rgba(34,197,94,0.4);border-radius:3px;padding:0.06rem 0.34rem;white-space:nowrap;letter-spacing:0.02em" title="Marked complete in the schedule">✓ Complete</span>`
         : '';
+      const _matTag  = _bidMaterialTagHTML(materialForBidItem(b, projId, matSrc));
+      const _subTags = (_doneTag || _matTag) ? `<div class="bid-sub-tags">${_doneTag}${_matTag}</div>` : '';
       const calcCellsA = `
         <td class="bid-calc">${rqty ? qfmt(rqty) : '—'}</td>
         <td class="bid-calc">${pct}</td>`;
@@ -10422,7 +10547,7 @@ function renderBidTable(projId, opts = {}) {
         <td class="${bidTot ? projCls : 'bid-actual'}">${projTxt}</td>`;
 
       childTr.innerHTML = readonly
-        ? `<td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(b.sub_code)||'—'}${_doneBadge}</td>
+        ? `<td style="padding:0.35rem 0.5rem 0.35rem 1.6rem">${esc(b.sub_code)||'—'}${_subTags}</td>
            <td class="bid-calc" style="font-size:0.72rem;color:var(--muted)">${esc(b.unit)||'—'}</td>
            <td class="bid-calc">${bidQty ? qfmt(bidQty) : '—'}</td>
            <td class="bid-calc">${bidQty ? '$'+fmt(parseFloat(b.unit_cost)||0) : '—'}</td>
@@ -10435,7 +10560,7 @@ function renderBidTable(projId, opts = {}) {
              // would come back different and a bare focus/blur would save the
              // altered version over the real one.
              `onchange="_bidSubCodeCommit(this,'${projId}','${b.id}')"${b.sub_code ? ` data-cb-value="${_cbEsc(b.sub_code)}"` : ''}`,
-             'data-cb-fixed="1"')}${_doneBadge}</td>
+             'data-cb-fixed="1"')}${_subTags}</td>
            <td><select style="font-size:0.75rem;padding:0.15rem 0.3rem;background:var(--surface2);color:var(--text);border:1px solid var(--border);border-radius:4px;width:60px"
              onchange="updateBidItem('${projId}','${b.id}','unit',this.value)">${UNIT_OPTS.map(u=>`<option value="${u}"${b.unit===u?' selected':''}>${u||'—'}</option>`).join('')}</select></td>
            <td>
