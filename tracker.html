@@ -14052,7 +14052,7 @@ function renderBidFooter(projId, opts = {}) {
   if (bidViewProjId === projId) {
     const sqftBar = document.getElementById('bid-fs-sqft-bar');
     if (sqftBar) {
-      const contractVal = parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0;
+      const contractVal = bidContractFigures(p).value;
       const profit      = contractVal ? contractVal - totalProj : null;   // Contract - Projected final cost
       const profitCol   = profit === null ? 'var(--muted)' : profit >= 0 ? 'var(--green)' : 'var(--red)';
       const profitTxt   = profit === null ? '—' : (profit >= 0 ? '$'+fmt(profit) : '-$'+fmt(Math.abs(profit)));
@@ -23735,6 +23735,15 @@ function generateBidPDF() {
   );
   closeBidPDFModal();
   exportBidPDF(projId, selected);
+}
+
+// The contract figure the bid page's summary bar quotes, shared with the XLSX
+// export so the workbook and the bar can never quote two different ones.
+function bidContractFigures(p) {
+  return {
+    value: parseFloat(p['revised-amount']) || parseFloat(p['contract-amount']) || parseFloat(p['contract-value']) || 0,
+    original: 0, coTotal: 0, coCount: 0,
+  };
 }
 
 // The XLSX button: the same cost-code picker as the PDF, then the workbook

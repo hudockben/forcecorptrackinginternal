@@ -18868,6 +18868,14 @@ function generateBidPDF() {
   exportBidPDF(projId, selected);
 }
 
+// The contract figures the bid page's summary bar quotes — Contract Value, or
+// Original / Change Orders / Revised once the job carries contract change
+// orders — off the same helpers the bar reads, for the XLSX export.
+function bidContractFigures(p) {
+  return { value: projectContract(p), original: originalContract(p),
+           coTotal: contractCOTotal(p), coCount: contractCOs(p).length };
+}
+
 // The XLSX button: the same cost-code picker as the PDF, then the workbook
 // bid-xlsx.js writes off the same figures the PDF prints.
 function generateBidXlsx() {
