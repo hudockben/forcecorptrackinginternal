@@ -1177,6 +1177,20 @@ FAKE.browser = { newPage: async () => fakePage(), close: async () => {}, process
     assert('a definition saved without an internal-data flag reaches the page with it explicitly off',
       res.status === 'sent' && PAGE.specs.length === 1 && PAGE.specs[0].customReport.definition.includeInternal === false, JSON.stringify(PAGE.specs[0] && PAGE.specs[0].customReport));
 
+    // Round 6: report_blocked is the runner's own refusal, so a definition
+    // whose flag is the string "true" (not the boolean every check reads)
+    // lists no refusal — the run sends it, with internal data off.
+    const stringy = await mkReport('Stringy', { definition: def({ includeInternal: 'true' }), customerSafe: true });
+    const stR = await crs('POST', {}, { ...base, custom_report_id: stringy, picked_jobs: [{ id: 'p1', name: 'Paving Maple Ave' }] }, ADMIN);
+    assert('a report whose includeInternal is the string "true": scheduled, report_blocked null, report_customer_safe true',
+      stR.statusCode === 200 && stR.body.schedule.report_blocked === null && stR.body.schedule.report_customer_safe === true, show(stR));
+    const stLs = stR.statusCode === 200 && (await crs('GET', {}, null, ADMIN)).body.schedules.find(x => x.id === Number(stR.body.schedule.id));
+    assert('…and the schedules list reads the same', stLs && stLs.report_blocked === null, JSON.stringify(stLs));
+    resetPage(); SENT.length = 0;
+    res = stR.statusCode === 200 ? await run(await row(stR.body.schedule.id)) : {};
+    assert('…as the run agrees: it sends, with internal data off in the definition it is given',
+      res.status === 'sent' && PAGE.specs.length === 1 && PAGE.specs[0].customReport.definition.includeInternal === false, JSON.stringify(res));
+
     // Every In Progress job, none picked.
     const every = await mkSched({});
     resetPage(); SENT.length = 0;

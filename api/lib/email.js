@@ -162,12 +162,16 @@ function readStartTag(s, i) {
 // written &#61;: report text ("Curb w/one = 6in", "Conditions = …") reads the
 // same, in a cell or an attribute value (where entities decode), and should a
 // browser still read it as an attribute it is one named "onerror&#61;…" that
-// nothing runs. No separator lookbehind, so a handler sitting straight after a
-// closing quote ("<img src=\"x\"onerror=…") is defused too. Not applied to the
+// nothing runs. It matches wherever an attribute name could start — anywhere
+// but straight after a letter (the tokenizer never begins a name inside a run
+// of letters) — so a handler sitting straight after a closing quote ("<img
+// src=\"x\"onerror=…"), a "/" or a space is defused too, while each run of
+// letters is scanned once ("on" repeated through one would otherwise make
+// every "on" a fresh start, and the sanitizer quadratic). Not applied to the
 // spans stripHandlers keeps (CSS, <title>, <textarea>, comments …): entities
 // are not decoded in CSS, so a defused "=" would corrupt it, and report words
 // there should come through as written.
-const HANDLER_LIKE = /(on[a-z]+\s*)=/gi;
+const HANDLER_LIKE = /(?<![a-z])(on[a-z]+\s*)=/gi;
 const defuse = text => text.replace(HANDLER_LIKE, '$1&#61;');
 // The same, but only where an attribute name could start: straight after a
 // space, a "/" or a quote (the tokenizer begins a name nowhere else). Used on
@@ -225,6 +229,7 @@ function cutInSpan(span) {
    since the browser may read one as markup (cutInSpan). Text — between tags,
    and inside the attribute values left — is never cut, only defused, so the
    report's own words survive. */
+const COMMENT_END = /--!?>/g;
 function stripHandlers(html) {
   // A comment, a CDATA section (svg/math foreign content), or a start tag, in
   // source order. Anything else is ordinary text.
@@ -237,12 +242,12 @@ function stripHandlers(html) {
     out += defuse(html.slice(i, m.index));
     const tok = m[0];
     if (tok === '<!--') {                                // a comment: keep inert, to --> / --!> / EOF
-      const j = html.indexOf('-->', m.index + 4);
-      const k = html.indexOf('--!>', m.index + 4);
-      let stop;
-      if (j >= 0 && (k < 0 || j <= k)) stop = j + 3;
-      else if (k >= 0) stop = k + 4;
-      else stop = html.length;
+      // One forward scan for whichever comes first (the two never match at
+      // one index): looking for each on its own would scan to the end of the
+      // document for every comment, as reports have no "--!>".
+      COMMENT_END.lastIndex = m.index + 4;
+      const ce = COMMENT_END.exec(html);
+      const stop = ce ? ce.index + ce[0].length : html.length;
       out += cutInSpan(html.slice(m.index, stop));
       i = stop;
       continue;

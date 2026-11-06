@@ -1988,6 +1988,82 @@ function deepNear(a, b, at = '') {
       assert('…while one whose job ends Dec 31 is still "Not started", with no days figure either',
         rFuture.line.plan_status === 'Not started' && rFuture.line.ahead_days === null, JSON.stringify(rFuture));
 
+      // Round 6: "done today" spares only a line finished by its target. One
+      // still open at the range's end with its target already behind that
+      // end was late as of the report, so finishing it since does not clear
+      // "Behind (past target)" on the line or its Totals.
+      const PT = 'Behind (past target)';
+      const lwOver = zs([{ sub_code: 'B', quantity: 100, start_date: '2026-10-26', target_date: '2026-11-04' }],
+        [{ sub_code: 'B', date: '2026-10-28', quantity: 45 }, { sub_code: 'B', date: '2026-11-06', quantity: 45 }, { sub_code: 'B', date: '2026-11-09', quantity: 10 }],
+        '2026-11-10', { preset: 'last_week', from: '', to: '' });
+      assert('"Last week" sent Tue Nov 10 on a line due Nov 4, 90% in by Sun Nov 8 and finished Mon Nov 9: "Behind (past target)", line and Totals, no Needed / Day (was "At risk" / "On track")',
+        lwOver.line.plan_status === PT && lwOver.tot.plan_status === PT && lwOver.line.required_rate === null, JSON.stringify(lwOver));
+      const pastOver = zs([{ sub_code: 'B', quantity: 100, start_date: '2026-10-05', target_date: '2026-10-05' }],
+        [{ sub_code: 'B', date: '2026-10-19', quantity: 100 }], '2026-11-06', { preset: 'custom', from: '2026-10-01', to: '2026-10-16' });
+      assert('…and a custom Oct 1–16 range on a line due Oct 5 with none in by Oct 16 (all in Oct 19), run Nov 6: "Behind (past target)", line and Totals (was Totals "On track" at 0% earned of 100%)',
+        pastOver.line.plan_status === PT && pastOver.tot.plan_status === PT, JSON.stringify(pastOver));
+      assert('…while the line finished Nov 3 against target Nov 4 (open at Nov 1) still reads "On track"',
+        lwLate.line.plan_status === 'On track' && lwLate.tot.plan_status === 'On track', JSON.stringify(lwLate));
+
+      // Round 6: a line finished by its target after a past range ended, run
+      // past that target, has no Needed / Day — as its Totals — rather than 0.
+      const xItem = [{ sub_code: 'B', quantity: 100, start_date: '2026-10-12', target_date: '2026-10-20' }];
+      const xRows = [{ sub_code: 'B', date: '2026-10-14', quantity: 40 }, { sub_code: 'B', date: '2026-10-19', quantity: 60 }];
+      const xRange = { preset: 'custom', from: '2026-10-01', to: '2026-10-16' };
+      const xLate = zs(xItem, xRows, '2026-11-06', xRange), xOn = zs(xItem, xRows, '2026-10-19', xRange);
+      assert('a custom Oct 1–16 range on a line due Oct 20 finished Oct 19, run Nov 6: Needed / Day blank on the line and the Totals (was 0 beside blank)',
+        xLate.line.required_rate === null && xLate.tot.required_rate === null, JSON.stringify(xLate));
+      assert('…and run Oct 19, with its target still ahead, 0 on both',
+        xOn.line.required_rate === 0 && xOn.tot.required_rate === 0, JSON.stringify(xOn));
+
+      // Round 6: an unworked Plan / Day line with no start, past its target,
+      // makes the Totals late even beside a finished measurable line whose
+      // own (earlier) target is the Totals' — and in a combined report's
+      // subtotal and grand total, and with completed lines hidden.
+      const c2Items = [{ sub_code: 'Surface', quantity: 500, planned_rate: 100, target_date: '2026-10-09' },
+        { sub_code: 'Base', quantity: 300, start_date: '2026-09-14', target_date: '2026-09-25' }];
+      const c2Rows = [{ sub_code: 'Base', date: '2026-09-15', quantity: 150 }, { sub_code: 'Base', date: '2026-09-22', quantity: 150 }];
+      const c2 = (items, rows, today, defPatch, sec) => {
+        const def = pva(zCols, Object.assign({ dates: { preset: 'job_to_date', from: '', to: '' } }, defPatch || {}), sec);
+        const b = J(V.buildSectionData(def.sections[0], def, vmk(def, zjob(items, rows), ['z'], { today })).blocks[0]);
+        return { lines: b.groups.flatMap(g => g.rows.map(r => r.cells)), subs: b.groups.map(g => g.subtotal).filter(Boolean), tot: b.totals };
+      };
+      const c2Sep = c2(c2Items, c2Rows, '2026-11-06'), c2Comb = c2(c2Items, c2Rows, '2026-11-06', { layout: 'combined' });
+      const c2Hide = c2(c2Items, c2Rows, '2026-11-06', null, { options: { hideComplete: true } });
+      assert('Surface (Plan / Day, no start, unworked, due Oct 9) beside a finished Base (due Sep 25), run Nov 6: Totals "Behind (past target)" (was "On track")',
+        c2Sep.lines.find(l => l.sub_code === 'Surface').plan_status === PT && c2Sep.tot.plan_status === PT, JSON.stringify(c2Sep));
+      assert('…and the combined layout\'s job subtotal and grand total read the same',
+        c2Comb.subs.length === 1 && c2Comb.subs[0].plan_status === PT && c2Comb.tot.plan_status === PT, JSON.stringify(c2Comb));
+      assert('…as do the Totals with completed lines hidden', c2Hide.tot.plan_status === PT, JSON.stringify(c2Hide));
+      const c3 = c2([c2Items[0], { sub_code: 'Base', quantity: 300, start_date: '2026-10-26', target_date: '2026-11-20' }],
+        [{ sub_code: 'Base', date: '2026-10-27', quantity: 100 }, { sub_code: 'Base', date: '2026-11-03', quantity: 100 }], '2026-11-06');
+      assert('…while beside an open Base on track with the Totals\' target (Nov 20) still ahead, the Totals are not "Behind (past target)"',
+        c3.tot.plan_status !== PT && c3.tot.target_date === '2026-11-20', JSON.stringify(c3));
+
+      // Round 6: one open line in its span and its Totals compute the same
+      // days ahead two ways (EP·W − E, and (EP − SP)·W); float noise in the
+      // second must not round it to a different half day.
+      const hd = zline([{ sub_code: 'H', quantity: 40, start_date: '2025-06-26', target_date: '2025-07-21' }],
+        [{ sub_code: 'H', date: '2025-06-26', quantity: 15 }, { sub_code: 'H', date: '2025-07-01', quantity: 15 }], '2025-07-20');
+      assert('a line Jun 26–Jul 21 2025 (17 working days), 30 of 40 in, run Jul 20: −3 days, "At risk", on the line and the Totals (Totals were −3.5 "Behind")',
+        hd.line.ahead_days === -3 && hd.tot.ahead_days === -3 && hd.line.plan_status === 'At risk' && hd.tot.plan_status === 'At risk', JSON.stringify(hd));
+      const hdMiss = [];
+      const addD = (iso, n) => new Date(Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10) + n)).toISOString().slice(0, 10);
+      for (const S of ['2025-06-02', '2025-06-26', '2026-03-04']) {
+        for (const span of [6, 13, 24, 37]) {
+          const T = addD(S, span);
+          for (let a = 1; a < span; a += 2) {
+            const A = addD(S, a);
+            for (const f of [0.25, 0.5, 0.75]) {
+              const r = zline([{ sub_code: 'H', quantity: 40, start_date: S, target_date: T }], [{ sub_code: 'H', date: S, quantity: 40 * f }], A);
+              if (r.line.ahead_days !== r.tot.ahead_days || r.line.plan_status !== r.tot.plan_status) hdMiss.push({ S, T, A, f, line: r.line.ahead_days, tot: r.tot.ahead_days });
+            }
+          }
+        }
+      }
+      assert('…and over single open lines (several spans and days, 25 / 50 / 75% in) the line and its Totals always read the same days and status',
+        hdMiss.length === 0, JSON.stringify(hdMiss.slice(0, 5)) + ` (${hdMiss.length})`);
+
       // Round 5: a dated line with no quantity (zeroed by a change order, or
       // not entered yet) has nothing to measure: "Not scheduled", like its
       // Totals, with no Scheduled % — never a blank status.

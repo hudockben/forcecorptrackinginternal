@@ -126,8 +126,11 @@
     cust: { jobId: '', client: '', search: '', runs: null, loading: false, error: '', next: null, more: false, busy: null },
     // Scheduled sends of saved custom reports (admin / level 3).
     // schedBusy: the schedules a Send now is out for; schedToggling: those a
-    // Pause / Resume is out for (each one's ⋯ is off until its answer lands).
+    // Pause / Resume is out for; schedSaving: those an Edit…'s save is out for
+    // (its dialog may be closed meanwhile). Each one's ⋯ is off until its
+    // answer lands, so nothing is opened from the copy from before.
     scheds: null, schedsLoading: false, schedsError: '', canSchedule: false, schedGroups: null, schedBusy: new Set(), schedToggling: new Set(),
+    schedSaving: new Set(),
     // The report-wide sub code / cost code filter's search box.
     filterSearch: '', focusFilter: false,
     // The AI builder drawer.
@@ -1151,9 +1154,11 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         ${body}
       </div>`;
   }
+  const schedSavingOut = id => [...S.schedSaving].some(x => sameId(x, id));
   function schedItemHtml(s) {
     const busy = [...S.schedBusy].some(id => sameId(id, s.id));
     const toggling = [...S.schedToggling].some(id => sameId(id, s.id));
+    const saving = schedSavingOut(s.id);
     const next = s.enabled && s.next_run_at ? `Next ${fmtWhen(s.next_run_at)}` : (s.enabled ? '' : 'Paused');
     const last = s.last_status ? `Last: ${s.last_status}${s.last_run_at ? ' · ' + ago(s.last_run_at) : ''}` : 'Not sent yet';
     const bad = /fail|skip|partial|missed/i.test(String(s.last_status || ''));
@@ -1169,14 +1174,14 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     return `<div class="cr-item">
       <div class="cr-item-open" style="cursor:default">
         <span class="cr-item-name">${esc(s.report_name || 'Saved report')}</span>
-        <span class="cr-badges">${s.enabled ? badge('On', 'shared') : badge('Paused', 'paused')}${busy ? '<span class="cr-badge"><span class="cr-spin" aria-hidden="true"></span> Sending…</span>' : ''}</span>
+        <span class="cr-badges">${s.enabled ? badge('On', 'shared') : badge('Paused', 'paused')}${busy ? '<span class="cr-badge"><span class="cr-spin" aria-hidden="true"></span> Sending…</span>' : ''}${saving ? '<span class="cr-badge"><span class="cr-spin" aria-hidden="true"></span> Saving…</span>' : ''}</span>
         <span class="cr-sched-meta">${esc(cadenceText(s))}</span>
         <span class="cr-sched-meta">${esc([next, last].filter(Boolean).join(' · '))}</span>
         ${blocked ? `<span class="cr-sched-meta err">${esc(blocked)}</span>` : ''}
         ${s.last_message && bad ? `<span class="cr-sched-meta err">${esc(String(s.last_message).slice(0, 200))}</span>` : ''}
       </div>
       <button type="button" class="cr-item-more" data-act="sched-menu" data-id="${esc(s.id)}" data-fk="schedmore-${esc(s.id)}"
-        aria-haspopup="menu" aria-expanded="false" aria-label="Actions for the schedule of ${esc(s.report_name || 'a report')}" title="Schedule actions"${busy || toggling ? ' disabled' : ''}>&#8943;</button>
+        aria-haspopup="menu" aria-expanded="false" aria-label="Actions for the schedule of ${esc(s.report_name || 'a report')}" title="Schedule actions"${busy || toggling || saving ? ' disabled' : ''}>&#8943;</button>
     </div>`;
   }
 
@@ -2341,8 +2346,10 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   }
   // A save of a report a schedule sends: the schedules list asked for again,
   // so the rail says what its next send will find (what the server says).
+  // While a load is out (the first one, when which reports are scheduled is
+  // not known yet) it is asked for again too: that answer may predate this save.
   function schedsAfterSave(r) {
-    if (r && isScheduled({ id: r.id })) loadSchedules();
+    if (r && (isScheduled({ id: r.id }) || S.schedsP)) loadSchedules();
   }
   function loadList() {
     if (S.loading) return S.loadP;
@@ -2739,6 +2746,17 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const d = S.doc;
     if (!d || !d.id) return;
     if (vis === 'shared' && !window.confirm(`Share “${d.savedName}” with everyone in ${divLabel()}? They will be able to run it; only admins and level 3 users can change it.`)) return;
+    // Private, only its owner can open it (the server keeps the author while
+    // they still can), so a schedule that runs as anyone else stops: said
+    // before, as deleting it or switching internal data on is.
+    if (vis === 'private' && isScheduled(d)) {
+      const owner = txt(d.owner_username);
+      const others = [...new Set(S.scheds.filter(x => sameId(x.custom_report_id, d.id)).map(x => txt(x.run_as_username))
+        .filter(u => u && u !== owner))];
+      const who = others.length > 1 ? `${others.slice(0, -1).join(', ')} and ${others[others.length - 1]}` : others[0];
+      if (others.length && !window.confirm(`A schedule sends this report as ${who}. Made private, only ${owner || 'its owner'} can open it, `
+        + 'so those scheduled sends stop until it is shared again. Make it private anyway?')) return;
+    }
     try {
       const res = await api.update(d.id, { visibility: vis, version: d.version });
       if (S.doc !== d) { upsertReport(res.report); schedsAfterSave(res.report); return; }
@@ -2769,20 +2787,30 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   async function renameReport(r) {
     if (modalOpen()) return;
     const open = S.doc && S.doc.id != null && sameId(S.doc.id, r.id) ? S.doc : null;
+    // What the rename is made against: the list's copy — after a
+    // version_conflict, the one the server sent back, so "Try the rename
+    // again" can work. The open report renames against its own version until
+    // someone else's save is known (a conflict, or a newer copy in the list);
+    // from then on against theirs, and its own version is not moved, so its
+    // next Save still meets their save rather than quietly writing over it.
+    let base = r;
+    let behind = !!open && Number(r.version) > Number(open.version);
     await askName({
       title: 'Rename report', name: r.name, confirmLabel: 'Rename',
       onSubmit: async ({ name }) => {
-        if (name === r.name) return null;
+        if (name === base.name) return null;
+        const version = open && !behind ? open.version : base.version;
         try {
-          const res = await api.update(r.id, { name, version: open ? open.version : r.version });
+          const res = await api.update(r.id, { name, version });
           upsertReport(res.report);
           // Its schedules carry the name too: a list answer already on its
           // way, read before the rename, must not put the old one back.
           schedsAfterSave(res.report);
           if (open && S.doc === open) {
-            // Keep any unsaved edits; only the stored name and version moved.
+            // Keep any unsaved edits; only the stored name and version moved
+            // (the version only when it was the open copy's own).
             const typed = open.name.trim() !== open.savedName;
-            open.version = res.report.version;
+            if (version === open.version) open.version = res.report.version;
             open.savedName = res.report.name;
             if (!typed) {
               open.name = res.report.name;
@@ -2796,7 +2824,11 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         } catch (e) {
           if (e.status === 409 && code(e) === 'name_taken') return `There is already a report called “${name}”. Pick a different name.`;
           if (e.status === 409 && code(e) === 'version_conflict') {
-            if (e.data && e.data.report) { upsertReport(e.data.report); schedsAfterSave(e.data.report); }
+            if (e.data && e.data.report) {
+              upsertReport(e.data.report); schedsAfterSave(e.data.report);
+              base = e.data.report;
+              behind = true;
+            }
             renderRail();
             return 'Someone else changed this report a moment ago. Try the rename again.';
           }
@@ -3882,6 +3914,9 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   }
   async function openSchedule(reportId, row) {
     if (modalOpen()) return;
+    // Its last Edit… is still saving (that dialog closed meanwhile): the copy
+    // here is from before that save, so it is not opened until it lands.
+    if (row && schedSavingOut(row.id)) return;
     if (!S.canShare) { toast('Only an admin or level 3 user can schedule reports.', 'error'); return; }
     const r = reportId != null ? S.reports.find(x => sameId(x.id, reportId)) : null;
     if (!r && !row) { toast('Save the report first — a schedule sends a saved report.', 'error'); return; }
@@ -3979,7 +4014,11 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       <div class="cr-m-btns">
         <button type="button" class="btn btn-ghost" data-s="cancel">Cancel</button>
         <button type="button" class="btn btn-green" data-s="save">${row ? 'Save schedule' : 'Create schedule'}</button>
-      </div>`, null, { wide: true });
+      </div>`, () => {
+      // Closed (Escape, ✕, Cancel): the rail shows that schedule's ⋯ as it
+      // is now — off while an edit's save is still out, on once none is.
+      if (row) renderRail();
+    }, { wide: true });
     const $ = sel => m.body.querySelector(sel);
     const errs = $('.cr-m-errs');
     loadGroups(v.group_ids).then(res => {
@@ -4111,18 +4150,28 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       ok.disabled = true;
       ok.textContent = 'Saving…';
       errs.innerHTML = '';
+      // An edit's row keeps its ⋯ off while the save is out, even once the
+      // dialog is closed (Escape, ✕): an Edit… opened meanwhile would show
+      // the settings from before and could save them back over this save.
+      const savingId = row ? row.id : null;
+      if (row) S.schedSaving.add(savingId);
+      const saved = () => { if (row) S.schedSaving.delete(savingId); };
       try {
         const body = scheduleBody(val);
         const res = row ? await api.updateSchedule(row.id, body) : await api.createSchedule(body);
+        saved();
         applySched(res && res.schedule);
         m.close(true);
+        if (row && !(res && res.schedule)) renderRail();
         toast(row ? 'Schedule saved.' : `Scheduled “${r.name}”: ${cadenceText(val)}.`);
         loadSchedules();
       } catch (e) {
+        saved();
         // Closed (Escape, ✕) while it read "Saving…": say so in a toast, not
         // into the detached dialog, and show the schedules as they are.
         if (!m.el.isConnected) {
           if (e.status !== 401) toast(`Couldn’t save the schedule: ${scheduleError(e)}`, 'error');
+          if (row) renderRail();
           loadSchedules();
           return;
         }
@@ -4559,7 +4608,9 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
      a report set to fixed dates, a template scheduled once per job (or as
      one report) that now keeps its own jobs, and a saved-jobs report that no
      longer does. Only a change into one of these asks; one already so does
-     not ask at every save. */
+     not ask at every save. A save that makes two of them at once (fixed
+     dates and the jobs) names both, and what undoes each: undoing one alone
+     does not start the sends again. */
   function scheduledStops(d, def) {
     if (!isScheduled(d)) return null;
     const scheds = S.scheds.filter(x => sameId(x.custom_report_id, d.id));
@@ -4569,13 +4620,24 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const kindOf = x => (x && x.jobs && x.jobs.mode === 'saved' && Array.isArray(x.jobs.ids) && x.jobs.ids.length ? 'report' : 'template');
     const wasKind = saved && saved.kind ? saved.kind : kindOf(was), kind = kindOf(def);
     const fixedNow = def.dates && def.dates.preset === 'custom', fixedWas = !!(was && was.dates && was.dates.preset === 'custom');
-    if (fixedNow && !fixedWas) {
+    const fixed = fixedNow && !fixedWas;
+    const toReport = kind !== wasKind && kind === 'report' && scheds.some(x => x.jobs_mode !== 'saved');
+    const toTemplate = kind !== wasKind && kind === 'template' && scheds.some(x => x.jobs_mode === 'saved');
+    if (fixed && (toReport || toTemplate)) {
+      return 'This report is scheduled, and saved like this its scheduled sends stop for two reasons:\n'
+        + '• with fixed dates every scheduled email would show the same days;\n'
+        + (toReport ? '• saved with its own jobs, it no longer fits a schedule that sends it once per job (or as one report of every In Progress job).\n'
+          : '• saved without its jobs, it no longer fits a schedule that sends its saved jobs.\n')
+        + 'They start again only once it has a relative date range like Last week again '
+        + (toReport ? 'and the schedule is opened and saved again' : 'and the schedule is edited to pick its jobs') + '. Save anyway?';
+    }
+    if (fixed) {
       return 'This report is scheduled — with fixed dates every scheduled email would show the same days, so scheduled sends will stop until it has a relative date range like Last week again. Save anyway?';
     }
-    if (kind !== wasKind && kind === 'report' && scheds.some(x => x.jobs_mode !== 'saved')) {
+    if (toReport) {
       return 'This report is scheduled to send once per job (or as one report of every In Progress job). Saved with its own jobs, those scheduled sends stop until the schedule is opened and saved again. Save anyway?';
     }
-    if (kind !== wasKind && kind === 'template' && scheds.some(x => x.jobs_mode === 'saved')) {
+    if (toTemplate) {
       return 'This report is scheduled to send its saved jobs. Saved without them, scheduled sends stop until the schedule is edited to pick its jobs. Save anyway?';
     }
     return null;
@@ -4811,7 +4873,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       case 'sched-toggle': toggleSchedule(id); break;
       case 'sched-edit': {
         const s = (S.scheds || []).find(x => sameId(x.id, id));
-        if (s) openSchedule(s.custom_report_id, s);
+        if (s && !schedSavingOut(s.id)) openSchedule(s.custom_report_id, s);
         break;
       }
       case 'sched-send': sendScheduleNow(id); break;

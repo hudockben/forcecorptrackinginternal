@@ -119,6 +119,17 @@ function readVisibility(raw, fallback) {
 
 const flag = v => v === true || v === '1' || v === 'true';
 
+// The internal-data flag is stored as a boolean. Every check reads it as
+// `=== true`, so a hand-made "true" (a string) is not internal anywhere; it is
+// stored as the false it reads as, so no stored definition says otherwise
+// (the schedules list reads the stored JSON).
+function boolInternal(def) {
+  if (isPlainObject(def) && Object.prototype.hasOwnProperty.call(def, 'includeInternal') && typeof def.includeInternal !== 'boolean') {
+    def.includeInternal = false;
+  }
+  return def;
+}
+
 /**
  * What the list badges a report by, from its definition alone. 'report' when
  * it saves specific jobs; 'template' when they are picked at run time.
@@ -418,6 +429,8 @@ module.exports = async (req, res) => {
       if (desc.error) return res.status(400).json({ ok: false, error: desc.error });
       const def = readDefinition(b.definition);
       if (def.error) return res.status(def.status).json({ ok: false, error: def.error });
+      boolInternal(def.value);
+      def.json = JSON.stringify(def.value);
       const { kind, customer_safe } = deriveFlags(def.value);
 
       const rows = await sql`
@@ -485,7 +498,7 @@ module.exports = async (req, res) => {
       if (b.definition !== undefined) {
         const d = readDefinition(b.definition);
         if (d.error) return res.status(d.status).json({ ok: false, error: d.error });
-        definition = d.value;
+        definition = boolInternal(d.value);
       }
       const { kind, customer_safe } = deriveFlags(definition);
 

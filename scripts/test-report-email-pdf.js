@@ -345,6 +345,33 @@ assert('sanitizeReportHtml removes the window.print() bootstrap',
   const aOut = sanitizeReportHtml(inAttr), aTd = new JSDOM(aOut).window.document.querySelector('td');
   assert('…and so does an attribute value holding such text, with the tag around it intact',
     aTd && aTd.getAttribute('title') === 'Curb w/one = 6in' && aTd.className === 'sub' && aTd.textContent === 'x', aOut);
+  // Round 6: the sanitizer runs on every email (and twice per scheduled
+  // send), so crafted text must not make it quadratic: a long run of letters
+  // full of "on" (a bid description, a cell, a title), and many comments.
+  let t0 = Date.now();
+  sanitizeReportHtml('<td>' + 'on'.repeat(100000) + '</td>');
+  sanitizeReportHtml('<td title="' + 'on'.repeat(100000) + '">x</td>');
+  const tLetters = Date.now() - t0;
+  assert('a long run of letters full of "on" (200 KB, in a cell and in a title) is sanitized in linear time', tLetters < 500, `${tLetters} ms`);
+  t0 = Date.now();
+  sanitizeReportHtml('<!---->'.repeat(20000));
+  sanitizeReportHtml('<!--x--><p>y</p>'.repeat(20000));
+  const tComments = Date.now() - t0;
+  assert('many comments (20,000) are sanitized in linear time', tComments < 500, `${tComments} ms`);
+  // …with handlers still defused wherever an attribute name could start.
+  const anchored = { '"onerror=': '<p title="a">"onerror=x</p>', '/onerror=': '<p>a/onerror=x</p>', ' onerror =': '<p>a onerror =x</p>', 'ONERROR=': '<p>ONERROR=x</p>' };
+  for (const [what, h] of Object.entries(anchored)) {
+    const o = sanitizeReportHtml(h);
+    assert(`…and text "${what}" is still defused`, /&#61;/.test(o) && !/onerror\s*=/i.test(o), o);
+  }
+  const pass = '<p>Conditions = dry</p>';
+  assert('…while "Conditions = dry" (an "on" inside a word) comes through as written', sanitizeReportHtml(pass) === pass, sanitizeReportHtml(pass));
+  const cmts = { '<!--a-->': '<!--a--><p>k</p>', '<!--a--!>': '<!--a--!><p>k</p>', '<!--a--->': '<!--a---><p>k</p>', '<!--a---!>': '<!--a---!><p>k</p>',
+    'both, --!> first': '<!--a--!>b--><p>k</p>', 'unclosed': '<!--a<p>k</p>' };
+  for (const [what, h] of Object.entries(cmts)) {
+    const o = sanitizeReportHtml(h), d = new JSDOM(o).window.document, d0 = new JSDOM(h).window.document;
+    assert(`…and a comment ending ${what} ends where the browser ends it`, d.body.innerHTML === d0.body.innerHTML, o);
+  }
 }
 
 // ── 3. Real headless-Chrome render ─────────────────────────────────────────

@@ -1504,7 +1504,10 @@
   }
   const PLAN_BASIS = { rate: 'Planned per day', bid: 'Bid item dates', 'bid+job end': 'Bid item start + job end',
     schedule: 'Construction schedule', job: 'Job dates' };
-  const halfDay = x => { if (!isNum(x)) return null; const r = Math.round(x * 2) / 2; return Math.abs(r) < 0.5 ? 0 : r; };
+  // Rounded to half days after snapping float noise (x·2 to 9 decimals), so a
+  // value that is exactly a quarter day rounds the same however it was worked
+  // out — a lone line's EP·W − E and its Totals' (EP − SP)·W agree.
+  const halfDay = x => { if (!isNum(x)) return null; const r = Math.round(Math.round(x * 2e9) / 1e9) / 2; return Math.abs(r) < 0.5 ? 0 : r; };
   const round2 = x => (isNum(x) ? Math.round(x * 100) / 100 : null);
   // The thresholds: on track within a day (or pace at 95% of plan), at risk
   // to three days, behind past that.
@@ -2159,15 +2162,19 @@
     }
     const ahead0 = isNum(ahead) ? ahead : null;
     ahead = halfDay(ahead);
-    // Past target is a fact about today, so it asks whether the line is done
-    // today: one finished after a past range ended (but by its target) is not
-    // late, though as of the range's end it was still open.
+    // Past target: open today with its target behind today — or, for a past
+    // range, open as of its end with the target already behind that end:
+    // late as of the report, whatever has gone in since. One finished after a
+    // past range ended, but by its target, is not late, though as of the
+    // range's end it was still open.
     const doneNow = done || (Q > 0 && s.remainingNow <= 0);
-    const pastTarget = !!(pl.source && pl.T && pl.T < today && !doneNow && !noQty);
+    const pastTarget = !!(pl.source && pl.T && !noQty && !done && ((A < today && pl.T < A) || (pl.T < today && !doneNow)));
     let needed = null;
-    if (pl.source && pl.T && rated && !done && !pastTarget) {
-      // !pastTarget means today <= pl.T; a target on a non-working day (or
-      // today itself a non-working day) still needs at least the one day.
+    // None past the target: a line finished by its target after a past range
+    // ended, run past that target, has no needed / day, as its Totals.
+    if (pl.source && pl.T && pl.T >= today && rated && !done && !pastTarget) {
+      // A target on a non-working day (or today itself a non-working day)
+      // still needs at least the one day.
       const n = Math.max(1, countWorkdays(today, pl.T));
       needed = s.remainingNow / n;
     }
@@ -2358,11 +2365,14 @@
     c.forecast_vs_target = PF && T ? (PF <= T ? countWorkdays(PF, T) - 1 : -(countWorkdays(T, PF) - (isWorkday(T) ? 1 : 0))) : null;
     // Past target: measured against the Totals' own target (the latest
     // planned target, which every other figure here uses) — past it with a
-    // planned line still open. An open line with no plan (an LS line kept
-    // open to closeout) is not late against a plan it does not have, and one
-    // small line past its own earlier target does not make the whole job
-    // late (its own row says so). On job dates, past the job's end.
-    const past = !!(T && T < today) && (planned.length ? planned.some(r => r.m.past) : true);
+    // line still open past its own target: a planned line, or a Plan / Day
+    // line nobody has started (no start, so not among the planned lines). An
+    // open line with no plan (an LS line kept open to closeout, an undated
+    // one) is not late against a plan it does not have (m.past needs a plan
+    // and a target), and one small line past its own earlier target does not
+    // make the whole job late while the Totals' target is still ahead (its
+    // own row says so). On job dates, past the job's end.
+    const past = !!(T && T < today) && (planned.length ? recs.some(r => r.m.past) : true);
     if (recs.every(r => r.m.complete)) c.plan_status = 'Complete';
     // Nothing to measure the job on, but a line past its own target (a Plan /
     // Day line nobody has started, with no start to date it): late, as its row.

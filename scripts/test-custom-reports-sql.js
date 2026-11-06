@@ -689,6 +689,18 @@ async function cleanUp() {
         && !Object.prototype.hasOwnProperty.call((await dbRow(r.body.report.id)).definition, '__proto__'), show(r));
     r = await create(ALICE, { name: 'Truthy internal', definition: DEF({ includeInternal: 'yes' }) });
     assert('only includeInternal === true counts as internal', r.body.report.customer_safe === true);
+    // Round 6: and it is stored as the boolean it reads as, so nothing that
+    // reads the stored JSON (the schedules list) can read it otherwise.
+    r = await create(ALICE, { name: 'String true internal', definition: DEF({ includeInternal: 'true' }) });
+    let strRow = r.statusCode === 201 && await dbRow(r.body.report.id);
+    assert('includeInternal "true" (a string) is stored as false, beside customer_safe true',
+      r.statusCode === 201 && r.body.report.customer_safe === true && strRow.definition.includeInternal === false
+        && r.body.report.definition.includeInternal === false, show(r) + ' ' + JSON.stringify(strRow && strRow.definition));
+    if (r.statusCode === 201) {
+      const pr = await put(ALICE, r.body.report.id, { definition: DEF({ includeInternal: 'true' }), version: r.body.report.version });
+      strRow = await dbRow(r.body.report.id);
+      assert('…and saved again with it, the same', pr.statusCode === 200 && pr.body.report.customer_safe === true && strRow.definition.includeInternal === false, show(pr));
+    }
     r = await put(ALICE, saved.id, { definition: DEF({ includeInternal: true }), kind: 'report', customer_safe: true, version: 1 });
     assert('a save re-derives both from the new definition',
       r.statusCode === 200 && r.body.report.kind === 'template' && r.body.report.customer_safe === false, show(r));

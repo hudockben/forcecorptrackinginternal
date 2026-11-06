@@ -333,7 +333,7 @@ async function loadSchedules(sql, company, division, id) {
     SELECT s.*, cr.name AS cr_name, (cr.id IS NOT NULL AND cr.deleted_at IS NULL) AS cr_live,
            cr.visibility AS cr_visibility, cr.owner_user_id AS cr_owner, cr.customer_safe AS cr_safe,
            cr.kind AS cr_kind, cr.definition->'dates'->>'preset' AS cr_preset,
-           (cr.definition->>'includeInternal') = 'true' AS cr_internal
+           (cr.definition->'includeInternal') = 'true'::jsonb AS cr_internal
       FROM report_schedules s
       LEFT JOIN custom_reports cr ON cr.id = s.custom_report_id AND cr.company_code = s.company_code
      WHERE s.company_code = ${company} AND s.division = ${division} AND s.report_type = ${customTypeFor(division)}

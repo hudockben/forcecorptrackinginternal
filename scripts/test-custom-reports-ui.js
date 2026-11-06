@@ -3044,6 +3044,16 @@ function seed(srv) {
     const asked2 = h.confirms.pop() || '';
     assert('…and saving it with fixed dates asks first too', /This report is scheduled/.test(asked2) && /fixed dates/.test(asked2)
       && h.srv.calls('PUT').length === puts0, asked2);
+    // Round 6: both in one save — its jobs kept and fixed dates — names both,
+    // and does not promise the sends come back with relative dates alone.
+    h.$('[data-bind="save-jobs"]').click();
+    h.answers.push(false);
+    h.click(h.act('save'));
+    await tick(8);
+    const asked3 = h.confirms.pop() || '';
+    assert('…and saving it with its jobs kept AND fixed dates names both stops in one ask ("no" saves nothing)',
+      /fixed dates/.test(asked3) && /once per job/.test(asked3) && /schedule is opened and saved again/.test(asked3)
+        && !/until it has a relative date range like Last week again\. Save anyway/.test(asked3) && h.srv.calls('PUT').length === puts0, asked3);
     h.close();
   }
   {
@@ -3163,6 +3173,184 @@ function seed(srv) {
     await tick(12);
     assert('…and after the older refresh lands it still does — the list was asked for again',
       name() === 'Maple Ave — owner weekly update' && gets() > g0, `${name()} · gets ${gets()} vs ${g0}`);
+    h.close();
+  }
+  {
+    // Round 6: an Edit… closed (Escape) while it reads "Saving…" keeps that
+    // schedule's ⋯ off until the save lands, so Edit… cannot reopen the copy
+    // from before and save it back over the new settings.
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }] }));
+    srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+    srv.schedules.push({ id: 993, custom_report_id: 1, report_name: 'Acme weekly update', jobs_mode: 'saved', picked_jobs: null,
+      frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00', timezone: 'America/New_York', group_ids: [41], emails: [],
+      use_job_contacts: false, subject: null, note: null, attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:00:00Z',
+      last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat', created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z',
+      report_visible: true, report_deleted: false, report_customer_safe: true });
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    const esc = () => h.document.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    const more = () => h.$('[data-act="sched-menu"][data-id="993"]');
+    const edit = () => { h.click(more()); h.click(h.document.querySelector('.cr-menu [data-act="sched-edit"]')); };
+    let putRelease;
+    const putGate = new Promise(r => { putRelease = r; });
+    const realHandle = srv.handle;
+    srv.handle = async (url, init) => { if (init && init.method === 'PUT' && /custom-report-schedules/.test(url)) await putGate; return realHandle(url, init); };
+    edit();
+    await tick(6);
+    let m = h.modal();
+    m.querySelector('#cr-s-time').value = '06:30';
+    m.querySelector('[data-s="save"]').click();
+    esc();
+    await tick(6);
+    assert('Escape during an Edit…\'s "Saving…": the dialog is gone, and that schedule\'s ⋯ is off while the save is out',
+      !h.modal() && more() && more().disabled === true && /Saving…/.test(more().closest('.cr-item').textContent), more() && more().outerHTML);
+    // An Edit… that reaches the page anyway (a menu opened before) opens nothing.
+    const stray = h.document.createElement('button');
+    stray.setAttribute('data-act', 'sched-edit');
+    stray.setAttribute('data-id', '993');
+    h.$('.cr-root').appendChild(stray);
+    h.click(stray);
+    await tick(4);
+    assert('…and Edit… on it meanwhile opens nothing', !h.modal());
+    stray.remove();
+    putRelease();
+    await tick(12);
+    srv.handle = realHandle;
+    assert('…on again once the save has landed', more() && more().disabled === false && !/Saving…/.test(more().closest('.cr-item').textContent));
+    edit();
+    await tick(6);
+    m = h.modal();
+    assert('…and Edit… then shows the saved 06:30', m && m.querySelector('#cr-s-time').value === '06:30', m && m.querySelector('#cr-s-time').value);
+    if (m) m.querySelector('[data-s="save"]').click();
+    await tick(10);
+    const puts = h.srv.callsTo('/api/custom-report-schedules', 'PUT').map(e => e.body.send_time);
+    assert('…so saving it sends 06:30 again, never the old 07:00', JSON.stringify(puts) === '["06:30","06:30"]'
+      && srv.schedules.find(x => x.id === 993).send_time === '06:30', JSON.stringify(puts));
+    h.close();
+  }
+  {
+    // Round 6: Make private on a scheduled report whose schedule runs as
+    // someone other than its owner stops those sends — so it asks first, as
+    // deleting it or switching internal data on does. One whose schedules all
+    // run as the owner keeps sending, so it does not ask.
+    const privateWith = async runAs => {
+      const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }] }));
+      srv.reports.find(r => r.id === 2).definition.dates = { preset: 'last_week' };
+      srv.schedules.push({ id: 994, custom_report_id: 2, report_name: 'Division progress template', jobs_mode: 'each', picked_jobs: null,
+        frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00', timezone: 'America/New_York', group_ids: [41], emails: [],
+        use_job_contacts: false, subject: null, note: null, attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:00:00Z',
+        last_run_at: null, last_status: null, last_message: null, run_as_username: runAs, created_by_username: runAs, updated_at: '2026-11-01T12:00:00Z',
+        report_visible: true, report_deleted: false, report_customer_safe: true });
+      const h = boot({ server: srv });
+      await h.render();
+      await tick(6);
+      h.click(h.$('[data-act="open"][data-id="2"]'));
+      await tick(4);
+      const puts0 = h.srv.calls('PUT').length;
+      h.confirms.splice(0);
+      h.answers.push(false);
+      h.click(h.act('doc-menu'));
+      h.click(h.document.querySelector('.cr-menu [data-act="make-private"]'));
+      await tick(8);
+      const out = { asked: h.confirms.slice(), puts: h.srv.calls('PUT').length - puts0, vis: srv.find(2).visibility };
+      h.close();
+      return out;
+    };
+    const other = await privateWith('other.admin');
+    assert('Make private on a shared report scheduled to run as other.admin (owner boss) asks first, naming who it runs as; "no" changes nothing',
+      other.asked.length === 1 && /schedule/i.test(other.asked[0]) && /other\.admin/.test(other.asked[0]) && other.puts === 0 && other.vis === 'shared',
+      JSON.stringify(other));
+    const own = await privateWith('boss');
+    assert('…while one whose schedule runs as its owner makes it private without asking',
+      own.asked.length === 0 && own.puts === 1 && own.vis === 'private', JSON.stringify(own));
+  }
+  {
+    // Round 6: a scheduled report renamed while the first schedules load is
+    // still out (the list not known yet) asks for the list again, so that
+    // answer — read before the rename — cannot leave the old name on the rail.
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }] }));
+    srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+    srv.schedules.push({ id: 995, custom_report_id: 1, report_name: 'Acme weekly update', jobs_mode: 'saved', picked_jobs: null,
+      frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00', timezone: 'America/New_York', group_ids: [41], emails: [],
+      use_job_contacts: false, subject: null, note: null, attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:00:00Z',
+      last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat', created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z',
+      report_visible: true, report_deleted: false, report_customer_safe: true });
+    const releases = [];
+    srv.schedsLateGate = () => new Promise(r => releases.push(r));
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    srv.schedsLateGate = null;
+    const gets = () => h.srv.callsTo('/api/custom-report-schedules', 'GET').length;
+    const name = () => { const b = h.$('[data-act="sched-menu"][data-id="995"]'); return b ? b.closest('.cr-item').querySelector('.cr-item-name').textContent : ''; };
+    assert('the first schedules load is out (held)', releases.length === 1 && h.S().scheds === null && gets() === 1, `${releases.length} ${gets()}`);
+    h.click(h.$('[data-act="item-menu"][data-id="1"]'));
+    h.click(h.document.querySelector('.cr-menu [data-act="menu-rename"]'));
+    const rm = h.modal();
+    rm.querySelector('#cr-m-name').value = 'Maple Ave — owner weekly update';
+    rm.querySelector('[data-m="ok"]').click();
+    await tick(8);
+    releases.splice(0).forEach(f => f());
+    await tick(12);
+    assert('renamed while it was out: the list is asked for again and the rail shows the new name',
+      gets() === 2 && name() === 'Maple Ave — owner weekly update', `${name()} · gets ${gets()}`);
+    h.close();
+  }
+  {
+    // Round 6: after a rename's version_conflict, "Try the rename again" in
+    // the same dialog renames against the version the conflict sent back —
+    // for a report that is not open, and for the open one, whose own next
+    // Save still meets the other person's save (never quietly overwrites it).
+    const srv = seed(makeServer());
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    const renameTo = async (id, name) => {
+      h.click(h.$(`[data-act="item-menu"][data-id="${id}"]`));
+      h.click(h.document.querySelector('.cr-menu [data-act="menu-rename"]'));
+      const rm = h.modal();
+      rm.querySelector('#cr-m-name').value = name;
+      rm.querySelector('[data-m="ok"]').click();
+      await tick(8);
+      return rm;
+    };
+    const puts = id => h.srv.calls('PUT', e => e.q.id === String(id));
+    // Report 2, not open: someone else saves it (version 2) behind our back.
+    Object.assign(srv.find(2), { version: 2, updated_by_username: 'boss' });
+    let rm = await renameTo(2, 'Division progress — renamed');
+    const err1 = rm.isConnected ? rm.textContent : '';
+    assert('a report that is not open, saved by someone else meanwhile: the rename meets the conflict and says so', /Try the rename again/.test(err1)
+      && puts(2).length === 1 && puts(2)[0].body.version === 1, err1);
+    rm.querySelector('[data-m="ok"]').click();
+    await tick(8);
+    assert('…and OK again in the same dialog renames it, against the version the conflict sent back (was the same conflict again)',
+      !rm.isConnected && puts(2).length === 2 && puts(2)[1].body.version === 2 && srv.find(2).name === 'Division progress — renamed' && srv.find(2).version === 3,
+      JSON.stringify(puts(2).map(e => e.body)));
+    if (rm.isConnected) rm.querySelector('[data-m="cancel"]').click();
+    // Report 1, open, unedited; someone else saves it.
+    h.click(h.$('[data-act="open"][data-id="1"]'));
+    await tick(4);
+    Object.assign(srv.find(1), { version: 2, updated_by_username: 'boss', description: 'Changed by boss' });
+    rm = await renameTo(1, 'Acme — renamed');
+    assert('the open report, saved by someone else meanwhile: the rename meets the conflict', rm.isConnected && /Try the rename again/.test(rm.textContent)
+      && puts(1).length === 1, rm.textContent);
+    rm.querySelector('[data-m="ok"]').click();
+    await tick(8);
+    assert('…and OK again renames it (was the same conflict again, and again on every rename until reloaded)',
+      !rm.isConnected && puts(1).length === 2 && puts(1)[1].body.version === 2 && srv.find(1).name === 'Acme — renamed', JSON.stringify(puts(1).map(e => e.body)));
+    assert('…the open report shows the new name', h.S().doc.savedName === 'Acme — renamed' && h.$('[data-bind="name"]').value === 'Acme — renamed', h.S().doc.savedName);
+    if (rm.isConnected) rm.querySelector('[data-m="cancel"]').click();
+    // Its own next Save still meets boss's save, rather than writing over it.
+    if (h.$('#cr-step-3')) h.click(h.$('#cr-step-3'));
+    if (h.$('[data-bind="title"]')) h.type(h.$('[data-bind="title"]'), 'My edit');
+    await tick(2);
+    h.click(h.act('save'));
+    await tick(8);
+    const conflictBox = h.modal();
+    assert('…and its next Save still meets the other person\'s save (Load their version / Save mine as a copy), not a quiet overwrite',
+      conflictBox && /Someone else saved this report/.test(conflictBox.textContent) && srv.find(1).description === 'Changed by boss' && srv.find(1).version === 3,
+      conflictBox ? conflictBox.textContent : 'no dialog; version ' + srv.find(1).version);
     h.close();
   }
   {
