@@ -105,6 +105,11 @@ app.all('/api/email/report-schedules',  require('../api/email/report-schedules')
 
 /** Custom Reporting — saved report definitions, shared templates and send history */
 app.all('/api/custom-reports', require('../api/custom-reports'));
+/** Custom Reporting v2 — saved customer contacts, company branding, scheduled sends, AI builder */
+app.all('/api/report-contacts',          require('../api/report-contacts'));
+app.all('/api/company/branding',         require('../api/company/branding'));
+app.all('/api/custom-report-schedules',  require('../api/custom-report-schedules'));
+app.all('/api/ai/report-builder',        require('../api/ai/report-builder'));
 
 /** AI schedule analysis */
 app.post('/api/ai/schedule-analysis', require('../api/ai/schedule-analysis'));

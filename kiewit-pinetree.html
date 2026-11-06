@@ -2645,11 +2645,12 @@
   <script defer src="/_vercel/speed-insights/script.js"></script>
   <script src="auto-report.js"></script>
   <script src="report-branding.js" defer></script>
-  <script src="report-email.js" defer></script>
+  <script src="report-email.js?v=2" defer></script>
   <script src="bid-xlsx.js" defer></script>
   <script src="documents.js" defer></script>
-  <script src="custom-reports-engine.js" defer></script>
-  <script src="custom-reports.js" defer></script>
+  <script src="custom-reports-engine.js?v=2" defer></script>
+  <script src="custom-reports.js?v=2" defer></script>
+  <script src="custom-reports-ai.js?v=2" defer></script>
   <script src="mathis.js" defer></script>
 </head>
 <body>
@@ -2855,6 +2856,7 @@
         <th class="num">Cum. Hours</th><th class="num"># Laborers</th>
         <th class="num">Variance</th><th class="num">Projected Cost</th>
         <th>Start Date</th><th>Target Date</th>
+        <th class="num" title="Planned production per working day (in the item&#39;s unit). Leave blank to plan from Start/Target dates.">Plan / Day</th>
         <th class="num" title="Distinct days this sub code has been worked. A date counts once however many crew or rows were booked to it, and the gaps between work days are not counted — worked the 1st and the 5th is 2 days, not 5.">Days Worked</th>
       </tr></thead>
       <tbody id="bid-fs-tbody"></tbody>
@@ -8328,6 +8330,8 @@ function toggleBidItemComplete(projId, biId) {
    separate, async-loaded key (_csKey), so its completion is cached per project:
    warmed for every project after load, and refreshed when a bid view opens. */
 const _bidCsComplete = {};   // projId -> Set of "costcode||subcode" (normalized) complete in the Construction Schedule
+const _bidCsRows     = {};   // projId -> the schedule's rows as last read with it (null: none saved, or the read failed)
+const _csRowsOf = data => (data && Array.isArray(data.rows) ? data.rows : null);
 function _bidCsKey(cc, sc) {
   return (cc || '').trim().toLowerCase() + '||' + (sc || '').trim().toLowerCase();
 }
@@ -8354,6 +8358,7 @@ async function _loadBidCsCompletion(projId) {
   if (!projId) return;
   const data = await apiGet(_csKey(projId));
   _bidCsComplete[projId] = _csCompletionSet(data);
+  _bidCsRows[projId] = _csRowsOf(data);
   if (bidViewProjId === projId) renderBidTable(projId);   // re-render now that CS completion is known
 }
 
@@ -8367,6 +8372,9 @@ async function _loadAllBidCsCompletion() {
   if (!ids.length) return;
   const values = await apiBatchGet(ids.map(_csKey));
   ids.forEach(id => { _bidCsComplete[id] = _csCompletionSet(values[_csKey(id)]); });
+  // The same read, kept: Custom Reporting plans a bid item with no typed dates
+  // off its Construction Schedule tasks (_crEngineCfg → getConSchedule).
+  ids.forEach(id => { _bidCsRows[id] = _csRowsOf(values[_csKey(id)]); });
 }
 function bidItemComplete(b, projId) {
   if (!b) return false;
@@ -9098,6 +9106,70 @@ function _bidDateCommit(el, projId, itemId, field) {
   el.style.color = el.value ? (field === 'start_date' ? 'var(--green)' : 'var(--blue)') : 'var(--muted)';
 }
 
+/* The "Plan / Day" box on a bid row: what the line is planned to put down in a
+   working day, in its own unit. Optional — blank plans the line from its Start
+   and Target dates, as before. Custom Reporting's Planned vs Actual measures
+   the line against it (planned_rate); nothing on this page reads it.
+
+   It saves through the same per-item path as every other cell on the row
+   (updateBidItem → patchBidItem) as a number, or null once cleared. A box that
+   does not read as a number of zero or more is put back as it was rather than
+   saved, and someone who cannot edit bid items sees the figure as text. The box
+   is wired by one delegated listener (below) — no handler in the markup. */
+const _BID_PLAN_TIP = 'Planned production per working day (in the item\'s unit). Leave blank to plan from Start/Target dates.';
+
+// A planned rate as stored: a finite number of zero or more, null for none,
+// undefined for something that is neither (a typo, a negative).
+function _bidPlanRateValue(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number') return Number.isFinite(v) && v >= 0 ? v : undefined;
+  const s = String(v).trim().replace(/,/g, '');
+  if (!s) return null;
+  if (!/^\d*\.?\d*(e[+-]?\d+)?$/i.test(s) || !/\d/.test(s)) return undefined;
+  const n = Number(s);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
+function _bidPlanRateCellHTML(projId, b) {
+  const v = _bidPlanRateValue(b && b.planned_rate);
+  const has = typeof v === 'number';
+  if (!perm.canEdit) {
+    return `<td class="bid-calc bid-plan-ro" title="${_cbEsc(_BID_PLAN_TIP)}">${has ? _cbEsc(qfmt(v)) : '—'}</td>`;
+  }
+  return `<td><input type="number" class="num bid-plan-rate" min="0" step="any" inputmode="decimal"`
+    + ` value="${has ? _cbEsc(String(v)) : ''}" placeholder="—" title="${_cbEsc(_BID_PLAN_TIP)}"`
+    + ` aria-label="Planned per day${b && b.sub_code ? ' — ' + _cbEsc(b.sub_code) : ''}"`
+    + ` data-bid-plan="${_cbEsc(b.id)}" data-proj="${_cbEsc(projId)}"`
+    + ` style="font-size:0.75rem;padding:0.2rem 0.4rem;min-width:4.5rem;color:${has ? 'var(--text)' : 'var(--muted)'}"></td>`;
+}
+
+function _bidPlanRateCommit(el) {
+  if (!el || !el.dataset) return;
+  const projId = el.dataset.proj, itemId = el.dataset.bidPlan;
+  const p    = getProj(projId);
+  const item = p && (p.bidItems || []).find(b => String(b.id) === String(itemId));
+  if (!item) return;
+  const cur  = _bidPlanRateValue(item.planned_rate);
+  const back = () => { el.value = typeof cur === 'number' ? String(cur) : ''; };
+  // A box that is not this user's to change, or holds no number (a number box
+  // reports a half-typed "1e" or "-" as empty — badInput — not as blank).
+  if (!perm.canEdit || (el.validity && el.validity.badInput)) { back(); return; }
+  const v = _bidPlanRateValue(el.value);
+  if (v === undefined) { back(); return; }
+  el.style.color = v === null ? 'var(--muted)' : 'var(--text)';
+  if (v === (typeof cur === 'number' ? cur : null) && (v !== null || item.planned_rate == null)) return;
+  updateBidItem(projId, item.id, 'planned_rate', v);
+}
+
+// Named rather than an inline arrow: the daily table's own document-level
+// change handler, further down, is the one the suites lift by its first line,
+// and this one must not be found in its place.
+function _bidPlanRateOnChange(e) {
+  const el = e.target;
+  if (el && el.matches && el.matches('input[data-bid-plan]')) _bidPlanRateCommit(el);
+}
+document.addEventListener('change', _bidPlanRateOnChange);
+
 // Daily costs whose cost/sub code matches no bid line. Same wildcard rule as
 // actualForBidItem(), so on-bid spend is never miscounted as off-bid. Accepts a
 // project id or the project object itself.
@@ -9254,7 +9326,7 @@ function renderBidFooter(projId, opts = {}) {
     <td class="foot-label num">${totalLab || '—'}</td>
     <td class="${diffCls}">${diffTxt}</td>
     <td class="${totalBid ? projCls : 'foot-actual'}">${(totalBid || totalProj) ? '$'+fmt(totalProj) : '—'}</td>`;
-  footEl.innerHTML = readonly ? cells : `<td></td>${cells}<td></td><td></td><td class="foot-label num" title="Distinct days worked across every sub code on the bid. A day counts once however many sub codes were worked on it, so this is not the sum of the cost codes above.">${totalDays ? totalDays + ' day' + (totalDays !== 1 ? 's' : '') : '—'}</td>`;
+  footEl.innerHTML = readonly ? cells : `<td></td>${cells}<td></td><td></td><td></td><td class="foot-label num" title="Distinct days worked across every sub code on the bid. A day counts once however many sub codes were worked on it, so this is not the sum of the cost codes above.">${totalDays ? totalDays + ' day' + (totalDays !== 1 ? 's' : '') : '—'}</td>`;
 
   // Update the summary bar in the fullscreen view (only when this project is open).
   // Always shows the financial roll-up (contract value, costs, profit); the
@@ -10487,9 +10559,10 @@ function renderBidTable(projId, opts = {}) {
   const tbodyId  = opts.tbodyId  || 'btbody-' + projId;
   const readonly = !!opts.readonly;
   // Column count per layout — the readonly dashboard table drops the delete
-  // column and the two date columns. Kept exact: an overshooting colspan on the
-  // group header forces a phantom trailing column onto every other row.
-  const COLS     = readonly ? 14 : 17;
+  // column, the two date columns, Plan / Day and Days Worked. Kept exact: an
+  // overshooting colspan on the group header forces a phantom trailing column
+  // onto every other row.
+  const COLS     = readonly ? 14 : 19;
   const p = getProj(projId); if (!p) return;
   const projDone = projIsDone(p);
   const tbody = document.getElementById(tbodyId); if (!tbody) return;
@@ -10688,6 +10761,7 @@ function renderBidTable(projId, opts = {}) {
            ${calcCellsB}
            ${_bidDateCellHTML(projId, b, 'start_date',  _auto.start)}
            ${_bidDateCellHTML(projId, b, 'target_date', _auto.target)}
+           ${_bidPlanRateCellHTML(projId, b)}
            <td class="bid-calc" style="white-space:nowrap" title="${esc(_dTip)}">${
              _dCount
                ? `<div style="font-weight:600;color:var(--blue)">${_dCount} day${_dCount !== 1 ? 's' : ''}</div>`
@@ -10730,7 +10804,7 @@ function renderBidTable(projId, opts = {}) {
       <td class="bid-calc">—</td>
       <td class="${gBidTotal ? gDiffCls : 'bid-actual'}">${gDiffTxt}</td>
       <td class="${gBidTotal ? gProjCls : 'bid-actual'}">${(gBidTotal || gProj) ? '$'+fmt(gProj) : '—'}</td>
-      ${readonly ? '' : `<td></td><td></td><td class="bid-calc" title="Distinct days worked across this cost code's sub codes. A day two sub codes were both worked on counts once, so this is not the sum of the days above it.">${gDaysWorked ? gDaysWorked + ' day' + (gDaysWorked !== 1 ? 's' : '') : '—'}</td>`}` ;
+      ${readonly ? '' : `<td></td><td></td><td></td><td class="bid-calc" title="Distinct days worked across this cost code's sub codes. A day two sub codes were both worked on counts once, so this is not the sum of the days above it.">${gDaysWorked ? gDaysWorked + ' day' + (gDaysWorked !== 1 ? 's' : '') : '—'}</td>`}` ;
     const totalLabel = `<td style="padding-left:1.2rem;color:#d4b84a;font-weight:600">${esc(costCode)||'(No Code)'} — Total</td>`;
 
     const totalTr = document.createElement('tr');
@@ -20803,6 +20877,60 @@ function printFinancials() {
    and are stripped outright for the roles that cannot open Financials, even out
    of a shared template. canShare is only a hint for the first paint — the
    server's answer decides who may edit the division's shared templates. */
+
+/* What the engine is handed — on the tab, and for a scheduled send of a saved
+   report alike (_crScheduledReport), so the 6:30 email is worked out from the
+   same getters, page helpers and perm as the report on screen. A fresh object
+   on every call; every getter in it reads live data. */
+function _crEngineCfg() {
+  return {
+    division:      DIVISION,
+    divisionLabel: 'Kiewit Pinetree',
+    apiBase:       API_BASE,
+    getToken:      () => fctToken,
+    user:          fctUser,
+    perm: {
+      role:             perm.role,
+      // This page's perm has no canSeeCosts — it has no sales role to keep
+      // costs from — so it reads as true, the same as for everyone here.
+      canSeeCosts:      perm.canSeeCosts !== false,
+      // The same rule that takes the Financials item off level1/level2.
+      canSeeFinancials: !perm.visibleTabs || perm.visibleTabs.has('financials'),
+      canShare:         ['admin', 'level3'].includes(perm.role),
+    },
+    // The unit the job card keeps its area in: square yards on Kiewit.
+    areaUnit:      'SY',
+    // Settles once the jobs are in AND the daily rows older than 90 days
+    // have landed behind them — the promise the scheduled reports wait on.
+    // Before that, a "to date" figure would quietly leave out old work.
+    ready:         () => _bootReady.then(() => _drBackfillDone, () => _drBackfillDone),
+    // Getters, never copies: the poll reassigns these lists whenever
+    // someone else saves, and a report should print what is there now.
+    getProjects:        () => projectsList,
+    getPurchaseOrders:  () => purchaseOrders,
+    getTruckingEntries: () => truckingEntries,
+    // The job's Construction Schedule rows, read at boot along with its
+    // completion flags (_loadAllBidCsCompletion): a bid item with no typed
+    // dates is planned off the tasks on its code. null when it has none.
+    getConSchedule:     projId => _bidCsRows[projId] || null,
+    helpers: {
+      dailyRowCost, calcDaily, bidItemComplete, bidProjectPct, bidGroupPct, projForBidItem,
+      projectedCostForProject, gpEarnedToDate, bidContractFigures, projIsDone,
+      lineAmt: _lineAmt, lineTax: _lineTax,
+      // The working-day calendar the Schedule Estimator counts with, so a
+      // projected finish skips the same holidays.
+      addWorkingDays: _addWorkingDays,
+      // The Schedule tab's own count of working days between two dates (Mon–Fri
+      // less the federal holidays). The engine counts plan days with its own
+      // countWorkdays — which, unlike this, counts a one-day plan as one day —
+      // and the tests hold the two to the same calendar.
+      workingDaysBetween: _workingDaysBetween,
+    },
+    // A session that expires mid-save signs out the way every other call does.
+    onAuthError:   () => logout(),
+  };
+}
+
 let _crConfigured = false;   // handed over once; every getter reads live data
 let _crWaitTicks  = 0;       // bounded wait for the deferred custom-reports.js
 let _crWaitTimer  = null;
@@ -20832,43 +20960,7 @@ function renderCustomReports(isRetry) {
 
   try {
     if (!_crConfigured) {
-      FCTCustomReports.configure({
-        division:      DIVISION,
-        divisionLabel: 'Kiewit Pinetree',
-        apiBase:       API_BASE,
-        getToken:      () => fctToken,
-        user:          fctUser,
-        perm: {
-          role:             perm.role,
-          // This page's perm has no canSeeCosts — it has no sales role to keep
-          // costs from — so it reads as true, the same as for everyone here.
-          canSeeCosts:      perm.canSeeCosts !== false,
-          // The same rule that takes the Financials item off level1/level2.
-          canSeeFinancials: !perm.visibleTabs || perm.visibleTabs.has('financials'),
-          canShare:         ['admin', 'level3'].includes(perm.role),
-        },
-        // The unit the job card keeps its area in: square yards on Kiewit.
-        areaUnit:      'SY',
-        // Settles once the jobs are in AND the daily rows older than 90 days
-        // have landed behind them — the promise the scheduled reports wait on.
-        // Before that, a "to date" figure would quietly leave out old work.
-        ready:         () => _bootReady.then(() => _drBackfillDone, () => _drBackfillDone),
-        // Getters, never copies: the poll reassigns these lists whenever
-        // someone else saves, and a report should print what is there now.
-        getProjects:        () => projectsList,
-        getPurchaseOrders:  () => purchaseOrders,
-        getTruckingEntries: () => truckingEntries,
-        helpers: {
-          dailyRowCost, calcDaily, bidItemComplete, bidProjectPct, bidGroupPct, projForBidItem,
-          projectedCostForProject, gpEarnedToDate, bidContractFigures, projIsDone,
-          lineAmt: _lineAmt, lineTax: _lineTax,
-          // The working-day calendar the Schedule Estimator counts with, so a
-          // projected finish skips the same holidays.
-          addWorkingDays: _addWorkingDays,
-        },
-        // A session that expires mid-save signs out the way every other call does.
-        onAuthError:   () => logout(),
-      });
+      FCTCustomReports.configure(_crEngineCfg());
       _crConfigured = true;
     }
     FCTCustomReports.renderTab(root);
@@ -20879,6 +20971,169 @@ function renderCustomReports(isRetry) {
     root.innerHTML = '<div style="color:var(--red);padding:1.5rem">'
       + 'Custom Reporting hit an error and could not open. Refresh the page to try again.</div>';
   }
+}
+
+/* ── Custom Reporting on a timetable ──────────────────────────────────────
+   A saved report the office scheduled in Analytics → Custom Reporting, built
+   here when the report robot asks (auto-report.js, registered with the other
+   scheduled reports below) — the same engine, the same page data and the same
+   _crEngineCfg as the tab, so what goes out is what the builder would print.
+
+   Customer-safe or not at all. Nobody is at the keyboard to confirm a report
+   with costs in it, so internal data is switched off here whatever the saved
+   report says, and a report that still comes out carrying the engine's
+   internal mark is not sent. The runner refuses one again on its side.
+
+   spec.customReport is the saved report as the server read it at send time
+   ({ id, name, version, definition }); spec.jobsMode which jobs it covers:
+     saved            the report's own saved jobs, in one report
+     each             one report per job — spec.projectId is that job
+     all_in_progress  every job marked In Progress, in one report
+   The company's branding and the Team Directory (for each job's project
+   manager) are read once per page with a GET each, as the tab reads them;
+   either failing leaves the report unbranded, as it does on the tab. */
+let _crSide = null;   // the one read of branding and the directory, for every report this page builds
+
+// One side read; null when it fails or takes too long (a slow read must not
+// use up the build's own time limit).
+async function _crSideGet(path) {
+  try {
+    const res = await Promise.race([
+      fetch(`${API_BASE}/${path}`, { headers: { 'Authorization': `Bearer ${fctToken}` } }),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timed out')), 15000)),
+    ]);
+    if (!res || !res.ok) return null;
+    return await res.json();
+  } catch (_) { return null; }
+}
+function _crSideReads() {
+  if (!_crSide) {
+    _crSide = Promise.all([_crSideGet('company/branding'), _crSideGet('employees?view=people')])
+      .then(([b, e]) => ({
+        branding: b && b.branding && typeof b.branding === 'object' && !Array.isArray(b.branding) ? b.branding : null,
+        people:   e && Array.isArray(e.employees) ? e.employees.filter(x => x && typeof x.name === 'string') : [],
+      }));
+  }
+  return _crSide;
+}
+
+// A name as the Team Directory is matched by — case-blind, "Last, First" read
+// as "First Last" — the rule the builder's own PM line uses.
+function _crNameKey(n) {
+  let s = String(n == null ? '' : n).trim().toLowerCase().replace(/\s+/g, ' ');
+  const m = /^([^,]+),\s*(.+)$/.exec(s);
+  if (m) s = `${m[2].trim()} ${m[1].trim()}`;
+  return s;
+}
+
+/* What a report is dressed with, as the builder works it out: each job's
+   project manager from the directory (only one with a phone or an email), the
+   "Questions?" contact (the header's typed one, else the one PM every job
+   shares, else the person the schedule runs as), and the "Prepared by" name
+   (that person's name, else the login). */
+function _crDress(def, jobs, people) {
+  const t = v => String(v == null ? '' : v).trim();
+  const list = Array.isArray(people) ? people : [];
+  const person = n => {
+    const k = _crNameKey(n);
+    return k ? list.find(x => !x.login && _crNameKey(x.name) === k) || null : null;
+  };
+  const login = t(fctUser && fctUser.username).toLowerCase();
+  const me = login
+    ? list.find(x => !x.login && Array.isArray(x.logins) && x.logins.some(l => t(l).toLowerCase() === login)) || null
+    : null;
+  const card = x => (x && (t(x.phone) || t(x.email)) ? { name: t(x.name), phone: t(x.phone), email: t(x.email) } : null);
+  const contacts = {};
+  const pms = jobs.map(p => {
+    const pm = card(person(p && p.pm));
+    if (pm) contacts[String(p.id)] = { pm };
+    return pm;
+  });
+  const h = (def && def.header) || {};
+  const typed = { name: t(h.contactName), phone: t(h.contactPhone), email: t(h.contactEmail) };
+  let reportContact = null;
+  if (typed.name || typed.phone || typed.email) reportContact = typed;
+  else if (pms.length && pms.every(Boolean) && pms.every(x => _crNameKey(x.name) === _crNameKey(pms[0].name))) reportContact = pms[0];
+  else reportContact = card(me);
+  const preparer = (me && t(me.name)) || t(fctUser && (fctUser.name || fctUser.username));
+  return { contacts, reportContact, preparer };
+}
+
+const _CR_INTERNAL_MARK = /\bdata-cr-internal\s*=\s*["']?1\b/;
+const _CR_JOBS_MODES = ['saved', 'each', 'all_in_progress'];
+
+async function _crScheduledReport(spec, jobFor) {
+  const E = window.FCTReportEngine;
+  if (!E || typeof E.buildReportHtml !== 'function') throw new Error('Custom Reporting did not load on the page.');
+  const saved = spec && spec.customReport;
+  if (!saved || !saved.definition || typeof saved.definition !== 'object' || Array.isArray(saved.definition)) {
+    throw new Error('The schedule did not say which saved report to send.');
+  }
+  const def = E.normalizeDefinition(saved.definition);
+  // Customer-safe or not at all — whatever the saved report says.
+  def.includeInternal = false;
+  const cfg = _crEngineCfg();
+
+  const mode = _CR_JOBS_MODES.includes(spec.jobsMode) ? spec.jobsMode
+    : (spec.projectId != null && spec.projectId !== '*' ? 'each' : 'saved');
+  let ids;
+  if (mode === 'each') {
+    ids = [String(jobFor(spec).id)];
+  } else if (mode === 'all_in_progress') {
+    ids = (projectsList || []).filter(p => p && String(p['status'] || '').trim() === 'In Progress').map(p => String(p.id));
+    if (!ids.length) return { skip: 'No jobs are marked In Progress.' };
+  } else {
+    ids = (def.jobs && Array.isArray(def.jobs.ids) ? def.jobs.ids : []).map(String);
+    if (!ids.length) return { skip: 'The saved report has no jobs saved with it.' };
+  }
+  const jobs = E.resolveJobs(def, projectsList || [], ids).jobs;
+  if (!jobs.length) return { skip: 'None of the jobs saved with the report exist any more.' };
+
+  const side = await _crSideReads();
+  const dress = _crDress(def, jobs, side.people);
+  // The two header lines the builder fills in when they are left blank, as
+  // it prints them: "Prepared for" a one-job report's client, "Prepared by"
+  // whoever it runs as.
+  const one = jobs.length === 1 ? jobs[0] : null;
+  if (!String(def.header.preparedFor || '').trim() && one) def.header.preparedFor = String(one.client || '').trim();
+  if (!String(def.header.preparedBy || '').trim()) def.header.preparedBy = dress.preparer;
+  // The definition as it was built — these jobs — for the send history.
+  def.jobs = { mode: def.jobs && def.jobs.mode === 'saved' ? 'saved' : 'pick', ids: jobs.map(p => String(p.id)) };
+
+  const reportName = String(saved.name || '').trim();
+  const ctx = E.makeContext(def, cfg, {
+    pickedIds: def.jobs.ids, today: spec.today, reportName, userName: dress.preparer,
+    branding: side.branding, contacts: dress.contacts, reportContact: dress.reportContact,
+  });
+  const html = E.buildReportHtml(def, ctx);
+  if (E.hasInternal(def, cfg.perm, cfg.division) || _CR_INTERNAL_MARK.test(html)) {
+    return { skip: 'Report has internal data — scheduled sends are customer-safe only' };
+  }
+
+  const jobName = p => String(p['project-name'] || p['job-number'] || 'Untitled job');
+  const title = reportName || ctx.title;
+  const own = typeof spec.subject === 'string' ? spec.subject.trim() : '';
+  return {
+    html,
+    subject:     own || `${title} — ${one ? jobName(one) : jobs.length + ' jobs'}`,
+    projectId:   one ? one.id : null,
+    // None, deliberately: the mail step would swap a subject that does not
+    // name it for "Custom Report — <job>" (the builder's Email does the same).
+    projectName: null,
+    // The send history's record, and what the runner finds each job's saved
+    // contacts by (its jobs and their clients).
+    customReport: {
+      report_id:     saved.id != null ? saved.id : null,
+      report_name:   title.slice(0, 200),
+      project_ids:   jobs.map(p => String(p.id)),
+      project_names: jobs.map(jobName),
+      clients:       jobs.map(p => ({ id: String(p.id), client: String(p.client || '').trim() })),
+      date_from:     ctx.range.from || null,
+      date_to:       ctx.range.to || null,
+      definition:    def,
+      included_internal: false,
+    },
+  };
 }
 
 function renderSubCodePerf() {
@@ -23883,6 +24138,11 @@ const _bootReady = (async () => {
       };
     });
   }, { perJob: true });
+
+  // A saved Custom Reporting report on a timetable — set up in Analytics →
+  // Custom Reporting, never in this tab's editor, and sent customer-safe only
+  // (_crScheduledReport). One report per job when the schedule says so.
+  AR.register('kiewit_custom_report', spec => _crScheduledReport(spec, jobFor), { perJob: true });
 })();
 
 /* ═══════════════════════════════════════════

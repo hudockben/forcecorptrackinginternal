@@ -327,6 +327,14 @@ const server = http.createServer((req, res) => {
         quarry: sec('quarry', 'Quarry'),
         safety: { key: 'safety', name: 'Safety Sign-Off', accent: '#f59e0b', weekOf: YESTERDAY, documents: [] } });
     }
+    // Custom Reporting's reads, as the job pages make them (a scheduled custom
+    // report's builder reads the company's branding and the people list for
+    // the PM line): answered in their real shapes, empty, rather than `{}`.
+    // The scheduled custom report itself is test-custom-report-schedules.js's.
+    if (p === '/api/company/branding') return json(res, { ok: true, branding: null, canEdit: false });
+    if (p === '/api/employees')        return json(res, { ok: true, people: [] });
+    if (p === '/api/custom-reports')   return json(res, { ok: true, reports: [], canShare: true, me: { userId: 7, username: 'robot-admin' } });
+    if (p === '/api/report-contacts')  return json(res, { ok: true, contacts: [], canEdit: false });
     return json(res, {});
   }
   const f = path.join(ROOT, p === '/' ? 'index.html' : p);

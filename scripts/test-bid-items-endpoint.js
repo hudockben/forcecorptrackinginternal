@@ -380,6 +380,36 @@ async function run() {
     assert('  change_orders empty-array JSON',    mirrorCall.values.includes('[]'));
   }
 
+  console.log('\n[planned_rate — Plan / Day survives a single-field edit]');
+  {
+    // The item written into the project blob is the 1st statement's itemJson.
+    const blobItem = sql => JSON.parse(sql._calls[0].values.find(v => typeof v === 'string' && v.startsWith('{"id"')));
+    const putItem = async (bidItem, projectKey = 'fct_paving_project_p1') => {
+      const sql = makeMockSql({ projectBlobExists: true });
+      const handler = loadEndpoint({ sql, authPayload: goodAuth });
+      const res = makeRes();
+      await handler(makeReq({ query: { id: bidItem.id, projectId: 'p1', projectKey }, body: { bidItem } }), res);
+      return { res, sql, item: res.statusCode === 200 ? blobItem(sql) : null };
+    };
+    let t = await putItem({ id: 'b1', cost_code: 'Paving', unit: 'TON', quantity: 1500, planned_rate: 250 });
+    assert('a planned_rate is kept in the blob item (200)', t.res.statusCode === 200 && t.item.planned_rate === 250, JSON.stringify(t.item));
+    t = await putItem({ id: 'b1', planned_rate: '187.5' });
+    assert('  typed text "187.5" → 187.5', t.item.planned_rate === 187.5, JSON.stringify(t.item));
+    t = await putItem({ id: 'b1', planned_rate: 0 });
+    assert('  0 is a plan of zero, kept', t.item.planned_rate === 0, JSON.stringify(t.item));
+    for (const [v, what] of [['', 'blank'], [null, 'null'], [undefined, 'missing'], ['abc', 'junk'], [-5, 'negative'], ['Infinity', 'infinite']]) {
+      t = await putItem({ id: 'b1', planned_rate: v });
+      assert(`  ${what} → null (no plan)`, t.res.statusCode === 200 && t.item.planned_rate === null, JSON.stringify(t.item));
+    }
+    t = await putItem({ id: 'b1', start_date: '2026-11-02', target_date: '2026-11-13', planned_rate: 120 });
+    assert('  dates and the rate travel together', t.item.start_date === '2026-11-02' && t.item.target_date === '2026-11-13' && t.item.planned_rate === 120);
+    t = await putItem({ id: 'b1', cost_code: 'Turf', planned_rate: 4000 }, 'fct_project_p1');
+    const mirror = t.sql._calls.find(c => /INSERT INTO bid_items/i.test(c.sql));
+    assert('  turf: the blob item has it…', t.item.planned_rate === 4000);
+    assert('  …and the bid_items mirror ignores it cleanly (no column, value not passed)',
+      mirror && !/planned_rate/i.test(mirror.sql) && !mirror.values.includes(4000), mirror && mirror.sql.slice(0, 200));
+  }
+
   console.log('\n[SQL safety — no obvious injection vectors]');
   {
     // The endpoint uses parameterised tagged templates only. Verify the

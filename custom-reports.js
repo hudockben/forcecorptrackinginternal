@@ -30,6 +30,14 @@
  * cannot leak even when a saved definition names one — this file's job is to
  * make the rule visible, so nobody is surprised by what went to a customer.
  *
+ * Around the builder (definition v2): a report-wide sub code / cost code
+ * filter, the company's branding and each job's project manager fed into the
+ * engine, saved customer contacts that pre-fill the email, a per-job
+ * Customer History that can reopen or resend exactly what a customer was
+ * sent, scheduled sends of a saved customer-safe report, and a drawer for the
+ * AI report builder (custom-reports-ai.js). The AI and the schedules can
+ * never switch internal data on: only the same confirm a person answers can.
+ *
  * Like documents.js it brings no stylesheet to the page: one injected
  * <style id="cr-styles"> scoped under .cr-root, built on the host page's CSS
  * variables, so the tab takes each division's accent colour. Every click,
@@ -60,9 +68,29 @@
   const EMAIL_HTML_LIMIT = 1400000;
   const SELECT_ALL_ASK = 50;      // "Select all shown" with no search asks first past this
   const DRAFT_KEY     = 'fct_cr_draft_';  // + division: a report kept over a sign-out
+  const SIDE_TTL      = 5 * 60 * 1000;    // branding / contacts are fetched again on a tab visit after this
+  const MAX_FILTER    = 200;              // codes in one filter list (normalizeDefinition keeps this many)
+  const MAX_CODES_AI  = 500;              // codes handed to the AI builder, of each kind
+  const MAX_IDS_CALL  = 200;              // project ids / client keys in one /api/report-contacts call
+  const MAX_SCHED_EMAILS = 50;
+  const MAX_SEND_TO      = 50;            // addresses one email can go to (send-report's cap)
+  const MAX_SCHED_JOBS   = 100;
+  const AI_SHEET_BELOW   = 1200;          // the AI drawer is a full-width sheet below this
+  const SCHED_TZ = [
+    ['America/New_York', 'Eastern'], ['America/Chicago', 'Central'],
+    ['America/Denver', 'Mountain'], ['America/Los_Angeles', 'Pacific'],
+  ];
+  const CONTACT_ROLES = [['owner', 'Owner'], ['gc', 'General contractor'], ['engineer', 'Engineer'],
+    ['inspector', 'Inspector'], ['internal', 'Internal'], ['other', 'Other']];
+  const RUN_KIND_LABEL = { schedule: 'Scheduled', send_now: 'Scheduled (sent now)', resend: 'Resent' };
+  const INTERNAL_MARK = /\bdata-cr-internal\s*=\s*["']?1\b/;
 
   const INTERNAL_CONFIRM = 'This report will be able to show costs, rates, hours, employee names and profit. '
     + "Don't send it to a customer. Continue?";
+  const SCHEDULED_NOTE = 'This report is scheduled — scheduled sends will stop until it is customer-safe again.';
+  const OUTDATED_MSG = 'DataWatch was updated — reload the page to keep editing. Your changes are kept and will be offered back after the reload.';
+  const INTERNAL_ARCHIVE_MSG = 'Only the sender or an admin/level 3 can open internal reports.';
+  const REBUILT_BANNER = 'Rebuilt from current data — the original was not archived';
   const EXCEL_INTERNAL_CONFIRM = 'This workbook includes internal data — costs, rates, hours, employee names or profit. '
     + 'Download it anyway? Do not send it to a customer.';
 
@@ -84,11 +112,28 @@
   const S = {
     mount: null,
     configured: false,
-    view: 'home',                 // 'home' | 'edit' | 'history'
+    view: 'home',                 // 'home' | 'edit' | 'history' | 'customer' | 'contacts'
     reports: [], loaded: false, loading: false, loadError: '', loadP: null,
+    // Side data the report is dressed with, fetched quietly: a failure just
+    // means an unbranded report with no PM line.
+    branding: null, brandingAt: 0, brandingP: null, brandingCanEdit: false,
+    people: null, peopleP: null,
+    // Saved customer contacts for the whole division (the manager, the
+    // step ① badges); `contactsAt` 0 = not loaded.
+    contacts: null, contactsAt: 0, contactsP: null, contactsError: '', contactsCanEdit: false,
+    contactsSearch: '', contactsJob: '', contactEdit: null,   // contactEdit: { id|null, ...form }
+    // Customer History: the job chosen and its emails, a page at a time.
+    cust: { jobId: '', client: '', search: '', runs: null, loading: false, error: '', next: null, more: false, busy: null },
+    // Scheduled sends of saved custom reports (admin / level 3).
+    scheds: null, schedsLoading: false, schedsError: '', canSchedule: false, schedGroups: null, schedGroupsFull: null, schedBusy: null,
+    // The report-wide sub code / cost code filter's search box.
+    filterSearch: '', focusFilter: false,
+    // The AI builder drawer.
+    ai: { open: false, el: null, handle: null, docRef: null },
+    reloading: false,             // the "DataWatch was updated" Reload: don't ask before leaving
     canShare: false, me: null,
     deleted: null, deletedOpen: false, deletedLoading: false, deletedError: '',
-    runs: null, runsLoading: false, runsError: '',
+    runs: null, runsLoading: false, runsError: '', runsNext: null, runsMore: false,
     search: '', railOpen: false,
     doc: null,                    // the report in the builder — see blankDoc()
     step: 1,
@@ -128,6 +173,91 @@
   }
   function divLabel() { return txt(cfg.divisionLabel) || 'the division'; }
   const jobName = p => txt(p && p['project-name']) || 'Untitled job';
+  const projectById = id => projects().find(p => sameId(p.id, id)) || null;
+  // The server's client key: lower(btrim(client)).
+  const clientKey = c => txt(c).toLowerCase();
+
+  // The starter templates this division offers (Paving Tonnage is paving's).
+  function starters() {
+    try { if (typeof E.startersFor === 'function') return E.startersFor(cfg.division) || []; } catch (_) { /* fall through */ }
+    return (E.STARTERS || []).filter(s => !Array.isArray(s.divisions) || s.divisions.includes(cfg.division));
+  }
+  /* The distinct sub codes on these jobs' bid items, from the engine. An
+     engine that predates the sub-code filter has none to offer, and the
+     picker says so rather than inventing its own list. */
+  function subCodesFor(jobs) {
+    try {
+      if (typeof E.subCodesFor === 'function') {
+        const out = E.subCodesFor(jobs);
+        return Array.isArray(out) ? out.filter(x => x && txt(x.code)) : [];
+      }
+    } catch (_) { /* fall through */ }
+    return [];
+  }
+  const subCodeText = sc => {
+    const desc = txt(sc.description), unit = txt(sc.unit);
+    return `${txt(sc.code)}${desc ? ' — ' + desc : ''}${unit ? ` (${unit})` : ''}`;
+  };
+
+  // The local calendar day of a timestamp, as the engine's "today".
+  function localDate(iso) {
+    const d = new Date(iso);
+    if (isNaN(d)) return '';
+    const p = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  }
+
+  /* The Team Directory (GET /api/employees?view=people) names the people
+     behind the free-text "PM" on a job and behind the user's login. A name
+     matches case-blind, and "Last, First" matches "First Last". */
+  function nameKey(n) {
+    let s = txt(n).toLowerCase().replace(/\s+/g, ' ');
+    const m = /^([^,]+),\s*(.+)$/.exec(s);
+    if (m) s = `${m[2].trim()} ${m[1].trim()}`;
+    return s;
+  }
+  function personNamed(name) {
+    const k = nameKey(name);
+    if (!k || !Array.isArray(S.people)) return null;
+    return S.people.find(p => p && !p.login && nameKey(p.name) === k) || null;
+  }
+  function personForLogin(username) {
+    const u = txt(username).toLowerCase();
+    if (!u || !Array.isArray(S.people)) return null;
+    return S.people.find(p => p && !p.login && Array.isArray(p.logins) && p.logins.some(l => txt(l).toLowerCase() === u)) || null;
+  }
+  // "Prepared by": the person behind the login, else the login itself.
+  function preparerName() {
+    const u = cfg.user || {};
+    const person = personForLogin(txt(u.username) || txt(S.me && S.me.username));
+    return (person && txt(person.name)) || userName();
+  }
+  // A job's project manager, as the engine takes it — only when the
+  // directory has a phone or an email for them.
+  function pmContactFor(p) {
+    const person = personNamed(p && p.pm);
+    if (!person || !(txt(person.phone) || txt(person.email))) return null;
+    return { name: txt(person.name), phone: txt(person.phone), email: txt(person.email) };
+  }
+
+  /* Internal, by the engine's rule (with the division, so a division-only
+     internal column counts) or by the INTERNAL stamp on the built page.
+     Belt and braces: the question before an email, a download or a resend is
+     the one place a customer may be on the other end. */
+  function defIsInternal(def) {
+    try { if (E.hasInternal(def, perm(), cfg.division)) return true; } catch (_) { /* fall through */ }
+    const d = def || {};
+    if (d.includeInternal !== true || !Array.isArray(d.sections)) return false;
+    return d.sections.some(s => {
+      const cat = E.CATALOG[s.type];
+      if (!cat || !Array.isArray(s.columns)) return false;
+      return s.columns.some(k => {
+        const c = cat.columns.find(x => x.key === k);
+        return c && c.internal && E.columnState(s.type, k, d, perm(), cfg.division) === 'available';
+      });
+    });
+  }
+  const builtIsInternal = built => defIsInternal(built.def) || INTERNAL_MARK.test(built.html || '');
 
   // "3 days ago" for the list — the question there is "is this the one I
   // touched last week", which a relative time answers faster than a date.
@@ -165,9 +295,14 @@
     e.data = data;
     return e;
   }
-  async function request(method, params, body) {
+  /* One call to /api/<path>. opts.division === false leaves ?division= off
+     (company-wide endpoints); opts.quiet leaves a 401 to the caller — the
+     side fetches (branding, the directory) must not sign anyone out on their
+     own, the report list's own call does that. */
+  async function call(path, method, params, body, opts) {
+    opts = opts || {};
     const qs = new URLSearchParams();
-    qs.set('division', cfg.division);
+    if (opts.division !== false) qs.set('division', cfg.division);
     Object.keys(params || {}).forEach(k => {
       const v = params[k];
       if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
@@ -178,31 +313,59 @@
       init.body = JSON.stringify(body);
     }
     const base = String(cfg.apiBase || '/api').replace(/\/+$/, '');
+    const q = qs.toString();
     let r;
-    try { r = await fetch(`${base}/custom-reports?${qs.toString()}`, init); }
+    try { r = await fetch(`${base}/${path}${q ? '?' + q : ''}`, init); }
     catch (_) { throw failure('Could not reach the server — check the connection and try again.', 0, null); }
     let data = null;
     try { data = await r.json(); } catch (_) { data = null; }
-    if (r.status === 401) {
+    if (r.status === 401 && !opts.quiet) {
       // The page's logout leaves the page. Keep the open report first, so it
       // can be offered back after signing in rather than lost with the page.
       saveDraft();
       try { if (typeof cfg.onAuthError === 'function') cfg.onAuthError(); } catch (_) { /* the page's problem */ }
       throw failure('Your session has expired. Please sign in again.', 401, data);
     }
-    if (!r.ok) throw failure((data && data.error) || `Request failed (${r.status})`, r.status, data);
+    if (r.status === 409 && data && data.error === 'client_outdated') {
+      // This page's copy of the builder is older than the report it is
+      // saving over (a v2 report, a v1 save would strip). Keep the work
+      // and ask for a reload.
+      saveDraft();
+      showOutdated();
+      throw failure(OUTDATED_MSG, 409, data);
+    }
+    if (!r.ok) throw failure((data && (data.message || data.error)) || `Request failed (${r.status})`, r.status, data);
     return data || {};
   }
+  const request = (method, params, body) => call('custom-reports', method, params, body);
   const api = {
     request,
+    call,
     list:    () => request('GET'),
     deleted: () => request('GET', { deleted: 1 }),
-    runs:    reportId => request('GET', { runs: 1, report_id: reportId }),
+    // runs(reportId) as before, or runs({ project_id, action, kind, before_id })
+    runs:    p => request('GET', Object.assign({ runs: 1 }, p != null && typeof p === 'object' ? p : { report_id: p })),
+    runOne:  id => request('GET', { run: id }),
+    archive: id => request('GET', { run: id, archive: 1 }),
     create:  body => request('POST', null, body),
     update:  (id, body) => request('PUT', { id }, body),
     remove:  id => request('DELETE', { id }),
     restore: id => request('POST', { action: 'restore', id }),
     run:     body => request('POST', { action: 'run' }, body),
+    branding: () => call('company/branding', 'GET', null, undefined, { division: false, quiet: true }),
+    people:   () => call('employees', 'GET', { view: 'people' }, undefined, { division: false, quiet: true }),
+    contacts: p => call('report-contacts', 'GET', p || null),
+    contactsQuiet: p => call('report-contacts', 'GET', p || null, undefined, { quiet: true }),
+    addContact:    body => call('report-contacts', 'POST', null, body),
+    updateContact: (id, body) => call('report-contacts', 'PUT', { id }, body),
+    removeContact: id => call('report-contacts', 'DELETE', { id }),
+    schedules:      () => call('custom-report-schedules', 'GET'),
+    scheduleRuns:   id => call('custom-report-schedules', 'GET', { runs: id }),
+    createSchedule: body => call('custom-report-schedules', 'POST', null, body),
+    updateSchedule: (id, body) => call('custom-report-schedules', 'PUT', { id }, body),
+    removeSchedule: id => call('custom-report-schedules', 'DELETE', { id }),
+    sendSchedule:   id => call('custom-report-schedules', 'POST', { id, action: 'run' }),
+    groups: () => call('email/recipient-groups', 'GET', { report_type: `${cfg.division}_custom_report` }, undefined, { division: false, quiet: true }),
   };
   const code = e => (e && e.data && e.data.error) || '';
 
@@ -375,9 +538,51 @@
     d.jobs = { mode: S.doc.saveJobs ? 'saved' : 'pick', ids: S.doc.picked.slice(0, MAX_JOBS) };
     const jobs = currentJobs();
     if (!txt(d.header.preparedFor) && jobs.length === 1) d.header.preparedFor = txt(jobs[0].client);
-    if (!txt(d.header.preparedBy)) d.header.preparedBy = userName();
+    if (!txt(d.header.preparedBy)) d.header.preparedBy = preparerName();
     return d;
   }
+
+  /* What the report is dressed with — never stored in the definition (the
+     logo alone would blow its 64 KB cap), resolved fresh for each build:
+       branding      the company's display name, logo and contact line;
+       contacts      { [jobId]: { pm } } from the Team Directory;
+       reportContact the "Questions?" line: the header's override when any of
+                     its three fields is typed, else the one PM every picked
+                     job shares, else the person running the report. */
+  function brandingOpt() {
+    const b = S.branding;
+    if (!b || typeof b !== 'object') return null;
+    const logo = b.logo && typeof b.logo === 'object' && /^image\/(png|jpeg)$/.test(String(b.logo.mime || ''))
+      && typeof b.logo.base64 === 'string' && b.logo.base64
+      ? { mime: b.logo.mime, base64: b.logo.base64, width: Number(b.logo.width) || null, height: Number(b.logo.height) || null } : null;
+    return {
+      display_name: txt(b.display_name), logo, phone: txt(b.phone), email: txt(b.email),
+      website: txt(b.website), address: txt(b.address), report_footer: txt(b.report_footer),
+    };
+  }
+  function contactsOpt(jobs) {
+    const out = {};
+    (jobs || []).forEach(p => { const pm = pmContactFor(p); if (pm) out[String(p.id)] = { pm }; });
+    return out;
+  }
+  function defaultReportContact(jobs) {
+    const pms = (jobs || []).map(pmContactFor);
+    if (pms.length && pms.every(Boolean) && pms.every(x => nameKey(x.name) === nameKey(pms[0].name))) return pms[0];
+    const u = cfg.user || {};
+    const me = personForLogin(txt(u.username) || txt(S.me && S.me.username));
+    if (me && (txt(me.phone) || txt(me.email))) return { name: txt(me.name), phone: txt(me.phone), email: txt(me.email) };
+    return null;
+  }
+  function reportContactFor(def, jobs) {
+    const h = (def && def.header) || {};
+    const typed = { name: txt(h.contactName), phone: txt(h.contactPhone), email: txt(h.contactEmail) };
+    if (typed.name || typed.phone || typed.email) return typed;
+    return defaultReportContact(jobs);
+  }
+  function dressing(def, jobs) {
+    return { branding: brandingOpt(), contacts: contactsOpt(jobs), reportContact: reportContactFor(def, jobs) };
+  }
+
   /* What the open report is right now, frozen: the definition to print, the
      picked jobs, and the names it is logged under. An output that has to
      wait (for the older daily rows) builds from this, so the report that
@@ -385,15 +590,21 @@
      been edited, by the time it is ready. */
   function snapshot() {
     const d = S.doc;
+    const def = renderDefinition();
     return {
-      doc: d, def: renderDefinition(), picked: d.picked.slice(0, MAX_JOBS),
+      doc: d, def, picked: d.picked.slice(0, MAX_JOBS),
       reportName: d.name.trim() || d.savedName || '',
       reportId: d.id != null ? d.id : null,
       logName: d.savedName || d.name.trim(),
+      dress: dressing(def, currentJobs()),
     };
   }
   function buildFrom(snap, opts) {
-    const ctx = E.makeContext(snap.def, cfg, { pickedIds: snap.picked, reportName: snap.reportName, userName: userName() });
+    const dress = snap.dress || {};
+    const ctx = E.makeContext(snap.def, cfg, Object.assign({
+      pickedIds: snap.picked, reportName: snap.reportName, userName: preparerName(),
+      branding: dress.branding || null, contacts: dress.contacts || {}, reportContact: dress.reportContact || null,
+    }, snap.ctxOpts || {}));
     const html = opts && opts.html === false ? '' : E.buildReportHtml(snap.def, ctx);
     return { def: snap.def, ctx, html, snap };
   }
@@ -645,6 +856,77 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   .cr-job{padding:.6rem}
   .cr-item-more{width:2.6rem}
 }
+/* v2: filters, contacts, customer history, schedules */
+.cr-raillinks{display:flex;flex-direction:column;gap:.35rem;margin-top:.9rem}
+.cr-raillinks .btn{width:100%;justify-content:center;margin-top:0}
+.cr-chips{display:flex;flex-wrap:wrap;gap:.3rem;align-items:center}
+.cr-chips:empty{display:none}
+.cr-chip{display:inline-flex;align-items:center;gap:.25rem;max-width:100%;font-size:.72rem;background:var(--crs2);border:1px solid var(--crb);border-radius:999px;padding:.1rem .2rem .1rem .55rem}
+.cr-chip span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.cr-chip button{background:none;border:0;color:var(--crt);opacity:.6;cursor:pointer;font:inherit;line-height:1;padding:.1rem .3rem;border-radius:50%}
+.cr-chip button:hover{opacity:1;background:var(--crb)}
+.cr-chip.sc{border-color:var(--cra)}
+.cr-flist{max-height:11rem;overflow-y:auto;border:1px solid var(--crb);border-radius:5px;background:var(--crbg);padding:.25rem .5rem}
+.cr-flist .cr-check{overflow-wrap:anywhere}
+.cr-flist-h{font-size:.6rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;opacity:.55;margin:.35rem 0 .1rem}
+.cr-job-ct{flex:none;background:none;border:1px solid var(--crb);border-radius:999px;color:var(--cra);font:inherit;font-size:.64rem;font-weight:600;padding:.05rem .45rem;cursor:pointer;white-space:nowrap}
+.cr-job-ct:hover{border-color:var(--cra)}
+.cr-view-head{display:flex;align-items:center;gap:.7rem;flex-wrap:wrap;margin-bottom:.4rem}
+.cr-toolrow{display:flex;flex-wrap:wrap;gap:.45rem;align-items:center;margin:.5rem 0}
+/* A set width, so a long job name in a <select> cannot make the view wider
+   than a phone (its intrinsic width ignores a percentage max-width). */
+.cr-toolrow .cr-input{flex:1 1 12rem;width:12rem}
+.cr-ct-group{margin-top:.8rem}
+.cr-ct-group-h{display:flex;justify-content:space-between;align-items:baseline;gap:.5rem;flex-wrap:wrap;font-weight:700;font-size:.82rem;margin:0 0 .3rem}
+.cr-ct-card{display:flex;gap:.6rem;align-items:flex-start;justify-content:space-between;flex-wrap:wrap;padding:.5rem .6rem;border:1px solid var(--crb);border-radius:5px;background:var(--crs);margin-bottom:.3rem;min-width:0}
+.cr-ct-who{min-width:0;flex:1 1 14rem;overflow-wrap:anywhere}
+.cr-ct-who b{font-weight:600}
+.cr-ct-tools{display:flex;gap:.35rem;align-items:center;flex-wrap:wrap}
+.cr-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,13rem),1fr));gap:.55rem .8rem;padding:.7rem;border:1px solid var(--crb);border-radius:6px;background:var(--crs);margin:.5rem 0}
+.cr-form .cr-field{margin:0}
+.cr-form .cr-input{width:100%;min-width:0}
+.cr-form-btns{grid-column:1/-1;display:flex;gap:.5rem;justify-content:flex-end;flex-wrap:wrap;align-items:center}
+.cr-form-err{grid-column:1/-1;color:#fca5a5;font-size:.78rem;margin:0}
+.cr-form-err:empty{display:none}
+.cr-rowacts{display:flex;gap:.3rem;flex-wrap:wrap}
+.cr-more{display:flex;justify-content:center;margin:.7rem 0}
+.cr-spin{display:inline-block;width:.8rem;height:.8rem;border:2px solid currentColor;border-right-color:transparent;border-radius:50%;animation:cr-spin .8s linear infinite;vertical-align:-.1rem}
+@keyframes cr-spin{to{transform:rotate(360deg)}}
+.cr-sched-meta{font-size:.68rem;opacity:.6;line-height:1.35;overflow-wrap:anywhere}
+.cr-sched-meta.err{color:#fca5a5;opacity:.9}
+.cr-badge.paused{color:var(--yellow,#eab308);border-color:var(--yellow,#eab308)}
+.cr-modal-box.cr-wide{width:min(40rem,100%)}
+/* a row or list the dialog hides (the days of the week off Weekly, the day
+   of the month off Monthly) stays hidden over its own display:flex */
+.cr-modal [hidden]{display:none!important}
+.cr-modal .cr-m-row{display:flex;flex-wrap:wrap;gap:.5rem .9rem;align-items:center}
+.cr-modal .cr-m-row .cr-input{width:auto;flex:1 1 10rem}
+.cr-modal .cr-m-days{display:flex;flex-wrap:wrap;gap:.25rem .7rem}
+.cr-modal .cr-m-list{max-height:9rem;overflow-y:auto;border:1px solid var(--border,#2a2a3a);border-radius:5px;padding:.3rem .5rem;display:flex;flex-direction:column;gap:.1rem}
+.cr-modal .cr-m-fs{border:0;padding:0;margin:0;min-width:0;display:flex;flex-direction:column;gap:.3rem}
+.cr-modal .cr-m-fs legend{padding:0;margin-bottom:.25rem}
+.cr-modal .cr-m-hint{font-size:.74rem;opacity:.65;line-height:1.4}
+.cr-modal .cr-m-errs{color:#fca5a5;font-size:.8rem;margin:0;display:flex;flex-direction:column;gap:.15rem}
+.cr-modal .cr-m-errs:empty{display:none}
+.cr-modal .cr-chips{margin-top:.2rem}
+.cr-modal .cr-chip{font-size:.74rem;background:var(--surface2,#1a1a26);border:1px solid var(--border,#2a2a3a);border-radius:999px;display:inline-flex;align-items:center;gap:.25rem;padding:.1rem .2rem .1rem .55rem}
+.cr-modal .cr-chip button{background:none;border:0;color:var(--text,#e0e0e0);opacity:.6;cursor:pointer;font:inherit;padding:.1rem .3rem}
+/* the AI builder drawer: in the mount, so it hides with the tab */
+.cr-ai-drawer{position:fixed;top:0;right:0;bottom:0;width:400px;max-width:100vw;z-index:${Z - 30};background:var(--surface,#111118);color:var(--text,#e0e0e0);
+  border-left:1px solid var(--border,#2a2a3a);box-shadow:-12px 0 32px rgba(0,0,0,.5);display:flex;flex-direction:column;font-size:13px;line-height:1.4}
+.cr-ai-drawer[hidden]{display:none}
+.cr-ai-drawer *{box-sizing:border-box}
+.cr-ai-head{display:flex;align-items:center;justify-content:space-between;gap:.5rem;padding:.6rem .8rem;border-bottom:1px solid var(--border,#2a2a3a)}
+.cr-ai-head h2{margin:0;font-size:.8rem;font-weight:700;letter-spacing:.07em;text-transform:uppercase}
+.cr-ai-x{background:none;border:0;color:var(--text,#e0e0e0);opacity:.65;font-size:1.1rem;cursor:pointer;line-height:1;padding:.2rem .35rem}
+.cr-ai-body{flex:1 1 auto;min-height:0;overflow:auto;display:flex;flex-direction:column}
+.cr-ai-missing{padding:1rem;opacity:.75;font-size:.82rem}
+/* the pages' floating assistant button (52px, 18px in from the bottom right,
+   above this drawer) would sit on the Send button: the composer keeps clear
+   of that corner */
+.cr-ai-drawer .crai-form{padding-right:calc(.8rem + 66px)}
+@media (min-width:${AI_SHEET_BELOW}px){.cr-ai-on>.cr-shell{margin-right:408px}}
+@media (max-width:${AI_SHEET_BELOW - 1}px){.cr-ai-drawer{width:100%;left:0;border-left:0}}
 /* dialogs and toasts, on <body> */
 .cr-modal{position:fixed;inset:0;z-index:${Z};background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:1rem;color:var(--text,#e0e0e0);font-size:13px;line-height:1.45}
 .cr-modal-box{background:var(--surface,#111118);border:1px solid var(--border,#2a2a3a);border-radius:8px;width:min(29rem,100%);max-height:92vh;display:flex;flex-direction:column;box-shadow:0 20px 50px rgba(0,0,0,.6)}
@@ -697,16 +979,31 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (b) { try { b.focus({ preventScroll: true }); } catch (_) { b.focus(); } }
   }
 
+  /* The mount holds the builder (redrawn freely) and, beside it, the AI
+     drawer — which keeps its conversation across redraws, and sits inside
+     the tab's panel so it hides when another tab is up. */
+  function shell() {
+    let sh = [...S.mount.children].find(c => c.classList && c.classList.contains('cr-shell'));
+    if (!sh) {
+      S.mount.innerHTML = '<div class="cr-shell"></div><aside class="cr-ai-drawer" id="cr-ai-drawer" aria-label="AI report builder" hidden></aside>';
+      sh = S.mount.firstElementChild;
+      S.ai.el = null;
+      S.ai.handle = null;
+    }
+    return sh;
+  }
   function render() {
     if (!S.mount || !E) return;
     closeMenu();
-    withFocus(S.mount, () => {
-      S.mount.innerHTML = `<div class="cr-root">
+    const sh = shell();
+    withFocus(sh, () => {
+      sh.innerHTML = `<div class="cr-root">
         <button type="button" class="btn btn-ghost cr-railbtn" data-act="toggle-rail" data-fk="toggle-rail" aria-controls="cr-rail" aria-expanded="${S.railOpen}">${railBtnText()}</button>
         <aside class="cr-rail${S.railOpen ? ' open' : ''}" id="cr-rail" aria-label="Saved reports">${railHtml()}</aside>
         <div class="cr-main"><div class="cr-view">${viewHtml()}</div></div>
       </div>`;
     });
+    syncAi();
     afterView();
   }
   function renderView() {
@@ -745,6 +1042,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   }
   function viewHtml() {
     if (S.view === 'history') return historyHtml();
+    if (S.view === 'customer') return customerHtml();
+    if (S.view === 'contacts') return contactsHtml();
     if (S.view === 'edit' && S.doc) return editHtml();
     return homeHtml();
   }
@@ -757,7 +1056,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const hit = (...vals) => !q || vals.some(v => txt(v).toLowerCase().includes(q));
     const mine = S.reports.filter(r => r.visibility !== 'shared' && hit(r.name, r.description));
     const shared = S.reports.filter(r => r.visibility === 'shared' && hit(r.name, r.description));
-    const starters = E.STARTERS.filter(s => hit(s.name, s.blurb));
+    const starterList = starters().filter(s => hit(s.name, s.blurb));
     const waiting = !S.loaded && S.loading;
     const none = (msg) => `<p class="cr-empty">${msg}</p>`;
     const mineEmpty = waiting ? none('Loading saved reports…')
@@ -783,15 +1082,87 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         ${shared.length ? shared.map(itemHtml).join('') : sharedEmpty}
       </div>
       <div class="cr-group">
-        <h3 class="cr-group-h"><span>Starter Templates</span><span>${starters.length}</span></h3>
-        ${starters.length ? starters.map(starterItemHtml).join('') : none('No match.')}
+        <h3 class="cr-group-h"><span>Starter Templates</span><span>${starterList.length}</span></h3>
+        ${starterList.length ? starterList.map(starterItemHtml).join('') : none('No match.')}
       </div>
+      ${schedulesRailHtml()}
       <div class="cr-group">
         <button type="button" class="cr-group-toggle" data-act="toggle-deleted" data-fk="toggle-deleted"
           aria-expanded="${S.deletedOpen}" aria-controls="cr-deleted">${S.deletedOpen ? '&#9662;' : '&#9656;'} Recently Deleted</button>
         <div id="cr-deleted"${S.deletedOpen ? '' : ' hidden'}>${S.deletedOpen ? deletedHtml() : ''}</div>
       </div>
-      <button type="button" class="btn btn-ghost cr-histlink" data-act="history" data-fk="history">&#128337; Send History</button>`;
+      <div class="cr-raillinks">
+        <button type="button" class="btn btn-ghost cr-histlink" data-act="history" data-fk="history">&#128337; Send History</button>
+        <button type="button" class="btn btn-ghost" data-act="customer" data-fk="customer" title="Every email a job's customer was sent — open or resend exactly what went">&#128231; Customer History</button>
+        <button type="button" class="btn btn-ghost" data-act="contacts" data-fk="contacts" title="Saved customer contacts for each job and client">&#128101; Contacts</button>
+      </div>`;
+  }
+
+  // ── Schedules in the rail (admin / level 3) ─────────────────────────
+  const DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  function time12(hhmm) {
+    const m = /^(\d{2}):(\d{2})$/.exec(String(hhmm || ''));
+    if (!m) return '';
+    const h = Number(m[1]);
+    return `${h % 12 || 12}:${m[2]} ${h < 12 ? 'AM' : 'PM'}`;
+  }
+  function tzLabel(tz) {
+    const hit = SCHED_TZ.find(t => t[0] === tz);
+    return hit ? hit[1] : txt(tz);
+  }
+  function ordinal(n) {
+    const s = ['th', 'st', 'nd', 'rd'], v = n % 100;
+    return n + (s[(v - 20) % 10] || s[v] || s[0]);
+  }
+  function cadenceText(s) {
+    const at = `${time12(s.send_time)} ${tzLabel(s.timezone)}`.trim();
+    if (s.frequency === 'daily') return `Daily at ${at}`;
+    if (s.frequency === 'weekdays') return `Weekdays at ${at}`;
+    if (s.frequency === 'weekly') {
+      const days = (Array.isArray(s.days_of_week) ? s.days_of_week : []).map(d => DOW[Number(d)]).filter(Boolean);
+      return `Weekly ${days.join(', ') || '—'} at ${at}`;
+    }
+    if (s.frequency === 'monthly') {
+      const d = Number(s.day_of_month);
+      return `Monthly on the ${d === -1 ? 'last day' : ordinal(d || 1)} at ${at}`;
+    }
+    return at;
+  }
+  function schedulesRailHtml() {
+    if (!(S.canShare || S.canSchedule)) return '';
+    const list = Array.isArray(S.scheds) ? S.scheds : [];
+    let body;
+    if (S.schedsError) {
+      body = `<div class="cr-alert" role="alert"><span>Couldn’t load schedules: ${esc(S.schedsError)}</span>
+        <button type="button" class="btn btn-ghost cr-sm" data-act="reload-schedules">Retry</button></div>`;
+    } else if (!S.scheds) {
+      body = `<p class="cr-empty">${S.schedsLoading ? 'Loading…' : 'None yet.'}</p>`;
+    } else if (!list.length) {
+      body = '<p class="cr-empty">None yet. Open a saved, customer-safe report and choose <b>Schedule…</b>.</p>';
+    } else {
+      body = list.map(schedItemHtml).join('');
+    }
+    return `<div class="cr-group">
+        <h3 class="cr-group-h"><span>Schedules</span><span>${S.scheds ? list.length : ''}</span></h3>
+        ${body}
+      </div>`;
+  }
+  function schedItemHtml(s) {
+    const busy = S.schedBusy && sameId(S.schedBusy, s.id);
+    const next = s.enabled && s.next_run_at ? `Next ${fmtWhen(s.next_run_at)}` : (s.enabled ? '' : 'Paused');
+    const last = s.last_status ? `Last: ${s.last_status}${s.last_run_at ? ' · ' + ago(s.last_run_at) : ''}` : 'Not sent yet';
+    const bad = /fail|skip|partial|missed/i.test(String(s.last_status || ''));
+    return `<div class="cr-item">
+      <div class="cr-item-open" style="cursor:default">
+        <span class="cr-item-name">${esc(s.report_name || 'Saved report')}</span>
+        <span class="cr-badges">${s.enabled ? badge('On', 'shared') : badge('Paused', 'paused')}${busy ? '<span class="cr-badge"><span class="cr-spin" aria-hidden="true"></span> Sending…</span>' : ''}</span>
+        <span class="cr-sched-meta">${esc(cadenceText(s))}</span>
+        <span class="cr-sched-meta">${esc([next, last].filter(Boolean).join(' · '))}</span>
+        ${s.last_message && bad ? `<span class="cr-sched-meta err">${esc(String(s.last_message).slice(0, 200))}</span>` : ''}
+      </div>
+      <button type="button" class="cr-item-more" data-act="sched-menu" data-id="${esc(s.id)}" data-fk="schedmore-${esc(s.id)}"
+        aria-haspopup="menu" aria-expanded="false" aria-label="Actions for the schedule of ${esc(s.report_name || 'a report')}" title="Schedule actions"${busy ? ' disabled' : ''}>&#8943;</button>
+    </div>`;
   }
 
   function itemHtml(r) {
@@ -848,7 +1219,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
 
   // ── Welcome (nothing open) ──────────────────────────────────────────
   function homeHtml() {
-    const cards = E.STARTERS.map(st => {
+    const cards = starters().map(st => {
       const secs = st.definition.sections.map(s => (E.CATALOG[s.type] || {}).label).filter(Boolean).join(' · ');
       return `<button type="button" class="cr-card" data-act="starter" data-starter="${esc(st.id)}" data-fk="card-${esc(st.id)}">
         <span class="cr-card-name">${esc(st.name)}${st.internal ? badge('&#128274; Internal', 'internal') : ''}</span>
@@ -857,7 +1228,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       </button>`;
     }).join('');
     return `<div class="cr-home">
-      <h2 class="cr-h2">Custom Reporting</h2>
+      <div class="cr-view-head"><h2 class="cr-h2">Custom Reporting</h2>${aiButtonHtml()}</div>
       <p class="cr-lead">Pick jobs, choose exactly what the customer should see, and print it, email it or download it for Excel.
         Save it by name and next time it is one click.</p>
       <p class="cr-safenote"><span aria-hidden="true">&#128737;</span><span>Reports are <b>customer-safe</b> unless you say otherwise —
@@ -916,8 +1287,23 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         <button type="button" class="btn btn-ghost" data-act="print" data-fk="print" title="Open a printable copy — choose Save as PDF in the print dialog for a PDF">&#128424; Print / PDF</button>
         <button type="button" class="btn btn-ghost" data-act="email" data-fk="email" title="Email this report">&#9993; Email</button>
         <button type="button" class="btn btn-ghost" data-act="excel" data-fk="excel" title="Download as an Excel workbook">&#8681; Excel</button>
+        <button type="button" class="btn btn-ghost" data-act="schedule" data-fk="schedule">&#128339; Schedule…</button>
+        ${aiButtonHtml()}
         <button type="button" class="btn btn-ghost" data-act="doc-menu" data-fk="doc-menu" aria-haspopup="menu" aria-expanded="false" aria-label="More actions" title="More actions">&#8943;</button>
       </div>`;
+  }
+  function aiButtonHtml() {
+    return `<button type="button" class="btn btn-ghost" data-act="ai-toggle" data-fk="ai-toggle" aria-pressed="${S.ai.open}"
+      aria-controls="cr-ai-drawer" title="Describe the report you want and let the AI builder draft it">&#10024; AI Builder</button>`;
+  }
+  /* Schedule… is for a saved report that is customer-safe as saved, and for
+     the people who may schedule (admin / level 3). Why not, otherwise. */
+  function scheduleBlock(d) {
+    if (!S.canShare) return 'Only an admin or level 3 user can schedule reports.';
+    if (!d || !d.id) return 'Save the report first — a schedule sends a saved report.';
+    const r = S.reports.find(x => sameId(x.id, d.id));
+    if ((r && r.customer_safe === false) || internalOn()) return 'Only customer-safe reports can be scheduled — switch internal data off and save.';
+    return '';
   }
 
   function bannersHtml() {
@@ -935,7 +1321,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (d.missing) {
       out.push(`<div class="cr-note">${plural(d.missing, 'saved job')} no longer ${d.missing === 1 ? 'exists' : 'exist'} and ${d.missing === 1 ? 'was' : 'were'} left out.</div>`);
     }
-    const hidden = E.hiddenFinancialCount(d.def, perm());
+    const hidden = E.hiddenFinancialCount(d.def, perm(), cfg.division);
     if (hidden) {
       out.push(`<div class="cr-note">${plural(hidden, 'column')} hidden — your role can't see contract or profit figures</div>`);
     }
@@ -993,6 +1379,15 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         b.innerHTML = label;
       }
     });
+    const sch = S.mount.querySelector('[data-act="schedule"]');
+    if (sch) {
+      const why = scheduleBlock(d);
+      sch.disabled = !!why;
+      sch.title = why || (isDirty() ? 'Schedule the saved copy of this report — save your changes first if they should go out'
+        : 'Email this report on a schedule — customer-safe reports only');
+    }
+    const ai = S.mount.querySelector('[data-act="ai-toggle"]');
+    if (ai) ai.setAttribute('aria-pressed', String(!!S.ai.open));
     const ban = S.mount.querySelector('.cr-banners');
     const bh = bannersHtml();
     if (ban && bh !== S.lastBanners) { withFocus(ban, () => { ban.innerHTML = bh; }); S.lastBanners = bh; }
@@ -1051,6 +1446,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         </div>
         <div class="cr-joblist" role="group" aria-labelledby="cr-jobs-label">${jobListHtml()}</div>
       </div>
+      <div class="cr-field cr-filters">${filtersHtml()}</div>
       <div class="cr-field">
         <label class="cr-label" for="cr-preset">Dates</label>
         <div class="cr-inline">
@@ -1084,6 +1480,81 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const n = currentJobs().length;
     return n ? `${plural(n, 'job')} selected` : 'No jobs selected';
   }
+
+  /* The report-wide filter (definition v2 `filters`): every data section
+     shows only rows on these sub codes / cost codes, on top of whatever a
+     section filters itself. Chips say what is on; the list below is the
+     picked jobs' codes, searchable, plus anything already chosen so a saved
+     filter can always be undone. */
+  function curFilters() {
+    const def = S.doc.def;
+    if (!def.filters || typeof def.filters !== 'object') def.filters = { costCodes: [], subCodes: [] };
+    if (!Array.isArray(def.filters.costCodes)) def.filters.costCodes = [];
+    if (!Array.isArray(def.filters.subCodes)) def.filters.subCodes = [];
+    return def.filters;
+  }
+  const fkOf = s => { let h = 7; for (const ch of String(s)) h = (h * 31 + ch.charCodeAt(0)) | 0; return (h >>> 0).toString(36); };
+  function filtersHtml() {
+    const f = curFilters();
+    const n = f.subCodes.length + f.costCodes.length;
+    const subs = subCodesFor(currentJobs());
+    const subLabel = c => { const hit = subs.find(x => txt(x.code) === c); return hit ? subCodeText(hit) : c; };
+    const chip = (kind, value, label) => `<span class="cr-chip${kind === 'sc' ? ' sc' : ''}"><span title="${esc(label)}">${kind === 'cc' ? 'Cost code: ' : ''}${esc(label)}</span><button type="button"
+      data-act="filter-remove" data-kind="${kind}" data-value="${esc(value)}" data-fk="frm-${kind}-${fkOf(value)}" aria-label="Remove ${esc(label)} from the filter">&#10005;</button></span>`;
+    return `<div class="cr-field-head"><span class="cr-label" id="cr-filter-label">Filter by sub code / cost code</span>
+        <span class="cr-inline"><span class="cr-count">${n ? `${plural(n, 'code')} — every section` : 'Off'}</span>
+        ${n ? '<button type="button" class="btn btn-ghost cr-sm" data-act="filters-clear" data-fk="filters-clear">Clear</button>' : ''}</span></div>
+      <div class="cr-chips">${f.subCodes.map(c => chip('sc', c, subLabel(c))).join('')}${f.costCodes.map(c => chip('cc', c, c)).join('')}</div>
+      <input type="search" class="cr-input" data-bind="filter-search" data-fk="filter-search" value="${esc(S.filterSearch)}"
+        placeholder="&#128269; Search sub codes and cost codes…" aria-label="Search the sub codes and cost codes on the picked jobs" autocomplete="off" spellcheck="false">
+      <div class="cr-flist" role="group" aria-labelledby="cr-filter-label">${filterListHtml()}</div>
+      <span class="cr-hint">Tick a sub code (e.g. Turf Install) to report only on it, on every picked job. Nothing ticked shows everything; a section can narrow it further in step &#9313;.</span>`;
+  }
+  function filterListHtml() {
+    const f = curFilters();
+    const jobs = currentJobs();
+    const q = S.filterSearch.trim().toLowerCase();
+    const subs = subCodesFor(jobs);
+    const subCodes = subs.map(x => txt(x.code));
+    const subRows = subs.map(x => ({ code: txt(x.code), label: subCodeText(x) }))
+      .concat(f.subCodes.filter(c => !subCodes.includes(c)).map(c => ({ code: c, label: c })));
+    const ccs = E.costCodesFor(jobs);
+    const ccRows = ccs.concat(f.costCodes.filter(c => !ccs.includes(c))).map(c => ({ code: c, label: c }));
+    const hit = r => !q || r.label.toLowerCase().includes(q);
+    const LIMIT = 150;
+    const list = (rows, kind, sel) => {
+      const shown = rows.filter(hit);
+      const html = shown.slice(0, LIMIT).map(r => `<label class="cr-check"><input type="checkbox" data-bind="filter-${kind}" value="${esc(r.code)}"
+        data-fk="f${kind}-${fkOf(r.code)}"${sel.includes(r.code) ? ' checked' : ''}> <span>${esc(r.label)}</span></label>`).join('');
+      return html + (shown.length > LIMIT ? `<p class="cr-hint">${shown.length - LIMIT} more — search to narrow the list.</p>` : '');
+    };
+    if (!subRows.length && !ccRows.length) {
+      return `<p class="cr-empty">${jobs.length ? 'These jobs have no sub codes or cost codes on their bid items.' : 'Pick jobs above to filter by their sub codes.'}</p>`;
+    }
+    const subHtml = list(subRows, 'sc', f.subCodes), ccHtml = list(ccRows, 'cc', f.costCodes);
+    if (!subHtml && !ccHtml) return `<p class="cr-empty">No code matches “${esc(S.filterSearch.trim())}”.</p>`;
+    return (subHtml ? `<div class="cr-flist-h">Sub codes</div>${subHtml}` : '')
+      + (ccHtml ? `<div class="cr-flist-h">Cost codes</div>${ccHtml}` : '');
+  }
+  function renderFilters(listOnly) {
+    const box = S.mount && S.mount.querySelector(listOnly ? '.cr-flist' : '.cr-filters');
+    if (!box || !S.doc) return;
+    withFocus(box, () => { box.innerHTML = listOnly ? filterListHtml() : filtersHtml(); });
+  }
+  function toggleFilter(kind, value, on) {
+    const f = curFilters();
+    const key = kind === 'sc' ? 'subCodes' : 'costCodes';
+    const list = f[key].slice();
+    const at = list.indexOf(value);
+    if (on && at < 0) {
+      if (list.length >= MAX_FILTER) { toast(`A filter can hold up to ${MAX_FILTER} codes.`, 'error'); renderFilters(); return; }
+      list.push(value);
+    }
+    if (!on && at >= 0) list.splice(at, 1);
+    f[key] = list;
+    renderFilters();
+    changed();
+  }
   // A customer report spanning several clients is the one way to send one
   // owner another owner's job by accident. Say so while it can be fixed.
   function clientWarnHtml() {
@@ -1108,12 +1579,15 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const picked = new Set(S.doc.picked.map(String));
     const shown = all.filter(p => matchJob(p, q));
     if (!shown.length) return `<p class="cr-empty" style="padding:.7rem">No jobs match “${esc(S.jobSearch.trim())}”.</p>`;
+    const counts = contactCounts();
     return shown.map(p => {
       const id = String(p.id), on = picked.has(id);
       const meta = [txt(p['job-number']) ? '#' + txt(p['job-number']) : '', txt(p.status), txt(p.client)].filter(Boolean).join(' · ');
+      const nc = counts(p);
       return `<label class="cr-job${on ? ' on' : ''}">
         <input type="checkbox" data-bind="job" value="${esc(id)}"${on ? ' checked' : ''}>
         <span class="cr-job-name">${esc(jobName(p))}</span>${meta ? `<span class="cr-job-meta">${esc(meta)}</span>` : ''}
+        ${nc ? `<button type="button" class="cr-job-ct" data-act="job-contacts" data-id="${esc(id)}" title="Saved contacts for this job and its client — they fill in the email">${plural(nc, 'contact')}</button>` : ''}
       </label>`;
     }).join('');
   }
@@ -1142,6 +1616,18 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (list) list.innerHTML = jobListHtml();
     refreshJobCount();
   }
+  /* Saved contacts a job's email would pre-fill: its own and its client's.
+     Counted once per draw (by job, by client key), so a long job list
+     against a long contact list stays a single pass over each. */
+  function contactCounts() {
+    const byJob = new Map(), byClient = new Map();
+    (Array.isArray(S.contacts) ? S.contacts : []).forEach(c => {
+      if (!c) return;
+      if (c.project_id != null) byJob.set(String(c.project_id), (byJob.get(String(c.project_id)) || 0) + 1);
+      else if (c.client_key) byClient.set(c.client_key, (byClient.get(c.client_key) || 0) + 1);
+    });
+    return p => (byJob.get(String(p.id)) || 0) + (byClient.get(clientKey(p.client)) || 0);
+  }
   function refreshJobCount() {
     const c = S.mount && S.mount.querySelector('.cr-count');
     if (c) c.textContent = jobCountHtml();
@@ -1149,6 +1635,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (w) w.innerHTML = clientWarnHtml();
     const call = S.mount && S.mount.querySelector('.cr-callout');
     if (call && S.doc && S.doc.picked.length) call.hidden = true;
+    // The filter offers the picked jobs' codes.
+    if (S.mount && S.mount.querySelector('.cr-filters')) renderFilters();
   }
 
   // ── Step ② Sections ─────────────────────────────────────────────────
@@ -1179,9 +1667,19 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       const t = txt(s.text);
       return t ? t.split(/\r?\n/)[0].slice(0, 120) : 'No text yet';
     }
-    const cols = E.effectiveColumns(s, S.doc.def, perm());
+    const cols = shownColumns(s);
     if (!cols.length) return 'No columns that can print — expand to choose some';
-    return `${plural(cols.length, 'column')}: ${cols.map(c => c.label).join(', ')}`;
+    const noun = s.type === 'chart' ? 'measure' : (E.CATALOG[s.type] || {}).table === false ? 'figure' : 'column';
+    return `${plural(cols.length, noun)}: ${cols.map(c => c.label).join(', ')}`;
+  }
+  // The chosen columns that can print here (this role, this division, the
+  // customer-safe switch), with their printed labels.
+  const colState = (type, key) => E.columnState(type, key, S.doc.def, perm(), cfg.division);
+  function shownColumns(s) {
+    const cat = E.CATALOG[s.type];
+    if (!cat || !Array.isArray(s.columns)) return [];
+    return s.columns.map(k => cat.columns.find(c => c.key === k)).filter(c => c && colState(s.type, c.key) === 'available')
+      .map(c => ({ key: c.key, label: (s.labels && s.labels[c.key]) || c.label }));
   }
   function secHtml(s, i, n) {
     const cat = E.CATALOG[s.type];
@@ -1216,16 +1714,17 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
      column the role may never see (contract and profit for level 1 / 2) is
      not listed at all; the engine drops it from output either way. */
   function colsHtml(s) {
-    const def = S.doc.def, p = perm();
     const cat = E.CATALOG[s.type];
     const byKey = {};
     cat.columns.forEach(c => { byKey[c.key] = c; });
-    const st = k => E.columnState(s.type, k, def, p);
+    // A column scoped to another division (paving's tons per load on a turf
+    // report) is 'hidden' and never listed.
+    const st = k => colState(s.type, k);
     const chosen = s.columns.filter(k => byKey[k] && st(k) === 'available');
     const more = cat.columns.filter(c => !s.columns.includes(c.key) && st(c.key) === 'available');
     const locked = cat.columns.filter(c => st(c.key) === 'locked');
     let html = '<div class="cr-cols" role="group" aria-label="Columns">';
-    html += `<div class="cr-subhead">${s.type === 'job_info' || s.type === 'summary_kpis' ? 'Showing' : 'Columns, in printed order'}</div>`;
+    html += `<div class="cr-subhead">${s.type === 'chart' ? 'Measures drawn' : cat.table === false ? 'Showing' : 'Columns, in printed order'}</div>`;
     html += chosen.length ? chosen.map((k, i) => colRowHtml(s, byKey[k], true, i === 0, i === chosen.length - 1)).join('')
       : '<p class="cr-empty">Nothing chosen — tick some below.</p>';
     if (more.length) html += '<div class="cr-subhead">More</div>' + more.map(c => colRowHtml(s, c, false)).join('');
@@ -1286,8 +1785,29 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
           data-fk="${fk}-${esc(val)}"${list.includes(val) ? ' checked' : ''}> ${esc(label)}</label>`).join('')}
       </div></fieldset>`;
     }
+    // The sub-code picker, whatever kind name the catalog gives it.
+    if (sp.key === 'subCodes' || sp.kind === 'subCodes') return subCodesHtml(s, sp);
     if (sp.kind === 'costCodes') return costCodesHtml(s, sp);
     return '';
+  }
+  // Like the cost-code picker: the picked jobs' sub codes, plus any the
+  // section already filters on.
+  function subCodesHtml(s, sp) {
+    const sel = Array.isArray(s.options[sp.key]) ? s.options[sp.key] : [];
+    const jobs = currentJobs();
+    const subs = subCodesFor(jobs);
+    const codes = subs.map(x => txt(x.code));
+    const rows = subs.map(x => ({ code: txt(x.code), label: subCodeText(x) }))
+      .concat(sel.filter(c => !codes.includes(c)).map(c => ({ code: c, label: c })));
+    if (!rows.length) {
+      return `<div class="cr-fs"><span class="cr-opt">${esc(sp.label || 'Sub codes')}:</span>
+        <span class="cr-hint-i">${jobs.length ? 'these jobs have no sub codes on their bid items' : 'pick jobs in step &#9312; to filter by sub code'}</span></div>`;
+    }
+    return `<fieldset class="cr-fs"><legend>${esc(sp.label || 'Sub codes')} <span class="cr-hint-i">${sel.length ? `${sel.length} of ${rows.length} shown` : 'all shown'}</span>
+        ${sel.length ? `<button type="button" class="cr-linkbtn" data-act="sc-all" data-sec="${s.id}" data-key="${esc(sp.key)}" data-fk="scall-${s.id}">Show all</button>` : ''}</legend>
+      <div class="cr-cc-list">${rows.map(r => `<label class="cr-check"><input type="checkbox" data-bind="opt-sc" data-sec="${s.id}" data-key="${esc(sp.key)}" data-value="${esc(r.code)}"
+        data-fk="sc-${s.id}-${fkOf(r.code)}"${sel.includes(r.code) ? ' checked' : ''}> ${esc(r.label)}</label>`).join('')}</div>
+      <span class="cr-hint">Tick sub codes to show only those in this section. None ticked shows every sub code the report filter allows.</span></fieldset>`;
   }
   // Built from the bid items of the jobs picked in step ①, plus any code the
   // section already filters on, so a saved filter can always be undone.
@@ -1319,7 +1839,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const d = S.doc, def = d.def, h = def.header;
     const jobs = currentJobs();
     const client = jobs.length === 1 ? txt(jobs[0].client) : '';
-    const me = userName();
+    const me = preparerName();
     const notes = def.sections.filter(s => s.type === 'notes');
     const full = def.sections.length >= MAX_SECTIONS;
     return `
@@ -1346,13 +1866,58 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
           placeholder="A few lines under the title — what was done, what’s next.">${esc(h.intro)}</textarea></div>
       <div class="cr-field"><label class="cr-label" for="cr-footer">Footer note</label>
         <input id="cr-footer" class="cr-input" data-bind="h-footer" data-fk="h-footer" value="${esc(h.footer)}" maxlength="300"
-          placeholder="e.g. Questions? Call the office."></div>
+          placeholder="e.g. Thank you for your business."></div>
       <label class="cr-check"><input type="checkbox" data-bind="h-showGenerated" data-fk="h-showGenerated"${h.showGenerated ? ' checked' : ''}>
         <span>Show when the report was generated</span></label>
+      ${brandingFieldsHtml()}
       <h3 class="cr-h3">Notes sections</h3>
       ${notes.length ? notes.map(s => `<div class="cr-field">${notesEditorHtml(s, true)}</div>`).join('')
         : '<p class="cr-empty">No notes yet. A note prints as its own section, in the order set in step &#9313;.</p>'}
       <button type="button" class="btn btn-ghost cr-sm" data-act="add-section" data-type="notes" data-fk="add-note"${full ? ' disabled' : ''}>+ Add a note</button>`;
+  }
+  /* Branding (the company's name and logo, or plain DataWatch), the PM line
+     on each job and the footer's "Questions?" contact. The placeholders show
+     what prints when a field is left blank. */
+  function brandingFieldsHtml() {
+    const h = S.doc.def.header;
+    const jobs = currentJobs();
+    const b = brandingOpt();
+    const hasBrand = !!(b && (b.display_name || b.logo));
+    const brandMode = h.branding === 'datawatch' ? 'datawatch' : 'company';
+    const dflt = defaultReportContact(jobs) || {};
+    const pmShown = jobs.filter(p => pmContactFor(p)).length;
+    const ph = (v, fallback) => esc(v ? `${v} (default)` : fallback);
+    return `
+      <h3 class="cr-h3">Branding &amp; contacts</h3>
+      <div class="cr-grid2">
+        <div class="cr-field"><label class="cr-label" for="cr-brand">Masthead</label>
+          <select id="cr-brand" class="cr-input" data-bind="h-branding" data-fk="h-branding">
+            <option value="company"${brandMode === 'company' ? ' selected' : ''}>Company branding</option>
+            <option value="datawatch"${brandMode === 'datawatch' ? ' selected' : ''}>DataWatch only</option>
+          </select>
+          <span class="cr-hint">${hasBrand ? `Shows ${esc(b.display_name || 'your company')}${b.logo ? ' and its logo' : ''} at the top.`
+            : 'No company branding is set up yet — an admin can add the name and logo in Manage System → Branding. Until then the DataWatch masthead prints.'}</span></div>
+        <div class="cr-field"><span class="cr-label">Project manager</span>
+          <label class="cr-check"><input type="checkbox" data-bind="h-showPmContact" data-fk="h-showPmContact"${h.showPmContact !== false ? ' checked' : ''}>
+            <span>Show project manager contact on each job</span></label>
+          <span class="cr-hint">${jobs.length ? (pmShown ? `${plural(pmShown, 'job')} of ${jobs.length} ${pmShown === 1 ? 'has' : 'have'} a PM phone or email in the Team Directory.`
+            : 'None of these jobs’ PMs has a phone or email in the Team Directory yet.') : 'The PM’s phone and email come from the Team Directory.'}</span></div>
+      </div>
+      <fieldset class="cr-fieldset">
+        <legend class="cr-label">Report contact <span class="cr-hint-i">— the “Questions?” line in the footer</span></legend>
+        <div class="cr-grid2">
+          <div class="cr-field"><label class="cr-sr" for="cr-cname">Contact name</label>
+            <input id="cr-cname" class="cr-input" data-bind="h-contactName" data-fk="h-contactName" value="${esc(h.contactName || '')}" maxlength="120"
+              placeholder="${ph(dflt.name, 'Contact name')}" autocomplete="off"></div>
+          <div class="cr-field"><label class="cr-sr" for="cr-cphone">Contact phone</label>
+            <input id="cr-cphone" class="cr-input" data-bind="h-contactPhone" data-fk="h-contactPhone" value="${esc(h.contactPhone || '')}" maxlength="120"
+              placeholder="${ph(dflt.phone, 'Phone')}" autocomplete="off" inputmode="tel"></div>
+          <div class="cr-field"><label class="cr-sr" for="cr-cemail">Contact email</label>
+            <input id="cr-cemail" class="cr-input" data-bind="h-contactEmail" data-fk="h-contactEmail" value="${esc(h.contactEmail || '')}" maxlength="120"
+              placeholder="${ph(dflt.email, 'Email')}" autocomplete="off" inputmode="email"></div>
+        </div>
+        <span class="cr-hint">${dflt.name || dflt.phone || dflt.email ? 'Leave all three blank to use the default shown.' : 'Leave blank for no contact line.'} Typing any of them replaces the default.</span>
+      </fieldset>`;
   }
 
   // ── Live preview ────────────────────────────────────────────────────
@@ -1534,6 +2099,10 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const r = S.reports.find(x => sameId(x.id, id));
     if (!r) return;
     const items = [{ act: 'menu-open', id: r.id, label: 'Open' }, { act: 'menu-duplicate', id: r.id, label: 'Duplicate', blurb: 'A private copy you can change' }];
+    if (S.canShare) {
+      items.push({ act: 'menu-schedule', id: r.id, label: 'Schedule…',
+        blurb: r.customer_safe === false ? 'Customer-safe reports only — switch internal data off first' : 'Email it on a schedule' });
+    }
     if (r.can_edit) {
       items.push({ act: 'menu-rename', id: r.id, label: 'Rename' });
       items.push({ act: 'menu-delete', id: r.id, label: 'Delete', danger: true, blurb: 'Restorable for 30 days' });
@@ -1549,6 +2118,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         : { act: 'share', label: 'Share with division', blurb: `Everyone in ${divLabel()} can run it` });
     }
     items.push({ act: 'duplicate', label: 'Duplicate', blurb: 'Save a copy, with your changes' });
+    if (S.canShare) items.push({ act: 'schedule', label: 'Schedule…', blurb: scheduleBlock(d) || 'Email the saved report on a schedule' });
+    if (d.picked.length === 1) items.push({ act: 'customer', id: d.picked[0], label: 'Customer History', blurb: 'What this job’s customer has been sent' });
     if (d.id && d.can_edit) items.push({ act: 'delete', label: 'Delete', danger: true, blurb: 'Restorable for 30 days' });
     items.push({ act: 'close', label: 'Close report' });
     openMenu(trigger, items, 'right');
@@ -1560,11 +2131,11 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   }
 
   // ── Dialogs and toasts ──────────────────────────────────────────────
-  function modal(title, bodyHtml, onDismiss) {
+  function modal(title, bodyHtml, onDismiss, o) {
     const opener = document.activeElement;
     const back = document.createElement('div');
     back.className = 'cr-modal';
-    back.innerHTML = `<div class="cr-modal-box" role="dialog" aria-modal="true" aria-labelledby="cr-modal-title">
+    back.innerHTML = `<div class="cr-modal-box${o && o.wide ? ' cr-wide' : ''}" role="dialog" aria-modal="true" aria-labelledby="cr-modal-title">
       <div class="cr-modal-head"><h2 class="cr-modal-title" id="cr-modal-title">${esc(title)}</h2>
         <button type="button" class="cr-modal-x" data-m="x" aria-label="Close">&#10005;</button></div>
       <div class="cr-modal-body">${bodyHtml}</div></div>`;
@@ -1676,6 +2247,28 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     });
   }
 
+  /* 409 client_outdated: this tab runs an older builder than the report it
+     tried to save over. The open report is already in the draft, which the
+     tab offers back after the reload. */
+  let outdatedOpen = false;
+  function showOutdated() {
+    if (outdatedOpen) return;
+    outdatedOpen = true;
+    const m = modal('DataWatch was updated', `<p>${esc(OUTDATED_MSG)}</p>
+      <div class="cr-m-btns"><button type="button" class="btn btn-ghost" data-m="later">Not now</button>
+        <button type="button" class="btn btn-green" data-m="reload">Reload</button></div>`, () => { outdatedOpen = false; });
+    m.body.querySelector('[data-m="later"]').addEventListener('click', () => { outdatedOpen = false; m.close(true); });
+    const go = m.body.querySelector('[data-m="reload"]');
+    go.addEventListener('click', () => {
+      saveDraft();
+      S.reloading = true;
+      outdatedOpen = false;
+      m.close(true);
+      try { window.location.reload(); } catch (_) { /* nothing to do */ }
+    });
+    go.focus();
+  }
+
   function toast(message, kind, action) {
     if (S.toastEl) S.toastEl.remove();
     clearTimeout(S.toastTimer);
@@ -1747,16 +2340,98 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       renderRail();
     });
   }
-  function loadRuns() {
-    S.runsLoading = true;
+  /* Branding, once per tab visit (again after five minutes away), and the
+     Team Directory once: quiet, so a failure is just an unbranded report
+     with no PM line. Either landing redraws what it dresses. */
+  function sideArrived() {
+    if (S.view === 'edit' && S.doc) {
+      if (S.step === 3) renderPanel();
+      schedulePreview(true);
+    }
+  }
+  function loadBranding(force) {
+    if (S.brandingP) return S.brandingP;
+    if (!force && S.brandingAt && Date.now() - S.brandingAt < SIDE_TTL) return Promise.resolve();
+    S.brandingP = api.branding().then(data => {
+      S.branding = data && data.branding && typeof data.branding === 'object' ? data.branding : null;
+      S.brandingCanEdit = !!(data && data.canEdit);
+    }, () => { /* unbranded */ }).then(() => {
+      S.brandingAt = Date.now();
+      S.brandingP = null;
+      sideArrived();
+    });
+    return S.brandingP;
+  }
+  function loadPeople() {
+    if (S.people || S.peopleP) return S.peopleP || Promise.resolve();
+    S.peopleP = api.people().then(data => {
+      const list = data && (Array.isArray(data.employees) ? data.employees : Array.isArray(data.people) ? data.people : null);
+      S.people = Array.isArray(list) ? list.filter(p => p && typeof p.name === 'string') : [];
+    }, () => { S.people = []; }).then(() => {
+      S.peopleP = null;
+      sideArrived();
+    });
+    return S.peopleP;
+  }
+  // Every live contact in the division: the Contacts view and the step ①
+  // badges. Quiet for the badges; the Contacts view shows its error.
+  function loadContacts(force) {
+    if (S.contactsP) return S.contactsP;
+    if (!force && S.contactsAt && Date.now() - S.contactsAt < SIDE_TTL) return Promise.resolve();
+    S.contactsP = api.contactsQuiet().then(data => {
+      S.contacts = Array.isArray(data.contacts) ? data.contacts : [];
+      S.contactsCanEdit = data.canEdit === true;
+      S.contactsError = '';
+    }, err => {
+      S.contactsError = err.message;
+    }).then(() => {
+      S.contactsAt = Date.now();
+      S.contactsP = null;
+      if (S.view === 'contacts') renderView();
+      else if (S.view === 'edit' && S.step === 1 && S.mount && S.mount.querySelector('.cr-joblist')) renderJobList();
+    });
+    return S.contactsP;
+  }
+  function loadSchedules() {
+    if (!S.canShare && !S.canSchedule) return Promise.resolve();
+    if (S.schedsLoading) return Promise.resolve();
+    S.schedsLoading = true;
+    S.schedsError = '';
+    return api.schedules().then(data => {
+      S.scheds = Array.isArray(data.schedules) ? data.schedules : [];
+      S.canSchedule = data.canSchedule === true;
+      if (Array.isArray(data.groups)) S.schedGroups = data.groups;
+    }, err => {
+      if (err.status === 404 || err.status === 403) { S.scheds = []; S.canSchedule = false; return; }
+      S.schedsError = err.message;
+    }).then(() => {
+      S.schedsLoading = false;
+      renderRail();
+      updateChrome();
+    });
+  }
+
+  // The server sends the history 100 runs at a time, newest first; "Load
+  // more" asks for the page before the last one shown (next_before_id).
+  function loadRuns(more) {
+    if (more) {
+      if (S.runsNext == null || S.runsMore) return Promise.resolve();
+      S.runsMore = true;
+    } else {
+      S.runsLoading = true;
+    }
     S.runsError = '';
     if (S.view === 'history') renderView();
-    return api.runs().then(data => {
-      S.runs = Array.isArray(data.runs) ? data.runs : [];
+    return api.runs(more ? { before_id: S.runsNext } : {}).then(data => {
+      const rows = Array.isArray(data.runs) ? data.runs : [];
+      const had = more ? (S.runs || []) : [];
+      S.runs = had.concat(rows.filter(r => !had.some(x => sameId(x.id, r.id))));
+      S.runsNext = data.next_before_id != null && rows.length ? data.next_before_id : null;
     }, err => {
       S.runsError = err.message;
     }).then(() => {
       S.runsLoading = false;
+      S.runsMore = false;
       if (S.view === 'history') renderView();
     });
   }
@@ -1771,11 +2446,15 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     S.editLabel = null;
     S.railOpen = false;
     S.pvScroll = 0;
+    S.filterSearch = '';
+    aiDocChanged();
     render();
     const name = S.mount && S.mount.querySelector('.cr-edit');
     if (name && typeof name.scrollIntoView === 'function' && (window.innerWidth || 1200) < 900) {
       try { name.scrollIntoView({ block: 'start' }); } catch (_) { /* fine */ }
     }
+    // A starter built around a sub code opens on the sub-code picker.
+    if (S.focusFilter) { S.focusFilter = false; focusFk('filter-search'); }
   }
 
   function openSaved(r, force) {
@@ -1804,12 +2483,16 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     markClean(doc);
     startEditing(doc);
   }
+  // The "Sub-Code Production" starter asks for a sub code first.
+  const asksForSubCode = st => /sub[\s_-]?code/i.test(`${st.id} ${st.name}`);
   function openStarter(id) {
-    const st = E.STARTERS.find(s => s.id === id);
+    const st = starters().find(s => s.id === id);
     if (!st) return;
     if (S.doc && !S.doc.id && S.doc.starterId === id && !S.doc.touched && S.view === 'edit') { S.railOpen = false; render(); return; }
     if (!okToLeave()) return;
+    S.focusFilter = asksForSubCode(st);
     startEditing(blankDoc(JSON.parse(JSON.stringify(st.definition)), { starterId: st.id, name: st.name }));
+    if (asksForSubCode(st)) toast('Pick the jobs, then the sub code to report on.');
   }
   function newReport() {
     if (!okToLeave()) return;
@@ -1819,6 +2502,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (!okToLeave()) return;
     S.doc = null;
     S.view = 'home';
+    aiDocChanged();
     render();
   }
 
@@ -1902,6 +2586,9 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     S.saveSent = null;
     updateChrome();
     if (!err || S.doc !== d) return;
+    // An older copy of the builder than the report it was saving over: the
+    // reload question is already up and the work is in the draft.
+    if (err.status === 409 && code(err) === 'client_outdated') return;
     if (err.status === 409 && code(err) === 'version_conflict') { await onConflict(err.data && err.data.report); return; }
     if (err.status === 409 && code(err) === 'name_taken') {
       toast(`You already have a report called “${name}”. Change the name and save again.`, 'error');
@@ -1955,6 +2642,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
               : `You already have a report called “${chosen}”. Pick a different name.`;
           }
           if (e.status === 403) return 'Only an admin or level 3 user can share a report with the division. Untick “Share with division” to save it for yourself.';
+          if (e.status === 409 && code(e) === 'client_outdated') return OUTDATED_MSG;
           return `Couldn’t save: ${e.message}`;
         }
       },
@@ -1996,6 +2684,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       updateChrome();
       toast(vis === 'shared' ? 'Shared with the division.' : 'Made private.');
     } catch (e) {
+      if (e.status === 409 && code(e) === 'client_outdated') return;
       if (e.status === 409 && code(e) === 'version_conflict') { await onConflict(e.data && e.data.report); return; }
       if (e.status === 409 && code(e) === 'name_taken') {
         toast(vis === 'shared' ? 'There is already a shared template with this name. Rename it first.' : 'The owner already has a private report with this name. Rename it first.', 'error');
@@ -2068,7 +2757,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     try { await api.remove(r.id); }
     catch (e) { if (e.status !== 401) toast(`Couldn’t delete: ${e.message}`, 'error'); return; }
     S.reports = S.reports.filter(x => !sameId(x.id, r.id));
-    if (S.doc && S.doc.id != null && sameId(S.doc.id, r.id)) { S.doc = null; S.view = 'home'; }
+    if (S.doc && S.doc.id != null && sameId(S.doc.id, r.id)) { S.doc = null; S.view = 'home'; aiDocChanged(); }
     S.deleted = null;
     render();
     if (S.deletedOpen) loadDeleted();
@@ -2119,7 +2808,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       date_to: built.ctx.range.to || null,
       recipients: info && Array.isArray(info.recipients) ? info.recipients.slice(0, 50) : [],
       subject: (info && info.subject) || null,
-      included_internal: E.hasInternal(built.def, perm()),
+      included_internal: builtIsInternal(built),
       definition: built.def,
     };
   }
@@ -2130,8 +2819,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (r) { r.last_run_at = createdAt || new Date().toISOString(); r.run_count = (Number(r.run_count) || 0) + 1; }
     if (S.view === 'history') loadRuns();
   }
-  function logRun(action, built, info) {
-    return api.run(runBody(action, built, info)).then(res => {
+  function logRun(action, built, info, extra) {
+    return api.run(Object.assign(runBody(action, built, info), extra || {})).then(res => {
       if (res && res.run) noteRun(built, res.run.created_at);
     }).catch(e => console.warn('[custom-reports] could not log the run:', e && e.message));
   }
@@ -2200,28 +2889,24 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       return;
     }
     const d = S.doc;
+    // The saved contacts for these jobs are fetched while the report builds.
+    const contactsP = emailContacts(currentJobs());
     await whenReadyFor('email');
     if (S.doc !== d) return;
     let built;
     try { built = buildCurrent(); }
     catch (err) { toast('Couldn’t build the report: ' + err.message, 'error'); return; }
-    // send-report refuses anything bigger, and would say so only after the
-    // recipients are filled in. Say it now, with what to do instead.
-    const bytes = htmlBytes(built.html);
-    if (bytes > EMAIL_HTML_LIMIT) {
-      toast(`This report is ${(bytes / 1e6).toFixed(1)} MB — too big to email (the limit is 1.5 MB). Pick fewer jobs, set a shorter date range, `
-        + 'turn on “One row per day and sub code”, or use Print / PDF and attach the PDF.', 'error',
-      { label: 'Print / PDF instead', run: () => doPrint() });
-      return;
-    }
+    if (!emailSizeOk(built.html)) return;
     // The one place a customer is most likely on the other end.
-    if (E.hasInternal(built.def, perm())
+    if (builtIsInternal(built)
       && !window.confirm('This report includes internal data — costs, rates, hours, employee names or profit. Email it anyway? Only send it inside the company.')) return;
     const jobs = built.ctx.jobs;
     const one = jobs.length === 1 ? jobs[0] : null;
     const jobLabel = one ? jobName(one) : `${jobs.length} jobs`;
     const record = runBody('email', built);
     delete record.action; delete record.recipients; delete record.subject;
+    const pre = await contactsP;
+    if (typeof window.openReportEmailModal !== 'function') return;
     window.openReportEmailModal({
       reportType: `${cfg.division}_custom_report`,
       projectId: one ? one.id : null,
@@ -2231,14 +2916,77 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       projectName: null,
       defaultSubject: `${built.ctx.title} — ${jobLabel}`,
       getHTML: () => built.html,
+      // Each picked job's (and its client's) saved contacts, pre-filled, and
+      // what the modal needs to save a typed address as a new one.
+      contacts: pre.contacts,
+      contactContext: pre.context,
       // send-report records the send itself; the browser logs it only when
       // the server could not, so it is on the record once either way.
       customReport: record,
       onSent: info => {
+        // The modal may have saved a typed address as a contact: the job
+        // badges count it next time step ① draws.
+        loadContacts(true);
         if (info && info.logged) { noteRun(built); return undefined; }
         return logRun('email', built, info);
       },
     });
+  }
+
+  // send-report refuses anything bigger, and would say so only after the
+  // recipients are filled in. Say it now, with what to do instead.
+  function emailSizeOk(html, noPrint) {
+    const bytes = htmlBytes(html);
+    if (bytes <= EMAIL_HTML_LIMIT) return true;
+    toast(`This report is ${(bytes / 1e6).toFixed(1)} MB — too big to email (the limit is 1.5 MB). Pick fewer jobs, set a shorter date range, `
+      + 'turn on “One row per day and sub code”, or use Print / PDF and attach the PDF.', 'error',
+    noPrint ? null : { label: 'Print / PDF instead', run: () => doPrint() });
+    return false;
+  }
+
+  /* The saved contacts an email to these jobs starts with: each job's own,
+     then each job's client's, auto-add ones only, one per address, labelled
+     with where they came from. Never holds the email up for long, and a
+     failure is an empty list — the modal still works by hand. */
+  async function emailContacts(jobs) {
+    jobs = (jobs || []).slice(0, MAX_JOBS);
+    const projectIds = jobs.map(p => String(p.id));
+    const clients = [];
+    jobs.forEach(p => {
+      const key = clientKey(p.client);
+      if (key && !clients.some(c => c.key === key)) clients.push({ key, name: txt(p.client) });
+    });
+    const context = { division: cfg.division, projectIds, clients, canEdit: false, apiBase: cfg.apiBase, getToken: () => token() };
+    if (!jobs.length) return { contacts: [], context };
+    // A client name with a comma cannot ride in the comma-separated list:
+    // then the division's whole list is read and matched here.
+    const commas = clients.some(c => c.key.includes(','));
+    const params = commas || projectIds.length > MAX_IDS_CALL || clients.length > MAX_IDS_CALL ? null
+      : { project_ids: projectIds.join(','), client_keys: clients.map(c => c.key).join(',') };
+    let data = null;
+    try {
+      data = await Promise.race([api.contactsQuiet(params), new Promise(r => setTimeout(() => r(null), 5000))]);
+    } catch (_) { data = null; }
+    if (!data || !Array.isArray(data.contacts)) return { contacts: [], context };
+    context.canEdit = data.canEdit === true;
+    const byJob = new Map(jobs.map(p => [String(p.id), p]));
+    const byClient = new Map(clients.map(c => [c.key, c]));
+    const out = [], seen = new Set();
+    const add = (c, source, label) => {
+      const email = txt(c.email).toLowerCase();
+      if (!email || seen.has(email) || c.auto_add === false) return;
+      seen.add(email);
+      out.push({ email, name: txt(c.name), source, label });
+    };
+    data.contacts.forEach(c => {
+      if (c && c.project_id != null && byJob.has(String(c.project_id))) add(c, 'job', `Job contact — ${jobName(byJob.get(String(c.project_id)))}`);
+    });
+    data.contacts.forEach(c => {
+      if (c && c.project_id == null && c.client_key && byClient.has(c.client_key)) {
+        add(c, 'client', `Client contact — ${txt(c.client_name) || byClient.get(c.client_key).name}`);
+      }
+    });
+    return { contacts: out, context };
   }
 
   async function doExcel() {
@@ -2257,7 +3005,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     }
     // A workbook is the file most often attached to an email by hand, out of
     // reach of the Email button's question — so it asks here too.
-    if (E.hasInternal(built.def, perm()) && !window.confirm(EXCEL_INTERNAL_CONFIRM)) return;
+    if (builtIsInternal(built) && !window.confirm(EXCEL_INTERNAL_CONFIRM)) return;
     const blob = new Blob([bytes], { type: E.XLSX_MIME || 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -2295,7 +3043,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         <td data-label="When" class="cr-nowrap">${esc(fmtWhen(r.created_at))}</td>
         <td data-label="Who">${esc(r.run_by_username || '—')}</td>
         <td data-label="Report"><div>${esc(r.report_name || '')}${r.subject ? `<span class="cr-hint">${esc(r.subject)}</span>` : ''}</div></td>
-        <td data-label="Action" class="cr-nowrap">${ACTION_LABEL[r.action] || esc(r.action)}</td>
+        <td data-label="Action" class="cr-nowrap">${ACTION_LABEL[r.action] || esc(r.action)}${RUN_KIND_LABEL[r.run_kind] ? `<span class="cr-hint">${esc(RUN_KIND_LABEL[r.run_kind])}</span>` : ''}</td>
         <td data-label="Data">${r.included_internal ? badge('&#128274; Internal', 'internal') : badge('Customer-safe', 'safe')}</td>
         <td data-label="Jobs" title="${esc(names.join(', '))}">${esc(jobs || '—')}</td>
         <td data-label="Dates" class="cr-nowrap">${esc(range)}</td>
@@ -2305,7 +3053,1010 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     return head + `<div class="cr-tablewrap"><table class="cr-table">
       <thead><tr><th scope="col">When</th><th scope="col">Who</th><th scope="col">Report</th><th scope="col">Action</th>
         <th scope="col">Data</th><th scope="col">Jobs</th><th scope="col">Dates</th><th scope="col">Recipients</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
+      <tbody>${rows}</tbody></table></div>
+      ${S.runsNext != null ? `<div class="cr-more"><button type="button" class="btn btn-ghost" data-act="history-more" data-fk="history-more"${S.runsMore ? ' disabled' : ''}>${S.runsMore ? 'Loading…' : 'Load more'}</button></div>` : ''}`;
+  }
+
+  // ── Customer History ────────────────────────────────────────────────
+  /* Every email a job's customer was sent — by anyone in the division, not
+     only the user — newest first, a page at a time. Open shows the copy
+     that was archived at send time (exactly what went), or, for an older
+     send with no copy, a rebuild from today's data under a yellow banner
+     that says so. Resend mails the same copy again. */
+  // The server's rule for an internal send's copy: its sender, or an admin /
+  // level 3. Unknown (no sender on the row) is the server's call, except
+  // where `strict` asks for a sure yes.
+  function mayOpenInternal(run, strict) {
+    if (S.canShare) return true;
+    if (!S.me) return !strict;
+    if (run.run_by_user_id != null) return sameId(run.run_by_user_id, S.me.userId);
+    if (run.run_by_username) return run.run_by_username === S.me.username;
+    return !strict;
+  }
+  function clientList() {
+    const seen = new Map();
+    projects().forEach(p => { const k = clientKey(p.client); if (k && !seen.has(k)) seen.set(k, txt(p.client)); });
+    return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1], undefined, { sensitivity: 'base' }));
+  }
+  function customerJobOptions() {
+    const q = S.cust.search.trim().toLowerCase();
+    const c = S.cust.client;
+    const list = projects().filter(p => (!c || clientKey(p.client) === c) && matchJob(p, q));
+    const sel = S.cust.jobId ? projectById(S.cust.jobId) : null;
+    if (sel && !list.includes(sel)) list.unshift(sel);
+    const shown = list.slice(0, 300);
+    return `<option value="">${list.length ? 'Pick a job…' : 'No job matches'}</option>`
+      + shown.map(p => {
+        const meta = [txt(p['job-number']) ? '#' + txt(p['job-number']) : '', txt(p.client)].filter(Boolean).join(' · ');
+        return `<option value="${esc(String(p.id))}"${S.cust.jobId && sameId(S.cust.jobId, p.id) ? ' selected' : ''}>${esc(jobName(p))}${meta ? ' — ' + esc(meta) : ''}</option>`;
+      }).join('');
+  }
+  function customerHtml() {
+    const c = S.cust;
+    const job = c.jobId ? projectById(c.jobId) : null;
+    const clients = clientList();
+    const head = `<div class="cr-view-head">
+        <button type="button" class="btn btn-ghost cr-sm" data-act="back" data-fk="back">&#8592; ${S.doc ? 'Back to the report' : 'Back'}</button>
+        <h2 class="cr-h2">Customer History</h2>
+        ${job ? `<button type="button" class="btn btn-ghost cr-sm" data-act="cust-refresh" data-fk="cust-refresh"${c.loading ? ' disabled' : ''}>&#8635; Refresh</button>` : ''}
+      </div>
+      <p class="cr-hint">What each job’s customer was emailed, newest first — by anyone in ${esc(divLabel())}. <b>Open</b> shows exactly what was sent; <b>Resend</b> mails the same copy again.</p>
+      <div class="cr-toolrow">
+        <input type="search" class="cr-input" data-bind="cust-search" data-fk="cust-search" value="${esc(c.search)}" placeholder="&#128269; Find a job…"
+          aria-label="Find a job by name, number, client or status" autocomplete="off" spellcheck="false">
+        ${clients.length ? `<select class="cr-input" data-bind="cust-client" data-fk="cust-client" aria-label="Only this client's jobs">
+          <option value="">All clients</option>${clients.map(([k, n]) => `<option value="${esc(k)}"${c.client === k ? ' selected' : ''}>${esc(n)}</option>`).join('')}</select>` : ''}
+        <select class="cr-input" data-bind="cust-job" data-fk="cust-job" aria-label="Job">${customerJobOptions()}</select>
+      </div>`;
+    if (!job) return head + `<p class="cr-empty">${projects().length ? 'Pick a job to see what its customer was sent.' : (S.readyDone ? 'No jobs in this division yet.' : 'Loading jobs…')}</p>`;
+    if (c.error) {
+      return head + `<div class="cr-alert" role="alert"><span>Couldn’t load the history: ${esc(c.error)}</span>
+        <button type="button" class="btn btn-ghost cr-sm" data-act="cust-refresh">Retry</button></div>`;
+    }
+    if (!c.runs) return head + '<p class="cr-loading">Loading…</p>';
+    if (!c.runs.length) return head + `<p class="cr-empty">No custom report has been emailed for ${esc(jobName(job))} yet.</p>`;
+    const rows = c.runs.map(r => {
+      const to = Array.isArray(r.recipients) && r.recipients.length ? r.recipients.join(', ') : '—';
+      const kind = RUN_KIND_LABEL[r.run_kind] || '—';
+      const busy = c.busy != null && sameId(c.busy, r.id);
+      const locked = r.included_internal && !mayOpenInternal(r);
+      const tip = locked ? ` title="${esc(INTERNAL_ARCHIVE_MSG)}"` : '';
+      return `<tr>
+        <td data-label="Date" class="cr-nowrap">${esc(fmtWhen(r.created_at))}</td>
+        <td data-label="Report">${esc(r.report_name || '')}</td>
+        <td data-label="Subject">${esc(r.subject || '—')}</td>
+        <td data-label="Recipients">${esc(to)}</td>
+        <td data-label="Sent by">${esc(r.run_by_username || '—')}</td>
+        <td data-label="Kind">${esc(kind)}</td>
+        <td data-label="Data">${r.included_internal ? badge('&#128274; Internal', 'internal') : badge('Customer-safe', 'safe')}</td>
+        <td data-label="Actions"><span class="cr-rowacts">
+          <button type="button" class="btn btn-ghost cr-sm" data-act="cust-open" data-id="${esc(r.id)}" data-fk="cust-open-${esc(r.id)}"${busy ? ' disabled' : ''}${tip}
+            aria-label="Open what was sent on ${esc(fmtWhen(r.created_at))}">Open</button>
+          <button type="button" class="btn btn-ghost cr-sm" data-act="cust-resend" data-id="${esc(r.id)}" data-fk="cust-resend-${esc(r.id)}"${busy ? ' disabled' : ''}${tip}
+            aria-label="Resend what was sent on ${esc(fmtWhen(r.created_at))}">${busy ? '<span class="cr-spin" aria-hidden="true"></span> ' : ''}Resend</button>
+          <button type="button" class="btn btn-ghost cr-sm" data-act="cust-builder" data-id="${esc(r.id)}" data-fk="cust-builder-${esc(r.id)}"${busy ? ' disabled' : ''}
+            title="Open this report as a new, unsaved report with the same jobs and dates">Open in builder</button>
+        </span></td>
+      </tr>`;
+    }).join('');
+    return head + `<div class="cr-tablewrap"><table class="cr-table cr-cust">
+      <thead><tr><th scope="col">Date</th><th scope="col">Report</th><th scope="col">Subject</th><th scope="col">Recipients</th>
+        <th scope="col">Sent by</th><th scope="col">Kind</th><th scope="col">Data</th><th scope="col"><span class="cr-sr">Actions</span></th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+      ${c.next != null ? `<div class="cr-more"><button type="button" class="btn btn-ghost" data-act="cust-more" data-fk="cust-more"${c.more ? ' disabled' : ''}>${c.more ? 'Loading…' : 'Load more'}</button></div>` : ''}`;
+  }
+  function openCustomer(jobId) {
+    S.view = 'customer';
+    S.railOpen = false;
+    if (jobId != null && !sameId(jobId, S.cust.jobId)) { S.cust.jobId = String(jobId); S.cust.runs = null; S.cust.next = null; }
+    // From an open one-job report, start on that job.
+    if (!S.cust.jobId && S.doc && S.doc.picked.length === 1) S.cust.jobId = String(S.doc.picked[0]);
+    render();
+    if (S.cust.jobId) loadCustomer(false);
+  }
+  function loadCustomer(more) {
+    const c = S.cust;
+    const id = c.jobId;
+    if (!id) return Promise.resolve();
+    const params = { project_id: id, action: 'email' };
+    if (more) {
+      if (c.next == null || c.more) return Promise.resolve();
+      params.before_id = c.next;
+      c.more = true;
+    } else {
+      c.runs = null;
+      c.next = null;
+      c.loading = true;
+    }
+    c.error = '';
+    if (S.view === 'customer') renderView();
+    return api.runs(params).then(data => {
+      if (!sameId(S.cust.jobId, id)) return;
+      const rows = Array.isArray(data.runs) ? data.runs : [];
+      S.cust.runs = more ? (S.cust.runs || []).concat(rows.filter(r => !(S.cust.runs || []).some(x => sameId(x.id, r.id)))) : rows;
+      S.cust.next = data.next_before_id != null && rows.length ? data.next_before_id : null;
+    }, err => {
+      if (sameId(S.cust.jobId, id)) S.cust.error = err.message;
+    }).then(() => {
+      if (sameId(S.cust.jobId, id)) { S.cust.loading = false; S.cust.more = false; }
+      if (S.view === 'customer') renderView();
+    });
+  }
+  const custRun = id => (S.cust.runs || []).find(r => sameId(r.id, id)) || null;
+  // The full run (definition, recipients) — the list rows may not carry it.
+  async function runDetail(run) {
+    if (run.definition && typeof run.definition === 'object' && Array.isArray(run.definition.sections)) return run;
+    const data = await api.runOne(run.id);
+    const full = Object.assign({}, run, (data && (data.run || data)) || {});
+    const i = (S.cust.runs || []).indexOf(run);
+    if (i >= 0) S.cust.runs[i] = full;
+    return full;
+  }
+  // The copy archived at send time: its HTML, or null when there is none.
+  async function archivedHtml(run) {
+    if (run.has_archive === false) return null;
+    try {
+      const data = await api.archive(run.id);
+      return data && typeof data.html === 'string' && data.html ? data.html : null;
+    } catch (e) {
+      if (e.status === 404) return null;
+      throw e;
+    }
+  }
+  /* A send with no archived copy, rebuilt from today's data as it was set up
+     then: its definition, its jobs, its dates pinned, "today" and "now" the
+     moment it went. Throws when the definition is gone (pruned after two
+     years). */
+  function rebuildRun(full, withBanner) {
+    const def = E.normalizeDefinition(full.definition);
+    if (!def.sections.length) throw failure('This send is too old to rebuild — its report layout was not kept.', 0, null);
+    const ids = (Array.isArray(full.project_ids) ? full.project_ids : []).map(String);
+    def.dates = { preset: 'custom', from: full.date_from || '', to: full.date_to || '' };
+    def.jobs = { mode: 'pick', ids };
+    const jobs = ids.map(projectById).filter(Boolean);
+    if (!jobs.length) throw failure('The jobs this went out for no longer exist, so it cannot be rebuilt.', 0, null);
+    const snap = { def, picked: ids, reportName: txt(full.report_name), dress: dressing(def, jobs),
+      ctxOpts: { today: localDate(full.created_at) || undefined, now: full.created_at || undefined } };
+    const built = buildFrom(snap);
+    return { built, html: withBanner ? withRebuiltBanner(built.html) : built.html };
+  }
+  function withRebuiltBanner(html) {
+    const bar = `<div role="note" style="background:#fef3c7;color:#713f12;border:1px solid #f59e0b;border-radius:4px;padding:8px 12px;margin:0 0 12px;font:600 13px/1.4 system-ui,sans-serif">&#9888; ${esc(REBUILT_BANNER)}</div>`;
+    return /<body[^>]*>/i.test(html) ? html.replace(/<body[^>]*>/i, m => m + bar) : bar + html;
+  }
+  // Pages opened from the history run no script at all: whatever is in an
+  // archived copy (sanitized when it was sent) stays a picture.
+  function lockedDown(html) {
+    const csp = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; style-src \'unsafe-inline\'; font-src data:">';
+    return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, m => m + csp) : csp + html;
+  }
+  async function custOpen(id) {
+    const run = custRun(id);
+    if (!run) return;
+    if (run.included_internal && !mayOpenInternal(run)) { toast(INTERNAL_ARCHIVE_MSG, 'error'); return; }
+    // Opened inside the click (the pop-up rule), filled once the copy is in.
+    const win = window.open('', '_blank');
+    if (!win) { alert('Your browser blocked the window. Allow pop-ups for this site and try again.'); return; }
+    try {
+      win.document.write('<!DOCTYPE html><title>Opening report…</title><p style="font:14px system-ui,sans-serif;padding:2rem;color:#444">Opening the report…</p>');
+      win.document.close();
+    } catch (_) { /* the real write follows */ }
+    const fail = msg => { try { win.close(); } catch (_) { /* fine */ } toast(msg, 'error'); };
+    let html = null;
+    try { html = await archivedHtml(run); }
+    catch (e) {
+      if (e.status === 403 && code(e) === 'internal_archive') { fail(INTERNAL_ARCHIVE_MSG); return; }
+      if (e.status !== 401) fail(`Couldn’t open it: ${e.message}`);
+      return;
+    }
+    if (html == null) {
+      try { html = rebuildRun(await runDetail(run), true).html; }
+      catch (e) { if (e.status !== 401) fail(`Couldn’t open it: ${e.message}`); return; }
+    }
+    if (win.closed) return;
+    try { win.document.open(); } catch (_) { /* written fresh below */ }
+    const write = window.dwWrite || ((w, h) => w.document.write(h));
+    write(win, lockedDown(html));
+    try { win.document.close(); } catch (_) { /* fine */ }
+  }
+  async function custResend(id) {
+    const run = custRun(id);
+    if (!run || S.cust.busy != null) return;
+    if (typeof window.openReportEmailModal !== 'function') { alert('Email module is still loading — please try again in a moment.'); return; }
+    if (run.included_internal && !mayOpenInternal(run)) { toast(INTERNAL_ARCHIVE_MSG, 'error'); return; }
+    S.cust.busy = run.id;
+    renderView();
+    let full, html;
+    try {
+      full = await runDetail(run);
+      html = await archivedHtml(full);
+      // No archived copy: the rebuild, without the "rebuilt" banner — it is
+      // going to the customer.
+      if (html == null) html = rebuildRun(full, false).html;
+    } catch (e) {
+      if (e.status === 403 && code(e) === 'internal_archive') toast(INTERNAL_ARCHIVE_MSG, 'error');
+      else if (e.status !== 401) toast(`Couldn’t resend it: ${e.message}`, 'error');
+      return;
+    } finally {
+      S.cust.busy = null;
+      if (S.view === 'customer') renderView();
+    }
+    if (!emailSizeOk(html, true)) return;
+    const internal = full.included_internal === true || INTERNAL_MARK.test(html);
+    if (internal && !window.confirm('This report includes internal data — costs, rates, hours, employee names or profit. Resend it anyway? Only send it inside the company.')) return;
+    const ids = (Array.isArray(full.project_ids) ? full.project_ids : []).map(String);
+    // A scheduled send can have gone to more addresses than one email may
+    // carry: the first ones are filled in, and the rest are named as left off.
+    const sentTo = Array.isArray(full.recipients) ? full.recipients.filter(x => typeof x === 'string') : [];
+    if (sentTo.length > MAX_SEND_TO) {
+      toast(`This went to ${sentTo.length} addresses; one email can go to ${MAX_SEND_TO}, so the first ${MAX_SEND_TO} are filled in. `
+        + `Send it again for the other ${sentTo.length - MAX_SEND_TO}.`, 'error');
+    }
+    const record = {
+      report_id: full.report_id != null ? full.report_id : null,
+      report_name: txt(full.report_name).slice(0, 200) || 'Untitled report',
+      project_ids: ids.slice(0, MAX_JOBS),
+      project_names: (Array.isArray(full.project_names) ? full.project_names : []).slice(0, MAX_JOBS),
+      date_from: full.date_from || null, date_to: full.date_to || null,
+      included_internal: internal,
+      definition: full.definition && typeof full.definition === 'object' ? full.definition : {},
+      run_kind: 'resend', resent_from_run_id: full.id,
+    };
+    window.openReportEmailModal({
+      reportType: `${cfg.division}_custom_report`,
+      projectId: ids.length === 1 ? ids[0] : null,
+      projectName: null,
+      defaultSubject: txt(full.subject) || txt(full.report_name) || 'Report',
+      defaultRecipients: sentTo.slice(0, MAX_SEND_TO),
+      getHTML: () => html,
+      customReport: record,
+      onSent: info => {
+        const again = () => { if (S.view === 'customer') loadCustomer(false); };
+        if (info && info.logged) { again(); return undefined; }
+        return api.run(Object.assign({}, record, {
+          action: 'email', recipients: info && Array.isArray(info.recipients) ? info.recipients.slice(0, 50) : [],
+          subject: (info && info.subject) || null,
+        })).then(again).catch(e => console.warn('[custom-reports] could not log the resend:', e && e.message));
+      },
+    });
+  }
+  // The send as a new, unsaved report: same sections, jobs and dates.
+  async function custBuilder(id) {
+    const run = custRun(id);
+    if (!run) return;
+    let full;
+    try { full = await runDetail(run); }
+    catch (e) { if (e.status !== 401) toast(`Couldn’t open it: ${e.message}`, 'error'); return; }
+    const def = E.normalizeDefinition(full.definition);
+    if (!def.sections.length) { toast('This send is too old to reopen — its report layout was not kept.', 'error'); return; }
+    if (full.date_from || full.date_to) def.dates = { preset: 'custom', from: full.date_from || '', to: full.date_to || '' };
+    // An internal send reopens internal only for someone who may open it;
+    // anyone else starts customer-safe.
+    if (def.includeInternal && !mayOpenInternal(full, true)) def.includeInternal = false;
+    const ids = (Array.isArray(full.project_ids) ? full.project_ids : []).map(String);
+    const live = ids.filter(x => projectById(x));
+    def.jobs = { mode: 'pick', ids: [] };
+    if (!okToLeave()) return;
+    startEditing(blankDoc(def, { name: txt(full.report_name), picked: live.map(x => projectById(x).id), missing: ids.length - live.length, touched: true }));
+    toast('Opened what was sent as a new, unsaved report.');
+  }
+
+  // ── Contacts ────────────────────────────────────────────────────────
+  /* The customer contacts saved per job and per client. "Auto-add" ones fill
+     in the email for a report on their job (or any job for their client).
+     level 2 and up can change them; level 1 can look. */
+  const roleLabel = r => (CONTACT_ROLES.find(x => x[0] === r) || CONTACT_ROLES[CONTACT_ROLES.length - 1])[1];
+  function openContacts(jobId) {
+    S.view = 'contacts';
+    S.railOpen = false;
+    if (jobId !== undefined) S.contactsJob = jobId == null ? '' : String(jobId);
+    S.contactEdit = null;
+    render();
+    loadContacts(true);
+  }
+  function contactMatches(c, q, byId) {
+    if (!q) return true;
+    const p = c.project_id != null ? byId.get(String(c.project_id)) : null;
+    return [c.name, c.title, c.organization, c.email, c.phone, c.client_name, p && jobName(p)].some(v => txt(v).toLowerCase().includes(q));
+  }
+  function contactsHtml() {
+    const can = S.contactsCanEdit;
+    const head = `<div class="cr-view-head">
+        <button type="button" class="btn btn-ghost cr-sm" data-act="back" data-fk="back">&#8592; ${S.doc ? 'Back to the report' : 'Back'}</button>
+        <h2 class="cr-h2">Contacts</h2>
+        <button type="button" class="btn btn-ghost cr-sm" data-act="ct-refresh" data-fk="ct-refresh">&#8635; Refresh</button>
+        ${can && !S.contactEdit ? '<button type="button" class="btn btn-green cr-sm" data-act="ct-add" data-fk="ct-add">+ Add contact</button>' : ''}
+      </div>
+      <p class="cr-hint">Customer contacts for ${esc(divLabel())}, saved per job or per client. Ones set to <b>auto-add</b> fill in the email when you send a report for their job.${can ? '' : ' Only level 2 users and up can change them.'}</p>
+      <div class="cr-toolrow">
+        <input type="search" class="cr-input" data-bind="ct-search" data-fk="ct-search" value="${esc(S.contactsSearch)}" placeholder="&#128269; Search contacts…"
+          aria-label="Search contacts by name, email, organization, job or client" autocomplete="off" spellcheck="false">
+        <select class="cr-input" data-bind="ct-job" data-fk="ct-job" aria-label="Only one job's contacts">
+          <option value="">Every job and client</option>
+          ${projects().map(p => `<option value="${esc(String(p.id))}"${S.contactsJob && sameId(S.contactsJob, p.id) ? ' selected' : ''}>${esc(jobName(p))}</option>`).join('')}
+        </select>
+      </div>
+      ${S.contactEdit ? contactFormHtml() : ''}`;
+    if (S.contactsError && !S.contacts) {
+      return head + `<div class="cr-alert" role="alert"><span>Couldn’t load contacts: ${esc(S.contactsError)}</span>
+        <button type="button" class="btn btn-ghost cr-sm" data-act="ct-refresh">Retry</button></div>`;
+    }
+    if (!S.contacts) return head + '<p class="cr-loading">Loading…</p>';
+    return head + `<div class="cr-ct-list">${contactListHtml()}</div>`;
+  }
+  function contactListHtml() {
+    const q = S.contactsSearch.trim().toLowerCase();
+    const job = S.contactsJob ? projectById(S.contactsJob) : null;
+    const jk = job ? clientKey(job.client) : '';
+    const byId = new Map(projects().map(p => [String(p.id), p]));
+    let list = (S.contacts || []).filter(c => contactMatches(c, q, byId));
+    if (S.contactsJob) list = list.filter(c => (c.project_id != null && sameId(c.project_id, S.contactsJob)) || (jk && c.project_id == null && c.client_key === jk));
+    if (!list.length) {
+      return `<p class="cr-empty">${(S.contacts || []).length ? 'No contact matches.' : 'No contacts saved yet.'}${S.contactsCanEdit ? ' Use <b>+ Add contact</b>, or “Save as contact” in the email window.' : ''}</p>`;
+    }
+    const groups = new Map();
+    list.forEach(c => {
+      const p = c.project_id != null ? byId.get(String(c.project_id)) : null;
+      const key = c.project_id != null ? 'j:' + c.project_id : 'c:' + (c.client_key || '');
+      const title = c.project_id != null ? (p ? jobName(p) : `Job ${c.project_id} (no longer listed)`) : `Client: ${txt(c.client_name) || c.client_key || '—'}`;
+      if (!groups.has(key)) groups.set(key, { title, kind: c.project_id != null ? 'Job' : 'Client', items: [] });
+      groups.get(key).items.push(c);
+    });
+    const sorted = [...groups.values()].sort((a, b) => (a.kind === b.kind ? a.title.localeCompare(b.title, undefined, { sensitivity: 'base' }) : a.kind === 'Job' ? -1 : 1));
+    return sorted.map(g => `<div class="cr-ct-group"><h3 class="cr-ct-group-h"><span>${esc(g.title)}</span><span class="cr-hint-i">${esc(g.kind)} · ${plural(g.items.length, 'contact')}</span></h3>
+      ${g.items.map(contactCardHtml).join('')}</div>`).join('');
+  }
+  function contactCardHtml(c) {
+    const can = S.contactsCanEdit;
+    const line1 = [txt(c.title), txt(c.organization)].filter(Boolean).join(' · ');
+    const line2 = [txt(c.email), txt(c.phone)].filter(Boolean).join(' · ');
+    return `<div class="cr-ct-card">
+      <div class="cr-ct-who"><b>${esc(txt(c.name) || txt(c.email))}</b> <span class="cr-badge">${esc(roleLabel(c.role))}</span>
+        ${line1 ? `<span class="cr-hint">${esc(line1)}</span>` : ''}<span class="cr-hint">${esc(line2)}</span></div>
+      <div class="cr-ct-tools">
+        <label class="cr-check"><input type="checkbox" data-bind="ct-auto" data-id="${esc(c.id)}" data-fk="ct-auto-${esc(c.id)}"${c.auto_add !== false ? ' checked' : ''}${can ? '' : ' disabled'}> Auto-add</label>
+        ${can ? `<button type="button" class="btn btn-ghost cr-sm" data-act="ct-edit" data-id="${esc(c.id)}" data-fk="ct-edit-${esc(c.id)}" aria-label="Edit ${esc(txt(c.name) || txt(c.email))}">Edit</button>
+        <button type="button" class="btn btn-ghost cr-sm" data-act="ct-delete" data-id="${esc(c.id)}" data-fk="ct-delete-${esc(c.id)}" aria-label="Delete ${esc(txt(c.name) || txt(c.email))}">Delete</button>` : ''}
+      </div></div>`;
+  }
+  function contactFormHtml() {
+    const f = S.contactEdit;
+    const clients = clientList();
+    const v = k => esc(f[k] == null ? '' : String(f[k]));
+    const fld = (k, label, extra) => `<div class="cr-field"><label class="cr-label" for="cr-ct-${k}">${label}</label>
+      <input id="cr-ct-${k}" class="cr-input" data-bind="ct-field" data-field="${k}" data-fk="ct-f-${k}" value="${v(k)}" maxlength="${k === 'phone' ? 40 : 120}" autocomplete="off"${extra || ''}></div>`;
+    return `<div class="cr-form" role="group" aria-label="${f.id != null ? 'Edit contact' : 'New contact'}">
+      <div class="cr-field"><label class="cr-label" for="cr-ct-scope">For</label>
+        <select id="cr-ct-scope" class="cr-input" data-bind="ct-field" data-field="scope" data-fk="ct-f-scope">
+          <option value="job"${f.scope === 'job' ? ' selected' : ''}>One job</option>
+          <option value="client"${f.scope === 'client' ? ' selected' : ''}>Every job for a client</option>
+        </select></div>
+      ${f.scope === 'client'
+        ? `<div class="cr-field"><label class="cr-label" for="cr-ct-client">Client</label>
+          <select id="cr-ct-client" class="cr-input" data-bind="ct-field" data-field="client_name" data-fk="ct-f-client">
+            <option value="">Pick a client…</option>
+            ${clients.map(([k, n]) => `<option value="${esc(n)}"${clientKey(f.client_name) === k ? ' selected' : ''}>${esc(n)}</option>`).join('')}
+            ${f.client_name && !clients.some(([k]) => k === clientKey(f.client_name)) ? `<option value="${v('client_name')}" selected>${v('client_name')}</option>` : ''}
+          </select></div>`
+        : `<div class="cr-field"><label class="cr-label" for="cr-ct-job">Job</label>
+          <select id="cr-ct-job" class="cr-input" data-bind="ct-field" data-field="project_id" data-fk="ct-f-job">
+            <option value="">Pick a job…</option>
+            ${projects().map(p => `<option value="${esc(String(p.id))}"${f.project_id && sameId(f.project_id, p.id) ? ' selected' : ''}>${esc(jobName(p))}</option>`).join('')}
+          </select></div>`}
+      ${fld('email', 'Email', ' type="email" inputmode="email" required')}
+      ${fld('name', 'Name')}
+      ${fld('title', 'Title')}
+      ${fld('organization', 'Organization')}
+      ${fld('phone', 'Phone', ' type="tel" inputmode="tel"')}
+      <div class="cr-field"><label class="cr-label" for="cr-ct-role">Role</label>
+        <select id="cr-ct-role" class="cr-input" data-bind="ct-field" data-field="role" data-fk="ct-f-role">
+          ${CONTACT_ROLES.map(([k, n]) => `<option value="${k}"${(f.role || 'other') === k ? ' selected' : ''}>${esc(n)}</option>`).join('')}
+        </select></div>
+      <label class="cr-check" style="align-self:end"><input type="checkbox" data-bind="ct-field" data-field="auto_add" data-fk="ct-f-auto"${f.auto_add !== false ? ' checked' : ''}>
+        <span>Auto-add to emails</span></label>
+      <p class="cr-form-err" role="alert">${esc(f.error || '')}</p>
+      <div class="cr-form-btns">
+        <button type="button" class="btn btn-ghost cr-sm" data-act="ct-cancel" data-fk="ct-cancel">Cancel</button>
+        <button type="button" class="btn btn-green cr-sm" data-act="ct-save" data-fk="ct-save"${f.saving ? ' disabled' : ''}>${f.saving ? 'Saving…' : f.id != null ? 'Save changes' : 'Add contact'}</button>
+      </div></div>`;
+  }
+  function editContact(id) {
+    if (id == null) {
+      const job = S.contactsJob ? projectById(S.contactsJob) : null;
+      S.contactEdit = { id: null, scope: 'job', project_id: job ? String(job.id) : '', client_name: '', email: '', name: '', title: '',
+        organization: '', phone: '', role: 'other', auto_add: true, error: '' };
+    } else {
+      const c = (S.contacts || []).find(x => sameId(x.id, id));
+      if (!c) return;
+      S.contactEdit = { id: c.id, scope: c.project_id != null ? 'job' : 'client', project_id: c.project_id != null ? String(c.project_id) : '',
+        client_name: txt(c.client_name), email: txt(c.email), name: txt(c.name), title: txt(c.title), organization: txt(c.organization),
+        phone: txt(c.phone), role: c.role || 'other', auto_add: c.auto_add !== false, error: '' };
+    }
+    renderView();
+    focusFk('ct-f-email');
+  }
+  function setContactField(el) {
+    const f = S.contactEdit;
+    if (!f) return;
+    const k = el.getAttribute('data-field');
+    if (k === 'auto_add') f.auto_add = !!el.checked;
+    else if (['scope', 'project_id', 'client_name', 'email', 'name', 'title', 'organization', 'phone', 'role'].includes(k)) f[k] = el.value;
+    if (k === 'scope') renderView();
+  }
+  const EMAIL_OK = /^[^\s@<>()[\]\\,;:"]+@[^\s@<>()[\]\\,;:"]+\.[A-Za-z]{2,}$/;
+  const PHONE_OK = /^[0-9+().\-\s xXext]*$/;
+  async function saveContact() {
+    const f = S.contactEdit;
+    if (!f || f.saving) return;
+    const email = txt(f.email).toLowerCase();
+    const say = msg => { f.error = msg; renderView(); };
+    if (!EMAIL_OK.test(email)) { say('Enter a valid email address.'); focusFk('ct-f-email'); return; }
+    if (f.scope === 'job' && !f.project_id) { say('Pick the job this contact is for.'); return; }
+    if (f.scope === 'client' && !txt(f.client_name)) { say('Pick the client this contact is for.'); return; }
+    if (txt(f.phone).length > 40 || !PHONE_OK.test(txt(f.phone))) { say('Phone numbers can use digits, spaces, + ( ) - . and “ext”.'); return; }
+    const body = {
+      name: txt(f.name).slice(0, 120) || null, title: txt(f.title).slice(0, 120) || null, organization: txt(f.organization).slice(0, 120) || null,
+      email, phone: txt(f.phone) || null, role: CONTACT_ROLES.some(r => r[0] === f.role) ? f.role : 'other', auto_add: f.auto_add !== false,
+    };
+    if (f.scope === 'job') { body.project_id = String(f.project_id); body.client_key = null; body.client_name = null; }
+    else { body.project_id = null; body.client_name = txt(f.client_name); body.client_key = clientKey(f.client_name); }
+    f.saving = true;
+    f.error = '';
+    renderView();
+    try {
+      const res = f.id != null ? await api.updateContact(f.id, body) : await api.addContact(body);
+      const c = res && res.contact ? res.contact : Object.assign({ id: f.id }, body);
+      const list = (S.contacts || []).slice();
+      const i = list.findIndex(x => sameId(x.id, c.id));
+      if (i >= 0) list[i] = c; else list.push(c);
+      S.contacts = list;
+      S.contactEdit = null;
+      renderView();
+      toast(f.id != null ? 'Contact saved.' : `Added ${txt(c.name) || c.email}.`);
+    } catch (e) {
+      if (S.contactEdit !== f) return;
+      f.saving = false;
+      if (e.status === 409 && code(e) === 'duplicate') say(`${email} is already saved for this ${f.scope === 'job' ? 'job' : 'client'}.`);
+      else if (e.status === 403) say('Only level 2 users and up can change contacts.');
+      else if (e.status !== 401) say(`Couldn’t save: ${e.message}`);
+    }
+  }
+  async function deleteContact(id) {
+    const c = (S.contacts || []).find(x => sameId(x.id, id));
+    if (!c) return;
+    if (!window.confirm(`Delete the contact ${txt(c.name) || c.email}? It stops filling in emails.`)) return;
+    try { await api.removeContact(c.id); }
+    catch (e) { if (e.status !== 401) toast(`Couldn’t delete: ${e.message}`, 'error'); return; }
+    S.contacts = (S.contacts || []).filter(x => !sameId(x.id, c.id));
+    if (S.contactEdit && sameId(S.contactEdit.id, c.id)) S.contactEdit = null;
+    renderView();
+    toast(`Deleted ${txt(c.name) || c.email}.`);
+  }
+  async function setContactAuto(id, on, el) {
+    const c = (S.contacts || []).find(x => sameId(x.id, id));
+    if (!c) return;
+    const was = c.auto_add !== false;
+    c.auto_add = on;
+    try {
+      const res = await api.updateContact(c.id, { auto_add: on });
+      if (res && res.contact) Object.assign(c, res.contact);
+    } catch (e) {
+      c.auto_add = was;
+      if (el) el.checked = was;
+      if (e.status !== 401) toast(`Couldn’t change it: ${e.message}`, 'error');
+    }
+  }
+
+  // ── Schedules ───────────────────────────────────────────────────────
+  /* Email a saved, customer-safe report on a schedule. The server keeps the
+     rules (customer-safe as saved, a relative date range, someone to send
+     to, the cadence) and says what is wrong in words; this dialog shows
+     what it says next to the fields. A template can go once per job (each
+     In Progress job, or the jobs picked here) or as one report of every In
+     Progress job; a report with saved jobs goes as saved. */
+  async function loadGroups() {
+    if (Array.isArray(S.schedGroupsFull)) return S.schedGroupsFull;
+    try {
+      const data = await api.groups();
+      const list = data && Array.isArray(data.groups) ? data.groups : null;
+      if (list) {
+        S.schedGroupsFull = list.map(g => ({ id: g.id, name: txt(g.name) || 'Group', count: Array.isArray(g.emails) ? g.emails.length : Number(g.count) || 0 }));
+        return S.schedGroupsFull;
+      }
+    } catch (_) { /* fall back to what the schedules list gave */ }
+    return Array.isArray(S.schedGroups) ? S.schedGroups.map(g => ({ id: g.id, name: txt(g.name) || 'Group', count: Number(g.count) || 0 })) : [];
+  }
+  function scheduleBody(v) {
+    const body = {
+      custom_report_id: v.custom_report_id, jobs_mode: v.jobs_mode,
+      frequency: v.frequency, send_time: v.send_time, timezone: v.timezone,
+      days_of_week: v.frequency === 'weekly' ? v.days_of_week.slice() : null,
+      day_of_month: v.frequency === 'monthly' ? Number(v.day_of_month) : null,
+      group_ids: v.group_ids.slice(0, 10), emails: v.emails.slice(0, MAX_SCHED_EMAILS), use_job_contacts: !!v.use_job_contacts,
+      subject: txt(v.subject).slice(0, 200) || null, note: String(v.note || '').slice(0, 2000) || null,
+      attach_pdf: v.attach_pdf !== false, enabled: v.enabled !== false,
+    };
+    body.picked_jobs = v.jobs_mode === 'each' && v.picked ? v.picked_jobs.slice(0, MAX_SCHED_JOBS) : null;
+    return body;
+  }
+  function scheduleValues(r, row) {
+    const isTemplate = r ? r.kind !== 'report' : !(row && row.jobs_mode === 'saved');
+    const v = {
+      custom_report_id: row ? row.custom_report_id : r.id,
+      jobs_mode: isTemplate ? 'each' : 'saved', picked: false, picked_jobs: [],
+      frequency: 'weekly', days_of_week: [1], day_of_month: 1, send_time: '07:00', timezone: SCHED_TZ[0][0],
+      group_ids: [], emails: [], use_job_contacts: true, subject: '', note: '', attach_pdf: true, enabled: true,
+    };
+    if (row) {
+      Object.assign(v, {
+        jobs_mode: row.jobs_mode || v.jobs_mode,
+        picked_jobs: Array.isArray(row.picked_jobs) ? row.picked_jobs.filter(j => j && j.id != null).map(j => ({ id: String(j.id), name: txt(j.name) })) : [],
+        frequency: row.frequency || v.frequency,
+        days_of_week: Array.isArray(row.days_of_week) && row.days_of_week.length ? row.days_of_week.map(Number) : v.days_of_week,
+        day_of_month: row.day_of_month != null ? Number(row.day_of_month) : v.day_of_month,
+        send_time: row.send_time || v.send_time, timezone: row.timezone || v.timezone,
+        group_ids: Array.isArray(row.group_ids) ? row.group_ids.slice() : [],
+        emails: Array.isArray(row.emails) ? row.emails.slice() : [],
+        use_job_contacts: row.use_job_contacts === true, subject: row.subject || '', note: row.note || '',
+        attach_pdf: row.attach_pdf !== false, enabled: row.enabled !== false,
+      });
+      // The report may have changed kind since: a saved-jobs report sends as
+      // saved, a template once per job (or as one report).
+      if (!isTemplate) v.jobs_mode = 'saved';
+      else if (v.jobs_mode !== 'all_in_progress') v.jobs_mode = 'each';
+      v.picked = v.jobs_mode === 'each' && v.picked_jobs.length > 0;
+    }
+    return { v, isTemplate };
+  }
+  function scheduleError(e) {
+    const d = (e && e.data) || {};
+    if (d.error === 'fixed_dates') return d.message || 'Scheduled reports need a relative date range like Last week.';
+    const list = Array.isArray(d.errors) ? d.errors.map(x => (x && (x.message || x.error)) || String(x)) : [];
+    if (list.length) return list.join('\n');
+    return d.message || d.error || (e && e.message) || 'Something went wrong.';
+  }
+  async function openSchedule(reportId, row) {
+    if (modalOpen()) return;
+    if (!S.canShare) { toast('Only an admin or level 3 user can schedule reports.', 'error'); return; }
+    const r = reportId != null ? S.reports.find(x => sameId(x.id, reportId)) : null;
+    if (!r && !row) { toast('Save the report first — a schedule sends a saved report.', 'error'); return; }
+    if (!r && row) { toast('This schedule’s report isn’t shared with you, so it can’t be edited here. You can still pause, send or delete it.', 'error'); return; }
+    const def = E.normalizeDefinition(r.definition);
+    if (def.dates.preset === 'custom') {
+      await choose('Pick a relative date range first',
+        `“${r.name}” is set to fixed dates (${E.resolveDateRange(def.dates).label || 'a custom range'}), so every scheduled email would show the same days. `
+        + 'Scheduled reports need a relative date range like Last week or Last 30 days — change it in step ①, save, then schedule it.',
+        [{ label: 'OK', value: 'ok', primary: true }]);
+      return;
+    }
+    if (r.customer_safe === false || def.includeInternal === true) {
+      toast('Only customer-safe reports can be scheduled — switch internal data off and save.', 'error');
+      return;
+    }
+    const { v, isTemplate } = scheduleValues(r, row);
+    const groups = await loadGroups();
+    if (modalOpen()) return;
+    const tzKnown = SCHED_TZ.some(t => t[0] === v.timezone);
+    const times = [];
+    for (let m = 0; m < 24 * 60; m += 5) {
+      const hh = String(Math.floor(m / 60)).padStart(2, '0'), mm = String(m % 60).padStart(2, '0');
+      times.push(`${hh}:${mm}`);
+    }
+    const jobsOpts = () => {
+      const inProg = projects().filter(p => txt(p.status) === 'In Progress');
+      const rest = projects().filter(p => txt(p.status) !== 'In Progress');
+      return inProg.concat(rest).slice(0, 500);
+    };
+    const radio = (val, label, hint) => `<label class="cr-check"><input type="radio" name="cr-s-mode" value="${val}"${(val === 'picked' ? v.jobs_mode === 'each' && v.picked
+      : val === 'each' ? v.jobs_mode === 'each' && !v.picked : v.jobs_mode === val) ? ' checked' : ''}><span><b>${label}</b>${hint ? `<span class="cr-m-hint"> — ${hint}</span>` : ''}</span></label>`;
+    const m = modal(row ? 'Edit schedule' : 'Schedule this report', `
+      <p class="cr-m-hint">Emails <b>${esc(r.name)}</b> — customer-safe only. It sends the saved copy, with its date range (${esc(E.resolveDateRange(def.dates).label || 'job to date')}) worked out on the day.</p>
+      <fieldset class="cr-m-fs"><legend class="cr-m-label">How often</legend>
+        <div class="cr-m-row">
+          <select class="cr-input" id="cr-s-freq" aria-label="How often">
+            ${[['daily', 'Daily'], ['weekdays', 'Weekdays (Mon–Fri)'], ['weekly', 'Weekly'], ['monthly', 'Monthly']].map(([k, n]) => `<option value="${k}"${v.frequency === k ? ' selected' : ''}>${n}</option>`).join('')}
+          </select>
+          <label class="cr-sr" for="cr-s-time">Time</label>
+          <select class="cr-input" id="cr-s-time">${times.map(t => `<option value="${t}"${v.send_time === t ? ' selected' : ''}>${time12(t)}</option>`).join('')}</select>
+          <label class="cr-sr" for="cr-s-tz">Time zone</label>
+          <select class="cr-input" id="cr-s-tz">${SCHED_TZ.map(([k, n]) => `<option value="${k}"${v.timezone === k ? ' selected' : ''}>${n}</option>`).join('')}
+            <option value="other"${tzKnown ? '' : ' selected'}>Other…</option></select>
+          <input class="cr-input" id="cr-s-tzother" placeholder="e.g. America/Phoenix" aria-label="Time zone (IANA name)" value="${tzKnown ? '' : esc(v.timezone)}"${tzKnown ? ' hidden' : ''}>
+        </div>
+        <div class="cr-m-days" id="cr-s-days"${v.frequency === 'weekly' ? '' : ' hidden'} role="group" aria-label="Days of the week">
+          ${DOW.map((n, i) => `<label class="cr-check"><input type="checkbox" data-dow="${i}"${v.days_of_week.includes(i) ? ' checked' : ''}> ${n}</label>`).join('')}
+        </div>
+        <div class="cr-m-row" id="cr-s-dom-row"${v.frequency === 'monthly' ? '' : ' hidden'}>
+          <label class="cr-m-label" for="cr-s-dom">Day of the month</label>
+          <select class="cr-input" id="cr-s-dom">${Array.from({ length: 31 }, (_, i) => i + 1).map(n => `<option value="${n}"${Number(v.day_of_month) === n ? ' selected' : ''}>${ordinal(n)}</option>`).join('')}
+            <option value="-1"${Number(v.day_of_month) === -1 ? ' selected' : ''}>Last day</option></select>
+        </div>
+      </fieldset>
+      <fieldset class="cr-m-fs"><legend class="cr-m-label">Jobs</legend>
+        ${isTemplate ? `${radio('each', 'Each In Progress job', 'one email per job')}
+          ${radio('picked', 'Picked jobs', 'one email per job')}
+          <div id="cr-s-pick"${v.picked && v.jobs_mode === 'each' ? '' : ' hidden'}>
+            <input type="search" class="cr-input" id="cr-s-jobq" placeholder="&#128269; Find a job…" aria-label="Find a job" autocomplete="off">
+            <div class="cr-m-list" id="cr-s-jobs" role="group" aria-label="Jobs to send">
+              ${jobsOpts().map(p => `<label class="cr-check" data-name="${esc(`${jobName(p)} ${txt(p['job-number'])} ${txt(p.client)}`.toLowerCase())}"><input type="checkbox" data-job="${esc(String(p.id))}"
+                ${v.picked_jobs.some(j => sameId(j.id, p.id)) ? ' checked' : ''}> ${esc(jobName(p))}${txt(p.status) !== 'In Progress' ? ` <span class="cr-m-hint">(${esc(txt(p.status) || 'no status')})</span>` : ''}</label>`).join('')}
+            </div></div>
+          ${radio('all_in_progress', 'All In Progress jobs', 'one report')}`
+        : `<p>The report’s saved jobs <span class="cr-m-hint">(${plural(Array.isArray(def.jobs.ids) ? def.jobs.ids.length : 0, 'job')})</span></p>`}
+      </fieldset>
+      <fieldset class="cr-m-fs"><legend class="cr-m-label">Recipients</legend>
+        <label class="cr-check"><input type="checkbox" id="cr-s-contacts"${v.use_job_contacts ? ' checked' : ''}>
+          <span>Send to each job’s saved contacts<span class="cr-m-hint"> — a job with none is skipped</span></span></label>
+        <p class="cr-m-hint" id="cr-s-contacts-why" hidden></p>
+        ${groups.length ? `<div class="cr-m-list" role="group" aria-label="Saved recipient groups">${groups.map(g => `<label class="cr-check"><input type="checkbox" data-group="${esc(g.id)}"
+          ${v.group_ids.some(x => sameId(x, g.id)) ? ' checked' : ''}> ${esc(g.name)} <span class="cr-m-hint">(${plural(g.count, 'address', 'addresses')})</span></label>`).join('')}</div>`
+          : '<p class="cr-m-hint">No saved recipient groups for custom reports. An admin can make one from the email window.</p>'}
+        <div class="cr-m-row">
+          <input class="cr-input" id="cr-s-email" type="email" inputmode="email" placeholder="Add an email address" aria-label="Add an email address" autocomplete="off">
+          <button type="button" class="btn btn-ghost cr-sm" data-s="add-email">Add</button>
+        </div>
+        <div class="cr-chips" id="cr-s-chips"></div>
+      </fieldset>
+      <label class="cr-m-label" for="cr-s-subject">Subject</label>
+      <input class="cr-input" id="cr-s-subject" maxlength="200" value="${esc(v.subject)}" placeholder="${esc(`${txt(def.title) || r.name} — <job name>`)}">
+      <label class="cr-m-label" for="cr-s-note">Note</label>
+      <textarea class="cr-input" id="cr-s-note" rows="3" maxlength="2000" placeholder="A line above the report in the email (optional)">${esc(v.note)}</textarea>
+      <label class="cr-check"><input type="checkbox" id="cr-s-pdf"${v.attach_pdf ? ' checked' : ''}> <span>Attach the report as a PDF</span></label>
+      <label class="cr-check"><input type="checkbox" id="cr-s-enabled"${v.enabled ? ' checked' : ''}> <span>On — send on this schedule</span></label>
+      <div class="cr-m-errs" role="alert"></div>
+      <div class="cr-m-btns">
+        <button type="button" class="btn btn-ghost" data-s="cancel">Cancel</button>
+        <button type="button" class="btn btn-green" data-s="save">${row ? 'Save schedule' : 'Create schedule'}</button>
+      </div>`, null, { wide: true });
+    const $ = sel => m.body.querySelector(sel);
+    const errs = $('.cr-m-errs');
+    /* Each job's saved contacts may only be sent a report about their own
+       customer's jobs (the server refuses the rest as job_contacts): never
+       one report of every In Progress job, and a saved report's jobs only
+       when they all belong to one client. Say so, and take the tick away,
+       rather than let Save fail on it. */
+    const savedIds = Array.isArray(def.jobs.ids) ? def.jobs.ids : [];
+    const savedClients = savedIds.map(id => { const p = projectById(id); return p ? clientKey(p.client) : ''; });
+    const savedOneCustomer = savedIds.length <= 1 || savedClients.every(k => k && k === savedClients[0]);
+    const contactsWhy = mode => (mode === 'all_in_progress'
+      ? 'Not with one report of every In Progress job — each customer would be sent the others’ jobs. Send one email per job to use them.'
+      : mode === 'saved' && !savedOneCustomer ? 'Not for this report — its jobs belong to more than one customer.' : '');
+    const syncContacts = () => {
+      const mode = isTemplate ? ((m.body.querySelector('input[name="cr-s-mode"]:checked') || {}).value || 'each') : 'saved';
+      const box = $('#cr-s-contacts'), note = $('#cr-s-contacts-why'), why = contactsWhy(mode);
+      box.disabled = !!why;
+      if (why) box.checked = false;
+      note.textContent = why;
+      note.hidden = !why;
+    };
+    syncContacts();
+    const showErr = msg => {
+      errs.innerHTML = String(msg).split('\n').filter(Boolean).map(x => `<span>${esc(x)}</span>`).join('');
+      try { errs.scrollIntoView({ block: 'nearest' }); } catch (_) { /* fine */ }
+    };
+    const emails = v.emails.slice();
+    const drawChips = () => {
+      $('#cr-s-chips').innerHTML = emails.map((e, i) => `<span class="cr-chip"><span>${esc(e)}</span><button type="button" data-s="rm-email" data-i="${i}" aria-label="Remove ${esc(e)}">&#10005;</button></span>`).join('');
+    };
+    drawChips();
+    const addEmails = () => {
+      const box = $('#cr-s-email');
+      const bad = [];
+      String(box.value).split(/[,;\s]+/).map(x => x.trim().toLowerCase()).filter(Boolean).forEach(x => {
+        if (!EMAIL_OK.test(x)) { bad.push(x); return; }
+        if (emails.includes(x)) return;
+        if (emails.length >= MAX_SCHED_EMAILS) { bad.push(x); return; }
+        emails.push(x);
+      });
+      box.value = bad.join(', ');
+      drawChips();
+      if (bad.length) showErr(emails.length >= MAX_SCHED_EMAILS ? `Up to ${MAX_SCHED_EMAILS} addresses.` : `Not an email address: ${bad.join(', ')}`);
+      else errs.innerHTML = '';
+    };
+    m.body.addEventListener('change', e => {
+      const t = e.target;
+      if (t.id === 'cr-s-freq') {
+        $('#cr-s-days').hidden = t.value !== 'weekly';
+        $('#cr-s-dom-row').hidden = t.value !== 'monthly';
+      } else if (t.id === 'cr-s-tz') {
+        $('#cr-s-tzother').hidden = t.value !== 'other';
+        if (t.value === 'other') $('#cr-s-tzother').focus();
+      } else if (t.name === 'cr-s-mode') {
+        const pick = $('#cr-s-pick');
+        if (pick) pick.hidden = t.value !== 'picked';
+        syncContacts();
+      }
+    });
+    m.body.addEventListener('input', e => {
+      if (e.target.id !== 'cr-s-jobq') return;
+      const q = e.target.value.trim().toLowerCase();
+      m.body.querySelectorAll('#cr-s-jobs label').forEach(l => { l.hidden = !!q && !String(l.getAttribute('data-name')).includes(q); });
+    });
+    m.body.addEventListener('keydown', e => {
+      if (e.target.id === 'cr-s-email' && (e.key === 'Enter' || e.key === ',')) { e.preventDefault(); addEmails(); }
+    });
+    let busy = false;
+    const save = async () => {
+      if (busy) return;
+      addEmails();
+      const freq = $('#cr-s-freq').value;
+      const tzSel = $('#cr-s-tz').value;
+      const mode = isTemplate ? ((m.body.querySelector('input[name="cr-s-mode"]:checked') || {}).value || 'each') : 'saved';
+      const val = Object.assign({}, v, {
+        frequency: freq, send_time: $('#cr-s-time').value,
+        timezone: tzSel === 'other' ? txt($('#cr-s-tzother').value) : tzSel,
+        days_of_week: [...m.body.querySelectorAll('[data-dow]')].filter(b => b.checked).map(b => Number(b.getAttribute('data-dow'))),
+        day_of_month: Number($('#cr-s-dom').value),
+        jobs_mode: mode === 'picked' ? 'each' : mode, picked: mode === 'picked',
+        picked_jobs: [...m.body.querySelectorAll('[data-job]')].filter(b => b.checked).map(b => {
+          const p = projectById(b.getAttribute('data-job'));
+          return { id: String(b.getAttribute('data-job')), name: p ? jobName(p) : '' };
+        }),
+        group_ids: [...m.body.querySelectorAll('[data-group]')].filter(b => b.checked).map(b => {
+          const g = groups.find(x => sameId(x.id, b.getAttribute('data-group')));
+          return g ? g.id : b.getAttribute('data-group');
+        }),
+        emails: emails.slice(), use_job_contacts: $('#cr-s-contacts').checked,
+        subject: $('#cr-s-subject').value, note: $('#cr-s-note').value,
+        attach_pdf: $('#cr-s-pdf').checked, enabled: $('#cr-s-enabled').checked,
+      });
+      // What the server would say anyway, said before the round trip.
+      const problems = [];
+      if (freq === 'weekly' && !val.days_of_week.length) problems.push('Pick at least one day of the week.');
+      if (!val.timezone) problems.push('Pick a time zone.');
+      if (val.picked && !val.picked_jobs.length) problems.push('Tick the jobs to send, or choose “Each In Progress job”.');
+      if (val.picked_jobs.length > MAX_SCHED_JOBS) problems.push(`Pick up to ${MAX_SCHED_JOBS} jobs.`);
+      if (!val.use_job_contacts && !val.group_ids.length && !val.emails.length) problems.push('Add someone to send it to: the jobs’ saved contacts, a group or an email address.');
+      if (val.group_ids.length > 10) problems.push('Pick up to 10 groups.');
+      if (problems.length) { showErr(problems.join('\n')); return; }
+      busy = true;
+      const ok = $('[data-s="save"]');
+      ok.disabled = true;
+      ok.textContent = 'Saving…';
+      errs.innerHTML = '';
+      try {
+        const body = scheduleBody(val);
+        if (row) await api.updateSchedule(row.id, body); else await api.createSchedule(body);
+        m.close(true);
+        toast(row ? 'Schedule saved.' : `Scheduled “${r.name}”: ${cadenceText(val)}.`);
+        loadSchedules();
+      } catch (e) {
+        busy = false;
+        ok.disabled = false;
+        ok.textContent = row ? 'Save schedule' : 'Create schedule';
+        if (e.status !== 401) showErr(scheduleError(e));
+      }
+    };
+    m.body.addEventListener('click', e => {
+      const b = e.target.closest && e.target.closest('[data-s]');
+      if (!b) return;
+      const what = b.getAttribute('data-s');
+      if (what === 'cancel') m.close();
+      else if (what === 'save') save();
+      else if (what === 'add-email') addEmails();
+      else if (what === 'rm-email') { emails.splice(Number(b.getAttribute('data-i')), 1); drawChips(); }
+    });
+    $('#cr-s-freq').focus();
+  }
+  function schedMenu(trigger, id) {
+    const s = (S.scheds || []).find(x => sameId(x.id, id));
+    if (!s) return;
+    openMenu(trigger, [
+      { act: 'sched-toggle', id: s.id, label: s.enabled ? 'Pause' : 'Resume', blurb: s.enabled ? 'Stop sending until resumed' : 'Start sending on its schedule again' },
+      { act: 'sched-edit', id: s.id, label: 'Edit…' },
+      { act: 'sched-send', id: s.id, label: 'Send now', blurb: 'Send it to its recipients right away' },
+      { act: 'sched-delete', id: s.id, label: 'Delete', danger: true },
+    ], 'right');
+  }
+  async function toggleSchedule(id) {
+    const s = (S.scheds || []).find(x => sameId(x.id, id));
+    if (!s) return;
+    const { v } = scheduleValues(null, s);
+    v.enabled = !s.enabled;
+    try {
+      await api.updateSchedule(s.id, scheduleBody(v));
+      toast(v.enabled ? 'Schedule resumed.' : 'Schedule paused.');
+    } catch (e) {
+      if (e.status !== 401) toast(`Couldn’t ${v.enabled ? 'resume' : 'pause'} it: ${scheduleError(e)}`, 'error');
+    }
+    loadSchedules();
+  }
+  async function sendScheduleNow(id) {
+    const s = (S.scheds || []).find(x => sameId(x.id, id));
+    if (!s || S.schedBusy != null) return;
+    if (!window.confirm(`Send “${s.report_name || 'this report'}” to its recipients now? It can take a few minutes.`)) return;
+    S.schedBusy = s.id;
+    renderRail();
+    toast('Sending — this can take a few minutes. You can keep working.');
+    try {
+      const res = await api.sendSchedule(s.id);
+      const out = (res && (res.result || res.run)) || res || {};
+      const status = String(out.status || '');
+      const msg = txt(out.message);
+      if (/^(sent|ok)$/i.test(status) || (!status && res && res.ok)) toast(msg || `Sent${out.sent != null ? ` ${plural(Number(out.sent) || 0, 'email')}` : ''}.`);
+      else toast(msg || `Not sent (${status || 'unknown'}).`, /partial/i.test(status) ? null : 'error');
+    } catch (e) {
+      if (e.status !== 401) toast(`Couldn’t send it: ${scheduleError(e)}`, 'error');
+    } finally {
+      S.schedBusy = null;
+      loadSchedules();
+    }
+  }
+  async function deleteSchedule(id) {
+    const s = (S.scheds || []).find(x => sameId(x.id, id));
+    if (!s) return;
+    if (!window.confirm(`Delete the schedule for “${s.report_name || 'this report'}”? No more emails will go out on it.`)) return;
+    try { await api.removeSchedule(s.id); toast('Schedule deleted.'); }
+    catch (e) { if (e.status !== 401) toast(`Couldn’t delete it: ${scheduleError(e)}`, 'error'); }
+    loadSchedules();
+  }
+
+  // ── The AI builder drawer ───────────────────────────────────────────
+  /* custom-reports-ai.js draws the chat; this file gives it the report to
+     read and change. Every change it applies is undoable, marks the report
+     unsaved and redraws it. It can never switch internal data on: a
+     definition it applies keeps the report's own setting, and "Turn on
+     internal data…" asks through the same confirm a person answers. */
+  function toggleAi(force) {
+    S.ai.open = force != null ? !!force : !S.ai.open;
+    syncAi();
+    if (S.ai.open && S.ai.el) {
+      const first = S.ai.el.querySelector('.cr-ai-body textarea, .cr-ai-body input, .cr-ai-x');
+      if (first) { try { first.focus({ preventScroll: true }); } catch (_) { first.focus(); } }
+    } else if (!S.ai.open) focusFk('ai-toggle');
+  }
+  function syncAi() {
+    if (!S.mount) return;
+    const el = [...S.mount.children].find(c => c.classList && c.classList.contains('cr-ai-drawer'));
+    if (!el) return;
+    el.hidden = !S.ai.open;
+    S.mount.classList.toggle('cr-ai-on', !!S.ai.open);
+    S.mount.querySelectorAll('[data-act="ai-toggle"]').forEach(b => b.setAttribute('aria-pressed', String(!!S.ai.open)));
+    // The drawer takes (or gives back) 408px of the builder: the preview is
+    // fitted to its new width, not left scaled for the old one.
+    if (S.view === 'edit') fitPreview();
+    if (!S.ai.open) return;
+    if (S.ai.el !== el) {
+      el.innerHTML = `<div class="cr-ai-head"><h2>&#10024; AI Builder</h2>
+        <button type="button" class="cr-ai-x" aria-label="Close the AI builder">&#10005;</button></div><div class="cr-ai-body"></div>`;
+      el.querySelector('.cr-ai-x').addEventListener('click', () => toggleAi(false));
+      el.addEventListener('keydown', e => { if (e.key === 'Escape' && !document.querySelector('.cr-modal')) { e.stopPropagation(); toggleAi(false); } });
+      S.ai.el = el;
+      S.ai.handle = null;
+    }
+    if (!S.ai.handle) mountAi();
+  }
+  function mountAi() {
+    const body = S.ai.el && S.ai.el.querySelector('.cr-ai-body');
+    if (!body) return;
+    const AI = window.FCTReportAI;
+    if (!AI || typeof AI.mount !== 'function') {
+      body.innerHTML = '<p class="cr-ai-missing">The AI builder is still loading — close this and try again in a moment.</p>';
+      return;
+    }
+    body.innerHTML = '';
+    try {
+      S.ai.handle = AI.mount(body, aiAdapter()) || { mounted: true };
+      S.ai.docRef = S.doc;
+    } catch (err) {
+      console.error('[custom-reports] AI builder failed to start:', err);
+      body.innerHTML = '<p class="cr-ai-missing">The AI builder could not start. Refresh the page to try again.</p>';
+    }
+  }
+  // Another report is open (or none): the conversation was about the old one.
+  function aiDocChanged(force) {
+    if (!force && S.ai.docRef === S.doc) return;
+    S.ai.docRef = S.doc;
+    if (!S.ai.handle) return;
+    try { if (typeof S.ai.handle.destroy === 'function') S.ai.handle.destroy(); } catch (_) { /* gone anyway */ }
+    S.ai.handle = null;
+    const body = S.ai.el && S.ai.el.querySelector('.cr-ai-body');
+    if (body) body.innerHTML = '';
+    if (S.ai.open) mountAi();
+  }
+  function aiAdapter() {
+    return {
+      getDefinition: () => {
+        if (!S.doc) return E.defaultDefinition();
+        const d = E.normalizeDefinition(S.doc.def);
+        d.jobs = { mode: S.doc.saveJobs ? 'saved' : 'pick', ids: S.doc.picked.slice(0, MAX_JOBS).map(String) };
+        return d;
+      },
+      applyDefinition: (def, info) => aiApply(def, info),
+      undo: () => aiUndo(),
+      // Only what the builder needs to pick jobs: never a contract or cost.
+      getJobs: () => projects().map(p => ({ id: String(p.id), name: jobName(p), number: txt(p['job-number']), client: txt(p.client), status: txt(p.status) })),
+      getCodes: () => {
+        const all = projects();
+        return {
+          costCodes: E.costCodesFor(all).slice(0, MAX_CODES_AI),
+          subCodes: subCodesFor(all).slice(0, MAX_CODES_AI).map(x => ({ code: txt(x.code), description: txt(x.description), unit: txt(x.unit) })),
+        };
+      },
+      get division() { return cfg.division; },
+      get divisionLabel() { return txt(cfg.divisionLabel) || divLabel(); },
+      get apiBase() { return cfg.apiBase || '/api'; },
+      getToken: () => token(),
+      onAuthError: () => {
+        saveDraft();
+        try { if (typeof cfg.onAuthError === 'function') cfg.onAuthError(); } catch (_) { /* the page's problem */ }
+      },
+      requestInternal: () => aiRequestInternal(),
+      isReadOnly: () => !!(S.doc && S.doc.readOnly),
+    };
+  }
+  const cloneJson = v => JSON.parse(JSON.stringify(v));
+  function aiApply(raw, info) {
+    let next;
+    try { next = E.normalizeDefinition(raw); } catch (_) { return false; }
+    const cur = S.doc;
+    if (cur && cur.readOnly) return false;
+    // Internal data stays exactly as the person left it.
+    next.includeInternal = !!(cur && cur.def.includeInternal === true);
+    // Jobs only from this division's list, in the order given.
+    const picked = [];
+    next.jobs.ids.forEach(id => {
+      const p = projectById(id);
+      if (p && picked.length < MAX_JOBS && !picked.some(x => sameId(x, p.id))) picked.push(p.id);
+    });
+    next.jobs = { mode: next.jobs.mode, ids: [] };
+    if (!cur) {
+      const doc = blankDoc(next, { name: txt(next.title) || 'New report', picked, saveJobs: false, touched: true });
+      doc.aiUndo = [{ none: true }];
+      S.ai.docRef = doc;      // the same conversation carries on with it
+      startEditing(doc);
+      return true;
+    }
+    cur.aiUndo = cur.aiUndo || [];
+    cur.aiUndo.push({ def: cloneJson(cur.def), picked: cur.picked.slice(), saveJobs: cur.saveJobs, name: cur.name });
+    if (cur.aiUndo.length > 30) cur.aiUndo.shift();
+    cur.def = next;
+    cur.picked = picked;
+    if (!txt(cur.name) && txt(next.title)) cur.name = txt(next.title);
+    cur.touched = true;
+    S.collapsed = new Set(next.sections.map(s => s.id));
+    S.view = 'edit';
+    S.editLabel = null;
+    render();
+    // Beside the builder, a toast says what happened to it. As a full-width
+    // sheet (a narrow window) the panel already shows it, and a toast would
+    // sit on its Send button.
+    const sheet = (window.innerWidth || document.documentElement.clientWidth || 0) < AI_SHEET_BELOW;
+    if (!sheet && info && Array.isArray(info.changes) && info.changes.length) toast(`AI builder: ${plural(info.changes.length, 'change')} applied. Undo is in the AI panel.`);
+    return true;
+  }
+  function aiUndo() {
+    const d = S.doc;
+    if (!d || !Array.isArray(d.aiUndo) || !d.aiUndo.length) return false;
+    const prev = d.aiUndo.pop();
+    if (prev.none) {
+      // The AI built this report from nothing: undoing it closes it.
+      S.doc = null;
+      S.view = 'home';
+      S.ai.docRef = null;
+      render();
+      return true;
+    }
+    const wasOn = d.def.includeInternal === true;
+    d.def = prev.def;
+    // Undo never switches internal data back on.
+    d.def.includeInternal = wasOn && prev.def.includeInternal === true;
+    d.picked = prev.picked;
+    d.saveJobs = prev.saveJobs;
+    d.name = prev.name;
+    d.touched = true;
+    S.collapsed = new Set(d.def.sections.map(s => s.id));
+    S.view = 'edit';
+    S.editLabel = null;
+    render();
+    return true;
+  }
+  function aiRequestInternal() {
+    if (!S.doc) { toast('Build or open a report first, then switch internal data on.', 'error'); return false; }
+    if (internalOn()) return true;
+    if (S.view !== 'edit') { S.view = 'edit'; render(); }
+    setInternal(true);
+    return internalOn();
   }
 
   // ── Section and column edits ────────────────────────────────────────
@@ -2353,7 +4104,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (!s) return;
     // The checkbox is disabled while locked; this is the belt to that brace,
     // for a forged event or a stale control.
-    if (on && E.columnState(s.type, key, S.doc.def, perm()) !== 'available') { if (el) el.checked = false; return; }
+    if (on && colState(s.type, key) !== 'available') { if (el) el.checked = false; return; }
     const at = s.columns.indexOf(key);
     if (on && at < 0) {
       // Back where the catalog puts it relative to the others, which is
@@ -2371,7 +4122,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   function moveColumn(secId, key, dir) {
     const s = findSec(secId);
     if (!s) return;
-    const shown = s.columns.filter(k => E.columnState(s.type, k, S.doc.def, perm()) === 'available');
+    const shown = s.columns.filter(k => colState(s.type, k) === 'available');
     const i = shown.indexOf(key), j = i + dir;
     if (i < 0 || j < 0 || j >= shown.length) return;
     const a = s.columns.indexOf(key), b = s.columns.indexOf(shown[j]);
@@ -2429,13 +4180,19 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   function setInternal(on, el) {
     const def = S.doc.def;
     if (on) {
-      if (perm().canSeeCosts === false) { if (el) el.checked = false; return; }
-      if (!window.confirm(INTERNAL_CONFIRM)) { if (el) el.checked = false; return; }
+      if (perm().canSeeCosts === false) { if (el) el.checked = false; return false; }
+      if (!window.confirm(INTERNAL_CONFIRM + (isScheduled(S.doc) ? ' ' + SCHEDULED_NOTE : ''))) { if (el) el.checked = false; return false; }
       def.includeInternal = true;
     } else {
       def.includeInternal = false;
     }
     changed({ panel: S.step === 2 });
+    return on;
+  }
+  // Does a schedule send this saved report? (Only admin / level 3 can see
+  // the schedules; the server stops an internal report's sends either way.)
+  function isScheduled(d) {
+    return !!(d && d.id != null && Array.isArray(S.scheds) && S.scheds.some(x => sameId(x.custom_report_id, d.id)));
   }
 
   // ── Jobs ────────────────────────────────────────────────────────────
@@ -2485,7 +4242,10 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   }
 
   // ── Event wiring ────────────────────────────────────────────────────
+  // The AI drawer sits in the mount but is custom-reports-ai.js's to handle.
+  const inAi = el => !!(el && el.closest && el.closest('.cr-ai-drawer'));
   function onClick(e) {
+    if (inAi(e.target)) return;
     const t = e.target.closest && e.target.closest('[data-act]');
     if (!t || !S.mount || !S.mount.contains(t) || t.disabled) return;
     const act = t.getAttribute('data-act');
@@ -2539,6 +4299,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         loadRuns();
         break;
       case 'history-refresh': loadRuns(); break;
+      case 'history-more': loadRuns(true); break;
       case 'back':
         S.view = S.doc ? 'edit' : 'home';
         render();
@@ -2613,14 +4374,84 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         if (s) { s.options.costCodes = []; changed({ panel: true }); }
         break;
       }
+      case 'sc-all': {
+        const s = findSec(sec);
+        if (s) { s.options[key || 'subCodes'] = []; changed({ panel: true }); }
+        break;
+      }
+      // the report-wide filter
+      case 'filter-remove': toggleFilter(t.getAttribute('data-kind') === 'cc' ? 'cc' : 'sc', t.getAttribute('data-value'), false); break;
+      case 'filters-clear': {
+        const f = curFilters();
+        const prev = { costCodes: f.costCodes.slice(), subCodes: f.subCodes.slice() };
+        const d = S.doc;
+        f.costCodes = []; f.subCodes = [];
+        renderFilters();
+        changed();
+        focusFk('filter-search');
+        toast('Cleared the code filter.', null, { label: 'Undo', run: () => { if (S.doc !== d) return; d.def.filters = prev; if (S.view === 'edit') { renderFilters(); changed(); } } });
+        break;
+      }
+      // contacts, customer history
+      case 'job-contacts': e.preventDefault(); openContacts(id); break;
+      case 'contacts': openContacts(); break;
+      case 'ct-refresh': loadContacts(true); break;
+      case 'ct-add': editContact(null); break;
+      case 'ct-edit': editContact(id); break;
+      case 'ct-cancel': S.contactEdit = null; renderView(); focusFk('ct-add'); break;
+      case 'ct-save': saveContact(); break;
+      case 'ct-delete': deleteContact(id); break;
+      case 'customer': openCustomer(id != null ? id : undefined); break;
+      case 'cust-refresh': loadCustomer(false); break;
+      case 'cust-more': loadCustomer(true); break;
+      case 'cust-open': custOpen(id); break;
+      case 'cust-resend': custResend(id); break;
+      case 'cust-builder': custBuilder(id); break;
+      // schedules
+      case 'schedule': {
+        const why = scheduleBlock(S.doc);
+        if (why) { toast(why, 'error'); break; }
+        openSchedule(S.doc.id);
+        break;
+      }
+      case 'menu-schedule': {
+        const r = report();
+        if (!r) break;
+        if (r.customer_safe === false) { toast('Only customer-safe reports can be scheduled — switch internal data off and save.', 'error'); break; }
+        openSchedule(r.id);
+        break;
+      }
+      case 'sched-menu': schedMenu(t, id); break;
+      case 'sched-toggle': toggleSchedule(id); break;
+      case 'sched-edit': {
+        const s = (S.scheds || []).find(x => sameId(x.id, id));
+        if (s) openSchedule(s.custom_report_id, s);
+        break;
+      }
+      case 'sched-send': sendScheduleNow(id); break;
+      case 'sched-delete': deleteSchedule(id); break;
+      case 'reload-schedules': loadSchedules(); break;
+      // the AI builder
+      case 'ai-toggle': toggleAi(); break;
       default: break;
     }
   }
 
   function onChange(e) {
     const el = e.target;
+    if (inAi(el)) return;
     const bind = el && el.getAttribute && el.getAttribute('data-bind');
-    if (!bind || !S.doc) return;
+    if (!bind) return;
+    // The history and contacts views work with no report open.
+    switch (bind) {
+      case 'cust-job': S.cust.jobId = el.value; S.cust.runs = null; S.cust.next = null; S.cust.error = ''; renderView(); if (el.value) loadCustomer(false); return;
+      case 'cust-client': S.cust.client = el.value; renderView(); return;
+      case 'ct-job': S.contactsJob = el.value; renderView(); return;
+      case 'ct-auto': setContactAuto(el.getAttribute('data-id'), !!el.checked, el); return;
+      case 'ct-field': setContactField(el); return;
+      default: break;
+    }
+    if (!S.doc) return;
     const def = S.doc.def;
     const sec = el.getAttribute('data-sec');
     switch (bind) {
@@ -2655,16 +4486,35 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       case 'opt': setOption(sec, el.getAttribute('data-key'), el); break;
       case 'opt-kind': toggleListOption(sec, 'kinds', el.getAttribute('data-value'), !!el.checked); break;
       case 'opt-cc': toggleListOption(sec, 'costCodes', el.getAttribute('data-value'), !!el.checked); break;
+      case 'opt-sc': toggleListOption(sec, el.getAttribute('data-key') || 'subCodes', el.getAttribute('data-value'), !!el.checked); break;
+      case 'filter-sc': toggleFilter('sc', el.value, !!el.checked); break;
+      case 'filter-cc': toggleFilter('cc', el.value, !!el.checked); break;
       case 'h-showGenerated': def.header.showGenerated = !!el.checked; changed(); break;
+      case 'h-showPmContact': def.header.showPmContact = !!el.checked; changed(); break;
+      case 'h-branding': def.header.branding = el.value === 'datawatch' ? 'datawatch' : 'company'; changed(); break;
       default: break;
     }
   }
 
   function onInput(e) {
     const el = e.target;
+    if (inAi(el)) return;
     const bind = el && el.getAttribute && el.getAttribute('data-bind');
     if (!bind) return;
     if (bind === 'rail-search') { S.search = el.value; renderRail(); return; }
+    if (bind === 'cust-search') {
+      S.cust.search = el.value;
+      const sel = S.mount.querySelector('[data-bind="cust-job"]');
+      if (sel) sel.innerHTML = customerJobOptions();
+      return;
+    }
+    if (bind === 'ct-search') {
+      S.contactsSearch = el.value;
+      const list = S.mount.querySelector('.cr-ct-list');
+      if (list) list.innerHTML = contactListHtml();
+      return;
+    }
+    if (bind === 'ct-field') { if (el.tagName !== 'SELECT' && el.type !== 'checkbox') setContactField(el); return; }
     if (!S.doc) return;
     S.lastTypeAt = Date.now();
     const def = S.doc.def;
@@ -2675,9 +4525,11 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       case 'title': def.title = el.value; changed(); break;
       case 'description': S.doc.description = el.value; changed({ preview: false }); break;
       case 'h-preparedFor': case 'h-preparedBy': case 'h-intro': case 'h-footer':
+      case 'h-contactName': case 'h-contactPhone': case 'h-contactEmail':
         def.header[bind.slice(2)] = el.value;
         changed();
         break;
+      case 'filter-search': S.filterSearch = el.value; renderFilters(true); break;
       case 'sec-title': { const s = findSec(sec); if (s) { s.title = el.value; changed(); } break; }
       case 'sec-text': { const s = findSec(sec); if (s) { s.text = el.value; changed(); } break; }
       case 'col-label': setLabel(sec, el.getAttribute('data-key'), el.value); changed(); break;
@@ -2687,6 +4539,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
 
   function onKeydown(e) {
     const el = e.target;
+    if (inAi(el)) return;
     const bind = el && el.getAttribute && el.getAttribute('data-bind');
     if (bind === 'col-label') {
       if (e.key === 'Enter') { e.preventDefault(); endLabelEdit(true, true); }
@@ -2694,6 +4547,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       return;
     }
     if (bind === 'name' && e.key === 'Enter') { e.preventDefault(); el.blur(); return; }
+    if (bind === 'ct-field' && e.key === 'Enter' && el.tagName === 'INPUT') { e.preventDefault(); saveContact(); return; }
+    if (bind === 'ct-field' && e.key === 'Escape') { e.preventDefault(); S.contactEdit = null; renderView(); return; }
     // Menus: arrows move, Escape closes back onto the button.
     if (S.menuEl && S.menuEl.contains(el)) {
       const items = [...S.menuEl.querySelectorAll('[role="menuitem"]')];
@@ -2720,6 +4575,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
 
   function onFocusOut(e) {
     const el = e.target;
+    if (inAi(el)) return;
     // A slow preview held back while typing draws as soon as the box is left.
     if (S.pvTimer && S.lastBuildMs >= SLOW_BUILD_MS && el && el.getAttribute && el.getAttribute('data-bind')) {
       setTimeout(() => { if (S.pvTimer && !typingInBuilder()) schedulePreview(true); }, 0);
@@ -2773,6 +4629,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     // before an unsaved report goes with the page, as the pages already do
     // for daily rows still being written.
     window.addEventListener('beforeunload', e => {
+      if (S.reloading) return;   // the work is in the draft; the reload was asked for
       if (!S.doc || !(hasUnsavedWork() || (S.saving && changedSinceSent(S.doc)))) return;
       e.preventDefault();
       e.returnValue = '';
@@ -2790,8 +4647,14 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     cfg.perm = Object.assign({}, c.perm || {});
     cfg.helpers = Object.assign({}, c.helpers || {});
     if (S.configured && prev !== cfg.division) {
-      // Another division's reports and open report do not belong here.
-      Object.assign(S, { reports: [], loaded: false, loadError: '', deleted: null, runs: null, doc: null, view: 'home', me: null });
+      // Another division's reports, open report, contacts, history and
+      // schedules do not belong here.
+      Object.assign(S, { reports: [], loaded: false, loadError: '', deleted: null, runs: null, doc: null, view: 'home', me: null,
+        contacts: null, contactsAt: 0, contactsCanEdit: false, contactEdit: null, contactsJob: '', contactsSearch: '',
+        cust: { jobId: '', client: '', search: '', runs: null, loading: false, error: '', next: null, more: false, busy: null },
+        scheds: null, canSchedule: false, schedGroups: null, schedGroupsFull: null, filterSearch: '' });
+      // The AI conversation was about the other division's jobs.
+      aiDocChanged(true);
     }
     if (!S.loaded) S.canShare = cfg.perm.canShare === true;
     if (!S.readyDone) S.readyP = null;
@@ -2824,9 +4687,14 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     wireGlobal();
     render();
     readyPromise();
+    // What the reports are dressed with, and the contacts behind the badges.
+    loadBranding();
+    loadPeople();
+    loadContacts();
     // A report kept when the last session ended is offered back once the
     // list is in (so a saved one is matched to its saved copy).
     const p = loadList();
+    Promise.resolve(p).then(() => { if (S.canShare) loadSchedules(); });
     if (!S.doc && readDraft()) Promise.resolve(p).then(() => { if (!S.doc && S.mount && S.mount.isConnected) offerDraft(); });
   }
 

@@ -172,6 +172,7 @@ function load(src) {
     function _autoBidDates() { return { start: '', target: '' }; }
     function _workDaySpanLabel() { return ''; }
     function _bidDateCellHTML() { return '<td></td>'; }
+    function _bidPlanRateCellHTML() { return '<td></td>'; }
     function cbHtml(listKey, value) { return '<div class="cb-wrap"><input class="cb-input" value="' + _cbEsc(value) + '"></div>'; }
 
     window.__t = { setData, setPOs, getPOs, setPV, setView, srcCalls, renders, popOpen,
@@ -491,7 +492,8 @@ for (const page of PAGES) {
   }
   const roCells = doc.querySelector('#ro tr.bid-group-child').children.length;
   const edCells = doc.querySelector('#tb tr.bid-group-child').children.length;
-  assert('neither layout gains a column', roCells === 14 && edCells === 18, `${roCells} / ${edCells}`);
+  // 19: the editable row's Plan / Day box came in beside Target Date.
+  assert('neither layout gains a column', roCells === 14 && edCells === 19, `${roCells} / ${edCells}`);
   t.setData(importFixture());
   t.renderBidTable(P, { tbodyId: 'tb' });
   assert('a line whose only material sits outside its imported total is not tagged',

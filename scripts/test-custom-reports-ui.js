@@ -36,7 +36,7 @@
 const fs   = require('fs');
 const path = require('path');
 const zlib = require('zlib');
-const { JSDOM } = require('jsdom');
+const { JSDOM, VirtualConsole } = require('jsdom');
 
 let passed = 0, failed = 0;
 function assert(label, cond, detail) {
@@ -51,7 +51,9 @@ const PREVIEW_WAIT = 320;   // the builder redraws the preview 250 ms after the 
 const ROOT     = path.resolve(__dirname, '..');
 const ENGINE   = fs.readFileSync(path.join(ROOT, 'custom-reports-engine.js'), 'utf8');
 const BRANDING = fs.readFileSync(path.join(ROOT, 'report-branding.js'), 'utf8');
-const UI       = fs.readFileSync(path.join(ROOT, 'custom-reports.js'), 'utf8');
+// CR_UI_FILE points the suite at another copy of the builder — used to prove
+// the checks catch a deliberately broken one without touching the repo file.
+const UI       = fs.readFileSync(process.env.CR_UI_FILE || path.join(ROOT, 'custom-reports.js'), 'utf8');
 
 const XSS_NAME = '<img src=x onerror="window.__xss=1">';
 
@@ -91,15 +93,25 @@ function fixture() {
   return { projects: [p1, p2, p3], pos, trucks };
 }
 
-// ── /api/custom-reports, in memory ───────────────────────────────────────
-// Keeps the rules the UI depends on: visibility, can_edit, per-scope unique
-// names (case and whitespace blind), optimistic versions, soft delete and
-// restore, kind / customer_safe derived from the definition, the run log.
+// ── The API, in memory ───────────────────────────────────────────────────
+// /api/custom-reports keeps the rules the UI depends on: visibility,
+// can_edit, per-scope unique names (case and whitespace blind), optimistic
+// versions, soft delete and restore, kind / customer_safe derived from the
+// definition, the run log (with v2's job / action / kind filters, paging,
+// one run, its archived copy and who may open it), v ∈ {1,2} and the 409
+// client_outdated for a v1 save over a v2 report. Beside it: report
+// contacts, company branding, the Team Directory, recipient groups and the
+// custom-report schedules, each with the validation the UI shows.
 function makeServer(opts) {
   opts = opts || {};
   const srv = {
-    reports: [], runs: [], log: [], next: [],
+    reports: [], runs: [], archives: {}, log: [], next: [],
     me: { userId: 7, username: 'pat' }, canShare: opts.canShare !== false, seq: 100,
+    contacts: [], contactSeq: 500, contactsCanEdit: opts.contactsCanEdit !== false,
+    branding: opts.branding === undefined ? null : opts.branding, brandingFail: false,
+    people: opts.people || [], peopleFail: false,
+    groups: opts.groups || [], schedules: [], schedSeq: 900, schedRuns: [],
+    runPage: opts.runPage || 100, division: opts.division || 'paving',
   };
   const norm = n => String(n).trim().replace(/\s+/g, ' ').toLowerCase();
   const derive = def => ({
@@ -123,7 +135,22 @@ function makeServer(opts) {
     return r;
   };
   srv.find = id => srv.reports.find(r => r.id === Number(id));
-  srv.calls = (method, pred) => srv.log.filter(e => e.method === method && (!pred || pred(e)));
+  // Calls to /api/custom-reports (what most of the suite counts) …
+  srv.calls = (method, pred) => srv.log.filter(e => e.path === '/api/custom-reports' && e.method === method && (!pred || pred(e)));
+  // … and to any other endpoint.
+  srv.callsTo = (path, method, pred) => srv.log.filter(e => e.path === path && (!method || e.method === method) && (!pred || pred(e)));
+  srv.addRun = row => {
+    const run = Object.assign({ id: srv.runs.length + 1, created_at: stamp(), run_by_username: 'pat', run_by_user_id: 7, action: 'email',
+      run_kind: 'user', schedule_id: null, resent_from_run_id: null, recipients: [], project_ids: [], project_names: [],
+      included_internal: false, definition: {} }, row);
+    srv.runs.push(run);
+    return run;
+  };
+  const runRow = r => {
+    const o = Object.assign({}, r, { has_archive: !!srv.archives[r.id] });
+    delete o.definition;
+    return o;
+  };
 
   srv.handle = async (url, init) => {
     init = init || {};
@@ -134,14 +161,132 @@ function makeServer(opts) {
     const entry = { method, path: u.pathname, q, auth: init.headers && init.headers.Authorization, body };
     srv.log.push(entry);
     const res = (status, b) => ({ ok: status >= 200 && status < 300, status, json: async () => b });
-    if (srv.next.length && (!srv.next[0].match || srv.next[0].match(entry))) {
+    // A queued answer is for the next /api/custom-reports call unless it says
+    // which call it is for.
+    if (srv.next.length && (srv.next[0].match ? srv.next[0].match(entry) : entry.path === '/api/custom-reports')) {
       const o = srv.next.shift();
       if (o.network) throw new TypeError('Failed to fetch');
       return res(o.status, o.body);
     }
-    if (q.division !== 'paving') return res(400, { error: 'Custom reports are not available for this division' });
 
-    if (method === 'GET' && q.runs) return res(200, { runs: srv.runs.slice().reverse() });
+    // ── company-wide endpoints (no division) ──
+    if (u.pathname === '/api/company/branding') {
+      if (srv.brandingFail) return res(500, { error: 'Database error' });
+      return res(200, { ok: true, branding: srv.branding, canEdit: false });
+    }
+    if (u.pathname === '/api/employees') {
+      if (srv.peopleFail) return res(500, { error: 'Database error' });
+      return res(200, { employees: srv.people });
+    }
+    if (u.pathname === '/api/email/recipient-groups') {
+      return res(200, { ok: true, groups: srv.groups, isAdmin: true });
+    }
+    if (q.division !== srv.division) return res(400, { error: 'This is not available for this division' });
+
+    // ── /api/report-contacts ──
+    if (u.pathname === '/api/report-contacts') {
+      const live = srv.contacts.filter(c => !c.deleted_at);
+      if (method === 'GET') {
+        let list = live;
+        if (q.project_ids || q.client_keys) {
+          const ids = q.project_ids ? q.project_ids.split(',') : [];
+          const keys = q.client_keys ? q.client_keys.split(',') : [];
+          list = live.filter(c => (c.project_id != null && ids.includes(String(c.project_id))) || (c.client_key && keys.includes(c.client_key)));
+        }
+        return res(200, { ok: true, contacts: list, canEdit: srv.contactsCanEdit });
+      }
+      if (!srv.contactsCanEdit) return res(403, { error: 'Only level 2 users and up can change contacts.' });
+      if (method === 'POST') {
+        const email = String(body.email || '').toLowerCase();
+        if (!/@/.test(email)) return res(400, { error: 'Enter a valid email address.' });
+        const ck = body.project_id ? null : String(body.client_name || '').trim().toLowerCase();
+        if (live.some(c => String(c.project_id || '') === String(body.project_id || '') && String(c.client_key || '') === String(ck || '') && c.email === email)) {
+          return res(409, { error: 'duplicate' });
+        }
+        const c = { id: ++srv.contactSeq, project_id: body.project_id || null, client_key: ck, client_name: body.client_name || null,
+          name: body.name || null, title: body.title || null, organization: body.organization || null, email, phone: body.phone || null,
+          role: body.role || 'other', auto_add: body.auto_add !== false, updated_at: stamp(), updated_by_username: 'pat' };
+        srv.contacts.push(c);
+        return res(201, { contact: c });
+      }
+      const c = srv.contacts.find(x => x.id === Number(q.id) && !x.deleted_at);
+      if (!c) return res(404, { error: 'Contact not found' });
+      if (method === 'PUT') { Object.assign(c, body, { updated_at: stamp() }); return res(200, { contact: c }); }
+      if (method === 'DELETE') { c.deleted_at = stamp(); return res(200, { ok: true }); }
+      return res(405, { error: 'Method not allowed' });
+    }
+
+    // ── /api/custom-report-schedules ──
+    if (u.pathname === '/api/custom-report-schedules') {
+      if (method === 'GET' && q.runs) return res(200, { runs: srv.schedRuns.filter(r => String(r.schedule_id) === q.runs) });
+      if (method === 'GET') {
+        return res(200, { schedules: srv.canShare ? srv.schedules : [], canSchedule: srv.canShare,
+          groups: srv.groups.map(g => ({ id: g.id, name: g.name, count: (g.emails || []).length })) });
+      }
+      if (!srv.canShare) return res(403, { error: 'Only an admin or level 3 user can schedule reports.' });
+      if (method === 'POST' && q.action === 'run') {
+        const s = srv.schedules.find(x => x.id === Number(q.id));
+        if (!s) return res(404, { error: 'Schedule not found' });
+        if (srv.sendNowGate) await srv.sendNowGate;
+        s.last_status = 'sent'; s.last_run_at = stamp(); s.last_message = 'Sent 2 emails';
+        return res(200, { ok: true, result: { status: 'sent', sent: 2, total: 2, recipientCount: 3, message: 'Sent 2 emails' } });
+      }
+      const validate = b => {
+        const r = srv.find(b.custom_report_id);
+        if (!r || !visible(r)) return 'The saved report was not found.';
+        if (!r.customer_safe || (r.definition && r.definition.includeInternal === true)) return 'Only customer-safe reports can be scheduled.';
+        if (r.definition && r.definition.dates && r.definition.dates.preset === 'custom') return { error: 'fixed_dates', message: 'Scheduled reports need a relative date range like Last week' };
+        if (!(b.group_ids || []).length && !(b.emails || []).length && !b.use_job_contacts) return 'Add at least one recipient.';
+        if (r.kind === 'report' && b.jobs_mode !== 'saved') return 'A report with saved jobs sends its saved jobs.';
+        if (r.kind === 'template' && !['each', 'all_in_progress'].includes(b.jobs_mode)) return 'Pick which jobs to send.';
+        if (srv.rejectNext) { const m = srv.rejectNext; srv.rejectNext = null; return m; }
+        return null;
+      };
+      if (method === 'POST') {
+        const bad = validate(body || {});
+        if (bad) return res(400, typeof bad === 'string' ? { error: bad } : bad);
+        const r = srv.find(body.custom_report_id);
+        const s = Object.assign({ id: ++srv.schedSeq, report_name: r.name, next_run_at: '2026-11-09T12:00:00Z', last_run_at: null,
+          last_status: null, last_message: null, run_as_username: 'pat', created_by_username: 'pat', updated_at: stamp(),
+          project_id: body.jobs_mode === 'each' ? '*' : null }, body);
+        srv.schedules.push(s);
+        return res(201, { schedule: s });
+      }
+      const s = srv.schedules.find(x => x.id === Number(q.id));
+      if (!s) return res(404, { error: 'Schedule not found' });
+      if (method === 'PUT') {
+        const bad = validate(Object.assign({}, s, body));
+        if (bad) return res(400, typeof bad === 'string' ? { error: bad } : bad);
+        Object.assign(s, body, { updated_at: stamp() });
+        return res(200, { schedule: s });
+      }
+      if (method === 'DELETE') { srv.schedules = srv.schedules.filter(x => x !== s); return res(200, { ok: true }); }
+      return res(405, { error: 'Method not allowed' });
+    }
+
+    // ── /api/custom-reports ──
+    if (method === 'GET' && q.run) {
+      const r = srv.runs.find(x => x.id === Number(q.run));
+      if (!r) return res(404, { error: 'Run not found' });
+      if (q.archive) {
+        const html = srv.archives[r.id];
+        if (!html) return res(404, { error: 'No archived copy' });
+        const sender = r.run_by_user_id === srv.me.userId;
+        if (r.included_internal && !sender && !srv.canShare) return res(403, { error: 'internal_archive' });
+        return res(200, { html });
+      }
+      return res(200, { run: Object.assign({}, r, { has_archive: !!srv.archives[r.id] }) });
+    }
+    if (method === 'GET' && q.runs) {
+      let list = srv.runs.slice().reverse();
+      if (q.report_id) list = list.filter(r => String(r.report_id) === q.report_id);
+      if (q.project_id) list = list.filter(r => (r.project_ids || []).map(String).includes(q.project_id));
+      if (q.action) list = list.filter(r => r.action === q.action);
+      if (q.kind) list = list.filter(r => r.run_kind === q.kind);
+      if (q.before_id) list = list.filter(r => r.id < Number(q.before_id));
+      const page = list.slice(0, srv.runPage);
+      return res(200, { runs: page.map(runRow), next_before_id: list.length > page.length ? page[page.length - 1].id : null });
+    }
     if (method === 'GET' && q.deleted) {
       return res(200, { reports: srv.reports.filter(r => r.deleted_at && mayEdit(r)).map(shape), canShare: srv.canShare, me: srv.me });
     }
@@ -150,8 +295,8 @@ function makeServer(opts) {
         canShare: srv.canShare, me: srv.me });
     }
     if (method === 'POST' && q.action === 'run') {
-      const run = Object.assign({ id: srv.runs.length + 1, created_at: stamp(), run_by_username: 'pat' }, body);
-      srv.runs.push(run);
+      if (!body.definition || ![1, 2].includes(body.definition.v)) return res(400, { error: 'Unsupported report definition version' });
+      const run = srv.addRun(Object.assign({ created_at: stamp(), run_by_username: 'pat' }, body));
       const r = body.report_id != null ? srv.find(body.report_id) : null;
       if (r && visible(r)) { r.run_count++; r.last_run_at = run.created_at; }
       return res(201, { run });
@@ -166,7 +311,7 @@ function makeServer(opts) {
     }
     if (method === 'POST') {
       if (!body || !body.name || !String(body.name).trim()) return res(400, { error: 'Give the report a name.' });
-      if (!body.definition || body.definition.v !== 1) return res(400, { error: 'Unsupported report definition version (expected v: 1)' });
+      if (!body.definition || ![1, 2].includes(body.definition.v)) return res(400, { error: 'Unsupported report definition version (expected v: 1 or 2)' });
       const vis = body.visibility || 'private';
       if (vis === 'shared' && !srv.canShare) return res(403, { error: 'Only an admin or level 3 user can share a report with the division.' });
       if (clash(body.name, vis, srv.me.userId)) return res(409, { error: 'name_taken' });
@@ -178,6 +323,10 @@ function makeServer(opts) {
       if (!r || !visible(r)) return res(404, { error: 'Report not found' });
       if (!mayEdit(r)) return res(403, { error: 'Only an admin or level 3 user can change a shared template.' });
       if (r.version !== body.version) return res(409, { error: 'version_conflict', report: shape(r) });
+      if (body.definition !== undefined) {
+        if (![1, 2].includes(body.definition.v)) return res(400, { error: 'Unsupported report definition version' });
+        if (body.definition.v === 1 && r.definition && r.definition.v === 2) return res(409, { error: 'client_outdated' });
+      }
       const name = body.name !== undefined ? String(body.name).trim() : r.name;
       const vis = body.visibility || r.visibility;
       if (clash(name, vis, r.owner_user_id, r.id)) return res(409, { error: 'name_taken' });
@@ -204,15 +353,24 @@ function makeServer(opts) {
 // from one cannot prop up another.
 function boot(o) {
   o = o || {};
+  // jsdom's own errors are collected; "not implemented: navigation" (the
+  // Reload button's location.reload) is expected and dropped.
+  const jsdomErrors = [];
+  const virtualConsole = new VirtualConsole();
+  virtualConsole.on('jsdomError', err => {
+    if (/Not implemented: navigation/.test(String(err && err.message))) return;
+    jsdomErrors.push(err);
+    console.error('  [jsdom] ' + (err && (err.stack || err.message)));
+  });
   const dom = new JSDOM(`<!doctype html><html><head></head><body>
     <div class="tab-panel active" id="tab-customrpt"><div id="cr-content"></div></div>
     <div class="tab-panel" id="tab-other"></div></body></html>`,
-  { url: 'http://localhost/paving.html', runScripts: 'dangerously', pretendToBeVisual: true });
+  { url: 'http://localhost/paving.html', runScripts: 'dangerously', pretendToBeVisual: true, virtualConsole });
   const window = dom.window, document = window.document;
   const srv = o.server || makeServer();
   const data = o.data || fixture();
   const h = { dom, window, document, srv, data, opened: [], dwCalls: [], email: [], confirms: [], answers: [], alerts: [],
-    blobs: [], downloads: [], authErrors: 0, consoleErrors: [] };
+    blobs: [], downloads: [], authErrors: 0, consoleErrors: [], jsdomErrors };
   window.fetch = (url, init) => srv.handle(url, init);
   window.confirm = msg => { h.confirms.push(msg); return h.answers.length ? h.answers.shift() : true; };
   window.alert = msg => { h.alerts.push(msg); };
@@ -294,13 +452,25 @@ function seed(srv) {
     const gets = h.srv.calls('GET');
     assert('the list is fetched', gets.length === 1);
     assert('every call sends Authorization: Bearer <token>', h.srv.log.every(e => e.auth === 'Bearer tok-123'), JSON.stringify(h.srv.log.map(e => e.auth)));
-    assert('every call sends ?division=paving', h.srv.log.every(e => e.q.division === 'paving' && e.path === '/api/custom-reports'));
+    const crCalls = h.srv.log.filter(e => e.path === '/api/custom-reports');
+    assert('every /api/custom-reports call sends ?division=paving', crCalls.length && crCalls.every(e => e.q.division === 'paving'));
+    assert('the company branding is fetched once, company-wide (no ?division=)',
+      h.srv.callsTo('/api/company/branding', 'GET').length === 1 && !h.srv.callsTo('/api/company/branding')[0].q.division);
+    assert('the Team Directory is fetched once, as people', h.srv.callsTo('/api/employees', 'GET', e => e.q.view === 'people').length === 1
+      && !h.srv.callsTo('/api/employees')[0].q.division);
+    assert('the division saved contacts are fetched (for the job badges), with ?division=paving',
+      h.srv.callsTo('/api/report-contacts', 'GET').length === 1 && h.srv.callsTo('/api/report-contacts')[0].q.division === 'paving');
+    assert('nothing else is called', h.srv.log.every(e => ['/api/custom-reports', '/api/company/branding', '/api/employees',
+      '/api/report-contacts', '/api/custom-report-schedules'].includes(e.path)), h.srv.log.map(e => e.path).join());
 
     const E = h.window.FCTReportEngine;
     const railText = h.$('.cr-rail').textContent;
-    assert('all seven starter templates are listed in the rail', E.STARTERS.length === 7 && E.STARTERS.every(s => railText.includes(s.name)));
+    const pavStarters = typeof E.startersFor === 'function' ? E.startersFor('paving')
+      : E.STARTERS.filter(s => !Array.isArray(s.divisions) || s.divisions.includes('paving'));
+    assert('every paving starter template is listed in the rail', pavStarters.length >= 7 && pavStarters.every(s => railText.includes(s.name)),
+      pavStarters.map(s => s.name).join());
     assert('the welcome panel offers every starter as a card, plus a blank report',
-      h.$$('.cr-card[data-act="starter"]').length === 7 && !!h.$('.cr-card[data-act="new"]'));
+      h.$$('.cr-card[data-act="starter"]').length === pavStarters.length && !!h.$('.cr-card[data-act="new"]'));
     const groups = h.$$('.cr-group');
     const mineG = groups.find(g => /My Reports/.test(g.textContent));
     const sharedG = groups.find(g => /Shared Templates/.test(g.textContent));
@@ -535,7 +705,8 @@ function seed(srv) {
     m.querySelector('[data-m="ok"]').click();
     await tick();
     const post = h.srv.calls('POST', e => !e.q.action).pop();
-    assert('it POSTs the name and a v1 definition', post && post.body.name === 'Route 30 weekly' && post.body.definition.v === 1);
+    assert('it POSTs the name and a v2 definition (the engine VERSION)', post && post.body.name === 'Route 30 weekly'
+      && post.body.definition.v === h.window.FCTReportEngine.VERSION && h.window.FCTReportEngine.VERSION === 2);
     assert('…private by default', post.body.visibility === 'private');
     assert('…with every section, in order', post.body.definition.sections.map(s => s.type).join() === h.S().doc.def.sections.map(s => s.type).join());
     assert('…the edits made above', post.body.definition.title === 'Route 30 — Week 44'
@@ -580,7 +751,7 @@ function seed(srv) {
     assert('a print run is logged', run && run.body.action === 'print' && run.body.report_id === h.S().doc.id
       && JSON.stringify(run.body.project_ids) === '["p1","p2"]' && run.body.report_name === 'Route 30 weekly');
     assert('…with the job names, range and definition', run.body.project_names[0] === 'Route 30 Resurfacing'
-      && run.body.date_from === '2026-10-01' && run.body.date_to === '2026-10-31' && run.body.definition.v === 1);
+      && run.body.date_from === '2026-10-01' && run.body.date_to === '2026-10-31' && run.body.definition.v === 2);
     assert('…flagged customer-safe', run.body.included_internal === false && run.body.recipients.length === 0);
 
     section('Outputs — Email');
@@ -593,7 +764,7 @@ function seed(srv) {
       em.projectId === null && em.projectName === null);
     assert('…describing the send for the server-side history (jobs, dates, snapshot, internal flag)',
       em.customReport && em.customReport.report_id === h.S().doc.id && JSON.stringify(em.customReport.project_ids) === '["p1","p2"]'
-        && em.customReport.date_from === '2026-10-01' && em.customReport.definition.v === 1 && em.customReport.included_internal === false
+        && em.customReport.date_from === '2026-10-01' && em.customReport.definition.v === 2 && em.customReport.included_internal === false
         && !('recipients' in em.customReport) && !('action' in em.customReport), JSON.stringify(em.customReport && Object.keys(em.customReport)));
     assert('…subject "<title> — <jobs>"', em.defaultSubject === 'Route 30 — Week 44 — 2 jobs', em.defaultSubject);
     assert('…and the report HTML on demand, branded', typeof em.getHTML === 'function' && /data-dw-brand/.test(em.getHTML()));
@@ -1447,6 +1618,1076 @@ function seed(srv) {
   }
 
   // ════════════════════════════════════════════════════════════════════
+  // v2 — the report-wide sub code / cost code filter (step ①)
+  section('v2 · Filter by sub code / cost code (step ①)');
+  {
+    const h = boot({ server: seed(makeServer()) });
+    const E = h.window.FCTReportEngine;
+    await h.render();
+    h.click(h.$('.cr-card[data-starter="customer_progress"]'));
+    assert('with no jobs picked the filter says to pick jobs first', /Pick jobs above to filter/.test(h.$('.cr-filters').textContent),
+      h.$('.cr-filters').textContent.slice(0, 120));
+    h.$$('.cr-job input')[0].click();   // Route 30 (p1)
+    const p1 = h.data.projects[0];
+    const subs = h.$$('[data-bind="filter-sc"]').map(b => b.value);
+    assert('it lists the picked job\'s sub codes — E.subCodesFor', typeof E.subCodesFor === 'function'
+      && JSON.stringify(subs) === JSON.stringify(E.subCodesFor([p1]).map(x => x.code)) && subs.includes('Base Course'), subs.join());
+    assert('…each as "code — description (unit)"', /Base Course — Aggregate base \(TON\)/.test(h.$('.cr-flist').textContent), h.$('.cr-flist').textContent);
+    assert('…and the cost codes — E.costCodesFor', h.$$('[data-bind="filter-cc"]').map(b => b.value).join() === E.costCodesFor([p1]).join());
+    const search = h.$('[data-bind="filter-search"]');
+    h.type(search, 'surf');
+    assert('searching narrows the list to matching codes', h.$$('[data-bind="filter-sc"]').map(b => b.value).join() === 'Surface Course'
+      && h.$$('[data-bind="filter-cc"]').length === 0);
+    assert('…and the search box keeps focus', h.document.activeElement === h.$('[data-bind="filter-search"]'));
+    h.type(h.$('[data-bind="filter-search"]'), 'zzz');
+    assert('no match says so', /No code matches/.test(h.$('.cr-flist').textContent));
+    h.type(h.$('[data-bind="filter-search"]'), '');
+    h.$('[data-bind="filter-sc"][value="Base Course"]').click();
+    assert('ticking a sub code writes def.filters.subCodes', JSON.stringify(h.S().doc.def.filters.subCodes) === '["Base Course"]');
+    assert('…a chip shows it, with its description', /Base Course — Aggregate base/.test(h.$('.cr-chips').textContent));
+    assert('…and "Clear" appears', !!h.act('filters-clear'));
+    await sleep(PREVIEW_WAIT);
+    let doc = h.srcdoc();
+    assert('the preview keeps only that sub code in the data sections', /Base Course/.test(doc) && !/Surface Course/.test(doc) && !/Mill 2in/.test(doc));
+    h.$('[data-bind="filter-cc"][value="Paving"]').click();
+    assert('ticking a cost code writes def.filters.costCodes', JSON.stringify(h.S().doc.def.filters.costCodes) === '["Paving"]');
+    h.click(h.$('[data-act="filter-remove"][data-kind="cc"][data-value="Paving"]'));
+    assert('a chip\'s ✕ takes that code off', h.S().doc.def.filters.costCodes.length === 0 && h.S().doc.def.filters.subCodes.length === 1);
+    h.click(h.act('filters-clear'));
+    assert('Clear empties the filter', h.S().doc.def.filters.subCodes.length === 0 && !h.act('filters-clear'));
+    const undo = h.document.querySelector('.cr-toast button');
+    assert('…with an Undo that puts it back', undo && (undo.click(), JSON.stringify(h.S().doc.def.filters.subCodes) === '["Base Course"]'));
+    await sleep(PREVIEW_WAIT);
+    assert('…and the preview follows', !/Surface Course/.test(h.srcdoc()));
+    // A chosen code that the picked jobs no longer carry stays listed, so it can be undone.
+    h.$$('.cr-job input')[0].click();   // untick p1
+    h.$$('.cr-job input')[1].click();   // tick Elm Street (p2): sub code Coat only
+    const listed = h.$$('[data-bind="filter-sc"]').map(b => b.value);
+    assert('a chosen code the jobs no longer carry is still listed (ticked) to undo', listed.includes('Base Course') && listed.includes('Coat')
+      && h.$('[data-bind="filter-sc"][value="Base Course"]').checked, listed.join());
+    h.$('[data-bind="filter-sc"][value="Base Course"]').click();
+    h.$('[data-bind="filter-sc"][value="Coat"]').click();
+    h.click(h.act('save'));
+    await tick();
+    h.modal().querySelector('#cr-m-name').value = 'Sealcoat only';
+    h.modal().querySelector('[data-m="ok"]').click();
+    await tick();
+    const post = h.srv.calls('POST', e => !e.q.action).pop();
+    assert('the filter is saved with the report (v2 definition)', post && post.body.definition.v === 2
+      && JSON.stringify(post.body.definition.filters) === '{"costCodes":[],"subCodes":["Coat"]}', post && JSON.stringify(post.body.definition.filters));
+    h.click(h.act('print'));
+    await tick();
+    const run = h.srv.calls('POST', e => e.q.action === 'run').pop();
+    assert('…and travels with the run log snapshot', run && JSON.stringify(run.body.definition.filters.subCodes) === '["Coat"]');
+    // Escaping: a sub code with markup in it.
+    h.data.projects[1].bidItems.push({ id: 'ex', cost_code: 'X<b>', sub_code: '<img src=x onerror="window.__xss=3">', unit: 'EA', quantity: '1' });
+    h.click(h.$('#cr-step-2'));
+    h.click(h.$('#cr-step-1'));
+    assert('a sub code with markup is listed as text, never markup', h.mount.querySelectorAll('.cr-filters img').length === 0
+      && /<img src=x onerror/.test(h.$('.cr-flist').textContent) && h.window.__xss === undefined);
+    h.close();
+  }
+  {
+    const h = boot({ server: seed(makeServer()) });
+    const E = h.window.FCTReportEngine;
+    await h.render();
+    const st = (E.startersFor ? E.startersFor('paving') : E.STARTERS).find(s => /sub[\s_-]?code/i.test(`${s.id} ${s.name}`));
+    assert('there is a "Sub-Code Production" starter', !!st, (E.STARTERS || []).map(s => s.id).join());
+    if (st) {
+      h.click(h.$(`.cr-card[data-starter="${st.id}"]`));
+      assert('it opens on step ① with the sub-code picker focused', h.S().step === 1
+        && h.document.activeElement === h.$('[data-bind="filter-search"]'));
+      assert('…and says to pick the jobs, then the sub code', /Pick the jobs, then the sub code/.test(h.toast()), h.toast());
+    }
+    h.close();
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  section('v2 · Starters by division (E.startersFor)');
+  {
+    const h = boot({ server: seed(makeServer()) });
+    const E = h.window.FCTReportEngine;
+    await h.render();
+    const pav = E.startersFor('paving'), turf = E.startersFor('turf');
+    const tonnage = pav.find(s => s.divisions && s.divisions.length === 1 && s.divisions[0] === 'paving');
+    assert('paving offers a paving-only starter (Paving Tonnage) that turf does not', !!tonnage && !turf.some(s => s.id === tonnage.id));
+    assert('the paving rail and welcome cards list exactly E.startersFor("paving")',
+      h.$$('.cr-card[data-act="starter"]').map(b => b.getAttribute('data-starter')).join() === pav.map(s => s.id).join());
+    h.close();
+    const t = boot({ server: makeServer({ division: 'turf' }), cfg: { division: 'turf', divisionLabel: 'Turf' } });
+    await t.render();
+    assert('the turf tab lists turf\'s starters — no Paving Tonnage', !t.$(`.cr-card[data-starter="${tonnage && tonnage.id}"]`)
+      && t.$$('.cr-card[data-act="starter"]').length === turf.length);
+    t.close();
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  section('v2 · Section options — sub codes, Planned vs Actual, Chart, Division Rates');
+  {
+    const h = boot({ server: seed(makeServer()) });
+    const E = h.window.FCTReportEngine;
+    await h.render();
+    h.click(h.act('new'));
+    h.$$('.cr-job input')[0].click();
+    h.click(h.$('#cr-step-2'));
+    const add = type => {
+      h.click(h.act('add-menu'));
+      const it = h.document.querySelector(`.cr-menu [data-type="${type}"]`);
+      if (!it) return null;
+      h.click(it);
+      return h.S().doc.def.sections[h.S().doc.def.sections.length - 1];
+    };
+    const opt = (s, key) => h.$(`[data-bind="opt"][data-sec="${s.id}"][data-key="${key}"]`);
+    const bp = add('bid_progress');
+    const scBoxes = h.$$(`[data-bind="opt-sc"][data-sec="${bp.id}"]`);
+    assert('a data section has a Sub codes picker of the picked jobs\' sub codes', scBoxes.length === 3
+      && scBoxes.map(b => b.getAttribute('data-value')).join() === E.subCodesFor([h.data.projects[0]]).map(x => x.code).join());
+    scBoxes.find(b => b.getAttribute('data-value') === 'Surface Course').click();
+    assert('ticking one writes section.options.subCodes', JSON.stringify(bp.options.subCodes) === '["Surface Course"]');
+    await sleep(PREVIEW_WAIT);
+    assert('…and the section shows only it', /Surface Course/.test(h.srcdoc()) && !/Base Course/.test(h.srcdoc()));
+    h.click(h.$(`[data-act="sc-all"][data-sec="${bp.id}"]`));
+    assert('"Show all" clears the section\'s sub codes', bp.options.subCodes.length === 0);
+
+    const pva = add('plan_vs_actual');
+    assert('Planned vs Actual can be added', !!pva && pva.type === 'plan_vs_actual');
+    if (pva) {
+      assert('…with Hide unplanned, Hide complete, Totals and Group by', !!opt(pva, 'hideUnplanned') && !!opt(pva, 'hideComplete')
+        && !!opt(pva, 'totals') && !!opt(pva, 'groupBy') && opt(pva, 'groupBy').tagName === 'SELECT');
+      opt(pva, 'hideUnplanned').click();
+      h.change(opt(pva, 'groupBy'), 'none');
+      assert('…which write its options', pva.options.hideUnplanned === true && pva.options.groupBy === 'none');
+      assert('…plus cost-code and sub-code pickers', !!h.$(`[data-bind="opt-cc"][data-sec="${pva.id}"]`) && !!h.$(`[data-bind="opt-sc"][data-sec="${pva.id}"]`));
+      assert('…and its internal Units / Crew-Hour column is locked', !!h.colBox(pva.id, 'units_per_crew_hr') && h.colBox(pva.id, 'units_per_crew_hr').disabled);
+    }
+    const ch = add('chart');
+    assert('a Chart can be added', !!ch && ch.type === 'chart');
+    if (ch) {
+      assert('…with chart type, basis, show plan and height', opt(ch, 'chart').tagName === 'SELECT' && opt(ch, 'basis').tagName === 'SELECT'
+        && !!opt(ch, 'showPlan') && opt(ch, 'height').tagName === 'SELECT');
+      h.change(opt(ch, 'chart'), 'daily_bars');
+      h.change(opt(ch, 'height'), 'tall');
+      opt(ch, 'showPlan').click();
+      assert('…which write its options', ch.options.chart === 'daily_bars' && ch.options.height === 'tall' && ch.options.showPlan === false);
+      assert('…its measures are listed as "Measures drawn"', /Measures drawn/.test(h.$(`.cr-sec[data-sec="${ch.id}"]`).textContent));
+      assert('…the internal Crew hours measure is locked', h.colBox(ch.id, 'crew_hours') && h.colBox(ch.id, 'crew_hours').disabled);
+      await sleep(PREVIEW_WAIT);
+      assert('…and it reaches the preview as inline SVG', /<svg[^>]*viewBox/.test(h.srcdoc()));
+    }
+    const rs = add('rate_summary');
+    assert('Division Rates can be added', !!rs && rs.type === 'rate_summary');
+    if (rs) {
+      assert('on paving it offers the paving tiles (Tons / Day, Tons / Load), not turf\'s or Kiewit\'s',
+        !!h.colBox(rs.id, 'tons_per_day') && !!h.colBox(rs.id, 'tons_per_load') && !h.colBox(rs.id, 'sf_per_day') && !h.colBox(rs.id, 'homes_per_day'));
+      assert('…its internal Tons / Crew-Hour locked while customer-safe', h.colBox(rs.id, 'tons_per_crew_hr') && h.colBox(rs.id, 'tons_per_crew_hr').disabled);
+      assert('…and only the code pickers as options', !!h.$(`[data-bind="opt-cc"][data-sec="${rs.id}"]`) && !!h.$(`[data-bind="opt-sc"][data-sec="${rs.id}"]`)
+        && !h.$(`[data-bind="opt"][data-sec="${rs.id}"]`));
+      // A forged tick of another division's column is refused.
+      const fake = h.document.createElement('input');
+      fake.type = 'checkbox'; fake.checked = true;
+      fake.setAttribute('data-bind', 'col'); fake.setAttribute('data-sec', rs.id); fake.setAttribute('data-key', 'sf_per_day');
+      h.$(`.cr-sec[data-sec="${rs.id}"]`).appendChild(fake);
+      const colsBefore = JSON.stringify(rs.columns);
+      h.colBox(rs.id, 'tons_per_day').click();   // off …
+      fake.dispatchEvent(new h.window.Event('change', { bubbles: true }));
+      assert('a forged tick of a turf-only column on a paving report changes nothing', JSON.stringify(rs.columns) === JSON.stringify(JSON.parse(colsBefore).filter(k => k !== 'tons_per_day')),
+        rs.columns.join());
+      h.colBox(rs.id, 'tons_per_day').click();   // … and back on
+      await sleep(PREVIEW_WAIT);
+      assert('…and a paving preview never prints a turf or Kiewit tile', !/SF \/ Day|Homes \/ Day/.test(h.srcdoc()));
+      h.click(h.$(`[data-act="sec-toggle"][data-sec="${rs.id}"]`));
+      assert('the folded summary names the paving tiles it will print', /Tons \/ Day/.test(h.$(`.cr-sec[data-sec="${rs.id}"] .cr-sec-sum`).textContent));
+    }
+    h.close();
+    const t = boot({ server: makeServer({ division: 'turf' }), cfg: { division: 'turf', divisionLabel: 'Turf', areaUnit: 'SF' } });
+    await t.render();
+    t.click(t.act('new'));
+    t.click(t.$('#cr-step-2'));
+    t.click(t.act('add-menu'));
+    t.click(t.document.querySelector('.cr-menu [data-type="rate_summary"]'));
+    const trs = t.S().doc.def.sections[0];
+    assert('on turf Division Rates offers SF / Day, not tons', !!t.colBox(trs.id, 'sf_per_day') && !t.colBox(trs.id, 'tons_per_day'));
+    t.close();
+  }
+  // ════════════════════════════════════════════════════════════════════
+  section('v2 · Branding, the PM line and the report contact (step ③)');
+  {
+    const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+    const people = [
+      { name: 'Jane Smith', phone: '555-0100', email: 'jane@forcecorp.example', logins: ['jsmith'] },
+      { name: 'Pat Quinn', phone: '555-0199', email: 'pat.quinn@forcecorp.example', logins: ['PAT'] },
+      { name: 'pat', login: true },
+    ];
+    const branding = { display_name: 'Force Corp Paving', logo: { mime: 'image/png', base64: PNG, width: 1, height: 1 },
+      phone: '724-555-0000', email: 'office@forcecorp.example', website: 'https://forcecorp.example', address: '1 Industrial Way',
+      report_footer: 'Licensed & insured', updated_at: '2026-11-01T00:00:00Z', updated_by_username: 'boss' };
+    const data = fixture();
+    data.projects[0].pm = 'Smith, Jane';     // "Last, First" in the job; "First Last" in the directory
+    data.projects[1].pm = 'Nobody Listed';
+    const h = boot({ server: seed(makeServer({ people, branding })), data });
+    const E = h.window.FCTReportEngine;
+    const ctxOpts = [];
+    const realMake = E.makeContext;
+    E.makeContext = (def, cfg, opts) => { ctxOpts.push(opts); return realMake(def, cfg, opts); };
+    await h.render();
+    await tick(6);
+    h.click(h.$('.cr-card[data-starter="customer_progress"]'));
+    h.$$('.cr-job input')[0].click();
+    await sleep(PREVIEW_WAIT);
+    const o = ctxOpts[ctxOpts.length - 1] || {};
+    assert('makeContext gets the company branding (name, logo, contact line)', o.branding && o.branding.display_name === 'Force Corp Paving'
+      && o.branding.logo && o.branding.logo.mime === 'image/png' && o.branding.logo.base64 === PNG && o.branding.address === '1 Industrial Way',
+      JSON.stringify(o.branding && Object.keys(o.branding)));
+    assert('…the job\'s PM from the Team Directory ("Smith, Jane" = Jane Smith)', o.contacts && o.contacts.p1 && o.contacts.p1.pm
+      && o.contacts.p1.pm.name === 'Jane Smith' && o.contacts.p1.pm.phone === '555-0100' && o.contacts.p1.pm.email === 'jane@forcecorp.example',
+      JSON.stringify(o.contacts));
+    assert('…and the report contact: the one PM on the report', o.reportContact && o.reportContact.name === 'Jane Smith' && o.reportContact.phone === '555-0100');
+    let doc = h.srcdoc();
+    assert('the preview prints the company name and its logo (a data: URI) in the masthead', /class="mast-co">Force Corp Paving</.test(doc)
+      && /<img class="mast-logo" src="data:image\/png;base64,/.test(doc) && (doc.match(/data-dw-brand/g) || []).length === 1);
+    assert('…the PM line in the job band', /Project Manager: Jane Smith · 555-0100 · jane@forcecorp\.example/.test(doc), doc.match(/jb-pm[^<]*/));
+    assert('…the "Questions?" line', /Questions\? Jane Smith · 555-0100 · jane@forcecorp\.example/.test(doc));
+    assert('…and "Prepared by" the real name behind the login (logins match case-blind)', /Prepared by Pat Quinn/.test(doc));
+    h.click(h.$('#cr-step-3'));
+    assert('step ③ has the masthead choice, Company branding by default', h.$('[data-bind="h-branding"]').value === 'company');
+    assert('…says what the branding shows', /Shows Force Corp Paving and its logo/.test(h.$('.cr-panel').textContent));
+    assert('…the PM checkbox, on by default, counting the jobs with a PM contact', h.$('[data-bind="h-showPmContact"]').checked
+      && /1 job of 1 has a PM phone or email/.test(h.$('.cr-panel').textContent));
+    assert('…and the contact fields with the resolved default as placeholders', h.$('[data-bind="h-contactName"]').placeholder === 'Jane Smith (default)'
+      && h.$('[data-bind="h-contactPhone"]').placeholder === '555-0100 (default)' && h.$('[data-bind="h-contactEmail"]').placeholder === 'jane@forcecorp.example (default)');
+    assert('"Prepared by" suggests the real name', h.$('[data-bind="h-preparedBy"]').placeholder === 'Pat Quinn (you)');
+    h.change(h.$('[data-bind="h-branding"]'), 'datawatch');
+    assert('"DataWatch only" is stored', h.S().doc.def.header.branding === 'datawatch');
+    await sleep(PREVIEW_WAIT);
+    doc = h.srcdoc();
+    assert('…and the preview drops the logo for the DataWatch masthead', !/<img class="mast-logo"/.test(doc) && !/src="data:/.test(doc)
+      && /class="mast-word">DataWatch</.test(doc));
+    h.change(h.$('[data-bind="h-branding"]'), 'company');
+    h.$('[data-bind="h-showPmContact"]').click();
+    assert('unticking the PM line is stored', h.S().doc.def.header.showPmContact === false);
+    await sleep(PREVIEW_WAIT);
+    assert('…and the line goes', !/Project Manager: Jane/.test(h.srcdoc()));
+    h.type(h.$('[data-bind="h-contactName"]'), 'The office');
+    h.type(h.$('[data-bind="h-contactPhone"]'), '724-555-0000');
+    await sleep(PREVIEW_WAIT);
+    doc = h.srcdoc();
+    assert('typed contact fields replace the default contact (no stray PM email)', /Questions\? The office · 724-555-0000/.test(doc)
+      && !/Questions\?[^<]*jane@/.test(doc), (doc.match(/Questions\?[^<]*/) || [''])[0]);
+    const last = ctxOpts[ctxOpts.length - 1];
+    assert('…and that is what makeContext is given', last.reportContact.name === 'The office' && last.reportContact.email === '');
+    h.click(h.act('save'));
+    await tick();
+    h.modal().querySelector('#cr-m-name').value = 'Branded update';
+    h.modal().querySelector('[data-m="ok"]').click();
+    await tick();
+    const post = h.srv.calls('POST', e => !e.q.action).pop();
+    const hd = post.body.definition.header;
+    assert('the header choices are saved; the logo and the directory lookups are not', hd.branding === 'company' && hd.showPmContact === false
+      && hd.contactName === 'The office' && hd.contactPhone === '724-555-0000' && !/base64|iVBOR/.test(JSON.stringify(post.body)));
+    // Two jobs, two PMs: no single PM, so the default contact is the sender.
+    h.click(h.$('#cr-step-1'));
+    h.$$('.cr-job input')[1].click();
+    h.click(h.$('#cr-step-3'));
+    h.type(h.$('[data-bind="h-contactName"]'), '');
+    h.type(h.$('[data-bind="h-contactPhone"]'), '');
+    assert('with two PMs the default contact is the person sending it', h.$('[data-bind="h-contactName"]').placeholder === 'Pat Quinn (default)');
+    // The branding is fetched once per visit, again after five minutes away.
+    const n0 = h.srv.callsTo('/api/company/branding').length;
+    await h.render();
+    assert('opening the tab again within five minutes does not refetch the branding', h.srv.callsTo('/api/company/branding').length === n0);
+    h.S().brandingAt -= 6 * 60 * 1000;
+    await h.render();
+    assert('…after five minutes it does', h.srv.callsTo('/api/company/branding').length === n0 + 1);
+    assert('the Team Directory is fetched only once', h.srv.callsTo('/api/employees').length === 1);
+    E.makeContext = realMake;
+    h.close();
+  }
+  {
+    // A logo that is not a PNG/JPEG data payload never reaches the engine.
+    const srv = seed(makeServer({ branding: { display_name: 'Evil Co', logo: { mime: 'image/svg+xml', base64: 'PHN2Zz4=' } } }));
+    const h = boot({ server: srv });
+    const E = h.window.FCTReportEngine;
+    const seen = [];
+    const realMake = E.makeContext;
+    E.makeContext = (def, cfg, opts) => { seen.push(opts); return realMake(def, cfg, opts); };
+    await h.render();
+    await tick(6);
+    h.click(h.$('.cr-card[data-starter="haul_log"]'));
+    h.$$('.cr-job input')[0].click();
+    await sleep(PREVIEW_WAIT);
+    const b = seen[seen.length - 1].branding;
+    assert('an SVG "logo" is dropped before the engine; the name still shows', b && b.logo === null && b.display_name === 'Evil Co'
+      && !/svg\+xml/.test(h.srcdoc()) && /Evil Co/.test(h.srcdoc()));
+    E.makeContext = realMake;
+    h.close();
+  }
+  {
+    // Both lookups failing: an unbranded report, no error, no sign-out.
+    const srv = seed(makeServer());
+    srv.brandingFail = true;
+    srv.peopleFail = true;
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    h.click(h.$('.cr-card[data-starter="customer_progress"]'));
+    h.$$('.cr-job input')[0].click();
+    await sleep(PREVIEW_WAIT);
+    const doc = h.srcdoc();
+    assert('when branding and the directory fail, the report is plain DataWatch, prepared by the login', /class="mast-word">DataWatch</.test(doc)
+      && /Prepared by pat/.test(doc) && !/Questions\?/.test(doc));
+    assert('…quietly: no toast, no sign-out, no console error', !h.document.querySelector('.cr-toast.err') && h.authErrors === 0 && h.consoleErrors.length === 0,
+      h.consoleErrors.join('; '));
+    h.close();
+  }
+  {
+    // A 401 on a side fetch must not sign the user out on its own.
+    const srv = seed(makeServer());
+    srv.next.push({ status: 401, body: { error: 'Unauthorized' }, match: e => e.path === '/api/company/branding' });
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    assert('a 401 from the branding fetch alone does not sign the user out', h.authErrors === 0);
+    h.close();
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  section('v2 · Email — saved contacts fill in the recipients');
+  {
+    const srv = seed(makeServer());
+    srv.contacts = [
+      { id: 1, project_id: 'p1', email: 'owner@acme.com', name: 'Olivia Owner', role: 'owner', auto_add: true },
+      { id: 2, project_id: 'p1', email: 'quiet@acme.com', name: 'Not Auto', auto_add: false },
+      { id: 3, project_id: null, client_key: 'acme township', client_name: 'Acme Township', email: 'eng@acme.com', name: 'Ed Engineer', auto_add: true },
+      { id: 4, project_id: 'p2', email: 'owner@acme.com', name: 'Same Person', auto_add: true },
+      { id: 5, project_id: 'p2', email: 'bea@beta.example', name: 'Bea <b>Beta</b>', auto_add: true },
+      { id: 6, project_id: 'p3', email: 'other@job.example', auto_add: true },
+    ];
+    const h = boot({ server: srv });
+    await h.render();
+    h.click(h.$('.cr-card[data-starter="customer_progress"]'));
+    h.$$('.cr-job input')[0].click();
+    h.$$('.cr-job input')[1].click();
+    h.click(h.act('email'));
+    await tick(8);
+    const get = h.srv.callsTo('/api/report-contacts', 'GET', e => e.q.project_ids).pop();
+    assert('Email asks for the picked jobs\' contacts and their clients\' (by client key)', get && get.q.project_ids === 'p1,p2'
+      && get.q.client_keys === 'acme township,beta corp' && get.q.division === 'paving', get && JSON.stringify(get.q));
+    const em = h.email[0];
+    assert('the modal opens', !!em);
+    const list = (em && em.contacts) || [];
+    assert('contacts: each job\'s auto-add contacts, then the client\'s, one per address',
+      JSON.stringify(list.map(c => c.email)) === '["owner@acme.com","bea@beta.example","eng@acme.com"]', JSON.stringify(list));
+    assert('…labelled with where they came from', list[0] && list[0].source === 'job' && list[0].label === 'Job contact — Route 30 Resurfacing'
+      && list[0].name === 'Olivia Owner' && list[2].source === 'client' && list[2].label === 'Client contact — Acme Township');
+    assert('…never a contact set not to auto-add, nor one for a job not on the report', !list.some(c => c.email === 'quiet@acme.com' || c.email === 'other@job.example'));
+    const cc = em && em.contactContext;
+    assert('contactContext lets the modal save a typed address as a contact', cc && cc.division === 'paving'
+      && JSON.stringify(cc.projectIds) === '["p1","p2"]' && JSON.stringify(cc.clients) === '[{"key":"acme township","name":"Acme Township"},{"key":"beta corp","name":"Beta Corp"}]'
+      && cc.canEdit === true && cc.apiBase === '/api' && typeof cc.getToken === 'function' && cc.getToken() === 'tok-123', JSON.stringify(cc));
+    assert('the other modal options are as before (customReport, no project name)', em.projectName === null && em.customReport && !('recipients' in em.customReport));
+    h.close();
+  }
+  {
+    const srv = seed(makeServer({ contactsCanEdit: false }));
+    srv.contacts = [{ id: 1, project_id: 'p1', email: 'owner@acme.com', auto_add: true }];
+    const h = boot({ server: srv, cfg: { perm: { role: 'level1', canSeeCosts: false, canSeeFinancials: false } } });
+    await h.render();
+    h.click(h.$('.cr-card[data-starter="customer_progress"]'));
+    h.$$('.cr-job input')[0].click();
+    h.click(h.act('email'));
+    await tick(8);
+    assert('a read-only (level 1) user still gets the contacts, but contactContext.canEdit is false',
+      h.email[0] && h.email[0].contacts.length === 1 && h.email[0].contactContext.canEdit === false);
+    h.close();
+  }
+  {
+    const srv = seed(makeServer());
+    srv.next.push({ status: 500, body: { error: 'Database error' }, match: e => e.path === '/api/report-contacts' && !!e.q.project_ids });
+    const h = boot({ server: srv });
+    await h.render();
+    h.click(h.$('.cr-card[data-starter="customer_progress"]'));
+    h.$$('.cr-job input')[0].click();
+    h.click(h.act('email'));
+    await tick(8);
+    assert('a failed contacts lookup still opens the modal, with no contacts', h.email.length === 1 && h.email[0].contacts.length === 0
+      && h.email[0].contactContext.canEdit === false);
+    h.close();
+  }
+  {
+    // A client name with a comma cannot ride in the comma list: the whole
+    // division list is read and matched in the browser.
+    const data = fixture();
+    data.projects[0].client = 'Smith, Jones & Co';
+    const srv = seed(makeServer());
+    srv.contacts = [{ id: 9, project_id: null, client_key: 'smith, jones & co', client_name: 'Smith, Jones & Co', email: 'sj@law.example', auto_add: true },
+      { id: 10, project_id: null, client_key: 'jones & co', client_name: 'Jones & Co', email: 'wrong@law.example', auto_add: true }];
+    const h = boot({ server: srv, data });
+    await h.render();
+    h.click(h.$('.cr-card[data-starter="customer_progress"]'));
+    h.$$('.cr-job input')[0].click();
+    h.click(h.act('email'));
+    await tick(8);
+    const gets = h.srv.callsTo('/api/report-contacts', 'GET');
+    assert('a client with a comma in its name is matched whole, not split', h.email[0] && JSON.stringify(h.email[0].contacts.map(c => c.email)) === '["sj@law.example"]'
+      && !gets[gets.length - 1].q.client_keys, JSON.stringify(h.email[0] && h.email[0].contacts));
+    h.close();
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  section('v2 · Contacts manager');
+  {
+    const srv = seed(makeServer());
+    srv.contacts = [
+      { id: 1, project_id: 'p1', email: 'owner@acme.com', name: 'Olivia Owner', title: 'Owner rep', organization: 'Acme Township', role: 'owner', auto_add: true },
+      { id: 3, project_id: null, client_key: 'acme township', client_name: 'Acme Township', email: 'eng@acme.com', name: '<i>Ed</i>', role: 'engineer', auto_add: true },
+      { id: 5, project_id: 'p2', email: 'bea@beta.example', name: 'Bea', role: 'gc', auto_add: false },
+    ];
+    const h = boot({ server: srv });
+    await h.render();
+    h.click(h.$('.cr-card[data-starter="customer_progress"]'));
+    const badge = h.$('.cr-job-ct[data-id="p1"]');
+    assert('step ① shows "N contacts" on a job with saved contacts (its own + its client\'s)', badge && badge.textContent === '2 contacts'
+      && h.$('.cr-job-ct[data-id="p2"]').textContent === '1 contact', badge && badge.textContent);
+    h.click(badge);
+    await tick();
+    assert('the badge does not tick the job', h.S().doc.picked.length === 0);
+    assert('…it opens Contacts on that job', h.S().view === 'contacts' && h.$('[data-bind="ct-job"]').value === 'p1');
+    let text = h.$('.cr-ct-list').textContent;
+    assert('…showing the job\'s contacts and its client\'s, grouped', /Route 30 Resurfacing/.test(text) && /Client: Acme Township/.test(text)
+      && /Olivia Owner/.test(text) && !/Bea/.test(text));
+    assert('…names as text, never markup', /<i>Ed<\/i>/.test(text) && !h.$('.cr-ct-list i'));
+    h.change(h.$('[data-bind="ct-job"]'), '');
+    assert('"Every job and client" lists them all', /Bea/.test(h.$('.cr-ct-list').textContent) && /Elm Street Lot/.test(h.$('.cr-ct-list').textContent));
+    h.type(h.$('[data-bind="ct-search"]'), 'bea');
+    assert('search narrows the list (and keeps focus)', !/Olivia/.test(h.$('.cr-ct-list').textContent) && /Bea/.test(h.$('.cr-ct-list').textContent)
+      && h.document.activeElement === h.$('[data-bind="ct-search"]'));
+    h.type(h.$('[data-bind="ct-search"]'), '');
+    // Add
+    h.click(h.act('ct-add'));
+    assert('+ Add contact opens the form, email focused', !!h.$('.cr-form') && h.document.activeElement === h.$('[data-field="email"]'));
+    h.change(h.$('[data-field="project_id"]'), 'p2');
+    h.type(h.$('[data-field="email"]'), 'not-an-email');
+    h.click(h.act('ct-save'));
+    await tick();
+    assert('a bad address is caught before the server', /valid email/.test(h.$('.cr-form-err').textContent) && h.srv.callsTo('/api/report-contacts', 'POST').length === 0);
+    h.type(h.$('[data-field="email"]'), 'New.Person@Beta.example');
+    h.type(h.$('[data-field="name"]'), 'New Person');
+    h.type(h.$('[data-field="phone"]'), '(412) 555-0101 ext 4');
+    h.change(h.$('[data-field="role"]'), 'inspector');
+    h.click(h.act('ct-save'));
+    await tick(6);
+    let post = h.srv.callsTo('/api/report-contacts', 'POST').pop();
+    assert('it POSTs the contact for the job, email lower-cased', post && post.body.project_id === 'p2' && post.body.email === 'new.person@beta.example'
+      && post.body.name === 'New Person' && post.body.role === 'inspector' && post.body.auto_add === true && post.body.phone === '(412) 555-0101 ext 4'
+      && post.q.division === 'paving', post && JSON.stringify(post.body));
+    assert('…and it is listed', !h.$('.cr-form') && /New Person/.test(h.$('.cr-ct-list').textContent));
+    // Duplicate
+    h.click(h.act('ct-add'));
+    h.change(h.$('[data-field="scope"]'), 'client');
+    assert('switching to "Every job for a client" offers the clients', !!h.$('[data-field="client_name"]') && !h.$('[data-field="project_id"]'));
+    h.change(h.$('[data-field="client_name"]'), 'Acme Township');
+    h.type(h.$('[data-field="email"]'), 'eng@acme.com');
+    h.click(h.act('ct-save'));
+    await tick(6);
+    post = h.srv.callsTo('/api/report-contacts', 'POST').pop();
+    assert('a client contact is sent with its client name and key', post.body.project_id === null && post.body.client_name === 'Acme Township'
+      && post.body.client_key === 'acme township');
+    assert('the server\'s duplicate refusal is explained in the form', /already saved for this client/.test(h.$('.cr-form-err').textContent));
+    h.click(h.act('ct-cancel'));
+    // Edit
+    h.click(h.$('[data-act="ct-edit"][data-id="1"]'));
+    assert('Edit opens the form filled in', h.$('[data-field="email"]').value === 'owner@acme.com' && h.$('[data-field="title"]').value === 'Owner rep');
+    h.type(h.$('[data-field="title"]'), 'Township manager');
+    h.$('[data-field="email"]').dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    await tick(6);
+    const put = h.srv.callsTo('/api/report-contacts', 'PUT').pop();
+    assert('Enter saves an edit with a PUT ?id=', put && put.q.id === '1' && put.body.title === 'Township manager' && put.body.project_id === 'p1');
+    assert('…and the card shows it', /Township manager/.test(h.$('.cr-ct-list').textContent));
+    // Auto-add toggle
+    const auto = h.$('[data-bind="ct-auto"][data-id="5"]');
+    assert('the auto-add box shows the saved value', auto && !auto.checked);
+    auto.click();
+    await tick(6);
+    const put2 = h.srv.callsTo('/api/report-contacts', 'PUT').pop();
+    assert('ticking auto-add PUTs just that', put2.q.id === '5' && JSON.stringify(put2.body) === '{"auto_add":true}');
+    // Delete
+    h.answers.push(false);
+    h.click(h.$('[data-act="ct-delete"][data-id="5"]'));
+    await tick();
+    assert('Delete asks first', /Delete the contact Bea/.test(h.confirms.pop()) && h.srv.callsTo('/api/report-contacts', 'DELETE').length === 0);
+    h.click(h.$('[data-act="ct-delete"][data-id="5"]'));
+    await tick(6);
+    assert('…then DELETEs ?id= and drops it', h.srv.callsTo('/api/report-contacts', 'DELETE').pop().q.id === '5' && !/Bea/.test(h.$('.cr-ct-list').textContent));
+    h.click(h.act('back'));
+    assert('Back returns to the open report', h.S().view === 'edit');
+    assert('…where the job badges count the new contact', h.$('.cr-job-ct[data-id="p2"]') && h.$('.cr-job-ct[data-id="p2"]').textContent === '1 contact');
+    h.close();
+  }
+  {
+    const srv = seed(makeServer({ contactsCanEdit: false }));
+    srv.contacts = [{ id: 1, project_id: 'p1', email: 'owner@acme.com', name: 'Olivia', auto_add: true }];
+    const h = boot({ server: srv, cfg: { perm: { role: 'level1', canSeeCosts: false, canSeeFinancials: false } } });
+    await h.render();
+    h.click(h.act('contacts'));
+    await tick(6);
+    assert('level 1: Contacts lists but cannot change — no Add, Edit or Delete, auto-add disabled',
+      /Olivia/.test(h.$('.cr-ct-list').textContent) && !h.act('ct-add') && !h.$('[data-act="ct-edit"]') && !h.$('[data-act="ct-delete"]')
+        && h.$('[data-bind="ct-auto"]').disabled && /Only level 2 users and up/.test(h.mount.textContent));
+    h.close();
+  }
+  // ════════════════════════════════════════════════════════════════════
+  section('v2 · Customer History — open or resend exactly what was sent');
+  const ARCHIVED = '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Weekly</title></head>'
+    + '<body><div class="masthead" data-dw-brand>Force Corp</div><h1>ARCHIVED COPY — Route 30 — Week 44</h1><p>Installed 550 TON</p></body></html>';
+  const histServer = o => {
+    const srv = seed(makeServer(o));
+    const def = { v: 2, title: 'Weekly Update', jobs: { mode: 'pick', ids: ['p1'] }, dates: { preset: 'last_week', from: '', to: '' },
+      header: { preparedFor: 'Acme Township', preparedBy: 'Pat Quinn' }, sections: [{ type: 'job_info' }, { type: 'bid_progress' }] };
+    const base = { report_id: 1, report_name: 'Acme weekly update', project_ids: ['p1'], project_names: ['Route 30 Resurfacing'],
+      date_from: '2026-10-26', date_to: '2026-11-01', definition: def };
+    srv.addRun(Object.assign({}, base, { id: 1, created_at: '2026-10-20T13:00:00Z', subject: 'Week 42', recipients: ['owner@acme.com'] }));
+    srv.addRun(Object.assign({}, base, { id: 2, created_at: '2026-10-27T13:00:00Z', subject: 'Week 43', recipients: ['owner@acme.com', 'eng@acme.com'],
+      run_kind: 'schedule', run_by_username: 'robot', run_by_user_id: 3, schedule_id: 77 }));
+    srv.addRun(Object.assign({}, base, { id: 3, created_at: '2026-11-02T13:00:00Z', subject: 'Costs', recipients: ['boss@forcecorp.example'],
+      included_internal: true, run_by_username: 'sam', run_by_user_id: 9 }));
+    srv.addRun(Object.assign({}, base, { id: 4, created_at: '2026-11-03T13:00:00Z', action: 'print', subject: null }));
+    srv.addRun(Object.assign({}, base, { id: 5, created_at: '2026-11-04T13:00:00Z', subject: 'Week 44 <b>again</b>', recipients: ['owner@acme.com'],
+      run_kind: 'resend', resent_from_run_id: 1 }));
+    srv.addRun(Object.assign({}, base, { id: 6, created_at: '2026-11-04T14:00:00Z', project_ids: ['p2'], project_names: ['Elm Street Lot'], subject: 'Elm' }));
+    srv.archives[1] = ARCHIVED;
+    srv.archives[3] = ARCHIVED.replace('ARCHIVED COPY', 'INTERNAL COPY');
+    srv.archives[5] = ARCHIVED;
+    return srv;
+  };
+  {
+    const h = boot({ server: histServer({ runPage: 2 }) });
+    const E = h.window.FCTReportEngine;
+    await h.render();
+    h.click(h.act('customer'));
+    await tick();
+    assert('the rail opens Customer History, asking for a job', h.S().view === 'customer' && /Pick a job to see what its customer was sent/.test(h.mount.textContent));
+    h.type(h.$('[data-bind="cust-search"]'), 'route');
+    assert('the job picker is searchable', h.$$('[data-bind="cust-job"] option').length === 2 && /Route 30/.test(h.$('[data-bind="cust-job"]').textContent));
+    h.change(h.$('[data-bind="cust-client"]'), 'acme township');
+    h.change(h.$('[data-bind="cust-job"]'), 'p1');
+    await tick(6);
+    let get = h.srv.calls('GET', e => e.q.runs === '1').pop();
+    assert('picking a job asks for its emails only: ?runs=1&project_id=p1&action=email', get && get.q.project_id === 'p1' && get.q.action === 'email'
+      && !get.q.before_id, get && JSON.stringify(get.q));
+    let rows = h.$$('.cr-cust tbody tr');
+    assert('newest first, a page at a time', rows.length === 2 && /Week 44/.test(rows[0].textContent) && /Costs/.test(rows[1].textContent));
+    assert('each row: date, report, subject, recipients, sent by, kind, data', /Acme weekly update/.test(rows[0].textContent) && /owner@acme\.com/.test(rows[0].textContent)
+      && /Resent/.test(rows[0].textContent) && /Customer-safe/.test(rows[0].textContent) && /sam/.test(rows[1].textContent) && /Internal/.test(rows[1].textContent));
+    assert('subjects are text, never markup', /Week 44 <b>again<\/b>/.test(rows[0].textContent) && !h.$('.cr-cust b'));
+    h.click(h.act('cust-more'));
+    await tick(6);
+    get = h.srv.calls('GET', e => e.q.runs === '1').pop();
+    assert('"Load more" asks for the next page with before_id', get.q.before_id === '3', JSON.stringify(get.q));
+    rows = h.$$('.cr-cust tbody tr');
+    assert('…and appends it: the print run is not there (emails only), the other job\'s neither', rows.length === 4
+      && /Scheduled/.test(rows[2].textContent) && /robot/.test(rows[2].textContent) && /Week 42/.test(rows[3].textContent)
+      && !h.$$('.cr-cust tbody tr').some(r => /Elm/.test(r.textContent)), rows.map(r => r.textContent.replace(/\s+/g, ' ').slice(0, 60)).join(' | '));
+    assert('…and "Load more" goes when there is no more', !h.act('cust-more'));
+
+    // Open: the archived copy.
+    h.click(h.$('[data-act="cust-open"][data-id="1"]'));
+    assert('Open opens the window inside the click', h.opened.length === 1);
+    await tick(6);
+    let w = h.opened[0];
+    assert('…and writes the archived HTML exactly, through dwWrite, with no "rebuilt" banner', /ARCHIVED COPY — Route 30 — Week 44/.test(w.written)
+      && h.dwCalls.some(c => /ARCHIVED COPY/.test(c)) && !/Rebuilt from current data/.test(w.written));
+    assert('…locked down: a CSP that runs no script', /<meta http-equiv="Content-Security-Policy" content="default-src 'none'/.test(w.written));
+    assert('…and the archive was fetched with ?run=1&archive=1', h.srv.calls('GET', e => e.q.run === '1' && e.q.archive === '1').length === 1);
+    assert('opening is not logged as a send', h.srv.calls('POST', e => e.q.action === 'run').length === 0);
+
+    // Open: no archive → rebuilt, dates and "today" pinned, with the banner.
+    const seen = [];
+    const realMake = E.makeContext;
+    E.makeContext = (def, cfg, opts) => { seen.push({ def, opts }); return realMake(def, cfg, opts); };
+    h.click(h.$('[data-act="cust-open"][data-id="2"]'));
+    await tick(8);
+    w = h.opened[1];
+    const last = seen[seen.length - 1];
+    assert('a send with no archived copy is fetched (?run=2) and rebuilt', h.srv.calls('GET', e => e.q.run === '2' && !e.q.archive).length === 1
+      && h.srv.calls('GET', e => e.q.run === '2' && e.q.archive).length === 0, 'has_archive false skips the archive call');
+    assert('…with its jobs, its dates pinned (custom) and "today"/"now" the moment it went',
+      last && JSON.stringify(last.opts.pickedIds) === '["p1"]' && last.def.dates.preset === 'custom' && last.def.dates.from === '2026-10-26'
+        && last.def.dates.to === '2026-11-01' && last.opts.today === '2026-10-27' && last.opts.now === '2026-10-27T13:00:00Z',
+      last && JSON.stringify({ d: last.def.dates, t: last.opts.today, n: last.opts.now }));
+    assert('…under a yellow banner saying it was rebuilt', /Rebuilt from current data — the original was not archived/.test(w.written)
+      && /background:#fef3c7/.test(w.written) && /Route 30 Resurfacing/.test(w.written));
+    E.makeContext = realMake;
+
+    // Resend: the archived copy, to the same people, same subject.
+    h.click(h.$('[data-act="cust-resend"][data-id="1"]'));
+    await tick(8);
+    const em = h.email[0];
+    assert('Resend opens the email modal', !!em);
+    assert('…with the exact archived HTML', em && em.getHTML() === ARCHIVED);
+    assert('…the same recipients and subject', em && JSON.stringify(em.defaultRecipients) === '["owner@acme.com"]' && em.defaultSubject === 'Week 42');
+    assert('…as a resend of run 1, against the same report and jobs', em && em.reportType === 'paving_custom_report' && em.customReport.run_kind === 'resend'
+      && em.customReport.resent_from_run_id === 1 && em.customReport.report_id === 1 && JSON.stringify(em.customReport.project_ids) === '["p1"]'
+      && em.customReport.included_internal === false && em.customReport.definition.v === 2 && em.projectId === 'p1' && em.projectName === null,
+      em && JSON.stringify(em.customReport).slice(0, 300));
+    await em.onSent({ recipients: ['owner@acme.com'], subject: 'Week 42', recipientCount: 1 });
+    const logged = h.srv.calls('POST', e => e.q.action === 'run').pop();
+    assert('a resend the server did not log is logged as run_kind resend', logged && logged.body.action === 'email' && logged.body.run_kind === 'resend'
+      && logged.body.resent_from_run_id === 1 && logged.body.recipients[0] === 'owner@acme.com');
+    await tick(8);
+    // The list reloads to its first page (the resend is now on top): page down to the older rows again.
+    const showRun = async id => {
+      for (let i = 0; i < 6 && !h.$(`[data-act="cust-resend"][data-id="${id}"]`) && h.act('cust-more'); i++) { h.click(h.act('cust-more')); await tick(6); }
+    };
+    assert('after a resend the list reloads, the new send on top', /Week 42/.test((h.$$('.cr-cust tbody tr')[0] || {}).textContent || '')
+      && /Resent/.test((h.$$('.cr-cust tbody tr')[0] || {}).textContent || ''));
+    await showRun(2);
+    // Resend with no archive: the rebuild, without the banner.
+    h.click(h.$('[data-act="cust-resend"][data-id="2"]'));
+    await tick(8);
+    const em2 = h.email[1];
+    assert('resending a send with no archive mails the rebuild, without the banner', em2 && /Route 30 Resurfacing/.test(em2.getHTML())
+      && !/Rebuilt from current data/.test(em2.getHTML()) && JSON.stringify(em2.defaultRecipients) === '["owner@acme.com","eng@acme.com"]');
+    // Internal: confirm first (admin may open it).
+    h.answers.push(false);
+    h.click(h.$('[data-act="cust-resend"][data-id="3"]'));
+    await tick(8);
+    assert('resending an internal send asks first, and "no" opens nothing', /includes internal data/.test(h.confirms.pop() || '') && h.email.length === 2);
+    // Size check.
+    h.srv.archives[5] = ARCHIVED.replace('</body>', '<p>' + 'x'.repeat(1500000) + '</p></body>');
+    h.click(h.$('[data-act="cust-resend"][data-id="5"]'));
+    await tick(8);
+    assert('an archived copy over the email limit is refused before the modal', h.email.length === 2 && /too big to email/.test(h.toast()));
+
+    // A scheduled send to more addresses than one email can carry.
+    h.srv.addRun(Object.assign({}, h.srv.runs.find(r => r.id === 1), { id: 9, created_at: '2026-11-05T13:00:00Z', subject: 'Big list',
+      run_kind: 'schedule', recipients: Array.from({ length: 60 }, (_, i) => `r${i}@acme.com`) }));
+    h.srv.archives[9] = ARCHIVED;
+    h.click(h.act('cust-refresh'));
+    await tick(8);
+    h.click(h.$('[data-act="cust-resend"][data-id="9"]'));
+    await tick(8);
+    const em3 = h.email[h.email.length - 1];
+    assert('resending a send to 60 addresses fills in the first 50 (one email\'s limit) and says the other 10 need another send',
+      h.email.length === 3 && em3.defaultRecipients.length === 50 && em3.defaultRecipients[0] === 'r0@acme.com'
+        && em3.defaultRecipients[49] === 'r49@acme.com' && /went to 60 addresses/.test(h.toast()) && /other 10/.test(h.toast()),
+      em3 && em3.defaultRecipients.length + ' ' + h.toast());
+    await showRun(2);
+
+    // Open in builder.
+    h.click(h.$('[data-act="cust-builder"][data-id="2"]'));
+    await tick(8);
+    const d = h.S().doc;
+    assert('Open in builder makes a new, unsaved report from what was sent', h.S().view === 'edit' && d && d.id === null && d.touched
+      && d.name === 'Acme weekly update' && JSON.stringify(d.picked) === '["p1"]' && d.def.sections.map(s => s.type).join() === 'job_info,bid_progress');
+    assert('…with the send\'s dates', d.def.dates.preset === 'custom' && d.def.dates.from === '2026-10-26' && d.def.dates.to === '2026-11-01');
+    h.close();
+  }
+  {
+    // Not the sender, not admin / level 3: an internal send is not opened.
+    const h = boot({ server: histServer({ canShare: false }), cfg: { perm: { role: 'level2', canSeeCosts: true, canSeeFinancials: true, canShare: false } } });
+    await h.render();
+    h.click(h.act('customer'));
+    h.change(h.$('[data-bind="cust-job"]'), 'p1');
+    await tick(6);
+    h.click(h.$('[data-act="cust-open"][data-id="3"]'));
+    await tick(6);
+    assert('a level 2 who did not send an internal report gets the toast, and no window', h.opened.length === 0
+      && /Only the sender or an admin\/level 3 can open internal reports\./.test(h.toast()), h.toast());
+    h.click(h.$('[data-act="cust-resend"][data-id="3"]'));
+    await tick(6);
+    assert('…nor can resend it', h.email.length === 0);
+    // The server has the last word: a row without a sender goes to it, and its 403 closes the window.
+    h.S().cust.runs.find(r => r.id === 3).run_by_user_id = null;
+    h.S().cust.runs.find(r => r.id === 3).run_by_username = null;
+    h.click(h.$('[data-act="cust-open"][data-id="3"]'));
+    await tick(8);
+    assert('a 403 internal_archive from the server closes the window and says why', h.opened.length === 1 && h.opened[0].closed
+      && /Only the sender or an admin\/level 3/.test(h.toast()) && !/INTERNAL COPY/.test(h.opened[0].written));
+    // Open in builder: an internal send reopens customer-safe for them.
+    h.click(h.$('[data-act="cust-builder"][data-id="3"]'));
+    await tick(8);
+    assert('…and Open in builder starts it customer-safe', h.S().doc && h.S().doc.def.includeInternal === false);
+    h.close();
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  section('v2 · Schedules — Schedule… dialog, the rail list, Send now');
+  {
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com', 'b@acme.com'] }, { id: 42, name: '<b>Office</b>', emails: ['o@fc.example'] }] }));
+    srv.add({ id: 20, name: 'Fixed dates report', definition: { v: 2, dates: { preset: 'custom', from: '2026-10-01', to: '2026-10-31' },
+      jobs: { mode: 'saved', ids: ['p1'] }, sections: [{ type: 'job_info' }] } });
+    srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+    srv.reports.find(r => r.id === 2).definition.dates = { preset: 'last_week' };
+    srv.seq = 100;
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    assert('admin / level 3: the rail has a Schedules section', /Schedules/.test(h.$('.cr-rail').textContent)
+      && h.srv.callsTo('/api/custom-report-schedules', 'GET').length === 1 && h.srv.callsTo('/api/custom-report-schedules')[0].q.division === 'paving');
+    h.click(h.act('new'));
+    assert('Schedule… is off on an unsaved report, saying why', h.act('schedule').disabled && /Save the report first/.test(h.act('schedule').title));
+    h.click(h.$('[data-act="open"][data-id="3"]'));
+    assert('…and on an internal report', h.act('schedule').disabled && /customer-safe/.test(h.act('schedule').title));
+    h.click(h.$('[data-act="open"][data-id="20"]'));
+    h.click(h.act('schedule'));
+    await tick(4);
+    assert('a report with fixed (custom) dates is refused with the reason', /relative date range like Last week/.test((h.modal() || {}).textContent || '')
+      && h.srv.callsTo('/api/custom-report-schedules', 'POST').length === 0);
+    h.modal().querySelector('[data-choice]').click();
+    h.click(h.$('[data-act="open"][data-id="1"]'));
+    assert('a saved, customer-safe report can be scheduled', !h.act('schedule').disabled);
+    h.click(h.act('schedule'));
+    await tick(6);
+    let m = h.modal();
+    assert('Schedule… opens the dialog', m && /Schedule this report/.test(m.textContent));
+    assert('…every field is there: frequency, 5-minute times, time zone, jobs, recipients, subject, note, PDF, on',
+      !!m.querySelector('#cr-s-freq') && m.querySelectorAll('#cr-s-time option').length === 288 && !!m.querySelector('#cr-s-tz')
+        && !!m.querySelector('#cr-s-contacts') && m.querySelectorAll('[data-group]').length === 2 && !!m.querySelector('#cr-s-email')
+        && !!m.querySelector('#cr-s-subject') && !!m.querySelector('#cr-s-note') && !!m.querySelector('#cr-s-pdf') && !!m.querySelector('#cr-s-enabled'));
+    assert('…time zones Eastern / Central / Mountain / Pacific and Other', [...m.querySelectorAll('#cr-s-tz option')].map(o => o.textContent).join() === 'Eastern,Central,Mountain,Pacific,Other…');
+    assert('…a saved-jobs report sends its saved jobs (no job choice)', /The report’s saved jobs/.test(m.textContent) && !m.querySelector('input[name="cr-s-mode"]'));
+    assert('…group names are text', /<b>Office<\/b>/.test(m.textContent) && !m.querySelector('[data-group] + b'));
+    const ch = (sel, v) => { const el = m.querySelector(sel); el.value = v; el.dispatchEvent(new h.window.Event('change', { bubbles: true })); };
+    ch('#cr-s-freq', 'monthly');
+    assert('Monthly shows the day of the month, with "Last day"', !m.querySelector('#cr-s-dom-row').hidden && m.querySelector('#cr-s-days').hidden
+      && /Last day/.test(m.querySelector('#cr-s-dom').textContent));
+    ch('#cr-s-freq', 'weekly');
+    assert('Weekly shows the day checkboxes', !m.querySelector('#cr-s-days').hidden && m.querySelector('#cr-s-dom-row').hidden);
+    m.querySelector('[data-dow="1"]').checked = false;
+    m.querySelector('#cr-s-contacts').checked = false;
+    m.querySelector('[data-s="save"]').click();
+    await tick(4);
+    assert('no day and no recipient: said before any request', /at least one day/.test(m.querySelector('.cr-m-errs').textContent)
+      && /someone to send it to/.test(m.querySelector('.cr-m-errs').textContent) && h.srv.callsTo('/api/custom-report-schedules', 'POST').length === 0);
+    m.querySelector('[data-dow="1"]').checked = true;
+    m.querySelector('[data-dow="3"]').checked = true;
+    ch('#cr-s-time', '06:30');
+    ch('#cr-s-tz', 'America/Chicago');
+    m.querySelector('[data-group="41"]').checked = true;
+    m.querySelector('#cr-s-email').value = 'PM@Acme.com, not-valid';
+    m.querySelector('[data-s="add-email"]').click();
+    assert('typed addresses become chips; a bad one stays, named', /pm@acme\.com/.test(m.querySelector('#cr-s-chips').textContent)
+      && m.querySelector('#cr-s-email').value === 'not-valid' && /Not an email address: not-valid/.test(m.querySelector('.cr-m-errs').textContent));
+    m.querySelector('#cr-s-email').value = '';
+    m.querySelector('#cr-s-subject').value = 'Weekly progress';
+    m.querySelector('#cr-s-note').value = 'Have a good week.';
+    m.querySelector('#cr-s-pdf').checked = false;
+    srv.rejectNext = 'Pick a time on a five-minute mark — the server checks every five minutes.';
+    m.querySelector('[data-s="save"]').click();
+    await tick(6);
+    assert('the server\'s validation message is shown in the dialog, which stays open', !!h.modal()
+      && /five-minute mark/.test(m.querySelector('.cr-m-errs').textContent) && !m.querySelector('[data-s="save"]').disabled);
+    m.querySelector('[data-s="save"]').click();
+    await tick(8);
+    const post = h.srv.callsTo('/api/custom-report-schedules', 'POST').pop();
+    const b = post && post.body;
+    assert('Create POSTs the schedule for the saved report', b && b.custom_report_id === 1 && b.jobs_mode === 'saved' && b.frequency === 'weekly'
+      && JSON.stringify(b.days_of_week) === '[1,3]' && b.day_of_month === null && b.send_time === '06:30' && b.timezone === 'America/Chicago'
+      && JSON.stringify(b.group_ids) === '[41]' && JSON.stringify(b.emails) === '["pm@acme.com"]' && b.use_job_contacts === false
+      && b.subject === 'Weekly progress' && b.note === 'Have a good week.' && b.attach_pdf === false && b.enabled === true && b.picked_jobs === null
+      && post.q.division === 'paving', JSON.stringify(b));
+    assert('…closes, and the rail lists it: report, cadence, next send', !h.modal() && /Acme weekly update/.test(h.$('.cr-rail').textContent)
+      && /Weekly Mon, Wed at 6:30 AM Central/.test(h.$('.cr-rail').textContent) && /Next /.test(h.$('.cr-rail').textContent), h.$('.cr-rail').textContent.slice(-300));
+    const sid = srv.schedules[0].id;
+    // A template: once per job, the picked jobs, or one report of all In Progress jobs.
+    h.click(h.$('[data-act="open"][data-id="2"]'));
+    h.click(h.act('schedule'));
+    await tick(6);
+    m = h.modal();
+    const modes = [...m.querySelectorAll('input[name="cr-s-mode"]')].map(r => r.value);
+    assert('a template offers: each In Progress job, picked jobs, all In Progress jobs as one report', modes.join() === 'each,picked,all_in_progress'
+      && /one email per job/.test(m.textContent) && /one report/.test(m.textContent));
+    const mode = v => { const r = m.querySelector(`input[name="cr-s-mode"][value="${v}"]`); r.checked = true; r.dispatchEvent(new h.window.Event('change', { bubbles: true })); };
+    mode('picked');
+    assert('"Picked jobs" shows the job picker', !m.querySelector('#cr-s-pick').hidden && m.querySelectorAll('[data-job]').length === 3);
+    m.querySelector('[data-job="p2"]').checked = true;
+    m.querySelector('[data-s="save"]').click();
+    await tick(8);
+    const tb = h.srv.callsTo('/api/custom-report-schedules', 'POST').pop().body;
+    assert('…which sends jobs_mode each with picked_jobs [{id, name}] (job contacts on by default)', tb.custom_report_id === 2 && tb.jobs_mode === 'each'
+      && JSON.stringify(tb.picked_jobs) === '[{"id":"p2","name":"Elm Street Lot"}]' && tb.use_job_contacts === true, JSON.stringify(tb));
+    h.click(h.act('schedule'));
+    await tick(6);
+    m = h.modal();
+    mode('all_in_progress');
+    m.querySelector('#cr-s-email').value = 'office@forcecorp.example';
+    m.querySelector('[data-s="add-email"]').click();
+    m.querySelector('[data-s="save"]').click();
+    await tick(8);
+    const aip = h.srv.callsTo('/api/custom-report-schedules', 'POST').pop().body;
+    assert('"All In Progress jobs — one report" sends jobs_mode all_in_progress', aip.jobs_mode === 'all_in_progress');
+    assert('…without job contacts (one report of every customer\'s jobs never goes to each job\'s contacts)', aip.use_job_contacts === false, JSON.stringify(aip));
+    h.click(h.act('schedule'));
+    await tick(6);
+    m = h.modal();
+    const box = () => m.querySelector('#cr-s-contacts'), why = () => m.querySelector('#cr-s-contacts-why');
+    assert('the dialog opens with job contacts on for "each job"', box().checked && !box().disabled && why().hidden);
+    mode('all_in_progress');
+    assert('choosing "All In Progress jobs — one report" takes the contacts tick away, and says why',
+      !box().checked && box().disabled && !why().hidden && /each customer would be sent the others/.test(why().textContent));
+    mode('each');
+    assert('…back to one email per job, the box can be ticked again', !box().disabled && why().hidden);
+    m.querySelector('[data-s="cancel"]').click();
+    await tick(2);
+    // Rail actions.
+    const more = () => h.$(`[data-act="sched-menu"][data-id="${sid}"]`);
+    h.click(more());
+    const items = [...h.document.querySelectorAll('.cr-menu [role="menuitem"]')].map(i => i.getAttribute('data-act'));
+    assert('each schedule has Pause, Edit…, Send now and Delete', items.join() === 'sched-toggle,sched-edit,sched-send,sched-delete');
+    h.click(h.document.querySelector('.cr-menu [data-act="sched-toggle"]'));
+    await tick(8);
+    let put = h.srv.callsTo('/api/custom-report-schedules', 'PUT').pop();
+    assert('Pause PUTs the schedule with enabled false (everything else kept)', put && put.q.id === String(sid) && put.body.enabled === false
+      && put.body.send_time === '06:30' && JSON.stringify(put.body.days_of_week) === '[1,3]');
+    assert('…and the rail says Paused', /Paused/.test(h.$('.cr-rail').textContent));
+    h.click(more());
+    h.click(h.document.querySelector('.cr-menu [data-act="sched-toggle"]'));
+    await tick(8);
+    assert('Resume PUTs enabled true', h.srv.callsTo('/api/custom-report-schedules', 'PUT').pop().body.enabled === true);
+    h.click(more());
+    h.click(h.document.querySelector('.cr-menu [data-act="sched-edit"]'));
+    await tick(6);
+    m = h.modal();
+    assert('Edit… opens the dialog filled in from the schedule', m && /Edit schedule/.test(m.textContent) && m.querySelector('#cr-s-freq').value === 'weekly'
+      && m.querySelector('[data-dow="3"]').checked && m.querySelector('#cr-s-time').value === '06:30' && m.querySelector('#cr-s-tz').value === 'America/Chicago'
+      && m.querySelector('[data-group="41"]').checked && /pm@acme\.com/.test(m.querySelector('#cr-s-chips').textContent));
+    m.querySelector('#cr-s-subject').value = 'New subject';
+    m.querySelector('[data-s="save"]').click();
+    await tick(8);
+    put = h.srv.callsTo('/api/custom-report-schedules', 'PUT').pop();
+    assert('…and Save PUTs it', put.q.id === String(sid) && put.body.subject === 'New subject' && !h.modal());
+    let release;
+    srv.sendNowGate = new Promise(r => { release = r; });
+    h.answers.push(false);
+    h.click(more());
+    h.click(h.document.querySelector('.cr-menu [data-act="sched-send"]'));
+    assert('Send now asks first; "no" sends nothing', /Send “Acme weekly update” to its recipients now/.test(h.confirms.pop() || '')
+      && h.srv.callsTo('/api/custom-report-schedules', 'POST', e => e.q.action === 'run').length === 0);
+    h.click(more());
+    h.click(h.document.querySelector('.cr-menu [data-act="sched-send"]'));
+    await tick(4);
+    assert('"yes" POSTs ?id=&action=run and shows a spinner while it works', h.srv.callsTo('/api/custom-report-schedules', 'POST', e => e.q.action === 'run' && e.q.id === String(sid)).length === 1
+      && /Sending…/.test(h.$('.cr-rail').textContent) && !!h.$('.cr-rail .cr-spin'));
+    release();
+    await tick(8);
+    assert('…then says what happened', /Sent 2 emails/.test(h.toast()) && !h.$('.cr-rail .cr-spin'), h.toast());
+    // Turning internal data on for a scheduled report says the sends will stop.
+    h.click(h.$('[data-act="open"][data-id="1"]'));
+    h.click(h.$('#cr-step-2'));
+    h.answers.push(false);
+    h.$('[data-bind="internal"]').click();
+    assert('switching internal data on for a scheduled report warns the scheduled sends stop', /This report is scheduled — scheduled sends will stop until it is customer-safe again\./.test(h.confirms.pop() || ''));
+    h.answers.push(false);
+    h.click(more());
+    h.click(h.document.querySelector('.cr-menu [data-act="sched-delete"]'));
+    assert('Delete asks first', /Delete the schedule/.test(h.confirms.pop() || '') && h.srv.callsTo('/api/custom-report-schedules', 'DELETE').length === 0);
+    h.click(more());
+    h.click(h.document.querySelector('.cr-menu [data-act="sched-delete"]'));
+    await tick(8);
+    assert('…then DELETEs it', h.srv.callsTo('/api/custom-report-schedules', 'DELETE').pop().q.id === String(sid) && !h.$(`[data-act="sched-menu"][data-id="${sid}"]`));
+    h.click(h.$('[data-act="item-menu"][data-id="2"]'));
+    assert('the report ⋯ menu has Schedule… too', !!h.document.querySelector('.cr-menu [data-act="menu-schedule"]'));
+    h.close();
+  }
+  {
+    const h = boot({ server: seed(makeServer({ canShare: false })), cfg: { perm: { role: 'level2', canSeeCosts: true, canSeeFinancials: true, canShare: false } } });
+    await h.render();
+    await tick(6);
+    assert('level 1/2: no Schedules in the rail, no schedules fetched', !/Schedules/.test(h.$('.cr-rail').textContent)
+      && h.srv.callsTo('/api/custom-report-schedules').length === 0);
+    h.click(h.$('[data-act="open"][data-id="1"]'));
+    assert('…and Schedule… is off, saying who may', h.act('schedule').disabled && /Only an admin or level 3/.test(h.act('schedule').title));
+    h.close();
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  section('v2 · AI Builder drawer — the adapter, apply, undo, never internal');
+  {
+    const h = boot({ server: seed(makeServer({ canShare: false })) });
+    const E = h.window.FCTReportEngine;
+    const mounts = [];
+    let destroyed = 0;
+    h.window.FCTReportAI = {
+      mount(el, adapter) {
+        mounts.push({ el, adapter });
+        el.innerHTML = '<div class="ai-stub"><textarea aria-label="Ask"></textarea><button type="button" data-act="close">x</button>'
+          + '<button type="button" data-act="save">s</button></div>';
+        return { destroy() { destroyed++; } };
+      },
+    };
+    await h.render();
+    const drawer = () => h.mount.querySelector('.cr-ai-drawer');
+    assert('the drawer is there, closed', drawer() && drawer().hidden && mounts.length === 0);
+    h.click(h.act('ai-toggle'));
+    assert('"✨ AI Builder" opens the drawer and mounts the AI panel once', !drawer().hidden && mounts.length === 1
+      && drawer().contains(mounts[0].el) && h.act('ai-toggle').getAttribute('aria-pressed') === 'true');
+    const a = mounts[0].adapter;
+    const keys = ['getDefinition', 'applyDefinition', 'undo', 'getJobs', 'getCodes', 'division', 'divisionLabel', 'apiBase', 'getToken',
+      'onAuthError', 'requestInternal', 'isReadOnly'];
+    assert('the adapter has exactly the spec\'s members', JSON.stringify(Object.keys(a).sort()) === JSON.stringify(keys.slice().sort()), Object.keys(a).join());
+    assert('…division, label, API base and token', a.division === 'paving' && a.divisionLabel === 'Paving' && a.apiBase === '/api' && a.getToken() === 'tok-123');
+    const jobs = a.getJobs();
+    assert('getJobs gives id, name, number, client, status — and nothing else (no contract or money)', jobs.length === 3
+      && jobs.every(j => JSON.stringify(Object.keys(j)) === '["id","name","number","client","status"]')
+      && JSON.stringify(jobs[0]) === '{"id":"p1","name":"Route 30 Resurfacing","number":"26101","client":"Acme Township","status":"In Progress"}'
+      && !/250000|80000|contract/.test(JSON.stringify(jobs)));
+    const codes = a.getCodes();
+    assert('getCodes gives the division\'s cost codes and sub codes', codes.costCodes.includes('Paving') && codes.costCodes.includes('Sealcoat')
+      && codes.subCodes.some(x => x.code === 'Coat') && codes.subCodes.every(x => JSON.stringify(Object.keys(x)) === '["code","description","unit"]'));
+    assert('with no report open, getDefinition is an empty v2 definition and nothing is read-only', a.getDefinition().v === 2
+      && a.getDefinition().sections.length === 0 && a.isReadOnly() === false);
+    // Apply with nothing open: a new unsaved report.
+    const ok = a.applyDefinition(E.normalizeDefinition({ v: 2, title: 'Turf Install — last week', includeInternal: true,
+      jobs: { mode: 'pick', ids: ['p1', 'nope', 'p2'] }, dates: { preset: 'last_week' },
+      sections: [{ type: 'job_info' }, { type: 'bid_progress', columns: ['cost_code', 'actual_cost'] }] }), { changes: ['Added job info', 'Added progress'] });
+    let d = h.S().doc;
+    assert('applying with no report open creates a new, unsaved report', ok === true && d && d.id === null && d.touched && h.S().view === 'edit'
+      && d.def.title === 'Turf Install — last week' && d.name === 'Turf Install — last week' && !h.$('.cr-dirty').hidden);
+    assert('…with only the jobs that exist', JSON.stringify(d.picked) === '["p1","p2"]');
+    assert('…and internal data still OFF, whatever the definition said', d.def.includeInternal === false && !h.$('.cr-banner-int'));
+    assert('the drawer kept its conversation (no remount)', mounts.length === 1 && destroyed === 0 && !drawer().hidden);
+    await sleep(PREVIEW_WAIT);
+    assert('…the preview shows it, customer-safe', /Route 30 Resurfacing/.test(h.srcdoc()) && !/Actual Cost/.test(h.srcdoc()) && !/INTERNAL/.test(h.srcdoc()));
+    assert('getDefinition now reads the open report, jobs included', a.getDefinition().title === 'Turf Install — last week'
+      && JSON.stringify(a.getDefinition().jobs.ids) === '["p1","p2"]');
+    // Apply again → undoable.
+    a.applyDefinition(E.normalizeDefinition({ v: 2, title: 'Second try', jobs: { mode: 'pick', ids: ['p2'] }, sections: [{ type: 'notes', text: 'AI note' }] }), { changes: ['x'] });
+    d = h.S().doc;
+    assert('a second apply changes the open report in place', h.S().doc === d && d.def.title === 'Second try' && JSON.stringify(d.picked) === '["p2"]');
+    // The person turns internal data on — only through the confirm.
+    h.answers.push(false);
+    assert('requestInternal opens the internal-data confirm; "no" leaves it off', a.requestInternal() === false
+      && h.confirms.pop() === 'This report will be able to show costs, rates, hours, employee names and profit. Don\'t send it to a customer. Continue?'
+      && d.def.includeInternal === false);
+    assert('requestInternal with "yes" turns it on', a.requestInternal() === true && d.def.includeInternal === true && !!h.$('.cr-banner-int'));
+    a.applyDefinition(E.normalizeDefinition({ v: 2, title: 'Third', sections: [{ type: 'bid_progress' }] }), {});
+    assert('an apply keeps internal data as the person set it (on stays on)', h.S().doc.def.includeInternal === true);
+    h.click(h.act('internal-off'));
+    assert('…off by the person', h.S().doc.def.includeInternal === false);
+    assert('undo puts back the previous definition', a.undo() === true && h.S().doc.def.title === 'Second try');
+    assert('…but never switches internal data back on', h.S().doc.def.includeInternal === false && !h.$('.cr-banner-int'));
+    assert('undo again goes back to the first apply', a.undo() === true && h.S().doc.def.title === 'Turf Install — last week' && JSON.stringify(h.S().doc.picked) === '["p1","p2"]');
+    assert('undoing the apply that made the report closes it', a.undo() === true && h.S().doc === null && h.S().view === 'home');
+    assert('…and there is nothing more to undo', a.undo() === false);
+    // Clicks inside the drawer are the AI panel's, not the builder's.
+    h.click(h.$('[data-act="new"]'));
+    const before = h.S().doc;
+    h.click(mounts[0].el.querySelector('[data-act="close"]'));
+    h.click(mounts[0].el.querySelector('[data-act="save"]'));
+    await tick();
+    assert('a data-act="close" / "save" inside the drawer does not close or save the report', h.S().doc === before && h.S().view === 'edit' && !h.modal());
+    // Redraws keep the panel; switching report remounts it.
+    const nRedraw = mounts.length;
+    h.click(h.$('#cr-step-2'));
+    h.click(h.act('history'));
+    h.click(h.act('back'));
+    assert('redraws (steps, history, back) keep the same panel, not remounted', mounts.length === nRedraw
+      && drawer().contains(mounts[mounts.length - 1].el) && !drawer().hidden && !!drawer().querySelector('.ai-stub'), `mounts ${mounts.length}`);
+    const nBefore = mounts.length;
+    h.click(h.$('[data-act="open"][data-id="2"]'));   // the shared template, read-only here (canShare false)
+    await tick();
+    assert('opening another report starts a fresh conversation (old one destroyed, remounted)', mounts.length === nBefore + 1 && destroyed >= 1);
+    assert('isReadOnly is true on a shared template the user cannot save', mounts[mounts.length - 1].adapter.isReadOnly() === true);
+    assert('…and apply refuses to change it', mounts[mounts.length - 1].adapter.applyDefinition(E.defaultDefinition(), {}) === false
+      && h.S().doc.def.sections.length === 2);
+    // Closing.
+    drawer().querySelector('.cr-ai-x').click();
+    assert('the × closes the drawer', drawer().hidden && h.act('ai-toggle').getAttribute('aria-pressed') === 'false');
+    h.click(h.act('ai-toggle'));
+    drawer().dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    assert('Escape closes it too', drawer().hidden);
+    h.close();
+  }
+  {
+    const h = boot({ server: seed(makeServer()) });
+    await h.render();
+    h.click(h.act('ai-toggle'));
+    assert('without custom-reports-ai.js loaded the drawer says it is still loading', /still loading/.test(h.mount.querySelector('.cr-ai-drawer').textContent));
+    h.close();
+  }
+
+  // ════════════════════════════════════════════════════════════════════
+  section('v2 · 409 client_outdated — reload, the work kept');
+  {
+    const h = boot({ server: seed(makeServer()) });
+    await h.render();
+    h.click(h.$('[data-act="open"][data-id="1"]'));
+    h.click(h.$('#cr-step-3'));
+    h.type(h.$('[data-bind="title"]'), 'Edited in a stale tab');
+    // The stored report is v2; this tab sends a v1 definition (an old builder).
+    h.srv.find(1).definition.v = 2;
+    const E = h.window.FCTReportEngine;
+    const realNorm = E.normalizeDefinition;
+    E.normalizeDefinition = x => Object.assign(realNorm(x), { v: 1 });
+    h.click(h.act('save'));
+    await tick(6);
+    E.normalizeDefinition = realNorm;
+    const put = h.srv.calls('PUT').pop();
+    assert('the stand-in refuses a v1 save over a v2 report with 409 client_outdated', put && put.body.definition.v === 1);
+    const m = h.modal();
+    assert('the UI says DataWatch was updated and offers Reload', m && /DataWatch was updated/.test(m.textContent) && /reload the page to keep editing/.test(m.textContent)
+      && !!m.querySelector('[data-m="reload"]'));
+    assert('…no error toast on top', !h.document.querySelector('.cr-toast.err'));
+    const kept = h.window.sessionStorage.getItem('fct_cr_draft_paving');
+    assert('…and the work is kept in the draft', kept && /Edited in a stale tab/.test(kept));
+    m.querySelector('[data-m="reload"]').click();
+    const e = new h.window.Event('beforeunload', { cancelable: true });
+    h.window.dispatchEvent(e);
+    assert('Reload leaves without the "unsaved changes" question', h.S().reloading === true && !e.defaultPrevented);
+    const h2 = boot({ server: h.srv });
+    h2.window.sessionStorage.setItem('fct_cr_draft_paving', kept);
+    await h2.render();
+    await tick(6);
+    const m2 = h2.modal();
+    assert('after the reload the draft is offered back', m2 && /Restore your unsaved report/.test(m2.textContent));
+    [...m2.querySelectorAll('[data-choice]')].find(b => /Restore/.test(b.textContent)).click();
+    await tick();
+    h2.click(h2.act('save'));
+    await tick(6);
+    const put2 = h2.srv.calls('PUT').pop();
+    assert('…and saves as v2 this time', put2 && put2.body.definition.v === 2 && put2.body.definition.title === 'Edited in a stale tab' && h2.$('.cr-dirty').hidden);
+    h.close(); h2.close();
+  }
+
+  section('v2 · Send History names scheduled and resent emails');
+  {
+    const srv = seed(makeServer());
+    srv.addRun({ id: 1, report_name: 'R', action: 'email', run_kind: 'schedule', recipients: ['a@b.co'], created_at: '2026-11-04T15:00:00Z' });
+    srv.addRun({ id: 2, report_name: 'R', action: 'email', run_kind: 'resend', recipients: ['a@b.co'], created_at: '2026-11-04T16:00:00Z' });
+    const h = boot({ server: srv });
+    await h.render();
+    h.click(h.act('history'));
+    await tick();
+    const rows = h.$$('.cr-table tbody tr').map(r => r.textContent);
+    assert('the Action cell says Scheduled / Resent', rows.some(t => /Scheduled/.test(t)) && rows.some(t => /Resent/.test(t)));
+    h.close();
+  }
+  {
+    // The server pages the history (100 at a time): "Load more" fetches the rest.
+    const srv = seed(makeServer({ runPage: 2 }));
+    for (let i = 1; i <= 5; i++) srv.addRun({ id: i, report_name: 'Run ' + i, action: 'print', created_at: '2026-11-0' + i + 'T15:00:00Z' });
+    const h = boot({ server: srv });
+    await h.render();
+    h.click(h.act('history'));
+    await tick(4);
+    assert('Send History shows the first page, newest first, with "Load more"', h.$$('.cr-table tbody tr').length === 2
+      && /Run 5/.test(h.$$('.cr-table tbody tr')[0].textContent) && !!h.act('history-more'));
+    h.click(h.act('history-more'));
+    await tick(4);
+    const get = h.srv.calls('GET', e => e.q.runs === '1').pop();
+    assert('…which asks for the page before the last row shown (before_id) and appends it', get && get.q.before_id === '4'
+      && h.$$('.cr-table tbody tr').length === 4 && /Run 2/.test(h.$$('.cr-table tbody tr')[3].textContent), get && JSON.stringify(get.q));
+    h.click(h.act('history-more'));
+    await tick(4);
+    assert('…until there is no more: all five, and the button gone', h.$$('.cr-table tbody tr').length === 5 && !h.act('history-more'));
+    h.click(h.act('history-refresh'));
+    await tick(4);
+    assert('Refresh starts again from the newest page', h.$$('.cr-table tbody tr').length === 2 && !!h.act('history-more')
+      && !h.srv.calls('GET', e => e.q.runs === '1').pop().q.before_id);
+    h.close();
+  }
+
+  // ════════════════════════════════════════════════════════════════════
   section('Source rules');
   {
     const code = UI.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
@@ -1467,7 +2708,8 @@ function seed(srv) {
 
   // ════════════════════════════════════════════════════════════════════
   section('In a real browser — phone and desktop widths (optional)');
-  await browserCheck();
+  if (process.env.CR_SKIP_BROWSER) console.log('  - skipped: CR_SKIP_BROWSER is set');
+  else await browserCheck();
 
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
@@ -1499,13 +2741,43 @@ async function browserCheck() {
     <script>${BRANDING}</script><script>${ENGINE}</script><script>${UI}</script>
     <script>
       const data = ${JSON.stringify(data)};
-      const RUNS = [{ id: 1, report_name: 'Owner update', action: 'email', subject: 'Weekly progress for the owner',
+      const RUNS = [{ id: 1, report_name: 'Owner update', action: 'email', subject: 'Weekly progress for the owner', project_ids: ['p1'], run_kind: 'schedule',
         project_names: ['Route 30 Resurfacing', 'Elm Street Lot', 'Maple Avenue Reconstruction Phase Two', 'Borough Garage Lot'],
         date_from: '2026-10-27', date_to: '2026-11-02', included_internal: true, run_by_username: 'pat', created_at: '2026-11-04T15:00:00Z',
         recipients: ['project.manager.longname@acme-township.example.com', 'township.engineer@acme-township.example.com',
           'construction.inspector@acme-township.example.com', 'accounts.payable@acme-township.example.com', 'owner.representative@acme-township.example.com'] }];
-      window.fetch = async (url) => ({ ok: true, status: 200, json: async () => (/runs=1/.test(String(url)) ? { runs: RUNS }
-        : { reports: [], canShare: true, me: { userId: 7, username: 'pat' } }) });
+      const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+      const REPORTS = window.__REPORTS || [];
+      const CONTACTS = [
+        { id: 1, project_id: 'p1', email: 'project.manager.with.a.very.long.address@acme-township.example.com', name: 'Olivia Owner-Representative',
+          title: 'Owner representative for the township', organization: 'Acme Township Department of Public Works', role: 'owner', auto_add: true },
+        { id: 2, project_id: null, client_key: 'acme township', client_name: 'Acme Township', email: 'eng@acme.example', name: 'Ed Engineer', role: 'engineer', auto_add: false },
+      ];
+      const SCHEDS = [{ id: 901, custom_report_id: 1, report_name: 'Acme weekly owner update with a long name', jobs_mode: 'saved', frequency: 'weekly',
+        days_of_week: [1, 3, 5], send_time: '06:30', timezone: 'America/Chicago', group_ids: [41], emails: ['pm@acme.example'], use_job_contacts: true,
+        subject: 'Weekly', note: '', attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:30:00Z', last_status: 'failed',
+        last_message: 'No saved contacts for Route 30 Resurfacing — the job has no contacts to send to', last_run_at: '2026-11-02T12:30:00Z' }];
+      const GROUPS = [{ id: 41, name: 'Acme owners and engineers distribution list', emails: ['a@acme.example', 'b@acme.example'] }];
+      const route = url => {
+        const u = String(url);
+        if (u.includes('/company/branding')) return { ok: true, branding: { display_name: 'Force Corp Paving & Sealcoating', logo: { mime: 'image/png', base64: PNG, width: 1, height: 1 },
+          phone: '724-555-0000', address: '1 Industrial Way, Greensburg PA' }, canEdit: false };
+        if (u.includes('/employees')) return { employees: [{ name: 'Pat Quinn', phone: '555-0199', email: 'pat@fc.example', logins: ['pat'] }] };
+        if (u.includes('/report-contacts')) return { ok: true, contacts: CONTACTS, canEdit: true };
+        if (u.includes('/custom-report-schedules')) return { schedules: SCHEDS, canSchedule: true, groups: [{ id: 41, name: GROUPS[0].name, count: 2 }] };
+        if (u.includes('/recipient-groups')) return { ok: true, groups: GROUPS };
+        if (/archive=1/.test(u)) return { html: '<!DOCTYPE html><html><head></head><body><h1>Archived</h1></body></html>' };
+        if (/runs=1/.test(u)) return { runs: RUNS, next_before_id: /project_id/.test(u) ? 1 : null };
+        return { reports: REPORTS, canShare: true, me: { userId: 7, username: 'pat' } };
+      };
+      window.fetch = async (url) => ({ ok: true, status: 200, json: async () => route(url) });
+      // A stand-in AI panel: a message list and a box, as wide as it is given.
+      window.FCTReportAI = { mount(el, adapter) {
+        el.innerHTML = '<div style="padding:12px;display:flex;flex-direction:column;gap:8px"><div class="ai-msgs">Ask for a report in plain words.</div>'
+          + '<textarea style="width:100%;min-height:80px"></textarea><button type="button">Send</button></div>';
+        window.__aiAdapter = adapter;
+        return {};
+      } };
       FCTCustomReports.configure({ division: 'paving', divisionLabel: 'Paving', getToken: () => 't', user: { username: 'pat' },
         perm: { role: 'admin', canSeeCosts: true, canSeeFinancials: true }, areaUnit: 'SY', ready: () => Promise.resolve(),
         getProjects: () => data.projects, getPurchaseOrders: () => data.pos, getTruckingEntries: () => data.trucks, helpers: {} });
@@ -1588,7 +2860,87 @@ async function browserCheck() {
         && full.sw > full.cw, `${fit} ${JSON.stringify(full)}`);
       await q.close();
     }
+    await browserCheckV2(browser, page);
   } finally {
     await browser.close();
+  }
+}
+
+// The v2 views at 390 px and 1440 px: Customer History, Contacts (with the
+// form open), the step ① filter and step ③ fields, the Schedule… dialog and
+// the AI drawer (a full-width sheet on a phone, a side drawer that pushes the
+// builder over on a wide screen). Nothing scrolls sideways anywhere.
+async function browserCheckV2(browser, basePage) {
+  const saved = [{ id: 1, name: 'Acme weekly owner update', description: null, visibility: 'private', version: 1, can_edit: true, kind: 'report',
+    customer_safe: true, owner_username: 'pat', updated_by_username: 'pat', updated_at: '2026-11-04T15:00:00Z',
+    definition: { v: 2, title: 'Weekly', jobs: { mode: 'saved', ids: ['p1'] }, dates: { preset: 'last_week' }, sections: [{ type: 'job_info' }, { type: 'bid_progress' }] } }];
+  const page = basePage.replace('<script>' + BRANDING + '</script>', `<script>window.__REPORTS = ${JSON.stringify(saved)};</script><script>${BRANDING}</script>`);
+  for (const [w, hgt] of [[390, 844], [1440, 900]]) {
+    const p = await browser.newPage({ viewport: { width: w, height: hgt } });
+    const errors = [];
+    p.on('pageerror', e => errors.push(e.message));
+    await p.setContent(page);
+    await p.waitForSelector('.cr-card');
+    const wide = () => p.evaluate(() => document.documentElement.scrollWidth);
+    const rail = async () => { if (w === 390) await p.click('.cr-railbtn'); };
+    // Customer History
+    await rail();
+    await p.click('[data-act="customer"]');
+    await p.selectOption('[data-bind="cust-job"]', 'p1');
+    await p.waitForSelector('.cr-cust tbody tr');
+    assert(`${w}px: Customer History, with a page of sends, does not scroll sideways`, await wide() <= w, await wide());
+    const acts = await p.locator('.cr-cust [data-act="cust-open"]').first().boundingBox();
+    assert(`${w}px: …its Open button is on screen`, acts && acts.x >= 0 && acts.x + acts.width <= w + 1, JSON.stringify(acts));
+    // Contacts, form open
+    await rail();
+    await p.click('[data-act="contacts"]');
+    await p.waitForSelector('.cr-ct-card');
+    await p.click('[data-act="ct-add"]');
+    assert(`${w}px: Contacts, with the add form open, does not scroll sideways`, await wide() <= w, await wide());
+    // The builder: step ① filter, step ③ branding fields
+    await rail();
+    await p.click('[data-act="open"][data-id="1"]');
+    await p.waitForSelector('.cr-filters [data-bind="filter-sc"]');
+    assert(`${w}px: step ① with the sub-code filter does not scroll sideways`, await wide() <= w, await wide());
+    await p.check('.cr-filters [data-bind="filter-sc"] >> nth=0');
+    await p.waitForSelector('.cr-chip');
+    assert(`${w}px: …nor with a filter chip`, await wide() <= w, await wide());
+    await p.click('#cr-step-3');
+    await p.waitForSelector('[data-bind="h-branding"]');
+    assert(`${w}px: step ③ with branding and contact fields does not scroll sideways`, await wide() <= w, await wide());
+    await p.waitForTimeout(400);
+    const brand = await p.evaluate(() => { const f = document.querySelector('.cr-frame'); return f ? (f.getAttribute('srcdoc') || '') : ''; });
+    assert(`${w}px: the preview carries the company name and logo`, /Force Corp Paving &amp; Sealcoating/.test(brand) && /<img class="mast-logo" src="data:image\/png/.test(brand));
+    // Schedule… dialog
+    await p.click('[data-act="schedule"]');
+    await p.waitForSelector('#cr-s-freq');
+    const dlg = await p.locator('.cr-modal-box').boundingBox();
+    assert(`${w}px: the Schedule dialog fits the screen`, dlg && dlg.x >= 0 && dlg.x + dlg.width <= w + 1 && await wide() <= w, JSON.stringify(dlg));
+    await p.click('[data-s="cancel"]');
+    // AI drawer
+    await p.click('[data-act="ai-toggle"] >> visible=true');
+    await p.waitForSelector('.cr-ai-drawer:not([hidden]) textarea');
+    const dr = await p.locator('.cr-ai-drawer').boundingBox();
+    if (w === 390) {
+      assert('390px: the AI builder is a full-width sheet', dr && Math.round(dr.x) === 0 && Math.round(dr.width) === 390, JSON.stringify(dr));
+    } else {
+      const pv = await p.locator('.cr-preview').boundingBox();
+      assert('1440px: the AI builder is a 400 px drawer on the right', dr && Math.round(dr.width) === 400 && Math.round(dr.x + dr.width) === 1440, JSON.stringify(dr));
+      assert('1440px: …and the builder moves over so the drawer covers none of it', pv && pv.x + pv.width <= dr.x + 1, JSON.stringify({ pv, dr }));
+    }
+    assert(`${w}px: with the AI drawer open nothing scrolls sideways`, await wide() <= w, await wide());
+    await p.click('.cr-ai-x');
+    assert(`${w}px: the × closes the drawer`, await p.isHidden('.cr-ai-drawer'));
+    // The rail's schedules
+    if (w === 1440) {
+      const sch = await p.evaluate(() => {
+        const r = document.querySelector('.cr-rail'), it = [...r.querySelectorAll('.cr-item')].find(x => /Acme weekly owner update with a long name/.test(x.textContent));
+        return it ? { right: it.getBoundingClientRect().right, railRight: r.getBoundingClientRect().right, sw: r.scrollWidth, cw: r.clientWidth, text: it.textContent } : null;
+      });
+      assert('1440px: the rail lists the schedule — cadence, status and its failure — inside the rail', sch && sch.right <= sch.railRight + 1 && sch.sw <= sch.cw + 1
+        && /Weekly Mon, Wed, Fri at 6:30 AM Central/.test(sch.text) && /No saved contacts/.test(sch.text), JSON.stringify(sch));
+    }
+    assert(`${w}px: v2 views raise no script errors`, errors.length === 0, errors.join('; '));
+    await p.close();
   }
 }

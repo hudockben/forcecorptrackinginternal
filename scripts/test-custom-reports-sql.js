@@ -25,6 +25,24 @@
  *     statement, and never fails over a report the caller cannot see;
  *   - the 90-day purge takes only that company's and division's old rows, and
  *     leaves their history pointing at nothing rather than deleting it.
+ *
+ * And for Custom Reporting v2:
+ *   - the CUSTOM REPORTING V2 schema section splits and runs the run-schema
+ *     way, twice, on this database and on a fresh one holding only the schema
+ *     before it, and its CHECKs and unique index hold;
+ *   - definitions v1 and v2 are both saved, and a v1 save over a v2 report is
+ *     refused (409 client_outdated) before it can strip anything;
+ *   - a job's send history (?project_id=) is every division user's to see,
+ *     the general history still only the caller's own, both paged 100 at a
+ *     time on a cursor that never skips or repeats, with the GIN index used;
+ *   - one run (?run=) and its archived HTML (&archive=1) follow the visibility
+ *     rules exactly — an internal archive only for its sender and admins /
+ *     level3 — and the archive round-trips gzip byte for byte;
+ *   - a resend keeps the run it repeated only when the sender could see it;
+ *   - send-report archives the sanitized HTML it delivered, never fails a send
+ *     over the archive, and heads the email with the company's current name;
+ *   - the Email modal's defaultRecipients, contacts, run_kind passthrough and
+ *     archived flag.
  */
 
 const fs     = require('fs');
@@ -44,6 +62,9 @@ process.env.JWT_SECRET = process.env.JWT_SECRET || 'custom-reports-test-secret';
 // below, so nothing leaves the box.
 process.env.RESEND_API_KEY = process.env.RESEND_API_KEY || 'test-resend-key';
 process.env.EMAIL_FROM_ADDRESS = process.env.EMAIL_FROM_ADDRESS || 'reports@example.com';
+// send-report reads the company's current name only when there is a database
+// to ask; the driver below is the test's, whatever this says.
+process.env.DATABASE_URL = process.env.DATABASE_URL || URL;
 
 const CO  = 'CRTEST';
 const CO2 = 'CRTEST2';
@@ -68,15 +89,22 @@ let REAL_AUTH = false;
 // What reached the (stubbed) Resend SDK, and a switch to make the history
 // write fail the way a database blip would.
 const RESEND = { sent: [] };
-const DB = { failRunInsert: false };
+const DB = { failRunInsert: false, failArchiveInsert: false, failCompanyName: false };
 const origLoad = Module._load;
 Module._load = function (request, parent) {
   if (request === '@neondatabase/serverless') {
     return { neon: () => {
       const sql = makeSql(client);
       return (strings, ...values) => {
-        if (DB.failRunInsert && strings.join('?').includes('INSERT INTO custom_report_runs')) {
+        const text = strings.join('?');
+        if (DB.failRunInsert && text.includes('INSERT INTO custom_report_runs')) {
           return Promise.reject(new Error('connection reset'));
+        }
+        if (DB.failArchiveInsert && text.includes('INSERT INTO custom_report_run_archives')) {
+          return Promise.reject(new Error('disk full'));
+        }
+        if (DB.failCompanyName && text.includes('LEFT JOIN company_branding')) {
+          return Promise.reject(new Error('relation "company_branding" does not exist'));
         }
         return sql(strings, ...values);
       };
@@ -166,9 +194,14 @@ const dbRow = async id => (await client.query('SELECT * FROM custom_reports WHER
 const dbRun = async id => (await client.query(
   "SELECT *, to_char(date_from, 'YYYY-MM-DD') AS df, to_char(date_to, 'YYYY-MM-DD') AS dt FROM custom_report_runs WHERE id = $1", [id])).rows[0];
 const show = r => `${r.statusCode} ${JSON.stringify(r.body)}`;
+// scripts/run-schema.js's split: drop lines starting with '--', split on ';'.
+const splitSql = text => text.split('\n').filter(l => !l.trim().startsWith('--')).join('\n')
+  .split(';').map(x => x.trim()).filter(Boolean);
 
 async function cleanUp() {
   for (const co of [CO, CO2]) {
+    await client.query('DELETE FROM custom_report_run_archives WHERE company_code = $1', [co]).catch(() => {});
+    await client.query('DELETE FROM company_branding WHERE company_code = $1', [co]).catch(() => {});
     await client.query('DELETE FROM custom_report_runs WHERE company_code = $1', [co]);
     await client.query('DELETE FROM custom_reports WHERE company_code = $1', [co]);
     await client.query('DELETE FROM users WHERE company_code = $1', [co]);
@@ -233,11 +266,14 @@ async function cleanUp() {
     // every ';' once lines starting with '--' are gone — and each statement
     // run twice, so a ';' in a trailing comment or a non-idempotent statement
     // fails here rather than in a deploy.
+    // The section runs from its own header to the CUSTOM REPORTING V2 header
+    // (which has its own block below), not to the end of the file.
     const file = fs.readFileSync(path.join(ROOT, 'neon-schema.sql'), 'utf8');
     const at = file.indexOf('CUSTOM REPORTS (Analytics');
-    const section = at < 0 ? '' : file.slice(file.lastIndexOf('\n-- ─', at));
-    const stmts = section.split('\n').filter(l => !l.trim().startsWith('--')).join('\n')
-      .split(';').map(s => s.trim()).filter(Boolean);
+    const v2At = file.indexOf('\n-- CUSTOM REPORTING V2');
+    const v2Start = v2At < 0 ? file.length : file.lastIndexOf('\n-- ─', v2At);
+    const section = at < 0 ? '' : file.slice(file.lastIndexOf('\n-- ─', at), v2Start);
+    const stmts = splitSql(section);
     let okRuns = 0, firstErr = '';
     for (let pass = 0; pass < 2; pass++) {
       for (const s of stmts) {
@@ -255,6 +291,119 @@ async function cleanUp() {
       ['idx_custom_reports_list', 'uq_custom_reports_shared_name', 'uq_custom_reports_private_name',
         'idx_custom_report_runs_company', 'idx_custom_report_runs_report', 'idx_custom_report_runs_user',
         'idx_custom_report_runs_snapshot'].every(n => idx.includes(n)), idx.join(','));
+
+    // ── CUSTOM REPORTING V2 ─────────────────────────────────────────────
+    const v2 = v2At < 0 ? '' : file.slice(v2Start);
+    const v2Stmts = splitSql(v2);
+    const v2Comments = v2.split('\n').filter(l => l.trim().startsWith('--'));
+    assert('neon-schema.sql ends with the CUSTOM REPORTING V2 section, after CUSTOM REPORTS',
+      v2At > at && at > 0 && !/\n-- ─+\n-- (?!CUSTOM REPORTING V2)[A-Z]{2}/.test(v2), String(v2At));
+    assert('…with no DO $$ block and no \';\' inside a comment (run-schema splits on every one)',
+      !/DO\s*\$\$/i.test(v2) && v2Comments.every(l => !l.includes(';')), v2Comments.filter(l => l.includes(';')).join(' | '));
+    let v2Ok = 0, v2Err = '';
+    for (let pass = 0; pass < 2; pass++) {
+      for (const st of v2Stmts) {
+        try { await client.query(st); v2Ok++; } catch (e) { v2Err = v2Err || `${e.message} in: ${st.slice(0, 80)}`; }
+      }
+    }
+    assert(`…which splits into 18 statements that each run, twice, the run-schema way`,
+      v2Stmts.length === 18 && v2Ok === 36, v2Err || `${v2Stmts.length} statements, ${v2Ok} ran`);
+    assert('…every one CREATE … IF NOT EXISTS or ALTER TABLE … ADD COLUMN IF NOT EXISTS',
+      v2Stmts.every(st => /^(CREATE (TABLE|INDEX|UNIQUE INDEX) IF NOT EXISTS|ALTER TABLE \w+ ADD COLUMN IF NOT EXISTS)/.test(st)),
+      v2Stmts.filter(st => !/^(CREATE|ALTER TABLE \w+ ADD COLUMN IF NOT EXISTS)/.test(st)).join(' | ').slice(0, 300));
+    const cols = async (table) => (await client.query(
+      'SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_name = $1', [table])).rows
+      .reduce((m, c) => { m[c.column_name] = c; return m; }, {});
+    const runCols = await cols('custom_report_runs');
+    assert('custom_report_runs gains run_kind (NOT NULL, default user), schedule_id and resent_from_run_id',
+      runCols.run_kind && runCols.run_kind.is_nullable === 'NO' && /'user'/.test(runCols.run_kind.column_default || '')
+        && runCols.schedule_id && runCols.schedule_id.data_type === 'bigint'
+        && runCols.resent_from_run_id && runCols.resent_from_run_id.data_type === 'bigint', JSON.stringify(runCols.run_kind));
+    const schedCols = await cols('report_schedules');
+    assert('report_schedules gains custom_report_id, emails (jsonb, NOT NULL), use_job_contacts (NOT NULL) and jobs_mode',
+      schedCols.custom_report_id && schedCols.emails && schedCols.emails.data_type === 'jsonb' && schedCols.emails.is_nullable === 'NO'
+        && schedCols.use_job_contacts && schedCols.use_job_contacts.is_nullable === 'NO' && schedCols.jobs_mode, Object.keys(schedCols).join(','));
+    assert('report_schedule_runs gains report_name', Boolean((await cols('report_schedule_runs')).report_name));
+    const fks = (await client.query(`SELECT count(*)::int AS n FROM pg_constraint
+      WHERE conrelid = 'report_schedules'::regclass AND contype = 'f' AND confrelid = 'custom_reports'::regclass`)).rows[0].n;
+    assert('running it twice leaves ONE foreign key from report_schedules to custom_reports, not two', fks === 1, String(fks));
+    const v2Idx = (await client.query('SELECT indexname, indexdef FROM pg_indexes')).rows
+      .reduce((m, r) => { m[r.indexname] = r.indexdef; return m; }, {});
+    assert('the contact, archive, project and schedule indexes exist',
+      ['uq_report_contacts_live', 'idx_report_contacts_project', 'idx_report_contacts_client', 'idx_cr_run_archives_company',
+        'idx_custom_report_runs_projects', 'idx_report_schedules_custom'].every(n => v2Idx[n]), Object.keys(v2Idx).filter(n => /contact|archive|projects|schedules_custom/.test(n)).join(','));
+    assert('…the project index is a GIN index on project_ids', /USING gin \(project_ids\)/i.test(v2Idx.idx_custom_report_runs_projects || ''),
+      v2Idx.idx_custom_report_runs_projects);
+    const fails2 = async (q, args, code) => { try { await client.query(q, args); return false; } catch (e) { return e.code === code; } };
+    const ins2 = (div, pid, ckey, email) => client.query(
+      'INSERT INTO report_contacts (company_code, division, project_id, client_key, email) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+      [CO, div, pid, ckey, email]);
+    assert('report_contacts refuses a division without Custom Reporting (CHECK)',
+      await fails2('INSERT INTO report_contacts (company_code, division, project_id, email) VALUES ($1, \'dust\', \'p\', \'a@x.com\')', [CO], '23514'));
+    assert('…and a contact on neither a job nor a client (CHECK)',
+      await fails2('INSERT INTO report_contacts (company_code, division, email) VALUES ($1, \'paving\', \'a@x.com\')', [CO], '23514'));
+    const c1 = (await ins2('paving', 'job-1', null, 'Owner@Example.com')).rows[0].id;
+    assert('…and the same address twice on one job, whatever its case (unique, live rows)',
+      await fails2('INSERT INTO report_contacts (company_code, division, project_id, email) VALUES ($1, \'paving\', \'job-1\', \'owner@example.COM\')', [CO], '23505'));
+    let okIns = true;
+    try {
+      await ins2('paving', null, 'acme', 'owner@example.com');
+      await ins2('turf', 'job-1', null, 'owner@example.com');
+      await client.query('UPDATE report_contacts SET deleted_at = NOW() WHERE id = $1', [c1]);
+      await ins2('paving', 'job-1', null, 'owner@example.com');
+    } catch (e) { okIns = e.message; }
+    assert('…while the same address on the client, in another division, or after the first is deleted is fine', okIns === true, okIns);
+    await client.query('DELETE FROM report_contacts WHERE company_code = $1', [CO]);
+    assert('company_branding refuses a logo that is not PNG or JPEG (CHECK)',
+      await fails2('INSERT INTO company_branding (company_code, division, logo_mime) VALUES ($1, \'\', \'image/svg+xml\')', [CO], '23514'));
+    await client.query('INSERT INTO company_branding (company_code) VALUES ($1)', [CO]);
+    assert('…its division defaults to \'\' (the company default) and is part of the key',
+      (await client.query('SELECT division FROM company_branding WHERE company_code = $1', [CO])).rows[0].division === ''
+        && await fails2('INSERT INTO company_branding (company_code, division) VALUES ($1, \'\')', [CO], '23505'));
+    await client.query('DELETE FROM company_branding WHERE company_code = $1', [CO]);
+    const bareRun = (await client.query("INSERT INTO custom_report_runs (company_code, division, report_name, action) VALUES ($1, 'paving', 'bare', 'print') RETURNING run_kind, id", [CO])).rows[0];
+    assert('a run written without run_kind is a user run', bareRun.run_kind === 'user');
+    await client.query('INSERT INTO custom_report_run_archives (run_id, company_code, html_gzip_b64, html_bytes) VALUES ($1, $2, \'x\', 1)', [bareRun.id, CO]);
+    await client.query('DELETE FROM custom_report_runs WHERE id = $1', [bareRun.id]);
+    assert('an archive goes with its run (ON DELETE CASCADE)',
+      (await client.query('SELECT count(*)::int AS n FROM custom_report_run_archives WHERE run_id = $1', [bareRun.id])).rows[0].n === 0);
+    assert('report_builder_usage is keyed by company, user and day',
+      await (async () => {
+        await client.query("INSERT INTO report_builder_usage (company_code, user_id, day) VALUES ($1, 1, '2026-11-06')", [CO]);
+        const dup = await fails2("INSERT INTO report_builder_usage (company_code, user_id, day) VALUES ($1, 1, '2026-11-06')", [CO], '23505');
+        await client.query('DELETE FROM report_builder_usage WHERE company_code = $1', [CO]);
+        return dup;
+      })());
+
+    // A database deployed before v2: the whole file up to the V2 header, a
+    // run already logged, then the full file applied — twice — on top.
+    const freshName = `${dbName}_v2fresh_${process.pid}`;
+    let created = false;
+    try { await client.query(`CREATE DATABASE "${freshName}"`); created = true; }
+    catch (e) { console.log(`  ~ fresh-database check skipped: ${e.message}`); }
+    if (created) {
+      const fresh = new Client({ connectionString: URL.replace(/\/[^/?]+(\?|$)/, `/${freshName}$1`) });
+      let errs = [], ran = 0;
+      try {
+        await fresh.connect();
+        const apply = async (text) => { for (const st of splitSql(text)) { try { await fresh.query(st); ran++; } catch (e) { errs.push(`${e.message} in: ${st.slice(0, 60)}`); } } };
+        await apply(fs.readFileSync(path.join(ROOT, 'auth-schema.sql'), 'utf8'));
+        await apply(file.slice(0, v2Start));
+        const before = errs.length;
+        await fresh.query("INSERT INTO companies (code, name) VALUES ('OLD', 'Old Co')");
+        await fresh.query("INSERT INTO custom_report_runs (company_code, division, report_name, action) VALUES ('OLD', 'paving', 'pre-v2', 'email')");
+        await apply(file);
+        await apply(file);
+        const old = (await fresh.query("SELECT run_kind, schedule_id, resent_from_run_id FROM custom_report_runs WHERE report_name = 'pre-v2'")).rows[0];
+        assert('on a fresh database holding the pre-v2 schema, the full file then applies twice without an error',
+          before === 0 && errs.length === 0 && ran > 300, errs.slice(0, 3).join(' | ') || `${ran} statements`);
+        assert('…and a run logged before v2 reads as a user run with no schedule or resend',
+          old && old.run_kind === 'user' && old.schedule_id === null && old.resent_from_run_id === null, JSON.stringify(old));
+      } finally {
+        await fresh.end().catch(() => {});
+        await client.query(`DROP DATABASE IF EXISTS "${freshName}"`).catch(e => console.error('drop failed:', e.message));
+      }
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -562,9 +711,16 @@ async function cleanUp() {
     r = await create(ALICE, { name: 'No v', definition: { sections: [] } });
     assert('no v → 400', r.statusCode === 400, show(r));
     r = await create(ALICE, { name: 'v2', definition: { v: 2 } });
-    assert('v: 2 → 400', r.statusCode === 400, show(r));
+    assert('v: 2 is a saved report too (201), stored as v2', r.statusCode === 201 && r.body.report.definition.v === 2, show(r));
+    r = await create(ALICE, { name: 'v3', definition: { v: 3 } });
+    assert('v: 3 → 400, naming the versions it takes',
+      r.statusCode === 400 && /expected v: 1 or 2/.test(r.body.error), show(r));
     r = await create(ALICE, { name: 'v string', definition: { v: '1' } });
     assert('v: "1" → 400', r.statusCode === 400, show(r));
+    r = await create(ALICE, { name: 'v string 2', definition: { v: '2' } });
+    assert('v: "2" → 400', r.statusCode === 400, show(r));
+    r = await create(ALICE, { name: 'v float', definition: { v: 2.5 } });
+    assert('v: 2.5 → 400', r.statusCode === 400, show(r));
     const tgt = (await create(ALICE, { name: 'Size target' })).body.report;
     r = await put(ALICE, tgt.id, { definition: { v: 1, pad: 'x'.repeat(70000) }, version: 1 });
     assert('a save over the cap → 413, and the report is unchanged',
@@ -722,8 +878,10 @@ async function cleanUp() {
     assert('500 jobs is fine', r.statusCode === 201 && r.body.run.project_ids.length === 500, show(r));
     r = await run(ALICE, { project_names: Array.from({ length: 501 }, (_, i) => 'n' + i) });
     assert('501 job names → 400', r.statusCode === 400, show(r));
-    r = await run(ALICE, { recipients: Array.from({ length: 51 }, (_, i) => `r${i}@example.com`) });
-    assert('51 recipients → 400', r.statusCode === 400, show(r));
+    r = await run(ALICE, { recipients: Array.from({ length: 201 }, (_, i) => `r${i}@example.com`) });
+    assert('201 recipients → 400 (a scheduled send may name up to 200)', r.statusCode === 400 && /max 200/.test(r.body.error), show(r));
+    r = await run(ALICE, { recipients: Array.from({ length: 200 }, (_, i) => `r${i}@example.com`) });
+    assert('200 recipients are all kept', r.statusCode === 201 && r.body.run.recipients.length === 200, show(r));
     r = await run(ALICE, { project_ids: 'p1' });
     assert('jobs that are not a list → 400', r.statusCode === 400, show(r));
     for (const bad of ['2026-13-01', '2026-02-30', '10/01/2026', '2026-1-5', 20261001]) {
@@ -786,7 +944,14 @@ async function cleanUp() {
       INSERT INTO custom_report_runs (company_code, division, report_name, action, run_by_user_id, run_by_username)
       SELECT $1, 'kiewit', 'Bulk run ' || g, 'print', $2, 'kpm' FROM generate_series(1, 205) g`, [CO, KIEWIT.userId]);
     r = await call('GET', { division: 'kiewit', runs: '1' }, null, KIEWIT);
-    assert('the history stops at 200', r.body.runs.length === 200, r.body.runs && r.body.runs.length);
+    assert('the history comes 100 runs a page, with the cursor for the next',
+      r.body.runs.length === 100 && r.body.next_before_id === r.body.runs[99].id, `${r.body.runs && r.body.runs.length} ${r.body.next_before_id}`);
+    const p2 = await call('GET', { division: 'kiewit', runs: '1', before_id: String(r.body.next_before_id) }, null, KIEWIT);
+    const p3 = await call('GET', { division: 'kiewit', runs: '1', before_id: String(p2.body.next_before_id) }, null, KIEWIT);
+    const all = [...r.body.runs, ...p2.body.runs, ...p3.body.runs].map(x => x.id);
+    assert('…three pages hold all 205, each once, and the last says there is no more',
+      p2.body.runs.length === 100 && p3.body.runs.length === 5 && p3.body.next_before_id === null
+        && new Set(all).size === 205, `${p2.body.runs.length} ${p3.body.runs.length} ${p3.body.next_before_id} ${new Set(all).size}`);
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -887,7 +1052,11 @@ async function cleanUp() {
     for (const [type, [division, label]] of Object.entries(want)) {
       const t = catalog.REPORT_TYPES[type];
       assert(`${type} is an emailable report type of ${division}`, t && t.division === division && t.label === label, JSON.stringify(t));
-      assert(`…and not one Auto Reports offers`, !catalog.SCHEDULABLE[type]);
+      // v2: a saved custom report can be scheduled — through Custom Reporting's
+      // own schedule dialog (api/custom-report-schedules.js), customer-safe only.
+      const sched = catalog.SCHEDULABLE[type];
+      assert('…and one a schedule can send, as a custom report of that division',
+        sched && sched.customReport === true && sched.division === division && sched.scope === 'custom', JSON.stringify(sched));
     }
     const email = (type, auth) => call('POST', {}, { report_type: type, recipients: [], html: '<p>x</p>' }, auth, { h: sendReport });
     let r = await email('paving_custom_report', ALICE);
@@ -1095,6 +1264,474 @@ async function cleanUp() {
     assert('without onSent the modal sends exactly as it always has', /^Sent to 2 recipients\. PDF attached/.test(m.status) && m.posts.length === 1, m.status);
     m = await sendWith({ reply: { ok: true, recipientCount: 2, pdfAttached: true }, onSent: 'not a function' });
     assert('an onSent that is not a function is ignored', /^Sent to 2 recipients/.test(m.status), m.status);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nDefinitions v1 and v2: a stale builder cannot strip a v2 report');
+  {
+    const V2 = (over = {}) => ({ ...DEF(), v: 2, filters: { costCodes: [], subCodes: ['Turf Install'] },
+      header: { ...DEF().header, branding: 'company', showPmContact: true, contactName: 'Pat', contactPhone: '', contactEmail: '' }, ...over });
+    let r = await create(ALICE, { name: 'Born v2', definition: V2() });
+    const born = r.body.report;
+    assert('a v2 report saves, every v2 field kept', r.statusCode === 201 && born.definition.v === 2
+      && born.definition.filters.subCodes[0] === 'Turf Install' && born.definition.header.showPmContact === true, show(r));
+    r = await put(ALICE, born.id, { definition: DEF({ title: 'v1 over v2' }), version: 1 });
+    assert('a v1 save over it → 409 client_outdated, with a message to reload',
+      r.statusCode === 409 && r.body.error === 'client_outdated' && /reload/i.test(r.body.message), show(r));
+    let row = await dbRow(born.id);
+    assert('…and nothing changed: still v2, still version 1, filters intact',
+      row.version === 1 && row.definition.v === 2 && row.definition.filters.subCodes[0] === 'Turf Install');
+    r = await put(ALICE, born.id, { definition: DEF(), version: 7 });
+    assert('a v1 save from a stale version is told client_outdated too (reloading answers both)',
+      r.statusCode === 409 && r.body.error === 'client_outdated', show(r));
+    r = await put(ALICE, born.id, { name: 'Born v2 renamed', version: 1 });
+    assert('a save with no definition (a rename) goes through and keeps the v2 definition',
+      r.statusCode === 200 && r.body.report.name === 'Born v2 renamed' && r.body.report.definition.v === 2, show(r));
+    r = await put(ALICE, born.id, { definition: V2({ title: 'v2 again' }), version: 2 });
+    assert('a v2 save over a v2 report goes through', r.statusCode === 200 && r.body.report.definition.title === 'v2 again', show(r));
+    const old = (await create(ALICE, { name: 'Born v1' })).body.report;
+    r = await put(ALICE, old.id, { definition: V2({ title: 'Upgraded' }), version: 1 });
+    assert('a v2 save over a v1 report upgrades it', r.statusCode === 200 && r.body.report.definition.v === 2, show(r));
+    r = await put(ALICE, (await create(ALICE, { name: 'Still v1' })).body.report.id, { definition: DEF({ title: 'v1 on v1' }), version: 1 });
+    assert('a v1 save over a v1 report is as it always was', r.statusCode === 200 && r.body.report.definition.v === 1, show(r));
+    r = await create(ALICE, { name: 'v2 internal', definition: V2({ includeInternal: true, jobs: { mode: 'saved', ids: ['j1'] } }) });
+    assert('kind and customer_safe come from a v2 definition the same way', r.body.report.customer_safe === false && r.body.report.kind === 'report', show(r));
+    r = await run(ALICE, { definition: V2(), report_name: 'v2 run' });
+    assert('a v2 snapshot logs', r.statusCode === 201 && (await dbRun(r.body.run.id)).definition.v === 2, show(r));
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nCustomer history: a job\'s runs, one run, and what it emailed');
+  const lib = require(path.join(ROOT, 'api/lib/custom-report-runs.js'));
+  const sqlT = makeSql(client);
+  const H1  = await mk('hist1', { paving: 'level1', turf: 'level1' });
+  const H2  = await mk('hist2', { paving: 'level1' });
+  const HL2 = await mk('histl2', { paving: 'level2' });
+  const HL3 = await mk('histl3', { paving: 'level3' });
+  const HA  = await mk('histadmin', { paving: 'admin', turf: 'admin' });
+  const runsQ = (q, auth, division = 'paving') => call('GET', { division, runs: '1', ...q }, null, auth);
+  const oneRun = (id, auth, extra = {}, division = 'paving') => call('GET', { division, run: String(id), ...extra }, null, auth);
+  const logRun = async (auth, body, division = 'paving') => {
+    const r = await run(auth, body, division);
+    if (r.statusCode !== 201) throw new Error('could not log a run: ' + show(r));
+    return r.body.run;
+  };
+  const idsOf = r => (r.body && Array.isArray(r.body.runs) ? r.body.runs.map(x => x.id) : []);
+  let safeA, intA, printA, safeB, noJobs, turfA, rivalA, nearA;
+  {
+    safeA  = await logRun(H1, { action: 'email', report_name: 'Hist safe A', project_ids: ['job-A'], project_names: ['Maple Ave'], recipients: ['owner@example.com'], subject: 'Maple weekly' });
+    intA   = await logRun(H1, { action: 'email', report_name: 'Hist internal A', project_ids: ['job-A', 'job-B'], project_names: ['Maple Ave', 'Oak St'], included_internal: true, recipients: ['boss@example.com'] });
+    printA = await logRun(H2, { action: 'print', report_name: 'Hist print A', project_ids: ['job-A'] });
+    safeB  = await logRun(H2, { action: 'email', report_name: 'Hist safe B', project_ids: ['job-B'], recipients: ['gc@example.com'] });
+    noJobs = await logRun(H1, { action: 'email', report_name: 'Hist no jobs', project_ids: [], recipients: ['x@example.com'] });
+    turfA  = await logRun(HA, { action: 'email', report_name: 'Hist turf A', project_ids: ['job-A'] }, 'turf');
+    rivalA = await logRun(RIVAL, { action: 'email', report_name: 'Hist rival A', project_ids: ['job-A'] });
+    nearA  = await logRun(H2, { action: 'email', report_name: 'Hist near A', project_ids: ['job-A1'] });
+
+    let r = await runsQ({ project_id: 'job-A' }, H2);
+    const got = idsOf(r);
+    assert('a level1 user sees EVERY run for a job — colleagues\' too — in its history',
+      r.statusCode === 200 && [safeA.id, intA.id, printA.id].every(id => got.includes(id)), show(r));
+    assert('…and nothing else: not another job, not job-A1, not turf\'s, not another company\'s, not a run about no job',
+      ![safeB.id, nearA.id, turfA.id, rivalA.id, noJobs.id].some(id => got.includes(id)), got.join(','));
+    const rowA = r.body.runs.find(x => x.id === safeA.id);
+    assert('…each row saying how it started, which schedule and resend, and whether it was archived',
+      rowA && rowA.run_kind === 'user' && rowA.schedule_id === null && rowA.resent_from_run_id === null && rowA.has_archive === false
+        && !('definition' in rowA), JSON.stringify(rowA));
+    for (const [who, auth] of [['a level2', HL2], ['a level3', HL3], ['an admin', HA]]) {
+      r = await runsQ({ project_id: 'job-A' }, auth);
+      assert(`…and so does ${who}, the same runs`, JSON.stringify(idsOf(r).filter(id => [safeA.id, intA.id, printA.id].includes(id)).sort())
+        === JSON.stringify([safeA.id, intA.id, printA.id].sort()) && !idsOf(r).includes(safeB.id), show(r));
+    }
+    r = await runsQ({}, H2);
+    assert('without project_id a level1 user\'s history is still their own runs only',
+      idsOf(r).includes(printA.id) && !idsOf(r).includes(safeA.id) && r.body.runs.every(x => x.run_by_user_id === H2.userId), idsOf(r).join(','));
+    r = await runsQ({ project_id: 'job-A', action: 'email' }, H2);
+    assert('?action=email narrows a job\'s history to what was emailed',
+      idsOf(r).includes(safeA.id) && idsOf(r).includes(intA.id) && !idsOf(r).includes(printA.id) && r.body.runs.every(x => x.action === 'email'), idsOf(r).join(','));
+    r = await runsQ({ project_id: 'job-A', kind: 'resend' }, H2);
+    assert('?kind=resend: none yet', r.statusCode === 200 && r.body.runs.length === 0, show(r));
+    r = await runsQ({ project_id: 'job-B' }, H1);
+    assert('a run about two jobs is in both jobs\' histories', idsOf(r).includes(intA.id) && idsOf(r).includes(safeB.id), idsOf(r).join(','));
+    r = await runsQ({ project_id: 'job-A' }, SALES);
+    assert('sales is refused a job\'s history (403)', r.statusCode === 403, show(r));
+    r = await runsQ({ project_id: 'job-A' }, TURFPM);
+    assert('a turf-only user is refused paving\'s (403)', r.statusCode === 403, show(r));
+    r = await runsQ({ project_id: 'job-A' }, RIVAL);
+    assert('another company\'s admin sees only their own company\'s job-A runs', JSON.stringify(idsOf(r)) === JSON.stringify([rivalA.id]), idsOf(r).join(','));
+    r = await runsQ({ project_id: 'job-A' }, HA, 'turf');
+    assert('turf\'s job-A history is turf\'s run only', JSON.stringify(idsOf(r)) === JSON.stringify([turfA.id]), idsOf(r).join(','));
+    for (const [q, what] of [[{ action: 'fax' }, 'an unknown action'], [{ kind: 'bogus' }, 'an unknown kind'],
+      [{ before_id: 'abc' }, 'a junk before_id'], [{ before_id: '0' }, 'before_id 0'],
+      [{ project_id: 'x'.repeat(121) }, 'a 121-character project_id'], [{ project_id: ['a', 'b'] }, 'project_id given twice']]) {
+      r = await runsQ(q, H2);
+      assert(`${what} → 400`, r.statusCode === 400, show(r));
+    }
+
+    // Paging: 230 runs on one job, three to a timestamp, so the cursor has to
+    // break ties on id to neither skip nor repeat one.
+    await client.query(`
+      INSERT INTO custom_report_runs (company_code, division, report_name, action, project_ids, run_by_user_id, run_by_username, created_at)
+      SELECT $1, 'paving', 'Page ' || g, 'email', '["job-P"]'::jsonb, $2, 'hist1', TIMESTAMPTZ '2026-01-01' + make_interval(mins => g / 3)
+        FROM generate_series(1, 230) g`, [CO, H1.userId]);
+    const pages = [];
+    let cursor;
+    for (let i = 0; i < 5; i++) {
+      r = await runsQ(cursor ? { project_id: 'job-P', before_id: String(cursor) } : { project_id: 'job-P' }, H2);
+      pages.push(r.body.runs);
+      cursor = r.body.next_before_id;
+      if (!cursor) break;
+    }
+    const flat = pages.flat();
+    const sorted = flat.every((x, i) => i === 0 || (() => {
+      const a = flat[i - 1], ta = new Date(a.created_at).getTime(), tb = new Date(x.created_at).getTime();
+      return ta > tb || (ta === tb && a.id > x.id);
+    })());
+    assert('a job\'s history pages 100, 100, 30 and then says there is no more',
+      pages.map(p => p.length).join(',') === '100,100,30' && cursor === null, pages.map(p => p.length).join(','));
+    assert('…every run exactly once, newest first, ties broken by id', new Set(flat.map(x => x.id)).size === 230 && sorted);
+    r = await runsQ({ project_id: 'job-P', before_id: String(rivalA.id) }, H2);
+    assert('a cursor from another company returns nothing rather than another company\'s place', r.statusCode === 200 && r.body.runs.length === 0, show(r));
+
+    await client.query('SET enable_seqscan = off');
+    const plan = (await client.query(
+      "EXPLAIN SELECT id FROM custom_report_runs WHERE project_ids @> jsonb_build_array('job-A'::text)")).rows.map(x => x['QUERY PLAN']).join('\n');
+    await client.query('RESET enable_seqscan');
+    assert('the job filter can use the GIN index on project_ids', /idx_custom_report_runs_projects/.test(plan), plan);
+
+    // One run.
+    r = await oneRun(safeA.id, H2);
+    assert('one run of a job, for a level1 user who did not send it: 200 with its definition and recipients',
+      r.statusCode === 200 && r.body.run.id === safeA.id && r.body.run.definition && Array.isArray(r.body.run.definition.sections)
+        && JSON.stringify(r.body.run.recipients) === '["owner@example.com"]' && r.body.run.has_archive === false
+        && r.body.run.run_kind === 'user' && r.body.run.subject === 'Maple weekly', show(r));
+    for (const [who, auth, want] of [['its sender', H1, 200], ['another level1', H2, 404], ['a level2', HL2, 404],
+      ['a level3', HL3, 200], ['an admin', HA, 200]]) {
+      r = await oneRun(noJobs.id, auth);
+      assert(`a run about no job, asked for by ${who} → ${want}`, r.statusCode === want, show(r));
+    }
+    r = await oneRun(safeA.id, RIVAL);
+    assert('another company asking for this company\'s run → 404', r.statusCode === 404, show(r));
+    r = await oneRun(safeA.id, HA, {}, 'turf');
+    assert('asked for through another division → 404', r.statusCode === 404, show(r));
+    r = await oneRun('abc', H2);
+    assert('a junk run id → 400', r.statusCode === 400, show(r));
+    r = await oneRun(987654321, H2);
+    assert('a run that does not exist → 404', r.statusCode === 404 && r.body.error === 'Run not found', show(r));
+    r = await oneRun(safeA.id, SALES);
+    assert('sales → 403', r.statusCode === 403, show(r));
+
+    // The archive.
+    const htmlA = '<!doctype html><html><body><h1>Maple Ave — 1,234 SY · é ✓ 漢字 😀</h1>' + '<p>row</p>'.repeat(20000) + '</body></html>';
+    assert('insertArchive keeps an emailed run\'s HTML', await lib.insertArchive(sqlT, { runId: safeA.id, company: CO, html: htmlA }) === true);
+    assert('…once: a second archive for the same run is not written', await lib.insertArchive(sqlT, { runId: safeA.id, company: CO, html: '<p>other</p>' }) === false);
+    const arow = (await client.query('SELECT * FROM custom_report_run_archives WHERE run_id = $1', [safeA.id])).rows[0];
+    const gzBuf = Buffer.from(arow.html_gzip_b64, 'base64');
+    assert('…gzipped (1f 8b) and base64, much smaller than the page, with its byte count',
+      gzBuf[0] === 0x1f && gzBuf[1] === 0x8b && arow.html_gzip_b64.length < Buffer.byteLength(htmlA) / 10
+        && arow.html_bytes === Buffer.byteLength(htmlA, 'utf8') && arow.company_code === CO,
+      `${arow.html_gzip_b64.length} vs ${Buffer.byteLength(htmlA)} / ${arow.html_bytes}`);
+    assert('…and it gunzips to the exact HTML', require('zlib').gunzipSync(gzBuf).toString('utf8') === htmlA);
+    assert('insertArchive will not file HTML under another company\'s run', await lib.insertArchive(sqlT, { runId: rivalA.id, company: CO, html: '<p>x</p>' }) === false
+      && (await client.query('SELECT count(*)::int AS n FROM custom_report_run_archives WHERE run_id = $1', [rivalA.id])).rows[0].n === 0);
+    assert('…nor archive nothing, nor a junk run id, nor more than 4 MB',
+      await lib.insertArchive(sqlT, { runId: printA.id, company: CO, html: '' }) === false
+        && await lib.insertArchive(sqlT, { runId: 'abc', company: CO, html: '<p>x</p>' }) === false
+        && await lib.insertArchive(sqlT, { runId: printA.id, company: CO, html: 'x'.repeat(4 * 1024 * 1024 + 1) }) === false);
+    assert('readArchive answers only for the run\'s own company', await lib.readArchive(sqlT, { runId: safeA.id, company: CO2 }) === null
+      && await lib.readArchive(sqlT, { runId: safeA.id, company: CO }) === htmlA);
+
+    r = await oneRun(safeA.id, H2, { archive: '1' });
+    assert('a level1 user opens a customer-safe run\'s archive: exactly the HTML that was kept',
+      r.statusCode === 200 && r.body.html === htmlA, `${r.statusCode} ${r.body && r.body.error} ${r.body && r.body.html && r.body.html.length}`);
+    r = await runsQ({ project_id: 'job-A' }, H2);
+    assert('…and the history says it has one', r.body.runs.find(x => x.id === safeA.id).has_archive === true
+      && r.body.runs.find(x => x.id === printA.id).has_archive === false);
+    r = await oneRun(safeA.id, H2);
+    assert('…and so does the run itself', r.body.run.has_archive === true);
+
+    await lib.insertArchive(sqlT, { runId: intA.id, company: CO, html: '<p>Our cost: $91,000</p>' });
+    for (const [who, auth, want] of [['another level1', H2, 403], ['a level2', HL2, 403], ['its sender (a level1)', H1, 200],
+      ['a level3', HL3, 200], ['an admin', HA, 200]]) {
+      r = await oneRun(intA.id, auth, { archive: '1' });
+      assert(`an INTERNAL run's archive, asked for by ${who} → ${want}${want === 403 ? ' internal_archive' : ''}`,
+        r.statusCode === want && (want === 403 ? r.body.error === 'internal_archive' && !('html' in r.body) : r.body.html === '<p>Our cost: $91,000</p>'), show(r));
+    }
+    const intNoArch = await logRun(H1, { action: 'email', report_name: 'Hist internal, no archive', project_ids: ['job-A'], included_internal: true });
+    r = await oneRun(intNoArch.id, H2, { archive: '1' });
+    assert('an internal run with NO archive is still 403 for them — the answer never depends on whether one was kept',
+      r.statusCode === 403 && r.body.error === 'internal_archive', show(r));
+    r = await oneRun(intNoArch.id, H1, { archive: '1' });
+    assert('…and 404 no_archive for its sender', r.statusCode === 404 && r.body.error === 'no_archive', show(r));
+    r = await oneRun(safeB.id, H1, { archive: '1' });
+    assert('a customer-safe run never archived → 404 no_archive (the page rebuilds it instead)', r.statusCode === 404 && r.body.error === 'no_archive', show(r));
+    r = await oneRun(noJobs.id, H2, { archive: '1' });
+    assert('the archive of a run they cannot see → 404 Run not found', r.statusCode === 404 && r.body.error === 'Run not found', show(r));
+    r = await oneRun(rivalA.id, H2, { archive: '1' });
+    assert('…nor another company\'s', r.statusCode === 404, show(r));
+
+    // Archives two years old go as runs come in — this company's only.
+    await lib.insertArchive(sqlT, { runId: printA.id, company: CO, html: '<p>old</p>' });
+    await lib.insertArchive(sqlT, { runId: safeB.id, company: CO, html: '<p>newer</p>' });
+    await lib.insertArchive(sqlT, { runId: rivalA.id, company: CO2, html: '<p>rival</p>' });
+    await client.query("UPDATE custom_report_run_archives SET created_at = NOW() - interval '731 days' WHERE run_id = ANY($1::bigint[])", [[printA.id, rivalA.id]]);
+    await client.query("UPDATE custom_report_run_archives SET created_at = NOW() - interval '729 days' WHERE run_id = $1", [safeB.id]);
+    r = await run(H2, { report_name: 'Prune trigger' });
+    const left = (await client.query('SELECT run_id FROM custom_report_run_archives WHERE run_id = ANY($1::bigint[])',
+      [[printA.id, safeB.id, rivalA.id, safeA.id]])).rows.map(x => Number(x.run_id));
+    assert('logging a run deletes this company\'s archives over two years old, and only those',
+      r.statusCode === 201 && !left.includes(printA.id) && left.includes(safeB.id) && left.includes(rivalA.id) && left.includes(safeA.id), left.join(','));
+    await client.query('DELETE FROM custom_report_run_archives WHERE run_id = ANY($1::bigint[])', [[safeB.id, printA.id]]);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nResends, and the kinds only the schedule runner may claim');
+  {
+    const resend = async (auth, from, extra = {}, division = 'paving') => (await run(auth, {
+      action: 'email', report_name: 'Resend', run_kind: 'resend', resent_from_run_id: from, project_ids: ['job-A'], ...extra,
+    }, division)).body.run;
+    let x = await resend(H2, safeA.id);
+    assert('a level1 user resending a colleague\'s email to a job: logged as a resend of it',
+      x.run_kind === 'resend' && x.resent_from_run_id === safeA.id, JSON.stringify(x));
+    x = await resend(H2, noJobs.id);
+    assert('…of a run they could not open: still a resend, the reference dropped', x.run_kind === 'resend' && x.resent_from_run_id === null, JSON.stringify(x));
+    x = await resend(H1, noJobs.id);
+    assert('…of their own run about no job: kept', x.resent_from_run_id === noJobs.id, JSON.stringify(x));
+    x = await resend(HA, noJobs.id);
+    assert('…by an admin, who can see every run: kept', x.resent_from_run_id === noJobs.id, JSON.stringify(x));
+    x = await resend(H2, turfA.id);
+    assert('…of another division\'s run: dropped', x.resent_from_run_id === null, JSON.stringify(x));
+    x = await resend(H2, rivalA.id);
+    assert('…of another company\'s run: dropped', x.resent_from_run_id === null, JSON.stringify(x));
+    x = await resend(H2, 987654321);
+    assert('…of a run that does not exist: dropped', x.resent_from_run_id === null, JSON.stringify(x));
+    x = await resend(H2, 'abc');
+    assert('…of junk: dropped', x.resent_from_run_id === null && x.run_kind === 'resend', JSON.stringify(x));
+    x = await resend(H2, safeA.id, { run_kind: 'user' });
+    assert('a user run carrying a resent_from_run_id does not keep it', x.run_kind === 'user' && x.resent_from_run_id === null, JSON.stringify(x));
+    x = await resend(H2, null, { run_kind: 'schedule', schedule_id: 12 });
+    assert('a browser claiming a scheduled run is logged as a user run, without the schedule', x.run_kind === 'user' && x.schedule_id === null, JSON.stringify(x));
+    x = await resend(H2, null, { run_kind: 'send_now', schedule_id: 12 });
+    assert('…and so is send_now', x.run_kind === 'user' && x.schedule_id === null, JSON.stringify(x));
+    x = await resend(H2, null, { run_kind: 'bogus' });
+    assert('…and junk', x.run_kind === 'user', JSON.stringify(x));
+    let r = await runsQ({ project_id: 'job-A', kind: 'resend' }, HL2);
+    assert('?kind=resend lists the job\'s resends', r.body.runs.length >= 6 && r.body.runs.every(y => y.run_kind === 'resend'), show(r));
+
+    // The schedule runner's path: readRun with every kind allowed, then insertRun.
+    const rr = lib.readRun({ action: 'email', report_name: 'Weekly (scheduled)', run_kind: 'schedule', schedule_id: 77,
+      project_ids: ['job-A'], recipients: Array.from({ length: 120 }, (_, i) => `s${i}@example.com`), included_internal: false,
+      definition: DEF() }, { kinds: lib.RUN_KINDS });
+    assert('readRun with the runner\'s kinds keeps schedule and schedule_id', !rr.error && rr.value.runKind === 'schedule' && rr.value.scheduleId === 77, JSON.stringify(rr));
+    let ins = await lib.insertRun(sqlT, { company: CO, division: 'paving', me: { userId: HL3.userId, username: 'histl3' }, run: rr.value });
+    assert('…and insertRun writes it as a scheduled run of that schedule, all 120 recipients named',
+      ins.run_kind === 'schedule' && ins.schedule_id === 77 && ins.recipients.length === 120 && ins.resent_from_run_id === null, JSON.stringify(ins).slice(0, 300));
+    const sn = lib.readRun({ action: 'email', report_name: 'Send now', run_kind: 'send_now', schedule_id: '78' }, { kinds: lib.RUN_KINDS });
+    ins = await lib.insertRun(sqlT, { company: CO, division: 'paving', me: { userId: HL3.userId, username: 'histl3' }, run: sn.value });
+    assert('…send_now too', ins.run_kind === 'send_now' && ins.schedule_id === 78, JSON.stringify(ins));
+    ins = await lib.insertRun(sqlT, { company: CO, division: 'paving', me: { userId: HL3.userId, username: 'histl3' },
+      run: { action: 'email', reportName: 'Hand-built', projectIds: ['job-A'], recipients: ['a@example.com'], includedInternal: false } });
+    assert('a run object built by hand (no kind, no dates, no definition) is a plain user run',
+      ins.run_kind === 'user' && ins.schedule_id === null && ins.report_name === 'Hand-built' && ins.date_from === null, JSON.stringify(ins));
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nsend-report v2: the archive, resends and the company\'s name');
+  {
+    const { sanitizeReportHtml } = require(path.join(ROOT, 'api/lib/email.js'));
+    const dirty = '<!doctype html><html><head><style>.t{color:red}</style></head><body>'
+      + '<div class="masthead" data-dw-brand>Acme</div><p>Maple Ave — 1,234 SY</p>'
+      + '<script>alert(1)</script><p onclick="steal()">Totals</p><a href="javascript:alert(2)">x</a></body></html>';
+    const send = (body, auth = H2) => call('POST', {}, {
+      report_type: 'paving_custom_report', recipients: ['owner@example.com'], subject: 'Maple weekly',
+      attach_pdf: false, html: dirty, ...body,
+    }, auth, { h: sendReport });
+    const archiveOf = async id => {
+      const a = (await client.query('SELECT html_gzip_b64 FROM custom_report_run_archives WHERE run_id = $1', [id])).rows[0];
+      return a ? require('zlib').gunzipSync(Buffer.from(a.html_gzip_b64, 'base64')).toString('utf8') : null;
+    };
+
+    RESEND.sent = [];
+    let r = await send({ custom_report: { report_name: 'Archived one', project_ids: ['job-A'], project_names: ['Maple Ave'] } });
+    const kept = r.body && r.body.run_id ? await archiveOf(r.body.run_id) : null;
+    assert('a logged custom-report email answers archived: true', r.statusCode === 200 && r.body.logged === true && r.body.archived === true, show(r));
+    assert('…and what is kept is the sanitized HTML — no script, no handler, no javascript: link',
+      kept === sanitizeReportHtml(dirty) && !/<script|onclick|javascript:/i.test(kept), kept && kept.slice(0, 200));
+    assert('…the very document the email carried', RESEND.sent.length === 1 && RESEND.sent[0].html.includes(kept));
+    r = await oneRun(r.body.run_id, HL2, { archive: '1' });
+    assert('…which Customer History opens for any division user', r.statusCode === 200 && r.body.html === kept, show(r));
+
+    const PIXEL = '89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c4890000000a49444154789c636000000200010005fe02fea70000000049454e44ae426082';
+    r = await send({ html: dirty.replace('<p>Maple', '<img src="cid:co-logo" alt="logo"><p>Maple'),
+      attachments: [{ filename: 'logo.png', contentId: 'co-logo', content: Buffer.from(PIXEL, 'hex').toString('base64') }],
+      custom_report: { report_name: 'Archived with an image' } });
+    const withImg = await archiveOf(r.body.run_id);
+    assert('a cid: image in the report is kept inline in the archive, so it opens on its own',
+      r.body.archived === true && withImg.includes('src="data:image/png;base64,' + Buffer.from(PIXEL, 'hex').toString('base64') + '"')
+        && !withImg.includes('cid:co-logo'), withImg && withImg.slice(0, 300));
+
+    DB.failArchiveInsert = true;
+    r = await send({ custom_report: { report_name: 'Archive down' } });
+    DB.failArchiveInsert = false;
+    const downRun = r.body && r.body.run_id;
+    assert('when the archive cannot be written the email still went and was logged: 200, archived false',
+      r.statusCode === 200 && r.body.ok === true && r.body.logged === true && r.body.archived === false && downRun
+        && (await archiveOf(downRun)) === null, show(r));
+    DB.failRunInsert = true;
+    r = await send({ custom_report: { report_name: 'Log down' } });
+    DB.failRunInsert = false;
+    assert('when the log cannot be written: 200, logged false, archived false', r.statusCode === 200 && r.body.logged === false && r.body.archived === false, show(r));
+    r = await call('POST', {}, { report_type: 'paving_daily_pm', recipients: ['a@example.com'], subject: 'PM', attach_pdf: false, html: '<p>x</p>' }, HA, { h: sendReport });
+    assert('other report types say nothing about an archive', r.statusCode === 200 && !('archived' in r.body), show(r));
+
+    r = await send({ custom_report: { report_name: 'Resent', project_ids: ['job-A'], run_kind: 'resend', resent_from_run_id: safeA.id } });
+    let row = await dbRun(r.body.run_id);
+    assert('a resend through the Email modal is logged as a resend of the run it repeated',
+      row.run_kind === 'resend' && Number(row.resent_from_run_id) === safeA.id, JSON.stringify({ k: row.run_kind, f: row.resent_from_run_id }));
+    r = await send({ custom_report: { report_name: 'Resent unseen', run_kind: 'resend', resent_from_run_id: noJobs.id } });
+    row = await dbRun(r.body.run_id);
+    assert('…of a run the sender could not open: the reference is dropped', row.run_kind === 'resend' && row.resent_from_run_id === null);
+    r = await send({ custom_report: { report_name: 'Sales resend', run_kind: 'resend', resent_from_run_id: safeA.id } }, SALES);
+    row = r.body && r.body.run_id ? await dbRun(r.body.run_id) : null;
+    assert('…and a sales login (which cannot open Custom Reporting) never links to a job\'s run',
+      r.statusCode === 200 && row && row.resent_from_run_id === null, show(r));
+    r = await send({ custom_report: { report_name: 'Fake schedule', run_kind: 'schedule', schedule_id: 9 } });
+    row = await dbRun(r.body.run_id);
+    assert('…and a browser cannot log an email as a scheduled send', row.run_kind === 'user' && row.schedule_id === null);
+
+    // The name in the email's header.
+    const headerName = () => {
+      const html = RESEND.sent[RESEND.sent.length - 1].html;
+      const m = /letter-spacing:0\.08em;text-transform:uppercase;font-weight:600;">([^<]*)</.exec(html);
+      return m ? m[1] : null;
+    };
+    const stale = { ...H2, companyName: 'Stale Name Inc' };
+    await send({}, stale);
+    assert('the email is headed with the company\'s name as it is now, not the sign-in token\'s',
+      headerName() === 'Custom Reports test', headerName());
+    await client.query("INSERT INTO company_branding (company_code, division, display_name) VALUES ($1, '', 'Acme Paving & Sons')", [CO]);
+    await client.query("INSERT INTO company_branding (company_code, division, display_name) VALUES ($1, 'paving', 'Division Override')", [CO]);
+    await send({}, stale);
+    assert('…its branding display name when it has one (escaped), and the company default row only',
+      headerName() === 'Acme Paving &amp; Sons', headerName());
+    await call('POST', {}, { report_type: 'paving_daily_pm', recipients: ['a@example.com'], subject: 'PM', attach_pdf: false, html: '<p>x</p>' }, stale, { h: sendReport });
+    assert('…on every report type, not only custom reports', headerName() === 'Acme Paving &amp; Sons', headerName());
+    await client.query("UPDATE company_branding SET display_name = '   ' WHERE company_code = $1 AND division = ''", [CO]);
+    await send({}, stale);
+    assert('…a blank display name falls back to the company name', headerName() === 'Custom Reports test', headerName());
+    DB.failCompanyName = true;
+    r = await send({}, stale);
+    DB.failCompanyName = false;
+    assert('…and when the database cannot say, the token\'s copy is used and the send still goes',
+      r.statusCode === 200 && headerName() === 'Stale Name Inc', `${r.statusCode} ${headerName()}`);
+    await client.query('DELETE FROM company_branding WHERE company_code = $1', [CO]);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nThe Email modal: defaultRecipients, contacts, resend and archived');
+  {
+    const { JSDOM } = require('jsdom');
+    const src = fs.readFileSync(path.join(ROOT, 'report-email.js'), 'utf8');
+    const tick = () => new Promise(res => setTimeout(res, 10));
+    async function modal(opts, { groups = [], gate = null, reply = { ok: true, recipientCount: 1, pdfAttached: true } } = {}) {
+      const dom = new JSDOM('<!doctype html><html><body></body></html>', { runScripts: 'outside-only', url: 'http://localhost/' });
+      const w = dom.window;
+      w.localStorage.setItem('fct_token', 'test-token');
+      w.localStorage.setItem('fct_user', JSON.stringify({ role: 'level1' }));
+      const posts = [], gets = [];
+      w.fetch = async (url, o = {}) => {
+        if (String(url).startsWith('/api/email/send-report')) { posts.push(JSON.parse(o.body)); return { ok: true, status: 200, json: async () => reply }; }
+        gets.push(String(url));
+        if (gate) await gate;
+        return { ok: true, status: 200, json: async () => ({ ok: true, isAdmin: false, groups }) };
+      };
+      w.eval(src);
+      w.openReportEmailModal({ reportType: 'paving_custom_report', getHTML: () => '<p>report</p>', ...opts });
+      const $ = id => w.document.getElementById(id);
+      const chips = () => [...w.document.querySelectorAll('#rem-chips > span')].map(c => ({
+        text: c.firstChild ? c.firstChild.textContent.trim() : '', email: c.getAttribute('data-email'), title: c.getAttribute('title'),
+        save: Boolean(c.querySelector('.rem-chip-save')),
+      }));
+      return { w, $, posts, gets, chips, status: () => ($('rem-status') || {}).textContent || '' };
+    }
+    const settle = async () => { for (let i = 0; i < 5; i++) await tick(); };
+
+    let gateOpen;
+    let m = await modal({ defaultRecipients: ['A@Example.com', 'b@example.com', 'bad@@example', 'a@example.com'] },
+      { gate: new Promise(res => { gateOpen = res; }) });
+    assert('defaultRecipients are filled in as the modal opens, before the groups arrive, each once, lower-cased',
+      JSON.stringify(m.chips().map(c => c.email)) === '["a@example.com","b@example.com"]', JSON.stringify(m.chips()));
+    assert('…and one the send would refuse is left off and named', m.status() === 'Left off bad@@example — not a valid email address.', m.status());
+    gateOpen(); await settle(); m.w.close();
+
+    const P1 = { id: 5, name: 'Maple Ave group', project_id: 'P1', report_type: null, emails: ['b@example.com', 'c@example.com'] };
+    m = await modal({ projectId: 'P1', defaultRecipients: ['a@example.com', 'b@example.com'] }, { groups: [P1] });
+    await settle();
+    assert('the job\'s own group still auto-adds on top of them, merged without duplicates',
+      JSON.stringify(m.chips().map(c => c.email)) === '["a@example.com","b@example.com","c@example.com"]', JSON.stringify(m.chips()));
+    m.w.close();
+    m = await modal({ projectId: 'P1' }, { groups: [P1] });
+    await settle();
+    assert('with nothing filled in, the job\'s group auto-adds as it always has', JSON.stringify(m.chips().map(c => c.email)) === '["b@example.com","c@example.com"]', JSON.stringify(m.chips()));
+    m.w.close();
+    m = await modal({ projectId: 'P1' }, { groups: [P1], gate: new Promise(res => { gateOpen = res; }) });
+    m.$('rem-input').value = 'me@example.com';
+    m.$('rem-add').click();
+    gateOpen(); await settle();
+    assert('…and an address the user typed before the groups arrived still stops it', JSON.stringify(m.chips().map(c => c.email)) === '["me@example.com"]', JSON.stringify(m.chips()));
+    m.w.close();
+
+    const contacts = [
+      { email: 'Jane@Acme.com', name: 'Jane Smith', source: 'job', label: 'Job contact — Maple Ave' },
+      { email: 'gc@example.com', source: 'client' },
+      { email: 'nope', name: 'Bad Address', source: 'job' },
+      { email: 'jane@acme.com', name: 'Duplicate Jane', source: 'client' },
+      { email: 'x@example.com', name: '<img src=x onerror=alert(1)>', label: '"><b>bold</b>' },
+    ];
+    m = await modal({ contacts, defaultRecipients: ['jane@acme.com'] });
+    await settle();
+    const ch = m.chips();
+    assert('saved contacts are filled in, each address once (one already in defaultRecipients included)',
+      JSON.stringify(ch.map(c => c.email)) === '["jane@acme.com","gc@example.com","x@example.com"]', JSON.stringify(ch));
+    assert('…a contact\'s chip shows the name, its tooltip the label, the address beside it',
+      ch[0].text === 'Jane Smith' && ch[0].title === 'Job contact — Maple Ave'
+        && m.w.document.querySelector('#rem-chips .rem-chip-addr').textContent === 'jane@acme.com', JSON.stringify(ch[0]));
+    assert('…with no name it shows the address, and the tooltip says where it comes from', ch[1].text === 'gc@example.com' && ch[1].title === 'Client contact', JSON.stringify(ch[1]));
+    assert('…a name and label are text, never markup', ch[2].text === '<img src=x onerror=alert(1)>' && ch[2].title === '"><b>bold</b>'
+      && !m.w.document.querySelector('#rem-chips img') && !m.w.document.querySelector('#rem-chips b'), m.w.document.getElementById('rem-chips').innerHTML.slice(0, 300));
+    assert('…and a contact whose address the send would refuse is left off, said so', m.status() === 'Left off nope — not a valid email address. Fix it in Contacts.', m.status());
+    assert('with no contactContext there is no "Save as contact"', ch.every(c => !c.save));
+    m.w.document.querySelector('#rem-chips .rem-chip-x').click();
+    assert('a chip\'s × still removes it', JSON.stringify(m.chips().map(c => c.email)) === '["gc@example.com","x@example.com"]', JSON.stringify(m.chips()));
+    m.w.close();
+
+    m = await modal({ contacts: contacts.slice(0, 1), defaultRecipients: ['typed@example.com'],
+      contactContext: { division: 'paving', projectIds: ['P1'], clients: [], canEdit: false } });
+    assert('contactContext without canEdit offers no "Save as contact"', m.chips().every(c => !c.save), JSON.stringify(m.chips()));
+    m.w.close();
+    m = await modal({ contacts: contacts.slice(0, 1), defaultRecipients: ['typed@example.com'],
+      contactContext: { division: 'paving', projectIds: ['P1'], clients: [], canEdit: true } });
+    assert('…with canEdit, every address that is not a saved contact offers it, and the contact does not',
+      JSON.stringify(m.chips().map(c => [c.email, c.save])) === '[["typed@example.com",true],["jane@acme.com",false]]', JSON.stringify(m.chips()));
+    m.w.close();
+
+    const sent = [];
+    m = await modal({ defaultRecipients: ['owner@example.com'], defaultSubject: 'Maple weekly',
+      customReport: { report_id: 3, report_name: 'Weekly', run_kind: 'resend', resent_from_run_id: 41 }, onSent: info => sent.push(info) },
+    { reply: { ok: true, recipientCount: 1, pdfAttached: true, logged: true, run_id: 50, archived: true } });
+    m.$('rem-send').click();
+    for (let i = 0; i < 50 && !sent.length; i++) await tick();
+    assert('a Resend sends straight to the run\'s recipients with its subject, run_kind and resent_from_run_id riding along',
+      m.posts[0] && JSON.stringify(m.posts[0].recipients) === '["owner@example.com"]' && m.posts[0].subject === 'Maple weekly'
+        && m.posts[0].custom_report.run_kind === 'resend' && m.posts[0].custom_report.resent_from_run_id === 41, JSON.stringify(m.posts[0]));
+    assert('onSent is told the server archived it', sent[0] && sent[0].archived === true && sent[0].runId === 50, JSON.stringify(sent[0]));
+    m.w.close();
+    sent.length = 0;
+    m = await modal({ defaultRecipients: ['owner@example.com'], onSent: info => sent.push(info) });
+    m.$('rem-send').click();
+    for (let i = 0; i < 50 && !sent.length; i++) await tick();
+    assert('…and archived: false when the server says nothing of one', sent[0] && sent[0].archived === false, JSON.stringify(sent[0]));
+    m.w.close();
   }
 
   await cleanUp();

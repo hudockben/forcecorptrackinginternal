@@ -9,7 +9,8 @@
  * for every catalog lookup, every figure and every rendered page.
  *
  *   window.FCTReportEngine = { CATALOG, STARTERS, normalizeDefinition,
- *     makeContext, buildSectionData, buildReportHtml, buildXlsx, ... }
+ *     makeContext, buildSectionData, buildReportHtml, buildXlsx,
+ *     countWorkdays, subCodesFor, startersFor, aiCatalog, ... }
  *
  * It is pure on purpose: no fetch, no DOM, no page globals. The live preview,
  * the print window, the email and the workbook all come out of the same calls,
@@ -46,7 +47,10 @@
   const root = typeof window !== 'undefined' ? window : globalThis;
   if (root.FCTReportEngine) return; // already loaded
 
-  const VERSION = 1;
+  // v2 adds report-wide code filters, the branding / contact header fields
+  // and three section types (plan_vs_actual, chart, rate_summary). A v1
+  // definition reads as v2 with those at their defaults.
+  const VERSION = 2;
 
   // ── Small utilities ────────────────────────────────────────────────────
   const isObj = v => v != null && typeof v === 'object' && !Array.isArray(v);
@@ -180,6 +184,53 @@
     return fromUtc(t);
   }
 
+  const isWorkday = iso => { const w = weekday(iso); return w !== 0 && w !== 6 && !isHoliday(iso); };
+
+  /* Working days in [a, b], both ends counted, on the calendar above: 0 when
+     b is before a (or either is not a date), and 1 for a one-day span on a
+     working day. The pages' _workingDaysBetween gives 0 for a == b, which
+     leaves a one-day plan with no planned rate; plan math counts it as the
+     day it is. Worked out by whole weeks and a holiday count rather than a
+     walk, since a plan can run for years and the S-curve asks per point. */
+  function countWorkdays(a, b) {
+    if (!isIso(a) || !isIso(b) || b < a) return 0;
+    const n = daysBetween(a, b) + 1;
+    const w0 = weekday(a);
+    let count = Math.floor(n / 7) * 5;
+    for (let i = 0, rem = n % 7; i < rem; i++) {
+      const w = (w0 + i) % 7;
+      if (w !== 0 && w !== 6) count++;
+    }
+    for (let y = +a.slice(0, 4), y1 = +b.slice(0, 4); y <= y1; y++) {
+      holidaysOf(y).forEach(h => {
+        if (h >= a && h <= b) { const w = weekday(h); if (w !== 0 && w !== 6) count--; }
+      });
+    }
+    return count;
+  }
+
+  /* A unit as rate math groups it: trimmed, upper case, TN as TON and SQ FT
+     as SF — the units list offers both TN and TON. The bid item's unit as
+     typed is still what prints. */
+  function normUnit(u) {
+    const s = txt(u).toUpperCase().replace(/\s+/g, ' ');
+    if (s === 'TN') return 'TON';
+    if (s === 'SQ FT' || s === 'SQFT') return 'SF';
+    return s;
+  }
+
+  /* A Construction Schedule date: 'YYYY-MM-DD' from a date input, or
+     'M/D/YY' / 'M/D/YYYY' from a template (the page's _csParseDate). */
+  function csDate(v) {
+    const s = txt(v);
+    if (isIso(s)) return s;
+    const m = /^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/.exec(s);
+    if (!m) return '';
+    let y = +m[3];
+    if (y < 100) y += 2000;
+    return dayOf(`${y}-${p2(+m[1])}-${p2(+m[2])}`);
+  }
+
   function fmtDate(iso) {
     if (!isIso(iso)) return String(iso == null ? '' : iso);
     return `${MONTHS[+iso.slice(5, 7) - 1]} ${+iso.slice(8, 10)}, ${iso.slice(0, 4)}`;
@@ -233,7 +284,12 @@
     switch (type) {
       case 'money':   return fmtMoney(value);
       case 'percent': return (Math.round(value * 10) / 10).toFixed(1) + '%';
-      case 'days':    s = (value < 0 ? '-' : '') + commas(String(Math.abs(Math.round(value)))); break;
+      // Whole days, or a half (days ahead / behind round to 0.5).
+      case 'days': {
+        const h = Math.round(Math.abs(value) * 2) / 2;
+        s = (value < 0 && h ? '-' : '') + commas(String(Math.floor(h))) + (h % 1 ? '.5' : '');
+        break;
+      }
       case 'qty': case 'number': s = fmtQty(value); break;
       default:        return String(value);
     }
@@ -242,18 +298,25 @@
   }
 
   // ── The catalog ────────────────────────────────────────────────────────
-  // col(key, label, type, flags): d = on by default, i = internal (locked
-  // until "Include internal data"), f = financial (internal, and hidden
-  // outright from roles that cannot open Financials), s = totals sum it.
-  function col(key, label, type, flags) {
+  // col(key, label, type, flags, divisions): d = on by default, i = internal
+  // (locked until "Include internal data"), f = financial (internal, and
+  // hidden outright from roles that cannot open Financials), s = totals sum
+  // it, g = signed (+ on a positive figure, in the HTML and the workbook).
+  // divisions, when given, is the only divisions the column exists in: tons
+  // mean nothing on a turf job, so elsewhere it is hidden.
+  function col(key, label, type, flags, divisions) {
     flags = flags || '';
     const financial = flags.includes('f');
-    return { key, label, type, internal: financial || flags.includes('i'), financial,
-      def: flags.includes('d'), total: flags.includes('s') ? 'sum' : null };
+    const c = { key, label, type, internal: financial || flags.includes('i'), financial,
+      def: flags.includes('d'), total: flags.includes('s') ? 'sum' : null, signed: flags.includes('g') };
+    if (Array.isArray(divisions)) c.divisions = divisions.slice();
+    return c;
   }
   const B = (key, label) => ({ key, label, kind: 'bool' });
   const COST_CODES = { key: 'costCodes', label: 'Cost codes', kind: 'costCodes' };
+  const SUB_CODES = { key: 'subCodes', label: 'Sub codes', kind: 'subCodes' };
   const TOTALS = B('totals', 'Totals row');
+  const PAVING = ['paving'], TURF = ['turf'], KIEWIT = ['kiewit'];
 
   const CATALOG = {
     job_info: {
@@ -306,11 +369,11 @@
         col('crew_size', 'Crew Size', 'number', 'i'), col('cost_per_unit', 'Cost / Unit', 'money', 'i'),
         col('units_per_mh', 'Units / Man-Hour', 'number', 'i'),
       ],
-      options: { groupBy: 'cost_code', subtotals: true, totals: true, hideNotStarted: false, hideComplete: false, costCodes: [] },
+      options: { groupBy: 'cost_code', subtotals: true, totals: true, hideNotStarted: false, hideComplete: false, costCodes: [], subCodes: [] },
       optionSpec: [
         { key: 'groupBy', label: 'Group by', kind: 'select', choices: [['cost_code', 'Cost code'], ['none', 'No grouping']] },
         B('subtotals', 'Cost code subtotals'), TOTALS,
-        B('hideNotStarted', 'Hide items not started'), B('hideComplete', 'Hide completed items'), COST_CODES,
+        B('hideNotStarted', 'Hide items not started'), B('hideComplete', 'Hide completed items'), COST_CODES, SUB_CODES,
       ],
     },
     production_kpis: {
@@ -323,11 +386,13 @@
         col('avg_per_day', 'Avg / Day', 'qty', 'd'), col('best_day', 'Best Day', 'qty'),
         col('remaining_qty', 'Remaining', 'qty', 'ds'), col('est_days_left', 'Est. Days Left', 'days', 'd'),
         col('projected_finish', 'Projected Finish', 'date', 'd'),
+        col('per_load', 'Per Load', 'number'),
         col('labor_hours', 'Labor Hours', 'number', 'is'), col('units_per_mh', 'Units / Man-Hour', 'number', 'i'),
         col('cost_per_unit', 'Cost / Unit', 'money', 'i'), col('crew_avg', 'Avg Crew', 'number', 'i'),
+        col('units_per_crew_hr', 'Units / Crew-Hour', 'number', 'i'), col('units_per_equip_hr', 'Units / Equip-Hour', 'number', 'i'),
       ],
-      options: { totals: false, costCodes: [] },
-      optionSpec: [TOTALS, COST_CODES],
+      options: { totals: false, costCodes: [], subCodes: [] },
+      optionSpec: [TOTALS, COST_CODES, SUB_CODES],
     },
     daily_production: {
       type: 'daily_production', label: 'Daily Production', table: true,
@@ -344,12 +409,12 @@
         col('po_num', 'PO #', 'text', 'i'), col('material_cost', 'Material Cost', 'money', 'is'),
         col('total_cost', 'Total Cost', 'money', 'is'),
       ],
-      options: { summarize: true, groupBy: 'none', hideZeroQty: true, totals: true, costCodes: [] },
+      options: { summarize: true, groupBy: 'none', hideZeroQty: true, totals: true, costCodes: [], subCodes: [] },
       optionSpec: [
         B('summarize', 'One row per day and sub code'),
         { key: 'groupBy', label: 'Group by', kind: 'select',
           choices: [['none', 'No grouping'], ['date', 'Day'], ['week', 'Week'], ['sub_code', 'Sub code']] },
-        B('hideZeroQty', 'Hide rows with no quantity'), TOTALS, COST_CODES,
+        B('hideZeroQty', 'Hide rows with no quantity'), TOTALS, COST_CODES, SUB_CODES,
       ],
     },
     materials: {
@@ -364,8 +429,8 @@
         col('unit_cost', 'Unit Cost', 'money', 'i'), col('tax', 'Tax', 'money', 'is'),
         col('line_total', 'Line Total', 'money', 'is'),
       ],
-      options: { summarize: false, totals: true },
-      optionSpec: [B('summarize', 'One row per material and supplier'), TOTALS],
+      options: { summarize: false, totals: true, costCodes: [], subCodes: [] },
+      optionSpec: [B('summarize', 'One row per material and supplier'), TOTALS, COST_CODES, SUB_CODES],
     },
     trucking: {
       type: 'trucking', label: 'Trucking / Haul Log', table: true,
@@ -379,8 +444,8 @@
         col('driver', 'Driver', 'text', 'i'), col('hours', 'Hours', 'number', 'is'),
         col('rate', 'Rate', 'money', 'i'), col('cost', 'Cost', 'money', 'is'),
       ],
-      options: { totals: true },
-      optionSpec: [TOTALS],
+      options: { totals: true, costCodes: [], subCodes: [] },
+      optionSpec: [TOTALS, COST_CODES, SUB_CODES],
     },
     change_orders: {
       type: 'change_orders', label: 'Change Orders', table: true,
@@ -389,11 +454,11 @@
         col('kind', 'Type', 'text', 'd'), col('date', 'Date', 'date', 'd'),
         col('number', 'CO #', 'text', 'd'), col('cost_code', 'Cost Code', 'text', 'd'),
         col('sub_code', 'Sub Code', 'text', 'd'), col('description', 'Description', 'text', 'd'),
-        col('qty_change', 'Qty Change', 'qty', 'd'), col('amount', 'Amount', 'money', 'f'),
+        col('qty_change', 'Qty Change', 'qty', 'dg'), col('amount', 'Amount', 'money', 'f'),
       ],
-      options: { kinds: ['contract', 'quantity'] },
+      options: { kinds: ['contract', 'quantity'], costCodes: [], subCodes: [] },
       optionSpec: [{ key: 'kinds', label: 'Show', kind: 'kinds',
-        choices: [['contract', 'Contract change orders'], ['quantity', 'Quantity change orders']] }],
+        choices: [['contract', 'Contract change orders'], ['quantity', 'Quantity change orders']] }, COST_CODES, SUB_CODES],
     },
     schedule: {
       type: 'schedule', label: 'Schedule', table: true,
@@ -404,8 +469,64 @@
         col('target_date', 'Target', 'date', 'd'), col('status', 'Status', 'text', 'd'),
         col('pct_complete', '% Complete', 'percent', 'd'), col('days_left', 'Days Left', 'days'),
       ],
-      options: { showBars: true },
-      optionSpec: [B('showBars', 'Timeline bars')],
+      options: { showBars: true, costCodes: [], subCodes: [] },
+      optionSpec: [B('showBars', 'Timeline bars'), COST_CODES, SUB_CODES],
+    },
+    plan_vs_actual: {
+      type: 'plan_vs_actual', label: 'Planned vs Actual', table: true,
+      blurb: 'Each bid item\'s planned production against what has been installed: planned vs actual rate, scheduled vs earned %, and days ahead or behind.',
+      columns: [
+        col('cost_code', 'Cost Code', 'text'), col('sub_code', 'Sub Code', 'text', 'd'),
+        col('description', 'Description', 'text'), col('unit', 'Unit', 'text', 'd'),
+        col('bid_qty', 'Bid Qty', 'qty', 'ds'), col('installed_to_date', 'Installed to Date', 'qty', 'ds'),
+        col('planned_rate', 'Planned / Day', 'qty', 'd'), col('actual_rate', 'Actual / Day', 'qty', 'd'),
+        col('actual_rate_jtd', 'Actual / Day (to date)', 'qty'), col('pct_of_plan', '% of Planned Rate', 'percent', 'd'),
+        col('sched_pct', 'Scheduled %', 'percent', 'd'), col('earned_pct', 'Earned %', 'percent', 'd'),
+        col('spi', 'Pace vs Plan', 'number'), col('qty_variance', 'Qty vs Plan', 'qty', 'g'),
+        col('ahead_days', 'Days Ahead / Behind', 'days', 'gd'), col('required_rate', 'Needed / Day', 'qty'),
+        col('start_date', 'Start', 'date'), col('target_date', 'Target', 'date', 'd'),
+        col('projected_finish', 'Projected Finish', 'date'), col('forecast_vs_target', 'Finish vs Target', 'days', 'g'),
+        col('plan_status', 'Status', 'text', 'd'), col('plan_source', 'Plan Basis', 'text'),
+        col('units_per_crew_hr', 'Units / Crew-Hour', 'number', 'i'),
+      ],
+      options: { groupBy: 'none', totals: true, hideUnplanned: false, hideComplete: false, costCodes: [], subCodes: [] },
+      optionSpec: [
+        { key: 'groupBy', label: 'Group by', kind: 'select', choices: [['none', 'No grouping'], ['cost_code', 'Cost code']] },
+        TOTALS, B('hideUnplanned', 'Hide items with no plan'), B('hideComplete', 'Hide completed items'), COST_CODES, SUB_CODES,
+      ],
+    },
+    chart: {
+      type: 'chart', label: 'Chart', table: false,
+      blurb: 'An S-curve of installed against planned, or daily production bars with the planned rate.',
+      columns: [
+        col('installed', 'Installed', 'qty', 'd'), col('plan', 'Planned', 'qty', 'd'),
+        col('daily_qty', 'Daily quantity', 'qty', 'd'), col('planned_rate_line', 'Planned / day', 'qty', 'd'),
+        col('crew_hours', 'Crew hours', 'number', 'i'),
+      ],
+      options: { chart: 's_curve', basis: 'pct', showPlan: true, height: 'normal', costCodes: [], subCodes: [] },
+      optionSpec: [
+        { key: 'chart', label: 'Chart', kind: 'select', choices: [['s_curve', 'S-curve (cumulative)'], ['daily_bars', 'Daily production bars']] },
+        { key: 'basis', label: 'Measure', kind: 'select', choices: [['pct', '% of bid quantity'], ['qty', 'Quantity']] },
+        B('showPlan', 'Show the plan'),
+        { key: 'height', label: 'Height', kind: 'select', choices: [['normal', 'Normal'], ['tall', 'Tall']] },
+        COST_CODES, SUB_CODES,
+      ],
+    },
+    rate_summary: {
+      type: 'rate_summary', label: 'Production Rates by Division', table: false,
+      blurb: 'The division\'s own rates as headline figures: tons per day and per load, square feet per day, homes per day.',
+      columns: [
+        col('work_days', 'Work Days', 'days', 'd'), col('avg_crew', 'Avg Crew', 'number', 'i'),
+        col('tons_period', 'Tons Placed', 'qty', 'd', PAVING), col('tons_per_day', 'Tons / Day', 'qty', 'd', PAVING),
+        col('loads_period', 'Loads', 'number', 'd', PAVING), col('tons_per_load', 'Tons / Load', 'number', 'd', PAVING),
+        col('tons_per_crew_hr', 'Tons / Crew-Hour', 'number', 'i', PAVING), col('tons_per_equip_hr', 'Tons / Equip-Hour', 'number', 'i', PAVING),
+        col('sf_period', 'SF Installed', 'qty', 'd', TURF), col('sf_per_day', 'SF / Day', 'qty', 'd', TURF),
+        col('sf_per_mh', 'SF / Man-Hour', 'number', 'i', TURF),
+        col('homes_period', 'Homes Set', 'number', 'd', KIEWIT), col('homes_per_day', 'Homes / Day', 'number', 'd', KIEWIT),
+        col('mh_per_home', 'Man-Hours / Home', 'number', 'i', KIEWIT),
+      ],
+      options: { costCodes: [], subCodes: [] },
+      optionSpec: [COST_CODES, SUB_CODES],
     },
     notes: {
       type: 'notes', label: 'Notes', table: false,
@@ -414,7 +535,7 @@
     },
   };
   const SECTION_ORDER = ['job_info', 'summary_kpis', 'bid_progress', 'production_kpis', 'daily_production',
-    'materials', 'trucking', 'change_orders', 'schedule', 'notes'];
+    'materials', 'trucking', 'change_orders', 'schedule', 'plan_vs_actual', 'chart', 'rate_summary', 'notes'];
   const COLS = {};
   Object.keys(CATALOG).forEach(t => {
     COLS[t] = {};
@@ -423,7 +544,7 @@
   // What an empty section says: "No material deliveries in this period."
   const NOUN = { bid_progress: 'bid items', production_kpis: 'production', daily_production: 'daily production',
     materials: 'material deliveries', trucking: 'trucking tickets', change_orders: 'change orders',
-    schedule: 'scheduled bid items' };
+    schedule: 'scheduled bid items', plan_vs_actual: 'bid items', chart: 'production', rate_summary: 'production' };
   // A combined report's tables open with this; it is never internal.
   const JOB_COL = { key: '_job', label: 'Job', type: 'text', internal: false, financial: false, def: true, total: null };
   // Materials summarized to one row per material + supplier gain a count.
@@ -452,10 +573,26 @@
     return {
       v: VERSION, title: '', jobs: { mode: 'pick', ids: [] }, layout: 'separate', pageBreakPerJob: false,
       dates: { preset: 'job_to_date', from: '', to: '' }, includeInternal: false, orientation: 'portrait',
-      header: { preparedFor: '', preparedBy: '', intro: '', footer: '', showGenerated: true },
+      filters: { costCodes: [], subCodes: [] },
+      header: { preparedFor: '', preparedBy: '', intro: '', footer: '', showGenerated: true,
+        branding: 'company', showPmContact: true, contactName: '', contactPhone: '', contactEmail: '' },
       sections: [],
     };
   }
+  // A list of codes: strings, non-empty, each at most `len` long (a longer
+  // one could only fail to match, so it is dropped rather than cut), deduped,
+  // at most `max` of them.
+  function codeList(v, max, len) {
+    if (!Array.isArray(v)) return [];
+    const out = [], seen = new Set();
+    v.forEach(x => {
+      if (typeof x !== 'string' || !x.trim() || x.length > len || seen.has(x) || out.length >= max) return;
+      seen.add(x);
+      out.push(x);
+    });
+    return out;
+  }
+  const HEADER_BRANDING = ['company', 'datawatch'];
 
   function newSection(type) {
     const cat = CATALOG[type];
@@ -474,7 +611,7 @@
       const v = raw[spec.key];
       if (spec.kind === 'bool') { if (typeof v === 'boolean') out[spec.key] = v; }
       else if (spec.kind === 'select') { if (spec.choices.some(c => c[0] === v)) out[spec.key] = v; }
-      else if (spec.kind === 'costCodes') {
+      else if (spec.kind === 'costCodes' || spec.kind === 'subCodes') {
         if (Array.isArray(v)) out[spec.key] = [...new Set(v.filter(x => typeof x === 'string' && x && x.length <= 120))].slice(0, 300);
       } else if (spec.kind === 'kinds') {
         if (Array.isArray(v)) out[spec.key] = spec.choices.map(c => c[0]).filter(k => v.includes(k));
@@ -511,15 +648,21 @@
     return s;
   }
 
-  /* Anything in, a valid v1 definition out: null, a half-written draft, an
-     older shape, or a payload someone edited by hand. Unknown section types
-     and column keys are dropped, text is capped, order is kept. Every
-     renderer runs its definition through this first, so a junk value cannot
-     reach the output — includeInternal is on only when it is literally true. */
+  /* Anything in, a valid v2 definition out: null, a half-written draft, a v1
+     definition (it reads 1:1, the v2 fields at their defaults), an older
+     shape, or a payload someone — or the AI builder — edited by hand.
+     Unknown section types and column keys are dropped, text is capped, order
+     is kept. Every renderer runs its definition through this first, so a
+     junk value cannot reach the output — includeInternal is on only when it
+     is literally true. */
   function normalizeDefinition(def) {
     const d = isObj(def) ? def : {};
     const out = defaultDefinition();
     out.title = str(d.title, 120);
+    // The builder keeps the description on the saved report; one that rides
+    // in the definition (the AI builder sends one) is kept when given.
+    const desc = str(d.description, 500);
+    if (desc.trim()) out.description = desc;
     // Jobs: { mode, ids }, or an older bare array of ids.
     let ids = [], mode = 'pick';
     if (Array.isArray(d.jobs)) { ids = d.jobs; mode = d.jobs.length ? 'saved' : 'pick'; }
@@ -540,10 +683,15 @@
     };
     out.includeInternal = d.includeInternal === true;
     out.orientation = d.orientation === 'landscape' ? 'landscape' : 'portrait';
+    const f = isObj(d.filters) ? d.filters : {};
+    out.filters = { costCodes: codeList(f.costCodes, 200, 60), subCodes: codeList(f.subCodes, 200, 60) };
     const h = isObj(d.header) ? d.header : {};
     out.header = {
       preparedFor: str(h.preparedFor, 200), preparedBy: str(h.preparedBy, 200),
       intro: str(h.intro, 4000), footer: str(h.footer, 300), showGenerated: h.showGenerated !== false,
+      branding: HEADER_BRANDING.includes(h.branding) ? h.branding : 'company',
+      showPmContact: h.showPmContact !== false,
+      contactName: str(h.contactName, 120), contactPhone: str(h.contactPhone, 120), contactEmail: str(h.contactEmail, 120),
     };
     const used = new Set();
     out.sections = (Array.isArray(d.sections) ? d.sections : [])
@@ -600,10 +748,16 @@
   // ── Column rules — the customer-safe guarantee lives here ──────────────
   /* 'available', 'locked' (internal while "Include internal data" is off) or
      'hidden' (a financial column for a role that cannot open Financials —
-     or any internal column for a role that cannot see costs at all). */
-  function columnState(type, key, def, perm) {
-    const c = typeof type === 'string' && has(COLS, type) && typeof key === 'string' && has(COLS[type], key) ? COLS[type][key] : null;
+     or any internal column for a role that cannot see costs at all — or a
+     column of another division: tons on a turf report). A division-scoped
+     column with no division given is hidden: nothing is shown that the
+     report cannot say belongs. */
+  const colOf = (type, key) => (typeof type === 'string' && has(COLS, type) && typeof key === 'string' && has(COLS[type], key) ? COLS[type][key] : null);
+  const divisionHidden = (c, division) => !!c.divisions && !c.divisions.includes(division);
+  function columnState(type, key, def, perm, division) {
+    const c = colOf(type, key);
     if (!c) return 'hidden';
+    if (divisionHidden(c, division)) return 'hidden';
     const p = perm || {};
     if (c.financial && p.canSeeFinancials === false) return 'hidden';
     if (c.internal && p.canSeeCosts === false) return 'hidden';
@@ -614,7 +768,7 @@
   /* The columns a section may print right now, in its chosen order, each a
      copy of the catalog column with its printed label (a custom label from
      the builder, else the catalog's). The renderers use nothing else. */
-  function effectiveColumns(section, def, perm) {
+  function effectiveColumns(section, def, perm, division) {
     const type = section && section.type;
     const cat = typeof type === 'string' && has(CATALOG, type) ? CATALOG[type] : null;
     if (!cat || type === 'notes') return [];
@@ -624,7 +778,7 @@
     chosen.forEach(k => {
       if (typeof k !== 'string' || seen.has(k)) return;
       seen.add(k);
-      if (columnState(type, k, def, perm) !== 'available') return;
+      if (columnState(type, k, def, perm, division) !== 'available') return;
       const c = COLS[type][k];
       const label = has(labels, k) ? txt(str(labels[k], 60)) : '';
       out.push(Object.assign({}, c, { label: label || c.label }));
@@ -640,16 +794,34 @@
     return out;
   }
 
-  function hiddenFinancialCount(def, perm) {
+  // Columns the role may not see. Another division's columns are not
+  // counted: they are not withheld from anyone, they just do not apply.
+  function hiddenFinancialCount(def, perm, division) {
     const d = normalizeDefinition(def);
     let n = 0;
-    d.sections.forEach(s => s.columns.forEach(k => { if (columnState(s.type, k, d, perm) === 'hidden') n++; }));
+    d.sections.forEach(s => s.columns.forEach(k => {
+      const c = colOf(s.type, k);
+      if (c && !c.divisions && columnState(s.type, k, d, perm) === 'hidden') n++;
+      else if (c && c.divisions && c.divisions.includes(division) && columnState(s.type, k, d, perm, division) === 'hidden') n++;
+    }));
     return n;
   }
 
-  function hasInternal(def, perm) {
+  function internalIn(d, perm, division) {
+    return d.sections.some(s => effectiveColumns(s, d, perm, division).some(c => c.internal));
+  }
+  /* Whether the report carries internal data. With the division given, it is
+     exactly what the renderers print. Without one, a division-scoped
+     internal column counts as if it applied: a caller that cannot say the
+     division gets the cautious answer (a confirm too many, never one too
+     few). */
+  function hasInternal(def, perm, division) {
     const d = normalizeDefinition(def);
-    return d.sections.some(s => effectiveColumns(s, d, perm).some(c => c.internal));
+    if (division !== undefined) return internalIn(d, perm, division);
+    return d.sections.some(s => s.columns.some(k => {
+      const c = colOf(s.type, k);
+      return c && c.internal && columnState(s.type, k, d, perm, c.divisions ? c.divisions[0] : undefined) === 'available';
+    }));
   }
 
   function costCodesFor(jobs) {
@@ -658,7 +830,29 @@
       const cc = b && txt(b.cost_code);
       if (cc) set.add(cc);
     }));
-    return [...set].sort((a, b) => a.localeCompare(b, 'en', { numeric: true, sensitivity: 'base' }) || (a < b ? -1 : a > b ? 1 : 0));
+    return [...set].sort(codeSort);
+  }
+  function codeSort(a, b) { return a.localeCompare(b, 'en', { numeric: true, sensitivity: 'base' }) || (a < b ? -1 : a > b ? 1 : 0); }
+
+  /* The sub codes on these jobs' bid items, for the filter picker:
+     [{ code, description, unit, costCodes }], one per sub code (matched as
+     the filter matches — trimmed, case-blind; the first spelling met is the
+     one shown), the description and unit the first non-empty ones on a bid
+     item carrying it, sorted by code. */
+  function subCodesFor(jobs) {
+    const by = new Map();
+    (Array.isArray(jobs) ? jobs : []).forEach(p => (p && Array.isArray(p.bidItems) ? p.bidItems : []).forEach(b => {
+      const sc = b && typeof b === 'object' ? txt(b.sub_code) : '';
+      if (!sc) return;
+      const k = sc.toLowerCase();
+      let e = by.get(k);
+      if (!e) { e = { code: sc, description: '', unit: '', cc: new Set() }; by.set(k, e); }
+      if (!e.description && txt(b.description)) e.description = txt(b.description);
+      if (!e.unit && txt(b.unit)) e.unit = txt(b.unit);
+      if (txt(b.cost_code)) e.cc.add(txt(b.cost_code));
+    }));
+    return [...by.values()].sort((a, b) => codeSort(a.code, b.code))
+      .map(e => ({ code: e.code, description: e.description, unit: e.unit, costCodes: [...e.cc].sort(codeSort) }));
   }
 
   // ── Context, caches and the page's helpers ─────────────────────────────
@@ -671,9 +865,40 @@
     return s;
   }
 
-  /* opts { pickedIds?, today?, now?, reportName?, userName? } → the context
-     every builder call takes. A context is a snapshot of the page's data:
-     make a fresh one for each render. */
+  /* The company's branding as the masthead may print it. The logo is only
+     ever a data: URI of a PNG or a JPEG whose payload is plain base64 — the
+     server checks that on save, and it is checked again here, because this
+     string goes into an src attribute on a page that is printed, emailed
+     and rendered to PDF. Anything else and there is no logo. */
+  const LOGO_MIMES = ['image/png', 'image/jpeg'];
+  const MAX_LOGO_B64 = 400000;
+  function cleanLogo(l) {
+    if (!isObj(l)) return null;
+    const mime = typeof l.mime === 'string' ? l.mime.trim().toLowerCase() : '';
+    const b64 = typeof l.base64 === 'string' ? l.base64.replace(/\s+/g, '') : '';
+    if (!LOGO_MIMES.includes(mime) || !b64 || b64.length > MAX_LOGO_B64 || b64.length % 4
+      || !/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return null;
+    const dim = v => (isNum(v) && v > 0 && v <= 4000 ? Math.round(v) : null);
+    return { mime, base64: b64, width: dim(l.width), height: dim(l.height) };
+  }
+  function cleanBranding(b) {
+    if (!isObj(b)) return null;
+    const t = (v, n) => txt(str(v, n));
+    const out = {
+      display_name: t(b.display_name, 120), logo: cleanLogo(b.logo), phone: t(b.phone, 40), email: t(b.email, 200),
+      website: t(b.website, 200), address: t(b.address, 300), report_footer: t(b.report_footer, 300),
+    };
+    return out;
+  }
+  const cleanPerson = c => (isObj(c) ? { name: txt(str(c.name, 120)), phone: txt(str(c.phone, 60)), email: txt(str(c.email, 200)) } : null);
+
+  /* opts { pickedIds?, today?, now?, reportName?, userName?, branding?,
+     contacts?, reportContact? } → the context every builder call takes.
+     branding is the company's (display name, logo, phone, address…);
+     contacts is { [projectId]: { pm: { name, phone, email } } } for the PM
+     line in each job band; reportContact is the "Questions?" contact the
+     builder resolved. A context is a snapshot of the page's data: make a
+     fresh one for each render. */
   function makeContext(def, cfg, opts) {
     cfg = cfg || {};
     opts = opts || {};
@@ -693,10 +918,21 @@
       divisionLabel: txt(cfg.divisionLabel) || DIV_LABELS[cfg.division] || '',
       areaUnit: txt(cfg.areaUnit) || (cfg.division === 'turf' ? 'SF' : 'SY'),
       userName: txt(str(opts.userName, 120)),
+      branding: cleanBranding(opts.branding),
+      contacts: isObj(opts.contacts) ? opts.contacts : {},
+      reportContact: cleanPerson(opts.reportContact),
     };
     stateOf(ctx).rangeKey = JSON.stringify(d.dates);
     return ctx;
   }
+  // The day plan figures are measured to: the range's end, but never past
+  // today (this week and this month end in the future).
+  function asOf(ctx) {
+    const t = isIso(ctx.today) ? ctx.today : localToday();
+    const to = ctx.range && ctx.range.to;
+    return to && to < t ? to : t;
+  }
+  const divisionOf = ctx => (ctx && ctx.cfg ? ctx.cfg.division : undefined);
 
   // If the builder hands a newer definition (its dates changed) to an older
   // context, re-resolve the range rather than print the old one.
@@ -829,6 +1065,15 @@
   // A delivery that landed on a Saturday is not a day on the job.
   const isWorkRow = r => num(r.labor_hours) > 0 || num(r.equip_hours) > 0
     || num(r.equip_total_override) > 0 || num(r.quantity) > 0;
+  // Rows the rates leave out. Haul time is payroll's "Haul — On Site" /
+  // "Haul — To/From Site" (rowHaulHours); travel is Financials' rule
+  // (_finIsTravel); a trucking ticket coded to a job lands in its daily rows
+  // as job class Trucking with its loads in the quantity.
+  const HAUL_RE = /^haul\s*[—–-]\s/i;
+  const TRAVEL_RE = /\btravel\b/i;
+  const isHaulRow = r => HAUL_RE.test(String(r.field_type || '').trim());
+  const isTravelRow = r => r.field_type === 'Travel' || TRAVEL_RE.test(String(r.sub_code || '')) || TRAVEL_RE.test(String(r.cost_code || ''));
+  const isTruckRow = r => txt(r.job_class).toLowerCase() === 'trucking';
 
   function inPeriod(range, date) {
     if (!range.from && !range.to) return true;          // job to date: every row
@@ -857,6 +1102,7 @@
         r, date, qty: num(r.quantity), hrs: num(r.labor_hours), cost: H.rowCost(r), work: isWorkRow(r),
         emp: r.employee ? String(r.employee) : '',
         toEnd: !range.to || !date || date <= range.to, inP: inPeriod(range, date),
+        haul: isHaulRow(r), trk: isTruckRow(r), trv: isTravelRow(r),
       };
       facts.push(f);
       push(byCC, r.cost_code, f);
@@ -878,7 +1124,8 @@
       } else if (b.cost_code) { if (!unitCC.has(b.cost_code)) unitCC.set(b.cost_code, u); }
       else if (b.sub_code) { if (!unitSC.has(b.sub_code)) unitSC.set(b.sub_code, u); }
     });
-    ix = { p, facts, byCC, bySC, byPair, maxDate, items, unitPair, unitCC, unitSC, stats: new Map(), job: null };
+    ix = { p, facts, byCC, bySC, byPair, maxDate, items, unitPair, unitCC, unitSC, stats: new Map(), job: null,
+      plans: new Map(), cs: undefined };
     // Each row's unit, by the same rule the daily table uses, worked out once:
     // whatever adds rows up across bid lines counts each row once, under it.
     facts.forEach(f => { const u = unitForRow(ix, f.r); f.on = u.on; f.unit = u.unit; });
@@ -1045,6 +1292,201 @@
     return Math.max(sumLines + offBid, actualAll);
   }
 
+  // ── Code filters ───────────────────────────────────────────────────────
+  /* The report's filters and a section's own cost-code / sub-code options,
+     as one test. An item or row passes when its code is in every list that
+     has anything in it — the report's lists and the section's (an empty list
+     is no filter). Codes match trimmed and case-blind, as _bidCsKey does. */
+  const DATA_TYPES = new Set(['bid_progress', 'daily_production', 'production_kpis', 'materials', 'trucking',
+    'change_orders', 'schedule', 'plan_vs_actual', 'chart', 'rate_summary']);
+  function lowerSet(list) {
+    const a = (Array.isArray(list) ? list : []).map(x => txt(x).toLowerCase()).filter(Boolean);
+    return a.length ? new Set(a) : null;
+  }
+  function makeScope(def, opts) {
+    const f = isObj(def) && isObj(def.filters) ? def.filters : {};
+    const o = isObj(opts) ? opts : {};
+    const rcc = lowerSet(f.costCodes), rsc = lowerSet(f.subCodes);
+    const cc = [rcc, lowerSet(o.costCodes)].filter(Boolean), sc = [rsc, lowerSet(o.subCodes)].filter(Boolean);
+    const inAll = (sets, v) => { const k = txt(v).toLowerCase(); return sets.every(set => set.has(k)); };
+    const ccOk = c => !cc.length || inAll(cc, c);
+    const scOk = s => !sc.length || inAll(sc, s);
+    const codes = (c, s) => ccOk(c) && scOk(s);
+    return { active: !!(cc.length || sc.length), sub: !!sc.length, report: !!(rcc || rsc), ccOk, codes,
+      item: b => codes(b.cost_code, b.sub_code) };
+  }
+  const NO_SCOPE = makeScope(null, null);
+  /* The bid items a section lists. A cost-code-only line takes every sub
+     code under its code, so under a sub-code filter it cannot say how much of
+     itself is the picked sub code: it is left out, and counted for the
+     footnote. */
+  function scopedItems(ix, scope, info) {
+    if (!scope.active) return ix.items;
+    return ix.items.filter(b => {
+      if (scope.item(b)) return true;
+      if (info && scope.sub && txt(b.cost_code) && !txt(b.sub_code) && scope.ccOk(b.cost_code)) info.ccOnly++;
+      return false;
+    });
+  }
+  // What the builders count for a block's footnotes.
+  const newInfo = () => ({ ccOnly: 0, coHidden: 0, items: 0, noPlan: 0 });
+  const plural = (n, one, many) => `${n} ${n === 1 ? one : many || one + 's'}`;
+
+  // ── Crews, hours and loads, the way the rates count them ──────────────
+  /* Crew-hours: each day's site labour hours (no haul, no travel) over the
+     people who booked them that day — the length of that day's shift —
+     summed over the days. A row with hours and no name counts as a person of
+     its own. */
+  function crewHours(facts) {
+    const days = new Map();
+    facts.forEach(f => {
+      if (!(f.hrs > 0) || f.haul || f.trk || f.trv || !f.date) return;
+      let d = days.get(f.date);
+      if (!d) { d = { hrs: 0, emps: new Set() }; days.set(f.date, d); }
+      d.hrs += f.hrs;
+      d.emps.add(f.emp || f);
+    });
+    let t = 0;
+    days.forEach(d => { t += d.hrs / d.emps.size; });
+    return t;
+  }
+  // Man-hours as Cost Tracking's MU / labor hour counts them: no haul, no
+  // travel. Equipment hours leave out haul rows. Neither counts a trucking
+  // ticket's row — the truck's hours are not the crew's.
+  const manHours = facts => facts.reduce((t, f) => (f.haul || f.trk || f.trv ? t : t + f.hrs), 0);
+  const equipHours = facts => facts.reduce((t, f) => (f.haul || f.trk ? t : t + num(f.r.equip_hours)), 0);
+  // The quantity a rate is measured on: a trucking ticket's loads written
+  // into the daily rows, and haul rows, are not production.
+  const madeQty = facts => facts.reduce((t, f) => (f.trk || f.haul ? t : t + f.qty), 0);
+  // Σ distinct people per work day, and the work days.
+  function crewDays(facts) {
+    const days = new Map();
+    facts.forEach(f => {
+      if (!f.work || !f.date) return;
+      let e = days.get(f.date);
+      if (!e) { e = new Set(); days.set(f.date, e); }
+      if (f.emp) e.add(f.emp);
+    });
+    let n = 0;
+    days.forEach(e => { n += e.size; });
+    return { days: days.size, crew: n };
+  }
+  // A job's trucking tickets in the range.
+  function ticketsInRange(ctx, p) {
+    return (truckingByJob(ctx).get(jobKey(p)) || []).filter(t => t && inPeriod(ctx.range, dayOf(t.date)));
+  }
+  // A ticket lands on a bid line by the line's own codes (the wildcard rule).
+  function ticketOnItem(t, b) {
+    const cc = txt(b.cost_code).toLowerCase(), sc = txt(b.sub_code).toLowerCase();
+    const tc = txt(t.cost_code).toLowerCase(), ts = txt(t.sub_code).toLowerCase();
+    if (cc && sc) return tc === cc && ts === sc;
+    if (cc) return tc === cc;
+    if (sc) return ts === sc;
+    return false;
+  }
+
+  // ── Plans ──────────────────────────────────────────────────────────────
+  const csKey = (cc, sc) => txt(cc).toLowerCase() + '||' + txt(sc).toLowerCase();
+  /* The job's Construction Schedule (turf and Kiewit), when the page hands it
+     over: each task's span, by its code / sub code key, earliest start to
+     latest end over the tasks that carry both dates. */
+  function conSchedule(ctx, ix) {
+    if (ix.cs !== undefined) return ix.cs;
+    let rows = null;
+    try {
+      const g = ctx.cfg && ctx.cfg.getConSchedule;
+      const v = typeof g === 'function' ? g(ix.p.id) : null;
+      rows = Array.isArray(v) ? v : isObj(v) && Array.isArray(v.rows) ? v.rows : null;
+    } catch (_) { rows = null; }
+    let m = null;
+    if (rows) {
+      m = new Map();
+      rows.forEach(t => {
+        if (!isObj(t) || t.kind !== 'task') return;
+        const S = csDate(t.start), T = csDate(t.end);
+        if (!S || !T || T < S) return;
+        const k = csKey(t.code, t.subcode);
+        const x = m.get(k);
+        if (!x) m.set(k, { S, T });
+        else { if (S < x.S) x.S = S; if (T > x.T) x.T = T; }
+      });
+    }
+    ix.cs = m;
+    return m;
+  }
+  function firstWorkDay(ix, b) {
+    let first = '';
+    rowsForItem(ix, b).forEach(f => { if (f.work && f.date && (!first || f.date < first)) first = f.date; });
+    return first;
+  }
+  /* A bid item's plan: { S, T, W, PR, source, Q } or { source: null }.
+       rate          a Planned / Day typed on the item: PR is that; the start
+                     is the typed start or the first day worked (a rate plan
+                     measures pace, not the calendar); the target the typed
+                     one, else the job's end date, else the day the rate
+                     finishes the quantity.
+       bid           the item's typed Start and Target (the page's plannedPace)
+       bid+job end   typed Start, the job's end date as the target
+       schedule      the Construction Schedule tasks on the same code
+     W is the working days S..T, both ends counted; PR the quantity over W.
+     Typed dates only — never the first / last day worked the bid table
+     shows in grey, or every line would read on plan. An LS line, or one
+     with no quantity, has dates but no rate. */
+  function planOf(ctx, ix, b) {
+    let pl = ix.plans.get(b);
+    if (!pl) { pl = makePlan(ctx, ix, b); ix.plans.set(b, pl); }
+    return pl;
+  }
+  function makePlan(ctx, ix, b) {
+    const Q = effQty(b), rated = normUnit(b.unit) !== 'LS' && Q > 0;
+    const typedS = dayOf(b.start_date), typedT = dayOf(b.target_date), jobEnd = dayOf(ix.p['end-date']);
+    const pr = num(b.planned_rate);
+    if (pr > 0 && rated) {
+      const S = typedS || firstWorkDay(ix, b);
+      let T = typedT || jobEnd;
+      if (!T && S) T = addWorkdays(isWorkday(S) ? S : addWorkdays(S, 1), Math.ceil(Q / pr - 1e-9) - 1) || '';
+      const W = S && T ? countWorkdays(S, T) : 0;
+      return { S, T, W: W > 0 ? W : null, PR: pr, source: 'rate', Q, typedT: !!typedT };
+    }
+    const dated = (S, T, source) => {
+      const W = countWorkdays(S, T);
+      return W > 0 ? { S, T, W, PR: rated ? Q / W : null, source, Q, typedT: source === 'bid' } : { source: null, Q };
+    };
+    if (typedS && (typedT || jobEnd)) return dated(typedS, typedT || jobEnd, typedT ? 'bid' : 'bid+job end');
+    const cs = conSchedule(ctx, ix);
+    const task = cs && cs.get(csKey(b.cost_code, b.sub_code));
+    if (task) return dated(task.S, task.T, 'schedule');
+    return { source: null, Q };
+  }
+  // What a plan expects to be installed over its own working days: the typed
+  // rate times those days for a "Planned per day" line, else the bid
+  // quantity (a date plan's rate is the bid quantity over its days, so the
+  // two are the same thing). The roll-up's Planned / Day and the chart's
+  // planned line add these up, so a lone rate line totals to the rate it
+  // shows rather than to its bid quantity spread over its dates.
+  const planSpanQty = (pl, Q) => (pl.source === 'rate' && pl.PR > 0 && pl.W > 0 ? pl.PR * pl.W : Q);
+  // Scheduled % on a day: none before the start, all of it from the target
+  // on, a straight line over the working days between.
+  function schedPct(pl, day) {
+    if (!pl.source || !pl.S || !pl.T) return null;
+    if (day < pl.S) return 0;
+    if (day >= pl.T) return 100;
+    return pl.W ? 100 * countWorkdays(pl.S, day) / pl.W : null;
+  }
+  const PLAN_BASIS = { rate: 'Planned per day', bid: 'Bid item dates', 'bid+job end': 'Bid item start + job end',
+    schedule: 'Construction schedule', job: 'Job dates' };
+  const halfDay = x => { if (!isNum(x)) return null; const r = Math.round(x * 2) / 2; return Math.abs(r) < 0.5 ? 0 : r; };
+  const round2 = x => (isNum(x) ? Math.round(x * 100) / 100 : null);
+  // The thresholds: on track within a day (or pace at 95% of plan), at risk
+  // to three days, behind past that.
+  function planStatus(ahead, spi) {
+    if ((ahead !== null && ahead >= -1) || (spi !== null && spi >= 0.95)) return 'On track';
+    if (ahead !== null && ahead >= -3) return 'At risk';
+    if (ahead !== null) return 'Behind';
+    return null;
+  }
+  const PAST_TARGET = 'Behind (past target)';
+
   // ── Aggregation helpers ────────────────────────────────────────────────
   const jobKey = p => String(p && p.id);
   function sumOf(recs, k) {
@@ -1104,12 +1546,28 @@
     return [{ c, m: { unit: '' }, job: p }];
   }
 
-  function summaryRec(ctx, p) {
-    const js = jobStats(ctx, p);
+  /* Under a report-wide code filter, the strip's quantity, % complete and
+     items complete are the filtered items' (and say so in their labels);
+     the rest stay the job's. */
+  const FILTERED_KPIS = new Set(['qty_period', 'pct_complete', 'items_complete']);
+  function filteredJobFigures(ctx, p, scope) {
+    const ix = jobIndex(ctx, p), js = jobStats(ctx, p);
+    const stats = scopedItems(ix, scope).map(b => itemStats(ctx, ix, b));
+    const pr = ownProjectPct(stats);
+    const qtyByUnit = new Map();
+    ix.facts.forEach(f => {
+      if (!f.inP || !f.qty || !scope.codes(f.r.cost_code, f.r.sub_code)) return;
+      qtyByUnit.set(f.unit, (qtyByUnit.get(f.unit) || 0) + f.qty);
+    });
+    return Object.assign({}, js, { pct: pr ? pr.pct : null, done: stats.filter(x => x.complete).length, total: stats.length,
+      bidBudget: stats.reduce((t, x) => t + x.bidTotal, 0), qtyByUnit });
+  }
+  function summaryRec(ctx, p, scope) {
+    const js = scope && scope.report ? filteredJobFigures(ctx, p, scope) : jobStats(ctx, p);
     const c = {
       pct_complete: js.pct, days_worked: js.daysP.size,
       items_complete: js.total ? `${js.done} of ${js.total}` : null,
-      labor_hours: js.hrsP, actual_cost: js.actualEnd, period_cost: js.periodCost, bid_budget: js.bidBudget,
+      labor_hours: js.hrsP, actual_cost: js.actualEnd, period_cost: js.periodCost, bid_budget: jobStats(ctx, p).bidBudget,
       projected_cost: js.projected, contract: js.contract || null, co_total: js.coTotal, gp_earned: js.gp,
     };
     const q = js.qtyByUnit;
@@ -1143,12 +1601,10 @@
     return { c, m: { unit }, job: null };
   }
 
-  function bidProgressRecs(ctx, p, opts) {
+  function bidProgressRecs(ctx, p, opts, scope, info) {
     const ix = jobIndex(ctx, p);
-    const codes = opts.costCodes && opts.costCodes.length ? new Set(opts.costCodes) : null;
     const out = [];
-    ix.items.forEach(b => {
-      if (codes && !codes.has(txt(b.cost_code))) return;
+    scopedItems(ix, scope || NO_SCOPE, info).forEach(b => {
       const s = itemStats(ctx, ix, b);
       if (opts.hideNotStarted && s.status === 'Not Started') return;
       if (opts.hideComplete && s.status === 'Complete') return;
@@ -1239,15 +1695,24 @@
      work days to go and the working day (Mon–Fri, less the pages' holidays)
      that lands on. Remaining is today's,
      not the range end's, because the finish is projected forward from today. */
-  function productionRecs(ctx, p, opts) {
+  function productionRecs(ctx, p, opts, scope, info) {
     const ix = jobIndex(ctx, p), H = helpersOf(ctx);
-    const codes = opts.costCodes && opts.costCodes.length ? new Set(opts.costCodes) : null;
     const out = [];
-    ix.items.forEach(b => {
-      if (codes && !codes.has(txt(b.cost_code))) return;
+    let tickets = null;
+    scopedItems(ix, scope || NO_SCOPE, info).forEach(b => {
       const s = itemStats(ctx, ix, b);
       const days = s.daysP.size;
       if (!days) return;
+      // The per-hour and per-load rates: on the period's own rows, without
+      // haul or trucking rows; loads off the tickets coded to the line.
+      const facts = rowsForItem(ix, b).filter(f => f.inP);
+      const made = madeQty(facts), crewH = crewHours(facts), eqH = equipHours(facts);
+      let loads = 0, tix = [];
+      if (normUnit(b.unit) === 'TON') {
+        if (!tickets) tickets = ticketsInRange(ctx, p);
+        tix = tickets.filter(t => ticketOnItem(t, b));
+        loads = tix.reduce((t, x) => t + num(x.loads), 0);
+      }
       const avg = s.qtyP / days;
       let best = null;
       s.qtyByDayP.forEach(v => { if (best === null || v > best) best = v; });
@@ -1268,8 +1733,12 @@
           est_days_left: est, projected_finish: est > 0 ? H.workdays(ctx.today, est) : null,
           labor_hours: s.hrsP, units_per_mh: s.hrsP > 0 ? s.qtyP / s.hrsP : null,
           cost_per_unit: s.qtyP > 0 ? s.costP / s.qtyP : null, crew_avg: crew / days,
+          per_load: made > 0 && loads > 0 ? made / loads : null,
+          units_per_crew_hr: made > 0 && crewH > 0 ? made / crewH : null,
+          units_per_equip_hr: made > 0 && eqH > 0 ? made / eqH : null,
         },
-        m: { unit: s.unit, days: s.daysP, byDay: s.qtyByDayP, empsByDay: s.empsByDayP, costP: s.costP },
+        m: { unit: s.unit, days: s.daysP, byDay: s.qtyByDayP, empsByDay: s.empsByDayP, costP: s.costP,
+          facts, tickets: tix, ton: normUnit(b.unit) === 'TON' },
         job: p,
       });
     });
@@ -1307,19 +1776,37 @@
     let crew = 0;
     crewByDay.forEach(s => { crew += s.size; });
     c.crew_avg = crewByDay.size ? crew / crewByDay.size : null;
+    // The rates over the lines' rows and tickets, each counted once (a
+    // cost-code-only line shares rows with a line under its code), crews per
+    // job so two jobs' Mondays stay two.
+    if (one !== null) {
+      const byJob = new Map(), tix = new Set();
+      recs.forEach(r => {
+        const jk = jobKey(r.job);
+        if (!byJob.has(jk)) byJob.set(jk, new Set());
+        r.m.facts.forEach(f => byJob.get(jk).add(f));
+        r.m.tickets.forEach(t => tix.add(t));
+      });
+      let made = 0, crewH = 0, eqH = 0;
+      byJob.forEach(set => { const fs = [...set]; made += madeQty(fs); crewH += crewHours(fs); eqH += equipHours(fs); });
+      const loads = [...tix].reduce((t, x) => t + num(x.loads), 0);
+      c.per_load = recs.every(r => r.m.ton) && made > 0 && loads > 0 ? made / loads : null;
+      c.units_per_crew_hr = made > 0 && crewH > 0 ? made / crewH : null;
+      c.units_per_equip_hr = made > 0 && eqH > 0 ? made / eqH : null;
+    }
     return c;
   }
 
   const DP_SUM = ['quantity', 'labor_hours', 'labor_cost', 'equip_hours', 'equip_cost', 'material_cost', 'total_cost'];
   const DP_TEXT = ['unit', 'field_type', 'employee', 'job_class', 'equipment', 'material', 'supplier', 'po_num'];
-  function dailyRecs(ctx, p, opts) {
+  function dailyRecs(ctx, p, opts, scope) {
     const ix = jobIndex(ctx, p), H = helpersOf(ctx);
-    const codes = opts.costCodes && opts.costCodes.length ? new Set(opts.costCodes) : null;
+    const sc = scope || NO_SCOPE;
     let out = [];
     ix.facts.forEach(f => {
       if (!f.inP) return;
       const r = f.r;
-      if (codes && !codes.has(txt(r.cost_code))) return;
+      if (sc.active && !sc.codes(r.cost_code, r.sub_code)) return;
       const calc = H.calc(r);
       const unit = unitForRow(ix, r).unit;
       out.push({
@@ -1379,10 +1866,11 @@
     st.pos = m;
     return m;
   }
-  function materialRecs(ctx, p, opts) {
+  function materialRecs(ctx, p, opts, scope) {
     const H = helpersOf(ctx), range = ctx.range;
+    const sc = scope || NO_SCOPE;
     let out = [];
-    (posByJob(ctx).get(jobKey(p)) || []).forEach(po => (Array.isArray(po.lines) ? po.lines : []).forEach(l => {
+    (posByJob(ctx).get(jobKey(p)) || []).forEach(po => (Array.isArray(po.lines) && (!sc.active || sc.codes(po.cost_code, po.sub_code)) ? po.lines : []).forEach(l => {
       if (!l || typeof l !== 'object') return;
       const date = dayOf(l.date);
       if (!inPeriod(range, date)) return;
@@ -1444,11 +1932,13 @@
     st.trs = m;
     return m;
   }
-  function truckingRecs(ctx, p) {
+  function truckingRecs(ctx, p, opts, scope) {
     const out = [];
+    const sc = scope || NO_SCOPE;
     (truckingByJob(ctx).get(jobKey(p)) || []).forEach(t => {
       const date = dayOf(t.date);
       if (!inPeriod(ctx.range, date)) return;
+      if (sc.active && !sc.codes(t.cost_code, t.sub_code)) return;
       const rate = num(t.rate), hours = num(t.hours);
       out.push({
         c: {
@@ -1468,21 +1958,25 @@
   // Contract change orders move the contract (paving keeps them); quantity
   // change orders move a bid line. A CO with a date is held to the range; one
   // without is always shown.
-  function changeOrderRecs(ctx, p, opts) {
+  /* Under a code filter a contract change order — which belongs to no bid
+     line — has no codes to pass, so it is left out and counted. */
+  function changeOrderRecs(ctx, p, opts, scope, info) {
     const kinds = new Set(opts.kinds || []);
     const range = ctx.range, keep = d => !d || inPeriod(range, d);
+    const sc = scope || NO_SCOPE;
     const out = [];
     if (kinds.has('contract')) {
       (Array.isArray(p['contract-cos']) ? p['contract-cos'] : []).forEach(co => {
         if (!co || typeof co !== 'object') return;
         const date = dayOf(co.date);
         if (!keep(date)) return;
+        if (sc.active) { if (info) info.coHidden++; return; }
         out.push({ c: { kind: 'Contract', date: date || null, number: txt(co.number), cost_code: null, sub_code: null,
           description: txt(co.note), qty_change: null, amount: num(co.amount) }, m: { unit: '' }, job: p });
       });
     }
     if (kinds.has('quantity')) {
-      jobIndex(ctx, p).items.forEach(b => (Array.isArray(b.change_orders) ? b.change_orders : []).forEach(co => {
+      scopedItems(jobIndex(ctx, p), sc).forEach(b => (Array.isArray(b.change_orders) ? b.change_orders : []).forEach(co => {
         if (!co || typeof co !== 'object') return;
         const date = dayOf(co.date);
         if (!keep(date)) return;
@@ -1494,11 +1988,11 @@
     return out;
   }
 
-  function scheduleRecs(ctx, p) {
+  function scheduleRecs(ctx, p, opts, scope, info) {
     const ix = jobIndex(ctx, p);
     const end = dayOf(p['end-date']);
     const out = [];
-    ix.items.forEach(b => {
+    scopedItems(ix, scope || NO_SCOPE, info).forEach(b => {
       if (!dayOf(b.start_date) && !dayOf(b.target_date)) return;
       const s = itemStats(ctx, ix, b);
       out.push({
@@ -1514,14 +2008,551 @@
     return out;
   }
 
+  /* Planned vs actual, per bid item — every item in scope, idle ones too:
+     an item planned to be under way that has seen no work is the one a
+     customer most needs to hear about. A = the as-of day (the range's end,
+     never past today); Q the bid quantity with its change orders; I what is
+     in to the range's end; EP its % complete (100 once marked complete).
+       scheduled %  SP = 0 before S, 100 from T, else 100·E/W, E = working
+                    days S..A
+       earned %     EP; pace vs plan SPI = EP / SP
+       qty vs plan  min(I, Q) − Q·SP/100
+       ahead/behind open: EP/100·W − E; complete: W − working days S..last
+                    day worked; a rate plan with no typed target: what is in
+                    less PR × days worked, in days of planned output. To the
+                    half day; under half a day is on plan.
+       needed/day   what is left today over the working days today..T —
+                    none past the target, which makes the line Behind. */
+  function planRecs(ctx, p, opts, scope, info) {
+    const ix = jobIndex(ctx, p);
+    if (!ix.planRecs) ix.planRecs = new Map();
+    const out = [];
+    scopedItems(ix, scope || NO_SCOPE, info).forEach(b => {
+      let r = ix.planRecs.get(b);
+      if (!r) { r = planRec(ctx, ix, b); ix.planRecs.set(b, r); }
+      if (info) { info.items++; if (!r.m.pl.source) info.noPlan++; }
+      if (opts.hideComplete && r.m.complete) return;
+      if (opts.hideUnplanned && !r.m.pl.source && !r.m.complete) return;
+      out.push(r);
+    });
+    return out;
+  }
+  // One item's record, worked out once per report (every Planned vs Actual
+  // section shares it; the hide options only choose among them).
+  function planRec(ctx, ix, b) {
+    const p = ix.p, H = helpersOf(ctx);
+    const A = asOf(ctx), today = ctx.today;
+    const s = itemStats(ctx, ix, b), pl = planOf(ctx, ix, b);
+    const Q = s.bidQty, I = s.qtyEnd, daysE = s.daysEnd.size, daysP = s.daysP.size;
+    // Done: marked complete, or every unit of it in — as the Schedule
+    // tab's status reads a line at 100%.
+    const done = s.complete || (Q > 0 && I >= Q - 1e-9);
+    const nunit = normUnit(s.unit), rated = nunit !== 'LS' && Q > 0;
+    const EP = s.complete ? 100 : Q > 0 ? s.pctEnd : null;
+    const worked = daysE > 0 || I > 0;
+    const lastWork = daysE ? [...s.daysEnd].sort().pop() : '';
+    let SP = null, E = null;
+    if (pl.source && pl.S && pl.T) { SP = schedPct(pl, A); E = A < pl.S ? 0 : countWorkdays(pl.S, A); }
+    const PR = pl.source && rated ? pl.PR : null;
+    const PQ = SP !== null && Q > 0 ? Q * SP / 100 : null;
+    const spi = SP > 0 && EP !== null ? round2(EP / SP) : null;
+    let ahead = null;
+    if (pl.source === 'rate' && !pl.typedT && PR > 0) {
+      ahead = !worked && pl.S && A >= pl.S ? -E : ((done ? Math.max(I, Q) : I) - PR * daysE) / PR;
+    } else if (pl.source && done) {
+      ahead = lastWork && pl.S && pl.W ? pl.W - countWorkdays(pl.S, lastWork) : null;
+    } else if (SP !== null && EP !== null && pl.W) {
+      ahead = EP / 100 * pl.W - E;
+    }
+    ahead = halfDay(ahead);
+    const pastTarget = !!(pl.source && pl.T && pl.T < today && !done);
+    let needed = null;
+    if (pl.source && pl.T && rated && !done && !pastTarget) {
+      const n = countWorkdays(today, pl.T);
+      needed = n > 0 ? s.remainingNow / n : null;
+    }
+    // The finish the production rates project: the period's average a
+    // day, else the job to date's.
+    const rate = daysP && s.qtyP > 0 ? s.qtyP / daysP : daysE && s.qtyEnd > 0 ? s.qtyEnd / daysE : null;
+    let est = s.remainingNow <= 0 ? 0 : rate > 0 ? Math.ceil(s.remainingNow / rate - 1e-9) : null;
+    if (est !== null && est > MAX_WORKDAYS) est = null;
+    const PF = rated && est > 0 ? H.workdays(today, est) : null;
+    const fvt = PF && pl.T ? (PF <= pl.T ? countWorkdays(PF, pl.T) - 1 : -(countWorkdays(pl.T, PF) - 1)) : null;
+    let status;
+    if (done) status = 'Complete';
+    else if (!pl.source) status = 'Not scheduled';
+    else if (!worked && (!pl.S || A < pl.S)) status = 'Not started';
+    else if (pastTarget) status = PAST_TARGET;
+    else status = planStatus(ahead, spi);
+    const facts = rowsForItem(ix, b).filter(f => f.inP);
+    const made = madeQty(facts), crewH = crewHours(facts);
+    const actual = rated && daysP ? s.qtyP / daysP : null;
+    return {
+      c: {
+        cost_code: txt(b.cost_code), sub_code: txt(b.sub_code), description: txt(b.description) || null, unit: s.unit,
+        bid_qty: Q, installed_to_date: I, planned_rate: PR, actual_rate: actual,
+        actual_rate_jtd: rated && daysE ? s.qtyEnd / daysE : null,
+        pct_of_plan: PR > 0 && actual !== null ? actual / PR * 100 : null,
+        sched_pct: SP, earned_pct: EP, spi,
+        qty_variance: PQ !== null ? Math.min(I, Q) - PQ : null, ahead_days: ahead, required_rate: needed,
+        start_date: pl.S || null, target_date: pl.T || null, projected_finish: PF, forecast_vs_target: fvt,
+        plan_status: status, plan_source: pl.source ? PLAN_BASIS[pl.source] : null,
+        units_per_crew_hr: made > 0 && crewH > 0 ? made / crewH : null,
+      },
+      m: { unit: s.unit, nunit, pl, SP, EP, PQ, Q, I, PR, rated, worked, complete: done, past: pastTarget,
+        w: Math.abs(s.bidTotal) || 1, pct: itemPctParts(s), cc: txt(b.cost_code), rows: rowsForItem(ix, b),
+        qtyP: s.qtyP, daysP: s.daysP, daysEnd: s.daysEnd, remainingNow: s.remainingNow, PF, facts },
+      job: p,
+    };
+  }
+  /* The roll-up (Totals = the job; a combined report's group per job): over
+     the lines with a plan, each weighed by its bid dollars (|bid total|, or
+     1 — the weights never print), scheduled and earned % and the pace
+     between them; days ahead from the gap across the plan's whole span.
+     Rates only when every line is in one unit. A job whose lines have no
+     plan at all but which has start and end dates is measured against those
+     instead ("Job dates"). */
+  function planAgg(recs, ctx) {
+    const A = asOf(ctx), today = ctx.today;
+    const c = {};
+    const units = new Set(recs.map(r => r.m.nunit));
+    const one = units.size === 1 ? recs[0].m.unit : null;
+    c.unit = one;
+    const nunit = r => r.m.nunit;
+    c.bid_qty = qtyBy(recs, 'bid_qty', nunit).v;
+    c.installed_to_date = qtyBy(recs, 'installed_to_date', nunit).v;
+    const shared = sharedRows(recs);
+    if (shared) c.installed_to_date = factQty(shared.filter(f => f.toEnd), () => true);
+    const planned = recs.filter(r => r.m.pl.source && r.m.SP !== null && r.m.EP !== null);
+    let S = null, T = null, sched = null, earned = null, source = null, W = null;
+    if (planned.length) {
+      let w = 0, ws = 0, we = 0;
+      planned.forEach(r => { w += r.m.w; ws += r.m.w * r.m.SP; we += r.m.w * r.m.EP; });
+      sched = ws / w; earned = we / w;
+      S = minIso(planned.map(r => r.m.pl.S)); T = maxIso(planned.map(r => r.m.pl.T));
+      W = countWorkdays(S, T);
+      const src = new Set(planned.map(r => r.m.pl.source));
+      source = src.size === 1 ? PLAN_BASIS[[...src][0]] : null;
+    } else {
+      const jobs = new Set(recs.map(r => r.job));
+      const p = jobs.size === 1 ? recs[0].job : null;
+      const js = p && dayOf(p['start-date']), je = p && dayOf(p['end-date']);
+      if (js && je && countWorkdays(js, je) > 0) {
+        const byCode = new Map();
+        recs.forEach(r => { if (!byCode.has(r.m.cc)) byCode.set(r.m.cc, []); byCode.get(r.m.cc).push(r.m.pct); });
+        const pr = rollPct([...byCode.values()].map(rollPct).filter(Boolean));
+        if (pr) {
+          S = js; T = je; W = countWorkdays(S, T);
+          sched = schedPct({ source: 'job', S, T, W }, A); earned = pr.pct; source = PLAN_BASIS.job;
+        }
+      }
+    }
+    c.start_date = S; c.target_date = T;
+    c.sched_pct = sched; c.earned_pct = earned;
+    c.spi = sched > 0 && earned !== null ? round2(earned / sched) : null;
+    c.ahead_days = sched !== null && earned !== null && W ? halfDay((earned - sched) / 100 * W) : null;
+    c.plan_source = source;
+    if (one !== null) {
+      const rated = recs.filter(r => r.m.rated);
+      const withRate = planned.filter(r => r.m.PR > 0);
+      const days = (list, k) => unionSize(list.map(r => ({ job: r.job, m: { d: r.m[k] } })), 'd');
+      const qty = (list, k) => list.reduce((t, x) => t + x.m[k], 0);
+      const daysP = days(rated, 'daysP'), daysE = days(rated, 'daysEnd');
+      c.actual_rate = daysP ? qty(rated, 'qtyP') / daysP : null;
+      c.actual_rate_jtd = daysE ? qty(rated, 'I') / daysE : null;
+      /* Planned / Day: a job's planned quantity over its plan's working days
+         (earliest start to latest target). Over several jobs — a combined
+         report's grand total — each job's rate is weighed by the days it
+         worked, the basis Actual / Day is measured on (one day per job that
+         worked), so the two compare like with like; with no work yet, the
+         jobs' rates are averaged. % of plan compares the planned lines' own
+         pace with it: their quantity over what the plan expected on the days
+         worked. */
+      const rateJobs = new Map();
+      withRate.forEach(r => { const k = jobKey(r.job); if (!rateJobs.has(k)) rateJobs.set(k, []); rateJobs.get(k).push(r); });
+      const jobRates = [];
+      rateJobs.forEach(list => {
+        const pS = minIso(list.map(r => r.m.pl.S)), pT = maxIso(list.map(r => r.m.pl.T));
+        const pW = pS && pT ? countWorkdays(pS, pT) : 0;
+        if (pW > 0) jobRates.push({ rate: list.reduce((t, r) => t + planSpanQty(r.m.pl, r.m.Q), 0) / pW, days: days(list, 'daysP'), qty: qty(list, 'qtyP') });
+      });
+      const dPl = jobRates.reduce((t, j) => t + j.days, 0);
+      const plannedQty = jobRates.reduce((t, j) => t + j.rate * j.days, 0);
+      c.planned_rate = !jobRates.length ? null : jobRates.length === 1 ? jobRates[0].rate
+        : dPl ? plannedQty / dPl : jobRates.reduce((t, j) => t + j.rate, 0) / jobRates.length;
+      c.pct_of_plan = c.planned_rate > 0 && dPl && plannedQty > 0 ? jobRates.reduce((t, j) => t + j.qty, 0) / plannedQty * 100 : null;
+      const qv = planned.filter(r => r.m.PQ !== null);
+      c.qty_variance = qv.length ? qv.reduce((t, r) => t + Math.min(r.m.I, r.m.Q) - r.m.PQ, 0) : null;
+      const open = rated.filter(r => !r.m.complete);
+      const n = T && T >= today ? countWorkdays(today, T) : 0;
+      c.required_rate = open.length && n > 0 ? open.reduce((t, r) => t + r.m.remainingNow, 0) / n : null;
+      const byJob = new Map();
+      recs.forEach(r => { const jk = jobKey(r.job); if (!byJob.has(jk)) byJob.set(jk, new Set()); r.m.facts.forEach(f => byJob.get(jk).add(f)); });
+      let made = 0, crewH = 0;
+      byJob.forEach(set => { const fs = [...set]; made += madeQty(fs); crewH += crewHours(fs); });
+      c.units_per_crew_hr = made > 0 && crewH > 0 ? made / crewH : null;
+    }
+    // The job finishes when its last open line does.
+    const open = recs.filter(r => r.m.rated && !r.m.complete && r.m.remainingNow > 0);
+    c.projected_finish = open.length && open.every(r => r.m.PF) ? maxIso(open.map(r => r.m.PF)) : null;
+    const PF = c.projected_finish;
+    c.forecast_vs_target = PF && T ? (PF <= T ? countWorkdays(PF, T) - 1 : -(countWorkdays(T, PF) - 1)) : null;
+    if (recs.every(r => r.m.complete)) c.plan_status = 'Complete';
+    else if (sched === null || earned === null) c.plan_status = 'Not scheduled';
+    else if (!recs.some(r => r.m.worked) && S && A < S) c.plan_status = 'Not started';
+    else if (T && T < today) c.plan_status = PAST_TARGET;
+    else c.plan_status = planStatus(c.ahead_days, c.spi);
+    return c;
+  }
+  function planNote(ctx, info) {
+    return 'Planned figures use each bid item\'s Start and Target dates (or the job end date / Planned per day). '
+      + `${info.noPlan} of ${plural(info.items, 'item')} ${info.items === 1 ? 'has' : 'have'} no plan. As of ${fmtDate(asOf(ctx))}.`;
+  }
+
+  /* Production Rates by Division: the division's own rates over the period,
+     a strip per job, on the bid lines in scope.
+       paving  tons = quantity on TON lines (TN reads as TON), leaving out
+               trucking tickets written into the daily rows and haul rows —
+               loads are not tons placed; loads = the job's trucking tickets
+               in the range (a ticket with codes must pass the filter)
+       turf    square feet on ONE SF line: different SF lines (base prep,
+               turf install) cover the same ground, so they never add up —
+               the line with the most bid quantity, unless a sub code is
+               picked
+       kiewit  homes on one EA line, by the same rule
+     Work days and crew are the measured rows' (isWorkRow). Crew-hours are
+     each day's shift (site labour hours over the people booking them);
+     man-hours leave out haul and travel, as Cost Tracking's MU / labor hour
+     does. Anything off hours or crew is internal. */
+  const RATE_UNIT = { paving: 'TON', turf: 'SF', kiewit: 'EA' };
+  function rateRec(ctx, p, scope) {
+    const ix = jobIndex(ctx, p), div = divisionOf(ctx);
+    const captions = [];
+    const inScope = f => f.inP && (!scope.active || scope.codes(f.r.cost_code, f.r.sub_code));
+    let facts;
+    if (div === 'turf' || div === 'kiewit') {
+      const want = RATE_UNIT[div], what = div === 'turf' ? 'SF' : 'Homes';
+      const lines = scopedItems(ix, scope).filter(b => normUnit(b.unit) === want);
+      let best = null;
+      lines.forEach(b => { if (!best || effQty(b) > effQty(best)) best = b; });
+      facts = best ? rowsForItem(ix, best).filter(inScope) : [];
+      if (!best) captions.push(`No ${want} bid items in scope.`);
+      else if (lines.length > 1) captions.push(`${what} measured on ${txt(best.sub_code) || txt(best.cost_code) || 'one line'} — pick a sub code to change it.`);
+    } else {
+      facts = ix.facts.filter(f => inScope(f) && !f.trk && !f.haul && (div !== 'paving' || (f.on && normUnit(f.unit) === 'TON')));
+    }
+    let loads = 0;
+    if (div === 'paving') {
+      ticketsInRange(ctx, p).forEach(t => {
+        if (scope.active && (txt(t.cost_code) || txt(t.sub_code)) && !scope.codes(t.cost_code, t.sub_code)) return;
+        loads += num(t.loads);
+      });
+    }
+    const cd = crewDays(facts);
+    const m = { qty: facts.reduce((t, f) => t + f.qty, 0), days: cd.days, crew: cd.crew, shift: crewHours(facts),
+      eq: equipHours(facts), mh: manHours(facts), loads };
+    return { c: rateCells(m), m, job: p, captions };
+  }
+  function rateCells(m) {
+    const per = (a, b) => (a > 0 && b > 0 ? a / b : null);
+    const perDay = m.days ? m.qty / m.days : null;
+    return {
+      work_days: m.days, avg_crew: m.days ? m.crew / m.days : null,
+      tons_period: m.qty, tons_per_day: perDay, loads_period: m.loads, tons_per_load: per(m.qty, m.loads),
+      tons_per_crew_hr: per(m.qty, m.shift), tons_per_equip_hr: per(m.qty, m.eq),
+      sf_period: m.qty, sf_per_day: perDay, sf_per_mh: per(m.qty, m.mh),
+      homes_period: m.qty, homes_per_day: perDay, mh_per_home: per(m.mh, m.qty),
+    };
+  }
+  // All jobs together: the quantities, days and hours added up (one
+  // measured unit by construction), the rates worked out again from them.
+  function rateCombined(recs) {
+    const m = {};
+    ['qty', 'days', 'crew', 'shift', 'eq', 'mh', 'loads'].forEach(k => { m[k] = recs.reduce((t, r) => t + r.m[k], 0); });
+    return { c: rateCells(m), m, job: null, all: true, captions: [] };
+  }
+
+  // ── Charts ─────────────────────────────────────────────────────────────
+  const MAX_POINTS = 120, MAX_BARS = 120;
+  /* The S-curve: cumulative installed against the plan, from the first
+     relevant day (the earliest planned start or first day worked) to the
+     later of the last target and the as-of day. % basis weighs each line's
+     own % complete by its bid dollars, as the roll-up does, so mixed units
+     still add; qty basis adds quantities, only when the lines share a unit.
+     With a plan drawn, both curves cover the lines that have one — the same
+     lines, and so the same end figures, as Planned vs Actual's totals. */
+  function sCurve(ctx, p, opts, scope, keys) {
+    const ix = jobIndex(ctx, p), A = asOf(ctx);
+    const all = scopedItems(ix, scope).map(b => ({ b, s: itemStats(ctx, ix, b), pl: planOf(ctx, ix, b) }))
+      .filter(x => x.s.complete || x.s.bidQty > 0);
+    const planned = all.filter(x => x.pl.source && x.pl.S && x.pl.T && x.pl.W);
+    const drawPlan = opts.showPlan !== false && keys.has('plan') && planned.length > 0;
+    const drawInst = keys.has('installed');
+    const use = drawPlan ? planned : all;
+    const out = { kind: 's_curve', job: p, captions: [], points: [], drawPlan, drawInst };
+    if (!use.length) { out.message = 'No bid items in scope to chart.'; return out; }
+    if (drawPlan && planned.length < all.length) out.captions.push(`Covers the ${planned.length} of ${plural(all.length, 'item')} with a plan.`);
+    const units = new Set(use.map(x => normUnit(x.s.unit)));
+    let basis = opts.basis === 'qty' ? 'qty' : 'pct';
+    if (basis === 'qty' && units.size !== 1) { basis = 'pct'; out.captions.push('The items are in different units, so the chart shows % of bid quantity.'); }
+    out.basis = basis;
+    out.unit = units.size === 1 ? use[0].s.unit : '';
+    // Each line's dated rows to the as-of day, in date order; undated rows
+    // are part of the job to date from the first day.
+    const seen = new Set();
+    let first = '';
+    use.forEach(x => {
+      const dated = [];
+      let undated = 0;
+      rowsForItem(ix, x.b).forEach(f => {
+        if (!f.toEnd) return;
+        if (!f.date) { undated += f.qty; return; }
+        if (f.date > A) return;
+        dated.push(f);
+        if ((f.work || f.qty) && (!first || f.date < first)) first = f.date;
+      });
+      dated.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+      x.dated = dated; x.undated = undated; x.at = 0; x.cum = undated;
+      x.w = Math.abs(x.s.bidTotal) || 1;
+      x.last = x.s.daysEnd.size ? [...x.s.daysEnd].sort().pop() : '';
+    });
+    let start = first, end = A;
+    if (drawPlan) {
+      const pS = minIso(planned.map(x => x.pl.S)), pT = maxIso(planned.map(x => x.pl.T));
+      if (!start || pS < start) start = pS;
+      if (pT > end) end = pT;
+    }
+    if (!start) { out.message = 'Nothing installed or planned to chart yet.'; return out; }
+    // From the day before, so both curves rise from the baseline.
+    start = addDays(start, -1);
+    if (daysBetween(start, end) > MAX_WORKDAYS) start = addDays(end, -MAX_WORKDAYS);
+    const span = daysBetween(start, end), step = Math.max(1, Math.ceil(span / MAX_POINTS));
+    const dates = [];
+    for (let i = 0; i <= span; i += step) dates.push(addDays(start, i));
+    if (dates[dates.length - 1] !== end) dates.push(end);
+    if (A > start && A < end && !dates.includes(A)) { dates.push(A); dates.sort(); }
+    out.start = start; out.end = end; out.asOf = A;
+    if (dates.length < 2) { out.message = 'Not enough dates to chart yet.'; return out; }
+    const sumW = use.reduce((t, x) => t + x.w, 0);
+    // qty basis: the lines' rows each counted once (a cost-code-only line
+    // shares rows with one under its code).
+    let uniq = null, uAt = 0, uCum = 0;
+    if (basis === 'qty') {
+      const set = new Set();
+      use.forEach(x => x.dated.forEach(f => set.add(f)));
+      uniq = [...set].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+      use.forEach(x => rowsForItem(ix, x.b).forEach(f => { if (f.toEnd && !f.date && !seen.has(f)) { seen.add(f); uCum += f.qty; } }));
+    }
+    dates.forEach(d => {
+      let inst = null, plan = null;
+      if (d <= A) {
+        if (basis === 'qty') {
+          while (uAt < uniq.length && uniq[uAt].date <= d) uCum += uniq[uAt++].qty;
+          inst = uCum;
+        } else {
+          let t = 0;
+          use.forEach(x => {
+            while (x.at < x.dated.length && x.dated[x.at].date <= d) x.cum += x.dated[x.at++].qty;
+            const pc = x.s.complete && (!x.last || d >= x.last) ? 100 : x.s.bidQty > 0 ? clamp(x.cum / x.s.bidQty * 100, 0, 100) : 0;
+            t += x.w * pc;
+          });
+          inst = t / sumW;
+        }
+      }
+      if (drawPlan) {
+        plan = basis === 'qty' ? use.reduce((t, x) => t + x.s.bidQty * schedPct(x.pl, d) / 100, 0)
+          : use.reduce((t, x) => t + x.w * schedPct(x.pl, d), 0) / sumW;
+      }
+      out.points.push({ date: d, inst, plan });
+    });
+    // A curve needs two points to be a line; the legend names only lines.
+    out.instLine = drawInst && out.points.filter(pt => pt.inst !== null).length > 1;
+    if (!out.instLine && !drawPlan) out.message = 'Not enough dates to chart yet.';
+    return out;
+  }
+  /* Daily production bars: one per day in the period (every working day,
+     and any other day with work), in one unit — the unit with the most bid
+     quantity when the lines are mixed. Past 60 days the bars are weekly
+     totals, past 120 weeks monthly. The planned rate is the planned lines'
+     quantity over their span's working days. */
+  function dailyBars(ctx, p, opts, scope, keys) {
+    const ix = jobIndex(ctx, p), A = asOf(ctx), range = ctx.range;
+    const out = { kind: 'daily_bars', job: p, captions: [], bars: [], bucket: 'day',
+      drawQty: keys.has('daily_qty'), drawCrew: keys.has('crew_hours') };
+    const items = scopedItems(ix, scope);
+    const byUnit = new Map();
+    items.forEach(b => { const u = normUnit(b.unit); byUnit.set(u, (byUnit.get(u) || 0) + Math.max(0, effQty(b))); });
+    if (!byUnit.size) { out.message = 'No bid items in scope to chart.'; return out; }
+    let U = null, most = -1;
+    byUnit.forEach((q, u) => { if (q > most) { most = q; U = u; } });
+    const lines = items.filter(b => normUnit(b.unit) === U);
+    out.unit = txt(lines[0].unit);
+    if (byUnit.size > 1) out.captions.push(`Showing the ${out.unit || 'no-unit'} items only — the unit with the most bid quantity.`);
+    const set = new Set();
+    lines.forEach(b => rowsForItem(ix, b).forEach(f => { if (f.inP && f.date && f.date <= A) set.add(f); }));
+    const facts = [...set];
+    let from = range.from || '';
+    if (!from) facts.forEach(f => { if ((f.work || f.qty) && (!from || f.date < from)) from = f.date; });
+    const to = range.to && range.to < A ? range.to : A;
+    if (!from || from > to) { out.message = 'No production in this period to chart.'; return out; }
+    const byDay = new Map();
+    facts.forEach(f => { if (f.date >= from && f.date <= to) { let e = byDay.get(f.date); if (!e) { e = []; byDay.set(f.date, e); } e.push(f); } });
+    const days = [];
+    for (let d = from, i = 0; d <= to && i <= MAX_WORKDAYS * 2; d = addDays(d, 1), i++) if (isWorkday(d) || byDay.has(d)) days.push(d);
+    let buckets = days.map(d => ({ from: d, to: d, days: [d] }));
+    const regroup = keyOf => {
+      const m = new Map();
+      buckets.forEach(b => b.days.forEach(d => {
+        const k = keyOf(d);
+        if (!m.has(k)) m.set(k, { from: d, to: d, days: [] });
+        const e = m.get(k); e.days.push(d); if (d > e.to) e.to = d;
+      }));
+      return [...m.values()];
+    };
+    if (buckets.length > 60) { buckets = regroup(mondayOf); out.bucket = 'week'; }
+    if (buckets.length > MAX_BARS) { buckets = regroup(d => d.slice(0, 7)); out.bucket = 'month'; }
+    if (buckets.length > MAX_BARS) { buckets = buckets.slice(-MAX_BARS); out.captions.push(`The last ${MAX_BARS} months.`); }
+    if (out.bucket !== 'day') out.captions.push(out.bucket === 'week' ? 'Bars are weekly totals.' : 'Bars are monthly totals.');
+    const withRate = lines.map(b => ({ b, pl: planOf(ctx, ix, b) })).filter(x => x.pl.source && x.pl.PR > 0 && x.pl.S && x.pl.T);
+    const pS = minIso(withRate.map(x => x.pl.S)), pT = maxIso(withRate.map(x => x.pl.T));
+    const pW = pS && pT ? countWorkdays(pS, pT) : 0;
+    out.rate = pW > 0 ? withRate.reduce((t, x) => t + planSpanQty(x.pl, x.pl.Q), 0) / pW : null;
+    out.drawPlan = opts.showPlan !== false && keys.has('planned_rate_line') && out.rate !== null;
+    buckets.forEach(bk => {
+      const fs = [];
+      bk.days.forEach(d => (byDay.get(d) || []).forEach(f => fs.push(f)));
+      const wd = bk.days.filter(isWorkday).length;
+      out.bars.push({ from: bk.from, to: bk.to, qty: fs.reduce((t, f) => t + f.qty, 0),
+        plan: out.rate === null ? null : out.bucket === 'day' ? out.rate : out.rate * wd, crew: crewHours(fs) });
+    });
+    if (!out.bars.some(b => b.qty)) out.message = 'No production in this period to chart.';
+    return out;
+  }
+  function chartFor(ctx, p, opts, scope, keys) {
+    return opts.chart === 'daily_bars' ? dailyBars(ctx, p, opts, scope, keys) : sCurve(ctx, p, opts, scope, keys);
+  }
+
+  /* The chart as inline SVG: a viewBox and width 100% so it scales to the
+     sheet, flat fills and strokes, one path per series (the bars are one
+     path of rectangles), coordinates to a tenth. Nothing in it can fetch,
+     run or link — no url(), image, foreignObject, script, event attribute
+     or href — and no class name the email's key-figure lifter would read
+     as a label. Text that came from a person has its = escaped, because the
+     email sanitizer's on…= rule matches running text too. */
+  const svgEsc = s => escHtml(s).replace(/=/g, '&#61;');
+  // In the chart itself a parenthesis is written out too, so not even a
+  // job named "url(…)" puts the letters url( into the drawing.
+  const chartEsc = s => svgEsc(s).replace(/\(/g, '&#40;');
+  const r1 = v => String(Math.round(v * 10) / 10);
+  function niceMax(v) {
+    if (!(v > 0)) return 1;
+    const e = Math.pow(10, Math.floor(Math.log10(v))), m = v / e;
+    return (m <= 1 ? 1 : m <= 2 ? 2 : m <= 2.5 ? 2.5 : m <= 5 ? 5 : 10) * e;
+  }
+  const shortDate = iso => `${MONTHS[+iso.slice(5, 7) - 1]} ${+iso.slice(8, 10)}`;
+  const CH = { inst: '#16a34a', plan: '#2563eb', bar: '#86efac', crew: '#9333ea', grid: '#e5e7eb', axis: '#9ca3af', ink: '#4b5563' };
+  function chartSvg(ch, height, aria) {
+    const W = 720, H = height === 'tall' ? 340 : 220;
+    const crew = ch.kind === 'daily_bars' && ch.drawCrew;
+    const L = 56, R = crew ? 50 : 16, T = 12, B = 28, pw = W - L - R, ph = H - T - B;
+    const pct = ch.kind === 's_curve' && ch.basis === 'pct';
+    let yMax;
+    if (ch.kind === 's_curve') {
+      yMax = pct ? 100 : niceMax(Math.max(0, ...ch.points.map(pt => Math.max(ch.drawInst ? pt.inst || 0 : 0, ch.drawPlan ? pt.plan || 0 : 0))));
+    } else {
+      yMax = niceMax(Math.max(0, ...ch.bars.map(b => Math.max(ch.drawQty ? b.qty : 0, ch.drawPlan ? b.plan || 0 : 0))));
+    }
+    const y = v => T + ph - ph * clamp(v, 0, yMax) / yMax;
+    let grid = '', ticks = '';
+    for (let i = 0; i <= 4; i++) {
+      const v = yMax * i / 4, yy = r1(y(v));
+      grid += `M${L} ${yy}H${r1(L + pw)}`;
+      ticks += `<text x="${L - 6}" y="${r1(y(v) + 3)}" text-anchor="end">${chartEsc(pct ? Math.round(v) + '%' : fmtQty(v))}</text>`;
+    }
+    let body = `<path d="${grid}" fill="none" stroke="${CH.grid}" stroke-width="1"/>`;
+    const xl = [];
+    if (ch.kind === 's_curve') {
+      const span = Math.max(1, daysBetween(ch.start, ch.end));
+      const x = d => L + pw * daysBetween(ch.start, d) / span;
+      const line = key => ch.points.filter(pt => pt[key] !== null).map((pt, i) => `${i ? 'L' : 'M'}${r1(x(pt.date))} ${r1(y(pt[key]))}`).join('');
+      if (ch.drawPlan) body += `<path d="${line('plan')}" fill="none" stroke="${CH.plan}" stroke-width="1.6" stroke-dasharray="6 4"/>`;
+      if (ch.instLine) body += `<path d="${line('inst')}" fill="none" stroke="${CH.inst}" stroke-width="2.2"/>`;
+      if (ch.asOf > ch.start && ch.asOf < ch.end) {
+        const xa = r1(x(ch.asOf));
+        body += `<path d="M${xa} ${T}V${r1(T + ph)}" fill="none" stroke="${CH.axis}" stroke-width="1" stroke-dasharray="2 3"/>`;
+      }
+      const mid = addDays(ch.start, Math.round(span / 2));
+      xl.push([L, ch.start, 'start'], [L + pw / 2, mid, 'middle'], [L + pw, ch.end, 'end']);
+    } else {
+      const n = ch.bars.length, slot = pw / n, bw = Math.max(1, slot * 0.7);
+      const cx = i => L + slot * i + slot / 2;
+      if (ch.drawQty) {
+        let d = '';
+        ch.bars.forEach((b, i) => {
+          if (!(b.qty > 0)) return;
+          const x0 = L + slot * i + (slot - bw) / 2, yy = y(b.qty);
+          d += `M${r1(x0)} ${r1(T + ph)}V${r1(yy)}H${r1(x0 + bw)}V${r1(T + ph)}Z`;
+        });
+        if (d) body += `<path d="${d}" fill="${CH.bar}" stroke="none"/>`;
+      }
+      if (ch.drawPlan) {
+        const d = ch.bucket === 'day' ? `M${L} ${r1(y(ch.rate))}H${r1(L + pw)}`
+          : ch.bars.map((b, i) => `${i ? 'L' : 'M'}${r1(cx(i))} ${r1(y(b.plan || 0))}`).join('');
+        body += `<path d="${d}" fill="none" stroke="${CH.plan}" stroke-width="1.6" stroke-dasharray="6 4"/>`;
+      }
+      if (crew) {
+        const cMax = niceMax(Math.max(0, ...ch.bars.map(b => b.crew)));
+        const yc = v => T + ph - ph * clamp(v, 0, cMax) / cMax;
+        body += `<path d="${ch.bars.map((b, i) => `${i ? 'L' : 'M'}${r1(cx(i))} ${r1(yc(b.crew))}`).join('')}" fill="none" stroke="${CH.crew}" stroke-width="1.6"/>`;
+        for (let i = 0; i <= 4; i++) {
+          const v = cMax * i / 4;
+          ticks += `<text x="${r1(L + pw + 6)}" y="${r1(yc(v) + 3)}" text-anchor="start" fill="${CH.crew}">${chartEsc(fmtQty(v))}</text>`;
+        }
+      }
+      const mi = Math.floor((n - 1) / 2);
+      xl.push([cx(0), ch.bars[0].from, n === 1 ? 'middle' : 'start']);
+      if (n > 2) xl.push([cx(mi), ch.bars[mi].from, 'middle']);
+      if (n > 1) xl.push([cx(n - 1), ch.bars[n - 1].from, 'end']);
+    }
+    body += `<path d="M${L} ${r1(T + ph)}H${r1(L + pw)}" fill="none" stroke="${CH.axis}" stroke-width="1"/>`;
+    const xt = xl.map(([xx, d, anchor]) => `<text x="${r1(xx)}" y="${r1(T + ph + 16)}" text-anchor="${anchor}">${chartEsc(shortDate(d))}</text>`).join('');
+    return `<svg viewBox="0 0 ${W} ${H}" width="100%" role="img" aria-label="${chartEsc(aria)}" font-family="sans-serif" font-size="10" fill="${CH.ink}">`
+      + body + ticks + xt + '</svg>';
+  }
+  // What a chart says in words: its kind, measure and unit, the legend, and
+  // any caveat — in the figure caption, so the email body (which may drop
+  // the SVG) and a screen reader still get it.
+  function chartCaption(ch, jobName) {
+    const parts = [];
+    const span = ch.kind === 's_curve' ? rangeText(ch.start, ch.end) : rangeText(ch.bars[0].from, ch.bars[ch.bars.length - 1].to);
+    const unit = ch.unit ? ` (${ch.unit})` : '';
+    if (ch.kind === 's_curve') {
+      parts.push(`${jobName ? jobName + ' — ' : ''}Cumulative ${ch.basis === 'pct' ? '% of bid quantity' : 'quantity' + unit}, ${span}.`);
+      const legend = [];
+      if (ch.instLine) legend.push('green line: installed');
+      if (ch.drawPlan) legend.push('blue dashed line: planned');
+      if (ch.asOf > ch.start && ch.asOf < ch.end) legend.push(`grey dotted line: ${fmtDate(ch.asOf)}`);
+      if (legend.length) parts.push(cap1(legend.join('; ')) + '.');
+    } else {
+      const per = ch.bucket === 'day' ? 'day' : ch.bucket;
+      parts.push(`${jobName ? jobName + ' — ' : ''}Quantity per ${per}${unit}, ${span}.`);
+      const legend = [];
+      if (ch.drawQty) legend.push(`green bars: quantity per ${per}`);
+      if (ch.drawPlan) legend.push(`blue dashed line: planned ${fmtQty(ch.rate)}${ch.unit ? ' ' + ch.unit : ''} a day`);
+      if (ch.drawCrew) legend.push('purple line: crew hours (right scale)');
+      if (legend.length) parts.push(cap1(legend.join('; ')) + '.');
+    }
+    return parts.concat(ch.captions).join(' ');
+  }
+
   const BUILD = {
     job_info: jobInfoRecs, bid_progress: bidProgressRecs, production_kpis: productionRecs,
     daily_production: dailyRecs, materials: materialRecs, trucking: truckingRecs,
-    change_orders: changeOrderRecs, schedule: scheduleRecs,
+    change_orders: changeOrderRecs, schedule: scheduleRecs, plan_vs_actual: planRecs,
   };
   const AGG = {
     bid_progress: bidProgressAgg, production_kpis: productionAgg, daily_production: dailyAgg,
-    materials: materialAgg, trucking: truckingAgg,
+    materials: materialAgg, trucking: truckingAgg, plan_vs_actual: planAgg,
   };
   const byDateThen = (a, b, more) => {
     const da = a.c.date || '\uffff', db = b.c.date || '\uffff';
@@ -1542,6 +2573,15 @@
 
   // How a table's rows fall into groups: [{ key, label }] per record.
   function groupOf(type, opts, combined) {
+    // Planned vs actual on a combined report rolls each job up on its own.
+    if (type === 'plan_vs_actual' && (combined || opts.groupBy === 'cost_code')) {
+      return r => {
+        const cc = r.m.cc || '(No cost code)';
+        if (!combined) return { key: cc, label: cc };
+        return opts.groupBy === 'cost_code' ? { key: jobKey(r.job) + '\u0000' + cc, label: jobLabel(r.job) + ' — ' + cc }
+          : { key: jobKey(r.job), label: jobLabel(r.job) };
+      };
+    }
     if (type === 'bid_progress' && opts.groupBy === 'cost_code') {
       return r => {
         const cc = r.m.cc || '(No cost code)';
@@ -1630,24 +2670,57 @@
       return { type, title, columns: [], text: s.text || '',
         blocks: [{ job: null, groups: [], totals: null, empty: !txt(s.text) }] };
     }
-    const cols = effectiveColumns(s, d, ctx.perm);
+    let cols = effectiveColumns(s, d, ctx.perm, divisionOf(ctx));
     const combined = d.layout === 'combined';
     const opts = s.options;
     const jobs = ctx.jobs || [];
+    // The report's filters and, on a data section, the section's own.
+    const scope = makeScope(d, DATA_TYPES.has(type) ? opts : null);
     let blocks;
     if (type === 'summary_kpis') {
-      const recs = jobs.map(p => summaryRec(ctx, p));
+      if (scope.report) cols = cols.map(c => (FILTERED_KPIS.has(c.key) ? Object.assign({}, c, { label: c.label + ' (filtered)' }) : c));
+      const recs = jobs.map(p => summaryRec(ctx, p, scope));
       blocks = combined
         ? [kpiBlock(null, recs.length ? [summaryCombined(recs)] : [], cols)]
         : recs.map(r => kpiBlock(r.job, [r], cols));
+    } else if (type === 'rate_summary') {
+      const recs = jobs.map(p => rateRec(ctx, p, scope));
+      const loadsNote = divisionOf(ctx) === 'paving' && cols.some(c => c.key === 'loads_period' || c.key === 'tons_per_load');
+      const block = (job, list) => {
+        const b = kpiBlock(job, list, cols);
+        b.notes = list.flatMap(r => r.captions.map(t => (combined && r.job && jobs.length > 1 ? jobLabel(r.job) + ': ' + t : t)));
+        if (loadsNote && list.length) b.notes.push('Loads from trucking tickets.');
+        return b;
+      };
+      blocks = combined ? [block(null, recs.length > 1 ? recs.concat([rateCombined(recs)]) : recs)] : recs.map(r => block(r.job, [r]));
+    } else if (type === 'chart') {
+      const keys = new Set(cols.map(c => c.key));
+      const charts = jobs.map(p => chartFor(ctx, p, opts, scope, keys));
+      blocks = combined ? [{ job: null, groups: [], totals: null, charts, empty: !charts.length }]
+        : charts.map(ch => ({ job: ch.job, groups: [], totals: null, charts: [ch], empty: false }));
     } else if (combined) {
-      const recs = [];
-      jobs.forEach(p => BUILD[type](ctx, p, opts).forEach(r => recs.push(r)));
+      const recs = [], info = newInfo();
+      jobs.forEach(p => BUILD[type](ctx, p, opts, scope, info).forEach(r => recs.push(r)));
       blocks = [finishBlock(type, null, recs, cat.table ? [JOB_COL].concat(cols) : cols, opts, ctx, true)];
+      blocks[0].notes = blockNotes(type, info, ctx);
     } else {
-      blocks = jobs.map(p => finishBlock(type, p, BUILD[type](ctx, p, opts), cols, opts, ctx, false));
+      blocks = jobs.map(p => {
+        const info = newInfo();
+        const b = finishBlock(type, p, BUILD[type](ctx, p, opts, scope, info), cols, opts, ctx, false);
+        b.notes = blockNotes(type, info, ctx);
+        return b;
+      });
     }
     return { type, title, columns: combined && cat.table ? [JOB_COL].concat(cols) : cols, blocks };
+  }
+  // The footnotes under a table: what the filter left out, and the plan's
+  // basis.
+  function blockNotes(type, info, ctx) {
+    const notes = [];
+    if (type === 'plan_vs_actual' && info.items) notes.push(planNote(ctx, info));
+    if (info.ccOnly) notes.push(`${plural(info.ccOnly, 'cost-code-only item')} hidden by the sub-code filter.`);
+    if (info.coHidden) notes.push(`${plural(info.coHidden, 'contract change order')} hidden by the code filter.`);
+    return notes;
   }
   function kpiBlock(job, recs, cols) {
     const rows = recs.map(r => {
@@ -1655,6 +2728,8 @@
       cols.forEach(c => { cells[c.key] = r.c[c.key] === undefined ? null : r.c[c.key]; });
       const row = { cells };
       if (r.m.unit) row.unit = r.m.unit;
+      if (r.all) row.all = true;
+      else if (r.job && recs.length > 1) row.job = r.job;
       return row;
     });
     return { job, groups: rows.length ? [{ label: null, rows, subtotal: null }] : [], totals: null, empty: !rows.length };
@@ -1720,8 +2795,19 @@ td.tlc{padding:4px 6px;vertical-align:middle}
 .tl-now{position:absolute;top:-2px;bottom:-2px;width:0;border-left:1px solid #2563eb}
 p.legend{font-size:8px;color:#777;margin-top:2px}
 .rpt-foot{margin-top:18px;padding-top:6px;border-top:1px solid #ddd;font-size:8.5px;color:#777;display:flex;justify-content:space-between;gap:12px}
-@media print{body{padding:0}h3{page-break-after:avoid;break-after:avoid}.masthead,.sum-bar,.job-band{page-break-inside:avoid;break-inside:avoid}}
-@media screen and (max-width:640px){body{padding:12px}.ji-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.mast-left{display:flex;align-items:flex-end;gap:10px}
+.mast-logo{display:block;height:auto;width:auto}
+.mast-co{font-size:18px;font-weight:800;color:#111;line-height:1.1}
+.jb-pm{font-weight:500;color:#444;font-size:10px;margin-top:2px}
+.foot-l{display:flex;flex-direction:column;gap:2px}
+.foot-co{font-size:7.5px;color:#999}
+p.fnote{font-size:8px;color:#666;margin:2px 0 0;line-height:1.35}
+.kpi-h{font-size:9px;font-weight:700;color:#333;margin:6px 0 3px}
+figure.crc{margin:2px 0 8px;page-break-inside:avoid;break-inside:avoid}
+figure.crc svg{display:block;width:100%;height:auto;border:1px solid #eef0f2;border-radius:3px}
+figure.crc figcaption{font-size:8.5px;color:#555;margin-top:3px;line-height:1.35}
+@media print{body{padding:0}h3{page-break-after:avoid;break-after:avoid}.masthead,.sum-bar,.job-band,figure.crc{page-break-inside:avoid;break-inside:avoid}}
+@media screen and (max-width:640px){body{padding:12px}.ji-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.masthead,.mast-left{flex-wrap:wrap}}
 @media screen{.tw{overflow-x:auto}}
 `;
 
@@ -1740,7 +2826,7 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
     return `${jobs.length} jobs: ${names.join(', ')}${jobs.length > 8 ? `, +${jobs.length - 8} more` : ''}`;
   }
   const reportTitle = (def, ctx) => def.title || ctx.reportName || 'Custom Report';
-  const cellText = (v, c, row) => formatCell(v, c.type, row && row.unit && (c.key === 'qty_change' || c.key === 'qty_period') && isNum(v) ? row.unit : '', c.key === 'qty_change');
+  const cellText = (v, c, row) => formatCell(v, c.type, row && row.unit && (c.key === 'qty_change' || c.key === 'qty_period') && isNum(v) ? row.unit : '', !!c.signed);
 
   function notesHtml(text) {
     return String(text || '').trim().split(/\n\s*\n/).filter(x => x.trim())
@@ -1831,6 +2917,23 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
     return `<p class="empty">No ${noun} in this period.</p>`;
   }
 
+  // Footnotes say what a filter left out, the plan's basis, a caveat.
+  const notesUnder = block => (block && Array.isArray(block.notes) ? block.notes : []).map(t => `<p class="fnote">${svgEsc(t)}</p>`).join('');
+
+  function chartsHtml(sd, block, section, ctx, combined) {
+    const keys = new Set(sd.columns.map(c => c.key));
+    const opts = section.options || {};
+    const series = opts.chart === 'daily_bars' ? ['daily_qty', 'planned_rate_line', 'crew_hours'] : ['installed', 'plan'];
+    // A chart with none of its own series allowed draws nothing at all.
+    if (!series.some(k => keys.has(k))) return '';
+    return (block && block.charts || []).map(ch => {
+      const name = combined || (ctx.jobs || []).length > 1 ? jobLabel(ch.job) : '';
+      if (ch.message) return `<p class="empty">${name ? chartEsc(name) + ': ' : ''}${escHtml(ch.message)}</p>`;
+      const aria = `${ch.kind === 's_curve' ? 'S-curve' : 'Daily production'}${name ? ' — ' + name : ''}`;
+      return `<figure class="crc">${chartSvg(ch, opts.height, aria)}<figcaption>${chartEsc(chartCaption(ch, combined ? jobLabel(ch.job) : ''))}</figcaption></figure>`;
+    }).join('');
+  }
+
   function blockHtml(sd, block, section, ctx, combined) {
     if (sd.type === 'notes') {
       return sd.text && txt(sd.text) ? `<section class="sec notes"><h3>${escHtml(sd.title)}</h3>${notesHtml(sd.text)}</section>` : '';
@@ -1839,12 +2942,20 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
     // not an empty frame on a customer's copy.
     if (!sd.columns.length || (sd.columns.length === 1 && sd.columns[0].key === '_job')) return '';
     let inner = '';
-    if (!block || block.empty) inner = sd.type === 'job_info' || sd.type === 'summary_kpis' ? '' : emptyLine(sd, ctx);
+    if (sd.type === 'chart') inner = chartsHtml(sd, block, section, ctx, combined);
+    else if (!block || block.empty) inner = sd.type === 'job_info' || sd.type === 'summary_kpis' || sd.type === 'rate_summary' ? '' : emptyLine(sd, ctx);
     else if (sd.type === 'job_info') {
       block.groups.forEach(g => g.rows.forEach(r => { inner += cardHtml(r, sd.columns, ctx, combined ? jobLabel(r.job) : ''); }));
     } else if (sd.type === 'summary_kpis') {
       block.groups.forEach(g => g.rows.forEach(r => { inner += kpiHtml(r, sd.columns); }));
+    } else if (sd.type === 'rate_summary') {
+      block.groups.forEach(g => g.rows.forEach(r => {
+        const head = r.all ? 'All jobs' : r.job ? jobLabel(r.job) : '';
+        inner += (head ? `<div class="kpi-h">${escHtml(head)}</div>` : '') + kpiHtml(r, sd.columns);
+      }));
     } else inner = tableHtml(sd, block, section.options, ctx);
+    if (inner && sd.type !== 'chart') inner += notesUnder(block);
+    else if (!inner && block && block.notes && block.notes.length && sd.type !== 'chart') inner = notesUnder(block);
     if (!inner) return '';
     return `<section class="sec sec-${sd.type}"><h3>${escHtml(sd.title)}</h3>${inner}</section>`;
   }
@@ -1862,8 +2973,9 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
     const jobs = ctx.jobs || [];
     const combined = d.layout === 'combined';
     const data = d.sections.map(s => buildSectionData(s, d, ctx));
-    const internal = hasInternal(d, perm);
+    const internal = internalIn(d, perm, divisionOf(ctx));
     const h = d.header;
+    const br = brandingFor(d, ctx);
 
     const meta = [jobsMeta(jobs), (ctx.range || {}).label || 'Job to date'];
     if (txt(h.preparedFor)) meta.push('Prepared for ' + txt(h.preparedFor));
@@ -1871,15 +2983,17 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
 
     // data-cr-internal tells the server, as well as the reader, that this copy
     // carries internal columns: the email path logs the send from it.
+    const mastLeft = br ? brandLeft(br, ctx)
+      : `<div><div class="mast-word">DataWatch</div><div class="mast-sub">${escHtml(divisionSub(ctx))}</div></div>`;
     const mast = `<div class="masthead" data-dw-brand${internal ? ' data-cr-internal="1"' : ''}>
-  <div><div class="mast-word">DataWatch</div><div class="mast-sub">${escHtml(divisionSub(ctx))}</div></div>
+  ${mastLeft}
   <div class="mast-meta">${internal ? '<div class="mast-internal">INTERNAL — contains cost data. Not for customer distribution.</div>' : ''}
     <div class="mast-rpt">${escHtml(title)}</div>${h.showGenerated ? `<div class="mast-date">Generated ${escHtml(fmtStamp(ctx.now))}</div>` : ''}</div>
 </div>`;
 
     let body = '';
     if (combined || jobs.length <= 1) {
-      if (!combined && jobs.length === 1) body += jobBand(jobs[0], false);
+      if (!combined && jobs.length === 1) body += jobBand(jobs[0], false, pmFor(d, ctx, jobs[0]));
       d.sections.forEach((s, i) => { body += blockHtml(data[i], data[i].blocks[0], s, ctx, combined); });
     } else {
       // Several jobs, each its own block. Notes are said once, not per job:
@@ -1890,7 +3004,7 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
       d.sections.forEach((s, i) => { if (s.type === 'notes') (firstData < 0 || i < firstData ? lead : tail).push(i); });
       lead.forEach(i => { body += blockHtml(data[i], null, d.sections[i], ctx, false); });
       jobs.forEach((p, j) => {
-        let part = jobBand(p, j > 0 && d.pageBreakPerJob);
+        let part = jobBand(p, j > 0 && d.pageBreakPerJob, pmFor(d, ctx, p));
         d.sections.forEach((s, i) => { if (s.type !== 'notes') part += blockHtml(data[i], data[i].blocks[j], s, ctx, false); });
         body += `<div class="job">${part}</div>`;
       });
@@ -1898,7 +3012,7 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
     }
     if (!jobs.length) body = '<p class="none">No jobs selected.</p>' + body;
 
-    const foot = `<div class="rpt-foot"><span>${escHtml(txt(h.footer))}</span><span>DataWatch — ${escHtml(title)}</span></div>`;
+    const foot = footHtml(d, ctx, br, title);
     return '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">'
       + '<meta name="viewport" content="width=device-width,initial-scale=1">'
       + `<title>${escHtml(title)}</title><style>${CSS}@page{size:letter ${d.orientation};margin:0.45in}`
@@ -1911,11 +3025,56 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
       + (txt(h.intro) ? `<p class="intro">${escHtml(h.intro.trim()).replace(/\r?\n/g, '<br>')}</p>` : '')
       + body + foot + '</body></html>';
   }
-  function jobBand(p, pageBreak) {
+  function jobBand(p, pageBreak, pm) {
     const no = txt(p['job-number']), client = txt(p.client);
     const sub = [no ? 'Job #' + no : '', client].filter(Boolean).map(escHtml).join(' · ');
     return `<div class="job-band${pageBreak ? ' pb' : ''}">${escHtml(txt(p['project-name']) || 'Untitled job')}`
-      + `${sub ? ` <span class="jb-sub">· ${sub}</span>` : ''}</div>`;
+      + `${sub ? ` <span class="jb-sub">· ${sub}</span>` : ''}`
+      + (pm ? `<div class="jb-pm">${svgEsc('Project Manager: ' + pm)}</div>` : '') + '</div>';
+  }
+
+  /* Company branding: the company's name and logo in the masthead in place
+     of the DataWatch wordmark, unless the report asks for DataWatch only or
+     there is nothing to show. One data-dw-brand element either way. */
+  function brandingFor(d, ctx) {
+    const b = ctx.branding;
+    return d.header.branding !== 'datawatch' && b && (b.display_name || b.logo) ? b : null;
+  }
+  function brandLeft(br, ctx) {
+    const logo = br.logo
+      ? `<img class="mast-logo" src="data:${br.logo.mime};base64,${br.logo.base64}" alt="${escHtml(br.display_name || 'Company logo')}" style="max-height:48px;max-width:220px">`
+      : '';
+    const sub = txt(ctx.divisionLabel) ? `<div class="mast-sub">${escHtml(divisionSub(ctx))}</div>` : '';
+    return `<div class="mast-left">${logo}<div>${br.display_name ? `<div class="mast-co">${escHtml(br.display_name)}</div>` : ''}${sub}</div></div>`;
+  }
+  const joinDot = parts => parts.map(x => txt(x)).filter(Boolean).join(' · ');
+  // The job's project manager line: only with a phone or an email to reach
+  // them by (the name alone is on the job card already).
+  function pmFor(d, ctx, p) {
+    if (!d.header.showPmContact || !p) return '';
+    const c = ctx.contacts && has(ctx.contacts, String(p.id)) ? ctx.contacts[String(p.id)] : null;
+    const pm = cleanPerson(c && c.pm);
+    if (!pm || !(pm.phone || pm.email)) return '';
+    return joinDot([pm.name || txt(p.pm), pm.phone, pm.email]);
+  }
+  // "Questions? …": the report's own contact fields, each over the one the
+  // builder resolved (the PM, the sender).
+  function reportContact(d, ctx) {
+    const h = d.header, rc = ctx.reportContact || {};
+    const line = joinDot([txt(h.contactName) || rc.name, txt(h.contactPhone) || rc.phone, txt(h.contactEmail) || rc.email]);
+    return line ? 'Questions? ' + line : '';
+  }
+  function footHtml(d, ctx, br, title) {
+    const h = d.header, q = reportContact(d, ctx);
+    if (!br && !q) return `<div class="rpt-foot"><span>${escHtml(txt(h.footer))}</span><span>DataWatch — ${escHtml(title)}</span></div>`;
+    // A two-line address reads "12 Mill Rd, York, PA" on the one line, as
+    // the Branding panel previews it — not run together.
+    const co = br ? joinDot([String(br.address || '').replace(/\s*\n\s*/g, ', '), br.phone, br.website]) : '';
+    const left = (txt(h.footer) ? `<span>${escHtml(txt(h.footer))}</span>` : '')
+      + (q ? `<span class="foot-q">${svgEsc(q)}</span>` : '')
+      + (br && br.report_footer ? `<span class="foot-co">${svgEsc(br.report_footer)}</span>` : '')
+      + (co ? `<span class="foot-co">${svgEsc(co)}</span>` : '');
+    return `<div class="rpt-foot"><span class="foot-l">${left}</span><span>${br ? 'Prepared with DataWatch' : 'DataWatch — ' + escHtml(title)}</span></div>`;
   }
 
   // ── XLSX ───────────────────────────────────────────────────────────────
@@ -2059,6 +3218,7 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
     money: '"$"#,##0.00;-"$"#,##0.00', qty: '#,##0.00', number: '#,##0.00', days: '#,##0',
     percent: '0.0%', date: 'mmm d, yyyy',
   };
+  const SIGNED_FMT = '+#,##0.0;-#,##0.0;0', SIGNED_DAYS_FMT = '+#,##0;-#,##0;0', HALF_DAYS_FMT = '#,##0.0';
   const BAND = { line: null, grp: 'E8F5E9', sub: 'F3F4F6', tot: 'EDEFF3' };
   // A unit rides in the number format, so "+40 SY" stays the number 40.
   const unitFmt = (unit, signed) => {
@@ -2126,8 +3286,9 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
     const st = makeStyles();
     const title = reportTitle(d, ctx);
     const jobs = ctx.jobs || [];
-    const internal = hasInternal(d, ctx.perm || {});
+    const internal = internalIn(d, ctx.perm || {}, divisionOf(ctx));
     const h = d.header;
+    const br = brandingFor(d, ctx);
     const data = d.sections.map(s => buildSectionData(s, d, ctx));
     const used = new Set(['report', 'history']);
     const S = {
@@ -2140,11 +3301,16 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
       headR: st.xf({ font: { b: true, color: 'FFFFFF' }, fill: '1F2A44', wrap: true, align: 'right' }),
       sec: st.xf({ font: { b: true, sz: 12, color: '166534' } }),
     };
-    const look = (row, type, unit, signed) => {
+    const look = (row, type, unit, signed, v) => {
       const b = row === 'tot' || row === 'sub' || row === 'grp', i = row === 'sub';
       const top = row === 'sub' ? ['thin', 'B8BEC7'] : row === 'tot' ? ['medium', '1F2A44'] : null;
       const spec = { fill: BAND[row], top, font: { b, i } };
+      // Half days keep their half; a signed column shows + on a gain.
+      const half = type === 'days' && isNum(v) && (Math.round(Math.abs(v) * 2) / 2) % 1 !== 0;
       if (unit && (type === 'qty' || type === 'number')) spec.fmt = unitFmt(unit, signed);
+      else if (signed && (type === 'qty' || type === 'number' || half)) spec.fmt = SIGNED_FMT;
+      else if (signed && type === 'days') spec.fmt = SIGNED_DAYS_FMT;
+      else if (half) spec.fmt = HALF_DAYS_FMT;
       else if (FMT[type]) spec.fmt = FMT[type];
       if (NUMERIC[type]) spec.align = 'right';
       return st.xf(spec);
@@ -2154,7 +3320,8 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
       if (typeof v === 'number' && isFinite(v)) {
         if (c.type === 'percent') return { v: v / 100, s: look(row, 'percent') };
         if (c.type === 'date') return { v: String(v), s: look(row, 'text') };
-        if (NUMERIC[c.type]) return { v, s: look(row, c.type, unit, c.key === 'qty_change') };
+        // A quantity change order keeps its old look: signed with its unit.
+        if (NUMERIC[c.type]) return { v, s: look(row, c.type, unit, !!c.signed && (!!unit || c.key !== 'qty_change'), v) };
         return { v: String(v), s: look(row, 'text') };
       }
       if (c.type === 'date' && isIso(v)) return { v: dateSerial(v), s: look(row, 'date') };
@@ -2164,7 +3331,8 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
     // ── Report sheet ──
     const R = [];
     R.push({ cells: [{ v: title, s: S.title }], ht: 22 });
-    R.push({ cells: [{ v: 'DataWatch — ' + divisionSub(ctx), s: S.sub }] });
+    R.push({ cells: [{ v: br && br.display_name ? `${br.display_name} — ${divisionSub(ctx)} · Prepared with DataWatch`
+      : 'DataWatch — ' + divisionSub(ctx), s: S.sub }] });
     if (internal) R.push({ cells: [{ v: INTERNAL_NOTE, s: S.warn }] });
     R.push({ cells: [] });
     const kv = (k, v) => R.push({ cells: [{ v: k, s: S.key }, v && typeof v === 'object' ? v : { v, s: S.val }] });
@@ -2173,6 +3341,8 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
     if (h.showGenerated) kv('Generated', fmtStamp(ctx.now));
     if (txt(h.preparedFor)) kv('Prepared for', txt(h.preparedFor));
     if (txt(h.preparedBy)) kv('Prepared by', txt(h.preparedBy));
+    const q = reportContact(d, ctx);
+    if (q) kv('Questions?', q.replace(/^Questions\? /, ''));
     if (txt(h.intro)) kv('Message', txt(h.intro));
     d.sections.forEach((s, i) => {
       const sd = data[i];
@@ -2183,19 +3353,25 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
         R.push({ cells: [{ v: sd.text.trim(), s: S.val }] });
         return;
       }
-      if (sd.type !== 'job_info' && sd.type !== 'summary_kpis') return;
+      if (sd.type !== 'job_info' && sd.type !== 'summary_kpis' && sd.type !== 'rate_summary') return;
       if (!sd.columns.length) return;
-      sd.blocks.forEach(block => block.groups.forEach(g => g.rows.forEach(row => {
-        const who = sd.type === 'job_info' ? (row.job || block.job) : block.job;
-        R.push({ cells: [] });
-        R.push({ cells: [{ v: sd.title + (who ? ' — ' + jobLabel(who) : jobs.length > 1 ? ' — All jobs' : ''), s: S.sec }] });
-        sd.columns.forEach(c => {
-          const unit = c.key === 'sqft' ? ctx.areaUnit : c.key === 'qty_period' && isNum(row.cells[c.key]) ? row.unit : '';
-          const cell = cellFor(row.cells[c.key], c, 'line', unit);
-          if (cell.v === undefined) cell.v = '—';
-          kv(c.label, cell);
-        });
-      })));
+      sd.blocks.forEach(block => {
+        block.groups.forEach(g => g.rows.forEach(row => {
+          const who = sd.type !== 'summary_kpis' ? (row.job || block.job) : block.job;
+          R.push({ cells: [] });
+          R.push({ cells: [{ v: sd.title + (who ? ' — ' + jobLabel(who) : jobs.length > 1 ? ' — All jobs' : ''), s: S.sec }] });
+          sd.columns.forEach(c => {
+            const unit = c.key === 'sqft' ? ctx.areaUnit : c.key === 'qty_period' && isNum(row.cells[c.key]) ? row.unit : '';
+            const cell = cellFor(row.cells[c.key], c, 'line', unit);
+            if (cell.v === undefined) cell.v = '—';
+            kv(c.label, cell);
+          });
+          // The job card carries its project manager's phone and email.
+          const pm = sd.type === 'job_info' && who ? pmFor(d, ctx, who) : '';
+          if (pm) kv('Project Manager', pm);
+        }));
+        if (sd.type === 'rate_summary') (block.notes || []).forEach(t => R.push({ cells: [{ v: t, s: S.sub }] }));
+      });
     });
     if (txt(h.footer)) { R.push({ cells: [] }); kv('Note', txt(h.footer)); }
     const landscape = d.orientation === 'landscape';
@@ -2248,7 +3424,54 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
         }
       });
       if (!any) rows.push({ cells: [{ v: `No ${NOUN[sd.type] || 'data'} for this report.`, s: S.sub }] });
+      // The footnotes the HTML prints under the table, as note rows.
+      const notes = [];
+      sd.blocks.forEach(block => (block.notes || []).forEach(t => notes.push((jobs.length > 1 && block.job ? jobLabel(block.job) + ': ' : '') + t)));
+      if (notes.length) { rows.push({ cells: [] }); notes.forEach(t => rows.push({ cells: [{ v: t, s: S.sub }] })); }
       sheets.push({ name: sheetName(sd.title, used), xml: sheetXml(rows, widths, headRow, { selected: false, landscape, internal }), head: headRow });
+    });
+
+    // ── A "Chart data" sheet per chart: the series the chart draws ──
+    d.sections.forEach((s, i) => {
+      const sd = data[i];
+      if (sd.type !== 'chart' || !sd.columns.length) return;
+      const keys = new Set(sd.columns.map(c => c.key));
+      const opts = s.options || {};
+      const charts = sd.blocks.flatMap(b => b.charts || []).filter(ch => !ch.message);
+      const bars = opts.chart === 'daily_bars';
+      const ex = charts[0] || {};
+      const per = bars ? (ex.bucket === 'week' ? 'week' : ex.bucket === 'month' ? 'month' : 'day') : '';
+      const pctBasis = !bars && ex.basis === 'pct';
+      // Only the series the section may print: the measures are columns, so
+      // a locked one (crew hours) is no more in the workbook than the HTML.
+      const series = (bars
+        ? [['daily_qty', `${cap1(per === 'day' ? 'daily' : per + 'ly')} qty`, ch => ch.drawQty, pt => pt.qty, 'qty'],
+          ['planned_rate_line', `Planned / ${per}`, ch => ch.drawPlan, pt => pt.plan, 'qty'],
+          ['crew_hours', 'Crew hours', ch => ch.drawCrew, pt => pt.crew, 'number']]
+        : [['installed', pctBasis ? 'Installed (cum %)' : 'Installed (cum)', ch => ch.drawInst, pt => pt.inst, pctBasis ? 'percent' : 'qty'],
+          ['plan', pctBasis ? 'Planned (cum %)' : 'Planned (cum)', ch => ch.drawPlan, pt => pt.plan, pctBasis ? 'percent' : 'qty']])
+        .filter(x => keys.has(x[0]) && charts.some(x[2]));
+      if (!series.length) return;
+      const addJob = jobs.length > 1;
+      const cols = (addJob ? [JOB_COL] : []).concat([{ key: 'date', label: bars && per !== 'day' ? (per === 'week' ? 'Week of' : 'Month of') : 'Date', type: 'date' }],
+        series.map(x => ({ key: x[0], label: x[1], type: x[4] })));
+      const rows = [];
+      rows.push({ cells: [{ v: `Chart data — ${sd.title}`, s: S.title }], ht: 20 });
+      if (internal) rows.push({ cells: [{ v: INTERNAL_NOTE, s: S.warn }] });
+      rows.push({ cells: [{ v: [jobs.length === 1 ? jobLabel(jobs[0]) : `${jobs.length} jobs`, (ctx.range || {}).label].join(' · '), s: S.sub }] });
+      rows.push({ cells: [] });
+      rows.push({ cells: cols.map(c => ({ v: c.label, s: NUMERIC[c.type] ? S.headR : S.head })), ht: 30 });
+      const headRow = rows.length;
+      charts.forEach(ch => (bars ? ch.bars : ch.points).forEach(pt => {
+        const cells = { _job: jobLabel(ch.job), date: bars ? pt.from : pt.date };
+        series.forEach(x => { cells[x[0]] = x[2](ch) ? x[3](pt) : null; });
+        rows.push({ cells: cols.map(c => cellFor(cells[c.key], c, 'line', '')) });
+      }));
+      if (!charts.length) rows.push({ cells: [{ v: 'Nothing to chart for this report.', s: S.sub }] });
+      const caps = charts.flatMap(ch => ch.captions.map(t => (addJob ? jobLabel(ch.job) + ': ' : '') + t));
+      if (caps.length) { rows.push({ cells: [] }); caps.forEach(t => rows.push({ cells: [{ v: t, s: S.sub }] })); }
+      const widths = cols.map(c => (c.key === '_job' ? 30 : Math.max(12, c.label.length + 2)));
+      sheets.push({ name: sheetName('Chart data', used), xml: sheetXml(rows, widths, headRow, { selected: false, landscape, internal }), head: headRow });
     });
 
     const rel = 'http://schemas.openxmlformats.org/officeDocument/2006/relationships';
@@ -2290,18 +3513,24 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
   function xlsxFileName(def, ctx) {
     const d = normalizeDefinition(def);
     const base = reportTitle(d, ctx || {}).replace(/[^A-Za-z0-9 _-]+/g, ' ').trim().replace(/\s+/g, '-').slice(0, 80).replace(/-+$/, '');
-    const tag = hasInternal(d, (ctx && ctx.perm) || {}) ? '-INTERNAL' : '';
+    const tag = internalIn(d, (ctx && ctx.perm) || {}, divisionOf(ctx)) ? '-INTERNAL' : '';
     return `${base || 'report'}${tag}-${(ctx && isIso(ctx.today)) ? ctx.today : localToday()}.xlsx`;
   }
 
   // ── Starter templates ──────────────────────────────────────────────────
   // Built in and read-only; "Use this template" copies one into an unsaved
   // report. Section ids are fixed so a copy's sections are recognisable.
-  function starter(id, name, blurb, extra, sections) {
+  function starter(id, name, blurb, extra, sections, divisions) {
     const def = Object.assign(defaultDefinition(), { title: name }, extra || {});
-    def.sections = sections.map((s, i) => Object.assign(newSection(s.type), { id: `${id}-${i + 1}` }, s));
+    def.sections = sections.map((s, i) => {
+      const sec = Object.assign(newSection(s.type), { id: `${id}-${i + 1}` }, s);
+      if (s.options) sec.options = Object.assign(newSection(s.type).options, s.options);
+      return sec;
+    });
     const definition = normalizeDefinition(def);
-    return { id, name, blurb, internal: definition.includeInternal, definition };
+    const out = { id, name, blurb, internal: definition.includeInternal, definition };
+    if (divisions) out.divisions = divisions.slice();
+    return out;
   }
   const JOB_MIN = ['project-name', 'job-number', 'client'];
   const STARTERS = [
@@ -2344,13 +3573,72 @@ p.legend{font-size:8px;color:#777;margin-top:2px}
         { type: 'bid_progress', columns: ['cost_code', 'sub_code', 'bid_qty', 'installed_to_date', 'pct_complete',
           'bid_total', 'actual_cost', 'variance', 'projected_cost'] },
       ]),
+    starter('planned_vs_actual', 'Planned vs Actual',
+      'Each bid item against its plan — planned and actual rate, scheduled and earned %, days ahead or behind — with an S-curve.', null, [
+        { type: 'job_info', columns: JOB_MIN },
+        { type: 'plan_vs_actual' },
+        { type: 'chart', options: { chart: 's_curve', basis: 'pct', showPlan: true } },
+      ]),
+    starter('sub_code_production', 'Sub-Code Production',
+      'One sub code across your jobs — "Turf Install on every active job": plan vs actual, daily quantities, rates and daily bars. Pick the sub code first.',
+      { dates: { preset: 'last_week', from: '', to: '' } }, [
+        { type: 'plan_vs_actual' },
+        { type: 'daily_production', columns: ['date', 'cost_code', 'sub_code', 'quantity', 'unit'], options: { summarize: true, groupBy: 'none' } },
+        { type: 'rate_summary' },
+        { type: 'chart', options: { chart: 'daily_bars', showPlan: true } },
+      ]),
+    starter('paving_tonnage', 'Paving Tonnage',
+      'Tons placed, tons per day and per load, rates per bid item with tons per load, and the haul log.', { dates: { preset: 'last_week', from: '', to: '' } }, [
+        { type: 'rate_summary' },
+        { type: 'production_kpis', columns: ['sub_code', 'unit', 'qty_period', 'days_period', 'avg_per_day', 'per_load',
+          'remaining_qty', 'est_days_left', 'projected_finish'] },
+        { type: 'trucking' },
+      ], PAVING),
   ];
+  // The starters a division offers: every one not tied to a division, and
+  // the ones tied to this one (Paving Tonnage is paving's).
+  function startersFor(division) {
+    return STARTERS.filter(s => !s.divisions || s.divisions.includes(division));
+  }
+
+  /* The catalog as the AI report builder is told it: section types, their
+     columns (with the internal / financial flags, so it knows what needs
+     internal data switched on) and options, the date presets and layouts —
+     for one division, so it never offers tons on a turf report. Plain data,
+     the same every time, for the generator that commits it as JSON. */
+  function aiCatalog(division) {
+    const div = typeof division === 'string' && DIV_LABELS[division] ? division : undefined;
+    return {
+      version: VERSION,
+      division: div || null,
+      sections: SECTION_ORDER.map(t => {
+        const cat = CATALOG[t];
+        const cols = cat.columns.filter(c => !div || !divisionHidden(c, div)).map(c => {
+          const o = { key: c.key, label: c.label, type: c.type, internal: c.internal, financial: c.financial, default: c.def };
+          if (c.divisions) o.divisions = c.divisions.slice();
+          return o;
+        });
+        const options = cat.optionSpec.map(o => {
+          const x = { key: o.key, label: o.label, kind: o.kind, default: clone(cat.options[o.key]) };
+          if (o.choices) x.choices = o.choices.map(ch => ch[0]);
+          return x;
+        });
+        return { type: t, label: cat.label, blurb: cat.blurb, table: cat.table, columns: cols, options };
+      }),
+      datePresets: DATE_PRESETS.map(p => ({ key: p.key, label: p.label })),
+      layouts: ['separate', 'combined'],
+      orientations: ['portrait', 'landscape'],
+      headerBranding: HEADER_BRANDING.slice(),
+      limits: { sections: 20, filterCodes: 200, filterCodeLength: 60 },
+      starters: startersFor(div).map(s => ({ id: s.id, name: s.name, blurb: s.blurb, sections: s.definition.sections.map(x => x.type) })),
+    };
+  }
 
   root.FCTReportEngine = {
     VERSION, CATALOG, SECTION_ORDER, STARTERS, DATE_PRESETS,
     defaultDefinition, newSection, normalizeDefinition, resolveDateRange, resolveJobs,
-    columnState, effectiveColumns, hiddenFinancialCount, hasInternal, costCodesFor,
+    columnState, effectiveColumns, hiddenFinancialCount, hasInternal, costCodesFor, subCodesFor,
     makeContext, buildSectionData, buildReportHtml, buildXlsx, xlsxFileName, formatCell, escHtml,
-    XLSX_MIME,
+    XLSX_MIME, countWorkdays, normUnit, startersFor, aiCatalog,
   };
 })();

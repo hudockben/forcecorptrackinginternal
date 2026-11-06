@@ -66,7 +66,9 @@ const LIFT = ['dailyRowCost', 'calcDaily', 'bidItemComplete', '_bidCsKey', 'bidP
 // math lives where the PO tab does.
 const OPTIONAL = ['projectContract', 'originalContract', 'revisedContract', 'contractCOTotal', 'contractCOs',
   '_lineAmt', '_lineTax', '_lineTaxPct', '_poNum', '_poNum0', '_normalizeNumeric',
-  '_localDateStr', '_usHolidays', '_isHoliday', '_addWorkingDays', '_poTotals'];
+  '_localDateStr', '_usHolidays', '_isHoliday', '_addWorkingDays', '_poTotals',
+  // The Schedule tab's pace math, for planned-rate parity.
+  '_workingDaysBetween', '_schedDaysRemaining', '_schedStatus', '_ppWorkingDaysRemaining', '_schedCalcRow'];
 function pageEngine(file) {
   const SRC = fs.readFileSync(path.join(ROOT, file), 'utf8');
   const haul = /const HAUL_FIELD_TYPE_RE\s*=\s*([^;]+);/.exec(SRC);
@@ -79,6 +81,7 @@ function pageEngine(file) {
     'var pvPreview = { active: false, rate: 0 };',
     'var _bidCsComplete = {};',
     'var _holidayCache = {};',
+    'var _pp = null;',
     `var HAUL_FIELD_TYPE_RE = ${haul ? haul[1] : '/^haul\\s*[—–-]\\s/i'};`,
     ...LIFT.concat(have).map(n => requireFn(SRC, n, file)),
   ].join('\n'), ctx, { filename: file });
@@ -90,6 +93,7 @@ function pageEngine(file) {
     projectedCostForProject: fn('projectedCostForProject'), gpEarnedToDate: fn('gpEarnedToDate'),
     bidContractFigures: fn('bidContractFigures'), projIsDone: fn('projIsDone'),
     lineAmt: fn('_lineAmt'), lineTax: fn('_lineTax'), addWorkingDays: fn('_addWorkingDays'),
+    workingDaysBetween: fn('_workingDaysBetween'),
   };
   return { ctx, helpers, file };
 }
@@ -296,9 +300,9 @@ function deepNear(a, b, at = '') {
   const API = ['VERSION', 'CATALOG', 'SECTION_ORDER', 'STARTERS', 'DATE_PRESETS', 'defaultDefinition', 'newSection',
     'normalizeDefinition', 'resolveDateRange', 'resolveJobs', 'columnState', 'effectiveColumns', 'hiddenFinancialCount',
     'hasInternal', 'costCodesFor', 'makeContext', 'buildSectionData', 'buildReportHtml', 'buildXlsx', 'xlsxFileName',
-    'formatCell', 'escHtml'];
+    'formatCell', 'escHtml', 'subCodesFor', 'countWorkdays', 'normUnit', 'startersFor', 'aiCatalog'];
   assert('window.FCTReportEngine exposes every member of the contract', API.every(k => k in E), API.filter(k => !(k in E)).join(', '));
-  assert('VERSION is 1', E.VERSION === 1);
+  assert('VERSION is 2', E.VERSION === 2);
   assert('loads in a bare vm: no fetch, document, TextEncoder or Blob needed',
     typeof bare.document === 'undefined' && typeof bare.fetch === 'undefined' && typeof bare.TextEncoder === 'undefined');
   assert('engine source never reaches for the DOM or the network',
@@ -310,8 +314,9 @@ function deepNear(a, b, at = '') {
   section('Catalog');
   const TYPES = ['text', 'number', 'qty', 'money', 'date', 'percent', 'days'];
   const allTypes = Object.keys(E.CATALOG);
-  assert('ten section types, in the + Add section order',
-    allTypes.length === 10 && E.SECTION_ORDER.length === 10 && E.SECTION_ORDER.every(t => E.CATALOG[t]));
+  assert('thirteen section types (v2 adds plan_vs_actual, chart, rate_summary), in the + Add section order',
+    allTypes.length === 13 && E.SECTION_ORDER.length === 13 && E.SECTION_ORDER.every(t => E.CATALOG[t])
+      && JSON.stringify(E.SECTION_ORDER.slice(-4)) === JSON.stringify(['plan_vs_actual', 'chart', 'rate_summary', 'notes']));
   let colProblems = [];
   allTypes.forEach(t => {
     const cat = E.CATALOG[t];
@@ -329,7 +334,7 @@ function deepNear(a, b, at = '') {
     const specKeys = cat.optionSpec.map(o => o.key).sort().join(',');
     if (specKeys !== Object.keys(cat.options).sort().join(',')) colProblems.push(`${t}: optionSpec ≠ options`);
     cat.optionSpec.forEach(o => {
-      if (!['select', 'bool', 'costCodes', 'kinds'].includes(o.kind) || !o.label) colProblems.push(`${t}.${o.key}: spec`);
+      if (!['select', 'bool', 'costCodes', 'subCodes', 'kinds'].includes(o.kind) || !o.label) colProblems.push(`${t}.${o.key}: spec`);
       if (o.kind === 'select' && !o.choices.some(c => c[0] === cat.options[o.key])) colProblems.push(`${t}.${o.key}: default not a choice`);
     });
   });
@@ -364,10 +369,12 @@ function deepNear(a, b, at = '') {
   // ────────────────────────────────────────────────────────────────────────
   section('Definitions');
   const blank = E.defaultDefinition();
-  assert('defaultDefinition is a blank v1: no sections, jobs picked at run time, customer-safe',
-    blank.v === 1 && blank.sections.length === 0 && blank.jobs.mode === 'pick' && blank.jobs.ids.length === 0
+  assert('defaultDefinition is a blank v2: no sections, jobs picked at run time, customer-safe, no filters, company branding',
+    blank.v === 2 && blank.sections.length === 0 && blank.jobs.mode === 'pick' && blank.jobs.ids.length === 0
       && blank.includeInternal === false && blank.layout === 'separate' && blank.dates.preset === 'job_to_date'
-      && blank.header.showGenerated === true);
+      && blank.header.showGenerated === true && JSON.stringify(blank.filters) === '{"costCodes":[],"subCodes":[]}'
+      && blank.header.branding === 'company' && blank.header.showPmContact === true
+      && blank.header.contactName === '' && blank.header.contactPhone === '' && blank.header.contactEmail === '' && !('description' in blank));
   const s1 = E.newSection('trucking'), s2 = E.newSection('trucking');
   assert('newSection: fresh ids, default title / columns / options; notes carry text; unknown type → null',
     s1.id !== s2.id && s1.title === 'Trucking / Haul Log' && J(s1.options).totals === true
@@ -384,7 +391,7 @@ function deepNear(a, b, at = '') {
       { type: 'job_info' }].concat(junkNotes),
   });
   const bp = junk.sections[0];
-  assert('junk in: v1 out, includeInternal only when literally true', junk.v === 1 && junk.includeInternal === false
+  assert('junk in: v2 out, includeInternal only when literally true', junk.v === 2 && junk.includeInternal === false
     && junk.layout === 'separate' && junk.orientation === 'landscape' && junk.title === '12345');
   assert('unknown section types dropped, sections capped at 20, order kept',
     junk.sections.length === 20 && bp.type === 'bid_progress' && junk.sections[1].type === 'job_info');
@@ -404,9 +411,11 @@ function deepNear(a, b, at = '') {
   assert('header junk → defaults', JSON.stringify(junk.header) === JSON.stringify(blank.header));
   assert('normalizing twice changes nothing', JSON.stringify(E.normalizeDefinition(junk)) === JSON.stringify(junk));
 
-  assert('seven starter templates, each already normalized',
-    E.STARTERS.length === 7 && E.STARTERS.every(s => s.id && s.name && s.blurb
-      && JSON.stringify(E.normalizeDefinition(s.definition)) === JSON.stringify(s.definition)));
+  assert('ten starter templates (the seven, then Planned vs Actual, Sub-Code Production, Paving Tonnage), each already normalized',
+    E.STARTERS.length === 10 && E.STARTERS.every(s => s.id && s.name && s.blurb
+      && JSON.stringify(E.normalizeDefinition(s.definition)) === JSON.stringify(s.definition))
+      && E.STARTERS.map(s => s.id).join() === 'customer_progress,quantities_installed,production_rates,materials_delivered,haul_log,'
+        + 'change_order_log,internal_cost_snapshot,planned_vs_actual,sub_code_production,paving_tonnage');
   assert('only the Internal Cost Snapshot is internal',
     E.STARTERS.filter(s => s.internal).map(s => s.id).join() === 'internal_cost_snapshot'
       && E.STARTERS.every(s => s.internal === s.definition.includeInternal));
@@ -963,7 +972,9 @@ function deepNear(a, b, at = '') {
     assert('the parts Excel needs', ['[Content_Types].xml', '_rels/.rels', 'xl/workbook.xml', 'xl/_rels/workbook.xml.rels', 'xl/styles.xml', 'xl/worksheets/sheet1.xml']
       .every(n => wb.parts[n]));
     const tableCount = nd.sections.filter(s => PE.CATALOG[s.type].table).length;
-    assert('a Report sheet first, then one per table section', wb.names[0] === 'Report' && wb.names.length === 1 + tableCount, wb.names.join(' | '));
+    const chartCount = nd.sections.filter(s => s.type === 'chart').length;
+    assert('a Report sheet first, then one per table section, then a Chart data sheet per chart',
+      wb.names[0] === 'Report' && wb.names.length === 1 + tableCount + chartCount && wb.names[wb.names.length - 1] === 'Chart data', wb.names.join(' | '));
     assert('sheet names: ≤ 31 chars, no []:*?/\\, unique', wb.names.every(n => n.length <= 31 && !/[\[\]:*?\/\\]/.test(n))
       && new Set(wb.names.map(n => n.toLowerCase())).size === wb.names.length && wb.names.includes('Bid Item Progress (2)'), wb.names.join(' | '));
     assert('content types and relationships list every sheet', wb.names.every((_, i) =>
@@ -1281,16 +1292,883 @@ function deepNear(a, b, at = '') {
     }
   }
 
+  // ────────────────────────────────────────────────────────────────────────
+  // v2: plans, charts, division rates, code filters, branding.
+  // These use the engine with no page helpers unless a check is about the
+  // page's own numbers; the fallbacks are shown equal to the helpers above.
+  const V = bareEngine().FCTReportEngine;
+  const ADMIN = { role: 'admin', canSeeCosts: true, canSeeFinancials: true, canShare: true };
+  const DIVS = { paving: ['Paving', 'SY'], turf: ['Turf Management', 'SF'], kiewit: ['Kiewit Pinetree', 'SY'] };
+  const vcfg = (data, extra) => Object.assign({
+    division: 'paving', divisionLabel: 'Paving', areaUnit: 'SY', perm: ADMIN,
+    getProjects: () => data.projects, getPurchaseOrders: () => data.pos || [], getTruckingEntries: () => data.trucks || [],
+  }, extra || {});
+  const divCfg = div => (DIVS[div] ? { division: div, divisionLabel: DIVS[div][0], areaUnit: DIVS[div][1] }
+    : { division: undefined, divisionLabel: '', areaUnit: 'SY' });
+  const vmk = (def, data, ids, opts, extra) => V.makeContext(def, vcfg(data, extra), Object.assign({ pickedIds: ids, today: TODAY, now: NOW }, opts || {}));
+  const vdef = (sections, defPatch) => V.normalizeDefinition(Object.assign({ title: 'V2', sections }, defPatch || {}));
+  const vsec = (type, patch) => {
+    const s = Object.assign(V.newSection(type), patch || {});
+    if (patch && patch.options) s.options = Object.assign(V.newSection(type).options, patch.options);
+    return s;
+  };
+  const allCols = type => V.CATALOG[type].columns.map(c => c.key);
+  const row = (date, cc, sc, qty, extra) => Object.assign({ date, cost_code: cc, sub_code: sc, quantity: String(qty),
+    labor_hours: '8', employee: 'Crew A', rate: '30' }, extra || {});
+  const byKey = (rows, k, v) => rows.find(r => r[k] === v);
+  const wdWalk = (a, b, page) => {   // day by day, the page's own calendar
+    let n = 0;
+    for (let t = Date.UTC(+a.slice(0, 4), +a.slice(5, 7) - 1, +a.slice(8, 10)); ; t += 86400000) {
+      const d = new Date(t).toISOString().slice(0, 10);
+      if (d > b) break;
+      const w = new Date(t).getUTCDay();
+      if (w !== 0 && w !== 6 && !page._isHoliday(d)) n++;
+    }
+    return n;
+  };
+
+  section('Calendar and units (v2)');
+  {
+    const pg = pageEngine('paving.html').ctx;
+    const W = V.countWorkdays;
+    assert('one-day span on a working day is 1 (the page\'s _workingDaysBetween says 0)',
+      W('2026-11-04', '2026-11-04') === 1 && pg._workingDaysBetween('2026-11-04', '2026-11-04') === 0);
+    assert('a one-day span on a Saturday or a holiday is 0; end before start is 0; junk is 0',
+      W('2026-11-07', '2026-11-07') === 0 && W('2026-11-11', '2026-11-11') === 0 && W('2026-11-13', '2026-11-02') === 0
+        && W('nope', '2026-11-02') === 0 && W('2026-02-30', '2026-03-02') === 0);
+    assert('Nov 2 – Nov 13, 2026 is 9 working days (Veterans Day out); Thanksgiving week is 4',
+      W('2026-11-02', '2026-11-13') === 9 && W('2026-11-23', '2026-11-27') === 4);
+    assert('Oct 12 – Oct 30, 2026 is 14 (Columbus Day out); a weekend alone is 0', W('2026-10-12', '2026-10-30') === 14 && W('2026-11-07', '2026-11-08') === 0);
+    // Every pair a few days apart across 2021–2028, against a walk on the page's calendar.
+    let bad = [];
+    let seed = 7;
+    const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+    for (let i = 0; i < 1500 && bad.length < 5; i++) {
+      const a = new Date(Date.UTC(2021, 0, 1) + rnd(2900) * 86400000).toISOString().slice(0, 10);
+      const b = new Date(Date.parse(a) + rnd(i % 3 ? 40 : 900) * 86400000).toISOString().slice(0, 10);
+      const want = wdWalk(a, b, pg);
+      if (W(a, b) !== want) bad.push(`${a}..${b}: ${W(a, b)} vs ${want}`);
+      if (a < b && pg._workingDaysBetween(a, b) !== want) bad.push(`page ${a}..${b}: ${pg._workingDaysBetween(a, b)} vs ${want}`);
+    }
+    assert('countWorkdays equals a day-by-day walk on the page\'s holidays (1,500 spans, 2021–2028), and the page\'s count when start < end',
+      !bad.length, bad.join('; '));
+    assert('…including the year ends: Dec 31, 2021 (a Saturday New Year\'s is filed under 2022) and Jan 2, 2023',
+      W('2021-12-27', '2022-01-07') === wdWalk('2021-12-27', '2022-01-07', pg) && W('2022-12-26', '2023-01-06') === wdWalk('2022-12-26', '2023-01-06', pg));
+    const N = V.normUnit;
+    assert('normUnit: trimmed upper case, TN → TON, SQ FT / SQFT → SF, everything else as is',
+      N(' tn ') === 'TON' && N('Ton') === 'TON' && N('sq ft') === 'SF' && N('SQFT') === 'SF' && N('sq  ft') === 'SF'
+        && N('sf') === 'SF' && N('ls') === 'LS' && N('') === '' && N(null) === '' && N('Each') === 'EACH');
+  }
+
+  section('Definitions v2: v1 in, v2 out, limits');
+  {
+    const v1 = { v: 1, title: 'Old', jobs: { mode: 'saved', ids: ['p1'] }, dates: { preset: 'last_week', from: '', to: '' },
+      header: { preparedFor: 'Acme', preparedBy: 'Sam', intro: 'Hi', footer: 'F', showGenerated: false },
+      sections: [{ id: 'a1', type: 'bid_progress', columns: ['cost_code'], labels: {}, options: { costCodes: ['Paving'] } }] };
+    const n = V.normalizeDefinition(v1);
+    assert('a v1 definition reads 1:1 as v2, the new fields at their defaults',
+      n.v === 2 && n.title === 'Old' && n.jobs.mode === 'saved' && n.dates.preset === 'last_week' && n.header.preparedFor === 'Acme'
+        && n.header.showGenerated === false && n.header.branding === 'company' && n.header.showPmContact === true
+        && JSON.stringify(n.filters) === '{"costCodes":[],"subCodes":[]}' && n.sections[0].id === 'a1'
+        && JSON.stringify(n.sections[0].options.costCodes) === '["Paving"]' && JSON.stringify(n.sections[0].options.subCodes) === '[]');
+    const long = 'x'.repeat(61), ok60 = 'y'.repeat(60);
+    const many = Array.from({ length: 230 }, (_, i) => 'SC' + i);
+    const j = V.normalizeDefinition({ v: 2, description: '  A description  ', filters: { costCodes: ['A', 'A', 5, '', '  ', long, ok60, null],
+      subCodes: many }, header: { branding: 'evil', showPmContact: 'no', contactName: 'n'.repeat(200), contactPhone: 7, contactEmail: 'e@x.co' },
+      sections: [{ type: 'plan_vs_actual', options: { hideUnplanned: true, groupBy: 'weird', subCodes: ['Turf Install', 9, 'Turf Install'] } },
+        { type: 'chart', options: { chart: 'daily_bars', basis: 'nope', height: 'tall', showPlan: false } }] });
+    assert('filters: strings only, deduped, blank and over-60 entries dropped, at most 200',
+      JSON.stringify(j.filters.costCodes) === JSON.stringify(['A', ok60]) && j.filters.subCodes.length === 200 && j.filters.subCodes[199] === 'SC199');
+    assert('header: branding is an enum (junk → company), showPmContact off only when literally false, contact fields capped at 120',
+      j.header.branding === 'company' && j.header.showPmContact === true && j.header.contactName.length === 120
+        && j.header.contactPhone === '7' && j.header.contactEmail === 'e@x.co'
+        && V.normalizeDefinition({ header: { branding: 'datawatch', showPmContact: false } }).header.branding === 'datawatch'
+        && V.normalizeDefinition({ header: { showPmContact: false } }).header.showPmContact === false);
+    assert('a description riding in the definition is kept (capped at 500); none → no key',
+      j.description === '  A description  ' && !('description' in n) && V.normalizeDefinition({ description: 'z'.repeat(600) }).description.length === 500);
+    assert('new sections\' options normalize: bools, selects, sub codes deduped',
+      j.sections[0].options.hideUnplanned === true && j.sections[0].options.groupBy === 'none'
+        && JSON.stringify(j.sections[0].options.subCodes) === '["Turf Install"]'
+        && j.sections[1].options.chart === 'daily_bars' && j.sections[1].options.basis === 'pct' && j.sections[1].options.height === 'tall'
+        && j.sections[1].options.showPlan === false);
+    assert('normalizing a v2 definition twice changes nothing', JSON.stringify(V.normalizeDefinition(j)) === JSON.stringify(j));
+    const dataSecs = ['bid_progress', 'daily_production', 'production_kpis', 'materials', 'trucking', 'change_orders', 'schedule',
+      'plan_vs_actual', 'chart', 'rate_summary'];
+    assert('every data section carries costCodes and subCodes options (pickers of kind costCodes / subCodes)',
+      dataSecs.every(t => JSON.stringify(V.newSection(t).options.costCodes) === '[]' && JSON.stringify(V.newSection(t).options.subCodes) === '[]'
+        && V.CATALOG[t].optionSpec.some(o => o.key === 'subCodes' && o.kind === 'subCodes')
+        && V.CATALOG[t].optionSpec.some(o => o.key === 'costCodes' && o.kind === 'costCodes')));
+    assert('new section defaults: Planned vs Actual\'s spec columns, the chart\'s measures, the division tiles',
+      JSON.stringify(V.newSection('plan_vs_actual').columns) === JSON.stringify(['sub_code', 'unit', 'bid_qty', 'installed_to_date',
+        'planned_rate', 'actual_rate', 'pct_of_plan', 'sched_pct', 'earned_pct', 'ahead_days', 'target_date', 'plan_status'])
+      && JSON.stringify(V.newSection('chart').columns) === JSON.stringify(['installed', 'plan', 'daily_qty', 'planned_rate_line'])
+      && V.newSection('chart').options.chart === 's_curve' && V.newSection('chart').options.basis === 'pct' && V.newSection('chart').options.showPlan === true
+      && V.newSection('rate_summary').columns.join() === 'work_days,tons_period,tons_per_day,loads_period,tons_per_load,sf_period,sf_per_day,homes_period,homes_per_day');
+    const MUST_I = { plan_vs_actual: ['units_per_crew_hr'], chart: ['crew_hours'], production_kpis: ['units_per_crew_hr', 'units_per_equip_hr'],
+      rate_summary: ['avg_crew', 'tons_per_crew_hr', 'tons_per_equip_hr', 'sf_per_mh', 'mh_per_home'] };
+    const MUST_SAFE = { plan_vs_actual: ['planned_rate', 'actual_rate', 'sched_pct', 'earned_pct', 'spi', 'ahead_days', 'qty_variance', 'plan_status'],
+      chart: ['installed', 'plan', 'daily_qty', 'planned_rate_line'], production_kpis: ['per_load'],
+      rate_summary: ['work_days', 'tons_period', 'tons_per_day', 'loads_period', 'tons_per_load', 'sf_period', 'sf_per_day', 'homes_period', 'homes_per_day'] };
+    const col = (t, k) => V.CATALOG[t].columns.find(c => c.key === k);
+    const wrongI = [], wrongS = [];
+    Object.entries(MUST_I).forEach(([t, ks]) => ks.forEach(k => { if (!col(t, k) || !col(t, k).internal) wrongI.push(`${t}.${k}`); }));
+    Object.entries(MUST_SAFE).forEach(([t, ks]) => ks.forEach(k => { if (!col(t, k) || col(t, k).internal) wrongS.push(`${t}.${k}`); }));
+    assert('hours- and crew-based figures are internal; quantities, days, per-day and per-load rates, %s and plan figures are customer-safe',
+      !wrongI.length && !wrongS.length, wrongI.concat(wrongS).join(', '));
+    assert('signed (g) columns: qty vs plan, days ahead / behind, finish vs target, quantity change orders',
+      ['qty_variance', 'ahead_days', 'forecast_vs_target'].every(k => col('plan_vs_actual', k).signed === true)
+        && col('change_orders', 'qty_change').signed === true && col('plan_vs_actual', 'spi').signed === false);
+    assert('division tiles are scoped: tons to paving, SF to turf, homes to kiewit; the common ones to all',
+      JSON.stringify(col('rate_summary', 'tons_period').divisions) === '["paving"]' && JSON.stringify(col('rate_summary', 'sf_per_mh').divisions) === '["turf"]'
+        && JSON.stringify(col('rate_summary', 'homes_per_day').divisions) === '["kiewit"]' && !col('rate_summary', 'work_days').divisions);
+  }
+
+  section('Division-scoped columns, hasInternal, starters, AI catalog, sub codes');
+  {
+    const def = vdef([vsec('rate_summary', { columns: allCols('rate_summary') })]);
+    const intDef = vdef([vsec('rate_summary', { columns: allCols('rate_summary') })], { includeInternal: true });
+    const st = (k, d, div, perm) => V.columnState('rate_summary', k, d, perm || ADMIN, div);
+    assert('columnState 5th param: another division\'s column is hidden; no division at all hides every scoped column',
+      st('tons_period', def, 'paving') === 'available' && st('tons_period', def, 'turf') === 'hidden' && st('sf_period', def, 'turf') === 'available'
+        && st('homes_period', def, 'kiewit') === 'available' && st('tons_period', def, undefined) === 'hidden' && st('work_days', def, undefined) === 'available');
+    assert('…and a scoped internal column is still locked while customer-safe',
+      st('tons_per_crew_hr', def, 'paving') === 'locked' && st('tons_per_crew_hr', intDef, 'paving') === 'available' && st('tons_per_crew_hr', intDef, 'turf') === 'hidden');
+    const eff = div => V.effectiveColumns(intDef.sections[0], intDef, ADMIN, div).map(c => c.key).join();
+    assert('effectiveColumns by division', eff('paving') === 'work_days,avg_crew,tons_period,tons_per_day,loads_period,tons_per_load,tons_per_crew_hr,tons_per_equip_hr'
+      && eff('turf') === 'work_days,avg_crew,sf_period,sf_per_day,sf_per_mh' && eff('kiewit') === 'work_days,avg_crew,homes_period,homes_per_day,mh_per_home'
+      && eff(undefined) === 'work_days,avg_crew');
+    const onlyTons = vdef([vsec('rate_summary', { columns: ['tons_per_crew_hr'] })], { includeInternal: true });
+    assert('hasInternal: exact with a division; cautious without one (a scoped internal column counts)',
+      V.hasInternal(onlyTons, ADMIN, 'paving') === true && V.hasInternal(onlyTons, ADMIN, 'turf') === false && V.hasInternal(onlyTons, ADMIN) === true
+        && V.hasInternal(vdef(onlyTons.sections), ADMIN) === false);
+    assert('hiddenFinancialCount does not count another division\'s columns as withheld',
+      V.hiddenFinancialCount(intDef, { canSeeFinancials: false }, 'turf') === 0 && V.hiddenFinancialCount(intDef, { canSeeCosts: false }, 'turf') === 2
+        && V.hiddenFinancialCount(intDef, { canSeeCosts: false }, 'paving') === 3);
+    const ids = div => V.startersFor(div).map(s => s.id);
+    assert('startersFor: Paving Tonnage is paving\'s alone; the rest everywhere',
+      ids('paving').length === 10 && ids('turf').length === 9 && ids('kiewit').length === 9 && !ids('turf').includes('paving_tonnage')
+        && ids('paving').includes('paving_tonnage') && ids(undefined).length === 9 && JSON.stringify(V.STARTERS.find(s => s.id === 'paving_tonnage').divisions) === '["paving"]');
+    const st2 = id => V.STARTERS.find(s => s.id === id).definition;
+    assert('new starters carry the spec\'s sections, all customer-safe',
+      st2('planned_vs_actual').sections.map(s => s.type).join() === 'job_info,plan_vs_actual,chart' && st2('planned_vs_actual').sections[2].options.chart === 's_curve'
+        && st2('sub_code_production').sections.map(s => s.type).join() === 'plan_vs_actual,daily_production,rate_summary,chart'
+        && st2('sub_code_production').sections[3].options.chart === 'daily_bars' && JSON.stringify(st2('sub_code_production').filters.subCodes) === '[]'
+        && st2('paving_tonnage').sections.map(s => s.type).join() === 'rate_summary,production_kpis,trucking'
+        && st2('paving_tonnage').sections[1].columns.includes('per_load')
+        && ['planned_vs_actual', 'sub_code_production', 'paving_tonnage'].every(id => !V.hasInternal(st2(id), ADMIN, 'paving') && !V.STARTERS.find(s => s.id === id).internal));
+    const turfCat = V.aiCatalog('turf'), pavCat = V.aiCatalog('paving');
+    const rs = c => c.sections.find(s => s.type === 'rate_summary').columns.map(x => x.key);
+    assert('aiCatalog(division): every section type, no other division\'s columns, flags carried',
+      turfCat.version === 2 && turfCat.sections.length === 13 && !rs(turfCat).some(k => /^tons|^homes|mh_per_home/.test(k)) && rs(turfCat).includes('sf_per_mh')
+        && rs(pavCat).includes('tons_per_load') && pavCat.sections.find(s => s.type === 'job_info').columns.find(c => c.key === 'contract').financial === true
+        && pavCat.sections.find(s => s.type === 'chart').columns.find(c => c.key === 'crew_hours').internal === true);
+    assert('…options with their kinds and choices, presets, layouts, starters for the division; plain JSON, the same every call',
+      turfCat.sections.find(s => s.type === 'chart').options.find(o => o.key === 'chart').choices.join() === 's_curve,daily_bars'
+        && turfCat.sections.find(s => s.type === 'bid_progress').options.some(o => o.key === 'subCodes' && o.kind === 'subCodes')
+        && turfCat.datePresets.length === 10 && turfCat.layouts.join() === 'separate,combined'
+        && !turfCat.starters.some(s => s.id === 'paving_tonnage') && pavCat.starters.some(s => s.id === 'paving_tonnage')
+        && JSON.stringify(V.aiCatalog('turf')) === JSON.stringify(turfCat) && JSON.stringify(JSON.parse(JSON.stringify(turfCat))) === JSON.stringify(turfCat));
+    const d = fixture();
+    const extra = { id: 'px', bidItems: [{ cost_code: 'Paving2', sub_code: ' base course ', description: 'second', unit: 'TN' }, { cost_code: 'X', sub_code: '' }, null] };
+    const sc = J(V.subCodesFor(d.projects.slice(0, 2).concat([extra])));
+    assert('subCodesFor: one entry per sub code (case-blind), first description and unit, its cost codes, sorted by code',
+      JSON.stringify(sc.map(x => x.code)) === JSON.stringify(['Base Course', 'Mill 2in', 'Surface Course', 'Topsoil'])
+        && sc[0].description === 'Aggregate base' && sc[0].unit === 'TON' && JSON.stringify(sc[0].costCodes) === '["Paving","Paving2"]'
+        && JSON.stringify(sc[2].costCodes) === '["Paving"]' && sc[2].description === '' && JSON.stringify(V.subCodesFor(null)) === '[]',
+      JSON.stringify(sc));
+  }
+
+  // ── The plan fixture: A = today = Thu Nov 5, 2026 ──
+  const PV = () => ({ projects: [{ id: 'pv', 'project-name': 'Plan Job', 'job-number': 'PV1', status: 'In Progress',
+    bidItems: [
+      { id: 'L1', cost_code: 'Seed', sub_code: 'Topsoil', unit: 'SY', quantity: '1000', unit_cost: '1', start_date: '2026-11-02', target_date: '2026-11-13' },
+      { id: 'L2', cost_code: 'Pave', sub_code: 'Base', unit: 'TON', quantity: '900', unit_cost: '10', start_date: '2026-10-26', target_date: '2026-11-06' },
+      { id: 'L3', cost_code: 'Stripe', sub_code: 'Lines', unit: 'LF', quantity: '500', unit_cost: '1', start_date: '2026-10-19', target_date: '2026-10-30', is_complete: true },
+      { id: 'L4', cost_code: 'Homes', sub_code: 'Set', unit: 'EA', quantity: '10', unit_cost: '1', start_date: '2026-11-16', target_date: '2026-11-20' },
+      { id: 'L5', cost_code: 'Dirt', sub_code: 'Cut', unit: 'CY', quantity: '300', unit_cost: '1' },
+      { id: 'L6', cost_code: 'Sod', sub_code: 'Lay', unit: 'SF', quantity: '2000', unit_cost: '1', start_date: '2026-10-12', target_date: '2026-10-30' },
+      { id: 'L7', cost_code: 'Pave', sub_code: 'Surface', unit: 'TON', quantity: '1000', unit_cost: '1', planned_rate: '100' },
+      { id: 'L8', cost_code: 'Sign', sub_code: 'Post', unit: 'EA', quantity: '4', unit_cost: '1', start_date: '2026-11-04', target_date: '2026-11-04' },
+    ],
+    dailyRows: [
+      row('2026-11-02', 'Seed', 'Topsoil', 100), row('2026-11-03', 'Seed', 'Topsoil', 150), row('2026-11-04', 'Seed', 'Topsoil', 200),
+      row('2026-10-27', 'Pave', 'Base', 100), row('2026-10-29', 'Pave', 'Base', 80),
+      row('2026-10-19', 'Stripe', 'Lines', 200), row('2026-10-20', 'Stripe', 'Lines', 200), row('2026-10-21', 'Stripe', 'Lines', 100),
+      row('2026-11-03', 'Dirt', 'Cut', 50),
+      row('2026-10-13', 'Sod', 'Lay', 500), row('2026-10-14', 'Sod', 'Lay', 500),
+      row('2026-10-28', 'Pave', 'Surface', 120), row('2026-10-29', 'Pave', 'Surface', 90), row('2026-11-02', 'Pave', 'Surface', 110),
+      row('2026-11-04', 'Sign', 'Post', 2),
+    ] }] });
+
+  section('Planned vs actual — worked by hand');
+  {
+    const data = PV();
+    const def = vdef([vsec('plan_vs_actual', { columns: allCols('plan_vs_actual') })], { includeInternal: true });
+    const sd = V.buildSectionData(def.sections[0], def, vmk(def, data, ['pv']));
+    const rows = rowsOf(sd);
+    const L = sc => byKey(rows, 'sub_code', sc);
+    const l1 = L('Topsoil'), l2 = L('Base'), l3 = L('Lines'), l4 = L('Set'), l5 = L('Cut'), l6 = L('Lay'), l7 = L('Surface'), l8 = L('Post');
+    assert('every bid item is listed, idle ones too, in bid order', rows.map(r => r.sub_code).join() === 'Topsoil,Base,Lines,Set,Cut,Lay,Surface,Post');
+    // L1: Nov 2 – Nov 13 is 9 working days (Veterans Day out) → 1,000 ÷ 9 a day.
+    // To Nov 5: 4 days elapsed → scheduled 4/9 = 44.4%; 450 in = 45% earned.
+    assert('L1 planned / day = 1,000 ÷ 9 working days; actual 450 ÷ 3 days = 150; 135% of plan',
+      near(l1.planned_rate, 1000 / 9) && l1.actual_rate === 150 && l1.actual_rate_jtd === 150 && near(l1.pct_of_plan, 135), J(l1));
+    assert('L1 scheduled 44.4% (4 of 9 days), earned 45%, pace vs plan 1.01, 5.56 ahead of the planned quantity',
+      near(l1.sched_pct, 400 / 9) && l1.earned_pct === 45 && l1.spi === 1.01 && near(l1.qty_variance, 450 - 4000 / 9));
+    assert('L1 ahead = 0.45 × 9 − 4 = 0.05 → under half a day: 0, On track', l1.ahead_days === 0 && l1.plan_status === 'On track');
+    assert('L1 needed / day = 550 left ÷ 6 working days to Nov 13 (Nov 5, 6, 9, 10, 12, 13)', near(l1.required_rate, 550 / 6));
+    assert('L1 projected finish: 550 at 150 a day → 4 days → Thu Nov 12 (Veterans Day skipped); 1 day before target',
+      l1.projected_finish === '2026-11-12' && l1.forecast_vs_target === 1 && l1.start_date === '2026-11-02' && l1.target_date === '2026-11-13'
+        && l1.plan_source === 'Bid item dates');
+    assert('L1 units per crew-hour (internal): 450 over three 8-hour shifts = 18.75', l1.units_per_crew_hr === 18.75);
+    // L2: Oct 26 – Nov 6 = 10 days → 90 a day; 9 elapsed → scheduled 90%; 180 in = 20%.
+    assert('L2 behind: scheduled 90%, earned 20%, pace 0.22, ahead 0.2 × 10 − 9 = −7 → Behind',
+      l2.planned_rate === 90 && l2.sched_pct === 90 && l2.earned_pct === 20 && l2.spi === 0.22 && l2.ahead_days === -7
+        && l2.plan_status === 'Behind' && near(l2.qty_variance, 180 - 810));
+    assert('L2 needs 720 over 2 days = 360 a day; at 90 a day it finishes Wed Nov 18, 7 working days late',
+      l2.required_rate === 360 && l2.projected_finish === '2026-11-18' && l2.forecast_vs_target === -7, J(l2));
+    // L3: complete on Oct 21 against a 10-day plan to Oct 30 → 10 − 3 = 7 ahead.
+    assert('L3 complete: ahead = 10 planned days − 3 used (Oct 19–21) = +7; nothing needed, no finish',
+      l3.plan_status === 'Complete' && l3.ahead_days === 7 && l3.earned_pct === 100 && l3.sched_pct === 100 && l3.spi === 1
+        && l3.required_rate === null && l3.projected_finish === null && l3.forecast_vs_target === null);
+    assert('L4 not started: starts Nov 16, no work → Not started, scheduled 0, no pace; planned 10 ÷ 5 = 2 a day',
+      l4.plan_status === 'Not started' && l4.sched_pct === 0 && l4.spi === null && l4.ahead_days === 0 && l4.planned_rate === 2
+        && near(l4.required_rate, 10 / 11));
+    assert('L5 no dates, no rate: Not scheduled — no plan figures, but its earned % is still its % complete',
+      l5.plan_status === 'Not scheduled' && l5.planned_rate === null && l5.sched_pct === null && l5.spi === null && l5.ahead_days === null
+        && l5.plan_source === null && l5.target_date === null && near(l5.earned_pct, 50 / 3) && l5.actual_rate === 50);
+    // L6: Oct 12 (Columbus Day) – Oct 30 = 14 days; 18 elapsed to Nov 5; half in.
+    assert('L6 past its target and not done: Behind (past target), nothing needed / day; ahead 7 − 18 = −11',
+      l6.plan_status === 'Behind (past target)' && l6.required_rate === null && l6.ahead_days === -11 && l6.sched_pct === 100 && l6.spi === 0.5);
+    // L7: 100 a day typed; starts on its first day worked (Oct 28); 1,000 ÷ 100 = 10
+    // days → Oct 28 … Nov 10. Production: 320 in on 3 days vs 300 planned → +0.2 day.
+    assert('L7 rate plan: Planned / Day as typed, start = first day worked, target = the 10th working day (Nov 10)',
+      l7.planned_rate === 100 && l7.start_date === '2026-10-28' && l7.target_date === '2026-11-10' && l7.plan_source === 'Planned per day');
+    assert('L7 scheduled 7/10 = 70%, earned 32%; ahead in days of planned output (320 − 100 × 3) ÷ 100 = 0.2 → 0, On track',
+      l7.sched_pct === 70 && l7.earned_pct === 32 && l7.spi === 0.46 && l7.ahead_days === 0 && l7.plan_status === 'On track');
+    assert('L7 needs 680 over 4 days = 170; at 106.7 a day 7 days → Tue Nov 17, 4 working days past Nov 10',
+      l7.required_rate === 170 && l7.projected_finish === '2026-11-17' && l7.forecast_vs_target === -4, J(l7));
+    assert('L8 one-day plan (start = target = Nov 4): W = 1, so 4 a day — the page\'s count would give it no rate',
+      l8.planned_rate === 4 && l8.sched_pct === 100 && l8.earned_pct === 50 && l8.ahead_days === -1.5 && l8.plan_status === 'Behind (past target)');
+    assert('footnote: the plan basis, N of M items without a plan, and the as-of date',
+      JSON.stringify(sd.blocks[0].notes) === JSON.stringify(['Planned figures use each bid item\'s Start and Target dates (or the job end date / Planned per day). '
+        + '1 of 8 items have no plan. As of Nov 5, 2026.']), J(sd.blocks[0].notes));
+    const hid = vdef([vsec('plan_vs_actual', { options: { hideUnplanned: true, hideComplete: true } })]);
+    assert('hideUnplanned drops Not scheduled, hideComplete drops Complete; the footnote still counts every item',
+      rowsOf(V.buildSectionData(hid.sections[0], hid, vmk(hid, data, ['pv']))).map(r => r.sub_code).join() === 'Topsoil,Base,Set,Lay,Surface,Post'
+        && /1 of 8 items have no plan/.test(V.buildSectionData(hid.sections[0], hid, vmk(hid, data, ['pv'])).blocks[0].notes[0]));
+    // As of a past range's end: last month ends Oct 31.
+    const lm = vdef(def.sections, { includeInternal: true, dates: { preset: 'last_month' } });
+    const lr = rowsOf(V.buildSectionData(lm.sections[0], lm, vmk(lm, data, ['pv'])));
+    const lb = byKey(lr, 'sub_code', 'Base');
+    assert('a past range measures to its end: L2 at Oct 31 is 5 of 10 days = 50% scheduled, 2 − 5 = −3 → At risk',
+      lb.sched_pct === 50 && lb.earned_pct === 20 && lb.ahead_days === -3 && lb.plan_status === 'At risk' && /As of Oct 31, 2026/.test(
+        V.buildSectionData(lm.sections[0], lm, vmk(lm, data, ['pv'])).blocks[0].notes[0]));
+    const tw = vdef(def.sections, { includeInternal: true, dates: { preset: 'this_week' } });
+    assert('a range ending in the future (this week) measures to today, not Sunday',
+      byKey(rowsOf(V.buildSectionData(tw.sections[0], tw, vmk(tw, data, ['pv']))), 'sub_code', 'Topsoil').sched_pct === l1.sched_pct);
+    // Fully installed but never marked complete reads Complete, measured from its last day.
+    const full = PV();
+    full.projects[0].dailyRows.push(row('2026-11-05', 'Sign', 'Post', 2));
+    const fp = byKey(rowsOf(V.buildSectionData(def.sections[0], def, vmk(def, full, ['pv']))), 'sub_code', 'Post');
+    assert('a line with every unit in (not marked complete) is done: Complete, measured from its last day — 1 planned day − 2 used = −1',
+      fp.plan_status === 'Complete' && fp.earned_pct === 100 && fp.ahead_days === -1 && fp.required_rate === null, J(fp));
+  }
+
+  section('Planned vs actual — totals, job dates, schedule source, combined');
+  {
+    const data = { projects: [
+      { id: 'pt', 'project-name': 'Totals Job', status: 'In Progress', bidItems: [
+        { id: 'T1', cost_code: 'Pave', sub_code: 'Top', unit: 'TON', quantity: '1000', unit_cost: '10', start_date: '2026-11-02', target_date: '2026-11-13' },
+        { id: 'T2', cost_code: 'Pave', sub_code: 'Base', unit: 'tn', quantity: '500', unit_cost: '20', start_date: '2026-10-26', target_date: '2026-11-06' },
+      ], dailyRows: [row('2026-11-02', 'Pave', 'Top', 50), row('2026-10-26', 'Pave', 'Base', 250), row('2026-10-27', 'Pave', 'Base', 250)] },
+      { id: 'pj', 'project-name': 'Dates Job', status: 'In Progress', 'start-date': '2026-10-26', 'end-date': '2026-11-13', bidItems: [
+        { id: 'J1', cost_code: 'Grade', sub_code: 'Fine', unit: 'SY', quantity: '100', unit_cost: '1' },
+        { id: 'J2', cost_code: 'Grade', sub_code: 'Rough', unit: 'SY', quantity: '100', unit_cost: '1', is_complete: true },
+      ], dailyRows: [row('2026-10-27', 'Grade', 'Fine', 40)] },
+      { id: 'pe', 'project-name': 'End Job', 'end-date': '2026-11-13', bidItems: [
+        { id: 'E1', cost_code: 'Seed', sub_code: 'Mix', unit: 'SY', quantity: '900', unit_cost: '1', start_date: '2026-11-02' },
+      ], dailyRows: [] },
+    ] };
+    const def = vdef([vsec('plan_vs_actual', { columns: allCols('plan_vs_actual') })], { includeInternal: true });
+    const sd = V.buildSectionData(def.sections[0], def, vmk(def, data, ['pt', 'pj', 'pe']));
+    const t = sd.blocks[0].totals, r = rowsOf(sd, 0);
+    // Weights = bid $: 10,000 each. Scheduled (44.4 + 90) / 2 = 67.2; earned (5 + 100) / 2 = 52.5.
+    assert('totals weigh lines by bid dollars: scheduled 67.2%, earned 52.5%, pace 0.78',
+      near(t.sched_pct, (400 / 9 + 90) / 2) && near(t.earned_pct, 52.5) && t.spi === 0.78, J(t));
+    assert('totals ahead = (52.5 − 67.2)/100 × 14 working days (Oct 26 – Nov 13) = −2.06 → −2 → At risk',
+      t.ahead_days === -2 && t.plan_status === 'At risk' && t.start_date === '2026-10-26' && t.target_date === '2026-11-13');
+    assert('TON and TN are one unit: rates roll up — planned 1,500 ÷ 14 a day, actual 550 ÷ 3 days, % of plan',
+      t.unit === 'TON' && t.bid_qty === 1500 && t.installed_to_date === 550 && near(t.planned_rate, 1500 / 14) && near(t.actual_rate, 550 / 3)
+        && near(t.pct_of_plan, (550 / 3) / (1500 / 14) * 100), J(t));
+    assert('totals qty vs plan (50 − 444.4) + (500 − 450); needed 950 ÷ 6 days; finish Fri Dec 4 (Thanksgiving out), 14 days late',
+      near(t.qty_variance, (50 - 4000 / 9) + 50) && near(t.required_rate, 950 / 6) && t.projected_finish === '2026-12-04' && t.forecast_vs_target === -14, J(t));
+    assert('…the lines: T1 −3.55 → −3.5 Behind; T2 all in → Complete, 10 − 2 = +8',
+      byKey(r, 'sub_code', 'Top').ahead_days === -3.5 && byKey(r, 'sub_code', 'Top').plan_status === 'Behind'
+        && byKey(r, 'sub_code', 'Base').plan_status === 'Complete' && byKey(r, 'sub_code', 'Base').ahead_days === 8);
+    const jt = sd.blocks[1].totals;
+    // No line planned; the job runs Oct 26 – Nov 13 (14 days), 9 elapsed → 64.3%;
+    // earned = the bid-$ roll-up of 40% and a completed line = 70%.
+    assert('a job with no planned line but start and end dates: measured on Job dates',
+      jt.plan_source === 'Job dates' && near(jt.sched_pct, 900 / 14) && near(jt.earned_pct, 70) && jt.spi === 1.09
+        && jt.ahead_days === 1 && jt.plan_status === 'On track' && jt.start_date === '2026-10-26' && rowsOf(sd, 1)[0].plan_status === 'Not scheduled', J(jt));
+    const e1 = rowsOf(sd, 2)[0];
+    assert('typed start, no target: the job\'s end date stands in (bid + job end): Nov 2 – Nov 13 = 9 days → 100 a day',
+      e1.plan_source === 'Bid item start + job end' && e1.target_date === '2026-11-13' && e1.planned_rate === 100 && e1.sched_pct === 400 / 9);
+    // Combined: per-job roll-ups as subtotals, a grand total over both.
+    const comb = vdef(def.sections, { includeInternal: true, layout: 'combined' });
+    const cs = V.buildSectionData(comb.sections[0], comb, vmk(comb, data, ['pt', 'pj']));
+    const g = cs.blocks[0].groups;
+    assert('combined: a group per job, each rolled up like its own totals; one grand total',
+      g.map(x => x.label).join('|') === 'Totals Job|Dates Job' && near(g[0].subtotal.sched_pct, t.sched_pct) && g[0].subtotal.ahead_days === -2
+        && g[1].subtotal.plan_source === 'Job dates' && cs.blocks[0].totals && cs.columns[0].key === '_job'
+        && near(cs.blocks[0].totals.sched_pct, t.sched_pct), J(g.map(x => x.subtotal)));
+    // A typed rate is the plan: the roll-up and the chart's planned line read
+    // the rate the line shows, not its bid quantity spread over its dates.
+    {
+      const rd = { projects: [
+        { id: 'ra', 'project-name': 'Rate A', bidItems: [
+          { id: 'RA1', cost_code: 'Turf', sub_code: 'Install', unit: 'SF', quantity: '20000', unit_cost: '1', planned_rate: '2500',
+            start_date: '2026-10-26', target_date: '2026-11-20' }],
+        dailyRows: [row('2026-11-02', 'Turf', 'Install', 2000), row('2026-11-04', 'Turf', 'Install', 3000)] },
+        { id: 'rb', 'project-name': 'Rate B', bidItems: [
+          { id: 'RB1', cost_code: 'Turf', sub_code: 'Install', unit: 'SF', quantity: '12000', unit_cost: '1', planned_rate: '1000',
+            start_date: '2026-10-28', target_date: '2026-12-04' }],
+        dailyRows: [row('2026-11-03', 'Turf', 'Install', 1500)] },
+      ] };
+      const rdates = { preset: 'custom', from: '2026-10-26', to: '2026-11-05' };
+      const rdef = vdef([vsec('plan_vs_actual', { columns: ['sub_code', 'planned_rate', 'actual_rate', 'pct_of_plan'] })], { dates: rdates });
+      const one = V.buildSectionData(rdef.sections[0], rdef, vmk(rdef, rd, ['ra']));
+      const t1 = one.blocks[0].totals, l1 = rowsOf(one, 0)[0];
+      assert('a lone "Planned per day" line: Totals read its own rate — 2,500 planned (not 20,000 over its 19 days), 2,500 actual, 100%',
+        l1.planned_rate === 2500 && near(t1.planned_rate, 2500) && t1.actual_rate === 2500 && near(t1.pct_of_plan, 100) && near(l1.pct_of_plan, 100),
+        JSON.stringify({ l1, t1 }));
+      const rcomb = vdef(rdef.sections, { layout: 'combined', dates: rdates });
+      const gt = V.buildSectionData(rcomb.sections[0], rcomb, vmk(rcomb, rd, ['ra', 'rb'])).blocks[0].totals;
+      assert('combined: the grand total weighs each job\'s planned rate by the days it worked — (2,500×2 + 1,000×1) ÷ 3 = 2,000 a day '
+        + 'against 6,500 ÷ 3 job-days actual: 108.3% (the lines read 100% and 150%)',
+        near(gt.planned_rate, 2000) && near(gt.actual_rate, 6500 / 3) && near(gt.pct_of_plan, 6500 / 6000 * 100), JSON.stringify(gt));
+      const rnone = { projects: rd.projects.map(p => Object.assign({}, p, { dailyRows: [] })) };
+      const gt0 = V.buildSectionData(rcomb.sections[0], rcomb, vmk(rcomb, rnone, ['ra', 'rb'])).blocks[0].totals;
+      assert('…with no work yet, the jobs\' planned rates are averaged ((2,500 + 1,000) ÷ 2) and there is no % of plan',
+        near(gt0.planned_rate, 1750) && gt0.pct_of_plan === null && gt0.actual_rate === null, JSON.stringify(gt0));
+      const rbars = vdef([vsec('chart', { options: { chart: 'daily_bars' } })], { dates: rdates });
+      const bch = V.buildSectionData(rbars.sections[0], rbars, vmk(rbars, rd, ['ra'])).blocks[0].charts[0];
+      assert('…and the daily bars\' planned line is the 2,500 a day the line shows',
+        near(bch.rate, 2500) && bch.drawPlan && bch.bars.length > 0 && bch.bars.every(b => near(b.plan, 2500)), JSON.stringify({ rate: bch.rate }));
+    }
+    // The Construction Schedule (turf / Kiewit): tasks matched on _bidCsKey.
+    const csData = { projects: [{ id: 'pc', 'project-name': 'Turf Job', bidItems: [
+      { id: 'C1', cost_code: 'Turf', sub_code: 'Install', unit: 'SF', quantity: '1000', unit_cost: '1' },
+      { id: 'C2', cost_code: 'Turf', sub_code: '', unit: 'LF', quantity: '500', unit_cost: '1' },
+      { id: 'C3', cost_code: 'Seed', sub_code: 'Mix', unit: 'SY', quantity: '100', unit_cost: '1', start_date: '2026-11-09', target_date: '2026-11-10' },
+      { id: 'C4', cost_code: 'Edge', sub_code: 'Trim', unit: 'LF', quantity: '10', unit_cost: '1' },
+    ], dailyRows: [] }] };
+    const tasks = [
+      { id: 'a', kind: 'task', code: 'Turf', subcode: 'Install', start: '11/2/26', end: '2026-11-13' },
+      { id: 'b', kind: 'task', code: ' turf', subcode: 'INSTALL ', start: '2026-10-30', end: '11/12/26' },
+      { id: 'c', kind: 'task', code: 'Turf', subcode: '', start: '2026-11-02', end: '2026-11-06' },
+      { id: 'd', kind: 'task', code: 'Seed', subcode: 'Mix', start: '2026-10-01', end: '2026-10-30' },
+      { id: 'e', kind: 'divider', code: 'Edge', subcode: 'Trim', start: '2026-11-02', end: '2026-11-06' },
+      { id: 'f', kind: 'task', code: 'Edge', subcode: 'Trim', start: '2026-11-02', end: '' },
+      { id: 'g', kind: 'task', code: 'Edge', subcode: 'Trim', start: '2026-11-10', end: '2026-11-02' },
+    ];
+    const csDef = vdef([vsec('plan_vs_actual', { columns: ['sub_code', 'planned_rate', 'start_date', 'target_date', 'plan_source', 'plan_status'] })]);
+    const asked = [];
+    const csRows = getCs => rowsOf(V.buildSectionData(csDef.sections[0], csDef, vmk(csDef, csData, ['pc'], null,
+      Object.assign(divCfg('turf'), { getConSchedule: getCs }))));
+    const cr = csRows(id => { asked.push(id); return tasks; });
+    assert('schedule plan: tasks on the same code / sub code (trimmed, case-blind, M/D/YY read) → earliest start to latest end',
+      cr[0].start_date === '2026-10-30' && cr[0].target_date === '2026-11-13' && cr[0].planned_rate === 100 && cr[0].plan_source === 'Construction schedule', J(cr[0]));
+    assert('…a code-only task plans the code-only bid item; typed bid dates win over the schedule; dividers, half-dated and reversed tasks ignored',
+      cr[1].planned_rate === 100 && cr[1].target_date === '2026-11-06' && cr[2].plan_source === 'Bid item dates' && cr[2].planned_rate === 50
+        && cr[3].plan_source === null && cr[3].plan_status === 'Not scheduled');
+    assert('…asked once per job; a { rows } object works; a throwing or missing getter means no schedule plan',
+      asked.join() === 'pc' && csRows(() => ({ rows: tasks }))[0].planned_rate === 100 && csRows(() => { throw new Error('x'); })[0].plan_source === null
+        && csRows(undefined)[0].plan_source === null);
+    // Paving's _schedCalcRow on the same dates: the planned pace is the page's.
+    for (const file of ['paving.html', 'tracker.html', 'kiewit-pinetree.html']) {
+      const pg = pageEngine(file);
+      const items = [
+        { id: 'P1', cost_code: 'A', sub_code: '1', unit: 'SY', quantity: '1000', start_date: '2026-11-02', target_date: '2026-11-13',
+          change_orders: [{ qty_delta: '80' }] },
+        { id: 'P2', cost_code: 'A', sub_code: '2', unit: 'TON', quantity: '5000', start_date: '2026-11-20', target_date: '2026-12-31' },
+        { id: 'P3', cost_code: 'A', sub_code: '3', unit: 'LF', quantity: '777', start_date: '2027-06-28', target_date: '2027-07-09' },
+        { id: 'P4', cost_code: 'A', sub_code: '4', unit: 'EA', quantity: '12', start_date: '2026-12-28', target_date: '2027-01-08' },
+        { id: 'P5', cost_code: 'A', sub_code: '5', unit: 'CY', quantity: '450', start_date: '2026-11-02' },
+        { id: 'P6', cost_code: 'A', sub_code: '6', unit: 'EA', quantity: '4', start_date: '2026-11-04', target_date: '2026-11-04' },
+      ];
+      const pd = { projects: [{ id: 'pp', 'project-name': 'Pace', 'end-date': '2026-12-15', bidItems: items, dailyRows: [] }] };
+      const pdef = vdef([vsec('plan_vs_actual', { columns: ['sub_code', 'planned_rate', 'plan_source'] })]);
+      const er = rowsOf(pg.ctx.FCTReportEngine.buildSectionData(pdef.sections[0], pdef,
+        pg.ctx.FCTReportEngine.makeContext(pdef, cfgFor(pg, pd), { pickedIds: ['pp'], today: TODAY, now: NOW })));
+      const bad = [];
+      items.forEach((b, i) => {
+        const pace = pg.ctx._schedCalcRow(b, {}, null, '2026-12-15').plannedPace;
+        if (b.id === 'P6') { if (pace !== null || er[i].planned_rate !== 4) bad.push(`P6: page ${pace}, engine ${er[i].planned_rate}`); }
+        else if (!near(er[i].planned_rate, pace, 1e-9)) bad.push(`${b.id}: ${er[i].planned_rate} vs page ${pace}`);
+      });
+      assert(`${file}: Planned / Day equals the page's _schedCalcRow plannedPace (holidays, change orders, job end as deadline); a one-day plan is the deliberate exception`,
+        !bad.length && er[4].plan_source === 'Bid item start + job end', bad.join('; '));
+    }
+  }
+
+  // ── Division rates ──
+  const RATES = () => ({
+    projects: [{ id: 'rp', 'project-name': 'Rate Job', 'job-number': 'R1', bidItems: [
+      { id: 'R1', cost_code: 'Paving', sub_code: 'Base', unit: 'TON', quantity: '1000', unit_cost: '50' },
+      { id: 'R2', cost_code: 'Paving', sub_code: 'Surface', unit: 'TN', quantity: '500', unit_cost: '60' },
+      { id: 'R3', cost_code: 'Milling', sub_code: 'Mill', unit: 'SY', quantity: '2000', unit_cost: '2' },
+    ], dailyRows: [
+      row('2026-11-02', 'Paving', 'Base', 100, { employee: 'A', equip_hours: '6' }),
+      row('2026-11-02', 'Paving', 'Base', 0, { employee: 'B' }),
+      row('2026-11-02', 'Paving', 'Surface', 50, { employee: 'C' }),
+      row('2026-11-02', 'Paving', 'Base', 30, { employee: 'D', labor_hours: '4', field_type: 'Haul — On Site', equip_hours: '4' }),
+      row('2026-11-02', 'Paving', 'Base', 12, { employee: 'Driver Dan', labor_hours: '0', job_class: 'Trucking', equip_hours: '8' }),
+      row('2026-11-03', 'Paving', 'Base', 150, { employee: 'A', labor_hours: '10' }),
+      row('2026-11-03', 'Paving', 'Base', 0, { employee: 'B', labor_hours: '10' }),
+      row('2026-11-03', 'Paving', 'Base', 0, { employee: 'A', labor_hours: '1', field_type: 'Travel' }),
+      row('2026-11-03', 'Milling', 'Mill', 800, { employee: 'E' }),
+      row('2026-10-20', 'Paving', 'Base', 400, { employee: 'A' }),
+    ] },
+    { id: 'rp2', 'project-name': 'Rate Job Two', bidItems: [{ id: 'S1', cost_code: 'Paving', sub_code: 'Base', unit: 'TON', quantity: '300', unit_cost: '50' }],
+      dailyRows: [row('2026-11-04', 'Paving', 'Base', 100, { employee: 'X' })] }],
+    trucks: [
+      { id: 't1', tr_number: 'TR-1', project_id: 'rp', date: '2026-11-02', loads: '10', cost_code: 'Paving', sub_code: 'Base' },
+      { id: 't2', tr_number: 'TR-2', project_id: 'rp', date: '2026-11-03', loads: '5' },
+      { id: 't3', tr_number: 'TR-3', project_id: 'rp', date: '2026-11-03', loads: '7', cost_code: 'Milling', sub_code: 'Mill' },
+      { id: 't4', tr_number: 'TR-4', project_id: 'rp', date: '2026-10-20', loads: '99', cost_code: 'Paving', sub_code: 'Base' },
+      { id: 't5', tr_number: 'TR-5', project_id: 'rp2', date: '2026-11-04', loads: '4', cost_code: 'Paving', sub_code: 'Base' },
+    ],
+  });
+  const TURF = () => ({ projects: [{ id: 'rt', 'project-name': 'Turf Rate Job', bidItems: [
+    { id: 'B1', cost_code: 'Turf', sub_code: 'Base Prep', unit: 'sq ft', quantity: '5000', unit_cost: '1' },
+    { id: 'B2', cost_code: 'Turf', sub_code: 'Turf Install', unit: 'SF', quantity: '8000', unit_cost: '1' },
+    { id: 'B3', cost_code: 'Turf', sub_code: 'Edging', unit: 'LF', quantity: '300', unit_cost: '1' },
+  ], dailyRows: [
+    row('2026-11-02', 'Turf', 'Turf Install', 1000, { employee: 'A' }), row('2026-11-02', 'Turf', 'Turf Install', 0, { employee: 'B' }),
+    row('2026-11-03', 'Turf', 'Turf Install', 1500, { employee: 'A' }), row('2026-11-03', 'Turf', 'Turf Install', 0, { employee: 'B', labor_hours: '6' }),
+    row('2026-11-03', 'Turf', 'Turf Install', 0, { employee: 'C', labor_hours: '3', field_type: 'Haul — To/From Site' }),
+    row('2026-11-02', 'Turf', 'Base Prep', 3000, { employee: 'C' }), row('2026-11-03', 'Turf', 'Edging', 200, { employee: 'D', labor_hours: '4' }),
+  ] }] });
+  const KIEWIT = () => ({ projects: [{ id: 'rk', 'project-name': 'Home Job', bidItems: [
+    { id: 'K1', cost_code: 'Homes', sub_code: 'Set Home', unit: 'EA', quantity: '20', unit_cost: '1' },
+    { id: 'K2', cost_code: 'Homes', sub_code: 'Skirting', unit: 'ea', quantity: '10', unit_cost: '1' },
+  ], dailyRows: [
+    row('2026-11-02', 'Homes', 'Set Home', 2, { employee: 'A', labor_hours: '10' }), row('2026-11-02', 'Homes', 'Set Home', 0, { employee: 'B', labor_hours: '10' }),
+    row('2026-11-03', 'Homes', 'Set Home', 1, { employee: 'A', labor_hours: '9' }), row('2026-11-03', 'Homes', 'Set Home', 0, { employee: 'B', labor_hours: '9' }),
+    row('2026-11-03', 'Homes', 'Set Home', 0, { employee: 'C', labor_hours: '2', field_type: 'Travel' }),
+    row('2026-11-04', 'Homes', 'Set Home', 0, { employee: 'A', labor_hours: '4.1' }), row('2026-11-04', 'Homes', 'Skirting', 3, { employee: 'D', labor_hours: '6' }),
+  ] }] });
+
+  section('Division rates — paving, turf, kiewit');
+  {
+    const rateDef = (patch, defPatch) => vdef([vsec('rate_summary', Object.assign({ columns: allCols('rate_summary') }, patch || {}))],
+      Object.assign({ includeInternal: true, dates: { preset: 'this_week' } }, defPatch || {}));
+    const rr = (def, data, ids, div) => V.buildSectionData(def.sections[0], def, vmk(def, data, ids, null, divCfg(div)));
+    const pav = rr(rateDef(), RATES(), ['rp'], 'paving');
+    const p = rowsOf(pav)[0];
+    // This week (Nov 2–8): TON rows 100 + 50 (TN) + 150 = 300; the haul row's
+    // 30 and the trucking ticket's 12 are not tons placed; Oct 20 is outside.
+    assert('paving tons = TON and TN lines\' quantity, no haul rows, no trucking tickets\' loads: 300 over 2 days = 150 a day',
+      p.tons_period === 300 && p.work_days === 2 && p.tons_per_day === 150, J(p));
+    assert('loads = the job\'s tickets in the range (10 + 5 + 7); 300 ÷ 22 tons a load',
+      p.loads_period === 22 && near(p.tons_per_load, 300 / 22));
+    // Shifts: Nov 2 (8 + 8 + 8) ÷ 3 = 8; Nov 3 (10 + 10) ÷ 2 = 10 — travel and haul out.
+    assert('tons per crew-hour = 300 ÷ (8 + 10) shift hours; per equip-hour 300 ÷ 6 (haul and truck hours out); avg crew (3 + 2) ÷ 2',
+      near(p.tons_per_crew_hr, 300 / 18) && p.tons_per_equip_hr === 50 && p.avg_crew === 2.5, J(p));
+    assert('the paving strip shows only paving\'s tiles; a caption names where loads come from',
+      pav.columns.map(c => c.key).join() === 'work_days,avg_crew,tons_period,tons_per_day,loads_period,tons_per_load,tons_per_crew_hr,tons_per_equip_hr'
+        && JSON.stringify(pav.blocks[0].notes) === '["Loads from trucking tickets."]');
+    const f = rowsOf(rr(rateDef(null, { filters: { costCodes: [], subCodes: ['base'] } }), RATES(), ['rp'], 'paving'))[0];
+    assert('under a sub-code filter: Base only (250 tons); a ticket with codes must pass it, one without still counts (10 + 5)',
+      f.tons_period === 250 && f.loads_period === 15 && near(f.tons_per_load, 250 / 15) && near(f.tons_per_crew_hr, 250 / 18), J(f));
+    const turf = rr(rateDef(), TURF(), ['rt'], 'turf');
+    const t = rowsOf(turf)[0];
+    assert('turf: SF measured on ONE line — Turf Install, the most bid quantity — never Base Prep added in: 2,500 SF over 2 days',
+      t.sf_period === 2500 && t.work_days === 2 && t.sf_per_day === 1250 && JSON.stringify(turf.blocks[0].notes)
+        === '["SF measured on Turf Install — pick a sub code to change it."]', J(t));
+    assert('turf SF per man-hour = 2,500 ÷ 30 (the haul hours out); only turf tiles', near(t.sf_per_mh, 2500 / 30)
+      && turf.columns.map(c => c.key).join() === 'work_days,avg_crew,sf_period,sf_per_day,sf_per_mh');
+    const tb = rowsOf(rr(rateDef(null, { filters: { subCodes: ['Base Prep'] } }), TURF(), ['rt'], 'turf'))[0];
+    assert('…pick a sub code and that line is measured ("sq ft" reads as SF): 3,000 SF, 375 a man-hour, no caption',
+      tb.sf_period === 3000 && tb.sf_per_mh === 375 && tb.work_days === 1);
+    const kw = rr(rateDef(), KIEWIT(), ['rk'], 'kiewit');
+    const k = rowsOf(kw)[0];
+    assert('kiewit: homes on the EA line with the most bid quantity: 3 homes over 3 days; man-hours per home 42.1 ÷ 3 (travel out)',
+      k.homes_period === 3 && k.work_days === 3 && k.homes_per_day === 1 && near(k.mh_per_home, 42.1 / 3)
+        && kw.blocks[0].notes[0] === 'Homes measured on Set Home — pick a sub code to change it.', J(k));
+    const comb = rr(rateDef(null, { layout: 'combined' }), RATES(), ['rp', 'rp2'], 'paving');
+    const crow = comb.blocks[0].groups[0].rows;
+    assert('combined: a strip per job and an All jobs strip — sums, rates worked out again from them',
+      crow.length === 3 && crow[2].all === true && crow[0].job.id === 'rp' && crow[2].cells.tons_period === 400 && crow[2].cells.work_days === 3
+        && near(crow[2].cells.tons_per_day, 400 / 3) && crow[2].cells.loads_period === 26 && near(crow[2].cells.tons_per_load, 400 / 26)
+        && near(crow[2].cells.tons_per_crew_hr, 400 / 26), J(crow.map(x => x.cells)));
+    const html = V.buildReportHtml(rateDef(null, { layout: 'combined' }), vmk(rateDef(null, { layout: 'combined' }), RATES(), ['rp', 'rp2'], null, divCfg('paving')));
+    const doc = new JSDOM(html).window.document;
+    assert('…printed as KPI strips with job headings', [...doc.querySelectorAll('.sec-rate_summary .kpi-h')].map(e => e.textContent).join('|')
+      === 'Rate Job · R1|Rate Job Two|All jobs' && doc.querySelectorAll('.sec-rate_summary .sum-bar').length === 3);
+    const none = rowsOf(rr(rateDef(), RATES(), ['rp'], undefined))[0];
+    assert('with no division known, only the common tiles exist', Object.keys(none).join() === 'work_days,avg_crew');
+    // Per-item rate columns on Production Rates.
+    const pk = vdef([vsec('production_kpis', { columns: allCols('production_kpis'), options: { totals: true } })], { includeInternal: true, dates: { preset: 'this_week' } });
+    const pr = rowsOf(V.buildSectionData(pk.sections[0], pk, vmk(pk, RATES(), ['rp'])));
+    const base = byKey(pr, 'sub_code', 'Base'), surf = byKey(pr, 'sub_code', 'Surface'), mill = byKey(pr, 'sub_code', 'Mill');
+    assert('Per Load on a TON line: 250 tons placed ÷ 10 loads on its tickets = 25; none on a line without tickets or not in tons',
+      base.per_load === 25 && surf.per_load === null && mill.per_load === null && base.qty_period === 292, J(base));
+    assert('Units / Crew-Hour 250 ÷ 18, Units / Equip-Hour 250 ÷ 6 (internal)', near(base.units_per_crew_hr, 250 / 18) && near(base.units_per_equip_hr, 250 / 6)
+      && surf.units_per_crew_hr === 6.25 && mill.units_per_crew_hr === 100 && mill.units_per_equip_hr === null);
+    const one = vdef([vsec('production_kpis', { columns: allCols('production_kpis'), options: { totals: true, subCodes: ['Base'] } })],
+      { includeInternal: true, dates: { preset: 'this_week' } });
+    const ot = V.buildSectionData(one.sections[0], one, vmk(one, RATES(), ['rp'])).blocks[0].totals;
+    assert('…and in the totals when one unit (tickets and rows each counted once)', ot.per_load === 25 && near(ot.units_per_crew_hr, 250 / 18));
+  }
+
+  section('Sub-code and cost-code filters — every section');
+  {
+    const d = fixture();
+    const types = ['summary_kpis', 'bid_progress', 'production_kpis', 'daily_production', 'materials', 'trucking', 'change_orders', 'schedule',
+      'plan_vs_actual', 'chart', 'rate_summary'];
+    for (const layout of ['separate', 'combined']) {
+      const def = vdef(types.map(t => vsec(t, t === 'chart' ? { options: { chart: 'daily_bars' } } : {})),
+        { layout, filters: { costCodes: [], subCodes: ['base course'] } });
+      const ctx = vmk(def, d, ['p1', 'p2']);
+      const sd = t => V.buildSectionData(def.sections[types.indexOf(t)], def, ctx);
+      const all = t => sd(t).blocks.flatMap(b => b.groups.flatMap(g => g.rows.map(r => r.cells)));
+      const notes = t => sd(t).blocks.flatMap(b => b.notes || []);
+      assert(`${layout}: bid progress lists Base Course only (case-blind match), and says it hid the cost-code-only lines (Striping; Sealcoat on job 2)`,
+        all('bid_progress').map(r => r.sub_code).join() === 'Base Course' && (layout === 'combined'
+          ? JSON.stringify(notes('bid_progress')) === '["2 cost-code-only items hidden by the sub-code filter."]'
+          : JSON.stringify(notes('bid_progress')) === '["1 cost-code-only item hidden by the sub-code filter.","1 cost-code-only item hidden by the sub-code filter."]'),
+        J(notes('bid_progress')));
+      assert(`${layout}: production rates, plan vs actual and schedule likewise`,
+        all('production_kpis').map(r => r.sub_code).join() === 'Base Course' && all('plan_vs_actual').map(r => r.sub_code).join() === 'Base Course'
+          && all('schedule').length === 0 && notes('plan_vs_actual').filter(n => /^Planned figures/.test(n)).length === 1
+          && notes('plan_vs_actual').some(n => /1 of 1 item has no plan/.test(n)));
+      assert(`${layout}: daily rows on Base Course only`, all('daily_production').length > 0 && all('daily_production').every(r => r.sub_code === 'Base Course'));
+      assert(`${layout}: materials on the PO's codes (Base Course PO kept, the uncoded one dropped); trucking on the ticket's (none pass)`,
+        all('materials').map(r => r.invoice_num).sort().join() === 'T-400,T-501,T-502' && all('trucking').length === 0);
+      assert(`${layout}: change orders on their bid item's codes; contract change orders hidden, and counted`,
+        all('change_orders').map(r => r.number).join() === 'Q-1' && notes('change_orders').includes('1 contract change order hidden by the code filter.'));
+      const kpis = sd('summary_kpis');
+      const k = all('summary_kpis');
+      const labels = kpis.columns.map(c => c.label);
+      assert(`${layout}: the summary strip's quantity, % complete and items complete are the filtered items', labelled (filtered)`,
+        k[0].qty_period === 1050 && k[0].items_complete === '0 of 1' && near(k[0].pct_complete, 50)
+          && labels.includes('% Complete (filtered)') && labels.includes('Qty Installed (filtered)') && labels.includes('Bid Items Complete (filtered)')
+          && labels.includes('Days Worked'), J(k));
+      const bars = sd('chart').blocks.flatMap(b => b.charts).filter(ch => ch.job.id === 'p1')[0];
+      assert(`${layout}: the chart draws Base Course only (1,050 TON in daily bars)`, bars.bars.reduce((t, b) => t + b.qty, 0) === 1050 && bars.unit === 'TON');
+      assert(`${layout}: the division rates count Base Course tons only`, all('rate_summary').some(r => r.tons_period === 1050)
+        && all('rate_summary').every(r => r.tons_period === 1050 || r.tons_period === 0));
+    }
+    const both = vdef([vsec('bid_progress', { options: { subCodes: ['Surface Course'] } })], { filters: { subCodes: ['Base Course'] } });
+    assert('a section\'s own sub codes AND the report\'s: Surface ∩ Base → nothing',
+      rowsOf(V.buildSectionData(both.sections[0], both, vmk(both, d, ['p1']))).length === 0);
+    const secOnly = vdef([vsec('bid_progress', { options: { subCodes: ['Surface Course'], groupBy: 'none' } })]);
+    const so = V.buildSectionData(secOnly.sections[0], secOnly, vmk(secOnly, d, ['p1']));
+    assert('a section-level sub-code filter alone works the same way', rowsOf(so).map(r => r.sub_code).join() === 'Surface Course'
+      && so.blocks[0].notes.length === 1);
+    const cc = vdef([vsec('bid_progress', { options: { groupBy: 'none' } }), vsec('summary_kpis')], { filters: { costCodes: ['striping'] } });
+    const ccs = V.buildSectionData(cc.sections[0], cc, vmk(cc, d, ['p1']));
+    assert('a cost-code filter keeps a cost-code-only line (no sub-code filter, no footnote)',
+      rowsOf(ccs).map(r => r.cost_code).join() === 'Striping' && !ccs.blocks[0].notes.length
+        && V.buildSectionData(cc.sections[1], cc, vmk(cc, d, ['p1'])).columns.some(c => c.label === '% Complete (filtered)'));
+    const html = V.buildReportHtml(vdef([vsec('bid_progress')], { filters: { subCodes: ['Base Course'] } }),
+      vmk(vdef([vsec('bid_progress')], { filters: { subCodes: ['Base Course'] } }), d, ['p1']));
+    const fwb = workbook(V.buildXlsx(vdef([vsec('bid_progress')], { filters: { subCodes: ['Base Course'] } }),
+      vmk(vdef([vsec('bid_progress')], { filters: { subCodes: ['Base Course'] } }), d, ['p1'])));
+    assert('the footnote prints under the table and as a note row in the XLSX',
+      /<p class="fnote">1 cost-code-only item hidden by the sub-code filter\.<\/p>/.test(html)
+        && Object.values(fwb.sheets['Bid Item Progress']).some(c => c.v === '1 cost-code-only item hidden by the sub-code filter.'));
+    const plain = vdef([vsec('bid_progress')]);
+    assert('no filter: nothing hidden, no footnote, the strip unlabelled', !/class="fnote"/.test(V.buildReportHtml(plain, vmk(plain, d, ['p1']))));
+  }
+
+  section('Charts — figures, safety, caps');
+  {
+    // Daily bars: Oct 26 – Nov 5; TON lines (1,500 bid) outnumber SY (100).
+    const db = { projects: [{ id: 'db', 'project-name': 'Bars Job', bidItems: [
+      { id: 'D1', cost_code: 'Pave', sub_code: 'Base', unit: 'TON', quantity: '1000', unit_cost: '1', start_date: '2026-11-02', target_date: '2026-11-13' },
+      { id: 'D2', cost_code: 'Pave', sub_code: 'Top', unit: 'TON', quantity: '500', unit_cost: '1' },
+      { id: 'D3', cost_code: 'Misc', sub_code: 'X', unit: 'SY', quantity: '100', unit_cost: '1' },
+    ], dailyRows: [
+      row('2026-10-31', 'Pave', 'Base', 40, { employee: 'A' }), row('2026-11-02', 'Pave', 'Base', 100, { employee: 'A' }),
+      row('2026-11-02', 'Pave', 'Base', 0, { employee: 'B', labor_hours: '6' }), row('2026-11-03', 'Pave', 'Base', 120, { employee: 'A' }),
+      row('2026-11-03', 'Pave', 'Top', 30, { employee: 'A' }), row('2026-11-04', 'Pave', 'Top', 50, { employee: 'A' }),
+      row('2026-11-04', 'Misc', 'X', 999, { employee: 'Z' }),
+    ] }] };
+    const barDef = (cols, defPatch) => vdef([vsec('chart', { columns: cols || V.newSection('chart').columns, options: { chart: 'daily_bars' } })],
+      Object.assign({ dates: { preset: 'custom', from: '2026-10-26', to: '2026-11-05' } }, defPatch || {}));
+    const bd = barDef();
+    const bsd = V.buildSectionData(bd.sections[0], bd, vmk(bd, db, ['db']));
+    const ch = bsd.blocks[0].charts[0];
+    assert('daily bars: every working day in the period plus a Saturday with work — 10 bars, TON only, mixed units captioned',
+      ch.bars.length === 10 && ch.bars.map(b => b.qty).join() === '0,0,0,0,0,40,100,150,50,0' && ch.unit === 'TON'
+        && ch.captions[0] === 'Showing the TON items only — the unit with the most bid quantity.', J(ch.bars.map(b => [b.from, b.qty])));
+    assert('…with the planned rate of the planned lines (1,000 over 9 working days)', near(ch.rate, 1000 / 9) && ch.drawPlan && ch.bars.every(b => near(b.plan, 1000 / 9)));
+    const bh = V.buildReportHtml(bd, vmk(bd, db, ['db']));
+    const bdoc = new JSDOM(bh).window.document;
+    const fig = bdoc.querySelector('figure.crc');
+    const barPath = [...fig.querySelectorAll('path')].find(p => p.getAttribute('fill') === '#86efac');
+    assert('…drawn as one path of 4 bar rectangles (zero days draw none), a dashed plan line, no crew line while customer-safe',
+      barPath && (barPath.getAttribute('d').match(/Z/g) || []).length === 4 && [...fig.querySelectorAll('path')].some(p => p.getAttribute('stroke-dasharray'))
+        && !/crew hours/i.test(bh) && !fig.querySelector('path[stroke="#9333ea"]'));
+    const ib = barDef(allCols('chart'), { includeInternal: true });
+    const ich = V.buildSectionData(ib.sections[0], ib, vmk(ib, db, ['db'])).blocks[0].charts[0];
+    assert('with internal data on and crew hours chosen: a crew-hours line (shift length a day: Nov 2 (8 + 6) ÷ 2 = 7; Nov 3 one man, 8 + 8 = 16)',
+      ich.drawCrew && ich.bars[6].crew === 7 && ich.bars[7].crew === 16 && /crew hours/i.test(V.buildReportHtml(ib, vmk(ib, db, ['db']))));
+    const wb = workbook(V.buildXlsx(bd, vmk(bd, db, ['db'])));
+    const cd = wb.sheets['Chart data'];
+    const head = ['Date', 'Daily qty', 'Planned / day'].map(h => findCell(cd, h));
+    assert('XLSX: a Chart data sheet — Date, Daily qty, Planned / day; no Crew hours column while customer-safe',
+      head.every(Boolean) && !findCell(cd, 'Crew hours') && cd[head[0].col + (head[0].row + 7)].v === serial('2026-11-02')
+        && cd[head[1].col + (head[1].row + 7)].v === 100 && near(cd[head[2].col + (head[2].row + 1)].v, 1000 / 9, 1e-4)
+        && Object.values(cd).some(c => c.v === 'Showing the TON items only — the unit with the most bid quantity.'));
+    const iwb = workbook(V.buildXlsx(ib, vmk(ib, db, ['db'])));
+    assert('…and a Crew hours column once it may print', !!findCell(iwb.sheets['Chart data'], 'Crew hours'));
+
+    // S-curve on the plan fixture: its end figures are Planned vs Actual's totals.
+    const sdef = vdef([vsec('plan_vs_actual'), vsec('chart')]);
+    const sctx = vmk(sdef, PV(), ['pv']);
+    const tot = V.buildSectionData(sdef.sections[0], sdef, sctx).blocks[0].totals;
+    const sc = V.buildSectionData(sdef.sections[1], sdef, sctx).blocks[0].charts[0];
+    const atA = sc.points.find(pt => pt.date === TODAY);
+    assert('S-curve (% basis, plan drawn): at the as-of day, installed = the totals\' earned %, planned = their scheduled %',
+      atA && near(atA.inst, tot.earned_pct, 1e-6) && near(atA.plan, tot.sched_pct, 1e-6) && sc.basis === 'pct', `${atA && atA.inst} vs ${tot.earned_pct}; ${atA && atA.plan} vs ${tot.sched_pct}`);
+    assert('…from the day before the earliest start to the last target, rising from zero, planned to 100%',
+      sc.start === '2026-10-11' && sc.end === '2026-11-20' && sc.points[0].inst === 0 && sc.points[0].plan === 0
+        && sc.points[sc.points.length - 1].plan === 100 && sc.points[sc.points.length - 1].inst === null
+        && sc.captions[0] === 'Covers the 7 of 8 items with a plan.', J([sc.start, sc.end, sc.captions]));
+    const qd = vdef([vsec('chart', { options: { basis: 'qty' } })]);
+    const qc = V.buildSectionData(qd.sections[0], qd, vmk(qd, PV(), ['pv'])).blocks[0].charts[0];
+    assert('qty basis with mixed units falls back to % and says so', qc.basis === 'pct' && /different units/.test(qc.captions.join(' ')));
+    const one = { projects: [{ id: 'q1', 'project-name': 'Q', bidItems: [PV().projects[0].bidItems[0]], dailyRows: PV().projects[0].dailyRows }] };
+    const qq = V.buildSectionData(qd.sections[0], qd, vmk(qd, one, ['q1'])).blocks[0].charts[0];
+    const qa = qq.points.find(pt => pt.date === TODAY);
+    assert('qty basis on one unit: 450 SY in at the as-of day against 444.4 planned', qq.basis === 'qty' && qa.inst === 450 && near(qa.plan, 4000 / 9) && qq.unit === 'SY');
+    const noPlan = vdef([vsec('chart', { columns: ['installed'] })]);
+    const np = V.buildSectionData(noPlan.sections[0], noPlan, vmk(noPlan, PV(), ['pv'])).blocks[0].charts[0];
+    assert('with the plan column off, no plan is drawn and the curve covers every item', !np.drawPlan && np.points.every(pt => pt.plan === null) && !np.captions.length);
+    const nothing = vdef([vsec('chart', { columns: ['daily_qty'] })]);
+    assert('an S-curve whose own series are all off prints nothing', !/sec-chart/.test(V.buildReportHtml(nothing, vmk(nothing, PV(), ['pv']))));
+
+    // Hostile names, long spans: what the SVG may contain.
+    const evil = 'Evil <script>alert(1)</script> onload=alert(2) " onmouseover="x" url(javascript:alert(3)) href=x';
+    const long = { projects: [{ id: 'lg', 'project-name': evil, 'job-number': 'a=b', bidItems: [
+      { id: 'G1', cost_code: 'Long', sub_code: 'Run onclick=x', unit: 'L=F', quantity: '100000', unit_cost: '1', start_date: '2024-01-08', target_date: '2027-12-31' },
+      { id: 'G2', cost_code: 'Long', sub_code: 'Walk', unit: 'L=F', quantity: '5000', unit_cost: '1' }],
+    dailyRows: [] }, { id: 'lg2', 'project-name': 'Second <b>job</b>', bidItems: [{ id: 'H1', cost_code: 'Long', sub_code: 'Run onclick=x', unit: 'L=F', quantity: '10', unit_cost: '1' }],
+    dailyRows: [row('2026-11-02', 'Long', 'Run onclick=x', 3)] }] };
+    for (let t = Date.UTC(2024, 0, 8); t <= Date.UTC(2026, 10, 4); t += 86400000) {
+      const dt = new Date(t), w = dt.getUTCDay();
+      if (w !== 0 && w !== 6) long.projects[0].dailyRows.push(row(dt.toISOString().slice(0, 10), 'Long', 'Run onclick=x', 50, { employee: 'E' + (t % 7) }));
+    }
+    long.projects[0].dailyRows.push(row('2026-11-01', 'Long', 'Walk', 10));
+    const charts = [];
+    const sanit = require(path.join(ROOT, 'api/lib/email.js')).sanitizeReportHtml;
+    for (const layout of ['separate', 'combined']) {
+      for (const [opts, preset] of [[{ chart: 's_curve', basis: 'pct' }, 'job_to_date'], [{ chart: 's_curve', basis: 'qty' }, 'job_to_date'],
+        [{ chart: 'daily_bars' }, 'job_to_date'], [{ chart: 'daily_bars' }, 'last_30'], [{ chart: 'daily_bars', height: 'tall' }, 'custom']]) {
+        const def = vdef([vsec('chart', { columns: allCols('chart'), options: opts })],
+          { layout, includeInternal: true, dates: { preset, from: '2026-01-01', to: '2026-11-05' } });
+        const ctx = vmk(def, long, ['lg', 'lg2']);
+        const sdc = V.buildSectionData(def.sections[0], def, ctx);
+        const html = V.buildReportHtml(def, ctx);
+        charts.push({ layout, opts, preset, sd: sdc, html, figs: (html.match(/<figure class="crc">[\s\S]*?<\/figure>/g) || []) });
+      }
+    }
+    const figs = charts.flatMap(c => c.figs);
+    assert('hostile job and code names: 20 charts drawn', figs.length === 20, figs.length);
+    const banned = [/url\(/i, /<image/i, /foreignObject/i, /<script/i, /\son[a-z]+\s*=/i, /\shref\s*=/i, /\ssrc\s*=/i, /xlink/i, /<a[\s>]/i];
+    const hits = figs.flatMap(f => banned.filter(re => re.test(f)).map(String));
+    assert('no url(, <image>, foreignObject, script, on…= attribute or text, href or src anywhere in a chart', !hits.length, [...new Set(hits)].join(' '));
+    assert('an = in a person\'s text (job #, sub code, unit) is written &#61; in the chart and its caption',
+      figs.every(f => !/=/.test(f.replace(/="[^"]*"/g, '')))
+        && charts.some(c => c.figs.some(f => f.includes('a&#61;b'))) && charts.some(c => c.figs.some(f => f.includes('L&#61;F'))));
+    const classes = figs.flatMap(f => [...f.matchAll(/class="([^"]*)"/g)].map(m => m[1]));
+    assert('class names: only "crc", none ending label / lbl / val / value / num (the email lifter)',
+      classes.every(c => c === 'crc') && !classes.some(c => /(label|lbl|val|value|num)$/.test(c)));
+    const coords = figs.flatMap(f => [...f.matchAll(/ (?:d|x|y)="([^"]*)"/g)].flatMap(m => m[1].match(/-?\d+(?:\.\d+)?/g) || []));
+    assert('coordinates to one decimal', coords.length > 1000 && coords.every(n => !/\.\d\d/.test(n)), coords.find(n => /\.\d\d/.test(n)));
+    assert('svg shape: viewBox, width 100%, role img, an aria-label, sans-serif text, flat colours only',
+      figs.every(f => /<svg viewBox="0 0 720 (220|340)" width="100%" role="img" aria-label="[^"]+" font-family="sans-serif"/.test(f)
+        && !/gradient|<defs|marker|clip-path|filter=/i.test(f)));
+    const sMax = Math.max(...charts.filter(c => c.opts.chart === 's_curve').flatMap(c => c.sd.blocks.flatMap(b => b.charts.map(x => x.points.length))));
+    const pathPts = figs.flatMap(f => [...f.matchAll(/<path d="([^"]*)"/g)].map(m => (m[1].match(/[ML]/g) || []).length));
+    const bMax = Math.max(...charts.filter(c => c.opts.chart === 'daily_bars').flatMap(c => c.sd.blocks.flatMap(b => b.charts.map(x => x.bars.length))));
+    assert(`point caps: a 4-year S-curve has ≤ ${120 + 3} points (${sMax}); bars ≤ 120 (${bMax}); no path holds more than 125 points`,
+      sMax <= 123 && sMax > 50 && bMax <= 120 && Math.max(...pathPts) <= 125 && figs.every(f => (f.match(/Z/g) || []).length <= 120));
+    const jtdBars = charts.find(c => c.opts.chart === 'daily_bars' && c.preset === 'job_to_date' && c.layout === 'separate').sd.blocks[0].charts[0];
+    const yearBars = charts.find(c => c.opts.chart === 'daily_bars' && c.preset === 'custom' && c.layout === 'separate').sd.blocks[0].charts[0];
+    const lastBars = charts.find(c => c.opts.chart === 'daily_bars' && c.preset === 'last_30' && c.layout === 'separate').sd.blocks[0].charts[0];
+    assert('bars bucket weekly past 60 days and monthly past 120 weeks, and say so',
+      lastBars.bucket === 'day' && yearBars.bucket === 'week' && jtdBars.bucket === 'month' && jtdBars.bars.length === 35
+        && jtdBars.captions.includes('Bars are monthly totals.') && yearBars.captions.includes('Bars are weekly totals.'), `${jtdBars.bars.length} ${yearBars.bars.length}`);
+    const comb = charts.find(c => c.layout === 'combined' && c.opts.chart === 's_curve');
+    assert('combined: one chart per job, stacked, each caption naming its job', comb.figs.length === 2
+      && comb.figs[0].includes('Evil &lt;script&gt;') && comb.figs[1].includes('Second &lt;b&gt;job&lt;/b&gt;'));
+    // Run the real email sanitizer: nothing of the chart is eaten.
+    const before = charts[0].html, after = sanit(before);
+    const capText = h => [...new JSDOM(h).window.document.querySelectorAll('figure.crc figcaption, figure.crc text')].map(e => e.textContent).join('|');
+    assert('the email sanitizer leaves every chart, caption and label intact (its on…= rule finds nothing to eat)',
+      capText(before) === capText(after) && (after.match(/<\/figure>/g) || []).length === (before.match(/<\/figure>/g) || []).length
+        && charts.every(c => capText(c.html) === capText(sanit(c.html))));
+  }
+
+  section('Customer-safe: every v2 section and column, every division');
+  {
+    const S = SECRET;
+    for (const [div, mkData, ids, secrets] of [
+      ['paving', RATES, ['rp', 'rp2'], ['16.67', '13.89', '41.67']],
+      ['turf', TURF, ['rt'], ['83.33']],
+      ['kiewit', KIEWIT, ['rk'], ['14.03']]]) {
+      for (const layout of ['separate', 'combined']) {
+        const sections = V.SECTION_ORDER.map(t => vsec(t, { columns: allCols(t) }))
+          .concat([vsec('chart', { columns: allCols('chart'), options: { chart: 'daily_bars' } })]);
+        const safe = vdef(sections, { layout, dates: { preset: 'this_week' } });
+        const intl = vdef(sections, { layout, includeInternal: true, dates: { preset: 'this_week' } });
+        const data = mkData();
+        data.projects[0].dailyRows.forEach(r => { if (r.employee === 'A') r.employee = S.employee; r.rate = S.rate; });
+        const cfgX = divCfg(div);
+        const hs = V.buildReportHtml(safe, vmk(safe, data, ids, null, cfgX));
+        const hi = V.buildReportHtml(intl, vmk(intl, data, ids, null, cfgX));
+        const xs = Object.values(workbook(V.buildXlsx(safe, vmk(safe, data, ids, null, cfgX))).parts).join('\n');
+        const xi = Object.values(workbook(V.buildXlsx(intl, vmk(intl, data, ids, null, cfgX))).parts).join('\n');
+        const intLabels = new Set(), safeLabels = new Set();
+        Object.values(V.CATALOG).forEach(c => c.columns.forEach(x => (x.internal ? intLabels : safeLabels).add(x.label)));
+        const internalOnly = [...intLabels].filter(l => !safeLabels.has(l));
+        const heads = [...new JSDOM(hs).window.document.querySelectorAll('th, .sum-label, .ji-k')].map(e => e.textContent.trim());
+        const planted = secrets.concat([S.employee, S.rate]);
+        assert(`${div}/${layout}: the internal build does carry the hours-based rates (the scan is looking for something real)`,
+          secrets.every(v => hi.includes(v)) && /crew hours/i.test(hi) && hi.includes('data-cr-internal="1"'), secrets.filter(v => !hi.includes(v)).join());
+        assert(`${div}/${layout}: customer-safe HTML has none of them — no hours-based rate, crew, name, wage — and no internal header`,
+          !planted.some(v => hs.includes(v)) && !/crew hours|crew-hour|man-hour|avg crew/i.test(hs) && !heads.some(h => internalOnly.includes(h))
+            && !/INTERNAL/.test(hs) && !hs.includes('data-cr-internal'), planted.filter(v => hs.includes(v)).concat(heads.filter(h => internalOnly.includes(h))).join());
+        assert(`${div}/${layout}: …nor the customer-safe workbook (Chart data and all)`,
+          !planted.some(v => xs.includes(v)) && !/Crew hours|Crew-Hour|Man-Hour|Avg Crew|INTERNAL/.test(xs) && /Crew hours/.test(xi),
+          planted.filter(v => xs.includes(v)).join());
+      }
+    }
+  }
+
+  section('Branding, PM contact, report contact');
+  {
+    const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+    const d = fixture();
+    const brand = { display_name: 'Acme Paving <Co> & "Sons"', logo: { mime: 'image/png', base64: PNG, width: 120, height: 40 },
+      phone: '555-0100', email: 'office@acme.test', website: 'https://acme.test', address: '1 Road, Town onload=x', report_footer: 'Licensed & insured' };
+    const contacts = { p1: { pm: { name: 'Pat <Manager>', phone: '555-0199', email: 'pat@acme.test' } }, p2: { pm: { name: 'Nobody' } } };
+    const def = vdef([vsec('job_info'), vsec('bid_progress')], { title: 'Branded', header: { footer: 'Thanks', contactPhone: '555-0123' } });
+    const ctxB = vmk(def, d, ['p1', 'p2'], { branding: brand, contacts, reportContact: { name: 'Sam Sender', phone: '555-0000', email: 'sam@acme.test' } });
+    const html = V.buildReportHtml(def, ctxB);
+    const doc = new JSDOM(html).window.document;
+    const srcs = [...html.matchAll(/src\s*=\s*"([^"]*)"/gi)].map(m => m[1]);
+    assert('branded masthead: exactly one data-dw-brand, the company name (escaped) and the division under it',
+      doc.querySelectorAll('[data-dw-brand]').length === 1 && doc.querySelector('.mast-co').textContent === 'Acme Paving <Co> & "Sons"'
+        && doc.querySelector('.mast-left .mast-sub').textContent === 'Paving Division' && !doc.querySelector('.mast-word')
+        && doc.querySelector('.mast-rpt').textContent === 'Branded');
+    assert('the logo: one <img class="mast-logo">, its src the PNG data URI, and that is the only src= in the page',
+      doc.querySelectorAll('img').length === 1 && srcs.length === 1 && srcs[0] === 'data:image/png;base64,' + PNG
+        && doc.querySelector('img.mast-logo').getAttribute('alt') === 'Acme Paving <Co> & "Sons"'
+        && /max-height:48px;max-width:220px/.test(doc.querySelector('img.mast-logo').getAttribute('style')));
+    const foot = doc.querySelector('.rpt-foot');
+    assert('footer: the note, "Questions?" (the report\'s phone over the resolved contact\'s), the company lines, and "Prepared with DataWatch"',
+      foot.querySelector('.foot-l').children[0].textContent === 'Thanks'
+        && foot.querySelector('.foot-q').textContent === 'Questions? Sam Sender · 555-0123 · sam@acme.test'
+        && [...foot.querySelectorAll('.foot-co')].map(e => e.textContent).join('|') === 'Licensed & insured|1 Road, Town onload=x · 555-0100 · https://acme.test'
+        && foot.lastElementChild.textContent === 'Prepared with DataWatch' && /onload&#61;x/.test(html) && !/onload=x/.test(html));
+    const bands = [...doc.querySelectorAll('.job-band')];
+    assert('job band: "Project Manager: name · phone · email" when the job has contact data (escaped); none without',
+      bands[0].querySelector('.jb-pm').textContent === 'Project Manager: Pat <Manager> · 555-0199 · pat@acme.test' && !bands[1].querySelector('.jb-pm'));
+    const brand2 = { brand: null };
+    vm.createContext(brand2); brand2.window = brand2;
+    vm.runInContext(fs.readFileSync(path.join(ROOT, 'report-branding.js'), 'utf8'), brand2);
+    assert('dwBrand leaves the branded report alone too', brand2.dwBrand(html) === html);
+    const twoLine = new JSDOM(V.buildReportHtml(def, vmk(def, d, ['p1'], { branding: Object.assign({}, brand, { address: '12 Mill Rd\n  York, PA 17401' }) })))
+      .window.document;
+    assert('a two-line company address prints on the footer\'s one line as "12 Mill Rd, York, PA 17401", as the Branding panel previews it',
+      [...twoLine.querySelectorAll('.foot-co')].some(e => e.textContent === '12 Mill Rd, York, PA 17401 · 555-0100 · https://acme.test'),
+      [...twoLine.querySelectorAll('.foot-co')].map(e => e.textContent).join(' | '));
+    const noPm = V.buildReportHtml(vdef(def.sections, { header: { showPmContact: false } }), ctxB);
+    assert('showPmContact off: no PM line', !/class="jb-pm"/.test(noPm));
+    const dw = V.buildReportHtml(vdef(def.sections, { header: { branding: 'datawatch' } }), ctxB);
+    assert('"DataWatch only": the DataWatch masthead and no logo, whatever branding is passed',
+      /<div class="mast-word">DataWatch<\/div>/.test(dw) && !/<img/.test(dw) && !/class="mast-co"/.test(dw) && /DataWatch — /.test(dw));
+    const bads = [
+      ['an SVG logo', { mime: 'image/svg+xml', base64: PNG }], ['a gif', { mime: 'image/gif', base64: PNG }],
+      ['a quote in the payload', { mime: 'image/png', base64: 'AAAA"onerror="alert(1)' }], ['a bad length', { mime: 'image/png', base64: 'AAAAA' }],
+      ['markup of a valid length', { mime: 'image/png', base64: 'AA"><b>A' }], ['a nested data URI', { mime: 'image/png', base64: 'data:image/png;base64,AA' }],
+      ['padding in the middle', { mime: 'image/png', base64: 'AA==AAAA' }],
+      ['a data: prefix smuggled in', { mime: 'image/png', base64: 'data:text/html,AAAA' }], ['a mime with a payload', { mime: 'image/png;x', base64: PNG }],
+      ['no payload', { mime: 'image/jpeg', base64: '' }], ['too big', { mime: 'image/png', base64: 'A'.repeat(400004) }]];
+    bads.forEach(([why, logo]) => {
+      const h = V.buildReportHtml(def, vmk(def, d, ['p1'], { branding: { display_name: 'Co', logo } }));
+      assert(`a logo with ${why} is dropped (the company name stays)`, !/<img/.test(h) && !/src=/.test(h) && /class="mast-co">Co</.test(h));
+    });
+    const jpg = V.buildReportHtml(def, vmk(def, d, ['p1'], { branding: { logo: { mime: 'IMAGE/JPEG', base64: '/9j/4AAQSkZJRg==' } } }));
+    assert('a JPEG logo alone brands the masthead (mime read case-blind); only data:image/png|jpeg ever reaches src',
+      /<img class="mast-logo" src="data:image\/jpeg;base64,\/9j\/4AAQSkZJRg==" alt="Company logo"/.test(jpg)
+        && [...jpg.matchAll(/src="([^"]*)"/g)].every(m => /^data:image\/(png|jpeg);base64,[A-Za-z0-9+/]+=*$/.test(m[1])));
+    const onlyBad = V.buildReportHtml(def, vmk(def, d, ['p1'], { branding: { display_name: '  ', logo: { mime: 'image/svg+xml', base64: PNG } } }));
+    const plain = V.buildReportHtml(def, vmk(def, d, ['p1']));
+    assert('branding with nothing usable, or none at all: the DataWatch masthead and footer, byte for byte as before',
+      onlyBad === plain && /<div class="mast-word">DataWatch<\/div><div class="mast-sub">Paving Division<\/div>/.test(plain)
+        && /<div class="rpt-foot"><span>Thanks<\/span><span>DataWatch — Branded<\/span><\/div>/.test(
+          V.buildReportHtml(vdef(def.sections, { title: 'Branded', header: { footer: 'Thanks' } }), vmk(def, d, ['p1']))));
+    const withC = V.buildReportHtml(def, vmk(def, d, ['p1'], { contacts: { p1: { pm: { name: 'Pat', phone: '', email: '' } } } }));
+    assert('a PM with no phone or email adds no line (the name alone is on the job card)', !/class="jb-pm"/.test(withC));
+    const unb = V.buildReportHtml(def, vmk(def, d, ['p1'], { reportContact: { name: 'Sam' } }));
+    assert('unbranded with a report contact: the Questions line, and "DataWatch — <title>" on the right',
+      /<span class="foot-q">Questions\? Sam · 555-0123<\/span>/.test(unb) && /<span>DataWatch — Branded<\/span><\/div>/.test(unb));
+    const wb = workbook(V.buildXlsx(def, ctxB));
+    const rep = Object.values(wb.sheets.Report).map(c => c.v);
+    assert('XLSX: the company name on the Report sheet\'s title rows, the PM contact in the job card, the Questions? row',
+      rep.includes('Acme Paving <Co> & "Sons" — Paving Division · Prepared with DataWatch') && rep.includes('Project Manager')
+        && rep.includes('Pat <Manager> · 555-0199 · pat@acme.test') && rep.includes('Questions?') && rep.includes('Sam Sender · 555-0123 · sam@acme.test')
+        && !wb.bad.length && !Object.values(wb.parts).join('').includes(PNG));
+    assert('XLSX unbranded keeps "DataWatch — Paving Division"', Object.values(workbook(V.buildXlsx(def, vmk(def, d, ['p1']))).sheets.Report)
+      .some(c => c.v === 'DataWatch — Paving Division'));
+  }
+
+  section('Signed and half-day formatting');
+  {
+    const F2 = V.formatCell;
+    assert('days: whole or half — 2.5, −3.5, +7 signed, 60, and 0.2 rounds to 0',
+      F2(2.5, 'days') === '2.5' && F2(-3.5, 'days', '', true) === '-3.5' && F2(7, 'days', '', true) === '+7' && F2(60, 'days') === '60'
+        && F2(0.2, 'days') === '0' && F2(-0.2, 'days') === '0' && F2(1234, 'days') === '1,234' && F2(0, 'days', '', true) === '0');
+    const def = vdef([vsec('plan_vs_actual', { columns: ['sub_code', 'qty_variance', 'ahead_days', 'forecast_vs_target'], options: { totals: false } })]);
+    const ctx = vmk(def, PV(), ['pv']);
+    const html = V.buildReportHtml(def, ctx);
+    assert('HTML: + on gains for signed columns (+5.56 qty, +7 days, +1 day), − on losses, half days kept',
+      html.includes('<td class="num">+5.56</td>') && html.includes('<td class="num">+7</td>') && html.includes('<td class="num">+1</td>')
+        && html.includes('<td class="num">-1.5</td>') && html.includes('<td class="num">-630</td>') && html.includes('<td class="num">-11</td>'));
+    const wb = workbook(V.buildXlsx(def, ctx));
+    const sh = wb.sheets['Planned vs Actual'];
+    const fmtAt = (h, sub) => { const c = findCell(sh, h), s = findCell(sh, 'Sub Code'); const r = +Object.keys(sh).find(k => k.startsWith(s.col) && sh[k].v === sub).replace(/\D+/g, ''); return wb.styles[sh[c.col + r].s]; };
+    assert('XLSX: signed number formats — +#,##0.0;-#,##0.0;0 for quantities and half days, +#,##0;-#,##0;0 for whole days',
+      fmtAt('Qty vs Plan', 'Topsoil') === '+#,##0.0;-#,##0.0;0' && fmtAt('Days Ahead / Behind', 'Lines') === '+#,##0;-#,##0;0'
+        && fmtAt('Days Ahead / Behind', 'Post') === '+#,##0.0;-#,##0.0;0' && fmtAt('Finish vs Target', 'Topsoil') === '+#,##0;-#,##0;0', J([fmtAt('Qty vs Plan', 'Topsoil')]));
+    assert('the plan footnote is a note row in the XLSX', Object.values(sh).some(c => /^Planned figures use each bid item's Start and Target dates/.test(c.v || '')));
+  }
+
   section('Big jobs stay fast');
   {
-    // 20 jobs × 40 bid items × 2,500 daily rows = 50,000 rows, every section,
+    // 20 jobs × 40 bid items × 2,500 daily rows = 50,000 rows, every section
+    // — the v2 ones too: plans of every kind (typed dates, job end, a typed
+    // rate), both charts, the division rates with trucking tickets —
     // through paving's own helpers.
-    const big = [];
+    const big = [], bigTrucks = [];
     for (let j = 0; j < 20; j++) {
       const bidItems = [], dailyRows = [];
       for (let i = 0; i < 40; i++) {
         bidItems.push({ id: `b${j}-${i}`, cost_code: `CC${i % 8}`, sub_code: i % 5 === 4 ? '' : `SC${i}`, unit: i % 2 ? 'TON' : 'SY',
-          quantity: String(1000 + i), unit_cost: String(10 + i), start_date: i % 7 ? '' : '2026-09-01', target_date: i % 7 ? '' : '2026-12-01' });
+          quantity: String(1000 + i), unit_cost: String(10 + i), start_date: i % 7 ? (i % 7 === 2 ? '2026-08-15' : '') : '2026-09-01',
+          target_date: i % 7 ? '' : '2026-12-01', planned_rate: i % 7 === 3 ? '25' : '' });
+      }
+      for (let t = 0; t < 150; t++) {
+        bigTrucks.push({ id: `t${j}-${t}`, tr_number: `TR-${j}-${t}`, project_id: `j${j}`, loads: String(1 + (t % 9)),
+          date: new Date(Date.UTC(2026, 8, 1 + (t % 60))).toISOString().slice(0, 10), cost_code: `CC${t % 8}`, sub_code: t % 3 ? `SC${t % 40}` : '' });
       }
       for (let r = 0; r < 2500; r++) {
         const i = r % 40, day = 1 + (r % 60);
@@ -1298,12 +2176,16 @@ function deepNear(a, b, at = '') {
         dailyRows.push({ id: `r${j}-${r}`, date: dt, cost_code: `CC${i % 8}`, sub_code: `SC${i}`, quantity: String(r % 13),
           labor_hours: '8', rate: '30', employee: `E${r % 17}`, equip_hours: '2', equip_unit_cost: '50' });
       }
-      big.push({ id: `j${j}`, 'project-name': `Job ${j}`, 'job-number': String(9000 + j), bidItems, dailyRows, 'contract-value': '100000' });
+      big.push({ id: `j${j}`, 'project-name': `Job ${j}`, 'job-number': String(9000 + j), bidItems, dailyRows, 'contract-value': '100000',
+        'end-date': '2026-12-31' });
     }
     env.ctx.projectsList = big;
-    const bigData = { projects: big, pos: [], trucks: [] };
+    const bigData = { projects: big, pos: [], trucks: bigTrucks };
     const def = allColumnsDef(PE, { includeInternal: true });
     def.sections.find(s => s.type === 'daily_production').options.summarize = true;
+    def.sections.push(Object.assign(PE.newSection('chart'), { columns: PE.CATALOG.chart.columns.map(c => c.key),
+      options: Object.assign(PE.newSection('chart').options, { chart: 'daily_bars' }) }));
+    def.sections.push(Object.assign(PE.newSection('plan_vs_actual'), { options: Object.assign(PE.newSection('plan_vs_actual').options, { groupBy: 'cost_code' }) }));
     const ids = big.map(p => p.id);
     const t0 = Date.now();
     const ctx = PE.makeContext(def, cfgFor(env, bigData), { pickedIds: ids, today: TODAY, now: NOW });
@@ -1312,12 +2194,21 @@ function deepNear(a, b, at = '') {
     const xl = PE.buildXlsx(def, ctx);
     const t2 = Date.now();
     const cdef = PE.normalizeDefinition(Object.assign({}, def, { layout: 'combined' }));
-    PE.buildReportHtml(cdef, PE.makeContext(cdef, cfgFor(env, bigData), { pickedIds: ids, today: TODAY, now: NOW }));
+    const cctx = PE.makeContext(cdef, cfgFor(env, bigData), { pickedIds: ids, today: TODAY, now: NOW });
+    const chtml = PE.buildReportHtml(cdef, cctx);
     const t3 = Date.now();
-    console.log(`    (HTML ${t1 - t0} ms, ${(html.length / 1e6).toFixed(2)} MB; XLSX ${t2 - t1} ms, ${(xl.length / 1e6).toFixed(2)} MB; combined HTML ${t3 - t2} ms)`);
+    PE.buildXlsx(cdef, PE.makeContext(cdef, cfgFor(env, bigData), { pickedIds: ids, today: TODAY, now: NOW }));
+    const t4 = Date.now();
+    console.log(`    (HTML ${t1 - t0} ms, ${(html.length / 1e6).toFixed(2)} MB; XLSX ${t2 - t1} ms, ${(xl.length / 1e6).toFixed(2)} MB; combined HTML ${t3 - t2} ms; combined XLSX ${t4 - t3} ms)`);
     assert('separate HTML for 50,000 rows in under 4 s', t1 - t0 < 4000, `${t1 - t0} ms`);
     assert('XLSX in under 4 s', t2 - t1 < 4000, `${t2 - t1} ms`);
     assert('combined HTML in under 4 s', t3 - t2 < 4000, `${t3 - t2} ms`);
+    assert('combined XLSX in under 4 s', t4 - t3 < 4000, `${t4 - t3} ms`);
+    const kinds = new Set(def.sections.map(s => s.type));
+    assert('…with every v2 section in it, each drawing something: plans, both charts (40 figures), division rates',
+      ['plan_vs_actual', 'chart', 'rate_summary'].every(k => kinds.has(k)) && (html.match(/<figure class="crc">/g) || []).length === 40
+        && (chtml.match(/<figure class="crc">/g) || []).length === 40 && /Planned per day/.test(html) && /Bid item start \+ job end/.test(html)
+        && /class="sec sec-rate_summary"/.test(html), (html.match(/<figure class="crc">/g) || []).length);
     // Spot-check one figure at scale against the page.
     const bp = PE.buildSectionData(def.sections.find(s => s.type === 'bid_progress'), def, ctx);
     const b = big[7].bidItems[13];

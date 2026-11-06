@@ -222,8 +222,10 @@ for (const file of FILES) {
   console.log('  — the bid table column');
   const head = src.slice(src.lastIndexOf('<thead>', src.indexOf('<tbody id="bid-fs-tbody">')),
                          src.indexOf('<tbody id="bid-fs-tbody">'));
-  assert('the column is the table\'s last, after Target Date',
-    /<th>Target Date<\/th>\s*<th class="num" title="Distinct days this sub code has been worked[^"]*">Days Worked<\/th>/.test(head),
+  // Plan / Day (the planned rate Custom Reporting measures against) sits
+  // between Target Date and Days Worked.
+  assert('the column is the table\'s last, after Target Date and Plan / Day',
+    /<th>Target Date<\/th>\s*<th class="num" title="[^"]*">Plan \/ Day<\/th>\s*<th class="num" title="Distinct days this sub code has been worked[^"]*">Days Worked<\/th>\s*<\/tr><\/thead>/.test(head),
     head.slice(-160).replace(/\s+/g, ' '));
   assert('every sub code row counts its own days',
     /const _wDays  = _workDaysForItems\(\[b\], projId\);/.test(render) &&

@@ -20,7 +20,24 @@
  *                        //   true when the server wrote the send history itself
  *     customReport,      // optional object — sent as `custom_report`: what a
  *                        //   *_custom_report send records in the history
+ *                        //   (run_kind: 'resend' and resent_from_run_id ride
+ *                        //   along with it untouched)
+ *     defaultRecipients, // optional [emails] — filled in when the modal opens,
+ *                        //   ahead of the project-group auto-add, which still
+ *                        //   runs and merges (Customer History's Resend)
+ *     contacts,          // optional [{ email, name?, source?: 'job'|'client', label? }]
+ *                        //   — saved customer contacts, filled in too; a chip
+ *                        //   shows the name, its tooltip the label ("Job
+ *                        //   contact — Maple Ave")
+ *     contactContext,    // optional { division, projectIds:[...], clients:[{key,name}],
+ *                        //   canEdit, apiBase?, getToken? } — with canEdit, every
+ *                        //   address that is not a saved contact offers
+ *                        //   "☆ Save as contact" for this job / this client /
+ *                        //   each picked job (POST /api/report-contacts)
  *   });
+ *
+ * onSent's info also carries `archived`: true when the server kept a copy of
+ * the HTML it sent (Custom Reporting's "open exactly what was sent").
  *
  * onSent exists for Custom Reporting, which keeps a history of what was sent
  * to whom. It is told only about a send that really happened, and anything it
@@ -202,23 +219,51 @@
   }
 
   // ── Recipient chips ─────────────────────────────────────────────────
+  // A saved contact's chip shows the person's name with the address beside it
+  // and says where the contact comes from in its tooltip. Any other address
+  // offers "Save as contact" when the caller lets this user save them.
+  const CHIP_STYLE = 'display:inline-flex;align-items:center;flex-wrap:wrap;gap:0.35rem;background:#1f2937;color:#f3f4f6;border:1px solid #374151;border-radius:12px;padding:0.18rem 0.55rem;font-size:0.75rem;margin:0.12rem;max-width:100%;';
+  function canSaveContact(e) {
+    const cc = state.contactContext;
+    return Boolean(cc && cc.canEdit && cc.scopes.length) && !state.contactMeta.has(e);
+  }
   function renderChips() {
     const wrap = document.getElementById('rem-chips');
     if (!wrap) return;
-    wrap.innerHTML = state.recipients.map((e, i) => `
-      <span style="display:inline-flex;align-items:center;gap:0.35rem;background:#1f2937;color:#f3f4f6;border:1px solid #374151;border-radius:12px;padding:0.18rem 0.55rem;font-size:0.75rem;margin:0.12rem;">
-        ${esc(e)}
-        <span data-i="${i}" class="rem-chip-x" style="cursor:pointer;color:#9ca3af;font-weight:700;font-size:0.85rem;line-height:1;">&times;</span>
-      </span>
-    `).join('');
-    wrap.querySelectorAll('.rem-chip-x').forEach(x => {
-      x.onclick = () => {
-        const i = parseInt(x.getAttribute('data-i'), 10);
-        if (!Number.isFinite(i)) return;
-        state.recipients.splice(i, 1);
-        renderChips();
-      };
-    });
+    wrap.innerHTML = state.recipients.map((e, i) => {
+      const meta = state.contactMeta.get(e) || null;
+      const shown = meta && meta.name ? meta.name : e;
+      const tip = meta && meta.title ? ` title="${esc(meta.title)}"` : '';
+      const addr = meta && meta.name
+        ? `<span class="rem-chip-addr" style="color:#9ca3af;font-size:0.7rem;">${esc(e)}</span>` : '';
+      const saved = meta && meta.saved
+        ? '<span class="rem-chip-saved" style="color:#fbbf24;font-size:0.68rem;">&#9733; Saved</span>' : '';
+      const save = canSaveContact(e)
+        ? `<button type="button" class="rem-chip-save" data-i="${i}" title="Save as a contact so it is filled in next time" style="background:transparent;border:0;color:#fbbf24;font-size:0.68rem;cursor:pointer;padding:0;">&#9734; Save as contact</button>`
+        : '';
+      return `<span class="rem-chip" data-email="${esc(e)}"${tip} style="${CHIP_STYLE}">${esc(shown)}${addr}${saved}${save}<span data-i="${i}" class="rem-chip-x" role="button" aria-label="Remove ${esc(e)}" style="cursor:pointer;color:#9ca3af;font-weight:700;font-size:0.85rem;line-height:1;">&times;</span></span>`;
+    }).join('');
+  }
+
+  // One listener for every chip, present and future.
+  function onChipClick(ev) {
+    const t = ev.target;
+    if (!t || typeof t.closest !== 'function' || !state) return;
+    const x = t.closest('.rem-chip-x');
+    if (x) {
+      const i = parseInt(x.getAttribute('data-i'), 10);
+      if (!Number.isFinite(i) || !state.recipients[i]) return;
+      const gone = state.recipients.splice(i, 1)[0];
+      state.manualEdit = true;
+      if (state.contactForm === gone) closeContactForm();
+      renderChips();
+      return;
+    }
+    const sv = t.closest('.rem-chip-save');
+    if (sv) {
+      const i = parseInt(sv.getAttribute('data-i'), 10);
+      if (Number.isFinite(i) && state.recipients[i]) openContactForm(state.recipients[i]);
+    }
   }
 
   // Adds every valid address in `raw`; returns how many it added and the
@@ -246,6 +291,166 @@
       + (state.serverIsAdmin ? `Edit the group to fix ${many ? 'them' : 'it'}.` : 'Ask an admin to fix the group.');
   }
 
+  // ── Recipients the caller fills in ──────────────────────────────────
+  const SOURCE_LABELS = { job: 'Job contact', client: 'Client contact' };
+
+  // The caller's defaultRecipients, then its saved contacts, each address
+  // once. Any the send would be refused over are left off and named, like a
+  // group's. Runs as the modal opens, before the project groups load.
+  function seedRecipients(defaults, contacts) {
+    const badDefault = [], badContact = [];
+    const add = (raw, bad) => {
+      const lc = String(raw == null ? '' : raw).trim().toLowerCase();
+      if (!lc) return;
+      if (!isValidEmail(lc)) { if (!bad.includes(lc)) bad.push(lc); return; }
+      if (!state.recipients.includes(lc)) state.recipients.push(lc);
+    };
+    const list = Array.isArray(contacts) ? contacts.filter(c => c && typeof c === 'object') : [];
+    for (const c of list) {
+      const lc = String(c.email == null ? '' : c.email).trim().toLowerCase();
+      if (!isValidEmail(lc) || state.contactMeta.has(lc)) continue;
+      const name = typeof c.name === 'string' ? c.name.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+      const label = typeof c.label === 'string' && c.label.trim()
+        ? c.label.trim().slice(0, 200)
+        : (SOURCE_LABELS[c.source] || 'Saved contact');
+      state.contactMeta.set(lc, { name, title: label, source: c.source === 'job' || c.source === 'client' ? c.source : null });
+    }
+    if (Array.isArray(defaults)) for (const e of defaults) add(e, badDefault);
+    for (const c of list) add(c.email, badContact);
+    const notes = [];
+    const note = (bad, tail) => {
+      if (!bad.length) return;
+      const many = bad.length > 1;
+      notes.push(`Left off ${bad.join(', ')} — ${many ? 'not valid email addresses' : 'not a valid email address'}.${tail ? ' ' + tail(many) : ''}`);
+    };
+    note(badDefault, null);
+    note(badContact, many => `Fix ${many ? 'them' : 'it'} in Contacts.`);
+    state.seedNote = notes.join(' ');
+    if (state.recipients.length) renderChips();
+    if (state.seedNote) setStatus(state.seedNote, 'error');
+  }
+
+  // ── Save as contact ─────────────────────────────────────────────────
+  // Where an address can be saved: the one job, every picked job, or one of
+  // the picked jobs' clients.
+  function contactScopes(cc) {
+    const out = [];
+    if (cc.projectIds.length === 1) out.push({ value: 'job', label: 'This job', projectIds: cc.projectIds.slice() });
+    if (cc.projectIds.length > 1) out.push({ value: 'jobs', label: `Each picked job (${cc.projectIds.length})`, projectIds: cc.projectIds.slice() });
+    cc.clients.slice(0, 10).forEach((c, i) => {
+      out.push({ value: 'client:' + i, label: `${cc.clients.length > 1 ? 'Client' : 'This client'} — ${c.name}`, client: c });
+    });
+    return out;
+  }
+
+  function readContactContext(raw) {
+    if (!raw || typeof raw !== 'object' || !raw.division) return null;
+    const projectIds = [...new Set((Array.isArray(raw.projectIds) ? raw.projectIds : [])
+      .filter(x => x !== null && x !== undefined && String(x).trim()).map(x => String(x).trim()))].slice(0, 200);
+    const clients = [];
+    for (const c of (Array.isArray(raw.clients) ? raw.clients : [])) {
+      if (!c || typeof c !== 'object') continue;
+      const name = String(c.name == null ? '' : c.name).trim();
+      const key = String(c.key == null ? name : c.key).trim().toLowerCase();
+      if (!name || !key || clients.some(x => x.key === key)) continue;
+      clients.push({ key, name: name.slice(0, 200) });
+    }
+    const cc = {
+      division:   String(raw.division),
+      projectIds, clients,
+      canEdit:    raw.canEdit === true,
+      apiBase:    typeof raw.apiBase === 'string' && raw.apiBase ? raw.apiBase.replace(/\/+$/, '') : '/api',
+      getToken:   typeof raw.getToken === 'function' ? raw.getToken : null,
+    };
+    cc.scopes = contactScopes(cc);
+    return cc;
+  }
+
+  function closeContactForm() {
+    const box = document.getElementById('rem-contact-form');
+    if (box) { box.innerHTML = ''; box.style.display = 'none'; }
+    if (state) state.contactForm = null;
+  }
+
+  function openContactForm(email) {
+    const box = document.getElementById('rem-contact-form');
+    const cc = state.contactContext;
+    if (!box || !cc || !cc.canEdit || !cc.scopes.length) return;
+    state.contactForm = email;
+    const field = 'background:#020617;color:#e5e7eb;border:1px solid #1f2937;border-radius:6px;padding:0.35rem 0.5rem;font-size:0.8rem;outline:none;min-width:0;';
+    box.innerHTML = `
+      <div style="font-size:0.75rem;color:#e5e7eb;margin-bottom:0.35rem;">Save <strong>${esc(email)}</strong> as a contact</div>
+      <div style="display:flex;flex-wrap:wrap;gap:0.35rem;align-items:center;">
+        <input id="rem-contact-name" type="text" maxlength="120" placeholder="Name (optional)" autocomplete="off" style="${field}flex:1 1 9rem;">
+        <select id="rem-contact-role" style="${field}">
+          <option value="owner">Owner</option><option value="gc">GC</option><option value="engineer">Engineer</option>
+          <option value="inspector">Inspector</option><option value="internal">Internal</option>
+          <option value="other" selected>Other</option>
+        </select>
+        <select id="rem-contact-scope" style="${field}flex:1 1 9rem;">
+          ${cc.scopes.map(sc => `<option value="${esc(sc.value)}">${esc(sc.label)}</option>`).join('')}
+        </select>
+        <button type="button" id="rem-contact-save" style="background:#065f46;color:#d1fae5;border:1px solid #047857;border-radius:6px;font-size:0.75rem;font-weight:600;padding:0.32rem 0.7rem;cursor:pointer;">Save</button>
+        <button type="button" id="rem-contact-cancel" style="background:transparent;color:#9ca3af;border:1px solid #374151;border-radius:6px;font-size:0.75rem;padding:0.32rem 0.7rem;cursor:pointer;">Cancel</button>
+      </div>
+      <div id="rem-contact-msg" style="font-size:0.72rem;color:#fca5a5;margin-top:0.3rem;min-height:1em;"></div>`;
+    box.style.display = 'block';
+    document.getElementById('rem-contact-cancel').addEventListener('click', closeContactForm);
+    document.getElementById('rem-contact-save').addEventListener('click', () => { saveContact(email); });
+    const nameInp = document.getElementById('rem-contact-name');
+    nameInp.addEventListener('keydown', ev => { if (ev.key === 'Enter') { ev.preventDefault(); saveContact(email); } });
+    setTimeout(() => { try { nameInp.focus(); } catch (_) { /* gone already */ } }, 0);
+  }
+
+  async function saveContact(email) {
+    const cc = state && state.contactContext;
+    const btn = document.getElementById('rem-contact-save');
+    const msg = document.getElementById('rem-contact-msg');
+    if (!cc || !btn || btn.disabled) return;
+    const name = (document.getElementById('rem-contact-name')?.value || '').replace(/\s+/g, ' ').trim().slice(0, 120);
+    const role = document.getElementById('rem-contact-role')?.value || 'other';
+    const scope = cc.scopes.find(sc => sc.value === document.getElementById('rem-contact-scope')?.value) || cc.scopes[0];
+    // A client contact is filed under the key the server works out from the
+    // client's name — the same trim-and-lower-case the job's own client gets.
+    const bodies = scope.client
+      ? [{ client_name: scope.client.name }]
+      : scope.projectIds.map(id => ({ project_id: id }));
+    const live = state;   // closing the modal mid-save clears state
+    btn.disabled = true; btn.style.opacity = '0.6';
+    if (msg) { msg.style.color = '#9ca3af'; msg.textContent = 'Saving…'; }
+    let tok = '';
+    try { tok = cc.getToken ? await cc.getToken() : token(); } catch (_) { tok = token(); }
+    let saved = 0, already = 0, error = '';
+    for (const body of bodies) {
+      try {
+        const r = await fetch(`${cc.apiBase}/report-contacts?division=${encodeURIComponent(cc.division)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + (tok || '') },
+          body: JSON.stringify({ ...body, email, name: name || null, role, auto_add: true }),
+        });
+        const j = (await readJson(r)) || {};
+        if (r.ok && j.ok) saved++;
+        else if (r.status === 409 && j.error === 'duplicate') already++;
+        else { error = j.error || ('HTTP ' + r.status); break; }
+      } catch (err) { error = (err && err.message) || 'network error'; break; }
+    }
+    if (state !== live) return;
+    if (error && !saved && !already) {
+      btn.disabled = false; btn.style.opacity = '1';
+      if (msg) { msg.style.color = '#fca5a5'; msg.textContent = 'Couldn’t save the contact: ' + error; }
+      return;
+    }
+    const jobs = bodies.length > 1 ? `${bodies.length} jobs` : 'this job';
+    const where = scope.client ? `client ${scope.client.name}` : jobs;
+    state.contactMeta.set(email, { name, title: `Saved contact — ${scope.client ? scope.client.name : jobs}`,
+      source: scope.client ? 'client' : 'job', saved: true });
+    closeContactForm();
+    renderChips();
+    if (error) setStatus(`Saved ${email} for ${saved + already} of ${bodies.length} jobs — ${error}`, 'error');
+    else if (!saved) setStatus(`${email} was already a saved contact for ${where}.`, 'ok');
+    else setStatus(`Saved ${email} as a contact for ${where}.`, 'ok');
+  }
+
   // ── Saved groups ────────────────────────────────────────────────────
   async function loadGroups() {
     const list = document.getElementById('rem-groups-list');
@@ -268,9 +473,12 @@
       // On first load only, auto-populate recipients from any saved group
       // tied to this project so users don't hit "Add at least one recipient"
       // when a project group is clearly intended for the send.
+      // Recipients the caller filled in (defaultRecipients, contacts) do not
+      // stop it — the job's group still merges in; ones the user typed or
+      // removed before the groups arrived do, as they always have.
       if (!state.didAutoAdd) {
         state.didAutoAdd = true;
-        if (state.projectId && !state.recipients.length) {
+        if (state.projectId && (!state.recipients.length || !state.manualEdit)) {
           const matched = state.groups.filter(g => g.project_id === state.projectId);
           let added = 0;
           const bad = [];
@@ -285,7 +493,7 @@
             }
           }
           if (added) renderChips();
-          if (bad.length) setStatus(leftOffNote(bad), 'error');
+          if (bad.length) setStatus([state.seedNote, leftOffNote(bad)].filter(Boolean).join(' '), 'error');
         }
       }
     } catch (err) {
@@ -349,6 +557,7 @@
   }
 
   function onAddGroup(g) {
+    state.manualEdit = true;
     const before = state.recipients.length;
     const bad = [];
     for (const e of (g.emails || [])) {
@@ -457,6 +666,7 @@
         pdfAttached:    !!j.pdfAttached,
         logged:         j.logged === true,
         runId:          j.run_id == null ? null : j.run_id,
+        archived:       j.archived === true,
       });
       if (p && typeof p.catch === 'function') p.catch(err => console.warn('[report-email] onSent failed:', err && err.message));
     } catch (err) {
@@ -602,6 +812,7 @@
         <div style="padding:0.85rem 1.1rem;overflow-y:auto;flex:1;">
           <label style="display:block;font-size:0.72rem;color:#9ca3af;margin-bottom:0.25rem;">Recipients</label>
           <div id="rem-chips" style="border:1px solid #1f2937;border-radius:6px;background:#020617;padding:0.35rem;min-height:2rem;"></div>
+          <div id="rem-contact-form" style="display:none;margin-top:0.35rem;padding:0.5rem 0.6rem;border:1px solid #374151;border-radius:6px;background:#0f172a;"></div>
           <div style="display:flex;gap:0.4rem;margin-top:0.35rem;">
             <input id="rem-input" type="text" placeholder="Type an email and press Enter…" autocomplete="off"
               style="flex:1;background:#020617;color:#e5e7eb;border:1px solid #1f2937;border-radius:6px;padding:0.45rem 0.6rem;font-size:0.85rem;outline:none;">
@@ -652,6 +863,7 @@
     const inp = document.getElementById('rem-input');
     const addTyped = quiet => {
       const v = inp.value;
+      if (v.trim()) state.manualEdit = true;
       const { added, bad } = addEmail(v);
       if (bad.length) {
         inp.value = bad.join(', ');
@@ -672,7 +884,10 @@
     const onEsc = ev => { if (ev.key === 'Escape') { close(); document.removeEventListener('keydown', onEsc); } };
     document.addEventListener('keydown', onEsc);
 
+    document.getElementById('rem-chips').addEventListener('click', onChipClick);
+
     renderChips();
+    seedRecipients(state.defaultRecipients, state.contacts);
     loadGroups();
     setTimeout(() => inp.focus(), 30);
   }
@@ -716,6 +931,13 @@
       getSummary:     typeof opts.getSummary === 'function' ? opts.getSummary : null,
       onSent:         typeof opts.onSent === 'function' ? opts.onSent : null,
       customReport:   opts.customReport && typeof opts.customReport === 'object' ? opts.customReport : null,
+      defaultRecipients: Array.isArray(opts.defaultRecipients) ? opts.defaultRecipients.slice(0, 200) : [],
+      contacts:       Array.isArray(opts.contacts) ? opts.contacts.slice(0, 200) : [],
+      contactContext: readContactContext(opts.contactContext),
+      contactMeta:    new Map(),   // email → { name, title, source, saved? }
+      contactForm:    null,        // the address the Save-as-contact form is open for
+      seedNote:       '',
+      manualEdit:     false,       // the user added or removed a recipient themselves
       recipients:     [],
       groups:         [],
       serverIsAdmin:  false,

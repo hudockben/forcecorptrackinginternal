@@ -22,15 +22,28 @@
 // Access is checked at every send, against the account as it is now: a
 // division taken away from the admin who scheduled a report stops that report
 // rather than leaving a timetable as a way around Manage Users.
+//
+// A saved Custom Reporting report (SCHEDULABLE[type].customReport) is sent
+// customer-safe or not at all. Before anything is built the saved report is
+// read again: deleted, no longer shared with the account it runs as, switched
+// to internal data, or that account made sales since — the run stops and says
+// so in plain words. The page is handed the definition as it is now
+// (spec.customReport), forces internal data off itself, and anything that
+// still comes back carrying the engine's internal mark is refused before it
+// is sent. What does go is written into the report's own send history
+// (custom_report_runs, run_kind 'schedule' or 'send_now') with the HTML that
+// went, so Customer History can open exactly what the owner received.
 
 const { randomUUID } = require('crypto');
 const jwt = require('jsonwebtoken');
-const { currentAccess } = require('./auth');
-const { MAX_HTML_BYTES, isValidEmail, normalizeAttachments } = require('./email');
+const { currentAccess, isSalesIn } = require('./auth');
+const { MAX_HTML_BYTES, isValidEmail, normalizeAttachments, sanitizeReportHtml } = require('./email');
 const { launchBrowser } = require('./pdf');
 const { deliverReport } = require('./report-delivery');
-const { SCHEDULABLE, DIVISIONS, PAY_RANGES, mayUseDivision, periodsFor } = require('./report-catalog');
+const { SCHEDULABLE, DIVISIONS, PAY_RANGES, JOBS_MODES, mayUseDivision, periodsFor } = require('./report-catalog');
 const T = require('./report-schedule-time');
+const CR = require('./custom-report-runs');
+const { contactsForJobs, clientKeyOf } = require('./report-contacts');
 
 // Time limits. The function running all this is killed at 300s (vercel.json),
 // so every wait is the smaller of its own limit and what is left before the
@@ -99,6 +112,25 @@ function appBaseUrl(req) {
   return '';
 }
 
+/**
+ * The company name the email around a report carries: the branding's display
+ * name, else the company's own — the rule send-report.js reads for an email
+ * sent by hand, so a scheduled one is not headed differently. Any failure
+ * (an older schema without company_branding) keeps the name already read.
+ */
+async function mailCompanyName(sql, company, fallback) {
+  try {
+    const rows = await sql`
+      SELECT NULLIF(btrim(display_name), '') AS name FROM company_branding
+       WHERE company_code = ${company} AND division = ''`;
+    const name = rows[0] && typeof rows[0].name === 'string' ? rows[0].name.trim() : '';
+    return name || fallback;
+  } catch (err) {
+    console.error('[report-schedules] branding name not read, using the company name:', err.message);
+    return fallback;
+  }
+}
+
 /** The account a schedule runs as, with its access as of now — or null. */
 async function loadRunAs(sql, sched) {
   const rows = await sql`
@@ -153,14 +185,275 @@ async function recipientsFor(sql, companyCode, groupIds) {
   return { emails, invalid, groups: rows.map(g => g.name), missing: ids.length - rows.length };
 }
 
-/** The addresses recipientsFor left off, for a run's message. */
+/**
+ * The addresses left off a send, for a run's message. Each came from a
+ * recipient group (the usual case), the schedule's own extra addresses
+ * (source 'schedule') or a job's saved contacts (source 'contact'), and the
+ * fix named is the one for where it came from.
+ */
 function leftOffText(invalid) {
   if (!invalid || !invalid.length) return '';
   const shown = invalid.slice(0, 5).map(x => `${x.email} (${x.group})`).join(', ')
     + (invalid.length > 5 ? ` and ${invalid.length - 5} more` : '');
+  const fixes = [];
+  if (invalid.some(x => !x.source || x.source === 'group')) fixes.push('with Edit on the group');
+  if (invalid.some(x => x.source === 'schedule')) fixes.push('by editing the schedule');
+  if (invalid.some(x => x.source === 'contact')) fixes.push('in the job\'s saved contacts');
+  const fix = fixes.join(' or ');
   return invalid.length === 1
-    ? `Left off ${shown} — not a valid email address; fix it with Edit on the group.`
-    : `Left off ${shown} — not valid email addresses; fix them with Edit on the group.`;
+    ? `Left off ${shown} — not a valid email address; fix it ${fix}.`
+    : `Left off ${shown} — not valid email addresses; fix them ${fix}.`;
+}
+
+/**
+ * Fold more addresses into a recipient list (recipientsFor's shape): once
+ * each, without case, in order; one the mail service would refuse goes to
+ * `invalid` with where it came from. Returns a new list.
+ */
+function addRecipients(list, raw, label, source) {
+  const out = { ...list, emails: list.emails.slice(), invalid: list.invalid.slice() };
+  const seen = new Set([...out.emails, ...out.invalid.map(x => x.email)]);
+  for (const r of (Array.isArray(raw) ? raw : [])) {
+    const e = String((r && typeof r === 'object' ? r.email : r) || '').trim().toLowerCase();
+    if (!e || seen.has(e)) continue;
+    seen.add(e);
+    if (isValidEmail(e)) out.emails.push(e);
+    else out.invalid.push({ email: e, group: label, source });
+  }
+  return out;
+}
+
+// ── Scheduled custom reports ────────────────────────────────────────────────
+
+const optionsOf = sched => (sched && sched.options && typeof sched.options === 'object' && !Array.isArray(sched.options) ? sched.options : {});
+
+/** The saved report a custom schedule sends: its column, else the copy in options. */
+function customReportIdOf(sched) {
+  return CR.toId(sched && sched.custom_report_id) || CR.toId(optionsOf(sched).report_id);
+}
+
+/** Which jobs a custom schedule covers (JOBS_MODES). */
+function jobsModeOf(sched) {
+  if (JOBS_MODES.includes(sched && sched.jobs_mode)) return sched.jobs_mode;
+  const o = optionsOf(sched);
+  if (JOBS_MODES.includes(o.jobs_mode)) return o.jobs_mode;
+  return sched && sched.project_id === '*' ? 'each' : 'saved';
+}
+
+/**
+ * The saved report a custom schedule sends, read now and checked against the
+ * account it runs as now — { report, mode }, or { error } in words for the
+ * schedule's row. Customer-safe only: a report switched to internal data
+ * since it was scheduled stops the schedule rather than going out.
+ */
+async function loadCustomReport(sql, sched, acct, def) {
+  const savedName = String(optionsOf(sched).report_name || '').trim();
+  if (isSalesIn(acct, def.division)) {
+    return { error: `${acct.username} is a sales login in ${divisionName(def.division)} now, and sales cannot open Custom Reporting. `
+      + 'Have an admin or level 3 user edit and save the schedule to run it as them.' };
+  }
+  const gone = n => ({ error: `The saved report${n ? ` “${n}”` : ''} was deleted. Restore it in Custom Reporting, or delete this schedule.` });
+  const id = customReportIdOf(sched);
+  if (!id) return gone(savedName);
+  const rows = await sql`
+    SELECT id, name, kind, visibility, owner_user_id, customer_safe, definition, version, deleted_at
+      FROM custom_reports
+     WHERE id = ${id} AND company_code = ${sched.company_code} AND division = ${def.division}
+     LIMIT 1`;
+  const r = rows && rows[0];
+  const name = (r && r.name) || savedName;
+  if (!r || r.deleted_at) return gone(name);
+  if (!(r.visibility === 'shared' || Number(r.owner_user_id) === Number(acct.userId))) {
+    return { error: `“${name}” is no longer shared with ${acct.username}, who this schedule runs as. `
+      + 'Share it again, or have its owner edit and save the schedule.' };
+  }
+  const definition = CR.isPlainObject(r.definition) ? r.definition : {};
+  if (r.customer_safe === false || definition.includeInternal === true) {
+    return { error: `“${name}” now includes internal data — scheduled sends are customer-safe only. `
+      + 'Switch internal data off in Custom Reporting and save it to start sending again.' };
+  }
+  const dates = CR.isPlainObject(definition.dates) ? definition.dates : {};
+  if (dates.preset === 'custom') {
+    return { error: `“${name}” is set to fixed dates now, so every email would show the same days. `
+      + 'Give it a relative date range like Last week and save it.' };
+  }
+  const mode = jobsModeOf(sched);
+  if (mode === 'saved' && r.kind !== 'report') {
+    return { error: `“${name}” no longer saves its jobs, so this schedule does not know which jobs to send. `
+      + 'Edit the schedule and pick the jobs it covers.' };
+  }
+  return {
+    mode,
+    report: {
+      id: Number(r.id), name, kind: r.kind, version: Number(r.version) || 1,
+      // Forced off here as well as on the page: the one setting a schedule
+      // must never send with.
+      definition: { ...definition, includeInternal: false },
+    },
+  };
+}
+
+/**
+ * A custom report item's log record (its customReport, as the page returned
+ * it), tidied: job ids and names as lists, the jobs' clients where the page
+ * gave them, and the dates and definition it was built from.
+ */
+function customRecordOf(it, custom, spec) {
+  const c = it && CR.isPlainObject(it.customReport) ? it.customReport : {};
+  const list = v => (Array.isArray(v) ? v : []);
+  let ids = list(c.project_ids).map(x => String(x == null ? '' : x).trim()).filter(Boolean);
+  if (!ids.length && it && it.projectId) ids = [String(it.projectId)];
+  if (!ids.length && spec && spec.jobsMode === 'saved') {
+    const j = custom.definition.jobs;
+    ids = list(j && !Array.isArray(j) ? j.ids : j).map(String).filter(Boolean);
+  }
+  const names = list(c.project_names).map(x => String(x == null ? '' : x));
+  // Clients as the page sent them: a list beside project_ids (a name, or
+  // { id, client }), or none — then they are read from the jobs.
+  const raw = list(c.clients);
+  const clients = new Map();
+  raw.forEach((x, i) => {
+    if (x && typeof x === 'object') {
+      const id = x.id != null ? String(x.id) : ids[i];
+      const name = x.client != null ? x.client : x.name;
+      if (id && typeof name === 'string') clients.set(id, name);
+    } else if (typeof x === 'string' && ids[i]) {
+      clients.set(ids[i], x);
+    }
+  });
+  return {
+    project_ids:   ids,
+    project_names: ids.map((id, i) => names[i] || ''),
+    clients,
+    date_from:     c.date_from || null,
+    date_to:       c.date_to || null,
+    definition:    CR.isPlainObject(c.definition) ? { ...c.definition, includeInternal: false } : custom.definition,
+  };
+}
+
+/**
+ * Jobs a custom report item covers that it was not asked for, in words — or
+ * null. One email per job is that job; a saved report, its saved jobs (a job
+ * since deleted drops out, which is fine). An item that says nothing about
+ * its jobs is taken to be the job asked for.
+ */
+function strayJobsOf(rec, mode, asked, custom) {
+  if (mode === 'each') {
+    const want = String(asked && asked.projectId);
+    if (!rec.project_ids.length) { rec.project_ids = [want]; rec.project_names = [(asked && asked.projectName) || '']; return null; }
+    const other = rec.project_ids.filter(id => id !== want);
+    return other.length ? other.join(', ') : null;
+  }
+  if (mode === 'saved') {
+    const j = custom.definition.jobs;
+    const saved = new Set((Array.isArray(j) ? j : (j && Array.isArray(j.ids) ? j.ids : [])).map(String));
+    const other = rec.project_ids.filter(id => !saved.has(id));
+    return other.length ? other.join(', ') : null;
+  }
+  return null;
+}
+
+/** What a custom report item is called in the run's messages: its job, its jobs, or the report. */
+function customItemName(rec, custom) {
+  if (rec.project_ids.length === 1) return rec.project_names[0] || custom.name;
+  if (rec.project_ids.length > 1) return `${custom.name} (${rec.project_ids.length} jobs)`;
+  return custom.name;
+}
+
+/** The clients of jobs the page did not say, read from the jobs themselves, once per run. */
+async function clientsFromJobs(sql, company, division, ids, cache) {
+  const want = ids.filter(id => !cache.has(id));
+  if (want.length) {
+    const { PROJECT_KEYS } = require('../executive/report');
+    const keys = PROJECT_KEYS[division];
+    if (keys) {
+      const key = id => `${company}:${keys.prefix}${id}`;
+      const rows = await sql`
+        SELECT key, value->>'client' AS client FROM app_data WHERE key = ANY(${want.map(key)})`;
+      const byKey = new Map(rows.map(r => [r.key, r.client]));
+      for (const id of want) cache.set(id, byKey.get(key(id)) || '');
+    }
+  }
+  return ids.map(id => cache.get(id) || '');
+}
+
+/**
+ * Do these jobs belong to one customer? One job always does; several do only
+ * when every one names the same client (compared as the contacts file them).
+ * A job with no client could be anybody's, so several with one blank do not.
+ */
+function oneCustomer(clients) {
+  if (clients.length <= 1) return true;
+  const keys = clients.map(c => clientKeyOf(c));
+  return keys.every(k => k && k === keys[0]);
+}
+
+/**
+ * The saved contacts (auto_add) of an item's jobs and their clients, as
+ * { contacts } — or { mixed: true } when the item covers more than one
+ * customer's jobs. A report about several customers' jobs never goes to those
+ * customers' contacts: each would be sent the others' jobs.
+ */
+async function jobContactsFor(sql, sched, division, rec, cache) {
+  if (!rec.project_ids.length) return { contacts: [] };
+  let clients = rec.project_ids.map(id => rec.clients.get(id));
+  if (clients.some(c => c === undefined)) {
+    const read = await clientsFromJobs(sql, sched.company_code, division, rec.project_ids, cache);
+    clients = clients.map((c, i) => (c === undefined ? read[i] : c));
+  }
+  if (!oneCustomer(clients)) return { mixed: true, contacts: [] };
+  return {
+    contacts: await contactsForJobs(sql, sched.company_code, division,
+      rec.project_ids.map((id, i) => ({ id, client: clients[i] || '' }))),
+  };
+}
+
+/** The clients of these jobs, read from the jobs (for the schedules API's own check). */
+async function clientsOfJobs(sql, company, division, ids) {
+  return clientsFromJobs(sql, company, division, (Array.isArray(ids) ? ids : []).map(String), new Map());
+}
+
+/**
+ * Write a sent custom report into its send history, with the HTML that
+ * went. Never throws: the email has gone, and a failed log must not turn
+ * that into a failed run.
+ */
+async function logCustomSend(sql, { sched, def, acct, custom, rec, recipients, subject, html, runKind }) {
+  const base = {
+    action: 'email', run_kind: runKind, schedule_id: sched.id, included_internal: false,
+    report_id: custom.id, report_name: custom.name,
+    recipients: recipients.slice(0, CR.MAX_RUN_RECIPIENTS), subject,
+  };
+  const kinds = { kinds: ['schedule', 'send_now'] };
+  let r = CR.readRun({
+    ...base, project_ids: rec.project_ids, project_names: rec.project_names,
+    date_from: rec.date_from, date_to: rec.date_to, definition: rec.definition,
+  }, kinds);
+  // Something about the jobs or dates would not store: logged anyway, without them.
+  if (r.error) r = CR.readRun(base, kinds);
+  if (r.error) {
+    console.error('[report-schedules] custom report send not logged:', r.error, 'schedule=' + sched.id);
+    return { logged: false, archived: false };
+  }
+  let run;
+  try {
+    run = await CR.insertRun(sql, {
+      company: sched.company_code, division: def.division,
+      me: { userId: acct.userId, username: acct.username }, run: r.value,
+    });
+  } catch (err) {
+    console.error('[report-schedules] custom report send not logged:', err.message, 'schedule=' + sched.id);
+    return { logged: false, archived: false };
+  }
+  let archived = false;
+  try {
+    // What went out is what deliverReport sanitized: the same function on
+    // the same string gives the same document.
+    archived = await CR.insertArchive(sql, { runId: run.id, company: sched.company_code, html: sanitizeReportHtml(html) });
+  } catch (err) {
+    console.error('[report-schedules] custom report archive not written:', err.message, 'run=' + run.id);
+  }
+  return { logged: true, runId: run.id, archived };
 }
 
 /**
@@ -185,6 +478,19 @@ function specFor(sched, def, at) {
     today:       T.localDate(now, tz),
   };
   if (def.scope === 'job' && !spec.projectId) spec.projectId = '*';
+  // A saved custom report: its own saved jobs, or every In Progress job in
+  // one report — one build, no job — or one email per job ('*', the jobs
+  // picked on the schedule or every In Progress one). Its dates are its
+  // definition's own preset, worked out by the page from spec.today.
+  if (def.customReport) {
+    spec.jobsMode = jobsModeOf(sched);
+    if (spec.jobsMode === 'each') {
+      if (!spec.projectId) spec.projectId = '*';
+    } else {
+      spec.projectId = null;
+      spec.projectName = null;
+    }
+  }
   // One email per job, for the jobs ticked on the schedule rather than every
   // job marked In Progress (dwAutoReport.plan).
   if (spec.projectId === '*' && Array.isArray(sched.picked_jobs) && sched.picked_jobs.length) {
@@ -677,19 +983,46 @@ async function runSchedule(sql, sched, ctx = {}) {
         : `${acct.username} no longer has access to ${divisionName(def.division)}. Open it and save it as someone who does.`);
   }
 
+  // What the email shell is headed with (the report inside carries its own).
+  const mailName = await mailCompanyName(sql, sched.company_code, acct.companyName);
+
+  // A saved custom report: read again, now, and checked against the account
+  // it runs as, before anything is built.
+  let custom = null;
+  if (def.customReport) {
+    let loaded;
+    try { loaded = await loadCustomReport(sql, sched, acct, def); }
+    catch (err) { return fail(`Could not read the saved report: ${err.message}`); }
+    if (loaded.error) return fail(loaded.error);
+    custom = loaded.report;
+    result.reportName = custom.name;
+  }
+
   let recips;
   try { recips = await recipientsFor(sql, sched.company_code, sched.group_ids); }
   catch (err) { return fail(`Could not read its recipient groups: ${err.message}`); }
-  const leftOff = leftOffText(recips.invalid);
-  if (!recips.emails.length) {
+  // A custom report's schedule may also carry addresses of its own, and send
+  // to each job's saved contacts — those are worked out job by job below.
+  if (custom) recips = addRecipients(recips, sched.emails, 'the schedule\'s own addresses', 'schedule');
+  const useContacts = Boolean(custom && sched.use_job_contacts);
+  let leftOff = leftOffText(recips.invalid);
+  if (!recips.emails.length && !useContacts) {
     return fail(recips.invalid.length ? `Nobody to send to. ${leftOff}`
       : recips.missing
         ? 'Its recipient group was deleted. Pick another group.'
-        : 'Its recipient groups have no addresses on them.');
+        : custom && !(Array.isArray(sched.group_ids) && sched.group_ids.length)
+          ? 'It has nobody to send to. Add a recipient group, an email address or the jobs\' saved contacts.'
+          : 'Its recipient groups have no addresses on them.');
   }
   result.recipientCount = recips.emails.length;
+  // Everybody a custom report actually went to, over every job's email.
+  const sentTo = new Set();
+  const contactsLeftOff = [];
+  const clientCache = new Map();
+  const runKind = ctx.kind === 'manual' ? 'send_now' : 'schedule';
 
   const spec = specFor(sched, def, ctx.occurrence || now);
+  if (custom) spec.customReport = { id: custom.id, name: custom.name, version: custom.version, definition: custom.definition };
   const tz = spec.timezone;
   const generatedAt = now.toLocaleString('en-US', {
     timeZone: tz, weekday: 'short', year: 'numeric', month: 'short', day: 'numeric',
@@ -810,14 +1143,14 @@ async function runSchedule(sql, sched, ctx = {}) {
             break;
           }
         }
-        const label = one.projectName || def.label;
+        const label = one.projectName || (custom ? custom.name : def.label);
         let built;
         try {
           built = await during(specs.length > 1 ? `Building ${label} (${s + 1} of ${specs.length})` : `Building ${label}`,
             () => session.build(one));
         }
         catch (err) {
-          const msg = `${one.projectName || def.label}: ${err.message}`;
+          const msg = `${label}: ${err.message}`;
           if (isTimeUp(err)) {
             await session.close();
             session = null;
@@ -847,7 +1180,8 @@ async function runSchedule(sql, sched, ctx = {}) {
 
         let finished = true;
         for (const it of built.items) {
-          const name = it.projectName || def.label;
+          const rec = custom ? customRecordOf(it, custom, spec) : null;
+          const name = custom ? customItemName(rec, custom) : (it.projectName || def.label);
           if (ctx.deadline && budget(ctx.deadline, Infinity) < SEND_NEEDS_MS) {
             finished = false;
             halted = true;
@@ -858,7 +1192,49 @@ async function runSchedule(sql, sched, ctx = {}) {
             try { why = await ctx.stillWanted(); } catch { why = null; }
             if (why) { stopped = why; finished = false; halted = true; break; }
           }
+          // A custom report is for the jobs it was asked for — the one job of
+          // a one-email-per-job schedule, the saved report's own jobs — and
+          // never sent, to those jobs' contacts or anyone, as something else.
+          if (custom) {
+            const strayJobs = strayJobsOf(rec, spec.jobsMode, one, custom);
+            if (strayJobs) {
+              attempted++;
+              problems.push(`${name}: the page built it for ${strayJobs}, not the job${spec.jobsMode === 'saved' ? 's' : ''} it was asked for — not sent.`);
+              continue;
+            }
+          }
+          // Who this one goes to: the schedule's own list, and for a custom
+          // report that sends to the jobs' saved contacts, this item's jobs'.
+          let to = recips.emails;
+          if (custom && useContacts) {
+            let found;
+            try { found = await jobContactsFor(sql, sched, def.division, rec, clientCache); }
+            catch (err) {
+              attempted++;
+              problems.push(`${name}: its saved contacts could not be read (${err.message}).`);
+              continue;
+            }
+            if (found.mixed) {
+              // Several customers' jobs in one report: not to their contacts.
+              const why = `${name}: not sent to the jobs' saved contacts — it covers more than one customer's jobs, `
+                + 'and each would see the others\'. Send one email per job to use them.';
+              if (!to.length) { attempted++; problems.push(why); continue; }
+              // It still goes to the rest; the row asks to be looked at.
+              problems.push(why);
+            }
+            const merged = addRecipients({ emails: to, invalid: [] }, found.contacts, `contact on ${name}`, 'contact');
+            to = merged.emails;
+            contactsLeftOff.push(...merged.invalid);
+            if (!to.length) { skipped.push(`No saved contacts for ${name}`); continue; }
+          }
           attempted++;
+          // Customer-safe or not at all: whatever the page did, a report that
+          // carries the engine's internal mark does not go out on a timetable.
+          if (custom && (CR.INTERNAL_MARK.test(String(it.html || ''))
+            || (CR.isPlainObject(it.customReport) && it.customReport.included_internal === true))) {
+            problems.push(`${name}: it carries internal data, and scheduled sends are customer-safe only — not sent.`);
+            continue;
+          }
           if (Buffer.byteLength(it.html, 'utf8') > MAX_HTML_BYTES) {
             problems.push(`${name}: the report is too large to email.`);
             continue;
@@ -866,22 +1242,27 @@ async function runSchedule(sql, sched, ctx = {}) {
           const att = normalizeAttachments(it.attachments);
           if (!att.ok) { problems.push(`${name}: ${att.error}`); continue; }
 
+          // The schedule's subject, with the job named on each of a one-
+          // email-per-job schedule's emails so they can be told apart.
+          const jobName = custom ? (spec.jobsMode === 'each' && rec.project_ids.length === 1 ? rec.project_names[0] : null) : it.projectName;
+          const subj = sched.subject && sched.subject.trim()
+            ? (jobName && !sched.subject.includes(jobName) ? `${sched.subject.trim()} — ${jobName}` : sched.subject.trim())
+            : it.subject;
+
           if (!firstSend) await sleep(SEND_GAP_MS);
           firstSend = false;
           progress(specs.length > 1 ? `Making the PDF and sending ${name} (${s + 1} of ${specs.length})` : `Making the PDF and sending ${name}`);
           const sent = await deliverReport({
             label:       def.label,
             projectName: it.projectName,
-            recipients:  recips.emails,
-            subject:     sched.subject && sched.subject.trim()
-              ? (it.projectName && !sched.subject.includes(it.projectName) ? `${sched.subject.trim()} — ${it.projectName}` : sched.subject.trim())
-              : it.subject,
+            recipients:  to,
+            subject:     subj,
             note:        sched.note || '',
             html:        it.html,
             attachments: att.attachments,
             summary:     it.summary,
             attachPdf:   sched.attach_pdf !== false,
-            companyName: acct.companyName,
+            companyName: mailName,
             generatedAt,
             browser,
             logTag:      `schedule=${sched.id} report=${sched.report_type}`,
@@ -890,6 +1271,14 @@ async function runSchedule(sql, sched, ctx = {}) {
             result.sent++;
             // It went — the PDF just could not be made, so the report is in the body.
             if (sent.warning) notes.push(`${name}: ${sent.warning}`);
+            if (custom) {
+              to.forEach(e => sentTo.add(e));
+              const logged = await logCustomSend(sql, {
+                sched, def, acct, custom, rec, recipients: to, subject: sent.subject || subj, html: it.html, runKind,
+              });
+              if (logged.logged) result.logged = (result.logged || 0) + 1;
+              if (logged.archived) result.archived = (result.archived || 0) + 1;
+            }
           } else {
             problems.push(`${name}: ${sent.error}`);
           }
@@ -913,11 +1302,26 @@ async function runSchedule(sql, sched, ctx = {}) {
   }
 
   result.total = attempted;
+  // A custom report sent to its jobs' contacts went to a different list for
+  // each job: the count is everybody it reached, and a saved contact the mail
+  // service would refuse is named with the rest left off.
+  if (custom && sentTo.size) result.recipientCount = sentTo.size;
+  // The send history's housekeeping, as the Email button's sends do it.
+  if (custom && result.logged) {
+    try {
+      await CR.pruneSnapshots(sql, sched.company_code, def.division);
+      if (result.archived) await CR.pruneArchives(sql, sched.company_code);
+    } catch (err) { console.error('[report-schedules] custom report history prune failed:', err.message); }
+  }
+  if (contactsLeftOff.length) {
+    const seenBad = new Set();
+    leftOff = leftOffText([...recips.invalid, ...contactsLeftOff.filter(x => !seenBad.has(x.email) && seenBad.add(x.email))]);
+  }
   const unreached    = outOfTime + overCap + stoppedLeft;
   const allSent      = prev.sent + result.sent;
   const allAttempted = prev.attempted + attempted;
   const allProblems  = [...prev.problems, ...problems, ...retryProblems];
-  const to = plural(recips.emails.length, 'recipient');
+  const to = plural(result.recipientCount, 'recipient');
   // An every-job occurrence's jobs, all passes: the most any pass's plan saw.
   // Those not yet tried are what is left, whatever this pass managed to see.
   const total = everyJob ? Math.max(planned == null ? 0 : planned, prev.total) : 0;
@@ -1134,10 +1538,19 @@ async function handBack(sql, sched, token, { occurrence, state }) {
   if (!Number.isFinite(occ.getTime())) return false;
   const days = Array.isArray(sched.days_of_week) ? JSON.stringify(sched.days_of_week) : null;
   const dom  = sched.day_of_month == null ? null : Number(sched.day_of_month);
+  // The same report: the same type and, for a saved custom report, the same
+  // saved report covering the same jobs — two custom reports share a type.
+  const crId = sched.custom_report_id == null ? null : String(sched.custom_report_id);
+  const crOpt = String(optionsOf(sched).report_id == null ? '' : optionsOf(sched).report_id);
+  const mode = sched.jobs_mode == null ? null : String(sched.jobs_mode);
   const rows = await sql`
     UPDATE report_schedules
        SET next_run_at  = ${occ.toISOString()},
-           resume_state = CASE WHEN report_type = ${sched.report_type} THEN ${JSON.stringify(state || {})}::jsonb ELSE NULL END,
+           resume_state = CASE WHEN report_type = ${sched.report_type}
+                                AND custom_report_id IS NOT DISTINCT FROM ${crId}::bigint
+                                AND COALESCE(options->>'report_id', '') = ${crOpt}
+                                AND jobs_mode IS NOT DISTINCT FROM ${mode}::text
+                               THEN ${JSON.stringify(state || {})}::jsonb ELSE NULL END,
            resume_count = ${passes}
      WHERE id = ${sched.id} AND claim_token = ${token} AND enabled
        AND frequency = ${sched.frequency} AND send_time = ${sched.send_time} AND timezone = ${sched.timezone}
@@ -1186,15 +1599,25 @@ async function recordRun(sql, sched, result, { kind, token, triggeredBy, started
            resume_count = CASE WHEN ${finished} THEN 0 ELSE resume_count END
      WHERE id = ${sched.id}`;
   // What was sent, as it was sent — an edit afterwards must not relabel it.
+  // A saved custom report's name goes with it (two custom reports share a
+  // type): the name the run read, else the one the schedule was saved with.
+  const reportName = reportNameOf(sched, result);
   await sql`
     INSERT INTO report_schedule_runs
       (schedule_id, company_code, run_kind, status, sent_count, total_count, recipient_count,
-       message, triggered_by, started_at, finished_at, report_type, division, project_id, project_name)
+       message, triggered_by, started_at, finished_at, report_type, division, project_id, project_name, report_name)
     VALUES
       (${sched.id}, ${sched.company_code}, ${kind}, ${result.status}, ${result.sent || 0}, ${result.total || 0},
        ${result.recipientCount || 0}, ${msg}, ${triggeredBy || null},
        ${(startedAt || at).toISOString()}, ${at.toISOString()},
-       ${sched.report_type}, ${sched.division}, ${sched.project_id || null}, ${runLabel(sched)})`;
+       ${sched.report_type}, ${sched.division}, ${sched.project_id || null}, ${runLabel(sched, reportName)}, ${reportName})`;
+}
+
+/** A custom report run's report name — what the run read, else what the schedule was saved with — or null. */
+function reportNameOf(sched, result) {
+  if (!(SCHEDULABLE[sched.report_type] && SCHEDULABLE[sched.report_type].customReport)) return null;
+  const n = String((result && result.reportName) || optionsOf(sched).report_name || '').trim();
+  return n ? n.slice(0, 200) : null;
 }
 
 /**
@@ -1218,13 +1641,41 @@ const PROGRESS_PREFIX = 'Working: ';
 
 // The job a run was for, as the history shows it: the job's name, the jobs
 // ticked ("3 picked jobs"), or none for every In Progress job and whole-
-// division reports.
-function runLabel(sched) {
-  if (sched.project_id === '*' && Array.isArray(sched.picked_jobs) && sched.picked_jobs.length) {
-    const n = sched.picked_jobs.length;
-    return `${n} picked job${n === 1 ? '' : 's'}`;
+// division reports. A saved custom report leads with its name — "Owner
+// Update — 3 picked jobs" — since every one of them is a "Custom Report".
+function runLabel(sched, reportName) {
+  const picked = sched.project_id === '*' && Array.isArray(sched.picked_jobs) && sched.picked_jobs.length
+    ? `${sched.picked_jobs.length} picked job${sched.picked_jobs.length === 1 ? '' : 's'}` : null;
+  const def = SCHEDULABLE[sched.report_type];
+  if (def && def.customReport) {
+    const mode = jobsModeOf(sched);
+    const jobs = picked || (mode === 'each' ? 'each In Progress job' : mode === 'all_in_progress' ? 'all In Progress jobs' : null);
+    const name = reportName === undefined ? reportNameOf(sched, null) : reportName;
+    return [name, jobs].filter(Boolean).join(' — ') || null;
   }
+  if (picked) return picked;
   return sched.project_name || null;
+}
+
+/**
+ * The row's status as the tabs show it. "Sending" is a claim a live run
+ * holds; one older than the stale limit belongs to a run that died, and the
+ * row says so ('interrupted', and where it got to) rather than reading
+ * "Sending…" until the next occurrence.
+ */
+function liveStatus(r) {
+  const fresh = Boolean(r.claimed_at) && Date.now() - new Date(r.claimed_at).getTime() < STALE_CLAIM_MS;
+  const cutOff = r.last_status === 'sending' && !fresh;
+  if (!cutOff) return { status: r.last_status, message: r.last_message, sending: fresh };
+  const tail = 'Some of its emails may have gone out; the rest did not.';
+  const m = String(r.last_message || '');
+  return {
+    status: 'interrupted',
+    message: m.startsWith(PROGRESS_PREFIX)
+      ? `The run was cut off at: ${m.slice(PROGRESS_PREFIX.length)}. ${tail}`
+      : `The run was cut off before it finished. ${tail}`,
+    sending: false,
+  };
 }
 
 /** Let go of a claim with nothing recorded — a run that never started. */
@@ -1248,6 +1699,13 @@ module.exports = {
   newClaimToken: () => randomUUID(),
   appBaseUrl,
   specFor,
+  liveStatus,
+  runLabel,
+  loadCustomReport,
+  customReportIdOf,
+  jobsModeOf,
+  clientsOfJobs,
+  oneCustomer,
   STALE_CLAIM_MS,
   MAX_PASSES,
   MAX_IDLE_PASSES,
@@ -1256,6 +1714,8 @@ module.exports = {
   openReportPage,
   loadRunAs,
   recipientsFor,
+  addRecipients,
+  leftOffText,
   nextWorkday,
   MAX_ITEMS,
 };

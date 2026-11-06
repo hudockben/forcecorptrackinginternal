@@ -1,0 +1,1100 @@
+{
+  "_generated": "By scripts/gen-report-ai-catalog.js from custom-reports-engine.js. Do not edit by hand: run node scripts/gen-report-ai-catalog.js after changing the engine catalog.",
+  "engineVersion": 2,
+  "source": "aiCatalog",
+  "divisions": {
+    "turf": {
+      "version": 2,
+      "division": "turf",
+      "sections": [
+        {
+          "type": "job_info",
+          "label": "Job Information",
+          "blurb": "Name, client, address, dates and progress for each job, as a card.",
+          "table": false,
+          "columns": [
+            { "key": "project-name", "label": "Project", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "job-number", "label": "Job #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "contract-type", "label": "Contract Type", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "client", "label": "Client", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "gc", "label": "General Contractor", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "pm", "label": "Project Manager", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "super", "label": "Superintendent", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "estimator", "label": "Estimator", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "client-contact", "label": "Client Contact", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "address", "label": "Address", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "city-state", "label": "City / State", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "start-date", "label": "Start Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "end-date", "label": "End Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "contract-days", "label": "Contract Days", "type": "days", "internal": false, "financial": false, "default": false },
+            { "key": "scope", "label": "Scope", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sqft", "label": "Area", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "pct_complete", "label": "% Complete", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "days_worked", "label": "Days Worked", "type": "days", "internal": false, "financial": false, "default": false },
+            { "key": "notes", "label": "Internal Notes", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "contract", "label": "Contract Value", "type": "money", "internal": true, "financial": true, "default": false },
+            { "key": "retention", "label": "Retention", "type": "percent", "internal": true, "financial": true, "default": false },
+            { "key": "invoiced", "label": "Invoiced", "type": "money", "internal": true, "financial": true, "default": false }
+          ],
+          "options": []
+        },
+        {
+          "type": "summary_kpis",
+          "label": "Summary Figures",
+          "blurb": "A strip of headline numbers: % complete, days worked, quantity installed.",
+          "table": false,
+          "columns": [
+            { "key": "pct_complete", "label": "% Complete", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "days_worked", "label": "Days Worked", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "items_complete", "label": "Bid Items Complete", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "qty_period", "label": "Qty Installed", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "labor_hours", "label": "Labor Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "actual_cost", "label": "Actual Cost to Date", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "period_cost", "label": "Cost This Period", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "bid_budget", "label": "Bid Budget", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "projected_cost", "label": "Projected Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "contract", "label": "Contract Value", "type": "money", "internal": true, "financial": true, "default": false },
+            { "key": "co_total", "label": "Contract Change Orders", "type": "money", "internal": true, "financial": true, "default": false },
+            { "key": "gp_earned", "label": "GP Earned to Date", "type": "money", "internal": true, "financial": true, "default": false }
+          ],
+          "options": []
+        },
+        {
+          "type": "bid_progress",
+          "label": "Bid Item Progress",
+          "blurb": "Every bid item with quantity installed, remaining and % complete, grouped by cost code.",
+          "table": true,
+          "columns": [
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "unit", "label": "Unit", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "bid_qty", "label": "Bid Qty", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "installed_to_date", "label": "Installed to Date", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "installed_period", "label": "Installed This Period", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "remaining_qty", "label": "Remaining", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "pct_complete", "label": "% Complete", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "start_date", "label": "Start", "type": "date", "internal": false, "financial": false, "default": false },
+            { "key": "target_date", "label": "Target", "type": "date", "internal": false, "financial": false, "default": false },
+            { "key": "status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "days_worked", "label": "Days Worked", "type": "days", "internal": false, "financial": false, "default": false },
+            { "key": "unit_cost", "label": "Unit Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "bid_total", "label": "Bid Total", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "actual_cost", "label": "Actual Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "variance", "label": "Variance", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "projected_cost", "label": "Projected Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "labor_hours", "label": "Labor Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "crew_size", "label": "Crew Size", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "cost_per_unit", "label": "Cost / Unit", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "units_per_mh", "label": "Units / Man-Hour", "type": "number", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "groupBy", "label": "Group by", "kind": "select", "default": "cost_code", "choices": ["cost_code", "none"] },
+            { "key": "subtotals", "label": "Cost code subtotals", "kind": "bool", "default": true },
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "hideNotStarted", "label": "Hide items not started", "kind": "bool", "default": false },
+            { "key": "hideComplete", "label": "Hide completed items", "kind": "bool", "default": false },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "production_kpis",
+          "label": "Production Rates",
+          "blurb": "Per bid item worked in the period: average and best day, days left and projected finish.",
+          "table": true,
+          "columns": [
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "unit", "label": "Unit", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "qty_period", "label": "Qty This Period", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "days_period", "label": "Days Worked", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "avg_per_day", "label": "Avg / Day", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "best_day", "label": "Best Day", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "remaining_qty", "label": "Remaining", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "est_days_left", "label": "Est. Days Left", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "projected_finish", "label": "Projected Finish", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "per_load", "label": "Per Load", "type": "number", "internal": false, "financial": false, "default": false },
+            { "key": "labor_hours", "label": "Labor Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "units_per_mh", "label": "Units / Man-Hour", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "cost_per_unit", "label": "Cost / Unit", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "crew_avg", "label": "Avg Crew", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "units_per_crew_hr", "label": "Units / Crew-Hour", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "units_per_equip_hr", "label": "Units / Equip-Hour", "type": "number", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": false },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "daily_production",
+          "label": "Daily Production",
+          "blurb": "Quantities put down each day, by cost code and sub code.",
+          "table": true,
+          "columns": [
+            { "key": "date", "label": "Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "quantity", "label": "Quantity", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "unit", "label": "Unit", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "field_type", "label": "Field Type", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "employee", "label": "Employee", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "job_class", "label": "Job Class", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "labor_hours", "label": "Labor Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "rate", "label": "Rate", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "labor_cost", "label": "Labor Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "equipment", "label": "Equipment", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "equip_hours", "label": "Equip Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "equip_cost", "label": "Equip Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "material", "label": "Material", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "supplier", "label": "Supplier", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "po_num", "label": "PO #", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "material_cost", "label": "Material Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "total_cost", "label": "Total Cost", "type": "money", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "summarize", "label": "One row per day and sub code", "kind": "bool", "default": true },
+            { "key": "groupBy", "label": "Group by", "kind": "select", "default": "none", "choices": ["none", "date", "week", "sub_code"] },
+            { "key": "hideZeroQty", "label": "Hide rows with no quantity", "kind": "bool", "default": true },
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "materials",
+          "label": "Materials Delivered",
+          "blurb": "Purchase-order deliveries: date, supplier, material, ticket and quantity.",
+          "table": true,
+          "columns": [
+            { "key": "date", "label": "Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "po_number", "label": "PO #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "supplier", "label": "Supplier", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "material", "label": "Material", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "invoice_num", "label": "Ticket / Invoice #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "qty", "label": "Qty", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "po_status", "label": "PO Status", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "unit_cost", "label": "Unit Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "tax", "label": "Tax", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "line_total", "label": "Line Total", "type": "money", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "summarize", "label": "One row per material and supplier", "kind": "bool", "default": false },
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "trucking",
+          "label": "Trucking / Haul Log",
+          "blurb": "Trucking tickets: date, truck type, material hauled and loads.",
+          "table": true,
+          "columns": [
+            { "key": "date", "label": "Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "tr_number", "label": "Ticket #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "truck_type", "label": "Truck Type", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "material_hauled", "label": "Material Hauled", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "loads", "label": "Loads", "type": "number", "internal": false, "financial": false, "default": true },
+            { "key": "status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "notes", "label": "Notes", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "driver", "label": "Driver", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "hours", "label": "Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "rate", "label": "Rate", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "cost", "label": "Cost", "type": "money", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "change_orders",
+          "label": "Change Orders",
+          "blurb": "Contract and quantity change orders with their dates and descriptions.",
+          "table": true,
+          "columns": [
+            { "key": "kind", "label": "Type", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "date", "label": "Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "number", "label": "CO #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "qty_change", "label": "Qty Change", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "amount", "label": "Amount", "type": "money", "internal": true, "financial": true, "default": false }
+          ],
+          "options": [
+            { "key": "kinds", "label": "Show", "kind": "kinds", "default": ["contract", "quantity"], "choices": ["contract", "quantity"] },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "schedule",
+          "label": "Schedule",
+          "blurb": "Start and target dates per bid item, with a simple timeline bar.",
+          "table": true,
+          "columns": [
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "start_date", "label": "Start", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "target_date", "label": "Target", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "pct_complete", "label": "% Complete", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "days_left", "label": "Days Left", "type": "days", "internal": false, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "showBars", "label": "Timeline bars", "kind": "bool", "default": true },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "plan_vs_actual",
+          "label": "Planned vs Actual",
+          "blurb": "Each bid item's planned production against what has been installed: planned vs actual rate, scheduled vs earned %, and days ahead or behind.",
+          "table": true,
+          "columns": [
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "unit", "label": "Unit", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "bid_qty", "label": "Bid Qty", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "installed_to_date", "label": "Installed to Date", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "planned_rate", "label": "Planned / Day", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "actual_rate", "label": "Actual / Day", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "actual_rate_jtd", "label": "Actual / Day (to date)", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "pct_of_plan", "label": "% of Planned Rate", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "sched_pct", "label": "Scheduled %", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "earned_pct", "label": "Earned %", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "spi", "label": "Pace vs Plan", "type": "number", "internal": false, "financial": false, "default": false },
+            { "key": "qty_variance", "label": "Qty vs Plan", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "ahead_days", "label": "Days Ahead / Behind", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "required_rate", "label": "Needed / Day", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "start_date", "label": "Start", "type": "date", "internal": false, "financial": false, "default": false },
+            { "key": "target_date", "label": "Target", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "projected_finish", "label": "Projected Finish", "type": "date", "internal": false, "financial": false, "default": false },
+            { "key": "forecast_vs_target", "label": "Finish vs Target", "type": "days", "internal": false, "financial": false, "default": false },
+            { "key": "plan_status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "plan_source", "label": "Plan Basis", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "units_per_crew_hr", "label": "Units / Crew-Hour", "type": "number", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "groupBy", "label": "Group by", "kind": "select", "default": "none", "choices": ["none", "cost_code"] },
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "hideUnplanned", "label": "Hide items with no plan", "kind": "bool", "default": false },
+            { "key": "hideComplete", "label": "Hide completed items", "kind": "bool", "default": false },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "chart",
+          "label": "Chart",
+          "blurb": "An S-curve of installed against planned, or daily production bars with the planned rate.",
+          "table": false,
+          "columns": [
+            { "key": "installed", "label": "Installed", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "plan", "label": "Planned", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "daily_qty", "label": "Daily quantity", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "planned_rate_line", "label": "Planned / day", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "crew_hours", "label": "Crew hours", "type": "number", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "chart", "label": "Chart", "kind": "select", "default": "s_curve", "choices": ["s_curve", "daily_bars"] },
+            { "key": "basis", "label": "Measure", "kind": "select", "default": "pct", "choices": ["pct", "qty"] },
+            { "key": "showPlan", "label": "Show the plan", "kind": "bool", "default": true },
+            { "key": "height", "label": "Height", "kind": "select", "default": "normal", "choices": ["normal", "tall"] },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "rate_summary",
+          "label": "Production Rates by Division",
+          "blurb": "The division's own rates as headline figures: tons per day and per load, square feet per day, homes per day.",
+          "table": false,
+          "columns": [
+            { "key": "work_days", "label": "Work Days", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "avg_crew", "label": "Avg Crew", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "sf_period", "label": "SF Installed", "type": "qty", "internal": false, "financial": false, "default": true, "divisions": ["turf"] },
+            { "key": "sf_per_day", "label": "SF / Day", "type": "qty", "internal": false, "financial": false, "default": true, "divisions": ["turf"] },
+            { "key": "sf_per_mh", "label": "SF / Man-Hour", "type": "number", "internal": true, "financial": false, "default": false, "divisions": ["turf"] }
+          ],
+          "options": [
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        { "type": "notes", "label": "Notes", "blurb": "A free-text message, printed as written.", "table": false, "columns": [], "options": [] }
+      ],
+      "datePresets": [
+        { "key": "job_to_date", "label": "Job to date" },
+        { "key": "today", "label": "Today" },
+        { "key": "yesterday", "label": "Yesterday" },
+        { "key": "this_week", "label": "This week" },
+        { "key": "last_week", "label": "Last week" },
+        { "key": "this_month", "label": "This month" },
+        { "key": "last_month", "label": "Last month" },
+        { "key": "last_7", "label": "Last 7 days" },
+        { "key": "last_30", "label": "Last 30 days" },
+        { "key": "custom", "label": "Custom range" }
+      ],
+      "layouts": ["separate", "combined"],
+      "orientations": ["portrait", "landscape"],
+      "headerBranding": ["company", "datawatch"],
+      "limits": { "sections": 20, "filterCodes": 200, "filterCodeLength": 60 },
+      "starters": [
+        { "id": "customer_progress", "name": "Customer Progress Update", "blurb": "Where the job stands: job card, headline figures, bid item progress, schedule and a note to the customer.", "sections": ["job_info", "summary_kpis", "bid_progress", "schedule", "notes"] },
+        { "id": "quantities_installed", "name": "Quantities Installed", "blurb": "Last week's quantities by day and sub code — no costs, no crew.", "sections": ["job_info", "daily_production"] },
+        { "id": "production_rates", "name": "Production Rates", "blurb": "Average and best day per item over the last 30 days, days left and projected finish.", "sections": ["production_kpis"] },
+        { "id": "materials_delivered", "name": "Materials Delivered", "blurb": "Every delivery against the job's purchase orders: date, supplier, material, ticket and quantity.", "sections": ["job_info", "materials"] },
+        { "id": "haul_log", "name": "Haul Log", "blurb": "Trucking tickets for the job: date, truck type, material hauled and loads.", "sections": ["job_info", "trucking"] },
+        { "id": "change_order_log", "name": "Change Order Log", "blurb": "Contract and quantity change orders with their dates and descriptions.", "sections": ["job_info", "change_orders"] },
+        { "id": "internal_cost_snapshot", "name": "Internal Cost Snapshot", "blurb": "Costs, budget, projection and profit by bid item. Internal — not for customers.", "sections": ["summary_kpis", "bid_progress"] },
+        { "id": "planned_vs_actual", "name": "Planned vs Actual", "blurb": "Each bid item against its plan — planned and actual rate, scheduled and earned %, days ahead or behind — with an S-curve.", "sections": ["job_info", "plan_vs_actual", "chart"] },
+        { "id": "sub_code_production", "name": "Sub-Code Production", "blurb": "One sub code across your jobs — \"Turf Install on every active job\": plan vs actual, daily quantities, rates and daily bars. Pick the sub code first.", "sections": ["plan_vs_actual", "daily_production", "rate_summary", "chart"] }
+      ]
+    },
+    "paving": {
+      "version": 2,
+      "division": "paving",
+      "sections": [
+        {
+          "type": "job_info",
+          "label": "Job Information",
+          "blurb": "Name, client, address, dates and progress for each job, as a card.",
+          "table": false,
+          "columns": [
+            { "key": "project-name", "label": "Project", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "job-number", "label": "Job #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "contract-type", "label": "Contract Type", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "client", "label": "Client", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "gc", "label": "General Contractor", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "pm", "label": "Project Manager", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "super", "label": "Superintendent", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "estimator", "label": "Estimator", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "client-contact", "label": "Client Contact", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "address", "label": "Address", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "city-state", "label": "City / State", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "start-date", "label": "Start Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "end-date", "label": "End Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "contract-days", "label": "Contract Days", "type": "days", "internal": false, "financial": false, "default": false },
+            { "key": "scope", "label": "Scope", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sqft", "label": "Area", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "pct_complete", "label": "% Complete", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "days_worked", "label": "Days Worked", "type": "days", "internal": false, "financial": false, "default": false },
+            { "key": "notes", "label": "Internal Notes", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "contract", "label": "Contract Value", "type": "money", "internal": true, "financial": true, "default": false },
+            { "key": "retention", "label": "Retention", "type": "percent", "internal": true, "financial": true, "default": false },
+            { "key": "invoiced", "label": "Invoiced", "type": "money", "internal": true, "financial": true, "default": false }
+          ],
+          "options": []
+        },
+        {
+          "type": "summary_kpis",
+          "label": "Summary Figures",
+          "blurb": "A strip of headline numbers: % complete, days worked, quantity installed.",
+          "table": false,
+          "columns": [
+            { "key": "pct_complete", "label": "% Complete", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "days_worked", "label": "Days Worked", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "items_complete", "label": "Bid Items Complete", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "qty_period", "label": "Qty Installed", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "labor_hours", "label": "Labor Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "actual_cost", "label": "Actual Cost to Date", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "period_cost", "label": "Cost This Period", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "bid_budget", "label": "Bid Budget", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "projected_cost", "label": "Projected Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "contract", "label": "Contract Value", "type": "money", "internal": true, "financial": true, "default": false },
+            { "key": "co_total", "label": "Contract Change Orders", "type": "money", "internal": true, "financial": true, "default": false },
+            { "key": "gp_earned", "label": "GP Earned to Date", "type": "money", "internal": true, "financial": true, "default": false }
+          ],
+          "options": []
+        },
+        {
+          "type": "bid_progress",
+          "label": "Bid Item Progress",
+          "blurb": "Every bid item with quantity installed, remaining and % complete, grouped by cost code.",
+          "table": true,
+          "columns": [
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "unit", "label": "Unit", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "bid_qty", "label": "Bid Qty", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "installed_to_date", "label": "Installed to Date", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "installed_period", "label": "Installed This Period", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "remaining_qty", "label": "Remaining", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "pct_complete", "label": "% Complete", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "start_date", "label": "Start", "type": "date", "internal": false, "financial": false, "default": false },
+            { "key": "target_date", "label": "Target", "type": "date", "internal": false, "financial": false, "default": false },
+            { "key": "status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "days_worked", "label": "Days Worked", "type": "days", "internal": false, "financial": false, "default": false },
+            { "key": "unit_cost", "label": "Unit Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "bid_total", "label": "Bid Total", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "actual_cost", "label": "Actual Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "variance", "label": "Variance", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "projected_cost", "label": "Projected Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "labor_hours", "label": "Labor Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "crew_size", "label": "Crew Size", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "cost_per_unit", "label": "Cost / Unit", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "units_per_mh", "label": "Units / Man-Hour", "type": "number", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "groupBy", "label": "Group by", "kind": "select", "default": "cost_code", "choices": ["cost_code", "none"] },
+            { "key": "subtotals", "label": "Cost code subtotals", "kind": "bool", "default": true },
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "hideNotStarted", "label": "Hide items not started", "kind": "bool", "default": false },
+            { "key": "hideComplete", "label": "Hide completed items", "kind": "bool", "default": false },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "production_kpis",
+          "label": "Production Rates",
+          "blurb": "Per bid item worked in the period: average and best day, days left and projected finish.",
+          "table": true,
+          "columns": [
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "unit", "label": "Unit", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "qty_period", "label": "Qty This Period", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "days_period", "label": "Days Worked", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "avg_per_day", "label": "Avg / Day", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "best_day", "label": "Best Day", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "remaining_qty", "label": "Remaining", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "est_days_left", "label": "Est. Days Left", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "projected_finish", "label": "Projected Finish", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "per_load", "label": "Per Load", "type": "number", "internal": false, "financial": false, "default": false },
+            { "key": "labor_hours", "label": "Labor Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "units_per_mh", "label": "Units / Man-Hour", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "cost_per_unit", "label": "Cost / Unit", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "crew_avg", "label": "Avg Crew", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "units_per_crew_hr", "label": "Units / Crew-Hour", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "units_per_equip_hr", "label": "Units / Equip-Hour", "type": "number", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": false },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "daily_production",
+          "label": "Daily Production",
+          "blurb": "Quantities put down each day, by cost code and sub code.",
+          "table": true,
+          "columns": [
+            { "key": "date", "label": "Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "quantity", "label": "Quantity", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "unit", "label": "Unit", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "field_type", "label": "Field Type", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "employee", "label": "Employee", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "job_class", "label": "Job Class", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "labor_hours", "label": "Labor Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "rate", "label": "Rate", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "labor_cost", "label": "Labor Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "equipment", "label": "Equipment", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "equip_hours", "label": "Equip Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "equip_cost", "label": "Equip Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "material", "label": "Material", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "supplier", "label": "Supplier", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "po_num", "label": "PO #", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "material_cost", "label": "Material Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "total_cost", "label": "Total Cost", "type": "money", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "summarize", "label": "One row per day and sub code", "kind": "bool", "default": true },
+            { "key": "groupBy", "label": "Group by", "kind": "select", "default": "none", "choices": ["none", "date", "week", "sub_code"] },
+            { "key": "hideZeroQty", "label": "Hide rows with no quantity", "kind": "bool", "default": true },
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "materials",
+          "label": "Materials Delivered",
+          "blurb": "Purchase-order deliveries: date, supplier, material, ticket and quantity.",
+          "table": true,
+          "columns": [
+            { "key": "date", "label": "Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "po_number", "label": "PO #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "supplier", "label": "Supplier", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "material", "label": "Material", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "invoice_num", "label": "Ticket / Invoice #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "qty", "label": "Qty", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "po_status", "label": "PO Status", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "unit_cost", "label": "Unit Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "tax", "label": "Tax", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "line_total", "label": "Line Total", "type": "money", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "summarize", "label": "One row per material and supplier", "kind": "bool", "default": false },
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "trucking",
+          "label": "Trucking / Haul Log",
+          "blurb": "Trucking tickets: date, truck type, material hauled and loads.",
+          "table": true,
+          "columns": [
+            { "key": "date", "label": "Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "tr_number", "label": "Ticket #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "truck_type", "label": "Truck Type", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "material_hauled", "label": "Material Hauled", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "loads", "label": "Loads", "type": "number", "internal": false, "financial": false, "default": true },
+            { "key": "status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "notes", "label": "Notes", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "driver", "label": "Driver", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "hours", "label": "Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "rate", "label": "Rate", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "cost", "label": "Cost", "type": "money", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "change_orders",
+          "label": "Change Orders",
+          "blurb": "Contract and quantity change orders with their dates and descriptions.",
+          "table": true,
+          "columns": [
+            { "key": "kind", "label": "Type", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "date", "label": "Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "number", "label": "CO #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "qty_change", "label": "Qty Change", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "amount", "label": "Amount", "type": "money", "internal": true, "financial": true, "default": false }
+          ],
+          "options": [
+            { "key": "kinds", "label": "Show", "kind": "kinds", "default": ["contract", "quantity"], "choices": ["contract", "quantity"] },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "schedule",
+          "label": "Schedule",
+          "blurb": "Start and target dates per bid item, with a simple timeline bar.",
+          "table": true,
+          "columns": [
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "start_date", "label": "Start", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "target_date", "label": "Target", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "pct_complete", "label": "% Complete", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "days_left", "label": "Days Left", "type": "days", "internal": false, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "showBars", "label": "Timeline bars", "kind": "bool", "default": true },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "plan_vs_actual",
+          "label": "Planned vs Actual",
+          "blurb": "Each bid item's planned production against what has been installed: planned vs actual rate, scheduled vs earned %, and days ahead or behind.",
+          "table": true,
+          "columns": [
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "unit", "label": "Unit", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "bid_qty", "label": "Bid Qty", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "installed_to_date", "label": "Installed to Date", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "planned_rate", "label": "Planned / Day", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "actual_rate", "label": "Actual / Day", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "actual_rate_jtd", "label": "Actual / Day (to date)", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "pct_of_plan", "label": "% of Planned Rate", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "sched_pct", "label": "Scheduled %", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "earned_pct", "label": "Earned %", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "spi", "label": "Pace vs Plan", "type": "number", "internal": false, "financial": false, "default": false },
+            { "key": "qty_variance", "label": "Qty vs Plan", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "ahead_days", "label": "Days Ahead / Behind", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "required_rate", "label": "Needed / Day", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "start_date", "label": "Start", "type": "date", "internal": false, "financial": false, "default": false },
+            { "key": "target_date", "label": "Target", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "projected_finish", "label": "Projected Finish", "type": "date", "internal": false, "financial": false, "default": false },
+            { "key": "forecast_vs_target", "label": "Finish vs Target", "type": "days", "internal": false, "financial": false, "default": false },
+            { "key": "plan_status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "plan_source", "label": "Plan Basis", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "units_per_crew_hr", "label": "Units / Crew-Hour", "type": "number", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "groupBy", "label": "Group by", "kind": "select", "default": "none", "choices": ["none", "cost_code"] },
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "hideUnplanned", "label": "Hide items with no plan", "kind": "bool", "default": false },
+            { "key": "hideComplete", "label": "Hide completed items", "kind": "bool", "default": false },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "chart",
+          "label": "Chart",
+          "blurb": "An S-curve of installed against planned, or daily production bars with the planned rate.",
+          "table": false,
+          "columns": [
+            { "key": "installed", "label": "Installed", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "plan", "label": "Planned", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "daily_qty", "label": "Daily quantity", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "planned_rate_line", "label": "Planned / day", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "crew_hours", "label": "Crew hours", "type": "number", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "chart", "label": "Chart", "kind": "select", "default": "s_curve", "choices": ["s_curve", "daily_bars"] },
+            { "key": "basis", "label": "Measure", "kind": "select", "default": "pct", "choices": ["pct", "qty"] },
+            { "key": "showPlan", "label": "Show the plan", "kind": "bool", "default": true },
+            { "key": "height", "label": "Height", "kind": "select", "default": "normal", "choices": ["normal", "tall"] },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "rate_summary",
+          "label": "Production Rates by Division",
+          "blurb": "The division's own rates as headline figures: tons per day and per load, square feet per day, homes per day.",
+          "table": false,
+          "columns": [
+            { "key": "work_days", "label": "Work Days", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "avg_crew", "label": "Avg Crew", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "tons_period", "label": "Tons Placed", "type": "qty", "internal": false, "financial": false, "default": true, "divisions": ["paving"] },
+            { "key": "tons_per_day", "label": "Tons / Day", "type": "qty", "internal": false, "financial": false, "default": true, "divisions": ["paving"] },
+            { "key": "loads_period", "label": "Loads", "type": "number", "internal": false, "financial": false, "default": true, "divisions": ["paving"] },
+            { "key": "tons_per_load", "label": "Tons / Load", "type": "number", "internal": false, "financial": false, "default": true, "divisions": ["paving"] },
+            { "key": "tons_per_crew_hr", "label": "Tons / Crew-Hour", "type": "number", "internal": true, "financial": false, "default": false, "divisions": ["paving"] },
+            { "key": "tons_per_equip_hr", "label": "Tons / Equip-Hour", "type": "number", "internal": true, "financial": false, "default": false, "divisions": ["paving"] }
+          ],
+          "options": [
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        { "type": "notes", "label": "Notes", "blurb": "A free-text message, printed as written.", "table": false, "columns": [], "options": [] }
+      ],
+      "datePresets": [
+        { "key": "job_to_date", "label": "Job to date" },
+        { "key": "today", "label": "Today" },
+        { "key": "yesterday", "label": "Yesterday" },
+        { "key": "this_week", "label": "This week" },
+        { "key": "last_week", "label": "Last week" },
+        { "key": "this_month", "label": "This month" },
+        { "key": "last_month", "label": "Last month" },
+        { "key": "last_7", "label": "Last 7 days" },
+        { "key": "last_30", "label": "Last 30 days" },
+        { "key": "custom", "label": "Custom range" }
+      ],
+      "layouts": ["separate", "combined"],
+      "orientations": ["portrait", "landscape"],
+      "headerBranding": ["company", "datawatch"],
+      "limits": { "sections": 20, "filterCodes": 200, "filterCodeLength": 60 },
+      "starters": [
+        { "id": "customer_progress", "name": "Customer Progress Update", "blurb": "Where the job stands: job card, headline figures, bid item progress, schedule and a note to the customer.", "sections": ["job_info", "summary_kpis", "bid_progress", "schedule", "notes"] },
+        { "id": "quantities_installed", "name": "Quantities Installed", "blurb": "Last week's quantities by day and sub code — no costs, no crew.", "sections": ["job_info", "daily_production"] },
+        { "id": "production_rates", "name": "Production Rates", "blurb": "Average and best day per item over the last 30 days, days left and projected finish.", "sections": ["production_kpis"] },
+        { "id": "materials_delivered", "name": "Materials Delivered", "blurb": "Every delivery against the job's purchase orders: date, supplier, material, ticket and quantity.", "sections": ["job_info", "materials"] },
+        { "id": "haul_log", "name": "Haul Log", "blurb": "Trucking tickets for the job: date, truck type, material hauled and loads.", "sections": ["job_info", "trucking"] },
+        { "id": "change_order_log", "name": "Change Order Log", "blurb": "Contract and quantity change orders with their dates and descriptions.", "sections": ["job_info", "change_orders"] },
+        { "id": "internal_cost_snapshot", "name": "Internal Cost Snapshot", "blurb": "Costs, budget, projection and profit by bid item. Internal — not for customers.", "sections": ["summary_kpis", "bid_progress"] },
+        { "id": "planned_vs_actual", "name": "Planned vs Actual", "blurb": "Each bid item against its plan — planned and actual rate, scheduled and earned %, days ahead or behind — with an S-curve.", "sections": ["job_info", "plan_vs_actual", "chart"] },
+        { "id": "sub_code_production", "name": "Sub-Code Production", "blurb": "One sub code across your jobs — \"Turf Install on every active job\": plan vs actual, daily quantities, rates and daily bars. Pick the sub code first.", "sections": ["plan_vs_actual", "daily_production", "rate_summary", "chart"] },
+        { "id": "paving_tonnage", "name": "Paving Tonnage", "blurb": "Tons placed, tons per day and per load, rates per bid item with tons per load, and the haul log.", "sections": ["rate_summary", "production_kpis", "trucking"] }
+      ]
+    },
+    "kiewit": {
+      "version": 2,
+      "division": "kiewit",
+      "sections": [
+        {
+          "type": "job_info",
+          "label": "Job Information",
+          "blurb": "Name, client, address, dates and progress for each job, as a card.",
+          "table": false,
+          "columns": [
+            { "key": "project-name", "label": "Project", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "job-number", "label": "Job #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "contract-type", "label": "Contract Type", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "client", "label": "Client", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "gc", "label": "General Contractor", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "pm", "label": "Project Manager", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "super", "label": "Superintendent", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "estimator", "label": "Estimator", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "client-contact", "label": "Client Contact", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "address", "label": "Address", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "city-state", "label": "City / State", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "start-date", "label": "Start Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "end-date", "label": "End Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "contract-days", "label": "Contract Days", "type": "days", "internal": false, "financial": false, "default": false },
+            { "key": "scope", "label": "Scope", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sqft", "label": "Area", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "pct_complete", "label": "% Complete", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "days_worked", "label": "Days Worked", "type": "days", "internal": false, "financial": false, "default": false },
+            { "key": "notes", "label": "Internal Notes", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "contract", "label": "Contract Value", "type": "money", "internal": true, "financial": true, "default": false },
+            { "key": "retention", "label": "Retention", "type": "percent", "internal": true, "financial": true, "default": false },
+            { "key": "invoiced", "label": "Invoiced", "type": "money", "internal": true, "financial": true, "default": false }
+          ],
+          "options": []
+        },
+        {
+          "type": "summary_kpis",
+          "label": "Summary Figures",
+          "blurb": "A strip of headline numbers: % complete, days worked, quantity installed.",
+          "table": false,
+          "columns": [
+            { "key": "pct_complete", "label": "% Complete", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "days_worked", "label": "Days Worked", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "items_complete", "label": "Bid Items Complete", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "qty_period", "label": "Qty Installed", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "labor_hours", "label": "Labor Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "actual_cost", "label": "Actual Cost to Date", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "period_cost", "label": "Cost This Period", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "bid_budget", "label": "Bid Budget", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "projected_cost", "label": "Projected Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "contract", "label": "Contract Value", "type": "money", "internal": true, "financial": true, "default": false },
+            { "key": "co_total", "label": "Contract Change Orders", "type": "money", "internal": true, "financial": true, "default": false },
+            { "key": "gp_earned", "label": "GP Earned to Date", "type": "money", "internal": true, "financial": true, "default": false }
+          ],
+          "options": []
+        },
+        {
+          "type": "bid_progress",
+          "label": "Bid Item Progress",
+          "blurb": "Every bid item with quantity installed, remaining and % complete, grouped by cost code.",
+          "table": true,
+          "columns": [
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "unit", "label": "Unit", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "bid_qty", "label": "Bid Qty", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "installed_to_date", "label": "Installed to Date", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "installed_period", "label": "Installed This Period", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "remaining_qty", "label": "Remaining", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "pct_complete", "label": "% Complete", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "start_date", "label": "Start", "type": "date", "internal": false, "financial": false, "default": false },
+            { "key": "target_date", "label": "Target", "type": "date", "internal": false, "financial": false, "default": false },
+            { "key": "status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "days_worked", "label": "Days Worked", "type": "days", "internal": false, "financial": false, "default": false },
+            { "key": "unit_cost", "label": "Unit Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "bid_total", "label": "Bid Total", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "actual_cost", "label": "Actual Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "variance", "label": "Variance", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "projected_cost", "label": "Projected Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "labor_hours", "label": "Labor Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "crew_size", "label": "Crew Size", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "cost_per_unit", "label": "Cost / Unit", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "units_per_mh", "label": "Units / Man-Hour", "type": "number", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "groupBy", "label": "Group by", "kind": "select", "default": "cost_code", "choices": ["cost_code", "none"] },
+            { "key": "subtotals", "label": "Cost code subtotals", "kind": "bool", "default": true },
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "hideNotStarted", "label": "Hide items not started", "kind": "bool", "default": false },
+            { "key": "hideComplete", "label": "Hide completed items", "kind": "bool", "default": false },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "production_kpis",
+          "label": "Production Rates",
+          "blurb": "Per bid item worked in the period: average and best day, days left and projected finish.",
+          "table": true,
+          "columns": [
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "unit", "label": "Unit", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "qty_period", "label": "Qty This Period", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "days_period", "label": "Days Worked", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "avg_per_day", "label": "Avg / Day", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "best_day", "label": "Best Day", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "remaining_qty", "label": "Remaining", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "est_days_left", "label": "Est. Days Left", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "projected_finish", "label": "Projected Finish", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "per_load", "label": "Per Load", "type": "number", "internal": false, "financial": false, "default": false },
+            { "key": "labor_hours", "label": "Labor Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "units_per_mh", "label": "Units / Man-Hour", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "cost_per_unit", "label": "Cost / Unit", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "crew_avg", "label": "Avg Crew", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "units_per_crew_hr", "label": "Units / Crew-Hour", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "units_per_equip_hr", "label": "Units / Equip-Hour", "type": "number", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": false },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "daily_production",
+          "label": "Daily Production",
+          "blurb": "Quantities put down each day, by cost code and sub code.",
+          "table": true,
+          "columns": [
+            { "key": "date", "label": "Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "quantity", "label": "Quantity", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "unit", "label": "Unit", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "field_type", "label": "Field Type", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "employee", "label": "Employee", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "job_class", "label": "Job Class", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "labor_hours", "label": "Labor Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "rate", "label": "Rate", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "labor_cost", "label": "Labor Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "equipment", "label": "Equipment", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "equip_hours", "label": "Equip Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "equip_cost", "label": "Equip Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "material", "label": "Material", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "supplier", "label": "Supplier", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "po_num", "label": "PO #", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "material_cost", "label": "Material Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "total_cost", "label": "Total Cost", "type": "money", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "summarize", "label": "One row per day and sub code", "kind": "bool", "default": true },
+            { "key": "groupBy", "label": "Group by", "kind": "select", "default": "none", "choices": ["none", "date", "week", "sub_code"] },
+            { "key": "hideZeroQty", "label": "Hide rows with no quantity", "kind": "bool", "default": true },
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "materials",
+          "label": "Materials Delivered",
+          "blurb": "Purchase-order deliveries: date, supplier, material, ticket and quantity.",
+          "table": true,
+          "columns": [
+            { "key": "date", "label": "Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "po_number", "label": "PO #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "supplier", "label": "Supplier", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "material", "label": "Material", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "invoice_num", "label": "Ticket / Invoice #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "qty", "label": "Qty", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "po_status", "label": "PO Status", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "unit_cost", "label": "Unit Cost", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "tax", "label": "Tax", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "line_total", "label": "Line Total", "type": "money", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "summarize", "label": "One row per material and supplier", "kind": "bool", "default": false },
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "trucking",
+          "label": "Trucking / Haul Log",
+          "blurb": "Trucking tickets: date, truck type, material hauled and loads.",
+          "table": true,
+          "columns": [
+            { "key": "date", "label": "Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "tr_number", "label": "Ticket #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "truck_type", "label": "Truck Type", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "material_hauled", "label": "Material Hauled", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "loads", "label": "Loads", "type": "number", "internal": false, "financial": false, "default": true },
+            { "key": "status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "notes", "label": "Notes", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "driver", "label": "Driver", "type": "text", "internal": true, "financial": false, "default": false },
+            { "key": "hours", "label": "Hours", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "rate", "label": "Rate", "type": "money", "internal": true, "financial": false, "default": false },
+            { "key": "cost", "label": "Cost", "type": "money", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "change_orders",
+          "label": "Change Orders",
+          "blurb": "Contract and quantity change orders with their dates and descriptions.",
+          "table": true,
+          "columns": [
+            { "key": "kind", "label": "Type", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "date", "label": "Date", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "number", "label": "CO #", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "qty_change", "label": "Qty Change", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "amount", "label": "Amount", "type": "money", "internal": true, "financial": true, "default": false }
+          ],
+          "options": [
+            { "key": "kinds", "label": "Show", "kind": "kinds", "default": ["contract", "quantity"], "choices": ["contract", "quantity"] },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "schedule",
+          "label": "Schedule",
+          "blurb": "Start and target dates per bid item, with a simple timeline bar.",
+          "table": true,
+          "columns": [
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "start_date", "label": "Start", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "target_date", "label": "Target", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "pct_complete", "label": "% Complete", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "days_left", "label": "Days Left", "type": "days", "internal": false, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "showBars", "label": "Timeline bars", "kind": "bool", "default": true },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "plan_vs_actual",
+          "label": "Planned vs Actual",
+          "blurb": "Each bid item's planned production against what has been installed: planned vs actual rate, scheduled vs earned %, and days ahead or behind.",
+          "table": true,
+          "columns": [
+            { "key": "cost_code", "label": "Cost Code", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "sub_code", "label": "Sub Code", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "description", "label": "Description", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "unit", "label": "Unit", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "bid_qty", "label": "Bid Qty", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "installed_to_date", "label": "Installed to Date", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "planned_rate", "label": "Planned / Day", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "actual_rate", "label": "Actual / Day", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "actual_rate_jtd", "label": "Actual / Day (to date)", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "pct_of_plan", "label": "% of Planned Rate", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "sched_pct", "label": "Scheduled %", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "earned_pct", "label": "Earned %", "type": "percent", "internal": false, "financial": false, "default": true },
+            { "key": "spi", "label": "Pace vs Plan", "type": "number", "internal": false, "financial": false, "default": false },
+            { "key": "qty_variance", "label": "Qty vs Plan", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "ahead_days", "label": "Days Ahead / Behind", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "required_rate", "label": "Needed / Day", "type": "qty", "internal": false, "financial": false, "default": false },
+            { "key": "start_date", "label": "Start", "type": "date", "internal": false, "financial": false, "default": false },
+            { "key": "target_date", "label": "Target", "type": "date", "internal": false, "financial": false, "default": true },
+            { "key": "projected_finish", "label": "Projected Finish", "type": "date", "internal": false, "financial": false, "default": false },
+            { "key": "forecast_vs_target", "label": "Finish vs Target", "type": "days", "internal": false, "financial": false, "default": false },
+            { "key": "plan_status", "label": "Status", "type": "text", "internal": false, "financial": false, "default": true },
+            { "key": "plan_source", "label": "Plan Basis", "type": "text", "internal": false, "financial": false, "default": false },
+            { "key": "units_per_crew_hr", "label": "Units / Crew-Hour", "type": "number", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "groupBy", "label": "Group by", "kind": "select", "default": "none", "choices": ["none", "cost_code"] },
+            { "key": "totals", "label": "Totals row", "kind": "bool", "default": true },
+            { "key": "hideUnplanned", "label": "Hide items with no plan", "kind": "bool", "default": false },
+            { "key": "hideComplete", "label": "Hide completed items", "kind": "bool", "default": false },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "chart",
+          "label": "Chart",
+          "blurb": "An S-curve of installed against planned, or daily production bars with the planned rate.",
+          "table": false,
+          "columns": [
+            { "key": "installed", "label": "Installed", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "plan", "label": "Planned", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "daily_qty", "label": "Daily quantity", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "planned_rate_line", "label": "Planned / day", "type": "qty", "internal": false, "financial": false, "default": true },
+            { "key": "crew_hours", "label": "Crew hours", "type": "number", "internal": true, "financial": false, "default": false }
+          ],
+          "options": [
+            { "key": "chart", "label": "Chart", "kind": "select", "default": "s_curve", "choices": ["s_curve", "daily_bars"] },
+            { "key": "basis", "label": "Measure", "kind": "select", "default": "pct", "choices": ["pct", "qty"] },
+            { "key": "showPlan", "label": "Show the plan", "kind": "bool", "default": true },
+            { "key": "height", "label": "Height", "kind": "select", "default": "normal", "choices": ["normal", "tall"] },
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        {
+          "type": "rate_summary",
+          "label": "Production Rates by Division",
+          "blurb": "The division's own rates as headline figures: tons per day and per load, square feet per day, homes per day.",
+          "table": false,
+          "columns": [
+            { "key": "work_days", "label": "Work Days", "type": "days", "internal": false, "financial": false, "default": true },
+            { "key": "avg_crew", "label": "Avg Crew", "type": "number", "internal": true, "financial": false, "default": false },
+            { "key": "homes_period", "label": "Homes Set", "type": "number", "internal": false, "financial": false, "default": true, "divisions": ["kiewit"] },
+            { "key": "homes_per_day", "label": "Homes / Day", "type": "number", "internal": false, "financial": false, "default": true, "divisions": ["kiewit"] },
+            { "key": "mh_per_home", "label": "Man-Hours / Home", "type": "number", "internal": true, "financial": false, "default": false, "divisions": ["kiewit"] }
+          ],
+          "options": [
+            { "key": "costCodes", "label": "Cost codes", "kind": "costCodes", "default": [] },
+            { "key": "subCodes", "label": "Sub codes", "kind": "subCodes", "default": [] }
+          ]
+        },
+        { "type": "notes", "label": "Notes", "blurb": "A free-text message, printed as written.", "table": false, "columns": [], "options": [] }
+      ],
+      "datePresets": [
+        { "key": "job_to_date", "label": "Job to date" },
+        { "key": "today", "label": "Today" },
+        { "key": "yesterday", "label": "Yesterday" },
+        { "key": "this_week", "label": "This week" },
+        { "key": "last_week", "label": "Last week" },
+        { "key": "this_month", "label": "This month" },
+        { "key": "last_month", "label": "Last month" },
+        { "key": "last_7", "label": "Last 7 days" },
+        { "key": "last_30", "label": "Last 30 days" },
+        { "key": "custom", "label": "Custom range" }
+      ],
+      "layouts": ["separate", "combined"],
+      "orientations": ["portrait", "landscape"],
+      "headerBranding": ["company", "datawatch"],
+      "limits": { "sections": 20, "filterCodes": 200, "filterCodeLength": 60 },
+      "starters": [
+        { "id": "customer_progress", "name": "Customer Progress Update", "blurb": "Where the job stands: job card, headline figures, bid item progress, schedule and a note to the customer.", "sections": ["job_info", "summary_kpis", "bid_progress", "schedule", "notes"] },
+        { "id": "quantities_installed", "name": "Quantities Installed", "blurb": "Last week's quantities by day and sub code — no costs, no crew.", "sections": ["job_info", "daily_production"] },
+        { "id": "production_rates", "name": "Production Rates", "blurb": "Average and best day per item over the last 30 days, days left and projected finish.", "sections": ["production_kpis"] },
+        { "id": "materials_delivered", "name": "Materials Delivered", "blurb": "Every delivery against the job's purchase orders: date, supplier, material, ticket and quantity.", "sections": ["job_info", "materials"] },
+        { "id": "haul_log", "name": "Haul Log", "blurb": "Trucking tickets for the job: date, truck type, material hauled and loads.", "sections": ["job_info", "trucking"] },
+        { "id": "change_order_log", "name": "Change Order Log", "blurb": "Contract and quantity change orders with their dates and descriptions.", "sections": ["job_info", "change_orders"] },
+        { "id": "internal_cost_snapshot", "name": "Internal Cost Snapshot", "blurb": "Costs, budget, projection and profit by bid item. Internal — not for customers.", "sections": ["summary_kpis", "bid_progress"] },
+        { "id": "planned_vs_actual", "name": "Planned vs Actual", "blurb": "Each bid item against its plan — planned and actual rate, scheduled and earned %, days ahead or behind — with an S-curve.", "sections": ["job_info", "plan_vs_actual", "chart"] },
+        { "id": "sub_code_production", "name": "Sub-Code Production", "blurb": "One sub code across your jobs — \"Turf Install on every active job\": plan vs actual, daily quantities, rates and daily bars. Pick the sub code first.", "sections": ["plan_vs_actual", "daily_production", "rate_summary", "chart"] }
+      ]
+    }
+  }
+}
