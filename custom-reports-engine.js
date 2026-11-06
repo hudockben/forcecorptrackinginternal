@@ -1665,13 +1665,18 @@
      no row is shared, so the plain per-line sums stand (they ARE the rows).
      A cost-code-only line takes every row on its code, so beside a cost code
      + sub code line the two share rows, and adding the lines up would count
-     those rows twice. */
-  function sharedRows(recs) {
+     those rows twice. keep, when given, picks the rows that count (Planned
+     vs Actual's as-of figures look only at rows to the range's end). */
+  function sharedRows(recs, keep) {
     const seen = new Set();
     let shared = false;
-    recs.forEach(r => (r.m.rows || []).forEach(f => { if (seen.has(f)) shared = true; else seen.add(f); }));
+    recs.forEach(r => (r.m.rows || []).forEach(f => {
+      if (keep && !keep(f)) return;
+      if (seen.has(f)) shared = true; else seen.add(f);
+    }));
     return shared ? [...seen] : null;
   }
+  const toEndRow = f => f.toEnd;
   // Rows' quantity, added up by unit — the unit as typed on the bid line,
   // or by keyOf (Planned vs Actual merges TN and TON) and listed under the
   // first spelling seen.
@@ -2085,6 +2090,14 @@
      customer most needs to hear about. A = the as-of day (the range's end,
      never past today); Q the bid quantity with its change orders; I what is
      in to the range's end; EP its % complete (100 once marked complete).
+     The report is a snapshot as of A: every judgement looking back — the
+     status, Scheduled / Earned %, pace, Qty vs Plan, days ahead, the start,
+     "Not started", "Behind (past target)" — reads only A and the rows dated
+     up to the range's end (A, for every past range), so a past range's
+     report reads the same whenever it is run and whatever has gone in
+     since; a row dated after the range's end never counts, not even toward
+     "done". Only the figures looking forward — Needed / Day, Projected
+     Finish, Finish vs Target — are from today.
        scheduled %  SP = 0 before S, 100 from T, else 100·E/W, E = working
                     days S..A
        earned %     EP; pace vs plan SPI = EP / SP
@@ -2093,13 +2106,16 @@
                     day worked; a rate plan with no typed target: what is in
                     less PR × days worked, in days of planned output. To the
                     half day; under half a day is on plan.
-       needed/day   what is left today over the working days today..T —
-                    none past the target, which makes the line Behind
-                    unless it is done today (finished after a past range
-                    ended is not late). A Plan / Day line with no start
-                    nobody has worked is late past its target, not "Not
-                    started"; a line with no quantity has nothing to
-                    measure and is "Not scheduled". */
+       past target  a planned line (a plan, a target, a quantity) not done
+                    as of A whose target is before A: "Behind (past
+                    target)", ahead of "Not started" — a Plan / Day line
+                    with no start nobody has worked is late, not "Not
+                    started". A line with no quantity has nothing to
+                    measure and is "Not scheduled".
+       needed/day   what is left today over the working days today..T;
+                    none once T is behind today, or with nothing left
+                    today. A line not yet past its target as of A whose
+                    target has passed since simply has none. */
   function planRecs(ctx, p, opts, scope, info) {
     const ix = jobIndex(ctx, p);
     if (!ix.planRecs) ix.planRecs = new Map();
@@ -2165,17 +2181,17 @@
     }
     const ahead0 = isNum(ahead) ? ahead : null;
     ahead = halfDay(ahead);
-    // Past target: open today with its target behind today — or, for a past
-    // range, open as of its end with the target already behind that end:
-    // late as of the report, whatever has gone in since. One finished after a
-    // past range ended, but by its target, is not late, though as of the
-    // range's end it was still open.
-    const doneNow = done || (Q > 0 && s.remainingNow <= 0);
-    const pastTarget = !!(pl.source && pl.T && !noQty && !done && ((A < today && pl.T < A) || (pl.T < today && !doneNow)));
+    // Past target, as of A: not done by A with its target already behind A.
+    // Nothing after A moves it — not today's date, not work gone in since —
+    // so a past range's report reads the same whenever it is run: a line
+    // late at the range's end stays late in it, and one not yet due then is
+    // not late in it, however the line has gone since.
+    const pastTarget = !!(pl.source && pl.T && !noQty && !done && pl.T < A);
     let needed = null;
-    // None past the target: a line finished by its target after a past range
-    // ended, run past that target, has no needed / day, as its Totals.
-    if (pl.source && pl.T && pl.T >= today && rated && !done && !pastTarget) {
+    // Looking forward, from today: what is left today over the working days
+    // to the target — none once the target is behind today, or with nothing
+    // left today (done by A, or finished since).
+    if (pl.source && pl.T && pl.T >= today && rated && !done && s.remainingNow > 0) {
       // A target on a non-working day (or today itself a non-working day)
       // still needs at least the one day.
       const n = Math.max(1, countWorkdays(today, pl.T));
@@ -2195,14 +2211,12 @@
     let status;
     if (done) status = 'Complete';
     else if (!pl.source || noQty) status = 'Not scheduled';
-    // A line nobody has worked by the report's end that is past its target
-    // (and open today): late, not "Not started" — a Plan / Day line with no
-    // start, or one whose whole plan fell after a past range ended — as its
+    // Past target before "Not started": a line nobody has worked by A whose
+    // target is behind A (a Plan / Day line with no start) is late — as its
     // Totals read it.
-    else if (!worked && pastTarget) status = PAST_TARGET;
+    else if (pastTarget) status = PAST_TARGET;
     else if (!worked && (!pl.S || A < pl.S)) status = 'Not started';
     else if (!worked && undatable) status = 'Not scheduled';
-    else if (pastTarget) status = PAST_TARGET;
     else status = planStatus(ahead, spi);
     const facts = rowsForItem(ix, b).filter(f => f.inP);
     const made = madeQty(facts), crewH = crewHours(facts);
@@ -2219,7 +2233,7 @@
         plan_status: status, plan_source: pl.source ? PLAN_BASIS[pl.source] : null,
         units_per_crew_hr: made > 0 && crewH > 0 ? made / crewH : null,
       },
-      m: { unit: s.unit, nunit, pl, SP, EP, PQ, Q, I, PR, rated, worked, complete: done, past: pastTarget, doneNow, ahead0, noQty,
+      m: { unit: s.unit, nunit, pl, SP, EP, PQ, Q, I, PR, rated, worked, complete: done, past: pastTarget, ahead0, noQty,
         w: Math.abs(s.bidTotal) || 1, pct: itemPctParts(s), cc: txt(b.cost_code), rows: rowsForItem(ix, b),
         qtyP: s.qtyP, daysP: s.daysP, daysEnd: s.daysEnd, remainingNow: s.remainingNow, PF, facts },
       job: p,
@@ -2235,14 +2249,23 @@
      Day, % of plan, needed / day, the projected finish against the target,
      past target) is over those same planned lines; an unplanned line beside
      them is in the bid and installed totals only. Rates only when every line
-     is in one unit. Lines that share rows (a cost-code-only line beside a
-     cost code + sub code one) count those rows once in Actual / Day, and the
-     comparisons that would need one line's share of them are left blank. A
-     job whose lines have no plan at all but which has start and end dates is
-     measured against those instead ("Job dates"). Over several jobs (a
+     is in one unit. Lines that share rows to the range's end (a
+     cost-code-only line beside a cost code + sub code one) count those rows
+     once in Installed and Actual / Day, and the comparisons that would need
+     one line's share of them are left blank. A job whose lines have no plan
+     at all but which has start and end dates is measured against those
+     instead ("Job dates"). Over several jobs (a
      combined report's grand total) each job is measured on its own basis —
      its planned lines, or its job dates — and its Scheduled / Earned % and
-     days ahead are weighed by its bid dollars. */
+     days ahead are weighed by its bid dollars. Like a line, the roll-up is
+     a snapshot as of A: its status, % and days read only A and the lines'
+     as-of figures, and only Needed / Day and the projected finish look
+     forward from today. Past target is the line rule at every level (job
+     Totals, cost-code or job subtotal, grand total) on the roll-up's own
+     target: that target before A, with a line under it past its own target
+     as of A — or, for a job measured on its job dates, the job not done by
+     A. So Totals never read late with every line on time, nor on time with
+     a line late and their own target gone. */
   // One job's planned lines' days ahead, unrounded: the gap between their
   // weighted earned and scheduled % across their whole span — or, when every
   // one is a "Planned per day" with no typed target, their own days of
@@ -2282,8 +2305,10 @@
     const nunit = r => r.m.nunit;
     c.bid_qty = qtyBy(recs, 'bid_qty', nunit).v;
     c.installed_to_date = qtyBy(recs, 'installed_to_date', nunit).v;
-    const shared = sharedRows(recs);
-    if (shared) c.installed_to_date = factQty(shared.filter(f => f.toEnd), () => true, f => normUnit(f.unit));
+    // Lines that share rows to the range's end: those rows counted once. A
+    // row dated after it is no part of the report, nor whether lines share.
+    const shared = sharedRows(recs, toEndRow);
+    if (shared) c.installed_to_date = factQty(shared, () => true, f => normUnit(f.unit));
     const planned = recs.filter(r => r.m.pl.source && r.m.SP !== null && r.m.EP !== null);
     // Each job is measured on its planned lines — or, with none, on its own
     // dates, every line of it. A combined report's grand total counts every
@@ -2338,10 +2363,11 @@
       const days = (list, k) => unionSize(list.map(r => ({ job: r.job, m: { d: r.m[k] } })), 'd');
       const qty = (list, k) => list.reduce((t, x) => t + x.m[k], 0);
       const daysP = days(rated, 'daysP'), daysE = days(rated, 'daysEnd');
-      // Rows two of these lines both take are counted once (one unit here).
-      const dup = sharedRows(rated);
+      // Rows to the range's end two of these lines both take are counted
+      // once (one unit here); the period's rows are among them.
+      const dup = sharedRows(rated, toEndRow);
       const qtyP = dup ? dup.reduce((t, f) => t + (f.inP ? f.qty : 0), 0) : qty(rated, 'qtyP');
-      const qtyE = dup ? dup.reduce((t, f) => t + (f.toEnd ? f.qty : 0), 0) : qty(rated, 'I');
+      const qtyE = dup ? dup.reduce((t, f) => t + f.qty, 0) : qty(rated, 'I');
       c.actual_rate = daysP ? qtyP / daysP : null;
       c.actual_rate_jtd = daysE ? qtyE / daysE : null;
       /* Planned / Day: a job's planned quantity over its plan's working days
@@ -2369,9 +2395,13 @@
       c.pct_of_plan = !dup && c.planned_rate > 0 && dPl && plannedQty > 0 ? jobRates.reduce((t, j) => t + j.qty, 0) / plannedQty * 100 : null;
       const qv = planned.filter(r => r.m.PQ !== null);
       c.qty_variance = !dup && qv.length ? qv.reduce((t, r) => t + Math.min(r.m.I, r.m.Q) - r.m.PQ, 0) : null;
-      const open = rated.filter(r => !r.m.complete);
+      // Looking forward, as a line's: what the lines open today have left,
+      // over the working days from today to the target — none once it is
+      // behind today, or with nothing left today. What is left today counts
+      // every row, so it has no single answer once any row is shared.
+      const open = rated.filter(r => !r.m.complete && r.m.remainingNow > 0);
       const n = T && T >= today ? Math.max(1, countWorkdays(today, T)) : 0;
-      c.required_rate = !dup && open.length && n > 0 ? open.reduce((t, r) => t + r.m.remainingNow, 0) / n : null;
+      c.required_rate = !sharedRows(rated) && open.length && n > 0 ? open.reduce((t, r) => t + r.m.remainingNow, 0) / n : null;
       const byJob = new Map();
       recs.forEach(r => { const jk = jobKey(r.job); if (!byJob.has(jk)) byJob.set(jk, new Set()); r.m.facts.forEach(f => byJob.get(jk).add(f)); });
       let made = 0, crewH = 0;
@@ -2383,21 +2413,19 @@
     c.projected_finish = open.length && open.every(r => r.m.PF) ? maxIso(open.map(r => r.m.PF)) : null;
     const PF = c.projected_finish;
     c.forecast_vs_target = PF && T ? (PF <= T ? countWorkdays(PF, T) - 1 : -(countWorkdays(T, PF) - (isWorkday(T) ? 1 : 0))) : null;
-    // Past target: the Totals' own target (the latest target, which every
-    // other figure here uses) read by the line rule — past it today with a
-    // line still open today, or, for a past range, already past it at the
-    // range's end with a line open then. "Open" is a line late against its
-    // own target (a planned line, or a Plan / Day line nobody has started,
-    // with no start so not among the planned lines) or any line of a job
-    // measured on its job dates. An open line with no plan (an LS line kept
-    // open to closeout, an undated one) is not late against a plan it does
-    // not have (m.past needs a plan and a target); one small line past its
-    // own earlier target does not make the whole job late while the Totals'
-    // target is still ahead (its own row says so); and a past range whose
-    // lines have all finished since, by the Totals' target, is not late.
-    const openNow = recs.some(r => r.m.past && !r.m.doneNow) || datedRecs.some(r => !r.m.doneNow);
-    const openAtEnd = recs.some(r => r.m.past) || datedRecs.some(r => !r.m.complete);
-    const past = !!T && ((T < today && openNow) || (A < today && T < A && openAtEnd));
+    // Past target, as of A, by the line rule on the Totals' own target (the
+    // latest target, which every other figure here uses): that target before
+    // A, with a line late as of A — a line past its own target (a planned
+    // line, or a Plan / Day line nobody has started, with no start so not
+    // among the planned lines) or any line not done by A of a job measured
+    // on its job dates. An open line with no plan (an LS line kept open to
+    // closeout, an undated one) is not late against a plan it does not have
+    // (m.past needs a plan and a target); one small line past its own
+    // earlier target does not make the whole job late while the Totals'
+    // target is still ahead (its own row says so). Nothing after A — today,
+    // or work gone in since — moves it.
+    const late = recs.some(r => r.m.past) || datedRecs.some(r => !r.m.complete);
+    const past = !!T && T < A && late;
     if (recs.every(r => r.m.complete)) c.plan_status = 'Complete';
     // Nothing to measure the job on, but a line past its own target (a Plan /
     // Day line nobody has started, with no start to date it): late, as its row.

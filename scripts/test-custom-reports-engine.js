@@ -1968,9 +1968,19 @@ function deepNear(a, b, at = '') {
         lwLate.line.plan_status === 'On track' && lwLate.tot.plan_status === 'On track' && lwLate.line.ahead_days === 0.5
           && ['sched_pct', 'spi', 'qty_variance', 'ahead_days', 'plan_status'].every(k => lwLate.line[k] === lwOn.line[k] && lwLate.tot[k] === lwOn.tot[k]),
         JSON.stringify({ late: lwLate, on: lwOn }));
+      // Snapshot rule: a past range reads as of its end, whatever happened
+      // since — so the twin still short today (750 of 875) reads exactly as
+      // the finished one in "Last week" (it was 625 of 875 and ahead on
+      // Nov 1), with no Needed / Day now its target is behind today; job to
+      // date (as of today, past its target, short) it is "Behind (past target)".
       const lwStall = lw(6, '2026-11-06');
-      assert('…while the twin still short of its quantity today (750 of 875) is "Behind (past target)", line and Totals',
-        lwStall.line.plan_status === 'Behind (past target)' && lwStall.tot.plan_status === 'Behind (past target)', JSON.stringify(lwStall));
+      const lwStallJtd = zs([{ sub_code: 'B', quantity: 875, start_date: '2026-10-26', target_date: '2026-11-04' }],
+        lastWk.slice(0, 6).map(dt => ({ sub_code: 'B', date: dt, quantity: 125 })), '2026-11-06');
+      assert('…while the twin still short of its quantity today (750 of 875) reads the same in "Last week" (On track +0.5 as of Nov 1, line and Totals, no Needed / Day), and "Behind (past target)" job to date',
+        ['sched_pct', 'spi', 'qty_variance', 'ahead_days', 'plan_status'].every(k => lwStall.line[k] === lwOn.line[k] && lwStall.tot[k] === lwOn.tot[k])
+          && lwStall.line.plan_status === 'On track' && lwStall.line.required_rate === null && lwStall.tot.required_rate === null
+          && lwStallJtd.line.plan_status === 'Behind (past target)' && lwStallJtd.tot.plan_status === 'Behind (past target)',
+        JSON.stringify({ lwStall, lwStallJtd }));
       const lwCustom = zs([{ sub_code: 'B', quantity: 875, start_date: '2026-10-26', target_date: '2026-11-04' }],
         lastWk.map(dt => ({ sub_code: 'B', date: dt, quantity: 125 })), '2026-11-06', { preset: 'custom', from: '2026-10-26', to: '2026-10-30' });
       assert('…and a custom past range (Oct 26–30) run Nov 6 is not "Behind (past target)" either',
@@ -2018,8 +2028,13 @@ function deepNear(a, b, at = '') {
       const xLate = zs(xItem, xRows, '2026-11-06', xRange), xOn = zs(xItem, xRows, '2026-10-19', xRange);
       assert('a custom Oct 1–16 range on a line due Oct 20 finished Oct 19, run Nov 6: Needed / Day blank on the line and the Totals (was 0 beside blank)',
         xLate.line.required_rate === null && xLate.tot.required_rate === null, JSON.stringify(xLate));
-      assert('…and run Oct 19, with its target still ahead, 0 on both',
-        xOn.line.required_rate === 0 && xOn.tot.required_rate === 0, JSON.stringify(xOn));
+      // Run Oct 19, its target still ahead: nothing is left today, so no
+      // Needed / Day on either (was 0 on both) — and with 60 still to go
+      // (the Oct 19 row not yet in), 60 over the two days to Oct 20 on both.
+      const xLeft = zs(xItem, xRows.slice(0, 1), '2026-10-19', xRange);
+      assert('…and run Oct 19, with its target still ahead and nothing left today, blank on both; with 60 left, 30 / day on both',
+        xOn.line.required_rate === null && xOn.tot.required_rate === null && xLeft.line.required_rate === 30 && xLeft.tot.required_rate === 30,
+        JSON.stringify({ xOn, xLeft }));
 
       // Round 6: an unworked Plan / Day line with no start, past its target,
       // makes the Totals late even beside a finished measurable line whose
@@ -2145,13 +2160,21 @@ function deepNear(a, b, at = '') {
       const aLast = [r7row('2026-10-28', 'Surface', 50)];
       const aOct29 = r7(f1a(aLast), oct1to16, '2026-10-29'), aNov6 = r7(f1a(aLast), oct1to16, '2026-11-06');
       const aComb = r7(f1a(aLast), oct1to16, '2026-11-06', 'combined'), aOpen = r7(f1a([]), oct1to16, '2026-11-06');
+      const aOpenJtd = r7(f1a([]), { preset: 'job_to_date', from: '', to: '' }, '2026-11-06');
+      const aOpenOct = r7(f1a([]), { preset: 'custom', from: '2026-10-01', to: '2026-10-31' }, '2026-11-06');
       assert('round 7: a custom Oct 1–16 report, every line finished since by the Totals\' target (Oct 30), run Nov 6: Totals "On track" +8.5, as run Oct 29 (was "Behind (past target)"); Curb still "Behind (past target)"',
         aOct29.tot.plan_status === 'On track' && aOct29.tot.ahead_days === 8.5 && aNov6.tot.plan_status === 'On track' && aNov6.tot.ahead_days === 8.5
           && line(aOct29, 'Curb').plan_status === PT && line(aNov6, 'Curb').plan_status === PT, JSON.stringify({ aOct29, aNov6 }));
       assert('…and the combined layout\'s job subtotal and grand total read the same',
         aComb.subs.length === 1 && aComb.subs[0].plan_status === 'On track' && aComb.tot.plan_status === 'On track' && aComb.tot.ahead_days === 8.5, JSON.stringify(aComb));
-      assert('…while with Surface still open today (no Oct 28 row) the Totals are "Behind (past target)"',
-        aOpen.tot.plan_status === PT, JSON.stringify(aOpen));
+      // Snapshot rule: the Oct 1–16 report reads as of Oct 16 whatever has
+      // happened since, so with Surface still open today its Totals read as
+      // above (their target, Oct 30, was ahead on Oct 16); a report whose end
+      // is past Oct 30 — job to date, or Oct 1–31 — has them late.
+      assert('…and with Surface still open today (no Oct 28 row) the Oct 1–16 report reads the same, "On track" +8.5 (was "Behind (past target)"); job to date, or Oct 1–31, the Totals are "Behind (past target)"',
+        ['sched_pct', 'earned_pct', 'ahead_days', 'start_date', 'target_date', 'plan_status', 'plan_source'].every(k => aOpen.tot[k] === aNov6.tot[k])
+          && aOpen.tot.plan_status === 'On track' && aOpenJtd.tot.plan_status === PT && aOpenOct.tot.plan_status === PT,
+        JSON.stringify({ aOpen: aOpen.tot, aOpenJtd: aOpenJtd.tot, aOpenOct: aOpenOct.tot }));
 
       // (1b) Job dates: Sep 1 – Oct 30, one SF line, finished Oct 28; a
       // "September" report run Oct 15 and again Nov 6.
@@ -2164,8 +2187,14 @@ function deepNear(a, b, at = '') {
       const bOpen = r7(f1b('2026-10-30', bRows), sept, '2026-11-06'), bEarly = r7(f1b('2026-09-25', bRows.concat([bLast])), sept, '2026-11-06');
       assert('round 7: a job on its job dates (Sep 1 – Oct 30) finished Oct 28, its "September" report run Nov 6: Totals "On track" +4 on Job dates, as run Oct 15 (was "Behind (past target)")',
         [bOct15, bNov6, bComb].every(x => x.tot.plan_status === 'On track' && x.tot.ahead_days === 4 && x.tot.plan_source === 'Job dates'), JSON.stringify({ bOct15, bNov6, bComb }));
-      assert('…while with the job still open today, or a job end (Sep 25) before the range\'s end, it is "Behind (past target)"',
-        bOpen.tot.plan_status === PT && bEarly.tot.plan_status === PT, JSON.stringify({ bOpen: bOpen.tot, bEarly: bEarly.tot }));
+      // Snapshot rule: with the job still open today the September report
+      // reads the same (its end, Oct 30, was ahead on Sep 30); job to date it
+      // is late, as is the September report on a job that ended Sep 25.
+      const bOpenJtd = r7(f1b('2026-10-30', bRows), { preset: 'job_to_date', from: '', to: '' }, '2026-11-06');
+      assert('…and with the job still open today the September report reads the same, "On track" +4 (was "Behind (past target)"); job to date, or with a job end (Sep 25) before the range\'s end, it is "Behind (past target)"',
+        bOpen.tot.plan_status === 'On track' && bOpen.tot.ahead_days === 4 && bOpen.tot.plan_source === 'Job dates'
+          && bOpenJtd.tot.plan_status === PT && bEarly.tot.plan_status === PT,
+        JSON.stringify({ bOpen: bOpen.tot, bOpenJtd: bOpenJtd.tot, bEarly: bEarly.tot }));
 
       // (2) A Plan / Day line with no typed Start takes its start from a day
       // worked by the report's end — never one worked after a past range.
@@ -2183,18 +2212,28 @@ function deepNear(a, b, at = '') {
         line(sJtd, 'Seal').start_date === '2026-11-03' && line(sJtd, 'Seal').ahead_days === -3.5, JSON.stringify(sJtd));
 
       // (3) A line whose whole plan falls between a past range's end and
-      // today, unfinished today: late on the line and its Totals alike.
+      // today, unfinished today: the line and its Totals agree. Snapshot
+      // rule: as of the range's end (Oct 31) the line had not started and
+      // was not yet due, so "Last month" reads it — and its Totals, the
+      // combined subtotal and grand total — as on Oct 31: "Not started",
+      // "On track". Job to date (as of today, past its target, half in) the
+      // line and every roll-up over it are "Behind (past target)".
       const f3 = [{ id: 'r7d', 'project-name': 'Main', status: 'In Progress', 'start-date': '', 'end-date': '', bidItems: [
         { id: 'r7d1', cost_code: '200', sub_code: 'Base', unit: 'TON', quantity: 300, unit_cost: 40, start_date: '2026-10-05', target_date: '2026-10-23' },
         { id: 'r7d2', cost_code: '200', sub_code: 'Surface', unit: 'TON', quantity: 200, unit_cost: 80, start_date: '2026-11-02', target_date: '2026-11-04' }],
       dailyRows: [r7row('2026-10-06', 'Base', 100), r7row('2026-10-13', 'Base', 100), r7row('2026-10-20', 'Base', 100), r7row('2026-11-03', 'Surface', 100)] }];
-      const lastM = { preset: 'last_month', from: '', to: '' };
+      const lastM = { preset: 'last_month', from: '', to: '' }, jtd0 = { preset: 'job_to_date', from: '', to: '' };
       const nLm = r7(f3, lastM, '2026-11-06'), nComb = r7(f3, lastM, '2026-11-06', 'combined'), nOct31 = r7(f3, octM, '2026-10-31');
-      assert('round 7: "Last month" run Nov 6, Surface planned Nov 2–4 and half in: the line, its Totals, the combined subtotal and grand total all read "Behind (past target)" (the line read "Not started")',
-        line(nLm, 'Surface').plan_status === PT && nLm.tot.plan_status === PT && nComb.subs.length === 1 && nComb.subs[0].plan_status === PT
-          && nComb.tot.plan_status === PT && line(nComb, 'Surface').plan_status === PT, JSON.stringify({ nLm, nComb }));
-      assert('…while an Oct 1–31 report run Oct 31 still reads Surface "Not started", Totals "On track"',
-        line(nOct31, 'Surface').plan_status === 'Not started' && nOct31.tot.plan_status === 'On track', JSON.stringify(nOct31));
+      const nJtd = r7(f3, jtd0, '2026-11-06'), nJtdComb = r7(f3, jtd0, '2026-11-06', 'combined');
+      assert('round 7: "Last month" run Nov 6, Surface planned Nov 2–4 and half in since: the line reads "Not started" and its Totals, the combined subtotal and grand total "On track" — as run Oct 31 (were all "Behind (past target)")',
+        line(nLm, 'Surface').plan_status === 'Not started' && nLm.tot.plan_status === 'On track' && nComb.subs.length === 1
+          && nComb.subs[0].plan_status === 'On track' && nComb.tot.plan_status === 'On track' && line(nComb, 'Surface').plan_status === 'Not started'
+          && ['sched_pct', 'earned_pct', 'ahead_days', 'plan_status'].every(k => nLm.tot[k] === nOct31.tot[k] && line(nLm, 'Surface')[k] === line(nOct31, 'Surface')[k]),
+        JSON.stringify({ nLm, nComb, nOct31 }));
+      assert('…while an Oct 1–31 report run Oct 31 still reads Surface "Not started", Totals "On track"; job to date on Nov 6 the line, its Totals, the combined subtotal and grand total all read "Behind (past target)"',
+        line(nOct31, 'Surface').plan_status === 'Not started' && nOct31.tot.plan_status === 'On track'
+          && line(nJtd, 'Surface').plan_status === PT && nJtd.tot.plan_status === PT && nJtdComb.subs.length === 1
+          && nJtdComb.subs[0].plan_status === PT && nJtdComb.tot.plan_status === PT, JSON.stringify({ nOct31, nJtd, nJtdComb }));
 
       // (4) A combined grand total counts every measured job: one measured on
       // its job dates is rolled up on them, beside the others.
@@ -2362,6 +2401,326 @@ function deepNear(a, b, at = '') {
     assert('lines sharing rows: Totals 200 installed over 2 days is 100 a day (was 200), and % of plan / qty vs plan / needed are blank',
       t9.installed_to_date === 200 && t9.actual_rate === 100 && t9.actual_rate_jtd === 100
         && t9.pct_of_plan === null && t9.qty_variance === null && t9.required_rate === null, JSON.stringify(t9));
+  }
+
+  section('Planned vs actual — a snapshot as of the report\'s end (property tests)');
+  {
+    /* The report is a snapshot as of its end, A: what it says looking back
+       never moves with the day it is run or with work gone in since, and a
+       report as of today reads exactly as the round-7 engine (382f3c9) read
+       it, kept as a fixture. Marked complete carries no date: it is the
+       job's set-up, like a bid quantity or a typed date, and so stands at
+       every as-of day — the runs compared here keep it as it is, and the
+       rows are what differ. */
+    const OLD = (() => {
+      const c = {};
+      vm.createContext(c);
+      c.window = c;
+      vm.runInContext(fs.readFileSync(path.join(__dirname, 'fixtures', 'custom-reports-engine-382f3c9.js'), 'utf8'), c,
+        { filename: 'custom-reports-engine-382f3c9.js' });
+      return c.FCTReportEngine;
+    })();
+    /* Random jobs, plans, rows and ranges from a seeded PRNG; returns the
+       counts and the first few failures of each property:
+         (a) a past range's report (A < today) reads the same looking back —
+             every column but Needed / Day, Projected Finish and Finish vs
+             Target, and the footnotes (and, on a quarter of them, the
+             chart) — run 1, 9 working and 60 days after A, with rows dated
+             after A added, some of them finishing or overrunning a line;
+         (b) a report as of today (A = today) equals the round-7 engine's
+             output, every column and the chart — exactly, except that a row
+             dated after a range that ends today or later (a future-dated
+             row) no longer counts as done or as shared: the today-clause
+             read it, the snapshot does not;
+         (c) every roll-up (job Totals, subtotal, grand total) is "Behind
+             (past target)" exactly when its target is before A and a line
+             under it is (or a job under it measured on its job dates is not
+             done by A); no line or roll-up is with a target on or after A. */
+    function planProperties(E, OLD, N, SEED) {
+      const PT = 'Behind (past target)';
+      const ADMIN = { role: 'admin', canSeeCosts: true, canSeeFinancials: true, canShare: true };
+      const PVA_COLS = E.CATALOG.plan_vs_actual.columns.map(c => c.key);
+      const CH_COLS = E.CATALOG.chart.columns.map(c => c.key);
+      const FWD = ['required_rate', 'projected_finish', 'forecast_vs_target'];
+      const utcOf = iso => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10));
+      const addD = (iso, n) => new Date(utcOf(iso) + n * 864e5).toISOString().slice(0, 10);
+      const diffD = (a, b) => Math.round((utcOf(b) - utcOf(a)) / 864e5);
+      const dow = iso => new Date(utcOf(iso)).getUTCDay();
+      const addWd = (iso, n) => { let d = iso; while (n > 0) { d = addD(d, 1); if (E.countWorkdays(d, d) === 1) n--; } return d; };
+      // mulberry32: every run draws the same cases.
+      let st = SEED >>> 0;
+      const R = () => {
+        st = (st + 0x6D2B79F5) >>> 0;
+        let t = st;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+      const int = (a, b) => a + Math.floor(R() * (b - a + 1));
+      const pick = a => a[Math.floor(R() * a.length)];
+      const p = x => R() < x;
+      const day = (a, b) => addD(a, int(0, Math.max(0, diffD(a, b))));
+      const HOL = ['2026-09-07', '2026-10-12', '2026-11-11', '2026-11-26', '2026-12-25', '2027-01-01', '2027-01-18'];
+      // A holiday, or a Saturday / Sunday.
+      const odd = (a, b) => (p(0.4) ? pick(HOL) : (d => addD(d, (6 - dow(d) + 7) % 7 + (p(0.3) ? 1 : 0)))(day(a, b)));
+      const mdy = iso => `${+iso.slice(5, 7)}/${+iso.slice(8, 10)}/${iso.slice(2, 4)}`;
+      const RANGES = ['job_to_date', 'job_to_date', 'last_week', 'last_week', 'last_month', 'yesterday', 'custom_past', 'custom_past',
+        'custom_past_open', 'today', 'this_week', 'this_month', 'last_7', 'last_30', 'custom_today', 'custom_future', 'custom_ahead'];
+      function genDates(kind, today) {
+        const c = (from, to) => ({ preset: 'custom', from, to });
+        switch (kind) {
+          case 'custom_past': { const to = addD(today, -int(1, 70)); return c(addD(to, -int(0, 50)), to); }
+          case 'custom_past_open': return c('', addD(today, -int(1, 70)));
+          case 'custom_today': return c(addD(today, -int(0, 60)), today);
+          case 'custom_future': return c(addD(today, -int(0, 40)), addD(today, int(1, 40)));
+          case 'custom_ahead': { const from = addD(today, int(1, 20)); return c(from, addD(from, int(0, 20))); }
+          default: return { preset: kind, from: '', to: '' };
+        }
+      }
+      function genRow(b, date, Qn) {
+        const r = { date, cost_code: b.cost_code, sub_code: b.sub_code, employee: pick(['Ann', 'Bob', 'Cy']),
+          quantity: String(p(0.15) ? 0 : p(0.1) && Qn > 0 ? Qn : int(1, Math.max(1, Math.floor(Qn / 3)) || 20)),
+          labor_hours: p(0.15) ? '0' : '8', rate: '30' };
+        if (p(0.04)) r.job_class = 'Trucking';
+        if (p(0.04)) r.field_type = 'Haul — On Site';
+        return r;
+      }
+      function genJob(k, today, sched) {
+        const W0 = addD(today, -100), W1 = addD(today, 60);
+        const job = { id: 'j' + k, 'project-name': 'Job ' + k, status: p(0.1) ? 'Complete' : 'In Progress',
+          'start-date': p(0.5) ? day(W0, today) : '', 'end-date': p(0.5) ? (p(0.15) ? odd(W0, W1) : day(addD(today, -60), W1)) : '',
+          bidItems: [], dailyRows: [] };
+        const tasks = [];
+        for (let i = int(1, 4) - 1; i >= 0; i--) {
+          const qk = R();
+          const Q = qk < 0.08 ? 0 : qk < 0.13 ? '' : qk < 0.2 ? int(1, 5) : int(10, 2000);
+          const b = { id: `${job.id}-${i}`, cost_code: pick(['100', '200']), sub_code: p(0.15) ? '' : pick(['A', 'B', 'C']), description: 'Line ' + i,
+            unit: pick(['SF', 'SY', 'TON', 'TN', 'LF', 'EA', 'LS']), quantity: Q === '' ? '' : String(Q), unit_cost: String(p(0.1) ? 0 : int(1, 90)) };
+          if (p(0.08)) b.change_orders = [{ qty_delta: p(0.5) ? -(+Q || 0) : int(-50, 200), date: day(W0, W1) }];
+          if (p(0.12)) b.is_complete = true;
+          const kind = pick(['bid', 'bid', 'odd', 'rate', 'rate', 'sched', 'jobend', 'none', 'none']);
+          if (kind === 'bid') { b.start_date = day(W0, W1); b.target_date = addD(b.start_date, int(0, 50)); }
+          else if (kind === 'odd') {
+            const v = int(0, 3);
+            if (v === 0) b.start_date = b.target_date = odd(W0, W1);                                        // one weekend day / holiday
+            else if (v === 1) { b.start_date = odd(W0, W1); b.target_date = addD(b.start_date, 1); }       // a closure
+            else if (v === 2) { b.start_date = day(W0, W1); b.target_date = addD(b.start_date, -int(1, 20)); } // inverted
+            else b.start_date = b.target_date = day(W0, W1);                                                // start = target
+          } else if (kind === 'rate') {
+            // Plan / Day, with and without a Start and a Target; slow enough to
+            // finish months out, or (0.05) never on the calendar.
+            b.planned_rate = String(p(0.06) ? 0.05 : pick([int(10, 80), int(80, 600)]));
+            if (p(0.5)) b.start_date = p(0.2) ? odd(W0, W1) : day(W0, W1);
+            if (p(0.5)) b.target_date = b.start_date && p(0.8) ? addD(b.start_date, int(-5, 40)) : day(W0, W1);
+          } else if (kind === 'sched') {
+            const S = day(W0, W1), T = addD(S, int(-3, 40));
+            tasks.push({ kind: 'task', code: b.cost_code, subcode: b.sub_code, start: p(0.3) ? mdy(S) : S, end: p(0.3) ? mdy(T) : T });
+            if (p(0.3)) tasks.push({ kind: 'task', code: b.cost_code, subcode: b.sub_code, start: addD(S, int(0, 10)), end: addD(T, int(0, 10)) });
+            if (p(0.2)) b.target_date = day(W0, W1);
+          } else if (kind === 'jobend') b.start_date = day(W0, W1);   // the job's end date as its target, if it has one
+          else if (p(0.3)) b.target_date = day(W0, W1);
+          job.bidItems.push(b);
+          const Qn = Math.max(0, +Q || 0);
+          for (let r = int(0, 6); r > 0; r--) job.dailyRows.push(genRow(b, p(0.04) ? '' : day(W0, W1), Qn));
+        }
+        if (p(0.1)) job.dailyRows.push({ date: day(W0, W1), cost_code: '900', sub_code: 'X', quantity: '5', labor_hours: '8', employee: 'Ann' });
+        if (tasks.length) sched[job.id] = tasks;
+        return job;
+      }
+      function genCase() {
+        const today = addD('2026-09-14', int(0, 120));
+        const layout = p(0.5) ? 'combined' : 'separate';
+        const sched = {}, jobs = [];
+        for (let k = int(1, 3) - 1; k >= 0; k--) jobs.push(genJob(k, today, sched));
+        const pva = E.newSection('plan_vs_actual');
+        pva.columns = PVA_COLS.slice();
+        Object.assign(pva.options, { groupBy: p(0.25) ? 'cost_code' : 'none', totals: true, hideUnplanned: p(0.15), hideComplete: p(0.15) });
+        const ch = E.newSection('chart');
+        ch.columns = CH_COLS.slice();
+        Object.assign(ch.options, { chart: p(0.6) ? 's_curve' : 'daily_bars', basis: p(0.5) ? 'pct' : 'qty' });
+        const def = { v: 2, title: 'Props', layout, includeInternal: true, dates: genDates(pick(RANGES), today), sections: [pva, ch] };
+        return { today, jobs, sched, def, division: pick(['paving', 'turf', 'kiewit']) };
+      }
+      const nowOf = iso => new Date(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10), 14, 30);
+      function run(Eng, cs, jobs, today, dates, pvaOnly) {
+        const def = Object.assign({}, cs.def, { dates: dates || cs.def.dates });
+        if (pvaOnly) def.sections = def.sections.slice(0, 1);
+        const cfg = { division: cs.division, divisionLabel: cs.division, areaUnit: 'SY', perm: ADMIN, getProjects: () => jobs,
+          getConSchedule: id => cs.sched[id] || null, getPurchaseOrders: () => [], getTruckingEntries: () => [] };
+        const ctx = Eng.makeContext(def, cfg, { pickedIds: jobs.map(j => j.id), today, now: nowOf(today) });
+        return def.sections.map(s => Eng.buildSectionData(s, def, ctx));
+      }
+      // Section outputs as text: each job object by its id (in place — the
+      // outputs are this run's own), and, looking back only, without the
+      // figures that look forward from today.
+      const idOf = j => (j && typeof j === 'object' ? String(j.id) : j);
+      const ser = (out, back) => {
+        out.forEach(sec => (sec.blocks || []).forEach(bk => {
+          bk.job = idOf(bk.job);
+          const cut = c => { if (c && back) FWD.forEach(k => { delete c[k]; }); };
+          cut(bk.totals);
+          (bk.groups || []).forEach(g => { cut(g.subtotal); g.rows.forEach(r => { if (r.job !== undefined) r.job = idOf(r.job); cut(r.cells); }); });
+          (bk.charts || []).forEach(ch => { ch.job = idOf(ch.job); });
+        }));
+        return JSON.stringify(out);
+      };
+      function consistency(pvaOut, A, jobsById) {
+        const bad = [];
+        const isPT = c => c.plan_status === PT;
+        const planned = c => c.sched_pct !== null && c.earned_pct !== null;
+        const check = (tot, lines, what) => {
+          const byJob = new Map();
+          lines.forEach(l => { if (!byJob.has(l.job)) byJob.set(l.job, []); byJob.get(l.job).push(l.c); });
+          let datedOpen = false;
+          byJob.forEach((ls, id) => {
+            const j = jobsById[id], js = j && j['start-date'], je = j && j['end-date'];
+            if (!ls.some(planned) && js && je && E.countWorkdays(js, je) > 0 && ls.some(c => c.plan_status !== 'Complete')) datedOpen = true;
+          });
+          const late = lines.some(l => isPT(l.c));
+          if (isPT(tot)) {
+            if (!late && !datedOpen) bad.push({ what, tot, why: 'past target with no line past target and no job on its dates open' });
+            if (tot.target_date ? !(tot.target_date < A) : !late) bad.push({ what, tot, why: 'past target with its target on or after A' });
+          } else if (tot.target_date && tot.target_date < A && (late || datedOpen)) bad.push({ what, tot, why: 'target before A with a late line, not past target' });
+        };
+        pvaOut.blocks.forEach(bk => {
+          const all = [];
+          bk.groups.forEach(g => {
+            const lines = g.rows.map(r => ({ c: r.cells, job: r.job !== undefined ? r.job : bk.job }));
+            lines.forEach(({ c }) => {
+              if (isPT(c) && !(c.target_date && c.target_date < A)) bad.push({ line: c, why: 'line past target with its target on or after A' });
+              if (!isPT(c) && c.target_date && c.target_date < A && !['Complete', 'Not scheduled'].includes(c.plan_status)) bad.push({ line: c, why: 'open line past its target, not past target' });
+            });
+            all.push(...lines);
+            if (g.subtotal) check(g.subtotal, lines, 'subtotal');
+          });
+          if (bk.totals) check(bk.totals, all, bk.job == null ? 'grand total' : 'Totals');
+        });
+        return bad;
+      }
+      const res = { a: { cases: 0, runs: 0, rows: 0, fail: 0, kinds: {}, sample: [] },
+        b: { cases: 0, strict: 0, fail: 0, loose: 0, looseDiff: 0, looseBad: 0, sample: [] }, c: { cases: 0, fail: 0, sample: [] },
+        seen: { status: {}, source: {}, layout: {} } };
+      const tally = (m, k) => { m[k] = (m[k] || 0) + 1; };
+      for (let i = 0; i < N; i++) {
+        const cs = genCase();
+        const rg = E.resolveDateRange(cs.def.dates, cs.today);
+        const A = rg.to && rg.to < cs.today ? rg.to : cs.today;
+        const afterEnd = jobs => !!rg.to && jobs.some(j => j.dailyRows.some(r => r.date && r.date > rg.to));
+        // (b) on half the reports as of today that have an end: no row dated
+        // after it (none is dated after today, for one ending today).
+        const strict = A === cs.today && (!rg.to || p(0.5));
+        if (strict && rg.to) cs.jobs.forEach(j => { j.dailyRows = j.dailyRows.filter(r => !r.date || r.date <= rg.to); });
+        const charts = A === cs.today || p(0.25);
+        const baseFull = ser(run(E, cs, cs.jobs, cs.today, null, !charts), false);
+        const byId = Object.fromEntries(cs.jobs.map(j => [j.id, j]));
+        res.c.cases++;
+        const pvaOut = JSON.parse(baseFull)[0];
+        tally(res.seen.layout, cs.def.layout);
+        pvaOut.blocks.forEach(bk => bk.groups.forEach(g => g.rows.forEach(r => { tally(res.seen.status, r.cells.plan_status); tally(res.seen.source, r.cells.plan_source); })));
+        const bad = consistency(pvaOut, A, byId);
+        if (bad.length) { res.c.fail++; if (res.c.sample.length < 3) res.c.sample.push({ i, today: cs.today, A, dates: cs.def.dates, bad: bad.slice(0, 2) }); }
+        if (A < cs.today) {
+          res.a.cases++;
+          const kind = cs.def.dates.preset === 'custom' ? 'custom' : cs.def.dates.preset;
+          res.a.kinds[kind] = (res.a.kinds[kind] || 0) + 1;
+          // Later runs pin the range as custom dates (a "Last week" run later
+          // is another week); with the chart drawn, the pinned range is first
+          // shown to read exactly as the preset.
+          const pinned = { preset: 'custom', from: rg.from, to: rg.to };
+          const why = [];
+          if (charts && ser(run(E, cs, cs.jobs, cs.today, pinned), false) !== baseFull) why.push('the preset and its pinned dates differ');
+          const want = ser(JSON.parse(baseFull), true);
+          [[addD(A, 1), 0], [addWd(A, 9), int(1, 6)], [addD(A, 60), int(1, 8)]].forEach(([t, extra]) => {
+            res.a.runs++;
+            const jobs = cs.jobs.map(j => {
+              const rows = j.dailyRows.slice();
+              res.a.rows += extra;
+              for (let e = 0; e < extra; e++) {
+                const b = pick(j.bidItems), Qn = Math.max(0, +b.quantity || 0);
+                // Some finish the line (or overrun it) after A.
+                rows.push(Object.assign(genRow(b, day(addD(A, 1), addD(t, 10)), Qn), p(0.4) ? { quantity: String(Math.max(1, Qn)) } : {}));
+              }
+              return Object.assign({}, j, { dailyRows: rows });
+            });
+            if (ser(run(E, cs, jobs, t, pinned, !charts), true) !== want) why.push(`run ${t} with ${extra} more rows after ${A}`);
+          });
+          if (why.length) { res.a.fail++; if (res.a.sample.length < 3) res.a.sample.push({ i, today: cs.today, A, dates: cs.def.dates, why }); }
+        } else if (OLD) {
+          res.b.cases++;
+          const same = ser(run(OLD, cs, cs.jobs, cs.today), false) === baseFull;
+          if (strict) {
+            res.b.strict++;
+            if (!same) { res.b.fail++; if (res.b.sample.length < 3) res.b.sample.push({ i, today: cs.today, dates: cs.def.dates }); }
+          } else {
+            res.b.loose++;
+            if (!same) { res.b.looseDiff++; if (!afterEnd(cs.jobs)) res.b.looseBad++; }
+          }
+        }
+      }
+      return res;
+    }
+
+    const N = Math.max(2000, +process.env.CR_PVA_CASES || 0), SEED = +process.env.CR_PVA_SEED || 20261106;
+    const t0 = Date.now();
+    const res = planProperties(V, OLD, N, SEED);
+    const ms = Date.now() - t0;
+    const kinds = Object.entries(res.a.kinds).map(([k, n]) => `${k} ${n}`).join(', ');
+    assert(`(a) ${res.a.cases} past-range reports (${kinds}), each run again 1 day, 9 working days and 60 days after its end with ${res.a.rows} rows dated after it added: every line, Totals, subtotal, grand total and footnote (and the chart, drawn on a quarter of them) reads the same looking back`,
+      res.a.fail === 0 && res.a.cases >= 600 && Object.keys(res.a.kinds).length === 4, JSON.stringify(res.a.sample));
+    assert(`(b) ${res.b.strict} reports as of today (job to date, and ranges ending today or later with no row dated past their end) equal the round-7 engine's, every column, roll-up, footnote and chart`,
+      res.b.fail === 0 && res.b.strict >= 500, JSON.stringify(res.b.sample));
+    assert(`(b) …and of ${res.b.loose} with rows dated past a range that ends today or later (future-dated rows), the ${res.b.looseDiff} that differ all have such a row: the snapshot never counts it, the today-clause did`,
+      res.b.looseBad === 0 && res.b.loose >= 200, JSON.stringify(res.b));
+    assert(`(c) all ${res.c.cases} reports: a line or roll-up reads "Behind (past target)" exactly when its target is before A and it (or a line under it, or a job under it on its job dates) is not done by A — never with its target on or after A (${N} cases, ${ms} ms)`,
+      res.c.fail === 0, JSON.stringify(res.c.sample));
+    const STATUSES = ['Complete', 'Not scheduled', 'Behind (past target)', 'Not started', 'On track', 'At risk', 'Behind'];
+    const SOURCES = ['Planned per day', 'Bid item dates', 'Bid item start + job end', 'Construction schedule', 'null'];
+    assert('…over every status, every plan basis and no plan, and both layouts',
+      STATUSES.every(k => res.seen.status[k] > 20) && SOURCES.every(k => res.seen.source[k] > 20) && res.seen.layout.separate > 500 && res.seen.layout.combined > 500,
+      JSON.stringify(res.seen));
+
+    const pvaDef = (cols, dates) => vdef([vsec('plan_vs_actual', { columns: cols })], { dates });
+    // Worked by hand, the two places the snapshot parts from the round-7
+    // engine. (1) A row dated after a range that ends today or later is a
+    // future-dated row: it is no part of the report, so it does not finish a
+    // line that is past its target as of today ("This week" run Wed Nov 4;
+    // Base due Oct 30, 600 of 1000 in, 400 more typed for Nov 12).
+    const sv = (Eng, rows, dates, today, cols) => {
+      const def = pvaDef(cols || ['sub_code', 'installed_to_date', 'plan_status', 'required_rate', 'qty_variance', 'actual_rate', 'pct_of_plan'], dates);
+      const data = { projects: [{ id: 'sv', 'project-name': 'Snap', status: 'In Progress', 'start-date': '', 'end-date': '', bidItems: [
+        { id: 'sv1', cost_code: 'Pave', sub_code: 'Base', unit: 'TON', quantity: '1000', unit_cost: '40', start_date: '2026-10-19', target_date: '2026-10-30' }],
+      dailyRows: rows }] };
+      const d = Eng.buildSectionData(def.sections[0], def, Eng.makeContext(def, vcfg(data), { pickedIds: ['sv'], today, now: NOW }));
+      return { line: J(d.blocks[0].groups[0].rows[0].cells), tot: J(d.blocks[0].totals) };
+    };
+    const svRows = [row('2026-10-20', 'Pave', 'Base', 300), row('2026-10-27', 'Pave', 'Base', 300), row('2026-11-12', 'Pave', 'Base', 400)];
+    const thisWk = { preset: 'this_week', from: '', to: '' };
+    const svNew = sv(V, svRows, thisWk, '2026-11-04'), svOld = sv(OLD, svRows, thisWk, '2026-11-04');
+    const svJtd = sv(V, svRows, { preset: 'job_to_date', from: '', to: '' }, '2026-11-04');
+    assert('"This week" run Wed Nov 4 on a line due Oct 30, 600 of 1000 in, with 400 more typed for Nov 12 (after the range): "Behind (past target)", line and Totals (the round-7 engine read it as done today: "Behind")',
+      svNew.line.plan_status === 'Behind (past target)' && svNew.tot.plan_status === 'Behind (past target)' && svNew.line.installed_to_date === 600
+        && svNew.line.required_rate === null && svOld.line.plan_status === 'Behind' && svJtd.line.plan_status === 'Complete',
+      JSON.stringify({ svNew, svOld, svJtd }));
+
+    // (2) Whether two lines share rows is decided on the rows to the range's
+    // end: a cost-code-only line beside one under its code, sharing no row
+    // by Oct 30, keeps its Oct 26–30 Totals (Qty vs Plan, % of plan) when a
+    // row both take goes in on Nov 3 — job to date, it is shared.
+    const sh = (Eng, extra, dates, today) => {
+      const def = pvaDef(['sub_code', 'installed_to_date', 'actual_rate', 'actual_rate_jtd', 'pct_of_plan', 'qty_variance', 'plan_status'], dates);
+      const data = { projects: [{ id: 'sr', 'project-name': 'Share', status: 'In Progress', 'start-date': '', 'end-date': '', bidItems: [
+        { id: 'sr1', cost_code: 'Pave', sub_code: '', unit: 'TON', quantity: '1000', unit_cost: '10', start_date: '2026-10-19', target_date: '2026-11-13' },
+        { id: 'sr2', cost_code: 'Pave', sub_code: 'Top', unit: 'TON', quantity: '1000', unit_cost: '10', start_date: '2026-10-19', target_date: '2026-11-13' }],
+      dailyRows: [row('2026-10-27', 'Pave', 'Base', 100)].concat(extra) }] };
+      return J(Eng.buildSectionData(def.sections[0], def, Eng.makeContext(def, vcfg(data), { pickedIds: ['sr'], today, now: NOW })).blocks[0].totals);
+    };
+    const oct26to30 = { preset: 'custom', from: '2026-10-26', to: '2026-10-30' }, topNov3 = [row('2026-11-03', 'Pave', 'Top', 50)];
+    const shBefore = sh(V, [], oct26to30, '2026-11-06'), shAfter = sh(V, topNov3, oct26to30, '2026-11-06');
+    const shOld = sh(OLD, topNov3, oct26to30, '2026-11-06'), shJtd = sh(V, topNov3, { preset: 'job_to_date', from: '', to: '' }, '2026-11-06');
+    assert('an Oct 26–30 report whose lines share a row only after Oct 30: the Totals read as before that row went in — Qty vs Plan and % of plan shown (the round-7 engine blanked them); job to date, with the row shared, they are blank',
+      JSON.stringify(shAfter) === JSON.stringify(shBefore) && shAfter.qty_variance !== null && shAfter.installed_to_date === 100
+        && shOld.qty_variance === null && shJtd.qty_variance === null && shJtd.pct_of_plan === null,
+      JSON.stringify({ shBefore, shAfter, shOld, shJtd }));
   }
 
   // ── Division rates ──
