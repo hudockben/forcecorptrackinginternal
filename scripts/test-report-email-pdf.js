@@ -358,6 +358,48 @@ assert('sanitizeReportHtml removes the window.print() bootstrap',
   sanitizeReportHtml('<!--x--><p>y</p>'.repeat(20000));
   const tComments = Date.now() - t0;
   assert('many comments (20,000) are sanitized in linear time', tComments < 500, `${tComments} ms`);
+  // Round 7: tag openers with nothing to end them — a stray end tag with no
+  // ">" ("</form" repeated), an opener with no ">" ("<form" repeated), and a
+  // block with no end tag ("<script>" repeated) — must not make the tag
+  // removals retry each one to the end of the input. 300 KB of each.
+  for (const u of ['</form', '</script', '</iframe', '<form', '<script', '<iframe', '<style', '<meta', '<script>', '<style>', '<form>', '<iframe>']) {
+    const big = '<p>x</p>' + u.repeat(Math.floor(300000 / u.length));
+    t0 = Date.now();
+    sanitizeReportHtml(big);
+    sanitizeReportHtml(big + '>');
+    const tU = Date.now() - t0;
+    assert(`"${u}" repeated (300 KB, with and without a ">" at the end) is sanitized in linear time`, tU < 500, `${tU} ms`);
+  }
+  // Round 7: markup nested to splice a tag back together pass after pass
+  // (<scr<f<form>orm>ipt>, 8 or 20 deep) outlasts the passes: it fails closed
+  // as inert text — no script, iframe or meta refresh — and a further pass
+  // changes nothing. Ordinary nesting the passes do settle (7 deep) is still
+  // just removed.
+  {
+    const F = k => (k === 1 ? '<form>' : '<f' + F(k - 1) + 'orm>');
+    const live = h => {
+      const d = new JSDOM(h).window.document;
+      return d.querySelectorAll('script').length + d.querySelectorAll('iframe').length + d.querySelectorAll('meta[http-equiv]').length;
+    };
+    for (const k of [8, 20]) {
+      const spliced = {
+        script: '<scr' + F(k) + 'ipt>alert(1)</scr' + F(k) + 'ipt><p>keep</p>',
+        iframe: '<if' + F(k) + 'rame srcdoc="&lt;script&gt;alert(3)&lt;/script&gt;"></if' + F(k) + 'rame><p>keep</p>',
+        meta: '<me' + F(k) + 'ta http-equiv=refresh content="0;url=https://example.com"><p>keep</p>',
+      };
+      for (const [what, h] of Object.entries(spliced)) {
+        const out = sanitizeReportHtml(h);
+        assert(`${what === 'iframe' ? 'an' : 'a'} ${what} spliced back by removals nested ${k} deep is not live after sanitizing, and a further pass changes nothing`,
+          live(out) === 0 && live(`<div>${out}</div>`) === 0 && !/<(script|iframe|meta)/i.test(out) && sanitizeReportHtml(out) === out, out.slice(0, 300));
+      }
+    }
+    const seven = sanitizeReportHtml('<p>x</p><scr' + F(7) + 'ipt>alert(1)</scr' + F(7) + 'ipt>');
+    assert('…while one nested 7 deep is removed outright', seven === '<p>x</p>', seven);
+    t0 = Date.now();
+    const deep = sanitizeReportHtml('<scr' + '<f'.repeat(49999) + '<form>' + 'orm>'.repeat(49999) + 'ipt>x');
+    const tDeep = Date.now() - t0;
+    assert('…and one nested 50,000 deep is sanitized in linear time (the passes stay capped)', tDeep < 500 && !/</.test(deep), `${tDeep} ms`);
+  }
   // …with handlers still defused wherever an attribute name could start.
   const anchored = { '"onerror=': '<p title="a">"onerror=x</p>', '/onerror=': '<p>a/onerror=x</p>', ' onerror =': '<p>a onerror =x</p>', 'ONERROR=': '<p>ONERROR=x</p>' };
   for (const [what, h] of Object.entries(anchored)) {

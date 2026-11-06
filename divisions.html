@@ -2238,6 +2238,7 @@
             <div>
               <label for="br-email">Email</label>
               <input id="br-email" type="email" maxlength="254" autocomplete="email" placeholder="office@example.com" />
+              <div class="ar-hint">Kept on file — reports print the address, phone and website.</div>
             </div>
             <div>
               <label for="br-website">Website</label>
@@ -5218,7 +5219,9 @@
         ? `<div class="br-mast-left">${brLogo ? `<img class="br-mast-logo" src="${escHtml(brLogoUri(brLogo))}" alt="${escHtml(v.display_name || 'Company logo')}">` : ''}`
           + `<div>${v.display_name ? `<div class="br-mast-co">${escHtml(v.display_name)}</div>` : ''}<div class="br-mast-sub">Division</div></div></div>`
         : '<div><div class="br-mast-word">DataWatch</div><div class="br-mast-sub">Division</div></div>';
-      const contact = [v.address.replace(/\s*\n\s*/g, ', '), v.phone, v.email, v.website].filter(Boolean).join(' · ');
+      // The engine's footer line (footHtml): address, phone and website —
+      // the email is kept on file, not printed.
+      const contact = [v.address.replace(/\s*\n\s*/g, ', '), v.phone, v.website].filter(Boolean).join(' · ');
       const foot = [v.report_footer, contact].filter(Boolean).join('\n');
       pv.innerHTML =
         `<div class="br-mast">${left}<div class="br-mast-meta"><div class="br-mast-rpt">Weekly Progress Update</div>`

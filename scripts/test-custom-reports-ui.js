@@ -3298,6 +3298,249 @@ function seed(srv) {
     h.close();
   }
   {
+    // Round 7: while the schedules list is not in — its first load still out,
+    // or failed — a change that would stop a scheduled send still asks first:
+    // it waits for the list (asking for it again after a failure), and if the
+    // list still cannot be had it asks in general terms. Before, Save into
+    // fixed dates, Make private, Delete and internal-on asked nothing.
+    const sched7 = (id, reportId, runAs, extra) => Object.assign({ id, custom_report_id: reportId, report_name: 'x', jobs_mode: 'saved', picked_jobs: null,
+      frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00', timezone: 'America/New_York', group_ids: [41], emails: [],
+      use_job_contacts: false, subject: null, note: null, attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:00:00Z',
+      last_run_at: null, last_status: null, last_message: null, run_as_username: runAs || 'pat', created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z',
+      report_visible: true, report_deleted: false, report_customer_safe: true }, extra || {});
+    const mk7 = () => {
+      const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }] }));
+      srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+      srv.reports.find(r => r.id === 2).definition.dates = { preset: 'last_week' };
+      srv.schedules.push(sched7(996, 1), sched7(997, 2, 'other.admin', { jobs_mode: 'each' }));
+      return srv;
+    };
+    const failGet = srv => srv.next.push({ match: e => e.path === '/api/custom-report-schedules' && e.method === 'GET', status: 500, body: { error: 'Database error' } });
+    const gets7 = h => h.srv.callsTo('/api/custom-report-schedules', 'GET').length;
+    const fixedSave = async (h, answer) => {
+      h.click(h.$('[data-act="open"][data-id="1"]'));
+      await tick(4);
+      h.change(h.$('[data-bind="preset"]'), 'custom');
+      h.confirms.splice(0);
+      h.answers.push(answer);
+      h.click(h.act('save'));
+    };
+    // (a) The first load still out (held).
+    {
+      const srv = mk7();
+      const releases = [];
+      srv.schedsLateGate = () => new Promise(r => releases.push(r));
+      const h = boot({ server: srv });
+      await h.render();
+      await tick(6);
+      srv.schedsLateGate = null;
+      const puts0 = h.srv.calls('PUT').length;
+      await fixedSave(h, false);
+      await tick(8);
+      const before = h.confirms.length;
+      releases.splice(0).forEach(f => f());
+      await tick(12);
+      const asked = h.confirms.slice();
+      assert('round 7: Save into fixed dates while the first schedules load is still out waits for it, then asks (fixed dates); "no" saves nothing (was saved without asking)',
+        before === 0 && asked.length === 1 && /This report is scheduled/.test(asked[0]) && /fixed dates/.test(asked[0])
+          && h.srv.calls('PUT').length === puts0 && srv.find(1).definition.dates.preset === 'last_week', JSON.stringify({ before, asked }));
+      h.close();
+    }
+    // (b) The first load failed: Save asks for the list again, then asks.
+    {
+      const srv = mk7();
+      failGet(srv);
+      const h = boot({ server: srv });
+      await h.render();
+      await tick(6);
+      const g0 = gets7(h), err0 = h.S().schedsError, puts0 = h.srv.calls('PUT').length;
+      await fixedSave(h, false);
+      await tick(12);
+      const asked = h.confirms.slice();
+      assert('round 7: after a failed first schedules load, Save into fixed dates asks for the list again and asks (fixed dates); "no" saves nothing',
+        err0 === 'Database error' && gets7(h) === g0 + 1 && asked.length === 1 && /This report is scheduled/.test(asked[0])
+          && /fixed dates/.test(asked[0]) && h.srv.calls('PUT').length === puts0, JSON.stringify({ err0, g0, gets: gets7(h), asked }));
+      h.close();
+    }
+    // (b′, d) …and when that fails too: a general ask; "yes" saves, and the
+    // save asks for the list again.
+    {
+      const srv = mk7();
+      failGet(srv); failGet(srv); failGet(srv);
+      const h = boot({ server: srv });
+      await h.render();
+      await tick(6);
+      const puts0 = h.srv.calls('PUT').length;
+      await fixedSave(h, false);
+      await tick(12);
+      const asked = h.confirms.slice();
+      assert('round 7: with the schedules list failing again, Save into fixed dates asks in general terms (naming the error); "no" saves nothing',
+        asked.length === 1 && /Couldn’t check whether a schedule sends this report \(Database error\)/.test(asked[0]) && /fixed dates/.test(asked[0])
+          && h.srv.calls('PUT').length === puts0, JSON.stringify(asked));
+      const g1 = gets7(h);
+      h.confirms.splice(0);
+      h.answers.push(true);
+      h.click(h.act('save'));
+      await tick(14);
+      assert('…"yes" saves it, and the list is asked for again after the save (was never retried by a save)',
+        h.srv.calls('PUT').length === puts0 + 1 && srv.find(1).definition.dates.preset === 'custom' && gets7(h) >= g1 + 2,
+        JSON.stringify({ puts: h.srv.calls('PUT').length - puts0, g1, gets: gets7(h) }));
+      h.close();
+    }
+    // (c) Make private, Delete and internal-on with the list not to be had.
+    {
+      const srv = mk7();
+      for (let i = 0; i < 6; i++) failGet(srv);
+      const h = boot({ server: srv });
+      await h.render();
+      await tick(6);
+      h.click(h.$('[data-act="open"][data-id="2"]'));
+      await tick(4);
+      const puts0 = h.srv.calls('PUT').length;
+      h.confirms.splice(0);
+      h.answers.push(false);
+      h.click(h.act('doc-menu'));
+      h.click(h.document.querySelector('.cr-menu [data-act="make-private"]'));
+      await tick(12);
+      const asked = h.confirms.slice();
+      assert('round 7: Make private with the schedules list not to be had asks first, in general terms; "no" changes nothing (was made private without asking)',
+        asked.length === 1 && /Couldn’t check whether a schedule sends this report/.test(asked[0]) && /private/.test(asked[0])
+          && h.srv.calls('PUT').length === puts0 && srv.find(2).visibility === 'shared', JSON.stringify(asked));
+      h.click(h.$('[data-act="open"][data-id="1"]'));
+      await tick(4);
+      h.click(h.$('#cr-step-2'));
+      h.confirms.splice(0);
+      h.answers.push(false);
+      h.$('[data-bind="internal"]').click();
+      await tick(2);
+      const askedI = h.confirms.slice();
+      assert('…switching internal data on says a schedule may stop sending it (was no word of schedules)',
+        askedI.length === 1 && /If a schedule sends this report/.test(askedI[0]) && h.S().doc.def.includeInternal !== true, JSON.stringify(askedI));
+      h.confirms.splice(0);
+      h.answers.push(false);
+      h.click(h.$('[data-act="item-menu"][data-id="1"]'));
+      h.click(h.document.querySelector('.cr-menu [data-act="menu-delete"]'));
+      await tick(12);
+      const askedD = h.confirms.slice();
+      assert('…and Delete\'s confirm says a schedule may stop sending it', askedD.length === 1 && /Couldn’t check whether a schedule sends this report/.test(askedD[0])
+        && !!srv.find(1) && !srv.find(1).deleted_at, JSON.stringify(askedD));
+      h.close();
+    }
+    // (c′) Make private with the first load out: waits, then names who it runs as.
+    {
+      const srv = mk7();
+      const releases = [];
+      srv.schedsLateGate = () => new Promise(r => releases.push(r));
+      const h = boot({ server: srv });
+      await h.render();
+      await tick(6);
+      srv.schedsLateGate = null;
+      h.click(h.$('[data-act="open"][data-id="2"]'));
+      await tick(4);
+      h.confirms.splice(0);
+      h.answers.push(false);
+      h.click(h.act('doc-menu'));
+      h.click(h.document.querySelector('.cr-menu [data-act="make-private"]'));
+      await tick(8);
+      const before = h.confirms.length;
+      releases.splice(0).forEach(f => f());
+      await tick(12);
+      const asked = h.confirms.slice();
+      assert('…and Make private while the first load is out waits for it, then asks naming who the schedule runs as',
+        before === 0 && asked.length === 1 && /other\.admin/.test(asked[0]) && srv.find(2).visibility === 'shared', JSON.stringify({ before, asked }));
+      h.close();
+    }
+  }
+  {
+    // Round 7: the open report's own Save is out (the server has committed
+    // it, its answer is held): a rename from the rail is refused rather than
+    // racing it — and a late Save answer never puts an older copy back over a
+    // newer one in the list (here, a list reload that read someone's rename).
+    const srv = seed(makeServer());
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    let release = null;
+    const realHandle = srv.handle;
+    srv.handle = async (url, init) => {
+      const r = await realHandle(url, init);
+      if (init && init.method === 'PUT' && /\/api\/custom-reports\?/.test(url) && /id=1\b/.test(url) && JSON.parse(init.body).definition) {
+        await new Promise(res => { release = res; });
+      }
+      return r;
+    };
+    h.click(h.$('[data-act="open"][data-id="1"]'));
+    await tick(4);
+    h.change(h.$('[data-bind="preset"]'), 'last_month');
+    h.click(h.act('save'));
+    await tick(6);
+    assert('round 7: the open report\'s Save is out (committed, answer held)', !!release && srv.find(1).version === 2 && h.S().saving === true,
+      JSON.stringify({ held: !!release, v: srv.find(1).version }));
+    const renames0 = h.srv.calls('PUT').length;
+    h.click(h.$('[data-act="item-menu"][data-id="1"]'));
+    h.click(h.document.querySelector('.cr-menu [data-act="menu-rename"]'));
+    await tick(4);
+    assert('…a rename of it from the rail is refused while that Save is out, saying why (no dialog, no PUT)',
+      !h.modal() && /Wait for the save to finish/.test(h.toast()) && h.srv.calls('PUT').length === renames0, h.toast());
+    // Someone renames it on the server; a list reload reads that (version 3).
+    Object.assign(srv.find(1), { name: 'Maple Ave owner update', version: 3, updated_by_username: 'boss' });
+    h.window.FCTCustomReports.renderTab(h.mount);
+    await tick(8);
+    srv.handle = realHandle;
+    release();
+    await tick(10);
+    const listed = h.S().reports.find(r => r.id === 1), d = h.S().doc;
+    assert('…and the held Save answer (version 2) leaves the list\'s newer copy (version 3, its name) and the editor\'s saved name alone (was rolled back to version 2 and the old name)',
+      listed && listed.version === 3 && listed.name === 'Maple Ave owner update' && d && d.savedName === 'Maple Ave owner update' && d.version === 2,
+      JSON.stringify({ listed: listed && [listed.name, listed.version], doc: d && [d.savedName, d.version] }));
+    h.close();
+  }
+  {
+    // Round 7: a schedule save that fails with its dialog still open — no
+    // answer, or the server's own failure, which may follow a committed
+    // change — asks for the schedules list again, so after Cancel the rail
+    // and the next Edit… read what the server holds.
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }] }));
+    srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+    srv.schedules.push({ id: 998, custom_report_id: 1, report_name: 'Acme weekly update', jobs_mode: 'saved', picked_jobs: null,
+      frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00', timezone: 'America/New_York', group_ids: [41], emails: [],
+      use_job_contacts: false, subject: null, note: null, attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:00:00Z',
+      last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat', created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z',
+      report_visible: true, report_deleted: false, report_customer_safe: true });
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    const realHandle = srv.handle;
+    let failNext = true;
+    srv.handle = async (url, init) => {
+      const r = await realHandle(url, init);
+      if (failNext && init && init.method === 'PUT' && /custom-report-schedules/.test(url)) { failNext = false; return { ok: false, status: 500, json: async () => ({ error: 'Database error' }) }; }
+      return r;
+    };
+    const line = () => { const b = h.$('[data-act="sched-menu"][data-id="998"]'); return b ? b.closest('.cr-item').textContent.replace(/\s+/g, ' ') : ''; };
+    const edit = () => { h.click(h.$('[data-act="sched-menu"][data-id="998"]')); h.click(h.document.querySelector('.cr-menu [data-act="sched-edit"]')); };
+    edit();
+    await tick(6);
+    let m = h.modal();
+    m.querySelector('#cr-s-time').value = '06:30';
+    const g0 = h.srv.callsTo('/api/custom-report-schedules', 'GET').length;
+    m.querySelector('[data-s="save"]').click();
+    await tick(10);
+    assert('round 7: a schedule save the server committed but answered 500, dialog still open: it says so, and the list is asked for again',
+      !!h.modal() && /Database error/.test(m.querySelector('.cr-m-errs').textContent) && srv.schedules[0].send_time === '06:30'
+        && h.srv.callsTo('/api/custom-report-schedules', 'GET').length > g0, `${m.querySelector('.cr-m-errs').textContent} · gets ${h.srv.callsTo('/api/custom-report-schedules', 'GET').length - g0}`);
+    m.querySelector('[data-s="cancel"]').click();
+    await tick(6);
+    assert('…after Cancel the rail shows 6:30 AM, what the server holds (was 7:00 AM)', /6:30/.test(line()) && !/7:00/.test(line()), line());
+    edit();
+    await tick(6);
+    m = h.modal();
+    assert('…and Edit… reopens at 06:30 (was 07:00, which a later save wrote back)', m && m.querySelector('#cr-s-time').value === '06:30', m && m.querySelector('#cr-s-time').value);
+    if (m) m.querySelector('[data-s="cancel"]').click();
+    srv.handle = realHandle;
+    h.close();
+  }
+  {
     // Round 6: after a rename's version_conflict, "Try the rename again" in
     // the same dialog renames against the version the conflict sent back —
     // for a report that is not open, and for the open one, whose own next

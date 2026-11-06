@@ -1418,15 +1418,18 @@
     ix.cs = m;
     return m;
   }
+  // The first day the item was worked by the report's end: a past range's
+  // report never takes its start from a day worked after the range.
   function firstWorkDay(ix, b) {
     let first = '';
-    rowsForItem(ix, b).forEach(f => { if (f.work && f.date && (!first || f.date < first)) first = f.date; });
+    rowsForItem(ix, b).forEach(f => { if (f.work && f.date && f.toEnd && (!first || f.date < first)) first = f.date; });
     return first;
   }
   /* A bid item's plan: { S, T, W, PR, source, Q } or { source: null }.
        rate          a Planned / Day typed on the item: PR is that; the start
-                     is the typed start or the first day worked (a rate plan
-                     measures pace, not the calendar); the target the typed
+                     is the typed start or the first day worked by the
+                     report's end (a rate plan measures pace, not the
+                     calendar); the target the typed
                      one, else the job's end date, else the day the rate
                      finishes the quantity.
        bid           the item's typed Start and Target (the page's plannedPace)
@@ -2192,9 +2195,11 @@
     let status;
     if (done) status = 'Complete';
     else if (!pl.source || noQty) status = 'Not scheduled';
-    // A Plan / Day line with no start that nobody has worked: past its
-    // target it is late, not "Not started".
-    else if (!worked && !pl.S && pastTarget) status = PAST_TARGET;
+    // A line nobody has worked by the report's end that is past its target
+    // (and open today): late, not "Not started" — a Plan / Day line with no
+    // start, or one whose whole plan fell after a past range ended — as its
+    // Totals read it.
+    else if (!worked && pastTarget) status = PAST_TARGET;
     else if (!worked && (!pl.S || A < pl.S)) status = 'Not started';
     else if (!worked && undatable) status = 'Not scheduled';
     else if (pastTarget) status = PAST_TARGET;
@@ -2214,7 +2219,7 @@
         plan_status: status, plan_source: pl.source ? PLAN_BASIS[pl.source] : null,
         units_per_crew_hr: made > 0 && crewH > 0 ? made / crewH : null,
       },
-      m: { unit: s.unit, nunit, pl, SP, EP, PQ, Q, I, PR, rated, worked, complete: done, past: pastTarget, ahead0, noQty,
+      m: { unit: s.unit, nunit, pl, SP, EP, PQ, Q, I, PR, rated, worked, complete: done, past: pastTarget, doneNow, ahead0, noQty,
         w: Math.abs(s.bidTotal) || 1, pct: itemPctParts(s), cc: txt(b.cost_code), rows: rowsForItem(ix, b),
         qtyP: s.qtyP, daysP: s.daysP, daysEnd: s.daysEnd, remainingNow: s.remainingNow, PF, facts },
       job: p,
@@ -2235,8 +2240,9 @@
      comparisons that would need one line's share of them are left blank. A
      job whose lines have no plan at all but which has start and end dates is
      measured against those instead ("Job dates"). Over several jobs (a
-     combined report's grand total) days ahead is each job's own, weighed by
-     its bid dollars. */
+     combined report's grand total) each job is measured on its own basis —
+     its planned lines, or its job dates — and its Scheduled / Earned % and
+     days ahead are weighed by its bid dollars. */
   // One job's planned lines' days ahead, unrounded: the gap between their
   // weighted earned and scheduled % across their whole span — or, when every
   // one is a "Planned per day" with no typed target, their own days of
@@ -2253,6 +2259,20 @@
     const W = spanDays(minIso(planned.map(r => r.m.pl.S)), maxIso(planned.map(r => spanEnd(r.m.pl))));
     return W ? (we / w - ws / w) / 100 * W : null;
   }
+  // A job with no planned line, measured on its own start and end dates
+  // ("Job dates"): Scheduled % straight over them, earned its bid pages'
+  // % complete, every line of it. Null when it has no such dates.
+  function jobDatesPlan(list, A) {
+    const p = list[0].job;
+    const js = p && dayOf(p['start-date']), je = p && dayOf(p['end-date']);
+    if (!js || !je || countWorkdays(js, je) <= 0) return null;
+    const byCode = new Map();
+    list.forEach(r => { if (!byCode.has(r.m.cc)) byCode.set(r.m.cc, []); byCode.get(r.m.cc).push(r.m.pct); });
+    const pr = rollPct([...byCode.values()].map(rollPct).filter(Boolean));
+    if (!pr) return null;
+    const W = countWorkdays(js, je), sched = schedPct({ source: 'job', S: js, T: je, W }, A);
+    return { S: js, T: je, W, sched, earned: pr.pct, ahead: (pr.pct - sched) / 100 * W, w: list.reduce((t, r) => t + r.m.w, 0), recs: list };
+  }
   function planAgg(recs, ctx) {
     const A = asOf(ctx), today = ctx.today;
     const c = {};
@@ -2265,42 +2285,41 @@
     const shared = sharedRows(recs);
     if (shared) c.installed_to_date = factQty(shared.filter(f => f.toEnd), () => true, f => normUnit(f.unit));
     const planned = recs.filter(r => r.m.pl.source && r.m.SP !== null && r.m.EP !== null);
-    // What the plan comparisons measure: the planned lines — or, measured on
-    // the job's dates, every line.
-    const basis = planned.length ? planned : recs;
-    let S = null, T = null, sched = null, earned = null, source = null, W = null;
-    if (planned.length) {
-      let w = 0, ws = 0, we = 0;
-      planned.forEach(r => { w += r.m.w; ws += r.m.w * r.m.SP; we += r.m.w * r.m.EP; });
-      sched = ws / w; earned = we / w;
-      S = minIso(planned.map(r => r.m.pl.S)); T = maxIso(planned.map(r => r.m.pl.T));
-      W = spanDays(S, maxIso(planned.map(r => spanEnd(r.m.pl))));
-      const src = new Set(planned.map(r => r.m.pl.source));
-      source = src.size === 1 ? PLAN_BASIS[[...src][0]] : null;
-    } else {
-      const jobs = new Set(recs.map(r => r.job));
-      const p = jobs.size === 1 ? recs[0].job : null;
-      const js = p && dayOf(p['start-date']), je = p && dayOf(p['end-date']);
-      if (js && je && countWorkdays(js, je) > 0) {
-        const byCode = new Map();
-        recs.forEach(r => { if (!byCode.has(r.m.cc)) byCode.set(r.m.cc, []); byCode.get(r.m.cc).push(r.m.pct); });
-        const pr = rollPct([...byCode.values()].map(rollPct).filter(Boolean));
-        if (pr) {
-          S = js; T = je; W = countWorkdays(S, T);
-          sched = schedPct({ source: 'job', S, T, W }, A); earned = pr.pct; source = PLAN_BASIS.job;
-        }
+    // Each job is measured on its planned lines — or, with none, on its own
+    // dates, every line of it. A combined report's grand total counts every
+    // job measured either way.
+    const planJobs = new Map(), jobRecs = new Map();
+    planned.forEach(r => { const k = jobKey(r.job); if (!planJobs.has(k)) planJobs.set(k, []); planJobs.get(k).push(r); });
+    recs.forEach(r => { const k = jobKey(r.job); if (!jobRecs.has(k)) jobRecs.set(k, []); jobRecs.get(k).push(r); });
+    const dated = [];
+    jobRecs.forEach((list, k) => { if (!planJobs.has(k)) { const jd = jobDatesPlan(list, A); if (jd) dated.push(jd); } });
+    const datedRecs = [].concat(...dated.map(d => d.recs));
+    // What the plan comparisons measure: the measured lines — or, with none,
+    // every line.
+    const basis = planned.length || datedRecs.length ? planned.concat(datedRecs) : recs;
+    let S = null, T = null, sched = null, earned = null, source = null;
+    if (planned.length || dated.length) {
+      if (dated.length === 1 && !planned.length) { sched = dated[0].sched; earned = dated[0].earned; }
+      else {
+        let w = 0, ws = 0, we = 0;
+        planned.forEach(r => { w += r.m.w; ws += r.m.w * r.m.SP; we += r.m.w * r.m.EP; });
+        dated.forEach(d => { w += d.w; ws += d.w * d.sched; we += d.w * d.earned; });
+        sched = ws / w; earned = we / w;
       }
+      S = minIso(planned.map(r => r.m.pl.S).concat(dated.map(d => d.S)));
+      T = maxIso(planned.map(r => r.m.pl.T).concat(dated.map(d => d.T)));
+      const src = new Set(planned.map(r => r.m.pl.source).concat(dated.map(() => 'job')));
+      source = src.size === 1 ? PLAN_BASIS[[...src][0]] : null;
     }
     c.start_date = S; c.target_date = T;
     c.sched_pct = sched; c.earned_pct = earned;
     c.spi = sched > 0 && earned !== null ? round2(earned / sched) : null;
     // Over several jobs (a combined report's grand total) each job is rolled
-    // up on its own span and the jobs' days are weighed by their bid dollars:
-    // the % gap times the days from the first job's start to the last job's
-    // target would count months between jobs that are neither's.
-    const planJobs = new Map();
-    planned.forEach(r => { const k = jobKey(r.job); if (!planJobs.has(k)) planJobs.set(k, []); planJobs.get(k).push(r); });
-    if (planJobs.size > 1) {
+    // up on its own basis and span — its planned lines, or its job dates —
+    // and the jobs' days are weighed by their bid dollars: the % gap times
+    // the days from the first job's start to the last job's target would
+    // count months between jobs that are neither's.
+    if (planJobs.size + dated.length > 1) {
       let w = 0, t = 0;
       planJobs.forEach(list => {
         const a = planAhead(list);
@@ -2308,9 +2327,10 @@
         const lw = list.reduce((x, r) => x + r.m.w, 0);
         w += lw; t += lw * a;
       });
+      dated.forEach(d => { w += d.w; t += d.w * d.ahead; });
       c.ahead_days = w ? halfDay(t / w) : null;
     } else if (planned.length) c.ahead_days = halfDay(planAhead(planned));
-    else c.ahead_days = sched !== null && earned !== null && W ? halfDay((earned - sched) / 100 * W) : null;
+    else c.ahead_days = dated.length ? halfDay(dated[0].ahead) : null;
     c.plan_source = source;
     if (one !== null) {
       const rated = basis.filter(r => r.m.rated);
@@ -2363,22 +2383,28 @@
     c.projected_finish = open.length && open.every(r => r.m.PF) ? maxIso(open.map(r => r.m.PF)) : null;
     const PF = c.projected_finish;
     c.forecast_vs_target = PF && T ? (PF <= T ? countWorkdays(PF, T) - 1 : -(countWorkdays(T, PF) - (isWorkday(T) ? 1 : 0))) : null;
-    // Past target: measured against the Totals' own target (the latest
-    // planned target, which every other figure here uses) — past it with a
-    // line still open past its own target: a planned line, or a Plan / Day
-    // line nobody has started (no start, so not among the planned lines). An
-    // open line with no plan (an LS line kept open to closeout, an undated
-    // one) is not late against a plan it does not have (m.past needs a plan
-    // and a target), and one small line past its own earlier target does not
-    // make the whole job late while the Totals' target is still ahead (its
-    // own row says so). On job dates, past the job's end.
-    const past = !!(T && T < today) && (planned.length ? recs.some(r => r.m.past) : true);
+    // Past target: the Totals' own target (the latest target, which every
+    // other figure here uses) read by the line rule — past it today with a
+    // line still open today, or, for a past range, already past it at the
+    // range's end with a line open then. "Open" is a line late against its
+    // own target (a planned line, or a Plan / Day line nobody has started,
+    // with no start so not among the planned lines) or any line of a job
+    // measured on its job dates. An open line with no plan (an LS line kept
+    // open to closeout, an undated one) is not late against a plan it does
+    // not have (m.past needs a plan and a target); one small line past its
+    // own earlier target does not make the whole job late while the Totals'
+    // target is still ahead (its own row says so); and a past range whose
+    // lines have all finished since, by the Totals' target, is not late.
+    const openNow = recs.some(r => r.m.past && !r.m.doneNow) || datedRecs.some(r => !r.m.doneNow);
+    const openAtEnd = recs.some(r => r.m.past) || datedRecs.some(r => !r.m.complete);
+    const past = !!T && ((T < today && openNow) || (A < today && T < A && openAtEnd));
     if (recs.every(r => r.m.complete)) c.plan_status = 'Complete';
     // Nothing to measure the job on, but a line past its own target (a Plan /
     // Day line nobody has started, with no start to date it): late, as its row.
     else if (sched === null || earned === null) c.plan_status = recs.some(r => r.m.past) ? PAST_TARGET : 'Not scheduled';
-    else if (!recs.some(r => r.m.worked) && S && A < S) c.plan_status = 'Not started';
+    // Past target before "Not started", as a line reads it.
     else if (past) c.plan_status = PAST_TARGET;
+    else if (!recs.some(r => r.m.worked) && S && A < S) c.plan_status = 'Not started';
     else c.plan_status = planStatus(c.ahead_days, c.spi);
     return c;
   }

@@ -88,6 +88,8 @@
   const INTERNAL_CONFIRM = 'This report will be able to show costs, rates, hours, employee names and profit. '
     + "Don't send it to a customer. Continue?";
   const SCHEDULED_NOTE = 'This report is scheduled — scheduled sends will stop until it is customer-safe again.';
+  // The same, said when the schedules list could not be had to check.
+  const MAYBE_SCHEDULED_NOTE = 'If a schedule sends this report, its scheduled sends will stop until it is customer-safe again.';
   const OUTDATED_MSG = 'DataWatch was updated — reload the page to keep editing. Your changes are kept and will be offered back after the reload.';
   const INTERNAL_ARCHIVE_MSG = 'Only the sender or an admin/level 3 can open internal reports.';
   const REBUILT_BANNER = 'Rebuilt from current data — the original was not archived';
@@ -2334,6 +2336,9 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   function upsertReport(r) {
     if (!r || r.id == null) return;
     const i = S.reports.findIndex(x => sameId(x.id, r.id));
+    // An answer that arrives late (a save's, behind a rename that landed
+    // after it) never puts an older copy back over a newer one.
+    if (i >= 0 && Number(S.reports[i].version) > Number(r.version)) return;
     if (i >= 0) S.reports[i] = r; else S.reports.unshift(r);
     sortReports();
     // The schedules that send it read its name and whether it is still
@@ -2347,9 +2352,29 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   // A save of a report a schedule sends: the schedules list asked for again,
   // so the rail says what its next send will find (what the server says).
   // While a load is out (the first one, when which reports are scheduled is
-  // not known yet) it is asked for again too: that answer may predate this save.
+  // not known yet) it is asked for again too: that answer may predate this
+  // save. So it is after a load that failed: which reports are scheduled is
+  // still not known.
   function schedsAfterSave(r) {
-    if (r && (isScheduled({ id: r.id }) || S.schedsP)) loadSchedules();
+    if (r && (isScheduled({ id: r.id }) || S.schedsP || schedsUnknown())) loadSchedules();
+  }
+  // Which saved reports a schedule sends is known only once the schedules
+  // list is in (admin / level 3; nobody else sees schedules). A change that
+  // would stop a send — a save into fixed dates or another kind, Make
+  // private, Delete — waits for it first: the first load still out, or a
+  // fresh one after a failed load, for a bounded time. If it still cannot be
+  // had, the change asks in general terms rather than not at all.
+  const SCHEDS_WAIT_MS = 10000;
+  function schedsUnknown() { return !!(S.canShare || S.canSchedule) && !Array.isArray(S.scheds); }
+  async function waitForScheds() {
+    if (!schedsUnknown()) return;
+    let timer = 0;
+    await Promise.race([Promise.resolve(S.schedsP || loadSchedules()).catch(() => {}),
+      new Promise(r => { timer = setTimeout(r, SCHEDS_WAIT_MS); })]);
+    clearTimeout(timer);
+  }
+  function schedsUnknownLead() {
+    return `Couldn’t check whether a schedule sends this report${S.schedsError ? ` (${S.schedsError})` : ''}.`;
   }
   function loadList() {
     if (S.loading) return S.loadP;
@@ -2591,6 +2616,12 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   // overwritten with the old name — and lost on the next click away.
   function adoptSaved(report, sent) {
     const d = S.doc;
+    // A newer copy already in the list (a rename that landed after this
+    // save): its name stands, and the list is not put back to this one.
+    // The doc keeps this save's version, so its next Save still meets
+    // whatever else that newer copy changed.
+    const listed = S.reports.find(x => sameId(x.id, report.id));
+    const named = listed && Number(listed.version) > Number(report.version) ? listed : report;
     d.id = report.id;
     d.starterId = null;
     d.version = report.version;
@@ -2602,14 +2633,14 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     d.updated_at = report.updated_at || null;
     d.missing = 0;
     if (sent) {
-      if (d.name.trim() === sent.typedName) d.name = report.name;
+      if (d.name.trim() === sent.typedName) d.name = named.name;
       if (txt(d.description) === sent.typedDesc) d.description = report.description || '';
-      d.savedName = report.name;
+      d.savedName = named.name;
       d.savedDesc = report.description || '';
       d.savedDefKey = sent.key;
       d.touched = false;
     } else {
-      d.name = report.name;
+      d.name = named.name;
       d.description = report.description || '';
       markClean(d);
     }
@@ -2636,6 +2667,13 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       return;
     }
     if (!isDirty()) return;
+    // Whether a schedule sends it, before saving what could stop that.
+    if (schedsUnknown()) {
+      S.saving = true;
+      updateChrome();
+      try { await waitForScheds(); } finally { S.saving = false; updateChrome(); }
+      if (S.doc !== d || modalOpen() || !isDirty()) return;
+    }
     const name = d.name.trim() || d.savedName;
     const def = defForSave();
     const stops = scheduledStops(d, def);
@@ -2749,6 +2787,12 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     // Private, only its owner can open it (the server keeps the author while
     // they still can), so a schedule that runs as anyone else stops: said
     // before, as deleting it or switching internal data on is.
+    if (vis === 'private' && schedsUnknown()) {
+      await waitForScheds();
+      if (S.doc !== d) return;
+      if (schedsUnknown() && !window.confirm(`${schedsUnknownLead()} If one sends it as someone other than ${txt(d.owner_username) || 'its owner'}, `
+        + 'made private those scheduled sends stop until it is shared again. Make it private anyway?')) return;
+    }
     if (vis === 'private' && isScheduled(d)) {
       const owner = txt(d.owner_username);
       const others = [...new Set(S.scheds.filter(x => sameId(x.custom_report_id, d.id)).map(x => txt(x.run_as_username))
@@ -2784,9 +2828,14 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     }
   }
 
+  const RENAME_WHILE_SAVING = 'Wait for the save to finish, then rename it.';
   async function renameReport(r) {
     if (modalOpen()) return;
     const open = S.doc && S.doc.id != null && sameId(S.doc.id, r.id) ? S.doc : null;
+    // Not while the open report's own Save is out: a rename that lands after
+    // it (or a retry after the conflict it meets) would race that Save's
+    // answer for the name and version the list and the editor keep.
+    if (open && S.saving) { toast(RENAME_WHILE_SAVING, 'error'); return; }
     // What the rename is made against: the list's copy — after a
     // version_conflict, the one the server sent back, so "Try the rename
     // again" can work. The open report renames against its own version until
@@ -2799,6 +2848,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       title: 'Rename report', name: r.name, confirmLabel: 'Rename',
       onSubmit: async ({ name }) => {
         if (name === base.name) return null;
+        if (open && S.saving) return RENAME_WHILE_SAVING;
         const version = open && !behind ? open.version : base.version;
         try {
           const res = await api.update(r.id, { name, version });
@@ -2860,9 +2910,11 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   }
 
   async function deleteReport(r) {
-    const scheduled = isScheduled(r);
-    if (!window.confirm(`Delete “${r.name}”?\n\n${scheduled ? 'A schedule sends this report — it will stop sending until the report is restored.\n\n' : ''}`
-      + 'You can restore it from Recently Deleted for 30 days.')) return;
+    await waitForScheds();
+    const scheduled = isScheduled(r), unknown = schedsUnknown();
+    const note = scheduled ? 'A schedule sends this report — it will stop sending until the report is restored.\n\n'
+      : unknown ? `${schedsUnknownLead()} If one does, it will stop sending until the report is restored.\n\n` : '';
+    if (!window.confirm(`Delete “${r.name}”?\n\n${note}You can restore it from Recently Deleted for 30 days.`)) return;
     try { await api.remove(r.id); }
     catch (e) { if (e.status !== 401) toast(`Couldn’t delete: ${e.message}`, 'error'); return; }
     S.reports = S.reports.filter(x => !sameId(x.id, r.id));
@@ -2871,7 +2923,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     render();
     if (S.deletedOpen) loadDeleted();
     // The rail's schedules say what their next send will find.
-    if (scheduled) loadSchedules();
+    if (scheduled || unknown) loadSchedules();
     toast(`Deleted “${r.name}”. It is in Recently Deleted for 30 days.`);
   }
 
@@ -4184,6 +4236,11 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
           const names = d.missing.map(id => { const g = (groups || []).find(x => sameId(x.id, id)); return g ? `“${g.name}”` : `Group #${id}`; });
           showErr(`${names.join(', ')} ${names.length === 1 ? 'was' : 'were'} deleted — untick ${names.length === 1 ? 'it' : 'them'} and save again.`);
         } else if (e.status !== 401) showErr(scheduleError(e));
+        // No answer, or the server's own failure: the save may have landed
+        // all the same, so the rail (and the next Edit…) reads what the
+        // server holds now — the dialog keeps what was typed. A refusal (4xx)
+        // changed nothing.
+        if (!e.status || e.status >= 500) loadSchedules();
       }
     };
     m.body.addEventListener('click', e => {
@@ -4590,7 +4647,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const def = S.doc.def;
     if (on) {
       if (perm().canSeeCosts === false) { if (el) el.checked = false; return false; }
-      if (!window.confirm(INTERNAL_CONFIRM + (isScheduled(S.doc) ? ' ' + SCHEDULED_NOTE : ''))) { if (el) el.checked = false; return false; }
+      const note = isScheduled(S.doc) ? ' ' + SCHEDULED_NOTE : schedsUnknown() && S.doc.id != null ? ' ' + MAYBE_SCHEDULED_NOTE : '';
+      if (!window.confirm(INTERNAL_CONFIRM + note)) { if (el) el.checked = false; return false; }
       def.includeInternal = true;
     } else {
       def.includeInternal = false;
@@ -4612,8 +4670,11 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
      dates and the jobs) names both, and what undoes each: undoing one alone
      does not start the sends again. */
   function scheduledStops(d, def) {
-    if (!isScheduled(d)) return null;
-    const scheds = S.scheds.filter(x => sameId(x.custom_report_id, d.id));
+    // The schedules list could not be had (waitForScheds): any change into
+    // fixed dates or another kind asks, in general terms.
+    const unknown = schedsUnknown() && !!d && d.id != null;
+    if (!unknown && !isScheduled(d)) return null;
+    const scheds = unknown ? [] : S.scheds.filter(x => sameId(x.custom_report_id, d.id));
     const saved = S.reports.find(x => sameId(x.id, d.id));
     let was = null;
     try { was = saved ? E.normalizeDefinition(saved.definition) : null; } catch (_) { was = null; }
@@ -4621,6 +4682,10 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const wasKind = saved && saved.kind ? saved.kind : kindOf(was), kind = kindOf(def);
     const fixedNow = def.dates && def.dates.preset === 'custom', fixedWas = !!(was && was.dates && was.dates.preset === 'custom');
     const fixed = fixedNow && !fixedWas;
+    if (unknown) {
+      const how = [fixed ? 'with fixed dates' : '', kind === wasKind ? '' : kind === 'report' ? 'with its own jobs' : 'without its saved jobs'].filter(Boolean);
+      return how.length ? `${schedsUnknownLead()} If one does, saved ${how.join(' and ')} its scheduled sends stop. Save anyway?` : null;
+    }
     const toReport = kind !== wasKind && kind === 'report' && scheds.some(x => x.jobs_mode !== 'saved');
     const toTemplate = kind !== wasKind && kind === 'template' && scheds.some(x => x.jobs_mode === 'saved');
     if (fixed && (toReport || toTemplate)) {

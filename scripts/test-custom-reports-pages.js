@@ -1277,9 +1277,24 @@ async function checkBrandingPanel() {
   assert('the masthead preview: the logo and the company name in place of DataWatch',
     !!pv.querySelector('.br-mast-logo') && pv.querySelector('.br-mast-logo').getAttribute('src') === `data:image/png;base64,${PNG_B64}`
       && pv.querySelector('.br-mast-co').textContent === 'Force Corp Turf' && !pv.querySelector('.br-mast-word'));
-  assert('…the foot: the footer line, address, phone, email and website, and the DataWatch credit',
-    /PA HIC #123/.test(pv.querySelector('.br-foot').textContent) && /1 Main St, Town, PA · 555-0100 · office@example\.com · https:\/\/example\.com/.test(pv.querySelector('.br-foot').textContent)
-      && /Prepared with DataWatch/.test(pv.querySelector('.br-foot').textContent));
+  assert('…the foot: the footer line, address, phone and website (the email is kept on file, not printed), and the DataWatch credit',
+    /PA HIC #123/.test(pv.querySelector('.br-foot').textContent) && /1 Main St, Town, PA · 555-0100 · https:\/\/example\.com/.test(pv.querySelector('.br-foot').textContent)
+      && !/office@example\.com/.test(pv.querySelector('.br-foot').textContent) && /Prepared with DataWatch/.test(pv.querySelector('.br-foot').textContent));
+  // Round 7: the preview's foot is the report's foot — the same lines the
+  // engine prints for the same branding, so neither can drift from the other.
+  {
+    const E = loadEngine();
+    const def = E.normalizeDefinition({ title: 'Parity', sections: [{ type: 'notes', text: 'x' }] });
+    const ctx = E.makeContext(def, { division: 'turf', divisionLabel: 'Turf', areaUnit: 'SF', perm: { role: 'admin', canSeeCosts: true, canSeeFinancials: true },
+      getProjects: () => [{ id: 'p1', 'project-name': 'Lot', status: 'In Progress', bidItems: [], dailyRows: [] }], getPurchaseOrders: () => [], getTruckingEntries: () => [] },
+    { pickedIds: ['p1'], branding: SAVED, today: '2026-11-05', now: new Date(2026, 10, 5) });
+    const rdoc = new JSDOM(E.buildReportHtml(def, ctx)).window.document;
+    const engineLines = [...rdoc.querySelectorAll('.rpt-foot .foot-co')].map(e => e.textContent);
+    const previewLines = pv.querySelector('.br-foot span').textContent.split('\n');
+    assert('round 7: the Branding preview\'s foot lines are the ones a report prints for the same branding (was an email line no report prints)',
+      engineLines.length === 2 && JSON.stringify(previewLines) === JSON.stringify(engineLines)
+        && !/office@example\.com/.test(rdoc.body.textContent), JSON.stringify({ previewLines, engineLines }));
+  }
   $('br-name').value = '<img src=x onerror="window.__xss=1">';
   $('br-name').dispatchEvent(new w.Event('input', { bubbles: true }));
   assert('typing redraws the preview, and a name is text, never markup',

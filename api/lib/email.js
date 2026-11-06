@@ -94,7 +94,9 @@ function normalizeAttachments(raw) {
 //   - href="javascript:..." / src="javascript:..."
 // We keep inline styles and tables (the existing print HTML relies on them).
 // The passes repeat until nothing changes, so markup that a removal splices
-// back together (<scr<script></script>ipt>) is removed too.
+// back together (<scr<script></script>ipt>) is removed too — up to a cap,
+// past which the input is hostile and comes back as inert text
+// (sanitizeReportHtml below).
 
 // Where a start tag that opens at s[i] ("<" and a letter) ends, read as the
 // HTML tokenizer reads it: a quote opens a value only right after "=", so a
@@ -285,23 +287,68 @@ function stripHandlers(html) {
   return out;
 }
 
+/* s.replace(/<(NAMES)\b[^>]*>([\s\S]*?)<\/\1\s*>/gi, (block, name, body) =>
+   fn(block, name, body)), match for match, but in linear time. The regex
+   retries every opener that has no ">" after it, or no end tag of its name
+   after that ">", by scanning to the end of the input — quadratic on input
+   made of many such openers ("<form" or "<script>" repeated), which any
+   signed-in user can post. Here the next ">" and each name's next end tag
+   are found by forward searches whose answers are kept: openers come in
+   source order, so an answer stays good until an opener passes it, and "none
+   after here" stays good for the rest of the input. */
+function replaceBlocks(s, names, fn) {
+  const OPEN = new RegExp('<(' + names + ')\\b', 'gi');
+  const ends = new Map();                                 // name -> { re, from, at }
+  let gtFrom = -1, gtAt = -1;
+  const nextGt = p => {
+    if (gtFrom < 0 || p < gtFrom || (gtAt >= 0 && p > gtAt)) { gtFrom = p; gtAt = s.indexOf('>', p); }
+    return gtAt;
+  };
+  const nextEnd = (name, p) => {
+    let e = ends.get(name);
+    if (!e) { e = { re: new RegExp('<\\/' + name + '\\s*>', 'gi'), from: -1, at: null }; ends.set(name, e); }
+    if (e.from < 0 || p < e.from || (e.at && p > e.at.index)) {
+      e.re.lastIndex = p;
+      const m = e.re.exec(s);
+      e.from = p; e.at = m ? { index: m.index, end: m.index + m[0].length } : null;
+    }
+    return e.at;
+  };
+  let out = '', i = 0, m;
+  OPEN.lastIndex = 0;
+  while ((m = OPEN.exec(s))) {
+    const at = m.index, name = m[1].toLowerCase();
+    const gt = nextGt(at + m[0].length);
+    if (gt < 0) break;                                    // no ">" left: nothing further can match
+    const e = nextEnd(name, gt + 1);
+    if (!e) { OPEN.lastIndex = at + 1; continue; }
+    out += s.slice(i, at) + fn(s.slice(at, e.end), name, s.slice(gt + 1, e.index));
+    i = OPEN.lastIndex = e.end;
+  }
+  return out + s.slice(i);
+}
+// s.replace(re, '') for a stray-tag pattern that must end in ">" (/<…[^>]*>/g):
+// run only up to the last ">", where every opener the pattern takes has a
+// ">" after it to end at, so none scans on to the end of the input and fails.
+const dropBeforeLastGt = (s, re) => { const g = s.lastIndexOf('>'); return s.slice(0, g + 1).replace(re, '') + s.slice(g + 1); };
+
 function sanitizeOnce(html) {
   let out = html;
 
   // Drop dangerous tag blocks entirely (including content). A closing tag
   // may carry whitespace before its ">" (</script >), and a stray opening or
-  // closing tag left over is dropped as well.
-  out = out.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, '');
-  out = out.replace(/<\/?script\b[^>]*>/gi, '');
-  out = out.replace(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi, (_m, css) => {
+  // closing tag left over is dropped as well. Each in linear time (above).
+  out = replaceBlocks(out, 'script', () => '');
+  out = dropBeforeLastGt(out, /<\/?script\b[^>]*>/gi);
+  out = replaceBlocks(out, 'style', (_m, _name, css) => {
     // Keep <style> blocks but neutralize @import / javascript: refs.
     const safeCss = String(css || '')
       .replace(/@import[^;]*;?/gi, '')
       .replace(/javascript\s*:/gi, '');
     return `<style>${safeCss}</style>`;
   });
-  out = out.replace(/<(iframe|object|embed|link|meta|base|form)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
-  out = out.replace(/<\/?(iframe|object|embed|link|meta|base|form)\b[^>]*\/?>/gi, '');
+  out = replaceBlocks(out, 'iframe|object|embed|link|meta|base|form', () => '');
+  out = dropBeforeLastGt(out, /<\/?(iframe|object|embed|link|meta|base|form)\b[^>]*\/?>/gi);
 
   // Strip on*= event-handler attributes, wherever the browser would read
   // one: after whitespace, after a "/" (<img/onerror=x>), straight after a
@@ -313,15 +360,25 @@ function sanitizeOnce(html) {
 
   return out;
 }
+// Markup a removal splices back together is caught by running the passes
+// again, up to MAX_PASSES; real reports settle in one or two. Input still
+// changing after that is nested on purpose to splice a tag back together
+// pass after pass (<scr<f<form>orm>ipt>, eight deep), so it fails closed:
+// every "<", ">", "&" and "=" is escaped and the report reads as inert text
+// — no tag, handler or javascript: survives, and a further pass changes
+// nothing. Never loop until it settles: one pass per level of nesting would
+// make the sanitizer quadratic.
+const MAX_PASSES = 8;
+const inertText = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/=/g, '&#61;');
 function sanitizeReportHtml(html) {
   if (typeof html !== 'string') return '';
   let out = html;
-  for (let i = 0; i < 8; i++) {
+  for (let i = 0; i < MAX_PASSES; i++) {
     const next = sanitizeOnce(out);
-    if (next === out) break;
+    if (next === out) return out;
     out = next;
   }
-  return out;
+  return sanitizeOnce(out) === out ? out : inertText(out);
 }
 
 // The report palette, for the figures that carry a color in the report's own

@@ -1620,10 +1620,15 @@ function deepNear(a, b, at = '') {
     const comb = vdef(def.sections, { includeInternal: true, layout: 'combined' });
     const cs = V.buildSectionData(comb.sections[0], comb, vmk(comb, data, ['pt', 'pj']));
     const g = cs.blocks[0].groups;
-    assert('combined: a group per job, each rolled up like its own totals; one grand total',
+    // The grand total counts both jobs, each on its own basis, weighed by bid
+    // dollars (20,000 and 200): Scheduled (20,000 × 67.2 + 200 × 64.3) ÷ 20,200;
+    // days (20,000 × −2.06 + 200 × 0.8) ÷ 20,200 = −2.03 → −2; no single basis.
+    const gt = cs.blocks[0].totals;
+    assert('combined: a group per job, each rolled up like its own totals; one grand total over both jobs, each on its own basis',
       g.map(x => x.label).join('|') === 'Totals Job|Dates Job' && near(g[0].subtotal.sched_pct, t.sched_pct) && g[0].subtotal.ahead_days === -2
-        && g[1].subtotal.plan_source === 'Job dates' && cs.blocks[0].totals && cs.columns[0].key === '_job'
-        && near(cs.blocks[0].totals.sched_pct, t.sched_pct), J(g.map(x => x.subtotal)));
+        && g[1].subtotal.plan_source === 'Job dates' && gt && cs.columns[0].key === '_job'
+        && near(gt.sched_pct, (20000 * t.sched_pct + 200 * jt.sched_pct) / 20200) && near(gt.earned_pct, (20000 * t.earned_pct + 200 * jt.earned_pct) / 20200)
+        && gt.ahead_days === -2 && gt.plan_source === null, J({ subs: g.map(x => x.subtotal), gt }));
     // A typed rate is the plan: the roll-up and the chart's planned line read
     // the rate the line shows, not its bid quantity spread over its dates.
     {
@@ -2110,6 +2115,111 @@ function deepNear(a, b, at = '') {
       const jD = Object.assign(cjob('D', '2026-10-01', '2026-11-30', octDays, 50));
       const tBD = totFor([jB, jD], 'combined');
       assert('…while two jobs on the same span total what each reads (−11)', tBD.ahead_days === -11 && tB.ahead_days === -11, JSON.stringify({ tB, tBD }));
+    }
+
+    // Round 7: Planned vs Actual over past ranges and mixed bases — the
+    // Totals read their own target by the line rule, a Plan / Day line's
+    // start is a day worked by the report's end, a line and its Totals agree
+    // on "Behind (past target)" vs "Not started", and a combined grand total
+    // counts every measured job, planned or on its job dates.
+    {
+      const PT = 'Behind (past target)';
+      const r7cols = ['sub_code', 'sched_pct', 'earned_pct', 'ahead_days', 'start_date', 'target_date', 'plan_status', 'plan_source'];
+      const r7row = (date, sc, q, cc) => row(date, cc || '200', sc, q);
+      const r7 = (projects, dates, today, layout) => {
+        const def = vdef([vsec('plan_vs_actual', { columns: r7cols })], { layout: layout || 'separate', dates });
+        const b = J(V.buildSectionData(def.sections[0], def, vmk(def, { projects }, projects.map(p => p.id), { today })).blocks[0]);
+        return { lines: b.groups.flatMap(g => g.rows.map(r => r.cells)), subs: b.groups.map(g => g.subtotal).filter(Boolean), tot: b.totals };
+      };
+      const line = (res, sc) => res.lines.find(l => l.sub_code === sc) || {};
+
+      // (1a) Planned lines: a custom Oct 1–16 range, every line finished since
+      // by the Totals' target (Oct 30). Curb was due Oct 9 and finished Oct 19
+      // (late as of the range's end); Surface due Oct 30, finished Oct 28.
+      const oct1to16 = { preset: 'custom', from: '2026-10-01', to: '2026-10-16' };
+      const f1a = extra => [{ id: 'r7a', 'project-name': 'Main', status: 'In Progress', 'start-date': '', 'end-date': '', bidItems: [
+        { id: 'r7a1', cost_code: '200', sub_code: 'Curb', unit: 'TON', quantity: 10, unit_cost: 10, start_date: '2026-10-05', target_date: '2026-10-09' },
+        { id: 'r7a2', cost_code: '200', sub_code: 'Surface', unit: 'TON', quantity: 200, unit_cost: 80, start_date: '2026-10-13', target_date: '2026-10-30' }],
+      dailyRows: [r7row('2026-10-07', 'Curb', 4), r7row('2026-10-19', 'Curb', 6), r7row('2026-10-13', 'Surface', 50), r7row('2026-10-14', 'Surface', 50),
+        r7row('2026-10-15', 'Surface', 50)].concat(extra) }];
+      const aLast = [r7row('2026-10-28', 'Surface', 50)];
+      const aOct29 = r7(f1a(aLast), oct1to16, '2026-10-29'), aNov6 = r7(f1a(aLast), oct1to16, '2026-11-06');
+      const aComb = r7(f1a(aLast), oct1to16, '2026-11-06', 'combined'), aOpen = r7(f1a([]), oct1to16, '2026-11-06');
+      assert('round 7: a custom Oct 1–16 report, every line finished since by the Totals\' target (Oct 30), run Nov 6: Totals "On track" +8.5, as run Oct 29 (was "Behind (past target)"); Curb still "Behind (past target)"',
+        aOct29.tot.plan_status === 'On track' && aOct29.tot.ahead_days === 8.5 && aNov6.tot.plan_status === 'On track' && aNov6.tot.ahead_days === 8.5
+          && line(aOct29, 'Curb').plan_status === PT && line(aNov6, 'Curb').plan_status === PT, JSON.stringify({ aOct29, aNov6 }));
+      assert('…and the combined layout\'s job subtotal and grand total read the same',
+        aComb.subs.length === 1 && aComb.subs[0].plan_status === 'On track' && aComb.tot.plan_status === 'On track' && aComb.tot.ahead_days === 8.5, JSON.stringify(aComb));
+      assert('…while with Surface still open today (no Oct 28 row) the Totals are "Behind (past target)"',
+        aOpen.tot.plan_status === PT, JSON.stringify(aOpen));
+
+      // (1b) Job dates: Sep 1 – Oct 30, one SF line, finished Oct 28; a
+      // "September" report run Oct 15 and again Nov 6.
+      const f1b = (end, rows) => [{ id: 'r7b', 'project-name': 'Lawn', status: 'In Progress', 'start-date': '2026-09-01', 'end-date': end, bidItems: [
+        { id: 'r7b1', cost_code: '200', sub_code: 'Sod', unit: 'SF', quantity: 1000, unit_cost: 2 }], dailyRows: rows }];
+      const bRows = [r7row('2026-09-08', 'Sod', 300), r7row('2026-09-22', 'Sod', 300)], bLast = r7row('2026-10-28', 'Sod', 400);
+      const sept = { preset: 'custom', from: '2026-09-01', to: '2026-09-30' };
+      const bOct15 = r7(f1b('2026-10-30', bRows.concat([bLast])), sept, '2026-10-15'), bNov6 = r7(f1b('2026-10-30', bRows.concat([bLast])), sept, '2026-11-06');
+      const bComb = r7(f1b('2026-10-30', bRows.concat([bLast])), sept, '2026-11-06', 'combined');
+      const bOpen = r7(f1b('2026-10-30', bRows), sept, '2026-11-06'), bEarly = r7(f1b('2026-09-25', bRows.concat([bLast])), sept, '2026-11-06');
+      assert('round 7: a job on its job dates (Sep 1 – Oct 30) finished Oct 28, its "September" report run Nov 6: Totals "On track" +4 on Job dates, as run Oct 15 (was "Behind (past target)")',
+        [bOct15, bNov6, bComb].every(x => x.tot.plan_status === 'On track' && x.tot.ahead_days === 4 && x.tot.plan_source === 'Job dates'), JSON.stringify({ bOct15, bNov6, bComb }));
+      assert('…while with the job still open today, or a job end (Sep 25) before the range\'s end, it is "Behind (past target)"',
+        bOpen.tot.plan_status === PT && bEarly.tot.plan_status === PT, JSON.stringify({ bOpen: bOpen.tot, bEarly: bEarly.tot }));
+
+      // (2) A Plan / Day line with no typed Start takes its start from a day
+      // worked by the report's end — never one worked after a past range.
+      const f2 = extra => [{ id: 'r7c', 'project-name': 'Main', status: 'In Progress', 'start-date': '', 'end-date': '', bidItems: [
+        { id: 'r7c1', cost_code: '200', sub_code: 'Seal', unit: 'SY', quantity: 500, unit_cost: 5, planned_rate: 100, target_date: '2026-10-09' },
+        { id: 'r7c2', cost_code: '200', sub_code: 'Base', unit: 'SY', quantity: 300, unit_cost: 5, start_date: '2026-10-05', target_date: '2026-10-30' }],
+      dailyRows: [r7row('2026-10-06', 'Base', 150), r7row('2026-10-20', 'Base', 150)].concat(extra) }];
+      const octM = { preset: 'custom', from: '2026-10-01', to: '2026-10-31' }, sealNov = [r7row('2026-11-03', 'Seal', 200)];
+      const sOct31 = r7(f2([]), octM, '2026-10-31'), sNov6 = r7(f2(sealNov), octM, '2026-11-06');
+      const sJtd = r7(f2(sealNov), { preset: 'job_to_date', from: '', to: '' }, '2026-11-06');
+      assert('round 7: an October report on a Plan / Day line (no Start, due Oct 9, nothing in by Oct 31), run Nov 6 after 200 SY went in Nov 3: "Behind (past target)" with no days or start, Totals 100 / 100 — as run Oct 31 (was "Not started", start Nov 3, Totals 37.5 / 37.5)',
+        [sOct31, sNov6].every(x => line(x, 'Seal').plan_status === PT && line(x, 'Seal').ahead_days === null && line(x, 'Seal').start_date === null
+          && x.tot.sched_pct === 100 && x.tot.earned_pct === 100), JSON.stringify({ sOct31, sNov6 }));
+      assert('…while job to date it still starts Nov 3, −3.5 days',
+        line(sJtd, 'Seal').start_date === '2026-11-03' && line(sJtd, 'Seal').ahead_days === -3.5, JSON.stringify(sJtd));
+
+      // (3) A line whose whole plan falls between a past range's end and
+      // today, unfinished today: late on the line and its Totals alike.
+      const f3 = [{ id: 'r7d', 'project-name': 'Main', status: 'In Progress', 'start-date': '', 'end-date': '', bidItems: [
+        { id: 'r7d1', cost_code: '200', sub_code: 'Base', unit: 'TON', quantity: 300, unit_cost: 40, start_date: '2026-10-05', target_date: '2026-10-23' },
+        { id: 'r7d2', cost_code: '200', sub_code: 'Surface', unit: 'TON', quantity: 200, unit_cost: 80, start_date: '2026-11-02', target_date: '2026-11-04' }],
+      dailyRows: [r7row('2026-10-06', 'Base', 100), r7row('2026-10-13', 'Base', 100), r7row('2026-10-20', 'Base', 100), r7row('2026-11-03', 'Surface', 100)] }];
+      const lastM = { preset: 'last_month', from: '', to: '' };
+      const nLm = r7(f3, lastM, '2026-11-06'), nComb = r7(f3, lastM, '2026-11-06', 'combined'), nOct31 = r7(f3, octM, '2026-10-31');
+      assert('round 7: "Last month" run Nov 6, Surface planned Nov 2–4 and half in: the line, its Totals, the combined subtotal and grand total all read "Behind (past target)" (the line read "Not started")',
+        line(nLm, 'Surface').plan_status === PT && nLm.tot.plan_status === PT && nComb.subs.length === 1 && nComb.subs[0].plan_status === PT
+          && nComb.tot.plan_status === PT && line(nComb, 'Surface').plan_status === PT, JSON.stringify({ nLm, nComb }));
+      assert('…while an Oct 1–31 report run Oct 31 still reads Surface "Not started", Totals "On track"',
+        line(nOct31, 'Surface').plan_status === 'Not started' && nOct31.tot.plan_status === 'On track', JSON.stringify(nOct31));
+
+      // (4) A combined grand total counts every measured job: one measured on
+      // its job dates is rolled up on them, beside the others.
+      const jdJob = (id, s, e, rows) => ({ id, 'project-name': 'Job ' + id, status: 'In Progress', 'start-date': s, 'end-date': e, bidItems: [
+        { id: id + '1', cost_code: '500', sub_code: 'Sod', unit: 'SF', quantity: 1000, unit_cost: 2 },
+        { id: id + '2', cost_code: '500', sub_code: 'Seed', unit: 'SF', quantity: 1000, unit_cost: 1 }], dailyRows: rows });
+      const bdJob = id => ({ id, 'project-name': 'Job ' + id, status: 'In Progress', 'start-date': '', 'end-date': '', bidItems: [
+        { id: id + '1', cost_code: '500', sub_code: 'Sod', unit: 'SF', quantity: 1000, unit_cost: 2, start_date: '2026-10-19', target_date: '2026-11-27' },
+        { id: id + '2', cost_code: '500', sub_code: 'Seed', unit: 'SF', quantity: 1000, unit_cost: 1, start_date: '2026-10-19', target_date: '2026-11-27' }],
+      dailyRows: [r7row('2026-10-20', 'Sod', 800, '500'), r7row('2026-10-21', 'Seed', 800, '500')] });
+      const gA = jdJob('GA', '2026-09-01', '2026-10-30', [r7row('2026-09-10', 'Sod', 100, '500')]);
+      const gB = jdJob('GB', '2026-09-14', '2026-10-23', [r7row('2026-09-20', 'Seed', 50, '500')]);
+      const gC = bdJob('GC');
+      const jtd = { preset: 'job_to_date', from: '', to: '' };
+      const gAB = r7([gA, gB], jtd, '2026-11-05', 'combined'), gAC = r7([gA, gC], jtd, '2026-11-05', 'combined');
+      // A: 42 working days, 100% scheduled, 6.67% earned → −39.2; B: 29 days, 1.67% → −28.5; equal bid dollars → −33.9 → −34.
+      assert('round 7: a combined grand total over two jobs on their job dates (−39 and −28.5, past their ends): their bid-weighted mean, −34, "Behind (past target)" on Job dates (was "Not scheduled", blank)',
+        gAB.subs.map(s => s.ahead_days).join('|') === '-39|-28.5' && gAB.tot.ahead_days === -34 && gAB.tot.plan_status === PT
+          && gAB.tot.sched_pct === 100 && near(gAB.tot.earned_pct, (20 / 3 + 5 / 3) / 2) && gAB.tot.plan_source === 'Job dates'
+          && gAB.tot.start_date === '2026-09-01' && gAB.tot.target_date === '2026-10-30', JSON.stringify(gAB));
+      // A −39.2 and C +8.4 (50% scheduled, 80% earned over 28 days), equal bid dollars → −15.4 → −15.5.
+      assert('…and over a job on its job dates (−39) beside a bid-dated one (+8.5): −15.5 "Behind", Scheduled 75%, no single basis (was C alone: "On track" +8.5)',
+        gAC.subs.map(s => s.ahead_days).join('|') === '-39|8.5' && gAC.tot.ahead_days === -15.5 && gAC.tot.plan_status === 'Behind'
+          && near(gAC.tot.sched_pct, 75) && near(gAC.tot.earned_pct, (20 / 3 + 80) / 2) && gAC.tot.plan_source === null
+          && gAC.tot.target_date === '2026-11-27', JSON.stringify(gAC));
     }
 
     // A cost-code-only line (TON) beside a sub-coded line under its code
