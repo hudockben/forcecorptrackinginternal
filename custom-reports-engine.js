@@ -96,10 +96,14 @@
   // Every user-typed string that reaches the HTML goes through this. The
   // pages' own esc() only escapes quotes, which is not enough for a job name
   // like "<img onerror=…>" printed into a document that is opened, printed
-  // and emailed.
-  const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
+  // and emailed. An "=" is written &#61; too: the email sanitizer strips
+  // anything shaped like an on…= handler, and running text such as
+  // "phase one = done" or "w/one = 6ft" is that shape — written out, it
+  // reaches the customer as typed (a browser reads &#61; back as "=" in text,
+  // attributes and the <title> alike).
+  const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;', '=': '&#61;' };
   function escHtml(s) {
-    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ESC[c]);
+    return String(s == null ? '' : s).replace(/[&<>"'=]/g, c => ESC[c]);
   }
 
   // ── Dates ──────────────────────────────────────────────────────────────
@@ -1445,8 +1449,14 @@
       const S = typedS || firstWorkDay(ix, b);
       let T = typedT || jobEnd;
       if (!T && S) T = addWorkdays(isWorkday(S) ? S : addWorkdays(S, 1), Math.ceil(Q / pr - 1e-9) - 1) || '';
-      const W = S && T ? countWorkdays(S, T) : 0;
-      return { S, T, W: W > 0 ? W : null, PR: pr, source: 'rate', Q, typedT: !!typedT };
+      // A crew that started after the target (or the job's end date): the
+      // plan is all due by its start, so its span is that one day — U, its
+      // span's end — while T stays the target it shows and is late against.
+      // Every consumer measures the span the same way (spanEnd), so Planned
+      // vs Actual, its Totals and the charts all count the line.
+      const U = S && T && T < S ? S : T;
+      const W = S && U ? Math.max(T < S ? 1 : 0, countWorkdays(S, U)) : 0;
+      return { S, T, U, W: W > 0 ? W : null, PR: pr, source: 'rate', Q, typedT: !!typedT };
     }
     const dated = (S, T, source) => {
       const W = countWorkdays(S, T);
@@ -1465,6 +1475,9 @@
   // planned line add these up, so a lone rate line totals to the rate it
   // shows rather than to its bid quantity spread over its dates.
   const planSpanQty = (pl, Q) => (pl.source === 'rate' && pl.PR > 0 && pl.W > 0 ? pl.PR * pl.W : Q);
+  // The last day of a plan's span: its target — or, for a "Planned per day"
+  // line started after its target, its start (makePlan's U).
+  const spanEnd = pl => pl.U || pl.T;
   // Scheduled % on a day: none before the start, all of it from the target
   // on, a straight line over the working days between.
   function schedPct(pl, day) {
@@ -1746,10 +1759,13 @@
   }
   function productionAgg(recs, ctx) {
     const c = {};
-    const one = singleUnit(recs);
+    // One unit as rate math reads it (TN and TON alike), as Planned vs
+    // Actual and Division Rates do; the first line's unit as typed prints.
+    const nu = r => normUnit(r.m.unit);
+    const one = recs.length && new Set(recs.map(nu)).size === 1 ? recUnit(recs[0]) : null;
     c.unit = one;
-    c.qty_period = qtyBy(recs, 'qty_period', recUnit).v;
-    c.remaining_qty = qtyBy(recs, 'remaining_qty', recUnit).v;
+    c.qty_period = qtyBy(recs, 'qty_period', nu).v;
+    c.remaining_qty = qtyBy(recs, 'remaining_qty', nu).v;
     c.days_period = unionSize(recs, 'days');
     c.labor_hours = sumOf(recs, 'labor_hours');
     // The job finishes when its last line does.
@@ -2057,8 +2073,13 @@
     const PQ = SP !== null && Q > 0 ? Q * SP / 100 : null;
     const spi = SP > 0 && EP !== null ? round2(EP / SP) : null;
     let ahead = null;
+    // A "Planned per day" line whose finish cannot be dated (no target, no
+    // job end date, and a rate so slow its finish runs off the calendar):
+    // unworked, it has no pace to read — not "0 days, On track" — and, like
+    // its Totals, it is Not scheduled. Worked, its own output still dates it.
+    const undatable = pl.source === 'rate' && !pl.T;
     if (pl.source === 'rate' && !pl.typedT && PR > 0) {
-      ahead = !worked && pl.S && A >= pl.S ? -E : ((done ? Math.max(I, Q) : I) - PR * daysE) / PR;
+      ahead = !worked && undatable ? null : !worked && pl.S && A >= pl.S ? -E : ((done ? Math.max(I, Q) : I) - PR * daysE) / PR;
     } else if (pl.source && done) {
       ahead = lastWork && pl.S && pl.W ? pl.W - countWorkdays(pl.S, lastWork) : null;
     } else if (SP !== null && EP !== null && pl.W) {
@@ -2083,6 +2104,7 @@
     if (done) status = 'Complete';
     else if (!pl.source) status = 'Not scheduled';
     else if (!worked && (!pl.S || A < pl.S)) status = 'Not started';
+    else if (!worked && undatable) status = 'Not scheduled';
     else if (pastTarget) status = PAST_TARGET;
     else status = planStatus(ahead, spi);
     const facts = rowsForItem(ix, b).filter(f => f.inP);
@@ -2142,7 +2164,7 @@
       planned.forEach(r => { w += r.m.w; ws += r.m.w * r.m.SP; we += r.m.w * r.m.EP; });
       sched = ws / w; earned = we / w;
       S = minIso(planned.map(r => r.m.pl.S)); T = maxIso(planned.map(r => r.m.pl.T));
-      W = countWorkdays(S, T);
+      W = countWorkdays(S, maxIso(planned.map(r => spanEnd(r.m.pl))));
       const src = new Set(planned.map(r => r.m.pl.source));
       source = src.size === 1 ? PLAN_BASIS[[...src][0]] : null;
     } else {
@@ -2193,7 +2215,7 @@
       withRate.forEach(r => { const k = jobKey(r.job); if (!rateJobs.has(k)) rateJobs.set(k, []); rateJobs.get(k).push(r); });
       const jobRates = [];
       rateJobs.forEach(list => {
-        const pS = minIso(list.map(r => r.m.pl.S)), pT = maxIso(list.map(r => r.m.pl.T));
+        const pS = minIso(list.map(r => r.m.pl.S)), pT = maxIso(list.map(r => spanEnd(r.m.pl)));
         const pW = pS && pT ? countWorkdays(pS, pT) : 0;
         if (pW > 0) jobRates.push({ rate: list.reduce((t, r) => t + planSpanQty(r.m.pl, r.m.Q), 0) / pW, days: days(list, 'daysP'), qty: qty(list, 'qtyP') });
       });
@@ -2220,10 +2242,13 @@
     c.projected_finish = open.length && open.every(r => r.m.PF) ? maxIso(open.map(r => r.m.PF)) : null;
     const PF = c.projected_finish;
     c.forecast_vs_target = PF && T ? (PF <= T ? countWorkdays(PF, T) - 1 : -(countWorkdays(T, PF) - 1)) : null;
-    // Past target: a planned line still open past its own target — an open
-    // line with no plan (an LS line kept open to closeout) is not late
-    // against a plan it does not have. On job dates, past the job's end.
-    const past = planned.length ? planned.some(r => r.m.past) : !!(T && T < today);
+    // Past target: measured against the Totals' own target (the latest
+    // planned target, which every other figure here uses) — past it with a
+    // planned line still open. An open line with no plan (an LS line kept
+    // open to closeout) is not late against a plan it does not have, and one
+    // small line past its own earlier target does not make the whole job
+    // late (its own row says so). On job dates, past the job's end.
+    const past = !!(T && T < today) && (planned.length ? planned.some(r => r.m.past) : true);
     if (recs.every(r => r.m.complete)) c.plan_status = 'Complete';
     else if (sched === null || earned === null) c.plan_status = 'Not scheduled';
     else if (!recs.some(r => r.m.worked) && S && A < S) c.plan_status = 'Not started';
@@ -2351,7 +2376,7 @@
     });
     let start = first, end = A;
     if (drawPlan) {
-      const pS = minIso(planned.map(x => x.pl.S)), pT = maxIso(planned.map(x => x.pl.T));
+      const pS = minIso(planned.map(x => x.pl.S)), pT = maxIso(planned.map(x => spanEnd(x.pl)));
       if (!start || pS < start) start = pS;
       if (pT > end) end = pT;
     }
@@ -2447,7 +2472,7 @@
     if (buckets.length > MAX_BARS) { buckets = buckets.slice(-MAX_BARS); out.captions.push(`The last ${MAX_BARS} months.`); }
     if (out.bucket !== 'day') out.captions.push(out.bucket === 'week' ? 'Bars are weekly totals.' : 'Bars are monthly totals.');
     const withRate = lines.map(b => ({ b, pl: planOf(ctx, ix, b) })).filter(x => x.pl.source && x.pl.PR > 0 && x.pl.S && x.pl.T);
-    const pS = minIso(withRate.map(x => x.pl.S)), pT = maxIso(withRate.map(x => x.pl.T));
+    const pS = minIso(withRate.map(x => x.pl.S)), pT = maxIso(withRate.map(x => spanEnd(x.pl)));
     const pW = pS && pT ? countWorkdays(pS, pT) : 0;
     out.rate = pW > 0 ? withRate.reduce((t, x) => t + planSpanQty(x.pl, x.pl.Q), 0) / pW : null;
     out.drawPlan = opts.showPlan !== false && keys.has('planned_rate_line') && out.rate !== null;
@@ -2472,7 +2497,7 @@
      or href — and no class name the email's key-figure lifter would read
      as a label. Text that came from a person has its = escaped, because the
      email sanitizer's on…= rule matches running text too. */
-  const svgEsc = s => escHtml(s).replace(/=/g, '&#61;');
+  const svgEsc = escHtml;   // which writes an "=" out as &#61; already
   // In the chart itself a parenthesis is written out too, so not even a
   // job named "url(…)" puts the letters url( into the drawing.
   const chartEsc = s => svgEsc(s).replace(/\(/g, '&#40;');

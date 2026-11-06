@@ -1289,7 +1289,23 @@ async function runSchedule(sql, sched, ctx = {}) {
               if (logged.archived) result.archived = (result.archived || 0) + 1;
             }
           } else {
-            problems.push(`${name}: ${sent.error}`);
+            // A long list's later batch refused after earlier ones went: the
+            // people those reached have the report, so a custom report's send
+            // counts and goes in the job's Customer History with exactly
+            // them; the failure is still reported, naming who it missed.
+            let missed = '';
+            if (custom && Array.isArray(sent.deliveredTo) && sent.deliveredTo.length) {
+              result.sent++;
+              sent.deliveredTo.forEach(e => sentTo.add(e));
+              const logged = await logCustomSend(sql, {
+                sched, def, acct, custom, rec, recipients: sent.deliveredTo, subject: sent.subject || subj, html: it.html, runKind,
+              });
+              if (logged.logged) result.logged = (result.logged || 0) + 1;
+              if (logged.archived) result.archived = (result.archived || 0) + 1;
+              const left = Array.isArray(sent.notReached) ? sent.notReached : [];
+              if (left.length) missed = ` Not reached: ${left.slice(0, 5).join(', ')}${left.length > 5 ? ` and ${left.length - 5} more` : ''}.`;
+            }
+            problems.push(`${name}: ${sent.error}${missed}`);
           }
         }
         // A job is done once every report it made has been tried; one the

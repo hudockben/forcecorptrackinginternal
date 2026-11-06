@@ -125,7 +125,7 @@
     // Customer History: the job chosen and its emails, a page at a time.
     cust: { jobId: '', client: '', search: '', runs: null, loading: false, error: '', next: null, more: false, busy: null },
     // Scheduled sends of saved custom reports (admin / level 3).
-    scheds: null, schedsLoading: false, schedsError: '', canSchedule: false, schedGroups: null, schedGroupsFull: null, schedBusy: null,
+    scheds: null, schedsLoading: false, schedsError: '', canSchedule: false, schedGroups: null, schedBusy: null,
     // The report-wide sub code / cost code filter's search box.
     filterSearch: '', focusFilter: false,
     // The AI builder drawer.
@@ -804,7 +804,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
 .cr-cc-list{display:flex;flex-wrap:wrap;gap:0 1rem;max-height:9.5rem;overflow-y:auto}
 .cr-add{display:flex;align-items:center;gap:.6rem;flex-wrap:wrap}
 /* menus */
-.cr-menu{position:fixed;z-index:${Z - 10};min-width:13rem;max-width:min(24rem,calc(100vw - 1.5rem));max-height:min(70vh,30rem);overflow-y:auto;background:var(--surface2,#1a1a26);border:1px solid var(--border,#2a2a3a);border-radius:6px;box-shadow:0 12px 32px rgba(0,0,0,.6);padding:.3rem;display:flex;flex-direction:column}
+.cr-menu{position:fixed;z-index:${Z - 10};min-width:13rem;max-width:min(24rem,calc(100vw - 1.5rem));max-height:min(70vh,30rem);overflow-y:auto;overscroll-behavior:contain;background:var(--surface2,#1a1a26);border:1px solid var(--border,#2a2a3a);border-radius:6px;box-shadow:0 12px 32px rgba(0,0,0,.6);padding:.3rem;display:flex;flex-direction:column}
 .cr-menu-item{display:flex;flex-direction:column;gap:.12rem;text-align:left;background:none;border:0;color:var(--text,#e0e0e0);font:inherit;font-size:.8rem;padding:.45rem .6rem;border-radius:4px;cursor:pointer}
 .cr-menu-item:hover,.cr-menu-item:focus{background:var(--border,#2a2a3a);outline:none}
 .cr-menu-item.danger{color:#fca5a5}
@@ -1152,12 +1152,18 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const next = s.enabled && s.next_run_at ? `Next ${fmtWhen(s.next_run_at)}` : (s.enabled ? '' : 'Paused');
     const last = s.last_status ? `Last: ${s.last_status}${s.last_run_at ? ' · ' + ago(s.last_run_at) : ''}` : 'Not sent yet';
     const bad = /fail|skip|partial|missed/i.test(String(s.last_status || ''));
+    // What the next send will find, said now (the server sends these so the
+    // cases can be told apart): the report gone, or no longer customer-safe.
+    const blocked = s.report_deleted === true
+      ? 'Report deleted — restore it from Recently Deleted, or delete this schedule.'
+      : s.report_customer_safe === false ? 'Report now includes internal data — it won’t send until it’s customer-safe again.' : '';
     return `<div class="cr-item">
       <div class="cr-item-open" style="cursor:default">
         <span class="cr-item-name">${esc(s.report_name || 'Saved report')}</span>
         <span class="cr-badges">${s.enabled ? badge('On', 'shared') : badge('Paused', 'paused')}${busy ? '<span class="cr-badge"><span class="cr-spin" aria-hidden="true"></span> Sending…</span>' : ''}</span>
         <span class="cr-sched-meta">${esc(cadenceText(s))}</span>
         <span class="cr-sched-meta">${esc([next, last].filter(Boolean).join(' · '))}</span>
+        ${blocked ? `<span class="cr-sched-meta err">${esc(blocked)}</span>` : ''}
         ${s.last_message && bad ? `<span class="cr-sched-meta err">${esc(String(s.last_message).slice(0, 200))}</span>` : ''}
       </div>
       <button type="button" class="cr-item-more" data-act="sched-menu" data-id="${esc(s.id)}" data-fk="schedmore-${esc(s.id)}"
@@ -2075,7 +2081,20 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     left = Math.max(8, Math.min(left, vw - w - 8));
     const h = m.offsetHeight || 0;
     let top = r.bottom + 4;
-    if (h && top + h > vh - 8 && r.top - h - 4 > 8) top = r.top - h - 4;
+    if (h && top + h > vh - 8) {
+      const below = vh - 8 - (r.bottom + 4), above = r.top - 4 - 8;
+      if (h <= above) top = r.top - h - 4;
+      else {
+        // Fits neither side (a long menu on a phone): the side with more
+        // room, the menu cut to it and scrolling inside — never running off
+        // the screen with its last items out of reach.
+        const room = Math.max(120, below, above);
+        m.style.maxHeight = `${Math.floor(room)}px`;
+        const mh = m.offsetHeight || room;
+        top = below >= above ? r.bottom + 4 : r.top - 4 - mh;
+      }
+    }
+    top = Math.max(8, Math.min(top, vh - (m.offsetHeight || h) - 8));
     m.style.left = `${Math.round(left)}px`;
     m.style.top = `${Math.round(top)}px`;
     trigger.setAttribute('aria-expanded', 'true');
@@ -2754,7 +2773,9 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   }
 
   async function deleteReport(r) {
-    if (!window.confirm(`Delete “${r.name}”?\n\nYou can restore it from Recently Deleted for 30 days.`)) return;
+    const scheduled = isScheduled(r);
+    if (!window.confirm(`Delete “${r.name}”?\n\n${scheduled ? 'A schedule sends this report — it will stop sending until the report is restored.\n\n' : ''}`
+      + 'You can restore it from Recently Deleted for 30 days.')) return;
     try { await api.remove(r.id); }
     catch (e) { if (e.status !== 401) toast(`Couldn’t delete: ${e.message}`, 'error'); return; }
     S.reports = S.reports.filter(x => !sameId(x.id, r.id));
@@ -2762,6 +2783,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     S.deleted = null;
     render();
     if (S.deletedOpen) loadDeleted();
+    // The rail's schedules say what their next send will find.
+    if (scheduled) loadSchedules();
     toast(`Deleted “${r.name}”. It is in Recently Deleted for 30 days.`);
   }
 
@@ -2772,6 +2795,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       upsertReport(res.report);
       if (S.deleted) S.deleted = S.deleted.filter(x => !sameId(x.id, id));
       renderRail();
+      // A schedule that sends it is live again: the rail says so.
+      if (Array.isArray(S.scheds) && S.scheds.some(x => sameId(x.custom_report_id, id))) loadSchedules();
       toast(`Restored “${res.report.name}”.`);
     } catch (e) {
       if (e.status === 409 && code(e) === 'name_taken') {
@@ -3246,18 +3271,114 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
      whatever the sender's browser sent, sanitized by a pattern-matcher that
      is hygiene, not a wall — so it is never parsed as a document of this
      origin. The window gets a shell whose first bytes are a policy allowing
-     no script, no form and no outside load, and the copy goes in an iframe
-     sandboxed WITHOUT allow-scripts: no <script>, no handler, no markup trick
-     in it can run, wherever it puts a <head>. allow-same-origin (still no
-     scripts) only lets this page size the frame to the report, so the window
-     scrolls and prints it whole, and copy its page size across; allow-modals
-     lets the Print button print the copy itself, with its own page setup.
+     no form, no outside load and no script but the shell's own (one inline
+     script, carrying a nonce made fresh for each open), and the copy goes in
+     an iframe sandboxed WITHOUT allow-scripts: no <script>, no handler, no
+     markup trick in it can run, wherever it puts a <head>. allow-same-origin
+     (still no scripts) only lets the shell size the frame to the report, so
+     the window scrolls and prints it whole, and copy its page size across;
+     allow-modals lets the Print button print the copy itself, with its own
+     page setup. The shell's script is its own, not this page's, so the Print
+     button and the fitting keep working after this tab moves on or reloads.
      Nothing goes through dwWrite: an archive carries its own brand band, and
      anything added in front of the shell would push the policy out of the
      head, where browsers ignore it. */
-  const LOCKED_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'; base-uri 'none'";
-  function lockedShell(html, title) {
-    return '<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="' + LOCKED_CSP + '">'
+  const lockedCsp = nonce => "default-src 'none'; script-src 'nonce-" + nonce + "'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'; base-uri 'none'";
+  /* The copy window's own script: static code, nothing of the archive in it.
+     It fits the frame to the copy on screen; and for printing the window
+     (Ctrl+P, Save as PDF) it sizes the frame to the copy's own print width —
+     the page's, or wider where its tables need more — so the window overflows
+     the page and the browser shrinks it to fit: every column printed, as
+     printing the copy itself does. */
+  const COPY_WINDOW_JS = `(function () {
+  var fr = document.querySelector('iframe');
+  if (!fr) return;
+  var inner = function () { try { var d = fr.contentDocument; return d && d.documentElement ? d : null; } catch (e) { return null; } };
+  var tall = function (d) { return Math.max(d.documentElement.scrollHeight, d.body ? d.body.scrollHeight : 0); };
+  var wide = function (d) { return Math.max(d.documentElement.scrollWidth, d.body ? d.body.scrollWidth : 0); };
+  var fit = function () { var d = inner(); if (d) fr.style.height = tall(d) + 'px'; };
+  var pageW = 729;
+  var printCss = document.createElement('style');
+  document.head.appendChild(printCss);
+  /* The copy laid out as it prints while it is measured: its print rules on
+     and its screen rules off (the words swapped in each @media rule), put
+     back straight after, before anything is drawn. */
+  var mediaSwap = function (d) {
+    var done = [];
+    try { if (fr.contentWindow.matchMedia('print').matches) return done; } catch (e) { }
+    [].forEach.call(d.styleSheets, function (sh) {
+      var rules;
+      try { rules = sh.cssRules; } catch (e) { return; }
+      [].forEach.call(rules, function (r) {
+        if (r.type !== 4 || !r.media) return;
+        var t = r.media.mediaText;
+        if (!/\\b(print|screen)\\b/i.test(t)) return;
+        try {
+          r.media.mediaText = t.replace(/\\b(print|screen)\\b/gi, function (w) { return /print/i.test(w) ? 'screen' : 'print'; });
+          done.push([r, t]);
+        } catch (e) { }
+      });
+    });
+    return done;
+  };
+  var sizeForPrint = function () {
+    var d = inner();
+    if (!d) return;
+    var w0 = fr.style.width, h0 = fr.style.height, x0 = window.scrollX, y0 = window.scrollY;
+    var swapped = [];
+    try {
+      swapped = mediaSwap(d);
+      fr.style.height = '10px';
+      fr.style.width = '320px';
+      // Never wider than the browser will shrink a page to fit (one and a
+      // half pages): past that it clips, and a frame that wide would take
+      // every table's right edge with it, where printing the copy itself
+      // clips only the table too wide to fit.
+      var w = Math.max(pageW, Math.min(wide(d), Math.floor(pageW * 1.5)));
+      fr.style.width = w + 'px';
+      var h = tall(d);
+      printCss.textContent = '@media print{iframe{width:' + w + 'px!important;height:' + h + 'px!important}}';
+    } catch (e) {
+    } finally {
+      swapped.forEach(function (s) { try { s[0].media.mediaText = s[1]; } catch (e) { } });
+      fr.style.width = w0;
+      fr.style.height = h0;
+      try { window.scrollTo(x0, y0); } catch (e) { }
+    }
+  };
+  var loaded = function () {
+    fit();
+    var size = '';
+    try {
+      [].forEach.call(fr.contentDocument.styleSheets, function (sh) {
+        try { [].forEach.call(sh.cssRules, function (r) { if (r.type === 6 && r.style) size = r.style.getPropertyValue('size') || size; }); } catch (e) { }
+      });
+    } catch (e) { }
+    if (/^[a-z0-9 .]{1,40}$/i.test(size)) {
+      var st = document.createElement('style');
+      st.textContent = '@page{size:' + size + ';margin:0.45in}';
+      document.head.appendChild(st);
+      if (/landscape/i.test(size)) pageW = 969;
+    }
+    sizeForPrint();
+  };
+  fr.addEventListener('load', loaded);
+  var d0 = inner();
+  if (d0 && d0.readyState === 'complete' && d0.body && d0.body.childNodes.length) loaded();
+  window.addEventListener('resize', fit);
+  window.addEventListener('beforeprint', sizeForPrint);
+  var btn = document.querySelector('[data-copy="print"]');
+  if (btn) btn.addEventListener('click', function () {
+    try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (e) { try { window.print(); } catch (e2) { } }
+  });
+})();`;
+  function copyNonce() {
+    const b = new Uint8Array(16);
+    try { window.crypto.getRandomValues(b); } catch (_) { for (let i = 0; i < b.length; i++) b[i] = Math.floor(Math.random() * 256); }
+    return [...b].map(x => x.toString(16).padStart(2, '0')).join('');
+  }
+  function lockedShell(html, title, nonce) {
+    return '<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="' + lockedCsp(nonce) + '">'
       + '<meta charset="utf-8"><title>' + esc(title) + '</title><style>'
       + 'html,body{margin:0;padding:0;background:#fff}'
       + '.cr-copy-bar{display:flex;align-items:center;gap:12px;padding:8px 14px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;font:13px/1.4 system-ui,sans-serif;color:#334155}'
@@ -3265,44 +3386,15 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       + 'iframe{display:block;border:0;width:100%;height:calc(100vh - 42px)}'
       + '@media print{.cr-copy-bar{display:none}}'
       + '</style></head><body><div class="cr-copy-bar"><span>' + esc(title) + '</span><button type="button" data-copy="print">Print</button></div>'
-      + '<iframe sandbox="allow-same-origin allow-modals" title="' + esc(title) + '" srcdoc="' + esc(html) + '"></iframe></body></html>';
+      + '<iframe sandbox="allow-same-origin allow-modals" title="' + esc(title) + '" srcdoc="' + esc(html) + '"></iframe>'
+      + '<script nonce="' + nonce + '">' + COPY_WINDOW_JS + '</' + 'script></body></html>';
   }
   function writeLockedDown(win, html, title) {
     try { win.document.open(); } catch (_) { /* written fresh below */ }
-    win.document.write(lockedShell(html, title));
+    win.document.write(lockedShell(html, title, copyNonce()));
     try { win.document.close(); } catch (_) { /* fine */ }
     // Nothing in that window needs this one.
     try { win.opener = null; } catch (_) { /* fine */ }
-    const doc = win.document;
-    let fr = null;
-    try { fr = doc.querySelector('iframe'); } catch (_) { /* no DOM to reach */ }
-    if (!fr) return;
-    const fit = () => {
-      try {
-        const d = fr.contentDocument;
-        if (!d || !d.documentElement) return;
-        fr.style.height = Math.max(d.documentElement.scrollHeight, d.body ? d.body.scrollHeight : 0) + 'px';
-      } catch (_) { /* left at the window's height */ }
-    };
-    fr.addEventListener('load', () => {
-      fit();
-      // The copy's own page size (letter landscape, say), so printing this
-      // window lays it out the way printing the copy does.
-      try {
-        let size = '';
-        [...fr.contentDocument.styleSheets].forEach(sh => {
-          try { [...sh.cssRules].forEach(r => { if (r.type === 6 && r.style) size = r.style.getPropertyValue('size') || size; }); } catch (_) { /* unreadable */ }
-        });
-        if (/^[a-z0-9 .]{1,40}$/i.test(size)) {
-          const st = doc.createElement('style');
-          st.textContent = `@page{size:${size};margin:0.45in}`;
-          doc.head.appendChild(st);
-        }
-      } catch (_) { /* the default page */ }
-    });
-    try { win.addEventListener('resize', fit); } catch (_) { /* fine */ }
-    const btn = doc.querySelector('[data-copy="print"]');
-    if (btn) btn.addEventListener('click', () => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (_) { try { win.print(); } catch (__) { /* nothing */ } } });
   }
   async function custOpen(id) {
     const run = custRun(id);
@@ -3448,12 +3540,15 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         </select>
       </div>
       ${S.contactEdit ? contactFormHtml() : ''}`;
-    if (S.contactsError && !S.contacts) {
-      return head + `<div class="cr-alert" role="alert"><span>Couldn’t load contacts: ${esc(S.contactsError)}</span>
-        <button type="button" class="btn btn-ghost cr-sm" data-act="ct-refresh">Retry</button></div>`;
-    }
+    // A failed load says so whether or not an earlier list is still kept —
+    // that list may be missing contacts added since.
+    const failed = S.contactsError
+      ? `<div class="cr-alert" role="alert"><span>Couldn’t load contacts: ${esc(S.contactsError)}${S.contacts ? ' — showing the last list loaded.' : ''}</span>
+        <button type="button" class="btn btn-ghost cr-sm" data-act="ct-refresh">Retry</button></div>`
+      : '';
+    if (S.contactsError && !S.contacts) return head + failed;
     if (!S.contacts) return head + '<p class="cr-loading">Loading…</p>';
-    return head + `<div class="cr-ct-list">${contactListHtml()}</div>`;
+    return head + failed + `<div class="cr-ct-list">${contactListHtml()}</div>`;
   }
   function contactListHtml() {
     const q = S.contactsSearch.trim().toLowerCase();
@@ -3625,17 +3720,23 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
      what it says next to the fields. A template can go once per job (each
      In Progress job, or the jobs picked here) or as one report of every In
      Progress job; a report with saved jobs goes as saved. */
-  async function loadGroups() {
-    if (Array.isArray(S.schedGroupsFull)) return S.schedGroupsFull;
+  /* The groups the dialog offers. Asked afresh at every open, so one saved
+     since (from the email window, say) is there without a reload; then the
+     schedules list's own (which keeps any group a schedule here already sends
+     to, whatever report type it was saved for); then every group this
+     schedule sends to that neither names — so saving an edit never drops a
+     group the dialog did not show. */
+  async function loadGroups(keepIds) {
+    const list = [];
+    const add = g => { if (g && g.id != null && !list.some(x => sameId(x.id, g.id))) list.push(g); };
+    const shape = g => ({ id: g.id, name: txt(g.name) || 'Group', count: Array.isArray(g.emails) ? g.emails.length : Number(g.count) || 0 });
     try {
       const data = await api.groups();
-      const list = data && Array.isArray(data.groups) ? data.groups : null;
-      if (list) {
-        S.schedGroupsFull = list.map(g => ({ id: g.id, name: txt(g.name) || 'Group', count: Array.isArray(g.emails) ? g.emails.length : Number(g.count) || 0 }));
-        return S.schedGroupsFull;
-      }
-    } catch (_) { /* fall back to what the schedules list gave */ }
-    return Array.isArray(S.schedGroups) ? S.schedGroups.map(g => ({ id: g.id, name: txt(g.name) || 'Group', count: Number(g.count) || 0 })) : [];
+      if (data && Array.isArray(data.groups)) data.groups.forEach(g => add(shape(g)));
+    } catch (_) { /* what the schedules list gave, below */ }
+    (Array.isArray(S.schedGroups) ? S.schedGroups : []).forEach(g => add(shape(g)));
+    (Array.isArray(keepIds) ? keepIds : []).forEach(id => add({ id, name: `Group #${id}`, count: null }));
+    return list;
   }
   function scheduleBody(v) {
     const body = {
@@ -3691,6 +3792,10 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (!S.canShare) { toast('Only an admin or level 3 user can schedule reports.', 'error'); return; }
     const r = reportId != null ? S.reports.find(x => sameId(x.id, reportId)) : null;
     if (!r && !row) { toast('Save the report first — a schedule sends a saved report.', 'error'); return; }
+    if (!r && row && row.report_deleted === true) {
+      toast(`“${txt(row.report_name) || 'This schedule’s report'}” was deleted, so this schedule can’t be edited. Restore the report from Recently Deleted, or delete the schedule.`, 'error');
+      return;
+    }
     if (!r && row) { toast('This schedule’s report isn’t shared with you, so it can’t be edited here. You can still pause, send or delete it.', 'error'); return; }
     const def = E.normalizeDefinition(r.definition);
     if (def.dates.preset === 'custom') {
@@ -3705,7 +3810,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       return;
     }
     const { v, isTemplate } = scheduleValues(r, row);
-    const groups = await loadGroups();
+    const groups = await loadGroups(v.group_ids);
     if (modalOpen()) return;
     const tzKnown = SCHED_TZ.some(t => t[0] === v.timezone);
     const times = [];
@@ -3760,7 +3865,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
           <span>Send to each job’s saved contacts<span class="cr-m-hint"> — a job with none is skipped</span></span></label>
         <p class="cr-m-hint" id="cr-s-contacts-why" hidden></p>
         ${groups.length ? `<div class="cr-m-list" role="group" aria-label="Saved recipient groups">${groups.map(g => `<label class="cr-check"><input type="checkbox" data-group="${esc(g.id)}"
-          ${v.group_ids.some(x => sameId(x, g.id)) ? ' checked' : ''}> ${esc(g.name)} <span class="cr-m-hint">(${plural(g.count, 'address', 'addresses')})</span></label>`).join('')}</div>`
+          ${v.group_ids.some(x => sameId(x, g.id)) ? ' checked' : ''}> ${esc(g.name)}${g.count == null ? '' : ` <span class="cr-m-hint">(${plural(g.count, 'address', 'addresses')})</span>`}</label>`).join('')}</div>`
           : '<p class="cr-m-hint">No saved recipient groups for custom reports. An admin can make one from the email window.</p>'}
         <div class="cr-m-row">
           <input class="cr-input" id="cr-s-email" type="email" inputmode="email" placeholder="Add an email address" aria-label="Add an email address" autocomplete="off">
@@ -3792,11 +3897,14 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const contactsWhy = mode => (mode === 'all_in_progress'
       ? 'Not with one report of every In Progress job — each customer would be sent the others’ jobs. Send one email per job to use them.'
       : mode === 'saved' && !savedOneCustomer ? 'Not for this report — its jobs belong to more than one customer.' : '');
+    // The person's own choice, kept while a mode that cannot use contacts
+    // takes the tick away, and put back when that mode is left.
+    let wantContacts = !!v.use_job_contacts;
     const syncContacts = () => {
       const mode = isTemplate ? ((m.body.querySelector('input[name="cr-s-mode"]:checked') || {}).value || 'each') : 'saved';
       const box = $('#cr-s-contacts'), note = $('#cr-s-contacts-why'), why = contactsWhy(mode);
       box.disabled = !!why;
-      if (why) box.checked = false;
+      box.checked = why ? false : wantContacts;
       note.textContent = why;
       note.hidden = !why;
     };
@@ -3837,6 +3945,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         const pick = $('#cr-s-pick');
         if (pick) pick.hidden = t.value !== 'picked';
         syncContacts();
+      } else if (t.id === 'cr-s-contacts' && !t.disabled) {
+        wantContacts = t.checked;
       }
     });
     m.body.addEventListener('input', e => {
@@ -4128,11 +4238,13 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (!d || !Array.isArray(d.aiUndo) || !d.aiUndo.length) return false;
     const prev = d.aiUndo[d.aiUndo.length - 1];
     // Changed by hand since the AI change: undoing it would throw that work
-    // away (there is no redo), so it is asked first — and "no" changes nothing.
+    // away (there is no redo), so it is asked first — and "no" changes
+    // nothing. That is the person's choice, not a failure: the panel is told
+    // apart ('declined') so it reports nothing and keeps its Undo live.
     const edited = typeof prev.after === 'string' && prev.after !== aiKey(d);
     if (edited && !window.confirm(prev.none
       ? 'Undo the AI change? It built this report, so undoing it closes the report — and the edits you made since then will be lost.'
-      : 'Undo the AI change? Edits you made since then will be lost.')) return false;
+      : 'Undo the AI change? Edits you made since then will be lost.')) return 'declined';
     d.aiUndo.pop();
     if (prev.none) {
       // The AI built this report from nothing: undoing it closes it.
@@ -4758,7 +4870,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       Object.assign(S, { reports: [], loaded: false, loadError: '', deleted: null, runs: null, doc: null, view: 'home', me: null,
         contacts: null, contactsAt: 0, contactsCanEdit: false, contactEdit: null, contactsJob: '', contactsSearch: '',
         cust: { jobId: '', client: '', search: '', runs: null, loading: false, error: '', next: null, more: false, busy: null },
-        scheds: null, canSchedule: false, schedGroups: null, schedGroupsFull: null, filterSearch: '' });
+        scheds: null, canSchedule: false, schedGroups: null, filterSearch: '' });
       // The AI conversation was about the other division's jobs.
       aiDocChanged(true);
     }

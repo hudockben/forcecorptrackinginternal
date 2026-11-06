@@ -11,7 +11,10 @@
  * custom-reports.js owns the report and supplies the adapter:
  *   getDefinition()            the report on screen, as a definition
  *   applyDefinition(def, info) replace it (pushes an undo step, marks unsaved)
- *   undo()                     take the last applied step back
+ *   undo()                     take the last applied step back: true when
+ *                              undone, false when it could not be,
+ *                              'declined' when the person said no to its
+ *                              "edits since will be lost" question
  *   getJobs()                  [{ id, name, number, client, status }]
  *   getCodes()                 { costCodes: [...], subCodes: [{ code, description, unit }] }
  *   division, divisionLabel, apiBase, getToken(), onAuthError()
@@ -515,6 +518,13 @@
       if (latestUndoable() !== t) return false;
       let ok;
       try { ok = adapter.undo(); } catch (_) { ok = false; }
+      // The builder asked first (hand edits since) and the person said no:
+      // nothing failed, so nothing is reported, and Undo stays offered.
+      if (ok === 'declined') {
+        t.undoError = '';
+        render();
+        return false;
+      }
       if (ok === false) {
         t.undoError = 'Could not undo — the report may have been changed or closed since.';
         render();

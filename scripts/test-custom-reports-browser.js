@@ -587,6 +587,46 @@ async function waitFor(fn, ms, every = 250) {
     await sleep(every);
   }
 }
+// A wide customer copy, built by the engine itself: Planned vs Actual with
+// every column and Production Rates with every column — wider than a page.
+function wideArchiveHtml() {
+  const vm = require('vm');
+  const c = {};
+  vm.createContext(c);
+  c.window = c;
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'custom-reports-engine.js'), 'utf8'), c, { filename: 'custom-reports-engine.js' });
+  const E = c.FCTReportEngine;
+  const r = (date, cc, sc, qty) => ({ date, cost_code: cc, sub_code: sc, quantity: String(qty), labor_hours: '8', employee: 'Crew A', rate: '30', equip_hours: '6' });
+  const job = { id: 'w1', 'project-name': 'Wide Copy Job', 'job-number': 'W-1', status: 'In Progress', bidItems: [
+    { id: 'a', cost_code: 'Paving', sub_code: 'Base Course', description: 'Base course, 6in', unit: 'TON', quantity: '4000', unit_cost: '50', start_date: '2026-10-19', target_date: '2026-11-20' },
+    { id: 'b', cost_code: 'Paving', sub_code: 'Surface Course', description: 'Surface course, 2in', unit: 'TON', quantity: '2500', unit_cost: '60', planned_rate: '300' },
+    { id: 'c', cost_code: 'Milling', sub_code: 'Mill', description: 'Mill existing', unit: 'SY', quantity: '9000', unit_cost: '2', start_date: '2026-10-12', target_date: '2026-10-30' }],
+  dailyRows: [r('2026-10-19', 'Paving', 'Base Course', 300), r('2026-10-20', 'Paving', 'Base Course', 320), r('2026-10-21', 'Paving', 'Base Course', 280),
+    r('2026-11-02', 'Paving', 'Surface Course', 310), r('2026-11-03', 'Paving', 'Surface Course', 290),
+    r('2026-10-12', 'Milling', 'Mill', 3000), r('2026-10-13', 'Milling', 'Mill', 3200), r('2026-10-14', 'Milling', 'Mill', 2800)] };
+  const trucks = [{ id: 't1', tr_number: 'TR-1', project_id: 'w1', date: '2026-10-19', loads: '15', cost_code: 'Paving', sub_code: 'Base Course' },
+    { id: 't2', tr_number: 'TR-2', project_id: 'w1', date: '2026-11-02', loads: '14', cost_code: 'Paving', sub_code: 'Surface Course' }];
+  const sec = (type, cols) => Object.assign(E.newSection(type), { columns: cols || E.CATALOG[type].columns.map(x => x.key) });
+  const pva = ['cost_code', 'sub_code', 'description', 'unit', 'bid_qty', 'installed_to_date', 'planned_rate', 'actual_rate', 'pct_of_plan',
+    'sched_pct', 'earned_pct', 'spi', 'ahead_days', 'target_date', 'projected_finish', 'forecast_vs_target', 'plan_status', 'plan_source'];
+  const def = E.normalizeDefinition({ title: 'Wide copy', orientation: 'landscape', jobs: { mode: 'pick', ids: ['w1'] },
+    dates: { preset: 'job_to_date', from: '', to: '' }, sections: [sec('plan_vs_actual', pva), sec('production_kpis')] });
+  const ctx = E.makeContext(def, { division: 'paving', divisionLabel: 'Paving', areaUnit: 'SY',
+    perm: { role: 'admin', canSeeCosts: true, canSeeFinancials: true, canShare: true },
+    getProjects: () => [job], getPurchaseOrders: () => [], getTruckingEntries: () => trucks }, { pickedIds: ['w1'], today: '2026-11-05', now: new Date(2026, 10, 5, 14, 30) });
+  return E.buildReportHtml(def, ctx);
+}
+// Text of a PDF, one string (pdftotext); null when the tool is missing.
+function pdfText(buf) {
+  const cp = require('child_process');
+  const f = path.join(os.tmpdir(), `cr-pdf-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`);
+  fs.writeFileSync(f, buf);
+  try { return cp.execFileSync('pdftotext', ['-raw', f, '-'], { encoding: 'utf8' }); }
+  catch (_) { return null; }
+  finally { try { fs.unlinkSync(f); } catch (_) { /* fine */ } }
+}
+const pdfPages = buf => (String(buf.toString('latin1')).match(/\/Type\s*\/Page[^s]/g) || []).length;
+
 async function printFrom(page) {
   const [popup] = await Promise.all([page.waitForEvent('popup'), page.click('#cr-content [data-act="print"]')]);
   try {
@@ -956,6 +996,49 @@ async function cleanUp() {
       });
       ok('phone width: the builder itself does not run off the side of the screen', over <= 1, over + 'px');
       await ctx.close();
+    }
+    // Phone: "+ Add section" opens a menu that fits on the screen wherever
+    // the button sits — its last items (Chart, Division Rates, Notes) can be
+    // reached, and scrolling inside it never scrolls the page (which closes it).
+    {
+      const ph = await openPage(browser, baseUrl, 'paving', session, { width: 390, height: 844 });
+      try {
+        await openTab(ph.page, true);
+        await startStarter(ph.page, 'customer_progress');
+        await ph.page.click('#cr-content [data-act="step"][data-step="2"]');
+        await ph.page.waitForSelector('#cr-content [data-act="add-menu"]');
+        const seen = [];
+        for (const y of [300, 420, 470, 600]) {
+          const at = await ph.page.evaluate(async want => {
+            const b = document.querySelector('#cr-content [data-act="add-menu"]');
+            window.scrollBy(0, b.getBoundingClientRect().top - want);
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            return Math.round(b.getBoundingClientRect().top);
+          }, y);
+          await ph.page.evaluate(() => document.querySelector('#cr-content [data-act="add-menu"]').click());
+          const m = await ph.page.evaluate(() => {
+            const menu = document.querySelector('.cr-menu');
+            if (!menu) return null;
+            const box = menu.getBoundingClientRect();
+            const items = [...menu.querySelectorAll('.cr-menu-item')];
+            menu.scrollTop = menu.scrollHeight;
+            const last = items[items.length - 1].getBoundingClientRect();
+            menu.scrollTop = 0;
+            const first = items[0].getBoundingClientRect();
+            return { top: Math.round(box.top), bottom: Math.round(box.bottom), vh: window.innerHeight, n: items.length,
+              lastLabel: items[items.length - 1].textContent.trim().split('\n')[0], lastBottom: Math.round(last.bottom), firstTop: Math.round(first.top),
+              overscroll: getComputedStyle(menu).overscrollBehaviorY };
+          });
+          seen.push({ y, at, m });
+          await ph.page.keyboard.press('Escape');
+          await sleep(100);
+        }
+        ok('phone: "+ Add section" opens its menu inside the screen at any button height, the last item reachable by scrolling the menu',
+          seen.every(({ m }) => m && m.n > 10 && m.top >= 0 && m.bottom <= m.vh && m.lastBottom <= Math.min(m.vh, m.bottom) + 1 && m.firstTop >= m.top - 1),
+          JSON.stringify(seen));
+        ok('…and scrolling inside the menu stays in it (it does not scroll the page behind, which would close it)',
+          seen.every(({ m }) => m && m.overscroll === 'contain'), JSON.stringify(seen.map(s => s.m && s.m.overscroll)));
+      } finally { await ph.ctx.close().catch(() => {}); }
     }
 
     // ── Turf and Kiewit: the tab opens and a starter previews ──
@@ -1471,6 +1554,60 @@ async function cleanUp() {
       await db.query('DELETE FROM users WHERE id = $1', [l1]);
       await page.click('#cr-content [data-act="cust-refresh"]').catch(() => {});
       await page.waitForFunction(() => !/Hostile/.test((document.querySelector('#cr-content .cr-cust') || {}).textContent || ''), null, { timeout: 10000 }).catch(() => {});
+    }
+    // A copy wider than the page (Planned vs Actual with 18 columns, and
+    // Production Rates): printing its window (Ctrl+P / Save as PDF) prints
+    // every column, as printing the copy itself does — and the window's Print
+    // button keeps working after the app tab has moved to another page.
+    // Opened from a second app tab, so this one stays where it is.
+    {
+      const wide = wideArchiveHtml();
+      const run = (await db.query(`INSERT INTO custom_report_runs (company_code, division, report_name, action, project_ids, project_names, recipients, subject,
+          included_internal, run_by_user_id, run_by_username, run_kind)
+        VALUES ($1, 'paving', 'Wide copy', 'email', '["p1"]'::jsonb, $2::jsonb, '["owner@maple.example"]'::jsonb, 'Wide copy check', false, $3, 'pat.admin', 'user') RETURNING id`,
+      [CO, JSON.stringify([JOB1]), userId])).rows[0].id;
+      const raw = Buffer.from(wide, 'utf8');
+      await db.query('INSERT INTO custom_report_run_archives (run_id, company_code, html_gzip_b64, html_bytes) VALUES ($1, $2, $3, $4)',
+        [run, CO, zlib.gzipSync(raw).toString('base64'), raw.length]);
+      const two = await openPage(browser, baseUrl, 'paving', session);
+      try {
+        await openTab(two.page);
+        await two.page.click('#cr-content [data-act="customer"]');
+        await two.page.waitForSelector('#cr-content [data-bind="cust-job"]');
+        if ((await two.page.inputValue('#cr-content [data-bind="cust-job"]')) !== 'p1') await two.page.selectOption('#cr-content [data-bind="cust-job"]', 'p1');
+        await two.page.waitForSelector(`#cr-content [data-act="cust-open"][data-id="${run}"]`, { timeout: 10000 });
+        const [win] = await Promise.all([two.page.waitForEvent('popup'), two.page.click(`#cr-content [data-act="cust-open"][data-id="${run}"]`)]);
+        await win.waitForFunction(() => { const f = document.querySelector('iframe'); return !!(f && f.contentDocument && f.contentDocument.body && f.contentDocument.body.childNodes.length); },
+          null, { timeout: 15000 }).catch(() => {});
+        await sleep(600);
+        const popPdf = await win.pdf({ preferCSSPageSize: true });
+        const dctx = await browser.newContext();
+        const dpage = await dctx.newPage();
+        await dpage.setContent(wide);
+        await sleep(300);
+        const dirPdf = await dpage.pdf({ preferCSSPageSize: true });
+        await dctx.close();
+        const pt = pdfText(popPdf), dt = pdfText(dirPdf);
+        if (pt == null || dt == null) console.log('  (pdftotext not installed — the printed columns are counted by page only)');
+        const count = (t, w) => (String(t || '').match(new RegExp(w, 'g')) || []).length;
+        // The right-hand columns of both tables (a page-wide frame cut them off).
+        const heads = ['STATUS', 'PACE VS PLAN', 'DAYS AHEAD', 'FINISH VS TARGET', 'PLAN BASIS', 'REMAINING', 'PER LOAD'];
+        const got = heads.map(w => [w, count(pt, w), count(dt, w)]);
+        ok('printing the copy\'s window prints every column of a wide copy, as printing the copy itself does (same headings, no more pages)',
+          pdfPages(popPdf) <= pdfPages(dirPdf) && (pt == null || got.every(([, p, d]) => d > 0 && p > 0)),
+          JSON.stringify({ pages: [pdfPages(popPdf), pdfPages(dirPdf)], got }));
+        await two.page.goto(`${baseUrl}/divisions.html`, { waitUntil: 'domcontentloaded' }).catch(() => {});
+        await sleep(400);
+        await win.evaluate(() => { const f = document.querySelector('iframe'); window.__printed = 0; f.contentWindow.print = () => { window.__printed++; }; window.print = () => { window.__printed += 10; }; });
+        await win.click('[data-copy="print"]');
+        await sleep(300);
+        const printed = await win.evaluate(() => window.__printed);
+        ok('…and its Print button still prints the copy after the app tab has moved to another page', printed === 1, String(printed));
+        await win.close().catch(() => {});
+      } finally {
+        await two.ctx.close().catch(() => {});
+        await db.query('DELETE FROM custom_report_runs WHERE id = $1', [run]);
+      }
     }
     await page.click(`#cr-content [data-act="cust-resend"][data-id="${sentRun && sentRun.id}"]`);
     await page.waitForSelector('#rem-input', { timeout: 10000 });

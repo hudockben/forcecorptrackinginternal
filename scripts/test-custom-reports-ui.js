@@ -186,6 +186,7 @@ function makeServer(opts) {
     // ── /api/report-contacts ──
     if (u.pathname === '/api/report-contacts') {
       const live = srv.contacts.filter(c => !c.deleted_at);
+      if (method === 'GET' && srv.contactsFail) return res(500, { error: 'Database error' });
       if (method === 'GET') {
         let list = live;
         if (q.project_ids || q.client_keys) {
@@ -2161,6 +2162,29 @@ function seed(srv) {
         && h.$('[data-bind="ct-auto"]').disabled && /Only level 2 users and up/.test(h.mount.textContent));
     h.close();
   }
+  {
+    // A Contacts load or Refresh that fails says so — even with a list from
+    // an earlier load still on screen — and the next good one clears it.
+    const srv = seed(makeServer());
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    srv.contacts.push({ id: 9, project_id: 'p1', email: 'new@acme.com', name: 'Added Elsewhere', role: 'owner', auto_add: true });
+    srv.contactsFail = true;
+    h.click(h.act('contacts'));
+    await tick(6);
+    const alertText = () => { const a = h.mount.querySelector('.cr-alert'); return a ? a.textContent : ''; };
+    assert('the Contacts view, its load failing after an earlier one worked: says it could not load them, with Retry — not just "No contacts saved yet"',
+      /Couldn’t load contacts/.test(alertText()) && !!h.mount.querySelector('.cr-alert [data-act="ct-refresh"]'), h.mount.textContent.replace(/\s+/g, ' ').slice(0, 400));
+    h.click(h.act('ct-refresh'));
+    await tick(6);
+    assert('…and so does a Refresh that fails', /Couldn’t load contacts/.test(alertText()));
+    srv.contactsFail = false;
+    h.click(h.act('ct-refresh'));
+    await tick(6);
+    assert('…the next Refresh that works clears it and shows the list', !alertText() && /Added Elsewhere/.test(h.$('.cr-ct-list').textContent));
+    h.close();
+  }
   // ════════════════════════════════════════════════════════════════════
   section('v2 · Customer History — open or resend exactly what was sent');
   const ARCHIVED = '<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Weekly</title></head>'
@@ -2248,10 +2272,21 @@ function seed(srv) {
       const hw = h.opened[before];
       const hd = hw ? shellOf(hw.written) : null;
       const hf = hd ? hd.querySelectorAll('iframe') : [];
+      // The window's one script is its own: the nonce its policy names, none of the archive in it.
+      const own = hd ? [...hd.querySelectorAll('script')] : [];
+      const nonce = hd ? ((hd.head.firstElementChild.getAttribute('content') || '').match(/script-src 'nonce-([0-9a-f]{32})'/) || [])[1] : null;
       assert(`hostile archive ${i + 1}: written only inside the sandboxed frame — no element of it in the window's own document, the policy still first in the head`,
-        hd && hf.length === 1 && hf[0].getAttribute('srcdoc') === bad && !hd.querySelector('img, script, p')
+        hd && hf.length === 1 && hf[0].getAttribute('srcdoc') === bad && !hd.querySelector('img, p')
+          && own.length === 1 && !!nonce && own[0].getAttribute('nonce') === nonce && !/__pw/.test(own[0].textContent)
           && hd.head.firstElementChild.getAttribute('http-equiv') === 'Content-Security-Policy' && !/allow-scripts/.test(hf[0].getAttribute('sandbox'))
           && h.window.__pw === undefined, hw && hw.written.slice(0, 400));
+    }
+    {
+      const nonces = h.opened.slice(-3).map(x => (x.written.match(/script-src 'nonce-([0-9a-f]{32})'/) || [])[1]);
+      assert('…its script allowed by a nonce made fresh for each open, and by nothing else',
+        nonces.every(Boolean) && new Set(nonces).size === nonces.length
+          && h.opened.slice(-3).every(x => !/script-src[^;]*('unsafe-inline'|\*|https?:|data:)/.test(x.written)),
+        JSON.stringify(nonces));
     }
     h.srv.archives[1] = ARCHIVED;
 
@@ -2582,6 +2617,99 @@ function seed(srv) {
     h.close();
   }
   {
+    // Recipient groups: asked afresh at every Schedule…, and an edit never
+    // drops a group the dialog was not offered. Job contacts: the person's
+    // tick comes back when the reason it was taken away goes. A schedule
+    // whose report was deleted says so.
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com', 'b@acme.com'] }] }));
+    srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+    srv.reports.find(r => r.id === 2).definition.dates = { preset: 'last_week' };
+    const schedRow = (over) => Object.assign({ custom_report_id: 1, report_name: 'Acme weekly update', jobs_mode: 'saved', picked_jobs: null,
+      frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00', timezone: 'America/New_York', group_ids: [41], emails: [],
+      use_job_contacts: false, subject: 'Old subject', note: null, attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:00:00Z',
+      last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat', created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z',
+      report_visible: true, report_deleted: false, report_customer_safe: true }, over);
+    // Sends to group 99 too — another report type's group, attached through the API: neither list offers it.
+    srv.schedules.push(schedRow({ id: 950, group_ids: [41, 99] }));
+    // Its report deleted since (in Recently Deleted).
+    srv.schedules.push(schedRow({ id: 951, custom_report_id: 777, report_name: 'Gone weekly', report_visible: false, report_deleted: true }));
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    h.click(h.$('[data-act="open"][data-id="1"]'));
+    h.click(h.act('schedule'));
+    await tick(6);
+    let m = h.modal();
+    assert('the dialog offers the saved group', m && !!m.querySelector('[data-group="41"]') && !m.querySelector('[data-group="43"]'));
+    m.querySelector('[data-s="cancel"]').click();
+    await tick(2);
+    // Saved from the email window meanwhile ("Save as group").
+    srv.groups.push({ id: 43, name: 'Maple owners', emails: ['o@maple.example'] });
+    h.click(h.act('schedule'));
+    await tick(6);
+    m = h.modal();
+    assert('a group saved since the dialog was last open is offered the next time, no reload', m && !!m.querySelector('[data-group="43"]'),
+      m && [...m.querySelectorAll('[data-group]')].map(b => b.getAttribute('data-group')).join());
+    m.querySelector('[data-s="cancel"]').click();
+    await tick(2);
+    h.click(h.$('[data-act="sched-menu"][data-id="950"]'));
+    h.click(h.document.querySelector('.cr-menu [data-act="sched-edit"]'));
+    await tick(6);
+    m = h.modal();
+    const g99 = m && m.querySelector('[data-group="99"]');
+    assert('Edit… shows every group the schedule sends to, ticked — one neither list offers too', m && m.querySelector('[data-group="41"]').checked
+      && !!g99 && g99.checked, m && [...m.querySelectorAll('[data-group]')].map(b => b.getAttribute('data-group') + ':' + b.checked).join());
+    m.querySelector('#cr-s-subject').value = 'New subject';
+    m.querySelector('[data-s="save"]').click();
+    await tick(8);
+    const put = h.srv.callsTo('/api/custom-report-schedules', 'PUT').pop();
+    assert('…and saving it with only the subject changed keeps that group', put && put.q.id === '950' && put.body.subject === 'New subject'
+      && JSON.stringify(put.body.group_ids.map(Number).sort((a, b) => a - b)) === '[41,99]', put && JSON.stringify(put.body.group_ids));
+
+    // Job contacts on a template: the tick taken away for "All In Progress
+    // jobs — one report" comes back with one email per job.
+    h.click(h.$('[data-act="open"][data-id="2"]'));
+    h.click(h.act('schedule'));
+    await tick(6);
+    m = h.modal();
+    const box = () => m.querySelector('#cr-s-contacts');
+    const mode = v => { const r = m.querySelector(`input[name="cr-s-mode"][value="${v}"]`); r.checked = true; r.dispatchEvent(new h.window.Event('change', { bubbles: true })); };
+    const startTicked = box().checked;
+    mode('all_in_progress');
+    const offThere = !box().checked && box().disabled;
+    mode('each');
+    const backEach = box().checked;
+    mode('all_in_progress');
+    mode('picked');
+    assert('switching to "All In Progress jobs" and back: "Send to each job’s saved contacts" is ticked again, as it was (each and picked)',
+      startTicked && offThere && backEach && box().checked && !box().disabled, JSON.stringify({ startTicked, offThere, backEach, picked: box().checked }));
+    box().checked = false;
+    box().dispatchEvent(new h.window.Event('change', { bubbles: true }));
+    mode('all_in_progress');
+    mode('each');
+    assert('…and one the person unticked stays unticked', !box().checked && !box().disabled);
+    m.querySelector('[data-s="cancel"]').click();
+    await tick(2);
+
+    // The schedule whose report was deleted.
+    const goneItem = h.$('[data-act="sched-menu"][data-id="951"]').closest('.cr-item');
+    assert('the rail says a schedule\'s report was deleted, and what to do', /deleted/i.test(goneItem.textContent) && /Recently Deleted/.test(goneItem.textContent),
+      goneItem.textContent.replace(/\s+/g, ' '));
+    h.click(h.$('[data-act="sched-menu"][data-id="951"]'));
+    h.click(h.document.querySelector('.cr-menu [data-act="sched-edit"]'));
+    await tick(4);
+    assert('…and its Edit… says the report was deleted, not that it isn\'t shared', /Recently Deleted/.test(h.toast()) && !/isn’t shared/.test(h.toast()), h.toast());
+    // Deleting a report a schedule sends: the question says the schedule stops, and the rail is asked again.
+    const schedGets = h.srv.callsTo('/api/custom-report-schedules', 'GET').length;
+    h.click(h.$('[data-act="item-menu"][data-id="1"]'));
+    h.click(h.document.querySelector('.cr-menu [data-act="menu-delete"]'));
+    await tick(8);
+    assert('deleting a scheduled report says its schedule will stop sending', /schedule/i.test(h.confirms[h.confirms.length - 1] || ''),
+      h.confirms[h.confirms.length - 1]);
+    assert('…and the schedules are asked for again after the delete', h.srv.callsTo('/api/custom-report-schedules', 'GET').length > schedGets);
+    h.close();
+  }
+  {
     const h = boot({ server: seed(makeServer({ canShare: false })), cfg: { perm: { role: 'level2', canSeeCosts: true, canSeeFinancials: true, canShare: false } } });
     await h.render();
     await tick(6);
@@ -2673,7 +2801,7 @@ function seed(srv) {
       h.answers.push(false);
       const r3 = a.undo();
       assert('undoing an AI-built report that was then named by hand asks before closing it; "no" leaves it open, as it is',
-        r3 === false && h.S().doc === built && built.name === 'Named by hand' && h.confirms.length === c1 + 1
+        r3 === 'declined' && h.S().doc === built && built.name === 'Named by hand' && h.confirms.length === c1 + 1
           && /closes the report/.test(h.confirms[h.confirms.length - 1]), JSON.stringify({ r3, open: !!h.S().doc, c: h.confirms.slice(c1) }));
       h.answers.push(true);
       assert('…"yes" closes it', a.undo() === true && h.S().doc === null);
@@ -2691,7 +2819,7 @@ function seed(srv) {
       h.answers.push(false);
       const r1 = a.undo();
       assert('Undo after hand edits (a section added, a rename) asks first; "no" keeps every edit and reports it did not undo',
-        r1 === false && h.confirms.length === c0 + 1 && /Edits you made since then will be lost/.test(h.confirms[h.confirms.length - 1])
+        r1 === 'declined' && h.confirms.length === c0 + 1 && /Edits you made since then will be lost/.test(h.confirms[h.confirms.length - 1])
           && h.S().doc === od && od.name === 'Renamed by hand' && JSON.stringify(od.def.sections.map(x => x.type)) === hand && /notes/.test(hand),
         JSON.stringify({ r1, name: od.name, hand, c: h.confirms.slice(c0) }));
       h.answers.push(true);
@@ -2733,6 +2861,48 @@ function seed(srv) {
     await h.render();
     h.click(h.act('ai-toggle'));
     assert('without custom-reports-ai.js loaded the drawer says it is still loading', /still loading/.test(h.mount.querySelector('.cr-ai-drawer').textContent));
+    h.close();
+  }
+  {
+    // The real AI panel: an AI change, then a hand edit; Undo → the builder's
+    // "Undo the AI change? Edits you made since then will be lost." → Cancel.
+    // Nothing failed, so the panel says nothing failed, and Undo stays live.
+    const h = boot({ server: seed(makeServer()) });
+    h.window.eval(fs.readFileSync(path.join(ROOT, 'custom-reports-ai.js'), 'utf8'));
+    const realFetch = h.window.fetch;
+    h.window.fetch = (url, init) => (/\/ai\/report-builder/.test(String(url))
+      ? Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, reply: 'Retitled it.', changes: ['Changed the title'],
+        needs_internal: false, clarifying_question: null, dropped: { jobs: 0, codes: 0, sections: 0 },
+        definition: Object.assign(JSON.parse(JSON.stringify(h.S().doc.def)), { title: 'Retitled by AI' }) }) })
+      : realFetch(url, init));
+    await h.render();
+    await tick(4);
+    h.click(h.$('[data-act="open"][data-id="1"]'));
+    await tick();
+    h.click(h.act('ai-toggle'));
+    await tick();
+    const drawer = h.mount.querySelector('.cr-ai-drawer');
+    await h.S().ai.handle.send('Retitle it');
+    await tick(4);
+    const undoBtn = () => drawer.querySelector('[data-crai-act="undo"]');
+    assert('the real panel applies an AI change and offers its Undo', h.S().doc.def.title === 'Retitled by AI' && !!undoBtn() && !undoBtn().disabled,
+      h.S().doc.def.title);
+    h.click(h.$('#cr-step-3'));
+    h.type(h.$('[data-bind="title"]'), 'Retitled by hand');
+    const c0 = h.confirms.length;
+    h.answers.push(false);
+    h.click(undoBtn());
+    await tick();
+    const notes = [...drawer.querySelectorAll('.crai-note')].map(n => n.textContent);
+    assert('declining "Undo the AI change?" in the panel: no "Could not undo" note, the hand edit kept, and Undo still live',
+      h.confirms.length === c0 + 1 && /Edits you made since then will be lost/.test(h.confirms[c0] || '')
+        && !notes.some(n => /Could not undo/.test(n)) && h.S().doc.def.title === 'Retitled by hand' && !!undoBtn() && !undoBtn().disabled
+        && !/Undone/.test(drawer.textContent), JSON.stringify({ notes, title: h.S().doc.def.title, c: h.confirms.slice(c0) }));
+    h.answers.push(true);
+    h.click(undoBtn());
+    await tick();
+    assert('…and "yes" on a second Undo undoes it', /Undone/.test(drawer.textContent) && h.S().doc.def.title !== 'Retitled by hand'
+      && ![...drawer.querySelectorAll('.crai-note')].some(n => /Could not undo/.test(n.textContent)), h.S().doc.def.title);
     h.close();
   }
   {

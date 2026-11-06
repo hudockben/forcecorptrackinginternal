@@ -1062,6 +1062,23 @@ async function uiTests() {
     && $$('[data-crai-act="undo"]')[0].disabled && !$$('[data-crai-act="undo"]')[1].disabled);
 
   section('Panel — undo');
+  {
+    // A builder that cannot undo says so; a person who says no to the
+    // builder's "edits since will be lost" question ('declined') is not a
+    // failure: nothing is reported, and Undo stays live.
+    const realUndo = ad.undo;
+    ad.undo = () => false;
+    click(win, $$('[data-crai-act="undo"]')[1]);
+    assert('a builder that could not undo: "Could not undo" under the turn, Undo still offered', /Could not undo/.test(host.textContent)
+      && ad.undos === 0 && !$$('[data-crai-act="undo"]')[1].disabled);
+    ad.undo = () => 'declined';
+    click(win, $$('[data-crai-act="undo"]')[1]);
+    assert('declining the builder\'s undo question: no "Could not undo" (the earlier note cleared), not marked Undone, Undo still live',
+      !/Could not undo/.test(host.textContent) && !$$('.crai-note').some(n => /Could not undo/.test(n.textContent))
+        && !/Undone/.test(host.textContent) && ad.undos === 0 && $$('[data-crai-act="undo"]').length === 2 && !$$('[data-crai-act="undo"]')[1].disabled,
+      host.textContent.slice(0, 300));
+    ad.undo = realUndo;
+  }
   click(win, $$('[data-crai-act="undo"]')[1]);
   assert('Undo calls the builder\'s undo once', ad.undos === 1);
   assert('…the turn says Undone and the earlier Undo is live again', /Undone/.test(host.textContent) && $$('[data-crai-act="undo"]').length === 1 && !$('[data-crai-act="undo"]').disabled);

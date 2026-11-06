@@ -43,6 +43,8 @@
 //   { ok: true, id, recipientCount, pdfAttached, subject, pdfPages?, warning?,
 //     logged?, run_id?, archived? }
 //   | { ok: false, error: '...' }
+//   | 409 { ok: false, code: 'client_outdated', error } — a builder from before
+//     an update sending, as v1, a custom report now saved as v2 (not a resend)
 //
 // subject is the one the email actually went out with (an empty one becomes
 // the report's label). For a *_custom_report type the send is written to
@@ -81,8 +83,35 @@ const { inlineCidImages } = require('../lib/pdf');
 const { REPORT_TYPES, mayUseDivision } = require('../lib/report-catalog');
 const { neon } = require('@neondatabase/serverless');
 const {
-  readRun, insertRun, insertArchive, pruneArchives, isPlainObject, INTERNAL_MARK,
+  readRun, insertRun, insertArchive, pruneArchives, isPlainObject, toId, INTERNAL_MARK,
 } = require('../lib/custom-report-runs');
+
+/**
+ * A tab still running the Custom Reporting builder from before an update
+ * reads a report saved since in the newer format with its old code — which
+ * drops what it does not know (the code filters, the newer sections) — and
+ * would email what is left. Saving that way is refused (api/custom-reports.js,
+ * 409 client_outdated); sending is too, here, before anything goes out. A
+ * Customer History resend is exempt: it repeats an archived email, whose
+ * definition snapshot can rightly be older than the report it names. Fails
+ * open — a database that cannot answer never stops a send.
+ */
+async function staleBuilderSend(payload, division, body) {
+  const cr = isPlainObject(body.custom_report) ? body.custom_report : null;
+  if (!cr || cr.run_kind === 'resend' || !isPlainObject(cr.definition) || Number(cr.definition.v) !== 1) return false;
+  const id = toId(cr.report_id);
+  if (!id || !payload.companyCode || !process.env.DATABASE_URL) return false;
+  try {
+    const sql = neon(process.env.DATABASE_URL);
+    const rows = await sql`
+      SELECT definition->>'v' AS v FROM custom_reports
+       WHERE id = ${id}::bigint AND company_code = ${payload.companyCode} AND division = ${division} AND deleted_at IS NULL`;
+    return !!rows[0] && Number(rows[0].v) >= 2;
+  } catch (err) {
+    console.error('[email/send-report] saved report version not read, sending anyway:', err.message);
+    return false;
+  }
+}
 
 /**
  * The name the email's header carries: the company's branding display name,
@@ -238,6 +267,13 @@ module.exports = async (req, res) => {
   const att = normalizeAttachments(attachments);
   if (!att.ok) {
     return res.status(400).json({ ok: false, error: att.error });
+  }
+
+  // An out-of-date builder emailing a report saved in the newer format —
+  // checked before the send, because the history is written after it.
+  if (/_custom_report$/.test(report_type) && await staleBuilderSend(payload, cfg.division, body)) {
+    return res.status(409).json({ ok: false, code: 'client_outdated',
+      error: 'DataWatch was updated. Reload the page, then send this report again.' });
   }
 
   const companyName = await freshCompanyName(payload);

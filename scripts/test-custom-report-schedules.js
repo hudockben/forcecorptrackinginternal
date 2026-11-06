@@ -85,6 +85,7 @@ let AUTH = null;
 let REAL_AUTH = false;
 const SENT = [];
 const DB = { failRunInsert: false };
+const MAIL = { failAt: 0, tries: 0 };
 const FAKE = { browser: null, launched: 0 };
 
 const stubDivision = async (req, res, opts = {}) => {
@@ -123,10 +124,15 @@ Module._load = function (request, parent) {
   }
   if (request === 'resend') {
     return { Resend: class {
-      constructor() { this.emails = { send: async o => { SENT.push(o); return { data: { id: 'stub-' + SENT.length }, error: null }; } }; }
+      // MAIL.failAt = n: the n-th email of the run is refused, as the mail
+      // service does on a bad moment (one batch of a long list, say).
+      constructor() { this.emails = { send: async o => {
+        if (MAIL.failAt && ++MAIL.tries === MAIL.failAt) return { data: null, error: { message: 'Resend 500: internal error' } };
+        SENT.push(o); return { data: { id: 'stub-' + SENT.length }, error: null };
+      } }; }
     } };
   }
-  if ((request === './lib/auth' && /api[\\/]custom-report-schedules\.js$/.test(from))
+  if ((request === './lib/auth' && /api[\\/](custom-report-schedules|custom-reports)\.js$/.test(from))
     || (request === '../lib/auth' && /api[\\/]email[\\/]report-schedules\.js$/.test(from))) {
     return { ...realAuth, requireDivision: stubDivision, requireAuth: stubAuth };
   }
@@ -867,6 +873,34 @@ FAKE.browser = { newPage: async () => fakePage(), close: async () => {}, process
     assert('nobody left to send to (no group, no address, no contacts): failed, saying what to add',
       res2.status === 'failed' && /nobody to send to/i.test(res2.message) && PAGE.opened === 0, JSON.stringify(res2));
     await client.query('DELETE FROM report_schedules WHERE company_code = $1 AND id <> ALL($2)', [CO, [eachId, savedId, privId]]);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nA long list goes in batches of 50; a later batch refused — the people it reached are in Customer History');
+  {
+    const g30 = await grp('Owner distribution', Array.from({ length: 30 }, (_, i) => `gc${i}@owner.test`));
+    const extra = Array.from({ length: 30 }, (_, i) => `rep${i}@gc.test`);
+    const sched = await mkSched({ jobs_mode: 'each', picked_jobs: [{ id: 'p1', name: 'Paving Maple Ave' }], group_ids: [g30], emails: extra });
+    resetPage(); SENT.length = 0;
+    Object.assign(MAIL, { failAt: 2, tries: 0 });
+    let res;
+    try { res = await run(sched, { kind: 'manual' }); } finally { Object.assign(MAIL, { failAt: 0, tries: 0 }); }
+    const reached = SENT.flatMap(o => [].concat(o.to));
+    assert('the first batch of 50 went, the second was refused: the run reads partial, 1 sent to the 50 it reached, the failure named',
+      res.status === 'partial' && res.sent === 1 && SENT.length === 1 && reached.length === 50 && res.recipientCount === 50
+        && /50 of 60/.test(res.message) && /Resend 500/.test(res.message), JSON.stringify(res));
+    assert('…and the message names who it did not reach', /Not reached: /.test(res.message) && /and \d+ more/.test(res.message), res.message);
+    const rows = (await client.query(
+      `SELECT r.*, (a.run_id IS NOT NULL) AS has_archive FROM custom_report_runs r LEFT JOIN custom_report_run_archives a ON a.run_id = r.id
+        WHERE r.schedule_id = $1 ORDER BY r.id`, [sched.id])).rows;
+    assert('…one send in the report\'s history, as the schedule\'s, with exactly the 50 addresses that got it, its HTML archived',
+      rows.length === 1 && ['send_now', 'schedule'].includes(rows[0].run_kind) && rows[0].action === 'email' && rows[0].has_archive === true
+        && JSON.stringify([...rows[0].recipients].sort()) === JSON.stringify([...reached].sort()), JSON.stringify(rows.map(r => [r.run_kind, r.recipients.length, r.has_archive])));
+    const hist = await call(require(path.join(ROOT, 'api/custom-reports.js')), 'GET', { division: 'paving', runs: '1', project_id: 'p1' }, null, ADMIN);
+    assert('…which the job\'s Customer History lists', hist.statusCode === 200 && Array.isArray(hist.body.runs)
+      && hist.body.runs.some(x => rows[0] && Number(x.id) === Number(rows[0].id)), JSON.stringify(hist.body).slice(0, 300));
+    await client.query('DELETE FROM report_schedules WHERE id = $1', [sched.id]);
+    await client.query('DELETE FROM report_recipient_groups WHERE id = $1', [g30]);
   }
 
   // ─────────────────────────────────────────────────────────────────────

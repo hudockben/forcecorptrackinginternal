@@ -250,6 +250,9 @@ assert('sanitizeReportHtml removes the window.print() bootstrap',
     'tags a removal splices back': '<scr<script>x</script>ipt>alert(1)</script><p>keep</p>',
     'a handler spliced back': '<img src=x o<script></script>nerror=alert(1)><p>keep</p>',
     '</iframe > with a space': '<iframe srcdoc="x"></iframe ><p>keep</p>',
+    // A ">" inside a quoted attribute does not end the tag: a rule scoped to
+    // "<tag ...>" spans would stop there and let the handler through.
+    'a handler after a quoted ">"': '<img alt="a>b" onerror=alert(1) src=x><p>keep</p>',
   };
   for (const [what, html] of Object.entries(cases)) {
     const out = sanitizeReportHtml(html);
@@ -343,12 +346,19 @@ function findChrome() {
   };
 
   let sentPayload = null;
+  // MAILS.failAt = n: the n-th send is refused (a bad moment at the mail service).
+  const MAILS = { failAt: 0, tries: 0, to: [] };
   const resendPath = require.resolve('resend');
   require.cache[resendPath] = {
     id: resendPath, filename: resendPath, loaded: true, exports: {
       Resend: class {
         constructor() {
-          this.emails = { send: async opts => { sentPayload = opts; return { data: { id: 'stub-id' }, error: null }; } };
+          this.emails = { send: async opts => {
+            MAILS.tries++;
+            if (MAILS.failAt && MAILS.tries === MAILS.failAt) return { data: null, error: { message: 'Resend 500: internal error' } };
+            sentPayload = opts; MAILS.to.push([].concat(opts.to));
+            return { data: { id: 'stub-id-' + MAILS.tries }, error: null };
+          } };
         }
       },
     },
@@ -472,6 +482,26 @@ function findChrome() {
   assert('attach_pdf:false skips rendering entirely and inlines the report',
     res3.body && res3.body.ok === true && res3.body.pdfAttached === false && !res3.body.warning
     && sentPayload.html.includes('Silt Sock 12inch'), JSON.stringify(res3.body));
+
+  // — a long list goes in batches of 50; the third batch refused: the two
+  //   that went are reported (who has it, their ids), not lost in "failed" —
+  {
+    const { deliverReport } = require(path.join(ROOT, 'api/lib/report-delivery.js'));
+    const many = Array.from({ length: 120 }, (_, i) => `r${i}@example.com`);
+    Object.assign(MAILS, { failAt: 3, tries: 0, to: [] });
+    let out;
+    try { out = await deliverReport({ label: 'Custom Report', recipients: many, subject: 'Weekly', html: '<p>x</p>', attachments: [], attachPdf: false }); }
+    finally { Object.assign(MAILS, { failAt: 0, tries: 0, to: [] }); }
+    assert('deliverReport: a third batch refused → not ok, but it says the first 100 have it (2 emails) and who was not reached',
+      out && out.ok === false && out.status === 502 && out.partial === true && out.deliveredTo.length === 100 && out.ids.length === 2
+        && out.deliveredTo[0] === 'r0@example.com' && out.deliveredTo[99] === 'r99@example.com' && out.notReached.length === 20
+        && /after it had gone to 100 of 120 recipients/.test(out.error) && out.subject === 'Weekly',
+      JSON.stringify(out && { ...out, deliveredTo: out.deliveredTo && out.deliveredTo.length, notReached: out.notReached && out.notReached.length }));
+    Object.assign(MAILS, { failAt: 1, tries: 0, to: [] });
+    try { out = await deliverReport({ label: 'Custom Report', recipients: many.slice(0, 3), subject: 'Weekly', html: '<p>x</p>', attachments: [], attachPdf: false }); }
+    finally { Object.assign(MAILS, { failAt: 0, tries: 0, to: [] }); }
+    assert('…the first batch refused: nothing went, and it says no more than that', out && out.ok === false && !out.partial && !out.deliveredTo, JSON.stringify(out));
+  }
 
   // ── 5. ESM loading on a runtime without require(esm) ─────────────────────
   console.log('\nESM loading — the deps are ESM-only, so require() must not come back');

@@ -946,7 +946,7 @@ async function checkScheduledBuilder(page, src) {
   assert('…and each job\'s client, for its saved contacts',
     JSON.stringify(cr.clients) === JSON.stringify([{ id: 'p1', client: 'Acme Township' }, { id: 'p2', client: 'Beta Corp' }]));
   assert('…the definition lists the jobs it was built for', JSON.stringify(cr.definition.jobs.ids) === '["p1","p2"]');
-  assert('a job name prints as text', out.html.includes('&lt;img src=x onerror=alert(1)&gt;') && !out.html.includes('<img src=x'));
+  assert('a job name prints as text', out.html.includes('&lt;img src&#61;x onerror&#61;alert(1)&gt;') && !out.html.includes('<img src=x'));
 
   // ── branding and the directory: a GET each ──
   const f = h.calls.fetch;

@@ -1298,6 +1298,29 @@ async function cleanUp() {
     assert('kind and customer_safe come from a v2 definition the same way', r.body.report.customer_safe === false && r.body.report.kind === 'report', show(r));
     r = await run(ALICE, { definition: V2(), report_name: 'v2 run' });
     assert('a v2 snapshot logs', r.statusCode === 201 && (await dbRun(r.body.run.id)).definition.v === 2, show(r));
+
+    // A stale v1 tab EMAILING that v2 report: its old code read the report
+    // without its filters and new sections, so the send is refused like the
+    // save — before anything goes out, and nothing is logged.
+    const sendAs = cr => call('POST', {}, { report_type: 'paving_custom_report', recipients: ['gc@example.com'], subject: 'Stale tab send',
+      attach_pdf: false, html: '<p>Report</p>', custom_report: { report_name: 'Born v2', project_ids: [], ...cr } }, ALICE, { h: sendReport });
+    const runCount = async () => (await client.query("SELECT count(*)::int AS n FROM custom_report_runs WHERE company_code = $1 AND subject = 'Stale tab send'", [CO])).rows[0].n;
+    const mails0 = RESEND.sent.length, runs0 = await runCount();
+    r = await sendAs({ report_id: born.id, definition: DEF() });
+    assert('a v1 tab emailing a v2 report → 409 client_outdated, saying to reload; no email went out and nothing was logged',
+      r.statusCode === 409 && r.body.ok === false && r.body.code === 'client_outdated' && /reload/i.test(r.body.error)
+        && RESEND.sent.length === mails0 && (await runCount()) === runs0, show(r));
+    r = await sendAs({ report_id: born.id, definition: V2() });
+    assert('…the same send from an up-to-date tab (v2) goes out', r.statusCode === 200 && r.body.ok && RESEND.sent.length === mails0 + 1, show(r));
+    const sentRunId = r.body.run_id;
+    r = await sendAs({ report_id: born.id, definition: DEF(), run_kind: 'resend', resent_from_run_id: sentRunId });
+    assert('…a Customer History resend of an email sent before the update (its snapshot v1, the report now v2) still goes out',
+      r.statusCode === 200 && r.body.ok && RESEND.sent.length === mails0 + 2, show(r));
+    const stillV1 = (await create(ALICE, { name: 'Sent as v1' })).body.report;
+    r = await sendAs({ report_id: stillV1.id, definition: DEF() });
+    assert('…a v1 definition naming a v1 report goes out as it always did', r.statusCode === 200 && r.body.ok, show(r));
+    r = await sendAs({ definition: DEF() });
+    assert('…and so does a v1 definition naming no saved report', r.statusCode === 200 && r.body.ok, show(r));
   }
 
   // ─────────────────────────────────────────────────────────────────────
