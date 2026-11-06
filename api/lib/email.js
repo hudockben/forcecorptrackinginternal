@@ -84,35 +84,52 @@ function normalizeAttachments(raw) {
 // Conservative HTML sanitizer for report bodies. Email clients themselves
 // strip <script> + on*= handlers, but we sanitize server-side as defense in
 // depth so a logged-in caller can't use the endpoint to relay arbitrary HTML.
+// It is pattern-matching, so it is hygiene, not a security boundary: anything
+// that shows a stored report in the browser must still keep it from running
+// (Customer History opens an archive in a frame sandboxed without scripts).
 // We strip:
 //   - <script>, <iframe>, <object>, <embed>, <link>, <meta>, <base> tags
-//   - on*= event handlers
+//   - on*= event handlers, after whitespace or a "/" (<img/onerror=...>)
 //   - href="javascript:..." / src="javascript:..."
 // We keep inline styles and tables (the existing print HTML relies on them).
-function sanitizeReportHtml(html) {
-  if (typeof html !== 'string') return '';
-
+// The passes repeat until nothing changes, so markup that a removal splices
+// back together (<scr<script></script>ipt>) is removed too.
+function sanitizeOnce(html) {
   let out = html;
 
-  // Drop dangerous tag blocks entirely (including content).
-  out = out.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
-  out = out.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (_m, css) => {
+  // Drop dangerous tag blocks entirely (including content). A closing tag
+  // may carry whitespace before its ">" (</script >), and a stray opening or
+  // closing tag left over is dropped as well.
+  out = out.replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, '');
+  out = out.replace(/<\/?script\b[^>]*>/gi, '');
+  out = out.replace(/<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi, (_m, css) => {
     // Keep <style> blocks but neutralize @import / javascript: refs.
     const safeCss = String(css || '')
       .replace(/@import[^;]*;?/gi, '')
       .replace(/javascript\s*:/gi, '');
     return `<style>${safeCss}</style>`;
   });
-  out = out.replace(/<(iframe|object|embed|link|meta|base|form)\b[^>]*>[\s\S]*?<\/\1>/gi, '');
-  out = out.replace(/<(iframe|object|embed|link|meta|base|form)\b[^>]*\/?>/gi, '');
+  out = out.replace(/<(iframe|object|embed|link|meta|base|form)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
+  out = out.replace(/<\/?(iframe|object|embed|link|meta|base|form)\b[^>]*\/?>/gi, '');
 
   // Strip on*= event-handler attributes — match attribute name then value
-  // whether it's "..."  / '...'  / unquoted.
-  out = out.replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  // whether it's "..."  / '...'  / unquoted. An attribute may follow
+  // whitespace or a "/" (the parser reads <img/onerror=x> as an attribute).
+  out = out.replace(/[\s\/]+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
 
   // Neutralize javascript: in href / src.
   out = out.replace(/(href|src)\s*=\s*(["'])\s*javascript:[^"']*\2/gi, '$1=$2#$2');
 
+  return out;
+}
+function sanitizeReportHtml(html) {
+  if (typeof html !== 'string') return '';
+  let out = html;
+  for (let i = 0; i < 8; i++) {
+    const next = sanitizeOnce(out);
+    if (next === out) break;
+    out = next;
+  }
   return out;
 }
 

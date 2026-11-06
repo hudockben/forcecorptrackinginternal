@@ -1591,10 +1591,21 @@ async function cleanUp() {
     r = await send({ custom_report: { report_name: 'Resent unseen', run_kind: 'resend', resent_from_run_id: noJobs.id } });
     row = await dbRun(r.body.run_id);
     assert('…of a run the sender could not open: the reference is dropped', row.run_kind === 'resend' && row.resent_from_run_id === null);
-    r = await send({ custom_report: { report_name: 'Sales resend', run_kind: 'resend', resent_from_run_id: safeA.id } }, SALES);
-    row = r.body && r.body.run_id ? await dbRun(r.body.run_id) : null;
-    assert('…and a sales login (which cannot open Custom Reporting) never links to a job\'s run',
-      r.statusCode === 200 && row && row.resent_from_run_id === null, show(r));
+    // A sales login cannot open Custom Reporting, so it has no custom report
+    // to send — and nothing it sends lands in a job's customer history, or in
+    // an archive an admin there would open.
+    const runsBefore = (await client.query('SELECT COUNT(*)::int AS n FROM custom_report_runs WHERE company_code = $1', [CO])).rows[0].n;
+    const archBefore = (await client.query('SELECT COUNT(*)::int AS n FROM custom_report_run_archives WHERE company_code = $1', [CO])).rows[0].n;
+    const mailsBefore = RESEND.sent.length;
+    r = await send({ html: '<p>x</p><img src=x/onerror="alert(1)">',
+      custom_report: { report_name: 'Sales resend', project_ids: ['job-A'], run_kind: 'resend', resent_from_run_id: safeA.id } }, SALES);
+    const runsAfter = (await client.query('SELECT COUNT(*)::int AS n FROM custom_report_runs WHERE company_code = $1', [CO])).rows[0].n;
+    const archAfter = (await client.query('SELECT COUNT(*)::int AS n FROM custom_report_run_archives WHERE company_code = $1', [CO])).rows[0].n;
+    assert('…and a sales login (which cannot open Custom Reporting) is refused a custom-report send: 403, nothing mailed, no run, no archive',
+      r.statusCode === 403 && /sales login/.test(r.body.error) && RESEND.sent.length === mailsBefore && runsAfter === runsBefore && archAfter === archBefore,
+      show(r) + ` runs ${runsBefore}->${runsAfter} archives ${archBefore}->${archAfter}`);
+    r = await call('POST', {}, { report_type: 'paving_daily_pm', recipients: ['a@example.com'], subject: 'PM', attach_pdf: false, html: '<p>x</p>' }, SALES, { h: sendReport });
+    assert('…while a sales login\'s other paving reports still go (the refusal is custom reports only)', r.statusCode === 200 && r.body.ok === true, show(r));
     r = await send({ custom_report: { report_name: 'Fake schedule', run_kind: 'schedule', schedule_id: 9 } });
     row = await dbRun(r.body.run_id);
     assert('…and a browser cannot log an email as a scheduled send', row.run_kind === 'user' && row.schedule_id === null);

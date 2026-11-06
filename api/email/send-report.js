@@ -195,6 +195,13 @@ module.exports = async (req, res) => {
   if (!mayUseDivision(payload, cfg.division)) {
     return res.status(403).json({ ok: false, error: 'You do not have access to send this report' });
   }
+  // A custom report is sent from Custom Reporting, which a sales login cannot
+  // open (api/custom-reports.js) — so a sales login has no custom report to
+  // send, and nothing it sends is written into a job's customer history or
+  // archived for others there to open.
+  if (/_custom_report$/.test(report_type) && isSalesIn(payload, cfg.division)) {
+    return res.status(403).json({ ok: false, error: 'Custom Reporting is part of Analytics, which a sales login cannot open.' });
+  }
 
   // Validate recipients.
   if (!Array.isArray(recipients) || recipients.length === 0) {

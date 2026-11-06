@@ -2064,6 +2064,7 @@
     } else if (SP !== null && EP !== null && pl.W) {
       ahead = EP / 100 * pl.W - E;
     }
+    const ahead0 = isNum(ahead) ? ahead : null;
     ahead = halfDay(ahead);
     const pastTarget = !!(pl.source && pl.T && pl.T < today && !done);
     let needed = null;
@@ -2099,7 +2100,7 @@
         plan_status: status, plan_source: pl.source ? PLAN_BASIS[pl.source] : null,
         units_per_crew_hr: made > 0 && crewH > 0 ? made / crewH : null,
       },
-      m: { unit: s.unit, nunit, pl, SP, EP, PQ, Q, I, PR, rated, worked, complete: done, past: pastTarget,
+      m: { unit: s.unit, nunit, pl, SP, EP, PQ, Q, I, PR, rated, worked, complete: done, past: pastTarget, ahead0,
         w: Math.abs(s.bidTotal) || 1, pct: itemPctParts(s), cc: txt(b.cost_code), rows: rowsForItem(ix, b),
         qtyP: s.qtyP, daysP: s.daysP, daysEnd: s.daysEnd, remainingNow: s.remainingNow, PF, facts },
       job: p,
@@ -2108,10 +2109,18 @@
   /* The roll-up (Totals = the job; a combined report's group per job): over
      the lines with a plan, each weighed by its bid dollars (|bid total|, or
      1 — the weights never print), scheduled and earned % and the pace
-     between them; days ahead from the gap across the plan's whole span.
-     Rates only when every line is in one unit. A job whose lines have no
-     plan at all but which has start and end dates is measured against those
-     instead ("Job dates"). */
+     between them; days ahead from the gap across the plan's whole span —
+     or, when every planned line is a "Planned per day" with no typed target,
+     the lines' own days of planned output, weighed the same way, so a lone
+     such line and its Totals read alike. Every plan comparison (Actual /
+     Day, % of plan, needed / day, the projected finish against the target,
+     past target) is over those same planned lines; an unplanned line beside
+     them is in the bid and installed totals only. Rates only when every line
+     is in one unit. Lines that share rows (a cost-code-only line beside a
+     cost code + sub code one) count those rows once in Actual / Day, and the
+     comparisons that would need one line's share of them are left blank. A
+     job whose lines have no plan at all but which has start and end dates is
+     measured against those instead ("Job dates"). */
   function planAgg(recs, ctx) {
     const A = asOf(ctx), today = ctx.today;
     const c = {};
@@ -2124,6 +2133,9 @@
     const shared = sharedRows(recs);
     if (shared) c.installed_to_date = factQty(shared.filter(f => f.toEnd), () => true);
     const planned = recs.filter(r => r.m.pl.source && r.m.SP !== null && r.m.EP !== null);
+    // What the plan comparisons measure: the planned lines — or, measured on
+    // the job's dates, every line.
+    const basis = planned.length ? planned : recs;
     let S = null, T = null, sched = null, earned = null, source = null, W = null;
     if (planned.length) {
       let w = 0, ws = 0, we = 0;
@@ -2150,16 +2162,25 @@
     c.start_date = S; c.target_date = T;
     c.sched_pct = sched; c.earned_pct = earned;
     c.spi = sched > 0 && earned !== null ? round2(earned / sched) : null;
-    c.ahead_days = sched !== null && earned !== null && W ? halfDay((earned - sched) / 100 * W) : null;
+    const ratePace = planned.length > 0 && planned.every(r => r.m.pl.source === 'rate' && !r.m.pl.typedT && r.m.ahead0 !== null);
+    if (ratePace) {
+      let w = 0, t = 0;
+      planned.forEach(r => { w += r.m.w; t += r.m.w * r.m.ahead0; });
+      c.ahead_days = halfDay(t / w);
+    } else c.ahead_days = sched !== null && earned !== null && W ? halfDay((earned - sched) / 100 * W) : null;
     c.plan_source = source;
     if (one !== null) {
-      const rated = recs.filter(r => r.m.rated);
+      const rated = basis.filter(r => r.m.rated);
       const withRate = planned.filter(r => r.m.PR > 0);
       const days = (list, k) => unionSize(list.map(r => ({ job: r.job, m: { d: r.m[k] } })), 'd');
       const qty = (list, k) => list.reduce((t, x) => t + x.m[k], 0);
       const daysP = days(rated, 'daysP'), daysE = days(rated, 'daysEnd');
-      c.actual_rate = daysP ? qty(rated, 'qtyP') / daysP : null;
-      c.actual_rate_jtd = daysE ? qty(rated, 'I') / daysE : null;
+      // Rows two of these lines both take are counted once (one unit here).
+      const dup = sharedRows(rated);
+      const qtyP = dup ? dup.reduce((t, f) => t + (f.inP ? f.qty : 0), 0) : qty(rated, 'qtyP');
+      const qtyE = dup ? dup.reduce((t, f) => t + (f.toEnd ? f.qty : 0), 0) : qty(rated, 'I');
+      c.actual_rate = daysP ? qtyP / daysP : null;
+      c.actual_rate_jtd = daysE ? qtyE / daysE : null;
       /* Planned / Day: a job's planned quantity over its plan's working days
          (earliest start to latest target). Over several jobs — a combined
          report's grand total — each job's rate is weighed by the days it
@@ -2180,27 +2201,33 @@
       const plannedQty = jobRates.reduce((t, j) => t + j.rate * j.days, 0);
       c.planned_rate = !jobRates.length ? null : jobRates.length === 1 ? jobRates[0].rate
         : dPl ? plannedQty / dPl : jobRates.reduce((t, j) => t + j.rate, 0) / jobRates.length;
-      c.pct_of_plan = c.planned_rate > 0 && dPl && plannedQty > 0 ? jobRates.reduce((t, j) => t + j.qty, 0) / plannedQty * 100 : null;
+      // Shared rows: which line's quantity they are has no single answer, so
+      // neither have the comparisons built on each line's own quantity.
+      c.pct_of_plan = !dup && c.planned_rate > 0 && dPl && plannedQty > 0 ? jobRates.reduce((t, j) => t + j.qty, 0) / plannedQty * 100 : null;
       const qv = planned.filter(r => r.m.PQ !== null);
-      c.qty_variance = qv.length ? qv.reduce((t, r) => t + Math.min(r.m.I, r.m.Q) - r.m.PQ, 0) : null;
+      c.qty_variance = !dup && qv.length ? qv.reduce((t, r) => t + Math.min(r.m.I, r.m.Q) - r.m.PQ, 0) : null;
       const open = rated.filter(r => !r.m.complete);
       const n = T && T >= today ? countWorkdays(today, T) : 0;
-      c.required_rate = open.length && n > 0 ? open.reduce((t, r) => t + r.m.remainingNow, 0) / n : null;
+      c.required_rate = !dup && open.length && n > 0 ? open.reduce((t, r) => t + r.m.remainingNow, 0) / n : null;
       const byJob = new Map();
       recs.forEach(r => { const jk = jobKey(r.job); if (!byJob.has(jk)) byJob.set(jk, new Set()); r.m.facts.forEach(f => byJob.get(jk).add(f)); });
       let made = 0, crewH = 0;
       byJob.forEach(set => { const fs = [...set]; made += madeQty(fs); crewH += crewHours(fs); });
       c.units_per_crew_hr = made > 0 && crewH > 0 ? made / crewH : null;
     }
-    // The job finishes when its last open line does.
-    const open = recs.filter(r => r.m.rated && !r.m.complete && r.m.remainingNow > 0);
+    // The planned work finishes when its last open line does.
+    const open = basis.filter(r => r.m.rated && !r.m.complete && r.m.remainingNow > 0);
     c.projected_finish = open.length && open.every(r => r.m.PF) ? maxIso(open.map(r => r.m.PF)) : null;
     const PF = c.projected_finish;
     c.forecast_vs_target = PF && T ? (PF <= T ? countWorkdays(PF, T) - 1 : -(countWorkdays(T, PF) - 1)) : null;
+    // Past target: a planned line still open past its own target — an open
+    // line with no plan (an LS line kept open to closeout) is not late
+    // against a plan it does not have. On job dates, past the job's end.
+    const past = planned.length ? planned.some(r => r.m.past) : !!(T && T < today);
     if (recs.every(r => r.m.complete)) c.plan_status = 'Complete';
     else if (sched === null || earned === null) c.plan_status = 'Not scheduled';
     else if (!recs.some(r => r.m.worked) && S && A < S) c.plan_status = 'Not started';
-    else if (T && T < today) c.plan_status = PAST_TARGET;
+    else if (past) c.plan_status = PAST_TARGET;
     else c.plan_status = planStatus(c.ahead_days, c.spi);
     return c;
   }
@@ -2220,7 +2247,11 @@
                the line with the most bid quantity, unless a sub code is
                picked
        kiewit  homes on one EA line, by the same rule
-     Work days and crew are the measured rows' (isWorkRow). Crew-hours are
+     Every division leaves out the trucking tickets written into the daily
+     rows (their quantity is loads) and haul rows: neither is production, and
+     neither is a day the crew worked the line. On turf and Kiewit the bid
+     table counts them as installed, so the strip says so when any carried a
+     quantity. Work days and crew are the measured rows' (isWorkRow). Crew-hours are
      each day's shift (site labour hours over the people booking them);
      man-hours leave out haul and travel, as Cost Tracking's MU / labor hour
      does. Anything off hours or crew is internal. */
@@ -2235,9 +2266,11 @@
       const lines = scopedItems(ix, scope).filter(b => normUnit(b.unit) === want);
       let best = null;
       lines.forEach(b => { if (!best || effQty(b) > effQty(best)) best = b; });
-      facts = best ? rowsForItem(ix, best).filter(inScope) : [];
+      const mine = best ? rowsForItem(ix, best).filter(inScope) : [];
+      facts = mine.filter(f => !f.trk && !f.haul);
       if (!best) captions.push(`No ${want} bid items in scope.`);
       else if (lines.length > 1) captions.push(`${what} measured on ${txt(best.sub_code) || txt(best.cost_code) || 'one line'} — pick a sub code to change it.`);
+      if (mine.some(f => (f.trk || f.haul) && f.qty)) captions.push(`Trucking and haul rows are not counted as ${div === 'turf' ? 'SF installed' : 'homes set'}.`);
     } else {
       facts = ix.facts.filter(f => inScope(f) && !f.trk && !f.haul && (div !== 'paving' || (f.on && normUnit(f.unit) === 'TON')));
     }
@@ -3432,6 +3465,10 @@ figure.crc figcaption{font-size:8.5px;color:#555;margin-top:3px;line-height:1.35
     });
 
     // ── A "Chart data" sheet per chart: the series the chart draws ──
+    // Each job's chart picks its own bars (daily, weekly, monthly) and its
+    // own S-curve basis (quantity, or % when its lines' units differ), so
+    // the jobs are grouped by that, and each group gets the header and the
+    // number format of what its rows hold.
     d.sections.forEach((s, i) => {
       const sd = data[i];
       if (sd.type !== 'chart' || !sd.columns.length) return;
@@ -3439,38 +3476,51 @@ figure.crc figcaption{font-size:8.5px;color:#555;margin-top:3px;line-height:1.35
       const opts = s.options || {};
       const charts = sd.blocks.flatMap(b => b.charts || []).filter(ch => !ch.message);
       const bars = opts.chart === 'daily_bars';
-      const ex = charts[0] || {};
-      const per = bars ? (ex.bucket === 'week' ? 'week' : ex.bucket === 'month' ? 'month' : 'day') : '';
-      const pctBasis = !bars && ex.basis === 'pct';
-      // Only the series the section may print: the measures are columns, so
-      // a locked one (crew hours) is no more in the workbook than the HTML.
-      const series = (bars
-        ? [['daily_qty', `${cap1(per === 'day' ? 'daily' : per + 'ly')} qty`, ch => ch.drawQty, pt => pt.qty, 'qty'],
-          ['planned_rate_line', `Planned / ${per}`, ch => ch.drawPlan, pt => pt.plan, 'qty'],
-          ['crew_hours', 'Crew hours', ch => ch.drawCrew, pt => pt.crew, 'number']]
-        : [['installed', pctBasis ? 'Installed (cum %)' : 'Installed (cum)', ch => ch.drawInst, pt => pt.inst, pctBasis ? 'percent' : 'qty'],
-          ['plan', pctBasis ? 'Planned (cum %)' : 'Planned (cum)', ch => ch.drawPlan, pt => pt.plan, pctBasis ? 'percent' : 'qty']])
-        .filter(x => keys.has(x[0]) && charts.some(x[2]));
-      if (!series.length) return;
       const addJob = jobs.length > 1;
-      const cols = (addJob ? [JOB_COL] : []).concat([{ key: 'date', label: bars && per !== 'day' ? (per === 'week' ? 'Week of' : 'Month of') : 'Date', type: 'date' }],
-        series.map(x => ({ key: x[0], label: x[1], type: x[4] })));
+      const groups = [];
+      charts.forEach(ch => {
+        const k = bars ? (ch.bucket === 'week' ? 'week' : ch.bucket === 'month' ? 'month' : 'day') : (ch.basis === 'pct' ? 'pct' : 'qty');
+        let g = groups.find(x => x.k === k);
+        if (!g) { g = { k, charts: [] }; groups.push(g); }
+        g.charts.push(ch);
+      });
+      groups.forEach(g => {
+        const per = bars ? g.k : '';
+        const pctBasis = !bars && g.k === 'pct';
+        // Only the series the section may print: the measures are columns, so
+        // a locked one (crew hours) is no more in the workbook than the HTML.
+        g.series = (bars
+          ? [['daily_qty', `${cap1(per === 'day' ? 'daily' : per + 'ly')} qty`, ch => ch.drawQty, pt => pt.qty, 'qty'],
+            ['planned_rate_line', `Planned / ${per}`, ch => ch.drawPlan, pt => pt.plan, 'qty'],
+            ['crew_hours', 'Crew hours', ch => ch.drawCrew, pt => pt.crew, 'number']]
+          : [['installed', pctBasis ? 'Installed (cum %)' : 'Installed (cum)', ch => ch.drawInst, pt => pt.inst, pctBasis ? 'percent' : 'qty'],
+            ['plan', pctBasis ? 'Planned (cum %)' : 'Planned (cum)', ch => ch.drawPlan, pt => pt.plan, pctBasis ? 'percent' : 'qty']])
+          .filter(x => keys.has(x[0]) && g.charts.some(x[2]));
+        g.cols = (addJob ? [JOB_COL] : []).concat([{ key: 'date', label: bars && per !== 'day' ? (per === 'week' ? 'Week of' : 'Month of') : 'Date', type: 'date' }],
+          g.series.map(x => ({ key: x[0], label: x[1], type: x[4] })));
+      });
+      const use = groups.filter(g => g.series.length);
+      if (!use.length) return;
       const rows = [];
       rows.push({ cells: [{ v: `Chart data — ${sd.title}`, s: S.title }], ht: 20 });
       if (internal) rows.push({ cells: [{ v: INTERNAL_NOTE, s: S.warn }] });
       rows.push({ cells: [{ v: [jobs.length === 1 ? jobLabel(jobs[0]) : `${jobs.length} jobs`, (ctx.range || {}).label].join(' · '), s: S.sub }] });
       rows.push({ cells: [] });
-      rows.push({ cells: cols.map(c => ({ v: c.label, s: NUMERIC[c.type] ? S.headR : S.head })), ht: 30 });
-      const headRow = rows.length;
-      charts.forEach(ch => (bars ? ch.bars : ch.points).forEach(pt => {
-        const cells = { _job: jobLabel(ch.job), date: bars ? pt.from : pt.date };
-        series.forEach(x => { cells[x[0]] = x[2](ch) ? x[3](pt) : null; });
-        rows.push({ cells: cols.map(c => cellFor(cells[c.key], c, 'line', '')) });
-      }));
-      if (!charts.length) rows.push({ cells: [{ v: 'Nothing to chart for this report.', s: S.sub }] });
+      let headRow = 0;
+      use.forEach((g, gi) => {
+        if (gi) rows.push({ cells: [] });
+        rows.push({ cells: g.cols.map(c => ({ v: c.label, s: NUMERIC[c.type] ? S.headR : S.head })), ht: 30 });
+        if (!headRow) headRow = rows.length;
+        g.charts.forEach(ch => (bars ? ch.bars : ch.points).forEach(pt => {
+          const cells = { _job: jobLabel(ch.job), date: bars ? pt.from : pt.date };
+          g.series.forEach(x => { cells[x[0]] = x[2](ch) ? x[3](pt) : null; });
+          rows.push({ cells: g.cols.map(c => cellFor(cells[c.key], c, 'line', '')) });
+        }));
+      });
       const caps = charts.flatMap(ch => ch.captions.map(t => (addJob ? jobLabel(ch.job) + ': ' : '') + t));
       if (caps.length) { rows.push({ cells: [] }); caps.forEach(t => rows.push({ cells: [{ v: t, s: S.sub }] })); }
-      const widths = cols.map(c => (c.key === '_job' ? 30 : Math.max(12, c.label.length + 2)));
+      const widths = [];
+      use.forEach(g => g.cols.forEach((c, ci) => { widths[ci] = Math.max(widths[ci] || 0, c.key === '_job' ? 30 : Math.max(12, c.label.length + 2)); }));
       sheets.push({ name: sheetName('Chart data', used), xml: sheetXml(rows, widths, headRow, { selected: false, landscape, internal }), head: headRow });
     });
 

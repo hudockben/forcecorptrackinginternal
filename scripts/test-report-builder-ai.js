@@ -666,6 +666,16 @@ async function cleanUp() {
       [{ type: 'text', text: '{"reply":"partial from the model that decl' }, { type: 'fallback', from: { model: 'a' }, to: { model: 'b' } }]));
     r = await call('POST', T, body(), TURF.token);
     assert('a fallback block: the answer after the switch point is the one used', r.statusCode === 200 && r.body.reply === 'from the fallback', show(r));
+    // Streamed, a mid-output fallback keeps the partial and the fallback
+    // model carries on from it: the answer is the text either side of the switch.
+    const whole = JSON.stringify(canned({ reply: 'continued across the switch' }));
+    const cut = Math.floor(whole.length / 2);
+    SDK.queue.push({ id: 'msg_test', type: 'message', role: 'assistant', model: 'stub', stop_reason: 'end_turn', usage: { input_tokens: 10, output_tokens: 10 },
+      content: [{ type: 'thinking', thinking: '', signature: 'sig' }, { type: 'text', text: whole.slice(0, cut) },
+        { type: 'fallback', from: { model: 'a' }, to: { model: 'b' } }, { type: 'text', text: whole.slice(cut) }] });
+    r = await call('POST', T, body(), TURF.token);
+    assert('a streamed mid-output fallback that continues the partial: the two halves are one answer → 200', r.statusCode === 200 && r.body.ok === true
+      && r.body.reply === 'continued across the switch', show(r));
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -756,6 +766,7 @@ async function realSdkTests(user) {
   const http = require('http');
   const seen = [];
   const plan = [];
+  const stalls = [];
   const server = http.createServer((req, res) => {
     let raw = '';
     req.on('data', c => { raw += c; });
@@ -764,6 +775,36 @@ async function realSdkTests(user) {
       try { parsed = JSON.parse(raw); } catch (_) { /* recorded as null */ }
       seen.push({ url: req.url, headers: req.headers, body: parsed });
       const step = plan.shift() || 'ok';
+      if (step === 'stall') {
+        // Headers and the start of a message at once, then nothing more: a
+        // turn that has started and will not finish in time.
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+        res.write(`event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { id: 'msg_slow', type: 'message', role: 'assistant', model: 'local',
+          content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 1 } } })}\n\n`);
+        const iv = setInterval(() => { try { res.write('event: ping\ndata: {"type":"ping"}\n\n'); } catch (_) { /* closed */ } }, 300);
+        res.on('close', () => { clearInterval(iv); stalls.push(Date.now()); });
+        return;
+      }
+      if (step === 'midfallback') {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+        const ev2 = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+        const json2 = JSON.stringify(canned({ reply: 'Finished by the fallback model.' }));
+        const half = Math.floor(json2.length / 2);
+        ev2('message_start', { message: { id: 'msg_fb', type: 'message', role: 'assistant', model: 'local', content: [], stop_reason: null, stop_sequence: null,
+          usage: { input_tokens: 12, output_tokens: 1 } } });
+        ev2('content_block_start', { index: 0, content_block: { type: 'text', text: '' } });
+        ev2('content_block_delta', { index: 0, delta: { type: 'text_delta', text: json2.slice(0, half) } });
+        ev2('content_block_stop', { index: 0 });
+        ev2('content_block_start', { index: 1, content_block: { type: 'fallback', from: { model: 'local-a' }, to: { model: 'local-b' } } });
+        ev2('content_block_stop', { index: 1 });
+        ev2('content_block_start', { index: 2, content_block: { type: 'text', text: '' } });
+        ev2('content_block_delta', { index: 2, delta: { type: 'text_delta', text: json2.slice(half) } });
+        ev2('content_block_stop', { index: 2 });
+        ev2('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 99 } });
+        ev2('message_stop', {});
+        res.end();
+        return;
+      }
       if (step === '400') {
         res.writeHead(400, { 'content-type': 'application/json', 'request-id': 'req_test' });
         res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'fallbacks: Extra inputs are not permitted' } }));
@@ -827,6 +868,29 @@ async function realSdkTests(user) {
     plan.push('refusal');
     r = await call('POST', { division: 'turf' }, body(), user.token, null, real);
     assert('a streamed refusal → 200 { ok:false }', r.statusCode === 200 && r.body.ok === false && /can't help/.test(r.body.error), show(r));
+
+    seen.length = 0;
+    plan.push('midfallback');
+    r = await call('POST', { division: 'turf' }, body(), user.token, null, real);
+    assert('a streamed mid-output fallback through the real SDK (partial, fallback block, continuation) → 200 with the whole answer',
+      r.statusCode === 200 && r.body.ok === true && r.body.reply === 'Finished by the fallback model.', show(r));
+
+    // The budget bounds the whole stream, not just its first byte: a turn
+    // that starts and then stalls ends in the "took too long" reply, on time,
+    // and the connection to the API is dropped.
+    process.env.REPORT_BUILDER_MODEL_BUDGET_MS = '3000';
+    let quick;
+    REAL_SDK = true;
+    try { quick = loadServer(); } finally { REAL_SDK = false; delete process.env.REPORT_BUILDER_MODEL_BUDGET_MS; }
+    seen.length = 0;
+    plan.push('stall');
+    const t0 = Date.now();
+    r = await call('POST', { division: 'turf' }, body(), user.token, null, quick);
+    const took = Date.now() - t0;
+    await new Promise(res2 => setTimeout(res2, 300));
+    assert('a stream that starts and then stalls → 504 "took too long" within the budget (3 s here), not the function\'s 60 s kill',
+      r.statusCode === 504 && /took too long/.test(r.body.error) && took < 4500, `${show(r)} after ${took} ms`);
+    assert('…and the stream to the API was closed when the budget ran out', stalls.length === 1 && stalls[0] - t0 < 4500, JSON.stringify(stalls.map(x => x - t0)));
   } finally {
     await new Promise(r => server.close(r));
     if (saved.base === undefined) delete process.env.ANTHROPIC_BASE_URL; else process.env.ANTHROPIC_BASE_URL = saved.base;
@@ -1132,6 +1196,47 @@ async function uiTests() {
   release2({ status: 200, json: () => Promise.resolve(okResponse()) });
   await p2; await tick();
   assert('an answer to a chat cleared while it was in flight is dropped', ad.applied.length === 0 && !host.querySelector('.crai-msg') && host.querySelectorAll('.crai-chip').length === 3);
+  h.destroy();
+
+  // Edited by hand while the request is out: the answer was built on the
+  // report as it was, so it is held back, and the person chooses.
+  win = makeWindow(); host = win.document.querySelector('.cr-ai-body'); f = stubFetch(win);
+  ad = makeAdapter(win);
+  h = win.FCTReportAI.mount(host, ad);
+  let release3;
+  f.queue.push(new Promise(r => { release3 = r; }));
+  const p3 = h.send('make it a weekly update');
+  await tick();
+  ad.def.title = 'Title typed while the AI was busy';
+  release3({ status: 200, json: () => Promise.resolve(okResponse()) });
+  await p3; await tick();
+  const applyBtn = host.querySelector('[data-crai-act="apply-stale"]');
+  assert('a report changed by hand while the AI worked is not overwritten: nothing applied, the edit kept, a note and Apply anyway / Discard',
+    ad.applied.length === 0 && ad.def.title === 'Title typed while the AI was busy' && /changed while I was working/.test(host.textContent)
+      && !!applyBtn && !applyBtn.disabled && !!host.querySelector('[data-crai-act="discard-stale"]') && !host.querySelector('[data-crai-act="undo"]'),
+    JSON.stringify({ applied: ad.applied.length, title: ad.def.title }));
+  click(win, applyBtn);
+  assert('…Apply anyway applies the answer (and it can be undone)', ad.applied.length === 1 && ad.def.title === 'Weekly Turf Install'
+    && !host.querySelector('[data-crai-act="apply-stale"]') && !!host.querySelector('[data-crai-act="undo"]'));
+  click(win, host.querySelector('[data-crai-act="undo"]'));
+  assert('…and Undo brings back the hand-typed title', ad.def.title === 'Title typed while the AI was busy');
+  let release4;
+  f.queue.push(new Promise(r => { release4 = r; }));
+  const p4 = h.send('again');
+  await tick();
+  ad.def.title = 'Edited again';
+  release4({ status: 200, json: () => Promise.resolve(okResponse()) });
+  await p4; await tick();
+  click(win, host.querySelector('[data-crai-act="discard-stale"]'));
+  assert('…Discard leaves the report as the person left it', ad.applied.length === 1 && ad.def.title === 'Edited again'
+    && /Discarded/.test(host.textContent) && !host.querySelector('[data-crai-act="apply-stale"]'));
+  f.queue.push({ status: 200, body: okResponse() });
+  await h.send('and once more, nothing touched this time');
+  assert('…with no edit in between, the answer is applied as before', ad.applied.length === 2 && ad.def.title === 'Weekly Turf Install');
+  h.destroy();
+  win = makeWindow(); host = win.document.querySelector('.cr-ai-body'); f = stubFetch(win);
+  ad = makeAdapter(win);
+  h = win.FCTReportAI.mount(host, ad);
   // An error, then a different message: the earlier message and its error stay.
   f.queue.push({ status: 500, body: { error: 'boom' } }, { status: 200, body: okResponse() });
   await h.send('first try');

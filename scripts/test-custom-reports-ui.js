@@ -1974,17 +1974,43 @@ function seed(srv) {
       && get.q.client_keys === 'acme township,beta corp' && get.q.division === 'paving', get && JSON.stringify(get.q));
     const em = h.email[0];
     assert('the modal opens', !!em);
-    const list = (em && em.contacts) || [];
-    assert('contacts: each job\'s auto-add contacts, then the client\'s, one per address',
+    // Route 30 is Acme Township's, Elm Street Beta Corp's: two customers.
+    const list = (em && em.suggestedContacts) || [];
+    assert('two customers\' jobs: nothing is filled in — each owner would be sent the other\'s job',
+      em && Array.isArray(em.contacts) && em.contacts.length === 0, em && JSON.stringify(em.contacts));
+    assert('…the saved contacts are offered instead: each job\'s auto-add contacts, then the client\'s, one per address',
       JSON.stringify(list.map(c => c.email)) === '["owner@acme.com","bea@beta.example","eng@acme.com"]', JSON.stringify(list));
+    assert('…with a note saying why', /These jobs belong to 2 different customers — each recipient would see the others' jobs/.test(em.suggestedNote || ''), em.suggestedNote);
     assert('…labelled with where they came from', list[0] && list[0].source === 'job' && list[0].label === 'Job contact — Route 30 Resurfacing'
       && list[0].name === 'Olivia Owner' && list[2].source === 'client' && list[2].label === 'Client contact — Acme Township');
     assert('…never a contact set not to auto-add, nor one for a job not on the report', !list.some(c => c.email === 'quiet@acme.com' || c.email === 'other@job.example'));
     const cc = em && em.contactContext;
-    assert('contactContext lets the modal save a typed address as a contact', cc && cc.division === 'paving'
+    assert('contactContext lets the modal save a typed address as a contact, and says the jobs are more than one customer\'s', cc && cc.division === 'paving'
       && JSON.stringify(cc.projectIds) === '["p1","p2"]' && JSON.stringify(cc.clients) === '[{"key":"acme township","name":"Acme Township"},{"key":"beta corp","name":"Beta Corp"}]'
-      && cc.canEdit === true && cc.apiBase === '/api' && typeof cc.getToken === 'function' && cc.getToken() === 'tok-123', JSON.stringify(cc));
+      && cc.mixed === true && cc.canEdit === true && cc.apiBase === '/api' && typeof cc.getToken === 'function' && cc.getToken() === 'tok-123', JSON.stringify(cc));
     assert('the other modal options are as before (customReport, no project name)', em.projectName === null && em.customReport && !('recipients' in em.customReport));
+    h.close();
+  }
+  {
+    // Two jobs of ONE customer (Acme Township's Route 30 and its other job): filled in.
+    const srv = seed(makeServer());
+    srv.contacts = [
+      { id: 1, project_id: 'p1', email: 'owner@acme.com', name: 'Olivia Owner', auto_add: true },
+      { id: 2, project_id: 'p3', email: 'site@acme.com', name: 'Site Lead', auto_add: true },
+      { id: 3, project_id: null, client_key: 'acme township', client_name: 'Acme Township', email: 'eng@acme.com', auto_add: true },
+    ];
+    const h = boot({ server: srv });
+    await h.render();
+    h.click(h.$('.cr-card[data-starter="customer_progress"]'));
+    h.$('.cr-job input[value="p1"]').click();
+    h.$('.cr-job input[value="p3"]').click();
+    h.click(h.act('email'));
+    await tick(8);
+    const em = h.email[0];
+    assert('two jobs of one customer: their saved contacts are filled in, as before, with no warning',
+      em && JSON.stringify((em.contacts || []).map(c => c.email).sort()) === '["eng@acme.com","owner@acme.com","site@acme.com"]'
+        && (em.suggestedContacts || []).length === 0 && !em.suggestedNote && em.contactContext.mixed === false,
+      em && JSON.stringify({ picked: h.S().doc.picked, c: em.contacts, s: em.suggestedContacts }));
     h.close();
   }
   {
@@ -2194,11 +2220,40 @@ function seed(srv) {
     assert('Open opens the window inside the click', h.opened.length === 1);
     await tick(6);
     let w = h.opened[0];
-    assert('…and writes the archived HTML exactly, through dwWrite, with no "rebuilt" banner', /ARCHIVED COPY — Route 30 — Week 44/.test(w.written)
-      && h.dwCalls.some(c => /ARCHIVED COPY/.test(c)) && !/Rebuilt from current data/.test(w.written));
-    assert('…locked down: a CSP that runs no script', /<meta http-equiv="Content-Security-Policy" content="default-src 'none'/.test(w.written));
+    // The shell, parsed as a browser would (no script runs here).
+    const shellOf = written => new JSDOM(written).window.document;
+    let sd = shellOf(w.written);
+    let fr = sd.querySelectorAll('iframe');
+    assert('…and shows the archived HTML exactly — as the srcdoc of a sandboxed frame, not through dwWrite — with no "rebuilt" banner',
+      fr.length === 1 && fr[0].getAttribute('srcdoc') === ARCHIVED && !h.dwCalls.some(c => /ARCHIVED COPY/.test(c))
+        && !/Rebuilt from current data/.test(w.written), w.written.slice(0, 300));
+    assert('…locked down: the policy is the first thing in the head, and the frame may run no script',
+      w.written.indexOf('<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="default-src \'none\'') === 0
+        && sd.head.firstElementChild.getAttribute('http-equiv') === 'Content-Security-Policy'
+        && /form-action 'none'/.test(sd.head.firstElementChild.getAttribute('content'))
+        && fr[0].hasAttribute('sandbox') && !/allow-scripts/.test(fr[0].getAttribute('sandbox'))
+        && !sd.querySelector('[data-dw-brand]'), w.written.slice(0, 300));
     assert('…and the archive was fetched with ?run=1&archive=1', h.srv.calls('GET', e => e.q.run === '1' && e.q.archive === '1').length === 1);
     assert('opening is not logged as a send', h.srv.calls('POST', e => e.q.action === 'run').length === 0);
+    // Whatever the archive holds — markup that moves <head>, a bare fragment,
+    // a script closed with a space — it is only ever the frame's srcdoc.
+    const HOSTILE = ['<!--<head>--><img src="x"/onerror="window.opener.__pw=1"><p>A</p>',
+      '<p>x</p><img src="x"/onerror="window.opener.__pw=1">',
+      '<script>window.opener.__pw=1</script ><head></head><p>B</p>'];
+    for (const [i, bad] of HOSTILE.entries()) {
+      h.srv.archives[1] = bad;
+      const before = h.opened.length;
+      h.click(h.$('[data-act="cust-open"][data-id="1"]'));
+      await tick(6);
+      const hw = h.opened[before];
+      const hd = hw ? shellOf(hw.written) : null;
+      const hf = hd ? hd.querySelectorAll('iframe') : [];
+      assert(`hostile archive ${i + 1}: written only inside the sandboxed frame — no element of it in the window's own document, the policy still first in the head`,
+        hd && hf.length === 1 && hf[0].getAttribute('srcdoc') === bad && !hd.querySelector('img, script, p')
+          && hd.head.firstElementChild.getAttribute('http-equiv') === 'Content-Security-Policy' && !/allow-scripts/.test(hf[0].getAttribute('sandbox'))
+          && h.window.__pw === undefined, hw && hw.written.slice(0, 400));
+    }
+    h.srv.archives[1] = ARCHIVED;
 
     // Open: no archive → rebuilt, dates and "today" pinned, with the banner.
     const seen = [];
@@ -2206,7 +2261,7 @@ function seed(srv) {
     E.makeContext = (def, cfg, opts) => { seen.push({ def, opts }); return realMake(def, cfg, opts); };
     h.click(h.$('[data-act="cust-open"][data-id="2"]'));
     await tick(8);
-    w = h.opened[1];
+    w = h.opened[h.opened.length - 1];
     const last = seen[seen.length - 1];
     assert('a send with no archived copy is fetched (?run=2) and rebuilt', h.srv.calls('GET', e => e.q.run === '2' && !e.q.archive).length === 1
       && h.srv.calls('GET', e => e.q.run === '2' && e.q.archive).length === 0, 'has_archive false skips the archive call');
@@ -2214,8 +2269,12 @@ function seed(srv) {
       last && JSON.stringify(last.opts.pickedIds) === '["p1"]' && last.def.dates.preset === 'custom' && last.def.dates.from === '2026-10-26'
         && last.def.dates.to === '2026-11-01' && last.opts.today === '2026-10-27' && last.opts.now === '2026-10-27T13:00:00Z',
       last && JSON.stringify({ d: last.def.dates, t: last.opts.today, n: last.opts.now }));
-    assert('…under a yellow banner saying it was rebuilt', /Rebuilt from current data — the original was not archived/.test(w.written)
-      && /background:#fef3c7/.test(w.written) && /Route 30 Resurfacing/.test(w.written));
+    sd = shellOf(w.written);
+    fr = sd.querySelectorAll('iframe');
+    const rebuilt = fr.length === 1 ? fr[0].getAttribute('srcdoc') : '';
+    assert('…under a yellow banner saying it was rebuilt — in the same sandboxed frame, behind the same policy',
+      /Rebuilt from current data — the original was not archived/.test(rebuilt) && /background:#fef3c7/.test(rebuilt) && /Route 30 Resurfacing/.test(rebuilt)
+        && sd.head.firstElementChild.getAttribute('http-equiv') === 'Content-Security-Policy' && !/allow-scripts/.test(fr[0].getAttribute('sandbox')));
     E.makeContext = realMake;
 
     // Resend: the archived copy, to the same people, same subject.
@@ -2427,6 +2486,39 @@ function seed(srv) {
       !box().checked && box().disabled && !why().hidden && /each customer would be sent the others/.test(why().textContent));
     mode('each');
     assert('…back to one email per job, the box can be ticked again', !box().disabled && why().hidden);
+    // A mistyped address left in the box stops the save — it is not dropped.
+    const posts = () => h.srv.callsTo('/api/custom-report-schedules', 'POST').length;
+    let nPosts = posts();
+    m.querySelector('#cr-s-email').value = 'pm@forcecorp.example';
+    m.querySelector('[data-s="add-email"]').click();
+    m.querySelector('#cr-s-email').value = 'owner@acme';
+    const toastBefore = h.toast();
+    m.querySelector('[data-s="save"]').click();
+    await tick(6);
+    assert('Save with a mistyped address still in the box: nothing is sent, the dialog stays, the address is still there with its message',
+      posts() === nPosts && !!h.modal() && m.querySelector('#cr-s-email').value === 'owner@acme'
+        && /Not an email address: owner@acme/.test(m.querySelector('.cr-m-errs').textContent) && h.toast() === toastBefore,
+      `${posts() - nPosts} posts; box "${m.querySelector('#cr-s-email').value}"; errs "${m.querySelector('.cr-m-errs').textContent}"`);
+    m.querySelector('#cr-s-email').value = 'owner@acme.com';
+    m.querySelector('[data-s="save"]').click();
+    await tick(8);
+    const fixed = h.srv.callsTo('/api/custom-report-schedules', 'POST').pop();
+    assert('…corrected, Save sends both addresses', posts() === nPosts + 1 && !h.modal()
+      && JSON.stringify(fixed.body.emails) === '["pm@forcecorp.example","owner@acme.com"]', JSON.stringify(fixed && fixed.body.emails));
+    // The 51st address the same way.
+    h.click(h.act('schedule'));
+    await tick(6);
+    m = h.modal();
+    nPosts = posts();
+    m.querySelector('#cr-s-email').value = Array.from({ length: 50 }, (_, i) => `r${i}@acme.com`).join(', ');
+    m.querySelector('[data-s="add-email"]').click();
+    m.querySelector('#cr-s-email').value = 'one-more@acme.com';
+    m.querySelector('[data-s="save"]').click();
+    await tick(6);
+    assert('…and a 51st address left in the box stops the save too, saying the limit',
+      m.querySelectorAll('#cr-s-chips .cr-chip').length === 50 && posts() === nPosts && !!h.modal()
+        && m.querySelector('#cr-s-email').value === 'one-more@acme.com' && /Up to 50 addresses/.test(m.querySelector('.cr-m-errs').textContent),
+      `${posts() - nPosts} posts; errs "${m.querySelector('.cr-m-errs').textContent}"`);
     m.querySelector('[data-s="cancel"]').click();
     await tick(2);
     // Rail actions.
@@ -2437,13 +2529,13 @@ function seed(srv) {
     h.click(h.document.querySelector('.cr-menu [data-act="sched-toggle"]'));
     await tick(8);
     let put = h.srv.callsTo('/api/custom-report-schedules', 'PUT').pop();
-    assert('Pause PUTs the schedule with enabled false (everything else kept)', put && put.q.id === String(sid) && put.body.enabled === false
-      && put.body.send_time === '06:30' && JSON.stringify(put.body.days_of_week) === '[1,3]');
+    assert('Pause PUTs { enabled: false } alone — a switch, not a save that would re-check it and run it as whoever paused it',
+      put && put.q.id === String(sid) && JSON.stringify(put.body) === '{"enabled":false}', put && JSON.stringify(put.body));
     assert('…and the rail says Paused', /Paused/.test(h.$('.cr-rail').textContent));
     h.click(more());
     h.click(h.document.querySelector('.cr-menu [data-act="sched-toggle"]'));
     await tick(8);
-    assert('Resume PUTs enabled true', h.srv.callsTo('/api/custom-report-schedules', 'PUT').pop().body.enabled === true);
+    assert('Resume PUTs { enabled: true } alone', JSON.stringify(h.srv.callsTo('/api/custom-report-schedules', 'PUT').pop().body) === '{"enabled":true}');
     h.click(more());
     h.click(h.document.querySelector('.cr-menu [data-act="sched-edit"]'));
     await tick(6);
@@ -2567,8 +2659,46 @@ function seed(srv) {
     assert('undo puts back the previous definition', a.undo() === true && h.S().doc.def.title === 'Second try');
     assert('…but never switches internal data back on', h.S().doc.def.includeInternal === false && !h.$('.cr-banner-int'));
     assert('undo again goes back to the first apply', a.undo() === true && h.S().doc.def.title === 'Turf Install — last week' && JSON.stringify(h.S().doc.picked) === '["p1","p2"]');
-    assert('undoing the apply that made the report closes it', a.undo() === true && h.S().doc === null && h.S().view === 'home');
+    const nConfirms = h.confirms.length;
+    assert('undoing the apply that made the report closes it — with nothing changed by hand since, without asking',
+      a.undo() === true && h.S().doc === null && h.S().view === 'home' && h.confirms.length === nConfirms);
     assert('…and there is nothing more to undo', a.undo() === false);
+    // Hand edits after an AI change: Undo asks first, and "no" keeps them.
+    {
+      // A report the AI built from nothing, then named by hand.
+      a.applyDefinition(E.normalizeDefinition({ v: 2, title: 'Built by AI', jobs: { mode: 'pick', ids: ['p2'] }, sections: [{ type: 'job_info' }] }), {});
+      const built = h.S().doc;
+      h.type(h.$('[data-bind="name"]'), 'Named by hand');
+      const c1 = h.confirms.length;
+      h.answers.push(false);
+      const r3 = a.undo();
+      assert('undoing an AI-built report that was then named by hand asks before closing it; "no" leaves it open, as it is',
+        r3 === false && h.S().doc === built && built.name === 'Named by hand' && h.confirms.length === c1 + 1
+          && /closes the report/.test(h.confirms[h.confirms.length - 1]), JSON.stringify({ r3, open: !!h.S().doc, c: h.confirms.slice(c1) }));
+      h.answers.push(true);
+      assert('…"yes" closes it', a.undo() === true && h.S().doc === null);
+      h.click(h.$('[data-act="open"][data-id="1"]'));
+      await tick();
+      const od = h.S().doc;
+      const preTitle = od.def.title, preName = od.name, preSecs = od.def.sections.length;
+      a.applyDefinition(E.normalizeDefinition({ v: 2, title: 'AI weekly', jobs: { mode: 'pick', ids: ['p1'] }, sections: [{ type: 'job_info' }, { type: 'bid_progress' }] }), {});
+      h.click(h.$('#cr-step-2'));
+      h.click(h.act('add-menu'));
+      h.click(h.document.querySelector('.cr-menu [data-type="notes"]'));
+      h.type(h.$('[data-bind="name"]'), 'Renamed by hand');
+      const hand = JSON.stringify(h.S().doc.def.sections.map(x => x.type));
+      const c0 = h.confirms.length;
+      h.answers.push(false);
+      const r1 = a.undo();
+      assert('Undo after hand edits (a section added, a rename) asks first; "no" keeps every edit and reports it did not undo',
+        r1 === false && h.confirms.length === c0 + 1 && /Edits you made since then will be lost/.test(h.confirms[h.confirms.length - 1])
+          && h.S().doc === od && od.name === 'Renamed by hand' && JSON.stringify(od.def.sections.map(x => x.type)) === hand && /notes/.test(hand),
+        JSON.stringify({ r1, name: od.name, hand, c: h.confirms.slice(c0) }));
+      h.answers.push(true);
+      const r2 = a.undo();
+      assert('…"yes" puts back the report as it was before the AI change', r2 === true && od.def.title === preTitle && od.name === preName
+        && od.def.sections.length === preSecs, JSON.stringify({ r2, t: od.def.title, n: od.name }));
+    }
     // Clicks inside the drawer are the AI panel's, not the builder's.
     h.click(h.$('[data-act="new"]'));
     const before = h.S().doc;
@@ -2603,6 +2733,32 @@ function seed(srv) {
     await h.render();
     h.click(h.act('ai-toggle'));
     assert('without custom-reports-ai.js loaded the drawer says it is still loading', /still loading/.test(h.mount.querySelector('.cr-ai-drawer').textContent));
+    h.close();
+  }
+  {
+    // The real AI panel on a shared template this user cannot change: locked,
+    // with its "use Save As" note — until a Save As makes it their own copy.
+    const h = boot({ server: seed(makeServer({ canShare: false })) });
+    h.window.eval(fs.readFileSync(path.join(ROOT, 'custom-reports-ai.js'), 'utf8'));
+    await h.render();
+    await tick(4);
+    h.click(h.$('[data-act="open"][data-id="2"]'));
+    await tick();
+    h.click(h.act('ai-toggle'));
+    await tick();
+    const drawer = h.mount.querySelector('.cr-ai-drawer');
+    const q = sel => drawer.querySelector(sel);
+    assert('the real AI panel on a read-only shared template: input and Send off, the "use Save As" note shown',
+      h.S().doc.readOnly === true && q('.crai-in').disabled && q('.crai-send').disabled && !q('.crai-ro').hidden);
+    h.click(h.act('save-as'));
+    await tick(4);
+    const m = h.modal();
+    h.type(m.querySelector('#cr-m-name'), 'My copy of the template');
+    m.querySelector('[data-m="ok"]').click();
+    await tick(10);
+    assert('after Save As the copy is the user\'s own, and the panel follows: input and Send on, the note gone',
+      !h.modal() && h.S().doc.readOnly === false && !q('.crai-in').disabled && !q('.crai-send').disabled && q('.crai-ro').hidden,
+      JSON.stringify({ ro: h.S().doc.readOnly, input: q('.crai-in').disabled, note: q('.crai-ro').hidden }));
     h.close();
   }
 

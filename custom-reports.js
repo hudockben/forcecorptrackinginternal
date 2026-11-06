@@ -2552,6 +2552,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (keep) keep.checked = !!d.saveJobs;
     renderRail();
     updateChrome();
+    aiSync();
   }
 
   async function save() {
@@ -2917,8 +2918,12 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       defaultSubject: `${built.ctx.title} — ${jobLabel}`,
       getHTML: () => built.html,
       // Each picked job's (and its client's) saved contacts, pre-filled, and
-      // what the modal needs to save a typed address as a new one.
+      // what the modal needs to save a typed address as a new one. Jobs of
+      // more than one customer: listed to add by hand, under a warning, not
+      // filled in — each would be sent the others' jobs.
       contacts: pre.contacts,
+      suggestedContacts: pre.suggested,
+      suggestedNote: pre.note,
       contactContext: pre.context,
       // send-report records the send itself; the browser logs it only when
       // the server could not, so it is on the record once either way.
@@ -2947,7 +2952,13 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   /* The saved contacts an email to these jobs starts with: each job's own,
      then each job's client's, auto-add ones only, one per address, labelled
      with where they came from. Never holds the email up for long, and a
-     failure is an empty list — the modal still works by hand. */
+     failure is an empty list — the modal still works by hand.
+     Jobs of more than one customer — by the schedule runner's rule, where a
+     job that names no client among several is a customer of its own — are
+     not filled in: one owner's contact would be sent another owner's job.
+     They come back as suggestions, with the note the modal shows above them,
+     and the modal is told (context.mixed) so "Save as contact" never files a
+     typed address on every picked job. */
   async function emailContacts(jobs) {
     jobs = (jobs || []).slice(0, MAX_JOBS);
     const projectIds = jobs.map(p => String(p.id));
@@ -2956,8 +2967,15 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       const key = clientKey(p.client);
       if (key && !clients.some(c => c.key === key)) clients.push({ key, name: txt(p.client) });
     });
-    const context = { division: cfg.division, projectIds, clients, canEdit: false, apiBase: cfg.apiBase, getToken: () => token() };
-    if (!jobs.length) return { contacts: [], context };
+    const unnamed = jobs.some(p => !clientKey(p.client));
+    const mixed = jobs.length > 1 && (clients.length > 1 || unnamed);
+    const note = !mixed ? ''
+      : clients.length > 1
+        ? `These jobs belong to ${clients.length}${unnamed ? ' or more' : ''} different customers — each recipient would see the others' jobs. Their saved contacts are not filled in.`
+        : 'Not every one of these jobs names its customer, so they may belong to different customers — each recipient would see every job. Their saved contacts are not filled in.';
+    const context = { division: cfg.division, projectIds, clients, mixed, canEdit: false, apiBase: cfg.apiBase, getToken: () => token() };
+    const done = list => (mixed ? { contacts: [], suggested: list, note, context } : { contacts: list, suggested: [], note: '', context });
+    if (!jobs.length) return done([]);
     // A client name with a comma cannot ride in the comma-separated list:
     // then the division's whole list is read and matched here.
     const commas = clients.some(c => c.key.includes(','));
@@ -2967,7 +2985,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     try {
       data = await Promise.race([api.contactsQuiet(params), new Promise(r => setTimeout(() => r(null), 5000))]);
     } catch (_) { data = null; }
-    if (!data || !Array.isArray(data.contacts)) return { contacts: [], context };
+    if (!data || !Array.isArray(data.contacts)) return done([]);
     context.canEdit = data.canEdit === true;
     const byJob = new Map(jobs.map(p => [String(p.id), p]));
     const byClient = new Map(clients.map(c => [c.key, c]));
@@ -2986,7 +3004,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         add(c, 'client', `Client contact — ${txt(c.client_name) || byClient.get(c.client_key).name}`);
       }
     });
-    return { contacts: out, context };
+    return done(out);
   }
 
   async function doExcel() {
@@ -3224,11 +3242,67 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const bar = `<div role="note" style="background:#fef3c7;color:#713f12;border:1px solid #f59e0b;border-radius:4px;padding:8px 12px;margin:0 0 12px;font:600 13px/1.4 system-ui,sans-serif">&#9888; ${esc(REBUILT_BANNER)}</div>`;
     return /<body[^>]*>/i.test(html) ? html.replace(/<body[^>]*>/i, m => m + bar) : bar + html;
   }
-  // Pages opened from the history run no script at all: whatever is in an
-  // archived copy (sanitized when it was sent) stays a picture.
-  function lockedDown(html) {
-    const csp = '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src data:; style-src \'unsafe-inline\'; font-src data:">';
-    return /<head[^>]*>/i.test(html) ? html.replace(/<head[^>]*>/i, m => m + csp) : csp + html;
+  /* A copy opened from the history is shown, never run. What was archived is
+     whatever the sender's browser sent, sanitized by a pattern-matcher that
+     is hygiene, not a wall — so it is never parsed as a document of this
+     origin. The window gets a shell whose first bytes are a policy allowing
+     no script, no form and no outside load, and the copy goes in an iframe
+     sandboxed WITHOUT allow-scripts: no <script>, no handler, no markup trick
+     in it can run, wherever it puts a <head>. allow-same-origin (still no
+     scripts) only lets this page size the frame to the report, so the window
+     scrolls and prints it whole, and copy its page size across; allow-modals
+     lets the Print button print the copy itself, with its own page setup.
+     Nothing goes through dwWrite: an archive carries its own brand band, and
+     anything added in front of the shell would push the policy out of the
+     head, where browsers ignore it. */
+  const LOCKED_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'; base-uri 'none'";
+  function lockedShell(html, title) {
+    return '<!DOCTYPE html><html><head><meta http-equiv="Content-Security-Policy" content="' + LOCKED_CSP + '">'
+      + '<meta charset="utf-8"><title>' + esc(title) + '</title><style>'
+      + 'html,body{margin:0;padding:0;background:#fff}'
+      + '.cr-copy-bar{display:flex;align-items:center;gap:12px;padding:8px 14px;background:#f1f5f9;border-bottom:1px solid #cbd5e1;font:13px/1.4 system-ui,sans-serif;color:#334155}'
+      + '.cr-copy-bar button{font:600 13px system-ui,sans-serif;padding:4px 12px;border:1px solid #94a3b8;border-radius:4px;background:#fff;cursor:pointer}'
+      + 'iframe{display:block;border:0;width:100%;height:calc(100vh - 42px)}'
+      + '@media print{.cr-copy-bar{display:none}}'
+      + '</style></head><body><div class="cr-copy-bar"><span>' + esc(title) + '</span><button type="button" data-copy="print">Print</button></div>'
+      + '<iframe sandbox="allow-same-origin allow-modals" title="' + esc(title) + '" srcdoc="' + esc(html) + '"></iframe></body></html>';
+  }
+  function writeLockedDown(win, html, title) {
+    try { win.document.open(); } catch (_) { /* written fresh below */ }
+    win.document.write(lockedShell(html, title));
+    try { win.document.close(); } catch (_) { /* fine */ }
+    // Nothing in that window needs this one.
+    try { win.opener = null; } catch (_) { /* fine */ }
+    const doc = win.document;
+    let fr = null;
+    try { fr = doc.querySelector('iframe'); } catch (_) { /* no DOM to reach */ }
+    if (!fr) return;
+    const fit = () => {
+      try {
+        const d = fr.contentDocument;
+        if (!d || !d.documentElement) return;
+        fr.style.height = Math.max(d.documentElement.scrollHeight, d.body ? d.body.scrollHeight : 0) + 'px';
+      } catch (_) { /* left at the window's height */ }
+    };
+    fr.addEventListener('load', () => {
+      fit();
+      // The copy's own page size (letter landscape, say), so printing this
+      // window lays it out the way printing the copy does.
+      try {
+        let size = '';
+        [...fr.contentDocument.styleSheets].forEach(sh => {
+          try { [...sh.cssRules].forEach(r => { if (r.type === 6 && r.style) size = r.style.getPropertyValue('size') || size; }); } catch (_) { /* unreadable */ }
+        });
+        if (/^[a-z0-9 .]{1,40}$/i.test(size)) {
+          const st = doc.createElement('style');
+          st.textContent = `@page{size:${size};margin:0.45in}`;
+          doc.head.appendChild(st);
+        }
+      } catch (_) { /* the default page */ }
+    });
+    try { win.addEventListener('resize', fit); } catch (_) { /* fine */ }
+    const btn = doc.querySelector('[data-copy="print"]');
+    if (btn) btn.addEventListener('click', () => { try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (_) { try { win.print(); } catch (__) { /* nothing */ } } });
   }
   async function custOpen(id) {
     const run = custRun(id);
@@ -3254,10 +3328,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       catch (e) { if (e.status !== 401) fail(`Couldn’t open it: ${e.message}`); return; }
     }
     if (win.closed) return;
-    try { win.document.open(); } catch (_) { /* written fresh below */ }
-    const write = window.dwWrite || ((w, h) => w.document.write(h));
-    write(win, lockedDown(html));
-    try { win.document.close(); } catch (_) { /* fine */ }
+    writeLockedDown(win, html, `Sent copy — ${txt(run.subject) || txt(run.report_name) || 'Report'}`);
   }
   async function custResend(id) {
     const run = custRun(id);
@@ -3752,6 +3823,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       drawChips();
       if (bad.length) showErr(emails.length >= MAX_SCHED_EMAILS ? `Up to ${MAX_SCHED_EMAILS} addresses.` : `Not an email address: ${bad.join(', ')}`);
       else errs.innerHTML = '';
+      return bad;
     };
     m.body.addEventListener('change', e => {
       const t = e.target;
@@ -3778,7 +3850,10 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     let busy = false;
     const save = async () => {
       if (busy) return;
-      addEmails();
+      // Whatever is left in the box is someone the sender meant to add: a
+      // mistyped address (or one past the limit) stops the save, still in
+      // the box with its message, rather than being dropped without a word.
+      if (addEmails().length) { $('#cr-s-email').focus(); return; }
       const freq = $('#cr-s-freq').value;
       const tzSel = $('#cr-s-tz').value;
       const mode = isTemplate ? ((m.body.querySelector('input[name="cr-s-mode"]:checked') || {}).value || 'each') : 'saved';
@@ -3851,10 +3926,11 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   async function toggleSchedule(id) {
     const s = (S.scheds || []).find(x => sameId(x.id, id));
     if (!s) return;
-    const { v } = scheduleValues(null, s);
-    v.enabled = !s.enabled;
+    // The switch alone: a whole schedule sent back is a save, which would
+    // re-check it and make it run as whoever clicked Pause / Resume.
+    const v = { enabled: !s.enabled };
     try {
-      await api.updateSchedule(s.id, scheduleBody(v));
+      await api.updateSchedule(s.id, { enabled: v.enabled });
       toast(v.enabled ? 'Schedule resumed.' : 'Schedule paused.');
     } catch (e) {
       if (e.status !== 401) toast(`Couldn’t ${v.enabled ? 'resume' : 'pause'} it: ${scheduleError(e)}`, 'error');
@@ -3925,6 +4001,14 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       S.ai.handle = null;
     }
     if (!S.ai.handle) mountAi();
+    else aiSync();
+  }
+  // Same report, maybe not the same state: a Save As or Duplicate of a
+  // read-only template makes it the user's own copy in place, and the
+  // panel's controls follow.
+  function aiSync() {
+    const hd = S.ai && S.ai.handle;
+    if (hd && typeof hd.sync === 'function') { try { hd.sync(); } catch (_) { /* the panel's problem */ } }
   }
   function mountAi() {
     const body = S.ai.el && S.ai.el.querySelector('.cr-ai-body');
@@ -3986,6 +4070,16 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     };
   }
   const cloneJson = v => JSON.parse(JSON.stringify(v));
+  // The report as an AI change left it — so Undo can tell whether anything
+  // was changed by hand since, which undoing would throw away. Internal data
+  // is left out: Undo never switches it back on, so turning it off loses
+  // nothing, and turning it on is only ever undone the safe way.
+  function aiKey(d) {
+    let def;
+    try { def = E.normalizeDefinition(d.def); } catch (_) { def = cloneJson(d.def || {}); }
+    def.includeInternal = false;
+    return JSON.stringify({ def, picked: (d.picked || []).map(String), name: d.name, saveJobs: !!d.saveJobs });
+  }
   function aiApply(raw, info) {
     let next;
     try { next = E.normalizeDefinition(raw); } catch (_) { return false; }
@@ -4002,13 +4096,16 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     next.jobs = { mode: next.jobs.mode, ids: [] };
     if (!cur) {
       const doc = blankDoc(next, { name: txt(next.title) || 'New report', picked, saveJobs: false, touched: true });
-      doc.aiUndo = [{ none: true }];
+      const made = { none: true };
+      doc.aiUndo = [made];
       S.ai.docRef = doc;      // the same conversation carries on with it
       startEditing(doc);
+      made.after = aiKey(doc);
       return true;
     }
     cur.aiUndo = cur.aiUndo || [];
-    cur.aiUndo.push({ def: cloneJson(cur.def), picked: cur.picked.slice(), saveJobs: cur.saveJobs, name: cur.name });
+    const entry = { def: cloneJson(cur.def), picked: cur.picked.slice(), saveJobs: cur.saveJobs, name: cur.name };
+    cur.aiUndo.push(entry);
     if (cur.aiUndo.length > 30) cur.aiUndo.shift();
     cur.def = next;
     cur.picked = picked;
@@ -4018,6 +4115,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     S.view = 'edit';
     S.editLabel = null;
     render();
+    entry.after = aiKey(cur);
     // Beside the builder, a toast says what happened to it. As a full-width
     // sheet (a narrow window) the panel already shows it, and a toast would
     // sit on its Send button.
@@ -4028,9 +4126,17 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   function aiUndo() {
     const d = S.doc;
     if (!d || !Array.isArray(d.aiUndo) || !d.aiUndo.length) return false;
-    const prev = d.aiUndo.pop();
+    const prev = d.aiUndo[d.aiUndo.length - 1];
+    // Changed by hand since the AI change: undoing it would throw that work
+    // away (there is no redo), so it is asked first — and "no" changes nothing.
+    const edited = typeof prev.after === 'string' && prev.after !== aiKey(d);
+    if (edited && !window.confirm(prev.none
+      ? 'Undo the AI change? It built this report, so undoing it closes the report — and the edits you made since then will be lost.'
+      : 'Undo the AI change? Edits you made since then will be lost.')) return false;
+    d.aiUndo.pop();
     if (prev.none) {
       // The AI built this report from nothing: undoing it closes it.
+      clearDraft();
       S.doc = null;
       S.view = 'home';
       S.ai.docRef = null;

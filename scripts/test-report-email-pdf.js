@@ -238,6 +238,26 @@ assert('pdfPageCount returns null on non-PDF bytes', pdfPageCount(Buffer.from('n
 // reports' own auto-print bootstrap before Chrome ever sees it.
 assert('sanitizeReportHtml removes the window.print() bootstrap',
   !sanitizeReportHtml('<body>x<script>window.onload=()=>{window.print();}</script></body>').includes('window.print'));
+// A handler after a "/" (the parser reads <img/onerror=...> as an
+// attribute), a closing tag with a space before its ">", a stray opening
+// tag, and markup a removal splices back together.
+{
+  const cases = {
+    'a handler after "/"': '<img src="x"/onerror="alert(1)"><p>keep</p>',
+    'a handler after "/" with no quotes on the source': '<img src=x/onerror=alert(1)><p>keep</p>',
+    '</script > with a space': '<script>alert(1)</script ><p>keep</p>',
+    'a stray <script> with no close': '<p>keep</p><script>alert(1)',
+    'tags a removal splices back': '<scr<script>x</script>ipt>alert(1)</script><p>keep</p>',
+    'a handler spliced back': '<img src=x o<script></script>nerror=alert(1)><p>keep</p>',
+    '</iframe > with a space': '<iframe srcdoc="x"></iframe ><p>keep</p>',
+  };
+  for (const [what, html] of Object.entries(cases)) {
+    const out = sanitizeReportHtml(html);
+    assert(`sanitizeReportHtml strips ${what}`, !/<script|onerror\s*=|<iframe/i.test(out) && out.includes('<p>keep</p>'), out);
+  }
+  const plain = '<table><tr><td>Tons / Day</td><td>a/b</td></tr></table><br/><img src="data:image/png;base64,AAAA"/>';
+  assert('…and leaves ordinary report markup alone (slashes, self-closing tags)', sanitizeReportHtml(plain) === plain, sanitizeReportHtml(plain));
+}
 
 // ── 3. Real headless-Chrome render ─────────────────────────────────────────
 console.log('\nrenderHtmlToPdf — real headless Chrome');

@@ -491,6 +491,49 @@ async function applyV2() {
       JSON.stringify(rows.map(x => x.project_id).sort()) === '["job-10","job-11"]' && m.status() === 'Saved both@example.com as a contact for 2 jobs.', m.status());
     m.w.close();
 
+    // Jobs of two customers: a typed address is never filed on every picked
+    // job (one customer's contact would later be sent the other's jobs by a
+    // schedule), and the client is chosen, not defaulted.
+    const two = { ...ctx, projectIds: ['job-20', 'job-21'], clients: [{ key: 'acme township', name: 'Acme Township' }, { key: 'oak llc', name: 'Oak LLC' }] };
+    m = await modal(two, L2, {
+      suggestedContacts: [{ email: 'Owner@Maple.example', name: 'Olivia <b>Owner</b>', source: 'job', label: 'Job contact — Maple Ave' },
+        { email: 'cfo@oak.example', source: 'client', label: 'Client contact — Oak LLC' }, { email: 'not-an-email' }],
+      suggestedNote: 'These jobs belong to 2 different customers — each recipient would see the others\' jobs.' });
+    assert('two customers: the suggested contacts are listed, not filled in, under the warning',
+      !m.$('rem-chips').querySelector('.rem-chip') && m.$('rem-suggest').style.display === 'block'
+        && /2 different customers/.test(m.$('rem-suggest').querySelector('.rem-suggest-note').textContent)
+        && [...m.$('rem-suggest').querySelectorAll('.rem-suggest-add')].map(b => b.getAttribute('data-email')).join() === 'owner@maple.example,cfo@oak.example'
+        && !m.$('rem-suggest').querySelector('b'), m.$('rem-suggest').innerHTML.slice(0, 300));
+    m.$('rem-suggest').querySelector('.rem-suggest-add[data-email="owner@maple.example"]').click();
+    assert('…one click adds that one, by name, labelled, and it leaves the list',
+      m.chip('owner@maple.example') && m.chip('owner@maple.example').firstChild.textContent === 'Olivia <b>Owner</b>'
+        && m.chip('owner@maple.example').getAttribute('title') === 'Job contact — Maple Ave' && !m.chip('cfo@oak.example')
+        && !m.$('rem-suggest').querySelector('.rem-suggest-add[data-email="owner@maple.example"]'));
+    m.chip('owner@maple.example').querySelector('.rem-chip-x').click();
+    assert('…removed again, it is offered again', !!m.$('rem-suggest').querySelector('.rem-suggest-add[data-email="owner@maple.example"]'));
+    m.type('pm@maple.example');
+    m.chip('pm@maple.example').querySelector('.rem-chip-save').click();
+    const twoScopes = [...m.$('rem-contact-scope').options].map(o => [o.value, o.textContent]);
+    assert('"Save as contact" offers each client, not "Each picked job", and starts on "Pick one"',
+      JSON.stringify(twoScopes) === JSON.stringify([['', 'Who is it for? Pick one…'], ['client:0', 'Client — Acme Township'], ['client:1', 'Client — Oak LLC']])
+        && m.$('rem-contact-scope').value === '', JSON.stringify(twoScopes));
+    const before = m.calls.length;
+    m.$('rem-contact-save').click();
+    await tick();
+    assert('…Save without picking saves nothing and says to pick', m.calls.length === before && /Pick who this contact is for/.test(m.msg())
+      && (await live("email = 'pm@maple.example'")).length === 0, m.msg());
+    m.$('rem-contact-scope').value = 'client:0';
+    m.$('rem-contact-save').click();
+    for (let i = 0; i < 100 && m.$('rem-contact-save'); i++) await tick();
+    rows = await live("email = 'pm@maple.example'");
+    assert('…picked, it is filed for that client only', rows.length === 1 && rows[0].client_key === 'acme township' && rows[0].project_id === null, JSON.stringify(rows));
+    m.w.close();
+    m = await modal({ ...ctx, projectIds: ['job-22', 'job-23'], clients: [], mixed: true }, L2);
+    m.type('who@example.com');
+    assert('jobs that may be different customers\' (mixed, no client named): nowhere safe to file a typed address, so no Save',
+      !m.chip('who@example.com').querySelector('.rem-chip-save'));
+    m.w.close();
+
     m = await modal(ctx, L1);
     m.type('refused@example.com');
     await m.save('refused@example.com', { scope: 'job' });

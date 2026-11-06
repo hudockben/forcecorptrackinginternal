@@ -1394,19 +1394,84 @@ async function cleanUp() {
     ok('…and only emails: the print and Excel runs of the first report are not in it',
       (await page.locator('#cr-content .cr-cust tbody tr').count()) === (await db.query("SELECT 1 FROM custom_report_runs WHERE company_code = $1 AND action = 'email' AND project_ids @> '[\"p1\"]'", [CO])).rows.length);
     await shotPair(page, 'i-customer-history');
-    const [opened] = await Promise.all([page.waitForEvent('popup'), page.click(`#cr-content [data-act="cust-open"][data-id="${sentRun && sentRun.id}"]`)]);
-    let openedHtml = '';
-    try { await opened.waitForFunction(() => !!document.querySelector('[data-dw-brand]'), null, { timeout: 15000 }); openedHtml = await opened.content(); }
-    catch (err) { ok('Open writes the archived copy into a window', false, err.message); }
+    // What an opened copy is: the window's own document (the shell) and the
+    // copy in its frame, read without running anything in either.
+    const openCopy = async runId => {
+      const [win] = await Promise.all([page.waitForEvent('popup'), page.click(`#cr-content [data-act="cust-open"][data-id="${runId}"]`)]);
+      await win.waitForFunction(() => { const f = document.querySelector('iframe'); return !!(f && f.contentDocument && f.contentDocument.body && f.contentDocument.body.childNodes.length); },
+        null, { timeout: 15000 }).catch(() => {});
+      await sleep(500);
+      const seen = await win.evaluate(() => {
+        const f = document.querySelector('iframe');
+        const d = f && f.contentDocument;
+        return { headFirst: document.head && document.head.firstElementChild ? document.head.firstElementChild.outerHTML : '',
+          frames: document.querySelectorAll('iframe').length, sandbox: f ? f.getAttribute('sandbox') : null,
+          copy: d && d.documentElement ? d.documentElement.outerHTML : '', shellRan: document.documentElement.getAttribute('data-ran'),
+          copyRan: d && d.documentElement ? d.documentElement.getAttribute('data-ran') : null, pw: window.__pw, opener: window.opener === null,
+          brandInShell: !!document.querySelector('body > [data-dw-brand]') };
+      }).catch(err => ({ err: err.message }));
+      return { win, seen };
+    };
+    const { win: opened, seen: os } = await openCopy(sentRun && sentRun.id);
+    const openedHtml = os.copy || '';
+    if (!openedHtml) ok('Open writes the archived copy into a window', false, JSON.stringify(os).slice(0, 300));
     const archived = sentRun && (await db.query('SELECT html_gzip_b64 FROM custom_report_run_archives WHERE run_id = $1', [sentRun.id])).rows[0];
     const archivedHtml = archived ? zlib.gunzipSync(Buffer.from(archived.html_gzip_b64, 'base64')).toString('utf8') : '';
     if (openedHtml) {
       ok('Open shows the archived copy — the branded report as it went, no "rebuilt" banner',
         textOf(openedHtml).includes(BRAND) && textOf(openedHtml).includes(JOB1) && !/Rebuilt from current data/.test(openedHtml)
           && textOf(openedHtml).replace(/\s+/g, ' ').trim() === textOf(archivedHtml).replace(/\s+/g, ' ').trim());
-      ok('…in a window that runs no script (a CSP of default-src none)', /Content-Security-Policy/.test(openedHtml) && /default-src 'none'/.test(openedHtml));
+      ok('…in a frame sandboxed without scripts, in a window whose first word is a CSP of default-src none',
+        os.frames === 1 && os.sandbox !== null && !/allow-scripts/.test(os.sandbox) && /^<meta http-equiv="Content-Security-Policy" content="default-src 'none'/.test(os.headFirst)
+          && !os.brandInShell, JSON.stringify({ h: os.headFirst, s: os.sandbox }));
+      const logo = await opened.evaluate(() => { const i = document.querySelector('iframe').contentDocument.querySelector('img.mast-logo'); return i ? i.naturalWidth : -1; }).catch(() => -2);
+      ok('…the logo still shows in it (a data: image)', logo === 600, String(logo));
     }
     await opened.close().catch(() => {});
+
+    // Copies that try to run something: an archive written before today's
+    // sanitizer, or one a pattern-matcher missed. Put straight into the
+    // archive table, past the sanitizer, as a level 1 login's sends to the
+    // job; an admin opens each from the job's history. The only thing each
+    // tries is to leave a mark — on its own document, the window around it,
+    // or the app page that opened it.
+    {
+      const mark = "document.documentElement.setAttribute('data-ran','1');try{parent.document.documentElement.setAttribute('data-ran','1')}catch(e){}try{top.opener.__pw=1}catch(e){}try{window.__pw=1}catch(e){}";
+      const HOSTILE = [
+        ['comment-head', `<!--<head>--><img src="x"/onerror="${mark}"><p>Hostile comment-head</p>`],
+        ['bare-fragment', `<p>Hostile bare-fragment</p><img src="x"/onerror="${mark}">`],
+        ['script-space-close', `<script>${mark}</script ><head></head><p>Hostile script-space-close</p>`],
+      ];
+      const l1 = (await db.query(
+        "INSERT INTO users (username, company_code, password_hash, role, division_roles) VALUES ('lee.level1', $1, 'x', 'level1', $2) RETURNING id",
+        [CO, JSON.stringify({ paving: 'level1' })])).rows[0].id;
+      const ids = [];
+      for (const [name, html] of HOSTILE) {
+        const run = (await db.query(`INSERT INTO custom_report_runs (company_code, division, report_name, action, project_ids, project_names, recipients, subject,
+            included_internal, run_by_user_id, run_by_username, run_kind)
+          VALUES ($1, 'paving', 'Looks normal', 'email', '["p1"]'::jsonb, $2::jsonb, '["owner@maple.example"]'::jsonb, $3, false, $4, 'lee.level1', 'user') RETURNING id`,
+        [CO, JSON.stringify([JOB1]), 'Hostile ' + name, l1])).rows[0].id;
+        const raw = Buffer.from(html, 'utf8');
+        await db.query('INSERT INTO custom_report_run_archives (run_id, company_code, html_gzip_b64, html_bytes) VALUES ($1, $2, $3, $4)',
+          [run, CO, zlib.gzipSync(raw).toString('base64'), raw.length]);
+        ids.push([name, run]);
+      }
+      await page.click('#cr-content [data-act="cust-refresh"]').catch(() => {});
+      await page.waitForFunction(() => /Hostile script-space-close/.test((document.querySelector('#cr-content .cr-cust') || {}).textContent || ''), null, { timeout: 10000 }).catch(() => {});
+      for (const [name, run] of ids) {
+        const { win, seen } = await openCopy(run);
+        const appMark = await page.evaluate(() => window.__pw);
+        ok(`a hostile archive (${name}) opened from the history runs nothing: no mark on the app page, the window or the copy`,
+          appMark === undefined && seen.pw === undefined && seen.shellRan === null && seen.copyRan === null && seen.frames === 1
+            && !/allow-scripts/.test(seen.sandbox || 'allow-scripts') && /^<meta http-equiv="Content-Security-Policy"/.test(seen.headFirst || '')
+            && new RegExp('Hostile ' + name).test(seen.copy || ''), JSON.stringify(Object.assign({}, seen, { copy: (seen.copy || '').slice(0, 120) })));
+        await win.close().catch(() => {});
+      }
+      await db.query('DELETE FROM custom_report_runs WHERE company_code = $1 AND run_by_username = $2', [CO, 'lee.level1']);
+      await db.query('DELETE FROM users WHERE id = $1', [l1]);
+      await page.click('#cr-content [data-act="cust-refresh"]').catch(() => {});
+      await page.waitForFunction(() => !/Hostile/.test((document.querySelector('#cr-content .cr-cust') || {}).textContent || ''), null, { timeout: 10000 }).catch(() => {});
+    }
     await page.click(`#cr-content [data-act="cust-resend"][data-id="${sentRun && sentRun.id}"]`);
     await page.waitForSelector('#rem-input', { timeout: 10000 });
     await page.waitForSelector('.rem-chip[data-email="super@keystone.example"]', { timeout: 5000 }).catch(() => {});

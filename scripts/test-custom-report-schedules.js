@@ -628,11 +628,17 @@ FAKE.browser = { newPage: async () => fakePage(), close: async () => {}, process
     s = await row(privId);
     assert('…but can switch it off — and it still runs as its owner',
       r.statusCode === 200 && s.enabled === false && s.next_run_at === null && s.run_as_user_id === l3Id, show(r));
-    // The builder switches a schedule off/on by sending it back whole.
+    // A whole schedule sent back switched ON is a save — checked, and run as
+    // the saver — so the admin, who cannot see this private report, is refused.
     const whole = { ...base, custom_report_id: PRIV_L3, enabled: true };
     r = await crs('PUT', { id: privId }, whole, ADMIN);
     s = await row(privId);
-    assert('a whole schedule sent back with only "enabled" changed is a switch, not a save',
+    assert('a whole schedule sent back switched on is a save, not a switch: refused here (it would run as someone who cannot see the report)',
+      r.statusCode === 400 && r.body.error === 'report_not_found' && s.enabled === false && s.run_as_user_id === l3Id, show(r));
+    // The builder's Pause / Resume sends { enabled } alone.
+    r = await crs('PUT', { id: privId }, { enabled: true }, ADMIN);
+    s = await row(privId);
+    assert('{ enabled } alone is the switch: back on, still running as its owner',
       r.statusCode === 200 && s.enabled === true && new Date(s.next_run_at) > new Date() && s.run_as_user_id === l3Id, show(r));
     await client.query("UPDATE custom_reports SET customer_safe = false, definition = jsonb_set(definition, '{includeInternal}', 'true') WHERE id = $1", [TPL]);
     const cur = await row(eachId);
@@ -861,6 +867,74 @@ FAKE.browser = { newPage: async () => fakePage(), close: async () => {}, process
     assert('nobody left to send to (no group, no address, no contacts): failed, saying what to add',
       res2.status === 'failed' && /nobody to send to/i.test(res2.message) && PAGE.opened === 0, JSON.stringify(res2));
     await client.query('DELETE FROM report_schedules WHERE company_code = $1 AND id <> ALL($2)', [CO, [eachId, savedId, privId]]);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nSaved with nothing changed, a schedule runs as whoever saved it — the fix its failed run names');
+  {
+    // The body the Edit dialog sends back when nothing was changed.
+    const asShown = sched => ({ custom_report_id: Number(sched.custom_report_id), jobs_mode: sched.jobs_mode, picked_jobs: sched.picked_jobs,
+      frequency: sched.frequency, days_of_week: sched.days_of_week, day_of_month: sched.day_of_month, send_time: sched.send_time,
+      timezone: sched.timezone, group_ids: sched.group_ids, emails: sched.emails, use_job_contacts: sched.use_job_contacts,
+      subject: sched.subject, note: sched.note, attach_pdf: sched.attach_pdf, enabled: sched.enabled });
+    const vId = await mkUser('victimadm', { paving: 'admin' });
+    let sched = await mkSched({}, P(vId, 'victimadm', { paving: 'admin' }));
+    await client.query('UPDATE users SET division_roles = $1 WHERE id = $2', [JSON.stringify({ paving: 'sales' }), vId]);
+    resetPage(); SENT.length = 0;
+    let res = await run(sched);
+    assert('runs as an admin made sales since: failed, telling someone to edit and save it',
+      res.status === 'failed' && /victimadm is a sales login/.test(res.message) && /edit and save the schedule/.test(res.message), JSON.stringify(res));
+    let r = await crs('PUT', { id: sched.id }, asShown(sched), L3);
+    sched = await row(sched.id);
+    assert('a level 3 saves it with nothing changed: 200, and it now runs as them',
+      r.statusCode === 200 && sched.run_as_user_id === l3Id && sched.run_as_username === 'pl3' && sched.enabled === true, show(r));
+    resetPage(); SENT.length = 0;
+    res = await run(sched);
+    assert('…so the next run sends', res.status === 'sent' && SENT.length > 0, JSON.stringify(res));
+    // The account it ran as deleted.
+    const goneId = await mkUser('goneadm', { paving: 'admin' });
+    let gone = await mkSched({}, P(goneId, 'goneadm', { paving: 'admin' }));
+    await client.query('DELETE FROM users WHERE id = $1', [goneId]);
+    gone = await row(gone.id);
+    resetPage(); SENT.length = 0;
+    res = await run(gone);
+    assert('runs as a deleted account: failed, saying to open it and save it', res.status === 'failed' && /save it/.test(res.message), JSON.stringify(res));
+    r = await crs('PUT', { id: gone.id }, asShown(gone), ADMIN);
+    gone = await row(gone.id);
+    assert('…an admin saves it unchanged: it runs as the admin now', r.statusCode === 200 && gone.run_as_user_id === adminId && gone.run_as_username === 'padmin', show(r));
+    resetPage(); SENT.length = 0;
+    res = await run(gone);
+    assert('…and sends', res.status === 'sent' && SENT.length > 0, JSON.stringify(res));
+    // Paused from the dialog (the whole schedule, switched off): still a switch.
+    r = await crs('PUT', { id: gone.id }, { ...asShown(gone), enabled: false }, L3);
+    gone = await row(gone.id);
+    assert('switched off from the dialog with nothing else changed: paused, and it still runs as the admin',
+      r.statusCode === 200 && gone.enabled === false && gone.next_run_at === null && gone.run_as_user_id === adminId, show(r));
+    await client.query('DELETE FROM report_schedules WHERE id = ANY($1)', [[sched.id, gone.id]]);
+    await client.query('DELETE FROM users WHERE id = $1', [vId]);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nA template scheduled per job, then saved with its own jobs, is not sent per job');
+  {
+    for (const mode of ['each', 'all_in_progress']) {
+      const flip = await mkReport(`Flips To Report ${mode}`);
+      const sched = await mkSched({ custom_report_id: flip, jobs_mode: mode, use_job_contacts: mode === 'each' });
+      await client.query(`UPDATE custom_reports SET kind = 'report', name = 'Acme Township — Route 30 Weekly ' || $2,
+        definition = jsonb_set(definition, '{jobs}', '{"mode":"saved","ids":["p1"]}') WHERE id = $1`, [flip, mode]);
+      resetPage(); SENT.length = 0;
+      const res = await run(await row(sched.id));
+      assert(`${mode}: the run refuses, saying it now saves its own jobs and to save the schedule — nothing built, nothing sent`,
+        res.status === 'failed' && /now saves its own jobs/.test(res.message) && /save it to send it for those jobs/.test(res.message)
+          && PAGE.specs.length === 0 && SENT.length === 0, JSON.stringify(res));
+      // What the Edit dialog sends for a report that saves its jobs.
+      const r = await crs('PUT', { id: sched.id }, { ...base, custom_report_id: flip, jobs_mode: 'saved', use_job_contacts: false }, ADMIN);
+      resetPage(); SENT.length = 0;
+      const again = await run(await row(sched.id));
+      assert(`${mode}: …and once the schedule is saved, it sends the report for its own job only`,
+        r.statusCode === 200 && again.status === 'sent' && PAGE.specs.length === 1 && PAGE.specs[0].jobsMode === 'saved', `${show(r)} ${JSON.stringify(again)}`);
+      await client.query('DELETE FROM report_schedules WHERE id = $1', [sched.id]);
+    }
   }
 
   // ─────────────────────────────────────────────────────────────────────

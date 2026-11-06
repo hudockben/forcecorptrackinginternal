@@ -282,6 +282,15 @@ async function loadCustomReport(sql, sched, acct, def) {
     return { error: `“${name}” no longer saves its jobs, so this schedule does not know which jobs to send. `
       + 'Edit the schedule and pick the jobs it covers.' };
   }
+  // The other way round: a template scheduled once per job (or as every In
+  // Progress job) that has since been saved with its own jobs is a report
+  // about THOSE jobs — its name, its "Prepared for", its filters — and is
+  // not sent for every other job. Saving the schedule makes it send for the
+  // report's own jobs (the editor offers nothing else for it).
+  if (mode !== 'saved' && r.kind === 'report') {
+    return { error: `“${name}” now saves its own jobs, so it is no longer sent ${mode === 'all_in_progress' ? 'as one report of every In Progress job' : 'once per job'}. `
+      + 'Open the schedule and save it to send it for those jobs.' };
+  }
   return {
     mode,
     report: {

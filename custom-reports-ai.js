@@ -6,7 +6,7 @@
  * the answer from /api/ai/report-builder is a report definition, which this
  * panel checks and hands to the builder as one undoable change.
  *
- *   window.FCTReportAI = { mount(el, adapter) → { destroy, send, reset, refresh }, _internals }
+ *   window.FCTReportAI = { mount(el, adapter) → { destroy, send, reset, refresh, sync }, _internals }
  *
  * custom-reports.js owns the report and supplies the adapter:
  *   getDefinition()            the report on screen, as a definition
@@ -320,6 +320,8 @@
       if (t.droppedJobs) notes.push(`Left out ${plural(t.droppedJobs, 'job')} that ${t.droppedJobs === 1 ? 'is' : 'are'} not in this division's list.`);
       if (t.droppedCodes) notes.push(`Left out ${plural(t.droppedCodes, 'code')} not found on these jobs.`);
       if (t.unchanged) notes.push('The report is unchanged.');
+      if (t.stale) notes.push('The report changed while I was working, so this was not applied. Apply it anyway (your edits since then would be replaced), or discard it.');
+      if (t.discarded) notes.push('Discarded — the report is as you left it.');
       if (t.applyError) notes.push(t.applyError);
       if (t.undoError) notes.push(t.undoError);
       notes.forEach(n => parts.push(`<p class="crai-note">${esc(n)}</p>`));
@@ -330,6 +332,11 @@
           const top = latestUndoable() === t;
           acts.push(`<button type="button" class="crai-btn" data-crai-act="undo" data-turn="${i}"${top && !st.busy ? '' : ' disabled'}${top ? '' : ' title="Undo the later change first"'}>Undo</button>`);
         }
+      }
+      if (t.stale && t.pending) {
+        const live = st.turns[st.turns.length - 1] === t && !st.busy;
+        acts.push(`<button type="button" class="crai-btn" data-crai-act="apply-stale" data-turn="${i}"${live ? '' : ' disabled'}>Apply anyway</button>`
+          + `<button type="button" class="crai-btn" data-crai-act="discard-stale" data-turn="${i}"${live ? '' : ' disabled'}>Discard</button>`);
       }
       if (t.needsInternal && !t.undone) {
         acts.push(internalOnNow()
@@ -383,6 +390,9 @@
       render();
 
       const body = buildBody(adapter, message, st.history);
+      // What the answer will be built on: if the report is changed by hand
+      // while this is out, the answer no longer describes it.
+      const sentDef = body.definition;
       const base = String(call(() => adapter.apiBase, '') || '/api').replace(/\/+$/, '');
       const url = `${base}/ai/report-builder?division=${encodeURIComponent(String(call(() => adapter.division, '') || ''))}`;
       const headers = { 'Content-Type': 'application/json' };
@@ -439,6 +449,7 @@
         droppedJobs: Number(data.dropped && data.dropped.jobs) || 0,
         droppedCodes: Number(data.dropped && data.dropped.codes) || 0,
         applied: false, undone: false, unchanged: false, applyError: '', undoError: '',
+        stale: false, pending: null, discarded: false,
       };
       const current = currentDefinition(adapter);
       const prep = prepareDefinition(data.definition, adapter, current);
@@ -446,10 +457,17 @@
       else {
         turn.droppedJobs += prep.droppedJobs;
         const E = root.FCTReportEngine;
-        const curNorm = current ? call(() => E.normalizeDefinition(current), null) : null;
+        const norm = d => (d ? call(() => E.normalizeDefinition(d), null) : null);
+        const curNorm = norm(current);
         if (curNorm && sameDefinition(prep.def, curNorm)) turn.unchanged = true;
         else if (readOnly()) turn.applyError = 'Not applied — this report is read-only for you.';
-        else {
+        else if (!sameDefinition(norm(sentDef), curNorm)) {
+          // Changed by hand while the AI was working: applying would replace
+          // those edits with an answer built on the report as it was. The
+          // person chooses.
+          turn.stale = true;
+          turn.pending = prep.def;
+        } else {
           let ok;
           try { ok = adapter.applyDefinition(prep.def, { changes: turn.changes.slice() }); } catch (_) { ok = false; }
           if (ok === false) turn.applyError = 'The builder could not take that change.';
@@ -464,6 +482,31 @@
       if (st.history.length > MAX_HISTORY * 2) st.history.splice(0, st.history.length - MAX_HISTORY * 2);
       render();
       return turn.applied;
+    }
+
+    // An answer held back because the report changed while it was out.
+    function applyStale(i) {
+      const t = st.turns[i];
+      if (!t || !t.stale || !t.pending || st.busy || st.turns[st.turns.length - 1] !== t) return false;
+      if (readOnly()) { t.applyError = 'Not applied — this report is read-only for you.'; t.stale = false; t.pending = null; render(); return false; }
+      let ok;
+      try { ok = adapter.applyDefinition(t.pending, { changes: t.changes.slice() }); } catch (_) { ok = false; }
+      t.stale = false;
+      t.pending = null;
+      if (ok === false) t.applyError = 'The builder could not take that change.';
+      else t.applied = true;
+      if (t.historyEntry) t.historyEntry.content = historyText(t);
+      render();
+      return t.applied;
+    }
+    function discardStale(i) {
+      const t = st.turns[i];
+      if (!t || !t.stale) return false;
+      t.stale = false;
+      t.pending = null;
+      t.discarded = true;
+      render();
+      return true;
     }
 
     function undo(i) {
@@ -525,6 +568,8 @@
         const c = st.chips[Number(b.getAttribute('data-i'))];
         if (c) { input.value = c; send(c); }
       } else if (act === 'undo') undo(Number(b.getAttribute('data-turn')));
+      else if (act === 'apply-stale') applyStale(Number(b.getAttribute('data-turn')));
+      else if (act === 'discard-stale') discardStale(Number(b.getAttribute('data-turn')));
       else if (act === 'internal') askInternal();
       else if (act === 'retry') send(st.lastText);
       else if (act === 'clear') { reset(); input.focus(); }
@@ -549,6 +594,9 @@
       send: t => send(t),
       reset,
       refresh: () => render(),
+      // Re-reads the report's state (read-only, say, after a Save As made it
+      // the user's own copy) into the controls, without redrawing the chat.
+      sync: () => { if (!st.destroyed) syncControls(); },
       destroy() {
         st.destroyed = true;
         if (st.ctrl) { try { st.ctrl.abort(); } catch (_) { /* gone */ } }

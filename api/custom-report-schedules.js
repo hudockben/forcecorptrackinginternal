@@ -40,7 +40,9 @@
 // GET    ?division=&runs=<scheduleId>     → { runs }   its last 25 runs
 // POST   ?division=                       create
 // PUT    ?division=&id=<n>                save, or { enabled } alone (also a full
-//                                         body whose only change is enabled)
+//                                         body, unchanged, that switches it off);
+//                                         any other full body is a save, and
+//                                         runs as whoever saved it
 // DELETE ?division=&id=<n>
 // POST   ?division=&id=<n>&action=run     Send now — built and sent inside the
 //                                         request, as Auto Reports' Send now
@@ -516,11 +518,18 @@ module.exports = async (req, res) => {
       if (!cur) return notFound();
       const body = isPlainObject(req.body) ? req.body : {};
       const hasEnabled = Object.prototype.hasOwnProperty.call(body, 'enabled');
-      const toggleOnly = hasEnabled && (Object.keys(body).length === 1 || settingsKey(body) === settingsKey(cur));
+      const wantOn = body.enabled !== false && body.enabled !== 'false' && Boolean(body.enabled);
+      // A switch is { enabled } alone (the builder's Pause / Resume), or a
+      // whole schedule sent back unchanged to PAUSE it — pausing sends
+      // nothing, so it needs no checks and keeps who it runs as. Anything
+      // else is a save: checked again, and run as whoever saved it — which is
+      // what a failed run tells the person to do ("open it and save it"),
+      // even with nothing changed.
+      const toggleOnly = hasEnabled && (Object.keys(body).length === 1 || (!wantOn && settingsKey(body) === settingsKey(cur)));
 
       let v;
       if (toggleOnly) {
-        v = { ...cur, enabled: body.enabled !== false && body.enabled !== 'false' && Boolean(body.enabled) };
+        v = { ...cur, enabled: wantOn };
       } else {
         const checked = await validate(sql, { company, division, me, body });
         if (!checked.value) return send(res, checked);

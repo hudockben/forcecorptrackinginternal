@@ -84,9 +84,14 @@ const MAX_OPTION_CODES = 300;
 const MAX_OPTION_CODE_LEN = 120;
 const DIVISIONS = ['turf', 'paving', 'kiewit'];
 const DIV_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree' };
-// The function is given 60 s. The model call gets what is left of 50 s, so a
-// slow turn ends in a message the panel can show rather than a killed request.
-const MODEL_BUDGET_MS = 50000;
+// The function is given 60 s. The model call gets what is left of 50 s — the
+// whole streamed answer, not just its first byte — so a slow turn ends in a
+// message the panel can show rather than a killed request. The environment
+// may only shorten it (the tests do).
+const MODEL_BUDGET_MS = (() => {
+  const v = Number(process.env.REPORT_BUILDER_MODEL_BUDGET_MS);
+  return Number.isFinite(v) && v > 0 && v < 50000 ? v : 50000;
+})();
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
 // ── Text in, text out ──────────────────────────────────────────────────────
@@ -561,11 +566,30 @@ function postProcess(raw, { jobs, codes, current, division }) {
 // The SDK's own retries are off: a retry it made after a slow first attempt
 // would run past the function's 60 s. One retry is made here instead, for an
 // overloaded or failing API, and only while there is time for it to finish.
+//
+// The SDK's timeout stops counting once the response headers are in, so a
+// stream that starts at once and then trickles would run on to the
+// function's kill. Each try is bounded here instead, over the whole stream:
+// when the budget runs out the stream is aborted and the error says so.
 const TRANSIENT = [500, 502, 503, 504, 529];
+class ModelBudgetError extends Error {
+  constructor() { super('The model call ran past its time budget.'); this.name = 'ModelBudgetError'; this.budgetExceeded = true; }
+}
 async function callModel(client, body, started) {
   const left = () => MODEL_BUDGET_MS - (Date.now() - started);
-  const once = (b, headers) => client.messages.stream(b,
-    { ...(headers ? { headers } : {}), timeout: Math.max(5000, left()), maxRetries: 0 }).finalMessage();
+  const once = async (b, headers) => {
+    const ms = Math.max(1000, left());
+    const stream = client.messages.stream(b, { ...(headers ? { headers } : {}), timeout: ms, maxRetries: 0 });
+    let timer;
+    const budget = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        try { if (stream && typeof stream.abort === 'function') stream.abort(); } catch (_) { /* gone */ }
+        reject(new ModelBudgetError());
+      }, ms);
+    });
+    try { return await Promise.race([stream.finalMessage(), budget]); }
+    finally { clearTimeout(timer); }
+  };
   const withFallback = () => once({ ...body, fallbacks: 'default' }, { 'anthropic-beta': FALLBACK_BETA });
   try {
     return await withFallback();
@@ -576,13 +600,27 @@ async function callModel(client, body, started) {
   }
 }
 
-// After a fallback the answer is the text after the last switch point; any
-// text before it belongs to the model that declined.
-function answerText(message) {
+// The answer's text, as candidates to parse in turn. A streamed request that
+// falls back mid-output keeps the declined model's partial text, marks the
+// switch with a fallback block, and the fallback model CONTINUES that text —
+// so the whole answer is every text block in order. A request that falls
+// back before any output (or a non-streamed one, which drops the partial)
+// has nothing before the switch, and the same join is the answer. Should the
+// fallback model start over instead, the text after the last switch point is
+// tried as well.
+function answerTexts(message) {
   const blocks = Array.isArray(message && message.content) ? message.content : [];
+  const text = list => list.filter(b => b && b.type === 'text').map(b => b.text || '').join('');
   let from = 0;
   blocks.forEach((b, i) => { if (b && b.type === 'fallback') from = i + 1; });
-  return blocks.slice(from).filter(b => b && b.type === 'text').map(b => b.text || '').join('');
+  const all = text(blocks), tail = text(blocks.slice(from));
+  return all === tail ? [all] : [all, tail];
+}
+function parseAnswer(message) {
+  for (const t of answerTexts(message)) {
+    try { const v = JSON.parse(t); if (isObj(v)) return v; } catch (_) { /* the next one */ }
+  }
+  return null;
 }
 
 const fail = (res, status, error, extra) => res.status(status).json({ ok: false, error, ...(extra || {}) });
@@ -657,7 +695,8 @@ module.exports = async (req, res) => {
   } catch (err) {
     console.error('[report-builder] model call failed:', (err && err.status) || '', err && err.message);
     if (err && err.status === 429) return fail(res, 429, 'The AI builder is busy right now — try again in a moment.');
-    if (typeof Anthropic.APIConnectionTimeoutError === 'function' && err instanceof Anthropic.APIConnectionTimeoutError) {
+    if ((err && err.budgetExceeded)
+      || (typeof Anthropic.APIConnectionTimeoutError === 'function' && err instanceof Anthropic.APIConnectionTimeoutError)) {
       return fail(res, 504, 'The AI builder took too long on that one. Try a shorter request.');
     }
     return fail(res, 502, 'The AI builder could not answer just now. Try again in a moment.');
@@ -671,8 +710,7 @@ module.exports = async (req, res) => {
     return fail(res, 502, 'That report was too big to finish in one go. Try asking for fewer sections at a time.', counts);
   }
 
-  let out;
-  try { out = JSON.parse(answerText(message_)); } catch { out = null; }
+  const out = parseAnswer(message_);
   if (!isObj(out) || !isObj(out.definition)) {
     console.error('[report-builder] unreadable answer, stop_reason', message_ && message_.stop_reason);
     return fail(res, 502, 'The AI builder sent back something it could not use. Try again.', counts);
@@ -704,4 +742,5 @@ module.exports.buildMessages = buildMessages;
 module.exports.readJobs = readJobs;
 module.exports.readCodes = readCodes;
 module.exports.readHistory = readHistory;
-module.exports.answerText = answerText;
+module.exports.answerTexts = answerTexts;
+module.exports.parseAnswer = parseAnswer;

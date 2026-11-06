@@ -29,11 +29,19 @@
  *                        //   — saved customer contacts, filled in too; a chip
  *                        //   shows the name, its tooltip the label ("Job
  *                        //   contact — Maple Ave")
+ *     suggestedContacts, // optional — the same shape as contacts, NOT filled in:
+ *                        //   listed under the recipients to add by hand (a
+ *                        //   report about several customers' jobs, whose
+ *                        //   contacts would each see the others' jobs)
+ *     suggestedNote,     // optional string — the warning shown above them
  *     contactContext,    // optional { division, projectIds:[...], clients:[{key,name}],
- *                        //   canEdit, apiBase?, getToken? } — with canEdit, every
- *                        //   address that is not a saved contact offers
+ *                        //   mixed?, canEdit, apiBase?, getToken? } — with canEdit,
+ *                        //   every address that is not a saved contact offers
  *                        //   "☆ Save as contact" for this job / this client /
- *                        //   each picked job (POST /api/report-contacts)
+ *                        //   each picked job (POST /api/report-contacts). mixed
+ *                        //   (or more than one client): the jobs are more than
+ *                        //   one customer's, so "each picked job" is not offered
+ *                        //   and the client must be chosen, not defaulted
  *   });
  *
  * onSent's info also carries `archived`: true when the server kept a copy of
@@ -243,6 +251,9 @@
         : '';
       return `<span class="rem-chip" data-email="${esc(e)}"${tip} style="${CHIP_STYLE}">${esc(shown)}${addr}${saved}${save}<span data-i="${i}" class="rem-chip-x" role="button" aria-label="Remove ${esc(e)}" style="cursor:pointer;color:#9ca3af;font-weight:700;font-size:0.85rem;line-height:1;">&times;</span></span>`;
     }).join('');
+    // A suggested contact already on the list (added, or by a group) is not
+    // offered again; one removed is.
+    renderSuggestions();
   }
 
   // One listener for every chip, present and future.
@@ -257,6 +268,7 @@
       state.manualEdit = true;
       if (state.contactForm === gone) closeContactForm();
       renderChips();
+      renderSuggestions();
       return;
     }
     const sv = t.closest('.rem-chip-save');
@@ -330,13 +342,60 @@
     if (state.seedNote) setStatus(state.seedNote, 'error');
   }
 
+  // ── Suggested contacts ──────────────────────────────────────────────
+  // Saved contacts the caller does not fill in — a report about several
+  // customers' jobs would show each of them the others' — listed with a
+  // warning, each added only by a click.
+  function cleanContactList(raw) {
+    const out = [];
+    for (const c of (Array.isArray(raw) ? raw : []).slice(0, 200)) {
+      if (!c || typeof c !== 'object') continue;
+      const email = String(c.email == null ? '' : c.email).trim().toLowerCase();
+      if (!isValidEmail(email) || out.some(x => x.email === email)) continue;
+      const name = typeof c.name === 'string' ? c.name.replace(/\s+/g, ' ').trim().slice(0, 120) : '';
+      const label = typeof c.label === 'string' && c.label.trim() ? c.label.trim().slice(0, 200) : (SOURCE_LABELS[c.source] || 'Saved contact');
+      out.push({ email, name, label, source: c.source === 'job' || c.source === 'client' ? c.source : null });
+    }
+    return out;
+  }
+  function renderSuggestions() {
+    const box = document.getElementById('rem-suggest');
+    if (!box || !state) return;
+    const left = state.suggested.filter(c => !state.recipients.includes(c.email));
+    if (!left.length && !state.suggestedNote) { box.style.display = 'none'; box.innerHTML = ''; return; }
+    box.style.display = 'block';
+    const btn = 'display:inline-flex;align-items:center;gap:0.3rem;background:transparent;color:#e5e7eb;border:1px dashed #4b5563;border-radius:12px;padding:0.15rem 0.55rem;font-size:0.72rem;margin:0.12rem;cursor:pointer;max-width:100%;';
+    box.innerHTML = (state.suggestedNote
+      ? `<div class="rem-suggest-note" role="note" style="font-size:0.72rem;color:#fcd34d;background:#422006;border:1px solid #92400e;border-radius:6px;padding:0.35rem 0.5rem;">&#9888; ${esc(state.suggestedNote)}</div>` : '')
+      + (left.length
+        ? `<div style="font-size:0.7rem;color:#9ca3af;margin:0.35rem 0 0.1rem;">Saved contacts, not added — add one only if they should see every job in this report:</div>`
+          + left.map(c => `<button type="button" class="rem-suggest-add" data-email="${esc(c.email)}" title="${esc(c.label)}" style="${btn}">+ ${esc(c.name || c.email)}${
+            c.name ? `<span style="color:#9ca3af;font-size:0.68rem;">${esc(c.email)}</span>` : ''}</button>`).join('')
+        : '');
+  }
+  function onSuggestClick(ev) {
+    const t = ev.target;
+    if (!t || typeof t.closest !== 'function' || !state) return;
+    const b = t.closest('.rem-suggest-add');
+    if (!b) return;
+    const c = state.suggested.find(x => x.email === b.getAttribute('data-email'));
+    if (!c) return;
+    if (!state.contactMeta.has(c.email)) state.contactMeta.set(c.email, { name: c.name, title: c.label, source: c.source });
+    if (!state.recipients.includes(c.email)) state.recipients.push(c.email);
+    state.manualEdit = true;
+    renderChips();
+    renderSuggestions();
+  }
+
   // ── Save as contact ─────────────────────────────────────────────────
   // Where an address can be saved: the one job, every picked job, or one of
-  // the picked jobs' clients.
+  // the picked jobs' clients. Jobs of more than one customer: never every
+  // picked job (one customer's contact would be filed on — and later sent —
+  // the others' jobs), and the client is chosen, not defaulted.
   function contactScopes(cc) {
     const out = [];
     if (cc.projectIds.length === 1) out.push({ value: 'job', label: 'This job', projectIds: cc.projectIds.slice() });
-    if (cc.projectIds.length > 1) out.push({ value: 'jobs', label: `Each picked job (${cc.projectIds.length})`, projectIds: cc.projectIds.slice() });
+    if (cc.projectIds.length > 1 && !cc.mixed) out.push({ value: 'jobs', label: `Each picked job (${cc.projectIds.length})`, projectIds: cc.projectIds.slice() });
     cc.clients.slice(0, 10).forEach((c, i) => {
       out.push({ value: 'client:' + i, label: `${cc.clients.length > 1 ? 'Client' : 'This client'} — ${c.name}`, client: c });
     });
@@ -358,6 +417,7 @@
     const cc = {
       division:   String(raw.division),
       projectIds, clients,
+      mixed:      raw.mixed === true || clients.length > 1,
       canEdit:    raw.canEdit === true,
       apiBase:    typeof raw.apiBase === 'string' && raw.apiBase ? raw.apiBase.replace(/\/+$/, '') : '/api',
       getToken:   typeof raw.getToken === 'function' ? raw.getToken : null,
@@ -388,7 +448,7 @@
           <option value="other" selected>Other</option>
         </select>
         <select id="rem-contact-scope" style="${field}flex:1 1 9rem;">
-          ${cc.scopes.map(sc => `<option value="${esc(sc.value)}">${esc(sc.label)}</option>`).join('')}
+          ${cc.mixed ? '<option value="" selected>Who is it for? Pick one…</option>' : ''}${cc.scopes.map(sc => `<option value="${esc(sc.value)}">${esc(sc.label)}</option>`).join('')}
         </select>
         <button type="button" id="rem-contact-save" style="background:#065f46;color:#d1fae5;border:1px solid #047857;border-radius:6px;font-size:0.75rem;font-weight:600;padding:0.32rem 0.7rem;cursor:pointer;">Save</button>
         <button type="button" id="rem-contact-cancel" style="background:transparent;color:#9ca3af;border:1px solid #374151;border-radius:6px;font-size:0.75rem;padding:0.32rem 0.7rem;cursor:pointer;">Cancel</button>
@@ -409,7 +469,11 @@
     if (!cc || !btn || btn.disabled) return;
     const name = (document.getElementById('rem-contact-name')?.value || '').replace(/\s+/g, ' ').trim().slice(0, 120);
     const role = document.getElementById('rem-contact-role')?.value || 'other';
-    const scope = cc.scopes.find(sc => sc.value === document.getElementById('rem-contact-scope')?.value) || cc.scopes[0];
+    const scope = cc.scopes.find(sc => sc.value === document.getElementById('rem-contact-scope')?.value);
+    if (!scope) {
+      if (msg) { msg.style.color = '#fca5a5'; msg.textContent = 'Pick who this contact is for — these jobs are for more than one customer.'; }
+      return;
+    }
     // A client contact is filed under the key the server works out from the
     // client's name — the same trim-and-lower-case the job's own client gets.
     const bodies = scope.client
@@ -813,6 +877,7 @@
           <label style="display:block;font-size:0.72rem;color:#9ca3af;margin-bottom:0.25rem;">Recipients</label>
           <div id="rem-chips" style="border:1px solid #1f2937;border-radius:6px;background:#020617;padding:0.35rem;min-height:2rem;"></div>
           <div id="rem-contact-form" style="display:none;margin-top:0.35rem;padding:0.5rem 0.6rem;border:1px solid #374151;border-radius:6px;background:#0f172a;"></div>
+          <div id="rem-suggest" style="display:none;margin-top:0.35rem;"></div>
           <div style="display:flex;gap:0.4rem;margin-top:0.35rem;">
             <input id="rem-input" type="text" placeholder="Type an email and press Enter…" autocomplete="off"
               style="flex:1;background:#020617;color:#e5e7eb;border:1px solid #1f2937;border-radius:6px;padding:0.45rem 0.6rem;font-size:0.85rem;outline:none;">
@@ -885,9 +950,11 @@
     document.addEventListener('keydown', onEsc);
 
     document.getElementById('rem-chips').addEventListener('click', onChipClick);
+    document.getElementById('rem-suggest').addEventListener('click', onSuggestClick);
 
     renderChips();
     seedRecipients(state.defaultRecipients, state.contacts);
+    renderSuggestions();
     loadGroups();
     setTimeout(() => inp.focus(), 30);
   }
@@ -933,6 +1000,8 @@
       customReport:   opts.customReport && typeof opts.customReport === 'object' ? opts.customReport : null,
       defaultRecipients: Array.isArray(opts.defaultRecipients) ? opts.defaultRecipients.slice(0, 200) : [],
       contacts:       Array.isArray(opts.contacts) ? opts.contacts.slice(0, 200) : [],
+      suggested:      cleanContactList(opts.suggestedContacts),
+      suggestedNote:  typeof opts.suggestedNote === 'string' ? opts.suggestedNote.replace(/\s+/g, ' ').trim().slice(0, 300) : '',
       contactContext: readContactContext(opts.contactContext),
       contactMeta:    new Map(),   // email → { name, title, source, saved? }
       contactForm:    null,        // the address the Save-as-contact form is open for
