@@ -2767,9 +2767,10 @@ function deepNear(a, b, at = '') {
              back in every one of those sections — every column but the
              figures that look forward from today (FWD_BY) — run with
              everything dated after the range's end (daily rows, delivery
-             lines, trucking tickets) taken out, the day after A, and run
-             again 1 to 60 days after A with more of each dated after A
-             added. (Planned vs Actual is (a)'s, on its own stream.)
+             lines, trucking tickets) taken out, on A itself (as of that
+             day) and the day after A, and run again 1 to 60 days after A
+             with more of each dated after A added. (Planned vs Actual is
+             (a)'s, on its own stream.)
          (d') today (A = today): those sections and Planned vs Actual equal
              the round-7 engine's (382f3c9, whose sections other than
              Planned vs Actual are this engine's before this fix), every
@@ -2871,6 +2872,9 @@ function deepNear(a, b, at = '') {
           const why = [], bad = new Set();
           const check = (got, what) => { res.d.runs++; if (got !== want) { why.push(what); secDiff(got, want).forEach(k => bad.add(k)); } };
           const x = cut(cs);
+          // On A itself the report is as of today; a day later it looks
+          // back. Either way it is the same report.
+          check(serOut(runCase(E, x.c, x.jobs, A, pinned, n, true), true), `run on ${A} itself, as of that day`);
           check(serOut(runCase(E, x.c, x.jobs, addD(A, 1), pinned, n, true), true), `run ${addD(A, 1)} with nothing dated after ${A}`);
           [[p(0.5) ? addWd(A, int(1, 9)) : addD(A, int(10, 60)), int(1, 8)]].forEach(([t, extra]) => {
             const lo = addD(A, 1), hi = addD(t, 10);
@@ -2956,7 +2960,7 @@ function deepNear(a, b, at = '') {
     const rt = asOfProperties(V, OLD, NT, SEED_D + 1, 'today');
     const msT = Date.now() - t1;
     const listOf = m => Object.entries(m).map(([k, n]) => `${k} ${n}`).join(', ');
-    assert(`(d) ${rd.cases} past-range reports (${listOf(rd.kinds)}): Bid Item Progress lines, cost-code subtotals and Totals, Production Rates, Daily Production, Materials, Trucking, Schedule, Summary Figures and Division Rates (and the chart, on ${rd.secs.chart}) read the same looking back with everything dated after the range's end taken out, and run again 1 to 60 days after its end with ${rd.d.rows} more rows (and delivery lines and tickets) dated after it (${rd.d.runs} runs, ${msD} ms)`,
+    assert(`(d) ${rd.cases} past-range reports (${listOf(rd.kinds)}): Bid Item Progress lines, cost-code subtotals and Totals, Production Rates, Daily Production, Materials, Trucking, Schedule, Summary Figures and Division Rates (and the chart, on ${rd.secs.chart}) read the same run on the range's last day itself (as of that day) and looking back with everything dated after the range's end taken out, and run again 1 to 60 days after its end with ${rd.d.rows} more rows (and delivery lines and tickets) dated after it (${rd.d.runs} runs, ${msD} ms)`,
       rd.d.fail === 0 && rd.cases >= 1000 && Object.keys(rd.kinds).length === 4 && rd.secs.chart > 200, JSON.stringify(rd.d));
     assert(`(d') ${rt.t.strict} reports as of today (${listOf(rt.kinds)}) with nothing dated past their end equal the round-7 engine's in all those sections and Planned vs Actual, every column — but for ${rt.t.blank} (${rt.t.blankLines} lines) that differ only by the Plan / Day status fix (${msT} ms)`,
       rt.t.fail === 0 && rt.t.strict >= 250 && rt.t.blank >= 10, JSON.stringify({ fail: rt.t.fail, diffSecs: rt.t.diffSecs, sample: rt.t.sample }));
@@ -3053,6 +3057,25 @@ function deepNear(a, b, at = '') {
     assert('…job to date the Oct 20 row is shared: Installed 120 counts it once (lines 120 and 70), Remaining is blank, cost and hours once ($480, 16 h)',
       bpJtd.tot.installed_to_date === 120 && bpJtd.tot.remaining_qty === null && bpJtd.lines.map(l => l.installed_to_date).join() === '120,70'
         && near(bpJtd.tot.actual_cost, 480) && bpJtd.tot.labor_hours === 16, JSON.stringify(bpJtd));
+    // A row both lines take dated before the range: 100 on Top on Sep 20,
+    // beside the Oct 10 Base 50. It is one of the rows to the range's end, so
+    // the lines share it however long after Oct 16 the report is run: the
+    // Totals count it once — Installed 150 (lines 150 and 100), This Period
+    // 50, Remaining blank, cost and hours once ($480, 16 h) — never the 250,
+    // 1,250, $720 and 24 h of the two lines added up. Run on Oct 16 itself
+    // (as of today) and on Oct 17 it reads the same, and the round-7 engine
+    // read it so too.
+    const sep20 = [row('2026-09-20', 'Pave', 'Top', 100)];
+    const bpPre = bpShare(V, sep20, oct1to16, '2026-11-06'), bpPreA = bpShare(V, sep20, oct1to16, '2026-10-16');
+    const bpPre17 = bpShare(V, sep20, oct1to16, '2026-10-17'), bpPreOld = bpShare(OLD, sep20, oct1to16, '2026-11-06');
+    const bpPreCc = bpShare(V, sep20, oct1to16, '2026-11-06', 'cost_code');
+    assert('Bid Item Progress, Oct 1–16 run Nov 6, whose two lines share a Sep 20 row (before the range): Totals count it once — Installed 150 (lines 150 and 100), This Period 50, Remaining blank, $480 and 16 h — as run on Oct 16 itself and on Oct 17, and as the round-7 engine read it; the Pave subtotal reads the same',
+      bpPre.tot.installed_to_date === 150 && bpPre.tot.installed_period === 50 && bpPre.tot.remaining_qty === null
+        && near(bpPre.tot.actual_cost, 480) && bpPre.tot.labor_hours === 16 && bpPre.lines.map(l => l.installed_to_date).join() === '150,100'
+        && JSON.stringify(bpPreA) === JSON.stringify(bpPre) && JSON.stringify(bpPre17) === JSON.stringify(bpPre)
+        && JSON.stringify(bpPreOld) === JSON.stringify(bpPre)
+        && bpPreCc.sub && bpPreCc.sub.installed_to_date === 150 && bpPreCc.sub.remaining_qty === null && near(bpPreCc.sub.actual_cost, 480),
+      JSON.stringify({ bpPre, bpPreA, bpPre17, bpPreOld, sub: bpPreCc.sub }));
     // As of today ("This week", Nov 2–8, run Wed Nov 4): a row typed for
     // Nov 12, after the range's end, is no part of the report — the Totals
     // read as without it (the round-7 engine blanked Remaining over it). A

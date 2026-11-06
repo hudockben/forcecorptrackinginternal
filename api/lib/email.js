@@ -94,7 +94,9 @@ function normalizeAttachments(raw) {
 //   - javascript:/vbscript: URLs, and data: ones but images, in every URL
 //     attribute (href, src, xlink:href, srcset, formaction, … and an svg
 //     <animate>/<set> to/values), however the value is quoted or encoded:
-//     the value becomes "#" (rewriteTag below)
+//     the value becomes "#" (rewriteTag below); in a span kept as text that
+//     the browser may read as markup, such an attribute a tag reader cannot
+//     see has its "=" written &#61; instead (cutInSpan, spanUrls)
 // We keep inline styles and tables (the existing print HTML relies on them).
 // The passes repeat until nothing changes, so markup that a removal splices
 // back together (<scr<script></script>ipt>) is removed too — up to a cap,
@@ -277,12 +279,20 @@ const RAWTEXT_EL = /^(script|style|textarea|title|xmp|iframe|noembed|noframes|no
 // The browser may yet read it as markup — an svg/math <style>, <title> or
 // <textarea> is an ordinary element there, "<!-->" closes at once, an HTML
 // "<![CDATA[" ends at its first ">" — so it is not copied blind: each start
-// tag in it, read bounded at the span's end, loses its on… attributes, and
-// then any handler-like text still where an attribute name could start (one
-// a comment or CDATA inside an svg <style> hid from that reading) is
-// defused. Everything else is kept as written: CSS, and a <title>'s
-// "Conditions = dry", come through byte for byte (words that do sit where an
-// attribute could start, "Phase one = 1,200", get an &#61; a title decodes).
+// tag in it, read bounded at the span's end, loses its on… attributes and has
+// a javascript:/vbscript:/non-image data: URL value replaced by "#", as any
+// tag does (rewriteTag). Then the text is read again where an attribute name
+// could start, for a tag a comment or CDATA inside an svg <style> hid from
+// that reading: handler-like text is defused, and so is a URL attribute
+// holding such a URL (spanUrls, from the span's first "<" and a letter: no
+// tag opens before it). Both are defused by writing the "=" as &#61;: should
+// the browser read it as a tag, the attribute is one named "onerror&#61;…" or
+// "href&#61;…" that nothing runs or follows; read as a <title>'s or
+// <textarea>'s text, it decodes back to "=". Everything else is kept as
+// written: CSS, and a <title>'s "Conditions = dry" or "paving by = data:
+// TBD", come through byte for byte (words that do sit where a handler could
+// start, "Phase one = 1,200", get an &#61; a title decodes, as do URL-like
+// words past a tag in the span).
 function cutInSpan(span) {
   const START = /<[A-Za-z]/g;
   let out = '', i = 0;
@@ -295,22 +305,59 @@ function cutInSpan(span) {
     out += rewriteTag(span, m.index, tag, asWritten);
     i = tag.end;
   }
-  return out.replace(SPAN_HANDLER_LIKE, '$1&#61;').replace(SPAN_URL_LIKE, spanUrl);
+  out = out.replace(SPAN_HANDLER_LIKE, '$1&#61;');
+  const first = out.search(START_TAG);   // no tag, so no attribute, before it
+  return first < 0 ? out : out.slice(0, first) + spanUrls(out.slice(first));
 }
+const START_TAG = /<[A-Za-z]/;
 const asWritten = t => t;
-// The same for a URL: any URL attribute still written where an attribute
-// name could start (one a comment or CDATA inside an svg <style> hid from the
-// tag reading) has a javascript:/vbscript:/data: value replaced by "#". Which
-// element it is on is not known here, so a data: image is kept only on src
-// and srcset (no element left by then runs one as a page).
-const SPAN_URL_LIKE = /(?<=[\s\/"'])(xlink:href|href|src|srcset|action|formaction|data|poster|background|ping|cite|longdesc|lowsrc|dynsrc|codebase|manifest|icon|archive|to|from|by|values)(\s*=\s*)("[^"]*"?|'[^']*'?|[^\s>"'][^\s>]*)/gi;
-function spanUrl(m, name, eq, val) {
-  const q = val[0] === '"' || val[0] === "'" ? val[0] : '';
-  const closed = q && val.length > 1 && val[val.length - 1] === q;
-  const raw = q ? val.slice(1, closed ? -1 : undefined) : val;
-  const split = ANIMATE_ATTR.test(name) ? ANIMATE_SPLIT : URL_LIST_ATTR.test(name) ? URL_LIST_SPLIT : null;
-  if (!unsafeUrlValue(raw, split, /^(?:src|srcset)$/i.test(name))) return m;
-  return name + eq + q + '#' + (closed ? q : '');
+/* The URL check on a span's text, from where a tag could first open. Every
+   place a URL attribute could start (its name straight after a space, a "/"
+   or a quote, then "=") is read, with its value read as the browser would
+   read it there; one holding a javascript: or vbscript: URL, or a data: one
+   (but an image on a src or srcset), has its "=" written &#61;. A value is
+   read but never passed over, so a name inside it is read too: the browser
+   may not read that value as one at all — it may have closed an earlier
+   value at the quote this one opens with, or never begun the tag this
+   reading puts it in — and then reads an attribute from inside it, after a
+   space, a "/" or a quote. Which element a name is on is not known
+   here, so a data: image is told apart only on src and srcset, and only in
+   quotes. Linear: a quoted value is read to its closing quote, and no later
+   value in that quote opens before it; an unquoted one only up to its first
+   "/", quote, space or ">" — a scheme comes before any of those, and a name
+   inside the value starts after one; and an unquoted list (srcset, values …)
+   counts as holding such a URL when a ":" or "&" comes before its end, found
+   by forward searches whose answers are kept, as replaceBlocks keeps its. */
+const SPAN_URL_NAME = /(?<=[\s\/"'])(xlink:href|href|srcset|src|formaction|action|data|poster|background|ping|cite|longdesc|lowsrc|dynsrc|codebase|manifest|icon|archive|to|from|by|values)\s*=/gi;
+const LIST_END = /[\t\n\f\r >]/g;
+const SCHEME_SIGN = /[:&]/g;
+function spanUrls(s) {
+  const nextAt = (re, from) => { re.lastIndex = from; const r = re.exec(s); return r ? r.index : s.length; };
+  let out = '', k = 0, m, endAt = -1, signAt = -1;
+  SPAN_URL_NAME.lastIndex = 0;
+  while ((m = SPAN_URL_NAME.exec(s))) {
+    const eq = SPAN_URL_NAME.lastIndex - 1, name = m[1];
+    let vs = eq + 1;
+    while (vs < s.length && isHtmlSpace(s[vs])) vs++;
+    const anim = ANIMATE_ATTR.test(name);
+    const split = anim ? ANIMATE_SPLIT : URL_LIST_ATTR.test(name) ? URL_LIST_SPLIT : null;
+    const q = s[vs];
+    let bad;
+    if (q === '"' || q === "'") {
+      const e = s.indexOf(q, vs + 1);
+      bad = unsafeUrlValue(s.slice(vs + 1, e < 0 ? s.length : e), split, !anim && /^src(?:set)?$/i.test(name));
+    } else if (!split) {
+      let e = vs;
+      while (e < s.length && !isHtmlSpace(s[e]) && s[e] !== '>' && s[e] !== '/' && s[e] !== '"' && s[e] !== "'") e++;
+      bad = unsafeUrlValue(s.slice(vs, e), null, false);
+    } else {
+      if (endAt < vs) endAt = nextAt(LIST_END, vs);
+      if (signAt < vs) signAt = nextAt(SCHEME_SIGN, vs);
+      bad = signAt < endAt;
+    }
+    if (bad) { out += s.slice(k, eq) + '&#61;'; k = eq + 1; }
+  }
+  return out + s.slice(k);
 }
 /* Every on… attribute goes: each start tag is read as the browser reads it
    and its on… attributes are cut out (with the separators before them; a
@@ -318,9 +365,11 @@ function spanUrl(m, name, eq, val) {
    before). Comments, CDATA sections and raw-text element bodies are kept as
    spans, to their real terminator, so a terminator faked inside one cannot put
    the reader out of step with the browser; but they are not copied blind,
-   since the browser may read one as markup (cutInSpan). Text — between tags,
-   and inside the attribute values left — is never cut, only defused, so the
-   report's own words survive. */
+   since the browser may read one as markup (cutInSpan). A URL attribute's
+   javascript:/vbscript:/non-image data: value is replaced by "#"
+   (rewriteTag); any other text — between tags, and inside the attribute
+   values left — is never cut, only defused, so the report's own words
+   survive. */
 const COMMENT_END = /--!?>/g;
 function stripHandlers(html) {
   // A comment, a CDATA section (svg/math foreign content), or a start tag, in

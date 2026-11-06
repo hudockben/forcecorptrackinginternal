@@ -541,6 +541,15 @@ assert('sanitizeReportHtml removes the window.print() bootstrap',
       'a link a comment inside an svg <style> hides from a tag reader': '<svg><style><!--<b title="--><img src=x><a href=javascript:alert(1)>x</a>"></style></svg>',
       'a link in a <noscript> (script is off in the PDF renderer and in mail)': '<noscript><a href=javascript:alert(1)>x</a></noscript>',
       'a link past an HTML-context CDATA (a bogus comment)': '<![CDATA[x><a href=javascript:alert(1)>x</a>]]>',
+      // In a span, a value the text-level check reads must not hide what the
+      // browser reads past it: here the browser ends that value sooner (at
+      // the quote that closes the title's) and finds a live href beyond it,
+      // or one after a "/", or one nested in a javascript: value.
+      'a link a safe quoted value hides in an svg <style> span': `<svg><style><!--<b title='--><a title="x href="y href=&#106;avascript:alert(1)//">x</a>'></style></svg>`,
+      'a link after a "/" that a safe unquoted value hides in an svg <style> span': `<svg><style><!--<b title="--><a title='x href=a'/href=&#106;avascript:alert(1)>x</a>"></style></svg>`,
+      'a link nested in a javascript: value in an svg <style> span': `<svg><style><!--<b title="--><a href='&#106;avascript:0 href=&#106;avascript:alert(1)//'>x</a>"></style></svg>`,
+      'a <set> to that a safe value hides in an svg <style> span': `<svg><style><!--<b title="--><a href=#><set attributeName=href title='x to='y to=&#106;avascript:alert(1) /><text y=9>x</text></a>"></style></svg>`,
+      'an href after a "/" with a space before its "=" in an svg <style> span': `<svg><style><!--<b title="--><a href=&#106;avascript:0/href =&#106;avascript:alert(1)>x</a>"></style></svg>`,
       'an href the report never closes': '<a href="javascript:alert(1)',
       'an unquoted href the report never closes': '<a href=javascript:alert(1)',
     };
@@ -579,6 +588,26 @@ assert('sanitizeReportHtml removes the window.print() bootstrap',
       + '<a href="/tracker.html?job=26001&amp;view=javascript">j</a><a href="javascript-notes.html">r</a><a href="./data:x">d</a>';
     assert('round 9: http(s), mailto, tel, fragment and relative links, and prose that says "href=javascript:", come through byte for byte',
       sanitizeReportHtml(links) === links, sanitizeReportHtml(links));
+    // A kept span's words read as written. A job named "… by = data: TBD"
+    // reaches the report's <title> as typed (the bid items builders print it
+    // bare), and an svg chart's <title> tooltip and a <textarea> are kept
+    // spans too. No tag can open in a span without a "<" and a letter, so
+    // its words come through byte for byte; past one, an "=" the URL check
+    // defuses is an &#61; the text decodes back, and the browser reads the
+    // same words.
+    const spanWords = 'by = data: TBD; href=javascript: is prose; from = data: pending; to = javascript: no, src=data: none';
+    const words = {
+      'a report <title>': [`<html><head><title>Maple Ave — paving ${spanWords}</title></head><body><p>x</p></body></html>`, d => d.title, true],
+      'an svg <title> tooltip': [`<svg viewBox="0 0 9 9"><title>Mon: ${spanWords}</title><rect width="9" height="9"/></svg>`, d => d.querySelector('svg title').textContent, true],
+      'a <textarea>': [`<textarea>${spanWords}</textarea>`, d => d.querySelector('textarea').value, true],
+      'a report <title> holding a "<b>"': [`<html><head><title>Phase <b>2</b> ${spanWords}</title></head><body><p>x</p></body></html>`, d => d.title, false],
+      'an svg <title> holding a <tspan>': [`<svg><title>Mon <tspan>${spanWords}</tspan></title></svg>`, d => d.querySelector('svg title').textContent, false],
+    };
+    for (const [what, [h, read, bytes]] of Object.entries(words)) {
+      const out = sanitizeReportHtml(h), got = read(new JSDOM(out).window.document), want = read(new JSDOM(h).window.document);
+      assert(`round 9: ${what} with "${spanWords.slice(0, 40)}…" reads the same after sanitizing${bytes ? ', byte for byte' : ''}`,
+        got === want && (!bytes || out === h) && sanitizeReportHtml(out) === out, JSON.stringify(got) + (bytes && out !== h ? '  ' + out : ''));
+    }
     // Idempotence on the new shapes as a whole.
     const all = '<p>keep</p>' + Object.values(js).slice(0, -2).join('<br>');
     const once = sanitizeReportHtml(all);
@@ -600,6 +629,12 @@ assert('sanitizeReportHtml removes the window.print() bootstrap',
       '50,000 ampersands with long names': '<a href="' + '&abcdefghij'.repeat(50000) + '">x</a>',
       'an <animate> with 100,000 values': '<svg><animate attributeName="href" values="' + 'javascript:x;'.repeat(100000) + '"/></svg>',
       'a srcset of 100,000 candidates': '<img srcset="' + 'a.png 1x, '.repeat(100000) + '">',
+      // The span check reads every place an attribute could start, values
+      // inside values included, each once.
+      '300,000 unquoted hrefs chained by "/" in an svg <style>': '<svg><style><a ' + 'href=x/'.repeat(300000) + '></style></svg>',
+      '150,000 unquoted srcsets chained by "/" in an svg <style>': '<svg><style><a ' + 'srcset=a:b,/'.repeat(150000) + '></style></svg>',
+      '100,000 quoted hrefs inside quoted values in an svg <style>': '<svg><style><!--<b title="--><a ' + ` href='x href="y`.repeat(100000) + '></style></svg>',
+      '100,000 hrefs with long space runs in an svg <style>': '<svg><style><a ' + (' href' + ' '.repeat(10)).repeat(100000) + '></style></svg>',
     };
     for (const [what, h] of Object.entries(big)) {
       const t = Date.now();
@@ -709,10 +744,15 @@ function findChrome() {
       // name, notes and bid text say "javascript: no" and "href=javascript:"
       // as words, with an address, through every report the page emails —
       // sanitized byte for byte as da94bc6 (before the pass) sanitized it.
+      // The name also says "by = data: TBD" and "href=javascript:", shaped
+      // like an attribute: the bid items, daily PM and job summary builders
+      // print it in the report's <title>, a kept span the URL pass reads
+      // too.
       if (!oldSanitize) skip(`${file}: page-built reports sanitize byte for byte as before the URL pass`, 'da94bc6 is not in this checkout');
       else {
         const NOTE = 'Crew note: javascript: no. href=javascript: is prose here; see https://maps.google.com/?q=40.44,-79.99 & call 555-0100';
-        w.eval(`projectsList.push({ id: 'p2', 'project-name': 'Elm St — javascript: no', 'job-number': '26002', client: 'Acme & Sons', status: 'In Progress',
+        const NAME = 'Elm St — javascript: no; by = data: TBD; href=javascript: is prose';
+        w.eval(`projectsList.push({ id: 'p2', 'project-name': ${JSON.stringify(NAME)}, 'job-number': '26002', client: 'Acme & Sons', status: 'In Progress',
           'start-date': '2026-10-01', 'end-date': '2026-12-18', address: '100 Elm St, Pittsburgh, PA', notes: ${JSON.stringify(NOTE)},
           bidItems: [
             { id: 'b1', cost_code: 'Concrete', sub_code: 'Curb', description: ${JSON.stringify(NOTE)}, unit: 'LF', quantity: '1200', unit_cost: '10' },
@@ -734,6 +774,7 @@ function findChrome() {
                    { id: 't2', description: 'Pave', start: '2026-11-10', end: '2026-11-12', duration: 3, pct: 0, deps: ['t1'] }], workWeek: 5 };
             try { return _csBuildEmailReportHtml({ dataUrl: 'data:image/png;base64,iVBORw0KGgo=', width: 800, height: 200 }); } finally { _csData = prev; } })()`,
         };
+        const titled = [];
         for (const [what, expr] of Object.entries(fid)) {
           let b = null;
           try { b = await Promise.race([Promise.resolve(w.eval(expr)), new Promise(res => setTimeout(() => res(null), 8000))]); } catch (e) { b = null; }
@@ -741,9 +782,12 @@ function findChrome() {
           const html = b && (typeof b === 'string' ? b : b.html);
           if (!html) { assert(`round 9: ${file} ${what} with "javascript: no" prose: the page builds it`, false, 'no html'); continue; }
           const now = sanitizeReportHtml(html), before = oldSanitize(html);
+          if (/<title>[^<]*by = data: TBD; href=javascript: is prose/.test(html)) titled.push(what);
           assert(`round 9: ${file} ${what} with "javascript: no" prose sanitizes byte for byte as before the URL pass`,
             /javascript: no/.test(html) && now === before, now === before ? 'the prose did not reach the report' : 'differs at ' + [...now].findIndex((c, i) => c !== before[i]));
         }
+        assert(`round 9: ${file}: the job name, "by = data: TBD; href=javascript: is prose", reaches the <title> of the bid items report (${titled.join(', ') || 'none'})`,
+          titled.includes('bid items'), titled.join(', '));
       }
       w.close();
     }
