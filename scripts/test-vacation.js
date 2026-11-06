@@ -318,8 +318,9 @@ const vac = (id, date, status, hours, extra) => ({ id, user_id: 9, entry_type: '
 
     let { w, doc, calls } = buildTab(okList());
     const markup = new JSDOM(DIVS).window.document;
+    // Branding (Custom Reporting's masthead) came in after it, as the sixth.
     eq('a fifth tab, after Auto Reports', [...markup.querySelectorAll('.mu-subtabs .mu-subtab-btn')].map(b => b.textContent.trim()),
-      ['Users', 'Roles', 'Scheduler', 'Auto Reports', 'Vacation']);
+      ['Users', 'Roles', 'Scheduler', 'Auto Reports', 'Vacation', 'Branding']);
     assert('  inside Manage System, which only admins can open', !!markup.getElementById('mu-panel-vacation').closest('#userModalBackdrop'));
     w.eval("switchUserSubTab('vacation')");
     await settle();

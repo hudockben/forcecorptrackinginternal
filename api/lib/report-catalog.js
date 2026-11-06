@@ -31,10 +31,9 @@ const REPORT_TYPES = {
   kiewit_job_summary:   { division: 'kiewit',    label: 'Job Summary — Kiewit Pinetree'               },
   kiewit_construction_schedule: { division: 'kiewit', label: 'Construction Schedule'                  },
   // Analytics → Custom Reporting: whatever report the user built and named,
-  // emailed from the builder. Email only — they are not in SCHEDULE_DEFS:
-  // Auto Reports sends a report through the builder its page registers in
-  // window.dwAutoReport, and a custom report is a saved recipe with no such
-  // builder behind it.
+  // emailed from the builder — and, customer-safe only, on a timetable (see
+  // SCHEDULE_DEFS: each page registers a builder that runs the saved recipe
+  // through the same engine the builder's Email button uses).
   turf_custom_report:   { division: 'turf',      label: 'Custom Report — Turf'                       },
   paving_custom_report: { division: 'paving',    label: 'Custom Report — Paving'                     },
   kiewit_custom_report: { division: 'kiewit',    label: 'Custom Report — Kiewit Pinetree'            },
@@ -100,6 +99,12 @@ const PAY_RANGES = {
 //         next workday.
 // year:   offers "this year" or "all years".
 // payRange: the default PAY_RANGES entry a payroll report covers.
+// customReport: a saved Custom Reporting report (scope 'custom'). Which one
+//         is the schedule's custom_report_id; which jobs, its jobs_mode
+//         (JOBS_MODES). No period: the dates are the definition's own preset,
+//         worked out on the day it is sent. Set up and edited in Analytics →
+//         Custom Reporting (api/custom-report-schedules.js), never in the
+//         Auto Reports editor, and only ever sent customer-safe.
 const JOB_REPORTS = (div, label) => ({
   [`${div}_daily_pm`]:      { name: 'Daily PM Report', scope: 'job',
     blurb: 'The day\'s field plan for a job: pace, required pace and status on every bid item.' },
@@ -124,6 +129,19 @@ const EXEC_SECTIONS = [
   { key: 'payroll',      name: 'Payroll'              },
   { key: 'safety',       name: 'Safety Sign-Off'      },
 ];
+
+// A saved custom report, as Auto Reports lists it.
+const CUSTOM_REPORT = {
+  name: 'Custom Report', scope: 'custom', customReport: true,
+  blurb: 'A report saved in Analytics → Custom Reporting, built from its saved recipe and sent customer-safe.',
+};
+
+// Which jobs a scheduled custom report covers:
+//   'saved'           the report's own saved jobs, one email (a saved-jobs report)
+//   'each'            one email per job: every In Progress job, or the jobs
+//                     picked on the schedule (a template)
+//   'all_in_progress' every In Progress job in one report (a template)
+const JOBS_MODES = ['saved', 'each', 'all_in_progress'];
 
 const SCHEDULE_DEFS = {
   ...JOB_REPORTS('turf', 'Turf'),
@@ -158,6 +176,9 @@ const SCHEDULE_DEFS = {
     periods: ['prev_week', 'week_to_date', 'month_to_date', 'prev_month'],
     periodHint: 'Forms are filed by week — it takes every week these days fall in',
     blurb: 'Every safety form posted for those weeks: who signed it and when, with their drawn signature, and who still has not.' },
+  turf_custom_report:     { ...CUSTOM_REPORT },
+  paving_custom_report:   { ...CUSTOM_REPORT },
+  kiewit_custom_report:   { ...CUSTOM_REPORT },
 };
 
 // Each schedulable report with its division, label and page filled in from
@@ -210,4 +231,19 @@ function periodsFor(def, all) {
   return def && Array.isArray(def.periods) ? def.periods.filter(k => keys.includes(k)) : keys;
 }
 
-module.exports = { REPORT_TYPES, DIVISIONS, SCHEDULABLE, PAY_RANGES, mayUseDivision, periodsFor, pickSections };
+/** Is `type` a scheduled custom report (managed in Custom Reporting)? */
+function isCustomType(type) {
+  const def = Object.prototype.hasOwnProperty.call(SCHEDULABLE, type) ? SCHEDULABLE[type] : null;
+  return Boolean(def && def.customReport);
+}
+
+/** The custom-report schedule type for a division, or null. */
+function customTypeFor(division) {
+  const type = `${division}_custom_report`;
+  return isCustomType(type) ? type : null;
+}
+
+module.exports = {
+  REPORT_TYPES, DIVISIONS, SCHEDULABLE, PAY_RANGES, JOBS_MODES,
+  mayUseDivision, periodsFor, pickSections, isCustomType, customTypeFor,
+};

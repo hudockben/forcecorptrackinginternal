@@ -238,6 +238,421 @@ assert('pdfPageCount returns null on non-PDF bytes', pdfPageCount(Buffer.from('n
 // reports' own auto-print bootstrap before Chrome ever sees it.
 assert('sanitizeReportHtml removes the window.print() bootstrap',
   !sanitizeReportHtml('<body>x<script>window.onload=()=>{window.print();}</script></body>').includes('window.print'));
+// A handler after a "/" (the parser reads <img/onerror=...> as an
+// attribute), a closing tag with a space before its ">", a stray opening
+// tag, and markup a removal splices back together.
+{
+  const cases = {
+    'a handler after "/"': '<img src="x"/onerror="alert(1)"><p>keep</p>',
+    'a handler after "/" with no quotes on the source': '<img src=x/onerror=alert(1)><p>keep</p>',
+    '</script > with a space': '<script>alert(1)</script ><p>keep</p>',
+    'a stray <script> with no close': '<p>keep</p><script>alert(1)',
+    'tags a removal splices back': '<scr<script>x</script>ipt>alert(1)</script><p>keep</p>',
+    'a handler spliced back': '<img src=x o<script></script>nerror=alert(1)><p>keep</p>',
+    '</iframe > with a space': '<iframe srcdoc="x"></iframe ><p>keep</p>',
+    // A ">" inside a quoted attribute does not end the tag: a rule scoped to
+    // "<tag ...>" spans would stop there and let the handler through.
+    'a handler after a quoted ">"': '<img alt="a>b" onerror=alert(1) src=x><p>keep</p>',
+    // A quote only opens a value right after "=": a stray one in an
+    // unquoted value must not make a tag reader stop short of the handler.
+    'a handler after a stray quote in an unquoted value': '<img alt=a"b title=">" onerror=alert(1)><p>keep</p>',
+    // A quoted value may run straight into the next attribute.
+    'a handler right after a quoted value': '<img src="x"onerror=alert(1)><p>keep</p>',
+    // A comment, or an svg <title>, can put a tag reader out of step with
+    // the browser: the handler is the browser's, whatever the reader thinks.
+    'a handler a comment hides from a tag reader': '<!--<x a="--><img src=1 b=\'">\' onerror=alert(1)><p>keep</p>',
+    'a handler after "/" a comment hides from a tag reader': '<!--<x a="--><img src=1 b=\'">\'/onerror=alert(1)><p>keep</p>',
+    'a handler after "/" behind an svg <title>': '<svg><title><img src=1 b=\'</title>\'/onerror=alert(1)></svg><p>keep</p>',
+    'a handler left in a tag the report never closes': '<p>keep</p><img src=x onerror="alert(1)',
+    // A raw-text / RCDATA element, a comment, or a CDATA section can end at a
+    // terminator a tag reader does not see inside a faked attribute value, so
+    // the browser parses the <img> and its handler on the far side. Each of
+    // these fires in a real browser unless the sanitizer skips the span to its
+    // real terminator; the pattern is `<RAW><b c='</RAW><img …onerror=…>'`.
+    'a handler a <style> span hides from a tag reader': '<style><b c=\'</style><img src="x"onerror=alert(1)>\'</style><p>keep</p>',
+    'a handler a <title> span hides from a tag reader': '<title><b c=\'</title><img src="x"onerror=alert(1)>\'</title><p>keep</p>',
+    'a handler a <textarea> span hides from a tag reader': '<textarea><b c=\'</textarea><img src="x"onerror=alert(1)>\'</textarea><p>keep</p>',
+    'a handler an <xmp> span hides from a tag reader': '<xmp><b c=\'</xmp><img src="x"onerror=alert(1)>\'</xmp><p>keep</p>',
+    'a handler a <noembed> span hides from a tag reader': '<noembed><b c=\'</noembed><img src="x"onerror=alert(1)>\'</noembed><p>keep</p>',
+    'a handler a <noframes> span hides from a tag reader': '<noframes><b c=\'</noframes><img src="x"onerror=alert(1)>\'</noframes><p>keep</p>',
+    'a handler an svg CDATA span hides from a tag reader': '<svg><![CDATA[<b c=\']]><img src="x"onerror=alert(1)>\']]></svg><p>keep</p>',
+    'a handler straight after a comment that spans a quote': '<!--<b c=\'--><img src="x"onerror=alert(1)>\'--><p>keep</p>',
+    // …and the reverse: a span the reader keeps whole that the browser reads
+    // as markup. "<!-->" and "<!--->" close at once; an HTML "<![CDATA[" is a
+    // bogus comment that ends at its first ">"; inside svg/math a <style>,
+    // <title> or <textarea> is an ordinary element and an <img> breaks out of
+    // it as a live HTML element.
+    'a handler after an empty comment "<!-->"': '<!--><img src=x onerror=alert(1)>--><p>keep</p>',
+    'a handler after an empty comment "<!--->"': '<!---><img src=x onerror=alert(1)>--><p>keep</p>',
+    'a handler after an HTML-context CDATA (a bogus comment)': '<![CDATA[x><img src=x onerror=alert(1)>]]><p>keep</p>',
+    'a handler inside an svg <style>': '<svg><style><img src=x onerror=alert(1)></style></svg><p>keep</p>',
+    'a handler inside an svg <title>': '<svg><title><img src=x onerror=alert(1)></title></svg><p>keep</p>',
+    'a handler inside a math <style>': '<math><style><img src=x onerror=alert(1)></style></math><p>keep</p>',
+    'a handler inside an svg <textarea>': '<svg><textarea><img src=x onerror=alert(1)></textarea></svg><p>keep</p>',
+    'a handler past a faked </style> inside an svg <style>': '<svg><style><img src=x a=\'</style>\' onerror=alert(1)></svg><p>keep</p>',
+    // Inside an svg <style> a comment or CDATA is the browser's own, so a tag
+    // read from the first "<" + letter can swallow the live <img> in a value.
+    'a handler a comment inside an svg <style> hides from a tag reader': '<svg><style><!--<a title="--><img src=x onerror=alert(1)>"></style></svg><p>keep</p>',
+    'a handler a CDATA inside an svg <style> hides from a tag reader': '<svg><style><![CDATA[<a title="]]><img src=x onerror=alert(1)>"></style></svg><p>keep</p>',
+    // A faked </style> inside an svg <style> ends the reader's span while the
+    // browser is still in the <img>, so a comment or CDATA the reader then
+    // keeps whole is that tag's attributes to the browser.
+    'a handler in a "comment" read past a faked </style> in svg': '<svg><style><img src=x a=\'</style>\' <!-- \' onerror=alert(1) --></svg><p>keep</p>',
+    'a handler in a "CDATA" read past a faked </style> in svg': '<svg><style><img src=x a=\'</style>\' <![CDATA[ \' onerror=alert(1) ]]></svg><p>keep</p>',
+    'a handler straight after a quoted value inside an svg <style>': '<svg><style><img src="x"onerror=alert(1)></style></svg><p>keep</p>',
+  };
+  // The browser's own reading is the judge: parsed as a document, and as the
+  // email shell's body (where markup after it can close an open tag), no
+  // element carries an event handler (an attribute named on + letters — one
+  // a defused "onerror&#61;…" leaves behind is named that, and runs nothing).
+  const handlerAttrs = h => [h, `<div>${h}</div><p title="x">y</p>`].flatMap(doc =>
+    [...new JSDOM(doc).window.document.querySelectorAll('*')].flatMap(el => [...el.attributes].map(a => a.name).filter(n => /^on[a-z]+$/i.test(n))));
+  for (const [what, html] of Object.entries(cases)) {
+    const out = sanitizeReportHtml(html);
+    const left = handlerAttrs(out);
+    assert(`sanitizeReportHtml strips ${what}`, !/<script|onerror\s*=|<iframe/i.test(out) && out.includes('<p>keep</p>') && !left.length,
+      out + (left.length ? '  (handlers: ' + left.join(', ') + ')' : ''));
+  }
+  const plain = '<table><tr><td>Tons / Day</td><td>a/b</td></tr></table><br/><img src="data:image/png;base64,AAAA"/>';
+  assert('…and leaves ordinary report markup alone (slashes, self-closing tags)', sanitizeReportHtml(plain) === plain, sanitizeReportHtml(plain));
+  // Report text that only looks like a handler — a sub code "Curb w/one =
+  // 6in", a note "w/onsite = 200 CY" — is the report's own words: it reads
+  // the same after sanitizing (at most its "=" is written &#61;), in a cell,
+  // in a paragraph and in an attribute value.
+  const words = '<table><tr><td class="sub">Curb w/one = 6in</td><td>1,200</td></tr></table><p>Topsoil w/onsite = 200 CY</p><p>Phase one = 1,200</p>';
+  const wOut = sanitizeReportHtml(words);
+  const textOf = h => new JSDOM(h).window.document.body.textContent;
+  assert('report text that only looks like a handler ("Curb w/one = 6in", "w/onsite = 200 CY", "Phase one = 1,200") reads the same after sanitizing',
+    textOf(wOut) === textOf(words) && wOut.replace(/&#61;/g, '=') === words && !handlerAttrs(wOut).length, wOut);
+  // The spans the sanitizer keeps (a <title>, CSS, an svg <title>/<style>, a
+  // comment) come through byte for byte: report words there are not defused.
+  const realDoc = '<!DOCTYPE html><html><head><title>Maple Ave — Conditions = dry</title>'
+    + '<style>body{font:12px system-ui}@page{size:letter landscape;margin:0.45in}.t td[data-k="a"]{color:#111}.x:not(.y)>b{content:"a/b"}</style></head>'
+    + '<body><!-- report body: Conditions = dry --><h1>Weekly update</h1>'
+    + '<svg viewBox="0 0 10 10" role="img"><title>Earned vs plan — Conditions = dry</title><style>.ln{stroke:#0a0;stroke-width:2}</style>'
+    + '<path class="ln" d="M0 10L10 0"/></svg><table><tr><td>Tons / Day</td><td>a/b</td></tr></table></body></html>';
+  const realOut = sanitizeReportHtml(realDoc);
+  assert('a real report document (a <title> and svg <title> with "Conditions = …", CSS with @page, a comment) comes through byte for byte',
+    realOut === realDoc, realOut);
+  // Words in such a span that do sit where an attribute could start ("Phase
+  // one = 1,200") may have their "=" written &#61; — a <title> decodes it, in
+  // HTML and in svg alike, so the title reads the same.
+  const titled = '<html><head><title>Phase one = 1,200</title></head><body><svg><title>Phase one = 1,200</title></svg></body></html>';
+  const tDoc = new JSDOM(sanitizeReportHtml(titled)).window.document;
+  assert('…and a <title> holding "Phase one = 1,200" reads the same after sanitizing (HTML and svg)',
+    tDoc.title === 'Phase one = 1,200' && tDoc.querySelector('svg title').textContent === 'Phase one = 1,200', sanitizeReportHtml(titled));
+  const inAttr = '<table><tr><td class="sub" title="Curb w/one = 6in">x</td></tr></table>';
+  const aOut = sanitizeReportHtml(inAttr), aTd = new JSDOM(aOut).window.document.querySelector('td');
+  assert('…and so does an attribute value holding such text, with the tag around it intact',
+    aTd && aTd.getAttribute('title') === 'Curb w/one = 6in' && aTd.className === 'sub' && aTd.textContent === 'x', aOut);
+  // Round 6: the sanitizer runs on every email (and twice per scheduled
+  // send), so crafted text must not make it quadratic: a long run of letters
+  // full of "on" (a bid description, a cell, a title), and many comments.
+  let t0 = Date.now();
+  sanitizeReportHtml('<td>' + 'on'.repeat(100000) + '</td>');
+  sanitizeReportHtml('<td title="' + 'on'.repeat(100000) + '">x</td>');
+  const tLetters = Date.now() - t0;
+  assert('a long run of letters full of "on" (200 KB, in a cell and in a title) is sanitized in linear time', tLetters < 500, `${tLetters} ms`);
+  t0 = Date.now();
+  sanitizeReportHtml('<!---->'.repeat(20000));
+  sanitizeReportHtml('<!--x--><p>y</p>'.repeat(20000));
+  const tComments = Date.now() - t0;
+  assert('many comments (20,000) are sanitized in linear time', tComments < 500, `${tComments} ms`);
+  // Round 7: tag openers with nothing to end them — a stray end tag with no
+  // ">" ("</form" repeated), an opener with no ">" ("<form" repeated), and a
+  // block with no end tag ("<script>" repeated) — must not make the tag
+  // removals retry each one to the end of the input. 300 KB of each.
+  for (const u of ['</form', '</script', '</iframe', '<form', '<script', '<iframe', '<style', '<meta', '<script>', '<style>', '<form>', '<iframe>']) {
+    const big = '<p>x</p>' + u.repeat(Math.floor(300000 / u.length));
+    t0 = Date.now();
+    sanitizeReportHtml(big);
+    sanitizeReportHtml(big + '>');
+    const tU = Date.now() - t0;
+    assert(`"${u}" repeated (300 KB, with and without a ">" at the end) is sanitized in linear time`, tU < 500, `${tU} ms`);
+  }
+  // Round 7: markup nested to splice a tag back together pass after pass
+  // (<scr<f<form>orm>ipt>, 8 or 20 deep) outlasts the passes: it fails closed
+  // as inert text — no script, iframe or meta refresh — and a further pass
+  // changes nothing. Ordinary nesting the passes do settle (7 deep) is still
+  // just removed.
+  {
+    const F = k => (k === 1 ? '<form>' : '<f' + F(k - 1) + 'orm>');
+    const live = h => {
+      const d = new JSDOM(h).window.document;
+      return d.querySelectorAll('script').length + d.querySelectorAll('iframe').length + d.querySelectorAll('meta[http-equiv]').length;
+    };
+    for (const k of [8, 20]) {
+      const spliced = {
+        script: '<scr' + F(k) + 'ipt>alert(1)</scr' + F(k) + 'ipt><p>keep</p>',
+        iframe: '<if' + F(k) + 'rame srcdoc="&lt;script&gt;alert(3)&lt;/script&gt;"></if' + F(k) + 'rame><p>keep</p>',
+        meta: '<me' + F(k) + 'ta http-equiv=refresh content="0;url=https://example.com"><p>keep</p>',
+      };
+      for (const [what, h] of Object.entries(spliced)) {
+        const out = sanitizeReportHtml(h);
+        assert(`${what === 'iframe' ? 'an' : 'a'} ${what} spliced back by removals nested ${k} deep is not live after sanitizing, and a further pass changes nothing`,
+          live(out) === 0 && live(`<div>${out}</div>`) === 0 && !/<(script|iframe|meta)/i.test(out) && sanitizeReportHtml(out) === out, out.slice(0, 300));
+      }
+    }
+    const seven = sanitizeReportHtml('<p>x</p><scr' + F(7) + 'ipt>alert(1)</scr' + F(7) + 'ipt>');
+    assert('…while one nested 7 deep is removed outright', seven === '<p>x</p>', seven);
+    t0 = Date.now();
+    const deep = sanitizeReportHtml('<scr' + '<f'.repeat(49999) + '<form>' + 'orm>'.repeat(49999) + 'ipt>x');
+    const tDeep = Date.now() - t0;
+    assert('…and one nested 50,000 deep is sanitized in linear time (the passes stay capped)', tDeep < 500 && !/</.test(deep), `${tDeep} ms`);
+  }
+  // …with handlers still defused wherever an attribute name could start.
+  const anchored = { '"onerror=': '<p title="a">"onerror=x</p>', '/onerror=': '<p>a/onerror=x</p>', ' onerror =': '<p>a onerror =x</p>', 'ONERROR=': '<p>ONERROR=x</p>' };
+  for (const [what, h] of Object.entries(anchored)) {
+    const o = sanitizeReportHtml(h);
+    assert(`…and text "${what}" is still defused`, /&#61;/.test(o) && !/onerror\s*=/i.test(o), o);
+  }
+  // Round 8: a removed tag's opener left with no ">" at the very end of the
+  // report. Alone the parser drops it at EOF, but the email shell's own
+  // markup after the body ("</div>") ends it and makes it a live element.
+  // It is dropped, with the rest of the input (all inside it to a parser).
+  {
+    const liveIn = doc => { const d = new JSDOM(doc).window.document;
+      return ['script', 'iframe', 'form', 'object', 'embed', 'base', 'link', 'meta[http-equiv]'].reduce((n, q) => n + d.querySelectorAll(q).length, 0); };
+    const head = '<table><tr><td>1,200 SF</td></tr></table>';
+    const trailing = {
+      'an iframe srcdoc': '<iframe srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;"',
+      'a script src': '<script src="https://example.com/a.js"',
+      'a meta refresh': '<meta http-equiv="refresh" content="0;url=https://example.com/"',
+      'a form owning an earlier password input': '<input form="f" type="password"><form id="f" action="https://example.com/c"',
+      'an object': '<object data="https://example.com/x"',
+      'an embed': '<embed src="https://example.com/x"',
+      'a base': '<base href="https://example.com/"',
+      'a link': '<link rel="stylesheet" href="https://example.com/x.css"',
+      'an iframe with whitespace after it': '<iframe srcdoc="x"  \n ',
+      'a closing form': '</form action="https://example.com/c"',
+    };
+    for (const [what, tail] of Object.entries(trailing)) {
+      const out = sanitizeReportHtml(head + tail);
+      const email = buildEmailHtml({ title: 'T', bodyHtml: out });
+      assert(`round 8: ${what} left unclosed at the end of the report is not live in the email shell${what === 'a closing form' ? '' : ' (was a live element there)'}`,
+        liveIn(email) === 0 && liveIn(`<div>${out}</div><p title="x">y</p>`) === 0 && out.startsWith(head) && sanitizeReportHtml(out) === out, out);
+    }
+    const kept = '<p>Formula: a < form factor</p><p>Use the <b>form</b> <formula-x';
+    assert('…while report text that only mentions a form, and an ordinary unclosed tag, come through as written', sanitizeReportHtml(kept) === kept, sanitizeReportHtml(kept));
+    t0 = Date.now();
+    sanitizeReportHtml('<p>x</p>' + '<form'.repeat(60000));
+    sanitizeReportHtml('<p>x</p>' + '<p'.repeat(150000));
+    sanitizeReportHtml('<p>x</p>' + '<p>'.repeat(100000) + '<scrip'.repeat(50000));
+    const tTrail = Date.now() - t0;
+    assert('…in linear time', tTrail < 500, `${tTrail} ms`);
+  }
+  // Round 9: a javascript: (or vbscript:, or non-image data:) URL in any form
+  // a browser honours. Only href="javascript:…" and src="javascript:…" with
+  // plain quotes were caught; the browser also takes an unquoted value, a
+  // quote of the other kind inside the value, character references anywhere
+  // in it (&#106; &#x6A; &#0000106 &colon; &Tab; &NewLine;, with or without
+  // the ";"), leading spaces and control characters, a tab or newline inside
+  // the scheme, any letter case — and a URL in a dozen other attributes, an
+  // svg xlink:href, and an svg <animate>/<set> that writes one into an href.
+  // The browser's own reading is the judge again: parsed (as a document, in a
+  // <div>, and in the email shell), no element keeps such a URL in a URL
+  // attribute, and no animate/set holds one to set.
+  {
+    const BASE = 'https://datawatch.test/r/1';
+    const URL_ATTRS = new Set(['href', 'src', 'action', 'formaction', 'xlink:href', 'data', 'poster', 'background', 'srcset',
+      'ping', 'cite', 'longdesc', 'lowsrc', 'dynsrc', 'codebase', 'manifest', 'icon', 'archive']);
+    const IMAGE_DATA = /^data:[\t\n\f\r ]*image\/(?:png|jpe?g|gif|webp|svg\+xml)[\t\n\f\r ]*[;,]/i;
+    // Where a data: image may stand: an <img>'s src/srcset, a <source>'s
+    // srcset, an svg <image>'s href (a company logo is a data:image/png).
+    const imageSlot = (el, n) => ({ img: ['src', 'srcset'], source: ['srcset'], image: ['href', 'xlink:href'] }[el.localName.toLowerCase()] || []).includes(n);
+    const badUrl = (raw, imageOk) => {
+      let u; try { u = new URL(raw, BASE); } catch { return false; }
+      if (u.protocol === 'javascript:' || u.protocol === 'vbscript:') return true;
+      return u.protocol === 'data:' && !(imageOk && IMAGE_DATA.test(u.href));
+    };
+    // The candidate URLs of a srcset, read the way the browser reads them.
+    const srcsetUrls = v => {
+      const urls = []; let i = 0;
+      while (i < v.length) {
+        while (i < v.length && /[\s,]/.test(v[i])) i++;
+        if (i >= v.length) break;
+        let j = i; while (j < v.length && !/\s/.test(v[j])) j++;
+        let u = v.slice(i, j);
+        if (u.endsWith(',')) { u = u.replace(/,+$/, ''); i = j; }
+        else { let p = false; while (j < v.length && (p || v[j] !== ',')) { if (v[j] === '(') p = true; else if (v[j] === ')') p = false; j++; } i = j + 1; }
+        urls.push(u);
+      }
+      return urls;
+    };
+    const urlsOf = el => [...el.attributes].flatMap(a => {
+      const n = a.name.toLowerCase();
+      if (/^(animate|set)$/i.test(el.localName) && ['to', 'from', 'by', 'values'].includes(n)) return a.value.split(';').map(v => [n, v.trim(), false]);
+      if (!URL_ATTRS.has(n)) return [];
+      const vs = n === 'srcset' ? srcsetUrls(a.value) : (n === 'ping' || n === 'archive') ? a.value.split(/[\s,]+/) : [a.value];
+      return vs.map(v => [n, v, imageSlot(el, n)]);
+    });
+    const liveUrls = h => [h, `<div>${h}</div><p title="x">y</p>`, buildEmailHtml({ title: 'T', bodyHtml: h })].flatMap(doc =>
+      [...new JSDOM(doc).window.document.querySelectorAll('*')].flatMap(el =>
+        urlsOf(el).filter(([, v, ok]) => badUrl(v, ok)).map(([n, v]) => `<${el.localName} ${n}=${v.slice(0, 40)}>`)));
+    const js = {
+      'an unquoted href': '<a href=javascript:alert(1)>x</a>',
+      'an unquoted href starting with a character reference': '<a href=&#106;avascript:alert(1)>x</a>',
+      'a single-quoted href holding a double quote': `<a href='javascript:alert("x")'>x</a>`,
+      'a double-quoted href holding a single quote': `<a href="javascript:alert('x')">x</a>`,
+      'a decimal reference (&#106;)': '<a href="&#106;avascript:alert(1)">x</a>',
+      'a hex reference (&#x6A;)': '<a href="&#x6A;avascript:alert(1)">x</a>',
+      'a decimal reference with leading zeros and no ";" (&#0000106)': '<a href="&#0000106avascript:alert(1)">x</a>',
+      'a hex reference with no ";" (&#x61)': '<a href="jav&#x61script:alert(1)">x</a>',
+      'an uppercase hex reference with leading zeros (&#X00003A;)': '<a href="javascript&#X00003A;alert(1)">x</a>',
+      'a named colon (&colon;)': '<a href="javascript&colon;alert(1)">x</a>',
+      'a decimal colon (&#58)': '<a href="javascript&#58alert(1)">x</a>',
+      'a &Tab; inside the scheme': '<a href="java&Tab;script:alert(1)">x</a>',
+      'a &NewLine; inside the scheme': '<a href="java&NewLine;script:alert(1)">x</a>',
+      'a raw tab, newline and CR inside the scheme': '<a href="ja\tva\nscr\ript:alert(1)">x</a>',
+      'leading spaces and control characters': '<a href=" \x01\x08\x1f javascript:alert(1)">x</a>',
+      'leading control characters written as references': '<a href="&#1;&#x20;&#9;&#x0C;javascript:alert(1)">x</a>',
+      'a long run of &Tab; before the scheme': '<a href="' + '&Tab;'.repeat(50) + 'javascript:alert(1)">x</a>',
+      'mixed case': '<a href="JaVaScRiPt:alert(1)">x</a>',
+      'spaces around "="': '<a href = "javascript:alert(1)">x</a>',
+      'a second href after a harmless one': '<a href="#ok" href="javascript:alert(1)" xlink:href=javascript:alert(2)>x</a>',
+      'vbscript:': '<a href="vbscript:msgbox(1)">x</a>',
+      'an unquoted VBScript:': '<a href=VBScript:msgbox(1)>x</a>',
+      'a data:text/html link': '<a href="data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==">x</a>',
+      'a data:image/svg+xml link (an svg can run script as a page)': '<a href="data:image/svg+xml;base64,PHN2ZyBvbmxvYWQ9YWxlcnQoMSk+">x</a>',
+      'an unquoted data: link with an encoded colon': '<a href=data&colon;text/html,hi>x</a>',
+      'a button formaction': '<button formaction=javascript:alert(1)>x</button>',
+      'an input formaction': '<input type=submit formaction="&#106;avascript:alert(1)">',
+      'an <area> href': '<map name=m><area shape=rect coords=0,0,9,9 href=javascript:alert(1)></map>',
+      'a MathML href': '<math href=javascript:alert(1)><mi>x</mi></math>',
+      'an <html manifest> (the browser adds it to the root)': '<html manifest=javascript:alert(1)>',
+      'poster, background and cite': '<video poster=javascript:alert(1)></video><table background=javascript:alert(1)><tr><td>x</td></tr></table><blockquote cite=javascript:alert(1)>q</blockquote>',
+      'longdesc, lowsrc and dynsrc on an <img>': '<img src=x.png longdesc=javascript:alert(1) lowsrc=javascript:alert(1) dynsrc=javascript:alert(1)>',
+      'codebase, archive, icon, data, action and ping': '<applet code=x codebase=javascript:alert(1) archive="a.jar, javascript:alert(1)"></applet><menu><menuitem icon=javascript:alert(1)>m</menuitem></menu><x-y data=javascript:alert(1) action=javascript:alert(1)></x-y><a href=/ok ping="/p javascript:alert(1)">x</a>',
+      'an <img src>': '<img src=javascript:alert(1)>',
+      'an <img src> of a data:text/html URL': '<img src="data:text/html,hi">',
+      'a javascript: candidate in a srcset': '<img src=a.png srcset="a.png 1x, javascript:alert(1) 2x">',
+      'a data:text/html <source srcset>': '<picture><source srcset="data:text/html;base64,aGk= 1x"><img src=a.png></picture>',
+      'an svg xlink:href': '<svg><a xlink:href="javascript:alert(1)"><text y="9">x</text></a></svg>',
+      'an svg href made of references': '<svg><a href="&#x6a;avascript&colon;alert(1)"><text y="9">x</text></a></svg>',
+      'an svg <use> of an svg data: URL': '<svg><use href="data:image/svg+xml;base64,PHN2ZyBpZD0neCc+PC9zdmc+#x"/></svg>',
+      'an svg <image> of a data:text/html URL': '<svg><image href="data:text/html,hi"/></svg>',
+      'an <animate> that sets an href to javascript:': '<svg><a href="#"><animate attributeName="href" to="javascript:alert(1)"/><text y="9">x</text></a></svg>',
+      'a <set> that sets an xlink:href, unquoted': '<svg><a xlink:href="#"><set attributeName="xlink:href" to=javascript:alert(1) /><text y="9">x</text></a></svg>',
+      'an <animate> whose values hold an encoded javascript:': '<svg><a href="#"><animate attributeName="href" values="#a;&#106;avascript:alert(1)" dur="1s"/><text y="9">x</text></a></svg>',
+      'an <animate> whose from and by hold javascript:': '<svg><a href="#"><animate attributeName="href" from="javascript:alert(1)" by="javascript:alert(2)"/><text y="9">x</text></a></svg>',
+      // The spans the sanitizer keeps whole can hold a live link too.
+      'a link an svg <style> span holds': '<svg><style><img src=x><a href=javascript:alert(1)>x</a></style></svg>',
+      'a link after an empty comment "<!-->"': '<!--><a href=javascript:alert(1)>x</a>-->',
+      'a link a comment inside an svg <style> hides from a tag reader': '<svg><style><!--<b title="--><img src=x><a href=javascript:alert(1)>x</a>"></style></svg>',
+      'a link in a <noscript> (script is off in the PDF renderer and in mail)': '<noscript><a href=javascript:alert(1)>x</a></noscript>',
+      'a link past an HTML-context CDATA (a bogus comment)': '<![CDATA[x><a href=javascript:alert(1)>x</a>]]>',
+      // In a span, a value the text-level check reads must not hide what the
+      // browser reads past it: here the browser ends that value sooner (at
+      // the quote that closes the title's) and finds a live href beyond it,
+      // or one after a "/", or one nested in a javascript: value.
+      'a link a safe quoted value hides in an svg <style> span': `<svg><style><!--<b title='--><a title="x href="y href=&#106;avascript:alert(1)//">x</a>'></style></svg>`,
+      'a link after a "/" that a safe unquoted value hides in an svg <style> span': `<svg><style><!--<b title="--><a title='x href=a'/href=&#106;avascript:alert(1)>x</a>"></style></svg>`,
+      'a link nested in a javascript: value in an svg <style> span': `<svg><style><!--<b title="--><a href='&#106;avascript:0 href=&#106;avascript:alert(1)//'>x</a>"></style></svg>`,
+      'a <set> to that a safe value hides in an svg <style> span': `<svg><style><!--<b title="--><a href=#><set attributeName=href title='x to='y to=&#106;avascript:alert(1) /><text y=9>x</text></a>"></style></svg>`,
+      'an href after a "/" with a space before its "=" in an svg <style> span': `<svg><style><!--<b title="--><a href=&#106;avascript:0/href =&#106;avascript:alert(1)>x</a>"></style></svg>`,
+      'an href the report never closes': '<a href="javascript:alert(1)',
+      'an unquoted href the report never closes': '<a href=javascript:alert(1)',
+    };
+    for (const [what, h] of Object.entries(js)) {
+      const html = '<p>keep</p>' + h;
+      const out = sanitizeReportHtml(html), left = liveUrls(out);
+      assert(`round 9: ${what} is neutralized, and a further pass changes nothing`,
+        !left.length && out.startsWith('<p>keep</p>') && sanitizeReportHtml(out) === out, out.slice(0, 200) + (left.length ? '  (live: ' + left.join(' ') + ')' : ''));
+    }
+    // The value becomes "#", in the quotes it was written with.
+    const shapes = {
+      '<a href=javascript:alert(1)>x</a>': '<a href=#>x</a>',
+      "<a href='javascript:alert(\"x\")'>x</a>": "<a href='#'>x</a>",
+      '<a href="&#106;avascript:alert(1)">x</a>': '<a href="#">x</a>',
+      '<a href="javascript:alert(1)">x</a>': '<a href="#">x</a>',
+    };
+    for (const [h, want] of Object.entries(shapes)) {
+      assert(`round 9: ${JSON.stringify(h)} → ${JSON.stringify(want)}`, sanitizeReportHtml(h) === want, sanitizeReportHtml(h));
+    }
+    // What a report legitimately carries comes through byte for byte: a logo
+    // as a data: image (PNG/JPEG from Company Branding, and the other image
+    // types), cid: images, http(s)/mailto/tel/fragment/relative links, a
+    // Google Maps link and query strings that say "javascript", and prose
+    // that mentions href=javascript: as words.
+    const logos = '<div class="br-mast-left"><img class="mast-logo" src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==" alt="Acme &amp; Sons" style="max-height:48px;max-width:220px"></div>'
+      + '<img src="data:image/jpeg;base64,/9j/4AAQSkZJRgABAQ=="><img src=\'data:image/gif;base64,R0lGODlhAQABAAAAACw=\'>'
+      + '<img alt="m" srcset="data:image/webp;base64,UklGRhoAAABXRUJQ 1x, data:image/png;base64,iVBORw0K 2x" src="cid:co-logo">'
+      + '<picture><source srcset="data:image/png;base64,AAAA"><img src="data:image/svg+xml;base64,PHN2Zy8+"></picture>'
+      + '<svg viewBox="0 0 9 9"><image href="data:image/png;base64,AAAA" width="9" height="9"/><image xlink:href="data:image/svg+xml,%3Csvg%2F%3E" width="9" height="9"/><use href="#m"/></svg>';
+    assert('round 9: data: image logos (img src/srcset, source srcset, svg image href) and cid: images come through byte for byte',
+      sanitizeReportHtml(logos) === logos, sanitizeReportHtml(logos));
+    const links = '<p>Crew note: href=javascript: no, src=javascript:void(0) and href = vbscript: are words here</p><table><tr><td>javascript: no</td><td title="javascript: no">data: none</td></tr></table>'
+      + '<a href="https://www.google.com/maps/search/?api=1&amp;query=40.44%2C-79.99%20javascript%3A%20no">Map</a>'
+      + '<a href="https://example.com/notes?q=javascript:no&amp;x=data:1">q</a><a href=https://example.com/a?b=javascript:c>u</a>'
+      + '<a href="mailto:pm@example.com?subject=javascript:%20no">m</a><a href="tel:+1-555-0100">t</a><a href="#sec-2">s</a>'
+      + '<a href="/tracker.html?job=26001&amp;view=javascript">j</a><a href="javascript-notes.html">r</a><a href="./data:x">d</a>';
+    assert('round 9: http(s), mailto, tel, fragment and relative links, and prose that says "href=javascript:", come through byte for byte',
+      sanitizeReportHtml(links) === links, sanitizeReportHtml(links));
+    // A kept span's words read as written. A job named "… by = data: TBD"
+    // reaches the report's <title> as typed (the bid items builders print it
+    // bare), and an svg chart's <title> tooltip and a <textarea> are kept
+    // spans too. No tag can open in a span without a "<" and a letter, so
+    // its words come through byte for byte; past one, an "=" the URL check
+    // defuses is an &#61; the text decodes back, and the browser reads the
+    // same words.
+    const spanWords = 'by = data: TBD; href=javascript: is prose; from = data: pending; to = javascript: no, src=data: none';
+    const words = {
+      'a report <title>': [`<html><head><title>Maple Ave — paving ${spanWords}</title></head><body><p>x</p></body></html>`, d => d.title, true],
+      'an svg <title> tooltip': [`<svg viewBox="0 0 9 9"><title>Mon: ${spanWords}</title><rect width="9" height="9"/></svg>`, d => d.querySelector('svg title').textContent, true],
+      'a <textarea>': [`<textarea>${spanWords}</textarea>`, d => d.querySelector('textarea').value, true],
+      'a report <title> holding a "<b>"': [`<html><head><title>Phase <b>2</b> ${spanWords}</title></head><body><p>x</p></body></html>`, d => d.title, false],
+      'an svg <title> holding a <tspan>': [`<svg><title>Mon <tspan>${spanWords}</tspan></title></svg>`, d => d.querySelector('svg title').textContent, false],
+    };
+    for (const [what, [h, read, bytes]] of Object.entries(words)) {
+      const out = sanitizeReportHtml(h), got = read(new JSDOM(out).window.document), want = read(new JSDOM(h).window.document);
+      assert(`round 9: ${what} with "${spanWords.slice(0, 40)}…" reads the same after sanitizing${bytes ? ', byte for byte' : ''}`,
+        got === want && (!bytes || out === h) && sanitizeReportHtml(out) === out, JSON.stringify(got) + (bytes && out !== h ? '  ' + out : ''));
+    }
+    // Idempotence on the new shapes as a whole.
+    const all = '<p>keep</p>' + Object.values(js).slice(0, -2).join('<br>');
+    const once = sanitizeReportHtml(all);
+    assert('round 9: sanitizing the sanitized output changes nothing', sanitizeReportHtml(once) === once && !liveUrls(once).length, liveUrls(once).join(' '));
+    // Linear time on the new pass: one very long value, many references,
+    // many attributes, many unclosed values in a kept span, a long value with
+    // no scheme, and a 2 MB logo.
+    const big = {
+      '300 KB of &Tab; before a javascript: scheme': '<a href="' + '&Tab;'.repeat(60000) + 'javascript:alert(1)">x</a>',
+      '300 KB of tabs and controls before a scheme': '<a href="' + '\t\x01'.repeat(150000) + 'javascript:alert(1)">x</a>',
+      '12,000 links of references': '<a href="&#106;&#97;&#x76;">x</a>'.repeat(12000),
+      '30,000 javascript: attributes on one tag': '<a ' + 'href=javascript:x '.repeat(30000) + '>x</a>',
+      '30,000 unquoted values holding references': '<a ' + 'src=&#106;&#97;:'.repeat(30000) + '>',
+      'a 2 MB href with no scheme': '<a href="' + 'a'.repeat(2000000) + '">x</a>',
+      'a 2 MB data:image logo': '<img src="data:image/png;base64,' + 'A'.repeat(2000000) + '">',
+      'a 2 MB javascript: href': '<a href="javascript:' + 'a'.repeat(2000000) + '">x</a>',
+      '100,000 unclosed href=" in an svg <style>': '<svg><style>' + ' href="'.repeat(100000),
+      '100,000 href=javascript: in a comment': '<!--' + ' href=javascript:x'.repeat(50000) + '-->',
+      '50,000 ampersands with long names': '<a href="' + '&abcdefghij'.repeat(50000) + '">x</a>',
+      'an <animate> with 100,000 values': '<svg><animate attributeName="href" values="' + 'javascript:x;'.repeat(100000) + '"/></svg>',
+      'a srcset of 100,000 candidates': '<img srcset="' + 'a.png 1x, '.repeat(100000) + '">',
+      // The span check reads every place an attribute could start, values
+      // inside values included, each once.
+      '300,000 unquoted hrefs chained by "/" in an svg <style>': '<svg><style><a ' + 'href=x/'.repeat(300000) + '></style></svg>',
+      '150,000 unquoted srcsets chained by "/" in an svg <style>': '<svg><style><a ' + 'srcset=a:b,/'.repeat(150000) + '></style></svg>',
+      '100,000 quoted hrefs inside quoted values in an svg <style>': '<svg><style><!--<b title="--><a ' + ` href='x href="y`.repeat(100000) + '></style></svg>',
+      '100,000 hrefs with long space runs in an svg <style>': '<svg><style><a ' + (' href' + ' '.repeat(10)).repeat(100000) + '></style></svg>',
+    };
+    for (const [what, h] of Object.entries(big)) {
+      const t = Date.now();
+      sanitizeReportHtml(h);
+      const dt = Date.now() - t;
+      const cap = h.length > 1000000 ? 1500 : 500;
+      assert(`round 9: ${what} (${Math.round(h.length / 1000)} KB) is sanitized in linear time`, dt < cap, `${dt} ms`);
+    }
+  }
+  const pass = '<p>Conditions = dry</p>';
+  assert('…while "Conditions = dry" (an "on" inside a word) comes through as written', sanitizeReportHtml(pass) === pass, sanitizeReportHtml(pass));
+  const cmts = { '<!--a-->': '<!--a--><p>k</p>', '<!--a--!>': '<!--a--!><p>k</p>', '<!--a--->': '<!--a---><p>k</p>', '<!--a---!>': '<!--a---!><p>k</p>',
+    'both, --!> first': '<!--a--!>b--><p>k</p>', 'unclosed': '<!--a<p>k</p>' };
+  for (const [what, h] of Object.entries(cmts)) {
+    const o = sanitizeReportHtml(h), d = new JSDOM(o).window.document, d0 = new JSDOM(h).window.document;
+    assert(`…and a comment ending ${what} ends where the browser ends it`, d.body.innerHTML === d0.body.innerHTML, o);
+  }
+}
 
 // ── 3. Real headless-Chrome render ─────────────────────────────────────────
 console.log('\nrenderHtmlToPdf — real headless Chrome');
@@ -265,6 +680,119 @@ function findChrome() {
 }
 
 (async () => {
+  // ── 2b. The division pages' own report builders, through the sanitizer ──
+  // Bid items, the daily summary and the daily PM report print a person's
+  // text with only its double quotes escaped, so "Curb w/one = 6in" reaches
+  // the sanitizer with a bare "=". What the page built is what must arrive.
+  console.log('\npage-built reports keep their text through sanitizeReportHtml');
+  // The sanitizer as it was before the round-9 URL pass, read from git when
+  // the history is here: what a report legitimately carries must come out of
+  // the new one byte for byte as it came out of that one.
+  let oldSanitize = null;
+  try {
+    const src = require('child_process').execFileSync('git', ['show', 'da94bc6:api/lib/email.js'],
+      { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+    const f = path.join(require('os').tmpdir(), `email-da94bc6-${process.pid}.js`);
+    fs.writeFileSync(f, src);
+    try { oldSanitize = require(f).sanitizeReportHtml; } finally { fs.unlinkSync(f); }
+  } catch { oldSanitize = null; }
+  {
+    const { VirtualConsole } = require('jsdom');
+    const SESSION = { fct_token: 'harness', fct_division: 'paving', fct_user: JSON.stringify({ userId: 1, username: 'harness', companyCode: 'FCT',
+      isPlatformAdmin: true, divisionRoles: { turf: 'level5', paving: 'level5', kiewit: 'level5' } }) };
+    const bootPage = file => new JSDOM(fs.readFileSync(path.join(ROOT, file), 'utf8'), {
+      runScripts: 'dangerously', url: 'https://datawatch.app/' + file, virtualConsole: new VirtualConsole(),
+      beforeParse(w) {
+        Object.entries(SESSION).forEach(([k, v]) => w.localStorage.setItem(k, v));
+        w.fetch = () => Promise.resolve({ ok: true, status: 200, text: async () => '',
+          json: async () => ({ ok: true, value: null, user: null, employees: [], jobs: [], entries: [], rows: [], groups: [] }) });
+        w.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
+        w.scrollTo = () => {}; w.alert = () => {}; w.confirm = () => true; w.prompt = () => null;
+        w.HTMLCanvasElement.prototype.getContext = () => null;
+      } });
+    const WORDS = ['Curb w/one = 6in', 'Topsoil w/onsite = 200 CY', 'Walk/only = 4in'];
+    const count = (h, wd) => {
+      const d = new JSDOM(h).window.document;
+      d.querySelectorAll('script').forEach(x => x.remove());
+      return d.body.textContent.split(wd).length - 1;
+    };
+    for (const file of ['paving.html', 'tracker.html', 'kiewit-pinetree.html']) {
+      const dom = bootPage(file);
+      await new Promise(res => setTimeout(res, 300));
+      const w = dom.window;
+      w.eval(`projectsList.push({ id: 'p1', 'project-name': 'Maple Ave', 'job-number': '26001', client: 'Acme', status: 'In Progress',
+        'start-date': '2026-10-01', 'end-date': '2026-12-18',
+        bidItems: [
+          { id: 'b1', cost_code: 'Concrete', sub_code: 'Curb w/one = 6in', description: 'Topsoil w/onsite = 200 CY', unit: 'LF', quantity: '1200', unit_cost: '10' },
+          { id: 'b2', cost_code: 'Concrete', sub_code: 'Walk/only = 4in', description: '', unit: 'SF', quantity: '500', unit_cost: '5' }],
+        dailyRows: [{ id: 'r1', date: '2026-11-02', employee: 'A', cost_code: 'Concrete', sub_code: 'Curb w/one = 6in', quantity: '100',
+          labor_hours: '8', material: 'Topsoil w/onsite = 200 CY' }] }); _pmrProjId = 'p1';`);
+      const built = {
+        'bid items': w.eval(`exportBidPDF('p1', null, { returnHtml: true })`),
+        'daily summary': w.eval(`exportDailySummaryPDF('all', '2026-11-01', '2026-11-06', { returnHtml: true })`),
+        'daily PM report': w.eval(`printDailyPMReport({ returnHtml: true })`),
+      };
+      for (const [what, b] of Object.entries(built)) {
+        const html = b && (typeof b === 'string' ? b : b.html);
+        if (!html) { assert(`${file} ${what}: the page builds it`, false, 'no html'); continue; }
+        const lost = WORDS.filter(wd => count(html, wd) && count(sanitizeReportHtml(html), wd) !== count(html, wd));
+        const shown = WORDS.filter(wd => count(html, wd));
+        assert(`${file} ${what}: ${shown.map(x => `"${x}"`).join(', ')} read the same after sanitizing`, shown.length && !lost.length,
+          'lost: ' + lost.join(' | '));
+      }
+      // Round 9: the URL pass changes nothing a page builds. A job whose
+      // name, notes and bid text say "javascript: no" and "href=javascript:"
+      // as words, with an address, through every report the page emails —
+      // sanitized byte for byte as da94bc6 (before the pass) sanitized it.
+      // The name also says "by = data: TBD" and "href=javascript:", shaped
+      // like an attribute: the bid items, daily PM and job summary builders
+      // print it in the report's <title>, a kept span the URL pass reads
+      // too.
+      if (!oldSanitize) skip(`${file}: page-built reports sanitize byte for byte as before the URL pass`, 'da94bc6 is not in this checkout');
+      else {
+        const NOTE = 'Crew note: javascript: no. href=javascript: is prose here; see https://maps.google.com/?q=40.44,-79.99 & call 555-0100';
+        const NAME = 'Elm St — javascript: no; by = data: TBD; href=javascript: is prose';
+        w.eval(`projectsList.push({ id: 'p2', 'project-name': ${JSON.stringify(NAME)}, 'job-number': '26002', client: 'Acme & Sons', status: 'In Progress',
+          'start-date': '2026-10-01', 'end-date': '2026-12-18', address: '100 Elm St, Pittsburgh, PA', notes: ${JSON.stringify(NOTE)},
+          bidItems: [
+            { id: 'b1', cost_code: 'Concrete', sub_code: 'Curb', description: ${JSON.stringify(NOTE)}, unit: 'LF', quantity: '1200', unit_cost: '10' },
+            { id: 'b2', cost_code: 'Paving', sub_code: 'src=javascript:void(0)', description: 'data: none', unit: 'SF', quantity: '500', unit_cost: '5' }],
+          dailyRows: [{ id: 'r1', date: '2026-11-03', employee: 'A', cost_code: 'Concrete', sub_code: 'Curb', quantity: '100',
+            labor_hours: '8', material: 'Topsoil', notes: ${JSON.stringify(NOTE)}, comments: ${JSON.stringify(NOTE)} }] }); _pmrProjId = 'p2';
+          if (typeof _jsScheduleSectionHtml === 'function') _jsScheduleSectionHtml = async () => '';`);
+        const fid = {
+          'bid items': `exportBidPDF('p2', null, { returnHtml: true })`,
+          'daily summary': `exportDailySummaryPDF('all', '2026-11-01', '2026-11-06', { returnHtml: true })`,
+          'daily PM report': `printDailyPMReport({ returnHtml: true })`,
+          'job summary': `exportJobSummary('p2', { returnHtml: true, forEmail: true })`,
+          'CRM next steps': `typeof _crmStepsEmailHtml !== 'function' ? 'n/a' : _crmStepsEmailHtml([
+            { due: '2026-11-05', due_in: -1, overdue: true, next_step: ${JSON.stringify(NOTE)}, who: "Pat O'Neil", company: 'Acme & Sons', phone: '555-0100', lead_contact: 'Ben' },
+            { due: '2026-11-07', due_in: 1, overdue: false, next_step: 'Send bid — javascript: no', who: 'Lee', company: 'X', phone: '', lead_contact: '' }],
+            { today: new Date('2026-11-06T12:00:00Z'), horizonDays: 7 })`,
+          'construction schedule': `typeof _csBuildEmailReportHtml !== 'function' ? 'n/a' : (() => { const prev = _csData; _csData = { v: 1, header: { heading: 'Elm St — javascript: no', projectTitle: 'Elm St' },
+            rows: [{ id: 't1', description: ${JSON.stringify(NOTE)}, start: '2026-11-02', end: '2026-11-09', duration: 5, pct: 40, deps: [] },
+                   { id: 't2', description: 'Pave', start: '2026-11-10', end: '2026-11-12', duration: 3, pct: 0, deps: ['t1'] }], workWeek: 5 };
+            try { return _csBuildEmailReportHtml({ dataUrl: 'data:image/png;base64,iVBORw0KGgo=', width: 800, height: 200 }); } finally { _csData = prev; } })()`,
+        };
+        const titled = [];
+        for (const [what, expr] of Object.entries(fid)) {
+          let b = null;
+          try { b = await Promise.race([Promise.resolve(w.eval(expr)), new Promise(res => setTimeout(() => res(null), 8000))]); } catch (e) { b = null; }
+          if (b === 'n/a') continue;
+          const html = b && (typeof b === 'string' ? b : b.html);
+          if (!html) { assert(`round 9: ${file} ${what} with "javascript: no" prose: the page builds it`, false, 'no html'); continue; }
+          const now = sanitizeReportHtml(html), before = oldSanitize(html);
+          if (/<title>[^<]*by = data: TBD; href=javascript: is prose/.test(html)) titled.push(what);
+          assert(`round 9: ${file} ${what} with "javascript: no" prose sanitizes byte for byte as before the URL pass`,
+            /javascript: no/.test(html) && now === before, now === before ? 'the prose did not reach the report' : 'differs at ' + [...now].findIndex((c, i) => c !== before[i]));
+        }
+        assert(`round 9: ${file}: the job name, "by = data: TBD; href=javascript: is prose", reaches the <title> of the bid items report (${titled.join(', ') || 'none'})`,
+          titled.includes('bid items'), titled.join(', '));
+      }
+      w.close();
+    }
+  }
+
   const chrome = findChrome();  // also gates layer 4's render assertions
   if (!chrome) {
     skip('renders a report to a real PDF', 'no Chrome/Chromium on this box');
@@ -307,6 +835,90 @@ function findChrome() {
     const elapsed = Date.now() - t0;
     assert('a report referencing an external URL still renders', r2.ok, r2.error);
     assert('the blocked request does not stall the render', elapsed < 20_000, `${elapsed}ms`);
+
+    // JavaScript must be OFF in the render page: reports are static print
+    // markup, and a handler the pattern sanitizer missed (a comment/raw-text/
+    // CDATA confusion) would otherwise run in this server-side renderer and
+    // make blind outbound connections that request interception can't see.
+    // A script that would rewrite visible text proves it: the PDF must still
+    // read "before", never "after".
+    const scripted = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>
+      <p id="m">before</p>
+      <script>document.getElementById('m').textContent='after';<\/script>
+      <img src="x" onerror="document.getElementById('m').textContent='after'">
+    </body></html>`;
+    const r3 = await renderHtmlToPdf(scripted);
+    assert('a scripted report still renders', r3.ok, r3.error);
+    if (r3.ok) {
+      const { execFileSync } = require('child_process');
+      const os = require('os');
+      const tmp = path.join(os.tmpdir(), `js-off-${process.pid}.pdf`);
+      fs.writeFileSync(tmp, r3.buffer);
+      let text = '';
+      try { text = execFileSync('pdftotext', ['-q', tmp, '-'], { encoding: 'utf8' }); }
+      catch { text = ''; }
+      finally { try { fs.unlinkSync(tmp); } catch {} }
+      if (text) {
+        assert('JavaScript is disabled in the PDF renderer (text stays "before")',
+          /before/.test(text) && !/after/.test(text), JSON.stringify(text.trim().slice(0, 60)));
+      } else {
+        skip('JavaScript is disabled in the PDF renderer', 'pdftotext unavailable');
+      }
+    }
+
+    // Round 9 in a real Chromium, with script ON (a javascript: URL runs only
+    // where script does — a mail client or browser opening the report): click
+    // every link of a sample before and after sanitizing. Before, the forms
+    // the browser honours run (so the check can see one run); after, nothing
+    // runs, the page stays where it was, and no link points at a javascript:,
+    // vbscript: or data: URL.
+    {
+      const { launchBrowser } = require(path.join(ROOT, 'api/lib/pdf.js'));
+      const run = 'void(window.__hits=(window.__hits||0)+1)';
+      const forms = [
+        `<a href=javascript:${run}>`, `<a href='javascript:${run};void("x")'>`, `<a href="&#106;avascript:${run}">`,
+        `<a href="&#0000106avascript:${run}">`, `<a href="jav&#x61script:${run}">`, `<a href="javascript&colon;${run}">`,
+        `<a href="java&Tab;script:${run}">`, `<a href="java&NewLine;script:${run}">`, `<a href=" \x01JaVaScRiPt:${run}">`,
+      ];
+      const sample = forms.map((a, i) => `<p style="font-size:20px">${a}link ${i}</a></p>`).join('')
+        + `<svg width="240" height="30"><a xlink:href="javascript:${run}"><text x="5" y="22">svg link</text></a></svg>`
+        + `<svg width="240" height="30"><a href="#"><set attributeName="href" to="javascript:${run}" begin="0s"/><text x="5" y="22">animated link</text></a></svg>`
+        + `<p><a href="data:text/html;base64,PGgxPmRhdGE8L2gxPg==">data link</a></p>`;
+      let browser = null;
+      try {
+        browser = await launchBrowser();
+        const clickAll = async html => {
+          // A page of its own each time: setContent keeps the window, and the
+          // count with it.
+          const page = await browser.newPage();
+          await page.setJavaScriptEnabled(true);
+          await page.setContent(`<!DOCTYPE html><html><body>${html}</body></html>`);
+          const url0 = page.url();
+          await new Promise(res => setTimeout(res, 100));
+          const n = (await page.$$('a')).length;
+          for (let i = 0; i < n; i++) {
+            const links = await page.$$('a');
+            try { await links[i].click(); } catch { /* not clickable */ }
+            await new Promise(res => setTimeout(res, 80));
+          }
+          const hits = await page.evaluate(() => window.__hits || 0);
+          const bad = await page.evaluate(() => [...document.querySelectorAll('a')].map(a => a.getAttribute('href') ?? a.getAttribute('xlink:href') ?? '')
+            .filter(v => { try { return /^(javascript|vbscript|data):$/.test(new URL(v, location.href).protocol); } catch { return false; } }));
+          const moved = page.url().split('#')[0] !== url0.split('#')[0];
+          await page.close();
+          return { hits, bad, n, moved };
+        };
+        const before = await clickAll(sample);
+        const after = await clickAll(sanitizeReportHtml(sample));
+        assert('round 9 (Chromium): the unsanitized sample\'s links do run when clicked (the check can see one run)', before.hits >= forms.length, JSON.stringify(before));
+        assert('round 9 (Chromium): after sanitizing, clicking every link runs nothing, goes nowhere, and no link holds a javascript:/vbscript:/data: URL',
+          after.hits === 0 && !after.moved && !after.bad.length && after.n === before.n, JSON.stringify(after));
+      } catch (err) {
+        assert('round 9 (Chromium): the click check runs', false, err.message);
+      } finally {
+        if (browser) await browser.close().catch(() => {});
+      }
+    }
   }
 
   // ── 4. send-report, end to end ───────────────────────────────────────────
@@ -323,12 +935,19 @@ function findChrome() {
   };
 
   let sentPayload = null;
+  // MAILS.failAt = n: the n-th send is refused (a bad moment at the mail service).
+  const MAILS = { failAt: 0, tries: 0, to: [] };
   const resendPath = require.resolve('resend');
   require.cache[resendPath] = {
     id: resendPath, filename: resendPath, loaded: true, exports: {
       Resend: class {
         constructor() {
-          this.emails = { send: async opts => { sentPayload = opts; return { data: { id: 'stub-id' }, error: null }; } };
+          this.emails = { send: async opts => {
+            MAILS.tries++;
+            if (MAILS.failAt && MAILS.tries === MAILS.failAt) return { data: null, error: { message: 'Resend 500: internal error' } };
+            sentPayload = opts; MAILS.to.push([].concat(opts.to));
+            return { data: { id: 'stub-id-' + MAILS.tries }, error: null };
+          } };
         }
       },
     },
@@ -452,6 +1071,26 @@ function findChrome() {
   assert('attach_pdf:false skips rendering entirely and inlines the report',
     res3.body && res3.body.ok === true && res3.body.pdfAttached === false && !res3.body.warning
     && sentPayload.html.includes('Silt Sock 12inch'), JSON.stringify(res3.body));
+
+  // — a long list goes in batches of 50; the third batch refused: the two
+  //   that went are reported (who has it, their ids), not lost in "failed" —
+  {
+    const { deliverReport } = require(path.join(ROOT, 'api/lib/report-delivery.js'));
+    const many = Array.from({ length: 120 }, (_, i) => `r${i}@example.com`);
+    Object.assign(MAILS, { failAt: 3, tries: 0, to: [] });
+    let out;
+    try { out = await deliverReport({ label: 'Custom Report', recipients: many, subject: 'Weekly', html: '<p>x</p>', attachments: [], attachPdf: false }); }
+    finally { Object.assign(MAILS, { failAt: 0, tries: 0, to: [] }); }
+    assert('deliverReport: a third batch refused → not ok, but it says the first 100 have it (2 emails) and who was not reached',
+      out && out.ok === false && out.status === 502 && out.partial === true && out.deliveredTo.length === 100 && out.ids.length === 2
+        && out.deliveredTo[0] === 'r0@example.com' && out.deliveredTo[99] === 'r99@example.com' && out.notReached.length === 20
+        && /after it had gone to 100 of 120 recipients/.test(out.error) && out.subject === 'Weekly',
+      JSON.stringify(out && { ...out, deliveredTo: out.deliveredTo && out.deliveredTo.length, notReached: out.notReached && out.notReached.length }));
+    Object.assign(MAILS, { failAt: 1, tries: 0, to: [] });
+    try { out = await deliverReport({ label: 'Custom Report', recipients: many.slice(0, 3), subject: 'Weekly', html: '<p>x</p>', attachments: [], attachPdf: false }); }
+    finally { Object.assign(MAILS, { failAt: 0, tries: 0, to: [] }); }
+    assert('…the first batch refused: nothing went, and it says no more than that', out && out.ok === false && !out.partial && !out.deliveredTo, JSON.stringify(out));
+  }
 
   // ── 5. ESM loading on a runtime without require(esm) ─────────────────────
   console.log('\nESM loading — the deps are ESM-only, so require() must not come back');

@@ -24,10 +24,21 @@
 // Saving a schedule makes the saver the account it runs as. That is the rule
 // that keeps the access check honest: whoever last said "send this" is whose
 // access it is sent with, checked again at every send.
+//
+// Scheduled custom reports (<division>_custom_report) are listed here too,
+// marked managed_in: 'custom_reporting' with the saved report's name, but are
+// set up and edited in Analytics → Custom Reporting
+// (api/custom-report-schedules.js), where the saved report, its customer-safe
+// check and its jobs can be picked. Here an admin may switch one off or on,
+// Send it now, or delete it; creating or editing one is refused. Switching
+// one on or off leaves the account it runs as alone: that account is the one
+// that could see the saved report, and is checked again at every send. An
+// admin who is a sales login in that division (Custom Reporting is part of
+// Analytics, which sales cannot open) neither sees nor touches them.
 
 const { neon } = require('@neondatabase/serverless');
-const { requireAuth } = require('../lib/auth');
-const { SCHEDULABLE, DIVISIONS, PAY_RANGES, mayUseDivision, periodsFor, pickSections } = require('../lib/report-catalog');
+const { requireAuth, isSalesIn } = require('../lib/auth');
+const { SCHEDULABLE, DIVISIONS, PAY_RANGES, mayUseDivision, periodsFor, pickSections, isCustomType } = require('../lib/report-catalog');
 const T = require('../lib/report-schedule-time');
 const runner = require('../lib/report-schedule-runner');
 const jobFin = require('../lib/job-financials');
@@ -40,6 +51,10 @@ const MAX_PICKED_JOBS = 100;  // jobs ticked on one schedule
 const RUNS_PER_DIVISION = 25;
 const DAY_CHOICES   = ['today', 'tomorrow', 'next_workday'];
 const YEAR_CHOICES  = ['current', 'all'];
+const MANAGED_IN_CUSTOM = 'Manage custom report schedules in Analytics → Custom Reporting';
+const SALES_NO_CUSTOM = 'Custom Reporting is part of Analytics, which a sales login cannot open.';
+// A scheduled custom report is Custom Reporting's: not a sales login's to see.
+const hiddenFromSales = (payload, r) => isCustomType(r.report_type) && isSalesIn(payload, r.division);
 
 function isAdmin(payload) {
   if (!payload) return false;
@@ -54,7 +69,6 @@ function isAdmin(payload) {
 
 const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
 
-/** The schedule as the tab reads it. */
 /**
  * The schedule as the tab reads it.
  *
@@ -62,20 +76,15 @@ const str = (v, max) => (typeof v === 'string' ? v.trim().slice(0, max) : '');
  * belongs to a run that died, and the row says so rather than reading
  * "Sending…" until the next occurrence. A run that died after it started
  * left 'sending' behind as its last status — shown as Interrupted, since some
- * of its emails may have gone.
+ * of its emails may have gone, with where it got to (runner.liveStatus).
+ *
+ * A scheduled custom report also carries the saved report's name (now, or as
+ * it was saved if the report is gone), its extra addresses, whether it sends
+ * to the jobs' saved contacts, and managed_in: 'custom_reporting'.
  */
-// A run cut off partway (the function stopped: out of memory, out of time, a
-// crash) leaves its last progress note on the row; say where it got to.
-function cutOffMessage(lastMessage) {
-  const tail = 'Some of its emails may have gone out; the rest did not.';
-  const m = String(lastMessage || '');
-  if (!m.startsWith(runner.PROGRESS_PREFIX)) return `The run was cut off before it finished. ${tail}`;
-  return `The run was cut off at: ${m.slice(runner.PROGRESS_PREFIX.length)}. ${tail}`;
-}
-
 function shape(r) {
-  const fresh = Boolean(r.claimed_at) && Date.now() - new Date(r.claimed_at).getTime() < runner.STALE_CLAIM_MS;
-  const cutOff = r.last_status === 'sending' && !fresh;
+  const live = runner.liveStatus(r);
+  const custom = isCustomType(r.report_type);
   return {
     id:            Number(r.id),
     report_type:   r.report_type,
@@ -97,11 +106,20 @@ function shape(r) {
     run_as_username: r.run_as_username,
     next_run_at:   r.next_run_at,
     last_run_at:   r.last_run_at,
-    last_status:   cutOff ? 'interrupted' : r.last_status,
-    last_message:  cutOff ? cutOffMessage(r.last_message) : r.last_message,
-    sending:       fresh,
+    last_status:   live.status,
+    last_message:  live.message,
+    sending:       live.sending,
     created_by_username: r.created_by_username,
     updated_at:    r.updated_at,
+    ...(custom ? {
+      managed_in:       'custom_reporting',
+      custom_report_id: r.custom_report_id == null ? null : Number(r.custom_report_id),
+      report_name:      (r.cr_live && r.cr_name) || (r.options && r.options.report_name) || null,
+      report_deleted:   !r.cr_live,
+      jobs_mode:        runner.jobsModeOf(r),
+      emails:           Array.isArray(r.emails) ? r.emails : [],
+      use_job_contacts: r.use_job_contacts === true,
+    } : {}),
   };
 }
 
@@ -113,6 +131,9 @@ function normalizeBody(body, payload) {
   const b = body || {};
   const def = SCHEDULABLE[b.report_type];
   if (!def) return { error: 'Pick a report.' };
+  // A saved custom report is picked, checked and given its jobs in Custom
+  // Reporting, which knows what the report is; this editor does not.
+  if (def.customReport) return { error: MANAGED_IN_CUSTOM };
   if (!mayUseDivision(payload, def.division)) {
     return { status: 403, error: 'You do not have access to that division.' };
   }
@@ -200,6 +221,21 @@ async function loadOne(sql, company, id) {
   return rows[0] || null;
 }
 
+// The saved custom report's name for a custom row, read now (cr_name, and
+// cr_live when the report is still there), alongside the schedule.
+async function withReportNames(sql, company, rows) {
+  const ids = [...new Set(rows.filter(r => isCustomType(r.report_type) && r.custom_report_id != null)
+    .map(r => String(r.custom_report_id)))];
+  if (!ids.length) return rows;
+  const found = await sql`
+    SELECT id, name, deleted_at FROM custom_reports WHERE company_code = ${company} AND id = ANY(${ids}::bigint[])`;
+  const byId = new Map(found.map(f => [String(f.id), f]));
+  return rows.map(r => {
+    const f = r.custom_report_id != null ? byId.get(String(r.custom_report_id)) : null;
+    return f ? { ...r, cr_name: f.name, cr_live: !f.deleted_at } : r;
+  });
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
@@ -241,6 +277,9 @@ module.exports = async (req, res) => {
             period: s.period || null, day: s.day || null, year: Boolean(s.year), payRange: s.payRange || null,
             periods: s.period ? periodsFor(s, T.PERIODS) : null, periodHint: s.periodHint || null,
             sections: s.sections || null,
+            // Listed so its rows and history read by name; not one this
+            // editor creates (managed in Custom Reporting).
+            ...(s.customReport ? { customReport: true, managed_in: 'custom_reporting' } : {}),
           })),
         }))
         .filter(d => d.reports.length);
@@ -261,6 +300,7 @@ module.exports = async (req, res) => {
                      CASE WHEN r.report_type IS NULL THEN s.division     ELSE r.division     END AS division,
                      CASE WHEN r.report_type IS NULL THEN s.project_name ELSE r.project_name END AS project_name,
                      CASE WHEN r.report_type IS NULL THEN s.project_id   ELSE r.project_id   END AS project_id,
+                     r.report_name,
                      row_number() OVER (
                        PARTITION BY CASE WHEN r.report_type IS NULL THEN s.division ELSE r.division END
                        ORDER BY r.started_at DESC) AS rn
@@ -274,7 +314,7 @@ module.exports = async (req, res) => {
       return res.json({
         ok: true,
         divisions,
-        schedules: rows.filter(r => visible.has(r.division)).map(shape),
+        schedules: (await withReportNames(sql, company, rows.filter(r => visible.has(r.division) && !hiddenFromSales(payload, r)))).map(shape),
         // The addresses too, so the editor can open a group to fix a typo
         // in it rather than have it made again. Admins only, as all of this is.
         groups: groups.map(g => ({
@@ -283,11 +323,12 @@ module.exports = async (req, res) => {
           count: Array.isArray(g.emails) ? g.emails.length : 0,
           report_type: g.report_type, project_id: g.project_id,
         })),
-        runs: runs.filter(r => visible.has(r.division)).map(r => ({
+        runs: runs.filter(r => visible.has(r.division) && !hiddenFromSales(payload, r)).map(r => ({
           id: Number(r.id), schedule_id: Number(r.schedule_id), kind: r.run_kind, status: r.status,
           sent: r.sent_count, total: r.total_count, recipients: r.recipient_count, message: r.message,
           triggered_by: r.triggered_by, started_at: r.started_at, finished_at: r.finished_at,
           report_type: r.report_type, division: r.division, project_name: r.project_name, project_id: r.project_id,
+          report_name: r.report_name || null,
         })),
         periods: T.PERIODS,
         payRanges: PAY_RANGES,
@@ -305,6 +346,7 @@ module.exports = async (req, res) => {
       if (!mayUseDivision(payload, sched.division)) {
         return res.status(403).json({ ok: false, error: 'You do not have access to that division.' });
       }
+      if (hiddenFromSales(payload, sched)) return res.status(403).json({ ok: false, error: SALES_NO_CUSTOM });
       // Claimed like a timetabled run, so a second press — or the five-minute
       // run reaching the same schedule — cannot send it again while this one
       // is still going. The page also shows it as Sending… meanwhile.
@@ -326,7 +368,7 @@ module.exports = async (req, res) => {
       const result = await runner.runSchedule(sql, claimed, {
         // Inside the function's 300 seconds, as the cron's is.
         baseUrl: runner.appBaseUrl(req), now: startedAt, deadline: startedAt.getTime() + 285_000,
-        progress: runner.progressWriter(sql, claimed, token),
+        progress: runner.progressWriter(sql, claimed, token), kind: 'manual',
       });
       try {
         await runner.recordRun(sql, claimed, result, {
@@ -341,6 +383,7 @@ module.exports = async (req, res) => {
       // turn that into an error that invites a second press.
       let fresh = null;
       try { fresh = await loadOne(sql, company, id); } catch { /* the page reloads the list anyway */ }
+      if (fresh) { try { fresh = (await withReportNames(sql, company, [fresh]))[0]; } catch { /* without the name */ } }
       return res.json({ ok: true, result, schedule: fresh ? shape(fresh) : null });
     }
 
@@ -383,9 +426,13 @@ module.exports = async (req, res) => {
       if (!mayUseDivision(payload, cur.division)) {
         return res.status(403).json({ ok: false, error: 'You do not have access to that division.' });
       }
+      if (hiddenFromSales(payload, cur)) return res.status(403).json({ ok: false, error: SALES_NO_CUSTOM });
 
       const body = req.body || {};
       const toggleOnly = Object.keys(body).length === 1 && Object.prototype.hasOwnProperty.call(body, 'enabled');
+      const customRow = isCustomType(cur.report_type);
+      // A scheduled custom report is only switched off or on here.
+      if (customRow && !toggleOnly) return res.status(400).json({ ok: false, error: MANAGED_IN_CUSTOM });
       let v;
       if (toggleOnly) {
         v = { ...cur, enabled: Boolean(body.enabled) };
@@ -419,7 +466,8 @@ module.exports = async (req, res) => {
       // nothing carried over; a report handed to the next pass that is now
       // off, retimed or another report says the rest did not go.
       const keepResume = Boolean(stillDue) && cur.report_type === v.report_type
-        && (cur.project_id || null) === (v.project_id || null);
+        && (cur.project_id || null) === (v.project_id || null)
+        && sameCustomReport(cur, v);
       const sentBefore = Number(cur.resume_state && cur.resume_state.sent) || 0;
       const endedStatus = sentBefore ? 'partial' : 'skipped';
       const endedMessage = `The rest of its last send did not go out: it was ${v.enabled ? 'changed' : 'switched off'} before the next pass.`
@@ -442,8 +490,8 @@ module.exports = async (req, res) => {
           note          = ${v.note},
           attach_pdf    = ${v.attach_pdf !== false},
           enabled       = ${Boolean(v.enabled)},
-          run_as_user_id  = ${payload.userId},
-          run_as_username = ${payload.username || null},
+          run_as_user_id  = ${customRow ? cur.run_as_user_id : payload.userId},
+          run_as_username = ${customRow ? cur.run_as_username : (payload.username || null)},
           next_run_at   = ${next ? next.toISOString() : null},
           resume_state  = CASE WHEN ${keepResume} THEN resume_state ELSE NULL END,
           resume_count  = CASE WHEN ${keepResume} THEN resume_count ELSE 0 END,
@@ -452,7 +500,9 @@ module.exports = async (req, res) => {
           updated_at    = NOW()
          WHERE id = ${id} AND company_code = ${company}
          RETURNING *`;
-      return res.json({ ok: true, schedule: shape(rows[0]) });
+      let saved = rows[0];
+      if (customRow) { try { saved = (await withReportNames(sql, company, [saved]))[0]; } catch { /* without the name */ } }
+      return res.json({ ok: true, schedule: shape(saved) });
     }
 
     // ── DELETE ?id= ───────────────────────────────────────────────────────
@@ -464,6 +514,7 @@ module.exports = async (req, res) => {
       if (!mayUseDivision(payload, cur.division)) {
         return res.status(403).json({ ok: false, error: 'You do not have access to that division.' });
       }
+      if (hiddenFromSales(payload, cur)) return res.status(403).json({ ok: false, error: SALES_NO_CUSTOM });
       await sql`DELETE FROM report_schedules WHERE id = ${id} AND company_code = ${company}`;
       return res.json({ ok: true });
     }
@@ -475,5 +526,20 @@ module.exports = async (req, res) => {
   }
 };
 
+/**
+ * Whether two copies of a schedule send the same saved custom report (both
+ * none, for every other kind): the column, and the copy in options for one
+ * whose report was purged (the column is then NULL), and the same jobs mode.
+ */
+function sameCustomReport(a, b) {
+  const col = r => (r.custom_report_id == null ? null : String(r.custom_report_id));
+  const opt = r => (r.options && r.options.report_id != null ? String(r.options.report_id) : null);
+  const mode = r => r.jobs_mode || null;
+  return col(a) === col(b) && opt(a) === opt(b) && mode(a) === mode(b);
+}
+
 module.exports.normalizeBody = normalizeBody;
 module.exports.isAdmin = isAdmin;
+module.exports.shape = shape;
+module.exports.sameCustomReport = sameCustomReport;
+module.exports.MANAGED_IN_CUSTOM = MANAGED_IN_CUSTOM;

@@ -1005,6 +1005,47 @@
     .ar-hist col.c-ar-msg    { width: 43%; }
     .ar-hist td { vertical-align: top; }
     .ar-hist td.ar-hist-msg { white-space: normal; color: #9a9aaa; font-size: 0.72rem; line-height: 1.4; }
+    /* A scheduled custom report: listed, switched off/on and deleted here,
+       but set up and edited in Analytics → Custom Reporting. */
+    .ar-managed { display: inline-block; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase;
+      color: #93c5fd; border: 1px solid rgba(96,165,250,0.35); border-radius: 3px; padding: 0.04rem 0.32rem; margin-left: 0.35rem; vertical-align: 1px; }
+    .ar-sub.ar-gone { color: #f87171; }
+
+    /* Manage System → Branding */
+    .br-panel { display: flex; flex-direction: column; gap: 0.85rem; }
+    .modal .br-panel textarea {
+      width: 100%; min-height: 3.2rem; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+      border-radius: 4px; padding: 0.45rem 0.65rem; font-size: 0.85rem; font-family: inherit; outline: none; resize: vertical;
+    }
+    .modal .br-panel textarea:focus { border-color: var(--green); }
+    .modal .br-panel input:disabled, .modal .br-panel textarea:disabled { opacity: 0.6; cursor: not-allowed; }
+    .br-logo-row { display: flex; gap: 0.9rem; align-items: flex-start; flex-wrap: wrap; }
+    .br-logo-box {
+      width: 220px; max-width: 100%; height: 76px; display: flex; align-items: center; justify-content: center;
+      background: #fff; border: 1px solid var(--border); border-radius: 5px; padding: 0.4rem; overflow: hidden;
+    }
+    .br-logo-box img { max-width: 100%; max-height: 100%; display: block; }
+    .br-logo-box .ar-hint { color: #6b7280; margin: 0; }
+    .br-logo-acts { flex: 1 1 240px; min-width: 0; display: flex; flex-direction: column; gap: 0.45rem; align-items: flex-start; }
+    .modal .br-logo-acts input[type=file] { padding: 0.35rem; font-size: 0.75rem; }
+    .br-sheet {
+      background: #fff; color: #111; border-radius: 5px; padding: 0.9rem 1rem 0.7rem; font-family: Arial, Helvetica, sans-serif;
+      overflow: hidden;
+    }
+    .br-mast { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; border-bottom: 3px solid #22c55e; padding-bottom: 7px; }
+    .br-mast-left { display: flex; align-items: flex-end; gap: 10px; min-width: 0; }
+    .br-mast-logo { display: block; max-height: 48px; max-width: 220px; height: auto; width: auto; }
+    .br-mast-co { font-size: 17px; font-weight: 800; color: #111; line-height: 1.1; overflow-wrap: anywhere; }
+    .br-mast-word { font-size: 22px; font-weight: 800; letter-spacing: 0.14em; text-transform: uppercase; color: #22c55e; line-height: 1; }
+    .br-mast-sub { font-size: 8px; font-weight: 700; letter-spacing: 0.2em; text-transform: uppercase; color: #6b7280; margin-top: 5px; }
+    .br-mast-meta { text-align: right; flex: none; }
+    .br-mast-rpt { font-size: 10px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: #111; }
+    .br-mast-date { font-size: 8px; color: #9ca3af; margin-top: 3px; }
+    .br-body { height: 34px; margin: 10px 0 8px; background: repeating-linear-gradient(#f3f4f6 0 6px, #fff 6px 12px); border-radius: 2px; }
+    .br-foot { border-top: 1px solid #ddd; padding-top: 5px; font-size: 8.5px; color: #777; display: flex; justify-content: space-between; gap: 12px; }
+    .br-foot > span:first-child { min-width: 0; overflow-wrap: anywhere; white-space: pre-line; }
+    .br-foot > span:last-child { flex: none; }
+    @media (max-width: 640px) { .br-mast { flex-wrap: wrap; } .br-mast-meta { text-align: left; } }
 
     @media (max-width: 980px) {
       .ar-row {
@@ -1118,7 +1159,7 @@
       .modal { height: 100vh; max-height: 100vh; border-radius: 0; border: none; }
       .mu-legend { display: none; }
       .modal-header, .mu-subtabs, .mu-body { padding-left: 1rem; padding-right: 1rem; }
-      /* Five tabs on one line: tighter, never wrapped, and the strip scrolls
+      /* Six tabs on one line: tighter, never wrapped, and the strip scrolls
          sideways on its own rather than pushing the last tab off the screen.
          Auto Reports is just Reports here — the room the fifth tab needs. */
       .mu-subtabs { overflow-x: auto; scrollbar-width: none; }
@@ -1128,6 +1169,12 @@
       .mu-tab-long { display: none; }
       .mu-search { max-width: none; flex-basis: 100%; }
       .modal .mu-filter { flex: 1 1 45%; min-width: 0; }
+    }
+    /* A phone: the sixth tab (Branding) fits beside the rest, all six on
+       screen at 390px rather than one scrolled out of sight. */
+    @media (max-width: 420px) {
+      .mu-subtab-btn { padding: 0.55rem 0.24rem; font-size: 0.6rem; letter-spacing: 0.02em; }
+      .mu-subtab-count { margin-left: 0.18rem; }
     }
 
     /* ── Main ── */
@@ -1503,6 +1550,7 @@
         <button class="mu-subtab-btn"        id="muTabBtnScheduler"   onclick="switchUserSubTab('scheduler')">Scheduler</button>
         <button class="mu-subtab-btn"        id="muTabBtnReports"     onclick="switchUserSubTab('reports')"><span class="mu-tab-long">Auto </span>Reports<span class="mu-subtab-count" id="muTabCountReports" style="display:none"></span></button>
         <button class="mu-subtab-btn"        id="muTabBtnVacation"    onclick="switchUserSubTab('vacation')">Vacation</button>
+        <button class="mu-subtab-btn"        id="muTabBtnBranding"    type="button">Branding</button>
       </div>
 
       <div class="mu-body" id="muBody">
@@ -2163,6 +2211,72 @@
 
         <div id="vac-result" class="modal-result"></div>
       </div><!-- /#mu-panel-vacation -->
+
+      <!-- ── Branding sub-panel ──
+           The company's own name, logo and contact line on the customer
+           reports Analytics → Custom Reporting builds: the masthead at the top
+           and the line at the foot. One per company (api/company/branding.js);
+           a company admin edits it, everyone's reports read it. -->
+      <div class="mu-panel" id="mu-panel-branding">
+        <div class="mu-note">
+          What customers see on every report built in <strong>Analytics → Custom Reporting</strong>:
+          your company's name and logo at the top in place of the DataWatch masthead, and how to
+          reach you at the foot. Each report can still be switched back to the DataWatch masthead
+          on its own Header step.
+        </div>
+        <div id="br-status" class="mu-status" role="status"></div>
+        <div class="br-panel" id="br-panel">
+          <div class="ar-grid">
+            <div>
+              <label for="br-name">Company name on reports</label>
+              <input id="br-name" type="text" maxlength="120" autocomplete="organization" placeholder="e.g. Force Corp Paving &amp; Sealcoating" />
+            </div>
+            <div>
+              <label for="br-phone">Phone</label>
+              <input id="br-phone" type="tel" maxlength="40" autocomplete="tel" placeholder="(555) 555-0100" />
+            </div>
+            <div>
+              <label for="br-email">Email</label>
+              <input id="br-email" type="email" maxlength="254" autocomplete="email" placeholder="office@example.com" />
+              <div class="ar-hint">Kept on file — reports print the address, phone and website.</div>
+            </div>
+            <div>
+              <label for="br-website">Website</label>
+              <input id="br-website" type="text" inputmode="url" maxlength="200" autocomplete="url" placeholder="www.example.com" />
+            </div>
+          </div>
+          <div class="ar-grid">
+            <div>
+              <label for="br-address">Address</label>
+              <textarea id="br-address" maxlength="300" rows="2" placeholder="Street, town, state ZIP"></textarea>
+            </div>
+            <div>
+              <label for="br-footer">Report footer <span style="text-transform:none;letter-spacing:0">(optional)</span></label>
+              <textarea id="br-footer" maxlength="300" rows="2" placeholder="A line at the foot of every report"></textarea>
+            </div>
+          </div>
+          <div>
+            <label for="br-logo-file">Logo</label>
+            <div class="br-logo-row">
+              <div class="br-logo-box" id="br-logo-box"><span class="ar-hint">No logo</span></div>
+              <div class="br-logo-acts">
+                <input id="br-logo-file" type="file" accept="image/png,image/jpeg" />
+                <button type="button" class="mu-tool-btn" id="br-logo-remove" disabled>Remove logo</button>
+                <div class="ar-hint">PNG or JPEG. It is shrunk to fit 600 × 200 pixels and must come to under 200 KB, because it travels inside every report and email.</div>
+              </div>
+            </div>
+          </div>
+          <div>
+            <div class="mu-group-label">How the top and foot of a report will look</div>
+            <div class="br-sheet" id="br-preview"></div>
+          </div>
+          <button type="button" class="ar-link-btn" id="br-dir-link">PM phone and email come from the Team Directory →</button>
+          <div class="mu-form-actions">
+            <button class="modal-submit" id="br-save" type="button" disabled>Save Branding</button>
+            <span id="br-result" class="modal-result"></span>
+          </div>
+        </div>
+      </div><!-- /#mu-panel-branding -->
 
       </div><!-- /.mu-body -->
     </div>
@@ -2839,7 +2953,7 @@
     }
 
     // Sub-tab → the suffix its button and panel ids carry.
-    const MU_SUBTABS = { users: 'Users', supervisors: 'Supervisors', scheduler: 'Scheduler', reports: 'Reports', vacation: 'Vacation' };
+    const MU_SUBTABS = { users: 'Users', supervisors: 'Supervisors', scheduler: 'Scheduler', reports: 'Reports', vacation: 'Vacation', branding: 'Branding' };
 
     function switchUserSubTab(tab) {
       muActiveSubTab = tab;
@@ -2855,6 +2969,8 @@
       if (tab === 'reports') { loadAutoReports(); arStartPolling(); } else arStopPolling();
       // And here: a request sent or deleted since changes what is left.
       if (tab === 'vacation') loadVacationList();
+      // And the branding: another admin may have changed it since.
+      if (tab === 'branding') brLoad();
       if (tab === 'supervisors' && !supervisorsLoaded) {
         supervisorsLoaded = true;
         const search = document.getElementById('sup-search');
@@ -3531,6 +3647,47 @@
       return null;
     }
 
+    // A saved Custom Reporting report on a timetable. It is listed here so it
+    // can be switched off, back on or deleted alongside the rest, but it is
+    // set up and edited in Analytics → Custom Reporting — which knows the
+    // saved report, checks it is customer-safe and picks its jobs — so this
+    // editor never offers it and its row has no Edit or Send now.
+    const AR_MANAGED_NOTE = 'Managed in Analytics → Custom Reporting';
+    function arIsCustomType(r) {
+      return Boolean(r && (r.customReport || r.managed_in === 'custom_reporting' || /_custom_report$/.test(String(r.type || ''))));
+    }
+    function arIsCustom(s) {
+      return Boolean(s && (s.managed_in === 'custom_reporting' || /_custom_report$/.test(String(s.report_type || ''))));
+    }
+    // The reports this editor can set up: every one but a custom report.
+    function arEditable(reports) { return (reports || []).filter(r => !arIsCustomType(r)); }
+    function arCustomName(s) { return String((s && s.report_name) || '').trim() || 'A saved custom report'; }
+    // Who a custom report goes to: its groups, its own addresses and/or each
+    // job's saved contacts.
+    function arCustomRecipients(s) {
+      const parts = [];
+      const groups = arGroupsText(s);
+      if (groups) parts.push(groups);
+      const n = Array.isArray(s.emails) ? s.emails.length : 0;
+      if (n) parts.push(`${n} address${n === 1 ? '' : 'es'}`);
+      if (s.use_job_contacts) parts.push('each job\'s saved contacts');
+      return parts.join(', ');
+    }
+    // Which jobs a custom report covers (jobs_mode).
+    function arCustomScope(s) {
+      const picked = Array.isArray(s.picked_jobs) && s.picked_jobs.length ? s.picked_jobs : null;
+      if (s.jobs_mode === 'each') {
+        if (picked) {
+          const names = picked.map(j => j.name || 'Job ' + j.id);
+          return { main: `${picked.length} picked job${picked.length === 1 ? '' : 's'}`,
+            sub: names.slice(0, 3).join(', ') + (names.length > 3 ? ` +${names.length - 3}` : '') + ' · one email per job' };
+        }
+        return { main: 'Every In Progress job', sub: 'one email per job' };
+      }
+      if (s.jobs_mode === 'all_in_progress') return { main: 'All In Progress jobs', sub: 'one report' };
+      return { main: 'The report\'s saved jobs', sub: 'one report' };
+    }
+
     function arWhenText(s) {
       const at = arClock(s.send_time);
       switch (s.frequency) {
@@ -3716,9 +3873,10 @@
 
     function arRowHtml(s) {
       const def   = arReportDef(s.report_type);
-      const scope = arScopeText(s, def);
+      const custom = arIsCustom(s);
+      const scope = custom ? arCustomScope(s) : arScopeText(s, def);
       const st    = arStatusOf(s);
-      const name  = def ? def.name : s.report_type;
+      const name  = custom ? arCustomName(s) : def ? def.name : s.report_type;
       const next  = s.enabled && s.next_run_at && !st.due && !st.sending ? 'Next: ' + arFmtWhen(s.next_run_at) : '';
       let msg = '';
       // Handed back by a run that ran out of time: it is due again, and what
@@ -3735,10 +3893,12 @@
       else if (st.last && s.last_message) msg = (st.lastShown ? '' : `Last: ${st.last.label} ${st.last.when} — `) + s.last_message;
       const msgBad = st.bad && !st.due && !st.sending;
       return `
-        <div class="ar-row${s.enabled ? '' : ' off'}${st.flag ? ' flag-' + st.flag : ''}" data-id="${s.id}">
+        <div class="ar-row${s.enabled ? '' : ' off'}${st.flag ? ' flag-' + st.flag : ''}${custom ? ' ar-custom' : ''}" data-id="${s.id}">
           <div class="ar-c-title">
-            <div class="ar-title">${escHtml(name)}</div>
-            <div class="ar-sub">To ${escHtml(arGroupsText(s) || 'nobody')}</div>
+            <div class="ar-title">${escHtml(name)}${custom ? '<span class="ar-managed">Custom Report</span>' : ''}</div>
+            <div class="ar-sub">To ${escHtml((custom ? arCustomRecipients(s) : arGroupsText(s)) || 'nobody')}</div>
+            ${custom && s.report_deleted ? '<div class="ar-sub ar-gone">The saved report was deleted — restore it in Custom Reporting, or delete this schedule.</div>' : ''}
+            ${custom ? `<div class="ar-sub">${escHtml(AR_MANAGED_NOTE)}</div>` : ''}
           </div>
           <div class="ar-c-job">
             <div>${escHtml(scope.main)}</div>
@@ -3759,8 +3919,10 @@
             </label>
           </div>
           <div class="ar-c-act">
-            <button class="ar-send-btn" onclick="arSendNow(${s.id}, this)" ${st.sending ? 'disabled' : ''} title="Build it and send it to its groups right now">${st.sending ? 'Sending…' : 'Send now'}</button>
-            <button class="user-edit-btn" onclick="arEdit(${s.id})">Edit</button>
+            ${custom
+              ? `<button class="user-edit-btn" disabled title="${escHtml(AR_MANAGED_NOTE)}">Edit</button>`
+              : `<button class="ar-send-btn" onclick="arSendNow(${s.id}, this)" ${st.sending ? 'disabled' : ''} title="Build it and send it to its groups right now">${st.sending ? 'Sending…' : 'Send now'}</button>
+            <button class="user-edit-btn" onclick="arEdit(${s.id})">Edit</button>`}
             <button class="user-del-btn" onclick="arDelete(${s.id})" title="Delete this schedule">&#10005;</button>
           </div>
         </div>`;
@@ -3780,11 +3942,15 @@
       }
       body.innerHTML = runs.map(r => {
         const def = arReportDef(r.report_type);
+        // A custom report's run carries the saved report's name: two of them
+        // share a type, and "Custom Report" alone says nothing.
+        const label = r.report_name && (arIsCustomType(def) || /_custom_report$/.test(String(r.report_type || '')))
+          ? `Custom Report — ${r.report_name}` : def ? def.name : r.report_type;
         const job = r.project_id === '*' ? 'every In Progress job' : (r.project_name || '');
         const how = r.kind === 'manual' ? `Send now${r.triggered_by ? ' · ' + r.triggered_by : ''}` : 'On schedule';
         return `<tr>
           <td>${escHtml(arFmtWhen(r.started_at))}<div class="ar-sub">${escHtml(how)}</div></td>
-          <td>${escHtml(def ? def.name : r.report_type)}${job ? `<div class="ar-sub">${escHtml(job)}</div>` : ''}</td>
+          <td>${escHtml(label)}${job ? `<div class="ar-sub">${escHtml(job)}</div>` : ''}</td>
           <td><span class="ar-badge ${escHtml(r.status)}">${escHtml(AR_RESULT[r.status] || r.status)}</span></td>
           <td class="ar-hist-msg">${escHtml(r.message || '')}</td>
         </tr>`;
@@ -3849,7 +4015,7 @@
 
     async function arSendNow(id, btn) {
       const s = arData.schedules.find(x => x.id === id);
-      if (!s) return;
+      if (!s || arIsCustom(s)) return;
       const def = arReportDef(s.report_type);
       const name = def ? def.name : s.report_type;
       if (arSendingIds.has(id)) return;
@@ -3882,7 +4048,8 @@
       const s = arData.schedules.find(x => x.id === id);
       if (!s) return;
       const def = arReportDef(s.report_type);
-      if (!confirm(`Delete the scheduled ${def ? def.name : 'report'}? Its send history goes with it.`)) return;
+      const what = arIsCustom(s) ? `schedule for “${arCustomName(s)}”` : `scheduled ${def ? def.name : 'report'}`;
+      if (!confirm(`Delete the ${what}? Its send history goes with it.`)) return;
       try {
         await arApi('DELETE', 'id=' + id);
         arBanner('Schedule deleted.', 'ok');
@@ -3904,7 +4071,7 @@
     function arOnDivision(type) {
       const divKey = document.getElementById('ar-division').value;
       const d = (arData.divisions || []).find(x => x.key === divKey);
-      arFillSelect(document.getElementById('ar-report'), (d ? d.reports : []).map(r => [r.type, r.name]), type);
+      arFillSelect(document.getElementById('ar-report'), arEditable(d ? d.reports : []).map(r => [r.type, r.name]), type);
       arOnReport();
     }
 
@@ -4322,10 +4489,11 @@
     function arEdit(id) {
       const s = arData.schedules.find(x => x.id === id);
       if (!s) return;
+      if (arIsCustom(s)) { arBanner(`${arCustomName(s)}: ${AR_MANAGED_NOTE}.`, 'ok'); return; }
       document.getElementById('ar-edit-id').value = String(id);
       arFillDivisionSelect(s.division);
       arFillSelect(document.getElementById('ar-report'),
-        ((arData.divisions.find(d => d.key === s.division) || {}).reports || []).map(r => [r.type, r.name]), s.report_type);
+        arEditable((arData.divisions.find(d => d.key === s.division) || {}).reports).map(r => [r.type, r.name]), s.report_type);
       document.getElementById('ar-time').value = s.send_time;
       arDays = new Set(s.days_of_week || [1]);
       arRenderDays();
@@ -4932,6 +5100,274 @@
         if (result.textContent.startsWith('Exported')) result.textContent = '';
       }, 4000);
     }
+
+    // ── Branding sub-panel (inside Manage Users modal) ──────────────────────
+    // The company's name, logo and contact line on the customer reports that
+    // Analytics → Custom Reporting builds (api/company/branding.js; the report
+    // engine draws them into the masthead and the foot). Anyone signed in may
+    // read them, as every report needs them; a company admin edits them here.
+    //
+    // The logo is kept inline and travels inside every report and email — the
+    // print window and the PDF renderer can show nothing else — so it is made
+    // small here before it is sent: drawn onto a canvas no bigger than
+    // BR_LOGO_MAX_W × BR_LOGO_MAX_H, keeping its shape and never enlarged, and
+    // saved as a PNG, or as a JPEG at 0.9 when the PNG would come out over
+    // BR_LOGO_MAX_BYTES (a photo-like logo) and the JPEG is smaller; still over
+    // it, it is refused. PNG and JPEG only — an SVG can carry script — and the
+    // server checks the type and the size again by the image's own bytes.
+    const BR_LOGO_MAX_W     = 600;
+    const BR_LOGO_MAX_H     = 200;
+    const BR_LOGO_MAX_BYTES = 200 * 1024;
+    const BR_FILE_MAX_BYTES = 15 * 1024 * 1024;   // a picked file bigger than this is not even opened
+    const BR_FIELDS = {
+      display_name: 'br-name', phone: 'br-phone', email: 'br-email', website: 'br-website',
+      address: 'br-address', report_footer: 'br-footer',
+    };
+    const BR_DATA_URI = /^data:(image\/(?:png|jpeg));base64,([A-Za-z0-9+/]+={0,2})$/;
+    let brCanEdit   = false;
+    let brLogo      = null;    // the logo on screen: { mime, base64, width, height } or null
+    let brLogoDirty = false;   // picked or removed since the last read — only then is it sent
+    let brLoadSeq   = 0;       // the latest read wins
+    let brSaving    = false;
+
+    function brStatus(msg, kind) {
+      const el = document.getElementById('br-status');
+      el.textContent = msg || '';
+      el.className = 'mu-status' + (msg ? ' show ' + (kind || 'ok') : '');
+    }
+    function brResult(msg, kind) {
+      const el = document.getElementById('br-result');
+      el.textContent = msg || '';
+      el.style.color = kind === 'err' ? '#ef4444' : kind === 'ok' ? 'var(--green)' : 'var(--muted)';
+    }
+
+    // A logo as the server hands it back, kept only if it is one a report may
+    // carry: PNG or JPEG, base64 and nothing else.
+    function brCleanLogo(l) {
+      if (!l || typeof l !== 'object' || !/^image\/(png|jpeg)$/.test(String(l.mime || ''))) return null;
+      const b64 = String(l.base64 || '');
+      if (!b64 || !/^[A-Za-z0-9+/]+={0,2}$/.test(b64)) return null;
+      return { mime: l.mime, base64: b64, width: Number(l.width) || null, height: Number(l.height) || null };
+    }
+    function brBytes(b64) {
+      const s = String(b64 || '');
+      return Math.max(0, Math.floor(s.length * 3 / 4) - (s.endsWith('==') ? 2 : s.endsWith('=') ? 1 : 0));
+    }
+    const brKb = n => Math.max(1, Math.round(n / 1024));
+
+    async function brLoad() {
+      const seq = ++brLoadSeq;
+      brStatus('');
+      brResult('');
+      brSetEnabled(false);
+      try {
+        const res  = await fetch('/api/company/branding', { headers: { Authorization: `Bearer ${token}` } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        if (seq !== brLoadSeq) return;
+        brFill(data.branding, data.canEdit === true);
+      } catch (err) {
+        if (seq !== brLoadSeq) return;
+        brStatus('Could not read the branding: ' + err.message, 'err');
+      }
+    }
+
+    function brFill(b, canEdit) {
+      const saved = b && typeof b === 'object' ? b : {};
+      Object.entries(BR_FIELDS).forEach(([k, id]) => { document.getElementById(id).value = saved[k] || ''; });
+      brLogo = brCleanLogo(saved.logo);
+      brLogoDirty = false;
+      brCanEdit = Boolean(canEdit);
+      document.getElementById('br-logo-file').value = '';
+      brSetEnabled(brCanEdit);
+      if (!brCanEdit) brStatus('Only a company admin can change the branding.', 'ok');
+      brRender();
+    }
+
+    function brSetEnabled(on) {
+      document.querySelectorAll('#br-panel input, #br-panel textarea').forEach(el => { el.disabled = !on; });
+      document.getElementById('br-save').disabled = !on || brSaving;
+      document.getElementById('br-logo-remove').disabled = !on || !brLogo;
+    }
+
+    function brValues() {
+      const v = {};
+      Object.entries(BR_FIELDS).forEach(([k, id]) => { const el = document.getElementById(id); v[k] = el ? el.value.trim() : ''; });
+      return v;
+    }
+
+    const brLogoUri = l => `data:${l.mime};base64,${l.base64}`;
+
+    function brRender() {
+      const box = document.getElementById('br-logo-box');
+      box.innerHTML = brLogo
+        ? `<img src="${escHtml(brLogoUri(brLogo))}" alt="Company logo">`
+        : '<span class="ar-hint">No logo</span>';
+      document.getElementById('br-logo-remove').disabled = !brCanEdit || !brLogo;
+      brRenderPreview();
+    }
+
+    // The top and foot of a report as the engine draws them: the company's
+    // name and logo when either is set, else the DataWatch masthead.
+    function brRenderPreview() {
+      const pv = document.getElementById('br-preview');
+      if (!pv) return;
+      const v = brValues();
+      const branded = Boolean(v.display_name || brLogo);
+      const today = new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      const left = branded
+        ? `<div class="br-mast-left">${brLogo ? `<img class="br-mast-logo" src="${escHtml(brLogoUri(brLogo))}" alt="${escHtml(v.display_name || 'Company logo')}">` : ''}`
+          + `<div>${v.display_name ? `<div class="br-mast-co">${escHtml(v.display_name)}</div>` : ''}<div class="br-mast-sub">Division</div></div></div>`
+        : '<div><div class="br-mast-word">DataWatch</div><div class="br-mast-sub">Division</div></div>';
+      // The engine's footer line (footHtml): address, phone and website —
+      // the email is kept on file, not printed.
+      const contact = [v.address.replace(/\s*\n\s*/g, ', '), v.phone, v.website].filter(Boolean).join(' · ');
+      const foot = [v.report_footer, contact].filter(Boolean).join('\n');
+      pv.innerHTML =
+        `<div class="br-mast">${left}<div class="br-mast-meta"><div class="br-mast-rpt">Weekly Progress Update</div>`
+        + `<div class="br-mast-date">Generated ${escHtml(today)}</div></div></div>`
+        + '<div class="br-body"></div>'
+        + `<div class="br-foot"><span>${escHtml(foot)}</span><span>${branded ? 'Prepared with DataWatch' : 'DataWatch — Weekly Progress Update'}</span></div>`;
+    }
+
+    function brReadFile(file) {
+      return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(String(r.result || ''));
+        r.onerror = () => reject(new Error('the file could not be read'));
+        r.readAsDataURL(file);
+      });
+    }
+    function brLoadImage(src) {
+      return new Promise((resolve, reject) => {
+        const img = new Image();
+        img.onload = () => resolve(img);
+        img.onerror = () => reject(new Error('it is not an image this browser can open'));
+        img.src = src;
+      });
+    }
+    // The size that fits the box, keeping the shape and never enlarging.
+    function brFit(w, h) {
+      const k = Math.min(1, BR_LOGO_MAX_W / w, BR_LOGO_MAX_H / h);
+      return { width: Math.max(1, Math.round(w * k)), height: Math.max(1, Math.round(h * k)) };
+    }
+    function brEncode(img, size, mime) {
+      const canvas = document.createElement('canvas');
+      canvas.width = size.width;
+      canvas.height = size.height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('this browser cannot resize images');
+      // A JPEG has no transparency: what is see-through in the logo goes
+      // white, as the report's paper is, rather than black.
+      if (mime === 'image/jpeg') { ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, size.width, size.height); }
+      ctx.drawImage(img, 0, 0, size.width, size.height);
+      const m = BR_DATA_URI.exec(String(canvas.toDataURL(mime, mime === 'image/jpeg' ? 0.9 : undefined) || ''));
+      return m && m[1] === mime ? { mime, base64: m[2] } : null;
+    }
+    function brDownscale(img) {
+      const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+      if (!(w > 0 && h > 0)) throw new Error('it has no size');
+      const size = brFit(w, h);
+      let out = brEncode(img, size, 'image/png');
+      if (!out) throw new Error('this browser could not save it as a PNG');
+      if (brBytes(out.base64) > BR_LOGO_MAX_BYTES) {
+        const jpg = brEncode(img, size, 'image/jpeg');
+        if (jpg && brBytes(jpg.base64) < brBytes(out.base64)) out = jpg;
+      }
+      return Object.assign(out, size);
+    }
+
+    async function brPickLogo(file) {
+      const input = document.getElementById('br-logo-file');
+      brResult('');
+      if (!file || !brCanEdit) return;
+      if (!/^image\/(png|jpeg)$/.test(String(file.type || ''))) {
+        input.value = '';
+        brResult('Pick a PNG or JPEG image — other kinds (SVG, GIF, WebP…) cannot go on a report.', 'err');
+        return;
+      }
+      if (file.size > BR_FILE_MAX_BYTES) {
+        input.value = '';
+        brResult(`That image is ${Math.round(file.size / 1048576)} MB — pick one under ${BR_FILE_MAX_BYTES / 1048576} MB.`, 'err');
+        return;
+      }
+      let logo;
+      try {
+        logo = brDownscale(await brLoadImage(await brReadFile(file)));
+      } catch (err) {
+        input.value = '';
+        brResult('Could not use that image: ' + err.message + '.', 'err');
+        return;
+      }
+      const bytes = brBytes(logo.base64);
+      if (bytes > BR_LOGO_MAX_BYTES) {
+        input.value = '';
+        brResult(`Even at ${logo.width} × ${logo.height} the logo comes to ${brKb(bytes)} KB — it must be under `
+          + `${BR_LOGO_MAX_BYTES / 1024} KB. A simpler image, or one with fewer colours, will fit.`, 'err');
+        return;
+      }
+      brLogo = logo;
+      brLogoDirty = true;
+      brRender();
+      brResult(`Logo ready — ${logo.width} × ${logo.height}, ${brKb(bytes)} KB. Save to put it on reports.`, 'ok');
+    }
+
+    function brRemoveLogo() {
+      if (!brCanEdit || !brLogo) return;
+      brLogo = null;
+      brLogoDirty = true;
+      document.getElementById('br-logo-file').value = '';
+      brRender();
+      brResult('Logo removed — Save to take it off reports.', 'ok');
+    }
+
+    async function brSave() {
+      if (brSaving || !brCanEdit) return;
+      const v = brValues();
+      // Quick checks for a typo; the server's checks are the rule.
+      if (v.email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v.email)) { brResult('That email address does not look right.', 'err'); return; }
+      if (v.website && /^[a-z][a-z0-9+.-]*:/i.test(v.website) && !/^https?:\/\//i.test(v.website)) {
+        brResult('The website must be a web address (http or https).', 'err');
+        return;
+      }
+      // Every field goes, so a cleared one is cleared; the logo only when it
+      // was picked or removed (left out, the saved one stays).
+      const body = Object.assign({}, v);
+      if (brLogoDirty) body.logo = brLogo ? { mime: brLogo.mime, base64: brLogo.base64, width: brLogo.width, height: brLogo.height } : null;
+      const btn = document.getElementById('br-save');
+      brSaving = true;
+      btn.disabled = true;
+      brResult('Saving…');
+      try {
+        const res = await fetch('/api/company/branding', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+        brLoadSeq++;   // a read from before the save lands on nothing
+        brSaving = false;
+        brFill(data.branding, data.canEdit !== false);
+        brResult('Saved — reports built from now on carry it.', 'ok');
+      } catch (err) {
+        brResult(err.message, 'err');
+      } finally {
+        brSaving = false;
+        btn.disabled = !brCanEdit;
+      }
+    }
+
+    (function initBrandingPanel() {
+      const on = (id, type, fn) => { const el = document.getElementById(id); if (el) el.addEventListener(type, fn); };
+      on('muTabBtnBranding', 'click', () => switchUserSubTab('branding'));
+      on('br-logo-file', 'change', e => brPickLogo(e.target.files && e.target.files[0]));
+      on('br-logo-remove', 'click', brRemoveLogo);
+      on('br-save', 'click', brSave);
+      on('br-dir-link', 'click', () => openDirectory());
+      on('br-panel', 'input', e => { if (e.target && e.target.id !== 'br-logo-file') brRenderPreview(); });
+      brRenderPreview();
+    })();
 
     // ── Team Directory ──────────────────────────────────────────────────────
     // Names, cell numbers, email addresses and reporting lines, read off the

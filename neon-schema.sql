@@ -2846,3 +2846,113 @@ CREATE INDEX IF NOT EXISTS idx_custom_report_runs_report  ON custom_report_runs(
 -- holding one.
 CREATE INDEX IF NOT EXISTS idx_custom_report_runs_user     ON custom_report_runs(company_code, run_by_user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_custom_report_runs_snapshot ON custom_report_runs(company_code, division, created_at) WHERE definition <> '{}'::jsonb;
+
+-- ─────────────────────────────────────────────────
+-- CUSTOM REPORTING V2  (contacts, branding, send archive, schedules, AI builder)
+-- ─────────────────────────────────────────────────
+-- What Custom Reporting v2 adds on top of the CUSTOM REPORTS section above.
+-- Every statement is idempotent and additive, so the file can be re-run on a
+-- database that already has it, or on one that has only the section above.
+--
+-- report_contacts: the customer people a job's reports go to. A row belongs
+-- to one job (project_id) or to every job of one client (client_key, the
+-- client name trimmed and lower-cased by api/report-contacts.js). project_id
+-- has no foreign key because paving and kiewit jobs live only in app_data
+-- blobs. Deleting is soft, and the unique index covers live rows only, so an
+-- address removed by mistake can simply be added again. auto_add says the
+-- Email modal and job-contact schedules pre-fill it.
+CREATE TABLE IF NOT EXISTS report_contacts (
+  id BIGSERIAL PRIMARY KEY,
+  company_code TEXT NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+  division TEXT NOT NULL CHECK (division IN ('turf','paving','kiewit')),
+  project_id TEXT,
+  client_key TEXT,
+  client_name TEXT,
+  name TEXT,
+  title TEXT,
+  organization TEXT,
+  email TEXT NOT NULL,
+  phone TEXT,
+  role TEXT,
+  auto_add BOOLEAN NOT NULL DEFAULT TRUE,
+  created_by_user_id INTEGER,
+  created_by_username TEXT,
+  updated_by_username TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  deleted_at TIMESTAMPTZ,
+  CHECK (project_id IS NOT NULL OR client_key IS NOT NULL)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_report_contacts_live ON report_contacts (company_code, division, COALESCE(project_id,''), COALESCE(client_key,''), lower(email)) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_report_contacts_project ON report_contacts (company_code, division, project_id) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_report_contacts_client ON report_contacts (company_code, division, client_key) WHERE deleted_at IS NULL;
+
+-- company_branding: the name and logo on the masthead of a customer report,
+-- and the contact line in its footer. The '' division row is the company
+-- default (api/company/branding.js). The logo is a small PNG or JPEG kept
+-- inline as base64, because the PDF renderer and the print window can only
+-- show data: images, and its size is checked by the API before it is stored.
+CREATE TABLE IF NOT EXISTS company_branding (
+  company_code TEXT NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+  division TEXT NOT NULL DEFAULT '',
+  display_name TEXT,
+  logo_mime TEXT CHECK (logo_mime IS NULL OR logo_mime IN ('image/png','image/jpeg')),
+  logo_base64 TEXT,
+  logo_width INTEGER,
+  logo_height INTEGER,
+  phone TEXT,
+  email TEXT,
+  website TEXT,
+  address TEXT,
+  report_footer TEXT,
+  updated_by_user_id INTEGER,
+  updated_by_username TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  PRIMARY KEY (company_code, division)
+);
+
+-- custom_report_run_archives: the HTML that was actually emailed, gzipped and
+-- base64-encoded, one row per emailed run. It is what Customer History opens
+-- when somebody asks to see exactly what went to the owner. Prints and
+-- downloads are not archived. Rows older than two years are pruned as new
+-- runs come in, the same as the definition snapshots.
+CREATE TABLE IF NOT EXISTS custom_report_run_archives (
+  run_id BIGINT PRIMARY KEY REFERENCES custom_report_runs(id) ON DELETE CASCADE,
+  company_code TEXT NOT NULL,
+  html_gzip_b64 TEXT NOT NULL,
+  html_bytes INTEGER NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_cr_run_archives_company ON custom_report_run_archives (company_code, created_at);
+
+-- The run log learns how a send started (run_kind is user, schedule,
+-- send_now or resend), which schedule sent it and which run a resend
+-- repeated. The GIN index serves the per-job history, which asks for the
+-- runs whose project_ids contain one job id.
+ALTER TABLE custom_report_runs ADD COLUMN IF NOT EXISTS run_kind TEXT NOT NULL DEFAULT 'user';
+ALTER TABLE custom_report_runs ADD COLUMN IF NOT EXISTS schedule_id BIGINT;
+ALTER TABLE custom_report_runs ADD COLUMN IF NOT EXISTS resent_from_run_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_custom_report_runs_projects ON custom_report_runs USING GIN (project_ids);
+
+-- Scheduled custom reports ride on report_schedules. custom_report_id points
+-- at the saved report, emails holds extra addresses beyond the groups,
+-- use_job_contacts sends to each job's saved contacts, and jobs_mode says
+-- which jobs a run covers. A schedule whose report is purged keeps its row
+-- with no report, and the runner says so plainly.
+ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS custom_report_id BIGINT REFERENCES custom_reports(id) ON DELETE SET NULL;
+ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS emails JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS use_job_contacts BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS jobs_mode TEXT;
+CREATE INDEX IF NOT EXISTS idx_report_schedules_custom ON report_schedules (custom_report_id) WHERE custom_report_id IS NOT NULL;
+ALTER TABLE report_schedule_runs ADD COLUMN IF NOT EXISTS report_name TEXT;
+
+-- report_builder_usage: the AI report builder's daily turn count per user,
+-- the cap api/ai/report-builder.js enforces. Nothing of what was asked is
+-- kept, only the count.
+CREATE TABLE IF NOT EXISTS report_builder_usage (
+  company_code TEXT NOT NULL,
+  user_id INTEGER NOT NULL,
+  day DATE NOT NULL,
+  turns INTEGER NOT NULL DEFAULT 0,
+  PRIMARY KEY (company_code, user_id, day)
+);

@@ -68,6 +68,16 @@
       "memory": 2048,
       "maxDuration": 300
     },
+    "api/custom-report-schedules.js": {
+      "includeFiles": "api/**",
+      "memory": 2048,
+      "maxDuration": 300
+    },
+    "api/ai/report-builder.js": {
+      "includeFiles": "api/**",
+      "memory": 1024,
+      "maxDuration": 60
+    },
     "api/**/*.js": {
       "includeFiles": "api/**"
     }

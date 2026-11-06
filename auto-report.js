@@ -22,8 +22,9 @@
  * at the set time, and an alert() the function raises instead ("No production
  * data found…") comes back as the reason nothing went out.
  *
- * An item is { html, subject, projectId?, projectName?, attachments?, summary? }
- * — exactly what the page would have handed openReportEmailModal. `{ skip }`
+ * An item is { html, subject, projectId?, projectName?, attachments?, summary?,
+ * customReport? } — exactly what the page would have handed
+ * openReportEmailModal (customReport: a custom report's log record). `{ skip }`
  * says there is nothing to send and why ("No daily entries for Oct 4"), which
  * is an answer, not a failure: an empty report is an email people learn to
  * ignore.
@@ -38,7 +39,9 @@
  * a slow job costs that job, not every report already made.
  *
  * spec: { type, projectId ('*' = every In Progress job), start, end, day,
- *         options, timezone }.
+ *         options, timezone, today } — and, for a custom report,
+ *         customReport { id, name, version, definition } and jobsMode
+ *         ('saved' | 'each' | 'all_in_progress').
  *
  * Loaded on every page that has a schedulable report. It does nothing until
  * build() is called, so a person using the page never runs any of it.
@@ -86,6 +89,11 @@
   // What the email modal does to a report on Send, done here so a scheduled
   // copy is the same email: the DataWatch header stamped on, and the key
   // figures lifted out of the header strip for the email body.
+  //
+  // A custom report also hands back its customReport record (the saved
+  // report, the jobs and dates it covered, the definition it was built
+  // from): the server logs the send in that report's history with it, and
+  // finds each job's saved contacts from its jobs and clients.
   function finish(item, fallback) {
     let html = String(item.html || '');
     try { if (typeof window.dwBrand === 'function') html = window.dwBrand(html); } catch (_) {}
@@ -103,6 +111,8 @@
       projectName: item.projectName || fallback.projectName || null,
       attachments: Array.isArray(item.attachments) ? item.attachments.filter(Boolean) : [],
       summary:     Array.isArray(summary) ? summary : [],
+      ...(item.customReport && typeof item.customReport === 'object' && !Array.isArray(item.customReport)
+        ? { customReport: item.customReport } : {}),
     };
   }
 

@@ -155,6 +155,15 @@ async function renderHtmlToPdf(html, opts = {}) {
     page = await browser.newPage();
     page.setDefaultTimeout(NAV_TIMEOUT_MS);
 
+    // Reports are static print markup: the sanitizer already strips their
+    // window.print() bootstrap and every author script, so the render needs
+    // no JavaScript at all. Turning it off closes any handler the pattern
+    // sanitizer missed (a comment / raw-text / CDATA context confusion can
+    // smuggle one past it) — such a handler would otherwise run in this
+    // server-side renderer and make blind outbound connections that request
+    // interception cannot see (a WebSocket handshake, a popup navigation).
+    try { await page.setJavaScriptEnabled(false); } catch { /* best effort */ }
+
     await page.setRequestInterception(true);
     // continue()/abort() answer with a promise that Puppeteer rejects when it
     // cannot apply them; unhandled, that ends the whole function on Vercel.

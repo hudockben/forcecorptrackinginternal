@@ -39,6 +39,27 @@
  * printout must still include them. That is the page's `ready` hand-over and
  * the builder's wait working together; a print that went out early would
  * quietly under-report work to a customer.
+ *
+ * Custom Reporting v2 runs the same way, every handler real on the test
+ * database (branding, contacts, schedules, the AI builder, send-report):
+ *   - Turf: a sub-code report built by hand — Turf Install on every In
+ *     Progress job, combined — with Planned vs Actual, Division Rates and a
+ *     chart, every figure checked against numbers worked out here (scheduled
+ *     % on the page's own holiday calendar), in the preview and the print;
+ *   - Paving: tons a day and tons per load off a trucking ticket, a chart in
+ *     the print;
+ *   - branding saved in divisions.html (a real PNG through the logo picker),
+ *     then the masthead, the PM line from the Team Directory and the footer;
+ *   - a job contact added in Contacts, pre-filled in the email, and a typed
+ *     address saved from the email window;
+ *   - Customer History: the archived copy opened, and resent;
+ *   - a schedule made from the builder, and Send now running the REAL report
+ *     robot (headless Chrome on paving.html) into the run log and archive —
+ *     then refused, in plain words, once the report carries internal data;
+ *   - the AI builder with only the model stubbed (the SDK, server side): a
+ *     sub-code report applied, undone, and a request for costs that shows the
+ *     "Turn on internal data…" button without switching anything on.
+ * CR_SCREENS=<dir> writes desktop (1440) and phone (390) screenshots of each.
  */
 
 const fs     = require('fs');
@@ -72,6 +93,36 @@ process.env.DATABASE_URL = process.env.DATABASE_URL || 'postgres://stubbed';
 process.env.RESEND_API_KEY = process.env.RESEND_API_KEY || 'test-resend-key';
 process.env.EMAIL_FROM_ADDRESS = process.env.EMAIL_FROM_ADDRESS || 'reports@example.com';
 const RESENT = [];   // what reached the (stubbed) Resend SDK
+// The AI builder's model is the one thing of it replaced: the SDK, server
+// side. Every request body is kept; each answer is the next canned one.
+process.env.ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || 'test-anthropic-key';
+const SDK_CALLS = [];
+const AI_ANSWERS = [];
+class FakeAnthropic {
+  constructor() {
+    this.messages = {
+      stream: (body, opts) => {
+        SDK_CALLS.push({ body: JSON.parse(JSON.stringify(body)), opts });
+        return { finalMessage: async () => {
+          const next = AI_ANSWERS.shift();
+          const out = typeof next === 'function' ? next(body) : next;
+          return { id: 'msg_test', type: 'message', role: 'assistant', stop_reason: 'end_turn',
+            content: [{ type: 'text', text: JSON.stringify(out || {}) }], usage: { input_tokens: 1, output_tokens: 1 } };
+        } };
+      },
+    };
+  }
+}
+// The report robot behind "Send now" is the runner's own headless Chrome.
+const ROBOT_CHROME = [
+  process.env.CHROME_EXECUTABLE_PATH,
+  '/opt/pw-browsers/chromium-1243/chrome-linux64/chrome',
+  '/opt/pw-browsers/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell',
+  '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome',
+].find(p => p && fs.existsSync(p));
+if (ROBOT_CHROME) process.env.CHROME_EXECUTABLE_PATH = ROBOT_CHROME;
+if (process.env.CHROME_SINGLE_PROCESS == null) process.env.CHROME_SINGLE_PROCESS = '0';
+for (const k of ['APP_BASE_URL', 'VERCEL_ENV', 'VERCEL_URL', 'VERCEL_PROJECT_PRODUCTION_URL']) delete process.env[k];
 const SCREENS = process.env.CR_SCREENS ? path.resolve(process.env.CR_SCREENS) : '';
 
 const db = new Client({ connectionString: PG_URL });
@@ -89,6 +140,7 @@ function makeSql(c) {
 const origLoad = Module._load;
 Module._load = function (request) {
   if (request === '@neondatabase/serverless') return { neon: () => makeSql(db) };
+  if (request === '@anthropic-ai/sdk') return FakeAnthropic;
   if (request === 'resend') {
     return { Resend: class {
       constructor() { this.emails = { send: async o => { RESENT.push(o); return { data: { id: 'stub-' + RESENT.length }, error: null }; } }; }
@@ -98,6 +150,16 @@ Module._load = function (request) {
 };
 const handler = require(path.join(ROOT, 'api/custom-reports.js'));
 const sendReport = require(path.join(ROOT, 'api/email/send-report.js'));
+// The v2 handlers, real, on the same test database.
+const ROUTES = {
+  '/api/company/branding':        require(path.join(ROOT, 'api/company/branding.js')),
+  '/api/report-contacts':         require(path.join(ROOT, 'api/report-contacts.js')),
+  '/api/custom-report-schedules': require(path.join(ROOT, 'api/custom-report-schedules.js')),
+  '/api/ai/report-builder':       require(path.join(ROOT, 'api/ai/report-builder.js')),
+  '/api/email/recipient-groups':  require(path.join(ROOT, 'api/email/recipient-groups.js')),
+  '/api/email/report-schedules':  require(path.join(ROOT, 'api/email/report-schedules.js')),
+};
+const API_CALLS = [];   // every request to one of ROUTES: { path, method, query, body }
 const jwt     = require('jsonwebtoken');
 const { JSDOM } = require('jsdom');
 
@@ -121,9 +183,20 @@ const JOB3 = 'Pine Rd Closeout';
 const SECRET_NAME = 'Kowalski';
 const SECRET_RATE = '41.25';
 
-function divisionData(keyPfx) {
+// The Team Directory the builder reads PM phone numbers and "Prepared by"
+// from (GET /api/employees?view=people). Maria runs Maple Ave; Pat is the
+// person behind the signed-in login.
+const PM_NAME = 'Maria Rivera', PM_PHONE = '(717) 555-0142', PM_EMAIL = 'maria.rivera@keystone.example';
+const PEOPLE = [
+  { name: PM_NAME, phone: PM_PHONE, email: PM_EMAIL, logins: [] },
+  { name: 'Pat Quinn', phone: '(717) 555-0199', email: 'pat.quinn@keystone.example', logins: ['pat.admin'] },
+];
+// Turf Install, planned per day, on both In Progress turf jobs.
+const TURF = { p1: { qty: 20000, rate: 2500, start: -10, target: 20 }, p2: { qty: 12000, rate: 1000, start: -6, target: 30 } };
+
+function divisionData(keyPfx, div) {
   const projects = [
-    { id: 'p1', 'project-name': JOB1, 'job-number': '26101', status: 'In Progress', client: 'Borough of Maple',
+    { id: 'p1', 'project-name': JOB1, 'job-number': '26101', status: 'In Progress', client: 'Borough of Maple', pm: 'Rivera, Maria',
       gc: 'Keystone GC', address: '12 Maple Ave', 'city-state': 'Maple, PA', 'start-date': daysFrom(-240),
       'end-date': daysFrom(60), 'contract-amount': 250000,
       bidItems: [
@@ -133,7 +206,7 @@ function divisionData(keyPfx) {
           quantity: 400, unit_cost: 85, start_date: daysFrom(-10), target_date: daysFrom(30),
           change_orders: [{ date: daysFrom(-5), qty_delta: 50, note: 'Driveway apron added' }] },
       ] },
-    { id: 'p2', 'project-name': JOB2, 'job-number': '26102', status: 'In Progress', client: 'Oak Holdings LLC',
+    { id: 'p2', 'project-name': JOB2, 'job-number': '26102', status: 'In Progress', client: 'Oak Holdings LLC', pm: 'Tom Becker',
       address: '400 Oak St', 'city-state': 'Oakdale, PA', 'start-date': daysFrom(-20), 'end-date': daysFrom(40),
       'contract-amount': 120000,
       bidItems: [{ id: 'p2-b1', cost_code: '0300', sub_code: 'Surface Course', unit: 'SY', quantity: 2500, unit_cost: 18,
@@ -155,12 +228,34 @@ function divisionData(keyPfx) {
     row('3', 'p1', daysFrom(-3), '0200', 'Base Course', 60, 3100, 'Dale Brennan', 9),
     row('4', 'p2', daysFrom(-2), '0300', 'Surface Course', 800, 5200, 'Dale Brennan', 10),
   ];
-  return { store, rows, projects };
+  let trucking = [];
+  if (div === 'turf') {
+    for (const id of ['p1', 'p2']) {
+      const t = TURF[id];
+      projects.find(p => p.id === id).bidItems.push({ id: id + '-turf', cost_code: '0400', sub_code: 'Turf Install', description: 'Install sod',
+        unit: 'SF', quantity: t.qty, unit_cost: 0.9, planned_rate: t.rate, start_date: daysFrom(t.start), target_date: daysFrom(t.target) });
+    }
+    rows.push(row('t1', 'p1', daysFrom(-4), '0400', 'Turf Install', 2000, 1100, 'Sam ' + SECRET_NAME, 8),
+      row('t2', 'p1', daysFrom(-1), '0400', 'Turf Install', 3000, 1300, 'Sam ' + SECRET_NAME, 9),
+      row('t3', 'p2', daysFrom(-3), '0400', 'Turf Install', 1500, 800, 'Dale Brennan', 7));
+  }
+  if (div === 'kiewit') {
+    projects[0].bidItems.push({ id: 'p1-homes', cost_code: '0500', sub_code: 'Home Set', description: 'Set modular homes', unit: 'EA',
+      quantity: 40, unit_cost: 9000, planned_rate: 2, start_date: daysFrom(-10), target_date: daysFrom(30) });
+    rows.push(row('k1', 'p1', daysFrom(-4), '0500', 'Home Set', 2, 2200, 'Sam ' + SECRET_NAME, 10),
+      row('k2', 'p1', daysFrom(-2), '0500', 'Home Set', 3, 2600, 'Dale Brennan', 10));
+  }
+  if (div === 'paving') {
+    // Three loads of stone on the day the base course went down.
+    trucking = [{ id: 'tk1', project_id: 'p1', date: daysFrom(-3), tr_number: 'T-101', truck_type: 'Tri-axle', material_hauled: '2A stone',
+      loads: 3, status: 'approved', cost_code: '0200', sub_code: 'Base Course', driver: 'Ray ' + SECRET_NAME, hours: 6, rate: 95 }];
+  }
+  return { store, rows, projects, trucking };
 }
 const PAGES = {
-  paving: { file: 'paving.html',          label: 'Paving',          data: divisionData('fct_paving_') },
-  turf:   { file: 'tracker.html',         label: 'Turf Management', data: divisionData('fct_') },
-  kiewit: { file: 'kiewit-pinetree.html', label: 'Kiewit Pinetree', data: divisionData('fct_kiewit_') },
+  paving: { file: 'paving.html',          label: 'Paving',          data: divisionData('fct_paving_', 'paving') },
+  turf:   { file: 'tracker.html',         label: 'Turf Management', data: divisionData('fct_', 'turf') },
+  kiewit: { file: 'kiewit-pinetree.html', label: 'Kiewit Pinetree', data: divisionData('fct_kiewit_', 'kiewit') },
 };
 const STORE = Object.assign({}, PAGES.paving.data.store, PAGES.turf.data.store, PAGES.kiewit.data.store);
 
@@ -182,12 +277,12 @@ function readBody(req) {
 }
 
 // Vercel hands a function req.query / req.body and a res with status().json().
-async function runHandler(req, res, u, fn = handler, log = CR_CALLS) {
+async function runHandler(req, res, u, fn = handler, log = CR_CALLS, p) {
   const raw = await readBody(req);
   let body;
   if (raw) { try { body = JSON.parse(raw); } catch { body = raw; } }
   const query = Object.fromEntries(u.searchParams);
-  log.push(fn === handler ? { method: req.method, query, body } : body);
+  log.push(fn === handler ? { method: req.method, query, body } : p ? { path: p, method: req.method, query, body } : body);
   let status = 200;
   const out = {
     setHeader() {},
@@ -203,6 +298,7 @@ const server = http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x');
   const p = decodeURIComponent(u.pathname);
   if (p === '/api/custom-reports') return runHandler(req, res, u);
+  if (ROUTES[p]) return runHandler(req, res, u, ROUTES[p], API_CALLS, p);
   if (p.startsWith('/api/')) {
     if (p === '/api/email/send-report' && req.method === 'POST') return runHandler(req, res, u, sendReport, EMAILS);
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) return json(res, { ok: true });
@@ -225,12 +321,16 @@ const server = http.createServer(async (req, res) => {
       return send();
     }
     if (p === '/api/purchase-orders') return json(res, { purchaseOrders: [] });
-    if (p === '/api/trucking')        return json(res, { truckingEntries: [] });
+    if (p === '/api/trucking') {
+      const d = PAGES[u.searchParams.get('division') || 'turf'];
+      return json(res, { truckingEntries: d ? d.data.trucking : [] });
+    }
+    if (p === '/api/employees') return json(res, { employees: PEOPLE });
     return json(res, {});
   }
   const f = path.join(ROOT, p === '/' ? 'index.html' : p);
   if (!f.startsWith(ROOT) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) { res.writeHead(404); return res.end('no'); }
-  res.writeHead(200, { 'Content-Type': f.endsWith('.js') ? 'text/javascript' : 'text/html; charset=utf-8' });
+  res.writeHead(200, { 'Content-Type': f.endsWith('.js') ? 'text/javascript' : f.endsWith('.json') ? 'application/json' : 'text/html; charset=utf-8' });
   res.end(fs.readFileSync(f));
 });
 
@@ -285,6 +385,9 @@ async function openPage(browser, baseUrl, div, session, viewport) {
   });
   await page.addInitScript(([s, d]) => {
     if (location.pathname.endsWith('.html')) {
+      // The page's assistant greets once per tab; seen already, so it stays
+      // out of the screenshots.
+      try { sessionStorage.setItem('fct_mathis_nudge_' + d, '1'); } catch (_) { /* fine */ }
       localStorage.setItem('fct_token', s.token);
       localStorage.setItem('fct_user', JSON.stringify(s.user));
       localStorage.setItem('fct_division', d);
@@ -324,7 +427,17 @@ async function waitPreview(page, test, label) {
   } catch { ok(label || 'the preview redraws', false, (await srcdoc(page)).slice(0, 300)); return false; }
 }
 async function startStarter(page, id) {
-  await page.click(`.cr-card[data-starter="${id}"]`);
+  // The home page's card, or (with a report open) the rail's Start-from list.
+  const card = page.locator(`#cr-content .cr-card[data-starter="${id}"]`);
+  if (await card.count() && await card.first().isVisible()) await card.first().click();
+  else {
+    // Leaving an unsaved report asks first.
+    const yes = d => d.accept().catch(() => {});
+    page.once('dialog', yes);
+    await page.click(`#cr-content .cr-rail [data-act="starter"][data-starter="${id}"]`);
+    await sleep(300);
+    page.off('dialog', yes);
+  }
   await page.waitForSelector('#cr-content .cr-edit');
 }
 async function pickJob(page, id) {
@@ -353,9 +466,196 @@ async function shot(page, name, opts) {
   await page.screenshot(Object.assign({ path: path.join(SCREENS, name + '.png') }, opts || {}));
 }
 
+// ── v2 helpers ───────────────────────────────────────────────────────────
+// A real PNG, built by hand: w × h of one colour with a darker band, so the
+// logo picker has a genuine image to decode, shrink and re-encode.
+function crc32(buf) {
+  let c, crc = 0xffffffff;
+  for (let n = 0; n < buf.length; n++) {
+    c = (crc ^ buf[n]) & 0xff;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    crc = (crc >>> 8) ^ c;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+function makePng(w, h) {
+  const chunk = (type, data) => {
+    const len = Buffer.alloc(4); len.writeUInt32BE(data.length);
+    const td = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+    const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(td));
+    return Buffer.concat([len, td, crc]);
+  };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+  const raw = Buffer.alloc((w * 3 + 1) * h);
+  for (let y = 0; y < h; y++) {
+    raw[y * (w * 3 + 1)] = 0;
+    for (let x = 0; x < w; x++) {
+      const o = y * (w * 3 + 1) + 1 + x * 3, band = y > h / 3 && y < (2 * h) / 3;
+      raw[o] = band ? 20 : 30; raw[o + 1] = band ? 83 : 120; raw[o + 2] = band ? 45 : 200;
+    }
+  }
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    chunk('IHDR', ihdr), chunk('IDAT', zlib.deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+const docOf = html => new JSDOM(html).window.document;
+const cellText = el => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
+// A section's table as { head: [labels], rows: [{ cls, cells: { label: text } }] }.
+function tableIn(doc, type) {
+  const t = doc.querySelector(`section.sec-${type} table`);
+  if (!t) return null;
+  const head = [...t.querySelectorAll('thead th')].map(cellText);
+  const rows = [...t.querySelectorAll('tbody tr')].map(tr => {
+    const tds = [...tr.children];
+    const cells = {};
+    if (tds.length === head.length) head.forEach((hd, i) => { cells[hd] = cellText(tds[i]); });
+    return { cls: tr.className || '', first: cellText(tds[0]), cells };
+  });
+  return { head, rows };
+}
+// Division Rates: each strip's heading and its figures, { title: { label: value } }.
+function strips(doc) {
+  const out = {};
+  const sec = doc.querySelector('section.sec-rate_summary');
+  if (!sec) return out;
+  let title = '';
+  [...sec.children].forEach(el => {
+    if (el.classList.contains('kpi-h')) title = cellText(el);
+    if (el.classList.contains('sum-bar')) {
+      const m = {};
+      el.querySelectorAll('.sum-metric').forEach(x => { m[cellText(x.querySelector('.sum-label'))] = cellText(x.querySelector('.sum-val')); });
+      out[title || '(job)'] = m;
+    }
+  });
+  return out;
+}
+const fmtN = (v, dp = 2) => Number(v).toLocaleString('en-US', { maximumFractionDigits: dp });
+// Nothing in a chart that can fetch, run or link.
+function svgSafe(html) {
+  const svgs = html.match(/<svg[\s\S]*?<\/svg>/g) || [];
+  return svgs.length > 0 && svgs.every(x => !/url\(|<image|<foreignObject|<script|\son[a-z]+\s*=|href/i.test(x));
+}
+// Desktop (1440) and phone (390) screenshots of what is on screen now.
+async function shotPair(page, name, opts) {
+  if (!SCREENS) return;
+  const vp = page.viewportSize() || { width: 1440, height: 900 };
+  const o = opts || {};
+  if (!o.keepToast) await page.evaluate(() => document.querySelectorAll('.cr-toast').forEach(t => t.remove())).catch(() => {});
+  const take = async tag => {
+    if (tag === 'phone' && o.phoneBefore) await o.phoneBefore();
+    else if (o.before) await o.before();
+    else { await page.evaluate(() => window.scrollTo(0, 0)); }
+    await sleep(500);
+    const target = o.selector ? page.locator(o.selector).first() : null;
+    if (target && await target.count()) await target.screenshot({ path: path.join(SCREENS, `${tag}-${name}.png`) });
+    else await page.screenshot({ path: path.join(SCREENS, `${tag}-${name}.png`), fullPage: !!o.fullPage });
+  };
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await take('desktop');
+  await page.setViewportSize({ width: 390, height: 844 });
+  await take('phone');
+  await page.setViewportSize(vp);
+  await sleep(300);
+}
+// Working days a..b, both ends, on the page's own calendar (its _usHolidays):
+// the figure the plan's scheduled % is held to, worked out without the engine.
+async function pageWorkdays(page, a, b) {
+  return page.evaluate(([a, b]) => {
+    if (b < a) return 0;
+    let n = 0;
+    const hol = {};
+    for (let t = new Date(a + 'T12:00:00'); ; t.setDate(t.getDate() + 1)) {
+      const y = t.getFullYear();
+      const d = `${y}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`;
+      if (d > b) break;
+      if (!hol[y]) hol[y] = _usHolidays(y);
+      const w = t.getDay();
+      if (w !== 0 && w !== 6 && !hol[y].has(d)) n++;
+    }
+    return n;
+  }, [a, b]);
+}
+async function toastText(page) {
+  return page.evaluate(() => { const t = document.querySelector('.cr-toast'); return t ? t.textContent : ''; });
+}
+async function waitFor(fn, ms, every = 250) {
+  const t0 = Date.now();
+  for (;;) {
+    const v = await fn();
+    if (v) return v;
+    if (Date.now() - t0 > ms) return v;
+    await sleep(every);
+  }
+}
+// A wide customer copy, built by the engine itself: Planned vs Actual with
+// every column and Production Rates with every column — wider than a page.
+function wideArchiveHtml() {
+  const vm = require('vm');
+  const c = {};
+  vm.createContext(c);
+  c.window = c;
+  vm.runInContext(fs.readFileSync(path.join(ROOT, 'custom-reports-engine.js'), 'utf8'), c, { filename: 'custom-reports-engine.js' });
+  const E = c.FCTReportEngine;
+  const r = (date, cc, sc, qty) => ({ date, cost_code: cc, sub_code: sc, quantity: String(qty), labor_hours: '8', employee: 'Crew A', rate: '30', equip_hours: '6' });
+  const job = { id: 'w1', 'project-name': 'Wide Copy Job', 'job-number': 'W-1', status: 'In Progress', bidItems: [
+    { id: 'a', cost_code: 'Paving', sub_code: 'Base Course', description: 'Base course, 6in', unit: 'TON', quantity: '4000', unit_cost: '50', start_date: '2026-10-19', target_date: '2026-11-20' },
+    { id: 'b', cost_code: 'Paving', sub_code: 'Surface Course', description: 'Surface course, 2in', unit: 'TON', quantity: '2500', unit_cost: '60', planned_rate: '300' },
+    { id: 'c', cost_code: 'Milling', sub_code: 'Mill', description: 'Mill existing', unit: 'SY', quantity: '9000', unit_cost: '2', start_date: '2026-10-12', target_date: '2026-10-30' }],
+  dailyRows: [r('2026-10-19', 'Paving', 'Base Course', 300), r('2026-10-20', 'Paving', 'Base Course', 320), r('2026-10-21', 'Paving', 'Base Course', 280),
+    r('2026-11-02', 'Paving', 'Surface Course', 310), r('2026-11-03', 'Paving', 'Surface Course', 290),
+    r('2026-10-12', 'Milling', 'Mill', 3000), r('2026-10-13', 'Milling', 'Mill', 3200), r('2026-10-14', 'Milling', 'Mill', 2800)] };
+  const trucks = [{ id: 't1', tr_number: 'TR-1', project_id: 'w1', date: '2026-10-19', loads: '15', cost_code: 'Paving', sub_code: 'Base Course' },
+    { id: 't2', tr_number: 'TR-2', project_id: 'w1', date: '2026-11-02', loads: '14', cost_code: 'Paving', sub_code: 'Surface Course' }];
+  const sec = (type, cols) => Object.assign(E.newSection(type), { columns: cols || E.CATALOG[type].columns.map(x => x.key) });
+  const pva = ['cost_code', 'sub_code', 'description', 'unit', 'bid_qty', 'installed_to_date', 'planned_rate', 'actual_rate', 'pct_of_plan',
+    'sched_pct', 'earned_pct', 'spi', 'ahead_days', 'target_date', 'projected_finish', 'forecast_vs_target', 'plan_status', 'plan_source'];
+  const def = E.normalizeDefinition({ title: 'Wide copy', orientation: 'landscape', jobs: { mode: 'pick', ids: ['w1'] },
+    dates: { preset: 'job_to_date', from: '', to: '' }, sections: [sec('plan_vs_actual', pva), sec('production_kpis')] });
+  const ctx = E.makeContext(def, { division: 'paving', divisionLabel: 'Paving', areaUnit: 'SY',
+    perm: { role: 'admin', canSeeCosts: true, canSeeFinancials: true, canShare: true },
+    getProjects: () => [job], getPurchaseOrders: () => [], getTruckingEntries: () => trucks }, { pickedIds: ['w1'], today: '2026-11-05', now: new Date(2026, 10, 5, 14, 30) });
+  return E.buildReportHtml(def, ctx);
+}
+// Text of a PDF, one string (pdftotext); null when the tool is missing.
+function pdfText(buf) {
+  const cp = require('child_process');
+  const f = path.join(os.tmpdir(), `cr-pdf-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.pdf`);
+  fs.writeFileSync(f, buf);
+  try { return cp.execFileSync('pdftotext', ['-raw', f, '-'], { encoding: 'utf8' }); }
+  catch (_) { return null; }
+  finally { try { fs.unlinkSync(f); } catch (_) { /* fine */ } }
+}
+const pdfPages = buf => (String(buf.toString('latin1')).match(/\/Type\s*\/Page[^s]/g) || []).length;
+
+async function printFrom(page) {
+  const [popup] = await Promise.all([page.waitForEvent('popup'), page.click('#cr-content [data-act="print"]')]);
+  try {
+    await popup.waitForFunction(() => !!document.querySelector('[data-dw-brand]'), null, { timeout: 25000 });
+    return { popup, html: await popup.content() };
+  } catch (err) { return { popup, html: '', err }; }
+}
+async function printedShots(browser, html, name) {
+  if (!SCREENS || !html) return;
+  for (const [w, h, tag] of [[1440, 900, 'desktop'], [390, 844, 'phone']]) {
+    const pctx = await browser.newContext({ viewport: { width: w, height: h }, deviceScaleFactor: 1 });
+    const pp = await pctx.newPage();
+    await pp.setContent(html.replace(/<script>window\.onload[\s\S]*?<\/script>/, ''));
+    await sleep(300);
+    await pp.screenshot({ path: path.join(SCREENS, `${tag}-${name}.png`), fullPage: true });
+    await pctx.close();
+  }
+}
+
 // ── The run ──────────────────────────────────────────────────────────────
 const CO = 'CRBROWSER';
 async function cleanUp() {
+  await db.query('DELETE FROM report_schedule_runs WHERE company_code = $1', [CO]);
+  await db.query('DELETE FROM report_schedules WHERE company_code = $1', [CO]);
+  await db.query('DELETE FROM custom_report_run_archives WHERE company_code = $1', [CO]);
+  await db.query('DELETE FROM report_contacts WHERE company_code = $1', [CO]);
+  await db.query('DELETE FROM company_branding WHERE company_code = $1', [CO]);
+  await db.query('DELETE FROM report_builder_usage WHERE company_code = $1', [CO]);
+  await db.query('DELETE FROM report_recipient_groups WHERE company_code = $1', [CO]);
   await db.query('DELETE FROM custom_report_runs WHERE company_code = $1', [CO]);
   await db.query('DELETE FROM custom_reports WHERE company_code = $1', [CO]);
   await db.query('DELETE FROM users WHERE company_code = $1', [CO]);
@@ -697,6 +997,49 @@ async function cleanUp() {
       ok('phone width: the builder itself does not run off the side of the screen', over <= 1, over + 'px');
       await ctx.close();
     }
+    // Phone: "+ Add section" opens a menu that fits on the screen wherever
+    // the button sits — its last items (Chart, Division Rates, Notes) can be
+    // reached, and scrolling inside it never scrolls the page (which closes it).
+    {
+      const ph = await openPage(browser, baseUrl, 'paving', session, { width: 390, height: 844 });
+      try {
+        await openTab(ph.page, true);
+        await startStarter(ph.page, 'customer_progress');
+        await ph.page.click('#cr-content [data-act="step"][data-step="2"]');
+        await ph.page.waitForSelector('#cr-content [data-act="add-menu"]');
+        const seen = [];
+        for (const y of [300, 420, 470, 600]) {
+          const at = await ph.page.evaluate(async want => {
+            const b = document.querySelector('#cr-content [data-act="add-menu"]');
+            window.scrollBy(0, b.getBoundingClientRect().top - want);
+            await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+            return Math.round(b.getBoundingClientRect().top);
+          }, y);
+          await ph.page.evaluate(() => document.querySelector('#cr-content [data-act="add-menu"]').click());
+          const m = await ph.page.evaluate(() => {
+            const menu = document.querySelector('.cr-menu');
+            if (!menu) return null;
+            const box = menu.getBoundingClientRect();
+            const items = [...menu.querySelectorAll('.cr-menu-item')];
+            menu.scrollTop = menu.scrollHeight;
+            const last = items[items.length - 1].getBoundingClientRect();
+            menu.scrollTop = 0;
+            const first = items[0].getBoundingClientRect();
+            return { top: Math.round(box.top), bottom: Math.round(box.bottom), vh: window.innerHeight, n: items.length,
+              lastLabel: items[items.length - 1].textContent.trim().split('\n')[0], lastBottom: Math.round(last.bottom), firstTop: Math.round(first.top),
+              overscroll: getComputedStyle(menu).overscrollBehaviorY };
+          });
+          seen.push({ y, at, m });
+          await ph.page.keyboard.press('Escape');
+          await sleep(100);
+        }
+        ok('phone: "+ Add section" opens its menu inside the screen at any button height, the last item reachable by scrolling the menu',
+          seen.every(({ m }) => m && m.n > 10 && m.top >= 0 && m.bottom <= m.vh && m.lastBottom <= Math.min(m.vh, m.bottom) + 1 && m.firstTop >= m.top - 1),
+          JSON.stringify(seen));
+        ok('…and scrolling inside the menu stays in it (it does not scroll the page behind, which would close it)',
+          seen.every(({ m }) => m && m.overscroll === 'contain'), JSON.stringify(seen.map(s => s.m && s.m.overscroll)));
+      } finally { await ph.ctx.close().catch(() => {}); }
+    }
 
     // ── Turf and Kiewit: the tab opens and a starter previews ──
     for (const div of ['turf', 'kiewit']) {
@@ -725,6 +1068,759 @@ async function cleanUp() {
       ok('no page errors, and no console errors from the Custom Reporting files', o.length === 0, o.slice(0, 3).join(' | '));
       await ctx.close();
     }
+    // ═════════════════════════════════════════════════════════════════
+    // Custom Reporting v2
+    // ═════════════════════════════════════════════════════════════════
+    // ── (a) Turf: a sub-code report, built by hand ──
+    console.log('\nTurf — Turf Install on every In Progress job: Planned vs Actual, Division Rates, a chart');
+    ({ ctx, page, errors } = await openPage(browser, baseUrl, 'turf', session));
+    await openTab(page);
+    await startStarter(page, 'sub_code_production');
+    ok('the Sub-Code Production starter opens with the sub-code search focused',
+      await page.evaluate(() => (document.activeElement && document.activeElement.getAttribute('data-bind')) === 'filter-search'));
+    await page.click('#cr-content [data-act="jobs-active"]');
+    ok('"All In Progress" picks both In Progress jobs (not the complete one)', /2 jobs selected/.test(await page.textContent('#cr-content .cr-count')));
+    await page.fill('#cr-content [data-bind="filter-search"]', 'turf');
+    const scBox = page.locator('#cr-content input[data-bind="filter-sc"][value="Turf Install"]');
+    ok('the sub-code search finds Turf Install on the picked jobs, shown as "code — description (unit)"',
+      await scBox.count() === 1 && /Turf Install — Install sod \(SF\)/.test(await page.textContent('#cr-content .cr-flist')),
+      await page.textContent('#cr-content .cr-flist'));
+    await scBox.check();
+    await page.check('#cr-content input[data-bind="layout"][value="combined"]');
+    await page.selectOption('#cr-content [data-bind="preset"]', 'last_30');
+    good = await waitPreview(page, "s.includes('sec-plan_vs_actual') && s.includes('All jobs') && s.includes('<svg') && s.includes('2,166.67')",
+      'the preview shows Planned vs Actual, Division Rates and the chart for Turf Install');
+    const turfToday = await page.evaluate(() => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; });
+    const range30 = await page.evaluate(t => window.FCTReportEngine.resolveDateRange({ preset: 'last_30' }, t), turfToday);
+    const asOf = range30.to && range30.to < turfToday ? range30.to : turfToday;
+    const schedPct = async t => {
+      const S = daysFrom(t.start), T = daysFrom(t.target);
+      if (asOf < S) return 0;
+      if (asOf >= T) return 100;
+      return 100 * (await pageWorkdays(page, S, asOf)) / (await pageWorkdays(page, S, T));
+    };
+    const sp1 = await schedPct(TURF.p1), sp2 = await schedPct(TURF.p2);
+    const pct1 = v => fmtN(v, 1).replace(/^(\d+)$/, '$1.0') + '%';
+    const checkTurf = (html, where) => {
+      const doc = docOf(html);
+      const t = tableIn(doc, 'plan_vs_actual');
+      const r1 = t && t.rows.find(r => r.first.startsWith(JOB1) && r.cells['Sub Code'] === 'Turf Install');
+      const r2 = t && t.rows.find(r => r.first.startsWith(JOB2) && r.cells['Sub Code'] === 'Turf Install');
+      const tot = t && t.rows.find(r => /\btot\b/.test(r.cls));
+      ok(`${where}: Planned vs Actual lists Turf Install only, one line per job`,
+        t && t.rows.filter(r => !/grp|tot/.test(r.cls)).length === 2 && !/Milling|Base Course|Surface Course/.test(cellText(doc.querySelector('section.sec-plan_vs_actual'))),
+        t && JSON.stringify(t.rows.map(r => r.first + ':' + (r.cells['Sub Code'] || ''))));
+      ok(`${where}: ${JOB1} — 20,000 SF bid, 5,000 in; planned 2,500 a day (typed), actual 2,500 a day (5,000 over 2 days): 100% of plan, 25% earned`,
+        r1 && r1.cells['Bid Qty'] === '20,000' && r1.cells['Installed to Date'] === '5,000' && r1.cells['Planned / Day'] === '2,500'
+          && r1.cells['Actual / Day'] === '2,500' && r1.cells['% of Planned Rate'] === '100.0%' && r1.cells['Earned %'] === '25.0%', r1 && JSON.stringify(r1.cells));
+      ok(`${where}: ${JOB2} — 1,500 in one day against 1,000 planned: 150% of plan, 12.5% earned`,
+        r2 && r2.cells['Bid Qty'] === '12,000' && r2.cells['Installed to Date'] === '1,500' && r2.cells['Planned / Day'] === '1,000'
+          && r2.cells['Actual / Day'] === '1,500' && r2.cells['% of Planned Rate'] === '150.0%' && r2.cells['Earned %'] === '12.5%', r2 && JSON.stringify(r2.cells));
+      ok(`${where}: Scheduled % on the page's holiday calendar — ${pct1(sp1)} and ${pct1(sp2)} (working days from Start to ${asOf}, over Start to Target)`,
+        r1 && r2 && r1.cells['Scheduled %'] === pct1(sp1) && r2.cells['Scheduled %'] === pct1(sp2),
+        r1 && r2 && `${r1.cells['Scheduled %']} / ${r2.cells['Scheduled %']}`);
+      ok(`${where}: the Totals compare like with like — 2,000 planned a day for the days worked, 2,166.67 actual, 108.3%`,
+        tot && tot.cells['Bid Qty'] === '32,000' && tot.cells['Installed to Date'] === '6,500' && tot.cells['Planned / Day'] === '2,000'
+          && tot.cells['Actual / Day'] === '2,166.67' && tot.cells['% of Planned Rate'] === '108.3%', tot && JSON.stringify(tot.cells));
+      const st = strips(doc);
+      const s1 = st[`${JOB1} · 26101`], s2 = st[`${JOB2} · 26102`];
+      ok(`${where}: Division Rates — SF Installed / SF a day / work days per job, and All jobs`,
+        s1 && s1['SF Installed'] === '5,000' && s1['SF / Day'] === '2,500' && s1['Work Days'] === '2'
+          && s2 && s2['SF Installed'] === '1,500' && s2['SF / Day'] === '1,500' && s2['Work Days'] === '1'
+          && st['All jobs'] && st['All jobs']['SF Installed'] === '6,500' && st['All jobs']['Work Days'] === '3' && st['All jobs']['SF / Day'] === '2,166.67',
+        JSON.stringify(st));
+      ok(`${where}: …customer-safe — no SF per man-hour, no crew-hour rate, no employee name`,
+        !/Man-Hour|Crew-Hour|Avg Crew/.test(cellText(doc.body)) && !html.includes(SECRET_NAME) && !/data-cr-internal="1"/.test(html));
+      const figs = [...doc.querySelectorAll('section.sec-chart figure.crc')];
+      ok(`${where}: one chart per job (combined), each captioned with its job and the planned rate the table shows`,
+        figs.length === 2 && figs.every(f => f.querySelector('svg')) && /Maple Ave/.test(cellText(figs[0].querySelector('figcaption')))
+          && /planned 2,500 SF a day/.test(cellText(figs[0].querySelector('figcaption'))) && /planned 1,000 SF a day/.test(cellText(figs[1].querySelector('figcaption'))),
+        figs.map(f => cellText(f.querySelector('figcaption'))).join(' | '));
+      ok(`${where}: the chart SVG can fetch, run and link nothing`, svgSafe(html));
+    };
+    if (good) { const h0 = await srcdoc(page); if (process.env.CR_DUMP) fs.writeFileSync(process.env.CR_DUMP, h0); checkTurf(h0, 'preview'); }
+    await shotPair(page, 'e-plan-chart-preview', {
+      // On a phone the panes stack: the preview is below the editor.
+      phoneBefore: () => page.evaluate(() => { const f = document.querySelector('#cr-content .cr-frame'); if (f) f.scrollIntoView({ block: 'start' }); }),
+    });
+    let pr = await printFrom(page);
+    if (pr.html) checkTurf(pr.html, 'print');
+    else ok('the print window gets the sub-code report', false, pr.err && pr.err.message);
+    await pr.popup.close().catch(() => {});
+    // The workbook: the same figures as numbers, and the chart's data.
+    {
+      const [dlx] = await Promise.all([page.waitForEvent('download', { timeout: 30000 }), page.click('#cr-content [data-act="excel"]')]);
+      const xp = path.join(tmp, 'turf.xlsx');
+      await dlx.saveAs(xp);
+      let parts = null;
+      try { parts = unzip(fs.readFileSync(xp)); } catch (err) { ok('the sub-code workbook unzips', false, err.message); }
+      if (parts) {
+        const wb = parts['xl/workbook.xml'] ? parts['xl/workbook.xml'].toString('utf8') : '';
+        const sheets = Object.keys(parts).filter(n => /^xl\/worksheets\//.test(n)).map(n => parts[n].toString('utf8')).join('\n');
+        const strs = parts['xl/sharedStrings.xml'] ? parts['xl/sharedStrings.xml'].toString('utf8') : '';
+        const all = sheets + strs;
+        ok('Excel: a "Chart data" sheet per chart section, and every part parses',
+          /name="Chart data/.test(wb) && Object.keys(parts).filter(n => /\.(xml|rels)$/.test(n)).every(n => xmlOk(parts[n].toString('utf8'))), wb.slice(0, 300));
+        ok('…the planned and actual rates as numbers (2,500 and 1,000 planned a day)', /<v>2500<\/v>/.test(sheets) && /<v>1000<\/v>/.test(sheets) && /<v>5000<\/v>/.test(sheets));
+        ok('…customer-safe like the page: no man-hour or crew-hour figure, no employee name',
+          !/Man-Hour|Crew-Hour|Avg Crew/.test(all) && !all.includes(SECRET_NAME));
+      }
+    }
+    let o = ourErrors(errors);
+    ok('no page errors, and no console errors from the Custom Reporting files', o.length === 0, o.slice(0, 3).join(' | '));
+
+    // ── (g) The AI builder, model stubbed server side ──
+    console.log('\nTurf — the AI builder (the model stubbed in the SDK, everything else real)');
+    await startStarter(page, 'customer_progress');
+    await pickJob(page, 'p1');
+    await waitPreview(page, `s.includes(${JSON.stringify(JOB1)})`);
+    const before = await page.evaluate(() => JSON.parse(JSON.stringify(window.FCTCustomReports._internals.state().doc.def.sections.map(x => x.type))));
+    AI_ANSWERS.push({
+      reply: 'Built a Turf Install report for both In Progress jobs over the last 30 days, with planned vs actual and an S-curve.',
+      changes: ['Picked Maple Ave Resurfacing and Oak St Parking Lot', 'Filtered every section to Turf Install', 'Planned vs Actual and an S-curve', 'Last 30 days, one combined report'],
+      needs_internal: false, clarifying_question: null,
+      definition: { title: 'Turf Install — <b>active</b> jobs', description: '', jobs: { mode: 'pick', ids: ['p1', 'p2', 'p404'] }, layout: 'combined',
+        pageBreakPerJob: false, orientation: 'portrait', dates: { preset: 'last_30', from: '', to: '' },
+        filters: { costCodes: [], subCodes: ['turf install', 'Not A Code'] },
+        header: { preparedFor: '', intro: '', footer: '', showGenerated: true, branding: 'company', showPmContact: true },
+        sections: [
+          { type: 'plan_vs_actual', title: 'Planned vs Actual', columns: ['sub_code', 'bid_qty', 'installed_to_date', 'planned_rate', 'actual_rate', 'pct_of_plan', 'sched_pct', 'earned_pct', 'plan_status'], labels: [], options: { totals: true } },
+          { type: 'chart', title: 'Turf Install S-curve', columns: ['installed', 'plan'], labels: [], options: { chart: 's_curve', basis: 'pct', showPlan: true } },
+        ] },
+    });
+    await page.click('#cr-content [data-act="ai-toggle"]');
+    await page.waitForSelector('.cr-ai-drawer .crai-in', { timeout: 10000 });
+    ok('"✨ AI Builder" opens the drawer with the chat', await page.isVisible('.cr-ai-drawer .crai-in'));
+    const fitAi = await page.$eval('#cr-content .cr-frame', f => {
+      const wrap = f.parentElement.getBoundingClientRect(), r = f.getBoundingClientRect();
+      return { frameR: Math.round(r.right), wrapR: Math.round(wrap.right), scroll: f.parentElement.classList.contains('cr-scroll') };
+    });
+    ok('…and the builder\'s preview is fitted again to the narrower pane (scaled to fit, or scrollable at full size — never cut off)',
+      fitAi.scroll || fitAi.frameR <= fitAi.wrapR + 2, JSON.stringify(fitAi));
+    await page.fill('.cr-ai-drawer .crai-in', 'Turf Install on all active jobs, last 30 days, with a chart');
+    const sendTop = await page.evaluate(() => {
+      const b = document.querySelector('.cr-ai-drawer .crai-send').getBoundingClientRect();
+      const hit = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+      return hit ? (hit.closest('.crai-send') ? 'send' : (hit.id || hit.className || hit.tagName)) : 'nothing';
+    });
+    ok('…and its Send button is not covered by anything (the page\'s floating assistant button sits beside it)', sendTop === 'send', sendTop);
+    await page.click('.cr-ai-drawer .crai-send');
+    await page.waitForSelector('.cr-ai-drawer [data-crai-act="undo"]', { timeout: 20000 }).catch(() => {});
+    const req = SDK_CALLS[SDK_CALLS.length - 1];
+    const reqText = req ? JSON.stringify(req.body.messages) : '';
+    ok('the request reached the model through the real endpoint: its model, adaptive thinking, a JSON-schema answer with no includeInternal',
+      req && req.body.model === ROUTES['/api/ai/report-builder'].MODEL && req.body.thinking && req.body.thinking.type === 'adaptive'
+        && req.body.output_config && req.body.output_config.format && req.body.output_config.format.type === 'json_schema'
+        && !JSON.stringify(req.body.output_config.format.schema).includes('includeInternal'), req && JSON.stringify(Object.keys(req.body)));
+    ok('…the system prompt is one cached block, with no job in it', req && Array.isArray(req.body.system) && req.body.system.length === 1
+      && req.body.system[0].cache_control && !JSON.stringify(req.body.system).includes(JOB1));
+    ok('…and the jobs went as id, name, number, client and status only — no contract, PM or dates', req && reqText.includes(JOB1)
+      && !reqText.includes('250000') && !/contract-amount|contract_value/.test(reqText) && !reqText.includes('Rivera') && !reqText.includes(daysFrom(60)),
+      ['250000', 'contract-amount', 'Rivera', daysFrom(60)].filter(x => reqText.includes(x)).map(x => x + ' @ ' + reqText.slice(Math.max(0, reqText.indexOf(x) - 80), reqText.indexOf(x) + 40)).join(' | '));
+    const st1 = await page.evaluate(() => { const d = window.FCTCustomReports._internals.state().doc; return JSON.parse(JSON.stringify({ def: d.def, picked: d.picked, name: d.name })); });
+    ok('the answer is applied: both jobs (the unknown one dropped), the Turf Install filter (the junk code dropped), its two sections',
+      JSON.stringify(st1.picked) === '["p1","p2"]' && JSON.stringify(st1.def.filters.subCodes) === '["Turf Install"]'
+        && st1.def.sections.map(x => x.type).join() === 'plan_vs_actual,chart' && st1.def.layout === 'combined' && st1.def.dates.preset === 'last_30',
+      JSON.stringify({ picked: st1.picked, f: st1.def.filters, s: st1.def.sections.map(x => x.type) }));
+    ok('…customer-safe, as it was', st1.def.includeInternal === false);
+    const aiText = await page.textContent('.cr-ai-drawer');
+    ok('the drawer shows the reply and what changed', /Built a Turf Install report/.test(aiText) && /Filtered every section to Turf Install/.test(aiText));
+    good = await waitPreview(page, "s.includes('sec-plan_vs_actual') && s.includes('Turf Install') && s.includes('<svg')", 'the preview redraws with the AI\'s report');
+    if (good) {
+      const html = await srcdoc(page);
+      ok('…the title prints as text', html.includes('Turf Install — &lt;b&gt;active&lt;/b&gt; jobs') && !html.includes('<b>active</b>'));
+    }
+    await shotPair(page, 'f-ai-panel-reply');
+    await page.click('.cr-ai-drawer [data-crai-act="undo"]');
+    await sleep(400);
+    const st2 = await page.evaluate(() => { const d = window.FCTCustomReports._internals.state().doc; return JSON.parse(JSON.stringify({ s: d.def.sections.map(x => x.type), picked: d.picked, f: d.def.filters })); });
+    ok('Undo puts the report back as it was: its sections, its one job, no filter',
+      JSON.stringify(st2.s) === JSON.stringify(before) && JSON.stringify(st2.picked) === '["p1"]' && st2.f.subCodes.length === 0, JSON.stringify(st2));
+    // Costs asked for: the AI can add the column, never switch internal data on.
+    AI_ANSWERS.push(body => ({
+      reply: 'Added crew-hour rates. They are internal — switch on internal data yourself to see them.',
+      changes: ['Added Units / Crew-Hour to Planned vs Actual'], needs_internal: true, clarifying_question: null,
+      definition: { title: 'Turf crew rates', description: '', jobs: { mode: 'pick', ids: ['p1'] }, layout: 'separate', pageBreakPerJob: false,
+        orientation: 'portrait', dates: { preset: 'last_30', from: '', to: '' }, filters: { costCodes: [], subCodes: [] },
+        header: { preparedFor: '', intro: '', footer: '', showGenerated: true, branding: 'company', showPmContact: true },
+        sections: [{ type: 'plan_vs_actual', title: 'Planned vs Actual', columns: ['sub_code', 'planned_rate', 'actual_rate', 'units_per_crew_hr'], labels: [], options: {} }] },
+    }));
+    await page.fill('.cr-ai-drawer .crai-in', 'Add the crew-hour rate and what it cost');
+    await page.click('.cr-ai-drawer .crai-send');
+    await page.waitForSelector('.cr-ai-drawer [data-crai-act="internal"]', { timeout: 20000 }).catch(() => {});
+    ok('a request for costs shows "Turn on internal data…"', await page.locator('.cr-ai-drawer [data-crai-act="internal"]').count() === 1);
+    let st3 = await page.evaluate(() => window.FCTCustomReports._internals.state().doc.def.includeInternal);
+    ok('…and internal data stays off', st3 === false);
+    good = await waitPreview(page, "s.includes('sec-plan_vs_actual') && !s.includes('Turf Install S-curve')", 'the preview redraws');
+    if (good) ok('…so the crew-hour column is locked out of the preview', !/Crew-Hour/.test(await srcdoc(page)) && !/INTERNAL/.test(await srcdoc(page)));
+    let askedInternal = '';
+    page.once('dialog', d => { askedInternal = d.message(); d.dismiss().catch(() => {}); });
+    await page.click('.cr-ai-drawer [data-crai-act="internal"]');
+    await sleep(500);
+    st3 = await page.evaluate(() => window.FCTCustomReports._internals.state().doc.def.includeInternal);
+    ok('the button asks through the builder\'s own confirm; saying no leaves internal data off',
+      /costs, rates, hours, employee names and profit/.test(askedInternal) && st3 === false, askedInternal);
+    o = ourErrors(errors);
+    ok('no page errors, and no console errors from the Custom Reporting files', o.length === 0, o.slice(0, 3).join(' | '));
+    await ctx.close();
+
+    // ── Kiewit: homes a day on the Home Set line ──
+    console.log('\nKiewit — homes a day on the Home Set line');
+    ({ ctx, page, errors } = await openPage(browser, baseUrl, 'kiewit', session));
+    await openTab(page);
+    await startStarter(page, 'sub_code_production');
+    await pickJob(page, 'p1');
+    await page.check('#cr-content input[data-bind="filter-sc"][value="Home Set"]');
+    await page.selectOption('#cr-content [data-bind="preset"]', 'last_30');
+    good = await waitPreview(page, "s.includes('Homes Set') && s.includes('sec-plan_vs_actual')", 'the Kiewit preview shows Homes Set');
+    if (good) {
+      const doc = docOf(await srcdoc(page));
+      const st = strips(doc);
+      const m = Object.values(st)[0] || {};
+      ok('Division Rates on Kiewit: 5 homes set over 2 days, 2.5 a day; no tons or square feet on a Kiewit report',
+        m['Homes Set'] === '5' && m['Homes / Day'] === '2.5' && m['Work Days'] === '2' && !/Tons|SF Installed/.test(cellText(doc.querySelector('section.sec-rate_summary'))),
+        JSON.stringify(st));
+      const t = tableIn(doc, 'plan_vs_actual');
+      const r = t && t.rows.find(x => x.cells['Sub Code'] === 'Home Set');
+      ok('…and Planned vs Actual: 2 a day planned (typed), 2.5 actual, 125%', r && r.cells['Planned / Day'] === '2' && r.cells['Actual / Day'] === '2.5'
+        && r.cells['% of Planned Rate'] === '125.0%', r && JSON.stringify(r.cells));
+    }
+    o = ourErrors(errors);
+    ok('no page errors, and no console errors from the Custom Reporting files', o.length === 0, o.slice(0, 3).join(' | '));
+    await ctx.close();
+
+    // ── (b) Paving: tons a day, tons per load, a chart in the print ──
+    console.log('\nPaving — tons a day and tons per load off the trucking ticket, a chart in the print');
+    ({ ctx, page, errors } = await openPage(browser, baseUrl, 'paving', session));
+    await openTab(page);
+    await startStarter(page, 'paving_tonnage');
+    await pickJob(page, 'p1');
+    await page.selectOption('#cr-content [data-bind="preset"]', 'last_30');
+    await page.click('#cr-content [data-act="step"][data-step="2"]');
+    await page.click('#cr-content [data-act="add-menu"]');
+    await page.click('.cr-menu [data-act="add-section"][data-type="chart"]');
+    const checkPaving = (html, where) => {
+      const doc = docOf(html);
+      const m = Object.values(strips(doc))[0] || {};
+      ok(`${where}: Division Rates — 60 tons placed on 1 day: 60 a day; 3 loads off the ticket: 20 tons a load`,
+        m['Tons Placed'] === '60' && m['Tons / Day'] === '60' && m['Work Days'] === '1' && m['Loads'] === '3' && m['Tons / Load'] === '20',
+        JSON.stringify(m));
+      ok(`${where}: …customer-safe — no crew-hour or equipment-hour rate, no driver, no ticket cost`,
+        !/Crew-Hour|Equip-Hour|Avg Crew/.test(cellText(doc.body)) && !html.includes(SECRET_NAME) && !html.includes('$570'));
+      const t = tableIn(doc, 'production_kpis');
+      const r = t && t.rows.find(x => x.cells['Sub Code'] === 'Base Course');
+      ok(`${where}: Production Rates shows Per Load on the Base Course line: 60 ÷ 3 = 20`, r && r.cells['Per Load'] === '20', r && JSON.stringify(r.cells));
+      const tk = tableIn(doc, 'trucking');
+      ok(`${where}: the haul log has the ticket's 3 loads`, tk && tk.rows.some(x => x.cells['Loads'] === '3'), tk && JSON.stringify(tk.rows.map(x => x.cells)));
+      ok(`${where}: the chart is drawn as inline SVG that can fetch, run and link nothing`,
+        doc.querySelectorAll('section.sec-chart figure.crc svg').length === 1 && svgSafe(html));
+    };
+    good = await waitPreview(page, "s.includes('Tons / Load') && s.includes('<svg')", 'the paving preview shows the rates and the chart');
+    if (good) checkPaving(await srcdoc(page), 'preview');
+    pr = await printFrom(page);
+    if (pr.html) checkPaving(pr.html, 'print');
+    else ok('the print window gets the paving report', false, pr.err && pr.err.message);
+    await pr.popup.close().catch(() => {});
+    o = ourErrors(errors);
+    ok('no page errors, and no console errors from the Custom Reporting files', o.length === 0, o.slice(0, 3).join(' | '));
+    await ctx.close();
+
+    // ── (c) Branding: saved in divisions.html, worn by the report ──
+    console.log('\nBranding — set in divisions.html (a real PNG through the logo picker), worn by the report');
+    const BRAND = 'Keystone Paving & Sealcoating <Co>';
+    const dctx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+    const dpage = await dctx.newPage();
+    const derr = [];
+    dpage.on('pageerror', e => derr.push(String(e && e.message || e)));
+    await dpage.addInitScript(([s]) => {
+      // Seeded once: the page may reload itself after refreshing permissions.
+      if (location.pathname.endsWith('.html') && !localStorage.getItem('fct_token')) {
+        localStorage.setItem('fct_token', s.token);
+        localStorage.setItem('fct_user', JSON.stringify(s.user));
+      }
+    }, [session]);
+    await dpage.goto(`${baseUrl}/divisions.html`, { waitUntil: 'domcontentloaded' });
+    await sleep(1200);
+    await dpage.click('#addUserBtn');
+    await dpage.click('#muTabBtnBranding');
+    let brandReady = true;
+    try { await dpage.waitForFunction(() => !document.getElementById('br-name').disabled, null, { timeout: 10000 }); }
+    catch { brandReady = false; }
+    ok('Manage System → Branding opens, editable for a company admin', brandReady && await dpage.isVisible('#mu-panel-branding'));
+    await dpage.fill('#br-name', BRAND);
+    await dpage.fill('#br-phone', '(717) 555-0100');
+    await dpage.fill('#br-email', 'office@keystone.example');
+    await dpage.fill('#br-website', 'www.keystone.example');
+    await dpage.fill('#br-address', '12 Mill Rd\nYork, PA 17401');
+    await dpage.setInputFiles('#br-logo-file', { name: 'logo.png', mimeType: 'image/png', buffer: makePng(900, 300) });
+    await dpage.waitForFunction(() => /Logo ready/.test(document.getElementById('br-result').textContent), null, { timeout: 10000 }).catch(() => {});
+    const brResultText = await dpage.textContent('#br-result');
+    ok('the logo picker shrinks a 900 × 300 PNG to fit 600 × 200 and says so', /Logo ready — 600 × 200/.test(brResultText), brResultText);
+    ok('…and the panel previews the masthead with the name (as text) and the logo',
+      (await dpage.textContent('#br-preview .br-mast-co')) === BRAND && await dpage.locator('#br-preview img.br-mast-logo').count() === 1);
+    await shotPair(dpage, 'g-branding-panel', { before: () => dpage.evaluate(() => { const el = document.getElementById('mu-panel-branding'); if (el) el.scrollIntoView({ block: 'start' }); }) });
+    await dpage.click('#br-save');
+    await dpage.waitForFunction(() => /Saved/.test(document.getElementById('br-result').textContent), null, { timeout: 10000 }).catch(() => {});
+    const brow = (await db.query("SELECT * FROM company_branding WHERE company_code = $1 AND division = ''", [CO])).rows[0];
+    ok('Save writes the company\'s branding: the name, a 600 × 200 PNG, the contact line (website made a web address)',
+      brow && brow.display_name === BRAND && brow.logo_mime === 'image/png' && brow.logo_width === 600 && brow.logo_height === 200
+        && brow.phone === '(717) 555-0100' && brow.website === 'https://www.keystone.example' && brow.updated_by_username === 'pat.admin',
+      brow && JSON.stringify(Object.assign({}, brow, { logo_base64: (brow.logo_base64 || '').length })));
+    ok('no page errors on divisions.html', derr.length === 0, derr.slice(0, 3).join(' | '));
+    await dctx.close();
+
+    ({ ctx, page, errors } = await openPage(browser, baseUrl, 'paving', session));
+    await openTab(page);
+    await startStarter(page, 'customer_progress');
+    await pickJob(page, 'p1');
+    good = await waitPreview(page, "s.includes('class=\"mast-logo\"') && s.includes('class=\"jb-pm\"') && s.includes('Questions? Maria')", 'the preview wears the branding');
+    const checkBrand = (html, where) => {
+      const doc = docOf(html);
+      const img = doc.querySelector('.masthead img.mast-logo');
+      ok(`${where}: the masthead carries the logo as a PNG data URI, its alt the company name`,
+        img && /^data:image\/png;base64,[A-Za-z0-9+/]+=*$/.test(img.getAttribute('src')) && img.getAttribute('alt') === BRAND);
+      ok(`${where}: …and the company name, as text`, cellText(doc.querySelector('.masthead .mast-co')) === BRAND && !html.includes('<Co>'));
+      ok(`${where}: one masthead, and the logo is the only image source in the document`,
+        doc.querySelectorAll('[data-dw-brand]').length === 1 && (html.match(/\ssrc=/g) || []).length === 1);
+      ok(`${where}: the job band names the project manager from the Team Directory ("Rivera, Maria" on the job)`,
+        cellText(doc.querySelector('.jb-pm')) === `Project Manager: ${PM_NAME} · ${PM_PHONE} · ${PM_EMAIL}`, cellText(doc.querySelector('.jb-pm')));
+      ok(`${where}: "Prepared by" is the person behind the login`, /Prepared by Pat Quinn/.test(cellText(doc.querySelector('.meta'))), cellText(doc.querySelector('.meta')));
+      const foot = cellText(doc.querySelector('.rpt-foot'));
+      ok(`${where}: the footer: Questions? the job's PM, the company's address and phone, Prepared with DataWatch`,
+        foot.includes(`Questions? ${PM_NAME} · ${PM_PHONE} · ${PM_EMAIL}`) && foot.includes('12 Mill Rd, York, PA 17401 · (717) 555-0100')
+          && /Prepared with DataWatch$/.test(foot), foot);
+    };
+    if (good) checkBrand(await srcdoc(page), 'preview');
+    pr = await printFrom(page);
+    if (pr.html) {
+      checkBrand(pr.html, 'print');
+      const shown = await pr.popup.$eval('.masthead img.mast-logo', i => ({ w: i.naturalWidth, h: i.naturalHeight })).catch(() => null);
+      ok('print: the logo actually loads in the print window (600 × 200)', shown && shown.w === 600 && shown.h === 200, JSON.stringify(shown));
+      await printedShots(browser, pr.html, 'k-printed-branded-report');
+    } else ok('the print window gets the branded report', false, pr.err && pr.err.message);
+    await pr.popup.close().catch(() => {});
+
+    // ── (d) Contacts: a job contact, the email pre-fill, "Save as contact" ──
+    console.log('\nContacts — a job contact, pre-filled in the email; a typed address saved from the email window');
+    await page.click('#cr-content [data-act="contacts"]');
+    await page.waitForSelector('#cr-content [data-act="ct-add"]', { timeout: 10000 });
+    await page.click('#cr-content [data-act="ct-add"]');
+    await page.selectOption('#cr-ct-job', 'p1');
+    await page.fill('#cr-ct-email', 'Owner@Maple.example');
+    await page.fill('#cr-ct-name', 'Olivia <Owner>');
+    await page.fill('#cr-ct-title', 'Borough Manager');
+    await page.selectOption('#cr-ct-role', 'owner');
+    await page.click('#cr-content [data-act="ct-save"]');
+    await page.waitForFunction(() => /Olivia <Owner>/.test((document.querySelector('#cr-content .cr-ct-list') || {}).textContent || ''), null, { timeout: 10000 }).catch(() => {});
+    let crow = (await db.query('SELECT * FROM report_contacts WHERE company_code = $1 ORDER BY id', [CO])).rows;
+    ok('Add contact writes it for the job: lower-cased address, name, role, auto-add on',
+      crow.length === 1 && crow[0].project_id === 'p1' && crow[0].email === 'owner@maple.example' && crow[0].name === 'Olivia <Owner>'
+        && crow[0].role === 'owner' && crow[0].auto_add === true && crow[0].division === 'paving' && crow[0].created_by_username === 'pat.admin',
+      JSON.stringify(crow));
+    ok('…and the Contacts list shows it under the job, the name as text',
+      /Maple Ave Resurfacing/.test(await page.textContent('#cr-content .cr-ct-list')) && await page.locator('#cr-content .cr-ct-list b', { hasText: 'Olivia <Owner>' }).count() === 1);
+    await shotPair(page, 'h-contacts-manager');
+    await page.click('#cr-content [data-act="back"]');
+    await page.waitForSelector('#cr-content .cr-edit');
+    await page.click('#cr-content [data-act="step"][data-step="1"]');
+    await page.waitForFunction(() => /1 contact/.test((document.querySelector('#cr-content .cr-job-ct') || {}).textContent || ''), null, { timeout: 8000 }).catch(() => {});
+    ok('step ① badges the job "1 contact"', /1 contact/.test(await page.textContent('#cr-content .cr-job-ct').catch(() => '')));
+    await page.click('#cr-content [data-act="email"]');
+    await page.waitForSelector('#rem-input', { timeout: 10000 });
+    await page.waitForSelector('.rem-chip[data-email="owner@maple.example"]', { timeout: 8000 }).catch(() => {});
+    const chip = page.locator('.rem-chip[data-email="owner@maple.example"]');
+    ok('the email starts with the job\'s saved contact, by name, labelled where it came from',
+      await chip.count() === 1 && /Olivia <Owner>/.test(await chip.textContent()) && /Job contact — Maple Ave Resurfacing/.test(await chip.getAttribute('title') || ''),
+      await chip.count() && (await chip.textContent()) + ' / ' + (await chip.getAttribute('title')));
+    await page.fill('#rem-input', 'super@keystone.example');
+    await page.press('#rem-input', 'Enter');
+    const saveBtn = page.locator('.rem-chip[data-email="super@keystone.example"] .rem-chip-save');
+    ok('a typed address offers "☆ Save as contact"', await saveBtn.count() === 1 && /Save as contact/.test(await saveBtn.textContent()));
+    await saveBtn.click();
+    await page.waitForSelector('#rem-contact-name', { timeout: 5000 });
+    await page.fill('#rem-contact-name', 'Sam Super');
+    await page.selectOption('#rem-contact-role', 'gc');
+    await page.click('#rem-contact-save');
+    await page.waitForFunction(() => /Saved super@keystone\.example as a contact for this job/.test(document.getElementById('rem-status').textContent), null, { timeout: 8000 }).catch(() => {});
+    crow = (await db.query('SELECT * FROM report_contacts WHERE company_code = $1 ORDER BY id', [CO])).rows;
+    ok('"Save as contact" files it for this job, through the real /api/report-contacts',
+      crow.length === 2 && crow[1].email === 'super@keystone.example' && crow[1].name === 'Sam Super' && crow[1].role === 'gc' && crow[1].project_id === 'p1',
+      JSON.stringify(crow.map(c => [c.email, c.name, c.role, c.project_id])));
+    ok('…and the chip says Saved', /Saved/.test(await page.locator('.rem-chip[data-email="super@keystone.example"]').textContent()));
+    const SUBJECT = 'Maple Ave — weekly progress';
+    await page.fill('#rem-subject', SUBJECT);
+    await page.uncheck('#rem-pdf');
+    await page.click('#rem-send');
+    await page.waitForFunction(() => /sent|recipient|failed/i.test((document.getElementById('rem-status') || {}).textContent || ''), null, { timeout: 15000 }).catch(() => {});
+    const sentRun = await waitFor(async () => (await db.query(
+      "SELECT r.*, (a.run_id IS NOT NULL) AS archived FROM custom_report_runs r LEFT JOIN custom_report_run_archives a ON a.run_id = r.id WHERE r.company_code = $1 AND r.subject = $2 ORDER BY r.id", [CO, SUBJECT])).rows[0], 8000);
+    ok('the email went to both contacts, customer-safe, logged as a user send of the job',
+      sentRun && JSON.stringify([...sentRun.recipients].sort()) === '["owner@maple.example","super@keystone.example"]' && sentRun.run_kind === 'user'
+        && sentRun.included_internal === false && JSON.stringify(sentRun.project_ids) === '["p1"]', sentRun && JSON.stringify(sentRun.recipients));
+    ok('…and send-report archived exactly what it delivered', sentRun && sentRun.archived === true);
+    const mailed = RESENT[RESENT.length - 1];
+    ok('…which is what reached the mail service, under the company\'s own name', mailed && mailed.subject === SUBJECT
+      && JSON.stringify([].concat(mailed.to).map(String).sort()) === '["owner@maple.example","super@keystone.example"]'
+      && String(mailed.html || '').includes('Keystone Paving &amp; Sealcoating &lt;Co&gt;') && !String(mailed.html || '').includes('Browser test'),
+      mailed && JSON.stringify({ to: mailed.to, s: mailed.subject }));
+
+    // ── (e) Customer History: open the archived copy, resend it ──
+    console.log('\nCustomer History — open exactly what was sent, and resend it');
+    await page.click('#cr-content [data-act="customer"]');
+    await page.waitForSelector('#cr-content [data-bind="cust-job"]');
+    if ((await page.inputValue('#cr-content [data-bind="cust-job"]')) !== 'p1') await page.selectOption('#cr-content [data-bind="cust-job"]', 'p1');
+    await page.waitForFunction(s => [...document.querySelectorAll('#cr-content .cr-cust tbody tr')].some(r => r.textContent.includes(s)), SUBJECT, { timeout: 10000 }).catch(() => {});
+    const histRow = page.locator('#cr-content .cr-cust tbody tr', { hasText: SUBJECT });
+    const histText = await histRow.count() ? await histRow.first().textContent() : '';
+    ok('the job\'s history lists the email: subject, both recipients, who sent it, customer-safe',
+      /owner@maple\.example, super@keystone\.example|super@keystone\.example, owner@maple\.example/.test(histText) && /pat\.admin/.test(histText) && /Customer-safe/.test(histText), histText);
+    ok('…and only emails: the print and Excel runs of the first report are not in it',
+      (await page.locator('#cr-content .cr-cust tbody tr').count()) === (await db.query("SELECT 1 FROM custom_report_runs WHERE company_code = $1 AND action = 'email' AND project_ids @> '[\"p1\"]'", [CO])).rows.length);
+    await shotPair(page, 'i-customer-history');
+    // What an opened copy is: the window's own document (the shell) and the
+    // copy in its frame, read without running anything in either.
+    const openCopy = async runId => {
+      const [win] = await Promise.all([page.waitForEvent('popup'), page.click(`#cr-content [data-act="cust-open"][data-id="${runId}"]`)]);
+      await win.waitForFunction(() => { const f = document.querySelector('iframe'); return !!(f && f.contentDocument && f.contentDocument.body && f.contentDocument.body.childNodes.length); },
+        null, { timeout: 15000 }).catch(() => {});
+      await sleep(500);
+      const seen = await win.evaluate(() => {
+        const f = document.querySelector('iframe');
+        const d = f && f.contentDocument;
+        return { headFirst: document.head && document.head.firstElementChild ? document.head.firstElementChild.outerHTML : '',
+          frames: document.querySelectorAll('iframe').length, sandbox: f ? f.getAttribute('sandbox') : null,
+          copy: d && d.documentElement ? d.documentElement.outerHTML : '', shellRan: document.documentElement.getAttribute('data-ran'),
+          copyRan: d && d.documentElement ? d.documentElement.getAttribute('data-ran') : null, pw: window.__pw, opener: window.opener === null,
+          brandInShell: !!document.querySelector('body > [data-dw-brand]') };
+      }).catch(err => ({ err: err.message }));
+      return { win, seen };
+    };
+    const { win: opened, seen: os } = await openCopy(sentRun && sentRun.id);
+    const openedHtml = os.copy || '';
+    if (!openedHtml) ok('Open writes the archived copy into a window', false, JSON.stringify(os).slice(0, 300));
+    const archived = sentRun && (await db.query('SELECT html_gzip_b64 FROM custom_report_run_archives WHERE run_id = $1', [sentRun.id])).rows[0];
+    const archivedHtml = archived ? zlib.gunzipSync(Buffer.from(archived.html_gzip_b64, 'base64')).toString('utf8') : '';
+    if (openedHtml) {
+      ok('Open shows the archived copy — the branded report as it went, no "rebuilt" banner',
+        textOf(openedHtml).includes(BRAND) && textOf(openedHtml).includes(JOB1) && !/Rebuilt from current data/.test(openedHtml)
+          && textOf(openedHtml).replace(/\s+/g, ' ').trim() === textOf(archivedHtml).replace(/\s+/g, ' ').trim());
+      ok('…in a frame sandboxed without scripts, in a window whose first word is a CSP of default-src none',
+        os.frames === 1 && os.sandbox !== null && !/allow-scripts/.test(os.sandbox) && /^<meta http-equiv="Content-Security-Policy" content="default-src 'none'/.test(os.headFirst)
+          && !os.brandInShell, JSON.stringify({ h: os.headFirst, s: os.sandbox }));
+      const logo = await opened.evaluate(() => { const i = document.querySelector('iframe').contentDocument.querySelector('img.mast-logo'); return i ? i.naturalWidth : -1; }).catch(() => -2);
+      ok('…the logo still shows in it (a data: image)', logo === 600, String(logo));
+    }
+    await opened.close().catch(() => {});
+
+    // Copies that try to run something: an archive written before today's
+    // sanitizer, or one a pattern-matcher missed. Put straight into the
+    // archive table, past the sanitizer, as a level 1 login's sends to the
+    // job; an admin opens each from the job's history. The only thing each
+    // tries is to leave a mark — on its own document, the window around it,
+    // or the app page that opened it.
+    {
+      const mark = "document.documentElement.setAttribute('data-ran','1');try{parent.document.documentElement.setAttribute('data-ran','1')}catch(e){}try{top.opener.__pw=1}catch(e){}try{window.__pw=1}catch(e){}";
+      const HOSTILE = [
+        ['comment-head', `<!--<head>--><img src="x"/onerror="${mark}"><p>Hostile comment-head</p>`],
+        ['bare-fragment', `<p>Hostile bare-fragment</p><img src="x"/onerror="${mark}">`],
+        ['script-space-close', `<script>${mark}</script ><head></head><p>Hostile script-space-close</p>`],
+      ];
+      const l1 = (await db.query(
+        "INSERT INTO users (username, company_code, password_hash, role, division_roles) VALUES ('lee.level1', $1, 'x', 'level1', $2) RETURNING id",
+        [CO, JSON.stringify({ paving: 'level1' })])).rows[0].id;
+      const ids = [];
+      for (const [name, html] of HOSTILE) {
+        const run = (await db.query(`INSERT INTO custom_report_runs (company_code, division, report_name, action, project_ids, project_names, recipients, subject,
+            included_internal, run_by_user_id, run_by_username, run_kind)
+          VALUES ($1, 'paving', 'Looks normal', 'email', '["p1"]'::jsonb, $2::jsonb, '["owner@maple.example"]'::jsonb, $3, false, $4, 'lee.level1', 'user') RETURNING id`,
+        [CO, JSON.stringify([JOB1]), 'Hostile ' + name, l1])).rows[0].id;
+        const raw = Buffer.from(html, 'utf8');
+        await db.query('INSERT INTO custom_report_run_archives (run_id, company_code, html_gzip_b64, html_bytes) VALUES ($1, $2, $3, $4)',
+          [run, CO, zlib.gzipSync(raw).toString('base64'), raw.length]);
+        ids.push([name, run]);
+      }
+      await page.click('#cr-content [data-act="cust-refresh"]').catch(() => {});
+      await page.waitForFunction(() => /Hostile script-space-close/.test((document.querySelector('#cr-content .cr-cust') || {}).textContent || ''), null, { timeout: 10000 }).catch(() => {});
+      for (const [name, run] of ids) {
+        const { win, seen } = await openCopy(run);
+        const appMark = await page.evaluate(() => window.__pw);
+        ok(`a hostile archive (${name}) opened from the history runs nothing: no mark on the app page, the window or the copy`,
+          appMark === undefined && seen.pw === undefined && seen.shellRan === null && seen.copyRan === null && seen.frames === 1
+            && !/allow-scripts/.test(seen.sandbox || 'allow-scripts') && /^<meta http-equiv="Content-Security-Policy"/.test(seen.headFirst || '')
+            && new RegExp('Hostile ' + name).test(seen.copy || ''), JSON.stringify(Object.assign({}, seen, { copy: (seen.copy || '').slice(0, 120) })));
+        await win.close().catch(() => {});
+      }
+      await db.query('DELETE FROM custom_report_runs WHERE company_code = $1 AND run_by_username = $2', [CO, 'lee.level1']);
+      await db.query('DELETE FROM users WHERE id = $1', [l1]);
+      await page.click('#cr-content [data-act="cust-refresh"]').catch(() => {});
+      await page.waitForFunction(() => !/Hostile/.test((document.querySelector('#cr-content .cr-cust') || {}).textContent || ''), null, { timeout: 10000 }).catch(() => {});
+    }
+    // A copy wider than the page (Planned vs Actual with 18 columns, and
+    // Production Rates): printing its window (Ctrl+P / Save as PDF) prints
+    // every column, as printing the copy itself does — and the window's Print
+    // button keeps working after the app tab has moved to another page.
+    // Opened from a second app tab, so this one stays where it is.
+    {
+      const wide = wideArchiveHtml();
+      const run = (await db.query(`INSERT INTO custom_report_runs (company_code, division, report_name, action, project_ids, project_names, recipients, subject,
+          included_internal, run_by_user_id, run_by_username, run_kind)
+        VALUES ($1, 'paving', 'Wide copy', 'email', '["p1"]'::jsonb, $2::jsonb, '["owner@maple.example"]'::jsonb, 'Wide copy check', false, $3, 'pat.admin', 'user') RETURNING id`,
+      [CO, JSON.stringify([JOB1]), userId])).rows[0].id;
+      const raw = Buffer.from(wide, 'utf8');
+      await db.query('INSERT INTO custom_report_run_archives (run_id, company_code, html_gzip_b64, html_bytes) VALUES ($1, $2, $3, $4)',
+        [run, CO, zlib.gzipSync(raw).toString('base64'), raw.length]);
+      const two = await openPage(browser, baseUrl, 'paving', session);
+      try {
+        await openTab(two.page);
+        await two.page.click('#cr-content [data-act="customer"]');
+        await two.page.waitForSelector('#cr-content [data-bind="cust-job"]');
+        if ((await two.page.inputValue('#cr-content [data-bind="cust-job"]')) !== 'p1') await two.page.selectOption('#cr-content [data-bind="cust-job"]', 'p1');
+        await two.page.waitForSelector(`#cr-content [data-act="cust-open"][data-id="${run}"]`, { timeout: 10000 });
+        const [win] = await Promise.all([two.page.waitForEvent('popup'), two.page.click(`#cr-content [data-act="cust-open"][data-id="${run}"]`)]);
+        await win.waitForFunction(() => { const f = document.querySelector('iframe'); return !!(f && f.contentDocument && f.contentDocument.body && f.contentDocument.body.childNodes.length); },
+          null, { timeout: 15000 }).catch(() => {});
+        await sleep(600);
+        const popPdf = await win.pdf({ preferCSSPageSize: true });
+        const dctx = await browser.newContext();
+        const dpage = await dctx.newPage();
+        await dpage.setContent(wide);
+        await sleep(300);
+        const dirPdf = await dpage.pdf({ preferCSSPageSize: true });
+        await dctx.close();
+        const pt = pdfText(popPdf), dt = pdfText(dirPdf);
+        if (pt == null || dt == null) console.log('  (pdftotext not installed — the printed columns are counted by page only)');
+        const count = (t, w) => (String(t || '').match(new RegExp(w, 'g')) || []).length;
+        // The right-hand columns of both tables (a page-wide frame cut them off).
+        const heads = ['STATUS', 'PACE VS PLAN', 'DAYS AHEAD', 'FINISH VS TARGET', 'PLAN BASIS', 'REMAINING', 'PER LOAD'];
+        const got = heads.map(w => [w, count(pt, w), count(dt, w)]);
+        ok('printing the copy\'s window prints every column of a wide copy, as printing the copy itself does (same headings, no more pages)',
+          pdfPages(popPdf) <= pdfPages(dirPdf) && (pt == null || got.every(([, p, d]) => d > 0 && p > 0)),
+          JSON.stringify({ pages: [pdfPages(popPdf), pdfPages(dirPdf)], got }));
+        await two.page.goto(`${baseUrl}/divisions.html`, { waitUntil: 'domcontentloaded' }).catch(() => {});
+        await sleep(400);
+        await win.evaluate(() => { const f = document.querySelector('iframe'); window.__printed = 0; f.contentWindow.print = () => { window.__printed++; }; window.print = () => { window.__printed += 10; }; });
+        await win.click('[data-copy="print"]');
+        await sleep(300);
+        const printed = await win.evaluate(() => window.__printed);
+        ok('…and its Print button still prints the copy after the app tab has moved to another page', printed === 1, String(printed));
+        // Ctrl/Cmd+P must print the copy's own frame — which paginates
+        // properly — not the sized-iframe shell, which the browser would slice
+        // at the page edges. It must fire wherever focus sits (the shell, or
+        // the sandboxed frame), and never fall back to the shell's print.
+        const kp = await win.evaluate(() => {
+          var f = document.querySelector('iframe');
+          window.__printed = 0;
+          f.contentWindow.print = function () { window.__printed++; };
+          window.print = function () { window.__printed += 10; };
+          var ev = function () { return new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, bubbles: true, cancelable: true }); };
+          var e1 = ev(); window.dispatchEvent(e1);
+          var e2 = ev(); f.contentDocument.dispatchEvent(e2);
+          return { printed: window.__printed, prevented: e1.defaultPrevented && e2.defaultPrevented };
+        });
+        ok('Ctrl+P prints the copy\'s own frame (not the sliced shell), whether focus is in the shell or the frame',
+          kp.printed === 2 && kp.prevented === true, JSON.stringify(kp));
+        await win.close().catch(() => {});
+      } finally {
+        await two.ctx.close().catch(() => {});
+        await db.query('DELETE FROM custom_report_runs WHERE id = $1', [run]);
+      }
+    }
+    await page.click(`#cr-content [data-act="cust-resend"][data-id="${sentRun && sentRun.id}"]`);
+    await page.waitForSelector('#rem-input', { timeout: 10000 });
+    await page.waitForSelector('.rem-chip[data-email="super@keystone.example"]', { timeout: 5000 }).catch(() => {});
+    ok('Resend opens the email with the same recipients and subject',
+      (await page.inputValue('#rem-subject')) === SUBJECT && await page.locator('.rem-chip[data-email="owner@maple.example"]').count() === 1
+        && await page.locator('.rem-chip[data-email="super@keystone.example"]').count() === 1, await page.inputValue('#rem-subject'));
+    const resentBefore = RESENT.length;
+    await page.uncheck('#rem-pdf');
+    await page.click('#rem-send');
+    await page.waitForFunction(() => /sent|recipient|failed/i.test((document.getElementById('rem-status') || {}).textContent || ''), null, { timeout: 15000 }).catch(() => {});
+    const resend = await waitFor(async () => (await db.query(
+      "SELECT r.*, (a.run_id IS NOT NULL) AS archived FROM custom_report_runs r LEFT JOIN custom_report_run_archives a ON a.run_id = r.id WHERE r.company_code = $1 AND r.run_kind = 'resend' ORDER BY r.id", [CO])).rows[0], 8000);
+    ok('the resend is logged as run_kind resend, pointing at the email it repeats, and archived',
+      resend && sentRun && Number(resend.resent_from_run_id) === Number(sentRun.id) && resend.subject === SUBJECT && resend.archived === true
+        && JSON.stringify([...resend.recipients].sort()) === '["owner@maple.example","super@keystone.example"]', resend && JSON.stringify({ from: resend.resent_from_run_id, s: resend.subject }));
+    ok('…and what went out the second time is the archived copy, unchanged',
+      RESENT.length === resentBefore + 1 && textOf(String(RESENT[RESENT.length - 1].html || '')).includes(BRAND));
+    await page.waitForFunction(() => /Resent/.test((document.querySelector('#cr-content .cr-cust tbody tr') || {}).textContent || ''), null, { timeout: 8000 }).catch(() => {});
+    ok('the history reloads with the resend on top, marked Resent', /Resent/.test(await page.textContent('#cr-content .cr-cust tbody tr').catch(() => '')));
+
+    // ── (f) Schedules: made from the builder, Send now runs the real robot ──
+    console.log('\nSchedules — made from the builder; Send now runs the real report robot (headless Chrome on paving.html)');
+    await page.click('#cr-content [data-act="back"]');
+    await page.waitForSelector('#cr-content .cr-edit');
+    const SCHED_REPORT = 'Maple Ave — owner update';
+    await page.click('#cr-content [data-act="step"][data-step="1"]');
+    await page.check('#cr-content input[data-bind="save-jobs"]');
+    await page.click('#cr-content [data-act="save"]');
+    await page.waitForSelector('.cr-modal #cr-m-name');
+    await page.fill('.cr-modal #cr-m-name', SCHED_REPORT);
+    await page.click('.cr-modal [data-m="ok"]');
+    await page.waitForSelector('.cr-modal', { state: 'detached', timeout: 10000 }).catch(() => {});
+    const sr = (await db.query('SELECT * FROM custom_reports WHERE company_code = $1 AND name = $2', [CO, SCHED_REPORT])).rows[0];
+    ok('the report is saved customer-safe, with its job', sr && sr.customer_safe === true && sr.kind === 'report', sr && JSON.stringify({ cs: sr.customer_safe, kind: sr.kind }));
+    await page.waitForFunction(() => { const b = document.querySelector('#cr-content [data-act="schedule"]'); return b && !b.disabled; }, null, { timeout: 8000 }).catch(() => {});
+    ok('Schedule… is on for a saved, customer-safe report', !(await page.isDisabled('#cr-content [data-act="schedule"]')));
+    await page.click('#cr-content [data-act="schedule"]');
+    await page.waitForSelector('.cr-modal #cr-s-freq', { timeout: 10000 });
+    ok('the dialog sends the saved jobs, with each job\'s contacts on (one customer)',
+      /The report’s saved jobs/.test(await page.textContent('.cr-modal')) && await page.isChecked('#cr-s-contacts') && !(await page.isDisabled('#cr-s-contacts')));
+    ok('Weekly shows its day checkboxes and not the day of the month', await page.isVisible('#cr-s-days') && !(await page.isVisible('#cr-s-dom-row')));
+    await page.selectOption('#cr-s-freq', 'monthly');
+    ok('…Monthly the other way round', !(await page.isVisible('#cr-s-days')) && await page.isVisible('#cr-s-dom-row'));
+    await page.selectOption('#cr-s-freq', 'weekly');
+    await page.fill('#cr-s-email', 'pm@keystone.example');
+    await page.press('#cr-s-email', 'Enter');
+    await page.uncheck('#cr-s-pdf');
+    await page.fill('#cr-s-subject', 'Maple Ave — owner update');
+    await shotPair(page, 'j-schedules-dialog', { selector: '.cr-modal .cr-modal-box' });
+    await page.click('.cr-modal [data-s="save"]');
+    await page.waitForSelector('.cr-modal', { state: 'detached', timeout: 10000 }).catch(() => {});
+    const sched = (await db.query('SELECT * FROM report_schedules WHERE company_code = $1', [CO])).rows[0];
+    ok('Create writes the schedule: the custom report type, the saved report, its jobs mode, recipients, weekly Monday 7:00, run as the saver',
+      sched && sched.report_type === 'paving_custom_report' && String(sched.custom_report_id) === String(sr && sr.id) && sched.jobs_mode === 'saved'
+        && JSON.stringify(sched.emails) === '["pm@keystone.example"]' && sched.use_job_contacts === true && sched.frequency === 'weekly'
+        && JSON.stringify(sched.days_of_week) === '[1]' && sched.send_time === '07:00' && sched.attach_pdf === false && sched.run_as_username === 'pat.admin'
+        && sched.enabled === true && !!sched.next_run_at, sched && JSON.stringify(Object.assign({}, sched, { options: undefined })));
+    await page.waitForFunction(n => (document.querySelector('#cr-content .cr-rail') || {}).textContent.includes(n), SCHED_REPORT, { timeout: 8000 }).catch(() => {});
+    const railText = await page.textContent('#cr-content .cr-rail');
+    ok('the rail\'s Schedules lists it with its cadence and next send', /Weekly Mon at 7:00 AM Eastern/.test(railText) && /Next /.test(railText), railText.slice(-300));
+    const schedAct = async act => {
+      // The rail redraws when the schedules list comes back; open the menu
+      // on the settled rail.
+      for (let i = 0; i < 5; i++) {
+        // On screen first: a menu closes on any scroll, and Playwright
+        // scrolling the button into view as it clicks would close it.
+        await page.evaluate(id => document.querySelector(`#cr-content [data-act="sched-menu"][data-id="${id}"]`).scrollIntoView({ block: 'center', behavior: 'instant' }), sched.id);
+        await sleep(400);
+        await page.click(`#cr-content [data-act="sched-menu"][data-id="${sched.id}"]`);
+        if (await page.waitForSelector(`.cr-menu [data-act="${act}"]`, { timeout: 2000 }).then(() => true, () => false)) break;
+      }
+      await page.click(`.cr-menu [data-act="${act}"]`);
+    };
+    const sendNow = async () => {
+      page.once('dialog', d => d.accept().catch(() => {}));
+      await schedAct('sched-send');
+    };
+    // A recipient group the schedule sends to, deleted while the page is
+    // open (its schedules list, groups and all, loaded before the delete):
+    // Edit… does not offer it, says it was taken off, and Save goes through.
+    {
+      const gid = Number((await db.query(`INSERT INTO report_recipient_groups (company_code, name, emails, report_type)
+        VALUES ($1, 'Owner Reps', '["reps@maple.example"]', 'paving_custom_report') RETURNING id`, [CO])).rows[0].id);
+      await db.query('UPDATE report_schedules SET group_ids = $1 WHERE id = $2', [JSON.stringify([gid]), sched.id]);
+      // Pause and resume: each asks for the schedules list again.
+      await schedAct('sched-toggle');
+      await page.waitForFunction(() => /Paused/i.test((document.querySelector('#cr-content .cr-rail') || {}).textContent || ''), null, { timeout: 8000 }).catch(() => {});
+      await schedAct('sched-toggle');
+      await waitFor(async () => (await db.query('SELECT enabled FROM report_schedules WHERE id = $1', [sched.id])).rows[0].enabled === true, 8000);
+      await sleep(600);
+      // The page knows the schedule sends to it, and has it among its groups.
+      const knew = await page.evaluate(([id, g]) => {
+        const st = window.FCTCustomReports._internals.state(), r = (st.scheds || []).find(x => String(x.id) === String(id));
+        return !!r && (r.group_ids || []).map(Number).includes(g) && (st.schedGroups || []).some(x => Number(x.id) === g);
+      }, [sched.id, gid]);
+      await db.query('DELETE FROM report_recipient_groups WHERE id = $1', [gid]);
+      await schedAct('sched-edit');
+      await page.waitForSelector('.cr-modal #cr-s-freq', { timeout: 10000 });
+      await page.waitForFunction(() => !document.querySelector('.cr-modal #cr-s-groups[aria-busy]'), null, { timeout: 8000 }).catch(() => {});
+      const offered = await page.$(`.cr-modal [data-group="${gid}"]`);
+      const goneNote = await page.$eval('.cr-modal #cr-s-gone', el => (el.hidden ? '' : el.textContent)).catch(() => '');
+      ok('a group the schedule sends to, deleted while the page is open: Edit… does not offer it, and says it was taken off',
+        knew && !offered && /deleted/.test(goneNote), JSON.stringify({ knew, offered: !!offered, goneNote }));
+      await page.selectOption('#cr-s-time', '08:00');
+      await page.click('.cr-modal [data-s="save"]');
+      await page.waitForSelector('.cr-modal', { state: 'detached', timeout: 10000 }).catch(() => {});
+      const after = (await db.query('SELECT group_ids, send_time FROM report_schedules WHERE id = $1', [sched.id])).rows[0];
+      const left = await page.$('.cr-modal') ? await page.textContent('.cr-modal .cr-m-errs').catch(() => '') : '';
+      ok('…Save goes through: the dialog closes, the schedule is retimed and no longer names the deleted group',
+        !left && after.send_time === '08:00' && !(after.group_ids || []).map(Number).includes(gid), JSON.stringify({ left, after }));
+    }
+    const mailsBefore = RESENT.length;
+    if (!ROBOT_CHROME) console.log('  (no Chrome for the robot on this box — Send now is not exercised)');
+    else {
+      await sendNow();
+      const status = await waitFor(async () => {
+        const r = (await db.query('SELECT last_status, last_message FROM report_schedules WHERE id = $1', [sched.id])).rows[0];
+        return r && r.last_status && !/sending|running/.test(r.last_status) ? r : null;
+      }, 240000, 1000);
+      const runs = (await db.query(`SELECT r.*, a.html_gzip_b64 FROM custom_report_runs r LEFT JOIN custom_report_run_archives a ON a.run_id = r.id
+        WHERE r.company_code = $1 AND r.schedule_id = $2 ORDER BY r.id`, [CO, sched.id])).rows;
+      ok('Send now ran the real robot and sent it', status && status.last_status === 'sent', status && JSON.stringify(status));
+      const run = runs[0];
+      ok('…logged in the send history as run_kind send_now, an email, customer-safe, for the saved report and its job',
+        runs.length === 1 && run.run_kind === 'send_now' && run.action === 'email' && run.included_internal === false
+          && String(run.report_id) === String(sr && sr.id) && JSON.stringify(run.project_ids) === '["p1"]', run && JSON.stringify({ k: run.run_kind, a: run.action }));
+      ok('…to the schedule\'s address and each saved contact of the job',
+        run && JSON.stringify([...run.recipients].sort()) === '["owner@maple.example","pm@keystone.example","super@keystone.example"]', run && JSON.stringify(run.recipients));
+      const robotHtml = run && run.html_gzip_b64 ? zlib.gunzipSync(Buffer.from(run.html_gzip_b64, 'base64')).toString('utf8') : '';
+      ok('…with the HTML archived: the page\'s own build, branded, customer-safe',
+        textOf(robotHtml).includes(BRAND) && textOf(robotHtml).includes(JOB1) && !/data-cr-internal="1"/.test(robotHtml)
+          && !robotHtml.includes(SECRET_NAME) && /Project Manager: Maria Rivera/.test(textOf(robotHtml)), robotHtml.slice(0, 200));
+      const robotMail = RESENT[RESENT.length - 1];
+      ok('…and the mail service got one email, with the schedule\'s subject', RESENT.length === mailsBefore + 1 && robotMail
+        && /Maple Ave — owner update/.test(robotMail.subject), robotMail && robotMail.subject);
+      ok('…headed with the company\'s branding name, as a hand-sent email is (not the account\'s company name)',
+        robotMail && !String(robotMail.html || '').includes('Browser test'),
+        robotMail && (String(robotMail.html || '').match(/.{80}Browser test.{40}/) || [''])[0]);
+      await page.waitForFunction(() => /Sent/.test((document.querySelector('.cr-toast') || {}).textContent || '') || /Last: sent/.test((document.querySelector('#cr-content .cr-rail') || {}).textContent || ''), null, { timeout: 15000 }).catch(() => {});
+      ok('the builder says it went', /Last: sent/.test(await page.textContent('#cr-content .cr-rail')));
+
+      // Internal data on: the next run is refused, in plain words.
+      await page.click('#cr-content [data-act="step"][data-step="2"]');
+      let intAsk = '';
+      page.once('dialog', d => { intAsk = d.message(); d.accept().catch(() => {}); });
+      await page.click('#cr-content label.cr-switch');
+      await page.waitForSelector('#cr-content .cr-banner-int', { timeout: 5000 }).catch(() => {});
+      ok('switching internal data on for a scheduled report says the scheduled sends will stop',
+        /This report is scheduled — scheduled sends will stop until it is customer-safe again\./.test(intAsk), intAsk);
+      await page.keyboard.press('Control+s');
+      await waitFor(async () => (await db.query('SELECT customer_safe FROM custom_reports WHERE id = $1', [sr.id])).rows[0].customer_safe === false, 8000);
+      const mails2 = RESENT.length;
+      await sendNow();
+      const refused = await waitFor(async () => {
+        const r = (await db.query('SELECT last_status, last_message FROM report_schedules WHERE id = $1', [sched.id])).rows[0];
+        return r && r.last_status === 'failed' ? r : null;
+      }, 120000, 1000);
+      ok('the next Send now fails, saying why in plain words', refused && /internal data/.test(refused.last_message) && /customer-safe only/.test(refused.last_message),
+        refused && refused.last_message);
+      ok('…nothing was sent, nothing logged', RESENT.length === mails2
+        && (await db.query('SELECT COUNT(*)::int AS n FROM custom_report_runs WHERE schedule_id = $1', [sched.id])).rows[0].n === 1);
+      await page.waitForFunction(() => /customer-safe only/.test((document.querySelector('.cr-toast') || {}).textContent || '')
+        || /customer-safe only/.test((document.querySelector('#cr-content .cr-rail') || {}).textContent || ''), null, { timeout: 15000 }).catch(() => {});
+      ok('…and the builder shows the reason', /customer-safe only/.test((await toastText(page)) + (await page.textContent('#cr-content .cr-rail'))));
+    }
+    o = ourErrors(errors);
+    ok('no page errors, and no console errors from the Custom Reporting files', o.length === 0, o.slice(0, 3).join(' | '));
+    await ctx.close();
+
+    // ── The same schedule in divisions.html → Auto Reports: read-only there ──
+    console.log('\nAuto Reports (divisions.html) — the custom schedule, shown and managed elsewhere');
+    const actx = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 1 });
+    const apage = await actx.newPage();
+    const aerr = [];
+    apage.on('pageerror', e => aerr.push(String(e && e.message || e)));
+    await apage.addInitScript(([s]) => {
+      if (location.pathname.endsWith('.html') && !localStorage.getItem('fct_token')) {
+        localStorage.setItem('fct_token', s.token);
+        localStorage.setItem('fct_user', JSON.stringify(s.user));
+      }
+    }, [session]);
+    await apage.goto(`${baseUrl}/divisions.html`, { waitUntil: 'domcontentloaded' });
+    await sleep(1200);
+    await apage.click('#addUserBtn');
+    await apage.click('#muTabBtnReports');
+    await apage.waitForFunction(n => [...document.querySelectorAll('.ar-row')].some(r => r.textContent.includes(n)), SCHED_REPORT, { timeout: 10000 }).catch(() => {});
+    const arRow = apage.locator('.ar-row', { hasText: SCHED_REPORT });
+    const arText = await arRow.count() ? (await arRow.first().textContent()).replace(/\s+/g, ' ') : '';
+    ok('the Paving card lists it by the saved report\'s name, who it goes to and "Managed in Analytics → Custom Reporting"',
+      /Custom Report/.test(arText) && /Managed in Analytics → Custom Reporting/.test(arText) && /To 1 address, each job's saved contacts/.test(arText), arText);
+    ok('…with the refusal that stopped its last send, in the same plain words', /now includes internal data — scheduled sends are customer-safe only/.test(arText));
+    ok('…its Edit is off, and there is no Send now there', await arRow.count() === 1 && await arRow.first().locator('.user-edit-btn').isDisabled()
+      && await arRow.first().locator('.ar-send-btn').count() === 0);
+    ok('no page errors on divisions.html', aerr.length === 0, aerr.slice(0, 3).join(' | '));
+    await actx.close();
+
   } catch (err) {
     ok('the run finished without an exception', false, err.stack || err.message);
   } finally {

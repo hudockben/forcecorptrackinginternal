@@ -96,9 +96,21 @@ async function cleanUp() {
 const row = async id => (await client.query('SELECT * FROM report_schedules WHERE id = $1', [id])).rows[0];
 const runsFor = async id => (await client.query('SELECT * FROM report_schedule_runs WHERE schedule_id = $1 ORDER BY id', [id])).rows;
 
+// The columns Custom Reporting v2 adds to the schedule tables (neon-schema.sql,
+// CUSTOM REPORTING V2), which the runner and the API now read and write —
+// applied here as well, idempotently, for a test database set up before them.
+const V2_SCHEDULE_DDL = [
+  'ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS custom_report_id BIGINT REFERENCES custom_reports(id) ON DELETE SET NULL',
+  "ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS emails JSONB NOT NULL DEFAULT '[]'::jsonb",
+  'ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS use_job_contacts BOOLEAN NOT NULL DEFAULT FALSE',
+  'ALTER TABLE report_schedules ADD COLUMN IF NOT EXISTS jobs_mode TEXT',
+  'ALTER TABLE report_schedule_runs ADD COLUMN IF NOT EXISTS report_name TEXT',
+];
+
 (async () => {
   await client.connect();
   const sql = makeSql(client);
+  for (const ddl of V2_SCHEDULE_DDL) await client.query(ddl);
   await cleanUp();
   await client.query("INSERT INTO companies (code, name) VALUES ($1, 'Auto Reports test')", [CO]);
   const mkUser = async (username, roles) => (await client.query(
@@ -137,7 +149,14 @@ const runsFor = async id => (await client.query('SELECT * FROM report_schedule_r
       r.statusCode === 200 && JSON.stringify(r.body.divisions.map(d => d.key)) === '["turf","paving","dust"]',
       JSON.stringify(r.body && r.body.divisions && r.body.divisions.map(d => d.key)));
     const turf = r.body.divisions.find(d => d.key === 'turf');
-    assert('…Turf offers its five reports', turf && turf.reports.length === 5, turf && turf.reports.map(x => x.type).join(','));
+    // Five built here, and the saved custom reports — listed so their rows
+    // read by name, but managed in Custom Reporting, never created here.
+    assert('…Turf offers its five reports, and lists its saved custom reports as managed in Custom Reporting',
+      turf && turf.reports.length === 6
+        && JSON.stringify(turf.reports.filter(x => !x.customReport).map(x => x.type))
+          === '["turf_daily_pm","turf_daily_summary","turf_bid_items","turf_job_summary","turf_construction_schedule"]'
+        && turf.reports.filter(x => x.customReport).map(x => `${x.type}/${x.scope}/${x.managed_in}`).join() === 'turf_custom_report/custom/custom_reporting',
+      turf && turf.reports.map(x => x.type).join(','));
     assert('…and the saved groups to send to', r.body.groups.length === 2 && r.body.groups.every(g => g.count === 2));
     r = await call('GET', {}, null, PAV);
     assert('a Paving admin sees Paving only', JSON.stringify(r.body.divisions.map(d => d.key)) === '["paving"]');

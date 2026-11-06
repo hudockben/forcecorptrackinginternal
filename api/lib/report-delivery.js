@@ -67,6 +67,9 @@ function finalSubjectFor({ subject, label, projectName }) {
  * Resolves to
  *   { ok: true, id, ids, subject, pdfAttached, pdfPages?, warning? }
  *   | { ok: false, status, error }      status: 400 | 413 | 502
+ *   — and when a later batch of a long list was refused after earlier ones
+ *   went: { ok: false, status: 502, error, partial: true, deliveredTo,
+ *     notReached, ids, subject, pdfAttached }
  *
  * Never throws for anything the email itself can cause.
  */
@@ -151,7 +154,14 @@ async function deliverReport(opts) {
     });
     if (!result.ok) {
       const already = i ? ` (after it had gone to ${i} of ${recipients.length} recipients)` : '';
-      return { ok: false, status: 502, error: (result.error || 'Email send failed') + already };
+      const failed = { ok: false, status: 502, error: (result.error || 'Email send failed') + already };
+      // A later batch refused: the earlier ones went. Say who has it, so the
+      // caller can count and record that send rather than call it nothing.
+      if (i) {
+        Object.assign(failed, { partial: true, deliveredTo: recipients.slice(0, i), notReached: recipients.slice(i), ids: ids.slice(),
+          subject: finalSubject, pdfAttached: Boolean(pdfAttachment) });
+      }
+      return failed;
     }
     ids.push(result.id);
   }

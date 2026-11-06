@@ -33,15 +33,18 @@
 //                                              // tone: 'good' | 'bad' | 'actual'
 //
 //     custom_report?: { report_id?, report_name?, project_ids?, project_names?,
-//                       date_from?, date_to?, included_internal?, definition? }
+//                       date_from?, date_to?, included_internal?, definition?,
+//                       run_kind?: 'user' | 'resend', resent_from_run_id? }
 //                                  // a *_custom_report send: what to put in the
 //                                  // Custom Reporting send history
 //   }
 //
 // Response:
 //   { ok: true, id, recipientCount, pdfAttached, subject, pdfPages?, warning?,
-//     logged?, run_id? }
+//     logged?, run_id?, archived? }
 //   | { ok: false, error: '...' }
+//   | 409 { ok: false, code: 'client_outdated', error } — a builder from before
+//     an update sending, as v1, a custom report now saved as v2 (not a resend)
 //
 // subject is the one the email actually went out with (an empty one becomes
 // the report's label). For a *_custom_report type the send is written to
@@ -52,33 +55,103 @@
 // sent has internal data switched on, or when the HTML carries the engine's
 // data-cr-internal mark: whichever way, an email with our costs on it is
 // never recorded as customer-safe.
+//
+// A logged custom-report email also keeps the HTML it delivered — the
+// sanitized document, the same string the send went out with — in
+// custom_report_run_archives, so Customer History can open exactly what the
+// owner was sent. archived says whether that worked; like the log, a failure
+// never fails the send.
+//
+// The company name in the email's header is read fresh on every send — the
+// company's branding display name, else its name — rather than taken from the
+// sign-in token, which can be a month old. The token's copy is the fallback
+// when the database cannot say.
 
-const { requireAuth } = require('../lib/auth');
+const { requireAuth, levelFor, isSalesIn } = require('../lib/auth');
 const {
   MAX_RECIPIENTS,
   MAX_HTML_BYTES,
   isValidEmail,
   normalizeAttachments,
+  sanitizeReportHtml,
 } = require('../lib/email');
 const { deliverReport } = require('../lib/report-delivery');
+const { inlineCidImages } = require('../lib/pdf');
 // Each report type → which division the caller must have access to. Shared
 // with the scheduled sends, which check the same thing for the account a
 // schedule runs as.
 const { REPORT_TYPES, mayUseDivision } = require('../lib/report-catalog');
 const { neon } = require('@neondatabase/serverless');
-const { readRun, insertRun, isPlainObject, INTERNAL_MARK } = require('../lib/custom-report-runs');
+const {
+  readRun, insertRun, insertArchive, pruneArchives, isPlainObject, toId, INTERNAL_MARK,
+} = require('../lib/custom-report-runs');
 
 /**
- * Record an emailed custom report in its division's send history. Never
- * throws and never fails the send — the email has already gone; on a failure
- * the caller is told (logged: false) so the browser can log it instead.
+ * A tab still running the Custom Reporting builder from before an update
+ * reads a report saved since in the newer format with its old code — which
+ * drops what it does not know (the code filters, the newer sections) — and
+ * would email what is left. Saving that way is refused (api/custom-reports.js,
+ * 409 client_outdated); sending is too, here, before anything goes out. A
+ * Customer History resend is exempt: it repeats an archived email, whose
+ * definition snapshot can rightly be older than the report it names. Fails
+ * open — a database that cannot answer never stops a send.
  */
-async function logCustomReportSend({ payload, division, body, html, recipients, subject, label }) {
+async function staleBuilderSend(payload, division, body) {
+  const cr = isPlainObject(body.custom_report) ? body.custom_report : null;
+  if (!cr || cr.run_kind === 'resend' || !isPlainObject(cr.definition) || Number(cr.definition.v) !== 1) return false;
+  const id = toId(cr.report_id);
+  if (!id || !payload.companyCode || !process.env.DATABASE_URL) return false;
+  try {
+    const sql = neon(process.env.DATABASE_URL);
+    const rows = await sql`
+      SELECT definition->>'v' AS v FROM custom_reports
+       WHERE id = ${id}::bigint AND company_code = ${payload.companyCode} AND division = ${division} AND deleted_at IS NULL`;
+    return !!rows[0] && Number(rows[0].v) >= 2;
+  } catch (err) {
+    console.error('[email/send-report] saved report version not read, sending anyway:', err.message);
+    return false;
+  }
+}
+
+/**
+ * The name the email's header carries: the company's branding display name,
+ * else companies.name, read now. Falls back to the sign-in token's copy when
+ * there is no database to ask, no such company, or the query fails — never
+ * worth failing or delaying a send over.
+ */
+async function freshCompanyName(payload) {
+  const fallback = payload && payload.companyName;
+  if (!payload || !payload.companyCode || !process.env.DATABASE_URL) return fallback;
+  try {
+    const sql = neon(process.env.DATABASE_URL);
+    const rows = await sql`
+      SELECT COALESCE(NULLIF(btrim(b.display_name), ''), c.name) AS name
+        FROM companies c
+        LEFT JOIN company_branding b ON b.company_code = c.code AND b.division = ''
+       WHERE c.code = ${payload.companyCode}`;
+    const name = rows[0] && typeof rows[0].name === 'string' ? rows[0].name.trim() : '';
+    return name || fallback;
+  } catch (err) {
+    console.error('[email/send-report] company name not read, using the sign-in copy:', err.message);
+    return fallback;
+  }
+}
+
+/**
+ * Record an emailed custom report in its division's send history, and keep
+ * the HTML it delivered. Never throws and never fails the send — the email
+ * has already gone; on a failure the caller is told (logged: false,
+ * archived: false) so the browser can log it instead.
+ */
+async function logCustomReportSend({ payload, division, body, html, attachments, recipients, subject, label }) {
   const userId = Number(payload.userId);
-  if (!Number.isSafeInteger(userId) || !payload.companyCode) return { logged: false };
+  if (!Number.isSafeInteger(userId) || !payload.companyCode) return { logged: false, archived: false };
   const cr = isPlainObject(body.custom_report) ? body.custom_report : {};
   const internal = cr.included_internal === true || INTERNAL_MARK.test(html);
-  const base = { action: 'email', recipients, subject, included_internal: internal };
+  const base = {
+    action: 'email', recipients, subject, included_internal: internal,
+    run_kind: cr.run_kind, resent_from_run_id: cr.resent_from_run_id,
+  };
   const described = {
     report_id: cr.report_id, report_name: cr.report_name || label, project_ids: cr.project_ids,
     project_names: cr.project_names, date_from: cr.date_from, date_to: cr.date_to, definition: cr.definition,
@@ -87,18 +160,36 @@ async function logCustomReportSend({ payload, division, body, html, recipients, 
   // Something in the browser's description would not store (too many jobs, a
   // bad date): log the email anyway, without it, rather than not at all.
   if (r.error) r = readRun({ report_name: described.report_name, ...base });
-  if (r.error) return { logged: false };
+  if (r.error) return { logged: false, archived: false };
+  let sql, run;
   try {
-    const sql = neon(process.env.DATABASE_URL);
-    const run = await insertRun(sql, {
+    sql = neon(process.env.DATABASE_URL);
+    const level = levelFor(payload, division);
+    run = await insertRun(sql, {
       company: payload.companyCode, division, me: { userId, username: payload.username || null }, run: r.value,
+      canShare: level === 'admin' || level === 'level3', sales: isSalesIn(payload, division),
     });
-    return { logged: true, runId: run.id };
   } catch (err) {
     console.error('[email/send-report] custom report history not written:', err.message,
       'user=' + payload.username, 'company=' + payload.companyCode);
-    return { logged: false };
+    return { logged: false, archived: false };
   }
+  // What went out is what deliverReport sanitized: the same function run on
+  // the same string gives the same document. Any cid: image is put inline the
+  // way the PDF has it, so the archive opens on its own, later, anywhere.
+  let archived = false;
+  try {
+    const kept = inlineCidImages(sanitizeReportHtml(html), attachments || []);
+    archived = await insertArchive(sql, { runId: run.id, company: payload.companyCode, html: kept });
+  } catch (err) {
+    console.error('[email/send-report] custom report archive not written:', err.message,
+      'run=' + run.id, 'company=' + payload.companyCode);
+  }
+  if (archived) {
+    try { await pruneArchives(sql, payload.companyCode); }
+    catch (err) { console.error('[email/send-report] archive prune failed:', err.message); }
+  }
+  return { logged: true, runId: run.id, archived };
 }
 
 module.exports = async (req, res) => {
@@ -132,6 +223,13 @@ module.exports = async (req, res) => {
   // payroll coders hold their division without being allowed its reports.
   if (!mayUseDivision(payload, cfg.division)) {
     return res.status(403).json({ ok: false, error: 'You do not have access to send this report' });
+  }
+  // A custom report is sent from Custom Reporting, which a sales login cannot
+  // open (api/custom-reports.js) — so a sales login has no custom report to
+  // send, and nothing it sends is written into a job's customer history or
+  // archived for others there to open.
+  if (/_custom_report$/.test(report_type) && isSalesIn(payload, cfg.division)) {
+    return res.status(403).json({ ok: false, error: 'Custom Reporting is part of Analytics, which a sales login cannot open.' });
   }
 
   // Validate recipients.
@@ -171,6 +269,15 @@ module.exports = async (req, res) => {
     return res.status(400).json({ ok: false, error: att.error });
   }
 
+  // An out-of-date builder emailing a report saved in the newer format —
+  // checked before the send, because the history is written after it.
+  if (/_custom_report$/.test(report_type) && await staleBuilderSend(payload, cfg.division, body)) {
+    return res.status(409).json({ ok: false, code: 'client_outdated',
+      error: 'DataWatch was updated. Reload the page, then send this report again.' });
+  }
+
+  const companyName = await freshCompanyName(payload);
+
   const sent = await deliverReport({
     label:        cfg.label,
     projectName:  project_name,
@@ -181,7 +288,7 @@ module.exports = async (req, res) => {
     attachments:  att.attachments,
     summary,
     attachPdf,
-    companyName:  payload.companyName,
+    companyName,
     logTag:       'user=' + payload.username + ' report=' + report_type,
   });
 
@@ -209,7 +316,8 @@ module.exports = async (req, res) => {
   let history = null;
   if (/_custom_report$/.test(report_type)) {
     history = await logCustomReportSend({
-      payload, division: cfg.division, body, html, recipients: cleaned, subject: sent.subject, label: cfg.label,
+      payload, division: cfg.division, body, html, attachments: att.attachments, recipients: cleaned,
+      subject: sent.subject, label: cfg.label,
     });
   }
 
@@ -223,6 +331,10 @@ module.exports = async (req, res) => {
     subject:        sent.subject,
     ...(sent.pdfPages ? { pdfPages: sent.pdfPages } : {}),
     ...(sent.warning ? { warning: sent.warning } : {}),
-    ...(history ? { logged: history.logged, ...(history.runId ? { run_id: history.runId } : {}) } : {}),
+    ...(history ? {
+      logged: history.logged,
+      ...(history.runId ? { run_id: history.runId } : {}),
+      archived: history.archived === true,
+    } : {}),
   });
 };

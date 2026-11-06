@@ -9,7 +9,7 @@
  * Payload is the single bid item (~500 bytes) instead of the full project
  * blob (which can exceed the 64KB keepalive cap on large projects with
  * 100+ bid items). This is the safe fast-path for field-level edits
- * (start_date, target_date, qty, unit_cost, etc.) — structural changes
+ * (start_date, target_date, planned_rate, qty, unit_cost, etc.) — structural changes
  * (add/remove bid item, project metadata) still go through the existing
  * /api/data/<projectKey> full-blob PUT.
  */
@@ -35,7 +35,17 @@ function safeFloat(v) {
   return isNaN(f) ? null : f;
 }
 
+// Planned production per working day, in the item's own unit (Custom
+// Reporting's Planned vs Actual reads it). A number of zero or more; blank,
+// junk, a negative or an infinite value is no plan at all.
+function safeRate(v) {
+  const f = safeFloat(v);
+  return f === null || !Number.isFinite(f) || f < 0 ? null : f;
+}
+
 // Coerce incoming bid item to DB-safe values. Unknown keys are dropped.
+// planned_rate lives in the project blob only: the turf mirror below names its
+// columns, and bid_items has no column for it, so it never reaches the table.
 function normalize(bi) {
   return {
     id:            String(bi.id),
@@ -48,6 +58,7 @@ function normalize(bi) {
     status:        STATUS_VALUES.has(bi.status) ? bi.status : 'Active',
     start_date:    safeDate(bi.start_date),
     target_date:   safeDate(bi.target_date),
+    planned_rate:  safeRate(bi.planned_rate),
     is_complete:   bi.is_complete === true,
     change_orders: Array.isArray(bi.change_orders) ? bi.change_orders : [],
   };

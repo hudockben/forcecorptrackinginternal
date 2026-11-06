@@ -251,7 +251,8 @@ const RANGE = [0, 1, 2, 3].map(n => dayAfter(MON, n));
       const r = b.getBoundingClientRect();
       return { text: b.innerText.trim(), h: Math.round(r.height), right: Math.round(r.right) };
     }));
-    ok('all five tabs on one line and on screen', tabs.length === 5 && tabs.every(t => t.h <= tabs[0].h && t.right <= 390), JSON.stringify(tabs));
+    // Six since Branding (Custom Reporting's masthead) joined after Vacation.
+    ok('all six tabs on one line and on screen', tabs.length === 6 && tabs.every(t => t.h <= tabs[0].h && t.right <= 390), JSON.stringify(tabs));
     const fit = await admin.evaluate(() => { const b = document.getElementById('muBody'); return { sw: b.scrollWidth, cw: b.clientWidth }; });
     ok('the tab fits the screen with no sideways scroll', fit.sw <= fit.cw + 1, JSON.stringify(fit));
     if (shots) await admin.screenshot({ path: path.join(shots, 'vacation-tab-phone.png') });

@@ -84,36 +84,446 @@ function normalizeAttachments(raw) {
 // Conservative HTML sanitizer for report bodies. Email clients themselves
 // strip <script> + on*= handlers, but we sanitize server-side as defense in
 // depth so a logged-in caller can't use the endpoint to relay arbitrary HTML.
+// It is pattern-matching, so it is hygiene, not a security boundary: anything
+// that shows a stored report in the browser must still keep it from running
+// (Customer History opens an archive in a frame sandboxed without scripts).
 // We strip:
 //   - <script>, <iframe>, <object>, <embed>, <link>, <meta>, <base> tags
-//   - on*= event handlers
-//   - href="javascript:..." / src="javascript:..."
+//   - on*= event handlers: every on… attribute of a start tag, read the way
+//     the browser reads it (stripHandlers below)
+//   - javascript:/vbscript: URLs, and data: ones but images, in every URL
+//     attribute (href, src, xlink:href, srcset, formaction, … and an svg
+//     <animate>/<set> to/values), however the value is quoted or encoded:
+//     the value becomes "#" (rewriteTag below); in a span kept as text that
+//     the browser may read as markup, such an attribute a tag reader cannot
+//     see has its "=" written &#61; instead (cutInSpan, spanUrls)
 // We keep inline styles and tables (the existing print HTML relies on them).
-function sanitizeReportHtml(html) {
-  if (typeof html !== 'string') return '';
+// The passes repeat until nothing changes, so markup that a removal splices
+// back together (<scr<script></script>ipt>) is removed too — up to a cap,
+// past which the input is hostile and comes back as inert text
+// (sanitizeReportHtml below).
 
+// Where a start tag that opens at s[i] ("<" and a letter) ends, read as the
+// HTML tokenizer reads it: a quote opens a value only right after "=", so a
+// ">" inside a quoted value does not end the tag and a stray quote elsewhere
+// does not start one. Returns the tag's name, the attributes it saw ({ from,
+// to, name, vs, ve }: `from` taking in the separators before the name, and
+// vs..ve the value inside any quotes, when there is one) and the end (one
+// past the ">", or the end of the input for a tag never closed).
+const isHtmlSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\f' || c === '\r';
+function readStartTag(s, i) {
+  const attrs = [];
+  let st = 'name', sep = -1, cur = null, nameEnd = s.length;
+  const gap = j => { if (sep < 0) sep = j; };            // a run of separators starts
+  const open = j => { cur = { from: sep >= 0 ? sep : j, at: j }; sep = -1; };
+  const close = j => { if (j !== undefined) cur.to = j; attrs.push(cur); cur = null; };
+  const done = end => ({ name: s.slice(i + 1, nameEnd), attrs, end });
+  for (let j = i + 1; j < s.length; j++) {
+    const c = s[j];
+    switch (st) {
+      case 'name':                                   // the tag name
+        if (isHtmlSpace(c)) { nameEnd = j; st = 'before'; gap(j); }
+        else if (c === '/') { nameEnd = j; st = 'slash'; gap(j); }
+        else if (c === '>') { nameEnd = j; return done(j + 1); }
+        break;
+      case 'attr':                                   // an attribute name
+        if (c === '=' || c === '>' || c === '/' || isHtmlSpace(c)) cur.name = s.slice(cur.at, j);
+        if (c === '=') st = 'value?';
+        else if (c === '>') { close(j); return done(j + 1); }
+        else if (c === '/') { close(j); st = 'slash'; gap(j); }
+        else if (isHtmlSpace(c)) { cur.to = j; st = 'after'; gap(j); }
+        break;
+      case 'after':                                  // after a name, before any "="
+        if (c === '=') { sep = -1; st = 'value?'; }
+        else if (c === '>') { close(); return done(j + 1); }
+        else if (c === '/') { close(); st = 'slash'; }
+        else if (!isHtmlSpace(c)) { close(); open(j); st = 'attr'; }
+        break;
+      case 'value?':                                 // after "=", before the value
+        if (c === '"') { st = 'dq'; cur.vs = j + 1; }
+        else if (c === "'") { st = 'sq'; cur.vs = j + 1; }
+        else if (c === '>') { close(j); return done(j + 1); }
+        else if (!isHtmlSpace(c)) { st = 'uq'; cur.vs = j; }
+        break;
+      case 'dq': if (c === '"') { cur.ve = j; close(j + 1); st = 'quoted'; } break;
+      case 'sq': if (c === "'") { cur.ve = j; close(j + 1); st = 'quoted'; } break;
+      case 'uq':                                     // an unquoted value
+        if (isHtmlSpace(c)) { cur.ve = j; close(j); st = 'before'; gap(j); }
+        else if (c === '>') { cur.ve = j; close(j); return done(j + 1); }
+        break;
+      default:                                       // before a name, after a quoted value, after "/"
+        if (c === '>') return done(j + 1);
+        if (isHtmlSpace(c)) { st = 'before'; gap(j); }
+        else if (c === '/') { st = 'slash'; gap(j); }
+        else { open(j); st = 'attr'; }               // an "=" here starts a name
+    }
+  }
+  // Never closed: what is open runs to the end (markup after the report —
+  // the email shell's — could still close it).
+  if (cur) {
+    if (st === 'attr') cur.name = s.slice(cur.at);
+    if (cur.vs !== undefined) cur.ve = s.length;
+    if (st === 'after') close(); else close(s.length);
+  }
+  return done(s.length);
+}
+
+/* URLs a report must not carry: a javascript: or vbscript: one anywhere, and
+   a data: one anywhere but where an image is drawn. Read the way the browser
+   reads an attribute value before it loads or follows it: character
+   references decoded (numeric ones with or without the ";", and the named
+   ones that can spell a scheme — &colon; &Tab; &NewLine; …), then what the
+   URL parser drops — leading spaces and control characters, and a tab, LF or
+   CR anywhere — before the scheme is read. A company logo is a data:image
+   (PNG/JPEG from Company Branding), so a data: URL of an image type stays on
+   an <img> src/srcset, a <source> srcset and an svg <image> href: nothing
+   drawn as an image runs script. Anywhere else — a link, an svg <use>, an
+   <animate> — even a data: svg could. */
+const URL_ATTR = /^(?:href|xlink:href|src|srcset|action|formaction|data|poster|background|ping|cite|longdesc|lowsrc|dynsrc|codebase|manifest|icon|archive)$/i;
+const URL_LIST_ATTR = /^(?:srcset|ping|archive)$/i;   // more than one URL, split at spaces/commas
+const URL_LIST_SPLIT = /[\t\n\f\r ,]+/;
+// An svg <animate>/<set> writes its to/from/by/values into the attribute it
+// names — an href among them — so those are URLs too (values split at ";").
+const ANIMATE_EL = /^(?:animate[a-z]*|set)$/i;
+const ANIMATE_ATTR = /^(?:to|from|by|values)$/i;
+const ANIMATE_SPLIT = /;/;
+const IMAGE_SLOT = { img: /^(?:src|srcset)$/i, image: /^(?:src|srcset|href|xlink:href)$/i, source: /^srcset$/i };
+const IMAGE_DATA = /^data:[\t\n\f\r ]*image\/(?:png|jpe?g|gif|webp|svg\+xml)[\t\n\f\r ]*(?:[;,]|$)/i;
+const URL_SCHEME = /^([A-Za-z][A-Za-z0-9+.\-]*):/;
+const CHAR_REF = /&(?:#[xX]([0-9A-Fa-f]+)|#([0-9]+)|([A-Za-z][A-Za-z0-9]*));?/g;
+const NAMED_REF = {
+  colon: ':', tab: '\t', newline: '\n', lpar: '(', rpar: ')', period: '.', sol: '/', bsol: '\\', plus: '+',
+  comma: ',', semi: ';', num: '#', quest: '?', excl: '!', equals: '=', commat: '@', percnt: '%', amp: '&',
+  lt: '<', gt: '>', quot: '"', apos: "'", nbsp: '\u00a0',
+};
+const decodeRefs = v => (v.indexOf('&') < 0 ? v : v.replace(CHAR_REF, (m, hex, dec, name) => {
+  if (name !== undefined) { const c = NAMED_REF[name.toLowerCase()]; return c === undefined ? m : c; }
+  const n = hex !== undefined ? parseInt(hex, 16) : parseInt(dec, 10);
+  return n > 0 && n <= 0x10ffff && !(n >= 0xd800 && n <= 0xdfff) ? String.fromCodePoint(n) : '\ufffd';
+}));
+function unsafeUrl(u, imageOk) {
+  u = u.replace(/[\t\n\r]/g, '').replace(/^[\x00-\x20]+/, '');
+  const m = URL_SCHEME.exec(u);
+  if (!m) return false;
+  const scheme = m[1].toLowerCase();
+  return scheme === 'javascript' || scheme === 'vbscript' || (scheme === 'data' && !(imageOk && IMAGE_DATA.test(u)));
+}
+// Whether an attribute value (as written, between its quotes) holds such a
+// URL. A scheme needs a ":", written or as a reference, so a value with
+// neither ":" nor "&" — nearly every value in a report — is passed at once.
+function unsafeUrlValue(raw, split, imageOk) {
+  if (raw.indexOf(':') < 0 && raw.indexOf('&') < 0) return false;
+  const v = decodeRefs(raw);
+  if (v.indexOf(':') < 0) return false;
+  return split ? v.split(split).some(u => unsafeUrl(u, imageOk)) : unsafeUrl(v, imageOk);
+}
+// A start tag read by readStartTag, written back with its on… attributes cut
+// out (with the separators before them; a space stands in when the next
+// attribute would otherwise run into the one before) and any URL value above
+// replaced by "#", in the quotes it had. Everything else goes through `text`
+// (defuse, or as written).
+function rewriteTag(s, i, { name, attrs, end }, text) {
+  const animate = ANIMATE_EL.test(name);
+  const slot = name.length <= 6 ? IMAGE_SLOT[name.toLowerCase()] : undefined;
+  let tag = '', k = i;
+  attrs.forEach(a => {
+    if (/^on[a-z]+$/i.test(a.name)) {
+      tag += text(s.slice(k, a.from));
+      const next = s[a.to];
+      if (a.to < end && next !== undefined && !isHtmlSpace(next) && next !== '/' && next !== '>') tag += ' ';
+      k = a.to;
+      return;
+    }
+    if (a.vs === undefined) return;
+    const anim = animate && ANIMATE_ATTR.test(a.name);
+    if (!anim && !URL_ATTR.test(a.name)) return;
+    const split = anim ? ANIMATE_SPLIT : URL_LIST_ATTR.test(a.name) ? URL_LIST_SPLIT : null;
+    if (!unsafeUrlValue(s.slice(a.vs, a.ve), split, !anim && !!slot && slot.test(a.name))) return;
+    tag += text(s.slice(k, a.vs)) + '#';
+    k = a.ve;
+  });
+  return tag + text(s.slice(k, end));
+}
+// Text that would be a handler if a parser read it as part of a tag — on…
+// and its "=". Outside the attributes stripHandlers removes, only its "=" is
+// written &#61;: report text ("Curb w/one = 6in", "Conditions = …") reads the
+// same, in a cell or an attribute value (where entities decode), and should a
+// browser still read it as an attribute it is one named "onerror&#61;…" that
+// nothing runs. It matches wherever an attribute name could start — anywhere
+// but straight after a letter (the tokenizer never begins a name inside a run
+// of letters) — so a handler sitting straight after a closing quote ("<img
+// src=\"x\"onerror=…"), a "/" or a space is defused too, while each run of
+// letters is scanned once ("on" repeated through one would otherwise make
+// every "on" a fresh start, and the sanitizer quadratic). Not applied to the
+// spans stripHandlers keeps (CSS, <title>, <textarea>, comments …): entities
+// are not decoded in CSS, so a defused "=" would corrupt it, and report words
+// there should come through as written.
+const HANDLER_LIKE = /(?<![a-z])(on[a-z]+\s*)=/gi;
+const defuse = text => text.replace(HANDLER_LIKE, '$1&#61;');
+// The same, but only where an attribute name could start: straight after a
+// space, a "/" or a quote (the tokenizer begins a name nowhere else). Used on
+// those spans (cutInSpan), so a handler in one is defused however the browser
+// reads it, while "Conditions = dry" in a <title> stays as written.
+const SPAN_HANDLER_LIKE = /(?<=[\s\/"'])(on[a-z]+\s*)=/gi;
+// Elements whose content the HTML parser reads as text (RAWTEXT/RCDATA), not
+// markup, up to the matching end tag. A start tag written inside such content
+// — the </textarea> in `<b c='</textarea>` — is just text to a tag reader, but
+// the real terminator to the browser, which then parses whatever follows (an
+// <img onerror=…>) as its own tags. stripHandlers skips to the real end tag
+// and keeps the span as the inert text it is, rather than letting readStartTag
+// read an attribute value across the faked terminator and miss the
+// handler-bearing tag beyond it. (script/iframe are removed upstream; the rest
+// are listed so a confusion through them is closed regardless.)
+const RAWTEXT_EL = /^(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext)$/i;
+// A span stripHandlers keeps (a comment, a CDATA section, a raw-text body).
+// The browser may yet read it as markup — an svg/math <style>, <title> or
+// <textarea> is an ordinary element there, "<!-->" closes at once, an HTML
+// "<![CDATA[" ends at its first ">" — so it is not copied blind: each start
+// tag in it, read bounded at the span's end, loses its on… attributes and has
+// a javascript:/vbscript:/non-image data: URL value replaced by "#", as any
+// tag does (rewriteTag). Then the text is read again where an attribute name
+// could start, for a tag a comment or CDATA inside an svg <style> hid from
+// that reading: handler-like text is defused, and so is a URL attribute
+// holding such a URL (spanUrls, from the span's first "<" and a letter: no
+// tag opens before it). Both are defused by writing the "=" as &#61;: should
+// the browser read it as a tag, the attribute is one named "onerror&#61;…" or
+// "href&#61;…" that nothing runs or follows; read as a <title>'s or
+// <textarea>'s text, it decodes back to "=". Everything else is kept as
+// written: CSS, and a <title>'s "Conditions = dry" or "paving by = data:
+// TBD", come through byte for byte (words that do sit where a handler could
+// start, "Phase one = 1,200", get an &#61; a title decodes, as do URL-like
+// words past a tag in the span).
+function cutInSpan(span) {
+  const START = /<[A-Za-z]/g;
+  let out = '', i = 0;
+  for (;;) {
+    START.lastIndex = i;
+    const m = START.exec(span);
+    if (!m) { out += span.slice(i); break; }
+    out += span.slice(i, m.index);
+    const tag = readStartTag(span, m.index);
+    out += rewriteTag(span, m.index, tag, asWritten);
+    i = tag.end;
+  }
+  out = out.replace(SPAN_HANDLER_LIKE, '$1&#61;');
+  const first = out.search(START_TAG);   // no tag, so no attribute, before it
+  return first < 0 ? out : out.slice(0, first) + spanUrls(out.slice(first));
+}
+const START_TAG = /<[A-Za-z]/;
+const asWritten = t => t;
+/* The URL check on a span's text, from where a tag could first open. Every
+   place a URL attribute could start (its name straight after a space, a "/"
+   or a quote, then "=") is read, with its value read as the browser would
+   read it there; one holding a javascript: or vbscript: URL, or a data: one
+   (but an image on a src or srcset), has its "=" written &#61;. A value is
+   read but never passed over, so a name inside it is read too: the browser
+   may not read that value as one at all — it may have closed an earlier
+   value at the quote this one opens with, or never begun the tag this
+   reading puts it in — and then reads an attribute from inside it, after a
+   space, a "/" or a quote. Which element a name is on is not known
+   here, so a data: image is told apart only on src and srcset, and only in
+   quotes. Linear: a quoted value is read to its closing quote, and no later
+   value in that quote opens before it; an unquoted one only up to its first
+   "/", quote, space or ">" — a scheme comes before any of those, and a name
+   inside the value starts after one; and an unquoted list (srcset, values …)
+   counts as holding such a URL when a ":" or "&" comes before its end, found
+   by forward searches whose answers are kept, as replaceBlocks keeps its. */
+const SPAN_URL_NAME = /(?<=[\s\/"'])(xlink:href|href|srcset|src|formaction|action|data|poster|background|ping|cite|longdesc|lowsrc|dynsrc|codebase|manifest|icon|archive|to|from|by|values)\s*=/gi;
+const LIST_END = /[\t\n\f\r >]/g;
+const SCHEME_SIGN = /[:&]/g;
+function spanUrls(s) {
+  const nextAt = (re, from) => { re.lastIndex = from; const r = re.exec(s); return r ? r.index : s.length; };
+  let out = '', k = 0, m, endAt = -1, signAt = -1;
+  SPAN_URL_NAME.lastIndex = 0;
+  while ((m = SPAN_URL_NAME.exec(s))) {
+    const eq = SPAN_URL_NAME.lastIndex - 1, name = m[1];
+    let vs = eq + 1;
+    while (vs < s.length && isHtmlSpace(s[vs])) vs++;
+    const anim = ANIMATE_ATTR.test(name);
+    const split = anim ? ANIMATE_SPLIT : URL_LIST_ATTR.test(name) ? URL_LIST_SPLIT : null;
+    const q = s[vs];
+    let bad;
+    if (q === '"' || q === "'") {
+      const e = s.indexOf(q, vs + 1);
+      bad = unsafeUrlValue(s.slice(vs + 1, e < 0 ? s.length : e), split, !anim && /^src(?:set)?$/i.test(name));
+    } else if (!split) {
+      let e = vs;
+      while (e < s.length && !isHtmlSpace(s[e]) && s[e] !== '>' && s[e] !== '/' && s[e] !== '"' && s[e] !== "'") e++;
+      bad = unsafeUrlValue(s.slice(vs, e), null, false);
+    } else {
+      if (endAt < vs) endAt = nextAt(LIST_END, vs);
+      if (signAt < vs) signAt = nextAt(SCHEME_SIGN, vs);
+      bad = signAt < endAt;
+    }
+    if (bad) { out += s.slice(k, eq) + '&#61;'; k = eq + 1; }
+  }
+  return out + s.slice(k);
+}
+/* Every on… attribute goes: each start tag is read as the browser reads it
+   and its on… attributes are cut out (with the separators before them; a
+   space stands in when the next attribute would otherwise run into the one
+   before). Comments, CDATA sections and raw-text element bodies are kept as
+   spans, to their real terminator, so a terminator faked inside one cannot put
+   the reader out of step with the browser; but they are not copied blind,
+   since the browser may read one as markup (cutInSpan). A URL attribute's
+   javascript:/vbscript:/non-image data: value is replaced by "#"
+   (rewriteTag); any other text — between tags, and inside the attribute
+   values left — is never cut, only defused, so the report's own words
+   survive. */
+const COMMENT_END = /--!?>/g;
+function stripHandlers(html) {
+  // A comment, a CDATA section (svg/math foreign content), or a start tag, in
+  // source order. Anything else is ordinary text.
+  const TOKEN = /<!--|<!\[CDATA\[|<[A-Za-z]/g;
+  let out = '', i = 0;
+  for (;;) {
+    TOKEN.lastIndex = i;
+    const m = TOKEN.exec(html);
+    if (!m) { out += defuse(html.slice(i)); break; }
+    out += defuse(html.slice(i, m.index));
+    const tok = m[0];
+    if (tok === '<!--') {                                // a comment: keep inert, to --> / --!> / EOF
+      // One forward scan for whichever comes first (the two never match at
+      // one index): looking for each on its own would scan to the end of the
+      // document for every comment, as reports have no "--!>".
+      COMMENT_END.lastIndex = m.index + 4;
+      const ce = COMMENT_END.exec(html);
+      const stop = ce ? ce.index + ce[0].length : html.length;
+      out += cutInSpan(html.slice(m.index, stop));
+      i = stop;
+      continue;
+    }
+    if (tok === '<![CDATA[') {                           // a CDATA section: keep inert, to ]]> / EOF
+      const j = html.indexOf(']]>', m.index + 9);
+      const stop = j >= 0 ? j + 3 : html.length;
+      out += cutInSpan(html.slice(m.index, stop));
+      i = stop;
+      continue;
+    }
+    // A start tag: cut its on… attributes, neutralize its URLs (rewriteTag).
+    const tag = readStartTag(html, m.index), end = tag.end;
+    out += rewriteTag(html, m.index, tag, defuse);
+    i = end;
+    // If it opens a raw-text/RCDATA element, keep its body verbatim through the
+    // real end tag so a faked terminator inside it can't be read across.
+    const nameMatch = /^<([a-z0-9]+)/i.exec(html.slice(m.index, end));
+    const selfClosed = html[end - 2] === '/';
+    if (nameMatch && !selfClosed && RAWTEXT_EL.test(nameMatch[1])) {
+      const close = new RegExp('</' + nameMatch[1] + '[\\s/>]', 'i');
+      const cm = close.exec(html.slice(end));
+      const stop = cm ? end + cm.index : html.length;
+      out += cutInSpan(html.slice(end, stop));
+      i = stop;
+    }
+  }
+  return out;
+}
+
+/* s.replace(/<(NAMES)\b[^>]*>([\s\S]*?)<\/\1\s*>/gi, (block, name, body) =>
+   fn(block, name, body)), match for match, but in linear time. The regex
+   retries every opener that has no ">" after it, or no end tag of its name
+   after that ">", by scanning to the end of the input — quadratic on input
+   made of many such openers ("<form" or "<script>" repeated), which any
+   signed-in user can post. Here the next ">" and each name's next end tag
+   are found by forward searches whose answers are kept: openers come in
+   source order, so an answer stays good until an opener passes it, and "none
+   after here" stays good for the rest of the input. */
+function replaceBlocks(s, names, fn) {
+  const OPEN = new RegExp('<(' + names + ')\\b', 'gi');
+  const ends = new Map();                                 // name -> { re, from, at }
+  let gtFrom = -1, gtAt = -1;
+  const nextGt = p => {
+    if (gtFrom < 0 || p < gtFrom || (gtAt >= 0 && p > gtAt)) { gtFrom = p; gtAt = s.indexOf('>', p); }
+    return gtAt;
+  };
+  const nextEnd = (name, p) => {
+    let e = ends.get(name);
+    if (!e) { e = { re: new RegExp('<\\/' + name + '\\s*>', 'gi'), from: -1, at: null }; ends.set(name, e); }
+    if (e.from < 0 || p < e.from || (e.at && p > e.at.index)) {
+      e.re.lastIndex = p;
+      const m = e.re.exec(s);
+      e.from = p; e.at = m ? { index: m.index, end: m.index + m[0].length } : null;
+    }
+    return e.at;
+  };
+  let out = '', i = 0, m;
+  OPEN.lastIndex = 0;
+  while ((m = OPEN.exec(s))) {
+    const at = m.index, name = m[1].toLowerCase();
+    const gt = nextGt(at + m[0].length);
+    if (gt < 0) break;                                    // no ">" left: nothing further can match
+    const e = nextEnd(name, gt + 1);
+    if (!e) { OPEN.lastIndex = at + 1; continue; }
+    out += s.slice(i, at) + fn(s.slice(at, e.end), name, s.slice(gt + 1, e.index));
+    i = OPEN.lastIndex = e.end;
+  }
+  return out + s.slice(i);
+}
+// s.replace(re, '') for a stray-tag pattern that must end in ">" (/<…[^>]*>/g):
+// run only up to the last ">", where every opener the pattern takes has a
+// ">" after it to end at, so none scans on to the end of the input and fails.
+const dropBeforeLastGt = (s, re) => { const g = s.lastIndexOf('>'); return s.slice(0, g + 1).replace(re, '') + s.slice(g + 1); };
+// An opener of a removed tag with no ">" after it at all, at the very end of
+// the report, is one no rule above takes (each needs a ">" to end at), and
+// nothing in the report ends it — but markup after the report (the email
+// shell's "</div>") would, and make it a live element. It goes too, with the
+// rest of the input: to a parser all of that is inside the tag anyway. Only
+// the tail after the last ">" is read, so this stays linear.
+const TRAILING_REMOVED = /<\/?(script|iframe|object|embed|link|meta|base|form)\b[\s\S]*$/i;
+const dropTrailingOpener = s => { const g = s.lastIndexOf('>'); return s.slice(0, g + 1) + s.slice(g + 1).replace(TRAILING_REMOVED, ''); };
+
+function sanitizeOnce(html) {
   let out = html;
 
-  // Drop dangerous tag blocks entirely (including content).
-  out = out.replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, '');
-  out = out.replace(/<style\b[^>]*>([\s\S]*?)<\/style>/gi, (_m, css) => {
+  // Drop dangerous tag blocks entirely (including content). A closing tag
+  // may carry whitespace before its ">" (</script >), and a stray opening or
+  // closing tag left over is dropped as well. Each in linear time (above).
+  out = replaceBlocks(out, 'script', () => '');
+  out = dropBeforeLastGt(out, /<\/?script\b[^>]*>/gi);
+  out = replaceBlocks(out, 'style', (_m, _name, css) => {
     // Keep <style> blocks but neutralize @import / javascript: refs.
     const safeCss = String(css || '')
       .replace(/@import[^;]*;?/gi, '')
       .replace(/javascript\s*:/gi, '');
     return `<style>${safeCss}</style>`;
   });
-  out = out.replace(/<(iframe|object|embed|link|meta|base|form)\b[^>]*>[\s\S]*?<\/\1>/gi, '');
-  out = out.replace(/<(iframe|object|embed|link|meta|base|form)\b[^>]*\/?>/gi, '');
+  out = replaceBlocks(out, 'iframe|object|embed|link|meta|base|form', () => '');
+  out = dropBeforeLastGt(out, /<\/?(iframe|object|embed|link|meta|base|form)\b[^>]*\/?>/gi);
+  out = dropTrailingOpener(out);
 
-  // Strip on*= event-handler attributes — match attribute name then value
-  // whether it's "..."  / '...'  / unquoted.
-  out = out.replace(/\s+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  // Strip on*= event-handler attributes, wherever the browser would read
+  // one: after whitespace, after a "/" (<img/onerror=x>), straight after a
+  // quoted value, past a quoted ">". Text is defused, never cut. The same
+  // reading neutralizes each URL attribute holding a javascript:/vbscript:
+  // or non-image data: URL.
+  out = stripHandlers(out);
 
-  // Neutralize javascript: in href / src.
+  // URL attributes were neutralized above, start tag by start tag. This
+  // older rule stays for what it always did besides: report text and other
+  // attributes that spell out href="javascript:…" read as they always have.
   out = out.replace(/(href|src)\s*=\s*(["'])\s*javascript:[^"']*\2/gi, '$1=$2#$2');
 
   return out;
+}
+// Markup a removal splices back together is caught by running the passes
+// again, up to MAX_PASSES; real reports settle in one or two. Input still
+// changing after that is nested on purpose to splice a tag back together
+// pass after pass (<scr<f<form>orm>ipt>, eight deep), so it fails closed:
+// every "<", ">", "&" and "=" is escaped and the report reads as inert text
+// — no tag, handler or javascript: survives, and a further pass changes
+// nothing. Never loop until it settles: one pass per level of nesting would
+// make the sanitizer quadratic.
+const MAX_PASSES = 8;
+const inertText = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/=/g, '&#61;');
+function sanitizeReportHtml(html) {
+  if (typeof html !== 'string') return '';
+  let out = html;
+  for (let i = 0; i < MAX_PASSES; i++) {
+    const next = sanitizeOnce(out);
+    if (next === out) return out;
+    out = next;
+  }
+  return sanitizeOnce(out) === out ? out : inertText(out);
 }
 
 // The report palette, for the figures that carry a color in the report's own

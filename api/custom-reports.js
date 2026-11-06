@@ -23,12 +23,31 @@
 //
 // GET    ?division=…                     → { reports, canShare, me }
 // GET    ?division=…&deleted=1           → reports deleted in the last 30 days the caller may restore
-// GET    ?division=…&runs=1[&report_id=] → { runs }  the send history
+// GET    ?division=…&runs=1[&report_id=][&project_id=][&action=][&kind=][&before_id=]
+//                                        → { runs, next_before_id }  the send history, 100 a page
+// GET    ?division=…&run=N               → { run }   one run, with its definition snapshot
+// GET    ?division=…&run=N&archive=1     → { html }  exactly what that email delivered
 // POST   ?division=…                     create   { name, description?, visibility?, definition }
 // PUT    ?division=…&id=N                save     { name?, description?, visibility?, definition?, version }
 // DELETE ?division=…&id=N                soft delete
 // POST   ?division=…&action=restore&id=N un-delete
 // POST   ?division=…&action=run          log a print / email / Excel download
+//                                        (run_kind 'user' | 'resend', resent_from_run_id)
+//
+// Definitions are v1 or v2. A v2 report saved over by a page still running the
+// v1 builder (a tab left open across a deploy, a cached script) would lose
+// every v2 field that builder does not know, so that save is refused with
+// 409 client_outdated and the page asks for a reload instead.
+//
+// Who sees which runs. The general history: admins and level3 see the
+// division's, everyone else their own. A job's history (?project_id=, the
+// Customer History view) is the customer communication record for that job,
+// so every division user who may open Custom Reporting sees all of it. One
+// run (?run=) follows the same line: a run about jobs is open to every such
+// user, a run about none only to its sender and admins/level3. The archived
+// HTML of a run that carried internal figures opens only for its sender and
+// admins/level3 (403 internal_archive) — what went out with our costs on it
+// is not a document every login may pull up.
 //
 // Saves are optimistically locked. The browser sends the version it opened and
 // the UPDATE only matches that version, so two people saving the same shared
@@ -57,14 +76,18 @@ const {
 } = require('./lib/auth');
 
 const {
-  DIVISIONS, RUN_RATE_LIMIT,
-  cleanStr, oneLine, readDefinition, toId, readRun, shapeRun, recentRunCount, insertRun, pruneSnapshots,
+  DIVISIONS, RUN_RATE_LIMIT, RUN_ACTIONS, RUN_KINDS,
+  cleanStr, oneLine, isPlainObject, readDefinition, toId, readRun, shapeRun, recentRunCount, insertRun,
+  pruneSnapshots, readArchive, pruneArchives,
 } = require('./lib/custom-report-runs');
 
 const MAX_NAME             = 120;
 const MAX_DESCRIPTION      = 500;
 const LIST_CAP             = 500;
-const RUNS_CAP             = 200;
+// One page of the send history; ?before_id= (the page's next_before_id) asks
+// for the one after it.
+const RUNS_PAGE            = 100;
+const MAX_PROJECT_ID       = 120;
 const RESTORE_DAYS         = 30;
 const PURGE_DAYS           = 90;
 
@@ -95,6 +118,17 @@ function readVisibility(raw, fallback) {
 }
 
 const flag = v => v === true || v === '1' || v === 'true';
+
+// The internal-data flag is stored as a boolean. Every check reads it as
+// `=== true`, so a hand-made "true" (a string) is not internal anywhere; it is
+// stored as the false it reads as, so no stored definition says otherwise
+// (the schedules list reads the stored JSON).
+function boolInternal(def) {
+  if (isPlainObject(def) && Object.prototype.hasOwnProperty.call(def, 'includeInternal') && typeof def.includeInternal !== 'boolean') {
+    def.includeInternal = false;
+  }
+  return def;
+}
 
 /**
  * What the list badges a report by, from its definition alone. 'report' when
@@ -201,24 +235,96 @@ module.exports = async (req, res) => {
 
   try {
     // ── GET ?runs=1 — the send history ─────────────────────────────────
-    // Admins and level3 see the division's; everyone else sees their own.
+    // Admins and level3 see the division's; everyone else their own — except
+    // a job's history (?project_id=), which every division user here sees
+    // whole: it is the record of what that customer has been sent.
     if (req.method === 'GET' && flag(q.runs)) {
       let reportId = null;
       if (q.report_id !== undefined && q.report_id !== '') {
         reportId = toId(q.report_id);
         if (!reportId) return res.status(400).json({ ok: false, error: 'report_id must be a number' });
       }
+      let projectId = null;
+      if (q.project_id !== undefined && q.project_id !== '') {
+        projectId = typeof q.project_id === 'string' ? oneLine(q.project_id, Infinity) : '';
+        if (!projectId || projectId.length > MAX_PROJECT_ID) {
+          return res.status(400).json({ ok: false, error: 'project_id must be a job id' });
+        }
+      }
+      let action = null;
+      if (q.action !== undefined && q.action !== '') {
+        if (!RUN_ACTIONS.includes(q.action)) return res.status(400).json({ ok: false, error: 'action must be print, email or excel' });
+        action = q.action;
+      }
+      let kind = null;
+      if (q.kind !== undefined && q.kind !== '') {
+        if (!RUN_KINDS.includes(q.kind)) return res.status(400).json({ ok: false, error: 'kind must be user, schedule, send_now or resend' });
+        kind = q.kind;
+      }
+      let beforeId = null;
+      if (q.before_id !== undefined && q.before_id !== '') {
+        beforeId = toId(q.before_id);
+        if (!beforeId) return res.status(400).json({ ok: false, error: 'before_id must be a number' });
+      }
+      // Newest first, and paged on (created_at, id) from the run before_id
+      // names, so a page boundary never skips or repeats a run however
+      // created_at and id happen to interleave.
       const rows = await sql`
-        SELECT id, report_id, report_name, action, project_ids, project_names,
-               to_char(date_from, 'YYYY-MM-DD') AS date_from, to_char(date_to, 'YYYY-MM-DD') AS date_to,
-               recipients, subject, included_internal, run_by_user_id, run_by_username, created_at
-          FROM custom_report_runs
-         WHERE company_code = ${company} AND division = ${division}
-           AND (${canShare}::boolean OR run_by_user_id = ${me.userId})
-           AND (${reportId}::bigint IS NULL OR report_id = ${reportId}::bigint)
-         ORDER BY created_at DESC, id DESC
-         LIMIT ${RUNS_CAP}`;
-      return res.json({ ok: true, runs: rows.map(shapeRun) });
+        SELECT r.id, r.report_id, r.report_name, r.action, r.project_ids, r.project_names,
+               to_char(r.date_from, 'YYYY-MM-DD') AS date_from, to_char(r.date_to, 'YYYY-MM-DD') AS date_to,
+               r.recipients, r.subject, r.included_internal, r.run_by_user_id, r.run_by_username, r.created_at,
+               r.run_kind, r.schedule_id, r.resent_from_run_id,
+               EXISTS (SELECT 1 FROM custom_report_run_archives a WHERE a.run_id = r.id) AS has_archive
+          FROM custom_report_runs r
+         WHERE r.company_code = ${company} AND r.division = ${division}
+           AND (${projectId}::text IS NOT NULL OR ${canShare}::boolean OR r.run_by_user_id = ${me.userId})
+           AND (${projectId}::text IS NULL OR r.project_ids @> jsonb_build_array(${projectId}::text))
+           AND (${reportId}::bigint IS NULL OR r.report_id = ${reportId}::bigint)
+           AND (${action}::text IS NULL OR r.action = ${action}::text)
+           AND (${kind}::text IS NULL OR r.run_kind = ${kind}::text)
+           AND (${beforeId}::bigint IS NULL OR (r.created_at, r.id) < (
+                 SELECT c.created_at, c.id FROM custom_report_runs c
+                  WHERE c.id = ${beforeId}::bigint AND c.company_code = ${company} AND c.division = ${division}))
+         ORDER BY r.created_at DESC, r.id DESC
+         LIMIT ${RUNS_PAGE + 1}`;
+      const page = rows.slice(0, RUNS_PAGE);
+      return res.json({
+        ok: true,
+        runs: page.map(r => shapeRun(r)),
+        next_before_id: rows.length > RUNS_PAGE ? Number(page[page.length - 1].id) : null,
+      });
+    }
+
+    // ── GET ?run=N[&archive=1] — one run, or what it emailed ───────────
+    if (req.method === 'GET' && q.run !== undefined) {
+      const runId = toId(q.run);
+      if (!runId) return res.status(400).json({ ok: false, error: 'run must be a number' });
+      const found = await sql`
+        SELECT r.id, r.report_id, r.report_name, r.action, r.project_ids, r.project_names,
+               to_char(r.date_from, 'YYYY-MM-DD') AS date_from, to_char(r.date_to, 'YYYY-MM-DD') AS date_to,
+               r.recipients, r.subject, r.included_internal, r.definition,
+               r.run_by_user_id, r.run_by_username, r.created_at,
+               r.run_kind, r.schedule_id, r.resent_from_run_id,
+               EXISTS (SELECT 1 FROM custom_report_run_archives a WHERE a.run_id = r.id) AS has_archive
+          FROM custom_report_runs r
+         WHERE r.id = ${runId} AND r.company_code = ${company} AND r.division = ${division}`;
+      const row = found[0];
+      const aboutJobs = row && Array.isArray(row.project_ids) && row.project_ids.length > 0;
+      const sender = row && row.run_by_user_id != null && Number(row.run_by_user_id) === me.userId;
+      // Not there and not theirs to see read the same: a run id is not a way
+      // to learn what the division has sent.
+      if (!row || !(aboutJobs || canShare || sender)) {
+        return res.status(404).json({ ok: false, error: 'Run not found' });
+      }
+      if (!flag(q.archive)) return res.json({ ok: true, run: shapeRun(row, { definition: true }) });
+      // Decided before looking for the archive, so the answer never depends
+      // on whether one was kept.
+      if (row.included_internal && !sender && !canShare) {
+        return res.status(403).json({ ok: false, error: 'internal_archive' });
+      }
+      const html = await readArchive(sql, { runId, company });
+      if (html === null) return res.status(404).json({ ok: false, error: 'no_archive' });
+      return res.json({ ok: true, html });
     }
 
     // ── GET ?deleted=1 — Recently Deleted ──────────────────────────────
@@ -259,11 +365,14 @@ module.exports = async (req, res) => {
       if ((await recentRunCount(sql, company, me.userId)) >= RUN_RATE_LIMIT) {
         return res.status(429).json({ ok: false, error: 'Too many reports logged — try again in a minute.' });
       }
-      const run = await insertRun(sql, { company, division, me, run: r.value });
-      // Old definition snapshots are emptied as new runs come in. Never
-      // fatal — the run the user asked to log is already logged.
+      const run = await insertRun(sql, { company, division, me, run: r.value, canShare });
+      // Old definition snapshots are emptied, and old archives deleted, as
+      // new runs come in. Never fatal — the run the user asked to log is
+      // already logged.
       try { await pruneSnapshots(sql, company, division); }
       catch (err) { console.error('[custom-reports] snapshot prune failed:', err.message); }
+      try { await pruneArchives(sql, company); }
+      catch (err) { console.error('[custom-reports] archive prune failed:', err.message); }
       return res.status(201).json({ ok: true, run });
     }
 
@@ -320,6 +429,8 @@ module.exports = async (req, res) => {
       if (desc.error) return res.status(400).json({ ok: false, error: desc.error });
       const def = readDefinition(b.definition);
       if (def.error) return res.status(def.status).json({ ok: false, error: def.error });
+      boolInternal(def.value);
+      def.json = JSON.stringify(def.value);
       const { kind, customer_safe } = deriveFlags(def.value);
 
       const rows = await sql`
@@ -346,6 +457,14 @@ module.exports = async (req, res) => {
       if (!cur || !isVisible(cur, me)) return res.status(404).json({ ok: false, error: 'Report not found' });
       if (!mayEdit(cur, me, canShare)) {
         return res.status(403).json({ ok: false, error: 'Only an admin or level 3 user can change a shared template. Use Save As to make your own copy.' });
+      }
+      // A v1 builder saving over a v2 report would silently strip what it
+      // does not know (filters, branding, the new sections). Asked before the
+      // version check: reloading is the answer to both.
+      if (isPlainObject(b.definition) && b.definition.v === 1
+          && isPlainObject(cur.definition) && cur.definition.v === 2) {
+        return res.status(409).json({ ok: false, error: 'client_outdated',
+          message: 'DataWatch was updated — reload the page to keep editing.' });
       }
       if (Number(cur.version) !== version) {
         return res.status(409).json({ ok: false, error: 'version_conflict', report: out(cur) });
@@ -379,7 +498,7 @@ module.exports = async (req, res) => {
       if (b.definition !== undefined) {
         const d = readDefinition(b.definition);
         if (d.error) return res.status(d.status).json({ ok: false, error: d.error });
-        definition = d.value;
+        definition = boolInternal(d.value);
       }
       const { kind, customer_safe } = deriveFlags(definition);
 
