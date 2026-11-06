@@ -253,13 +253,45 @@ assert('sanitizeReportHtml removes the window.print() bootstrap',
     // A ">" inside a quoted attribute does not end the tag: a rule scoped to
     // "<tag ...>" spans would stop there and let the handler through.
     'a handler after a quoted ">"': '<img alt="a>b" onerror=alert(1) src=x><p>keep</p>',
+    // A quote only opens a value right after "=": a stray one in an
+    // unquoted value must not make a tag reader stop short of the handler.
+    'a handler after a stray quote in an unquoted value': '<img alt=a"b title=">" onerror=alert(1)><p>keep</p>',
+    // A quoted value may run straight into the next attribute.
+    'a handler right after a quoted value': '<img src="x"onerror=alert(1)><p>keep</p>',
+    // A comment, or an svg <title>, can put a tag reader out of step with
+    // the browser: the handler is the browser's, whatever the reader thinks.
+    'a handler a comment hides from a tag reader': '<!--<x a="--><img src=1 b=\'">\' onerror=alert(1)><p>keep</p>',
+    'a handler after "/" a comment hides from a tag reader': '<!--<x a="--><img src=1 b=\'">\'/onerror=alert(1)><p>keep</p>',
+    'a handler after "/" behind an svg <title>': '<svg><title><img src=1 b=\'</title>\'/onerror=alert(1)></svg><p>keep</p>',
+    'a handler left in a tag the report never closes': '<p>keep</p><img src=x onerror="alert(1)',
   };
+  // The browser's own reading is the judge: parsed as a document, and as the
+  // email shell's body (where markup after it can close an open tag), no
+  // element carries an event handler (an attribute named on + letters — one
+  // a defused "onerror&#61;…" leaves behind is named that, and runs nothing).
+  const handlerAttrs = h => [h, `<div>${h}</div><p title="x">y</p>`].flatMap(doc =>
+    [...new JSDOM(doc).window.document.querySelectorAll('*')].flatMap(el => [...el.attributes].map(a => a.name).filter(n => /^on[a-z]+$/i.test(n))));
   for (const [what, html] of Object.entries(cases)) {
     const out = sanitizeReportHtml(html);
-    assert(`sanitizeReportHtml strips ${what}`, !/<script|onerror\s*=|<iframe/i.test(out) && out.includes('<p>keep</p>'), out);
+    const left = handlerAttrs(out);
+    assert(`sanitizeReportHtml strips ${what}`, !/<script|onerror\s*=|<iframe/i.test(out) && out.includes('<p>keep</p>') && !left.length,
+      out + (left.length ? '  (handlers: ' + left.join(', ') + ')' : ''));
   }
   const plain = '<table><tr><td>Tons / Day</td><td>a/b</td></tr></table><br/><img src="data:image/png;base64,AAAA"/>';
   assert('…and leaves ordinary report markup alone (slashes, self-closing tags)', sanitizeReportHtml(plain) === plain, sanitizeReportHtml(plain));
+  // Report text that only looks like a handler — a sub code "Curb w/one =
+  // 6in", a note "w/onsite = 200 CY" — is the report's own words: it reads
+  // the same after sanitizing (at most its "=" is written &#61;), in a cell,
+  // in a paragraph and in an attribute value.
+  const words = '<table><tr><td class="sub">Curb w/one = 6in</td><td>1,200</td></tr></table><p>Topsoil w/onsite = 200 CY</p><p>Phase one = 1,200</p>';
+  const wOut = sanitizeReportHtml(words);
+  const textOf = h => new JSDOM(h).window.document.body.textContent;
+  assert('report text that only looks like a handler ("Curb w/one = 6in", "w/onsite = 200 CY", "Phase one = 1,200") reads the same after sanitizing',
+    textOf(wOut) === textOf(words) && wOut.replace(/&#61;/g, '=') === words && !handlerAttrs(wOut).length, wOut);
+  const inAttr = '<table><tr><td class="sub" title="Curb w/one = 6in">x</td></tr></table>';
+  const aOut = sanitizeReportHtml(inAttr), aTd = new JSDOM(aOut).window.document.querySelector('td');
+  assert('…and so does an attribute value holding such text, with the tag around it intact',
+    aTd && aTd.getAttribute('title') === 'Curb w/one = 6in' && aTd.className === 'sub' && aTd.textContent === 'x', aOut);
 }
 
 // ── 3. Real headless-Chrome render ─────────────────────────────────────────
@@ -288,6 +320,59 @@ function findChrome() {
 }
 
 (async () => {
+  // ── 2b. The division pages' own report builders, through the sanitizer ──
+  // Bid items, the daily summary and the daily PM report print a person's
+  // text with only its double quotes escaped, so "Curb w/one = 6in" reaches
+  // the sanitizer with a bare "=". What the page built is what must arrive.
+  console.log('\npage-built reports keep their text through sanitizeReportHtml');
+  {
+    const { VirtualConsole } = require('jsdom');
+    const SESSION = { fct_token: 'harness', fct_division: 'paving', fct_user: JSON.stringify({ userId: 1, username: 'harness', companyCode: 'FCT',
+      isPlatformAdmin: true, divisionRoles: { turf: 'level5', paving: 'level5', kiewit: 'level5' } }) };
+    const bootPage = file => new JSDOM(fs.readFileSync(path.join(ROOT, file), 'utf8'), {
+      runScripts: 'dangerously', url: 'https://datawatch.app/' + file, virtualConsole: new VirtualConsole(),
+      beforeParse(w) {
+        Object.entries(SESSION).forEach(([k, v]) => w.localStorage.setItem(k, v));
+        w.fetch = () => Promise.resolve({ ok: true, status: 200, text: async () => '',
+          json: async () => ({ ok: true, value: null, user: null, employees: [], jobs: [], entries: [], rows: [], groups: [] }) });
+        w.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} });
+        w.scrollTo = () => {}; w.alert = () => {}; w.confirm = () => true; w.prompt = () => null;
+        w.HTMLCanvasElement.prototype.getContext = () => null;
+      } });
+    const WORDS = ['Curb w/one = 6in', 'Topsoil w/onsite = 200 CY', 'Walk/only = 4in'];
+    const count = (h, wd) => {
+      const d = new JSDOM(h).window.document;
+      d.querySelectorAll('script').forEach(x => x.remove());
+      return d.body.textContent.split(wd).length - 1;
+    };
+    for (const file of ['paving.html', 'tracker.html', 'kiewit-pinetree.html']) {
+      const dom = bootPage(file);
+      await new Promise(res => setTimeout(res, 300));
+      const w = dom.window;
+      w.eval(`projectsList.push({ id: 'p1', 'project-name': 'Maple Ave', 'job-number': '26001', client: 'Acme', status: 'In Progress',
+        'start-date': '2026-10-01', 'end-date': '2026-12-18',
+        bidItems: [
+          { id: 'b1', cost_code: 'Concrete', sub_code: 'Curb w/one = 6in', description: 'Topsoil w/onsite = 200 CY', unit: 'LF', quantity: '1200', unit_cost: '10' },
+          { id: 'b2', cost_code: 'Concrete', sub_code: 'Walk/only = 4in', description: '', unit: 'SF', quantity: '500', unit_cost: '5' }],
+        dailyRows: [{ id: 'r1', date: '2026-11-02', employee: 'A', cost_code: 'Concrete', sub_code: 'Curb w/one = 6in', quantity: '100',
+          labor_hours: '8', material: 'Topsoil w/onsite = 200 CY' }] }); _pmrProjId = 'p1';`);
+      const built = {
+        'bid items': w.eval(`exportBidPDF('p1', null, { returnHtml: true })`),
+        'daily summary': w.eval(`exportDailySummaryPDF('all', '2026-11-01', '2026-11-06', { returnHtml: true })`),
+        'daily PM report': w.eval(`printDailyPMReport({ returnHtml: true })`),
+      };
+      for (const [what, b] of Object.entries(built)) {
+        const html = b && (typeof b === 'string' ? b : b.html);
+        if (!html) { assert(`${file} ${what}: the page builds it`, false, 'no html'); continue; }
+        const lost = WORDS.filter(wd => count(html, wd) && count(sanitizeReportHtml(html), wd) !== count(html, wd));
+        const shown = WORDS.filter(wd => count(html, wd));
+        assert(`${file} ${what}: ${shown.map(x => `"${x}"`).join(', ')} read the same after sanitizing`, shown.length && !lost.length,
+          'lost: ' + lost.join(' | '));
+      }
+      w.close();
+    }
+  }
+
   const chrome = findChrome();  // also gates layer 4's render assertions
   if (!chrome) {
     skip('renders a report to a real PDF', 'no Chrome/Chromium on this box');

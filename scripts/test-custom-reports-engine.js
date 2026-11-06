@@ -1771,32 +1771,107 @@ function deepNear(a, b, at = '') {
     // Target, after the job's end date): Planned vs Actual counts it as
     // planned, so the S-curve, the daily bars' planned line and the Totals'
     // Planned / Day count it too — one span (its start day) for all of them.
+    // That day counts as one even when it is a Saturday, a Sunday or a
+    // holiday (a weekend crew, a holiday start): the span has no working day
+    // of its own, and every consumer counts it as the day it is.
+    for (const [first, surfDays, iToday, sFrom, sTo] of [
+      ['a Monday', ['2026-10-19', '2026-10-20', '2026-10-21'], '2026-11-06', '2026-10-12', '2026-10-30'],
+      ['a Saturday', ['2026-10-17', '2026-10-19', '2026-10-20'], '2026-11-06', '2026-10-12', '2026-10-30'],
+      ['Veterans Day (a weekday holiday)', ['2026-11-11', '2026-11-12', '2026-11-13'], '2026-11-20', '2026-11-09', '2026-11-20']])
     for (const [why, target, jobEnd] of [['a typed Target before the first work day', '2026-10-09', '2026-12-18'],
       ['no Target, the job end date before the first work day', '', '2026-10-09']]) {
       const INV = { projects: [{ id: 'inv', 'project-name': 'Main St', status: 'In Progress', 'start-date': '2026-10-01', 'end-date': jobEnd, bidItems: [
         { id: 'ia', cost_code: '300', sub_code: 'MILL', unit: 'SY', quantity: '14000', unit_cost: '3', start_date: '2026-10-05', target_date: '2026-10-13' },
         Object.assign({ id: 'ib', cost_code: '400', sub_code: 'SURF', unit: 'TON', quantity: '2400', unit_cost: '95', planned_rate: '400' }, target ? { target_date: target } : {})],
       dailyRows: ['2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09', '2026-10-12', '2026-10-13'].map(dt => row(dt, '300', 'MILL', 2000))
-        .concat(['2026-10-19', '2026-10-20', '2026-10-21'].map(dt => row(dt, '400', 'SURF', 350))) }] };
-      const iCols = ['sub_code', 'planned_rate', 'actual_rate', 'pct_of_plan', 'sched_pct', 'earned_pct', 'plan_status'];
+        .concat(surfDays.map(dt => row(dt, '400', 'SURF', 350))) }] };
+      const iCols = ['sub_code', 'planned_rate', 'actual_rate', 'pct_of_plan', 'sched_pct', 'earned_pct', 'ahead_days', 'plan_status'];
       const idef = vdef([vsec('plan_vs_actual', { columns: iCols }), vsec('chart', { columns: ['installed', 'plan'], options: { chart: 's_curve', basis: 'pct' } })],
         { dates: { preset: 'job_to_date', from: '', to: '' } });
-      const ictx = vmk(idef, INV, ['inv'], { today: '2026-11-06' });
+      const ictx = vmk(idef, INV, ['inv'], { today: iToday });
       const itot = J(V.buildSectionData(idef.sections[0], idef, ictx).blocks[0].totals);
       const isc = J(V.buildSectionData(idef.sections[1], idef, ictx).blocks[0].charts[0]);
       const iat = isc.points.find(q => q.date === isc.asOf) || isc.points[isc.points.length - 1];
-      assert(`late start (${why}): the S-curve at the as-of day reads PvA Totals' earned and scheduled %, both items covered`,
+      assert(`late start (${why}, first work day ${first}): the S-curve at the as-of day reads PvA Totals' earned and scheduled %, both items covered`,
         iat && near(iat.inst, itot.earned_pct, 1e-6) && near(iat.plan, itot.sched_pct, 1e-6) && !isc.captions.some(c => /Covers the 1 of 2/.test(c)),
         JSON.stringify({ at: iat, tot: itot, cap: isc.captions }));
       const sdef = vdef([vsec('plan_vs_actual', { columns: iCols }), vsec('chart', { columns: ['daily_qty', 'planned_rate_line'], options: { chart: 'daily_bars' } })],
-        { dates: { preset: 'custom', from: '2026-10-12', to: '2026-10-30' }, filters: { costCodes: [], subCodes: ['SURF'] } });
-      const sctx = vmk(sdef, INV, ['inv'], { today: '2026-11-06' });
+        { dates: { preset: 'custom', from: sFrom, to: sTo }, filters: { costCodes: [], subCodes: ['SURF'] } });
+      const sctx = vmk(sdef, INV, ['inv'], { today: iToday });
       const sd0 = V.buildSectionData(sdef.sections[0], sdef, sctx);
       const sline = J(rowsOf(sd0)[0]), stot = J(sd0.blocks[0].totals);
       const sbars = J(V.buildSectionData(sdef.sections[1], sdef, sctx).blocks[0].charts[0]);
       assert(`…scoped to that line alone: its Totals read its Planned / Day 400 and 87.5% of plan, and the daily bars draw the 400 planned line`,
         sline.planned_rate === 400 && stot.planned_rate === 400 && near(stot.pct_of_plan, 87.5) && sbars.rate === 400 && sbars.drawPlan === true,
         JSON.stringify({ sline, stot, rate: sbars.rate, draw: sbars.drawPlan }));
+      assert(`…its Days Ahead / Behind has a value, on the line and in its Totals${target ? ' (typed Target)' : ''}`,
+        sline.ahead_days !== null && stot.ahead_days !== null && (target ? true : stot.ahead_days === sline.ahead_days),
+        JSON.stringify({ sline, stot }));
+    }
+
+    // A Plan / Day line planned for one weekend day (start = target = a
+    // Saturday) beside a dated line: the S-curve covers both lines, as the
+    // Totals do, and ends on the Totals' figures; the line's own Days
+    // Ahead / Behind is not blank; and the Totals read as they do with the
+    // weekend line moved to the Friday.
+    {
+      const WK = day => ({ projects: [{ id: 'wk', 'project-name': 'Lot', status: 'In Progress', 'start-date': '2026-05-01', 'end-date': '2026-06-30', bidItems: [
+        { id: 'w1', cost_code: '200', sub_code: 'S1', unit: 'TON', quantity: '1000', unit_cost: '80', start_date: '2026-05-04', target_date: '2026-05-29' },
+        { id: 'w2', cost_code: '200', sub_code: 'S2', unit: 'TON', quantity: '300', unit_cost: '90', planned_rate: '300', start_date: day, target_date: day }],
+      dailyRows: [row('2026-05-04', '200', 'S1', 100), row('2026-05-05', '200', 'S1', 100), row('2026-05-11', '200', 'S1', 100), row(day, '200', 'S2', 150)] }] });
+      const wcols = allCols('plan_vs_actual');
+      const wkOf = (day, basis) => {
+        const def = vdef([vsec('plan_vs_actual', { columns: wcols }), vsec('chart', { columns: ['installed', 'plan'], options: { chart: 's_curve', basis } })],
+          { dates: { preset: 'job_to_date', from: '', to: '' } });
+        const ctx = vmk(def, WK(day), ['wk'], { today: '2026-05-12' });
+        const d = V.buildSectionData(def.sections[0], def, ctx);
+        const sc = J(V.buildSectionData(def.sections[1], def, ctx).blocks[0].charts[0]);
+        return { rows: rowsOf(d).map(J), tot: J(d.blocks[0].totals), sc, at: sc.points.find(q => q.date === sc.asOf) || sc.points[sc.points.length - 1] };
+      };
+      const sat = wkOf('2026-05-09', 'pct'), fri = wkOf('2026-05-08', 'pct');
+      const satQ = wkOf('2026-05-09', 'qty'), friQ = wkOf('2026-05-08', 'qty');
+      const wl = byKey(sat.rows, 'sub_code', 'S2');
+      assert('a Plan / Day line planned for one Saturday: the S-curve covers both items and ends on PvA Totals\' earned and scheduled %',
+        sat.sc.drawPlan && !sat.sc.captions.some(c => /Covers the/.test(c)) && near(sat.at.inst, sat.tot.earned_pct) && near(sat.at.plan, sat.tot.sched_pct),
+        JSON.stringify({ at: sat.at, tot: sat.tot, cap: sat.sc.captions }));
+      assert('…on the quantity basis too, the same curve as with that line on the Friday',
+        !satQ.sc.captions.some(c => /Covers the/.test(c)) && near(satQ.at.inst, friQ.at.inst) && near(satQ.at.plan, friQ.at.plan),
+        JSON.stringify({ sat: satQ.at, fri: friQ.at, cap: satQ.sc.captions }));
+      assert('…the line\'s own Days Ahead / Behind is not blank, and the Totals equal those with the line on the Friday',
+        wl && wl.plan_source === 'Planned per day' && wl.ahead_days !== null && JSON.stringify(sat.tot) === JSON.stringify(fri.tot),
+        JSON.stringify({ wl, sat: sat.tot, fri: fri.tot }));
+    }
+
+    // A cost-code-only line (TON) beside a sub-coded line under its code
+    // typed TN: the two share the sub-coded rows. TN and TON are one unit in
+    // Planned vs Actual, so its Totals' Installed to Date is one figure —
+    // as with the lines typed alike — while Bid Progress, which pairs each
+    // typed unit's Bid Qty with its Installed, keeps them apart.
+    {
+      const SH = { projects: [{ id: 'sh', 'project-name': 'Lot A', status: 'In Progress', 'start-date': '2026-05-01', 'end-date': '2026-06-30', bidItems: [
+        { id: 's1', cost_code: '200', sub_code: '', unit: 'TON', quantity: '1000', unit_cost: '60', start_date: '2026-05-04', target_date: '2026-05-29' },
+        { id: 's2', cost_code: '200', sub_code: 'S1', unit: 'TN', quantity: '500', unit_cost: '80', start_date: '2026-05-04', target_date: '2026-05-29' }],
+      dailyRows: [row('2026-05-04', '200', '', 200), row('2026-05-05', '200', 'S1', 150), row('2026-05-06', '200', '', 220), row('2026-05-07', '200', 'S1', 130)] }] };
+      const shCols = ['sub_code', 'unit', 'bid_qty', 'installed_to_date', 'actual_rate'];
+      const shDef = layout => vdef([vsec('plan_vs_actual', { columns: shCols }), vsec('bid_progress', { columns: ['sub_code', 'unit', 'bid_qty', 'installed_to_date'] })],
+        { layout, dates: { preset: 'job_to_date', from: '', to: '' } });
+      const sd = shDef('separate'), sctx = vmk(sd, SH, ['sh'], { today: '2026-05-08' });
+      const st = J(V.buildSectionData(sd.sections[0], sd, sctx).blocks[0].totals);
+      assert('shared rows, a TON line and a TN line: PvA Totals\' Installed to Date is 700 (one number, not "420 TON · 280 TN"), Bid Qty 1,500, Actual / Day 175',
+        st.installed_to_date === 700 && st.bid_qty === 1500 && st.actual_rate === 175 && st.unit === 'TON', JSON.stringify(st));
+      const cd = shDef('combined'), cctx = vmk(cd, SH, ['sh'], { today: '2026-05-08' });
+      const cb = J(V.buildSectionData(cd.sections[0], cd, cctx).blocks[0]);
+      const sub = cb.groups.map(g => g.subtotal).filter(Boolean)[0];
+      assert('…and the combined layout\'s job subtotal and grand total read 700 too',
+        sub && sub.installed_to_date === 700 && cb.totals.installed_to_date === 700, JSON.stringify({ sub, tot: cb.totals }));
+      const wb = workbook(V.buildXlsx(sd, vmk(sd, SH, ['sh'], { today: '2026-05-08' })));
+      const rep = wb.sheets[wb.names.find(n => /plan/i.test(n))] || {}, ih = findCell(rep, 'Installed to Date');
+      const totRow = ih && Object.keys(rep).filter(r => rep[r].v === 'Totals').map(r => +r.replace(/\D+/g, '')).find(n => n > ih.row);
+      const xc = totRow && rep[ih.col + totRow];
+      assert('…and the XLSX Totals cell is the number 700', xc && xc.t !== 'inlineStr' && xc.v === 700, JSON.stringify({ ih, totRow, xc }));
+      const bt = J(V.buildSectionData(sd.sections[1], sd, sctx).blocks[0].totals);
+      assert('…while Bid Progress\' Totals still pair Bid Qty and Installed by the units as typed',
+        bt.bid_qty === '1,000 TON · 500 TN' && bt.installed_to_date === '420 TON · 280 TN', JSON.stringify(bt));
     }
 
     // A Plan / Day line whose finish cannot be dated (no Target, no job end

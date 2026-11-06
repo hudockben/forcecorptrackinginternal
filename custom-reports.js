@@ -365,7 +365,9 @@
     updateSchedule: (id, body) => call('custom-report-schedules', 'PUT', { id }, body),
     removeSchedule: id => call('custom-report-schedules', 'DELETE', { id }),
     sendSchedule:   id => call('custom-report-schedules', 'POST', { id, action: 'run' }),
-    groups: () => call('email/recipient-groups', 'GET', { report_type: `${cfg.division}_custom_report` }, undefined, { division: false, quiet: true }),
+    // Every company group, each with its report type: the dialog keeps the
+    // ones it may offer, and can tell a deleted group from one it hides.
+    groups: () => call('email/recipient-groups', 'GET', {}, undefined, { division: false, quiet: true }),
   };
   const code = e => (e && e.data && e.data.error) || '';
 
@@ -2319,6 +2321,18 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const i = S.reports.findIndex(x => sameId(x.id, r.id));
     if (i >= 0) S.reports[i] = r; else S.reports.unshift(r);
     sortReports();
+    // The schedules that send it read its name and whether it is still
+    // customer-safe ("won’t send until…") from this copy at once.
+    (Array.isArray(S.scheds) ? S.scheds : []).forEach(x => {
+      if (!sameId(x.custom_report_id, r.id)) return;
+      if (typeof r.customer_safe === 'boolean') x.report_customer_safe = r.customer_safe;
+      if (txt(r.name)) x.report_name = r.name;
+    });
+  }
+  // A save of a report a schedule sends: the schedules list asked for again,
+  // so the rail says what its next send will find (what the server says).
+  function schedsAfterSave(r) {
+    if (r && isScheduled({ id: r.id })) loadSchedules();
   }
   function loadList() {
     if (S.loading) return S.loadP;
@@ -2570,6 +2584,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     const keep = S.mount && S.mount.querySelector('[data-bind="save-jobs"]');
     if (keep) keep.checked = !!d.saveJobs;
     renderRail();
+    schedsAfterSave(report);
     updateChrome();
     aiSync();
   }
@@ -2599,6 +2614,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         // version), not the old copy and a false "someone else saved" later.
         upsertReport(res.report);
         renderRail();
+        schedsAfterSave(res.report);
         toast(`Saved “${res.report.name}”.`);
       }
     } catch (e) { err = e; }
@@ -3720,23 +3736,37 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
      what it says next to the fields. A template can go once per job (each
      In Progress job, or the jobs picked here) or as one report of every In
      Progress job; a report with saved jobs goes as saved. */
-  /* The groups the dialog offers. Asked afresh at every open, so one saved
-     since (from the email window, say) is there without a reload; then the
-     schedules list's own (which keeps any group a schedule here already sends
-     to, whatever report type it was saved for); then every group this
-     schedule sends to that neither names — so saving an edit never drops a
-     group the dialog did not show. */
+  /* The groups the dialog offers: { list, gone }. Asked afresh at every
+     open — every company group, so one saved since (from the email window,
+     say) is there without a reload, and the list is what exists now: the
+     general groups, this division's custom report type's, and any other this
+     schedule sends to. A group the schedule sends to that is not in it was
+     deleted: it is `gone`, never offered. Only when that list cannot be had
+     do the schedules list's groups stand in (as of their load), with every
+     group this schedule sends to that they do not name kept as "Group #id",
+     so saving never drops a group the dialog could not check — the server
+     leaves off any of those deleted since. */
   async function loadGroups(keepIds) {
-    const list = [];
-    const add = g => { if (g && g.id != null && !list.some(x => sameId(x.id, g.id))) list.push(g); };
+    const keep = Array.isArray(keepIds) ? keepIds : [];
+    const kept = id => keep.some(k => sameId(k, id));
+    const type = `${cfg.division}_custom_report`;
     const shape = g => ({ id: g.id, name: txt(g.name) || 'Group', count: Array.isArray(g.emails) ? g.emails.length : Number(g.count) || 0 });
+    let all = null;
     try {
       const data = await api.groups();
-      if (data && Array.isArray(data.groups)) data.groups.forEach(g => add(shape(g)));
-    } catch (_) { /* what the schedules list gave, below */ }
+      if (data && Array.isArray(data.groups)) all = data.groups.filter(g => g && g.id != null);
+    } catch (_) { /* the schedules list's, below */ }
+    if (all) {
+      return {
+        list: all.filter(g => !g.report_type || g.report_type === type || kept(g.id)).map(shape),
+        gone: keep.filter(id => !all.some(g => sameId(g.id, id))),
+      };
+    }
+    const list = [];
+    const add = g => { if (g && g.id != null && !list.some(x => sameId(x.id, g.id))) list.push(g); };
     (Array.isArray(S.schedGroups) ? S.schedGroups : []).forEach(g => add(shape(g)));
-    (Array.isArray(keepIds) ? keepIds : []).forEach(id => add({ id, name: `Group #${id}`, count: null }));
-    return list;
+    keep.forEach(id => add({ id, name: `Group #${id}`, count: null }));
+    return { list, gone: [] };
   }
   function scheduleBody(v) {
     const body = {
@@ -3810,8 +3840,12 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       return;
     }
     const { v, isTemplate } = scheduleValues(r, row);
-    const groups = await loadGroups(v.group_ids);
-    if (modalOpen()) return;
+    // The dialog opens at once, its groups loading into it: no wait with
+    // nothing on screen, in which a second Edit… could open the first one.
+    let groups = null;
+    const groupsHtml = () => (groups.length ? `<div class="cr-m-list" role="group" aria-label="Saved recipient groups">${groups.map(g => `<label class="cr-check"><input type="checkbox" data-group="${esc(g.id)}"
+          ${v.group_ids.some(x => sameId(x, g.id)) ? ' checked' : ''}> ${esc(g.name)}${g.count == null ? '' : ` <span class="cr-m-hint">(${plural(g.count, 'address', 'addresses')})</span>`}</label>`).join('')}</div>`
+      : '<p class="cr-m-hint">No saved recipient groups for custom reports. An admin can make one from the email window.</p>');
     const tzKnown = SCHED_TZ.some(t => t[0] === v.timezone);
     const times = [];
     for (let m = 0; m < 24 * 60; m += 5) {
@@ -3864,9 +3898,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         <label class="cr-check"><input type="checkbox" id="cr-s-contacts"${v.use_job_contacts ? ' checked' : ''}>
           <span>Send to each job’s saved contacts<span class="cr-m-hint"> — a job with none is skipped</span></span></label>
         <p class="cr-m-hint" id="cr-s-contacts-why" hidden></p>
-        ${groups.length ? `<div class="cr-m-list" role="group" aria-label="Saved recipient groups">${groups.map(g => `<label class="cr-check"><input type="checkbox" data-group="${esc(g.id)}"
-          ${v.group_ids.some(x => sameId(x, g.id)) ? ' checked' : ''}> ${esc(g.name)}${g.count == null ? '' : ` <span class="cr-m-hint">(${plural(g.count, 'address', 'addresses')})</span>`}</label>`).join('')}</div>`
-          : '<p class="cr-m-hint">No saved recipient groups for custom reports. An admin can make one from the email window.</p>'}
+        <div id="cr-s-groups" aria-busy="true"><p class="cr-m-hint cr-s-groups-loading">Loading recipient groups…</p></div>
+        <p class="cr-m-hint" id="cr-s-gone" role="status" hidden></p>
         <div class="cr-m-row">
           <input class="cr-input" id="cr-s-email" type="email" inputmode="email" placeholder="Add an email address" aria-label="Add an email address" autocomplete="off">
           <button type="button" class="btn btn-ghost cr-sm" data-s="add-email">Add</button>
@@ -3886,6 +3919,21 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       </div>`, null, { wide: true });
     const $ = sel => m.body.querySelector(sel);
     const errs = $('.cr-m-errs');
+    loadGroups(v.group_ids).then(res => {
+      if (!m.el.isConnected) return;                 // closed meanwhile
+      groups = res.list;
+      // A deleted group is taken off the schedule, and the dialog says so.
+      if (res.gone.length) {
+        v.group_ids = v.group_ids.filter(id => !res.gone.some(g => sameId(g, id)));
+        const n = res.gone.length;
+        $('#cr-s-gone').textContent = `${n === 1 ? 'A recipient group' : `${n} recipient groups`} this schedule sent to ${n === 1 ? 'was' : 'were'} deleted, `
+          + `so ${n === 1 ? 'it is' : 'they are'} no longer on it. Save to keep the change.`;
+        $('#cr-s-gone').hidden = false;
+      }
+      const box = $('#cr-s-groups');
+      box.innerHTML = groupsHtml();
+      box.removeAttribute('aria-busy');
+    });
     /* Each job's saved contacts may only be sent a report about their own
        customer's jobs (the server refuses the rest as job_contacts): never
        one report of every In Progress job, and a saved report's jobs only
@@ -3977,7 +4025,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
           const p = projectById(b.getAttribute('data-job'));
           return { id: String(b.getAttribute('data-job')), name: p ? jobName(p) : '' };
         }),
-        group_ids: [...m.body.querySelectorAll('[data-group]')].filter(b => b.checked).map(b => {
+        // Still loading: the groups the schedule sends to, as they were.
+        group_ids: !groups ? v.group_ids.slice() : [...m.body.querySelectorAll('[data-group]')].filter(b => b.checked).map(b => {
           const g = groups.find(x => sameId(x.id, b.getAttribute('data-group')));
           return g ? g.id : b.getAttribute('data-group');
         }),
@@ -4009,7 +4058,12 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         busy = false;
         ok.disabled = false;
         ok.textContent = row ? 'Save schedule' : 'Create schedule';
-        if (e.status !== 401) showErr(scheduleError(e));
+        const d = (e && e.data) || {};
+        if (d.error === 'groups' && Array.isArray(d.missing) && d.missing.length) {
+          // Deleted while the dialog was open: name them, so they can be unticked.
+          const names = d.missing.map(id => { const g = (groups || []).find(x => sameId(x.id, id)); return g ? `“${g.name}”` : `Group #${id}`; });
+          showErr(`${names.join(', ')} ${names.length === 1 ? 'was' : 'were'} deleted — untick ${names.length === 1 ? 'it' : 'them'} and save again.`);
+        } else if (e.status !== 401) showErr(scheduleError(e));
       }
     };
     m.body.addEventListener('click', e => {

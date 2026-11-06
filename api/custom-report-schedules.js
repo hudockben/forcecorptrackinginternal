@@ -79,8 +79,9 @@ const SEND_NOW_MS      = 285_000;
 
 const FIXED_DATES_MSG  = 'Scheduled reports need a relative date range like Last week';
 
-const refuse = (status, error, message) => ({ status, error, message });
-const send = (res, r) => res.status(r.status || 400).json({ ok: false, error: r.error, message: r.message });
+const refuse = (status, error, message, extra) => ({ status, error, message, ...(extra || {}) });
+const send = (res, r) => res.status(r.status || 400).json({ ok: false, error: r.error, message: r.message,
+  ...(Array.isArray(r.missing) ? { missing: r.missing } : {}) });
 
 // ── The body ────────────────────────────────────────────────────────────────
 
@@ -230,14 +231,20 @@ function jobsFor(report, v) {
   return { mode, pickedJobs: mode === 'each' ? v.pickedJobs : null };
 }
 
-async function groupsExist(sql, company, ids) {
-  if (!ids.length) return true;
+// The ids of these groups that the company no longer has.
+async function missingGroups(sql, company, ids) {
+  if (!ids.length) return [];
   const rows = await sql`SELECT id FROM report_recipient_groups WHERE company_code = ${company} AND id = ANY(${ids})`;
-  return rows.length === ids.length;
+  const have = new Set(rows.map(r => Number(r.id)));
+  return ids.filter(id => !have.has(Number(id)));
 }
 
-/** The body, the report and the groups, checked: the row's fields, or a refusal. */
-async function validate(sql, { company, division, me, body }) {
+/** The body, the report and the groups, checked: the row's fields, or a refusal.
+ *  `had` is the group ids the schedule being saved sends to now: one of those
+ *  deleted since (the page that sends it back loaded before the delete) is
+ *  left off, not refused — any other group that does not exist is refused,
+ *  and named. */
+async function validate(sql, { company, division, me, body, had }) {
   const read = readBody(body);
   if (!read.value) return read;
   const v = read.value;
@@ -249,8 +256,19 @@ async function validate(sql, { company, division, me, body }) {
     const mixed = await checkJobContacts(sql, company, division, checked.report, jobs.mode);
     if (mixed) return mixed;
   }
-  if (!(await groupsExist(sql, company, v.group_ids))) {
-    return refuse(400, 'groups', 'One of those recipient groups no longer exists.');
+  const missing = await missingGroups(sql, company, v.group_ids);
+  if (missing.length) {
+    const before = new Set((Array.isArray(had) ? had : []).map(Number));
+    const unknown = missing.filter(id => !before.has(Number(id)));
+    if (unknown.length) {
+      return refuse(400, 'groups', unknown.length === 1 ? 'One of those recipient groups no longer exists.'
+        : `${unknown.length} of those recipient groups no longer exist.`, { missing: unknown });
+    }
+    v.group_ids = v.group_ids.filter(id => !missing.includes(id));
+    if (!v.group_ids.length && !v.emails.length && !v.use_job_contacts) {
+      return refuse(400, 'recipients', 'The recipient group it sent to was deleted — add someone to send it to: '
+        + 'the jobs’ saved contacts, a recipient group or an email address.', { missing });
+    }
   }
   const report = checked.report;
   return {
@@ -531,7 +549,7 @@ module.exports = async (req, res) => {
       if (toggleOnly) {
         v = { ...cur, enabled: wantOn };
       } else {
-        const checked = await validate(sql, { company, division, me, body });
+        const checked = await validate(sql, { company, division, me, body, had: cur.group_ids });
         if (!checked.value) return send(res, checked);
         v = checked.value;
       }

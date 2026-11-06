@@ -1669,7 +1669,7 @@ async function cleanUp() {
     await page.waitForFunction(n => (document.querySelector('#cr-content .cr-rail') || {}).textContent.includes(n), SCHED_REPORT, { timeout: 8000 }).catch(() => {});
     const railText = await page.textContent('#cr-content .cr-rail');
     ok('the rail\'s Schedules lists it with its cadence and next send', /Weekly Mon at 7:00 AM Eastern/.test(railText) && /Next /.test(railText), railText.slice(-300));
-    const sendNow = async () => {
+    const schedAct = async act => {
       // The rail redraws when the schedules list comes back; open the menu
       // on the settled rail.
       for (let i = 0; i < 5; i++) {
@@ -1678,11 +1678,48 @@ async function cleanUp() {
         await page.evaluate(id => document.querySelector(`#cr-content [data-act="sched-menu"][data-id="${id}"]`).scrollIntoView({ block: 'center', behavior: 'instant' }), sched.id);
         await sleep(400);
         await page.click(`#cr-content [data-act="sched-menu"][data-id="${sched.id}"]`);
-        if (await page.waitForSelector('.cr-menu [data-act="sched-send"]', { timeout: 2000 }).then(() => true, () => false)) break;
+        if (await page.waitForSelector(`.cr-menu [data-act="${act}"]`, { timeout: 2000 }).then(() => true, () => false)) break;
       }
-      page.once('dialog', d => d.accept().catch(() => {}));
-      await page.click('.cr-menu [data-act="sched-send"]');
+      await page.click(`.cr-menu [data-act="${act}"]`);
     };
+    const sendNow = async () => {
+      page.once('dialog', d => d.accept().catch(() => {}));
+      await schedAct('sched-send');
+    };
+    // A recipient group the schedule sends to, deleted while the page is
+    // open (its schedules list, groups and all, loaded before the delete):
+    // Edit… does not offer it, says it was taken off, and Save goes through.
+    {
+      const gid = Number((await db.query(`INSERT INTO report_recipient_groups (company_code, name, emails, report_type)
+        VALUES ($1, 'Owner Reps', '["reps@maple.example"]', 'paving_custom_report') RETURNING id`, [CO])).rows[0].id);
+      await db.query('UPDATE report_schedules SET group_ids = $1 WHERE id = $2', [JSON.stringify([gid]), sched.id]);
+      // Pause and resume: each asks for the schedules list again.
+      await schedAct('sched-toggle');
+      await page.waitForFunction(() => /Paused/i.test((document.querySelector('#cr-content .cr-rail') || {}).textContent || ''), null, { timeout: 8000 }).catch(() => {});
+      await schedAct('sched-toggle');
+      await waitFor(async () => (await db.query('SELECT enabled FROM report_schedules WHERE id = $1', [sched.id])).rows[0].enabled === true, 8000);
+      await sleep(600);
+      // The page knows the schedule sends to it, and has it among its groups.
+      const knew = await page.evaluate(([id, g]) => {
+        const st = window.FCTCustomReports._internals.state(), r = (st.scheds || []).find(x => String(x.id) === String(id));
+        return !!r && (r.group_ids || []).map(Number).includes(g) && (st.schedGroups || []).some(x => Number(x.id) === g);
+      }, [sched.id, gid]);
+      await db.query('DELETE FROM report_recipient_groups WHERE id = $1', [gid]);
+      await schedAct('sched-edit');
+      await page.waitForSelector('.cr-modal #cr-s-freq', { timeout: 10000 });
+      await page.waitForFunction(() => !document.querySelector('.cr-modal #cr-s-groups[aria-busy]'), null, { timeout: 8000 }).catch(() => {});
+      const offered = await page.$(`.cr-modal [data-group="${gid}"]`);
+      const goneNote = await page.$eval('.cr-modal #cr-s-gone', el => (el.hidden ? '' : el.textContent)).catch(() => '');
+      ok('a group the schedule sends to, deleted while the page is open: Edit… does not offer it, and says it was taken off',
+        knew && !offered && /deleted/.test(goneNote), JSON.stringify({ knew, offered: !!offered, goneNote }));
+      await page.selectOption('#cr-s-time', '08:00');
+      await page.click('.cr-modal [data-s="save"]');
+      await page.waitForSelector('.cr-modal', { state: 'detached', timeout: 10000 }).catch(() => {});
+      const after = (await db.query('SELECT group_ids, send_time FROM report_schedules WHERE id = $1', [sched.id])).rows[0];
+      const left = await page.$('.cr-modal') ? await page.textContent('.cr-modal .cr-m-errs').catch(() => '') : '';
+      ok('…Save goes through: the dialog closes, the schedule is retimed and no longer names the deleted group',
+        !left && after.send_time === '08:00' && !(after.group_ids || []).map(Number).includes(gid), JSON.stringify({ left, after }));
+    }
     const mailsBefore = RESENT.length;
     if (!ROBOT_CHROME) console.log('  (no Chrome for the robot on this box — Send now is not exercised)');
     else {

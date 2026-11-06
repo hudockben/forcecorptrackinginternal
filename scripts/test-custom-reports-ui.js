@@ -179,7 +179,11 @@ function makeServer(opts) {
       return res(200, { employees: srv.people });
     }
     if (u.pathname === '/api/email/recipient-groups') {
-      return res(200, { ok: true, groups: srv.groups, isAdmin: true });
+      if (srv.groupsGate) await srv.groupsGate();
+      if (srv.groupsFail) return res(500, { error: 'Database error' });
+      // As the real endpoint: a report type keeps the general groups and its own.
+      const rt = q.report_type;
+      return res(200, { ok: true, groups: srv.groups.filter(g => !rt || !g.report_type || g.report_type === rt), isAdmin: true });
     }
     if (q.division !== srv.division) return res(400, { error: 'This is not available for this division' });
 
@@ -221,8 +225,14 @@ function makeServer(opts) {
     if (u.pathname === '/api/custom-report-schedules') {
       if (method === 'GET' && q.runs) return res(200, { runs: srv.schedRuns.filter(r => String(r.schedule_id) === q.runs) });
       if (method === 'GET') {
-        return res(200, { schedules: srv.canShare ? srv.schedules : [], canSchedule: srv.canShare,
-          groups: srv.groups.map(g => ({ id: g.id, name: g.name, count: (g.emails || []).length })) });
+        // As the real endpoint: the general groups, this division's custom
+        // report type's, and any a schedule here sends to.
+        const used = new Set(srv.schedules.flatMap(x => (x.group_ids || []).map(Number)));
+        // As the real endpoint: whether the report is customer-safe is the report's, now.
+        const live = x => { const r = srv.find(x.custom_report_id); if (r && !r.deleted_at) x.report_customer_safe = r.customer_safe !== false; return x; };
+        return res(200, { schedules: srv.canShare ? srv.schedules.map(live) : [], canSchedule: srv.canShare,
+          groups: srv.groups.filter(g => !g.report_type || g.report_type === `${srv.division}_custom_report` || used.has(Number(g.id)))
+            .map(g => ({ id: g.id, name: g.name, count: (g.emails || []).length })) });
       }
       if (!srv.canShare) return res(403, { error: 'Only an admin or level 3 user can schedule reports.' });
       if (method === 'POST' && q.action === 'run') {
@@ -2621,7 +2631,8 @@ function seed(srv) {
     // drops a group the dialog was not offered. Job contacts: the person's
     // tick comes back when the reason it was taken away goes. A schedule
     // whose report was deleted says so.
-    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com', 'b@acme.com'] }] }));
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com', 'b@acme.com'] },
+      { id: 99, name: 'Turf bid owners', emails: ['t@turf.example'], report_type: 'turf_bid_items' }] }));
     srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
     srv.reports.find(r => r.id === 2).definition.dates = { preset: 'last_week' };
     const schedRow = (over) => Object.assign({ custom_report_id: 1, report_name: 'Acme weekly update', jobs_mode: 'saved', picked_jobs: null,
@@ -2629,7 +2640,7 @@ function seed(srv) {
       use_job_contacts: false, subject: 'Old subject', note: null, attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:00:00Z',
       last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat', created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z',
       report_visible: true, report_deleted: false, report_customer_safe: true }, over);
-    // Sends to group 99 too — another report type's group, attached through the API: neither list offers it.
+    // Sends to group 99 too — another report type's group, attached through the API: offered only because it sends to it.
     srv.schedules.push(schedRow({ id: 950, group_ids: [41, 99] }));
     // Its report deleted since (in Recently Deleted).
     srv.schedules.push(schedRow({ id: 951, custom_report_id: 777, report_name: 'Gone weekly', report_visible: false, report_deleted: true }));
@@ -2707,6 +2718,147 @@ function seed(srv) {
     assert('deleting a scheduled report says its schedule will stop sending', /schedule/i.test(h.confirms[h.confirms.length - 1] || ''),
       h.confirms[h.confirms.length - 1]);
     assert('…and the schedules are asked for again after the delete', h.srv.callsTo('/api/custom-report-schedules', 'GET').length > schedGets);
+    h.close();
+  }
+  {
+    // A recipient group deleted since: one the schedule sends to (99, gone
+    // before the page loaded) and one the schedules list still names (42,
+    // deleted from the email window since). Edit… offers neither, ticks
+    // neither, says one was taken off, and Save sends the groups that exist.
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }, { id: 42, name: 'Owner Reps', emails: ['r@acme.com'] }] }));
+    srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+    srv.schedules.push({ id: 960, custom_report_id: 1, report_name: 'Acme weekly update', jobs_mode: 'saved', picked_jobs: null,
+      frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00', timezone: 'America/New_York', group_ids: [41, 99], emails: [],
+      use_job_contacts: false, subject: 'Weekly', note: null, attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:00:00Z',
+      last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat', created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z',
+      report_visible: true, report_deleted: false, report_customer_safe: true });
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    srv.groups = srv.groups.filter(g => g.id !== 42);
+    h.click(h.$('[data-act="sched-menu"][data-id="960"]'));
+    h.click(h.document.querySelector('.cr-menu [data-act="sched-edit"]'));
+    await tick(6);
+    const m = h.modal();
+    const boxes = m ? [...m.querySelectorAll('[data-group]')].map(b => b.getAttribute('data-group') + ':' + b.checked) : [];
+    assert('Edit… on a schedule naming deleted groups: only the group that exists is offered, ticked — no "Group #99", no "Owner Reps"',
+      m && boxes.join() === '41:true' && !/Owner Reps|Group #99/.test(m.textContent), boxes.join());
+    assert('…and it says a deleted group was taken off the schedule', m && /deleted/i.test(m.querySelector('#cr-s-gone') ? m.querySelector('#cr-s-gone').textContent : ''),
+      m && m.textContent.replace(/\s+/g, ' ').slice(0, 400));
+    m.querySelector('#cr-s-time').value = '08:00';
+    m.querySelector('[data-s="save"]').click();
+    await tick(8);
+    const put = h.srv.callsTo('/api/custom-report-schedules', 'PUT').pop();
+    assert('…Save PUTs the groups that exist ([41]) and the dialog closes', put && put.q.id === '960' && JSON.stringify(put.body.group_ids) === '[41]' && !h.modal(),
+      put && JSON.stringify(put.body.group_ids));
+    // The groups list cannot be had: the schedules list's groups stand in,
+    // and a group the schedule names that neither shows is kept, not dropped.
+    srv.groupsFail = true;
+    srv.schedules.find(x => x.id === 960).group_ids = [41, 77];
+    h.click(h.$('[data-act="sched-menu"][data-id="960"]'));
+    h.click(h.document.querySelector('.cr-menu [data-act="sched-edit"]'));
+    await tick(6);
+    const m2 = h.modal();
+    const b2 = m2 ? [...m2.querySelectorAll('[data-group]')].map(b => b.getAttribute('data-group') + ':' + b.checked) : [];
+    assert('…with the groups list unavailable, Edit… keeps every group the schedule sends to (the server drops any deleted)',
+      m2 && b2.includes('41:true') && b2.includes('77:true'), b2.join());
+    if (m2) m2.querySelector('[data-s="cancel"]').click();
+    await tick(2);
+    h.close();
+  }
+  {
+    // A slow groups list: the dialog opens at the click, naming its report,
+    // with the groups loading into it — not after a wait with nothing on
+    // screen, during which a second Edit… would open the first schedule.
+    // Saved before they arrive, it keeps the groups the schedule sends to.
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }, { id: 44, name: 'Bravo owners', emails: ['b@b.example'] }] }));
+    srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+    srv.reports.find(r => r.id === 2).definition.dates = { preset: 'last_week' };
+    const sched = (id, rid, name, groupIds, mode) => ({ id, custom_report_id: rid, report_name: name, jobs_mode: mode, picked_jobs: null,
+      frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00', timezone: 'America/New_York', group_ids: groupIds, emails: [],
+      use_job_contacts: false, subject: null, note: null, attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:00:00Z',
+      last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat', created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z',
+      report_visible: true, report_deleted: false, report_customer_safe: true });
+    srv.schedules.push(sched(970, 1, 'Acme weekly update', [41], 'saved'), sched(971, 2, 'Bravo template', [44], 'each'));
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    const releases = [];
+    srv.groupsGate = () => new Promise(res => releases.push(res));
+    const edit = id => { h.click(h.$(`[data-act="sched-menu"][data-id="${id}"]`)); h.click(h.document.querySelector('.cr-menu [data-act="sched-edit"]')); };
+    const nameOf = id => srv.reports.find(r => r.id === id).name;
+    edit(970);
+    await tick(3);
+    const modals = () => h.document.querySelectorAll('.cr-modal');
+    let m = h.modal();
+    assert('Edit… with the groups list slow to answer: the dialog is up at once, naming its report, saying the groups are loading',
+      modals().length === 1 && m.textContent.includes(nameOf(1)) && /Loading recipient groups/.test(m.textContent) && !m.querySelector('[data-group]'),
+      m ? m.textContent.replace(/\s+/g, ' ').slice(0, 300) : 'no dialog');
+    edit(971);
+    await tick(3);
+    releases.splice(0).forEach(f => f());
+    await tick(6);
+    m = h.modal();
+    const ticked = m ? [...m.querySelectorAll('[data-group]')].map(b => b.getAttribute('data-group') + ':' + b.checked).join() : '';
+    assert('…one dialog, still the one the click opened; the groups fill in when they come, its own ticked',
+      modals().length === 1 && m.textContent.includes(nameOf(1)) && !m.textContent.includes(nameOf(2)) && !/Loading recipient groups/.test(m.textContent)
+        && ticked === '41:true,44:false', ticked);
+    // A group ticked here, deleted before Save: the refusal names it.
+    m.querySelector('[data-group="44"]').checked = true;
+    srv.next.push({ match: e => e.path === '/api/custom-report-schedules' && e.method === 'PUT', status: 400,
+      body: { error: 'groups', message: 'One of those recipient groups no longer exists.', missing: [44] } });
+    m.querySelector('[data-s="save"]').click();
+    await tick(8);
+    assert('…a group deleted after it was ticked: Save says which one, by name, and the dialog stays open',
+      h.modal() && /“Bravo owners” was deleted — untick it/.test(m.querySelector('.cr-m-errs').textContent), m.querySelector('.cr-m-errs').textContent);
+    m.querySelector('[data-s="cancel"]').click();
+    await tick(2);
+    // Saved while still loading: the schedule's own groups go back unchanged.
+    edit(970);
+    await tick(3);
+    m = h.modal();
+    m.querySelector('#cr-s-subject').value = 'Saved early';
+    m.querySelector('[data-s="save"]').click();
+    await tick(8);
+    const put = h.srv.callsTo('/api/custom-report-schedules', 'PUT').pop();
+    assert('…and saved before the groups arrive, it keeps the groups the schedule sends to',
+      put && put.q.id === '970' && put.body.subject === 'Saved early' && JSON.stringify(put.body.group_ids) === '[41]', put && JSON.stringify(put.body));
+    releases.splice(0).forEach(f => f());
+    srv.groupsGate = null;
+    await tick(4);
+    assert('…and the late answer does not reopen anything', modals().length === 0);
+    h.close();
+  }
+  {
+    // A scheduled report saved with internal data switched on, then off: the
+    // rail's line about whether its schedule will send follows each save.
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }] }));
+    srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+    srv.schedules.push({ id: 980, custom_report_id: 1, report_name: 'Acme weekly update', jobs_mode: 'saved', picked_jobs: null,
+      frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00', timezone: 'America/New_York', group_ids: [41], emails: [],
+      use_job_contacts: false, subject: null, note: null, attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:00:00Z',
+      last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat', created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z',
+      report_visible: true, report_deleted: false, report_customer_safe: true });
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    const line = () => { const b = h.$('[data-act="sched-menu"][data-id="980"]'); return b ? b.closest('.cr-item').textContent.replace(/\s+/g, ' ') : ''; };
+    const gets = () => h.srv.callsTo('/api/custom-report-schedules', 'GET').length;
+    assert('a customer-safe scheduled report: its schedule has no "won’t send" line', !/won’t send/.test(line()), line());
+    h.click(h.$('[data-act="open"][data-id="1"]'));
+    h.click(h.$('#cr-step-2'));
+    h.$('[data-bind="internal"]').click();
+    h.confirms.splice(0);
+    const before = gets();
+    h.click(h.act('save'));
+    await tick(10);
+    assert('saved with internal data on: the schedules are asked for again and the rail says it won’t send',
+      srv.find(1).customer_safe === false && gets() > before && /won’t send until it’s customer-safe again/.test(line()), `${gets()} ${line()}`);
+    h.click(h.act('internal-off'));
+    const before2 = gets();
+    h.click(h.act('save'));
+    await tick(10);
+    assert('…saved customer-safe again: the line goes', srv.find(1).customer_safe === true && gets() > before2 && !/won’t send/.test(line()), line());
     h.close();
   }
   {

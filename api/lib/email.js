@@ -89,11 +89,111 @@ function normalizeAttachments(raw) {
 // (Customer History opens an archive in a frame sandboxed without scripts).
 // We strip:
 //   - <script>, <iframe>, <object>, <embed>, <link>, <meta>, <base> tags
-//   - on*= event handlers, after whitespace or a "/" (<img/onerror=...>)
+//   - on*= event handlers: every on… attribute of a start tag, read the way
+//     the browser reads it (stripHandlers below)
 //   - href="javascript:..." / src="javascript:..."
 // We keep inline styles and tables (the existing print HTML relies on them).
 // The passes repeat until nothing changes, so markup that a removal splices
 // back together (<scr<script></script>ipt>) is removed too.
+
+// Where a start tag that opens at s[i] ("<" and a letter) ends, read as the
+// HTML tokenizer reads it: a quote opens a value only right after "=", so a
+// ">" inside a quoted value does not end the tag and a stray quote elsewhere
+// does not start one. Returns the attributes it saw ({ from, to, name },
+// `from` taking in the separators before the name) and the end (one past
+// the ">", or the end of the input for a tag never closed).
+const isHtmlSpace = c => c === ' ' || c === '\t' || c === '\n' || c === '\f' || c === '\r';
+function readStartTag(s, i) {
+  const attrs = [];
+  let st = 'name', sep = -1, cur = null;
+  const gap = j => { if (sep < 0) sep = j; };            // a run of separators starts
+  const open = j => { cur = { from: sep >= 0 ? sep : j, at: j }; sep = -1; };
+  const close = j => { if (j !== undefined) cur.to = j; attrs.push(cur); cur = null; };
+  for (let j = i + 1; j < s.length; j++) {
+    const c = s[j];
+    switch (st) {
+      case 'name':                                   // the tag name
+        if (isHtmlSpace(c)) { st = 'before'; gap(j); }
+        else if (c === '/') { st = 'slash'; gap(j); }
+        else if (c === '>') return { attrs, end: j + 1 };
+        break;
+      case 'attr':                                   // an attribute name
+        if (c === '=' || c === '>' || c === '/' || isHtmlSpace(c)) cur.name = s.slice(cur.at, j);
+        if (c === '=') st = 'value?';
+        else if (c === '>') { close(j); return { attrs, end: j + 1 }; }
+        else if (c === '/') { close(j); st = 'slash'; gap(j); }
+        else if (isHtmlSpace(c)) { cur.to = j; st = 'after'; gap(j); }
+        break;
+      case 'after':                                  // after a name, before any "="
+        if (c === '=') { sep = -1; st = 'value?'; }
+        else if (c === '>') { close(); return { attrs, end: j + 1 }; }
+        else if (c === '/') { close(); st = 'slash'; }
+        else if (!isHtmlSpace(c)) { close(); open(j); st = 'attr'; }
+        break;
+      case 'value?':                                 // after "=", before the value
+        if (c === '"') st = 'dq';
+        else if (c === "'") st = 'sq';
+        else if (c === '>') { close(j); return { attrs, end: j + 1 }; }
+        else if (!isHtmlSpace(c)) st = 'uq';
+        break;
+      case 'dq': if (c === '"') { close(j + 1); st = 'quoted'; } break;
+      case 'sq': if (c === "'") { close(j + 1); st = 'quoted'; } break;
+      case 'uq':                                     // an unquoted value
+        if (isHtmlSpace(c)) { close(j); st = 'before'; gap(j); }
+        else if (c === '>') { close(j); return { attrs, end: j + 1 }; }
+        break;
+      default:                                       // before a name, after a quoted value, after "/"
+        if (c === '>') return { attrs, end: j + 1 };
+        if (isHtmlSpace(c)) { st = 'before'; gap(j); }
+        else if (c === '/') { st = 'slash'; gap(j); }
+        else { open(j); st = 'attr'; }               // an "=" here starts a name
+    }
+  }
+  // Never closed: what is open runs to the end (markup after the report —
+  // the email shell's — could still close it).
+  if (cur) {
+    if (st === 'attr') cur.name = s.slice(cur.at);
+    if (st === 'after') close(); else close(s.length);
+  }
+  return { attrs, end: s.length };
+}
+// Text that would be a handler if a parser read it as part of a tag — a
+// separator, on…, "=". Outside the attributes stripHandlers removes, only
+// its "=" is written &#61;: report text ("Curb w/one = 6in") reads the same,
+// in a cell or an attribute value, and should a browser still read it as an
+// attribute, it is one named "onerror&#61;…" that nothing runs.
+const HANDLER_LIKE = /(?<=[\s\/])(on[a-z]+\s*)=/gi;
+const defuse = text => text.replace(HANDLER_LIKE, '$1&#61;');
+/* Every on… attribute goes: each start tag is read as the browser reads it
+   and its on… attributes are cut out (with the separators before them; a
+   space stands in when the next attribute would otherwise run into the one
+   before). Text — between tags, and inside the attribute values left — is
+   never cut, only defused, so the report's own words survive and a tag the
+   reader and the browser see differently (a comment, an svg <title>) still
+   carries no handler. */
+function stripHandlers(html) {
+  const START = /<[A-Za-z]/g;
+  let out = '', i = 0;
+  for (;;) {
+    START.lastIndex = i;
+    const m = START.exec(html);
+    if (!m) { out += defuse(html.slice(i)); break; }
+    out += defuse(html.slice(i, m.index));
+    const { attrs, end } = readStartTag(html, m.index);
+    let tag = '', k = m.index;
+    attrs.forEach(a => {
+      if (!/^on[a-z]+$/i.test(a.name)) return;
+      tag += defuse(html.slice(k, a.from));
+      const next = html[a.to];
+      if (a.to < end && next !== undefined && !isHtmlSpace(next) && next !== '/' && next !== '>') tag += ' ';
+      k = a.to;
+    });
+    out += tag + defuse(html.slice(k, end));
+    i = end;
+  }
+  return out;
+}
+
 function sanitizeOnce(html) {
   let out = html;
 
@@ -112,10 +212,10 @@ function sanitizeOnce(html) {
   out = out.replace(/<(iframe|object|embed|link|meta|base|form)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, '');
   out = out.replace(/<\/?(iframe|object|embed|link|meta|base|form)\b[^>]*\/?>/gi, '');
 
-  // Strip on*= event-handler attributes — match attribute name then value
-  // whether it's "..."  / '...'  / unquoted. An attribute may follow
-  // whitespace or a "/" (the parser reads <img/onerror=x> as an attribute).
-  out = out.replace(/[\s\/]+on[a-z]+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '');
+  // Strip on*= event-handler attributes, wherever the browser would read
+  // one: after whitespace, after a "/" (<img/onerror=x>), straight after a
+  // quoted value, past a quoted ">". Text is defused, never cut.
+  out = stripHandlers(out);
 
   // Neutralize javascript: in href / src.
   out = out.replace(/(href|src)\s*=\s*(["'])\s*javascript:[^"']*\2/gi, '$1=$2#$2');

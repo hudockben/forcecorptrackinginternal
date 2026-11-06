@@ -949,6 +949,38 @@ FAKE.browser = { newPage: async () => fakePage(), close: async () => {}, process
   }
 
   // ─────────────────────────────────────────────────────────────────────
+  console.log('\nA recipient group deleted since the schedule was saved');
+  {
+    const asShown = sched => ({ custom_report_id: Number(sched.custom_report_id), jobs_mode: sched.jobs_mode, picked_jobs: sched.picked_jobs,
+      frequency: sched.frequency, days_of_week: sched.days_of_week, day_of_month: sched.day_of_month, send_time: sched.send_time,
+      timezone: sched.timezone, group_ids: sched.group_ids, emails: sched.emails, use_job_contacts: sched.use_job_contacts,
+      subject: sched.subject, note: sched.note, attach_pdf: sched.attach_pdf, enabled: sched.enabled });
+    const gGone = await grp('Owner Reps', ['rep@example.com']);
+    let sched = await mkSched({ group_ids: [G1, gGone] });
+    await client.query('DELETE FROM report_recipient_groups WHERE id = $1', [gGone]);
+    // An edit sent back with the deleted group still on it (a page loaded
+    // before the delete): saved, without that group, rather than refused.
+    let r = await crs('PUT', { id: sched.id }, { ...asShown(sched), send_time: '08:00' }, ADMIN);
+    let s = await row(sched.id);
+    assert('saving a schedule that still names a group deleted since: 200, saved without it',
+      r.statusCode === 200 && s.send_time === '08:00' && JSON.stringify(s.group_ids.map(Number)) === JSON.stringify([G1]), show(r));
+    // A deleted group it never sent to is still refused, and named.
+    const gNew = await grp('Never attached', ['n@example.com']);
+    await client.query('DELETE FROM report_recipient_groups WHERE id = $1', [gNew]);
+    r = await crs('PUT', { id: sched.id }, { ...asShown(await row(sched.id)), group_ids: [G1, gNew] }, ADMIN);
+    assert('…a deleted group it never sent to is refused, and the refusal names it', r.statusCode === 400 && r.body.error === 'groups'
+      && Array.isArray(r.body.missing) && r.body.missing.map(Number).join() === String(gNew), show(r));
+    // Its only recipient was the deleted group: nobody left to send to.
+    const gOnly = await grp('Only group', ['only@example.com']);
+    const only = await mkSched({ group_ids: [gOnly] });
+    await client.query('DELETE FROM report_recipient_groups WHERE id = $1', [gOnly]);
+    r = await crs('PUT', { id: only.id }, asShown(only), ADMIN);
+    assert('…and one whose only recipient was that group says there is nobody left to send to', r.statusCode === 400 && r.body.error === 'recipients'
+      && /deleted/.test(r.body.message), show(r));
+    await client.query('DELETE FROM report_schedules WHERE id = ANY($1)', [[sched.id, only.id]]);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
   console.log('\nA template scheduled per job, then saved with its own jobs, is not sent per job');
   {
     for (const mode of ['each', 'all_in_progress']) {

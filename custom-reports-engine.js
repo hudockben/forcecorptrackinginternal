@@ -1452,10 +1452,12 @@
       // A crew that started after the target (or the job's end date): the
       // plan is all due by its start, so its span is that one day — U, its
       // span's end — while T stays the target it shows and is late against.
-      // Every consumer measures the span the same way (spanEnd), so Planned
-      // vs Actual, its Totals and the charts all count the line.
+      // A span with no working day in it (start and target one Saturday, a
+      // weekend, a holiday start) counts one day, the day it is. Every
+      // consumer measures the span the same way (spanEnd, spanDays), so
+      // Planned vs Actual, its Totals and the charts all count the line.
       const U = S && T && T < S ? S : T;
-      const W = S && U ? Math.max(T < S ? 1 : 0, countWorkdays(S, U)) : 0;
+      const W = spanDays(S, U);
       return { S, T, U, W: W > 0 ? W : null, PR: pr, source: 'rate', Q, typedT: !!typedT };
     }
     const dated = (S, T, source) => {
@@ -1478,6 +1480,11 @@
   // The last day of a plan's span: its target — or, for a "Planned per day"
   // line started after its target, its start (makePlan's U).
   const spanEnd = pl => pl.U || pl.T;
+  // The working days a rate plan's span (or several plans' spans together)
+  // covers, at least one: a span of only non-working days — a Saturday
+  // crew, a holiday start — counts as the one day it is, so a line's own
+  // figures, its Totals and the charts all have a span to divide by.
+  const spanDays = (a, b) => (a && b && b >= a ? Math.max(1, countWorkdays(a, b)) : 0);
   // Scheduled % on a day: none before the start, all of it from the target
   // on, a straight line over the working days between.
   function schedPct(pl, day) {
@@ -1650,12 +1657,21 @@
     recs.forEach(r => (r.m.rows || []).forEach(f => { if (seen.has(f)) shared = true; else seen.add(f); }));
     return shared ? [...seen] : null;
   }
-  function factQty(facts, pick) {
-    const m = new Map();
-    facts.forEach(f => { if (pick(f) && f.qty) m.set(f.unit, (m.get(f.unit) || 0) + f.qty); });
+  // Rows' quantity, added up by unit — the unit as typed on the bid line,
+  // or by keyOf (Planned vs Actual merges TN and TON) and listed under the
+  // first spelling seen.
+  function factQty(facts, pick, keyOf) {
+    const key = keyOf || (f => f.unit);
+    const m = new Map(), label = new Map();
+    facts.forEach(f => {
+      if (!pick(f) || !f.qty) return;
+      const k = key(f);
+      if (!label.has(k)) label.set(k, f.unit);
+      m.set(k, (m.get(k) || 0) + f.qty);
+    });
     if (!m.size) return 0;
     if (m.size === 1) return [...m][0][1];
-    return unitList(m);
+    return unitList(new Map([...m].map(([k, v]) => [label.get(k), v])));
   }
   function bidProgressAgg(recs) {
     const c = {};
@@ -2153,7 +2169,7 @@
     c.bid_qty = qtyBy(recs, 'bid_qty', nunit).v;
     c.installed_to_date = qtyBy(recs, 'installed_to_date', nunit).v;
     const shared = sharedRows(recs);
-    if (shared) c.installed_to_date = factQty(shared.filter(f => f.toEnd), () => true);
+    if (shared) c.installed_to_date = factQty(shared.filter(f => f.toEnd), () => true, f => normUnit(f.unit));
     const planned = recs.filter(r => r.m.pl.source && r.m.SP !== null && r.m.EP !== null);
     // What the plan comparisons measure: the planned lines — or, measured on
     // the job's dates, every line.
@@ -2164,7 +2180,7 @@
       planned.forEach(r => { w += r.m.w; ws += r.m.w * r.m.SP; we += r.m.w * r.m.EP; });
       sched = ws / w; earned = we / w;
       S = minIso(planned.map(r => r.m.pl.S)); T = maxIso(planned.map(r => r.m.pl.T));
-      W = countWorkdays(S, maxIso(planned.map(r => spanEnd(r.m.pl))));
+      W = spanDays(S, maxIso(planned.map(r => spanEnd(r.m.pl))));
       const src = new Set(planned.map(r => r.m.pl.source));
       source = src.size === 1 ? PLAN_BASIS[[...src][0]] : null;
     } else {
@@ -2216,7 +2232,7 @@
       const jobRates = [];
       rateJobs.forEach(list => {
         const pS = minIso(list.map(r => r.m.pl.S)), pT = maxIso(list.map(r => spanEnd(r.m.pl)));
-        const pW = pS && pT ? countWorkdays(pS, pT) : 0;
+        const pW = spanDays(pS, pT);
         if (pW > 0) jobRates.push({ rate: list.reduce((t, r) => t + planSpanQty(r.m.pl, r.m.Q), 0) / pW, days: days(list, 'daysP'), qty: qty(list, 'qtyP') });
       });
       const dPl = jobRates.reduce((t, j) => t + j.days, 0);
@@ -2473,7 +2489,7 @@
     if (out.bucket !== 'day') out.captions.push(out.bucket === 'week' ? 'Bars are weekly totals.' : 'Bars are monthly totals.');
     const withRate = lines.map(b => ({ b, pl: planOf(ctx, ix, b) })).filter(x => x.pl.source && x.pl.PR > 0 && x.pl.S && x.pl.T);
     const pS = minIso(withRate.map(x => x.pl.S)), pT = maxIso(withRate.map(x => spanEnd(x.pl)));
-    const pW = pS && pT ? countWorkdays(pS, pT) : 0;
+    const pW = spanDays(pS, pT);
     out.rate = pW > 0 ? withRate.reduce((t, x) => t + planSpanQty(x.pl, x.pl.Q), 0) / pW : null;
     out.drawPlan = opts.showPlan !== false && keys.has('planned_rate_line') && out.rate !== null;
     buckets.forEach(bk => {
