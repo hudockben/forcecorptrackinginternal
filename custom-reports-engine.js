@@ -1461,7 +1461,12 @@
       return { S, T, U, W: W > 0 ? W : null, PR: pr, source: 'rate', Q, typedT: !!typedT };
     }
     const dated = (S, T, source) => {
-      const W = countWorkdays(S, T);
+      // spanDays, not countWorkdays: a span whose only day is non-working
+      // (start = target on a Saturday, a weekend closure, a holiday start)
+      // still counts as the one day it is, so the line stays scheduled with
+      // its typed dates rather than dropping to "Not scheduled". spanDays
+      // still returns 0 for T < S, so an inverted span is dropped as before.
+      const W = spanDays(S, T);
       return W > 0 ? { S, T, W, PR: rated ? Q / W : null, source, Q, typedT: source === 'bid' } : { source: null, Q };
     };
     if (typedS && (typedT || jobEnd)) return dated(typedS, typedT || jobEnd, typedT ? 'bid' : 'bid+job end');
@@ -1780,10 +1785,27 @@
     const nu = r => normUnit(r.m.unit);
     const one = recs.length && new Set(recs.map(nu)).size === 1 ? recUnit(recs[0]) : null;
     c.unit = one;
-    c.qty_period = qtyBy(recs, 'qty_period', nu).v;
-    c.remaining_qty = qtyBy(recs, 'remaining_qty', nu).v;
+    // Rows two lines both take (a cost-code-only line beside a line under its
+    // code) are the same objects, so adding each line's qty / hours / best day
+    // / cost would count them twice. Collect the period rows per job (a row
+    // belongs to one job) and, when any is shared, aggregate the unique set —
+    // just as Bid Progress does for Installed to Date.
+    const factsByJob = new Map();
+    let refs = 0;
+    recs.forEach(r => {
+      const jk = jobKey(r.job);
+      if (!factsByJob.has(jk)) factsByJob.set(jk, new Set());
+      (r.m.facts || []).forEach(f => { factsByJob.get(jk).add(f); refs++; });
+    });
+    const uniq = [];
+    factsByJob.forEach(s => s.forEach(f => uniq.push(f)));
+    const dup = refs > uniq.length;
+    c.qty_period = dup ? factQty(uniq, () => true, f => normUnit(f.unit)) : qtyBy(recs, 'qty_period', nu).v;
+    // Which line owns the shared rows has no single answer, so neither has
+    // what is left on them: Bid Progress leaves Remaining blank here too.
+    c.remaining_qty = dup ? null : qtyBy(recs, 'remaining_qty', nu).v;
     c.days_period = unionSize(recs, 'days');
-    c.labor_hours = sumOf(recs, 'labor_hours');
+    c.labor_hours = dup ? uniq.reduce((t, f) => t + (f.hrs || 0), 0) : sumOf(recs, 'labor_hours');
     // The job finishes when its last line does.
     const ests = recs.map(r => r.c.est_days_left);
     c.est_days_left = ests.some(v => v === null) ? null : Math.max(0, ...ests);
@@ -1796,7 +1818,15 @@
       r.m.byDay.forEach((v, d) => byDay.set(jk + '|' + d, (byDay.get(jk + '|' + d) || 0) + v));
       r.m.empsByDay.forEach((e, d) => { const s = crewByDay.get(jk + '|' + d); if (s) e.forEach(x => s.add(x)); });
     });
-    const q = sumOf(recs, 'qty_period'), cost = recs.reduce((t, r) => t + r.m.costP, 0);
+    // Shared rows double the day totals above too: rebuild the best-day map
+    // from the unique rows (crew per day is a union of employee sets, so it is
+    // already counted once).
+    if (dup) {
+      byDay.clear();
+      factsByJob.forEach((set, jk) => set.forEach(f => { if (f.date && f.qty) byDay.set(jk + '|' + f.date, (byDay.get(jk + '|' + f.date) || 0) + f.qty); }));
+    }
+    const q = dup ? uniq.reduce((t, f) => t + (f.qty || 0), 0) : sumOf(recs, 'qty_period');
+    const cost = dup ? uniq.reduce((t, f) => t + (f.cost || 0), 0) : recs.reduce((t, r) => t + r.m.costP, 0);
     if (one !== null) {
       c.avg_per_day = c.days_period ? q / c.days_period : null;
       let best = null;
@@ -2083,8 +2113,16 @@
     const EP = s.complete ? 100 : Q > 0 ? s.pctEnd : null;
     const worked = daysE > 0 || I > 0;
     const lastWork = daysE ? [...s.daysEnd].sort().pop() : '';
+    // A plan whose whole span is non-working days (start = target on a
+    // Saturday / Sunday / holiday, a weekend closure) counts as the one day it
+    // is — W === 1 with no working day in [S, span end]. Its elapsed days must
+    // count that day once we are at or past the start, or a raw countWorkdays
+    // reads 0 and the line comes out a working day too good, unlike the same
+    // plan moved onto a working day.
+    const zeroSpan = !!(pl.source && pl.S && pl.W === 1 && countWorkdays(pl.S, spanEnd(pl)) === 0);
+    const elapsed = d => (!d || d < pl.S ? 0 : countWorkdays(pl.S, d) + (zeroSpan ? 1 : 0));
     let SP = null, E = null;
-    if (pl.source && pl.S && pl.T) { SP = schedPct(pl, A); E = A < pl.S ? 0 : countWorkdays(pl.S, A); }
+    if (pl.source && pl.S && pl.T) { SP = schedPct(pl, A); E = elapsed(A); }
     const PR = pl.source && rated ? pl.PR : null;
     const PQ = SP !== null && Q > 0 ? Q * SP / 100 : null;
     const spi = SP > 0 && EP !== null ? round2(EP / SP) : null;
@@ -2097,7 +2135,7 @@
     if (pl.source === 'rate' && !pl.typedT && PR > 0) {
       ahead = !worked && undatable ? null : !worked && pl.S && A >= pl.S ? -E : ((done ? Math.max(I, Q) : I) - PR * daysE) / PR;
     } else if (pl.source && done) {
-      ahead = lastWork && pl.S && pl.W ? pl.W - countWorkdays(pl.S, lastWork) : null;
+      ahead = lastWork && pl.S && pl.W ? pl.W - elapsed(lastWork) : null;
     } else if (SP !== null && EP !== null && pl.W) {
       ahead = EP / 100 * pl.W - E;
     }
@@ -2106,8 +2144,10 @@
     const pastTarget = !!(pl.source && pl.T && pl.T < today && !done);
     let needed = null;
     if (pl.source && pl.T && rated && !done && !pastTarget) {
-      const n = countWorkdays(today, pl.T);
-      needed = n > 0 ? s.remainingNow / n : null;
+      // !pastTarget means today <= pl.T; a target on a non-working day (or
+      // today itself a non-working day) still needs at least the one day.
+      const n = Math.max(1, countWorkdays(today, pl.T));
+      needed = s.remainingNow / n;
     }
     // The finish the production rates project: the period's average a
     // day, else the job to date's.
@@ -2115,7 +2155,11 @@
     let est = s.remainingNow <= 0 ? 0 : rate > 0 ? Math.ceil(s.remainingNow / rate - 1e-9) : null;
     if (est !== null && est > MAX_WORKDAYS) est = null;
     const PF = rated && est > 0 ? H.workdays(today, est) : null;
-    const fvt = PF && pl.T ? (PF <= pl.T ? countWorkdays(PF, pl.T) - 1 : -(countWorkdays(pl.T, PF) - 1)) : null;
+    // Forecast vs target, in working days. PF is always a working day; when
+    // the target is not (a Saturday / Sunday / holiday) a late finish must not
+    // borrow its non-working target day, so an overrun drops a day only when
+    // the target itself is a working day (= -countWorkdays(day after T, PF)).
+    const fvt = PF && pl.T ? (PF <= pl.T ? countWorkdays(PF, pl.T) - 1 : -(countWorkdays(pl.T, PF) - (isWorkday(pl.T) ? 1 : 0))) : null;
     let status;
     if (done) status = 'Complete';
     else if (!pl.source) status = 'Not scheduled';
@@ -2245,7 +2289,7 @@
       const qv = planned.filter(r => r.m.PQ !== null);
       c.qty_variance = !dup && qv.length ? qv.reduce((t, r) => t + Math.min(r.m.I, r.m.Q) - r.m.PQ, 0) : null;
       const open = rated.filter(r => !r.m.complete);
-      const n = T && T >= today ? countWorkdays(today, T) : 0;
+      const n = T && T >= today ? Math.max(1, countWorkdays(today, T)) : 0;
       c.required_rate = !dup && open.length && n > 0 ? open.reduce((t, r) => t + r.m.remainingNow, 0) / n : null;
       const byJob = new Map();
       recs.forEach(r => { const jk = jobKey(r.job); if (!byJob.has(jk)) byJob.set(jk, new Set()); r.m.facts.forEach(f => byJob.get(jk).add(f)); });
@@ -2257,7 +2301,7 @@
     const open = basis.filter(r => r.m.rated && !r.m.complete && r.m.remainingNow > 0);
     c.projected_finish = open.length && open.every(r => r.m.PF) ? maxIso(open.map(r => r.m.PF)) : null;
     const PF = c.projected_finish;
-    c.forecast_vs_target = PF && T ? (PF <= T ? countWorkdays(PF, T) - 1 : -(countWorkdays(T, PF) - 1)) : null;
+    c.forecast_vs_target = PF && T ? (PF <= T ? countWorkdays(PF, T) - 1 : -(countWorkdays(T, PF) - (isWorkday(T) ? 1 : 0))) : null;
     // Past target: measured against the Totals' own target (the latest
     // planned target, which every other figure here uses) — past it with a
     // planned line still open. An open line with no plan (an LS line kept

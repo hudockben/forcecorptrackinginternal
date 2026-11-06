@@ -1603,6 +1603,22 @@ async function cleanUp() {
         await sleep(300);
         const printed = await win.evaluate(() => window.__printed);
         ok('…and its Print button still prints the copy after the app tab has moved to another page', printed === 1, String(printed));
+        // Ctrl/Cmd+P must print the copy's own frame — which paginates
+        // properly — not the sized-iframe shell, which the browser would slice
+        // at the page edges. It must fire wherever focus sits (the shell, or
+        // the sandboxed frame), and never fall back to the shell's print.
+        const kp = await win.evaluate(() => {
+          var f = document.querySelector('iframe');
+          window.__printed = 0;
+          f.contentWindow.print = function () { window.__printed++; };
+          window.print = function () { window.__printed += 10; };
+          var ev = function () { return new KeyboardEvent('keydown', { key: 'p', ctrlKey: true, bubbles: true, cancelable: true }); };
+          var e1 = ev(); window.dispatchEvent(e1);
+          var e2 = ev(); f.contentDocument.dispatchEvent(e2);
+          return { printed: window.__printed, prevented: e1.defaultPrevented && e2.defaultPrevented };
+        });
+        ok('Ctrl+P prints the copy\'s own frame (not the sliced shell), whether focus is in the shell or the frame',
+          kp.printed === 2 && kp.prevented === true, JSON.stringify(kp));
         await win.close().catch(() => {});
       } finally {
         await two.ctx.close().catch(() => {});

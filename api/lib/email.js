@@ -157,29 +157,65 @@ function readStartTag(s, i) {
   }
   return { attrs, end: s.length };
 }
-// Text that would be a handler if a parser read it as part of a tag — a
-// separator, on…, "=". Outside the attributes stripHandlers removes, only
-// its "=" is written &#61;: report text ("Curb w/one = 6in") reads the same,
-// in a cell or an attribute value, and should a browser still read it as an
-// attribute, it is one named "onerror&#61;…" that nothing runs.
-const HANDLER_LIKE = /(?<=[\s\/])(on[a-z]+\s*)=/gi;
+// Text that would be a handler if a parser read it as part of a tag — on…
+// and its "=". Outside the attributes stripHandlers removes, only its "=" is
+// written &#61;: report text ("Curb w/one = 6in", "Conditions = …") reads the
+// same, in a cell or an attribute value (where entities decode), and should a
+// browser still read it as an attribute it is one named "onerror&#61;…" that
+// nothing runs. No separator lookbehind, so a handler sitting straight after a
+// closing quote ("<img src=\"x\"onerror=…") is defused too. Not applied to the
+// inert raw-text spans stripHandlers keeps verbatim (CSS, <title>, <textarea>
+// …): entities are not decoded there, so a defused "=" would corrupt them.
+const HANDLER_LIKE = /(on[a-z]+\s*)=/gi;
 const defuse = text => text.replace(HANDLER_LIKE, '$1&#61;');
+// Elements whose content the HTML parser reads as text (RAWTEXT/RCDATA), not
+// markup, up to the matching end tag. A start tag written inside such content
+// — the </textarea> in `<b c='</textarea>` — is just text to a tag reader, but
+// the real terminator to the browser, which then parses whatever follows (an
+// <img onerror=…>) as its own tags. stripHandlers skips to the real end tag
+// and keeps the span as the inert text it is, rather than letting readStartTag
+// read an attribute value across the faked terminator and miss the
+// handler-bearing tag beyond it. (script/iframe are removed upstream; the rest
+// are listed so a confusion through them is closed regardless.)
+const RAWTEXT_EL = /^(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext)$/i;
 /* Every on… attribute goes: each start tag is read as the browser reads it
    and its on… attributes are cut out (with the separators before them; a
    space stands in when the next attribute would otherwise run into the one
-   before). Text — between tags, and inside the attribute values left — is
-   never cut, only defused, so the report's own words survive and a tag the
-   reader and the browser see differently (a comment, an svg <title>) still
-   carries no handler. */
+   before). Comments, CDATA sections and raw-text element bodies are passed
+   through verbatim and not scanned for tags, so a terminator faked inside one
+   cannot put the reader out of step with the browser. Text — between tags, and
+   inside the attribute values left — is never cut, only defused, so the
+   report's own words survive. */
 function stripHandlers(html) {
-  const START = /<[A-Za-z]/g;
+  // A comment, a CDATA section (svg/math foreign content), or a start tag, in
+  // source order. Anything else is ordinary text.
+  const TOKEN = /<!--|<!\[CDATA\[|<[A-Za-z]/g;
   let out = '', i = 0;
   for (;;) {
-    START.lastIndex = i;
-    const m = START.exec(html);
+    TOKEN.lastIndex = i;
+    const m = TOKEN.exec(html);
     if (!m) { out += defuse(html.slice(i)); break; }
     out += defuse(html.slice(i, m.index));
-    const { attrs, end } = readStartTag(html, m.index);
+    const tok = m[0];
+    if (tok === '<!--') {                                // a comment: keep inert, to --> / --!> / EOF
+      const j = html.indexOf('-->', m.index + 4);
+      const k = html.indexOf('--!>', m.index + 4);
+      let stop;
+      if (j >= 0 && (k < 0 || j <= k)) stop = j + 3;
+      else if (k >= 0) stop = k + 4;
+      else stop = html.length;
+      out += html.slice(m.index, stop);
+      i = stop;
+      continue;
+    }
+    if (tok === '<![CDATA[') {                           // a CDATA section: keep inert, to ]]> / EOF
+      const j = html.indexOf(']]>', m.index + 9);
+      const stop = j >= 0 ? j + 3 : html.length;
+      out += html.slice(m.index, stop);
+      i = stop;
+      continue;
+    }
+    const { attrs, end } = readStartTag(html, m.index);  // a start tag: cut its on… attributes
     let tag = '', k = m.index;
     attrs.forEach(a => {
       if (!/^on[a-z]+$/i.test(a.name)) return;
@@ -190,6 +226,17 @@ function stripHandlers(html) {
     });
     out += tag + defuse(html.slice(k, end));
     i = end;
+    // If it opens a raw-text/RCDATA element, keep its body verbatim through the
+    // real end tag so a faked terminator inside it can't be read across.
+    const nameMatch = /^<([a-z0-9]+)/i.exec(html.slice(m.index, end));
+    const selfClosed = html[end - 2] === '/';
+    if (nameMatch && !selfClosed && RAWTEXT_EL.test(nameMatch[1])) {
+      const close = new RegExp('</' + nameMatch[1] + '[\\s/>]', 'i');
+      const cm = close.exec(html.slice(end));
+      const stop = cm ? end + cm.index : html.length;
+      out += html.slice(end, stop);
+      i = stop;
+    }
   }
   return out;
 }

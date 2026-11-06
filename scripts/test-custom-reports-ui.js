@@ -230,9 +230,16 @@ function makeServer(opts) {
         const used = new Set(srv.schedules.flatMap(x => (x.group_ids || []).map(Number)));
         // As the real endpoint: whether the report is customer-safe is the report's, now.
         const live = x => { const r = srv.find(x.custom_report_id); if (r && !r.deleted_at) x.report_customer_safe = r.customer_safe !== false; return x; };
-        return res(200, { schedules: srv.canShare ? srv.schedules.map(live) : [], canSchedule: srv.canShare,
+        // The body is built now — report_customer_safe read from each report
+        // as the server sees it at this moment (live() stamps it onto the
+        // schedule) — then, if a gate is set, the answer is held so a later
+        // save can land before it returns (models an in-flight GET that
+        // answers after a newer request was wanted).
+        const body = { schedules: srv.canShare ? srv.schedules.map(live) : [], canSchedule: srv.canShare,
           groups: srv.groups.filter(g => !g.report_type || g.report_type === `${srv.division}_custom_report` || used.has(Number(g.id)))
-            .map(g => ({ id: g.id, name: g.name, count: (g.emails || []).length })) });
+            .map(g => ({ id: g.id, name: g.name, count: (g.emails || []).length })) };
+        if (srv.schedsLateGate) await srv.schedsLateGate();
+        return res(200, body);
       }
       if (!srv.canShare) return res(403, { error: 'Only an admin or level 3 user can schedule reports.' });
       if (method === 'POST' && q.action === 'run') {
@@ -2413,6 +2420,29 @@ function seed(srv) {
     assert('…and Open in builder starts it customer-safe', h.S().doc && h.S().doc.def.includeInternal === false);
     h.close();
   }
+  {
+    // An expired session on Open: the archive GET 401s (which, in the app,
+    // signs the tab out). The placeholder window must be closed, not left
+    // orphaned reading "Opening the report…", and no toast piles on the
+    // sign-out. Also for the rebuild path (no archived copy).
+    for (const [id, label] of [[1, 'the archived copy'], [2, 'the rebuild (no archive)']]) {
+      const h = boot({ server: histServer() });
+      await h.render();
+      h.click(h.act('customer'));
+      h.change(h.$('[data-bind="cust-job"]'), 'p1');
+      await tick(6);
+      h.srv.next.push({ status: 401, body: { error: 'Unauthorized' },
+        match: e => e.path === '/api/custom-reports' && (id === 1 ? !!e.q.archive : e.q.run === String(id)) });
+      const before = h.opened.length;
+      h.click(h.$(`[data-act="cust-open"][data-id="${id}"]`));
+      await tick(8);
+      assert(`Open with an expired session (${label}): the placeholder window is closed, not orphaned, with no toast`,
+        h.opened.length === before + 1 && h.opened[before].closed === true && h.authErrors === 1
+          && !h.document.querySelector('.cr-toast.err'),
+        JSON.stringify({ opened: h.opened.length - before, closed: h.opened[before] && h.opened[before].closed, auth: h.authErrors, toast: h.toast() }));
+      h.close();
+    }
+  }
 
   // ════════════════════════════════════════════════════════════════════
   section('v2 · Schedules — Schedule… dialog, the rail list, Send now');
@@ -2859,6 +2889,50 @@ function seed(srv) {
     h.click(h.act('save'));
     await tick(10);
     assert('…saved customer-safe again: the line goes', srv.find(1).customer_safe === true && gets() > before2 && !/won’t send/.test(line()), line());
+    h.close();
+  }
+  {
+    // A schedules refresh already in flight must not swallow the refresh a
+    // later save asks for, and its older answer must not overwrite
+    // upsertReport's correct local copy: saving internal-on then internal-off
+    // while the first GET is held must still leave the rail customer-safe.
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }] }));
+    srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+    srv.schedules.push({ id: 980, custom_report_id: 1, report_name: 'Acme weekly update', jobs_mode: 'saved', picked_jobs: null,
+      frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00', timezone: 'America/New_York', group_ids: [41], emails: [],
+      use_job_contacts: false, subject: null, note: null, attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:00:00Z',
+      last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat', created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z',
+      report_visible: true, report_deleted: false, report_customer_safe: true });
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    const line = () => { const b = h.$('[data-act="sched-menu"][data-id="980"]'); return b ? b.closest('.cr-item').textContent.replace(/\s+/g, ' ') : ''; };
+    const gets = () => h.srv.callsTo('/api/custom-report-schedules', 'GET').length;
+    const releases = [];
+    h.click(h.$('[data-act="open"][data-id="1"]'));
+    h.click(h.$('#cr-step-2'));
+    // Save #1: internal on, and hold the schedules GET it triggers — it
+    // snapshots customer_safe:false now and answers later.
+    srv.schedsLateGate = () => new Promise(r => releases.push(r));
+    h.$('[data-bind="internal"]').click();
+    h.confirms.splice(0);
+    h.click(h.act('save'));
+    await tick(10);
+    assert('internal-on save: the schedules GET it asked for is in flight (held), one request out', releases.length === 1, `releases=${releases.length}`);
+    // Save #2: internal off, while GET #1 is still held. No new GET yet.
+    srv.schedsLateGate = null;
+    h.click(h.act('internal-off'));
+    h.click(h.act('save'));
+    await tick(10);
+    assert('internal-off save while the first GET is held: still only the one held request, report customer-safe again',
+      releases.length === 1 && srv.find(1).customer_safe === true, `releases=${releases.length}`);
+    const g0 = gets();
+    // Release the held (stale) answer: it must be discarded and a fresh
+    // refresh must run, so the rail is not left reading "won’t send".
+    releases.splice(0).forEach(f => f());
+    await tick(12);
+    assert('the stale answer is dropped, a fresh refresh runs, and the rail stays customer-safe (no "won’t send")',
+      gets() > g0 && srv.find(1).customer_safe === true && !/won’t send/.test(line()), `${gets()} vs ${g0} · ${line()}`);
     h.close();
   }
   {

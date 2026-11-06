@@ -1837,9 +1837,93 @@ function deepNear(a, b, at = '') {
       assert('…on the quantity basis too, the same curve as with that line on the Friday',
         !satQ.sc.captions.some(c => /Covers the/.test(c)) && near(satQ.at.inst, friQ.at.inst) && near(satQ.at.plan, friQ.at.plan),
         JSON.stringify({ sat: satQ.at, fri: friQ.at, cap: satQ.sc.captions }));
-      assert('…the line\'s own Days Ahead / Behind is not blank, and the Totals equal those with the line on the Friday',
-        wl && wl.plan_source === 'Planned per day' && wl.ahead_days !== null && JSON.stringify(sat.tot) === JSON.stringify(fri.tot),
-        JSON.stringify({ wl, sat: sat.tot, fri: fri.tot }));
+      const wlFri = byKey(fri.rows, 'sub_code', 'S2');
+      assert('…the Saturday line\'s own Days Ahead / Behind equals the same line on the Friday (not a day too good), and the Totals match',
+        wl && wl.plan_source === 'Planned per day' && wl.ahead_days !== null && wlFri
+          && wl.ahead_days === wlFri.ahead_days && JSON.stringify(sat.tot) === JSON.stringify(fri.tot),
+        JSON.stringify({ wl, wlFri, sat: sat.tot, fri: fri.tot }));
+    }
+
+    // A Plan / Day or dated line whose whole span is non-working days (start =
+    // target on a Saturday / Sunday / holiday) must read exactly as the same
+    // line moved onto the previous working day, never a working day too good.
+    // Each case below pairs the weekend/holiday line with its working-day twin
+    // and asserts the customer-facing figures (ahead/behind, required / day,
+    // forecast vs target, scheduled %, status, plan source) match.
+    {
+      const zCols = ['sub_code', 'installed_to_date', 'sched_pct', 'earned_pct', 'ahead_days', 'required_rate',
+        'projected_finish', 'forecast_vs_target', 'start_date', 'target_date', 'plan_status', 'plan_source'];
+      const zjob = (items, rows) => ({ projects: [{ id: 'z', 'project-name': 'Lot', status: 'In Progress', 'start-date': '2026-05-01', 'end-date': '',
+        bidItems: items.map((it, i) => Object.assign({ id: 'z' + i, cost_code: '200', description: 'x', unit: 'TON', quantity: 300, unit_cost: 80 }, it)),
+        dailyRows: rows.map((r, i) => Object.assign({ id: 'zr' + i, cost_code: '200', employee: 'Ann', labor_hours: 8 }, r)) }] });
+      const zline = (items, rows, today, sub) => {
+        const def = pva(zCols, { dates: { preset: 'job_to_date', from: '', to: '' } });
+        const d = V.buildSectionData(def.sections[0], def, vmk(def, zjob(items, rows), ['z'], { today }));
+        return { line: byKey(rowsOf(d), 'sub_code', sub || items[0].sub_code), tot: J(d.blocks[0].totals) };
+      };
+      // Rate line (Plan / Day) finished on its planned Saturday vs the Friday.
+      const rDoneSat = zline([{ sub_code: 'E', planned_rate: 300, start_date: '2026-05-09', target_date: '2026-05-09' }], [{ sub_code: 'E', date: '2026-05-09', quantity: 300 }], '2026-05-12');
+      assert('a Plan / Day line finished on its planned Saturday reads 0 days ahead (was +1)', rDoneSat.line.ahead_days === 0, JSON.stringify(rDoneSat.line));
+      // Finished the Monday after: one working day late.
+      const rDoneMon = zline([{ sub_code: 'E', planned_rate: 300, start_date: '2026-05-09', target_date: '2026-05-09' }],
+        [{ sub_code: 'E', date: '2026-05-09', quantity: 100 }, { sub_code: 'E', date: '2026-05-11', quantity: 200 }], '2026-05-12');
+      assert('…finished the Monday after, −1', rDoneMon.line.ahead_days === -1, JSON.stringify(rDoneMon.line));
+      // Half done on a Saturday target day: required / day is the whole
+      // remainder over the one day (150), not blank, and status On track.
+      const rHalfSat = zline([{ sub_code: 'E', planned_rate: 300, start_date: '2026-05-09', target_date: '2026-05-09' }], [{ sub_code: 'E', date: '2026-05-09', quantity: 150 }], '2026-05-09');
+      const rHalfFri = zline([{ sub_code: 'E', planned_rate: 300, start_date: '2026-05-08', target_date: '2026-05-08' }], [{ sub_code: 'E', date: '2026-05-08', quantity: 150 }], '2026-05-08');
+      assert('…half done on its Saturday target day: Required / Day 150 (was blank), ahead −0.5, matching the Friday twin',
+        rHalfSat.line.required_rate === 150 && rHalfSat.line.ahead_days === -0.5
+          && rHalfSat.line.required_rate === rHalfFri.line.required_rate && rHalfSat.line.ahead_days === rHalfFri.line.ahead_days,
+        JSON.stringify({ sat: rHalfSat.line, fri: rHalfFri.line }));
+      // Unworked on its Saturday target day: line −1 and equal to its Totals.
+      const rUnworkedSat = zline([{ sub_code: 'E', planned_rate: 300, start_date: '2026-05-09', target_date: '2026-05-09' }], [], '2026-05-09');
+      assert('…unworked on its Saturday target day: line −1 (was 0) and equal to its Totals',
+        rUnworkedSat.line.ahead_days === -1 && rUnworkedSat.tot.ahead_days === -1, JSON.stringify(rUnworkedSat));
+      // Inverted: typed target Fri 5/8, first work Sat 5/9, finished Sat.
+      const rInvSat = zline([{ sub_code: 'E', planned_rate: 300, target_date: '2026-05-08' }], [{ sub_code: 'E', date: '2026-05-09', quantity: 300 }], '2026-05-12');
+      const rInvThu = zline([{ sub_code: 'E', planned_rate: 300, target_date: '2026-05-07' }], [{ sub_code: 'E', date: '2026-05-08', quantity: 300 }], '2026-05-12');
+      assert('…inverted (target before first work day): a Saturday first-work line reads 0, like its working-day twin (was +1)',
+        rInvSat.line.ahead_days === 0 && rInvSat.line.ahead_days === rInvThu.line.ahead_days, JSON.stringify({ sat: rInvSat.line, thu: rInvThu.line }));
+
+      // F6: Finish vs Target when the target is non-working. A dated LF line,
+      // 200/day, today Thu 5/7, projected finish Mon 5/11.
+      const fvtJob = (target, qty) => ({ projects: [{ id: 'f', 'project-name': 'Lot', status: 'In Progress', 'start-date': '2026-05-01', 'end-date': '',
+        bidItems: [{ id: 'f1', cost_code: '300', sub_code: 'C', unit: 'LF', quantity: qty || 1000, unit_cost: 20, start_date: '2026-05-04', target_date: target }],
+        dailyRows: [{ date: '2026-05-04', quantity: 200 }, { date: '2026-05-05', quantity: 200 }, { date: '2026-05-06', quantity: 200 }]
+          .map((r, i) => Object.assign({ id: 'fr' + i, cost_code: '300', sub_code: 'C', employee: 'Ann', labor_hours: 8 }, r)) }] });
+      const fvtOf = (target, qty, today) => {
+        const def = pva(['sub_code', 'projected_finish', 'forecast_vs_target'], { dates: { preset: 'job_to_date', from: '', to: '' } });
+        const d = V.buildSectionData(def.sections[0], def, vmk(def, fvtJob(target, qty), ['f'], { today: today || '2026-05-07' }, divCfg('turf')));
+        return { line: rowsOf(d)[0], tot: J(d.blocks[0].totals) };
+      };
+      for (const [T, exp] of [['2026-05-08', -1], ['2026-05-09', -1], ['2026-05-10', -1], ['2026-05-11', 0]]) {
+        const r = fvtOf(T);
+        assert(`Finish vs Target: PF Mon 5/11 against target ${T} is ${exp} on the line and the Totals`,
+          r.line.forecast_vs_target === exp && r.tot.forecast_vs_target === exp, JSON.stringify(r));
+      }
+      // Memorial Day (Mon 5/25) target and the Friday before it, PF Wed 5/27.
+      const memJob = target => ({ projects: [{ id: 'm', 'project-name': 'Lot', status: 'In Progress', 'start-date': '2026-05-01', 'end-date': '',
+        bidItems: [{ id: 'm1', cost_code: '300', sub_code: 'C', unit: 'LF', quantity: 1200, unit_cost: 20, start_date: '2026-05-18', target_date: target }],
+        dailyRows: ['2026-05-18', '2026-05-19', '2026-05-20'].map((dt, i) => ({ id: 'mr' + i, cost_code: '300', sub_code: 'C', employee: 'Ann', labor_hours: 8, date: dt, quantity: 200 })) }] });
+      for (const T of ['2026-05-22', '2026-05-25']) {
+        const def = pva(['sub_code', 'projected_finish', 'forecast_vs_target'], { dates: { preset: 'job_to_date', from: '', to: '' } });
+        const d = V.buildSectionData(def.sections[0], def, vmk(def, memJob(T), ['m'], { today: '2026-05-21' }, divCfg('turf')));
+        const line = rowsOf(d)[0];
+        assert(`Finish vs Target: PF Wed 5/27 against ${T === '2026-05-25' ? 'Memorial Day Mon 5/25' : 'Fri 5/22'} is −2`,
+          line.projected_finish === '2026-05-27' && line.forecast_vs_target === -2, JSON.stringify(line));
+      }
+
+      // F8: a dated line (no Plan / Day) whose span is only non-working days
+      // stays scheduled with its typed dates rather than "Not scheduled".
+      const dSat = zline([{ sub_code: 'E', start_date: '2026-05-09', target_date: '2026-05-09' }], [{ sub_code: 'E', date: '2026-05-09', quantity: 150 }], '2026-05-12');
+      const dFri = zline([{ sub_code: 'E', start_date: '2026-05-08', target_date: '2026-05-08' }], [{ sub_code: 'E', date: '2026-05-08', quantity: 150 }], '2026-05-12');
+      assert('a dated line whose Start = Target on a Saturday is scheduled (Bid item dates), not "Not scheduled", matching the Friday twin',
+        dSat.line.plan_source === 'Bid item dates' && dSat.line.start_date === '2026-05-09' && dSat.line.target_date === '2026-05-09'
+          && dSat.line.sched_pct === 100 && dSat.line.plan_status === 'Behind (past target)'
+          && dSat.line.ahead_days === dFri.line.ahead_days, JSON.stringify({ sat: dSat.line, fri: dFri.line }));
+      const dWknd = zline([{ sub_code: 'E', start_date: '2026-05-09', target_date: '2026-05-10' }], [{ sub_code: 'E', date: '2026-05-09', quantity: 150 }], '2026-05-12');
+      assert('…and a Sat→Sun dated closure is scheduled too', dWknd.line.plan_source === 'Bid item dates' && dWknd.line.plan_status === 'Behind (past target)', JSON.stringify(dWknd.line));
     }
 
     // A cost-code-only line (TON) beside a sub-coded line under its code
@@ -1872,6 +1956,27 @@ function deepNear(a, b, at = '') {
       const bt = J(V.buildSectionData(sd.sections[1], sd, sctx).blocks[0].totals);
       assert('…while Bid Progress\' Totals still pair Bid Qty and Installed by the units as typed',
         bt.bid_qty === '1,000 TON · 500 TN' && bt.installed_to_date === '420 TON · 280 TN', JSON.stringify(bt));
+
+      // Production Rates Totals over the same shared rows: the cost-code-only
+      // line and the sub-coded line take the same rows, so the quantity, best
+      // day, labour hours and per-day rate must count them once — not the 980
+      // / 245 / 300 / 48 doubling — and agree with PvA Actual / Day and Rate
+      // Summary tons/day in the same report.
+      const pkSecs = vdef([
+        vsec('production_kpis', { columns: ['sub_code', 'unit', 'qty_period', 'days_period', 'avg_per_day', 'best_day', 'remaining_qty', 'labor_hours', 'units_per_mh'], options: { totals: true } }),
+        vsec('plan_vs_actual', { columns: ['sub_code', 'actual_rate'], options: { totals: true } }),
+        vsec('rate_summary', { columns: allCols('rate_summary') })],
+        { includeInternal: true, dates: { preset: 'job_to_date', from: '', to: '' } });
+      const pkCtx = vmk(pkSecs, SH, ['sh'], { today: '2026-05-08' });
+      const pkTot = J(V.buildSectionData(pkSecs.sections[0], pkSecs, pkCtx).blocks[0].totals);
+      const pvTot = J(V.buildSectionData(pkSecs.sections[1], pkSecs, pkCtx).blocks[0].totals);
+      const rsRow = J(V.buildSectionData(pkSecs.sections[2], pkSecs, pkCtx).blocks[0].groups[0].rows[0].cells);
+      assert('Production Rates Totals count shared rows once: Qty 700, Avg / Day 175, Best Day 220, Days 4, Remaining blank (was 980 / 245 / 300)',
+        pkTot.qty_period === 700 && pkTot.avg_per_day === 175 && pkTot.best_day === 220 && pkTot.days_period === 4 && pkTot.remaining_qty === null,
+        JSON.stringify(pkTot));
+      assert('…Labour Hours 32 and Units / MH 21.875 (one base), and Avg / Day ties to PvA Actual / Day and Rate Summary tons/day',
+        pkTot.labor_hours === 32 && near(pkTot.units_per_mh, 21.875) && pkTot.avg_per_day === pvTot.actual_rate && pkTot.avg_per_day === rsRow.tons_per_day,
+        JSON.stringify({ pkTot, actual_rate: pvTot.actual_rate, tons_per_day: rsRow.tons_per_day }));
     }
 
     // A Plan / Day line whose finish cannot be dated (no Target, no job end

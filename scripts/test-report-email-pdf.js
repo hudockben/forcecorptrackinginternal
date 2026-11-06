@@ -264,6 +264,19 @@ assert('sanitizeReportHtml removes the window.print() bootstrap',
     'a handler after "/" a comment hides from a tag reader': '<!--<x a="--><img src=1 b=\'">\'/onerror=alert(1)><p>keep</p>',
     'a handler after "/" behind an svg <title>': '<svg><title><img src=1 b=\'</title>\'/onerror=alert(1)></svg><p>keep</p>',
     'a handler left in a tag the report never closes': '<p>keep</p><img src=x onerror="alert(1)',
+    // A raw-text / RCDATA element, a comment, or a CDATA section can end at a
+    // terminator a tag reader does not see inside a faked attribute value, so
+    // the browser parses the <img> and its handler on the far side. Each of
+    // these fires in a real browser unless the sanitizer skips the span to its
+    // real terminator; the pattern is `<RAW><b c='</RAW><img …onerror=…>'`.
+    'a handler a <style> span hides from a tag reader': '<style><b c=\'</style><img src="x"onerror=alert(1)>\'</style><p>keep</p>',
+    'a handler a <title> span hides from a tag reader': '<title><b c=\'</title><img src="x"onerror=alert(1)>\'</title><p>keep</p>',
+    'a handler a <textarea> span hides from a tag reader': '<textarea><b c=\'</textarea><img src="x"onerror=alert(1)>\'</textarea><p>keep</p>',
+    'a handler an <xmp> span hides from a tag reader': '<xmp><b c=\'</xmp><img src="x"onerror=alert(1)>\'</xmp><p>keep</p>',
+    'a handler a <noembed> span hides from a tag reader': '<noembed><b c=\'</noembed><img src="x"onerror=alert(1)>\'</noembed><p>keep</p>',
+    'a handler a <noframes> span hides from a tag reader': '<noframes><b c=\'</noframes><img src="x"onerror=alert(1)>\'</noframes><p>keep</p>',
+    'a handler an svg CDATA span hides from a tag reader': '<svg><![CDATA[<b c=\']]><img src="x"onerror=alert(1)>\']]></svg><p>keep</p>',
+    'a handler straight after a comment that spans a quote': '<!--<b c=\'--><img src="x"onerror=alert(1)>\'--><p>keep</p>',
   };
   // The browser's own reading is the judge: parsed as a document, and as the
   // email shell's body (where markup after it can close an open tag), no
@@ -415,6 +428,36 @@ function findChrome() {
     const elapsed = Date.now() - t0;
     assert('a report referencing an external URL still renders', r2.ok, r2.error);
     assert('the blocked request does not stall the render', elapsed < 20_000, `${elapsed}ms`);
+
+    // JavaScript must be OFF in the render page: reports are static print
+    // markup, and a handler the pattern sanitizer missed (a comment/raw-text/
+    // CDATA confusion) would otherwise run in this server-side renderer and
+    // make blind outbound connections that request interception can't see.
+    // A script that would rewrite visible text proves it: the PDF must still
+    // read "before", never "after".
+    const scripted = `<!DOCTYPE html><html><head><meta charset="utf-8"></head><body>
+      <p id="m">before</p>
+      <script>document.getElementById('m').textContent='after';<\/script>
+      <img src="x" onerror="document.getElementById('m').textContent='after'">
+    </body></html>`;
+    const r3 = await renderHtmlToPdf(scripted);
+    assert('a scripted report still renders', r3.ok, r3.error);
+    if (r3.ok) {
+      const { execFileSync } = require('child_process');
+      const os = require('os');
+      const tmp = path.join(os.tmpdir(), `js-off-${process.pid}.pdf`);
+      fs.writeFileSync(tmp, r3.buffer);
+      let text = '';
+      try { text = execFileSync('pdftotext', ['-q', tmp, '-'], { encoding: 'utf8' }); }
+      catch { text = ''; }
+      finally { try { fs.unlinkSync(tmp); } catch {} }
+      if (text) {
+        assert('JavaScript is disabled in the PDF renderer (text stays "before")',
+          /before/.test(text) && !/after/.test(text), JSON.stringify(text.trim().slice(0, 60)));
+      } else {
+        skip('JavaScript is disabled in the PDF renderer', 'pdftotext unavailable');
+      }
+    }
   }
 
   // ── 4. send-report, end to end ───────────────────────────────────────────

@@ -2427,21 +2427,32 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   }
   function loadSchedules() {
     if (!S.canShare && !S.canSchedule) return Promise.resolve();
-    if (S.schedsLoading) return Promise.resolve();
+    // A refresh asked for while one is already in flight is queued, not
+    // dropped, and an answer older than the newest ask is not applied:
+    // otherwise a later save's refresh is swallowed, and the in-flight
+    // answer — read before that save committed — overwrites upsertReport's
+    // correct local copy, leaving the rail's "won't send" line or the report
+    // name stale. At most one request runs with one more queued behind it.
+    if (S.schedsP) { S.schedsAgain = true; return S.schedsP; }
     S.schedsLoading = true;
     S.schedsError = '';
-    return api.schedules().then(data => {
+    S.schedsP = api.schedules().then(data => {
+      if (S.schedsAgain) return;        // a later ask is queued; this answer may predate it
       S.scheds = Array.isArray(data.schedules) ? data.schedules : [];
       S.canSchedule = data.canSchedule === true;
       if (Array.isArray(data.groups)) S.schedGroups = data.groups;
     }, err => {
+      if (S.schedsAgain) return;
       if (err.status === 404 || err.status === 403) { S.scheds = []; S.canSchedule = false; return; }
       S.schedsError = err.message;
     }).then(() => {
+      S.schedsP = null;
+      if (S.schedsAgain) { S.schedsAgain = false; return loadSchedules(); }
       S.schedsLoading = false;
       renderRail();
       updateChrome();
     });
+    return S.schedsP;
   }
 
   // The server sends the history 100 runs at a time, newest first; "Load
@@ -3301,11 +3312,14 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
      head, where browsers ignore it. */
   const lockedCsp = nonce => "default-src 'none'; script-src 'nonce-" + nonce + "'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'; base-uri 'none'";
   /* The copy window's own script: static code, nothing of the archive in it.
-     It fits the frame to the copy on screen; and for printing the window
-     (Ctrl+P, Save as PDF) it sizes the frame to the copy's own print width —
-     the page's, or wider where its tables need more — so the window overflows
-     the page and the browser shrinks it to fit: every column printed, as
-     printing the copy itself does. */
+     It fits the frame to the copy on screen. Keyboard print (Ctrl/Cmd+P,
+     Save as PDF) and the Print button print the copy's own frame directly, so
+     it paginates exactly as printing the copy does — table header repeating,
+     rows kept whole — rather than the browser slicing a single tall iframe box
+     at the page edges. The browser-menu Print cannot be intercepted; for that
+     path only, the frame is sized to the copy's print width (the page's, or
+     wider where its tables need more) so the window overflows and the browser
+     shrinks it to fit, keeping every column. */
   const COPY_WINDOW_JS = `(function () {
   var fr = document.querySelector('iframe');
   if (!fr) return;
@@ -3362,8 +3376,21 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       try { window.scrollTo(x0, y0); } catch (e) { }
     }
   };
+  /* Keyboard print prints the copy itself, never the sized-iframe shell:
+     a single tall iframe box cannot break inside, so the browser would slice
+     rows at each page edge and drop the repeating header. Attached to the
+     shell and, after every frame load, to the frame document, so it fires
+     wherever focus sits. The browser's menu Print cannot be reached this way;
+     sizeForPrint still handles that path. */
+  var printFrame = function (e) {
+    if (e.altKey || !(e.ctrlKey || e.metaKey) || (e.key || '').toLowerCase() !== 'p') return;
+    e.preventDefault();
+    try { fr.contentWindow.focus(); fr.contentWindow.print(); } catch (e2) { try { window.print(); } catch (e3) { } }
+  };
+  window.addEventListener('keydown', printFrame);
   var loaded = function () {
     fit();
+    try { var kd = fr.contentDocument; if (kd) { kd.removeEventListener('keydown', printFrame); kd.addEventListener('keydown', printFrame); } } catch (e) { }
     var size = '';
     try {
       [].forEach.call(fr.contentDocument.styleSheets, function (sh) {
@@ -3428,12 +3455,20 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     try { html = await archivedHtml(run); }
     catch (e) {
       if (e.status === 403 && code(e) === 'internal_archive') { fail(INTERNAL_ARCHIVE_MSG); return; }
-      if (e.status !== 401) fail(`Couldn’t open it: ${e.message}`);
+      // A 401 signs the app tab out (call() → onAuthError → logout navigates
+      // away); close the placeholder so it is not left orphaned, with no toast
+      // on top of the sign-out.
+      if (e.status === 401) { try { win.close(); } catch (_) { /* fine */ } return; }
+      fail(`Couldn’t open it: ${e.message}`);
       return;
     }
     if (html == null) {
       try { html = rebuildRun(await runDetail(run), true).html; }
-      catch (e) { if (e.status !== 401) fail(`Couldn’t open it: ${e.message}`); return; }
+      catch (e) {
+        if (e.status === 401) { try { win.close(); } catch (_) { /* fine */ } }
+        else fail(`Couldn’t open it: ${e.message}`);
+        return;
+      }
     }
     if (win.closed) return;
     writeLockedDown(win, html, `Sent copy — ${txt(run.subject) || txt(run.report_name) || 'Report'}`);
