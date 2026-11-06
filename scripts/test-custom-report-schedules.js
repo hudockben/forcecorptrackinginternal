@@ -836,24 +836,37 @@ FAKE.browser = { newPage: async () => fakePage(), close: async () => {}, process
     const hideMe = await mkReport('Hide Me');
     sched = await mkSched({ custom_report_id: hideMe });
     await client.query("UPDATE custom_reports SET visibility = 'private', owner_user_id = $2 WHERE id = $1", [hideMe, l3Id]);
-    await quiet('made private to someone else since: "…is no longer shared with padmin"', sched, /^“Hide Me” is no longer shared with padmin, who this schedule runs as\./);
+    const hidden = await quiet('made private to someone else since: "…is no longer shared with padmin"', sched, /^“Hide Me” is no longer shared with padmin, who this schedule runs as\./);
+    // The schedules list says what the next send will find, in the run's words.
+    const listed = async id => (await crs('GET', {}, null, ADMIN)).body.schedules.find(x => x.id === Number(id));
+    let ls = await listed(sched.id);
+    assert('…and the schedules list says so before the next send (report_blocked, the run\'s own words)', ls && ls.report_blocked === hidden.message, JSON.stringify(ls));
 
     const goesInternal = await mkReport('Goes Internal');
     sched = await mkSched({ custom_report_id: goesInternal });
     await client.query("UPDATE custom_reports SET customer_safe = false, definition = jsonb_set(definition, '{includeInternal}', 'true') WHERE id = $1", [goesInternal]);
     await quiet('switched to internal data since: customer-safe only', sched, /^“Goes Internal” now includes internal data — scheduled sends are customer-safe only\./);
+    ls = await listed(sched.id);
+    assert('…which the list carries in report_customer_safe, not report_blocked', ls && ls.report_customer_safe === false && ls.report_blocked === null, JSON.stringify(ls));
     await client.query("UPDATE custom_reports SET customer_safe = true WHERE id = $1", [goesInternal]);
     await quiet('…even when only its definition says so', sched, /now includes internal data/);
 
     const goesFixed = await mkReport('Goes Fixed');
     sched = await mkSched({ custom_report_id: goesFixed });
     await client.query(`UPDATE custom_reports SET definition = jsonb_set(definition, '{dates}', '{"preset":"custom","from":"2026-10-01","to":"2026-10-07"}') WHERE id = $1`, [goesFixed]);
-    await quiet('switched to fixed dates since: stopped, saying why', sched, /^“Goes Fixed” is set to fixed dates now/);
+    const fixedRes = await quiet('switched to fixed dates since: stopped, saying why', sched, /^“Goes Fixed” is set to fixed dates now/);
+    ls = await listed(sched.id);
+    assert('…and the list says so (report_blocked) while the report is still customer-safe', ls && ls.report_customer_safe === true
+      && ls.report_blocked === fixedRes.message, JSON.stringify(ls));
 
     const losesJobs = await mkReport('Loses Jobs', { definition: def({ jobs: { mode: 'saved', ids: ['p1'] } }) });
     sched = await mkSched({ custom_report_id: losesJobs, jobs_mode: 'saved' });
     await client.query(`UPDATE custom_reports SET kind = 'template', definition = jsonb_set(definition, '{jobs}', '{"mode":"pick","ids":[]}') WHERE id = $1`, [losesJobs]);
-    await quiet('a saved-jobs report that no longer saves its jobs: stopped, saying what to do', sched, /^“Loses Jobs” no longer saves its jobs/);
+    const lostRes = await quiet('a saved-jobs report that no longer saves its jobs: stopped, saying what to do', sched, /^“Loses Jobs” no longer saves its jobs/);
+    ls = await listed(sched.id);
+    assert('…and the list says so (report_blocked)', ls && ls.report_blocked === lostRes.message, JSON.stringify(ls));
+    ls = await listed(eachId);
+    assert('…while a schedule that will send has no report_blocked', ls && ls.report_blocked === null, JSON.stringify(ls));
 
     sched = await mkSched();
     await client.query("UPDATE users SET division_roles = $1 WHERE id = $2", [JSON.stringify({ paving: 'sales' }), adminId]);
@@ -993,12 +1006,38 @@ FAKE.browser = { newPage: async () => fakePage(), close: async () => {}, process
       assert(`${mode}: the run refuses, saying it now saves its own jobs and to save the schedule — nothing built, nothing sent`,
         res.status === 'failed' && /now saves its own jobs/.test(res.message) && /save it to send it for those jobs/.test(res.message)
           && PAGE.specs.length === 0 && SENT.length === 0, JSON.stringify(res));
+      const ls = (await crs('GET', {}, null, ADMIN)).body.schedules.find(x => x.id === Number(sched.id));
+      assert(`${mode}: …and the schedules list says so before any send (report_blocked)`, ls && ls.report_blocked === res.message, JSON.stringify(ls));
       // What the Edit dialog sends for a report that saves its jobs.
       const r = await crs('PUT', { id: sched.id }, { ...base, custom_report_id: flip, jobs_mode: 'saved', use_job_contacts: false }, ADMIN);
       resetPage(); SENT.length = 0;
       const again = await run(await row(sched.id));
-      assert(`${mode}: …and once the schedule is saved, it sends the report for its own job only`,
-        r.statusCode === 200 && again.status === 'sent' && PAGE.specs.length === 1 && PAGE.specs[0].jobsMode === 'saved', `${show(r)} ${JSON.stringify(again)}`);
+      assert(`${mode}: …and once the schedule is saved, it sends the report for its own job only (the PUT's answer no longer blocked)`,
+        r.statusCode === 200 && again.status === 'sent' && PAGE.specs.length === 1 && PAGE.specs[0].jobsMode === 'saved'
+          && r.body.schedule.report_blocked === null, `${show(r)} ${JSON.stringify(again)}`);
+      await client.query('DELETE FROM report_schedules WHERE id = $1', [sched.id]);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nA picked job saved under a name it no longer has keeps the schedule\'s subject');
+  {
+    // p3 "Paving Done Job" is Complete, so the page cannot find it among the
+    // In Progress jobs and labels it with the name the schedule saved — a
+    // name it may no longer have ("Untitled job" is what the dialog saves for
+    // a job with only a number). The subject still names it as the page does.
+    for (const [label, over, want] of [
+      ['renamed since, with a subject', { subject: 'Owner update', picked_jobs: [{ id: 'p3', name: 'Old name' }] }, 'Owner update — Paving Done Job'],
+      ['renamed since, no subject (the page\'s own)', { subject: null, picked_jobs: [{ id: 'p3', name: 'Old name' }] }, 'Owner Update — Paving Done Job'],
+      ['saved as "Untitled job", with a subject', { subject: 'Owner update', picked_jobs: [{ id: 'p3', name: 'Untitled job' }] }, 'Owner update — Paving Done Job'],
+    ]) {
+      resetPage(); SENT.length = 0;
+      const sched = await mkSched({ ...over, attach_pdf: false });
+      const res = await run(sched);
+      const logged = await crRuns(sched.id);
+      assert(`${label}: the email's subject is "${want}", and its history says the same (not "Custom Report — Paving — <old name>")`,
+        res.status === 'sent' && SENT.length === 1 && SENT[0].subject === want && logged.length === 1 && logged[0].subject === want,
+        JSON.stringify({ status: res.status, sent: SENT.map(m => m.subject), logged: logged.map(l => l.subject) }));
       await client.query('DELETE FROM report_schedules WHERE id = $1', [sched.id]);
     }
   }

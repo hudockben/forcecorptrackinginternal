@@ -1924,6 +1924,116 @@ function deepNear(a, b, at = '') {
           && dSat.line.ahead_days === dFri.line.ahead_days, JSON.stringify({ sat: dSat.line, fri: dFri.line }));
       const dWknd = zline([{ sub_code: 'E', start_date: '2026-05-09', target_date: '2026-05-10' }], [{ sub_code: 'E', date: '2026-05-09', quantity: 150 }], '2026-05-12');
       assert('…and a Sat→Sun dated closure is scheduled too', dWknd.line.plan_source === 'Bid item dates' && dWknd.line.plan_status === 'Behind (past target)', JSON.stringify(dWknd.line));
+
+      // Round 5: Scheduled % of a span with no working day counts that day
+      // too, as elapsed does — so on the Saturday of a Sat–Sun closure the
+      // line, its Totals and the S-curve read as the Friday one-day twin.
+      const sCols = zCols.concat(['spi', 'qty_variance']);
+      const zs = (items, rows, today, dates) => {
+        const def = pva(sCols, { dates: dates || { preset: 'job_to_date', from: '', to: '' } });
+        def.sections.push(vsec('chart', { columns: ['installed', 'plan'], options: { chart: 's_curve', basis: 'pct', showPlan: true } }));
+        const ctx = vmk(def, zjob(items, rows), ['z'], { today });
+        const d = V.buildSectionData(def.sections[0], def, ctx), ch = J(V.buildSectionData(def.sections[1], def, ctx));
+        const pts = ch.blocks[0].charts[0].points;
+        return { line: J(rowsOf(d)[0]), tot: J(d.blocks[0].totals), at: day => pts.find(p => p.date === day) };
+      };
+      const cSat = zs([{ sub_code: 'E', start_date: '2026-05-09', target_date: '2026-05-10' }], [{ sub_code: 'E', date: '2026-05-09', quantity: 150 }], '2026-05-09');
+      const cFri = zs([{ sub_code: 'E', start_date: '2026-05-08', target_date: '2026-05-08' }], [{ sub_code: 'E', date: '2026-05-08', quantity: 150 }], '2026-05-08');
+      assert('a Sat–Sun closure on its Saturday: Scheduled 100%, pace 0.5, Qty vs Plan −150, −0.5 on the line and the Totals — the Friday twin (was 0% / +150 / Totals +0.5)',
+        cSat.line.sched_pct === 100 && cSat.line.spi === 0.5 && cSat.line.qty_variance === -150 && cSat.line.ahead_days === -0.5
+          && cSat.tot.ahead_days === cSat.line.ahead_days && cSat.tot.sched_pct === 100
+          && ['sched_pct', 'spi', 'qty_variance', 'ahead_days', 'plan_status'].every(k => cSat.line[k] === cFri.line[k] && cSat.tot[k] === cFri.tot[k]),
+        JSON.stringify({ sat: cSat, fri: cFri }));
+      assert('…and the S-curve plans 100% on that Saturday, as on the Friday twin',
+        cSat.at('2026-05-09') && cSat.at('2026-05-09').plan === 100 && cFri.at('2026-05-08').plan === 100, JSON.stringify(cSat.at('2026-05-09')));
+      // Memorial Day weekend closure (Sat 5/23 – Mon 5/25), the Monday "Last week" send: as of Sun 5/24.
+      const cMem = zs([{ sub_code: 'E', quantity: 600, start_date: '2026-05-23', target_date: '2026-05-25' }], [{ sub_code: 'E', date: '2026-05-23', quantity: 200 }],
+        '2026-05-25', { preset: 'last_week', from: '', to: '' });
+      assert('…and a Memorial Day weekend closure, sent the Monday as "Last week": Scheduled 100%, Qty vs Plan −400 (was 0% / +200)',
+        cMem.line.sched_pct === 100 && cMem.line.qty_variance === -400 && cMem.tot.ahead_days === cMem.line.ahead_days, JSON.stringify(cMem));
+
+      // Round 5: a past range is measured as of its end, so a line finished
+      // after the range ended (but before its target) is not called late
+      // when the report is run past that target.
+      const lastWk = ['2026-10-26', '2026-10-27', '2026-10-28', '2026-10-29', '2026-10-30', '2026-11-02', '2026-11-03'];
+      const lw = (n, today) => zs([{ sub_code: 'B', quantity: 875, start_date: '2026-10-26', target_date: '2026-11-04' }],
+        lastWk.slice(0, n).map(dt => ({ sub_code: 'B', date: dt, quantity: 125 })), today, { preset: 'last_week', from: '', to: '' });
+      const lwOn = lw(7, '2026-11-03'), lwLate = lw(7, '2026-11-06');
+      assert('"Last week" on a line finished Tue Nov 3 against target Wed Nov 4, run Fri Nov 6: On track +0.5 on the line and the Totals, as run on Nov 3 (was "Behind (past target)")',
+        lwLate.line.plan_status === 'On track' && lwLate.tot.plan_status === 'On track' && lwLate.line.ahead_days === 0.5
+          && ['sched_pct', 'spi', 'qty_variance', 'ahead_days', 'plan_status'].every(k => lwLate.line[k] === lwOn.line[k] && lwLate.tot[k] === lwOn.tot[k]),
+        JSON.stringify({ late: lwLate, on: lwOn }));
+      const lwStall = lw(6, '2026-11-06');
+      assert('…while the twin still short of its quantity today (750 of 875) is "Behind (past target)", line and Totals',
+        lwStall.line.plan_status === 'Behind (past target)' && lwStall.tot.plan_status === 'Behind (past target)', JSON.stringify(lwStall));
+      const lwCustom = zs([{ sub_code: 'B', quantity: 875, start_date: '2026-10-26', target_date: '2026-11-04' }],
+        lastWk.map(dt => ({ sub_code: 'B', date: dt, quantity: 125 })), '2026-11-06', { preset: 'custom', from: '2026-10-26', to: '2026-10-30' });
+      assert('…and a custom past range (Oct 26–30) run Nov 6 is not "Behind (past target)" either',
+        lwCustom.line.plan_status !== 'Behind (past target)' && lwCustom.tot.plan_status !== 'Behind (past target)', JSON.stringify(lwCustom));
+
+      // Round 5: an unworked Plan / Day line with no Start, past its target
+      // (typed, or the job's end date), is late — not "Not started".
+      const rjob = (item, jobEnd) => ({ projects: [{ id: 'r', 'project-name': 'Lot', status: 'In Progress', 'start-date': '', 'end-date': jobEnd || '',
+        bidItems: [Object.assign({ id: 'r1', cost_code: '300', sub_code: 'Seed', unit: 'SF', quantity: 1000, unit_cost: 1, planned_rate: 100 }, item)], dailyRows: [] }] });
+      const rr5 = (item, jobEnd) => {
+        const def = pva(zCols, { dates: { preset: 'job_to_date', from: '', to: '' } });
+        const d = V.buildSectionData(def.sections[0], def, vmk(def, rjob(item, jobEnd), ['r'], { today: '2026-11-05' }));
+        return { line: J(rowsOf(d)[0]), tot: J(d.blocks[0].totals) };
+      };
+      const rTyped = rr5({ target_date: '2026-10-01' }), rEnd = rr5({}, '2026-10-01'), rFuture = rr5({}, '2026-12-31');
+      assert('an unworked Plan / Day line with no Start and a typed Target Oct 1, run Nov 5: "Behind (past target)", line and Totals (was "Not started" / "Not scheduled")',
+        rTyped.line.plan_status === 'Behind (past target)' && rTyped.tot.plan_status === 'Behind (past target)', JSON.stringify(rTyped));
+      assert('…and with no dates but a job end date of Oct 1: "Behind (past target)" with no days figure (was 0 beside "Not started")',
+        rEnd.line.plan_status === 'Behind (past target)' && rEnd.line.ahead_days === null && rEnd.tot.plan_status === 'Behind (past target)', JSON.stringify(rEnd));
+      assert('…while one whose job ends Dec 31 is still "Not started", with no days figure either',
+        rFuture.line.plan_status === 'Not started' && rFuture.line.ahead_days === null, JSON.stringify(rFuture));
+
+      // Round 5: a dated line with no quantity (zeroed by a change order, or
+      // not entered yet) has nothing to measure: "Not scheduled", like its
+      // Totals, with no Scheduled % — never a blank status.
+      const qz = (item, sec) => {
+        const def = pva(sCols, { dates: { preset: 'job_to_date', from: '', to: '' } }, sec);
+        const data = { projects: [{ id: 'q', 'project-name': 'Lot', status: 'In Progress', 'start-date': '', 'end-date': '',
+          bidItems: [Object.assign({ id: 'q1', cost_code: '400', sub_code: 'Edge', unit: 'LF', unit_cost: 5, start_date: '2026-11-02', target_date: '2026-11-20' }, item)],
+          dailyRows: item.rows || [] }] };
+        const d = V.buildSectionData(def.sections[0], def, vmk(def, data, ['q'], { today: '2026-11-05' }));
+        return { line: J(rowsOf(d)[0] || null), tot: J(d.blocks[0].totals), notes: J(d.blocks[0].notes || d.notes || null) };
+      };
+      const qCo = qz({ quantity: 400, change_orders: [{ qty_delta: -400 }], rows: [row('2026-11-02', '400', 'Edge', 50)] });
+      const qBlank = qz({ quantity: '' });
+      assert('a dated LF line zeroed by a change order: "Not scheduled" with no Scheduled %, as its Totals (was a blank status beside 28.57%)',
+        qCo.line.plan_status === 'Not scheduled' && qCo.line.sched_pct === null && qCo.line.qty_variance === null && qCo.tot.plan_status === 'Not scheduled', JSON.stringify(qCo));
+      assert('…and one whose quantity is blank reads the same', qBlank.line.plan_status === 'Not scheduled' && qBlank.line.sched_pct === null, JSON.stringify(qBlank));
+      assert('…counted in the footnote as having no plan, and hidden by "Hide items with no plan" like any "Not scheduled" line',
+        /1 of 1 item has no plan/.test(JSON.stringify(qCo.notes)) && qz({ quantity: '' }, { options: { hideUnplanned: true } }).line === null, JSON.stringify(qCo.notes));
+      const qLs = qz({ unit: 'LS', quantity: 1, rows: [row('2026-11-02', '400', 'Edge', 0)] });
+      assert('…while an LS line of 1 keeps its Scheduled % and status', qLs.line.sched_pct !== null && !!qLs.line.plan_status && qLs.line.plan_status !== 'Not scheduled', JSON.stringify(qLs));
+    }
+
+    // Round 5: a combined report's grand total over jobs whose plans span
+    // different months takes each job's own roll-up and weighs them by bid
+    // dollars — never the cross-job % gap times the working days from the
+    // first job's start to the last job's target.
+    {
+      const cjob = (id, s, t, days, q) => ({ id, 'project-name': 'Job ' + id, status: 'In Progress', 'start-date': '', 'end-date': '',
+        bidItems: [{ id: id + '1', cost_code: '500', sub_code: 'Sod', unit: 'SF', quantity: '1000', unit_cost: '10', start_date: s, target_date: t }],
+        dailyRows: days.map(dt => row(dt, '500', 'Sod', q)) });
+      const marDays = ['2026-03-02', '2026-03-03', '2026-03-04', '2026-03-05', '2026-03-06', '2026-03-09', '2026-03-10', '2026-03-11', '2026-03-12', '2026-03-13'];
+      const octDays = ['2026-10-01', '2026-10-02', '2026-10-05', '2026-10-06', '2026-10-07', '2026-10-08', '2026-10-09'];
+      const jA = cjob('A', '2026-03-02', '2026-03-27', marDays, 100), jB = cjob('B', '2026-10-01', '2026-11-30', octDays, 50);
+      const cols = ['sub_code', 'sched_pct', 'earned_pct', 'ahead_days', 'plan_status'];
+      const totFor = (projects, layout) => {
+        const def = vdef([vsec('plan_vs_actual', { columns: cols })], { layout, dates: { preset: 'job_to_date', from: '', to: '' } });
+        return J(V.buildSectionData(def.sections[0], def, vmk(def, { projects }, projects.map(p => p.id))).blocks[0].totals);
+      };
+      const tA = totFor([jA], 'separate'), tB = totFor([jB], 'separate'), tAB = totFor([jA, jB], 'combined');
+      const exp = Math.round(((tA.ahead_days || 0) + (-11.27)) / 2 * 2) / 2;
+      assert('combined grand total over a job done in March and one behind in Oct–Nov: days ahead no bigger than either job\'s own, the bid-weighted mean (was −26)',
+        Math.abs(tAB.ahead_days) <= Math.max(Math.abs(tA.ahead_days), Math.abs(tB.ahead_days)) && tAB.ahead_days === exp && tAB.ahead_days === -5.5,
+        JSON.stringify({ tA, tB, tAB }));
+      const jD = Object.assign(cjob('D', '2026-10-01', '2026-11-30', octDays, 50));
+      const tBD = totFor([jB, jD], 'combined');
+      assert('…while two jobs on the same span total what each reads (−11)', tBD.ahead_days === -11 && tB.ahead_days === -11, JSON.stringify({ tB, tBD }));
     }
 
     // A cost-code-only line (TON) beside a sub-coded line under its code

@@ -331,7 +331,9 @@ function settingsKey(src) {
 async function loadSchedules(sql, company, division, id) {
   return sql`
     SELECT s.*, cr.name AS cr_name, (cr.id IS NOT NULL AND cr.deleted_at IS NULL) AS cr_live,
-           cr.visibility AS cr_visibility, cr.owner_user_id AS cr_owner, cr.customer_safe AS cr_safe
+           cr.visibility AS cr_visibility, cr.owner_user_id AS cr_owner, cr.customer_safe AS cr_safe,
+           cr.kind AS cr_kind, cr.definition->'dates'->>'preset' AS cr_preset,
+           (cr.definition->>'includeInternal') = 'true' AS cr_internal
       FROM report_schedules s
       LEFT JOIN custom_reports cr ON cr.id = s.custom_report_id AND cr.company_code = s.company_code
      WHERE s.company_code = ${company} AND s.division = ${division} AND s.report_type = ${customTypeFor(division)}
@@ -378,6 +380,14 @@ function shape(r, me) {
     report_deleted:      !reportLive,
     report_visible:      reportLive && (r.cr_visibility === 'shared' || Number(r.cr_owner) === me.userId),
     report_customer_safe: reportLive ? r.cr_safe !== false : null,
+    // Anything else that stops its next send — fixed dates, a change of kind
+    // against how it is scheduled, no longer shared with who it runs as — in
+    // the run's own words. Deleted and internal have their own flags above
+    // (the builder keeps those current as the report is saved).
+    report_blocked: !reportLive || r.cr_safe === false ? null : runner.customReportBlock({
+      name: r.cr_name, kind: r.cr_kind, visibility: r.cr_visibility, owner_user_id: r.cr_owner, customer_safe: r.cr_safe,
+      definition: { dates: { preset: r.cr_preset || null }, includeInternal: r.cr_internal === true },
+    }, runner.jobsModeOf(r), r.run_as_user_id == null ? null : { userId: r.run_as_user_id, username: r.run_as_username }, opts.report_name),
   };
 }
 

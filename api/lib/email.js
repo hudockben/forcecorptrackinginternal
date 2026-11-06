@@ -164,10 +164,16 @@ function readStartTag(s, i) {
 // browser still read it as an attribute it is one named "onerror&#61;…" that
 // nothing runs. No separator lookbehind, so a handler sitting straight after a
 // closing quote ("<img src=\"x\"onerror=…") is defused too. Not applied to the
-// inert raw-text spans stripHandlers keeps verbatim (CSS, <title>, <textarea>
-// …): entities are not decoded there, so a defused "=" would corrupt them.
+// spans stripHandlers keeps (CSS, <title>, <textarea>, comments …): entities
+// are not decoded in CSS, so a defused "=" would corrupt it, and report words
+// there should come through as written.
 const HANDLER_LIKE = /(on[a-z]+\s*)=/gi;
 const defuse = text => text.replace(HANDLER_LIKE, '$1&#61;');
+// The same, but only where an attribute name could start: straight after a
+// space, a "/" or a quote (the tokenizer begins a name nowhere else). Used on
+// those spans (cutInSpan), so a handler in one is defused however the browser
+// reads it, while "Conditions = dry" in a <title> stays as written.
+const SPAN_HANDLER_LIKE = /(?<=[\s\/"'])(on[a-z]+\s*)=/gi;
 // Elements whose content the HTML parser reads as text (RAWTEXT/RCDATA), not
 // markup, up to the matching end tag. A start tag written inside such content
 // — the </textarea> in `<b c='</textarea>` — is just text to a tag reader, but
@@ -178,13 +184,46 @@ const defuse = text => text.replace(HANDLER_LIKE, '$1&#61;');
 // handler-bearing tag beyond it. (script/iframe are removed upstream; the rest
 // are listed so a confusion through them is closed regardless.)
 const RAWTEXT_EL = /^(script|style|textarea|title|xmp|iframe|noembed|noframes|noscript|plaintext)$/i;
+// A span stripHandlers keeps (a comment, a CDATA section, a raw-text body).
+// The browser may yet read it as markup — an svg/math <style>, <title> or
+// <textarea> is an ordinary element there, "<!-->" closes at once, an HTML
+// "<![CDATA[" ends at its first ">" — so it is not copied blind: each start
+// tag in it, read bounded at the span's end, loses its on… attributes, and
+// then any handler-like text still where an attribute name could start (one
+// a comment or CDATA inside an svg <style> hid from that reading) is
+// defused. Everything else is kept as written: CSS, and a <title>'s
+// "Conditions = dry", come through byte for byte (words that do sit where an
+// attribute could start, "Phase one = 1,200", get an &#61; a title decodes).
+function cutInSpan(span) {
+  const START = /<[A-Za-z]/g;
+  let out = '', i = 0;
+  for (;;) {
+    START.lastIndex = i;
+    const m = START.exec(span);
+    if (!m) { out += span.slice(i); break; }
+    out += span.slice(i, m.index);
+    const { attrs, end } = readStartTag(span, m.index);
+    let k = m.index;
+    attrs.forEach(a => {
+      if (!/^on[a-z]+$/i.test(a.name)) return;
+      out += span.slice(k, a.from);
+      const next = span[a.to];
+      if (a.to < end && next !== undefined && !isHtmlSpace(next) && next !== '/' && next !== '>') out += ' ';
+      k = a.to;
+    });
+    out += span.slice(k, end);
+    i = end;
+  }
+  return out.replace(SPAN_HANDLER_LIKE, '$1&#61;');
+}
 /* Every on… attribute goes: each start tag is read as the browser reads it
    and its on… attributes are cut out (with the separators before them; a
    space stands in when the next attribute would otherwise run into the one
-   before). Comments, CDATA sections and raw-text element bodies are passed
-   through verbatim and not scanned for tags, so a terminator faked inside one
-   cannot put the reader out of step with the browser. Text — between tags, and
-   inside the attribute values left — is never cut, only defused, so the
+   before). Comments, CDATA sections and raw-text element bodies are kept as
+   spans, to their real terminator, so a terminator faked inside one cannot put
+   the reader out of step with the browser; but they are not copied blind,
+   since the browser may read one as markup (cutInSpan). Text — between tags,
+   and inside the attribute values left — is never cut, only defused, so the
    report's own words survive. */
 function stripHandlers(html) {
   // A comment, a CDATA section (svg/math foreign content), or a start tag, in
@@ -204,14 +243,14 @@ function stripHandlers(html) {
       if (j >= 0 && (k < 0 || j <= k)) stop = j + 3;
       else if (k >= 0) stop = k + 4;
       else stop = html.length;
-      out += html.slice(m.index, stop);
+      out += cutInSpan(html.slice(m.index, stop));
       i = stop;
       continue;
     }
     if (tok === '<![CDATA[') {                           // a CDATA section: keep inert, to ]]> / EOF
       const j = html.indexOf(']]>', m.index + 9);
       const stop = j >= 0 ? j + 3 : html.length;
-      out += html.slice(m.index, stop);
+      out += cutInSpan(html.slice(m.index, stop));
       i = stop;
       continue;
     }
@@ -234,7 +273,7 @@ function stripHandlers(html) {
       const close = new RegExp('</' + nameMatch[1] + '[\\s/>]', 'i');
       const cm = close.exec(html.slice(end));
       const stop = cm ? end + cm.index : html.length;
-      out += html.slice(end, stop);
+      out += cutInSpan(html.slice(end, stop));
       i = stop;
     }
   }

@@ -125,7 +125,9 @@
     // Customer History: the job chosen and its emails, a page at a time.
     cust: { jobId: '', client: '', search: '', runs: null, loading: false, error: '', next: null, more: false, busy: null },
     // Scheduled sends of saved custom reports (admin / level 3).
-    scheds: null, schedsLoading: false, schedsError: '', canSchedule: false, schedGroups: null, schedBusy: null,
+    // schedBusy: the schedules a Send now is out for; schedToggling: those a
+    // Pause / Resume is out for (each one's ⋯ is off until its answer lands).
+    scheds: null, schedsLoading: false, schedsError: '', canSchedule: false, schedGroups: null, schedBusy: new Set(), schedToggling: new Set(),
     // The report-wide sub code / cost code filter's search box.
     filterSearch: '', focusFilter: false,
     // The AI builder drawer.
@@ -1150,15 +1152,20 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       </div>`;
   }
   function schedItemHtml(s) {
-    const busy = S.schedBusy && sameId(S.schedBusy, s.id);
+    const busy = [...S.schedBusy].some(id => sameId(id, s.id));
+    const toggling = [...S.schedToggling].some(id => sameId(id, s.id));
     const next = s.enabled && s.next_run_at ? `Next ${fmtWhen(s.next_run_at)}` : (s.enabled ? '' : 'Paused');
     const last = s.last_status ? `Last: ${s.last_status}${s.last_run_at ? ' · ' + ago(s.last_run_at) : ''}` : 'Not sent yet';
     const bad = /fail|skip|partial|missed/i.test(String(s.last_status || ''));
     // What the next send will find, said now (the server sends these so the
     // cases can be told apart): the report gone, or no longer customer-safe.
+    // Anything else the next send would refuse on (fixed dates, saved jobs
+    // against once per job, no longer shared with who it runs as) comes in
+    // the run's own words.
     const blocked = s.report_deleted === true
       ? 'Report deleted — restore it from Recently Deleted, or delete this schedule.'
-      : s.report_customer_safe === false ? 'Report now includes internal data — it won’t send until it’s customer-safe again.' : '';
+      : s.report_customer_safe === false ? 'Report now includes internal data — it won’t send until it’s customer-safe again.'
+      : txt(s.report_blocked) ? `Won’t send: ${txt(s.report_blocked)}` : '';
     return `<div class="cr-item">
       <div class="cr-item-open" style="cursor:default">
         <span class="cr-item-name">${esc(s.report_name || 'Saved report')}</span>
@@ -1169,7 +1176,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         ${s.last_message && bad ? `<span class="cr-sched-meta err">${esc(String(s.last_message).slice(0, 200))}</span>` : ''}
       </div>
       <button type="button" class="cr-item-more" data-act="sched-menu" data-id="${esc(s.id)}" data-fk="schedmore-${esc(s.id)}"
-        aria-haspopup="menu" aria-expanded="false" aria-label="Actions for the schedule of ${esc(s.report_name || 'a report')}" title="Schedule actions"${busy ? ' disabled' : ''}>&#8943;</button>
+        aria-haspopup="menu" aria-expanded="false" aria-label="Actions for the schedule of ${esc(s.report_name || 'a report')}" title="Schedule actions"${busy || toggling ? ' disabled' : ''}>&#8943;</button>
     </div>`;
   }
 
@@ -2236,6 +2243,9 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         let msg = null;
         try { msg = await o.onSubmit({ name, shared: !!(share && share.checked), saveJobs: keepJobs ? keepJobs.checked : null }); }
         catch (e) { msg = e && e.message ? e.message : 'Something went wrong.'; }
+        // Closed (Escape, ✕) while it read "Saving…": the dialog is gone, so a
+        // failure is said in a toast rather than into a detached dialog.
+        if (!m.el.isConnected) { if (msg) toast(msg, 'error'); return; }
         busy = false;
         ok.disabled = false;
         ok.textContent = o.confirmLabel || 'Save';
@@ -2425,6 +2435,16 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     });
     return S.contactsP;
   }
+  // A schedule as a save, Pause or Resume just answered with it: into the
+  // list and the rail at once, so the row (and an Edit… opened from it)
+  // reads what the server now holds, not the copy from before — the list's
+  // own refresh can be a moment behind.
+  function applySched(row) {
+    if (!row || row.id == null || !Array.isArray(S.scheds)) return;
+    const i = S.scheds.findIndex(x => sameId(x.id, row.id));
+    if (i >= 0) S.scheds[i] = row; else S.scheds.push(row);
+    renderRail();
+  }
   function loadSchedules() {
     if (!S.canShare && !S.canSchedule) return Promise.resolve();
     // A refresh asked for while one is already in flight is queued, not
@@ -2611,6 +2631,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (!isDirty()) return;
     const name = d.name.trim() || d.savedName;
     const def = defForSave();
+    const stops = scheduledStops(d, def);
+    if (stops && !window.confirm(stops)) return;
     const sent = sentSnapshot(d, def);
     S.saving = true;
     S.saveSent = sent;
@@ -2719,7 +2741,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (vis === 'shared' && !window.confirm(`Share “${d.savedName}” with everyone in ${divLabel()}? They will be able to run it; only admins and level 3 users can change it.`)) return;
     try {
       const res = await api.update(d.id, { visibility: vis, version: d.version });
-      if (S.doc !== d) { upsertReport(res.report); return; }
+      if (S.doc !== d) { upsertReport(res.report); schedsAfterSave(res.report); return; }
       // Only the visibility changed on the server; any unsaved edits stay
       // unsaved, against the new version.
       d.version = res.report.version;
@@ -2729,6 +2751,9 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       upsertReport(res.report);
       renderRail();
       updateChrome();
+      // Who may open it changed: what its schedules will find, and a list
+      // answer already on its way (read before this) is not applied.
+      schedsAfterSave(res.report);
       toast(vis === 'shared' ? 'Shared with the division.' : 'Made private.');
     } catch (e) {
       if (e.status === 409 && code(e) === 'client_outdated') return;
@@ -2751,6 +2776,9 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         try {
           const res = await api.update(r.id, { name, version: open ? open.version : r.version });
           upsertReport(res.report);
+          // Its schedules carry the name too: a list answer already on its
+          // way, read before the rename, must not put the old one back.
+          schedsAfterSave(res.report);
           if (open && S.doc === open) {
             // Keep any unsaved edits; only the stored name and version moved.
             const typed = open.name.trim() !== open.savedName;
@@ -2768,7 +2796,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
         } catch (e) {
           if (e.status === 409 && code(e) === 'name_taken') return `There is already a report called “${name}”. Pick a different name.`;
           if (e.status === 409 && code(e) === 'version_conflict') {
-            if (e.data && e.data.report) upsertReport(e.data.report);
+            if (e.data && e.data.report) { upsertReport(e.data.report); schedsAfterSave(e.data.report); }
             renderRail();
             return 'Someone else changed this report a moment ago. Try the rename again.';
           }
@@ -4085,11 +4113,19 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       errs.innerHTML = '';
       try {
         const body = scheduleBody(val);
-        if (row) await api.updateSchedule(row.id, body); else await api.createSchedule(body);
+        const res = row ? await api.updateSchedule(row.id, body) : await api.createSchedule(body);
+        applySched(res && res.schedule);
         m.close(true);
         toast(row ? 'Schedule saved.' : `Scheduled “${r.name}”: ${cadenceText(val)}.`);
         loadSchedules();
       } catch (e) {
+        // Closed (Escape, ✕) while it read "Saving…": say so in a toast, not
+        // into the detached dialog, and show the schedules as they are.
+        if (!m.el.isConnected) {
+          if (e.status !== 401) toast(`Couldn’t save the schedule: ${scheduleError(e)}`, 'error');
+          loadSchedules();
+          return;
+        }
         busy = false;
         ok.disabled = false;
         ok.textContent = row ? 'Save schedule' : 'Create schedule';
@@ -4128,32 +4164,44 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     // The switch alone: a whole schedule sent back is a save, which would
     // re-check it and make it run as whoever clicked Pause / Resume.
     const v = { enabled: !s.enabled };
+    if ([...S.schedToggling].some(x => sameId(x, s.id))) return;
+    const key = s.id;
+    S.schedToggling.add(key);
+    renderRail();
+    let res = null;
     try {
-      await api.updateSchedule(s.id, { enabled: v.enabled });
+      res = await api.updateSchedule(s.id, { enabled: v.enabled });
       toast(v.enabled ? 'Schedule resumed.' : 'Schedule paused.');
     } catch (e) {
       if (e.status !== 401) toast(`Couldn’t ${v.enabled ? 'resume' : 'pause'} it: ${scheduleError(e)}`, 'error');
     }
+    S.schedToggling.delete(key);
+    if (res && res.schedule) applySched(res.schedule); else renderRail();
     loadSchedules();
   }
+  // One Send now per schedule at a time (the server refuses a second of the
+  // same schedule); another schedule's can go meanwhile, and each result
+  // names its report so two sends cannot be confused.
   async function sendScheduleNow(id) {
     const s = (S.scheds || []).find(x => sameId(x.id, id));
-    if (!s || S.schedBusy != null) return;
-    if (!window.confirm(`Send “${s.report_name || 'this report'}” to its recipients now? It can take a few minutes.`)) return;
-    S.schedBusy = s.id;
+    if (!s || [...S.schedBusy].some(x => sameId(x, s.id))) return;
+    const name = txt(s.report_name) || 'this report';
+    if (!window.confirm(`Send “${name}” to its recipients now? It can take a few minutes.`)) return;
+    const key = s.id;
+    S.schedBusy.add(key);
     renderRail();
-    toast('Sending — this can take a few minutes. You can keep working.');
+    toast(`Sending “${name}” — this can take a few minutes. You can keep working.`);
     try {
       const res = await api.sendSchedule(s.id);
       const out = (res && (res.result || res.run)) || res || {};
       const status = String(out.status || '');
       const msg = txt(out.message);
-      if (/^(sent|ok)$/i.test(status) || (!status && res && res.ok)) toast(msg || `Sent${out.sent != null ? ` ${plural(Number(out.sent) || 0, 'email')}` : ''}.`);
-      else toast(msg || `Not sent (${status || 'unknown'}).`, /partial/i.test(status) ? null : 'error');
+      if (/^(sent|ok)$/i.test(status) || (!status && res && res.ok)) toast(`“${name}”: ${msg || `Sent${out.sent != null ? ` ${plural(Number(out.sent) || 0, 'email')}` : ''}.`}`);
+      else toast(`“${name}”: ${msg || `Not sent (${status || 'unknown'}).`}`, /partial/i.test(status) ? null : 'error');
     } catch (e) {
-      if (e.status !== 401) toast(`Couldn’t send it: ${scheduleError(e)}`, 'error');
+      if (e.status !== 401) toast(`Couldn’t send “${name}”: ${scheduleError(e)}`, 'error');
     } finally {
-      S.schedBusy = null;
+      S.schedBusy.delete(key);
       loadSchedules();
     }
   }
@@ -4292,9 +4340,12 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       const p = projectById(id);
       if (p && picked.length < MAX_JOBS && !picked.some(x => sameId(x, p.id))) picked.push(p.id);
     });
+    // "Save the jobs with the report" (jobs.mode 'saved') is the step ①
+    // box: the definition's mode is that, and nothing reads it but the box.
+    const wantSave = next.jobs.mode === 'saved' && picked.length > 0;
     next.jobs = { mode: next.jobs.mode, ids: [] };
     if (!cur) {
-      const doc = blankDoc(next, { name: txt(next.title) || 'New report', picked, saveJobs: false, touched: true });
+      const doc = blankDoc(next, { name: txt(next.title) || 'New report', picked, saveJobs: wantSave, touched: true });
       const made = { none: true };
       doc.aiUndo = [made];
       S.ai.docRef = doc;      // the same conversation carries on with it
@@ -4303,11 +4354,12 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       return true;
     }
     cur.aiUndo = cur.aiUndo || [];
-    const entry = { def: cloneJson(cur.def), picked: cur.picked.slice(), saveJobs: cur.saveJobs, name: cur.name };
+    const entry = { def: cloneJson(cur.def), picked: cur.picked.slice(), saveJobs: cur.saveJobs, saveJobsSet: cur.saveJobsSet, name: cur.name };
     cur.aiUndo.push(entry);
     if (cur.aiUndo.length > 30) cur.aiUndo.shift();
     cur.def = next;
     cur.picked = picked;
+    if (wantSave !== !!cur.saveJobs) { cur.saveJobs = wantSave; cur.saveJobsSet = true; }
     if (!txt(cur.name) && txt(next.title)) cur.name = txt(next.title);
     cur.touched = true;
     S.collapsed = new Set(next.sections.map(s => s.id));
@@ -4350,6 +4402,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     d.def.includeInternal = wasOn && prev.def.includeInternal === true;
     d.picked = prev.picked;
     d.saveJobs = prev.saveJobs;
+    if ('saveJobsSet' in prev) d.saveJobsSet = prev.saveJobsSet;
     d.name = prev.name;
     d.touched = true;
     S.collapsed = new Set(d.def.sections.map(s => s.id));
@@ -4500,6 +4553,32 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   // the schedules; the server stops an internal report's sends either way.)
   function isScheduled(d) {
     return !!(d && d.id != null && Array.isArray(S.scheds) && S.scheds.some(x => sameId(x.custom_report_id, d.id)));
+  }
+  /* What saving `def` over this scheduled report would stop, said before the
+     save (as SCHEDULED_NOTE is for internal data) — or null. The run refuses
+     a report set to fixed dates, a template scheduled once per job (or as
+     one report) that now keeps its own jobs, and a saved-jobs report that no
+     longer does. Only a change into one of these asks; one already so does
+     not ask at every save. */
+  function scheduledStops(d, def) {
+    if (!isScheduled(d)) return null;
+    const scheds = S.scheds.filter(x => sameId(x.custom_report_id, d.id));
+    const saved = S.reports.find(x => sameId(x.id, d.id));
+    let was = null;
+    try { was = saved ? E.normalizeDefinition(saved.definition) : null; } catch (_) { was = null; }
+    const kindOf = x => (x && x.jobs && x.jobs.mode === 'saved' && Array.isArray(x.jobs.ids) && x.jobs.ids.length ? 'report' : 'template');
+    const wasKind = saved && saved.kind ? saved.kind : kindOf(was), kind = kindOf(def);
+    const fixedNow = def.dates && def.dates.preset === 'custom', fixedWas = !!(was && was.dates && was.dates.preset === 'custom');
+    if (fixedNow && !fixedWas) {
+      return 'This report is scheduled — with fixed dates every scheduled email would show the same days, so scheduled sends will stop until it has a relative date range like Last week again. Save anyway?';
+    }
+    if (kind !== wasKind && kind === 'report' && scheds.some(x => x.jobs_mode !== 'saved')) {
+      return 'This report is scheduled to send once per job (or as one report of every In Progress job). Saved with its own jobs, those scheduled sends stop until the schedule is opened and saved again. Save anyway?';
+    }
+    if (kind !== wasKind && kind === 'template' && scheds.some(x => x.jobs_mode === 'saved')) {
+      return 'This report is scheduled to send its saved jobs. Saved without them, scheduled sends stop until the schedule is edited to pick its jobs. Save anyway?';
+    }
+    return null;
   }
 
   // ── Jobs ────────────────────────────────────────────────────────────

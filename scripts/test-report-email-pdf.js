@@ -277,6 +277,29 @@ assert('sanitizeReportHtml removes the window.print() bootstrap',
     'a handler a <noframes> span hides from a tag reader': '<noframes><b c=\'</noframes><img src="x"onerror=alert(1)>\'</noframes><p>keep</p>',
     'a handler an svg CDATA span hides from a tag reader': '<svg><![CDATA[<b c=\']]><img src="x"onerror=alert(1)>\']]></svg><p>keep</p>',
     'a handler straight after a comment that spans a quote': '<!--<b c=\'--><img src="x"onerror=alert(1)>\'--><p>keep</p>',
+    // …and the reverse: a span the reader keeps whole that the browser reads
+    // as markup. "<!-->" and "<!--->" close at once; an HTML "<![CDATA[" is a
+    // bogus comment that ends at its first ">"; inside svg/math a <style>,
+    // <title> or <textarea> is an ordinary element and an <img> breaks out of
+    // it as a live HTML element.
+    'a handler after an empty comment "<!-->"': '<!--><img src=x onerror=alert(1)>--><p>keep</p>',
+    'a handler after an empty comment "<!--->"': '<!---><img src=x onerror=alert(1)>--><p>keep</p>',
+    'a handler after an HTML-context CDATA (a bogus comment)': '<![CDATA[x><img src=x onerror=alert(1)>]]><p>keep</p>',
+    'a handler inside an svg <style>': '<svg><style><img src=x onerror=alert(1)></style></svg><p>keep</p>',
+    'a handler inside an svg <title>': '<svg><title><img src=x onerror=alert(1)></title></svg><p>keep</p>',
+    'a handler inside a math <style>': '<math><style><img src=x onerror=alert(1)></style></math><p>keep</p>',
+    'a handler inside an svg <textarea>': '<svg><textarea><img src=x onerror=alert(1)></textarea></svg><p>keep</p>',
+    'a handler past a faked </style> inside an svg <style>': '<svg><style><img src=x a=\'</style>\' onerror=alert(1)></svg><p>keep</p>',
+    // Inside an svg <style> a comment or CDATA is the browser's own, so a tag
+    // read from the first "<" + letter can swallow the live <img> in a value.
+    'a handler a comment inside an svg <style> hides from a tag reader': '<svg><style><!--<a title="--><img src=x onerror=alert(1)>"></style></svg><p>keep</p>',
+    'a handler a CDATA inside an svg <style> hides from a tag reader': '<svg><style><![CDATA[<a title="]]><img src=x onerror=alert(1)>"></style></svg><p>keep</p>',
+    // A faked </style> inside an svg <style> ends the reader's span while the
+    // browser is still in the <img>, so a comment or CDATA the reader then
+    // keeps whole is that tag's attributes to the browser.
+    'a handler in a "comment" read past a faked </style> in svg': '<svg><style><img src=x a=\'</style>\' <!-- \' onerror=alert(1) --></svg><p>keep</p>',
+    'a handler in a "CDATA" read past a faked </style> in svg': '<svg><style><img src=x a=\'</style>\' <![CDATA[ \' onerror=alert(1) ]]></svg><p>keep</p>',
+    'a handler straight after a quoted value inside an svg <style>': '<svg><style><img src="x"onerror=alert(1)></style></svg><p>keep</p>',
   };
   // The browser's own reading is the judge: parsed as a document, and as the
   // email shell's body (where markup after it can close an open tag), no
@@ -301,6 +324,23 @@ assert('sanitizeReportHtml removes the window.print() bootstrap',
   const textOf = h => new JSDOM(h).window.document.body.textContent;
   assert('report text that only looks like a handler ("Curb w/one = 6in", "w/onsite = 200 CY", "Phase one = 1,200") reads the same after sanitizing',
     textOf(wOut) === textOf(words) && wOut.replace(/&#61;/g, '=') === words && !handlerAttrs(wOut).length, wOut);
+  // The spans the sanitizer keeps (a <title>, CSS, an svg <title>/<style>, a
+  // comment) come through byte for byte: report words there are not defused.
+  const realDoc = '<!DOCTYPE html><html><head><title>Maple Ave — Conditions = dry</title>'
+    + '<style>body{font:12px system-ui}@page{size:letter landscape;margin:0.45in}.t td[data-k="a"]{color:#111}.x:not(.y)>b{content:"a/b"}</style></head>'
+    + '<body><!-- report body: Conditions = dry --><h1>Weekly update</h1>'
+    + '<svg viewBox="0 0 10 10" role="img"><title>Earned vs plan — Conditions = dry</title><style>.ln{stroke:#0a0;stroke-width:2}</style>'
+    + '<path class="ln" d="M0 10L10 0"/></svg><table><tr><td>Tons / Day</td><td>a/b</td></tr></table></body></html>';
+  const realOut = sanitizeReportHtml(realDoc);
+  assert('a real report document (a <title> and svg <title> with "Conditions = …", CSS with @page, a comment) comes through byte for byte',
+    realOut === realDoc, realOut);
+  // Words in such a span that do sit where an attribute could start ("Phase
+  // one = 1,200") may have their "=" written &#61; — a <title> decodes it, in
+  // HTML and in svg alike, so the title reads the same.
+  const titled = '<html><head><title>Phase one = 1,200</title></head><body><svg><title>Phase one = 1,200</title></svg></body></html>';
+  const tDoc = new JSDOM(sanitizeReportHtml(titled)).window.document;
+  assert('…and a <title> holding "Phase one = 1,200" reads the same after sanitizing (HTML and svg)',
+    tDoc.title === 'Phase one = 1,200' && tDoc.querySelector('svg title').textContent === 'Phase one = 1,200', sanitizeReportHtml(titled));
   const inAttr = '<table><tr><td class="sub" title="Curb w/one = 6in">x</td></tr></table>';
   const aOut = sanitizeReportHtml(inAttr), aTd = new JSDOM(aOut).window.document.querySelector('td');
   assert('…and so does an attribute value holding such text, with the tag around it intact',

@@ -1491,12 +1491,16 @@
   // figures, its Totals and the charts all have a span to divide by.
   const spanDays = (a, b) => (a && b && b >= a ? Math.max(1, countWorkdays(a, b)) : 0);
   // Scheduled % on a day: none before the start, all of it from the target
-  // on, a straight line over the working days between.
+  // on, a straight line over the working days between. A span with no
+  // working day in it (a weekend closure) counts its one day from the start,
+  // as planRec's elapsed does, so on its Saturday it reads as the same plan
+  // moved onto a Friday — not 0% beside a day already gone.
   function schedPct(pl, day) {
     if (!pl.source || !pl.S || !pl.T) return null;
     if (day < pl.S) return 0;
     if (day >= pl.T) return 100;
-    return pl.W ? 100 * countWorkdays(pl.S, day) / pl.W : null;
+    const zero = pl.W === 1 && countWorkdays(pl.S, spanEnd(pl)) === 0;
+    return pl.W ? 100 * (countWorkdays(pl.S, day) + (zero ? 1 : 0)) / pl.W : null;
   }
   const PLAN_BASIS = { rate: 'Planned per day', bid: 'Bid item dates', 'bid+job end': 'Bid item start + job end',
     schedule: 'Construction schedule', job: 'Job dates' };
@@ -2084,7 +2088,12 @@
                     less PR × days worked, in days of planned output. To the
                     half day; under half a day is on plan.
        needed/day   what is left today over the working days today..T —
-                    none past the target, which makes the line Behind. */
+                    none past the target, which makes the line Behind
+                    unless it is done today (finished after a past range
+                    ended is not late). A Plan / Day line with no start
+                    nobody has worked is late past its target, not "Not
+                    started"; a line with no quantity has nothing to
+                    measure and is "Not scheduled". */
   function planRecs(ctx, p, opts, scope, info) {
     const ix = jobIndex(ctx, p);
     if (!ix.planRecs) ix.planRecs = new Map();
@@ -2092,9 +2101,12 @@
     scopedItems(ix, scope || NO_SCOPE, info).forEach(b => {
       let r = ix.planRecs.get(b);
       if (!r) { r = planRec(ctx, ix, b); ix.planRecs.set(b, r); }
-      if (info) { info.items++; if (!r.m.pl.source) info.noPlan++; }
+      // No plan: none at all, or dates with no quantity to measure against
+      // them (read "Not scheduled" like a line with no plan).
+      const unplanned = !r.m.pl.source || r.m.noQty;
+      if (info) { info.items++; if (unplanned) info.noPlan++; }
       if (opts.hideComplete && r.m.complete) return;
-      if (opts.hideUnplanned && !r.m.pl.source && !r.m.complete) return;
+      if (opts.hideUnplanned && unplanned && !r.m.complete) return;
       out.push(r);
     });
     return out;
@@ -2111,6 +2123,10 @@
     const done = s.complete || (Q > 0 && I >= Q - 1e-9);
     const nunit = normUnit(s.unit), rated = nunit !== 'LS' && Q > 0;
     const EP = s.complete ? 100 : Q > 0 ? s.pctEnd : null;
+    // An open line with no quantity (zeroed by a change order, or not entered
+    // yet) keeps its typed dates but has nothing to measure against them: no
+    // Scheduled %, and "Not scheduled", as its Totals read.
+    const noQty = !!pl.source && EP === null;
     const worked = daysE > 0 || I > 0;
     const lastWork = daysE ? [...s.daysEnd].sort().pop() : '';
     // A plan whose whole span is non-working days (start = target on a
@@ -2122,7 +2138,7 @@
     const zeroSpan = !!(pl.source && pl.S && pl.W === 1 && countWorkdays(pl.S, spanEnd(pl)) === 0);
     const elapsed = d => (!d || d < pl.S ? 0 : countWorkdays(pl.S, d) + (zeroSpan ? 1 : 0));
     let SP = null, E = null;
-    if (pl.source && pl.S && pl.T) { SP = schedPct(pl, A); E = elapsed(A); }
+    if (pl.source && pl.S && pl.T && !noQty) { SP = schedPct(pl, A); E = elapsed(A); }
     const PR = pl.source && rated ? pl.PR : null;
     const PQ = SP !== null && Q > 0 ? Q * SP / 100 : null;
     const spi = SP > 0 && EP !== null ? round2(EP / SP) : null;
@@ -2133,7 +2149,9 @@
     // its Totals, it is Not scheduled. Worked, its own output still dates it.
     const undatable = pl.source === 'rate' && !pl.T;
     if (pl.source === 'rate' && !pl.typedT && PR > 0) {
-      ahead = !worked && undatable ? null : !worked && pl.S && A >= pl.S ? -E : ((done ? Math.max(I, Q) : I) - PR * daysE) / PR;
+      // Unworked with no start (none typed, no day worked) there is no pace
+      // to read either: no days figure, rather than 0.
+      ahead = !worked && (undatable || !pl.S) ? null : !worked && pl.S && A >= pl.S ? -E : ((done ? Math.max(I, Q) : I) - PR * daysE) / PR;
     } else if (pl.source && done) {
       ahead = lastWork && pl.S && pl.W ? pl.W - elapsed(lastWork) : null;
     } else if (SP !== null && EP !== null && pl.W) {
@@ -2141,7 +2159,11 @@
     }
     const ahead0 = isNum(ahead) ? ahead : null;
     ahead = halfDay(ahead);
-    const pastTarget = !!(pl.source && pl.T && pl.T < today && !done);
+    // Past target is a fact about today, so it asks whether the line is done
+    // today: one finished after a past range ended (but by its target) is not
+    // late, though as of the range's end it was still open.
+    const doneNow = done || (Q > 0 && s.remainingNow <= 0);
+    const pastTarget = !!(pl.source && pl.T && pl.T < today && !doneNow && !noQty);
     let needed = null;
     if (pl.source && pl.T && rated && !done && !pastTarget) {
       // !pastTarget means today <= pl.T; a target on a non-working day (or
@@ -2162,7 +2184,10 @@
     const fvt = PF && pl.T ? (PF <= pl.T ? countWorkdays(PF, pl.T) - 1 : -(countWorkdays(pl.T, PF) - (isWorkday(pl.T) ? 1 : 0))) : null;
     let status;
     if (done) status = 'Complete';
-    else if (!pl.source) status = 'Not scheduled';
+    else if (!pl.source || noQty) status = 'Not scheduled';
+    // A Plan / Day line with no start that nobody has worked: past its
+    // target it is late, not "Not started".
+    else if (!worked && !pl.S && pastTarget) status = PAST_TARGET;
     else if (!worked && (!pl.S || A < pl.S)) status = 'Not started';
     else if (!worked && undatable) status = 'Not scheduled';
     else if (pastTarget) status = PAST_TARGET;
@@ -2182,7 +2207,7 @@
         plan_status: status, plan_source: pl.source ? PLAN_BASIS[pl.source] : null,
         units_per_crew_hr: made > 0 && crewH > 0 ? made / crewH : null,
       },
-      m: { unit: s.unit, nunit, pl, SP, EP, PQ, Q, I, PR, rated, worked, complete: done, past: pastTarget, ahead0,
+      m: { unit: s.unit, nunit, pl, SP, EP, PQ, Q, I, PR, rated, worked, complete: done, past: pastTarget, ahead0, noQty,
         w: Math.abs(s.bidTotal) || 1, pct: itemPctParts(s), cc: txt(b.cost_code), rows: rowsForItem(ix, b),
         qtyP: s.qtyP, daysP: s.daysP, daysEnd: s.daysEnd, remainingNow: s.remainingNow, PF, facts },
       job: p,
@@ -2202,7 +2227,25 @@
      cost code + sub code one) count those rows once in Actual / Day, and the
      comparisons that would need one line's share of them are left blank. A
      job whose lines have no plan at all but which has start and end dates is
-     measured against those instead ("Job dates"). */
+     measured against those instead ("Job dates"). Over several jobs (a
+     combined report's grand total) days ahead is each job's own, weighed by
+     its bid dollars. */
+  // One job's planned lines' days ahead, unrounded: the gap between their
+  // weighted earned and scheduled % across their whole span — or, when every
+  // one is a "Planned per day" with no typed target, their own days of
+  // planned output, weighed the same way.
+  function planAhead(planned) {
+    let w = 0;
+    if (planned.every(r => r.m.pl.source === 'rate' && !r.m.pl.typedT && r.m.ahead0 !== null)) {
+      let t = 0;
+      planned.forEach(r => { w += r.m.w; t += r.m.w * r.m.ahead0; });
+      return t / w;
+    }
+    let ws = 0, we = 0;
+    planned.forEach(r => { w += r.m.w; ws += r.m.w * r.m.SP; we += r.m.w * r.m.EP; });
+    const W = spanDays(minIso(planned.map(r => r.m.pl.S)), maxIso(planned.map(r => spanEnd(r.m.pl))));
+    return W ? (we / w - ws / w) / 100 * W : null;
+  }
   function planAgg(recs, ctx) {
     const A = asOf(ctx), today = ctx.today;
     const c = {};
@@ -2244,12 +2287,23 @@
     c.start_date = S; c.target_date = T;
     c.sched_pct = sched; c.earned_pct = earned;
     c.spi = sched > 0 && earned !== null ? round2(earned / sched) : null;
-    const ratePace = planned.length > 0 && planned.every(r => r.m.pl.source === 'rate' && !r.m.pl.typedT && r.m.ahead0 !== null);
-    if (ratePace) {
+    // Over several jobs (a combined report's grand total) each job is rolled
+    // up on its own span and the jobs' days are weighed by their bid dollars:
+    // the % gap times the days from the first job's start to the last job's
+    // target would count months between jobs that are neither's.
+    const planJobs = new Map();
+    planned.forEach(r => { const k = jobKey(r.job); if (!planJobs.has(k)) planJobs.set(k, []); planJobs.get(k).push(r); });
+    if (planJobs.size > 1) {
       let w = 0, t = 0;
-      planned.forEach(r => { w += r.m.w; t += r.m.w * r.m.ahead0; });
-      c.ahead_days = halfDay(t / w);
-    } else c.ahead_days = sched !== null && earned !== null && W ? halfDay((earned - sched) / 100 * W) : null;
+      planJobs.forEach(list => {
+        const a = planAhead(list);
+        if (a === null) return;
+        const lw = list.reduce((x, r) => x + r.m.w, 0);
+        w += lw; t += lw * a;
+      });
+      c.ahead_days = w ? halfDay(t / w) : null;
+    } else if (planned.length) c.ahead_days = halfDay(planAhead(planned));
+    else c.ahead_days = sched !== null && earned !== null && W ? halfDay((earned - sched) / 100 * W) : null;
     c.plan_source = source;
     if (one !== null) {
       const rated = basis.filter(r => r.m.rated);
@@ -2310,7 +2364,9 @@
     // late (its own row says so). On job dates, past the job's end.
     const past = !!(T && T < today) && (planned.length ? planned.some(r => r.m.past) : true);
     if (recs.every(r => r.m.complete)) c.plan_status = 'Complete';
-    else if (sched === null || earned === null) c.plan_status = 'Not scheduled';
+    // Nothing to measure the job on, but a line past its own target (a Plan /
+    // Day line nobody has started, with no start to date it): late, as its row.
+    else if (sched === null || earned === null) c.plan_status = recs.some(r => r.m.past) ? PAST_TARGET : 'Not scheduled';
     else if (!recs.some(r => r.m.worked) && S && A < S) c.plan_status = 'Not started';
     else if (past) c.plan_status = PAST_TARGET;
     else c.plan_status = planStatus(c.ahead_days, c.spi);

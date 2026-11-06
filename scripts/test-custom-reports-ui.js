@@ -229,13 +229,14 @@ function makeServer(opts) {
         // report type's, and any a schedule here sends to.
         const used = new Set(srv.schedules.flatMap(x => (x.group_ids || []).map(Number)));
         // As the real endpoint: whether the report is customer-safe is the report's, now.
-        const live = x => { const r = srv.find(x.custom_report_id); if (r && !r.deleted_at) x.report_customer_safe = r.customer_safe !== false; return x; };
+        const live = x => { const r = srv.find(x.custom_report_id); if (r && !r.deleted_at) { x.report_customer_safe = r.customer_safe !== false; x.report_name = r.name; } return x; };
         // The body is built now — report_customer_safe read from each report
         // as the server sees it at this moment (live() stamps it onto the
         // schedule) — then, if a gate is set, the answer is held so a later
         // save can land before it returns (models an in-flight GET that
         // answers after a newer request was wanted).
-        const body = { schedules: srv.canShare ? srv.schedules.map(live) : [], canSchedule: srv.canShare,
+        // Copies, as a JSON answer is: the page's rows are never the server's.
+        const body = { schedules: srv.canShare ? srv.schedules.map(live).map(x => JSON.parse(JSON.stringify(x))) : [], canSchedule: srv.canShare,
           groups: srv.groups.filter(g => !g.report_type || g.report_type === `${srv.division}_custom_report` || used.has(Number(g.id)))
             .map(g => ({ id: g.id, name: g.name, count: (g.emails || []).length })) };
         if (srv.schedsLateGate) await srv.schedsLateGate();
@@ -268,7 +269,7 @@ function makeServer(opts) {
           last_status: null, last_message: null, run_as_username: 'pat', created_by_username: 'pat', updated_at: stamp(),
           project_id: body.jobs_mode === 'each' ? '*' : null }, body);
         srv.schedules.push(s);
-        return res(201, { schedule: s });
+        return res(201, { schedule: JSON.parse(JSON.stringify(s)) });
       }
       const s = srv.schedules.find(x => x.id === Number(q.id));
       if (!s) return res(404, { error: 'Schedule not found' });
@@ -276,7 +277,7 @@ function makeServer(opts) {
         const bad = validate(Object.assign({}, s, body));
         if (bad) return res(400, typeof bad === 'string' ? { error: bad } : bad);
         Object.assign(s, body, { updated_at: stamp() });
-        return res(200, { schedule: s });
+        return res(200, { schedule: JSON.parse(JSON.stringify(s)) });
       }
       if (method === 'DELETE') { srv.schedules = srv.schedules.filter(x => x !== s); return res(200, { ok: true }); }
       return res(405, { error: 'Method not allowed' });
@@ -2785,6 +2786,7 @@ function seed(srv) {
     // and a group the schedule names that neither shows is kept, not dropped.
     srv.groupsFail = true;
     srv.schedules.find(x => x.id === 960).group_ids = [41, 77];
+    h.S().scheds.find(x => x.id === 960).group_ids = [41, 77];   // the list already says so: the page holds a copy
     h.click(h.$('[data-act="sched-menu"][data-id="960"]'));
     h.click(h.document.querySelector('.cr-menu [data-act="sched-edit"]'));
     await tick(6);
@@ -2933,6 +2935,234 @@ function seed(srv) {
     await tick(12);
     assert('the stale answer is dropped, a fresh refresh runs, and the rail stays customer-safe (no "won’t send")',
       gets() > g0 && srv.find(1).customer_safe === true && !/won’t send/.test(line()), `${gets()} vs ${g0} · ${line()}`);
+    h.close();
+  }
+  {
+    // Round 5: the rail and Edit… follow what a Pause or a Save just did,
+    // from the PUT's own answer, without waiting for the list to come back —
+    // so an Edit… opened meanwhile cannot save the old settings back over it.
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }] }));
+    srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+    srv.schedules.push({ id: 985, custom_report_id: 1, report_name: 'Acme weekly update', jobs_mode: 'saved', picked_jobs: null,
+      frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00', timezone: 'America/New_York', group_ids: [41],
+      emails: ['keep@acme.com', 'drop@acme.com'], use_job_contacts: false, subject: null, note: null, attach_pdf: true, enabled: true,
+      next_run_at: '2026-11-09T12:00:00Z', last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat',
+      created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z', report_visible: true, report_deleted: false, report_customer_safe: true });
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    const releases = [];
+    const hold = () => { srv.schedsLateGate = () => new Promise(r => releases.push(r)); };
+    const letGo = async () => { srv.schedsLateGate = null; releases.splice(0).forEach(f => f()); await tick(12); };
+    const more = () => h.$('[data-act="sched-menu"][data-id="985"]');
+    const line = () => (more() ? more().closest('.cr-item').textContent.replace(/\s+/g, ' ') : '');
+    const menu = act => { h.click(more()); h.click(h.document.querySelector(`.cr-menu [data-act="${act}"]`)); };
+    hold();
+    menu('sched-toggle');
+    await tick(8);
+    assert('Pause with the list refresh still out: the rail already says Paused (from the PUT\'s answer)',
+      releases.length === 1 && /Paused/.test(line()) && !/ On /.test(' ' + line() + ' '), line());
+    menu('sched-edit');
+    await tick(6);
+    let m = h.modal();
+    assert('…and Edit… opened before the refresh lands shows it switched off, so Save keeps it paused',
+      m && m.querySelector('#cr-s-enabled').checked === false, m && String(m.querySelector('#cr-s-enabled').checked));
+    m.querySelector('[data-s="save"]').click();
+    await tick(8);
+    assert('…Save PUTs enabled:false', srv.schedules[0].enabled === false
+      && h.srv.callsTo('/api/custom-report-schedules', 'PUT').pop().body.enabled === false);
+    await letGo();
+    // Edit… → take an address off → Save, with the refresh held: Edit… again
+    // must not bring it back.
+    hold();
+    menu('sched-edit');
+    await tick(6);
+    m = h.modal();
+    const chipIdx = [...m.querySelectorAll('#cr-s-chips [data-s="rm-email"]')].findIndex(b => /drop@acme\.com/.test(b.closest('.cr-chip').textContent));
+    m.querySelectorAll('#cr-s-chips [data-s="rm-email"]')[chipIdx].click();
+    m.querySelector('[data-s="save"]').click();
+    await tick(8);
+    assert('an address taken off and saved: gone on the server', JSON.stringify(srv.schedules[0].emails) === '["keep@acme.com"]', JSON.stringify(srv.schedules[0].emails));
+    menu('sched-edit');
+    await tick(6);
+    m = h.modal();
+    assert('…and Edit… again before the refresh lands does not bring it back', m && !/drop@acme\.com/.test(m.querySelector('#cr-s-chips').textContent)
+      && /keep@acme\.com/.test(m.querySelector('#cr-s-chips').textContent), m && m.querySelector('#cr-s-chips').textContent);
+    m.querySelector('[data-s="cancel"]').click();
+    await letGo();
+    // While a Pause is out, the row's ⋯ is off: nothing can be opened from the old copy.
+    let putRelease;
+    const putGate = new Promise(r => { putRelease = r; });
+    const realHandle = srv.handle;
+    srv.handle = async (url, init) => { if (init && init.method === 'PUT' && /custom-report-schedules/.test(url)) await putGate; return realHandle(url, init); };
+    menu('sched-toggle');
+    await tick(4);
+    assert('while a Resume is out, the schedule\'s ⋯ is off', more() && more().disabled === true);
+    putRelease();
+    await tick(10);
+    srv.handle = realHandle;
+    assert('…and on again once it has landed, reading On', more() && more().disabled === false && /On/.test(line()), line());
+    h.close();
+  }
+  {
+    // Round 5: a schedule blocked for a reason other than deleted / internal
+    // (fixed dates, saved jobs vs once per job) says so on the rail; and
+    // saving a scheduled report into one of those asks first.
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }] }));
+    srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+    srv.reports.find(r => r.id === 2).definition.dates = { preset: 'last_week' };
+    const base = { jobs_mode: 'saved', picked_jobs: null, frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00',
+      timezone: 'America/New_York', group_ids: [41], emails: [], use_job_contacts: false, subject: null, note: null, attach_pdf: true, enabled: true,
+      next_run_at: '2026-11-09T12:00:00Z', last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat',
+      created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z', report_visible: true, report_deleted: false, report_customer_safe: true };
+    srv.schedules.push(Object.assign({}, base, { id: 986, custom_report_id: 1, report_name: 'Acme weekly update',
+      report_blocked: '“Acme weekly update” is set to fixed dates now, so every email would show the same days. Give it a relative date range like Last week and save it.' }));
+    srv.schedules.push(Object.assign({}, base, { id: 987, custom_report_id: 2, report_name: 'Owner template', jobs_mode: 'each', report_blocked: null }));
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    const line = id => { const b = h.$(`[data-act="sched-menu"][data-id="${id}"]`); return b ? b.closest('.cr-item').textContent.replace(/\s+/g, ' ') : ''; };
+    assert('the rail shows the server\'s report_blocked line for a schedule that will not send', /set to fixed dates now/.test(line(986)), line(986));
+    assert('…and none for one that will', !/fixed dates|saves its own jobs|won’t send/.test(line(987)), line(987));
+    // Report 2 (a template, scheduled once per job): saved with its jobs kept.
+    h.click(h.$('[data-act="open"][data-id="2"]'));
+    h.$$('.cr-job input')[0].click();
+    h.$('[data-bind="save-jobs"]').click();
+    const puts0 = h.srv.calls('PUT').length;
+    h.answers.push(false);
+    h.click(h.act('save'));
+    await tick(8);
+    const asked = h.confirms.pop() || '';
+    assert('saving a template scheduled once per job with its jobs kept asks first, saying the scheduled sends stop; "no" saves nothing',
+      /This report is scheduled/.test(asked) && /once per job/.test(asked) && h.srv.calls('PUT').length === puts0, asked);
+    h.$('[data-bind="save-jobs"]').click();
+    // Fixed dates on a scheduled report.
+    h.change(h.$('[data-bind="preset"]'), 'custom');
+    h.answers.push(false);
+    h.click(h.act('save'));
+    await tick(8);
+    const asked2 = h.confirms.pop() || '';
+    assert('…and saving it with fixed dates asks first too', /This report is scheduled/.test(asked2) && /fixed dates/.test(asked2)
+      && h.srv.calls('PUT').length === puts0, asked2);
+    h.close();
+  }
+  {
+    // Round 5: while one schedule is sending, Send now on another is not a
+    // silent no-op — it asks and sends that one too, and each result names
+    // its report.
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }] }));
+    srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+    srv.reports.find(r => r.id === 2).definition.dates = { preset: 'last_week' };
+    const base = { jobs_mode: 'saved', picked_jobs: null, frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00',
+      timezone: 'America/New_York', group_ids: [41], emails: [], use_job_contacts: false, subject: null, note: null, attach_pdf: true, enabled: true,
+      next_run_at: '2026-11-09T12:00:00Z', last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat',
+      created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z', report_visible: true, report_deleted: false, report_customer_safe: true };
+    srv.schedules.push(Object.assign({}, base, { id: 988, custom_report_id: 1, report_name: 'Acme weekly update' }));
+    srv.schedules.push(Object.assign({}, base, { id: 989, custom_report_id: 2, report_name: 'Division progress template', jobs_mode: 'each' }));
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    let release;
+    srv.sendNowGate = new Promise(r => { release = r; });
+    const send = id => { h.click(h.$(`[data-act="sched-menu"][data-id="${id}"]`)); h.click(h.document.querySelector('.cr-menu [data-act="sched-send"]')); };
+    const runs = () => h.srv.callsTo('/api/custom-report-schedules', 'POST', e => e.q.action === 'run').map(e => e.q.id);
+    h.confirms.splice(0);
+    send(988);
+    await tick(4);
+    assert('Send now on A: asked, sending', h.confirms.length === 1 && JSON.stringify(runs()) === '["988"]');
+    assert('…B\'s ⋯ stays on while A sends', h.$('[data-act="sched-menu"][data-id="989"]').disabled === false
+      && h.$('[data-act="sched-menu"][data-id="988"]').disabled === true);
+    send(989);
+    await tick(4);
+    assert('Send now on B meanwhile: asked and sent too — not silently dropped', h.confirms.length === 2 && /Division progress template/.test(h.confirms[1])
+      && JSON.stringify(runs()) === '["988","989"]', `${h.confirms.length} confirms; runs ${JSON.stringify(runs())}`);
+    const toasts = [];
+    const seen = new h.window.MutationObserver(recs => recs.forEach(r => [...r.addedNodes].forEach(n => {
+      if (n.classList && n.classList.contains('cr-toast')) toasts.push(n.textContent);
+    })));
+    seen.observe(h.document.body, { childList: true, subtree: true });
+    release();
+    await tick(12);
+    seen.disconnect();
+    assert('…and each result names its report', toasts.some(t => /Acme weekly update/.test(t) && /Sent 2 emails/.test(t))
+      && toasts.some(t => /Division progress template/.test(t) && /Sent 2 emails/.test(t)), JSON.stringify(toasts));
+    h.close();
+  }
+  {
+    // Round 5: a dialog closed (Escape) while it reads "Saving…" still says
+    // when the save fails.
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }] }));
+    srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+    srv.schedules.push({ id: 991, custom_report_id: 1, report_name: 'Acme weekly update', jobs_mode: 'saved', picked_jobs: null,
+      frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00', timezone: 'America/New_York', group_ids: [41], emails: [],
+      use_job_contacts: false, subject: null, note: null, attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:00:00Z',
+      last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat', created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z',
+      report_visible: true, report_deleted: false, report_customer_safe: true });
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    const esc = () => h.document.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    h.click(h.$('[data-act="sched-menu"][data-id="991"]'));
+    h.click(h.document.querySelector('.cr-menu [data-act="sched-edit"]'));
+    await tick(6);
+    const m = h.modal();
+    m.querySelector('#cr-s-subject').value = 'Changed';
+    srv.next.push({ match: e => e.path === '/api/custom-report-schedules' && e.method === 'PUT', status: 500, body: { error: 'database', message: 'Database error' } });
+    m.querySelector('[data-s="save"]').click();
+    esc();
+    await tick(10);
+    const t = h.document.querySelector('.cr-toast');
+    assert('Escape during the schedule\'s "Saving…", then the save fails: the dialog is gone and an error toast says it was not saved',
+      !h.modal() && t && t.classList.contains('err') && /Couldn’t save the schedule/.test(t.textContent) && /Database error/.test(t.textContent),
+      t ? t.className + ' ' + t.textContent : 'no toast');
+    // The same for Rename.
+    h.click(h.$('[data-act="item-menu"][data-id="1"]'));
+    h.click(h.document.querySelector('.cr-menu [data-act="menu-rename"]'));
+    const rm = h.modal();
+    rm.querySelector('#cr-m-name').value = 'Renamed meanwhile';
+    srv.next.push({ status: 500, body: { error: 'Database error' } });
+    rm.querySelector('[data-m="ok"]').click();
+    esc();
+    await tick(10);
+    const t2 = h.document.querySelector('.cr-toast');
+    assert('…and Escape during Rename\'s "Saving…", then a failure: an error toast says so',
+      !h.modal() && t2 && t2.classList.contains('err') && /Couldn’t rename/.test(t2.textContent), t2 ? t2.className + ' ' + t2.textContent : 'no toast');
+    h.close();
+  }
+  {
+    // Round 5: renaming a scheduled report while a schedules refresh is out
+    // asks for the list again, so the older answer cannot put the old name
+    // back on the rail.
+    const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }] }));
+    srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+    srv.schedules.push({ id: 992, custom_report_id: 1, report_name: 'Acme weekly update', jobs_mode: 'saved', picked_jobs: null,
+      frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00', timezone: 'America/New_York', group_ids: [41], emails: [],
+      use_job_contacts: false, subject: null, note: null, attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:00:00Z',
+      last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat', created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z',
+      report_visible: true, report_deleted: false, report_customer_safe: true });
+    const h = boot({ server: srv });
+    await h.render();
+    await tick(6);
+    const name = () => { const b = h.$('[data-act="sched-menu"][data-id="992"]'); return b ? b.closest('.cr-item').querySelector('.cr-item-name').textContent : ''; };
+    const gets = () => h.srv.callsTo('/api/custom-report-schedules', 'GET').length;
+    const releases = [];
+    srv.schedsLateGate = () => new Promise(r => releases.push(r));
+    h.click(h.$('[data-act="sched-menu"][data-id="992"]'));
+    h.click(h.document.querySelector('.cr-menu [data-act="sched-toggle"]'));
+    await tick(8);
+    srv.schedsLateGate = null;
+    const g0 = gets();
+    h.click(h.$('[data-act="item-menu"][data-id="1"]'));
+    h.click(h.document.querySelector('.cr-menu [data-act="menu-rename"]'));
+    const rm = h.modal();
+    rm.querySelector('#cr-m-name').value = 'Maple Ave — owner weekly update';
+    rm.querySelector('[data-m="ok"]').click();
+    await tick(8);
+    assert('renamed with a schedules refresh out: the rail shows the new name', releases.length === 1 && name() === 'Maple Ave — owner weekly update', name());
+    releases.splice(0).forEach(f => f());
+    await tick(12);
+    assert('…and after the older refresh lands it still does — the list was asked for again',
+      name() === 'Maple Ave — owner weekly update' && gets() > g0, `${name()} · gets ${gets()} vs ${g0}`);
     h.close();
   }
   {
@@ -3155,6 +3385,44 @@ function seed(srv) {
     assert('after Save As the copy is the user\'s own, and the panel follows: input and Send on, the note gone',
       !h.modal() && h.S().doc.readOnly === false && !q('.crai-in').disabled && !q('.crai-send').disabled && q('.crai-ro').hidden,
       JSON.stringify({ ro: h.S().doc.readOnly, input: q('.crai-in').disabled, note: q('.crai-ro').hidden }));
+    h.close();
+  }
+
+  {
+    // Round 5: "save the jobs with the report" from the AI builder reaches
+    // the report — the step ① box, getDefinition and the saved copy — and
+    // its Undo takes it back.
+    const srv = seed(makeServer({ canShare: false }));
+    srv.add({ id: 30, name: 'My private template', definition: { v: 2, dates: { preset: 'last_week' }, jobs: { mode: 'pick', ids: [] }, sections: [{ type: 'job_info' }] } });
+    const h = boot({ server: srv });
+    const E = h.window.FCTReportEngine;
+    const mounts = [];
+    h.window.FCTReportAI = { mount(el, adapter) { mounts.push(adapter); el.innerHTML = '<div class="ai-stub"></div>'; return { destroy() {} }; } };
+    await h.render();
+    h.click(h.act('ai-toggle'));
+    const a = mounts[0];
+    a.applyDefinition(E.normalizeDefinition({ v: 2, title: 'Maple weekly', jobs: { mode: 'saved', ids: ['p1'] }, sections: [{ type: 'job_info' }] }), { changes: ['Saved the jobs with the report'] });
+    assert('an AI apply with jobs saved, on a new report: the jobs are kept with it (step ① box ticked, getDefinition says saved)',
+      h.S().doc.saveJobs === true && h.$('[data-bind="save-jobs"]').checked && a.getDefinition().jobs.mode === 'saved'
+        && JSON.stringify(a.getDefinition().jobs.ids) === '["p1"]', JSON.stringify({ saveJobs: h.S().doc.saveJobs, def: a.getDefinition().jobs }));
+    // An existing private template: open it, the AI saves the jobs with it, Save.
+    h.click(h.$('[data-act="open"][data-id="30"]'));
+    await tick(2);
+    const puts0 = h.srv.calls('PUT').length;
+    a.applyDefinition(E.normalizeDefinition({ v: 2, title: 'My private template', dates: { preset: 'last_week' }, jobs: { mode: 'saved', ids: ['p1'] },
+      sections: [{ type: 'job_info' }] }), { changes: ['Saved the jobs with the report'] });
+    assert('…on an open template: the box is ticked and the report is unsaved', h.S().doc.saveJobs === true && h.$('[data-bind="save-jobs"]').checked
+      && !h.$('.cr-dirty').hidden);
+    h.click(h.act('save'));
+    await tick(8);
+    const put = h.srv.calls('PUT').slice(puts0).pop();
+    assert('…and Save PUTs the jobs with it', put && put.body.definition.jobs.mode === 'saved' && JSON.stringify(put.body.definition.jobs.ids) === '["p1"]'
+      && srv.find(30).kind === 'report', put ? JSON.stringify(put.body.definition.jobs) : 'no PUT');
+    // Undo of an AI change brings the box back.
+    a.applyDefinition(E.normalizeDefinition({ v: 2, title: 'My private template', dates: { preset: 'last_week' }, jobs: { mode: 'pick', ids: ['p1'] },
+      sections: [{ type: 'job_info' }] }), { changes: ['Jobs picked each time'] });
+    assert('an AI apply back to "pick each time" unticks it', h.S().doc.saveJobs === false && !h.$('[data-bind="save-jobs"]').checked);
+    assert('…and AI Undo ticks it again', a.undo() === true && h.S().doc.saveJobs === true && h.$('[data-bind="save-jobs"]').checked);
     h.close();
   }
 

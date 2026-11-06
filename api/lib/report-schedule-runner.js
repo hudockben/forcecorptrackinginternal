@@ -241,6 +241,50 @@ function jobsModeOf(sched) {
 }
 
 /**
+ * Why a custom schedule's saved report will not send as it stands, in words
+ * for the schedule's row — or null. `r` is the saved report as it is now
+ * ({ name, kind, visibility, owner_user_id, customer_safe, definition,
+ * deleted_at }, or nothing once purged), `mode` the schedule's jobs mode,
+ * `runAs` the account it runs as ({ userId, username }). The run refuses on
+ * these words (loadCustomReport); the schedules list shows them before the
+ * next send finds them.
+ */
+function customReportBlock(r, mode, runAs, savedName) {
+  const name = (r && r.name) || String(savedName || '').trim();
+  if (!r || r.deleted_at) {
+    return `The saved report${name ? ` “${name}”` : ''} was deleted. Restore it in Custom Reporting, or delete this schedule.`;
+  }
+  if (runAs && runAs.userId != null && !(r.visibility === 'shared' || Number(r.owner_user_id) === Number(runAs.userId))) {
+    return `“${name}” is no longer shared with ${runAs.username}, who this schedule runs as. `
+      + 'Share it again, or have its owner edit and save the schedule.';
+  }
+  const definition = CR.isPlainObject(r.definition) ? r.definition : {};
+  if (r.customer_safe === false || definition.includeInternal === true) {
+    return `“${name}” now includes internal data — scheduled sends are customer-safe only. `
+      + 'Switch internal data off in Custom Reporting and save it to start sending again.';
+  }
+  const dates = CR.isPlainObject(definition.dates) ? definition.dates : {};
+  if (dates.preset === 'custom') {
+    return `“${name}” is set to fixed dates now, so every email would show the same days. `
+      + 'Give it a relative date range like Last week and save it.';
+  }
+  if (mode === 'saved' && r.kind !== 'report') {
+    return `“${name}” no longer saves its jobs, so this schedule does not know which jobs to send. `
+      + 'Edit the schedule and pick the jobs it covers.';
+  }
+  // The other way round: a template scheduled once per job (or as every In
+  // Progress job) that has since been saved with its own jobs is a report
+  // about THOSE jobs — its name, its "Prepared for", its filters — and is
+  // not sent for every other job. Saving the schedule makes it send for the
+  // report's own jobs (the editor offers nothing else for it).
+  if (mode !== 'saved' && r.kind === 'report') {
+    return `“${name}” now saves its own jobs, so it is no longer sent ${mode === 'all_in_progress' ? 'as one report of every In Progress job' : 'once per job'}. `
+      + 'Open the schedule and save it to send it for those jobs.';
+  }
+  return null;
+}
+
+/**
  * The saved report a custom schedule sends, read now and checked against the
  * account it runs as now — { report, mode }, or { error } in words for the
  * schedule's row. Customer-safe only: a report switched to internal data
@@ -252,45 +296,18 @@ async function loadCustomReport(sql, sched, acct, def) {
     return { error: `${acct.username} is a sales login in ${divisionName(def.division)} now, and sales cannot open Custom Reporting. `
       + 'Have an admin or level 3 user edit and save the schedule to run it as them.' };
   }
-  const gone = n => ({ error: `The saved report${n ? ` “${n}”` : ''} was deleted. Restore it in Custom Reporting, or delete this schedule.` });
   const id = customReportIdOf(sched);
-  if (!id) return gone(savedName);
-  const rows = await sql`
+  const rows = id ? await sql`
     SELECT id, name, kind, visibility, owner_user_id, customer_safe, definition, version, deleted_at
       FROM custom_reports
      WHERE id = ${id} AND company_code = ${sched.company_code} AND division = ${def.division}
-     LIMIT 1`;
+     LIMIT 1` : [];
   const r = rows && rows[0];
   const name = (r && r.name) || savedName;
-  if (!r || r.deleted_at) return gone(name);
-  if (!(r.visibility === 'shared' || Number(r.owner_user_id) === Number(acct.userId))) {
-    return { error: `“${name}” is no longer shared with ${acct.username}, who this schedule runs as. `
-      + 'Share it again, or have its owner edit and save the schedule.' };
-  }
-  const definition = CR.isPlainObject(r.definition) ? r.definition : {};
-  if (r.customer_safe === false || definition.includeInternal === true) {
-    return { error: `“${name}” now includes internal data — scheduled sends are customer-safe only. `
-      + 'Switch internal data off in Custom Reporting and save it to start sending again.' };
-  }
-  const dates = CR.isPlainObject(definition.dates) ? definition.dates : {};
-  if (dates.preset === 'custom') {
-    return { error: `“${name}” is set to fixed dates now, so every email would show the same days. `
-      + 'Give it a relative date range like Last week and save it.' };
-  }
   const mode = jobsModeOf(sched);
-  if (mode === 'saved' && r.kind !== 'report') {
-    return { error: `“${name}” no longer saves its jobs, so this schedule does not know which jobs to send. `
-      + 'Edit the schedule and pick the jobs it covers.' };
-  }
-  // The other way round: a template scheduled once per job (or as every In
-  // Progress job) that has since been saved with its own jobs is a report
-  // about THOSE jobs — its name, its "Prepared for", its filters — and is
-  // not sent for every other job. Saving the schedule makes it send for the
-  // report's own jobs (the editor offers nothing else for it).
-  if (mode !== 'saved' && r.kind === 'report') {
-    return { error: `“${name}” now saves its own jobs, so it is no longer sent ${mode === 'all_in_progress' ? 'as one report of every In Progress job' : 'once per job'}. `
-      + 'Open the schedule and save it to send it for those jobs.' };
-  }
+  const blocked = customReportBlock(r, mode, acct, savedName);
+  if (blocked) return { error: blocked };
+  const definition = CR.isPlainObject(r.definition) ? r.definition : {};
   return {
     mode,
     report: {
@@ -1263,7 +1280,13 @@ async function runSchedule(sql, sched, ctx = {}) {
           progress(specs.length > 1 ? `Making the PDF and sending ${name} (${s + 1} of ${specs.length})` : `Making the PDF and sending ${name}`);
           const sent = await deliverReport({
             label:       def.label,
-            projectName: it.projectName,
+            // A custom report's subject already names its job (subj, from
+            // the page's current name). The label it was built with may be
+            // the name the schedule saved for a job that is no longer In
+            // Progress — a name it may no longer have — and handed on here
+            // it would replace the whole subject ("Custom Report — Paving —
+            // <old name>").
+            projectName: custom ? null : it.projectName,
             recipients:  to,
             subject:     subj,
             note:        sched.note || '',
@@ -1712,6 +1735,7 @@ async function releaseClaim(sql, sched, token) {
 
 module.exports = {
   runSchedule,
+  customReportBlock,
   recordRun,
   beginRun,
   handBack,
