@@ -2420,29 +2420,14 @@ function deepNear(a, b, at = '') {
         { filename: 'custom-reports-engine-382f3c9.js' });
       return c.FCTReportEngine;
     })();
-    /* Random jobs, plans, rows and ranges from a seeded PRNG; returns the
-       counts and the first few failures of each property:
-         (a) a past range's report (A < today) reads the same looking back —
-             every column but Needed / Day, Projected Finish and Finish vs
-             Target, and the footnotes (and, on a quarter of them, the
-             chart) — run 1, 9 working and 60 days after A, with rows dated
-             after A added, some of them finishing or overrunning a line;
-         (b) a report as of today (A = today) equals the round-7 engine's
-             output, every column and the chart — exactly, except that a row
-             dated after a range that ends today or later (a future-dated
-             row) no longer counts as done or as shared: the today-clause
-             read it, the snapshot does not. Where there are such rows, the
-             report reads the same looking back with them taken out;
-         (c) every roll-up (job Totals, subtotal, grand total) is "Behind
-             (past target)" exactly when its target is before A and a line
-             under it is (or a job under it measured on its job dates is not
-             done by A); no line or roll-up is with a target on or after A. */
-    function planProperties(E, OLD, N, SEED) {
-      const PT = 'Behind (past target)';
-      const ADMIN = { role: 'admin', canSeeCosts: true, canSeeFinancials: true, canShare: true };
-      const PVA_COLS = E.CATALOG.plan_vs_actual.columns.map(c => c.key);
-      const CH_COLS = E.CATALOG.chart.columns.map(c => c.key);
-      const FWD = ['required_rate', 'projected_finish', 'forecast_vs_target'];
+    /* The seeded case generator the properties share: random jobs (bid
+       lines on every plan basis, daily rows, Construction Schedule tasks),
+       ranges and days to run them on, from a mulberry32 PRNG, so every run
+       draws the same cases. opt tilts the draw: undated, the chance a row
+       has no date; noStart, the chance a "Planned per day" line has no
+       Start; kinds, the plan bases a bid line is drawn from. */
+    function caseGen(E, SEED, opt) {
+      const o = Object.assign({ undated: 0.04, noStart: 0.5, kinds: ['bid', 'bid', 'odd', 'rate', 'rate', 'sched', 'jobend', 'none', 'none'] }, opt || {});
       const utcOf = iso => Date.UTC(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10));
       const addD = (iso, n) => new Date(utcOf(iso) + n * 864e5).toISOString().slice(0, 10);
       const diffD = (a, b) => Math.round((utcOf(b) - utcOf(a)) / 864e5);
@@ -2499,7 +2484,7 @@ function deepNear(a, b, at = '') {
             unit: pick(['SF', 'SY', 'TON', 'TN', 'LF', 'EA', 'LS']), quantity: Q === '' ? '' : String(Q), unit_cost: String(p(0.1) ? 0 : int(1, 90)) };
           if (p(0.08)) b.change_orders = [{ qty_delta: p(0.5) ? -(+Q || 0) : int(-50, 200), date: day(W0, W1) }];
           if (p(0.12)) b.is_complete = true;
-          const kind = pick(['bid', 'bid', 'odd', 'rate', 'rate', 'sched', 'jobend', 'none', 'none']);
+          const kind = pick(o.kinds);
           if (kind === 'bid') { b.start_date = day(W0, W1); b.target_date = addD(b.start_date, int(0, 50)); }
           else if (kind === 'odd') {
             const v = int(0, 3);
@@ -2511,7 +2496,7 @@ function deepNear(a, b, at = '') {
             // Plan / Day, with and without a Start and a Target; slow enough to
             // finish months out, or (0.05) never on the calendar.
             b.planned_rate = String(p(0.06) ? 0.05 : pick([int(10, 80), int(80, 600)]));
-            if (p(0.5)) b.start_date = p(0.2) ? odd(W0, W1) : day(W0, W1);
+            if (p(1 - o.noStart)) b.start_date = p(0.2) ? odd(W0, W1) : day(W0, W1);
             if (p(0.5)) b.target_date = b.start_date && p(0.8) ? addD(b.start_date, int(-5, 40)) : day(W0, W1);
           } else if (kind === 'sched') {
             const S = day(W0, W1), T = addD(S, int(-3, 40));
@@ -2522,12 +2507,117 @@ function deepNear(a, b, at = '') {
           else if (p(0.3)) b.target_date = day(W0, W1);
           job.bidItems.push(b);
           const Qn = Math.max(0, +Q || 0);
-          for (let r = int(0, 6); r > 0; r--) job.dailyRows.push(genRow(b, p(0.04) ? '' : day(W0, W1), Qn));
+          for (let r = int(0, 6); r > 0; r--) job.dailyRows.push(genRow(b, p(o.undated) ? '' : day(W0, W1), Qn));
         }
         if (p(0.1)) job.dailyRows.push({ date: day(W0, W1), cost_code: '900', sub_code: 'X', quantity: '5', labor_hours: '8', employee: 'Ann' });
         if (tasks.length) sched[job.id] = tasks;
         return job;
       }
+      return { R, int, pick, p, day, addD, addWd, diffD, genDates, genRow, genJob, RANGES };
+    }
+    const PROP_ADMIN = { role: 'admin', canSeeCosts: true, canSeeFinancials: true, canShare: true };
+    const nowOf = iso => new Date(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10), 14, 30);
+    // One run of a case: its definition (on other dates, or only its first
+    // section or sections, when asked) over these jobs, as of today.
+    function runCase(Eng, cs, jobs, today, dates, first, eachAlone) {
+      const def = Object.assign({}, cs.def, { dates: dates || cs.def.dates });
+      if (first) def.sections = def.sections.slice(0, first === true ? 1 : first);
+      const cfg = { division: cs.division, divisionLabel: cs.division, areaUnit: 'SY', perm: PROP_ADMIN, getProjects: () => jobs,
+        getConSchedule: id => cs.sched[id] || null, getPurchaseOrders: () => cs.pos || [], getTruckingEntries: () => cs.trucks || [] };
+      const ctx = Eng.makeContext(def, cfg, { pickedIds: jobs.map(j => j.id), today, now: nowOf(today) });
+      // eachAlone: each section built under a definition of its own (the same
+      // report otherwise), which reads the same and saves normalizing every
+      // section of a long report for each one.
+      return def.sections.map(s => Eng.buildSectionData(s, eachAlone ? Object.assign({}, def, { sections: [s] }) : def, ctx));
+    }
+    // The figures that look forward from today, by section — by design,
+    // whatever the range: a snapshot leaves them out. Bid Progress' and the
+    // strip's Projected Cost are the bid page's projection today, and the
+    // strip's GP Earned is the bid page's, off today's cost and that
+    // projection; Production's Remaining, Est. Days Left and Projected
+    // Finish are from what is left today; the Schedule's Days Left counts
+    // from today.
+    const FWD_BY = {
+      plan_vs_actual: ['required_rate', 'projected_finish', 'forecast_vs_target'],
+      bid_progress: ['projected_cost'],
+      production_kpis: ['remaining_qty', 'est_days_left', 'projected_finish'],
+      summary_kpis: ['projected_cost', 'gp_earned'],
+      schedule: ['days_left'],
+    };
+    // Section outputs as text: each job object by its id (in place — the
+    // outputs are the run's own), and, looking back only, without the
+    // figures that look forward from today.
+    const idOf = j => (j && typeof j === 'object' ? String(j.id) : j);
+    function serOut(out, back) {
+      out.forEach(sec => (sec.blocks || []).forEach(bk => {
+        bk.job = idOf(bk.job);
+        const fwd = back ? FWD_BY[sec.type] || [] : [];
+        const cut = c => { if (c) fwd.forEach(k => { delete c[k]; }); };
+        cut(bk.totals);
+        (bk.groups || []).forEach(g => { cut(g.subtotal); g.rows.forEach(r => { if (r.job !== undefined) r.job = idOf(r.job); cut(r.cells); }); });
+        (bk.charts || []).forEach(ch => { ch.job = idOf(ch.job); });
+      }));
+      return JSON.stringify(out);
+    }
+    // Which sections of two serialized outputs differ.
+    const secDiff = (x, y) => { const a = JSON.parse(x), b = JSON.parse(y); return a.map((s, k) => (JSON.stringify(s) === JSON.stringify(b[k]) ? null : s.type)).filter(Boolean); };
+    /* The one change the Plan / Day status fix makes to a report as of
+       today: a Planned vs Actual line the round-7 engine left with no status
+       (a Plan / Day line with a typed target, no start and only undated work
+       in) reads "Not scheduled". Writes that status into the old output's
+       lines that have none, where the same line of the new output reads it,
+       and nothing else; returns how many it wrote. The outputs then have to
+       be equal in full — every other cell of the line, its subtotal, Totals
+       and every other section. */
+    function fillBlankStatus(oldOut, newOut) {
+      let n = 0;
+      oldOut.forEach((sec, si) => {
+        const ns = newOut[si];
+        if (sec.type !== 'plan_vs_actual' || !ns || ns.type !== sec.type) return;
+        (sec.blocks || []).forEach((bk, bi) => (bk.groups || []).forEach((g, gi) => g.rows.forEach((r, ri) => {
+          const nb = ns.blocks[bi], ng = nb && nb.groups[gi], nr = ng && ng.rows[ri];
+          if (nr && r.cells.plan_status === null && nr.cells.plan_status === 'Not scheduled') { r.cells.plan_status = 'Not scheduled'; n++; }
+        })));
+      });
+      return n;
+    }
+    // Planned vs Actual lines and roll-ups with no status.
+    function blankStatus(pvaOut) {
+      const out = [];
+      const no = c => c && c.plan_status == null;
+      pvaOut.blocks.forEach(bk => {
+        bk.groups.forEach(g => { g.rows.forEach(r => { if (no(r.cells)) out.push(r.cells); }); if (no(g.subtotal)) out.push(g.subtotal); });
+        if (no(bk.totals)) out.push(bk.totals);
+      });
+      return out;
+    }
+    /* Random jobs, plans, rows and ranges from a seeded PRNG; returns the
+       counts and the first few failures of each property:
+         (a) a past range's report (A < today) reads the same looking back —
+             every column but Needed / Day, Projected Finish and Finish vs
+             Target, and the footnotes (and, on a quarter of them, the
+             chart) — run 1, 9 working and 60 days after A, with rows dated
+             after A added, some of them finishing or overrunning a line;
+         (b) a report as of today (A = today) equals the round-7 engine's
+             output, every column and the chart — exactly, except that a row
+             dated after a range that ends today or later (a future-dated
+             row) no longer counts as done or as shared: the today-clause
+             read it, the snapshot does not. Where there are such rows, the
+             report reads the same looking back with them taken out. And a
+             line the round-7 engine left with no status (a Plan / Day line
+             with a typed target, no start and only undated work) reads "Not
+             scheduled" — that cell alone: nothing else on the line, its
+             Totals or anywhere in the report may move (fillBlankStatus);
+         (c) every roll-up (job Totals, subtotal, grand total) is "Behind
+             (past target)" exactly when its target is before A and a line
+             under it is (or a job under it measured on its job dates is not
+             done by A); no line or roll-up is with a target on or after A;
+         (e) no line or roll-up is without a status. */
+    function planProperties(E, OLD, N, SEED) {
+      const PT = 'Behind (past target)';
+      const PVA_COLS = E.CATALOG.plan_vs_actual.columns.map(c => c.key);
+      const CH_COLS = E.CATALOG.chart.columns.map(c => c.key);
+      const { int, pick, p, day, addD, addWd, genDates, genRow, genJob, RANGES } = caseGen(E, SEED);
       function genCase() {
         const today = addD('2026-09-14', int(0, 120));
         const layout = p(0.5) ? 'combined' : 'separate';
@@ -2542,29 +2632,7 @@ function deepNear(a, b, at = '') {
         const def = { v: 2, title: 'Props', layout, includeInternal: true, dates: genDates(pick(RANGES), today), sections: [pva, ch] };
         return { today, jobs, sched, def, division: pick(['paving', 'turf', 'kiewit']) };
       }
-      const nowOf = iso => new Date(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10), 14, 30);
-      function run(Eng, cs, jobs, today, dates, pvaOnly) {
-        const def = Object.assign({}, cs.def, { dates: dates || cs.def.dates });
-        if (pvaOnly) def.sections = def.sections.slice(0, 1);
-        const cfg = { division: cs.division, divisionLabel: cs.division, areaUnit: 'SY', perm: ADMIN, getProjects: () => jobs,
-          getConSchedule: id => cs.sched[id] || null, getPurchaseOrders: () => [], getTruckingEntries: () => [] };
-        const ctx = Eng.makeContext(def, cfg, { pickedIds: jobs.map(j => j.id), today, now: nowOf(today) });
-        return def.sections.map(s => Eng.buildSectionData(s, def, ctx));
-      }
-      // Section outputs as text: each job object by its id (in place — the
-      // outputs are this run's own), and, looking back only, without the
-      // figures that look forward from today.
-      const idOf = j => (j && typeof j === 'object' ? String(j.id) : j);
-      const ser = (out, back) => {
-        out.forEach(sec => (sec.blocks || []).forEach(bk => {
-          bk.job = idOf(bk.job);
-          const cut = c => { if (c && back) FWD.forEach(k => { delete c[k]; }); };
-          cut(bk.totals);
-          (bk.groups || []).forEach(g => { cut(g.subtotal); g.rows.forEach(r => { if (r.job !== undefined) r.job = idOf(r.job); cut(r.cells); }); });
-          (bk.charts || []).forEach(ch => { ch.job = idOf(ch.job); });
-        }));
-        return JSON.stringify(out);
-      };
+      const run = runCase, ser = serOut;
       function consistency(pvaOut, A, jobsById) {
         const bad = [];
         const isPT = c => c.plan_status === PT;
@@ -2599,8 +2667,10 @@ function deepNear(a, b, at = '') {
         return bad;
       }
       const res = { a: { cases: 0, runs: 0, rows: 0, fail: 0, kinds: {}, sample: [] },
-        b: { cases: 0, strict: 0, fail: 0, loose: 0, looseDiff: 0, looseBad: 0, sample: [], future: 0, futureRows: 0, futureFail: 0, futureSample: [] },
+        b: { cases: 0, strict: 0, fail: 0, loose: 0, looseDiff: 0, looseBad: 0, sample: [], future: 0, futureRows: 0, futureFail: 0, futureSample: [],
+          blank: 0, blankLines: 0 },
         c: { cases: 0, fail: 0, sample: [] },
+        e: { cases: 0, fail: 0, lines: 0, sample: [] },
         seen: { status: {}, source: {}, layout: {} } };
       const tally = (m, k) => { m[k] = (m[k] || 0) + 1; };
       for (let i = 0; i < N; i++) {
@@ -2621,6 +2691,9 @@ function deepNear(a, b, at = '') {
         pvaOut.blocks.forEach(bk => bk.groups.forEach(g => g.rows.forEach(r => { tally(res.seen.status, r.cells.plan_status); tally(res.seen.source, r.cells.plan_source); })));
         const bad = consistency(pvaOut, A, byId);
         if (bad.length) { res.c.fail++; if (res.c.sample.length < 3) res.c.sample.push({ i, today: cs.today, A, dates: cs.def.dates, bad: bad.slice(0, 2) }); }
+        res.e.cases++;
+        const blank = blankStatus(pvaOut);
+        if (blank.length) { res.e.fail++; res.e.lines += blank.length; if (res.e.sample.length < 3) res.e.sample.push({ i, today: cs.today, A, dates: cs.def.dates, blank: blank.slice(0, 2) }); }
         if (A < cs.today) {
           res.a.cases++;
           const kind = cs.def.dates.preset === 'custom' ? 'custom' : cs.def.dates.preset;
@@ -2663,13 +2736,186 @@ function deepNear(a, b, at = '') {
           }
           if (OLD) {
             res.b.cases++;
-            const same = ser(run(OLD, cs, cs.jobs, cs.today), false) === baseFull;
+            const oldOut = run(OLD, cs, cs.jobs, cs.today);
+            let same = ser(oldOut, false) === baseFull;
+            // The one change allowed besides: a line the round-7 engine left
+            // with no status reads "Not scheduled", and nothing else moves.
+            if (!same) {
+              const n = fillBlankStatus(oldOut, JSON.parse(baseFull));
+              if (n && ser(oldOut, false) === baseFull) { same = true; res.b.blank++; res.b.blankLines += n; }
+            }
             if (strict) {
               res.b.strict++;
               if (!same) { res.b.fail++; if (res.b.sample.length < 3) res.b.sample.push({ i, today: cs.today, dates: cs.def.dates }); }
             } else {
               res.b.loose++;
               if (!same) { res.b.looseDiff++; if (!afterEnd(cs.jobs)) res.b.looseBad++; }
+            }
+          }
+        }
+      }
+      return res;
+    }
+
+    /* Every section, not Planned vs Actual alone, reads to the range's end
+       where it says so, so the snapshot is checked across a whole report —
+       Bid Item Progress (lines, cost-code subtotals, Totals), Production
+       Rates, Daily Production, Materials, Trucking, Schedule, Summary
+       Figures, Division Rates and the chart — on other seeded streams,
+       tilted toward undated rows and "Planned per day" lines with no Start:
+         (d) past (A < today): a past range's report reads the same looking
+             back in every one of those sections — every column but the
+             figures that look forward from today (FWD_BY) — run with
+             everything dated after the range's end (daily rows, delivery
+             lines, trucking tickets) taken out, the day after A, and run
+             again 1 to 60 days after A with more of each dated after A
+             added. (Planned vs Actual is (a)'s, on its own stream.)
+         (d') today (A = today): those sections and Planned vs Actual equal
+             the round-7 engine's (382f3c9, whose sections other than
+             Planned vs Actual are this engine's before this fix), every
+             column — exactly, but for the Plan / Day status fix, when
+             nothing is dated past the range's end; where something is (a range ending
+             today or later with future-dated rows), the reports that differ
+             all have such a row, and each reads the same looking back with
+             them taken out;
+         (e) either way, no Planned vs Actual line or roll-up is without a
+             status. */
+    function asOfProperties(E, OLD, N, SEED, mode) {
+      const past = mode === 'past';
+      const { int, pick, p, day, addD, addWd, genDates, genRow, genJob } = caseGen(E, SEED, past
+        ? { undated: 0.25, noStart: 0.7 }
+        : { undated: 0.4, noStart: 0.85, kinds: ['bid', 'odd', 'rate', 'rate', 'rate', 'rate', 'sched', 'jobend', 'none'] });
+      const RANGES = past ? ['last_week', 'last_month', 'yesterday', 'custom_past', 'custom_past', 'custom_past_open']
+        : ['job_to_date', 'job_to_date', 'today', 'this_week', 'this_month', 'last_7', 'last_30', 'custom_today', 'custom_future', 'custom_ahead'];
+      // Delivery lines on the job's POs and trucking tickets, dated in [a, b].
+      const genLine = (a, b) => ({ date: p(0.05) ? '' : day(a, b), qty: String(int(1, 40)), unit_cost: String(int(5, 60)), tax_pct: '6' });
+      function genPOs(job, a, b, n) {
+        const out = [];
+        for (let k = int(0, n); k > 0; k--) {
+          const ln = pick(job.bidItems);
+          const po = { id: `${job.id}-po${k}`, project_id: job.id, po_number: `PO-${job.id}-${k}`, supplier: pick(['Acme', 'Stone Co']),
+            title: pick(['Base stone', 'Tack']), cost_code: ln.cost_code, sub_code: ln.sub_code, status: 'open', lines: [] };
+          for (let l = int(1, 3); l > 0; l--) po.lines.push(genLine(a, b));
+          out.push(po);
+        }
+        return out;
+      }
+      function genTickets(job, a, b, n) {
+        const out = [];
+        for (let k = int(0, n); k > 0; k--) {
+          const ln = pick(job.bidItems);
+          out.push({ project_id: job.id, date: p(0.05) ? '' : day(a, b), tr_number: `T-${job.id}-${int(1, 9999)}`, truck_type: 'Tri-axle',
+            loads: String(int(1, 9)), hours: String(int(1, 10)), rate: '85', status: 'approved', driver: 'Dee',
+            cost_code: p(0.2) ? '' : ln.cost_code, sub_code: p(0.3) ? '' : ln.sub_code });
+        }
+        return out;
+      }
+      function genCase() {
+        const today = addD('2026-09-14', int(0, 120));
+        const layout = p(0.5) ? 'combined' : 'separate';
+        const W0 = addD(today, -100), W1 = addD(today, 60);
+        const sched = {}, jobs = [], pos = [], trucks = [];
+        for (let k = int(1, 3) - 1; k >= 0; k--) jobs.push(genJob(k, today, sched));
+        jobs.forEach(j => { pos.push(...genPOs(j, W0, W1, 2)); trucks.push(...genTickets(j, W0, W1, 3)); });
+        const sec = (type, options) => {
+          const x = E.newSection(type);
+          x.columns = E.CATALOG[type].columns.map(c => c.key);
+          Object.assign(x.options, options || {});
+          return x;
+        };
+        const sections = [
+          sec('bid_progress', { groupBy: p(0.6) ? 'cost_code' : 'none', subtotals: p(0.8), totals: true, hideNotStarted: p(0.1), hideComplete: p(0.1) }),
+          sec('production_kpis', { totals: true }),
+          sec('daily_production', { summarize: p(0.5), groupBy: pick(['none', 'date', 'week', 'sub_code']), hideZeroQty: p(0.3), totals: true }),
+          sec('materials', { summarize: p(0.3), totals: true }), sec('trucking', { totals: true }),
+          sec('schedule'), sec('summary_kpis'), sec('rate_summary'),
+        ];
+        // The chart on a third of them; Planned vs Actual last.
+        if (!past || p(0.33)) sections.push(sec('chart', { chart: p(0.6) ? 's_curve' : 'daily_bars', basis: p(0.5) ? 'pct' : 'qty' }));
+        sections.push(sec('plan_vs_actual', { groupBy: p(0.25) ? 'cost_code' : 'none', totals: true, hideUnplanned: p(0.1), hideComplete: p(0.1) }));
+        const def = { v: 2, title: 'Props', layout, includeInternal: true, dates: genDates(pick(RANGES), today), sections };
+        return { today, jobs, sched, pos, trucks, def, division: pick(['paving', 'turf', 'kiewit']) };
+      }
+      const res = { cases: 0, kinds: {}, secs: {},
+        d: { runs: 0, rows: 0, fail: 0, secs: {}, sample: [] },
+        t: { strict: 0, fail: 0, loose: 0, looseDiff: 0, looseBad: 0, diffSecs: {}, blank: 0, blankLines: 0, future: 0, futureFail: 0, sample: [] },
+        e: { fail: 0, lines: 0, sample: [] } };
+      const tally = (m, list) => list.forEach(k => { m[k] = (m[k] || 0) + 1; });
+      for (let i = 0; i < N; i++) {
+        const cs = genCase();
+        const rg = E.resolveDateRange(cs.def.dates, cs.today);
+        const A = rg.to && rg.to < cs.today ? rg.to : cs.today;
+        if (past !== A < cs.today) throw new Error(`asOfProperties: case ${i} is not ${mode}`);
+        res.cases++;
+        tally(res.kinds, [cs.def.dates.preset === 'custom' ? 'custom' : cs.def.dates.preset]);
+        tally(res.secs, cs.def.sections.map(x => x.type));
+        const after = d => !!rg.to && !!d && d > rg.to;
+        // The case with nothing dated after the range's end.
+        const cut = c => ({ c: Object.assign({}, c, { pos: c.pos.map(po => Object.assign({}, po, { lines: po.lines.filter(l => !after(l.date)) })),
+          trucks: c.trucks.filter(t => !after(t.date)) }), jobs: c.jobs.map(j => Object.assign({}, j, { dailyRows: j.dailyRows.filter(r => !after(r.date)) })) });
+        const anyAfter = c => c.jobs.some(j => j.dailyRows.some(r => after(r.date))) || c.pos.some(po => po.lines.some(l => after(l.date)))
+          || c.trucks.some(t => after(t.date));
+        // As of today, on half of the reports with an end: nothing dated
+        // after it.
+        const strict = !past && (!rg.to || p(0.5));
+        if (strict && rg.to) { const x = cut(cs); Object.assign(cs, x.c, { jobs: x.jobs }); }
+        const baseFull = serOut(runCase(E, cs, cs.jobs, cs.today, null, false, true), false);
+        const base = JSON.parse(baseFull);
+        const blank = blankStatus(base[base.length - 1]);
+        if (blank.length) { res.e.fail++; res.e.lines += blank.length; if (res.e.sample.length < 3) res.e.sample.push({ i, today: cs.today, A, dates: cs.def.dates, blank: blank.slice(0, 2) }); }
+        if (past) {
+          // Every section but Planned vs Actual, looking back.
+          const n = cs.def.sections.length - 1;
+          const want = serOut(base.slice(0, n), true);
+          const pinned = { preset: 'custom', from: rg.from, to: rg.to };
+          const why = [], bad = new Set();
+          const check = (got, what) => { res.d.runs++; if (got !== want) { why.push(what); secDiff(got, want).forEach(k => bad.add(k)); } };
+          const x = cut(cs);
+          check(serOut(runCase(E, x.c, x.jobs, addD(A, 1), pinned, n, true), true), `run ${addD(A, 1)} with nothing dated after ${A}`);
+          [[p(0.5) ? addWd(A, int(1, 9)) : addD(A, int(10, 60)), int(1, 8)]].forEach(([t, extra]) => {
+            const lo = addD(A, 1), hi = addD(t, 10);
+            const jobs = cs.jobs.map(j => {
+              const rows = j.dailyRows.slice();
+              res.d.rows += extra;
+              for (let e = 0; e < extra; e++) {
+                const b = pick(j.bidItems), Qn = Math.max(0, +b.quantity || 0);
+                // Some finish the line (or overrun it) after A.
+                rows.push(Object.assign(genRow(b, day(lo, hi), Qn), p(0.4) ? { quantity: String(Math.max(1, Qn)) } : {}));
+              }
+              return Object.assign({}, j, { dailyRows: rows });
+            });
+            const more = Object.assign({}, cs, {
+              pos: cs.pos.map(po => Object.assign({}, po, { lines: po.lines.concat(p(0.5) ? [genLine(lo, hi)] : []) }))
+                .concat(...cs.jobs.map(j => genPOs(j, lo, hi, 1))),
+              trucks: cs.trucks.concat(...cs.jobs.map(j => genTickets(j, lo, hi, 2))) });
+            check(serOut(runCase(E, more, jobs, t, pinned, n, true), true), `run ${t} with ${extra} more rows after ${A}`);
+          });
+          if (why.length) { res.d.fail++; tally(res.d.secs, [...bad]); if (res.d.sample.length < 3) res.d.sample.push({ i, today: cs.today, A, dates: cs.def.dates, why, secs: [...bad] }); }
+        } else {
+          if (OLD) {
+            const oldOut = runCase(OLD, cs, cs.jobs, cs.today, null, false, true);
+            let same = serOut(oldOut, false) === baseFull;
+            // The one change allowed besides: a line the round-7 engine left
+            // with no status reads "Not scheduled", and nothing else moves.
+            if (!same) {
+              const n = fillBlankStatus(oldOut, JSON.parse(baseFull));
+              if (n && serOut(oldOut, false) === baseFull) { same = true; res.t.blank++; res.t.blankLines += n; }
+            }
+            if (!same) tally(res.t.diffSecs, secDiff(serOut(oldOut, false), baseFull));
+            if (strict) {
+              res.t.strict++;
+              if (!same) { res.t.fail++; if (res.t.sample.length < 3) res.t.sample.push({ i, today: cs.today, dates: cs.def.dates, secs: secDiff(serOut(oldOut, false), baseFull) }); }
+            } else {
+              res.t.loose++;
+              if (!same) { res.t.looseDiff++; if (!anyAfter(cs)) res.t.looseBad++; }
+            }
+          }
+          if (anyAfter(cs)) {
+            res.t.future++;
+            const x = cut(cs);
+            if (serOut(runCase(E, x.c, x.jobs, cs.today, null, false, true), true) !== serOut(base, true)) {
+              res.t.futureFail++;
+              if (res.t.sample.length < 3) res.t.sample.push({ i, today: cs.today, dates: cs.def.dates, future: true });
             }
           }
         }
@@ -2684,7 +2930,7 @@ function deepNear(a, b, at = '') {
     const kinds = Object.entries(res.a.kinds).map(([k, n]) => `${k} ${n}`).join(', ');
     assert(`(a) ${res.a.cases} past-range reports (${kinds}), each run again 1 day, 9 working days and 60 days after its end with ${res.a.rows} rows dated after it added: every line, Totals, subtotal, grand total and footnote (and the chart, drawn on a quarter of them) reads the same looking back`,
       res.a.fail === 0 && res.a.cases >= 600 && Object.keys(res.a.kinds).length === 4, JSON.stringify(res.a.sample));
-    assert(`(b) ${res.b.strict} reports as of today (job to date, and ranges ending today or later with no row dated past their end) equal the round-7 engine's, every column, roll-up, footnote and chart`,
+    assert(`(b) ${res.b.strict} reports as of today (job to date, and ranges ending today or later with no row dated past their end) equal the round-7 engine's, every column, roll-up, footnote and chart — but for a line the round-7 engine left with no status, which reads "Not scheduled" with nothing else on it, its Totals or the report moved (${res.b.blank} reports here, ${res.b.blankLines} lines; (d') draws them often)`,
       res.b.fail === 0 && res.b.strict >= 500, JSON.stringify(res.b.sample));
     assert(`(b) …and of ${res.b.loose} with rows dated past a range that ends today or later (future-dated rows), the ${res.b.looseDiff} that differ all have such a row: the snapshot never counts it, the today-clause did`,
       res.b.looseBad === 0 && res.b.loose >= 200, JSON.stringify(res.b));
@@ -2697,6 +2943,27 @@ function deepNear(a, b, at = '') {
     assert('…over every status, every plan basis and no plan, and both layouts',
       STATUSES.every(k => res.seen.status[k] > 20) && SOURCES.every(k => res.seen.source[k] > 20) && res.seen.layout.separate > 500 && res.seen.layout.combined > 500,
       JSON.stringify(res.seen));
+
+    assert(`(e) all ${res.e.cases} reports: every Planned vs Actual line, subtotal and Totals has a status — none is blank`,
+      res.e.fail === 0, JSON.stringify(res.e));
+
+    const ND = Math.max(1000, +process.env.CR_ASOF_CASES || 0), NT = Math.max(500, +process.env.CR_ASOF_TODAY_CASES || 0);
+    const SEED_D = +process.env.CR_ASOF_SEED || 20261107;
+    let t1 = Date.now();
+    const rd = asOfProperties(V, OLD, ND, SEED_D, 'past');
+    const msD = Date.now() - t1;
+    t1 = Date.now();
+    const rt = asOfProperties(V, OLD, NT, SEED_D + 1, 'today');
+    const msT = Date.now() - t1;
+    const listOf = m => Object.entries(m).map(([k, n]) => `${k} ${n}`).join(', ');
+    assert(`(d) ${rd.cases} past-range reports (${listOf(rd.kinds)}): Bid Item Progress lines, cost-code subtotals and Totals, Production Rates, Daily Production, Materials, Trucking, Schedule, Summary Figures and Division Rates (and the chart, on ${rd.secs.chart}) read the same looking back with everything dated after the range's end taken out, and run again 1 to 60 days after its end with ${rd.d.rows} more rows (and delivery lines and tickets) dated after it (${rd.d.runs} runs, ${msD} ms)`,
+      rd.d.fail === 0 && rd.cases >= 1000 && Object.keys(rd.kinds).length === 4 && rd.secs.chart > 200, JSON.stringify(rd.d));
+    assert(`(d') ${rt.t.strict} reports as of today (${listOf(rt.kinds)}) with nothing dated past their end equal the round-7 engine's in all those sections and Planned vs Actual, every column — but for ${rt.t.blank} (${rt.t.blankLines} lines) that differ only by the Plan / Day status fix (${msT} ms)`,
+      rt.t.fail === 0 && rt.t.strict >= 250 && rt.t.blank >= 10, JSON.stringify({ fail: rt.t.fail, diffSecs: rt.t.diffSecs, sample: rt.t.sample }));
+    assert(`(d') …and of ${rt.t.loose} with something dated past a range that ends today or later, the ${rt.t.looseDiff} that differ (${listOf(rt.t.diffSecs)}) all have such a row; each of the ${rt.t.future} with one reads the same looking back with them taken out`,
+      rt.t.looseBad === 0 && rt.t.futureFail === 0 && rt.t.loose >= 150 && rt.t.future >= 150, JSON.stringify(rt.t));
+    assert(`(e) …and on those streams, all ${rd.cases + rt.cases} reports: every Planned vs Actual line, subtotal and Totals has a status`,
+      rd.e.fail === 0 && rt.e.fail === 0, JSON.stringify({ past: rd.e, today: rt.e }));
 
     const pvaDef = (cols, dates) => vdef([vsec('plan_vs_actual', { columns: cols })], { dates });
     // Worked by hand, the two places the snapshot parts from the round-7
@@ -2750,6 +3017,106 @@ function deepNear(a, b, at = '') {
     assert('"This week" run Wed Nov 4 whose lines share a row only on Nov 12, after the range: the Totals read as without that row (Installed 100, Actual / Day to date 100), never counting its 400',
       JSON.stringify(shTw) === JSON.stringify(shTwNone) && shTw.installed_to_date === 100 && shTw.actual_rate_jtd === 100 && shTw.qty_variance !== null,
       JSON.stringify({ shTw, shTwNone }));
+
+    // Bid Item Progress is a snapshot too: whether two lines share rows is
+    // decided on the rows to the range's end, as Planned vs Actual's roll-up
+    // decides it. A cost-code-only Pave line (1,000 TON) beside Pave / Top
+    // (500 TON); by Oct 16 only a Base row of 50 is in (the cost-code-only
+    // line's alone). An Oct 1–16 report run Oct 17 reads Installed 50,
+    // Remaining 1,450; run Nov 6, after 70 went in on Top on Oct 20 (a row
+    // both lines take), it reads the same — the engine before this fix (and
+    // the round-7 one) blanked Remaining. Job to date that row is shared:
+    // Installed counts it once, Remaining is blank.
+    const bpCols = ['sub_code', 'bid_qty', 'installed_to_date', 'installed_period', 'remaining_qty', 'pct_complete', 'status', 'actual_cost', 'labor_hours', 'days_worked'];
+    const bpShare = (Eng, extra, dates, today, groupBy) => {
+      const def = vdef([vsec('bid_progress', { columns: bpCols, options: { groupBy: groupBy || 'none', subtotals: true, totals: true } })], { dates, includeInternal: true });
+      const data = { projects: [{ id: 'bp', 'project-name': 'Share', status: 'In Progress', bidItems: [
+        { id: 'bp1', cost_code: 'Pave', sub_code: '', unit: 'TON', quantity: '1000', unit_cost: '10' },
+        { id: 'bp2', cost_code: 'Pave', sub_code: 'Top', unit: 'TON', quantity: '500', unit_cost: '10' }],
+      dailyRows: [row('2026-10-10', 'Pave', 'Base', 50)].concat(extra) }] };
+      const d = Eng.buildSectionData(def.sections[0], def, Eng.makeContext(def, vcfg(data), { pickedIds: ['bp'], today, now: NOW }));
+      const g = d.blocks[0].groups[0];
+      return { lines: J(g.rows.map(r => r.cells)), sub: J(g.subtotal), tot: J(d.blocks[0].totals) };
+    };
+    const oct1to16 = { preset: 'custom', from: '2026-10-01', to: '2026-10-16' }, topOct20 = [row('2026-10-20', 'Pave', 'Top', 70)];
+    const bpOct17 = bpShare(V, [], oct1to16, '2026-10-17'), bpNov6 = bpShare(V, topOct20, oct1to16, '2026-11-06');
+    const bpOld = bpShare(OLD, topOct20, oct1to16, '2026-11-06'), bpJtd = bpShare(V, topOct20, { preset: 'job_to_date', from: '', to: '' }, '2026-11-06');
+    const bpCc = bpShare(V, topOct20, oct1to16, '2026-11-06', 'cost_code');
+    assert('Bid Item Progress, Oct 1–16 run Oct 17: Totals Installed 50, Remaining 1,450 (950 + 500)',
+      bpOct17.tot.installed_to_date === 50 && bpOct17.tot.remaining_qty === 1450 && bpOct17.tot.installed_period === 50
+        && bpOct17.lines.map(l => l.remaining_qty).join() === '950,500', JSON.stringify(bpOct17));
+    assert('…run Nov 6 after an Oct 20 row both lines take: lines and Totals read exactly as on Oct 17 — Remaining 1,450, not blank (the engine before this fix blanked it)',
+      JSON.stringify(bpNov6) === JSON.stringify(bpOct17) && bpOld.tot.remaining_qty === null && bpOld.tot.installed_to_date === 50,
+      JSON.stringify({ bpNov6, bpOld }));
+    assert('…grouped by cost code, the Pave subtotal reads the same as the Totals (Remaining 1,450)',
+      bpCc.sub && bpCc.sub.remaining_qty === 1450 && bpCc.sub.installed_to_date === 50 && bpCc.tot.remaining_qty === 1450, JSON.stringify(bpCc));
+    assert('…job to date the Oct 20 row is shared: Installed 120 counts it once (lines 120 and 70), Remaining is blank, cost and hours once ($480, 16 h)',
+      bpJtd.tot.installed_to_date === 120 && bpJtd.tot.remaining_qty === null && bpJtd.lines.map(l => l.installed_to_date).join() === '120,70'
+        && near(bpJtd.tot.actual_cost, 480) && bpJtd.tot.labor_hours === 16, JSON.stringify(bpJtd));
+    // As of today ("This week", Nov 2–8, run Wed Nov 4): a row typed for
+    // Nov 12, after the range's end, is no part of the report — the Totals
+    // read as without it (the round-7 engine blanked Remaining over it). A
+    // row typed for Fri Nov 6, inside the range, counts as before: shared,
+    // Remaining blank in both engines.
+    const thisWeek = { preset: 'this_week', from: '', to: '' };
+    const bpTw = bpShare(V, [row('2026-11-12', 'Pave', 'Top', 400)], thisWeek, '2026-11-04'), bpTwNone = bpShare(V, [], thisWeek, '2026-11-04');
+    const bpTwOld = bpShare(OLD, [row('2026-11-12', 'Pave', 'Top', 400)], thisWeek, '2026-11-04');
+    const bpIn = bpShare(V, [row('2026-11-06', 'Pave', 'Top', 40)], thisWeek, '2026-11-04'), bpInOld = bpShare(OLD, [row('2026-11-06', 'Pave', 'Top', 40)], thisWeek, '2026-11-04');
+    assert('"This week" run Wed Nov 4 with a row both lines take typed for Nov 12 (after the range): Totals as without it (Remaining 1,450; the round-7 engine blanked it); one typed for Fri Nov 6 (inside the range) is shared in both engines (Installed 90, Remaining blank)',
+      JSON.stringify(bpTw) === JSON.stringify(bpTwNone) && bpTw.tot.remaining_qty === 1450 && bpTwOld.tot.remaining_qty === null
+        && JSON.stringify(bpIn) === JSON.stringify(bpInOld) && bpIn.tot.installed_to_date === 90 && bpIn.tot.remaining_qty === null,
+      JSON.stringify({ bpTw, bpTwOld, bpIn }));
+
+    // A "Planned per day" line with a typed target and no start (none typed,
+    // no day worked) whose only work is an undated row: its plan has no span
+    // on the calendar — no Scheduled %, no days ahead, no pace — so it reads
+    // "Not scheduled", as its Totals do; the engine before this fix left its
+    // status blank. It keeps its plan basis, so the footnote does not count
+    // it as an item with no plan (like the unworked one whose finish cannot
+    // be dated).
+    const pdCols = ['sub_code', 'installed_to_date', 'planned_rate', 'sched_pct', 'earned_pct', 'spi', 'qty_variance', 'ahead_days', 'start_date', 'target_date', 'plan_status', 'plan_source'];
+    const pd = (Eng, rows, target, dates, today, job) => {
+      const def = pvaDef(pdCols, dates);
+      const data = { projects: [Object.assign({ id: 'pd', 'project-name': 'Plan Day', status: 'In Progress', 'start-date': '', 'end-date': '', bidItems: [
+        { id: 'pd1', cost_code: 'Pave', sub_code: 'Base', unit: 'TON', quantity: '1000', unit_cost: '40', planned_rate: '100', target_date: target }],
+      dailyRows: rows }, job || {})] };
+      const d = Eng.buildSectionData(def.sections[0], def, Eng.makeContext(def, vcfg(data), { pickedIds: ['pd'], today, now: NOW }));
+      return { line: J(d.blocks[0].groups[0].rows[0].cells), tot: J(d.blocks[0].totals), notes: J(d.blocks[0].notes) };
+    };
+    const jtd = { preset: 'job_to_date', from: '', to: '' };
+    const undated = [row('', 'Pave', 'Base', 200)];
+    const pdNew = pd(V, undated, '2026-11-20', jtd, '2026-11-06'), pdOld = pd(OLD, undated, '2026-11-20', jtd, '2026-11-06');
+    assert('Plan / Day line, no start, target Nov 20, only an undated row of 200 in (job to date, Nov 6): "Not scheduled", as its Totals — no Scheduled %, no days ahead (the engine before this fix: blank)',
+      pdNew.line.plan_status === 'Not scheduled' && pdNew.tot.plan_status === 'Not scheduled' && pdNew.line.plan_source === 'Planned per day'
+        && pdNew.line.installed_to_date === 200 && pdNew.line.sched_pct === null && pdNew.line.ahead_days === null && pdNew.line.start_date === null
+        && pdNew.line.target_date === '2026-11-20' && pdOld.line.plan_status === null && pdOld.tot.plan_status === 'Not scheduled',
+      JSON.stringify({ pdNew, pdOld }));
+    assert('…and that status is the only change: every other cell of the line, its Totals and the footnote ("0 of 1 item has no plan") are the round-7 engine\'s',
+      JSON.stringify(Object.assign({}, pdOld.line, { plan_status: 'Not scheduled' })) === JSON.stringify(pdNew.line)
+        && JSON.stringify(pdOld.tot) === JSON.stringify(pdNew.tot) && JSON.stringify(pdOld.notes) === JSON.stringify(pdNew.notes) && /\b0 of 1 item has no plan/.test(pdNew.notes[0]),
+      JSON.stringify({ pdNew, pdOld }));
+    const pdOnA = pd(V, undated, '2026-11-06', jtd, '2026-11-06'), pdLate = pd(V, undated, '2026-11-05', jtd, '2026-11-06');
+    const pdNone = pd(V, [], '2026-11-20', jtd, '2026-11-06'), pdDated = pd(V, [row('2026-11-02', 'Pave', 'Base', 200)], '2026-11-20', jtd, '2026-11-06');
+    const pdJob = pd(V, undated, '2026-11-20', jtd, '2026-11-06', { 'start-date': '2026-10-01', 'end-date': '2026-12-15' });
+    assert('…controls: target on A still "Not scheduled"; target the day before A "Behind (past target)", line and Totals; no work at all "Not started"; the 200 dated Mon Nov 2 starts it there and measures it (Nov 2–20, 14 working days with Veterans Day: 20% earned of 35.7% scheduled, 2 days behind, "At risk")',
+      pdOnA.line.plan_status === 'Not scheduled' && pdLate.line.plan_status === 'Behind (past target)' && pdLate.tot.plan_status === 'Behind (past target)'
+        && pdNone.line.plan_status === 'Not started' && pdDated.line.start_date === '2026-11-02' && pdDated.line.ahead_days === -2
+        && near(pdDated.line.sched_pct, 500 / 14) && pdDated.line.plan_status === 'At risk',
+      JSON.stringify({ pdOnA, pdLate, pdNone, pdDated }));
+    assert('…on a job with start and end dates, the Totals are measured on those ("Job dates") and the line still reads "Not scheduled"',
+      pdJob.line.plan_status === 'Not scheduled' && pdJob.tot.plan_source === 'Job dates' && ['On track', 'At risk', 'Behind'].includes(pdJob.tot.plan_status),
+      JSON.stringify(pdJob));
+    // A past range: Oct 1–16 run Nov 6. The line's only dated work went in on
+    // Oct 20, after the range; by Oct 16 only the undated 50 is in, so as of
+    // Oct 16 it has no start: "Not scheduled", whenever it is run. Job to
+    // date the Oct 20 row starts it.
+    const pdRows = [row('', 'Pave', 'Base', 50), row('2026-10-20', 'Pave', 'Base', 300)];
+    const pdPast = pd(V, pdRows, '2026-11-20', oct1to16, '2026-11-06'), pdPast17 = pd(V, pdRows.slice(0, 1), '2026-11-20', oct1to16, '2026-10-17');
+    const pdPastJtd = pd(V, pdRows, '2026-11-20', jtd, '2026-11-06');
+    assert('…an Oct 1–16 report whose line has only undated work by Oct 16 (its first dated row Oct 20): "Not scheduled" run Nov 6, as run Oct 17 before that row; job to date it starts Oct 20 and is measured',
+      pdPast.line.plan_status === 'Not scheduled' && JSON.stringify(pdPast) === JSON.stringify(pdPast17) && pdPast.line.installed_to_date === 50
+        && pdPastJtd.line.start_date === '2026-10-20' && !['Not scheduled', null].includes(pdPastJtd.line.plan_status),
+      JSON.stringify({ pdPast, pdPast17, pdPastJtd }));
   }
 
   // ── Division rates ──

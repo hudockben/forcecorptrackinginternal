@@ -1665,8 +1665,9 @@
      no row is shared, so the plain per-line sums stand (they ARE the rows).
      A cost-code-only line takes every row on its code, so beside a cost code
      + sub code line the two share rows, and adding the lines up would count
-     those rows twice. keep, when given, picks the rows that count (Planned
-     vs Actual's as-of figures look only at rows to the range's end). */
+     those rows twice. keep, when given, picks the rows that count (the
+     as-of figures — Bid Progress and Planned vs Actual roll-ups — look only
+     at rows to the range's end). */
   function sharedRows(recs, keep) {
     const seen = new Set();
     let shared = false;
@@ -1719,18 +1720,22 @@
     ['bid_total', 'actual_cost', 'variance', 'projected_cost', 'labor_hours'].forEach(k => { c[k] = sumOf(recs, k); });
     c.crew_size = unionSize(recs, 'emps');
     let inst = sumOf(recs, 'installed_to_date');
-    const rows = sharedRows(recs);
+    // Lines that share rows to the range's end: what went in, what it cost
+    // and the hours are those rows', counted once (to the range's end, as
+    // each line's are; the period's rows are among them). Whether the lines
+    // share is decided on the same rows, as Planned vs Actual's roll-up
+    // decides it: a row dated after the range's end is no part of the
+    // report, so it does not blank a past range's Remaining when it lands on
+    // two lines, and the Totals read the same whenever they are run.
+    // Remaining has no single answer when two lines claim the same quantity,
+    // so the total does not invent one.
+    const rows = sharedRows(recs, toEndRow);
     if (rows) {
-      // Lines that share rows: what went in, what it cost and the hours are
-      // the rows', counted once (to the range end, as each line's are).
-      // Remaining has no single answer when two lines claim the same
-      // quantity, so the total does not invent one.
-      const toEnd = rows.filter(f => f.toEnd);
-      c.installed_to_date = factQty(toEnd, () => true);
+      c.installed_to_date = factQty(rows, () => true);
       c.installed_period = factQty(rows, f => f.inP);
       c.remaining_qty = null;
-      c.actual_cost = toEnd.reduce((t, f) => t + f.cost, 0);
-      c.labor_hours = toEnd.reduce((t, f) => t + f.hrs, 0);
+      c.actual_cost = rows.reduce((t, f) => t + f.cost, 0);
+      c.labor_hours = rows.reduce((t, f) => t + f.hrs, 0);
       c.variance = (c.bid_total || 0) - c.actual_cost;
       inst = typeof c.installed_to_date === 'number' ? c.installed_to_date : 0;
     }
@@ -2111,7 +2116,11 @@
                     target)", ahead of "Not started" — a Plan / Day line
                     with no start nobody has worked is late, not "Not
                     started". A line with no quantity has nothing to
-                    measure and is "Not scheduled".
+                    measure and is "Not scheduled"; so is a Plan / Day
+                    line with a typed target, no start (none typed, no
+                    day worked by the range's end) and work in that is
+                    all undated: undated work cannot place it on the
+                    calendar (unworked, it is "Not started").
        needed/day   what is left today over the working days today..T;
                     none once T is behind today, or with nothing left
                     today. A line not yet past its target as of A whose
@@ -2217,7 +2226,15 @@
     else if (pastTarget) status = PAST_TARGET;
     else if (!worked && (!pl.S || A < pl.S)) status = 'Not started';
     else if (!worked && undatable) status = 'Not scheduled';
-    else status = planStatus(ahead, spi);
+    // Worked, but with nothing to measure it by — no days ahead and no pace:
+    // a Plan / Day line with a typed target and no start (none typed, and no
+    // day worked by the range's end — what is in is all undated). Its plan
+    // has no span on the calendar to be ahead of or behind, so, like the
+    // unworked one whose finish cannot be dated, and as its Totals read it
+    // (with no Scheduled % it is not among their measured lines): "Not
+    // scheduled". That is the only way here without a figure; a line in
+    // scope never goes without a status.
+    else status = planStatus(ahead, spi) || 'Not scheduled';
     const facts = rowsForItem(ix, b).filter(f => f.inP);
     const made = madeQty(facts), crewH = crewHours(facts);
     const actual = rated && daysP ? s.qtyP / daysP : null;
