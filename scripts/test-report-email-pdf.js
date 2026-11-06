@@ -406,6 +406,41 @@ assert('sanitizeReportHtml removes the window.print() bootstrap',
     const o = sanitizeReportHtml(h);
     assert(`…and text "${what}" is still defused`, /&#61;/.test(o) && !/onerror\s*=/i.test(o), o);
   }
+  // Round 8: a removed tag's opener left with no ">" at the very end of the
+  // report. Alone the parser drops it at EOF, but the email shell's own
+  // markup after the body ("</div>") ends it and makes it a live element.
+  // It is dropped, with the rest of the input (all inside it to a parser).
+  {
+    const liveIn = doc => { const d = new JSDOM(doc).window.document;
+      return ['script', 'iframe', 'form', 'object', 'embed', 'base', 'link', 'meta[http-equiv]'].reduce((n, q) => n + d.querySelectorAll(q).length, 0); };
+    const head = '<table><tr><td>1,200 SF</td></tr></table>';
+    const trailing = {
+      'an iframe srcdoc': '<iframe srcdoc="&lt;script&gt;alert(1)&lt;/script&gt;"',
+      'a script src': '<script src="https://example.com/a.js"',
+      'a meta refresh': '<meta http-equiv="refresh" content="0;url=https://example.com/"',
+      'a form owning an earlier password input': '<input form="f" type="password"><form id="f" action="https://example.com/c"',
+      'an object': '<object data="https://example.com/x"',
+      'an embed': '<embed src="https://example.com/x"',
+      'a base': '<base href="https://example.com/"',
+      'a link': '<link rel="stylesheet" href="https://example.com/x.css"',
+      'an iframe with whitespace after it': '<iframe srcdoc="x"  \n ',
+      'a closing form': '</form action="https://example.com/c"',
+    };
+    for (const [what, tail] of Object.entries(trailing)) {
+      const out = sanitizeReportHtml(head + tail);
+      const email = buildEmailHtml({ title: 'T', bodyHtml: out });
+      assert(`round 8: ${what} left unclosed at the end of the report is not live in the email shell${what === 'a closing form' ? '' : ' (was a live element there)'}`,
+        liveIn(email) === 0 && liveIn(`<div>${out}</div><p title="x">y</p>`) === 0 && out.startsWith(head) && sanitizeReportHtml(out) === out, out);
+    }
+    const kept = '<p>Formula: a < form factor</p><p>Use the <b>form</b> <formula-x';
+    assert('…while report text that only mentions a form, and an ordinary unclosed tag, come through as written', sanitizeReportHtml(kept) === kept, sanitizeReportHtml(kept));
+    t0 = Date.now();
+    sanitizeReportHtml('<p>x</p>' + '<form'.repeat(60000));
+    sanitizeReportHtml('<p>x</p>' + '<p'.repeat(150000));
+    sanitizeReportHtml('<p>x</p>' + '<p>'.repeat(100000) + '<scrip'.repeat(50000));
+    const tTrail = Date.now() - t0;
+    assert('…in linear time', tTrail < 500, `${tTrail} ms`);
+  }
   const pass = '<p>Conditions = dry</p>';
   assert('…while "Conditions = dry" (an "on" inside a word) comes through as written', sanitizeReportHtml(pass) === pass, sanitizeReportHtml(pass));
   const cmts = { '<!--a-->': '<!--a--><p>k</p>', '<!--a--!>': '<!--a--!><p>k</p>', '<!--a--->': '<!--a---><p>k</p>', '<!--a---!>': '<!--a---!><p>k</p>',

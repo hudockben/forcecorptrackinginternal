@@ -3541,6 +3541,244 @@ function seed(srv) {
     h.close();
   }
   {
+    // Round 8: a Save that waits for the schedules list (one into fixed dates
+    // or another kind, while the list is not in) is on its way from the
+    // click: it saves what was there at the click, a dialog or leaving the
+    // report during the wait does not drop it, and nothing else waits on it.
+    const sched8 = (id, reportId, extra) => Object.assign({ id, custom_report_id: reportId, report_name: 'x', jobs_mode: 'saved', picked_jobs: null,
+      frequency: 'weekly', days_of_week: [1], day_of_month: null, send_time: '07:00', timezone: 'America/New_York', group_ids: [41], emails: [],
+      use_job_contacts: false, subject: null, note: null, attach_pdf: true, enabled: true, next_run_at: '2026-11-09T12:00:00Z',
+      last_run_at: null, last_status: null, last_message: null, run_as_username: 'pat', created_by_username: 'pat', updated_at: '2026-11-01T12:00:00Z',
+      report_visible: true, report_deleted: false, report_customer_safe: true }, extra || {});
+    // The first schedules GET is held until h.release(); everything else answers at once.
+    const held8 = async (o) => {
+      o = o || {};
+      const srv = seed(makeServer({ groups: [{ id: 41, name: 'Acme owners', emails: ['a@acme.com'] }] }));
+      srv.reports.find(r => r.id === 1).definition.dates = { preset: 'last_week' };
+      if (o.scheduled) srv.schedules.push(sched8(996, 1));
+      if (o.mut) o.mut(srv);
+      const releases = [];
+      srv.schedsLateGate = o.never ? () => new Promise(() => {}) : () => new Promise(r => releases.push(r));
+      const h = boot({ server: srv });
+      await h.render();
+      await tick(6);
+      if (!o.never) srv.schedsLateGate = null;
+      h.release = async () => { releases.splice(0).forEach(f => f()); await tick(14); };
+      return h;
+    };
+    const open8 = async (h, id) => { h.click(h.$(`[data-act="open"][data-id="${id}"]`)); await tick(4); };
+    const docMenu8 = (h, act) => { h.click(h.act('doc-menu')); h.click(h.document.querySelector(`.cr-menu [data-act="${act}"]`)); };
+    const toFixed8 = h => h.change(h.$('[data-bind="preset"]'), 'custom');
+    const puts8 = (h, id) => h.srv.calls('PUT', e => e.q.id === String(id));
+    // (1) A plain save cannot stop a send: it does not wait for the list.
+    {
+      const h = await held8({ never: true });
+      await open8(h, 1);
+      h.type(h.$('[data-bind="name"]'), 'Acme weekly update (Nov)');
+      const t0 = Date.now();
+      h.click(h.act('save'));
+      await tick(8);
+      assert('round 8: with the schedules list hung, a Save that cannot stop a send (a rename, relative dates, same kind) is sent at once (was a 10 s wait on every Save)',
+        puts8(h, 1).length === 1 && h.srv.find(1).name === 'Acme weekly update (Nov)' && Date.now() - t0 < 500 && /Saved/.test(h.toast()),
+        JSON.stringify({ puts: puts8(h, 1).length, ms: Date.now() - t0, toast: h.toast() }));
+      h.close();
+    }
+    // (2) Save, then Schedule… while the list is out.
+    {
+      const h = await held8();
+      await open8(h, 1);
+      h.type(h.$('[data-bind="name"]'), 'Acme weekly update (Nov)');
+      h.click(h.act('save'));
+      await tick(3);
+      h.click(h.act('schedule'));
+      await tick(6);
+      const dlg = !!h.modal();
+      await h.release();
+      const put = puts8(h, 1)[0];
+      assert('round 8: Save, then Schedule… while the schedules list is out: the save is sent (1 PUT, the new name), "Saved", the unsaved chip goes (was dropped without a word)',
+        dlg && puts8(h, 1).length === 1 && put.body.name === 'Acme weekly update (Nov)' && /Saved/.test(h.toast()) && h.$('.cr-dirty').hidden,
+        JSON.stringify({ dlg, puts: puts8(h, 1).map(e => e.body.name), toast: h.toast(), chip: !h.$('.cr-dirty').hidden }));
+      h.close();
+    }
+    {
+      const h = await held8({ scheduled: true });
+      await open8(h, 1);
+      toFixed8(h);
+      h.type(h.$('[data-bind="name"]'), 'Acme (Oct)');
+      h.click(h.act('save'));
+      await tick(3);
+      h.click(h.act('schedule'));
+      await tick(6);
+      const dlg = !!h.modal(), before = h.confirms.length, putsWaiting = puts8(h, 1).length;
+      h.answers.push(true);
+      await h.release();
+      const asked = h.confirms.slice();
+      assert('…and a Save into fixed dates (which waits for the list), then Schedule…: once the list is in it asks (fixed dates), and on "yes" saves (was dropped without a word)',
+        dlg && before === 0 && putsWaiting === 0 && asked.length === 1 && /This report is scheduled/.test(asked[0]) && /fixed dates/.test(asked[0])
+          && puts8(h, 1).length === 1 && h.srv.find(1).definition.dates.preset === 'custom' && h.srv.find(1).name === 'Acme (Oct)',
+        JSON.stringify({ dlg, before, putsWaiting, asked, puts: puts8(h, 1).length }));
+      h.close();
+    }
+    // (3) Save, then Close report while the list is out.
+    {
+      const h = await held8();
+      await open8(h, 1);
+      h.type(h.$('[data-bind="name"]'), 'Acme weekly update (Nov)');
+      h.click(h.act('save'));
+      await tick(3);
+      h.answers.push(true);
+      docMenu8(h, 'close');
+      await tick(3);
+      await h.release();
+      assert('round 8: Save, then Close report while the schedules list is out: no "Discard them?", the save is sent and lands (was asked to discard, and on OK nothing saved)',
+        h.confirms.length === 0 && puts8(h, 1).length === 1 && h.srv.find(1).name === 'Acme weekly update (Nov)' && /Saved/.test(h.toast()),
+        JSON.stringify({ asked: h.confirms, puts: puts8(h, 1).length, name: h.srv.find(1).name, toast: h.toast() }));
+      h.close();
+    }
+    {
+      const h = await held8({ scheduled: true });
+      await open8(h, 1);
+      toFixed8(h);
+      h.type(h.$('[data-bind="name"]'), 'Acme (Oct)');
+      h.click(h.act('save'));
+      await tick(3);
+      h.answers.push(true, true);
+      docMenu8(h, 'close');
+      await tick(3);
+      const before = h.confirms.slice();
+      await h.release();
+      const asked = h.confirms.slice();
+      assert('…and a Save into fixed dates, then Close report: leaving asks nothing; once the list is in it asks, naming the report (no longer on screen), and on "yes" saves',
+        before.length === 0 && asked.length === 1 && /“Acme \(Oct\)”/.test(asked[0]) && /This report is scheduled/.test(asked[0])
+          && puts8(h, 1).length === 1 && h.srv.find(1).name === 'Acme (Oct)' && h.srv.find(1).definition.dates.preset === 'custom' && /Saved/.test(h.toast()),
+        JSON.stringify({ before, asked, puts: puts8(h, 1).length, name: h.srv.find(1).name }));
+      h.close();
+    }
+    // (4) What is saved is what was there at the click.
+    {
+      const h = await held8();
+      await open8(h, 1);
+      toFixed8(h);
+      h.type(h.$('[data-bind="name"]'), 'Acme (Oct)');
+      h.click(h.act('save'));
+      await tick(3);
+      h.type(h.$('[data-bind="name"]'), 'Acme (Oct) half-typ');
+      await h.release();
+      const put = puts8(h, 1)[0];
+      assert('round 8: a name typed while a waiting Save reads "Saving…" is not saved by it: the PUT carries the name at the click, and the chip stays (was the half-typed name, marked saved)',
+        puts8(h, 1).length === 1 && put.body.name === 'Acme (Oct)' && h.srv.find(1).name === 'Acme (Oct)'
+          && h.S().doc.name === 'Acme (Oct) half-typ' && !h.$('.cr-dirty').hidden,
+        JSON.stringify({ puts: puts8(h, 1).map(e => e.body.name), doc: h.S().doc.name, chip: !h.$('.cr-dirty').hidden }));
+      h.close();
+    }
+    {
+      const h = await held8();
+      let adapter = null;
+      h.window.FCTReportAI = { mount: (body, a) => { adapter = a; return { sync() {}, destroy() {} }; } };
+      await open8(h, 1);
+      h.click(h.act('ai-toggle'));
+      await tick(3);
+      toFixed8(h);
+      h.click(h.act('save'));
+      await tick(3);
+      const def = adapter.getDefinition();
+      def.sections = def.sections.filter(s => s.type !== 'bid_progress');
+      adapter.applyDefinition(def, { changes: ['removed Bid Progress'] });
+      await tick(3);
+      await h.release();
+      const saved = h.srv.find(1).definition;
+      assert('…and an AI Builder change applied during the wait is not saved by it: the server has the definition from the click (Bid Progress kept), and the chip stays',
+        puts8(h, 1).length === 1 && saved.dates.preset === 'custom' && saved.sections.some(s => s.type === 'bid_progress')
+          && !h.S().doc.def.sections.some(s => s.type === 'bid_progress') && !h.$('.cr-dirty').hidden,
+        JSON.stringify({ sections: saved.sections.map(s => s.type), chip: !h.$('.cr-dirty').hidden }));
+      h.close();
+    }
+    // (5) Make private: one at a time, and never on top of a Save of it.
+    {
+      const pat50 = srv => srv.add({ id: 50, name: 'Pat shared template', visibility: 'shared', definition: { v: 1, dates: { preset: 'last_week' }, sections: [{ type: 'job_info' }] } });
+      let h = await held8({ mut: pat50 });
+      await open8(h, 50);
+      for (let i = 0; i < 2; i++) { docMenu8(h, 'make-private'); await tick(3); }
+      await h.release();
+      assert('round 8: Make private picked twice while the schedules list is out: one PUT, no false "Someone else saved this report" (was two PUTs on one version)',
+        puts8(h, 50).length === 1 && !h.modal() && h.srv.find(50).visibility === 'private' && /Made private/.test(h.toast()),
+        JSON.stringify({ puts: puts8(h, 50).map(e => e.body), modal: h.modal() && h.modal().textContent.slice(0, 120), toast: h.toast() }));
+      h.close();
+      h = await held8({ mut: pat50 });
+      await open8(h, 50);
+      toFixed8(h);
+      h.click(h.act('save'));
+      await tick(3);
+      docMenu8(h, 'make-private');
+      await tick(3);
+      const toastWaiting = h.toast();
+      await h.release();
+      assert('…and Make private while a Save of it waits: refused, saying why; the Save lands and no false conflict (was two PUTs on one version and "Someone else saved this report")',
+        /Wait for the save to finish/.test(toastWaiting) && puts8(h, 50).length === 1 && puts8(h, 50)[0].body.definition && !h.modal()
+          && h.srv.find(50).visibility === 'shared' && h.srv.find(50).definition.dates.preset === 'custom',
+        JSON.stringify({ toastWaiting, puts: puts8(h, 50).map(e => e.body.version), modal: !!h.modal() }));
+      h.close();
+      h = await held8({ mut: pat50 });
+      await open8(h, 50);
+      docMenu8(h, 'make-private');
+      await tick(3);
+      h.type(h.$('[data-bind="name"]'), 'Pat shared template v2');
+      h.click(h.act('save'));
+      await tick(3);
+      const toastWaiting2 = h.toast(), putsWaiting = puts8(h, 50).length;
+      await h.release();
+      assert('…and Save while Make private waits: refused, saying why; Make private lands, no false conflict',
+        /Wait for the sharing change to finish/.test(toastWaiting2) && putsWaiting === 0 && puts8(h, 50).length === 1 && !puts8(h, 50)[0].body.definition
+          && !h.modal() && h.srv.find(50).visibility === 'private',
+        JSON.stringify({ toastWaiting2, putsWaiting, puts: puts8(h, 50).map(e => e.body), modal: !!h.modal() }));
+      h.close();
+    }
+    // (6) Delete picked twice while the list is out.
+    {
+      const h = await held8();
+      for (let i = 0; i < 2; i++) {
+        h.click(h.$('[data-act="item-menu"][data-id="1"]'));
+        h.click(h.document.querySelector('.cr-menu [data-act="menu-delete"]'));
+        await tick(3);
+      }
+      const toastWaiting = h.toast(), before = h.confirms.length;
+      await h.release();
+      assert('round 8: Delete picked twice while the schedules list is out: it says it is checking, then one confirm, one DELETE, "Deleted" (was two of each and "Couldn’t delete: Report not found")',
+        /Checking whether a schedule sends/.test(toastWaiting) && before === 0 && h.confirms.length === 1 && h.srv.calls('DELETE').length === 1
+          && /Deleted/.test(h.toast()) && !!h.srv.find(1).deleted_at,
+        JSON.stringify({ toastWaiting, before, confirms: h.confirms.length, deletes: h.srv.calls('DELETE').length, toast: h.toast() }));
+      h.close();
+    }
+    // (7) A Save of one report still waiting does not hold up another's.
+    {
+      const h = await held8();
+      await open8(h, 1);
+      toFixed8(h);
+      h.click(h.act('save'));
+      await tick(3);
+      h.answers.push(true);
+      await open8(h, 3);
+      h.type(h.$('[data-bind="name"]'), 'Cost check (B)');
+      await tick(2);
+      const btn = { text: h.act('save').textContent, disabled: h.act('save').disabled };
+      h.document.dispatchEvent(new h.window.KeyboardEvent('keydown', { key: 's', ctrlKey: true, bubbles: true }));
+      await tick(4);
+      const put3 = puts8(h, 3).length, name3 = h.srv.find(3).name;
+      h.click(h.$('[data-act="item-menu"][data-id="3"]'));
+      h.click(h.document.querySelector('.cr-menu [data-act="menu-rename"]'));
+      await tick(3);
+      const renameDlg = !!h.modal() && /Rename report/.test(h.modal().textContent);
+      if (h.modal()) h.modal().querySelector('[data-m="cancel"]').click();
+      await h.release();
+      assert('round 8: with report 1\'s Save still waiting, report 3 opened: its Save reads "Save" and works (Ctrl+S saves it), and its Rename opens (was "Saving…", disabled, Ctrl+S dropped and "Wait for the save to finish")',
+        btn.text === 'Save' && !btn.disabled && put3 === 1 && name3 === 'Cost check (B)' && renameDlg,
+        JSON.stringify({ btn, put3, name3, renameDlg, toast: h.toast() }));
+      assert('…and report 1\'s Save lands all the same once the list is in', puts8(h, 1).length === 1 && h.srv.find(1).definition.dates.preset === 'custom',
+        JSON.stringify(puts8(h, 1).map(e => e.body)));
+      h.close();
+    }
+  }
+  {
     // Round 6: after a rename's version_conflict, "Try the rename again" in
     // the same dialog renames against the version the conflict sent back —
     // for a report that is not open, and for the open one, whose own next

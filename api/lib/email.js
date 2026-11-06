@@ -331,6 +331,14 @@ function replaceBlocks(s, names, fn) {
 // run only up to the last ">", where every opener the pattern takes has a
 // ">" after it to end at, so none scans on to the end of the input and fails.
 const dropBeforeLastGt = (s, re) => { const g = s.lastIndexOf('>'); return s.slice(0, g + 1).replace(re, '') + s.slice(g + 1); };
+// An opener of a removed tag with no ">" after it at all, at the very end of
+// the report, is one no rule above takes (each needs a ">" to end at), and
+// nothing in the report ends it — but markup after the report (the email
+// shell's "</div>") would, and make it a live element. It goes too, with the
+// rest of the input: to a parser all of that is inside the tag anyway. Only
+// the tail after the last ">" is read, so this stays linear.
+const TRAILING_REMOVED = /<\/?(script|iframe|object|embed|link|meta|base|form)\b[\s\S]*$/i;
+const dropTrailingOpener = s => { const g = s.lastIndexOf('>'); return s.slice(0, g + 1) + s.slice(g + 1).replace(TRAILING_REMOVED, ''); };
 
 function sanitizeOnce(html) {
   let out = html;
@@ -349,6 +357,7 @@ function sanitizeOnce(html) {
   });
   out = replaceBlocks(out, 'iframe|object|embed|link|meta|base|form', () => '');
   out = dropBeforeLastGt(out, /<\/?(iframe|object|embed|link|meta|base|form)\b[^>]*\/?>/gi);
+  out = dropTrailingOpener(out);
 
   // Strip on*= event-handler attributes, wherever the browser would read
   // one: after whitespace, after a "/" (<img/onerror=x>), straight after a

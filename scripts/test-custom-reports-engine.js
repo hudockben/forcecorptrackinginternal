@@ -2003,10 +2003,10 @@ function deepNear(a, b, at = '') {
       assert('…while one whose job ends Dec 31 is still "Not started", with no days figure either',
         rFuture.line.plan_status === 'Not started' && rFuture.line.ahead_days === null, JSON.stringify(rFuture));
 
-      // Round 6: "done today" spares only a line finished by its target. One
-      // still open at the range's end with its target already behind that
-      // end was late as of the report, so finishing it since does not clear
-      // "Behind (past target)" on the line or its Totals.
+      // Round 6: a line still open at the range's end with its target before
+      // that end was late as of the report; finishing it since does not clear
+      // "Behind (past target)" on the line or its Totals. One whose target is
+      // on or after the range's end is not late in it.
       const PT = 'Behind (past target)';
       const lwOver = zs([{ sub_code: 'B', quantity: 100, start_date: '2026-10-26', target_date: '2026-11-04' }],
         [{ sub_code: 'B', date: '2026-10-28', quantity: 45 }, { sub_code: 'B', date: '2026-11-06', quantity: 45 }, { sub_code: 'B', date: '2026-11-09', quantity: 10 }],
@@ -2431,7 +2431,8 @@ function deepNear(a, b, at = '') {
              output, every column and the chart — exactly, except that a row
              dated after a range that ends today or later (a future-dated
              row) no longer counts as done or as shared: the today-clause
-             read it, the snapshot does not;
+             read it, the snapshot does not. Where there are such rows, the
+             report reads the same looking back with them taken out;
          (c) every roll-up (job Totals, subtotal, grand total) is "Behind
              (past target)" exactly when its target is before A and a line
              under it is (or a job under it measured on its job dates is not
@@ -2598,7 +2599,8 @@ function deepNear(a, b, at = '') {
         return bad;
       }
       const res = { a: { cases: 0, runs: 0, rows: 0, fail: 0, kinds: {}, sample: [] },
-        b: { cases: 0, strict: 0, fail: 0, loose: 0, looseDiff: 0, looseBad: 0, sample: [] }, c: { cases: 0, fail: 0, sample: [] },
+        b: { cases: 0, strict: 0, fail: 0, loose: 0, looseDiff: 0, looseBad: 0, sample: [], future: 0, futureRows: 0, futureFail: 0, futureSample: [] },
+        c: { cases: 0, fail: 0, sample: [] },
         seen: { status: {}, source: {}, layout: {} } };
       const tally = (m, k) => { m[k] = (m[k] || 0) + 1; };
       for (let i = 0; i < N; i++) {
@@ -2645,15 +2647,30 @@ function deepNear(a, b, at = '') {
             if (ser(run(E, cs, jobs, t, pinned, !charts), true) !== want) why.push(`run ${t} with ${extra} more rows after ${A}`);
           });
           if (why.length) { res.a.fail++; if (res.a.sample.length < 3) res.a.sample.push({ i, today: cs.today, A, dates: cs.def.dates, why }); }
-        } else if (OLD) {
-          res.b.cases++;
-          const same = ser(run(OLD, cs, cs.jobs, cs.today), false) === baseFull;
-          if (strict) {
-            res.b.strict++;
-            if (!same) { res.b.fail++; if (res.b.sample.length < 3) res.b.sample.push({ i, today: cs.today, dates: cs.def.dates }); }
-          } else {
-            res.b.loose++;
-            if (!same) { res.b.looseDiff++; if (!afterEnd(cs.jobs)) res.b.looseBad++; }
+        } else {
+          // Rows dated after the range's end are no part of a report as of
+          // today: looking back, it reads the same with them taken out —
+          // whether they finish a line, or are shared by two lines that share
+          // nothing to the end (Totals Installed and Actual / Day included).
+          if (afterEnd(cs.jobs)) {
+            res.b.future++;
+            const cut = cs.jobs.map(j => Object.assign({}, j, { dailyRows: j.dailyRows.filter(r => !r.date || r.date <= rg.to) }));
+            cs.jobs.forEach((j, k) => { res.b.futureRows += j.dailyRows.length - cut[k].dailyRows.length; });
+            if (ser(run(E, cs, cut, cs.today), true) !== ser(JSON.parse(baseFull), true)) {
+              res.b.futureFail++;
+              if (res.b.futureSample.length < 3) res.b.futureSample.push({ i, today: cs.today, dates: cs.def.dates });
+            }
+          }
+          if (OLD) {
+            res.b.cases++;
+            const same = ser(run(OLD, cs, cs.jobs, cs.today), false) === baseFull;
+            if (strict) {
+              res.b.strict++;
+              if (!same) { res.b.fail++; if (res.b.sample.length < 3) res.b.sample.push({ i, today: cs.today, dates: cs.def.dates }); }
+            } else {
+              res.b.loose++;
+              if (!same) { res.b.looseDiff++; if (!afterEnd(cs.jobs)) res.b.looseBad++; }
+            }
           }
         }
       }
@@ -2671,6 +2688,8 @@ function deepNear(a, b, at = '') {
       res.b.fail === 0 && res.b.strict >= 500, JSON.stringify(res.b.sample));
     assert(`(b) …and of ${res.b.loose} with rows dated past a range that ends today or later (future-dated rows), the ${res.b.looseDiff} that differ all have such a row: the snapshot never counts it, the today-clause did`,
       res.b.looseBad === 0 && res.b.loose >= 200, JSON.stringify(res.b));
+    assert(`(b) …and each of the ${res.b.future} reports as of today with such rows (${res.b.futureRows} of them) reads the same looking back — every line, Totals, subtotal, grand total, footnote and the chart — with them taken out: the snapshot never counts them`,
+      res.b.futureFail === 0 && res.b.future >= 200, JSON.stringify(res.b.futureSample));
     assert(`(c) all ${res.c.cases} reports: a line or roll-up reads "Behind (past target)" exactly when its target is before A and it (or a line under it, or a job under it on its job dates) is not done by A — never with its target on or after A (${N} cases, ${ms} ms)`,
       res.c.fail === 0, JSON.stringify(res.c.sample));
     const STATUSES = ['Complete', 'Not scheduled', 'Behind (past target)', 'Not started', 'On track', 'At risk', 'Behind'];
@@ -2721,6 +2740,16 @@ function deepNear(a, b, at = '') {
       JSON.stringify(shAfter) === JSON.stringify(shBefore) && shAfter.qty_variance !== null && shAfter.installed_to_date === 100
         && shOld.qty_variance === null && shJtd.qty_variance === null && shJtd.pct_of_plan === null,
       JSON.stringify({ shBefore, shAfter, shOld, shJtd }));
+    // …and as of today: "This week" run Wed Nov 4 (Nov 2–8), with the row
+    // both lines take typed for Nov 12, after the range's end. It is no part
+    // of the report, so whether they share is decided without it too: the
+    // Totals read as without that row — Installed 100, Actual / Day 100 —
+    // never counting its 400.
+    const nov12 = [row('2026-11-12', 'Pave', 'Top', 400)];
+    const shTw = sh(V, nov12, thisWk, '2026-11-04'), shTwNone = sh(V, [], thisWk, '2026-11-04');
+    assert('"This week" run Wed Nov 4 whose lines share a row only on Nov 12, after the range: the Totals read as without that row (Installed 100, Actual / Day to date 100), never counting its 400',
+      JSON.stringify(shTw) === JSON.stringify(shTwNone) && shTw.installed_to_date === 100 && shTw.actual_rate_jtd === 100 && shTw.qty_variance !== null,
+      JSON.stringify({ shTw, shTwNone }));
   }
 
   // ── Division rates ──

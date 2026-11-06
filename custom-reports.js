@@ -147,8 +147,13 @@
     collapsed: new Set(),         // section ids folded shut in step 2
     jobSearch: '',
     editLabel: null,              // { sec, key, orig } while a column label is being renamed
-    saving: false,
-    saveSent: null,               // { doc, typedName, typedDesc, key } — what an in-flight save sent
+    saving: false,                // a Save is out (of any report)
+    // What each Save now out sent ({ doc, typedName, typedDesc, key }): one
+    // per report at most, so a Save still out for a report left behind never
+    // holds up the next one's.
+    saves: new Set(),
+    visBusy: new Set(),           // report ids a Share / Make private is out for
+    deleting: new Set(),          // report ids a Delete is out for (its confirm included)
     busy: { email: false, excel: false },   // an output waiting on the old daily rows
     readyP: null, readyDone: false,
     lastBuildMs: 0, lastTypeAt: 0,
@@ -451,10 +456,16 @@
     if (!d) return false;
     return d.id ? isDirty(d) : d.touched;
   }
+  // The Save of this report now on its way (from its click: it may still be
+  // waiting on the schedules list), or null.
+  function sentFor(d) {
+    for (const s of S.saves) if (s.doc === d) return s;
+    return null;
+  }
   // Has the open report changed since the save now on its way was sent?
   function changedSinceSent(d) {
-    const sent = S.saveSent;
-    if (!sent || sent.doc !== d) return true;
+    const sent = sentFor(d);
+    if (!sent) return true;
     return d.name.trim() !== sent.typedName || txt(d.description) !== sent.typedDesc || defKey(d) !== sent.key;
   }
   function okToLeave() {
@@ -463,7 +474,7 @@
     const name = d.name.trim() || d.savedName || 'this report';
     // A save on its way finishes whether or not the report stays open, so
     // leaving loses nothing — unless something changed after it was sent.
-    if (S.saving && S.saveSent && S.saveSent.doc === d) {
+    if (sentFor(d)) {
       if (!changedSinceSent(d)) return true;
       return window.confirm(`"${name}" is still saving, but the changes you made after clicking Save will be lost. Leave anyway?`);
     }
@@ -1378,8 +1389,9 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (chip) chip.hidden = !dirty;
     const save = S.mount.querySelector('[data-act="save"]');
     if (save) {
-      save.disabled = S.saving || d.readOnly || !dirty;
-      save.textContent = S.saving ? 'Saving…' : 'Save';
+      const saving = !!sentFor(d);
+      save.disabled = saving || d.readOnly || !dirty;
+      save.textContent = saving ? 'Saving…' : 'Save';
       save.title = d.readOnly ? 'Only an admin or level 3 user can change a shared template — use Save As'
         : !dirty ? 'No changes to save'
         : d.visibility === 'shared' ? 'Save — updates the template for everyone in the division (Ctrl+S)'
@@ -2363,7 +2375,8 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   // would stop a send — a save into fixed dates or another kind, Make
   // private, Delete — waits for it first: the first load still out, or a
   // fresh one after a failed load, for a bounded time. If it still cannot be
-  // had, the change asks in general terms rather than not at all.
+  // had, the change asks in general terms rather than not at all. Any other
+  // save cannot stop a send, and does not wait.
   const SCHEDS_WAIT_MS = 10000;
   function schedsUnknown() { return !!(S.canShare || S.canSchedule) && !Array.isArray(S.scheds); }
   async function waitForScheds() {
@@ -2376,6 +2389,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   function schedsUnknownLead() {
     return `Couldn’t check whether a schedule sends this report${S.schedsError ? ` (${S.schedsError})` : ''}.`;
   }
+  const CHECKING_SCHEDS = name => `Checking whether a schedule sends “${name}”…`;
   function loadList() {
     if (S.loading) return S.loadP;
     S.loading = true;
@@ -2658,48 +2672,54 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     aiSync();
   }
 
+  const SAVE_WHILE_SHARING = 'Wait for the sharing change to finish, then save.';
   async function save() {
     const d = S.doc;
-    if (!d || S.saving || modalOpen()) return;
+    if (!d || sentFor(d) || modalOpen()) return;
     if (!d.id) { await saveAs(true); return; }
     if (d.readOnly) {
       toast('Only an admin or level 3 user can change a shared template — Save As to make your own copy.', 'error');
       return;
     }
     if (!isDirty()) return;
-    // Whether a schedule sends it, before saving what could stop that.
-    if (schedsUnknown()) {
-      S.saving = true;
-      updateChrome();
-      try { await waitForScheds(); } finally { S.saving = false; updateChrome(); }
-      if (S.doc !== d || modalOpen() || !isDirty()) return;
-    }
+    // Not while its Share / Make private is out: both would be sent against
+    // one version, and the second would meet the first as someone else's.
+    if (S.visBusy.has(String(d.id))) { toast(SAVE_WHILE_SHARING, 'error'); return; }
+    // What is saved is what is there at the click — the report, its version,
+    // the name — and from the click it is on its way: leaving the report or
+    // opening a dialog meanwhile does not drop it, and what is typed or
+    // applied while it reads "Saving…" stays unsaved.
+    const id = d.id, version = d.version;
     const name = d.name.trim() || d.savedName;
     const def = defForSave();
-    const stops = scheduledStops(d, def);
-    if (stops && !window.confirm(stops)) return;
     const sent = sentSnapshot(d, def);
+    S.saves.add(sent);
     S.saving = true;
-    S.saveSent = sent;
     updateChrome();
+    const settle = () => { S.saves.delete(sent); S.saving = S.saves.size > 0; updateChrome(); };
+    // Whether a schedule sends it, before saving what could stop that —
+    // only a save into fixed dates or another kind could.
+    if (schedsUnknown() && couldStopSend(id, def)) await waitForScheds();
+    const stops = scheduledStops(id, def);
+    // The editor may have moved on by now: the question then names the report.
+    if (stops && !window.confirm(S.doc === d ? stops : `“${name}”: ${stops}`)) { settle(); return; }
     let err = null;
     try {
-      const res = await api.update(d.id, { name, description: sent.typedDesc || null, definition: def, version: d.version });
-      if (S.doc === d) { adoptSaved(res.report, sent); toast(`Saved “${res.report.name}”.`); }
+      const res = await api.update(id, { name, description: sent.typedDesc || null, definition: def, version });
+      if (S.doc === d && sameId(d.id, id)) { adoptSaved(res.report, sent); toast(`Saved “${res.report.name}”.`); }
       else {
-        // They moved on while it was out. It saved all the same: put the new
-        // copy in the list, so reopening it shows what was saved (and its
-        // version), not the old copy and a false "someone else saved" later.
+        // They moved on while it was out (or saved it as a new report). It
+        // saved all the same: put the new copy in the list, so reopening it
+        // shows what was saved (and its version), not the old copy and a
+        // false "someone else saved" later.
         upsertReport(res.report);
         renderRail();
         schedsAfterSave(res.report);
         toast(`Saved “${res.report.name}”.`);
       }
     } catch (e) { err = e; }
-    S.saving = false;
-    S.saveSent = null;
-    updateChrome();
-    if (!err || S.doc !== d) return;
+    settle();
+    if (!err || S.doc !== d || !sameId(d.id, id)) return;
     // An older copy of the builder than the report it was saving over: the
     // reload question is already up and the work is in the draft.
     if (err.status === 409 && code(err) === 'client_outdated') return;
@@ -2780,14 +2800,25 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     else if (choice === 'copy') await saveAs(false);
   }
 
+  // One Share / Make private at a time per report, and never on top of a
+  // Save of it: each is sent against the report's version, and a second sent
+  // against the same one meets the first as "someone else saved this".
   async function setVisibility(vis) {
     const d = S.doc;
     if (!d || !d.id) return;
+    const key = String(d.id);
+    if (S.visBusy.has(key)) return;
+    if (sentFor(d)) { toast(`Wait for the save to finish, then ${vis === 'shared' ? 'share it' : 'make it private'}.`, 'error'); return; }
     if (vis === 'shared' && !window.confirm(`Share “${d.savedName}” with everyone in ${divLabel()}? They will be able to run it; only admins and level 3 users can change it.`)) return;
+    S.visBusy.add(key);
+    try { await sendVisibility(d, vis); } finally { S.visBusy.delete(key); }
+  }
+  async function sendVisibility(d, vis) {
     // Private, only its owner can open it (the server keeps the author while
     // they still can), so a schedule that runs as anyone else stops: said
     // before, as deleting it or switching internal data on is.
     if (vis === 'private' && schedsUnknown()) {
+      toast(CHECKING_SCHEDS(d.savedName || d.name.trim() || 'this report'));
       await waitForScheds();
       if (S.doc !== d) return;
       if (schedsUnknown() && !window.confirm(`${schedsUnknownLead()} If one sends it as someone other than ${txt(d.owner_username) || 'its owner'}, `
@@ -2835,7 +2866,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     // Not while the open report's own Save is out: a rename that lands after
     // it (or a retry after the conflict it meets) would race that Save's
     // answer for the name and version the list and the editor keep.
-    if (open && S.saving) { toast(RENAME_WHILE_SAVING, 'error'); return; }
+    if (open && sentFor(open)) { toast(RENAME_WHILE_SAVING, 'error'); return; }
     // What the rename is made against: the list's copy — after a
     // version_conflict, the one the server sent back, so "Try the rename
     // again" can work. The open report renames against its own version until
@@ -2848,7 +2879,7 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       title: 'Rename report', name: r.name, confirmLabel: 'Rename',
       onSubmit: async ({ name }) => {
         if (name === base.name) return null;
-        if (open && S.saving) return RENAME_WHILE_SAVING;
+        if (open && sentFor(open)) return RENAME_WHILE_SAVING;
         const version = open && !behind ? open.version : base.version;
         try {
           const res = await api.update(r.id, { name, version });
@@ -2909,8 +2940,24 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     toast('Couldn’t find a free name for the copy — rename an older copy first.', 'error');
   }
 
+  // One Delete at a time per report: picked again while the first waits on
+  // the schedules list (or its confirm is up), it is ignored, so a report is
+  // never asked about, and deleted, twice.
   async function deleteReport(r) {
-    await waitForScheds();
+    const key = String(r.id);
+    if (S.deleting.has(key)) return;
+    S.deleting.add(key);
+    try { await removeReport(r); } finally { S.deleting.delete(key); }
+  }
+  async function removeReport(r) {
+    const listed = () => S.reports.some(x => sameId(x.id, r.id));
+    const wasListed = listed();
+    if (schedsUnknown()) {
+      toast(CHECKING_SCHEDS(r.name));
+      await waitForScheds();
+      // Gone from the list meanwhile (deleted elsewhere): nothing to ask.
+      if (wasListed && !listed()) return;
+    }
     const scheduled = isScheduled(r), unknown = schedsUnknown();
     const note = scheduled ? 'A schedule sends this report — it will stop sending until the report is restored.\n\n'
       : unknown ? `${schedsUnknownLead()} If one does, it will stop sending until the report is restored.\n\n` : '';
@@ -4661,7 +4708,23 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
   function isScheduled(d) {
     return !!(d && d.id != null && Array.isArray(S.scheds) && S.scheds.some(x => sameId(x.custom_report_id, d.id)));
   }
-  /* What saving `def` over this scheduled report would stop, said before the
+  /* What saving `def` over saved report `id` changes that a schedule can
+     stop on: into fixed dates, and its kind (saved jobs or not) against the
+     list's saved copy. A save that changes neither can stop no send. */
+  function stopShape(id, def) {
+    const saved = S.reports.find(x => sameId(x.id, id));
+    let was = null;
+    try { was = saved ? E.normalizeDefinition(saved.definition) : null; } catch (_) { was = null; }
+    const kindOf = x => (x && x.jobs && x.jobs.mode === 'saved' && Array.isArray(x.jobs.ids) && x.jobs.ids.length ? 'report' : 'template');
+    const wasKind = saved && saved.kind ? saved.kind : kindOf(was), kind = kindOf(def);
+    const fixedNow = !!(def.dates && def.dates.preset === 'custom'), fixedWas = !!(was && was.dates && was.dates.preset === 'custom');
+    return { fixed: fixedNow && !fixedWas, kind, wasKind };
+  }
+  function couldStopSend(id, def) {
+    const s = stopShape(id, def);
+    return s.fixed || s.kind !== s.wasKind;
+  }
+  /* What saving `def` over scheduled report `id` would stop, said before the
      save (as SCHEDULED_NOTE is for internal data) — or null. The run refuses
      a report set to fixed dates, a template scheduled once per job (or as
      one report) that now keeps its own jobs, and a saved-jobs report that no
@@ -4669,19 +4732,13 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
      not ask at every save. A save that makes two of them at once (fixed
      dates and the jobs) names both, and what undoes each: undoing one alone
      does not start the sends again. */
-  function scheduledStops(d, def) {
+  function scheduledStops(id, def) {
     // The schedules list could not be had (waitForScheds): any change into
     // fixed dates or another kind asks, in general terms.
-    const unknown = schedsUnknown() && !!d && d.id != null;
-    if (!unknown && !isScheduled(d)) return null;
-    const scheds = unknown ? [] : S.scheds.filter(x => sameId(x.custom_report_id, d.id));
-    const saved = S.reports.find(x => sameId(x.id, d.id));
-    let was = null;
-    try { was = saved ? E.normalizeDefinition(saved.definition) : null; } catch (_) { was = null; }
-    const kindOf = x => (x && x.jobs && x.jobs.mode === 'saved' && Array.isArray(x.jobs.ids) && x.jobs.ids.length ? 'report' : 'template');
-    const wasKind = saved && saved.kind ? saved.kind : kindOf(was), kind = kindOf(def);
-    const fixedNow = def.dates && def.dates.preset === 'custom', fixedWas = !!(was && was.dates && was.dates.preset === 'custom');
-    const fixed = fixedNow && !fixedWas;
+    const unknown = schedsUnknown() && id != null;
+    if (!unknown && !isScheduled({ id })) return null;
+    const scheds = unknown ? [] : S.scheds.filter(x => sameId(x.custom_report_id, id));
+    const { fixed, kind, wasKind } = stopShape(id, def);
     if (unknown) {
       const how = [fixed ? 'with fixed dates' : '', kind === wasKind ? '' : kind === 'report' ? 'with its own jobs' : 'without its saved jobs'].filter(Boolean);
       return how.length ? `${schedsUnknownLead()} If one does, saved ${how.join(' and ')} its scheduled sends stop. Save anyway?` : null;
