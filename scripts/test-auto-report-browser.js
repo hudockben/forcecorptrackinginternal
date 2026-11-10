@@ -37,6 +37,7 @@ const ROOT = path.resolve(__dirname, '..');
 // to opt out).
 const CHROME = [
   process.env.CHROME_EXECUTABLE_PATH,
+  process.env.PW_CHROMIUM,
   '/opt/pw-browsers/chromium_headless_shell-1194/chrome-linux/headless_shell',
   '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
   '/usr/bin/chromium', '/usr/bin/chromium-browser', '/usr/bin/google-chrome',

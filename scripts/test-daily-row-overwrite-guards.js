@@ -75,8 +75,13 @@ function structuralChecks(file) {
     /if \(syncCodes\) \{\s*\n\s*r\.cost_code = po\.cost_code\|\| '';\s*\n\s*r\.sub_code  = po\.sub_code \|\| '';\s*\n\s*\}/.test(src));
   assert('no unconditional code write survives',
     !/r\.supplier  = po\.supplier \|\| '';\s*\n\s*r\.cost_code = po\.cost_code/.test(src));
-  assert('material / supplier / po_num still sync unconditionally',
-    /r\.material  = po\.title    \|\| '';\s*\n\s*r\.supplier  = po\.supplier \|\| '';\s*\n\s*r\.po_num    = po\.po_number\|\| '';/.test(src));
+  // The order's number always reaches its rows. Its title and supplier reach
+  // every row except one recorded FROM Daily Tracking, which keeps its own —
+  // see _syncDailyRowToPO.
+  assert('po_num still syncs unconditionally',
+    /if \(!r\) return;\s*\n\s*r\.po_num    = po\.po_number\|\| '';/.test(src));
+  assert('material / supplier sync on every line a PO raised',
+    /if \(!_poLineFromDaily\(line\)\) \{\s*\n\s*r\.material  = po\.title    \|\| '';\s*\n\s*r\.supplier  = po\.supplier \|\| '';/.test(src));
   // The call is awaited-or-caught now, because the sync may have to read the
   // job's rows before it can safely write one — so the opt-in is no longer
   // followed by a bare semicolon.
@@ -132,6 +137,7 @@ function poSyncChecks(file) {
     const puts = [];
     const sandbox = {
       console,
+      _poLineFromDaily: l => Boolean(l && l.source === 'daily'),
       getProj: () => proj,
       drPutNow: (id, r) => puts.push({ id, cost_code: r.cost_code, sub_code: r.sub_code }),
       renderDailyTable: () => {},
@@ -173,7 +179,8 @@ function poSyncChecks(file) {
     const row  = { id: 'r1', cost_code: 'Excavation', sub_code: 'Haul' };
     const proj = { id: 'p1', dailyRows: [row] };
     const po   = { project_id: 'p1', title: 't', lines: [{ po_row_id: 'r1' }] };
-    const sandbox = { console, getProj: () => proj, drPutNow: () => {}, renderDailyTable: () => {} };
+    const sandbox = { console, _poLineFromDaily: l => Boolean(l && l.source === 'daily'),
+                      getProj: () => proj, drPutNow: () => {}, renderDailyTable: () => {} };
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
     vm.runInContext(fn, sandbox);

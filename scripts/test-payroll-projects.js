@@ -52,10 +52,19 @@ const near = (a, b) => Math.abs(Number(a) - Number(b)) < 0.005;
 const FNS = [
   'escapeHtml', 'prettyDiv', 'prettyOff', 'prettyDateShort',
   'isOffSiteHaul', 'offSiteHaulWork', 'haulWorkHours',
+  // What a time-off entry pays. buildReportModel counts approved leave
+  // through this, so the vacation day below is priced by the page's own rule.
+  'timeOffPayHours', 'leaveHoursOf',
   'weekStartOf', 'weekEndOf', 'stampKey', 'compareIds', 'byEntryOrder', 'weeklyOvertime',
   'buildReportModel', 'projectKeyOf', 'buildProjectsModel',
   'projRoomTitle', 'projEmployeeRowHtml', 'projColumnsHtml', 'projBlockHtml',
-  'projBarsHtml', 'projChartHtml', 'projCrewChartHtml',
+  'projBarsHtml', 'projChartHtml',
+  // The crew capacity board — what replaced the second bar chart
+  // (projCrewChartHtml). One row per man, one meter per Monday–Sunday week,
+  // every meter on one shared scale with the 40 drawn on it.
+  'ccWeeksShown', 'ccWeekRelation', 'ccWeekTrusted', 'ccWindow', 'ccWeekLabel',
+  'ccStanding', 'ccOrdered', 'ccStatus', 'ccScaleMax',
+  'ccCellHtml', 'ccRowHtml', 'ccHeadHtml', 'projCapacityHtml',
   'colLetter', 'excelDateSerial', 'xmlEsc', 'xlsxRow', 'xlsxSheetXml',
   'xlsxContentTypes', 'xlsxSheetName', 'xlsxWorkbook', 'xlsxWorkbookRels',
   'projectSummarySheetXml', 'projectCrewSheetXml', 'projectEmployeeSheetXml',
@@ -73,11 +82,26 @@ function slice(startMark, endMark) {
   }
   return PAGE.slice(a, b + endMark.length);
 }
+function line(re) {
+  const m = PAGE.match(re);
+  if (!m) {
+    console.error(`could not find ${re} in payroll.html`);
+    process.exit(1);
+  }
+  return m[0];
+}
 const CONSTS = [
   slice('    const XS = {', "const cNum = (v, s) => ({ t: 'n', v, s });"),
-  PAGE.match(/const OT_WEEKLY_THRESHOLD = \d+;/)[0],
+  line(/const OT_WEEKLY_THRESHOLD = \d+;/),
+  line(/const PAID_LEAVE_HOURS = \d+;/),
+  line(/const MAX_LEAVE_HOURS = \d+;/),
   slice('    const PROJ_NUM_KEYS = [', '];'),
   slice('    const PROJ_COLUMNS = [', '];'),
+  // The board's own thresholds: how many weeks it draws, and where a man
+  // stops counting as having room.
+  line(/const CC_WEEKS_SHOWN = \d+;/),
+  line(/const CC_AT = [\d.]+;/),
+  line(/const CC_NEAR = [\d.]+;/),
 ].join('\n');
 
 const FROM = '2026-08-24', TO = '2026-09-06';
@@ -308,45 +332,128 @@ console.log('\n[one row per man, across every job he worked]');
     near(crew.matt.otHours, base.rows.find(r => r.username === 'matt').otHours));
   assert('the crew\'s overtime adds to the company\'s, exactly as the jobs\' does',
     near(model.employees.reduce((s, e) => s + e.otHours, 0), base.tot.otHours));
-  assert('  and so do the hours, so the two charts draw the same fortnight',
+  assert('  and so do the hours, so the job chart and the crew board draw the same fortnight',
     near(model.employees.reduce((s, e) => s + e.totalHours, 0), sumJobs('totalHours')));
   assert('a day worked on two jobs counts once against the man',
     crew.matt.days === 8, `got ${crew.matt.days}`);
-  assert('he carries his headroom, so the chart can say what is left',
+  assert('he carries his headroom, so the board can say what is left',
     near(crew.matt.remaining, 10) && near(crew.ray.remaining, 16));
   assert('the busiest overtime sorts to the top here too',
     model.employees[0].otHours >= model.employees[model.employees.length - 1].otHours);
 }
 
-console.log('\n[the second chart]');
+// ── The crew, against the 40 ────────────────────────────────────────────────
+// This used to be a second bar chart, projCrewChartHtml: one bar per man,
+// scaled to the busiest man's fortnight. payroll.html replaced it with the crew
+// capacity board, projCapacityHtml, because a fortnight's bar cannot be read
+// against 40: the forty is a WEEK's line. The board draws one meter per
+// Monday–Sunday week, and every meter on the board shares one track with the
+// 40 drawn on it.
+//
+// The old chart's checks are asked of the board below: a row per man, OT as
+// its own segment, the job count, and headroom in the tooltip. The one that
+// cannot carry over is "his share of the busiest man". The board drops that
+// scale on purpose, so the check here is the rule that replaced it.
+console.log('\n[the crew capacity board]');
 {
-  const cdom = new JSDOM(`<!doctype html><body>${api.projCrewChartHtml(model.employees)}</body>`);
-  const rows = [...cdom.window.document.querySelectorAll('.pc-row')];
-  assert('the crew chart draws a bar per man', rows.length === model.employees.length);
-  const matt = rows.find(r => r.querySelector('.pc-label').textContent.includes('matt'));
-  const width = sel => parseFloat((matt.querySelector(sel).getAttribute('style') || '').replace(/\D*([\d.]+).*/, '$1'));
-  assert('  overtime is its own segment here as well', width('.pc-ot') > 0 && width('.pc-reg') > 0);
-  // Each chart is scaled inside itself, so the busiest man fills his own bar.
-  const busiest = Math.max(...model.employees.map(e => e.totalHours));
-  const share = (Object.fromEntries(model.employees.map(e => [e.username, e]))
-    .matt.totalHours / busiest) * 100;
-  assert('  and the bar is his share of the busiest man, not of the biggest job',
-    Math.abs(width('.pc-reg') + width('.pc-ot') - share) < 0.02,
-    `${(width('.pc-reg') + width('.pc-ot')).toFixed(2)}% vs ${share.toFixed(2)}%`);
-  assert('  the label says how many jobs the bar is spread over',
-    /2 jobs/.test(matt.querySelector('.pc-label').textContent));
-  assert('  and the tooltip carries the hours left before overtime starts again',
-    /before overtime/i.test(matt.getAttribute('title') || ''), matt.getAttribute('title'));
+  const html = api.projCapacityHtml(model.employees, model.weeks, model.rangeFrom);
+  const cdom = new JSDOM(`<!doctype html><body>${html}</body>`);
+  const doc  = cdom.window.document;
+  const rows = [...doc.querySelectorAll('.cc-row:not(.cc-head)')];
+  const rowOf = who => rows.find(r => r.querySelector('.cc-name').textContent.trim() === who);
+  const meters = row => [...row.querySelectorAll('.cc-cell')];
+  const pct = el => (el ? parseFloat((el.getAttribute('style') || '').replace(/\D*([\d.]+).*/, '$1')) : 0);
+  const reg = cell => pct(cell.querySelector('.cc-reg'));
+  const ot  = cell => pct(cell.querySelector('.cc-ot'));
+  const wk  = (who, start) => model.crew.get(who).weeks.find(w => w.weekStart === start);
+  const W1 = '2026-08-24', W2 = '2026-08-31';
 
-  // Both charts are drawn by projBarsHtml, so the colours and the rounding
-  // cannot drift apart — that is the reason it is one function.
+  assert('the board draws a row per man', rows.length === model.employees.length,
+    `${rows.length} rows for ${model.employees.length} men`);
+  assert('  with a meter for each week of the fortnight on every row',
+    rows.every(r => meters(r).length === 2),
+    rows.map(r => meters(r).length).join(', '));
+
+  const matt = rowOf('matt');
+  const [m1, m2] = meters(matt);
+  assert('  overtime is its own segment of the meter here as well', ot(m1) > 0 && reg(m1) > 0,
+    `reg ${reg(m1)}% ot ${ot(m1)}%`);
+  assert('  and a week under the 40 has none', ot(m2) === 0 && reg(m2) > 0,
+    `reg ${reg(m2)}% ot ${ot(m2)}%`);
+
+  // One track for the whole board, read off the board itself.
+  const scaleText = doc.querySelector('.cc-scale').textContent;
+  const scale = Number((scaleText.match(/against a (\d+)-hour track/) || [])[1]);
+  const heaviest = Math.max(...model.employees.flatMap(e => e.room.weeks.map(w => w.totalHours)));
+  assert('  every meter shares one track, past the heaviest week and never under 50 h',
+    scale >= 50 && scale > heaviest, `${scale} h track, heaviest week ${heaviest} h`);
+  const filled = cell => reg(cell) + ot(cell);
+  const onTrack = h => (h / scale) * 100;
+  assert('  each meter is that WEEK\'s hours on the track, not his share of the busiest man',
+    Math.abs(filled(m1) - onTrack(wk('matt', W1).totalHours)) < 0.02 &&
+    Math.abs(filled(m2) - onTrack(wk('matt', W2).totalHours)) < 0.02,
+    `${filled(m1).toFixed(2)}% and ${filled(m2).toFixed(2)}% on a ${scale} h track`);
+  const [d1, d2] = meters(rowOf('dale'));
+  assert('  so the same track holds in every row, and two men\'s weeks compare directly',
+    Math.abs(filled(d1) - onTrack(wk('dale', W1).totalHours)) < 0.02,
+    `${filled(d1).toFixed(2)}% for ${wk('dale', W1).totalHours} h`);
+  assert('  regular time fills up to the 40 and the overtime runs on past it',
+    Math.abs(reg(m1) - onTrack(40)) < 0.02 && Math.abs(ot(m1) - onTrack(wk('matt', W1).otHours)) < 0.02,
+    `reg ${reg(m1)}% ot ${ot(m1)}%`);
+  const tick = parseFloat((doc.querySelector('.cc-board').getAttribute('style')
+    .match(/--cc-tick:\s*([\d.]+)%/) || [])[1]);
+  assert('  and the 40 is drawn on that same track', Math.abs(tick - onTrack(40)) < 0.02, `${tick}%`);
+  assert('  a week he worked no job is an empty track under the 40, not a zero bar',
+    !d2.querySelector('.cc-reg') && !!d2.querySelector('.cc-tick'));
+
+  assert('  the row says how many jobs his hours are spread over',
+    /2 jobs/.test(matt.querySelector('.cc-sub').textContent), matt.querySelector('.cc-sub').textContent);
+  const chip = matt.querySelector('.cc-chip');
+  assert('  and the Room tooltip carries the hours left before overtime starts again',
+    /before overtime/i.test(chip.getAttribute('title') || ''), chip.getAttribute('title'));
+  assert('  for a man on a job in both weeks, Room is his Before OT figure',
+    chip.textContent.trim() === `${model.crew.get('matt').remaining.toFixed(2)} h`, chip.textContent);
+  // The board's one deliberate departure from Before OT (see ccWindow): inside
+  // the cycle, a week nobody put him on is a full 40 open, not silence.
+  assert('  a week he was on no job counts as a full 40 open on the board',
+    rowOf('ray').querySelector('.cc-chip').textContent.trim() ===
+      `${(model.crew.get('ray').remaining + 40).toFixed(2)} h`,
+    rowOf('ray').querySelector('.cc-chip').textContent);
+
+  // The window here is the whole fortnight, so the board has to agree with
+  // the rest of the report to the hundredth.
+  const num = (r, i) => Number(r.querySelectorAll('.cc-num')[i].textContent) || 0;
+  assert('  its OT column adds to the company overtime',
+    near(rows.reduce((s, r) => s + num(r, 1), 0), base.tot.otHours));
+  assert('  and its Total column to the hours on jobs',
+    near(rows.reduce((s, r) => s + num(r, 0), 0), sumJobs('totalHours')));
+
+  const order = rows.map(r => r.querySelector('.cc-name').textContent.trim());
+  assert('  the men past the 40 lead, most overtime first, then the pool with room',
+    order.join() === 'matt,dale,ray', order.join());
+  assert('  and only the pool is folded away',
+    rowOf('ray').classList.contains('cc-tail') &&
+    !rowOf('matt').classList.contains('cc-tail') && !rowOf('dale').classList.contains('cc-tail'));
+
+  // The two crew pictures used to share projBarsHtml, which kept their colours
+  // from drifting apart. The board draws its own meters, so the same promise
+  // is checked where it now lives: the colour rules and the legend swatches.
+  const bg = sel => (PAGE.match(new RegExp(
+    sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\s*\\{\\s*background:\\s*([^;]+);')) || [])[1];
+  assert('the board colours regular and overtime the same as the job chart',
+    !!bg('.pc-reg') && bg('.cc-meter .cc-reg') === bg('.pc-reg') &&
+    !!bg('.pc-ot')  && bg('.cc-meter .cc-ot')  === bg('.pc-ot'),
+    `reg ${bg('.cc-meter .cc-reg')} vs ${bg('.pc-reg')}, ot ${bg('.cc-meter .cc-ot')} vs ${bg('.pc-ot')}`);
   const jdom = new JSDOM(`<!doctype html><body>${api.projChartHtml(model.projects)}</body>`);
-  const cls = d => [...d.window.document.querySelectorAll('.pc-row > *')].map(e => e.className);
-  assert('both charts are built from the same row markup',
-    JSON.stringify(cls(jdom).slice(0, 3)) === JSON.stringify(cls(cdom).slice(0, 3)));
-  assert('  and each says which yardstick it was scaled against',
+  const keys = d => [...d.querySelectorAll('.pc-legend .pc-key')].map(k => k.className);
+  assert('  and both legends use the same swatches for them',
+    ['pc-key reg', 'pc-key ot'].every(k => keys(jdom.window.document).includes(k) && keys(doc).includes(k)),
+    `${keys(jdom.window.document)} / ${keys(doc)}`);
+  assert('  and each says which yardstick it was drawn against',
     /largest job/.test(jdom.window.document.querySelector('.proj-section-title').textContent) &&
-    /busiest man/.test(cdom.window.document.querySelector('.proj-section-title').textContent));
+    /against the 40/.test(doc.querySelector('.proj-section-title').textContent) &&
+    /one week against a \d+-hour track/.test(scaleText) && /the line is the 40th hour/.test(scaleText),
+    scaleText);
 }
 
 // ── What the workbook says ──────────────────────────────────────────────────
@@ -397,7 +504,7 @@ function column(c, letter, first, last) {
   assert('sheet 2 is one row per man, across every job', n === 3, `got ${n}`);
   assert('  its overtime column adds to the company overtime too',
     near(column(s2, 'I', HEAD + 1, HEAD + n).reduce((a, b) => a + b, 0), base.tot.otHours));
-  assert('  and its hours match the by-job sheet, so the two charts agree',
+  assert('  and its hours match the by-job sheet, so the two sheets agree',
     near(val(s2, `G${HEAD + n + 1}`), sumJobs('totalHours')));
   // The whole reason this sheet exists beside the per-job one.
   assert('  HERE the headroom column totals — each man appears exactly once',
@@ -493,7 +600,7 @@ console.log('\n[nothing, and nothing-shaped]');
 // right edge of a landscape sheet once (see test-report-width.js); this table
 // is narrower but is printed inside the same page, and the bars beside it are
 // the one thing here that a browser drops from a printout by default.
-const CHROME = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const CHROME = process.env.PW_CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 let puppeteer;
 try { puppeteer = require(path.join(ROOT, 'node_modules/puppeteer-core')); } catch { /* skipped below */ }
 
@@ -513,12 +620,23 @@ if (!puppeteer || !fs.existsSync(CHROME)) {
     '<select id="flt-division"><option value="" selected></option></select>' +
     '<input id="flt-user" value=""><input id="flt-supervisor" value="">' +
     '<div id="projectsWrap"></div></body>');
-  const render = new Function('document', 'user', 'filtered', 'loadedScope',
-    `${[...FNS, 'renderProjectsReport'].map(n => requireFn(PAGE, n, 'payroll.html')).join('\n')}
+  // The report also draws each section's own Excel/PDF buttons and the
+  // "PDF includes" picker. Those only add markup, but renderProjectsReport
+  // calls them, so they come across with it. The picker reads its ticks from
+  // localStorage. An empty store gives each section its default, which is
+  // what a first visit prints.
+  const RENDER_FNS = ['projPartTools', 'printPieceState', 'printPickerHtml', 'renderProjectsReport'];
+  const RENDER_CONSTS = [
+    slice('    const PRINT_PIECES = [', '];'),
+    line(/const PRINT_PREF_KEY = [^\n]+/),
+  ].join('\n');
+  const render = new Function('document', 'user', 'filtered', 'loadedScope', 'localStorage',
+    `${[...FNS, ...RENDER_FNS].map(n => requireFn(PAGE, n, 'payroll.html')).join('\n')}
      ${CONSTS}
+     ${RENDER_CONSTS}
      return renderProjectsReport;`);
   render(rdom.window.document, { companyName: 'Force Corp', companyCode: 'FC' },
-    ENTRIES, { from: FROM, to: TO, division: '' })();
+    ENTRIES, { from: FROM, to: TO, division: '' }, { getItem: () => null })();
 
   const css = [...PAGE.matchAll(/<style>([\s\S]*?)<\/style>/g)].map(m => m[1]).join('\n');
   // main.main-wide is what the Reports tab puts on <main>; measuring without it
@@ -558,6 +676,10 @@ if (!puppeteer || !fs.existsSync(CHROME)) {
           .filter(e => e.scrollWidth > e.clientWidth + 1).length,
         labelColour: getComputedStyle(label).color,
         ot: seg('.pc-ot'), reg: seg('.pc-reg'),
+        // The crew board's meters, which took over from the second bar chart.
+        ccOt: seg('.cc-meter .cc-ot'), ccReg: seg('.cc-meter .cc-reg'),
+        ccTail: [...document.querySelectorAll('.cc-board .cc-tail')]
+          .map(e => getComputedStyle(e).display),
         nameColour: getComputedStyle(document.querySelector('.proj-name')).color,
         avoidBreak: getComputedStyle(document.querySelector('.proj-block')).breakInside,
       };
@@ -581,6 +703,18 @@ if (!puppeteer || !fs.existsSync(CHROME)) {
       JSON.stringify(p.ot.map(s => s.bg)));
     assert('  and overtime is still told apart from regular time on it',
       p.ot[0].bg !== p.reg[0].bg, `${p.ot[0].bg} vs ${p.reg[0].bg}`);
+    // The second crew picture is the capacity board now, and its meters are
+    // their own elements. The same rules apply to them on paper.
+    assert('  the crew board\'s meters keep their fill on paper as well',
+      p.ccOt.length > 0 && p.ccReg.length > 0 &&
+      p.ccOt.every(s => !/rgba\(0, 0, 0, 0\)/.test(s.bg)) &&
+      p.ccReg.every(s => !/rgba\(0, 0, 0, 0\)/.test(s.bg)),
+      JSON.stringify(p.ccOt.map(s => s.bg)));
+    assert('  in the job chart\'s own colours for regular and overtime',
+      p.ccOt.every(s => s.bg === p.ot[0].bg) && p.ccReg.every(s => s.bg === p.reg[0].bg),
+      `ot ${p.ccOt[0] && p.ccOt[0].bg} vs ${p.ot[0].bg}, reg ${p.ccReg[0] && p.ccReg[0].bg} vs ${p.reg[0].bg}`);
+    assert('  and the pool folded away on screen is printed in full',
+      p.ccTail.length > 0 && p.ccTail.every(d => d !== 'none'), JSON.stringify(p.ccTail));
     assert('  the dark-theme text is printed black, not near-white on white',
       p.nameColour === 'rgb(0, 0, 0)' && p.labelColour === 'rgb(0, 0, 0)',
       `${p.nameColour} / ${p.labelColour}`);

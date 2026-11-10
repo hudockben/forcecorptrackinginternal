@@ -32,7 +32,7 @@ const fs   = require('fs');
 const path = require('path');
 const ROOT = path.resolve(__dirname, '..');
 
-const CHROME = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+const CHROME = process.env.PW_CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
 let puppeteer;
 try { puppeteer = require(path.join(ROOT, 'node_modules/puppeteer-core')); }
 catch { console.log('puppeteer-core not installed — skipping width checks'); process.exit(0); }

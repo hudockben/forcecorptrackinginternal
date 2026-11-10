@@ -340,7 +340,7 @@ module.exports = async (req, res) => {
             const mineIds = new Set((Array.isArray(po.lines) ? po.lines : [])
               .map(l => l && l.id).filter(Boolean).map(String));
             for (const l of was.lines) {
-              if (l && l.id && l.po_row_id && mineIds.has(String(l.id))) {
+              if (l && l.id && l.po_row_id && mineIds.has(String(l.id)) && !poSync.isDailyLine(l)) {
                 candidateRows.push(String(l.po_row_id));
               }
             }
@@ -398,6 +398,9 @@ module.exports = async (req, res) => {
             const superseded = [];
             const kept = (jobMoved || !liveKnown) ? mine : mine.map(l => {
               if (!l || !l.id) return l;
+              // A Daily Tracking line's link is its row, fixed for life, and
+              // the derivation below decides whether the line stays at all.
+              if (poSync.isDailyLine(l)) return l;
               const before = wasById.get(l.id);
               if (!before || !before.po_row_id) return l;
               if (String(l.po_row_id || '') === String(before.po_row_id)) return l;
@@ -438,6 +441,10 @@ module.exports = async (req, res) => {
             const missing = was.lines
               .filter(l => l && l.id && !have.has(l.id))
               .map(l => {
+                // A Daily Tracking line comes back as it was stored; the
+                // derivation below keeps it only while its row still names this
+                // order, and its row is the field's — never swept with a move.
+                if (poSync.isDailyLine(l)) return l;
                 if (!jobMoved || !l.po_row_id) return l;
                 // Removed with the move, the way the tab removes the rows for
                 // the lines it did hold. Matched against the OLD job, which is
@@ -461,6 +468,25 @@ module.exports = async (req, res) => {
           if (mergedLinks) {
             console.warn(`[purchase-orders] restored ${mergedLinks} cost-row link(s) a stale copy had dropped for ${blobKey}`);
           }
+        }
+      }
+
+      // Every order's Daily Tracking lines are re-derived from the job rows
+      // before anything is stored — see "Deliveries recorded from Daily
+      // Tracking" in api/lib/po-sync.js. A tab's copy is often a minute behind:
+      // left to itself it would put back a line whose row has since moved to
+      // another order or been deleted (the merge above restores any stored line
+      // the copy lacks), or drop one a row sync added. The rows decide instead,
+      // so what this save stores is right whatever the tab held. A failed read
+      // stores the lines as they came, less any copy of a raised line's row.
+      let derived = 0;
+      if (PO_JOB_DIVISIONS.includes(division)) {
+        try {
+          const linkRows = await poSync.fetchLinkRows(sql, companyCode, division, poSync.linkScope(toWrite));
+          derived = poSync.deriveDailyLines(toWrite, linkRows).size;
+        } catch (err) {
+          console.error('[purchase-orders] could not read the job rows behind Daily Tracking lines:', err.message);
+          for (const po of toWrite) poSync.dropShadowedDailyLines(po);
         }
       }
 
@@ -531,6 +557,9 @@ module.exports = async (req, res) => {
         updatedAt: written.length ? written[0].updated_at : null,
         merged: mergedOrders + mergedLines + mergedLinks,
         mergedOrders, mergedLines, mergedLinks,
+        // Orders whose Daily Tracking lines the job rows changed from what the
+        // tab sent: its copy is behind, and it re-reads the list.
+        derived,
       });
     }
 
@@ -547,6 +576,30 @@ module.exports = async (req, res) => {
       if (!poCapabilities(payload, division).canUpload) {
         return res.status(403).json({ error: 'You do not have permission to change purchase orders' });
       }
+
+      // ── POST ?reconcile=1 — record the job rows that name an order ──────
+      // The division pages ask once per load: every job row that names one of
+      // its job's orders and is not on it yet — entered before Daily Tracking
+      // fed the orders, or by a path that has not — is recorded, and every
+      // Daily Tracking line whose row has moved on is dropped. The server
+      // reads the rows itself, all of them, rather than trusting what a page
+      // happened to hold. Answers with the list so the page can take it on.
+      if (req.query.reconcile === '1' || (req.body || {}).reconcile === true) {
+        const result = await poSync.reconcileDailyLines(sql, { companyCode, division });
+        if (!result.ok) {
+          return res.status(409).json({
+            error: 'Purchase orders not reconciled',
+            detail: 'Someone else is editing this division\'s purchase orders right now. Try again.',
+          });
+        }
+        const at = await sql`SELECT updated_at FROM app_data WHERE key = ${blobKey}`;
+        return res.json({
+          ok: true,
+          changed: result.changed.length,
+          purchaseOrders: result.list || [],
+          updatedAt: at.length ? at[0].updated_at : null,
+        });
+      }
       const po = (req.body || {}).purchaseOrder;
       if (!po || typeof po !== 'object' || Array.isArray(po)) {
         return res.status(400).json({ error: 'purchaseOrder object required' });
@@ -562,6 +615,13 @@ module.exports = async (req, res) => {
       // — somebody else added it — and is kept rather than dropped.
       const deletedLineIds = Array.isArray((req.body || {}).deletedLineIds)
         ? (req.body || {}).deletedLineIds.map(String).slice(0, 500)
+        : [];
+      // Deliveries the caller deliberately EDITED. For a line recorded from a
+      // Daily Tracking row the row is the truth, so a figure it carries is only
+      // taken — and written to the row — when the caller says it changed it.
+      // Anything else is a re-sent copy, and the row's own figures stand.
+      const editedLineIds = Array.isArray((req.body || {}).editedLineIds)
+        ? (req.body || {}).editedLineIds.map(String).slice(0, 500)
         : [];
 
       // The division the order was stored under before this save. Purchasing
@@ -581,6 +641,7 @@ module.exports = async (req, res) => {
         po: { ...po, lines: Array.isArray(po.lines) ? po.lines : [] },
         from,
         deletedLineIds,
+        editedLineIds,
         // Stamped as who raised the order only if it is new and the page sent
         // no stamp of its own.
         username: payload.username,
@@ -659,6 +720,9 @@ async function _syncPOs(sql, companyCode, division, list) {
   // rows survive leaves the job charged for material with no purchase order
   // anywhere behind it. Cheap, and it makes the invariant hold whatever the
   // client did or failed to do.
+  //
+  // Not a Daily Tracking line's row (line id 'dr-<row>'): that is the field's
+  // entry on its job, and it outlives the order it named.
   const goneRows = await sql`
     SELECT d.po_row_id
     FROM   po_deliveries d
@@ -668,6 +732,7 @@ async function _syncPOs(sql, companyCode, division, list) {
       AND  p.division = ${division}
       AND  p.id <> ALL(${incomingIds})
       AND  d.po_row_id IS NOT NULL
+      AND  COALESCE(d.line_id, '') NOT LIKE 'dr-%'
   `;
   const orphanIds = goneRows
     .map(r => r.po_row_id)

@@ -1156,6 +1156,14 @@ const _unsaved = new Set();
 // the second kind, so it has to be told about the first.
 const _deletedLines = {};
 
+// Deliveries this page has EDITED, per order, until a save confirms it. A line
+// recorded from a Daily Tracking row takes its figures from that row, so the
+// server only accepts this page's quantity, unit cost, tax, date or receiver
+// for it — and writes them to the row — when told the user changed them here.
+// A line merely re-sent from a copy a minute old must not put old figures back
+// on the job.
+const _editedLines = {};
+
 // The save in flight for each order, so a second one QUEUES behind it instead
 // of racing it. Without this, two saves of one order could both read the stored
 // order before either had written, neither would see a po_row_id for the
@@ -1192,6 +1200,11 @@ function poPayload(po) {
 /** The deliveries removed from this order and not yet confirmed to the server. */
 function deletedLinesFor(poId) {
   return _deletedLines[poId] ? [..._deletedLines[poId]] : [];
+}
+
+/** The deliveries edited on this order and not yet confirmed to the server. */
+function editedLinesFor(poId) {
+  return _editedLines[poId] ? [..._editedLines[poId]] : [];
 }
 
 /**
@@ -1244,9 +1257,11 @@ async function _savePOWrite(po) {
     const qs = '/purchase-orders?division=' + encodeURIComponent(po._division)
              + (from && from !== po._division ? '&from=' + encodeURIComponent(from) : '');
     const sentDeletions = deletedLinesFor(po.id);
+    const sentEdits     = editedLinesFor(po.id);
     const res = await api('POST', qs, {
       purchaseOrder: poPayload(po),
       deletedLineIds: sentDeletions,
+      editedLineIds:  sentEdits,
     });
 
     // The deletions this save carried are now on the server, so stop resending
@@ -1254,6 +1269,10 @@ async function _savePOWrite(po) {
     if (_deletedLines[po.id]) {
       sentDeletions.forEach(id => _deletedLines[po.id].delete(id));
       if (!_deletedLines[po.id].size) delete _deletedLines[po.id];
+    }
+    if (_editedLines[po.id]) {
+      sentEdits.forEach(id => _editedLines[po.id].delete(id));
+      if (!_editedLines[po.id].size) delete _editedLines[po.id];
     }
 
     // The server mints a po_row_id for any delivery line it created a job cost
@@ -1346,6 +1365,7 @@ window.addEventListener('beforeunload', () => {
         body: JSON.stringify({
           purchaseOrder:  poPayload(po),
           deletedLineIds: deletedLinesFor(id),
+          editedLineIds:  editedLinesFor(id),
         }),
       });
     } catch { /* the tab is closing; nothing useful to do */ }
@@ -1415,6 +1435,10 @@ function addLine(poId) {
 function deleteLine(poId, lineId) {
   const po = purchaseOrders.find(p => p.id === poId);
   if (!po || !capsFor(po._division).canEdit) return;
+  // A delivery recorded from a Daily Tracking row is on this order because
+  // its row names it; the server would only put it back. It comes off when
+  // the row's PO # is changed or cleared, in the division's Daily Tracking.
+  if (isDailyLine((po.lines || []).find(l => l.id === lineId))) return;
   // Remembered until the save lands. The server keeps any stored delivery this
   // page did not send, so without this a removal would simply be undone.
   (_deletedLines[poId] || (_deletedLines[poId] = new Set())).add(lineId);
@@ -1461,6 +1485,7 @@ async function deletePO(poId) {
       delete _saveTimers[poId];
       delete _saveChain[poId];
       delete _deletedLines[poId];
+      delete _editedLines[poId];
       showSave('saved', 'Removed');
       render();
       return;
@@ -1478,6 +1503,7 @@ async function deletePO(poId) {
       delete _savedDivision[poId];
       delete _saveChain[poId];
       delete _deletedLines[poId];
+      delete _editedLines[poId];
       // A DELETE is a server write like any other: a poll that fetched before it
       // would otherwise bring the order back.
       _saveEpoch++;
@@ -1587,6 +1613,7 @@ function setLineField(poId, lineId, field, value) {
   const line = (po.lines || []).find(l => l.id === lineId);
   if (!line) return;
   line[field] = value;
+  (_editedLines[poId] || (_editedLines[poId] = new Set())).add(lineId);
   if (field === 'qty' || field === 'unit_cost' || field === 'tax_pct') recalcLineTax(line);
   savePO(po);
   updateTotalsInPlace(po, line);
@@ -2219,7 +2246,7 @@ function lineRowsHTML(po, surface) {
       (capsFor(po._division).canEdit ? '' : 'disabled ') + (extra || '') +
       ' oninput="setLineField(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\',\'' + field + '\', this.value)">';
     return '<tr>' +
-      '<td style="min-width:120px">' + inp('invoice_num','text', l.invoice_num, 'placeholder="Invoice / Ticket #"') + '</td>' +
+      '<td style="min-width:120px">' + inp('invoice_num','text', l.invoice_num, 'placeholder="Invoice / Ticket #"') + dailyLineTagHTML(l) + '</td>' +
       '<td style="min-width:118px">' + inp('date','date', l.date) + '</td>' +
       '<td style="min-width:74px">'  + inp('qty','number', l.qty, 'step="any" placeholder="0"') + '</td>' +
       '<td style="min-width:92px">'  + inp('unit_cost','number', l.unit_cost, 'step="any" placeholder="0.00"') +
@@ -2238,9 +2265,26 @@ function lineRowsHTML(po, surface) {
         ((amt + tax) !== 0 ? '$' + fmt(amt + tax) : '—') + '</td>' +
       '<td style="min-width:140px">' + receivedByPickerHTML(po, l) + '</td>' +
       '<td style="width:30px;text-align:center">' +
-        (capsFor(po._division).canEdit ? '<button class="del-btn" onclick="deleteLine(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\')" title="Remove delivery">&#10005;</button>' : '') +
+        (isDailyLine(l)
+          ? '<span style="color:var(--muted);font-size:0.7rem;opacity:0.6" title="Entered on Daily Tracking — change or clear the row\'s PO # there to take it off this order">&#128274;</span>'
+          : capsFor(po._division).canEdit ? '<button class="del-btn" onclick="deleteLine(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\')" title="Remove delivery">&#10005;</button>' : '') +
       '</td></tr>';
   }).join('');
+}
+
+/**
+ * Under a delivery recorded from a Daily Tracking row: where it came from and
+ * the cost / sub code the job row carries. The division pages tag those lines
+ * `source: 'daily'` and keep them in step with the row; the order's header
+ * code is the order's own and can differ.
+ */
+function isDailyLine(l) { return Boolean(l && l.source === 'daily'); }
+function dailyLineTagHTML(l) {
+  if (!isDailyLine(l)) return '';
+  const codes = [l.cost_code, l.sub_code].filter(Boolean).join(' / ');
+  return '<div title="Entered on Daily Tracking. Edits here update that job row; change or clear the row\'s PO # there to take it off this order."' +
+    ' style="font-size:0.6rem;color:var(--muted);white-space:nowrap;padding-top:0.1rem">from Daily Tracking' +
+    (codes ? ' &middot; ' + esc(codes) : '') + '</div>';
 }
 
 function linesPanelHTML(po, colspan) {
