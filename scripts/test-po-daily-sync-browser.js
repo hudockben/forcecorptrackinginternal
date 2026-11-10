@@ -6,21 +6,25 @@
  * Run: node scripts/test-po-daily-sync-browser.js
  *      (PW_CHROMIUM=/path/to/chrome to point it at a different Chromium)
  *
- * scripts/test-po-daily-sync.js runs the functions; this runs the PAGE —
- * tracker.html, paving.html and kiewit-pinetree.html, booted against a mocked
- * API — and watches what reaches the server:
+ * tracker.html, paving.html and kiewit-pinetree.html, booted against an API
+ * that keeps its job rows and orders in memory and records Daily Tracking
+ * deliveries with the SERVER's own functions from api/lib/po-sync.js — so what
+ * the page shows is what the real derivation would store:
  *
- *  - a job row already naming one of its job's orders is recorded on it at
- *    load, and the full-list save carries the delivery
- *  - typing a new quantity into Daily Tracking reaches the order on blur
- *  - the Purchase Orders tab shows the delivery, tagged, and lists a PO # no
- *    order holds — with a button that raises it
+ *  - a row already naming one of its job's orders is on it after load
+ *  - typing a quantity into Daily Tracking reaches the order, with no
+ *    whole-list save from the page
+ *  - clearing the row's PO # takes it off; picking it again puts it back
+ *  - the PO tab tags it, locks it, and lists a PO # no order holds, whose
+ *    Create raises the order with the row on it
+ *  - deleting the order leaves the field's row on the job
  *  - nothing throws
  */
 const http = require('http');
 const fs   = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
+const poSync = require('../api/lib/po-sync');
 
 const ROOT = path.resolve(__dirname, '..');
 const CHROME = process.env.PW_CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
@@ -52,20 +56,40 @@ const PAGES = [
     index: 'fct_kiewit_projects_index', project: 'fct_kiewit_project_' },
 ];
 
-// Entered on Daily Tracking against PO-0003, before the rows fed the orders.
-const ROW = { id: 'r1', _projectId: 'p1', date: '2026-11-02', field_type: 'Material', employee: 'Sam',
-  cost_code: '02-100', sub_code: '0420', material: '57 stone', supplier: 'Acme Stone',
-  po_num: 'PO-0003', units_purchased: '20', unit_cost: '16', material_cost: '320' };
-// A PO # nothing in the division holds — an import, or an order since deleted.
-const STRAY = { ...ROW, id: 'r2', po_num: 'PO-0099', units_purchased: '5', unit_cost: '10', material_cost: '50' };
-const ORDER = { id: 'po3', po_number: 'PO-0003', title: 'Aggregate', supplier: 'Acme Stone', status: 'pending',
-  date_created: '2026-11-01', project_id: 'p1', cost_code: '', sub_code: '', lines: [] };
+// A page's row, as the server holds it for the derivation.
+const asDbRow = r => ({
+  row_id: String(r.id), project_id: r._projectId, date: r.date, employee: r.employee,
+  cost_code: r.cost_code, sub_code: r.sub_code, po_num: r.po_num,
+  units_purchased: r.units_purchased, unit_cost: r.unit_cost, material_cost: r.material_cost,
+  timesheet_entry_id: r.timesheet_entry_id || null,
+});
 
 async function run(browser, cfg) {
   console.log(`\n${cfg.file}`);
-  const puts = [];   // every full-list PO save, parsed
-  const LISTS = { equipment: [], employees: [{ name: 'Sam' }], suppliers: [{ name: 'Acme Stone' }] };
+  // ── the in-memory server ──
+  const rows = new Map([
+    ['r1', { id: 'r1', _projectId: 'p1', date: '2026-11-02', field_type: 'Material', employee: 'Sam',
+             cost_code: '02-100', sub_code: '0420', material: '57 stone', supplier: 'Acme Stone',
+             po_num: 'PO-0003', units_purchased: '20', unit_cost: '16', material_cost: '320' }],
+    ['r2', { id: 'r2', _projectId: 'p1', date: '2026-11-03', field_type: 'Material', employee: 'Lee',
+             cost_code: '03-200', sub_code: '0610', material: 'Rebar', supplier: 'Steel Co',
+             po_num: 'PO-0099', units_purchased: '5', unit_cost: '10', material_cost: '50' }],
+  ]);
+  let blob = [{ id: 'po3', po_number: 'PO-0003', title: 'Aggregate', supplier: 'Acme Stone', status: 'pending',
+                date_created: '2026-11-01', project_id: 'p1', cost_code: '', sub_code: '', lines: [] }];
+  let version = 1;
+  const stamp = () => '2026-11-10T00:00:0' + (version++) + '.000Z';
+  let updatedAt = stamp();
+  const listPuts = [], rowDeletes = [];
+  const dbRows = () => [...rows.values()].map(asDbRow);
+  const syncRows = (ids, deleted) => {
+    const byId = new Map(dbRows().map(r => [r.row_id, r]));
+    const changed = poSync.applyRowsToOrders(blob, byId, ids, { deleted: new Set(deleted || []) });
+    if (changed.size) updatedAt = stamp();
+    return blob.filter(p => changed.has(p.id));
+  };
 
+  const LISTS = { equipment: [], employees: [{ name: 'Sam' }, { name: 'Lee' }], suppliers: [{ name: 'Acme Stone' }] };
   const page = await browser.newPage({ viewport: { width: 1474, height: 889 } });
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
@@ -81,15 +105,51 @@ async function run(browser, cfg) {
     const u   = new URL(req.url());
     const p   = u.pathname;
     const m   = req.method();
+    const body = (() => { try { return JSON.parse(req.postData() || '{}'); } catch { return {}; } })();
     const json = b => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
     if (p === '/api/daily-rows') {
-      if (m === 'GET') return json({ rows: [ROW, STRAY].map(r => ({ ...r })), hasMore: false });
-      return json({ ok: true });
+      if (m === 'GET') return json({ rows: [...rows.values()].map(r => ({ ...r })), hasMore: false });
+      if (m === 'POST') {
+        const list = body.rows || (body.row ? [body.row] : []);
+        list.forEach(r => { if (!rows.has(String(r.id))) rows.set(String(r.id), { ...r, _projectId: body.projectId }); });
+        const orders = syncRows(list.filter(r => String(r.po_num || '').trim()).map(r => String(r.id)));
+        return json({ ok: true, inserted: list.length, ...(orders.length ? { po: { orders } } : {}) });
+      }
+      if (m === 'PUT') {
+        const id = u.searchParams.get('id');
+        const before = rows.get(id);
+        rows.set(id, { ...body.row, id, _projectId: body.projectId || (before && before._projectId) });
+        const orders = (String((before && before.po_num) || '').trim() || String(body.row.po_num || '').trim()) ? syncRows([id]) : [];
+        return json({ ok: true, ...(orders.length ? { po: { orders } } : {}) });
+      }
+      if (m === 'DELETE') {
+        const id = u.searchParams.get('id');
+        rowDeletes.push(id); rows.delete(id);
+        const orders = syncRows([], [id]);
+        return json({ ok: true, ...(orders.length ? { po: { orders } } : {}) });
+      }
     }
     if (p === '/api/purchase-orders') {
-      if (m === 'GET') return json({ purchaseOrders: [JSON.parse(JSON.stringify(ORDER))], updatedAt: '2026-11-10T00:00:00Z' });
-      if (m === 'PUT') { try { puts.push(JSON.parse(req.postData() || '{}')); } catch {} }
-      return json({ ok: true, updatedAt: '2026-11-10T00:00:0' + puts.length + 'Z', merged: 0 });
+      if (m === 'GET') return json({ purchaseOrders: JSON.parse(JSON.stringify(blob)), updatedAt });
+      if (m === 'POST' && u.searchParams.get('reconcile') === '1') {
+        const changed = poSync.deriveDailyLines(blob, dbRows());
+        if (changed.size) updatedAt = stamp();
+        return json({ ok: true, changed: changed.size, purchaseOrders: JSON.parse(JSON.stringify(blob)), updatedAt });
+      }
+      if (m === 'POST') {
+        const po = body.purchaseOrder;
+        poSync.deriveDailyLines([po], dbRows());
+        blob = blob.filter(x => x.id !== po.id).concat([po]);
+        updatedAt = stamp();
+        return json({ ok: true, purchaseOrder: po, rows: { removed: 0, written: 0 }, staleCopy: false, mergedLines: 0 });
+      }
+      if (m === 'PUT') {
+        const list = body.purchaseOrders || [];
+        listPuts.push(JSON.parse(JSON.stringify(list)));
+        const derived = poSync.deriveDailyLines(list, dbRows()).size;
+        blob = list; updatedAt = stamp();
+        return json({ ok: true, updatedAt, merged: 0, derived });
+      }
     }
     if (p === '/api/data/_batch') {
       const keys = (u.searchParams.get('keys') || '').split(',');
@@ -113,39 +173,46 @@ async function run(browser, cfg) {
   await page.waitForFunction(() => purchaseOrders.length && (purchaseOrders[0].lines || []).length > 0,
     null, { timeout: 8000 }).catch(() => {});
   await sleep(300);
+  const pageLines = () => page.evaluate(() => JSON.parse(JSON.stringify(
+    (purchaseOrders.find(p => p.id === 'po3') || { lines: [] }).lines)));
 
   // ── At load ─────────────────────────────────────────────────────────────
-  const atLoad = await page.evaluate(() => JSON.parse(JSON.stringify(purchaseOrders)));
-  const line = ((atLoad[0] || {}).lines || [])[0];
-  ok('the row already naming PO-0003 is recorded on it at load',
-    line && line.po_row_id === 'r1' && line.source === 'daily', JSON.stringify(atLoad));
+  let lines = await pageLines();
+  ok('the row already naming PO-0003 is on it after load',
+    lines.length === 1 && lines[0].id === 'dr-r1' && lines[0].source === 'daily' && lines[0].po_row_id === 'r1', JSON.stringify(lines));
   ok('  with its quantity, unit cost and codes',
-    line && line.qty === '20' && line.unit_cost === '16' && line.cost_code === '02-100' && line.sub_code === '0420',
-    JSON.stringify(line));
-  const firstPut = puts[0] && (puts[0].purchaseOrders || [])[0];
-  ok('and saved to the server', firstPut && (firstPut.lines || []).some(l => l.po_row_id === 'r1'),
-    JSON.stringify(puts));
-  ok('  against the version it read', puts[0] && puts[0].baseUpdatedAt === '2026-11-10T00:00:00Z');
-  ok('the stray PO # is not invented onto any order',
-    !atLoad.some(o => (o.lines || []).some(l => l.po_row_id === 'r2')));
+    lines[0] && lines[0].qty === '20' && lines[0].unit_cost === '16' && lines[0].cost_code === '02-100', JSON.stringify(lines[0]));
+  ok('  recorded by the server, with no whole-list save from the page', listPuts.length === 0, listPuts.length);
+  ok('the stray PO # is on no order', !blob.some(o => o.lines.some(l => l.po_row_id === 'r2')));
 
-  // ── An edit in Daily Tracking ───────────────────────────────────────────
+  // ── Daily Tracking edits ────────────────────────────────────────────────
   await page.evaluate(() => openDailyView('p1'));
   await sleep(400);
-  const i = await page.evaluate(() => getProj('p1').dailyRows.findIndex(r => String(r.id) === 'r1'));
-  const units = page.locator(`input[data-tab="daily"][data-proj="p1"][data-i="${i}"][data-f="units_purchased"]`);
-  const before = puts.length;
+  const idx = id => page.evaluate(i => getProj('p1').dailyRows.findIndex(r => String(r.id) === i), id);
+  const i1 = await idx('r1');
+  const units = page.locator(`input[data-tab="daily"][data-proj="p1"][data-i="${i1}"][data-f="units_purchased"]`);
   await units.fill('25');
   await units.blur();
-  await sleep(400);
-  const after = await page.evaluate(() => JSON.parse(JSON.stringify(purchaseOrders[0].lines)));
-  ok('a new quantity typed in Daily Tracking reaches the order', after[0] && after[0].qty === '25', JSON.stringify(after));
-  ok('  and the order is saved with it',
-    puts.length > before && (puts[puts.length - 1].purchaseOrders[0].lines || [])[0].qty === '25');
-  const sel = await page.locator(`select[data-tab="daily"][data-proj="p1"][data-f="po_num"]`).evaluateAll(els =>
+  await sleep(500);
+  lines = await pageLines();
+  ok('a quantity typed in Daily Tracking reaches the order', lines[0] && lines[0].qty === '25' && lines[0].unit_cost === '16', JSON.stringify(lines));
+  ok('  stored by the server', blob[0].lines[0] && blob[0].lines[0].qty === '25');
+  ok('  and still without a whole-list save from the page', listPuts.length === 0, listPuts.length);
+
+  const sel = page.locator(`select[data-tab="daily"][data-proj="p1"][data-i="${i1}"][data-f="po_num"]`);
+  await sel.selectOption('');
+  await sleep(500);
+  ok('clearing the row\'s PO # takes it off the order', (await pageLines()).length === 0 && blob[0].lines.length === 0);
+  await page.evaluate(() => renderDailyTable('p1'));
+  await sleep(150);
+  await page.locator(`select[data-tab="daily"][data-proj="p1"][data-i="${i1}"][data-f="po_num"]`).selectOption('PO-0003');
+  await sleep(500);
+  lines = await pageLines();
+  ok('picking it again puts it back, once', lines.length === 1 && lines[0].id === 'dr-r1' && lines[0].qty === '25', JSON.stringify(lines));
+  const cells = await page.locator('select[data-tab="daily"][data-proj="p1"][data-f="po_num"]').evaluateAll(els =>
     els.map(e => ({ v: e.value, disabled: e.disabled, flagged: /outline/.test(e.getAttribute('style') || '') })));
-  ok('a Daily Tracking delivery keeps its PO # editable', sel.some(s => s.v === 'PO-0003' && !s.disabled), JSON.stringify(sel));
-  ok('a PO # with no order on the job is flagged', sel.some(s => s.v === 'PO-0099' && s.flagged), JSON.stringify(sel));
+  ok('a Daily Tracking delivery keeps its PO # editable', cells.some(c => c.v === 'PO-0003' && !c.disabled), JSON.stringify(cells));
+  ok('a PO # with no order on the job is flagged', cells.some(c => c.v === 'PO-0099' && c.flagged), JSON.stringify(cells));
 
   // ── The Purchase Orders tab ─────────────────────────────────────────────
   await page.evaluate(() => closeDailyView());
@@ -153,18 +220,27 @@ async function run(browser, cfg) {
   await sleep(400);
   await page.evaluate(() => _togglePOLines('po3'));
   await sleep(200);
-  const tag = await page.locator('#po-root').innerText();
-  ok('the PO tab shows the delivery as from Daily Tracking, with its codes',
-    /from Daily Tracking · 02-100 \/ 0420/.test(tag), tag.slice(0, 600));
-  ok('and lists the PO # no order holds', /PO numbers in Daily Tracking with no purchase order/.test(tag) && /PO-0099/.test(tag));
-  const n = puts.length;
+  const text = await page.locator('#po-root').innerText();
+  ok('the PO tab tags the delivery with its row\'s codes', /from Daily Tracking · 02-100 \/ 0420/.test(text), text.slice(0, 500));
+  ok('  and shows a lock, not a ✕, on it',
+    await page.locator('#po-lines-po3 td[title^="Entered on Daily Tracking"]').count() === 1
+    && await page.locator('#po-lines-po3 button[title="Remove delivery"]').count() === 0);
+  ok('and lists the PO # no order holds', /PO numbers in Daily Tracking with no purchase order/.test(text) && /PO-0099/.test(text));
   await page.click('#po-root button:has-text("Create PO-0099")');
-  await sleep(400);
+  await sleep(500);
   const made = await page.evaluate(() => JSON.parse(JSON.stringify(purchaseOrders.find(p => p.po_number === 'PO-0099') || null)));
-  ok('Create raises it on the job, with its row recorded',
+  ok('Create raises it on the job with its row on it',
     made && made.project_id === 'p1' && made.lines.length === 1 && made.lines[0].po_row_id === 'r2', JSON.stringify(made));
-  ok('  and saves it', puts.length > n && puts[puts.length - 1].purchaseOrders.some(o => o.po_number === 'PO-0099'));
+  ok('  saved as that one order', blob.some(o => o.po_number === 'PO-0099') && listPuts.length === 0);
   ok('  and the notice is gone', !/with no purchase order on that job/.test(await page.locator('#po-root').innerText()));
+
+  // ── Deleting the order ──────────────────────────────────────────────────
+  await page.locator('.del-btn[data-tab="po"][data-po-id="po3"]').click();
+  await sleep(150);
+  if (await page.locator('.del-confirm .dc-yes').count()) await page.click('.del-confirm .dc-yes');
+  await sleep(500);
+  ok('deleting the order deletes no Daily Tracking row', !rowDeletes.includes('r1') && rows.has('r1'), rowDeletes.join());
+  ok('  and the row is still on the page', await page.evaluate(() => getProj('p1').dailyRows.some(r => String(r.id) === 'r1')));
 
   ok('no page errors', errors.length === 0, errors.join(' | '));
   await page.close();

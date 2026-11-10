@@ -141,16 +141,9 @@ function makeStore() {
     if (/^INSERT INTO daily_tracking/.test(q)) {
       // 'Material' is a literal in the INSERT, so it is NOT one of the
       // parameters — the columns after date shift down by one.
-      // After the fourteen values come the conflict arm's flags: whether the
-      // codes follow the order (twice, cost then sub code) and whether the row
-      // keeps its own description (twice, material then supplier).
       const [rowId, projectId, companyCode, division, date, employee,
              costCode, subCode, material, supplier, poNum,
              qty, unitCost, cost, codesChanged] = vals;
-      // Read from its slot only when the statement really has that arm, so a
-      // writeRow that lost it cannot pass on whatever value lands there.
-      const ownRow = /material = CASE WHEN \$17 THEN daily_tracking\.material ELSE EXCLUDED\.material END/.test(q)
-        ? vals[16] : false;
       const existing = daily.get(rowId);
       if (existing) {
         // The conflict arm: scoped to this company, never a payroll-injected
@@ -159,10 +152,9 @@ function makeStore() {
         if (existing.timesheet_entry_id) return Promise.resolve([]);
         Object.assign(existing, {
           project_id: projectId, division, date, employee,
-          po_num: poNum,
+          material, supplier, po_num: poNum,
           units_purchased: qty, unit_cost: unitCost, material_cost: cost,
         });
-        if (!ownRow) { existing.material = material; existing.supplier = supplier; }
         if (codesChanged) { existing.cost_code = costCode; existing.sub_code = subCode; }
         return Promise.resolve([{ row_id: rowId }]);
       }
@@ -174,6 +166,35 @@ function makeStore() {
         units_purchased: qty, unit_cost: unitCost, material_cost: cost,
       });
       return Promise.resolve([{ row_id: rowId }]);
+    }
+    // ── daily_tracking, as the Daily Tracking derivation reads and writes it ──
+    if (/^SELECT row_id, project_id, date, employee, cost_code, sub_code, po_num/.test(q)) {
+      const [companyCode, division, ids, projects] = vals;
+      const out = [];
+      for (const r of daily.values()) {
+        if (r.company_code !== companyCode || r.division !== division) continue;
+        if (ids.includes(r.row_id) || (projects.includes(r.project_id) && String(r.po_num || '').trim())) {
+          out.push({ timesheet_entry_id: null, ...r });
+        }
+      }
+      return Promise.resolve(out);
+    }
+    if (/^UPDATE daily_tracking SET units_purchased =/.test(q)) {
+      const [qty, unitCost, cost, date, employee, poNum, companyCode, division, projectId, rowId] = vals;
+      const r = daily.get(rowId);
+      if (r && r.company_code === companyCode && r.division === division
+          && r.project_id === projectId && !r.timesheet_entry_id) {
+        Object.assign(r, { units_purchased: qty, unit_cost: unitCost, material_cost: cost, employee, po_num: poNum });
+        if (date) r.date = date;
+      }
+      return Promise.resolve([]);
+    }
+    if (/^UPDATE daily_tracking SET po_num =/.test(q)) {
+      const [poNum, companyCode, division, projectId, rowId] = vals;
+      const r = daily.get(rowId);
+      if (r && r.company_code === companyCode && r.division === division
+          && r.project_id === projectId && !r.timesheet_entry_id) r.po_num = poNum;
+      return Promise.resolve([]);
     }
     if (/^SELECT 1 FROM document_links/.test(q)) return Promise.resolve([]);
 
@@ -924,87 +945,273 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
     st.daily.get(recodedId).cost_code === '300' && st.daily.get(recodedId).sub_code === 'C',
     JSON.stringify(st.daily.get(recodedId)));
 
-  console.log('\n[a delivery recorded from Daily Tracking keeps the row\'s own codes]');
-  // A foreman picks PO-0001 on a Daily Tracking row and keys in 20 t at $16
-  // under 02-100 / 0420; the division tab records it on the order as a line
-  // tagged source:'daily'. Purchasing then saves the order — a status flip, or
-  // a re-code of the ORDER — and must not re-code or re-describe that row.
-  st = makeStore();
-  st.daily.set('r1', {
-    row_id: 'r1', project_id: 'job1', company_code: 'FCT', division: 'turf',
+  // ══════════════════════════════════════════════════════════════════════
+  // Deliveries recorded from Daily Tracking
+  // ══════════════════════════════════════════════════════════════════════
+  // A job row that names one of its job's orders and carries material is a
+  // delivery on that order — a line tagged source:'daily', which the server
+  // alone derives from the rows. These pin that it is recorded, follows its
+  // row, moves and leaves with it, survives no stale copy, and that nothing
+  // done to an order ever mints, sweeps or re-codes the field's row.
+  const dRow = (id, over) => Object.assign({
+    row_id: id, project_id: 'job1', company_code: 'FCT', division: 'turf',
     date: '2026-11-02', field_type: 'Material', employee: 'Sam',
     cost_code: '02-100', sub_code: '0420', material: '57 stone', supplier: 'Quarry Co',
-    po_num: 'PO-0001', units_purchased: 20, unit_cost: 16, material_cost: 320,
-  });
-  const fromDaily = {
-    id: 'dr-r1', source: 'daily', invoice_num: '', date: '2026-11-02',
-    qty: '20', unit_cost: '16', tax: '', tax_pct: '', employee: 'Sam',
-    cost_code: '02-100', sub_code: '0420', po_row_id: 'r1',
+    po_num: 'PO-0001', units_purchased: 20, unit_cost: 16, material_cost: 320, timesheet_entry_id: null,
+  }, over || {});
+  const lineOf = (st2, div, poId, lineId) => {
+    const o = (st2.getBlob(KEY(div)) || []).find(p => p && p.id === poId);
+    return o ? (o.lines || []).find(l => l && l.id === lineId) || null : null;
   };
-  po = makePO({ id: 'daily1', project_id: 'job1', title: 'Aggregate', supplier: 'Acme',
-                cost_code: '100', sub_code: 'A',
-                lines: [fromDaily, { id: 'L2', qty: '5', unit_cost: '10' }] });
-  // Stored as the division tab's full-list save leaves it, so the row is the order's.
-  st.setBlob(KEY('turf'), [JSON.parse(JSON.stringify(po))]);
+  const linesOf = (st2, div, poId) => {
+    const o = (st2.getBlob(KEY(div)) || []).find(p => p && p.id === poId);
+    return o ? (o.lines || []).map(l => l.id).join() : '(no order)';
+  };
 
-  po.status = 'approved';
-  po.cost_code = '300'; po.sub_code = 'C';      // the ORDER is re-coded too
-  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: JSON.parse(JSON.stringify(po)) });
-  const dRow = st.daily.get('r1');
-  assert('the Daily Tracking row keeps its own cost and sub code',
-    dRow.cost_code === '02-100' && dRow.sub_code === '0420', JSON.stringify(dRow));
-  assert('  and its own material and supplier',
-    dRow.material === '57 stone' && dRow.supplier === 'Quarry Co', JSON.stringify(dRow));
-  assert('  while its quantity and money still follow the delivery',
-    Number(dRow.units_purchased) === 20 && Number(dRow.material_cost) === 320, JSON.stringify(dRow));
-  assert('it is not given a second row',
-    [...st.daily.values()].filter(r => r.po_num === 'PO-0001').length === 2,
-    JSON.stringify([...st.daily.keys()]));
-  const stored = st.getBlob(KEY('turf'))[0];
-  const poRow = st.daily.get(stored.lines.find(l => l.id === 'L2').po_row_id);
-  assert('a line raised on the order still takes the order\'s codes',
-    poRow && poRow.cost_code === '300' && poRow.sub_code === 'C', JSON.stringify(poRow));
-  assert('  and its title', poRow && poRow.material === 'Aggregate', JSON.stringify(poRow));
-  assert('the Daily Tracking line is stored still tagged and linked',
-    stored.lines.some(l => l.id === 'dr-r1' && l.source === 'daily' && l.po_row_id === 'r1'),
-    JSON.stringify(stored.lines));
-  assert('isDailyLine reads the tag', poSync.isDailyLine(fromDaily) && !poSync.isDailyLine({ id: 'x' }) && !poSync.isDailyLine(null));
-
-  console.log('\n[one job row is one delivery, even when a tab recorded it twice]');
-  // Purchasing writes the job row a moment before the order that links it. A
-  // division tab loading in that moment sees the row and not the link, and
-  // records the row as a Daily Tracking delivery of its own — so the order
-  // carries two lines for one row. The order's own line stands, and the row
-  // must survive the copy going.
+  console.log('\n[Daily Tracking: the figures a row gives its line]');
   {
-    const shadow = { lines: [
-      { id: 'L1', qty: '5', unit_cost: '10', po_row_id: 'rowX' },
-      { id: 'dr-rowX', source: 'daily', qty: '5', unit_cost: '10', po_row_id: 'rowX' },
-      { id: 'dr-rowY', source: 'daily', qty: '1', unit_cost: '2', po_row_id: 'rowY' },
-    ] };
-    assert('the copy is dropped', poSync.dropShadowedDailyLines(shadow) === 1
-      && shadow.lines.map(l => l.id).join() === 'L1,dr-rowY', JSON.stringify(shadow.lines));
-    assert('a Daily Tracking line nobody else names stays', shadow.lines.some(l => l.id === 'dr-rowY'));
-    assert('an order with no raised lines is untouched',
-      poSync.dropShadowedDailyLines({ lines: [{ id: 'dr-a', source: 'daily', po_row_id: 'a' }] }) === 0);
-    assert('a missing list is not an error', poSync.dropShadowedDailyLines({}) === 0 && poSync.dropShadowedDailyLines(null) === 0);
+    const f = (row, line) => poSync.lineFiguresFromRow(row, line || {});
+    assert('quantity and unit cost as the row has them',
+      JSON.stringify(f(dRow('a'))) === JSON.stringify({ qty: '20', unit_cost: '16' }), JSON.stringify(f(dRow('a'))));
+    assert('an imported total is reached to the cent',
+      f(dRow('a', { units_purchased: 10, unit_cost: 15, material_cost: 160 })).unit_cost === '16');
+    assert('a lump sum is one unit at the total',
+      JSON.stringify(f(dRow('a', { units_purchased: 0, unit_cost: 0, material_cost: 500 }))) === JSON.stringify({ qty: '1', unit_cost: '500' }));
+    assert('a quantity with no price yet is recorded unpriced',
+      JSON.stringify(f(dRow('a', { unit_cost: 0, material_cost: 0 }))) === JSON.stringify({ qty: '20', unit_cost: '' }));
+    assert('a copied row not yet charged records nothing', f(dRow('a', { material_cost: 0 })) === null);
+    assert('nor does a row with no material', f(dRow('a', { units_purchased: 0, unit_cost: 0, material_cost: 0 })) === null);
+    assert('a percentage tax comes back out of the row\'s unit cost',
+      f(dRow('a', { units_purchased: 10, unit_cost: 17.04, material_cost: 170.4 }), { tax_pct: '6.5' }).unit_cost === '16');
+    const legacy = { tax: '9.6' };   // no tax_pct key: a flat dollar tax
+    const lf = f(dRow('a', { units_purchased: 12, unit_cost: 16.96, material_cost: 203.52 }), legacy);
+    assert('a flat tax is spread back out of it',
+      Math.abs(poSync.lineAmt({ qty: lf.qty, unit_cost: lf.unit_cost }) + 9.6 - 203.52) < 0.005, JSON.stringify(lf));
+    const big = f(dRow('a', { units_purchased: 1000, unit_cost: 1, material_cost: 1234.5678 }));
+    assert('a large quantity keeps the places it needs to reach the row\'s money',
+      Math.abs(poSync.lineAmt({ qty: big.qty, unit_cost: big.unit_cost }) - 1234.5678) < 0.005, JSON.stringify(big));
+    assert('payroll\'s rows are never deliveries',
+      !poSync.rowIsDelivery(dRow('a', { timesheet_entry_id: 7 })) && !poSync.rowIsDelivery(dRow('ts9-1-0-x')));
+  }
 
+  console.log('\n[Daily Tracking: a row write carries to the order it names]');
+  {
     st = makeStore();
-    po = makePO({ id: 'twice', project_id: 'job1', lines: [{ id: 'L1', qty: '5', unit_cost: '10' }] });
+    const A = makePO({ id: 'A', po_number: 'PO-0001', project_id: 'job1' });
+    const B = makePO({ id: 'B', po_number: 'PO-0002', project_id: 'job1' });
+    st.setBlob(KEY('turf'), [A, B]);
+    st.daily.set('r1', dRow('r1'));
+    let out = await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r1'] });
+    const l1 = lineOf(st, 'turf', 'A', 'dr-r1');
+    assert('the row is recorded on its order', Boolean(l1) && l1.source === 'daily' && l1.po_row_id === 'r1', linesOf(st, 'turf', 'A'));
+    assert('  with its quantity, unit cost, date and receiver',
+      l1 && l1.qty === '20' && l1.unit_cost === '16' && l1.date === '2026-11-02' && l1.employee === 'Sam', JSON.stringify(l1));
+    assert('  and its own codes', l1 && l1.cost_code === '02-100' && l1.sub_code === '0420');
+    assert('the changed order comes back for the page', out.ok && out.orders.length === 1 && out.orders[0].id === 'A');
+    assert('and its mirror carries the delivery', st.deliveries.some(d => d.po_id === 'A' && d.line_id === 'dr-r1'));
+    assert('the order\'s own header is untouched',
+      (st.getBlob(KEY('turf')).find(p => p.id === 'A').cost_code || '') === '');
+    out = await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r1'] });
+    assert('a second sync changes nothing', out.orders.length === 0);
+
+    Object.assign(st.daily.get('r1'), { units_purchased: 25, material_cost: 400 });
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r1'] });
+    assert('a new quantity follows', lineOf(st, 'turf', 'A', 'dr-r1').qty === '25');
+
+    // purchasing typed an invoice # on it; then the foreman re-points the row.
+    const blob = st.getBlob(KEY('turf'));
+    blob.find(p => p.id === 'A').lines[0].invoice_num = 'T-118';
+    st.setBlob(KEY('turf'), blob);
+    st.daily.get('r1').po_num = 'PO-0002';
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r1'] });
+    assert('a changed PO # moves the delivery', linesOf(st, 'turf', 'A') === '' && linesOf(st, 'turf', 'B') === 'dr-r1');
+    assert('  with its invoice #', lineOf(st, 'turf', 'B', 'dr-r1').invoice_num === 'T-118');
+    st.daily.get('r1').po_num = '';
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r1'] });
+    assert('a cleared PO # takes it off', linesOf(st, 'turf', 'B') === '');
+    st.daily.get('r1').po_num = 'PO-0001';
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r1'] });
+    st.daily.delete('r1');
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: [], deletedIds: ['r1'] });
+    assert('a deleted row leaves its order', linesOf(st, 'turf', 'A') === '');
+
+    st.daily.set('rOther', dRow('rOther', { project_id: 'job2' }));
+    st.daily.set('rPay',   dRow('rPay',   { timesheet_entry_id: 12 }));
+    st.daily.set('rCopy',  dRow('rCopy',  { material_cost: 0 }));
+    out = await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['rOther', 'rPay', 'rCopy'] });
+    assert('another job\'s row, a payroll row and an uncharged copy are not recorded',
+      out.orders.length === 0 && linesOf(st, 'turf', 'A') === '', linesOf(st, 'turf', 'A'));
+    out = await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'quarry', rowIds: ['r1'] });
+    assert('a division without jobs is never touched', out.ok && out.orders.length === 0);
+  }
+
+  console.log('\n[Daily Tracking: a row an order raised follows its row]');
+  {
+    st = makeStore();
+    const L1 = { id: 'L1', qty: '10', unit_cost: '16', tax: '10.4', tax_pct: '6.5', date: '2026-11-02', employee: 'Sam', po_row_id: 'r9' };
+    st.setBlob(KEY('turf'), [makePO({ id: 'A', po_number: 'PO-0001', project_id: 'job1', lines: [L1] })]);
+    st.daily.set('r9', dRow('r9', { units_purchased: 12, unit_cost: 17.04, material_cost: 12 * 17.04 }));
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r9'] });
+    const l = lineOf(st, 'turf', 'A', 'L1');
+    assert('its new quantity reaches the order', l.qty === '12', JSON.stringify(l));
+    assert('  its pre-tax unit cost is untouched', l.unit_cost === '16');
+    assert('  and the order comes to the job\'s money',
+      Math.abs(poSync.lineAmt(l) + poSync.lineTax(l) - 12 * 17.04) < 0.005, JSON.stringify(l));
+    assert('  with no Daily Tracking copy beside it', linesOf(st, 'turf', 'A') === 'L1');
+    st.daily.get('r9').po_num = 'PO-0777';
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r9'] });
+    assert('its PO # is the order\'s: the line stays put', linesOf(st, 'turf', 'A') === 'L1');
+    st.daily.delete('r9');
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: [], deletedIds: ['r9'] });
+    const gone = lineOf(st, 'turf', 'A', 'L1');
+    assert('deleting the row detaches the line, the delivery kept', gone && gone.po_row_id === null && gone.qty === '12');
+  }
+
+  console.log('\n[Daily Tracking: the once-per-load catch-up]');
+  {
+    st = makeStore();
+    st.setBlob(KEY('turf'), [makePO({ id: 'A', po_number: 'PO-0001', project_id: 'job1', lines: [
+      { id: 'dr-gone', source: 'daily', qty: '1', unit_cost: '1', po_row_id: 'gone' },
+      { id: 'L1', qty: '2', unit_cost: '3', po_row_id: 'rRaised' },
+    ] })]);
+    st.daily.set('r1', dRow('r1'));
+    st.daily.set('r2', dRow('r2', { po_num: ' po-0001', units_purchased: 5, unit_cost: 0, material_cost: 0 }));
+    st.daily.set('rRaised', dRow('rRaised', { units_purchased: 2, unit_cost: 3, material_cost: 6 }));
+    let out = await poSync.reconcileDailyLines(st.sql, { companyCode: 'FCT', division: 'turf' });
+    assert('rows entered before are recorded, and a line whose row is gone dropped',
+      out.ok && linesOf(st, 'turf', 'A') === 'L1,dr-r1,dr-r2', linesOf(st, 'turf', 'A'));
+    assert('  a raised line\'s row is not recorded twice', !lineOf(st, 'turf', 'A', 'dr-rRaised'));
+    assert('  and the list comes back for the page', Array.isArray(out.list) && out.changed.join() === 'A');
+    out = await poSync.reconcileDailyLines(st.sql, { companyCode: 'FCT', division: 'turf' });
+    assert('a second catch-up finds nothing to do', out.ok && out.changed.length === 0);
+  }
+
+  console.log('\n[Daily Tracking: a save from a copy a minute behind]');
+  {
+    st = makeStore();
+    st.daily.set('r1', dRow('r1'));
+    const A = makePO({ id: 'A', po_number: 'PO-0001', project_id: 'job1', cost_code: '100', sub_code: 'A' });
+    const B = makePO({ id: 'B', po_number: 'PO-0002', project_id: 'job1' });
+    st.setBlob(KEY('turf'), [A, B]);
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r1'] });
+    const stale = JSON.parse(JSON.stringify(st.getBlob(KEY('turf')).find(p => p.id === 'A')));   // purchasing's copy
+
+    // The foreman moves the row to PO-0002, and the server moves the line.
+    st.daily.get('r1').po_num = 'PO-0002';
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r1'] });
+    const rowsBefore = st.daily.size;
+    stale.status = 'approved';
+    const res = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: stale });
+    assert('a stale copy cannot put a moved delivery back', res.ok && linesOf(st, 'turf', 'A') === '', linesOf(st, 'turf', 'A'));
+    assert('  it stays on the order its row names', linesOf(st, 'turf', 'B') === 'dr-r1');
+    assert('  and no second job row is minted for it', st.daily.size === rowsBefore,
+      [...st.daily.keys()].join());
+    assert('  nor any INSERT for the field\'s row',
+      !st.log.some(q => /^INSERT INTO daily_tracking/.test(q)));
+    assert('the status flip itself is saved', st.getBlob(KEY('turf')).find(p => p.id === 'A').status === 'approved');
+  }
+  {
+    st = makeStore();
+    st.daily.set('r1', dRow('r1'));
+    st.setBlob(KEY('turf'), [makePO({ id: 'A', po_number: 'PO-0001', project_id: 'job1', cost_code: '100', sub_code: 'A' })]);
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r1'] });
+    const copy = JSON.parse(JSON.stringify(st.getBlob(KEY('turf'))[0]));
+    copy.lines[0].qty = '15';                       // a figure from before the foreman's last edit
+    copy.cost_code = '300'; copy.sub_code = 'C';    // and purchasing re-codes the ORDER
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: copy });
+    assert('a re-sent figure gives way to the row\'s', lineOf(st, 'turf', 'A', 'dr-r1').qty === '20');
+    assert('  and the row is left as the field entered it', st.daily.get('r1').units_purchased === 20);
+    assert('re-coding the order does not re-code the field\'s row',
+      st.daily.get('r1').cost_code === '02-100' && st.daily.get('r1').sub_code === '0420');
+
+    const edit = JSON.parse(JSON.stringify(st.getBlob(KEY('turf'))[0]));
+    edit.lines[0].qty = '22';
+    edit.lines[0].date = '2026-11-03';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: edit, editedLineIds: ['dr-r1'] });
+    assert('a figure purchasing says it edited stands', lineOf(st, 'turf', 'A', 'dr-r1').qty === '22');
+    assert('  and reaches the row: quantity, money and date',
+      st.daily.get('r1').units_purchased === 22 && st.daily.get('r1').material_cost === 352
+      && st.daily.get('r1').date === '2026-11-03', JSON.stringify(st.daily.get('r1')));
+    assert('  still without re-coding it', st.daily.get('r1').cost_code === '02-100');
+  }
+
+  {
+    // The row moved to PO-0002 but its sync never ran (a dropped connection),
+    // so the STORED PO-0001 still lists it. A purchasing save of PO-0001 drops
+    // it — and the re-read under the compare-and-set, which keeps deliveries
+    // other writers added, must not bring it straight back from that copy.
+    st = makeStore();
+    st.daily.set('r1', dRow('r1', { po_num: 'PO-0002' }));
+    st.setBlob(KEY('turf'), [
+      makePO({ id: 'A', po_number: 'PO-0001', project_id: 'job1', lines: [
+        { id: 'dr-r1', source: 'daily', qty: '20', unit_cost: '16', po_row_id: 'r1' }] }),
+      makePO({ id: 'B', po_number: 'PO-0002', project_id: 'job1' }),
+    ]);
+    const copy = JSON.parse(JSON.stringify(st.getBlob(KEY('turf'))[0]));
+    copy.status = 'approved';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: copy });
+    assert('a line whose row moved on is not merged back from the stored copy',
+      linesOf(st, 'turf', 'A') === '', linesOf(st, 'turf', 'A'));
+  }
+
+  console.log('\n[Daily Tracking: nothing done to an order removes the field\'s row]');
+  {
+    st = makeStore();
+    st.daily.set('r1', dRow('r1'));
+    po = makePO({ id: 'A', po_number: 'PO-0001', project_id: 'job1', lines: [{ id: 'L1', qty: '2', unit_cost: '5' }] });
     await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
-    const rowX = po.lines[0].po_row_id;
-    // The division tab's save that recorded the row a second time.
-    const doubled = JSON.parse(JSON.stringify(po));
-    doubled.lines.push({ id: 'dr-' + rowX, source: 'daily', qty: '5', unit_cost: '10', po_row_id: rowX });
-    st.setBlob(KEY('turf'), [doubled]);
-    // Purchasing's next save of the order, from the copy it had.
-    po.status = 'approved';
-    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: JSON.parse(JSON.stringify(po)) });
-    const kept = st.getBlob(KEY('turf'))[0];
-    assert('the stored order is back to one line for the row',
-      kept.lines.length === 1 && kept.lines[0].id === 'L1', JSON.stringify(kept.lines));
-    assert('and the job row is still there', st.daily.has(rowX), JSON.stringify([...st.daily.keys()]));
-    assert('charged once', [...st.daily.values()].reduce((n, r) => n + Number(r.material_cost), 0) === 50);
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r1'] });
+    const raisedRow = st.getBlob(KEY('turf'))[0].lines.find(l => l.id === 'L1').po_row_id;
+    const del = await poSync.removePO(st.sql, { companyCode: 'FCT', division: 'turf', poId: 'A' });
+    assert('deleting the order removes its own delivery\'s row', del.ok && !st.daily.has(raisedRow));
+    assert('  but not the Daily Tracking row', st.daily.has('r1') && st.daily.get('r1').po_num === 'PO-0001');
+  }
+  {
+    st = makeStore();
+    st.daily.set('r1', dRow('r1'));
+    po = makePO({ id: 'A', po_number: 'PO-0001', project_id: 'job1', lines: [{ id: 'L1', qty: '2', unit_cost: '5' }] });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r1'] });
+    const moved = JSON.parse(JSON.stringify(st.getBlob(KEY('turf'))[0]));
+    moved.project_id = 'job2';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: moved });
+    assert('re-jobbing the order leaves the Daily Tracking row on its job',
+      st.daily.has('r1') && st.daily.get('r1').project_id === 'job1', JSON.stringify(st.daily.get('r1')));
+    assert('  and takes the delivery off the order', !lineOf(st, 'turf', 'A', 'dr-r1'), linesOf(st, 'turf', 'A'));
+    const L1 = lineOf(st, 'turf', 'A', 'L1');
+    assert('  while the order\'s own delivery moves with it as before',
+      L1 && st.daily.get(String(L1.po_row_id)) && st.daily.get(String(L1.po_row_id)).project_id === 'job2');
+  }
+  {
+    // Moving the order to another division. Its Daily Tracking line stays
+    // behind with its row, and that must not read as a delivery the move lost.
+    st = makeStore();
+    st.daily.set('r1', dRow('r1'));
+    st.setBlob(KEY('turf'), [makePO({ id: 'A', po_number: 'PO-0001', project_id: 'job1' })]);
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r1'] });
+    const mv = JSON.parse(JSON.stringify(st.getBlob(KEY('turf'))[0]));
+    mv.project_id = 'pav1';
+    const res = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'paving', po: mv, from: 'turf' });
+    assert('a move across divisions completes', res.ok && !res.staleCopy, JSON.stringify(res));
+    assert('  the old division no longer lists it', linesOf(st, 'turf', 'A') === '(no order)');
+    assert('  the Daily Tracking row stays on its turf job', st.daily.has('r1') && st.daily.get('r1').division === 'turf');
+    assert('  and the moved order carries no line for it', linesOf(st, 'paving', 'A') === '');
+  }
+  {
+    // A row sync lands while a purchasing save is in flight. Its new line is
+    // kept; it is not mistaken for one the save decided against.
+    st = makeStore();
+    st.setBlob(KEY('turf'), [makePO({ id: 'A', po_number: 'PO-0001', project_id: 'job1' })]);
+    const copy = JSON.parse(JSON.stringify(st.getBlob(KEY('turf'))[0]));
+    copy.status = 'approved';
+    st.onNextWrite(() => {
+      const list = st.getBlob(KEY('turf'));
+      list[0].lines = [{ id: 'dr-late', source: 'daily', qty: '1', unit_cost: '4', po_row_id: 'late' }];
+      st.setBlob(KEY('turf'), list);
+    });
+    st.daily.set('late', dRow('late', { units_purchased: 1, unit_cost: 4, material_cost: 4 }));
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: copy });
+    assert('a delivery a row sync recorded mid-save survives it', linesOf(st, 'turf', 'A') === 'dr-late', linesOf(st, 'turf', 'A'));
   }
 
   console.log('\n[a move that only half lands]');

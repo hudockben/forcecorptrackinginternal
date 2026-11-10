@@ -51,7 +51,7 @@ const realPoSync = require(poSyncPath);
  * hasDivisionAccess / canAccessPODivision — only requireAuth is faked, so what
  * these tests assert about access is what the endpoint actually enforces.
  */
-function loadEndpoint({ roles = {}, calls = null, upsertResult, removeResult, sqlStub = null } = {}) {
+function loadEndpoint({ roles = {}, calls = null, upsertResult, removeResult, reconcileResult, sqlStub = null } = {}) {
   [endpointPath, authPath, poSyncPath, neonPath].forEach(p => { delete require.cache[p]; });
 
   const payload = { companyCode: 'FCT', username: 'u1', divisionRoles: roles };
@@ -83,11 +83,14 @@ function loadEndpoint({ roles = {}, calls = null, upsertResult, removeResult, sq
 
   require.cache[poSyncPath] = {
     id: poSyncPath, filename: poSyncPath, loaded: true,
-    exports: {
-      safeTimestamp:        realPoSync.safeTimestamp,
-      settleCreationStamp:  realPoSync.settleCreationStamp,
-      settleCreationStamps: realPoSync.settleCreationStamps,
-      dropShadowedDailyLines: realPoSync.dropShadowedDailyLines,
+    // Everything the handler runs in-line is the real thing — the stamp
+    // helpers and the Daily Tracking derivation, which reads job rows through
+    // the sql stub — and only the single-order writes are faked.
+    exports: Object.assign({}, realPoSync, {
+      reconcileDailyLines: async (sql, args) => {
+        if (calls) calls.push({ fn: 'reconcileDailyLines', args });
+        return reconcileResult !== undefined ? reconcileResult : { ok: true, changed: ['po1'], list: [PO] };
+      },
       upsertPO: async (sql, args) => {
         if (calls) calls.push({ fn: 'upsertPO', args });
         return upsertResult !== undefined ? upsertResult : {
@@ -105,7 +108,7 @@ function loadEndpoint({ roles = {}, calls = null, upsertResult, removeResult, sq
         return removeResult !== undefined ? removeResult : { ok: true, found: true, rowsRemoved: 1 };
       },
       resolvePODocScope: async () => null,
-    },
+    }),
   };
 
   require.cache[neonPath] = {
@@ -302,6 +305,52 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
     await handler({ method: 'POST', query: { division: 'paving' }, headers: AUTHED,
                     body: { purchaseOrder: PO } }, res);
     check('a view-only paving user still cannot write', res.statusCode === 403);
+  }
+
+  console.log('\n[Daily Tracking deliveries: what a save says it edited, and the catch-up]');
+  {
+    // A line recorded from a Daily Tracking row takes its figures from the row
+    // unless purchasing says it edited that line — so the save must pass on
+    // which lines it did, the way it passes on which it deleted.
+    const calls = [];
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' }, calls });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'paving' }, headers: AUTHED,
+                    body: { purchaseOrder: PO, editedLineIds: ['dr-r1', 7] } }, res);
+    check('the edited lines reach the upsert', calls[0] && JSON.stringify(calls[0].args.editedLineIds) === '["dr-r1","7"]',
+      calls[0] && JSON.stringify(calls[0].args.editedLineIds));
+    const res2 = makeRes();
+    await handler({ method: 'POST', query: { division: 'paving' }, headers: AUTHED,
+                    body: { purchaseOrder: PO, editedLineIds: 'dr-r1' } }, res2);
+    check('anything but a list is no edits at all', calls[1] && Array.isArray(calls[1].args.editedLineIds)
+      && calls[1].args.editedLineIds.length === 0);
+  }
+  {
+    const calls = [];
+    const sqlStub = (strings) => Promise.resolve(/SELECT updated_at FROM app_data/.test(strings.join(' '))
+      ? [{ updated_at: new Date('2026-11-10T00:00:05Z') }] : []);
+    const handler = loadEndpoint({ roles: { turf: 'level2' }, calls, sqlStub });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'turf', reconcile: '1' }, headers: AUTHED, body: {} }, res);
+    check('a division editor can ask for the catch-up', res.statusCode === 200 && res.body.ok === true, JSON.stringify(res.body));
+    check('  which the server runs over the whole division', calls.some(c => c.fn === 'reconcileDailyLines'
+      && c.args.division === 'turf' && c.args.companyCode === 'FCT'));
+    check('  and answers with the list, its version and what changed',
+      Array.isArray(res.body.purchaseOrders) && res.body.changed === 1 && Boolean(res.body.updatedAt), JSON.stringify(res.body));
+    check('  without being taken for a save', !calls.some(c => c.fn === 'upsertPO'));
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { turf: 'level1' }, calls });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'turf', reconcile: '1' }, headers: AUTHED, body: {} }, res);
+    check('a view-only user cannot run it', res.statusCode === 403 && !calls.length, JSON.stringify(res.body));
+  }
+  {
+    const handler = loadEndpoint({ roles: { turf: 'level3' }, reconcileResult: { ok: false, changed: [], list: null } });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'turf', reconcile: '1' }, headers: AUTHED, body: {} }, res);
+    check('a catch-up that loses every race says so', res.statusCode === 409, JSON.stringify(res.body));
   }
 
   console.log('\n[single-order delete]');
@@ -590,23 +639,93 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
         ids.length === 1 && ids[0] === 'a', JSON.stringify(ids));
     }
     {
-      // One job row is one delivery. A division tab that recorded a Daily
-      // Tracking row purchasing had just raised a line for sends both; the
-      // order's own line is what gets stored.
-      const sqlStub = appDataStub({ storedUpdatedAt: new Date(T_READ) });
+      // Daily Tracking lines are re-derived from the job rows on every save,
+      // whatever the tab's copy said. Four rows on job1:
+      //   rowX  names PO-0001, but a line raised on the order owns it
+      //   rowY  names PO-0001                → stays, figures from the row
+      //   rowZ  names PO-0001, on no line   → recorded
+      //   rowM  moved to PO-0002            → off PO-0001, onto PO-0002
+      // and the tab's copy still carries dr-gone, whose row was deleted.
+      const LINK_ROWS = [
+        { row_id: 'rowX', project_id: 'job1', po_num: 'PO-0001', units_purchased: 5, unit_cost: 10, material_cost: 50, date: '2026-11-01', employee: 'Sam' },
+        { row_id: 'rowY', project_id: 'job1', po_num: 'PO-0001', units_purchased: 3, unit_cost: 4,  material_cost: 12, date: '2026-11-02', employee: 'Lee', cost_code: '02-100', sub_code: '0420' },
+        { row_id: 'rowZ', project_id: 'job1', po_num: 'po-0001 ', units_purchased: 7, unit_cost: 2, material_cost: 14, date: '2026-11-03', employee: '' },
+        { row_id: 'rowM', project_id: 'job1', po_num: 'PO-0002', units_purchased: 1, unit_cost: 9,  material_cost: 9,  date: '2026-11-04', employee: '' },
+      ];
+      const seen = [];
+      const sqlStub = (strings, ...vals) => {
+        let q = ''; strings.forEach((x, i) => { q += x; if (i < vals.length) q += '$' + (i + 1); });
+        q = q.replace(/\s+/g, ' ').trim();
+        seen.push({ q, vals });
+        if (/^SELECT row_id, project_id, date, employee, cost_code, sub_code, po_num/.test(q)) {
+          const ids = vals[2], projects = vals[3];
+          return Promise.resolve(LINK_ROWS.filter(r => ids.includes(r.row_id)
+            || (projects.includes(r.project_id) && String(r.po_num || '').trim())));
+        }
+        if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
+        return Promise.resolve([]);
+      };
       const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
       const res = makeRes();
-      const doubled = { id: 'a', po_number: 'PO-0001', project_id: 'job1', lines: [
-        { id: 'L1', qty: '5', unit_cost: '10', po_row_id: 'rowX' },
-        { id: 'dr-rowX', source: 'daily', qty: '5', unit_cost: '10', po_row_id: 'rowX' },
-        { id: 'dr-rowY', source: 'daily', qty: '1', unit_cost: '4', po_row_id: 'rowY' },
-      ] };
+      const sent = [
+        { id: 'a', po_number: 'PO-0001', project_id: 'job1', lines: [
+          { id: 'L1', qty: '5', unit_cost: '10', po_row_id: 'rowX' },
+          { id: 'dr-rowX', source: 'daily', qty: '5', unit_cost: '10', po_row_id: 'rowX' },
+          { id: 'dr-rowY', source: 'daily', invoice_num: 'T-1', qty: '99', unit_cost: '1', po_row_id: 'rowY' },
+          { id: 'dr-rowM', source: 'daily', qty: '1', unit_cost: '9', po_row_id: 'rowM' },
+          { id: 'dr-gone', source: 'daily', qty: '2', unit_cost: '2', po_row_id: 'gone' },
+        ] },
+        { id: 'b', po_number: 'PO-0002', project_id: 'job1', lines: [] },
+      ];
       await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
-                      body: { purchaseOrders: [doubled], baseUpdatedAt: T_READ } }, res);
-      const stored = (sqlStub.written() || [])[0] || {};
-      check('a Daily Tracking copy of a raised line is not stored',
-        (stored.lines || []).map(l => l.id).join() === 'L1,dr-rowY', JSON.stringify(stored.lines));
-      check('  and the save still succeeds', res.body && res.body.ok === true, JSON.stringify(res.body));
+                      body: { purchaseOrders: sent } }, res);
+      const hit = seen.find(c => /^INSERT INTO app_data/.test(c.q));
+      const written = hit ? JSON.parse(hit.vals[1]) : [];
+      const A = written.find(o => o.id === 'a') || { lines: [] };
+      const B = written.find(o => o.id === 'b') || { lines: [] };
+      const ids = o => o.lines.map(l => l.id).join();
+      check('a Daily Tracking copy of a raised line is not stored', !A.lines.some(l => l.id === 'dr-rowX'), ids(A));
+      check('  the raised line itself is', A.lines.some(l => l.id === 'L1' && l.po_row_id === 'rowX'), ids(A));
+      check('a line whose row was deleted is not put back', !A.lines.some(l => l.id === 'dr-gone'), ids(A));
+      check('a line whose row moved to another order leaves this one', !A.lines.some(l => l.id === 'dr-rowM'), ids(A));
+      check('  and lands on the order its row names, once',
+        B.lines.filter(l => l.id === 'dr-rowM').length === 1, ids(B));
+      const y = A.lines.find(l => l.id === 'dr-rowY') || {};
+      check('a stale copy\'s figures give way to the row\'s', y.qty === '3' && y.unit_cost === '4', JSON.stringify(y));
+      check('  keeping what only the line holds', y.invoice_num === 'T-1');
+      check('  and carrying the row\'s own codes', y.cost_code === '02-100' && y.sub_code === '0420');
+      check('a row naming the order that no line had is recorded',
+        A.lines.some(l => l.id === 'dr-rowZ' && l.source === 'daily' && l.po_row_id === 'rowZ' && l.qty === '7'), ids(A));
+      check('the save reports that the rows changed what it sent', res.body && res.body.derived === 2, JSON.stringify(res.body));
+      check('and still succeeds', res.body && res.body.ok === true);
+      const sweep = seen.find(c => /^SELECT d\.po_row_id FROM po_deliveries d/.test(c.q));
+      check('the sweep of a dropped order never takes a Daily Tracking row',
+        Boolean(sweep) && sweep.q.includes("COALESCE(d.line_id, '') NOT LIKE 'dr-%'"), sweep && sweep.q);
+    }
+    {
+      // A failed read of the rows: the save still lands, lines as sent, less a
+      // copy of a raised line's row.
+      let body = null;
+      const sqlStub = (strings, ...vals) => {
+        const q = strings.join('?').replace(/\s+/g, ' ').trim();
+        if (/^SELECT row_id, project_id, date/.test(q)) return Promise.reject(new Error('connection dropped'));
+        if (/^INSERT INTO app_data/.test(q)) { body = JSON.parse(vals[1]); return Promise.resolve([{ updated_at: new Date(T_NEW) }]); }
+        return Promise.resolve([]);
+      };
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      const errs = []; const orig = console.error; console.error = (...a) => errs.push(a.join(' '));
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED, body: { purchaseOrders: [
+        { id: 'a', po_number: 'PO-0001', project_id: 'job1', lines: [
+          { id: 'L1', po_row_id: 'rowX', qty: '1', unit_cost: '1' },
+          { id: 'dr-rowX', source: 'daily', po_row_id: 'rowX' },
+          { id: 'dr-rowY', source: 'daily', po_row_id: 'rowY' } ] },
+      ] } }, res);
+      console.error = orig;
+      check('a failed read of the job rows does not fail the save', res.body && res.body.ok === true, JSON.stringify(res.body));
+      check('  the copy of a raised line still goes',
+        body && body[0].lines.map(l => l.id).join() === 'L1,dr-rowY', JSON.stringify(body));
+      check('  and the failure is logged', errs.some(e => /Daily Tracking/.test(e)));
     }
     {
       // The same protection one level down. An order the client DID send may

@@ -1668,6 +1668,7 @@ console.log('\n[a keystroke while a delete is in flight]');
     const _saveTimers = {};
     const _unsaved = new Set();
     const _deletedLines = {};
+    const _editedLines  = {};
     const _savedDivision = {};        // never stored
     const expanded = new Set();
     let _inflight = 0, _saveEpoch = 0;
@@ -1684,6 +1685,7 @@ console.log('\n[a keystroke while a delete is in flight]');
     function render() {}
     function poPayload(po) { return po; }
     function deletedLinesFor() { return []; }
+    function editedLinesFor() { return []; }
     async function api(method, path) { calls.push(method + ' ' + path); return {}; }
   `, ctx);
   ['savePO', '_savePONow', '_savePOWrite', 'deletePO', 'setField']
@@ -1731,6 +1733,7 @@ console.log('\n[a keystroke while a delete is in flight]');
     const _saveTimers = {};
     const _unsaved = new Set(['new2']);     // a failed save left it queued
     const _deletedLines = {};
+    const _editedLines  = {};
     const _savedDivision = {};
     const expanded = new Set();
     const _deleting = new Set();
@@ -1746,6 +1749,7 @@ console.log('\n[a keystroke while a delete is in flight]');
     function render() {}
     function poPayload(po) { return po; }
     function deletedLinesFor() { return []; }
+    function editedLinesFor() { return []; }
     async function api(method, path) { calls.push(method + ' ' + path); return {}; }
   `, ctx2);
   ['savePO', '_savePONow', '_savePOWrite', 'deletePO']
@@ -1797,6 +1801,7 @@ console.log('\n[a keystroke while a delete is in flight]');
     const _saveTimers = {};
     const _unsaved = new Set();
     const _deletedLines = {};
+    const _editedLines  = {};
     const _savedDivision = { kept: 'purchase_orders' };   // stored, so a DELETE is sent
     const expanded = new Set();
     const _deleting = new Set();
@@ -1812,6 +1817,7 @@ console.log('\n[a keystroke while a delete is in flight]');
     function render() {}
     function poPayload(po) { return po; }
     function deletedLinesFor() { return []; }
+    function editedLinesFor() { return []; }
     function deletedLineIdsSent() { return []; }
     async function api(method, path) {
       calls.push(method + ' ' + path);
@@ -2109,6 +2115,7 @@ console.log('\n[cost / sub code, vendor and received by are typeahead pickers]')
      var fctUser = { username: 'tester' };
      var DIV_COLORS = { turf: 'var(--div-turf)', paving: 'var(--div-paving)', kiewit: 'var(--div-kiewit)', quarry: 'var(--div-quarry)' };
      var saves = [], renders = 0;
+     var _editedLines = {};
      function capsFor() { return { canEdit: true, canDelete: true }; }
      function savePO(po, opts) {
        saves.push({ immediate: !!(opts && opts.immediate), supplier: po.supplier, code: po.cost_code + '||' + po.sub_code });
