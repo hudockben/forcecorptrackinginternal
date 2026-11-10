@@ -523,14 +523,16 @@ async function buildFinancials(sql, companyCode, division, projects, range) {
       }
 
       // Mirrors projForBidItem(): spend already booked is a floor, so no branch
-      // may project a line below its own actual cost.
+      // may project a line below its own actual cost. A completed line settles
+      // at its actual first — $0 included: its work was booked elsewhere (or
+      // never needed), and projecting the bid on top counted it twice.
       let proj;
       const startMs  = b.start_date  ? new Date(b.start_date  + 'T00:00:00Z').getTime() : null;
       const targetMs = b.target_date ? new Date(b.target_date + 'T00:00:00Z').getTime() : null;
-      if (!(a > 0)) {
+      if (projDone || b.is_complete) {
+        proj = a > 0 ? a : 0;
+      } else if (!(a > 0)) {
         proj = itemBid;
-      } else if (projDone || b.is_complete) {
-        proj = a;
       } else if (startMs != null && targetMs != null && today > startMs && targetMs > startMs) {
         const total   = targetMs - startMs;
         const elapsed = today - startMs;

@@ -336,5 +336,45 @@ for (const file of ['tracker.html', 'kiewit-pinetree.html']) {
     !/conschedule/.test(src) && !/_loadAllBidCsCompletion/.test(src));
 }
 
-console.log(`\n${passed} passed, ${failed} failed`);
-process.exit(failed ? 1 : 0);
+// ── The Executive rollup agrees ─────────────────────────────────────────────
+// api/executive/report.js restates projForBidItem server-side for the
+// Executive dashboard, the nightly job snapshot and Mathis. It carried the same
+// rule — a complete line with no spend projected its bid — so it has to settle
+// those lines at $0 too, or the dashboard reads a different projected cost from
+// the bid page for the same job.
+(async () => {
+  console.log('\n══════════ api/executive/report.js ══════════');
+  const { buildFinancials } = require('../api/executive/report.js');
+  // [cost_code, sub_code, qty, unit cost, actual, running qty, complete]
+  const LINES = [
+    ['SW', 'BASIN', 1333, 27.75, 16968.13, 953.07, true],
+    ['SW', 'HDPE12', 186,  6.15,     0,      0,     true],   // complete, nothing charged
+    ['SW', 'NYO18',  6,    1298,     0,      0,     true],   // complete, nothing charged
+    ['SW', 'NYO24',  1,    2912,     0,      0,     false],  // not complete, not started
+    ['SW', 'RISER',  0,    0,     6568.92,   0,     true],
+  ];
+  const groups = LINES.filter(l => l[4] > 0).map(([cc, sc, , , actual, rqty]) =>
+    ({ project_id: 'p1', cost_code: cc, sub_code: sc, actual, range_actual: 0, range_rows: 0, rqty }));
+  const sql = () => Promise.resolve(groups);
+  const proj = status => ({ id: 'p1', status, bidItems: LINES.map(([cost_code, sub_code, quantity, unit_cost, , , is_complete]) =>
+    ({ cost_code, sub_code, quantity, unit_cost, is_complete })) });
+  const fin = await buildFinancials(sql, 'FC', 'turf', [proj('In Progress')], null);
+  const f = fin.perProject.get('p1');
+  const actual = 16968.13 + 6568.92;
+  // Complete lines settle at their actual ($0 for the two with nothing
+  // charged); only the 24" Nyoplast, not complete and not started, still
+  // carries its $2,912 bid.
+  assert('complete lines with no spend add $0, not their bid',
+    near(f.projected, actual + 2912), `got $${f.projected.toFixed(2)}, expected $${(actual + 2912).toFixed(2)}`);
+  assert('  the old rule would have added $1,143.90 + $7,788.00 more',
+    !near(f.projected, actual + 2912 + 1143.90 + 7788));
+  // And it matches the page's own function on the same lines.
+  const pageProj = loadProjFor('tracker.html');
+  const pageSum = LINES.reduce((s, [, , q, uc, a, rq, done]) => s + pageProj({}, a, rq, q, q * uc, done), 0);
+  assert('  the Executive rollup equals the bid page\'s projection',
+    near(f.projected, pageSum), `executive $${f.projected.toFixed(2)} vs page $${pageSum.toFixed(2)}`);
+})().catch(e => { failed++; console.error('  ✗ executive rollup threw —', e && e.stack || e); })
+  .finally(() => {
+    console.log(`\n${passed} passed, ${failed} failed`);
+    process.exit(failed ? 1 : 0);
+  });
