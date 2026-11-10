@@ -9230,15 +9230,20 @@ function projIsDone(p) {
 /* Projected final cost for a single bid line. Money already spent is a floor,
    never an estimate — no branch may project below the line's actual cost.
    Ordered most- to least-specific:
-     1. Nothing spent yet     → the bid total is the only estimate we have.
-     2. Line marked complete  → work is done, so the actual IS the final cost.
+     1. Line marked complete  → work is done, so the actual IS the final cost —
+                                $0 included. A sub code closed out with nothing
+                                charged to it had its cost land on another line
+                                (or none at all); projecting its bid on top
+                                would count that work twice and leave a 100%
+                                complete group projecting above its actual.
+     2. Nothing spent yet     → the bid total is the only estimate we have.
      3. Start + target dates  → scale spend by elapsed-vs-planned duration.
      4. Running quantity      → scale spend by qty burn rate across the bid qty.
      5. No running qty        → the bid total, or the actual once we've spent
                                 past it (or the line carries no bid at all). */
 function projForBidItem(b, actual, rqty, bidQty, bidTot, isComplete) {
+  if (isComplete) return actual > 0 ? actual : 0;
   if (!(actual > 0)) return bidTot;
-  if (isComplete) return actual;
   if (b.start_date && b.target_date) {
     const now   = new Date();
     const start = new Date(b.start_date + 'T00:00:00');
