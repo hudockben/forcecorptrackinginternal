@@ -6548,6 +6548,9 @@ let purchaseOrders = [];
 // central purchasing writes into this same list, and without it a save made
 // from a stale list erases whatever it raised in the meantime.
 let _poBaseUpdatedAt = null;
+// Whether a read of the purchase orders has worked. _reconcileDailyPOLinks
+// must never run against the empty list a failed read leaves behind.
+let _poLoadOk = false;
 
 async function loadPurchaseOrders() {
   try {
@@ -6559,6 +6562,7 @@ async function loadPurchaseOrders() {
       const data = await r.json();
       purchaseOrders = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
       _poBaseUpdatedAt = data.updatedAt || null;
+      _poLoadOk = true;
     } else {
       purchaseOrders = [];
     }
@@ -11671,6 +11675,8 @@ function deletePOLine(poId, lineId) {
   const po = purchaseOrders.find(p => p.id === poId);
   if (!po) return;
   const line = (po.lines || []).find(l => l.id === lineId);
+  if (_poLineFromDaily(line) && line.po_row_id && po.project_id &&
+      !confirm('This delivery was entered on Daily Tracking. Removing it here also deletes that job row. Continue?')) return;
   if (line && line.po_row_id && po.project_id) {
     const proj = getProj(po.project_id);
     if (proj) {
@@ -11742,12 +11748,17 @@ async function _syncPOHeaderToLines(po, syncCodes) {
     // to update, and nothing here should invent one — the delivery's own sync
     // owns that decision.
     if (!r) return;
-    r.material  = po.title    || '';
-    r.supplier  = po.supplier || '';
     r.po_num    = po.po_number|| '';
-    if (syncCodes) {
-      r.cost_code = po.cost_code|| '';
-      r.sub_code  = po.sub_code || '';
+    // A delivery recorded from Daily Tracking keeps the row's own description,
+    // supplier and codes — the server leaves them alone on a purchasing save
+    // too. Only the order's number is the order's. See _syncDailyRowToPO.
+    if (!_poLineFromDaily(line)) {
+      r.material  = po.title    || '';
+      r.supplier  = po.supplier || '';
+      if (syncCodes) {
+        r.cost_code = po.cost_code|| '';
+        r.sub_code  = po.sub_code || '';
+      }
     }
     drPutNow(r.id, r);
   });
@@ -11847,6 +11858,414 @@ function _ensurePOLineRow(po, line) {
   line.po_row_id = row.id;
   drPost(po.project_id, row);
   renderDailyTable(po.project_id);
+}
+
+/* ── Daily Tracking → Purchase Orders ─────────────────────────────────────
+   The links above only ever ran one way. A delivery line typed on this tab
+   mints its job row, but nothing a job row did reached a purchase order: a
+   foreman could pick PO-0003 in Daily Tracking, key in 20 t at $16.00 under
+   02-100 / 0420, and the job was charged while PO-0003 — here, and on central
+   purchasing — still read "no deliveries". Same order, two different stories.
+
+   So a job row that names one of ITS job's purchase orders and carries
+   material is recorded on that order as a delivery line, linked through
+   po_row_id exactly like a line raised here. That one link is what makes this
+   tab, central purchasing, the job summary and every report read the same
+   delivery once: a linked row is counted through its order, never beside it.
+
+   The line is tagged source:'daily' — the row is where it was entered, so the
+   row leads. It carries the row's own cost / sub code (the order's header
+   keeps its own: re-coding it from a row would let a stale purchasing tab
+   save the old header back and re-code every row on the order), the server
+   leaves the row's codes, material and supplier alone when purchasing saves
+   the order, and deleting the row removes the line with it.
+
+   Edits flow both ways from then on. The quantity, unit cost, date and
+   employee on any linked row follow to its line, and a line edited here or on
+   central purchasing updates the row through the same paths as before. What
+   the order owns stays the order's: a row a PO line raised has its PO # set by
+   that order, and the cell is locked.
+
+   Not every row can be a delivery. Payroll's rows are payroll's; a row a
+   trucking or inventory entry owns has its owner; and a row carrying labor or
+   equipment is a crew's day, not a delivery — removing the delivery on this
+   tab deletes its job row, which must never take anyone's hours with it.
+   Keep identical in tracker.html, paving.html and kiewit-pinetree.html. */
+const PO_DAILY_SOURCE = 'daily';
+// Daily Tracking fields whose change can make, move, update or end a delivery.
+const PO_ROW_SYNC_FIELDS = new Set([
+  'po_num', 'units_purchased', 'unit_cost', 'material_cost', 'date', 'employee',
+  'cost_code', 'sub_code', 'labor_hours', 'equip_hours',
+]);
+
+function _poLineFromDaily(line) { return Boolean(line && line.source === PO_DAILY_SOURCE); }
+
+/** The delivery line, with its order, that a job row is recorded under — or null. */
+function _poLinkForRow(rowId) {
+  if (rowId == null || rowId === '') return null;
+  const sid = String(rowId);
+  for (const po of (Array.isArray(purchaseOrders) ? purchaseOrders : [])) {
+    for (const line of ((po && po.lines) || [])) {
+      if (line && line.po_row_id != null && line.po_row_id !== '' && String(line.po_row_id) === sid) return { po, line };
+    }
+  }
+  return null;
+}
+
+/** row id → { po, line } for every linked delivery, built once per table draw. */
+function _poLinksByRow() {
+  const out = new Map();
+  (Array.isArray(purchaseOrders) ? purchaseOrders : []).forEach(po => ((po && po.lines) || []).forEach(line => {
+    if (line && line.po_row_id != null && line.po_row_id !== '') out.set(String(line.po_row_id), { po, line });
+  }));
+  return out;
+}
+
+/** The order a job row's PO # names: the one with that number on the row's own job. */
+function _poForRowNumber(projId, poNum) {
+  const want = String(poNum == null ? '' : poNum).trim().toLowerCase();
+  if (!want || !projId) return null;
+  return (Array.isArray(purchaseOrders) ? purchaseOrders : []).find(po => po
+    && String(po.project_id || '') === String(projId)
+    && String(po.po_number || '').trim().toLowerCase() === want) || null;
+}
+
+/** Can this job row be a delivery on a purchase order at all? */
+function _rowCanFeedPO(row) {
+  if (!row || row.id == null || row.id === '') return false;
+  if (row.timesheet_entry_id != null && row.timesheet_entry_id !== '') return false;
+  if (/^ts\d+-/.test(String(row.id))) return false;
+  const sid = String(row.id);
+  if (Array.isArray(truckingEntries) && truckingEntries.some(t => t && t.tr_row_id != null && String(t.tr_row_id) === sid)) return false;
+  if (Array.isArray(inventoryEntries) && inventoryEntries.some(e => e && e.inv_row_id != null && String(e.inv_row_id) === sid)) return false;
+  if (_poNum0(row.labor_hours) || _poNum0(row.equip_hours)) return false;
+  return true;
+}
+
+/**
+ * The delivery a job row records: quantity and unit cost as the row has them,
+ * or null while it records none. When the row's material cost was not built
+ * from them — an imported total — the unit cost is the one that comes to the
+ * same money, so the order and the job agree to the cent. A row whose
+ * units × unit cost it has not charged yet (a freshly copied row) waits for
+ * its next edit rather than putting money on the order the job does not have.
+ */
+function _poLineFiguresFromRow(row) {
+  if (!row) return null;
+  const qty = _poNum0(row.units_purchased);
+  const uc  = _poNum0(row.unit_cost);
+  const mat = _poNum0(row.material_cost);
+  if (!qty && !uc && !mat) return null;
+  const amt = qty * uc;
+  if (!mat && Math.abs(amt) >= 0.005) return null;
+  const s = v => String(Math.round(v * 1e4) / 1e4);
+  let lineQty = qty ? s(qty) : '';
+  let lineUC  = uc  ? s(uc)  : '';
+  if (mat && Math.abs(amt - mat) >= 0.005) {
+    if (qty) lineUC = s(mat / qty);
+    else { lineQty = '1'; lineUC = s(mat); }
+  }
+  return {
+    qty:       lineQty,
+    unit_cost: lineUC,
+    date:      String(row.date || '').slice(0, 10),
+    employee:  row.employee || '',
+  };
+}
+
+/**
+ * Bring a linked line's figures to its row's, and the row's to exactly what
+ * the line then charges. The row carries unit cost WITH tax and the line keeps
+ * it without, so a changed unit cost is taken back out of the line's tax; an
+ * unchanged one is left alone, or every save would nudge it by the rounding.
+ * Returns true when the line changed; sets out.rowChanged when the row did.
+ */
+function _poAlignLineToRow(line, row, out) {
+  const f = _poLineFiguresFromRow(row);
+  if (!f) return false;
+  let changed = false;
+  const set = (k, v) => {
+    if (String(line[k] == null ? '' : line[k]) === String(v == null ? '' : v)) return;
+    line[k] = v; changed = true;
+  };
+  const u0   = _poNum0(line.unit_cost) ? _lineUnitCostWithTax(line) : 0;
+  const qty  = _poNum0(f.qty);
+  if (Math.abs(qty - _poNum0(line.qty)) >= 1e-9) set('qty', f.qty);
+  const want = _poNum0(f.unit_cost);
+  if (Math.abs(want - u0) >= 5e-5) {
+    const pct = _lineTaxPct(line);
+    let base = want;
+    if (pct !== null) base = want / (1 + pct / 100);
+    else if (line.tax_pct == null && _poNum0(line.tax) && qty) base = want - _poNum0(line.tax) / qty;
+    set('unit_cost', base ? String(Math.round(base * 1e4) / 1e4) : '');
+  }
+  if (f.date && f.date !== String(line.date || '')) set('date', f.date);
+  set('employee', f.employee);
+  if (_poLineFromDaily(line)) {
+    set('cost_code', row.cost_code || '');
+    set('sub_code',  row.sub_code  || '');
+  }
+  const taxBefore = String(line.tax == null ? '' : line.tax);
+  _recalcLineTax(line);
+  if (String(line.tax == null ? '' : line.tax) !== taxBefore) changed = true;
+
+  const wantUC  = _poNum0(line.unit_cost) ? _lineUnitCostWithTax(line) : 0;
+  const wantMat = _lineAmt(line) + _lineTax(line);
+  if (Math.abs(_poNum0(row.unit_cost) - wantUC) >= 5e-5) {
+    row.unit_cost = wantUC ? String(wantUC) : '';
+    if (out) out.rowChanged = true;
+  }
+  if (Math.abs(_poNum0(row.material_cost) - wantMat) >= 0.005) {
+    row.material_cost = String(wantMat);
+    if (out) out.rowChanged = true;
+  }
+  return changed;
+}
+
+/**
+ * Bring the purchase orders into line with one job row.
+ *
+ * Returns { poChanged, rowChanged }: the caller saves the order list when the
+ * first is set, and writes the row when the second is (a taxed line charges
+ * unit cost with tax, so the row is brought to the line's figure).
+ *
+ * `bulk` is the catch-up pass over rows already on the page. It only RECORDS
+ * deliveries nobody has recorded yet. It never re-aligns a linked line, because
+ * the row it holds can be older than the order beside it — the order is polled
+ * every minute and the rows are not — and copying a stale row over a fresh
+ * line would undo somebody else's edit.
+ */
+function _syncDailyRowToPO(projId, row, opts) {
+  const out = { poChanged: false, rowChanged: false };
+  if (!row || row.id == null || row.id === '') return out;
+  const bulk = Boolean(opts && opts.bulk);
+  const link = _poLinkForRow(row.id);
+
+  // A line raised on the order: the order owns its number and its existence,
+  // and the row's PO # cell is locked. The delivery's figures follow the row.
+  if (link && !_poLineFromDaily(link.line)) {
+    if (!bulk && _poAlignLineToRow(link.line, row, out)) out.poChanged = true;
+    return out;
+  }
+
+  const target  = _rowCanFeedPO(row) ? _poForRowNumber(projId, row.po_num) : null;
+  const figures = target ? _poLineFiguresFromRow(row) : null;
+
+  if (link) {
+    if (bulk) return out;
+    if (target === link.po && figures) {
+      if (_poAlignLineToRow(link.line, row, out)) out.poChanged = true;
+      return out;
+    }
+    // Moved to another order, lost its PO #, or stopped being a delivery: the
+    // line leaves the order it was on. Moving keeps its invoice # and tax.
+    link.po.lines = (link.po.lines || []).filter(l => l !== link.line);
+    out.poChanged = true;
+    if (!target || !figures) return out;
+    target.lines = Array.isArray(target.lines) ? target.lines : [];
+    target.lines.push(link.line);
+    _poAlignLineToRow(link.line, row, out);
+    return out;
+  }
+
+  if (!target || !figures) return out;
+
+  // One id per row, so two tabs recording the same row write one line, not two.
+  const lineId = 'dr-' + String(row.id);
+  (Array.isArray(purchaseOrders) ? purchaseOrders : []).forEach(po => {
+    if (po && Array.isArray(po.lines) && po.lines.some(l => l && l.id === lineId)) {
+      po.lines = po.lines.filter(l => !(l && l.id === lineId));
+    }
+  });
+  target.lines = Array.isArray(target.lines) ? target.lines : [];
+  target.lines.push({
+    id:          lineId,
+    source:      PO_DAILY_SOURCE,
+    invoice_num: '',
+    date:        figures.date,
+    qty:         figures.qty,
+    unit_cost:   figures.unit_cost,
+    tax:         '',
+    tax_pct:     '',
+    employee:    figures.employee,
+    cost_code:   row.cost_code || '',
+    sub_code:    row.sub_code  || '',
+    po_row_id:   String(row.id),
+  });
+  out.poChanged = true;
+  return out;
+}
+
+/**
+ * A Daily Tracking edit, carried to the order it names. Runs before the row is
+ * written, so a row brought to its line's taxed figure is saved with it.
+ */
+function _dailyRowToPO(projId, i) {
+  if (!perm.canEdit || _AUTO_REPORT) return;
+  const p = getProj(projId); if (!p || !Array.isArray(p.dailyRows)) return;
+  const row = p.dailyRows[i]; if (!row) return;
+  const res = _syncDailyRowToPO(projId, row);
+  if (res.rowChanged) {
+    const tbody = document.getElementById('daily-tbody-' + projId);
+    const ucEl  = tbody && tbody.querySelector(`[data-i="${i}"][data-f="unit_cost"]`);
+    if (ucEl && document.activeElement !== ucEl) ucEl.value = row.unit_cost;
+  }
+  if (res.poChanged) {
+    savePurchaseOrders();
+    if (activeTab === 'po') renderPOTab();
+    renderProjectPOs(projId);
+  }
+}
+
+/**
+ * Catch-up: record every job row already on the page that names one of its
+ * job's purchase orders and is not on it yet — the rows entered before this
+ * existed, and rows an import or another tab brought in. Also clears a line
+ * recorded from a row that a tab running the older page then deleted: that tab
+ * detached the line instead of removing it, and on an order with a job a
+ * Daily Tracking line with no row behind it is a delivery the job never had.
+ * Idempotent; returns how many orders changed.
+ */
+function _reconcileDailyPOLinks() {
+  if (_AUTO_REPORT || !perm.canEdit || !_poLoadOk) return 0;
+  const touched = new Set();
+  (Array.isArray(purchaseOrders) ? purchaseOrders : []).forEach(po => {
+    if (!po || !Array.isArray(po.lines)) return;
+    // One job row is one delivery. A tab that read a row purchasing had just
+    // raised a line for, a moment before it read the order linking it, can
+    // have recorded it a second time; the order's own line stands. The server
+    // drops the same copy on save — dropShadowedDailyLines in api/lib/po-sync.js.
+    const raised = new Set(po.lines.filter(l => l && !_poLineFromDaily(l) && l.po_row_id).map(l => String(l.po_row_id)));
+    const keep = po.lines.filter(l => !(_poLineFromDaily(l) && (
+      (po.project_id && (l.po_row_id == null || l.po_row_id === '')) ||
+      (l.po_row_id && raised.has(String(l.po_row_id))))));
+    if (keep.length !== po.lines.length) { po.lines = keep; touched.add(po); }
+  });
+  const linked = new Set();
+  const onJob  = new Set();   // job + PO number of every order, so most rows cost one lookup
+  (Array.isArray(purchaseOrders) ? purchaseOrders : []).forEach(po => {
+    if (!po) return;
+    if (po.project_id) onJob.add(String(po.project_id) + '\u0000' + String(po.po_number || '').trim().toLowerCase());
+    (po.lines || []).forEach(l => {
+      if (l && l.po_row_id != null && l.po_row_id !== '') linked.add(String(l.po_row_id));
+    });
+  });
+  (Array.isArray(projectsList) ? projectsList : []).forEach(p => (p.dailyRows || []).forEach(row => {
+    const num = String((row && row.po_num) || '').trim().toLowerCase();
+    if (!num || linked.has(String(row.id)) || !onJob.has(String(p.id) + '\u0000' + num)) return;
+    const target = _poForRowNumber(p.id, num);
+    if (_syncDailyRowToPO(p.id, row, { bulk: true }).poChanged && target) {
+      touched.add(target);
+      linked.add(String(row.id));
+    }
+  }));
+  if (touched.size) {
+    savePurchaseOrders();
+    if (activeTab === 'po') renderPOTab();
+  }
+  return touched.size;
+}
+
+/**
+ * PO numbers on job rows that match no purchase order on that job — the
+ * entries the Purchase Orders tab cannot show, because there is no order to
+ * show them on. An import, a copied row or a deleted order leaves these.
+ * Grouped by job and number; `elsewhere` names an order in this division that
+ * holds the number on another job (or none), so it is not raised twice.
+ */
+function _dailyPONumbersWithoutOrder() {
+  const onJob = new Set(), byNum = new Map();
+  (Array.isArray(purchaseOrders) ? purchaseOrders : []).forEach(po => {
+    if (!po) return;
+    const n = String(po.po_number || '').trim().toLowerCase();
+    if (!n) return;
+    if (po.project_id) onJob.add(String(po.project_id) + '\u0000' + n);
+    if (!byNum.has(n)) byNum.set(n, po);
+  });
+  const groups = new Map();
+  (Array.isArray(projectsList) ? projectsList : []).forEach(p => (p.dailyRows || []).forEach(row => {
+    const num = String((row && row.po_num) || '').trim();
+    if (!num) return;
+    const key = String(p.id) + '\u0000' + num.toLowerCase();
+    if (onJob.has(key)) return;
+    let g = groups.get(key);
+    if (!g) {
+      g = { projId: p.id, projName: p['project-name'] || 'Untitled', poNum: num, rows: 0, material: 0,
+            elsewhere: byNum.get(num.toLowerCase()) || null };
+      groups.set(key, g);
+    }
+    g.rows++;
+    g.material += _poNum0(row.material_cost);
+  }));
+  return [...groups.values()].sort((a, b) => a.projName.localeCompare(b.projName) || a.poNum.localeCompare(b.poNum));
+}
+
+/**
+ * Raise the purchase order a job's rows already name, and record those rows on
+ * it. The header comes from the rows — a new order has no purchasing copy that
+ * could save an older header back over it.
+ */
+function createPOFromDaily(projId, poNum) {
+  if (!perm.canEdit) return;
+  const p = getProj(projId); if (!p) return;
+  const want = String(poNum || '').trim();
+  if (!want || _poForRowNumber(projId, want)) return;
+  if ((Array.isArray(purchaseOrders) ? purchaseOrders : [])
+        .some(po => po && String(po.po_number || '').trim().toLowerCase() === want.toLowerCase())) return;
+  const rows = (p.dailyRows || []).filter(r => String((r && r.po_num) || '').trim().toLowerCase() === want.toLowerCase());
+  if (!rows.length) return;
+  const first = rows.find(r => r.material || r.supplier || r.cost_code || r.sub_code) || rows[0];
+  const dates = rows.map(r => String(r.date || '').slice(0, 10)).filter(d => /^\d{4}-\d{2}-\d{2}$/.test(d)).sort();
+  const po = {
+    id:           uid(),
+    po_number:    want,
+    title:        first.material  || '',
+    supplier:     first.supplier  || '',
+    status:       'pending',
+    date_created: dates[0] || _localDateStr(),
+    project_id:   projId,
+    cost_code:    first.cost_code || '',
+    sub_code:     first.sub_code  || '',
+    created_at:   new Date().toISOString(),
+    created_by:   fctUser ? (fctUser.name || fctUser.username || '') : '',
+    lines:        [],
+  };
+  purchaseOrders.push(po);
+  rows.forEach(r => _syncDailyRowToPO(projId, r, { bulk: true }));
+  _poExpanded.add(po.id);
+  savePurchaseOrders();
+  poPage = 0;
+  renderPOTab();
+  renderProjectPOs(projId);
+  if (typeof renderDailyTable === 'function') renderDailyTable(projId);
+}
+
+/** The notice above the order list: job rows naming an order this tab cannot show. */
+function _poDailyOrphansHTML() {
+  const groups = _dailyPONumbersWithoutOrder();
+  if (!groups.length) return '';
+  const items = groups.map(g => {
+    const money = g.material ? ` &middot; $${fmt(g.material)}` : '';
+    const what  = `${g.rows} job row${g.rows === 1 ? '' : 's'}${money}`;
+    let action = '';
+    if (g.elsewhere) {
+      const on = g.elsewhere.project_id
+        ? 'is on ' + escT((getProj(g.elsewhere.project_id) || {})['project-name'] || 'another job')
+        : 'has no job';
+      action = `<span style="color:var(--muted)">— ${escT(g.elsewhere.po_number)} ${on}; set its job, or fix the PO # on these rows</span>`;
+    } else if (perm.canEdit) {
+      action = `<button class="btn" onclick="createPOFromDaily('${escJs(g.projId)}','${escJs(g.poNum)}')"
+        style="font-size:0.7rem;padding:0.15rem 0.55rem;background:rgba(234,179,8,0.12);border:1px solid rgba(234,179,8,0.4);color:var(--yellow)">Create ${escT(g.poNum)}</button>`;
+    }
+    return `<li style="margin:0.25rem 0;display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap">
+      <span style="font-family:monospace">${escT(g.poNum)}</span>
+      <span>${escT(g.projName)} &middot; ${what}</span>${action}</li>`;
+  }).join('');
+  return `<div style="border:1px solid rgba(234,179,8,0.4);background:rgba(234,179,8,0.08);border-radius:6px;padding:0.6rem 0.85rem;margin-bottom:0.85rem;font-size:0.78rem;color:var(--text)">
+    <div style="font-weight:700;color:var(--yellow);margin-bottom:0.2rem">PO numbers in Daily Tracking with no purchase order on that job</div>
+    <div style="color:var(--muted);margin-bottom:0.3rem">These job rows name an order this list does not have, so their material shows on the job but not here.</div>
+    <ul style="margin:0;padding-left:1rem">${items}</ul>
+  </div>`;
 }
 
 function _subCodeOpts(po) {
@@ -12162,7 +12581,7 @@ function renderPOTab() {
         const lineRows = (po.lines||[]).map(line => {
           const lineAmt = _lineAmt(line), lineTax = _lineTax(line), lineTot = lineAmt + lineTax;
           return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
-            <td style="padding:0.3rem 0.5rem;min-width:120px">${inp('invoice_num','text',line.invoice_num,po.id,line.id,'placeholder="Invoice / Ticket #"')}</td>
+            <td style="padding:0.3rem 0.5rem;min-width:120px">${inp('invoice_num','text',line.invoice_num,po.id,line.id,'placeholder="Invoice / Ticket #"')}${_poLineFromDaily(line) ? `<div title="Entered on Daily Tracking. Edits here update that job row; removing it here deletes the row." style="font-size:0.6rem;color:var(--muted);white-space:nowrap">from Daily Tracking${(line.cost_code || line.sub_code) ? ' &middot; ' + escT([line.cost_code, line.sub_code].filter(Boolean).join(' / ')) : ''}</div>` : ''}</td>
             <td style="padding:0.3rem 0.5rem;min-width:115px">${inp('date','date',line.date,po.id,line.id)}</td>
             <td style="padding:0.3rem 0.5rem;min-width:70px">${inp('qty','number',line.qty,po.id,line.id,'step="any" placeholder="0"')}</td>
             <td style="padding:0.3rem 0.5rem;min-width:90px">${inp('unit_cost','number',line.unit_cost,po.id,line.id,'step="any" placeholder="0.00"')}
@@ -12248,6 +12667,7 @@ function renderPOTab() {
           ${perm.canEdit ? `<button class="btn btn-green" onclick="addPO()">+ New PO</button>` : ''}
         </div>
       </div>
+      ${_poDailyOrphansHTML()}
       <input class="po-global-search" type="text" value="${esc(poSearch)}" placeholder="&#128269; Search purchase orders…"
         oninput="poSearch=this.value;poPage=0;renderPOTab()"
         style="width:100%;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:0.82rem;padding:0.45rem 0.75rem;outline:none;box-sizing:border-box;margin-bottom:0.85rem">
@@ -12598,11 +13018,21 @@ function _detachLinkedRows(pred) {
     inventoryEntries.forEach(en => { if (hit(en.inv_row_id)) { en.inv_row_id = null; nInv++; } });
   }
   if (Array.isArray(purchaseOrders)) {
-    purchaseOrders.forEach(po => (po.lines || []).forEach(ln => { if (hit(ln.po_row_id)) { ln.po_row_id = null; nPo++; } }));
+    purchaseOrders.forEach(po => {
+      if (!Array.isArray(po.lines)) return;
+      // A delivery recorded FROM the row is that row — it goes with it rather
+      // than staying on the order as material the job no longer has.
+      const keep = po.lines.filter(ln => !(hit(ln.po_row_id) && _poLineFromDaily(ln)));
+      if (keep.length !== po.lines.length) { nPo += po.lines.length - keep.length; po.lines = keep; }
+      po.lines.forEach(ln => { if (hit(ln.po_row_id)) { ln.po_row_id = null; nPo++; } });
+    });
   }
   if (nTr) saveTruckingEntries();
   if (nInv) saveInventoryEntries();
-  if (nPo) savePurchaseOrders();
+  if (nPo) {
+    savePurchaseOrders();
+    if (activeTab === 'po') renderPOTab();
+  }
   return nTr + nInv + nPo;
 }
 
@@ -18216,14 +18646,28 @@ function renderDailyTotals(projId) {
   el('dft-total').textContent = total ? '$' + fmt(total) : '—';
 }
 
-function makePOSelect(projId, selected, dataI) {
+function makePOSelect(projId, selected, dataI, link) {
+  // A row a PO delivery line raised takes its PO # from that order: changing
+  // it here would only be written back over. Change the delivery there.
+  if (link && !_poLineFromDaily(link.line)) {
+    const num = selected || link.po.po_number || '';
+    return `<select data-tab="daily" data-i="${dataI}" data-f="po_num" data-proj="${projId}" disabled
+      title="Set by ${esc(link.po.po_number || 'its purchase order')} — change this delivery on the Purchase Orders tab">
+      <option value="${esc(num)}" selected>${escT(num || '—')}</option>
+    </select>`;
+  }
   const projPOs = purchaseOrders
     .filter(po => po.project_id === projId)
     .map(po => po.po_number)
     .filter(Boolean)
     .sort();
   const opts = (selected && !projPOs.includes(selected)) ? [...projPOs, selected] : projPOs;
-  return `<select data-tab="daily" data-i="${dataI}" data-f="po_num" data-proj="${projId}">
+  // A number with no order on this job: the material reaches the job's costs
+  // but no purchase order, so it cannot show on the Purchase Orders tab.
+  const orphan = selected && !_poForRowNumber(projId, selected)
+    ? ` title="${esc(selected)} is not one of this job's purchase orders, so this row is not on the Purchase Orders tab" style="outline:1px solid var(--yellow);outline-offset:-1px"`
+    : '';
+  return `<select data-tab="daily" data-i="${dataI}" data-f="po_num" data-proj="${projId}"${orphan}>
     <option value="">—</option>
     ${opts.map(o => `<option value="${esc(o)}" ${o === selected ? 'selected' : ''}>${esc(o)}</option>`).join('')}
   </select>`;
@@ -18306,6 +18750,7 @@ function renderDailyTable(projId) {
 
   // ai is the row's index in p.dailyRows (unaffected by filters or by the
   // newest-first drawing order), which is what every data-i handler reads.
+  const poLinks = _poLinksByRow();   // which rows are deliveries on an order, for the PO # cell
   _dailyDisplayOrder(allRows, rows).forEach(({ row, ai }) => {
     const c  = calcDaily(row);
     // Rows auto-injected from payroll approval carry a timesheet_entry_id and
@@ -18339,7 +18784,7 @@ function renderDailyTable(projId) {
       <td class="calc">$${fmt(c.equip_total)}</td>
       <td><input type="text"   data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="material"        value="${esc(row.material)}"   placeholder="Description&hellip;"></td>
       <td>${cbHtml('suppliers', row.supplier || '', '— select —', `data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="supplier"`, 'data-cb-fixed="1"')}</td>
-      <td>${makePOSelect(projId, row.po_num, ai)}</td>
+      <td>${makePOSelect(projId, row.po_num, ai, poLinks.get(String(row.id)))}</td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="units_purchased" value="${row.units_purchased}" step="any" placeholder="0"></td>
       <td><input type="number" data-tab="daily" data-proj="${projId}" data-i="${ai}" data-f="unit_cost"       value="${row.unit_cost}"       step="any" placeholder="0.00"></td>
       <td class="calc" id="daily-mat-${projId}-${ai}">$${fmt(parseFloat(row.material_cost)||0)}</td>
@@ -23846,6 +24291,10 @@ document.addEventListener('change', e => {
       jcSel.value = 'Purchase Order';
     }
   }
+  // A row naming one of its job's purchase orders is a delivery on it, so the
+  // order follows the edit. Before the write, so a row brought to its taxed
+  // line's figure is saved with it. See _syncDailyRowToPO.
+  if (!_isInj && PO_ROW_SYNC_FIELDS.has(el.dataset.f)) _dailyRowToPO(el.dataset.proj, i);
   // Always flush on blur — cancels debounce and writes now
   drPutNow(p.dailyRows[i].id, p.dailyRows[i]);
   renderDailyCalcCells(el.dataset.proj, i);
@@ -24010,6 +24459,17 @@ const _bootReady = (async () => {
 
   // Each report draws its own; the robot draws none of the tabs.
   if (_AUTO_REPORT) return;
+
+  // Job rows that name one of their job's purchase orders, recorded on it:
+  // the ones entered before Daily Tracking fed the orders, and the older rows
+  // once the background load brings them in. Never allowed to stop the page
+  // drawing — see _reconcileDailyPOLinks.
+  const _dailyPOCatchUp = () => {
+    try { _reconcileDailyPOLinks(); }
+    catch (err) { console.warn('[po] could not record Daily Tracking deliveries:', err.message); }
+  };
+  _dailyPOCatchUp();
+  Promise.resolve(_drBackfillDone).then(_dailyPOCatchUp);
 
   // Defer visible-tab renders so the browser can paint first
   setTimeout(() => {
@@ -24283,6 +24743,7 @@ const _bootReady = (async () => {
     if (!r.ok) return;
     const data = await r.json();
     const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+    _poLoadOk = true;
     // Migrate before diffing: the conversion adds tax_pct to every line, so an
     // as-yet-unconverted blob would otherwise read as a change on every poll
     // and re-render the tab in a loop until someone saves a PO.
@@ -24668,6 +25129,9 @@ function commitImportCSV() {
   });
   // Persist rows to DB (fire-and-forget — UI is already updated in memory)
   Promise.all(bulkPromises).catch(err => console.warn('[import] bulk post failed:', err.message));
+  // Rows whose PO # names one of their job's orders are deliveries on it.
+  try { _reconcileDailyPOLinks(); }
+  catch (err) { console.warn('[import] could not record PO deliveries:', err.message); }
   projectsList.forEach(p => renderDailyTable(p.id));
   renderCostTable();
   clearImportPreview();

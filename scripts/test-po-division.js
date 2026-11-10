@@ -141,9 +141,16 @@ function makeStore() {
     if (/^INSERT INTO daily_tracking/.test(q)) {
       // 'Material' is a literal in the INSERT, so it is NOT one of the
       // parameters — the columns after date shift down by one.
+      // After the fourteen values come the conflict arm's flags: whether the
+      // codes follow the order (twice, cost then sub code) and whether the row
+      // keeps its own description (twice, material then supplier).
       const [rowId, projectId, companyCode, division, date, employee,
              costCode, subCode, material, supplier, poNum,
              qty, unitCost, cost, codesChanged] = vals;
+      // Read from its slot only when the statement really has that arm, so a
+      // writeRow that lost it cannot pass on whatever value lands there.
+      const ownRow = /material = CASE WHEN \$17 THEN daily_tracking\.material ELSE EXCLUDED\.material END/.test(q)
+        ? vals[16] : false;
       const existing = daily.get(rowId);
       if (existing) {
         // The conflict arm: scoped to this company, never a payroll-injected
@@ -152,9 +159,10 @@ function makeStore() {
         if (existing.timesheet_entry_id) return Promise.resolve([]);
         Object.assign(existing, {
           project_id: projectId, division, date, employee,
-          material, supplier, po_num: poNum,
+          po_num: poNum,
           units_purchased: qty, unit_cost: unitCost, material_cost: cost,
         });
+        if (!ownRow) { existing.material = material; existing.supplier = supplier; }
         if (codesChanged) { existing.cost_code = costCode; existing.sub_code = subCode; }
         return Promise.resolve([{ row_id: rowId }]);
       }
@@ -915,6 +923,89 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
   assert('but changing the order\'s own codes does carry through',
     st.daily.get(recodedId).cost_code === '300' && st.daily.get(recodedId).sub_code === 'C',
     JSON.stringify(st.daily.get(recodedId)));
+
+  console.log('\n[a delivery recorded from Daily Tracking keeps the row\'s own codes]');
+  // A foreman picks PO-0001 on a Daily Tracking row and keys in 20 t at $16
+  // under 02-100 / 0420; the division tab records it on the order as a line
+  // tagged source:'daily'. Purchasing then saves the order — a status flip, or
+  // a re-code of the ORDER — and must not re-code or re-describe that row.
+  st = makeStore();
+  st.daily.set('r1', {
+    row_id: 'r1', project_id: 'job1', company_code: 'FCT', division: 'turf',
+    date: '2026-11-02', field_type: 'Material', employee: 'Sam',
+    cost_code: '02-100', sub_code: '0420', material: '57 stone', supplier: 'Quarry Co',
+    po_num: 'PO-0001', units_purchased: 20, unit_cost: 16, material_cost: 320,
+  });
+  const fromDaily = {
+    id: 'dr-r1', source: 'daily', invoice_num: '', date: '2026-11-02',
+    qty: '20', unit_cost: '16', tax: '', tax_pct: '', employee: 'Sam',
+    cost_code: '02-100', sub_code: '0420', po_row_id: 'r1',
+  };
+  po = makePO({ id: 'daily1', project_id: 'job1', title: 'Aggregate', supplier: 'Acme',
+                cost_code: '100', sub_code: 'A',
+                lines: [fromDaily, { id: 'L2', qty: '5', unit_cost: '10' }] });
+  // Stored as the division tab's full-list save leaves it, so the row is the order's.
+  st.setBlob(KEY('turf'), [JSON.parse(JSON.stringify(po))]);
+
+  po.status = 'approved';
+  po.cost_code = '300'; po.sub_code = 'C';      // the ORDER is re-coded too
+  await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: JSON.parse(JSON.stringify(po)) });
+  const dRow = st.daily.get('r1');
+  assert('the Daily Tracking row keeps its own cost and sub code',
+    dRow.cost_code === '02-100' && dRow.sub_code === '0420', JSON.stringify(dRow));
+  assert('  and its own material and supplier',
+    dRow.material === '57 stone' && dRow.supplier === 'Quarry Co', JSON.stringify(dRow));
+  assert('  while its quantity and money still follow the delivery',
+    Number(dRow.units_purchased) === 20 && Number(dRow.material_cost) === 320, JSON.stringify(dRow));
+  assert('it is not given a second row',
+    [...st.daily.values()].filter(r => r.po_num === 'PO-0001').length === 2,
+    JSON.stringify([...st.daily.keys()]));
+  const stored = st.getBlob(KEY('turf'))[0];
+  const poRow = st.daily.get(stored.lines.find(l => l.id === 'L2').po_row_id);
+  assert('a line raised on the order still takes the order\'s codes',
+    poRow && poRow.cost_code === '300' && poRow.sub_code === 'C', JSON.stringify(poRow));
+  assert('  and its title', poRow && poRow.material === 'Aggregate', JSON.stringify(poRow));
+  assert('the Daily Tracking line is stored still tagged and linked',
+    stored.lines.some(l => l.id === 'dr-r1' && l.source === 'daily' && l.po_row_id === 'r1'),
+    JSON.stringify(stored.lines));
+  assert('isDailyLine reads the tag', poSync.isDailyLine(fromDaily) && !poSync.isDailyLine({ id: 'x' }) && !poSync.isDailyLine(null));
+
+  console.log('\n[one job row is one delivery, even when a tab recorded it twice]');
+  // Purchasing writes the job row a moment before the order that links it. A
+  // division tab loading in that moment sees the row and not the link, and
+  // records the row as a Daily Tracking delivery of its own — so the order
+  // carries two lines for one row. The order's own line stands, and the row
+  // must survive the copy going.
+  {
+    const shadow = { lines: [
+      { id: 'L1', qty: '5', unit_cost: '10', po_row_id: 'rowX' },
+      { id: 'dr-rowX', source: 'daily', qty: '5', unit_cost: '10', po_row_id: 'rowX' },
+      { id: 'dr-rowY', source: 'daily', qty: '1', unit_cost: '2', po_row_id: 'rowY' },
+    ] };
+    assert('the copy is dropped', poSync.dropShadowedDailyLines(shadow) === 1
+      && shadow.lines.map(l => l.id).join() === 'L1,dr-rowY', JSON.stringify(shadow.lines));
+    assert('a Daily Tracking line nobody else names stays', shadow.lines.some(l => l.id === 'dr-rowY'));
+    assert('an order with no raised lines is untouched',
+      poSync.dropShadowedDailyLines({ lines: [{ id: 'dr-a', source: 'daily', po_row_id: 'a' }] }) === 0);
+    assert('a missing list is not an error', poSync.dropShadowedDailyLines({}) === 0 && poSync.dropShadowedDailyLines(null) === 0);
+
+    st = makeStore();
+    po = makePO({ id: 'twice', project_id: 'job1', lines: [{ id: 'L1', qty: '5', unit_cost: '10' }] });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po });
+    const rowX = po.lines[0].po_row_id;
+    // The division tab's save that recorded the row a second time.
+    const doubled = JSON.parse(JSON.stringify(po));
+    doubled.lines.push({ id: 'dr-' + rowX, source: 'daily', qty: '5', unit_cost: '10', po_row_id: rowX });
+    st.setBlob(KEY('turf'), [doubled]);
+    // Purchasing's next save of the order, from the copy it had.
+    po.status = 'approved';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: JSON.parse(JSON.stringify(po)) });
+    const kept = st.getBlob(KEY('turf'))[0];
+    assert('the stored order is back to one line for the row',
+      kept.lines.length === 1 && kept.lines[0].id === 'L1', JSON.stringify(kept.lines));
+    assert('and the job row is still there', st.daily.has(rowX), JSON.stringify([...st.daily.keys()]));
+    assert('charged once', [...st.daily.values()].reduce((n, r) => n + Number(r.material_cost), 0) === 50);
+  }
 
   console.log('\n[a move that only half lands]');
   // The new list is written before the old one is emptied, so a compare-and-set

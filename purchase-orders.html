@@ -1378,6 +1378,10 @@ function addLine(poId) {
 function deleteLine(poId, lineId) {
   const po = purchaseOrders.find(p => p.id === poId);
   if (!po || !capsFor(po._division).canEdit) return;
+  // A delivery recorded from a Daily Tracking row takes that job row with it.
+  const gone = (po.lines || []).find(l => l.id === lineId);
+  if (isDailyLine(gone) && gone.po_row_id && po.project_id &&
+      !confirm('This delivery was entered on Daily Tracking. Removing it here also deletes that job row. Continue?')) return;
   // Remembered until the save lands. The server keeps any stored delivery this
   // page did not send, so without this a removal would simply be undone.
   (_deletedLines[poId] || (_deletedLines[poId] = new Set())).add(lineId);
@@ -2182,7 +2186,7 @@ function lineRowsHTML(po, surface) {
       (capsFor(po._division).canEdit ? '' : 'disabled ') + (extra || '') +
       ' oninput="setLineField(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\',\'' + field + '\', this.value)">';
     return '<tr>' +
-      '<td style="min-width:120px">' + inp('invoice_num','text', l.invoice_num, 'placeholder="Invoice / Ticket #"') + '</td>' +
+      '<td style="min-width:120px">' + inp('invoice_num','text', l.invoice_num, 'placeholder="Invoice / Ticket #"') + dailyLineTagHTML(l) + '</td>' +
       '<td style="min-width:118px">' + inp('date','date', l.date) + '</td>' +
       '<td style="min-width:74px">'  + inp('qty','number', l.qty, 'step="any" placeholder="0"') + '</td>' +
       '<td style="min-width:92px">'  + inp('unit_cost','number', l.unit_cost, 'step="any" placeholder="0.00"') +
@@ -2204,6 +2208,21 @@ function lineRowsHTML(po, surface) {
         (capsFor(po._division).canEdit ? '<button class="del-btn" onclick="deleteLine(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\')" title="Remove delivery">&#10005;</button>' : '') +
       '</td></tr>';
   }).join('');
+}
+
+/**
+ * Under a delivery recorded from a Daily Tracking row: where it came from and
+ * the cost / sub code the job row carries. The division pages tag those lines
+ * `source: 'daily'` and keep them in step with the row; the order's header
+ * code is the order's own and can differ.
+ */
+function isDailyLine(l) { return Boolean(l && l.source === 'daily'); }
+function dailyLineTagHTML(l) {
+  if (!isDailyLine(l)) return '';
+  const codes = [l.cost_code, l.sub_code].filter(Boolean).join(' / ');
+  return '<div title="Entered on Daily Tracking. Edits here update that job row; removing it here deletes the row."' +
+    ' style="font-size:0.6rem;color:var(--muted);white-space:nowrap;padding-top:0.1rem">from Daily Tracking' +
+    (codes ? ' &middot; ' + esc(codes) : '') + '</div>';
 }
 
 function linesPanelHTML(po, colspan) {

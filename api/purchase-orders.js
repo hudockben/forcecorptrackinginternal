@@ -464,6 +464,12 @@ module.exports = async (req, res) => {
         }
       }
 
+      // One job row is one delivery. A tab that recorded a Daily Tracking row
+      // purchasing had JUST raised a line for — it read the row a moment before
+      // the order that links it — sends a second line for it, and the merge
+      // above puts purchasing's back beside it. The order's own line stands.
+      for (const po of toWrite) poSync.dropShadowedDailyLines(po);
+
       // Who raised each order, and when. A tab saves its whole list every time,
       // so without this a copy that lacked an order's stamp — or said something
       // else — would replace it. Settled against the stored list, read here if

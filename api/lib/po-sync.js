@@ -126,6 +126,36 @@ function lineUnitCostWithTax(line) {
 }
 
 /**
+ * Was this delivery line recorded from a Daily Tracking row rather than typed
+ * on an order? The division pages tag those `source: 'daily'` — the row is
+ * where it was entered, so its own codes and description stand.
+ */
+function isDailyLine(line) {
+  return Boolean(line && line.source === 'daily');
+}
+
+/**
+ * Drop a Daily Tracking line that names a job row another line on the same
+ * order already names. Mutates `po`; returns how many went.
+ *
+ * One row is one delivery, so two lines naming it charge the order twice. It
+ * happens in one narrow window: purchasing records a delivery, which writes the
+ * job row a moment BEFORE the order that links it, and a division tab loading
+ * in that moment sees the row but not the link — and records the row as a
+ * delivery of its own. The order's own line is the original; the copy goes.
+ */
+function dropShadowedDailyLines(po) {
+  if (!po || !Array.isArray(po.lines)) return 0;
+  const raised = new Set(po.lines
+    .filter(l => l && !isDailyLine(l) && l.po_row_id)
+    .map(l => String(l.po_row_id)));
+  if (!raised.size) return 0;
+  const before = po.lines.length;
+  po.lines = po.lines.filter(l => !(isDailyLine(l) && l.po_row_id && raised.has(String(l.po_row_id))));
+  return before - po.lines.length;
+}
+
+/**
  * Does this delivery line cost the job? The frontend creates a daily row the
  * moment a line has a quantity or a unit cost, and not before — an empty line
  * someone added and never filled in should not show up on the job's cost tab.
@@ -480,9 +510,15 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
   // Rows that must go: everything from the previous project when the order
   // moved, otherwise the rows of lines that were deleted or emptied out.
   const liveLineIds = new Set(lines.filter(lineHasCost).map(l => l.id));
+  // ...but never a row a line still being written names. A line can leave the
+  // order while its row stays in use: a Daily Tracking line that merely
+  // duplicated purchasing's own line for the same row (dropShadowedDailyLines)
+  // goes, and the row is purchasing's line's to keep. Deleting it would leave
+  // that line pointing at nothing and the job short the material.
+  const liveRowIds = new Set(lines.filter(lineHasCost).map(l => l && l.po_row_id).filter(Boolean).map(String));
   const stale = prevLines
     .filter(l => l && l.po_row_id)
-    .filter(l => startAfresh || !liveLineIds.has(l.id))
+    .filter(l => startAfresh || (!liveLineIds.has(l.id) && !liveRowIds.has(String(l.po_row_id))))
     .map(l => l.po_row_id);
 
   // When the order moved, the rows the INCOMING lines point at go too. Normally
@@ -552,6 +588,15 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
   async function writeRow(rowId, line) {
     const cost = lineAmt(line) + lineTax(line);
     const date = safeDate(line.date) || safeDate(po.date_created) || new Date().toISOString().slice(0, 10);
+    // A delivery recorded FROM a Daily Tracking row (see _syncDailyRowToPO in
+    // the division pages) keeps that row's own cost / sub code, description
+    // and supplier. The order's header is the order's, not the row's: a
+    // foreman coding two deliveries on one order to two sub codes, or a status
+    // flip from a purchasing tab holding an older header, must not re-code or
+    // re-describe the job's rows. Only a row that does not exist yet takes the
+    // order's — there is nothing of the row's to keep.
+    const ownRow = isDailyLine(line);
+    const syncCodes = codesChanged && !ownRow;
     const out = await sql`
       INSERT INTO daily_tracking (
         row_id, project_id, company_code, division,
@@ -570,10 +615,10 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
         division        = EXCLUDED.division,
         date            = EXCLUDED.date,
         employee        = EXCLUDED.employee,
-        cost_code       = CASE WHEN ${codesChanged} THEN EXCLUDED.cost_code ELSE daily_tracking.cost_code END,
-        sub_code        = CASE WHEN ${codesChanged} THEN EXCLUDED.sub_code  ELSE daily_tracking.sub_code  END,
-        material        = EXCLUDED.material,
-        supplier        = EXCLUDED.supplier,
+        cost_code       = CASE WHEN ${syncCodes} THEN EXCLUDED.cost_code ELSE daily_tracking.cost_code END,
+        sub_code        = CASE WHEN ${syncCodes} THEN EXCLUDED.sub_code  ELSE daily_tracking.sub_code  END,
+        material        = CASE WHEN ${ownRow} THEN daily_tracking.material ELSE EXCLUDED.material END,
+        supplier        = CASE WHEN ${ownRow} THEN daily_tracking.supplier ELSE EXCLUDED.supplier END,
         po_num          = EXCLUDED.po_num,
         units_purchased = EXCLUDED.units_purchased,
         unit_cost       = EXCLUDED.unit_cost,
@@ -703,6 +748,8 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
   // as belonging to deleted lines and swept away.
   const recovered = unseenLines(po, priorCopies, deletedLineIds);
   if (recovered.length) po.lines = (Array.isArray(po.lines) ? po.lines : []).concat(recovered);
+  // ...and never two lines for one job row — see dropShadowedDailyLines.
+  dropShadowedDailyLines(po);
 
   const rows = await syncPOCostRows(sql, {
     companyCode, division, po, prevPO, prevDivision, priorCopies,
@@ -758,6 +805,7 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
               return { ...l, po_row_id: null };
             })
           : late);
+      dropShadowedDailyLines(po);
     }
 
     // Replaced in place. The purchase-order tables sort by the time in the
@@ -943,6 +991,8 @@ module.exports = {
   lineTax,
   lineUnitCostWithTax,
   lineHasCost,
+  isDailyLine,
+  dropShadowedDailyLines,
   isInjectedRowId,
   readPOBlob,
   mutatePOBlob,

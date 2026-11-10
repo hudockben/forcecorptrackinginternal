@@ -227,6 +227,7 @@ for (const file of DIVISION_PAGES) {
     calcDaily: () => ({ labor_cost: 0, equip_total: 0, total_cost: 0 }),
     fmt: n => String(n), esc: s => String(s == null ? '' : s),
     makeSelect: () => '<select></select>', makePOSelect: () => '<select></select>',
+    _poLinksByRow: () => new Map(),
     cbHtml: () => '<input>',
   });
   ['_localDateStr', '_dailySortDate', '_dailyDisplayOrder', '_dailyShowNewest', 'renderDailyTable']

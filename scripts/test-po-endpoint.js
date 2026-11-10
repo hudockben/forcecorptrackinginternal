@@ -87,6 +87,7 @@ function loadEndpoint({ roles = {}, calls = null, upsertResult, removeResult, sq
       safeTimestamp:        realPoSync.safeTimestamp,
       settleCreationStamp:  realPoSync.settleCreationStamp,
       settleCreationStamps: realPoSync.settleCreationStamps,
+      dropShadowedDailyLines: realPoSync.dropShadowedDailyLines,
       upsertPO: async (sql, args) => {
         if (calls) calls.push({ fn: 'upsertPO', args });
         return upsertResult !== undefined ? upsertResult : {
@@ -587,6 +588,25 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
       const ids = (sqlStub.written() || []).map(p => p.id);
       check('a client with no version behaves as it always did',
         ids.length === 1 && ids[0] === 'a', JSON.stringify(ids));
+    }
+    {
+      // One job row is one delivery. A division tab that recorded a Daily
+      // Tracking row purchasing had just raised a line for sends both; the
+      // order's own line is what gets stored.
+      const sqlStub = appDataStub({ storedUpdatedAt: new Date(T_READ) });
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      const doubled = { id: 'a', po_number: 'PO-0001', project_id: 'job1', lines: [
+        { id: 'L1', qty: '5', unit_cost: '10', po_row_id: 'rowX' },
+        { id: 'dr-rowX', source: 'daily', qty: '5', unit_cost: '10', po_row_id: 'rowX' },
+        { id: 'dr-rowY', source: 'daily', qty: '1', unit_cost: '4', po_row_id: 'rowY' },
+      ] };
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                      body: { purchaseOrders: [doubled], baseUpdatedAt: T_READ } }, res);
+      const stored = (sqlStub.written() || [])[0] || {};
+      check('a Daily Tracking copy of a raised line is not stored',
+        (stored.lines || []).map(l => l.id).join() === 'L1,dr-rowY', JSON.stringify(stored.lines));
+      check('  and the save still succeeds', res.body && res.body.ok === true, JSON.stringify(res.body));
     }
     {
       // The same protection one level down. An order the client DID send may
