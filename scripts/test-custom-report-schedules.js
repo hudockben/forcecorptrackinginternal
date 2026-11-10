@@ -1350,6 +1350,7 @@ async function robotRun(sql, { TPL, REP, G1 }) {
   if (process.env.SKIP_ROBOT === '1') { console.log('  (SKIP_ROBOT=1 — the robot section is skipped)'); return; }
   const CHROME = [
     process.env.CHROME_EXECUTABLE_PATH,
+    process.env.PW_CHROMIUM,
     '/opt/pw-browsers/chromium-1243/chrome-linux64/chrome',
     '/opt/pw-browsers/chromium_headless_shell-1243/chrome-headless-shell-linux64/chrome-headless-shell',
     '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',

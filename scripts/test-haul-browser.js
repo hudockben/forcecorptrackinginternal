@@ -89,7 +89,9 @@ async function boot(page, file, opts) {
 }
 
 (async () => {
-  const browser = await chromium.launch({ executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' });
+  const browser = await chromium.launch({
+    executablePath: process.env.PW_CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome',
+  });
 
   // ── The driver's form ────────────────────────────────────────────────────
   console.log('\n[timesheet.html — the driver is asked]');
