@@ -153,6 +153,11 @@ const harness = [
    var SUBS  = ${JSON.stringify(SUBS)};
    var TRAVEL_SUB_CODE = 'travel';
    var INJECTED_EDITABLE_FIELDS = new Set(['cost_code', 'sub_code', 'job_class', 'quantity']);
+   // The change handler hands a row naming a purchase order to the order. That
+   // is pinned against all three pages in scripts/test-po-daily-sync.js; here
+   // it only has to be callable.
+   var PO_ROW_SYNC_FIELDS = new Set(['po_num', 'units_purchased', 'unit_cost', 'cost_code', 'sub_code']);
+   var _dailyRowToPO = () => {};
    var lists = { employees: [], equipment: [] };
    var costRows = [];
    var saveCostRows = () => {};

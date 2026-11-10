@@ -89,7 +89,9 @@ function makeSql(seed = {}) {
   const sql = (strings, ...values) => {
     const q = strings.join(' ').replace(/\s+/g, ' ').trim();
     log.push({ q, values });
-    if (/^SELECT timesheet_entry_id FROM daily_tracking/.test(q)) {
+    // PUT also reads the row's PO # (whether the orders need a look after the
+    // write); DELETE reads only the entry. Both answer from the same table.
+    if (/^SELECT timesheet_entry_id(, po_num)? FROM daily_tracking/.test(q)) {
       const rowId = String(values[0]);
       return Promise.resolve(table.has(rowId) ? [table.get(rowId)] : []);
     }

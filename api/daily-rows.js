@@ -2,6 +2,30 @@
 
 const { neon }            = require('@neondatabase/serverless');
 const { requireDivision } = require('./lib/auth');
+const poSync              = require('./lib/po-sync');
+
+// After job rows are written or deleted, the orders they name follow — see
+// "Deliveries recorded from Daily Tracking" in api/lib/po-sync.js. A row that
+// names a purchase order is a delivery on it, and the server, which reads the
+// row as stored, is the one place that records it: a page holding a list a
+// minute old cannot be trusted to.
+//
+// Never allowed to fail the row write it follows — the row is saved either
+// way, and the next write or page load reconciles. Answers with the orders it
+// changed, for the page that wrote the row to show at once.
+async function syncOrders(sql, companyCode, division, rowIds, deletedIds) {
+  const ids = (rowIds || []).filter(Boolean), gone = (deletedIds || []).filter(Boolean);
+  if (!ids.length && !gone.length) return undefined;
+  try {
+    const out = await poSync.syncRowsToOrders(sql, { companyCode, division, rowIds: ids, deletedIds: gone });
+    return out.orders && out.orders.length ? { orders: out.orders } : undefined;
+  } catch (err) {
+    console.error('[daily-rows] could not carry the rows to their purchase orders:', err.message);
+    return undefined;
+  }
+}
+
+const namesPO = v => String(v == null ? '' : v).trim() !== '';
 
 // Falls back to today when date is missing (schema: date DATE NOT NULL)
 function dateOrToday(v) {
@@ -344,7 +368,11 @@ module.exports = async (req, res) => {
         console.warn(`[daily-rows] refused ${skipped} payroll-injected row(s) on POST — approve/un-approve owns these`);
       }
       if (clean.length) await insertRows(sql, projectId, companyCode, division, clean);
-      return res.json({ ok: true, inserted: clean.length, skipped });
+      // An imported or copied row that names one of its job's orders is a
+      // delivery on it from the moment it lands.
+      const po = await syncOrders(sql, companyCode, division,
+        clean.filter(r => namesPO(r.po_num)).map(r => String(r.id)));
+      return res.json({ ok: true, inserted: clean.length, skipped, ...(po ? { po } : {}) });
     }
 
     // ── PUT — upsert a single row (insert if missing, update if exists) ──────
@@ -363,7 +391,7 @@ module.exports = async (req, res) => {
       // approval. Hours-affecting changes still must go through
       // payroll.html (resplit).
       const [existingDt] = await sql`
-        SELECT timesheet_entry_id FROM daily_tracking
+        SELECT timesheet_entry_id, po_num FROM daily_tracking
         WHERE row_id = ${id} AND company_code = ${companyCode} AND division = ${division}
       `;
       if (existingDt && existingDt.timesheet_entry_id != null) {
@@ -467,7 +495,15 @@ module.exports = async (req, res) => {
             AND division = ${division}
         `;
       }
-      return res.json({ ok: true });
+      // A row that named an order before this write, or does now, may have
+      // moved, changed or stopped being a delivery. A row that never named one
+      // cannot be on an order as a Daily Tracking line, and a row a line raised
+      // on an order always carries that order's number — so nothing else needs
+      // the read.
+      const po = (namesPO(existingDt && existingDt.po_num) || namesPO(row.po_num))
+        ? await syncOrders(sql, companyCode, division, [String(id)])
+        : undefined;
+      return res.json({ ok: true, ...(po ? { po } : {}) });
     }
 
     // ── DELETE — by row id, by project, or by cost/sub code ───────────────
@@ -492,12 +528,20 @@ module.exports = async (req, res) => {
           DELETE FROM daily_tracking
           WHERE row_id = ${id} AND company_code = ${companyCode} AND division = ${division}
         `;
+        // The order it was a delivery on loses it: a Daily Tracking line goes,
+        // a line raised on the order is detached (its delivery still happened).
+        const po = await syncOrders(sql, companyCode, division, [], [String(id)]);
+        return res.json({ ok: true, ...(po ? { po } : {}) });
       } else if (projectId) {
-        await sql`
+        const gone = await sql`
           DELETE FROM daily_tracking
           WHERE project_id = ${projectId} AND company_code = ${companyCode}
             AND division = ${division}
+          RETURNING row_id, po_num
         `;
+        const po = await syncOrders(sql, companyCode, division, [],
+          gone.filter(r => namesPO(r.po_num)).map(r => String(r.row_id)));
+        return res.json({ ok: true, ...(po ? { po } : {}) });
       } else if (costCode !== undefined && subCode !== undefined) {
         // Bulk delete by cost_code + sub_code is invoked from the division
         // tab when a supervisor removes a cost/sub code from the bid items.
@@ -506,21 +550,29 @@ module.exports = async (req, res) => {
         // if a sub_code is later removed or renamed. Those rows remain
         // visible in cost tracking (locked + badged) and can still be
         // managed via payroll.html.
-        await sql`
+        const gone = await sql`
           DELETE FROM daily_tracking
           WHERE cost_code = ${costCode} AND sub_code = ${subCode}
             AND company_code = ${companyCode} AND division = ${division}
             AND timesheet_entry_id IS NULL
+          RETURNING row_id, po_num
         `;
+        const po = await syncOrders(sql, companyCode, division, [],
+          gone.filter(r => namesPO(r.po_num)).map(r => String(r.row_id)));
+        return res.json({ ok: true, ...(po ? { po } : {}) });
       } else if (subCode !== undefined) {
         // Same preservation rule for bulk-by-subCode (delete a sub code
         // across all cost codes). Injected rows survive.
-        await sql`
+        const gone = await sql`
           DELETE FROM daily_tracking
           WHERE sub_code = ${subCode} AND company_code = ${companyCode}
             AND division = ${division}
             AND timesheet_entry_id IS NULL
+          RETURNING row_id, po_num
         `;
+        const po = await syncOrders(sql, companyCode, division, [],
+          gone.filter(r => namesPO(r.po_num)).map(r => String(r.row_id)));
+        return res.json({ ok: true, ...(po ? { po } : {}) });
       } else {
         return res.status(400).json({ error: 'id, projectId, subCode, or costCode+subCode required' });
       }
