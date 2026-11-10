@@ -635,7 +635,13 @@ console.log('\n[the prefilled cells read as prefilled]');
     console,
     splitEntry: { division: 'turf', job_id: 'J1', computed_hours: 6.5, travel_hours: 1.5 },
     splitCcCache: { 'turf::J1': TURF },
-    splitEquipmentList: ['320 Excavator'],
+    // The machines a row is offered come from splitEquipOptsFor, off these
+    // three — the page's own globals, not a list restated here. No division
+    // keeps a list of its own in this fixture, so every row falls back to the
+    // company list, the same as an older server that sends no `divisions`.
+    splitEquipmentGlobal: ['320 Excavator'],
+    splitEquipmentByDivision: {},
+    splitProjEquipment: [],
     // No row in this block is sent to another division, so the destination
     // caches are empty — which is exactly the state the ordinary split has.
     splitDestJobsCache: {},
@@ -679,6 +685,11 @@ console.log('\n[the prefilled cells read as prefilled]');
       'splitDestCellHtml(r, i) {',
       'splitDestNoCodeHtml(r) {',
       'splitDestWindowHtml(r, i) {',
+      // The equipment picker is per row now, like the codes: renderSplitRows
+      // asks splitEquipOptsFor for each row's machines, off the division that
+      // row's cost lands on.
+      'splitEquipNamesFor(division) {',
+      'splitEquipOptsFor(r) {',
       'escapeHtml(s) {',
       'prettyDiv(d) {',
       'findCostCode(ccList, code) {',
@@ -894,6 +905,8 @@ console.log('\n[a repaint keeps the cursor where it was]');
     'splitHaulTruckName() {', 'splitDefaultHaulEquipment(r) {',
     'splitRowTakesTruck(r) {',
     'splitDestCellHtml(r, i) {', 'splitDestNoCodeHtml(r) {', 'splitDestWindowHtml(r, i) {',
+    // Each row's machines — see the note in the block above.
+    'splitEquipNamesFor(division) {', 'splitEquipOptsFor(r) {',
     'escapeHtml(s) {', 'prettyDiv(d) {',
     'splitPickTravelCodes(ccList, workCostCode) {', 'splitApplyTravelPrefill() {',
     'splitFillTravelHours(row) {', 'numInputVal(n) {',
@@ -919,7 +932,7 @@ console.log('\n[a repaint keeps the cursor where it was]');
     'function renderSplitTallyNoop(){}',
     "var splitEntry = { division: 'turf', job_id: 'J1', computed_hours: 6.5, travel_hours: 1.5 };",
     "var splitCcCache = { 'turf::J1': " + JSON.stringify(TURF) + ' };',
-    'var splitEquipmentList = [];',
+    'var splitEquipmentGlobal = [];  var splitEquipmentByDivision = {};',
     // splitSave posts the approver's hauling answer with the split. Kept
     // off splitEntry on purpose — the object the grid holds must not change
     // until a save lands. '' throughout: these cases are not hauls.
@@ -1296,6 +1309,8 @@ console.log('\n[the form and the server agree on what is saveable]');
     'splitRowIsHaul', 'splitTruckOnRow', 'splitPricedMachineOnRow',
     'splitRowHaulAnswer', 'splitRowNeedsHaulAnswer', 'splitHaulCellHtml',
     'splitDestCellHtml', 'splitDestNoCodeHtml', 'splitDestWindowHtml',
+    // Each row's machines — see the note in the second sandbox.
+    'splitEquipNamesFor', 'splitEquipOptsFor',
     'escapeHtml', 'prettyDiv',
     '_cbReadOptions', 'cbOnFocus',
     'cbOnInput', 'cbRenderMenu', 'cbPositionMenu', 'cbCloseAll', 'cbScrollHi', 'cbClose',
@@ -1329,7 +1344,8 @@ console.log('\n[the form and the server agree on what is saveable]');
     'var splitMode = "approve", splitRowLoad = "none";',
     "var splitEntry = { id: 1, division: 'turf', job_id: 'J1', computed_hours: 20, travel_hours: 5 };",
     "var splitCcCache = { 'turf::J1': [{ cost_code: 'Silt Sock', sub_codes: ['12inch'] }] };",
-    'var splitEquipmentList = [];  var splitRows = [];',
+    'var splitEquipmentGlobal = [];  var splitEquipmentByDivision = {};',
+    'var splitProjEquipment = [];  var splitRows = [];',
     'var splitDestJobsCache = {};',
     'window.__sent = null;',
     'window.fetch = function (url, opts) { window.__sent = JSON.parse(opts.body);',

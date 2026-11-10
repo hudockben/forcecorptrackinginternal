@@ -82,9 +82,8 @@ async function typeDate(page, sel, digits) {
 }
 
 (async () => {
-  const browser = await chromium.launch(
-    fs.existsSync('/opt/pw-browsers/chromium-1194/chrome-linux/chrome')
-      ? { executablePath: '/opt/pw-browsers/chromium-1194/chrome-linux/chrome' } : {});
+  const CHROME = process.env.PW_CHROMIUM || '/opt/pw-browsers/chromium-1194/chrome-linux/chrome';
+  const browser = await chromium.launch(fs.existsSync(CHROME) ? { executablePath: CHROME } : {});
 
   console.log('\n[a date range typed on the keyboard]');
   {
