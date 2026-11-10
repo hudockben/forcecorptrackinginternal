@@ -975,8 +975,8 @@
      the hours it has run, not off a whole day it has not had yet. */
   const localMidnight = iso => new Date(+iso.slice(0, 4), +iso.slice(5, 7) - 1, +iso.slice(8, 10)).getTime();
   function ownProjFor(b, actual, rqty, bidQty, bidTot, isComplete, now) {
+    if (isComplete) return actual > 0 ? actual : 0;
     if (!(actual > 0)) return bidTot;
-    if (isComplete) return actual;
     const s = dayOf(b.start_date), e = dayOf(b.target_date);
     if (s && e) {
       const at = now instanceof Date && !isNaN(now) ? now.getTime() : Date.now();

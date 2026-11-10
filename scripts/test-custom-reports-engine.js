@@ -2411,13 +2411,22 @@ function deepNear(a, b, at = '') {
        it, kept as a fixture. Marked complete carries no date: it is the
        job's set-up, like a bid quantity or a typed date, and so stands at
        every as-of day — the runs compared here keep it as it is, and the
-       rows are what differ. */
+       rows are what differ.
+
+       One rule is carried forward into the fixture: a line marked complete
+       projects its actual even when nothing is charged to it ($0), where
+       round 7 projected its bid. The bid page made the same change, so a
+       100%-complete cost code projects exactly its actual cost; the fixture
+       is otherwise run as it was kept. */
     const OLD = (() => {
       const c = {};
       vm.createContext(c);
       c.window = c;
-      vm.runInContext(fs.readFileSync(path.join(__dirname, 'fixtures', 'custom-reports-engine-382f3c9.js'), 'utf8'), c,
-        { filename: 'custom-reports-engine-382f3c9.js' });
+      const OLD_RULE = '    if (!(actual > 0)) return bidTot;\n    if (isComplete) return actual;';
+      const NEW_RULE = '    if (isComplete) return actual > 0 ? actual : 0;\n    if (!(actual > 0)) return bidTot;';
+      const src = fs.readFileSync(path.join(__dirname, 'fixtures', 'custom-reports-engine-382f3c9.js'), 'utf8');
+      if (src.split(OLD_RULE).length !== 2) throw new Error('round-7 fixture: the complete-line projection rule moved');
+      vm.runInContext(src.replace(OLD_RULE, NEW_RULE), c, { filename: 'custom-reports-engine-382f3c9.js' });
       return c.FCTReportEngine;
     })();
     /* The seeded case generator the properties share: random jobs (bid

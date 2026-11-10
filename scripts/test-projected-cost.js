@@ -156,9 +156,16 @@ for (const file of FILES) {
       near(projForBidItem({ start_date: '2026-06-01', target_date: '2026-12-31' }, 8193, 5, 5, 18250, true), 8193));
     assert('  the same line un-completed still extrapolates upward',
       projForBidItem({ start_date: '2026-06-01', target_date: '2026-12-31' }, 8193, 5, 5, 18250, false) > 8193);
-    // A completed line with nothing logged must not collapse to $0.
-    assert('a complete line with no spend falls back to its bid',
-      near(projForBidItem({}, 0, 0, 4, 3300, true), 3300));
+    // A completed line with nothing charged to it cost $0. Its work was booked
+    // to another line (or never happened); projecting the bid on top of that
+    // counted it twice and held a 100%-complete group above its actual.
+    assert('a complete line with no spend settles at $0, not its bid',
+      near(projForBidItem({}, 0, 0, 4, 3300, true), 0),
+      `got $${projForBidItem({}, 0, 0, 4, 3300, true).toFixed(2)}`);
+    assert('  even with dates and quantity on it',
+      near(projForBidItem({ start_date: '2026-06-01', target_date: '2026-12-31' }, 0, 186, 186, 1143.90, true), 0));
+    assert('  the same line NOT complete still projects its bid',
+      near(projForBidItem({}, 0, 0, 4, 3300, false), 3300));
 
     console.log('\n[a line with quantity logged but no cost yet]');
     // Used to project $0 — (0 / rqty) * bidQty — burying a bid line that has
@@ -221,6 +228,43 @@ for (const file of FILES) {
     assert('  the total still covers total actual when off-bid spend dominates',
       mod.projectedCostForProject({ ...onBidOnly, dailyRows: [onBidRow, { ...offBidRow, cost: 900000 }] })
         >= lineActual + 900000 - 0.01);
+
+    // Franklin Regional Softball, Storm Water & Facilities: every sub code is
+    // ✓ Complete (the group header reads 100%), yet the group projected
+    // $69,894.55 against $57,218.65 actual. The $12,675.90 gap was five
+    // complete lines with no cost charged — 12" HDPE, 15" HDPE Outlet,
+    // Connect to Existing Inlet, 18" and 24" Nyoplast — each still projecting
+    // its bid. A fully complete group must project exactly its actual.
+    console.log('\n[a 100% complete group projects exactly its actual]');
+    const STORM = [
+      // label, bidQty, unitCost, actual, rqty
+      ['Storm Underground Basin', 1333,  27.75, 16968.13, 953.07],
+      ['Drain Geo Fabric',        16170, 0.42,   5114.00, 16170],
+      ['Upstand Connections',     8,     150,     701.02, 0],
+      ['6" HDPE',                 166,   3,      1167.00, 166],
+      ['12" HDPE',                186,   6.15,      0.00, 0],
+      ['12" HDPE Perf',           446,   14.36,  8431.15, 446],
+      ['15" HDPE Outlet',         70,    7.60,      0.00, 0],
+      ['15" HDPE Perf',           338,   7.75,   1155.00, 338],
+      ['Connect to Existing',     2,     150,       0.00, 0],
+      ['Inlet',                   2,     1700,    743.06, 0],
+      ['18" Nyoplast Inlet',      6,     1298,      0.00, 0],
+      ['24" Nyoplast Inlet',      1,     2912,      0.00, 0],
+      ['Level Spreader',          35,    21.51,  4161.00, 35],
+      ['Stone Bedding & Backfill',1,     2500,   4148.90, 1],
+      ['Excavate Recharge Bed',   0,     0,      3047.72, 0],
+      ['Anti Steep Collar Prep',  1,     0,      1571.75, 0],
+      ['Pour Anti Steep Collar',  0,     0,       924.00, 0],
+      ['Excavate for 12" HDPE',   0,     0,      1448.50, 0],
+      ['12" HDPE Concession',     0,     0,      1068.50, 0],
+      ['Inlet Risers',            0,     0,      6568.92, 0],
+    ];
+    const stormActual = STORM.reduce((s, r) => s + r[3], 0);
+    const stormProj   = STORM.reduce((s, [, q, uc, a, rq]) => s + projForBidItem({}, a, rq, q, q * uc, true), 0);
+    assert('the fixture adds up to the screen\'s $57,218.65 actual', near(stormActual, 57218.65),
+      `got $${stormActual.toFixed(2)}`);
+    assert('the group projects $57,218.65, not $69,894.55', near(stormProj, stormActual),
+      `got $${stormProj.toFixed(2)}`);
 
     console.log('\n[a finished project cost what it cost]');
     for (const status of ['Complete', 'complete', 'Closed', 'closed']) {
