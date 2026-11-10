@@ -45,7 +45,6 @@ process.on('beforeExit', () => {
 });
 
 const STORAGE_URL = 'https://store.example/bucket/FCT/paving/p1/d1/receipt.jpg?X-Amz-Signature=x';
-const STALL_MS = 60000;   // the page's ATTACH_STALL_MS
 
 /** Virtual timers: due times on a clock that only moves when told to. */
 function makeClock() {
@@ -135,6 +134,17 @@ function sandbox(route, { downscale } = {}) {
           this.responseText = JSON.stringify(out.json || {});
           if (this.onload) this.onload();
         };
+        if (out.tail != null) {
+          // What a real browser does on a slow uplink: upload progress leaps to
+          // 100% as the body is handed to the OS buffer, then nothing at all
+          // while that buffer drains — measured at over a minute in real Chrome.
+          clock.setTimeout(() => {
+            if (this._finished) return;
+            if (this.upload.onprogress) this.upload.onprogress({});
+            if (!out.tailHang) clock.setTimeout(finish, out.tail);
+          }, 100);
+          return;
+        }
         if (!out.progress) { finish(); return; }
         let n = 0;
         const step = () => {
@@ -240,6 +250,7 @@ function server(over = {}) {
 const legs = calls => calls.map(c => c.method + ' ' + (c.url.startsWith('https://') ? 'STORAGE' : c.url.split('?')[0]));
 const count = (calls, leg) => legs(calls).filter(l => l === leg).length;
 const SMALL = "new Blob(['x'.repeat(2000)], { type: 'image/jpeg' })";
+const MB1   = "new Blob([new Uint8Array(1024 * 1024)], { type: 'application/pdf' })";
 const BIG   = "new Blob([new Uint8Array(3 * 1024 * 1024 + 1)], { type: 'application/pdf' })";
 
 async function attach(s, blobExpr = SMALL) {
@@ -392,9 +403,31 @@ console.log('\n[a slow upload is not a dead one]');
   const err = await attach(s);
   const relay = s.calls.find(c => c.method === 'PUT' && c.url.startsWith('/api/document-upload-url?'));
   const put = s.calls.find(c => c.url.startsWith('https://'));
+  const windowMs = s.run('stallWindowMs')(2000);
   assert('one that stops moving is ended after the stall window, and sent again',
-    !err && relay && relay.at - put.at === STALL_MS,
-    err ? err.message : relay && ('relayed after ' + (relay.at - put.at) + 'ms'));
+    !err && relay && relay.at - put.at === windowMs && windowMs >= 60000 && windowMs < 61000,
+    err ? err.message : relay && ('relayed after ' + (relay.at - put.at) + 'ms, window ' + windowMs));
+}
+{
+  // The real-Chrome case: 1 MB "sent" in 100 ms, then 150 s of silence while
+  // the phone's buffer drains up a weak uplink. A bare 60 s window cut this off.
+  const s = sandbox(server({ storage: (c, n) => (n === 1 ? { tail: 150000 } : null) }));
+  const err = await attach(s, MB1);
+  assert('a buffer still draining after "100% sent" is not taken for a stall',
+    !err && count(s.calls, 'PUT STORAGE') === 1 && count(s.calls, 'PUT /api/document-upload-url') === 0,
+    err ? err.message : JSON.stringify(legs(s.calls)));
+}
+{
+  const s = sandbox(server({ storage: (c, n) => (n === 1 ? { tail: 0, tailHang: true } : null) }));
+  const err = await attach(s, MB1);
+  const relay = s.calls.find(c => c.method === 'PUT' && c.url.startsWith('/api/document-upload-url?'));
+  const put = s.calls.find(c => c.url.startsWith('https://'));
+  const windowMs = s.run('stallWindowMs')(1024 * 1024);
+  assert('but one that never answers after it is still ended, a buffer\'s drain later',
+    !err && relay && relay.at - put.at === 100 + windowMs,
+    err ? err.message : relay && ('relayed after ' + (relay.at - put.at) + 'ms, window ' + windowMs));
+  assert('  and that allowance is bounded, whatever the file size',
+    s.run('stallWindowMs')(500 * 1024 * 1024) === s.run('stallWindowMs')(4 * 1024 * 1024));
 }
 {
   const s = sandbox(server({ storage: () => 'hang', relay: () => 'hang' }));
@@ -422,6 +455,11 @@ console.log('\n[a slow upload is not a dead one]');
   assert('  and registers the file under the ticket it was sent with',
     reg && JSON.parse(reg.body).documentId === 'd2' && JSON.parse(reg.body).storageKey === 'FCT/paving/p1/d2/receipt.jpg',
     reg && reg.body);
+  // The abandoned PUT's buffered bytes can still complete the old key.
+  const del = s.calls.find(c => c.method === 'DELETE');
+  assert('  then clears whatever the abandoned upload stored under the old key, last',
+    del && /storageKey=FCT%2Fpaving%2Fp1%2Fd1%2Freceipt\.jpg/.test(del.url) && /poId=po1/.test(del.url) &&
+    s.calls.indexOf(del) > s.calls.indexOf(reg), del ? del.url : JSON.stringify(legs(s.calls)));
 }
 
 console.log('\n[registering, when the answer is lost]');
@@ -528,10 +566,91 @@ console.log('\n[a long dead zone while filing]');
   let err = null;
   try { await s.drive(`attachToPO(${PO}, heldBlob, 'receipt.jpg')`); } catch (e) { err = e; }
   offline = false;
+  const back = s.calls.length;
   try { await s.drive(`attachToPO(${PO}, heldBlob, 'receipt.jpg')`); err = null; } catch (e) { err = e; }
-  const regs = s.calls.filter(c => c.method === 'POST' && c.url.startsWith('/api/documents?'));
-  assert('when the earlier try is NOT on the order, the retry uploads it properly',
-    !err && JSON.parse(regs[regs.length - 1].body).documentId === 'd2', err ? err.message : JSON.stringify(legs(s.calls)));
+  const after = s.calls.slice(back);
+  const reg = after.find(c => c.method === 'POST' && c.url.startsWith('/api/documents?'));
+  assert('when the earlier try is NOT on the order, the retry registers that same upload',
+    !err && reg && JSON.parse(reg.body).documentId === 'd1',
+    err ? err.message : JSON.stringify(legs(after)));
+  assert('  without minting or sending the bytes again',
+    count(after, 'POST /api/document-upload-url') === 0 && count(after, 'PUT STORAGE') === 0, JSON.stringify(legs(after)));
+}
+{
+  // The first register is still running on a cold function when the retry
+  // looks: "not there yet". It lands while the retry is re-registering, so the
+  // server's unique id answers the retry with a 409 — which must read as filed.
+  let offline = false;
+  const filed = new Set();
+  let firstLands = null;
+  const s = sandbox((call, calls) => {
+    if (offline) return netDown();
+    return server({
+      register: (c, n) => {
+        const id = JSON.parse(c.body).documentId;
+        if (n === 1) { offline = true; firstLands = () => filed.add(id); return netDown(); }
+        if (firstLands) { firstLands(); firstLands = null; }
+        if (filed.has(id)) return { status: 409, json: { error: 'That document is already registered' } };
+        filed.add(id);
+        return null;
+      },
+      list: () => ({ json: { documents: [...filed].map(id => ({ id })) } }),
+    })(call, calls);
+  });
+  s.run(`var heldBlob = ${SMALL};`);
+  try { await s.drive(`attachToPO(${PO}, heldBlob, 'receipt.jpg')`); } catch (e) { /* unsure */ }
+  offline = false;
+  let err = null;
+  try { await s.drive(`attachToPO(${PO}, heldBlob, 'receipt.jpg')`); } catch (e) { err = e; }
+  assert('a first register still landing during the retry ends filed once, not twice',
+    !err && filed.size === 1, err ? err.message : 'filed=' + [...filed]);
+}
+{
+  // The retry's re-register is refused outright — its folder was deleted. It
+  // starts again from scratch rather than leaving the user stuck.
+  let offline = false;
+  const s = sandbox((call, calls) => {
+    if (offline) return netDown();
+    return server({
+      ticket: (c, n) => ({ json: {
+        documentId: 'd' + n, storageKey: 'FCT/paving/p1/d' + n + '/receipt.jpg',
+        uploadUrl: STORAGE_URL, contentType: 'image/jpeg', expiresIn: 900,
+      } }),
+      register: (c, n) => {
+        if (n === 1) { offline = true; return netDown(); }
+        return JSON.parse(c.body).documentId === 'd1' ? { status: 404, json: { error: 'Folder not found' } } : null;
+      },
+    })(call, calls);
+  });
+  s.run(`var heldBlob = ${SMALL};`);
+  try { await s.drive(`attachToPO(${PO}, heldBlob, 'receipt.jpg')`); } catch (e) { /* unsure */ }
+  offline = false;
+  const back = s.calls.length;
+  let err = null;
+  try { await s.drive(`attachToPO(${PO}, heldBlob, 'receipt.jpg')`); } catch (e) { err = e; }
+  const after = s.calls.slice(back);
+  const regs = after.filter(c => c.method === 'POST' && c.url.startsWith('/api/documents?')).map(c => JSON.parse(c.body).documentId);
+  assert('a held upload the server now refuses is replaced by a fresh one',
+    !err && JSON.stringify(regs) === JSON.stringify(['d1', 'd2']), err ? err.message : JSON.stringify(regs));
+  assert('  leaving the held bytes alone, in case the first register still records them',
+    !after.some(c => c.method === 'DELETE' && /d1/.test(c.url)), JSON.stringify(legs(after)));
+}
+{
+  // A 504 can arrive AFTER the function wrote the row, and the look cannot get
+  // through. That is not a plain failure: it may be filed.
+  const filed = new Set();
+  const s = sandbox(server({
+    register: (c, n) => {
+      const id = JSON.parse(c.body).documentId;
+      if (n === 1) { filed.add(id); return { status: 504, json: { error: 'FUNCTION_INVOCATION_TIMEOUT' } }; }
+      return filed.has(id) ? { status: 409, json: { error: 'That document is already registered' } } : null;
+    },
+    list: () => ({ status: 504, json: { error: 'FUNCTION_INVOCATION_TIMEOUT' } }),
+  }));
+  const err = await attach(s);
+  assert('an answered 504 that may have filed it, with no way to look, is unsure — not a failure',
+    err && err.unconfirmed === true, err && err.message);
+  assert('  and its bytes are kept for the retry', count(s.calls, 'DELETE /api/document-upload-url') === 0);
 }
 
 console.log('\n[what api() reports]');
@@ -624,8 +743,18 @@ console.log('\n[the callers use all of it]');
 {
   const add = requireFn(PAGE, 'addAttachment', 'purchase-orders.html');
   assert('the paperclip sheet prepares the file before attaching it',
-    /const \{ blob, filename \} = await prepareAttachment\(file\);\s*\n\s*await attachToPO\(po, blob, filename\);/.test(add), add);
+    /prepared = await prepareAttachment\(file\);\s*\n\s*await attachToPO\(po, prepared\.blob, prepared\.filename\);/.test(add), add);
   assert('and no longer lets a photo that will not decode end the attach', !/downscaleImage/.test(add));
+  assert('a file it could not attach is kept, with whether it may have landed',
+    /_docsRetry = \{ poId, blob: prepared\.blob, filename: prepared\.filename, unsure: Boolean\(err\.unconfirmed\) \};/.test(add), add);
+  const open = requireFn(PAGE, 'openDocs', 'purchase-orders.html');
+  assert('  and offered again on that order\'s sheet', /docsRetryHTML\(po\)/.test(open));
+  const again = requireFn(PAGE, 'retryDocsAttach', 'purchase-orders.html');
+  assert('  sending the SAME file, so the check-first applies',
+    /await attachToPO\(po, held\.blob, held\.filename\);/.test(again), again);
+  const html = requireFn(PAGE, 'docsRetryHTML', 'purchase-orders.html');
+  assert('  with its order id escaped into the handlers',
+    (html.match(/jsAttr\(po\.id\)/g) || []).length === 2 && !/\(\\'' \+ po\.id/.test(html), html);
 
   const commit = requireFn(PAGE, 'commitScan', 'purchase-orders.html');
   assert('the scan sheet says "may not have attached" when that is the truth',

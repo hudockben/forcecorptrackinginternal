@@ -2661,12 +2661,27 @@ const ATTACH_RELAY_MAX_BYTES = 3 * 1024 * 1024;
 // deadline is fair for them.
 const ATTACH_API_TIMEOUT_MS = 45000;
 
-// How long a file transfer may make NO progress at all before it is treated as
+// How long a file transfer may go without progress before it is treated as
 // dead. Progress, not total time: a fixed deadline cut off a 3 MB PDF that was
 // still crawling up a one-bar uplink and then sent it again from the start, so
 // a file that used to arrive slowly did not arrive at all. A `let` so the test
 // suite can shorten it.
 let ATTACH_STALL_MS = 60000;
+
+// Upload progress counts bytes handed to the phone's own network buffer, not
+// bytes that reached the other end. Up to a few MB can sit in that buffer, so
+// progress leaps ahead and then goes quiet while it drains — for well over a
+// minute on a weak uplink, with the upload alive the whole time. Measured in
+// real Chrome: a 1 MB PUT read at 15 KB/s reported 100% sent at once and was
+// cut off at 60 s by a plain no-progress window, with the server still taking
+// bytes. So the window also allows the buffer's worth of bytes to drain at a
+// crawl.
+const ATTACH_BUFFER_CAP_BYTES = 4 * 1024 * 1024;
+const ATTACH_FLOOR_BYTES_PER_MS = 8;   // 8 KB/s — about the worst a phone that is still connected manages
+
+function stallWindowMs(bytes) {
+  return ATTACH_STALL_MS + Math.ceil(Math.min(bytes || 0, ATTACH_BUFFER_CAP_BYTES) / ATTACH_FLOOR_BYTES_PER_MS);
+}
 
 // The extensions the document vault takes — the allowlist in
 // api/lib/storage.js, which scripts/test-po-attach.js holds this to.
@@ -2706,12 +2721,14 @@ async function withRetry(step, retryIf) {
 /**
  * Send a file's bytes with XMLHttpRequest, which — unlike fetch — reports
  * upload progress, and give up only once nothing has moved for
- * ATTACH_STALL_MS. Resolves a fetch-shaped { ok, status, text() }. Rejects
+ * stallWindowMs(). Resolves a fetch-shaped { ok, status, text() }. Rejects
  * with `network` set when no answer came back: the connection dropped, the
  * browser refused the request (a bucket with no CORS rule looks exactly like
  * this), or it stalled.
  */
 function sendWatched(method, url, body, headers, label) {
+  const bytes = body == null ? 0 : (typeof body.size === 'number' ? body.size : String(body).length);
+  const windowMs = stallWindowMs(bytes);
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     let timer = null;
@@ -2731,9 +2748,9 @@ function sendWatched(method, url, body, headers, label) {
       // would otherwise report a stall as a cancellation.
       timer = setTimeout(() => {
         lost('The connection stopped moving — nothing reached ' + label + ' for ' +
-             Math.round(ATTACH_STALL_MS / 1000) + ' seconds');
+             Math.round(windowMs / 1000) + ' seconds');
         xhr.abort();
-      }, ATTACH_STALL_MS);
+      }, windowMs);
     };
     xhr.open(method, url);
     Object.keys(headers || {}).forEach(k => xhr.setRequestHeader(k, headers[k]));
@@ -2844,10 +2861,11 @@ async function isOnOrder(po, documentId) {
 }
 
 /**
- * Attaches whose registration went out and never came back, so they may or may
- * not be filed: order + file → the document id that was sent. The next attempt
- * at the same file on the same order checks this before uploading anything —
- * otherwise "Try again" after a long dead zone filed the receipt twice.
+ * Attaches whose registration may or may not have landed: order + file → the
+ * { ticket, folderId } it was sent with. The next attempt at the same file on
+ * the same order checks the paperclip first, and if it is not there, registers
+ * THAT ticket again rather than uploading a second copy — otherwise "Try
+ * again" after a long dead zone filed the receipt twice.
  */
 const _unconfirmedAttach = new Map();
 const unconfirmedKey = (po, blob, filename) => po.id + '\n' + filename + '\n' + blob.size;
@@ -2866,11 +2884,13 @@ async function attachToPO(po, blob, filename, note) {
   const poQ = '&poId=' + encodeURIComponent(po.id);
   const projQ = po.project_id ? '&projectId=' + encodeURIComponent(po.project_id) : '';
   const timed = { timeoutMs: ATTACH_API_TIMEOUT_MS };
-
-  // 0. An earlier try at this same file may already be filed. Find out first.
   const key = unconfirmedKey(po, blob, filename);
-  if (_unconfirmedAttach.has(key)) {
-    const filed = await isOnOrder(po, _unconfirmedAttach.get(key));
+  const filing = { filename, sizeBytes: blob.size, note, key };
+
+  // 0. An earlier try at this same file may already be filed — or still landing.
+  const held = _unconfirmedAttach.get(key);
+  if (held) {
+    const filed = await isOnOrder(po, held.ticket.documentId);
     if (filed === null) {
       const still = new Error('Still cannot reach the server to check whether the last try was filed. ' +
                               'Nothing was sent — try again in a moment.');
@@ -2881,6 +2901,22 @@ async function attachToPO(po, blob, filename, note) {
     if (filed) {
       docCounts[po.id] = (docCounts[po.id] || 0) + 1;
       return;
+    }
+    // Not on the order — or not YET: the first register may still be running
+    // on a cold function. Register that same ticket again. Its bytes are
+    // already in storage, and if the first one does land, the server's unique
+    // document id turns the race into a 409 that registerTicket recognises,
+    // not a second copy.
+    try {
+      await registerTicket(po, held, Object.assign({ resumed: true, cleanup: false }, filing));
+      docCounts[po.id] = (docCounts[po.id] || 0) + 1;
+      return;
+    } catch (err) {
+      if (err.unconfirmed) throw err;
+      // Refused outright — its folder deleted, the order moved to another
+      // job. Start again from scratch below. The old bytes are left where
+      // they are: a file the first register might still record must not end
+      // up pointing at nothing.
     }
   }
 
@@ -2906,6 +2942,7 @@ async function attachToPO(po, blob, filename, note) {
   //    makes a fresh one cheap when the first has gone stale (see putDirect).
   let ticket = null;
   let mintedAt = 0;
+  const staleKeys = [];
   const mint = async () => {
     ticket = await withRetry(() => api('POST', '/document-upload-url?division=' + encodeURIComponent(division) + poQ, {
       filename, sizeBytes: blob.size, projectId: po.project_id || undefined, poId: po.id,
@@ -2918,55 +2955,87 @@ async function attachToPO(po, blob, filename, note) {
   //    can be repeated. The presigned URL lasts `expiresIn` from when it was
   //    minted, and a retry after a long upload that stalled can start past
   //    that — the store then answers 403, which reads like a permissions
-  //    problem and could never succeed. So a stale ticket is replaced first;
-  //    nothing reached the old key, since a PUT that does not finish stores
-  //    nothing.
+  //    problem and could never succeed. So a stale ticket is replaced first.
+  //    Its key is remembered: an abandoned PUT is not necessarily an empty
+  //    one, since the bytes already in the phone's network buffer can still
+  //    arrive after the abort and complete it.
   const putDirect = async () => {
-    if (Date.now() - mintedAt > ((ticket.expiresIn || 900) - 60) * 1000) await mint();
+    if (Date.now() - mintedAt > ((ticket.expiresIn || 900) - 60) * 1000) {
+      staleKeys.push(ticket.storageKey);
+      await mint();
+    }
     await putToStorage(ticket.uploadUrl, blob, ticket.contentType);
   };
   try {
-    // While the store ANSWERS with a passing hiccup (5xx, 429) ask it again.
-    // No answer at all is decided below, because the answer to it depends on
-    // the file's size.
-    await withRetry(putDirect, err => !err.network && isTransient(err));
-  } catch (err) {
-    // The store answered and said no. The relay signs its request the same
-    // way, so it would only be told the same thing.
-    if (!err.network) throw err;
+    try {
+      // While the store ANSWERS with a passing hiccup (5xx, 429) ask it again.
+      // No answer at all is decided below, because the answer to it depends on
+      // the file's size.
+      await withRetry(putDirect, err => !err.network && isTransient(err));
+    } catch (err) {
+      // The store answered and said no. The relay signs its request the same
+      // way, so it would only be told the same thing.
+      if (!err.network) throw err;
 
-    if (blob.size <= ATTACH_RELAY_MAX_BYTES) {
-      // A cross-origin PUT needs a preflight and a bucket with no CORS rule
-      // refuses it, which surfaces as a bare "Failed to fetch" with nothing in
-      // any log. Relay through the API, which is same-origin. It is also the
-      // second attempt for a signal that dropped, by another road.
-      const b64 = await blobToBase64(blob);
-      await withRetry(() => api('PUT', '/document-upload-url?division=' + encodeURIComponent(division) + poQ,
-                                { storageKey: ticket.storageKey, contentBase64: b64, poId: po.id },
-                                { watched: true }));
-    } else {
-      // Too big for the relay — the platform caps what a function will take —
-      // so the direct road is the only one. Give it the same three tries.
-      try {
-        await withRetry(putDirect);
-      } catch (again) {
-        if (!again.network) throw again;
-        throw new Error('Could not send this ' + (blob.size / 1048576).toFixed(1) + ' MB file to file storage (' +
-          again.message + '). Try again on a stronger signal. If every file over 3 MB fails this way, the ' +
-          'storage bucket needs a CORS rule allowing PUT from this site — see api/.env.example.');
+      if (blob.size <= ATTACH_RELAY_MAX_BYTES) {
+        // A cross-origin PUT needs a preflight and a bucket with no CORS rule
+        // refuses it, which surfaces as a bare "Failed to fetch" with nothing in
+        // any log. Relay through the API, which is same-origin. It is also the
+        // second attempt for a signal that dropped, by another road.
+        const b64 = await blobToBase64(blob);
+        await withRetry(() => api('PUT', '/document-upload-url?division=' + encodeURIComponent(division) + poQ,
+                                  { storageKey: ticket.storageKey, contentBase64: b64, poId: po.id },
+                                  { watched: true }));
+      } else {
+        // Too big for the relay — the platform caps what a function will take —
+        // so the direct road is the only one. Give it the same three tries.
+        try {
+          await withRetry(putDirect);
+        } catch (again) {
+          if (!again.network) throw again;
+          throw new Error('Could not send this ' + (blob.size / 1048576).toFixed(1) + ' MB file to file storage (' +
+            again.message + '). Try again on a stronger signal. If every file over 3 MB fails this way, the ' +
+            'storage bucket needs a CORS rule allowing PUT from this site — see api/.env.example.');
+        }
       }
     }
+
+    // 4. Register.
+    await registerTicket(po, { ticket, folderId }, Object.assign({ cleanup: true }, filing));
+  } finally {
+    // Whatever an abandoned upload to a replaced ticket managed to store is
+    // referenced by nothing. Cleared last, so bytes still draining from the
+    // abandoned request have had every chance to land first. The endpoint
+    // refuses any key a document claims.
+    for (const stale of staleKeys) await dropStoredBytes(po, stale);
   }
 
-  // 4. Register.
-  //
-  //    The one step that is not safe to simply repeat: a register whose answer
-  //    was lost on the way back may have landed, and sending it again is told
-  //    "already registered" about a file that is filed. So when an attempt
-  //    fails without a real answer, look at the order's attachments before
-  //    trying again — and before telling anyone it failed.
+  docCounts[po.id] = (docCounts[po.id] || 0) + 1;
+}
+
+/**
+ * Register bytes already in storage against the order.
+ *
+ * The one step that is not safe to simply repeat: a register whose answer was
+ * lost may have landed, and sending it again is told "already registered"
+ * about a file that is filed. So whenever an attempt could have landed, look
+ * at the order's attachments before trying again — and before telling anyone
+ * it failed.
+ *
+ * `held` is { ticket, folderId }. Resolves once the document is on the order.
+ * When it may or may not be, throws with `unconfirmed` set and remembers
+ * `held` under `key`, so the next try registers the same ticket and cannot
+ * file a second copy. Otherwise it throws the server's refusal, after clearing
+ * away the stored bytes when `cleanup` says they are this call's to clear.
+ */
+async function registerTicket(po, held, { filename, sizeBytes, note, key, resumed, cleanup }) {
+  const division = po._division;
+  const poQ = '&poId=' + encodeURIComponent(po.id);
+  const projQ = po.project_id ? '&projectId=' + encodeURIComponent(po.project_id) : '';
+  const { ticket, folderId } = held;
   let lastErr = null;
-  let unanswered = false;   // an attempt went out and nothing came back
+  let unanswered = false;   // an attempt went out and nothing came back: it may still be running
+  let unsure = false;       // the last look that should have settled it could not be had
   for (let attempt = 0; attempt < 3; attempt++) {
     if (attempt) await retryPause(attempt);
     try {
@@ -2978,51 +3047,61 @@ async function attachToPO(po, blob, filename, note) {
         documentId: ticket.documentId,
         filename,
         storageKey: ticket.storageKey,
-        sizeBytes:  blob.size,
+        sizeBytes,
         folderId,
         poId:       po.id,
         poNumber:   po.po_number,
         note:       note || undefined,
-      }, timed);
-      lastErr = null;
-      break;
+      }, { timeoutMs: ATTACH_API_TIMEOUT_MS });
+      return;
     } catch (err) {
       lastErr = err;
       if (err.network) unanswered = true;
-      // A 409 on a second try is just as telling: this document id was minted
-      // for this one ticket, so only an earlier attempt of ours can hold it.
-      if (isTransient(err) || (attempt > 0 && err.status === 409)) {
-        if (await isOnOrder(po, ticket.documentId) === true) { lastErr = null; break; }
+      // Could this attempt, or an earlier one, have landed? Yes when no real
+      // answer came back; when the platform answered for a function that may
+      // have done its work before it was cut off (a 504 after the insert); and
+      // on a 409 for a ticket that has been sent before, because this document
+      // id was minted for this one ticket, so only an attempt of ours holds it.
+      const sentBefore = attempt > 0 || resumed;
+      if (isTransient(err) || (sentBefore && err.status === 409)) {
+        const seen = await isOnOrder(po, ticket.documentId);
+        if (seen === true) return;
+        unsure = seen === null;
       }
       if (!isTransient(err)) break;
     }
   }
 
-  if (lastErr) {
-    if (unanswered) {
-      // A request that never answered may still be running on the server.
-      // Removing its bytes now could leave it registering a file that is gone,
-      // so leave them, and have the next try at this file look before it sends.
-      _unconfirmedAttach.set(key, ticket.documentId);
-      const unsure = new Error('The connection dropped while filing it, so it may already be on the order (' +
-        lastErr.message + '). Trying the same file again checks first, so it will not be filed twice.');
-      unsure.unconfirmed = true;
-      throw unsure;
-    }
-    // Every attempt was answered, so the server is done with them and nothing
-    // refers to the stored bytes — clean them up, or they sit in the bucket
-    // with nothing pointing at them. The endpoint refuses a key that a
-    // document claims, so this can never remove a filed receipt.
-    try {
-      await api('DELETE', '/document-upload-url?division=' + encodeURIComponent(division) +
-                '&storageKey=' + encodeURIComponent(ticket.storageKey) + poQ, undefined, timed);
-    } catch (cleanupErr) {
-      console.warn('[po] could not remove the orphaned upload:', cleanupErr.message);
-    }
-    throw lastErr;
+  if (unanswered || unsure) {
+    // Nothing removes the stored bytes here. A request that never answered may
+    // still be running on the server, and taking its file away could leave it
+    // registering one that is gone — and the next try needs them anyway.
+    _unconfirmedAttach.set(key, held);
+    const maybe = new Error('Could not confirm it was filed (' + lastErr.message + '), so it may already be on ' +
+      'the order. Trying the same file again checks first, so it will not be filed twice.');
+    maybe.unconfirmed = true;
+    throw maybe;
   }
+  // Every attempt was answered and none of them filed it, so nothing refers to
+  // the stored bytes — clear them, or they sit in the bucket with nothing
+  // pointing at them.
+  if (cleanup) await dropStoredBytes(po, ticket.storageKey);
+  throw lastErr;
+}
 
-  docCounts[po.id] = (docCounts[po.id] || 0) + 1;
+/**
+ * Remove stored bytes no document refers to. Best effort: the endpoint refuses
+ * a key that a document claims, so this can never remove a filed receipt, and
+ * a failure only leaves an orphan behind.
+ */
+async function dropStoredBytes(po, storageKey) {
+  const poQ = '&poId=' + encodeURIComponent(po.id);
+  try {
+    await api('DELETE', '/document-upload-url?division=' + encodeURIComponent(po._division) +
+              '&storageKey=' + encodeURIComponent(storageKey) + poQ, undefined, { timeoutMs: ATTACH_API_TIMEOUT_MS });
+  } catch (err) {
+    console.warn('[po] could not remove the orphaned upload:', err.message);
+  }
 }
 
 /* ═══════════════════════════════════════════
@@ -3613,6 +3692,7 @@ async function openDocs(poId) {
         ? ' — so it is on the paperclip in that division’s own tab too.'
         : ' — ' + esc(divLabel(po._division)) + ' has no Purchase Orders tab of its own, so it is kept with the order here.') +
       '</div>' +
+    docsRetryHTML(po) +
     (loadError ? '<div class="scan-status err">' + esc(loadError) + '</div>' : list) +
     '<div class="sheet-actions">' +
       '<button class="btn" onclick="closeDocs()">Close</button>' +
@@ -3642,16 +3722,67 @@ async function addAttachment(poId) {
 
   const btn = document.getElementById('doc-add');
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Uploading…'; }
+  let prepared = null;
   try {
-    const { blob, filename } = await prepareAttachment(file);
-    await attachToPO(po, blob, filename);
+    prepared = await prepareAttachment(file);
+    await attachToPO(po, prepared.blob, prepared.filename);
     toast('Attached.');
     await openDocs(poId);
     render();
   } catch (err) {
     if (btn) { btn.disabled = false; btn.textContent = '+ Add photo or file'; }
     toast('Could not attach: ' + err.message, 'err');
+    if (!prepared) return;
+    // Keep the file, the way the scan sheet keeps its photo. One taken with
+    // the picker's camera is in no gallery to pick a second time, and only the
+    // SAME file can be checked against an attach that may already have landed.
+    _docsRetry = { poId, blob: prepared.blob, filename: prepared.filename, unsure: Boolean(err.unconfirmed) };
+    await openDocs(poId);
   }
+}
+
+/** The file a paperclip attach could not finish, offered again on its order's sheet. */
+let _docsRetry = null;
+let _docsRetryBusy = false;
+
+function docsRetryHTML(po) {
+  if (!_docsRetry || _docsRetry.poId !== po.id) return '';
+  return '<div class="scan-status err">' +
+      esc(_docsRetry.filename) + (_docsRetry.unsure
+        ? ' may not have attached — the connection dropped while it was being filed. Trying again checks first.'
+        : ' did not attach.') +
+      '<div class="sheet-actions">' +
+        '<button class="btn" onclick="dropDocsRetry(\'' + jsAttr(po.id) + '\')">Let it go</button>' +
+        '<button class="btn btn-green" id="doc-retry" onclick="retryDocsAttach(\'' + jsAttr(po.id) + '\')">Try it again</button>' +
+      '</div>' +
+    '</div>';
+}
+
+async function retryDocsAttach(poId) {
+  const held = _docsRetry;
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (_docsRetryBusy || !held || held.poId !== poId || !po) return;
+  _docsRetryBusy = true;
+  const btn = document.getElementById('doc-retry');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Attaching…'; }
+  try {
+    await attachToPO(po, held.blob, held.filename);
+    if (_docsRetry === held) _docsRetry = null;
+    toast('Attached.');
+  } catch (err) {
+    held.unsure = Boolean(err.unconfirmed);
+    toast('Still could not attach it: ' + err.message, 'err');
+  } finally {
+    _docsRetryBusy = false;
+  }
+  await openDocs(poId);
+  render();
+}
+
+function dropDocsRetry(poId) {
+  if (_docsRetryBusy) return;
+  if (_docsRetry && _docsRetry.poId === poId) _docsRetry = null;
+  openDocs(poId);
 }
 
 /* Close a sheet by clicking its backdrop, the way the other pages' modals do.
