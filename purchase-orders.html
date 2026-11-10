@@ -740,6 +740,9 @@ function showSave(state, text) {
  * came back at all. `opts.timeoutMs` ends a request that has gone quiet — on a
  * phone that lost signal mid-request fetch can otherwise sit for minutes, and
  * a spinner that never stops reads as "it didn't work" with nothing to retry.
+ * `opts.watched` is for a request carrying a file: it is sent through
+ * sendWatched(), which ends it only once it stops making progress, since a
+ * total deadline cannot tell a slow upload from a dead one.
  */
 async function api(method, path, body, opts) {
   const init = {
@@ -755,7 +758,9 @@ async function api(method, path, body, opts) {
   if (ctrl) init.signal = ctrl.signal;
   let res, text;
   try {
-    res = await fetch(API_BASE + path, init);
+    res = opts && opts.watched
+      ? await sendWatched(method, API_BASE + path, init.body, init.headers, 'the server')
+      : await fetch(API_BASE + path, init);
     if (res.status === 401) { logout(); throw new Error('Signed out'); }
     text = await res.text();
   } catch (err) {
@@ -2596,11 +2601,11 @@ function pickImage(inputId) {
 }
 
 /* ── Getting a file through on a jobsite connection ────────────────────────
-   Attaching was hit-and-miss because every one of its five requests had one
+   Attaching was hit-and-miss because every one of its requests had one
    chance. A bar of LTE dropping for a second, a phone that dimmed its screen
    mid-upload, or a function waking up cold failed the whole attach — and the
    same file went through when it was tried again. These retry what can safely
-   be retried, and stop a request that has gone quiet instead of letting the
+   be retried, and end a request that has stopped moving instead of letting the
    spinner run forever. */
 
 // Matched to RELAY_MAX_BYTES in api/document-upload-url.js: the most the API
@@ -2608,17 +2613,21 @@ function pickImage(inputId) {
 const ATTACH_RELAY_MAX_BYTES = 3 * 1024 * 1024;
 
 // Generous on purpose. It is here to end a request that will never answer,
-// not to hurry one that is merely slow.
+// not to hurry one that is merely slow. The JSON legs are small, so a total
+// deadline is fair for them.
 const ATTACH_API_TIMEOUT_MS = 45000;
 
-/**
- * How long a transfer of this many bytes may take before it is given up on: a
- * minute of slack plus a floor of 25 KB/s — slower than a poor jobsite signal,
- * so only a connection that has really died trips it.
- */
-function transferTimeoutMs(bytes) {
-  return 60000 + Math.ceil((bytes || 0) / 25);
-}
+// How long a file transfer may make NO progress at all before it is treated as
+// dead. Progress, not total time: a fixed deadline cut off a 3 MB PDF that was
+// still crawling up a one-bar uplink and then sent it again from the start, so
+// a file that used to arrive slowly did not arrive at all. A `let` so the test
+// suite can shorten it.
+let ATTACH_STALL_MS = 60000;
+
+// The extensions the document vault takes — the allowlist in
+// api/lib/storage.js, which scripts/test-po-attach.js holds this to.
+const VAULT_EXTS = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'heic', 'heif', 'csv', 'txt',
+                    'doc', 'docx', 'xls', 'xlsx', 'ppt', 'pptx', 'msg', 'eml', 'dwg', 'zip'];
 
 /** 1s, then 2s. */
 function retryPause(attempt) {
@@ -2637,16 +2646,67 @@ function isTransient(err) {
   return [408, 429, 500, 502, 503, 504].includes(err.status);
 }
 
-/** Run a step that is safe to repeat, up to three times. */
-async function withRetry(step) {
+/** Run a step that is safe to repeat, up to three times, while `retryIf` says so. */
+async function withRetry(step, retryIf) {
+  const worthIt = retryIf || isTransient;
   for (let attempt = 0; ; attempt++) {
     try {
       return await step();
     } catch (err) {
-      if (attempt >= 2 || !isTransient(err)) throw err;
+      if (attempt >= 2 || !worthIt(err)) throw err;
       await retryPause(attempt + 1);
     }
   }
+}
+
+/**
+ * Send a file's bytes with XMLHttpRequest, which — unlike fetch — reports
+ * upload progress, and give up only once nothing has moved for
+ * ATTACH_STALL_MS. Resolves a fetch-shaped { ok, status, text() }. Rejects
+ * with `network` set when no answer came back: the connection dropped, the
+ * browser refused the request (a bucket with no CORS rule looks exactly like
+ * this), or it stalled.
+ */
+function sendWatched(method, url, body, headers, label) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    let timer = null;
+    let done = false;
+    const lost = message => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      const err = new Error(message);
+      err.network = true;
+      reject(err);
+    };
+    const moved = () => {
+      if (done) return;
+      clearTimeout(timer);
+      // Settle BEFORE aborting: abort() fires onabort synchronously, which
+      // would otherwise report a stall as a cancellation.
+      timer = setTimeout(() => {
+        lost('The connection stopped moving — nothing reached ' + label + ' for ' +
+             Math.round(ATTACH_STALL_MS / 1000) + ' seconds');
+        xhr.abort();
+      }, ATTACH_STALL_MS);
+    };
+    xhr.open(method, url);
+    Object.keys(headers || {}).forEach(k => xhr.setRequestHeader(k, headers[k]));
+    xhr.upload.onprogress = moved;
+    xhr.onprogress = moved;
+    xhr.onload = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      const text = xhr.responseText;
+      resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, text: async () => text });
+    };
+    xhr.onerror = () => lost('Could not reach ' + label);
+    xhr.onabort = () => lost('The upload to ' + label + ' was cancelled');
+    moved();
+    xhr.send(body);
+  });
 }
 
 /**
@@ -2655,25 +2715,7 @@ async function withRetry(step) {
  * call for different things, so they are kept apart.
  */
 async function putToStorage(url, blob, contentType) {
-  const ctrl  = typeof AbortController === 'function' ? new AbortController() : null;
-  const timer = ctrl ? setTimeout(() => ctrl.abort(), transferTimeoutMs(blob.size)) : null;
-  let res;
-  try {
-    res = await fetch(url, {
-      method: 'PUT',
-      body: blob,
-      headers: { 'Content-Type': contentType },
-      signal: ctrl ? ctrl.signal : undefined,
-    });
-  } catch (err) {
-    const lost = new Error(err && err.name === 'AbortError'
-      ? 'The upload timed out'
-      : ((err && err.message) || 'Could not reach file storage'));
-    lost.network = true;
-    throw lost;
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
+  const res = await sendWatched('PUT', url, blob, { 'Content-Type': contentType }, 'file storage');
   if (!res.ok) {
     const refused = new Error('Upload to storage failed (' + res.status + ')');
     refused.status = res.status;
@@ -2690,9 +2732,8 @@ function blobToBase64(blob) {
   });
 }
 
-// What the server goes by is the extension, so a file that arrives without
-// one needs it supplied. Every value here is on the allowlist in
-// api/lib/storage.js — scripts/test-po-page.js holds the two together.
+// What the server goes by is the extension, so a file that arrives without a
+// usable one needs it supplied. Every value here is in VAULT_EXTS.
 const EXT_FOR_TYPE = {
   'application/pdf': 'pdf',
   'image/jpeg': 'jpg',
@@ -2722,8 +2763,9 @@ const EXT_FOR_TYPE = {
  * documents.js has always made the same call.
  *
  * A PDF is passed along untouched, since rasterizing one would destroy it. And
- * a file with no extension at all — some Android pickers hand one over as
- * "document" or "1000012345" — is given one from its type.
+ * a file whose name does not end in an extension the vault knows — some Android
+ * pickers hand one over as "document", or as "Home Depot receipt 11.10" — is
+ * given one from its type.
  */
 async function prepareAttachment(file) {
   let filename = String(file.name || '').trim();
@@ -2735,12 +2777,36 @@ async function prepareAttachment(file) {
       console.warn('[po] could not shrink the photo, sending it as it is:', err.message);
     }
   }
-  if (!/\.[A-Za-z0-9]+$/.test(filename)) {
-    const ext = EXT_FOR_TYPE[file.type];
-    filename = (filename || 'file') + (ext ? '.' + ext : '');
+  const ext = (filename.match(/\.([A-Za-z0-9]+)$/) || [])[1];
+  if (!ext || !VAULT_EXTS.includes(ext.toLowerCase())) {
+    const fromType = EXT_FOR_TYPE[file.type];
+    if (fromType) filename = (filename || 'file') + '.' + fromType;
   }
-  return { blob: file, filename };
+  return { blob: file, filename: filename || 'file' };
 }
+
+/**
+ * Is this document on the order's paperclip? true or false when the listing
+ * came back, null when it could not be had — which is not the same as "no".
+ */
+async function isOnOrder(po, documentId) {
+  try {
+    const res = await api('GET', '/documents?division=' + encodeURIComponent(po._division) +
+                          '&poId=' + encodeURIComponent(po.id), undefined, { timeoutMs: ATTACH_API_TIMEOUT_MS });
+    return ((res && res.documents) || []).some(d => d.id === documentId);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Attaches whose registration went out and never came back, so they may or may
+ * not be filed: order + file → the document id that was sent. The next attempt
+ * at the same file on the same order checks this before uploading anything —
+ * otherwise "Try again" after a long dead zone filed the receipt twice.
+ */
+const _unconfirmedAttach = new Map();
+const unconfirmedKey = (po, blob, filename) => po.id + '\n' + filename + '\n' + blob.size;
 
 /**
  * File a photo against an order, in the order's OWN division.
@@ -2756,6 +2822,23 @@ async function attachToPO(po, blob, filename, note) {
   const poQ = '&poId=' + encodeURIComponent(po.id);
   const projQ = po.project_id ? '&projectId=' + encodeURIComponent(po.project_id) : '';
   const timed = { timeoutMs: ATTACH_API_TIMEOUT_MS };
+
+  // 0. An earlier try at this same file may already be filed. Find out first.
+  const key = unconfirmedKey(po, blob, filename);
+  if (_unconfirmedAttach.has(key)) {
+    const filed = await isOnOrder(po, _unconfirmedAttach.get(key));
+    if (filed === null) {
+      const still = new Error('Still cannot reach the server to check whether the last try was filed. ' +
+                              'Nothing was sent — try again in a moment.');
+      still.network = true;
+      throw still;
+    }
+    _unconfirmedAttach.delete(key);
+    if (filed) {
+      docCounts[po.id] = (docCounts[po.id] || 0) + 1;
+      return;
+    }
+  }
 
   // 1. Make sure the folders exist, and find the one this belongs in. An
   //    order's own folder is created by the registration below, so the first
@@ -2775,15 +2858,34 @@ async function attachToPO(po, blob, filename, note) {
   }
   if (!folderId) throw new Error('No folder to file this receipt in');
 
-  // 2. Ticket. Writes nothing, so a repeat costs nothing.
-  const ticket = await withRetry(() => api('POST', '/document-upload-url?division=' + encodeURIComponent(division) + poQ, {
-    filename, sizeBytes: blob.size, projectId: po.project_id || undefined, poId: po.id,
-  }, timed));
+  // 2. Ticket. Writes nothing, so a repeat costs nothing — which is also what
+  //    makes a fresh one cheap when the first has gone stale (see putDirect).
+  let ticket = null;
+  let mintedAt = 0;
+  const mint = async () => {
+    ticket = await withRetry(() => api('POST', '/document-upload-url?division=' + encodeURIComponent(division) + poQ, {
+      filename, sizeBytes: blob.size, projectId: po.project_id || undefined, poId: po.id,
+    }, timed));
+    mintedAt = Date.now();
+  };
+  await mint();
 
   // 3. Bytes. A PUT to the same key just writes it again, so every leg here
-  //    can be repeated.
-  try {
+  //    can be repeated. The presigned URL lasts `expiresIn` from when it was
+  //    minted, and a retry after a long upload that stalled can start past
+  //    that — the store then answers 403, which reads like a permissions
+  //    problem and could never succeed. So a stale ticket is replaced first;
+  //    nothing reached the old key, since a PUT that does not finish stores
+  //    nothing.
+  const putDirect = async () => {
+    if (Date.now() - mintedAt > ((ticket.expiresIn || 900) - 60) * 1000) await mint();
     await putToStorage(ticket.uploadUrl, blob, ticket.contentType);
+  };
+  try {
+    // While the store ANSWERS with a passing hiccup (5xx, 429) ask it again.
+    // No answer at all is decided below, because the answer to it depends on
+    // the file's size.
+    await withRetry(putDirect, err => !err.network && isTransient(err));
   } catch (err) {
     // The store answered and said no. The relay signs its request the same
     // way, so it would only be told the same thing.
@@ -2797,12 +2899,12 @@ async function attachToPO(po, blob, filename, note) {
       const b64 = await blobToBase64(blob);
       await withRetry(() => api('PUT', '/document-upload-url?division=' + encodeURIComponent(division) + poQ,
                                 { storageKey: ticket.storageKey, contentBase64: b64, poId: po.id },
-                                { timeoutMs: transferTimeoutMs(b64.length) }));
+                                { watched: true }));
     } else {
       // Too big for the relay — the platform caps what a function will take —
       // so the direct road is the only one. Give it the same three tries.
       try {
-        await withRetry(() => putToStorage(ticket.uploadUrl, blob, ticket.contentType));
+        await withRetry(putDirect);
       } catch (again) {
         if (!again.network) throw again;
         throw new Error('Could not send this ' + (blob.size / 1048576).toFixed(1) + ' MB file to file storage (' +
@@ -2812,55 +2914,68 @@ async function attachToPO(po, blob, filename, note) {
     }
   }
 
-  // 4. Register — and clean up the stored bytes if it does not land, or they
-  //    sit in the bucket with nothing pointing at them.
+  // 4. Register.
   //
   //    The one step that is not safe to simply repeat: a register whose answer
   //    was lost on the way back may have landed, and sending it again is told
   //    "already registered" about a file that is filed. So when an attempt
   //    fails without a real answer, look at the order's attachments before
   //    trying again — and before telling anyone it failed.
-  const landed = async () => {
+  let lastErr = null;
+  let unanswered = false;   // an attempt went out and nothing came back
+  for (let attempt = 0; attempt < 3; attempt++) {
+    if (attempt) await retryPause(attempt);
     try {
-      const res = await api('GET', '/documents?division=' + encodeURIComponent(division) + poQ, undefined, timed);
-      return ((res && res.documents) || []).some(d => d.id === ticket.documentId);
-    } catch {
-      return false;
-    }
-  };
-  try {
-    for (let attempt = 0; ; attempt++) {
-      try {
-        // poQ as well as projQ: the carve-out reads the order it was granted for
-        // from the QUERY, so without it this leg 403s and the bytes already in the
-        // bucket are thrown away — no receipt could be filed against a turf,
-        // paving or kiewit order at all.
-        await api('POST', '/documents?division=' + encodeURIComponent(division) + projQ + poQ, {
-          documentId: ticket.documentId,
-          filename,
-          storageKey: ticket.storageKey,
-          sizeBytes:  blob.size,
-          folderId,
-          poId:       po.id,
-          poNumber:   po.po_number,
-          note:       note || undefined,
-        }, timed);
-        break;
-      } catch (err) {
-        const unanswered = isTransient(err) || (attempt > 0 && err.status === 409);
-        if (unanswered && await landed()) break;
-        if (attempt >= 2 || !isTransient(err)) throw err;
-        await retryPause(attempt + 1);
+      // poQ as well as projQ: the carve-out reads the order it was granted for
+      // from the QUERY, so without it this leg 403s and the bytes already in the
+      // bucket are thrown away — no receipt could be filed against a turf,
+      // paving or kiewit order at all.
+      await api('POST', '/documents?division=' + encodeURIComponent(division) + projQ + poQ, {
+        documentId: ticket.documentId,
+        filename,
+        storageKey: ticket.storageKey,
+        sizeBytes:  blob.size,
+        folderId,
+        poId:       po.id,
+        poNumber:   po.po_number,
+        note:       note || undefined,
+      }, timed);
+      lastErr = null;
+      break;
+    } catch (err) {
+      lastErr = err;
+      if (err.network) unanswered = true;
+      // A 409 on a second try is just as telling: this document id was minted
+      // for this one ticket, so only an earlier attempt of ours can hold it.
+      if (isTransient(err) || (attempt > 0 && err.status === 409)) {
+        if (await isOnOrder(po, ticket.documentId) === true) { lastErr = null; break; }
       }
+      if (!isTransient(err)) break;
     }
-  } catch (err) {
+  }
+
+  if (lastErr) {
+    if (unanswered) {
+      // A request that never answered may still be running on the server.
+      // Removing its bytes now could leave it registering a file that is gone,
+      // so leave them, and have the next try at this file look before it sends.
+      _unconfirmedAttach.set(key, ticket.documentId);
+      const unsure = new Error('The connection dropped while filing it, so it may already be on the order (' +
+        lastErr.message + '). Trying the same file again checks first, so it will not be filed twice.');
+      unsure.unconfirmed = true;
+      throw unsure;
+    }
+    // Every attempt was answered, so the server is done with them and nothing
+    // refers to the stored bytes — clean them up, or they sit in the bucket
+    // with nothing pointing at them. The endpoint refuses a key that a
+    // document claims, so this can never remove a filed receipt.
     try {
       await api('DELETE', '/document-upload-url?division=' + encodeURIComponent(division) +
-                '&storageKey=' + encodeURIComponent(ticket.storageKey) + poQ);
+                '&storageKey=' + encodeURIComponent(ticket.storageKey) + poQ, undefined, timed);
     } catch (cleanupErr) {
       console.warn('[po] could not remove the orphaned upload:', cleanupErr.message);
     }
-    throw err;
+    throw lastErr;
   }
 
   docCounts[po.id] = (docCounts[po.id] || 0) + 1;
@@ -3300,10 +3415,12 @@ async function commitScan() {
 
   if (btn) btn.innerHTML = '<span class="spinner"></span>Attaching photo…';
   let attachError = null;
+  let attachUnsure = false;   // the connection dropped mid-filing: it may be there
   try {
     await attachToPO(po, shotBlob, shotName, 'Scanned receipt');
   } catch (err) {
     attachError = err.message;
+    attachUnsure = Boolean(err.unconfirmed);
   }
 
   _committing = false;
@@ -3318,8 +3435,10 @@ async function commitScan() {
     render();
     _attachRetry = { poId: po.id, blob: shotBlob, filename: shotName };
     renderScanSheet(
-      '<h2>Saved ' + esc(po.po_number) + ' — the photo did not attach</h2>' +
-      '<div class="sub">The order is saved. Only the receipt failed to upload.</div>' +
+      '<h2>Saved ' + esc(po.po_number) + (attachUnsure ? ' — the photo may not have attached' : ' — the photo did not attach') + '</h2>' +
+      '<div class="sub">' + (attachUnsure
+        ? 'The order is saved. The connection dropped while the receipt was being filed.'
+        : 'The order is saved. Only the receipt failed to upload.') + '</div>' +
       '<div class="scan-status err">' + esc(attachError) + '</div>' +
       '<img class="receipt-preview" alt="The receipt just photographed" src="' + esc(shotDataUrl) + '">' +
       '<div class="sheet-actions">' +
