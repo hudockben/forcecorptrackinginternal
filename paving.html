@@ -21524,6 +21524,11 @@ function _crEngineCfg() {
       // countWorkdays — which, unlike this, counts a one-day plan as one day —
       // and the tests hold the two to the same calendar.
       workingDaysBetween: _workingDaysBetween,
+      // How the bid table splits a job row's cost between bid lines:
+      // equipment run on a Labor row is counted on its cost code's Equipment
+      // line. Paving only — Turf and Kiewit pass none and keep each row's
+      // cost on its own line.
+      bidEachCostPiece: _bidEachCostPiece,
     },
     // A session that expires mid-save signs out the way every other call does.
     onAuthError:   () => logout(),

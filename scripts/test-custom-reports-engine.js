@@ -98,6 +98,8 @@ function pageEngine(file) {
     lineAmt: fn('_lineAmt'), lineTax: fn('_lineTax'), addWorkingDays: fn('_addWorkingDays'),
     workingDaysBetween: fn('_workingDaysBetween'),
   };
+  // Paving's bid-line cost split; the other pages have none to pass.
+  if (fn('_bidEachCostPiece')) helpers.bidEachCostPiece = fn('_bidEachCostPiece');
   return { ctx, helpers, file };
 }
 
@@ -565,6 +567,242 @@ function deepNear(a, b, at = '') {
     if (patch && patch.options) s.options = Object.assign(PE.newSection(type).options, patch.options);
     return PE.normalizeDefinition(Object.assign({ title: 'T', sections: [s] }, defPatch || {}));
   };
+
+  section('Paving: equipment on a Labor row is costed to the Equipment line, as the bid page counts it');
+  {
+    // An approved timesheet puts the man and the machine he ran on one row,
+    // under the Labor sub code; paving bids the machine on the cost code's
+    // Equipment line. The bid page (actualForBidItem → _bidEachCostPiece)
+    // counts the machine there, and so must every per-line cost on a custom
+    // report. Quantity, hours, crew and days stay on Labor; the job's cost
+    // does not move.
+    const CC = '1 1/2" 9.5MM Overlay', LAB = `${CC} - Labor`, EQP = `${CC} - Equipment`, TRV = `${CC} - Travel`, MAT = `${CC} - Material`;
+    const pe = {
+      id: 'pe', 'project-name': 'Sheetz Parking Lot', 'job-number': '26058', status: 'In Progress', 'contract-value': '60000',
+      bidItems: [
+        { id: 'e1', cost_code: CC, sub_code: LAB, unit: 'SY', quantity: '3523', unit_cost: '1.20' },
+        { id: 'e2', cost_code: CC, sub_code: EQP, unit: 'LS', quantity: '1', unit_cost: '2500' },
+        { id: 'e3', cost_code: CC, sub_code: TRV, unit: 'HR', quantity: '20', unit_cost: '64.90' },
+        { id: 'e4', cost_code: CC, sub_code: MAT, unit: 'TON', quantity: '440', unit_cost: '62' },
+        // No Equipment line under this code: the machine stays on Labor.
+        { id: 'e5', cost_code: 'Base Repair', sub_code: 'Base Repair - Labor', unit: 'SY', quantity: '400', unit_cost: '3' },
+        // Only an Equipment line: the Labor row is off-bid, its machine is not.
+        { id: 'e6', cost_code: 'Curb', sub_code: 'Curb - Equipment', unit: 'LS', quantity: '1', unit_cost: '900' },
+        // An Equipment line nothing is booked to but the machine on Labor.
+        { id: 'e7', cost_code: 'Milling', sub_code: 'Milling - Labor', unit: 'SY', quantity: '5000', unit_cost: '0.5' },
+        { id: 'e8', cost_code: 'Milling', sub_code: 'Milling - Equipment', unit: 'LS', quantity: '1', unit_cost: '2000' },
+      ],
+      dailyRows: [
+        // Weiler 9 h × $85 = $765 on Aaron's Labor row; his wage 10.75 × 55 = $591.25.
+        { id: 'q1', date: '2026-11-02', cost_code: CC, sub_code: LAB, employee: 'Aaron Todd', rate: '55', labor_hours: '10.75',
+          equipment: 'Weiler', equip_unit_cost: '85', equip_hours: '9', quantity: '1800' },
+        { id: 'q2', date: '2026-11-02', cost_code: CC, sub_code: LAB, employee: 'Lucas Mower', rate: '45', labor_hours: '10.5' },
+        // An equipment total imported as a figure: $600 moves; $440 wage stays.
+        { id: 'q3', date: '2026-11-03', cost_code: CC, sub_code: LAB, employee: 'Aaron Todd', rate: '55', labor_hours: '8',
+          equipment: 'Weiler', equip_total_override: '600', quantity: '1723' },
+        // Equipment booked to the Equipment line itself: its own row, its own day.
+        { id: 'q4', date: '2026-11-03', cost_code: CC, sub_code: EQP, equipment: 'Roller', equip_unit_cost: '60', equip_hours: '8' },
+        // Travel is not Labor: its pickup stays on Travel.
+        { id: 'q5', date: '2026-11-03', cost_code: CC, sub_code: TRV, field_type: 'Travel', employee: 'Aaron Todd', rate: '55',
+          labor_hours: '0.5', equipment: 'Pickup', equip_unit_cost: '35', equip_hours: '0.5' },
+        { id: 'q6', date: '2026-11-03', cost_code: CC, sub_code: MAT, employee: 'Purchase Order', material: '9.5MM', material_cost: '15997.86' },
+        // Before the period: to date, not this period. Skid steer 4 × 70 = $280.
+        { id: 'q7', date: '2026-10-20', cost_code: CC, sub_code: LAB, employee: 'Collin Kelley', rate: '45', labor_hours: '10',
+          equipment: 'Skid steer', equip_unit_cost: '70', equip_hours: '4', quantity: '0' },
+        // Undated, imported at $100 against $150 of equipment: what moves is
+        // capped at the row's cost, so Labor keeps $0 of it.
+        { id: 'q8', date: '', cost_code: CC, sub_code: LAB, total_cost: '100', equip_unit_cost: '50', equip_hours: '3' },
+        { id: 'q9', date: '2026-11-04', cost_code: 'Base Repair', sub_code: 'Base Repair - Labor', employee: 'Dee Fox', rate: '40',
+          labor_hours: '8', equipment: 'Mini ex', equip_unit_cost: '45', equip_hours: '8', quantity: '50' },
+        { id: 'q10', date: '2026-11-04', cost_code: 'Curb', sub_code: 'Curb - Labor', employee: 'Eve Gray', rate: '30',
+          labor_hours: '6', equipment: 'Curb machine', equip_unit_cost: '90', equip_hours: '6' },
+        { id: 'q11', date: '2026-11-04', cost_code: 'Milling', sub_code: 'Milling - Labor', employee: 'Fay Hill', rate: '40',
+          labor_hours: '8', equipment: 'Mill', equip_unit_cost: '200', equip_hours: '8', quantity: '2000' },
+      ],
+    };
+    const page = env.ctx;
+    page.projectsList = [pe];
+    const data = { projects: [pe], pos: [], trucks: [] };
+    const before = JSON.stringify(pe.dailyRows);
+    const ctxOf = (def, helpers, extra) => PE.makeContext(def, cfgFor({ helpers }, data),
+      Object.assign({ pickedIds: ['pe'], today: TODAY, now: NOW }, extra || {}));
+    const throwing = Object.assign({}, env.helpers, { bidEachCostPiece() { throw new Error('boom'); } });
+    const jtd = allColumnsDef(PE, { includeInternal: true });
+    const bpOf = (def, c) => PE.buildSectionData(def.sections.find(s => s.type === 'bid_progress'), def, c);
+    const ctx1 = ctxOf(jtd, env.helpers);
+    const bp = bpOf(jtd, ctx1);
+    const rows = rowsOf(bp);
+    const row = sc => rows.find(r => r.sub_code === sc);
+
+    // Every line: the page's figures.
+    const bad = [];
+    pe.bidItems.forEach(b => {
+      const r = row(b.sub_code);
+      const bidQty = parseFloat(b.quantity), bidTot = bidQty * parseFloat(b.unit_cost);
+      const actual = page.actualForBidItem(b, 'pe'), rq = page.runningQtyForBidItem(b, 'pe');
+      const want = {
+        actual_cost: actual, variance: bidTot - actual, installed_to_date: rq,
+        projected_cost: page.projForBidItem(b, actual, rq, bidQty, bidTot, page.projIsDone(pe) || page.bidItemComplete(b, 'pe')),
+        labor_hours: page.cumulativeHoursForBidItem(b, 'pe'), crew_size: page.laborerCountForBidItem(b, 'pe'),
+        days_worked: page._workDaysForItems([b], 'pe').length,
+        cost_per_unit: rq > 0 ? actual / rq : null,
+      };
+      Object.entries(want).forEach(([k, v]) => { if (v === null ? r[k] !== null : !near(r[k], v)) bad.push(`${b.sub_code}.${k}: ${r[k]} vs ${v}`); });
+    });
+    assert('every line\'s actual, variance, projected, installed, hours, crew, days and cost / unit are the page\'s', !bad.length, bad.slice(0, 4).join('; '));
+    const WAGES = 591.25 + 472.5 + 440 + 450;
+    assert('Labor carries the wages and none of the machines: $1,953.75', near(row(LAB).actual_cost, WAGES), row(LAB).actual_cost);
+    assert('Equipment carries its own roller ($480) and the machines run on Labor: $765 + $600 + $280 + $100 (capped)',
+      near(row(EQP).actual_cost, 480 + 765 + 600 + 280 + 100), row(EQP).actual_cost);
+    assert('…its projected cost is projected off that actual, as the page projects it',
+      near(row(EQP).projected_cost, page.projForBidItem(pe.bidItems[1], 2225, 0, 1, 2500, false)) && near(row(EQP).variance, 2500 - 2225));
+    assert('Travel keeps its pickup; a code with no Equipment line keeps its machine on Labor',
+      near(row(TRV).actual_cost, 27.5 + 17.5) && near(row('Base Repair - Labor').actual_cost, 320 + 360));
+    assert('quantity, hours, crew and days stay on Labor; the Equipment line has only its own row\'s day',
+      row(LAB).installed_to_date === 3523 && near(row(LAB).labor_hours, 39.25) && row(LAB).crew_size === 3 && row(LAB).days_worked === 3
+        && row(EQP).installed_to_date === 0 && row(EQP).labor_hours === 0 && row(EQP).crew_size === 0 && row(EQP).days_worked === 1, J(row(EQP)));
+    const mE = row('Milling - Equipment');
+    assert('an Equipment line only the machine on Labor ran on: its cost, no quantity, hours, crew or days — and it is In Progress',
+      near(mE.actual_cost, 1600) && mE.installed_to_date === 0 && mE.labor_hours === 0 && mE.crew_size === 0 && mE.days_worked === 0
+        && mE.status === 'In Progress' && near(row('Milling - Labor').actual_cost, 320), J(mE));
+    const hideNS = one('bid_progress', { columns: ['sub_code', 'actual_cost', 'status'], options: { hideNotStarted: true } }, { includeInternal: true });
+    assert('…so "Hide items not started" keeps it on the report', rowsOf(bpOf(hideNS, ctxOf(hideNS, env.helpers))).some(r => r.sub_code === 'Milling - Equipment'));
+
+    const allRows = pe.dailyRows.reduce((t, r) => t + page.dailyRowCost(r), 0);
+    const onBid = pe.bidItems.reduce((t, b) => t + page.actualForBidItem(b, 'pe'), 0);
+    const grp = bp.blocks[0].groups.find(g => g.label === CC);
+    const ccRows = pe.dailyRows.filter(r => r.cost_code === CC).reduce((t, r) => t + page.dailyRowCost(r), 0);
+    assert('the cost code\'s subtotal is still every row on it — nothing gained or lost', grp && near(grp.subtotal.actual_cost, ccRows),
+      grp && `${grp.subtotal.actual_cost} vs ${ccRows}`);
+    assert('Totals: the lines add up to every row but the off-bid Curb wage ($180)',
+      near(bp.blocks[0].totals.actual_cost, onBid) && near(onBid, allRows - 180), `${bp.blocks[0].totals.actual_cost} vs ${onBid}`);
+    const sk = rowsOf(PE.buildSectionData(jtd.sections.find(s => s.type === 'summary_kpis'), jtd, ctx1))[0];
+    assert('summary: the job\'s actual cost is every row, unchanged; its projected cost the page\'s',
+      near(sk.actual_cost, allRows) && near(sk.projected_cost, page.projectedCostForProject(pe)), `${sk.actual_cost} / ${sk.projected_cost}`);
+    const own = Object.assign({}, env.helpers, { projectedCostForProject: undefined });
+    const skOwn = rowsOf(PE.buildSectionData(jtd.sections.find(s => s.type === 'summary_kpis'), jtd, ctxOf(jtd, own)))[0];
+    assert('…and the engine\'s own projected cost (no page helper) reconciles with it: the lines, plus the off-bid wage net of its machine',
+      near(skOwn.projected_cost, page.projectedCostForProject(pe)) && near(page.offBidForProject(pe).total, 180),
+      `${skOwn.projected_cost} vs ${page.projectedCostForProject(pe)}`);
+    const dp = Object.assign(PE.newSection('daily_production'), { columns: PE.CATALOG.daily_production.columns.map(c => c.key) });
+    dp.options = Object.assign(dp.options, { summarize: false });
+    const dpDef = PE.normalizeDefinition({ title: 'D', sections: [dp], includeInternal: true });
+    const dRows = rowsOf(PE.buildSectionData(dpDef.sections[0], dpDef, ctxOf(dpDef, env.helpers)));
+    const q1 = dRows.find(r => r.sub_code === LAB && r.employee === 'Aaron Todd' && r.date === '2026-11-02');
+    assert('Daily Production shows the row as approved: Aaron\'s Labor row carries its Weiler and its whole cost',
+      q1 && near(q1.equip_cost, 765) && near(q1.total_cost, 591.25 + 765) && JSON.stringify(pe.dailyRows) === before, J(q1));
+
+    // Only where the money is counted moves: against the same report without
+    // the split (a helper that fails falls back to each row on its own line),
+    // every cell but the per-line money and a status is the same.
+    const MONEY = new Set(['actual_cost', 'variance', 'projected_cost', 'cost_per_unit', 'status']);
+    const strip = v => (Array.isArray(v) ? v.map(strip) : v && typeof v === 'object'
+      ? Object.fromEntries(Object.entries(v).filter(([k]) => !MONEY.has(k)).map(([k, x]) => [k, strip(x)])) : v);
+    const period = J(Object.assign({}, jtd, { dates: { preset: 'custom', from: '2026-11-01', to: '2026-11-05' } }));
+    period.sections.push(Object.assign(PE.newSection('plan_vs_actual'), { columns: PE.CATALOG.plan_vs_actual.columns.map(c => c.key) }));
+    period.sections.push(Object.assign(PE.newSection('chart'), { columns: PE.CATALOG.chart.columns.map(c => c.key),
+      options: Object.assign(PE.newSection('chart').options, { chart: 'daily_bars' }) }));
+    const pd = PE.normalizeDefinition(period);
+    // Tables, totals and the charts' points and bars.
+    const view = sd => Object.assign(flat(sd), { charts: J(sd.blocks.map(b => (b.charts || []).map(ch => Object.assign({}, ch, { job: null })))) });
+    const withS = ctxOf(pd, env.helpers), noS = ctxOf(pd, throwing);
+    const views = pd.sections.map(s => [s.type, view(PE.buildSectionData(s, pd, withS)), view(PE.buildSectionData(s, pd, noS))]);
+    const diffs = views.map(([t, a, b]) => deepNear(strip(a), strip(b), t)).filter(Boolean);
+    const drawn = views.filter(([t]) => t === 'chart').map(([, a]) => a.charts[0][0]);
+    assert('quantities, hours, crews, days, rates, plans and both charts are the same with and without the split',
+      !diffs.length && drawn.length === 2 && drawn.some(c => c.kind === 's_curve' && c.points.length) && drawn.some(c => c.kind === 'daily_bars' && c.bars.length)
+        && views.some(([t, a]) => t === 'rate_summary' && a[0].groups.length), diffs.slice(0, 3).join('; '));
+    const noRows = rowsOf(bpOf(pd, noS));
+    assert('…a failing helper leaves each row\'s cost on its own line, and the report still builds',
+      near(noRows.find(r => r.sub_code === LAB).actual_cost, WAGES + 765 + 600 + 280 + 100) && near(noRows.find(r => r.sub_code === EQP).actual_cost, 480));
+    // The engine reads each row's cost off the split's own piece, so a split
+    // that hands over anything but every row, in order, is not trusted.
+    const wrap = f => Object.assign({}, env.helpers, { bidEachCostPiece: (p, rs, fn) => env.helpers.bidEachCostPiece(p, f(rs), fn) });
+    const odd = [wrap(rs => rs.slice(1)), wrap(rs => rs.slice().reverse()), wrap(rs => rs.concat(rs.slice(0, 1)))].map(h => {
+      const c = ctxOf(jtd, h);
+      return { rows: rowsOf(bpOf(jtd, c)), sk: rowsOf(PE.buildSectionData(jtd.sections.find(s => s.type === 'summary_kpis'), jtd, c))[0] };
+    });
+    assert('…as does one that skips, reorders or repeats rows: each row priced on its own, nothing moves, the job\'s cost whole',
+      odd.every(o => near(o.rows.find(r => r.sub_code === LAB).actual_cost, WAGES + 765 + 600 + 280 + 100)
+        && near(o.rows.find(r => r.sub_code === EQP).actual_cost, 480) && near(o.sk.actual_cost, allRows)), J(odd.map(o => o.sk.actual_cost)));
+    const pk = rowsOf(PE.buildSectionData(pd.sections.find(s => s.type === 'production_kpis'), pd, withS));
+    assert('this period\'s Labor cost / unit is the wage over what went in: $1,503.75 ÷ 3,523',
+      near(pk.find(r => r.sub_code === LAB).cost_per_unit, (591.25 + 472.5 + 440) / 3523), J(pk.find(r => r.sub_code === LAB)));
+    const pTot = PE.buildSectionData(pd.sections.find(s => s.type === 'bid_progress'), pd, withS).blocks[0].totals;
+    assert('to the period\'s end, the Totals are the same rows\' cost (to date, as each line\'s is)', near(pTot.actual_cost, onBid), pTot.actual_cost);
+
+    // A cost-code-only line takes the row and its machine: the whole cost.
+    // Beside the Equipment line the machine moved to, the Totals count it once.
+    const pq = {
+      id: 'pq', 'project-name': 'Overlay Job', status: 'In Progress',
+      bidItems: [
+        { id: 'c1', cost_code: 'Overlay', sub_code: '', unit: 'SY', quantity: '1000', unit_cost: '4' },
+        { id: 'c2', cost_code: 'Overlay', sub_code: 'Overlay - Labor', unit: 'SY', quantity: '1000', unit_cost: '1', is_complete: true },
+        { id: 'c3', cost_code: 'Overlay', sub_code: 'Overlay - Equipment', unit: 'LS', quantity: '1', unit_cost: '1500' },
+      ],
+      dailyRows: [{ id: 'w1', date: '2026-11-03', cost_code: 'Overlay', sub_code: 'Overlay - Labor', employee: 'Gus Ives', rate: '50',
+        labor_hours: '8', equipment: 'Paver', equip_unit_cost: '120', equip_hours: '8', quantity: '600' }],
+    };
+    page.projectsList = [pq];
+    const qData = { projects: [pq], pos: [], trucks: [] };
+    const hideC = one('bid_progress', { columns: ['cost_code', 'sub_code', 'remaining_qty', 'actual_cost', 'variance'],
+      options: { hideComplete: true, groupBy: 'none' } }, { includeInternal: true });
+    const qCtx = PE.makeContext(hideC, cfgFor({ helpers: env.helpers }, qData), { pickedIds: ['pq'], today: TODAY, now: NOW });
+    const qSd = bpOf(hideC, qCtx), qRows = rowsOf(qSd), qTot = qSd.blocks[0].totals;
+    assert('a cost-code-only line counts the row and its machine ($400 + $960), the Equipment line the machine, as the page does',
+      near(qRows.find(r => !r.sub_code).actual_cost, page.actualForBidItem(pq.bidItems[0], 'pq')) && near(qRows.find(r => !r.sub_code).actual_cost, 1360)
+        && near(qRows.find(r => r.sub_code === 'Overlay - Equipment').actual_cost, page.actualForBidItem(pq.bidItems[2], 'pq')), J(qRows));
+    assert('…and the Totals count the machine once ($1,360, not $2,320), with Remaining still the lines\' own',
+      near(qTot.actual_cost, 1360) && near(qTot.variance, 4000 + 1500 - 1360) && qTot.remaining_qty === '400 SY · 1 LS', J(qTot));
+    const prod = one('production_kpis', { columns: ['sub_code', 'cost_per_unit'], options: { totals: true } },
+      { includeInternal: true, dates: { preset: 'custom', from: '2026-11-01', to: '2026-11-05' } });
+    const prodSd = PE.buildSectionData(prod.sections[0], prod, PE.makeContext(prod, cfgFor({ helpers: env.helpers }, qData), { pickedIds: ['pq'], today: TODAY, now: NOW }));
+    assert('Production Totals over the cost-code-only and Labor lines (one row shared): $1,360 over 600 SY, counted once',
+      near(prodSd.blocks[0].totals.cost_per_unit, 1360 / 600), J(prodSd.blocks[0].totals));
+
+    // Two lines that share the Labor row (a sub-code-only line beside the
+    // Labor line), without the Equipment line its machine moved to: the
+    // Totals are the row's share on those lines, once — not its whole cost.
+    const pr = {
+      id: 'pr', 'project-name': 'Shared Labor', status: 'In Progress',
+      bidItems: [
+        { id: 'd1', cost_code: 'Overlay', sub_code: 'Overlay - Labor', unit: 'SY', quantity: '1000', unit_cost: '1' },
+        { id: 'd2', cost_code: '', sub_code: 'Overlay - Labor', unit: 'SY', quantity: '1000', unit_cost: '1' },
+        { id: 'd3', cost_code: 'Overlay', sub_code: 'Overlay - Equipment', unit: 'LS', quantity: '1', unit_cost: '1500' },
+      ],
+      dailyRows: pq.dailyRows,
+    };
+    page.projectsList = [pr];
+    const rData = { projects: [pr], pos: [], trucks: [] };
+    const labOnly = { costCodes: [], subCodes: ['Overlay - Labor'] };
+    const rBp = one('bid_progress', { columns: ['sub_code', 'actual_cost'], options: Object.assign({ groupBy: 'none' }, labOnly) },
+      { includeInternal: true, dates: { preset: 'custom', from: '2026-11-01', to: '2026-11-05' } });
+    const rPk = one('production_kpis', { columns: ['sub_code', 'cost_per_unit'], options: Object.assign({ totals: true }, labOnly) },
+      { includeInternal: true, dates: { preset: 'custom', from: '2026-11-01', to: '2026-11-05' } });
+    const rCtx = def => PE.makeContext(def, cfgFor({ helpers: env.helpers }, rData), { pickedIds: ['pr'], today: TODAY, now: NOW });
+    const rB = PE.buildSectionData(rBp.sections[0], rBp, rCtx(rBp)), rP = PE.buildSectionData(rPk.sections[0], rPk, rCtx(rPk));
+    assert('lines sharing a Labor row: each is the wage ($400) as the page counts it, and so are their Totals — Bid Progress and Production',
+      rowsOf(rB).length === 2 && rowsOf(rB).every((r, i) => near(r.actual_cost, page.actualForBidItem(pr.bidItems[i], 'pr')) && near(r.actual_cost, 400))
+        && near(rB.blocks[0].totals.actual_cost, 400) && near(rP.blocks[0].totals.cost_per_unit, 400 / 600),
+      J([rowsOf(rB), rB.blocks[0].totals, rP.blocks[0].totals]));
+
+    // Turf and Kiewit pass no split: a Labor row's machine stays on Labor, as
+    // their bid pages count it.
+    for (const file of ['tracker.html', 'kiewit-pinetree.html']) {
+      const other = pageEngine(file);
+      other.ctx.projectsList = [pe];
+      const oDef = other.ctx.FCTReportEngine.normalizeDefinition(J(hideNS));
+      const oRows = rowsOf(other.ctx.FCTReportEngine.buildSectionData(oDef.sections[0], oDef,
+        other.ctx.FCTReportEngine.makeContext(oDef, cfgFor(other, data), { pickedIds: ['pe'], today: TODAY, now: NOW })));
+      const lab = pe.bidItems[0], eqp = pe.bidItems[1];
+      assert(`${file}: no split — Labor and Equipment are its own actualForBidItem`, !('bidEachCostPiece' in other.helpers)
+        && near(oRows.find(r => r.sub_code === LAB).actual_cost, other.ctx.actualForBidItem(lab, 'pe'))
+        && near(oRows.find(r => r.sub_code === EQP).actual_cost, other.ctx.actualForBidItem(eqp, 'pe'))
+        && near(oRows.find(r => r.sub_code === EQP).actual_cost, 480)
+        && !oRows.some(r => r.sub_code === 'Milling - Equipment'), J(oRows));
+    }
+    page.projectsList = d0.projects;
+  }
 
   section('Production rates — worked by hand');
   {
@@ -3705,23 +3943,27 @@ function deepNear(a, b, at = '') {
     // 20 jobs × 40 bid items × 2,500 daily rows = 50,000 rows, every section
     // — the v2 ones too: plans of every kind (typed dates, job end, a typed
     // rate), both charts, the division rates with trucking tickets —
-    // through paving's own helpers.
+    // through paving's own helpers. Two cost codes bid their equipment on a
+    // line of their own beside a Labor line, and the rows carry machines, so
+    // paving's bid-line split (a Labor row's equipment on the Equipment
+    // line) runs on 2,500 of the rows.
     const big = [], bigTrucks = [];
+    const scName = i => (i === 0 || i === 5 ? `SC${i} - Labor` : i === 8 || i === 13 ? `SC${i} - Equipment` : `SC${i}`);
     for (let j = 0; j < 20; j++) {
       const bidItems = [], dailyRows = [];
       for (let i = 0; i < 40; i++) {
-        bidItems.push({ id: `b${j}-${i}`, cost_code: `CC${i % 8}`, sub_code: i % 5 === 4 ? '' : `SC${i}`, unit: i % 2 ? 'TON' : 'SY',
+        bidItems.push({ id: `b${j}-${i}`, cost_code: `CC${i % 8}`, sub_code: i % 5 === 4 ? '' : scName(i), unit: i % 2 ? 'TON' : 'SY',
           quantity: String(1000 + i), unit_cost: String(10 + i), start_date: i % 7 ? (i % 7 === 2 ? '2026-08-15' : '') : '2026-09-01',
           target_date: i % 7 ? '' : '2026-12-01', planned_rate: i % 7 === 3 ? '25' : '' });
       }
       for (let t = 0; t < 150; t++) {
         bigTrucks.push({ id: `t${j}-${t}`, tr_number: `TR-${j}-${t}`, project_id: `j${j}`, loads: String(1 + (t % 9)),
-          date: new Date(Date.UTC(2026, 8, 1 + (t % 60))).toISOString().slice(0, 10), cost_code: `CC${t % 8}`, sub_code: t % 3 ? `SC${t % 40}` : '' });
+          date: new Date(Date.UTC(2026, 8, 1 + (t % 60))).toISOString().slice(0, 10), cost_code: `CC${t % 8}`, sub_code: t % 3 ? scName(t % 40) : '' });
       }
       for (let r = 0; r < 2500; r++) {
         const i = r % 40, day = 1 + (r % 60);
         const dt = new Date(Date.UTC(2026, 8, day)).toISOString().slice(0, 10);
-        dailyRows.push({ id: `r${j}-${r}`, date: dt, cost_code: `CC${i % 8}`, sub_code: `SC${i}`, quantity: String(r % 13),
+        dailyRows.push({ id: `r${j}-${r}`, date: dt, cost_code: `CC${i % 8}`, sub_code: scName(i), quantity: String(r % 13),
           labor_hours: '8', rate: '30', employee: `E${r % 17}`, equip_hours: '2', equip_unit_cost: '50' });
       }
       big.push({ id: `j${j}`, 'project-name': `Job ${j}`, 'job-number': String(9000 + j), bidItems, dailyRows, 'contract-value': '100000',
@@ -3763,6 +4005,22 @@ function deepNear(a, b, at = '') {
     const row = rowsOf(bp, 7).find(r => r.sub_code === b.sub_code);
     assert('…and the figures still equal the page\'s', near(row.installed_to_date, env.ctx.runningQtyForBidItem(b, 'j7'))
       && near(row.actual_cost, env.ctx.actualForBidItem(b, 'j7')));
+    // An Equipment line taking the machines off its code's Labor rows (2 h ×
+    // $50 a row), that Labor line, and a cost-code-only line (CC0, item 24)
+    // taking both — and the job's cost, unmoved.
+    const j7 = big[7], cost = rs => rs.reduce((t, r) => t + env.ctx.dailyRowCost(r), 0);
+    const split = [13, 5, 24].map(i => {
+      const bi = j7.bidItems[i], r = rowsOf(bp, 7).find(x => x.cost_code === bi.cost_code && x.sub_code === bi.sub_code);
+      return { i, ours: r.actual_cost, page: env.ctx.actualForBidItem(bi, 'j7') };
+    });
+    const moved = j7.dailyRows.filter(r => r.sub_code === 'SC5 - Labor').length * 100;
+    const sk = rowsOf(PE.buildSectionData(def.sections.find(s => s.type === 'summary_kpis'), def, ctx), 7)[0];
+    assert('…the split lines too (Equipment, Labor, cost-code-only), with the job\'s cost unchanged',
+      split.every(x => near(x.ours, x.page)) && moved > 0
+        && near(split[0].page, cost(j7.dailyRows.filter(r => r.sub_code === 'SC13 - Equipment')) + moved)
+        && near(split[1].page, cost(j7.dailyRows.filter(r => r.sub_code === 'SC5 - Labor')) - moved)
+        && near(split[2].page, cost(j7.dailyRows.filter(r => r.cost_code === 'CC0')))
+        && near(sk.actual_cost, cost(j7.dailyRows)), J(split));
     env.ctx.projectsList = d0.projects;
   }
 
