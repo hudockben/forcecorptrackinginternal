@@ -8749,13 +8749,23 @@ function _bidGroupMeasureEdit(el) {
    Mobilization rows are not Labor and are never split, and neither is travel:
    the pickup on a travel row stays with the travel, whether the row sits on
    the Travel sub code or is a row payroll stamped Travel under the Labor one
-   (the same test payroll prices travel by — a "Travel" field type, or "travel"
-   as a word in the cost or sub code). Only a positive equipment cost moves. An imported Total Cost can be less than the
-   row's own equipment figure; what moves is capped at the row's cost, so the
-   Labor piece never goes below zero.
+   (the test payroll prices travel by: a "Travel" field type, or "travel" as a
+   word in the cost or sub code). Only a positive equipment cost moves. An
+   imported Total Cost can be less than the row's own equipment figure; what
+   moves is capped at the row's cost, so the Labor piece never goes below zero.
 
-   Mirrored server-side by the paving branch of buildFinancials in
-   api/executive/report.js, so the Executive report projects the same lines.
+   A move never changes how many times the money is counted. Bid lines can
+   overlap: one with only a cost code takes every row under it, so a bid of a
+   cost-code-only line and an Equipment line, with no Labor line, counts a
+   Labor row once (on the cost-code line) but the Equipment sub code twice.
+   Moving the machine there would add it to the job a second time. So the row
+   is split only when as many bid lines take its Equipment piece as take the
+   row where it was booked, a row on no line counting once (off-bid).
+
+   The travel and word tests are spelled the same way, character for
+   character, as the query in api/executive/report.js, which mirrors this so
+   the Executive report projects the same lines: ASCII spaces around the field
+   type, and a word edge is anything but a letter, digit or underscore.
 
    Hands each piece to fn(cost_code, sub_code, cost, row), in row order: a
    split row gives its Labor piece and then its Equipment piece. `want`, when
@@ -8765,18 +8775,33 @@ function _bidGroupMeasureEdit(el) {
    forty that lands on the line, is what made a big job's report crawl. A
    callback rather than a list for the same reason. */
 function _bidEachCostPiece(p, rows, fn, want) {
-  const LABOR = /\blabou?r\b/i, EQUIP = /\bequip/i, TRAVEL = /\btravel\b/i;
+  const LABOR = /\blabou?r\b/i, EQUIP = /\bequip/i;
+  const TRAVEL_FIELD = /^ *travel *$/i, TRAVEL_CODE = /(^|[^a-z0-9_])travel([^a-z0-9_]|$)/i;
+  const lines = ((p && p.bidItems) || []).filter(b => b && (b.cost_code || b.sub_code));
   const equipLine = new Map();   // cost code → the sub code of its Equipment line
-  ((p && p.bidItems) || []).forEach(b => {
-    const cc = b && b.cost_code, sc = b && b.sub_code;
+  lines.forEach(b => {
+    const cc = b.cost_code, sc = b.sub_code;
     if (cc && sc && !equipLine.has(cc) && EQUIP.test(sc) && !LABOR.test(sc)) equipLine.set(cc, sc);
   });
+  // How many bid lines take a piece with these codes — the wildcard rule
+  // actualForBidItem() matches by — and 1 for a piece on none (off-bid).
+  const reach = new Map();
+  const reachOf = (cc, sc) => {
+    const k = (cc || '') + '\u0000' + (sc || '');
+    let n = reach.get(k);
+    if (n === undefined) {
+      n = lines.filter(b => (b.cost_code ? cc === b.cost_code : true) && (b.sub_code ? sc === b.sub_code : true)).length || 1;
+      reach.set(k, n);
+    }
+    return n;
+  };
   const split = equipLine.size > 0;
   (rows || []).forEach(r => {
     const to    = split && r.cost_code ? equipLine.get(r.cost_code) : undefined;
     const sc    = r.sub_code || '';
     const moves = to !== undefined && sc !== to && LABOR.test(sc) && !EQUIP.test(sc)
-      && !/^\s*travel\s*$/i.test(r.field_type || '') && !TRAVEL.test(sc) && !TRAVEL.test(r.cost_code || '');
+      && !TRAVEL_FIELD.test(r.field_type || '') && !TRAVEL_CODE.test(sc) && !TRAVEL_CODE.test(r.cost_code || '')
+      && reachOf(r.cost_code, r.sub_code) === reachOf(r.cost_code, to);
     const own   = !want || want(r.cost_code, r.sub_code);
     const eqTo  = moves && (!want || want(r.cost_code, to));
     if (!own && !eqTo) return;
@@ -10852,7 +10877,7 @@ function renderBidTable(projId, opts = {}) {
       gBidTotal += bidTot; gActual += actual; gCumHrs += cumHrs; gProj += proj;
 
       // Size-aware past avg for this sub code — exclude this project from its own benchmark
-      const _pa     = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code, projId);
+      const _pa     = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code, projId, true);
       const _paUC   = _pa ? _pa.histUC   : 0;
       const _paTip  = _pa
         ? `Similar-size job avg (${_pa.band != null ? '\u00b1'+Math.round(_pa.band*100)+'%' : 'Global'}, n=${_pa.jobCount}, ${_pa.confidence})`
@@ -15072,13 +15097,39 @@ function buildDailyAgg() {
 // ── Per-project sub code aggregation for size-aware past avg ──
 let _projSubAggCache = null;
 let _projSubAggCacheRowCount = -1;
+let _projSubAggBidSig = null;   // this task's bid-line signature — see _projSubAggBids()
+let _projSubAggCacheBids = null; // …and the one the cache was built against
+
+/* Every job's bid-line codes, as one string, for buildProjectSubCodeAgg's cache
+   key: the split cost there moves with them (adding an Equipment line moves a
+   job's machines onto it), and nothing that edits a bid line, here or in a
+   poll, clears that cache. Worked out once per task, not once per lookup: the
+   bid table asks for a past average on every line it draws, and walking every
+   job's bid that many times is what made a big company's table slow. A bid
+   line is only ever edited from an event, which is a task of its own, so the
+   string is dropped (on the microtask after this task) before any edit can
+   land. */
+function _projSubAggBids() {
+  if (_projSubAggBidSig !== null) return _projSubAggBidSig;
+  let sig = '';
+  projectsList.forEach(p => {
+    (p.bidItems || []).forEach(b => { if (b) sig += (b.cost_code || '') + '\u0001' + (b.sub_code || '') + '\u0002'; });
+    sig += '\u0003';
+  });
+  _projSubAggBidSig = sig;
+  Promise.resolve().then(() => { _projSubAggBidSig = null; });
+  return sig;
+}
 
 // Builds a map of cost_code||sub_code → array of per-project aggregates (one entry per project).
 // Each entry includes bid qty, production totals, monthly breakdown, crew, and equipment data.
 function buildProjectSubCodeAgg() {
   const totalRows = projectsList.reduce((s, p) => s + (p.dailyRows ? p.dailyRows.length : 0), 0);
   const cacheKey  = totalRows + '|' + scaleManualEntries.length;
-  if (_projSubAggCache && _projSubAggCacheRowCount === cacheKey) return _projSubAggCache;
+  // Held apart from cacheKey, not appended to it: within a task it is the same
+  // string, so the check is a pointer compare rather than a copy of every bid.
+  const bids      = _projSubAggBids();
+  if (_projSubAggCache && _projSubAggCacheRowCount === cacheKey && _projSubAggCacheBids === bids) return _projSubAggCache;
   const agg = {};
   projectsList.forEach(p => {
     const bidItems  = p.bidItems  || [];
@@ -15093,28 +15144,15 @@ function buildProjectSubCodeAgg() {
     });
     // Aggregate this project's daily rows by sub code
     const projAgg = {};
-    const touch = key => projAgg[key] || (projAgg[key] = {
-      runQty: 0, totalCost: 0, laborHrs: 0, equipHrs: 0, dates: new Set(),
-      monthly: {},    // 'YYYY-MM' → { cost, qty }
-      employees: {},  // name → labor hours
-      equipment: {},  // name → equip hours
-    });
-    const addCost = (d, date, cost) => {
-      d.totalCost += cost;
-      if (!date) return;
-      const mo = date.substring(0, 7); // 'YYYY-MM'
-      if (!d.monthly[mo]) d.monthly[mo] = { cost: 0, qty: 0 };
-      d.monthly[mo].cost += cost;
-    };
-    // Cost by the same pieces the bid table's Actual Cost adds up, so a sub
-    // code's past average is a like-for-like benchmark for its Running Unit
-    // Cost: equipment run on a Labor row counts on the cost code's Equipment
-    // line, here as there. See _bidEachCostPiece().
-    _bidEachCostPiece(p, dailyRows, (cc, sc, cost, row) =>
-      addCost(touch((cc || '') + '||' + (sc || '')), row.date, cost));
     dailyRows.forEach(row => {
       const key = (row.cost_code || '') + '||' + (row.sub_code || '');
-      const d     = touch(key);
+      if (!projAgg[key]) projAgg[key] = {
+        runQty: 0, totalCost: 0, laborHrs: 0, equipHrs: 0, dates: new Set(),
+        monthly: {},    // 'YYYY-MM' → { cost, qty }
+        employees: {},  // name → labor hours
+        equipment: {},  // name → equip hours
+      };
+      const d     = projAgg[key];
       const qty   = parseFloat(row.quantity)    || 0;
       const lh    = parseFloat(row.labor_hours) || 0;
       const eh    = parseFloat(row.equip_hours) || 0;
@@ -15134,6 +15172,23 @@ function buildProjectSubCodeAgg() {
         d.equipment[row.equipment] = (d.equipment[row.equipment] || 0) + eh;
       }
     });
+    // Each row's cost, priced once, two ways. totalCost (and the monthly cost)
+    // is the whole row on its own sub code — what Sub Code Performance, the
+    // Daily Production Rate view and Scale of Economy set against whole-row
+    // running costs. splitCost is the cost as the bid table's Actual Cost
+    // counts it — equipment run on a Labor row on the cost code's Equipment
+    // line, see _bidEachCostPiece() — for the benchmark beside a Running Unit
+    // Cost worked that way. Only sub codes with rows of their own carry one: a
+    // line that only ever receives moved equipment has no quantity to put a
+    // cost over.
+    Object.values(projAgg).forEach(d => { d.splitCost = 0; });
+    _bidEachCostPiece(p, dailyRows, (cc, sc, cost, row) => {
+      const own = projAgg[(row.cost_code || '') + '||' + (row.sub_code || '')];
+      own.totalCost += cost;
+      if (row.date) own.monthly[row.date.substring(0, 7)].cost += cost;
+      const d = projAgg[(cc || '') + '||' + (sc || '')];
+      if (d) d.splitCost += cost;
+    });
     Object.entries(projAgg).forEach(([key, data]) => {
       if (!agg[key]) agg[key] = [];
       // Fall back to run qty when no bid — keeps the project visible in SOE scatter
@@ -15148,6 +15203,7 @@ function buildProjectSubCodeAgg() {
         overBid:     bidTotal > 0 ? data.totalCost > bidTotal : null,
         runQty:      data.runQty,
         totalCost:   data.totalCost,
+        splitCost:   data.splitCost,
         laborHrs:    data.laborHrs,
         equipHrs:    data.equipHrs,
         dayCount:    data.dates.size,
@@ -15184,6 +15240,7 @@ function buildProjectSubCodeAgg() {
 
   _projSubAggCache = agg;
   _projSubAggCacheRowCount = cacheKey;
+  _projSubAggCacheBids = bids;
   return agg;
 }
 
@@ -15191,7 +15248,11 @@ function buildProjectSubCodeAgg() {
 // Returns { histUC, histLbrPD, histEqPD, histMU, histDays, band, jobCount, confidence }
 // or null if no data exists at all for this sub code.
 // excludeProjId: omit the current project so it isn't benchmarked against itself.
-function computeSizeAwarePastAvg(bidQty, costCode, subCode, excludeProjId = null) {
+// split: cost each past job the way the bid table's Actual Cost does —
+// equipment on a Labor row counted on its Equipment line (splitCost, see
+// buildProjectSubCodeAgg) — for the Bid Items page, its PDF and its XLSX, whose
+// Running Unit Cost is worked that way. Everything else compares whole rows.
+function computeSizeAwarePastAvg(bidQty, costCode, subCode, excludeProjId = null, split = false) {
   const byProj   = buildProjectSubCodeAgg();
   // Aggregate across ALL cost codes with the same sub code name so that
   // production rate benchmarks reflect all historical usage regardless of
@@ -15235,7 +15296,8 @@ function computeSizeAwarePastAvg(bidQty, costCode, subCode, excludeProjId = null
   }
 
   const totRunQty = filtered.reduce((s, pr) => s + pr.runQty,    0);
-  const totCost   = filtered.reduce((s, pr) => s + pr.totalCost, 0);
+  // A manual entry has no rows to split: its own total stands either way.
+  const totCost   = filtered.reduce((s, pr) => s + (split && pr.splitCost != null ? pr.splitCost : pr.totalCost), 0);
   const totLbr    = filtered.reduce((s, pr) => s + pr.laborHrs,  0);
   const totEq     = filtered.reduce((s, pr) => s + pr.equipHrs,  0);
   const totDays   = filtered.reduce((s, pr) => s + pr.dayCount,  0);
@@ -20253,7 +20315,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
       const diffCls = diff >= 0 ? 'under' : 'over';
       const diffTxt = bidTot ? (diff >= 0 ? `$${fmt(diff)} under` : `$${fmt(Math.abs(diff))} over`) : dash;
       const projCls = (proj - bidTot) <= 0 ? 'under' : 'over';
-      const _paPDF  = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code, projId);
+      const _paPDF  = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code, projId, true);
       const _paUCPDF = _paPDF ? _paPDF.histUC : 0;
 
       gBid += bidTot; gActual += actual; gHrs += cumHrs; gProj += proj;
