@@ -473,6 +473,11 @@ function structural() {
   assert('…and the bid PDF', /actualForBidItem\(b, projId\)/.test(body('exportBidPDF')));
   assert('…and the bid XLSX', /actualForBidItem\(b, projId\)/.test(fs.readFileSync(path.join(ROOT, 'bid-xlsx.js'), 'utf8')));
   assert('…and the projected cost', /actualForBidItem\(b, p\.id\)/.test(body('projectedCostForProject')));
+  // Custom Reports work out each line's figures in custom-reports-engine.js;
+  // the page hands it the split itself (behaviour: test-custom-reports-engine.js).
+  assert('…and Custom Reports are handed the split itself',
+    /helpers:\s*\{[\s\S]*\bbidEachCostPiece:\s*_bidEachCostPiece\b[\s\S]*\}/.test(body('_crEngineCfg'))
+      && /\bbidEachCostPiece\b/.test(fs.readFileSync(path.join(ROOT, 'custom-reports-engine.js'), 'utf8')));
   assert('Daily Tracking\'s own totals are still the rows as entered',
     /const c = calcDaily\(row\);[\s\S]*lcost \+= c\.labor_cost;[\s\S]*ecost \+= c\.equip_total;/.test(body('renderDailyTotals')));
   for (const f of ['tracker.html', 'kiewit-pinetree.html']) {

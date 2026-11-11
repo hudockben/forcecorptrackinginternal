@@ -93,6 +93,12 @@ const HELPERS = {
   bidContractFigures: 'bidContractFigures', projIsDone: 'projIsDone', lineAmt: '_lineAmt', lineTax: '_lineTax',
   addWorkingDays: '_addWorkingDays', workingDaysBetween: '_workingDaysBetween',
 };
+// Helpers one page passes and the others do not. Paving splits a Labor row's
+// equipment onto the cost code's Equipment line in its bid table, and hands
+// the engine that split; Turf and Kiewit keep each row's cost on its own line
+// and pass nothing, which the "exactly the agreed keys" check holds them to.
+const PAGE_HELPERS = { paving: { bidEachCostPiece: '_bidEachCostPiece' } };
+const helpersFor = page => Object.assign({}, HELPERS, PAGE_HELPERS[page.division] || {});
 
 // menu: the Analytics menu (and with it Custom Reporting) is on screen.
 // share: the canShare hint. Financials visibility is not listed — it is read
@@ -328,7 +334,7 @@ function makeHarness(page, src, role, opts = {}) {
   });
   ctx.window = ctx;
   ctx.__csRows = { p1: [{ id: 't1', kind: 'task', code: '100', subcode: 'Turf Install', start: '2026-10-05', end: '2026-11-20' }] };
-  const helperSrc = [...new Set(Object.values(HELPERS))].map(n => requireFn(src, n, page.file));
+  const helperSrc = [...new Set(Object.values(helpersFor(page)))].map(n => requireFn(src, n, page.file));
   vm.runInContext([
     `const DIVISION = ${JSON.stringify(pageConst(src, 'DIVISION'))};`,
     `const API_BASE = ${JSON.stringify(pageConst(src, 'API_BASE'))};`,
@@ -396,11 +402,14 @@ async function checkAdapter(page, src, roleVis) {
     cfg.getPurchaseOrders()[0].id === 'po2' && Array.isArray(cfg.getTruckingEntries()) && cfg.getTruckingEntries().length === 0);
 
   // Helpers: the page's own functions, under the module's key names.
-  const hk = Object.keys(cfg.helpers || {});
+  const hk = Object.keys(cfg.helpers || {}), HK = helpersFor(page);
   assert('helpers carry exactly the agreed keys',
-    Object.keys(HELPERS).every(k => hk.includes(k)) && hk.length === Object.keys(HELPERS).length,
-    'missing: ' + Object.keys(HELPERS).filter(k => !hk.includes(k)).join(',') + ' extra: ' + hk.filter(k => !(k in HELPERS)).join(','));
-  const wrong = Object.entries(HELPERS).filter(([k, fn]) => cfg.helpers[k] !== h.ctx[fn] || typeof cfg.helpers[k] !== 'function');
+    Object.keys(HK).every(k => hk.includes(k)) && hk.length === Object.keys(HK).length,
+    'missing: ' + Object.keys(HK).filter(k => !hk.includes(k)).join(',') + ' extra: ' + hk.filter(k => !(k in HK)).join(','));
+  assert(page.division === 'paving' ? 'paving hands over its bid-line cost split (equipment on a Labor row → the Equipment line)'
+    : 'no bid-line cost split: each row\'s cost stays on its own line, as this page\'s bid table counts it',
+    page.division === 'paving' ? typeof cfg.helpers.bidEachCostPiece === 'function' : !('bidEachCostPiece' in cfg.helpers));
+  const wrong = Object.entries(HK).filter(([k, fn]) => cfg.helpers[k] !== h.ctx[fn] || typeof cfg.helpers[k] !== 'function');
   assert('every helper is the page\'s own function (lineAmt → _lineAmt, lineTax → _lineTax)', !wrong.length,
     wrong.map(([k]) => k).join(', '));
   assert('…the very source on the page, not a stand-in',
@@ -752,7 +761,7 @@ function pageVm(page, src, opts = {}) {
     'function getProj(id) { return projectsList.find(p => String(p.id) === String(id)); }',
     requireFn(src, '_localDateStr', page.file), requireFn(src, '_usHolidays', page.file),
     liftLine(src, 'const _holidayCache', page.file), requireFn(src, '_isHoliday', page.file),
-    ...[...new Set(Object.values(HELPERS))].map(n => requireFn(src, n, page.file)),
+    ...[...new Set(Object.values(helpersFor(page)))].map(n => requireFn(src, n, page.file)),
     page.cs ? 'const _bidCsRows = __csRows;' : '',
     requireFn(src, '_crEngineCfg', page.file),
     sliceSource(src, 'let _crConfigured', 'function renderCustomReports(', 'Custom Reporting state', '_crWaitTimer'),

@@ -1084,37 +1084,54 @@
     return !!date && (!range.from || date >= range.from) && (!range.to || date <= range.to);
   }
 
-  /* One pass over a job's daily rows: each row's cost (through the page's
-     dailyRowCost, once), and maps by cost code, sub code and the pair, so a
-     bid item finds its rows without scanning the job. The pages' wildcard
-     rule: a bid item with only a cost code takes every row on that code, one
-     with only a sub code every row on that sub code, one with neither none. */
+  // Lists by cost code, by sub code and by the pair, so a bid item finds what
+  // lands on it without scanning the job. The pages' wildcard rule: a bid
+  // item with only a cost code takes everything on that code, one with only
+  // a sub code everything on that sub code, one with neither nothing.
+  const newCodeIndex = () => ({ byCC: new Map(), bySC: new Map(), byPair: new Map() });
+  function codeIndexPut(k, cc, sc, x) {
+    const push = (m, key) => { const a = m.get(key); if (a) a.push(x); else m.set(key, [x]); };
+    push(k.byCC, cc);
+    push(k.bySC, sc);
+    let m = k.byPair.get(cc);
+    if (!m) { m = new Map(); k.byPair.set(cc, m); }
+    push(m, sc);
+  }
+  function codeIndexGet(k, b) {
+    if (b.cost_code && b.sub_code) { const m = k.byPair.get(b.cost_code); return (m && m.get(b.sub_code)) || []; }
+    if (b.cost_code) return k.byCC.get(b.cost_code) || [];
+    if (b.sub_code) return k.bySC.get(b.sub_code) || [];
+    return [];
+  }
+
+  /* One pass over a job's daily rows, indexed by their codes (above), and
+     each row's cost through the page's dailyRowCost, once (priceRows,
+     below). f.cost is the row's cost — what the job's and the daily table's
+     figures add up — and f.lc what it counts on the bid lines that take it:
+     the same, unless part of it is counted on another line. */
   function jobIndex(ctx, p) {
     const st = stateOf(ctx);
     const key = String(p.id);
     let ix = st.jobs.get(key);
     if (ix && ix.p === p) return ix;
-    const H = helpersOf(ctx), range = ctx.range;
-    const facts = [], byCC = new Map(), bySC = new Map(), byPair = new Map();
+    const range = ctx.range;
+    const facts = [], rows = newCodeIndex();
     let maxDate = '';
-    const push = (m, k, f) => { const a = m.get(k); if (a) a.push(f); else m.set(k, [f]); };
     (Array.isArray(p.dailyRows) ? p.dailyRows : []).forEach(r => {
       if (!r || typeof r !== 'object') return;
       const date = dayOf(r.date);
       if (date > maxDate) maxDate = date;
       const f = {
-        r, date, qty: num(r.quantity), hrs: num(r.labor_hours), cost: H.rowCost(r), work: isWorkRow(r),
+        r, date, qty: num(r.quantity), hrs: num(r.labor_hours), cost: 0, lc: 0, work: isWorkRow(r),
         emp: r.employee ? String(r.employee) : '',
         toEnd: !range.to || !date || date <= range.to, inP: inPeriod(range, date),
         haul: isHaulRow(r), trk: isTruckRow(r), trv: isTravelRow(r),
       };
       facts.push(f);
-      push(byCC, r.cost_code, f);
-      push(bySC, r.sub_code, f);
-      let m = byPair.get(r.cost_code);
-      if (!m) { m = new Map(); byPair.set(r.cost_code, m); }
-      push(m, r.sub_code, f);
+      codeIndexPut(rows, r.cost_code, r.sub_code, f);
     });
+    const { byCC, bySC, byPair } = rows;
+    const eq = priceRows(ctx, p, facts);
     // Which bid items each code lands on — for units, and for spend that
     // matches no bid line at all.
     const items = (Array.isArray(p.bidItems) ? p.bidItems : []).filter(b => b && typeof b === 'object');
@@ -1128,7 +1145,7 @@
       } else if (b.cost_code) { if (!unitCC.has(b.cost_code)) unitCC.set(b.cost_code, u); }
       else if (b.sub_code) { if (!unitSC.has(b.sub_code)) unitSC.set(b.sub_code, u); }
     });
-    ix = { p, facts, byCC, bySC, byPair, maxDate, items, unitPair, unitCC, unitSC, stats: new Map(), job: null,
+    ix = { p, facts, byCC, bySC, byPair, eq, maxDate, items, unitPair, unitCC, unitSC, stats: new Map(), job: null,
       plans: new Map(), cs: undefined };
     // Each row's unit, by the same rule the daily table uses, worked out once:
     // whatever adds rows up across bid lines counts each row once, under it.
@@ -1137,12 +1154,67 @@
     return ix;
   }
 
-  function rowsForItem(ix, b) {
-    if (b.cost_code && b.sub_code) { const m = ix.byPair.get(b.cost_code); return (m && m.get(b.sub_code)) || []; }
-    if (b.cost_code) return ix.byCC.get(b.cost_code) || [];
-    if (b.sub_code) return ix.bySC.get(b.sub_code) || [];
-    return [];
+  /* Each row's cost, and paving's split of it between bid lines.
+
+     Paving's bid comparison counts a Labor row's equipment on its cost
+     code's Equipment line (the page's _bidEachCostPiece, passed as
+     helpers.bidEachCostPiece): an approved timesheet puts the man and the
+     machine on one row, under the Labor sub code, while the bid prices the
+     machine on a line of its own. Only where the money is counted moves. The
+     row keeps its quantity, hours, crew and day, all on Labor, and its whole
+     cost (f.cost) in the job's figures; what it counts on its own line
+     (f.lc) is what is left.
+
+     What moved is a piece of its own, { lc, date, toEnd, inP }, indexed
+     under the Equipment line's codes, apart from the rows: nothing that reads
+     rows (quantities, hours, crews, days, units, charts, rates) ever meets
+     it, and only the bid lines' cost counts it. A line that takes both (a
+     cost-code-only line takes the row and the piece) counts the row's whole
+     cost, as the page does. Roll-ups that count each row once count each
+     piece once the same way (sharedCost).
+
+     The split prices every row with the page's dailyRowCost as it goes, and
+     hands over each row's own piece in row order, an Equipment piece right
+     after the row it came off — so a row's cost is read off its own piece,
+     and the job's rows are priced once, not twice. Only a row a piece moved
+     off is priced again, for its whole cost. If the split fails, or hands
+     over anything else, every row is priced on its own and nothing moves.
+
+     The page decides what moves; its rule is not restated here, so a page
+     that passes no split moves nothing. Turf and Kiewit pass none and keep
+     each row's cost on its own line, as their bid pages do. Returns the
+     moved pieces' index, or null when nothing moved. */
+  function priceRows(ctx, p, facts) {
+    const H = helpersOf(ctx);
+    const split = ctx.cfg && isObj(ctx.cfg.helpers) ? ctx.cfg.helpers.bidEachCostPiece : undefined;
+    const rowByRow = () => { facts.forEach(f => { f.cost = f.lc = H.rowCost(f.r); }); return null; };
+    if (typeof split !== 'function' || !facts.length) return rowByRow();
+    const moved = [];
+    let at = -1, ok = true;
+    try {
+      split(p, facts.map(f => f.r), (cc, sc, cost, r) => {
+        const own = !!r && cc === r.cost_code && sc === r.sub_code;
+        const f = ok ? facts[own ? ++at : at] : null;
+        if (!f || f.r !== r || (!own && !(isNum(cost) && cost > 0))) { ok = false; return; }
+        // A figure that is not a number is priced the engine's way.
+        if (own) f.cost = f.lc = isNum(cost) ? cost : H.rowCost(r);
+        else moved.push({ f, cc, sc, cost });
+      });
+    } catch (_) { ok = false; }
+    if (!ok || at !== facts.length - 1) return rowByRow();
+    if (!moved.length) return null;
+    const k = newCodeIndex();
+    moved.forEach(({ f, cc, sc, cost }) => {
+      f.cost = H.rowCost(f.r);
+      codeIndexPut(k, cc, sc, { lc: cost, date: f.date, toEnd: f.toEnd, inP: f.inP });
+    });
+    return k;
   }
+
+  function rowsForItem(ix, b) { return codeIndexGet(ix, b); }
+  // The cost moved onto a bid line from rows on other lines (priceRows).
+  const NO_PIECES = Object.freeze([]);
+  function piecesForItem(ix, b) { return ix.eq ? codeIndexGet(ix.eq, b) : NO_PIECES; }
   // Whether a row lands on any bid line, and the unit of the line it lands on
   // (the most specific match first).
   function unitForRow(ix, r) {
@@ -1164,15 +1236,17 @@
     const H = helpersOf(ctx), p = ix.p;
     let qtyAll = 0, costAll = 0, qtyEnd = 0, costEnd = 0, hrsEnd = 0, qtyP = 0, costP = 0, hrsP = 0;
     const daysEnd = new Set(), empsEnd = new Set(), daysP = new Set(), qtyByDayP = new Map(), empsByDayP = new Map();
+    // Cost is what each row counts on the line (f.lc), as the bid page's
+    // Actual Cost adds it up.
     rowsForItem(ix, b).forEach(f => {
-      qtyAll += f.qty; costAll += f.cost;
+      qtyAll += f.qty; costAll += f.lc;
       if (f.toEnd) {
-        qtyEnd += f.qty; costEnd += f.cost; hrsEnd += f.hrs;
+        qtyEnd += f.qty; costEnd += f.lc; hrsEnd += f.hrs;
         if (f.emp) empsEnd.add(f.emp);
         if (f.work && f.date) daysEnd.add(f.date);
       }
       if (f.inP) {
-        qtyP += f.qty; costP += f.cost; hrsP += f.hrs;
+        qtyP += f.qty; costP += f.lc; hrsP += f.hrs;
         if (f.date) qtyByDayP.set(f.date, (qtyByDayP.get(f.date) || 0) + f.qty);
         if (f.work && f.date) {
           daysP.add(f.date);
@@ -1180,11 +1254,20 @@
         }
       }
     });
+    // Equipment run on Labor rows and counted here (priceRows): money only —
+    // its quantity, hours, crew and day are the Labor line's. A machine that
+    // ran on the line by the range's end has started it all the same.
+    let ranEnd = false;
+    piecesForItem(ix, b).forEach(e => {
+      costAll += e.lc;
+      if (e.toEnd) { costEnd += e.lc; ranEnd = true; }
+      if (e.inP) costP += e.lc;
+    });
     const bidQty = effQty(b), unitCost = num(b.unit_cost), bidTotal = bidQty * unitCost;
     const complete = H.itemComplete(b, p);
     const projDone = jobDone(ctx, p);
     const worked = [...daysEnd].sort();
-    const status = complete ? 'Complete' : (qtyEnd > 0 || daysEnd.size > 0) ? 'In Progress' : 'Not Started';
+    const status = complete ? 'Complete' : (qtyEnd > 0 || daysEnd.size > 0 || ranEnd) ? 'In Progress' : 'Not Started';
     s = {
       b, unit: txt(b.unit), bidQty, unitCost, bidTotal, complete, status,
       qtyAll, costAll, qtyEnd, costEnd, hrsEnd, qtyP, costP, hrsP,
@@ -1285,11 +1368,14 @@
     const H = helpersOf(ctx), done = jobDone(ctx, ix.p);
     const sumLines = stats.reduce((t, s) =>
       t + H.projFor(s.b, s.costAll, s.qtyAll, s.bidQty, s.bidTotal, done || s.complete, ctx.now), 0);
+    // By what each row counts on its own codes (f.lc), as offBidForProject
+    // counts it: equipment moved off a row is on its Equipment line, which a
+    // bid line always covers.
     const off = new Map();
     ix.facts.forEach(f => {
-      if (!f.cost || unitForRow(ix, f.r).on) return;
+      if (!f.lc || unitForRow(ix, f.r).on) return;
       const k = (f.r.cost_code || '') + '\u0000' + (f.r.sub_code || '');
-      off.set(k, (off.get(k) || 0) + f.cost);
+      off.set(k, (off.get(k) || 0) + f.lc);
     });
     let offBid = 0;
     off.forEach(v => { if (Math.abs(v) > 0.005) offBid += v; });
@@ -1655,7 +1741,7 @@
           units_per_mh: s.hrsEnd > 0 ? s.qtyEnd / s.hrsEnd : null,
         },
         m: { unit: s.unit, pct: itemPctParts(s), days: s.daysEnd, emps: s.empsEnd, status: s.status, cc: txt(b.cost_code),
-          rows: rowsForItem(ix, b) },
+          rows: rowsForItem(ix, b), eq: piecesForItem(ix, b) },
         job: p,
       });
     });
@@ -1678,6 +1764,23 @@
     return shared ? [...seen] : null;
   }
   const toEndRow = f => f.toEnd;
+  /* What a set of lines cost with each row and each moved piece of
+     equipment (priceRows) counted once — or null when nothing is on two of
+     them, so the plain per-line sums stand. lists are the lines' rows and
+     pieces; keep as for sharedRows. A piece shared without a row (a
+     cost-code-only line beside the Equipment line it moved to) is counted
+     once here, while the rows' figures stand as they are. */
+  function sharedCost(lists, keep) {
+    const seen = new Set();
+    let shared = false, t = 0;
+    lists.forEach(list => (list || []).forEach(f => {
+      if (keep && !keep(f)) return;
+      if (seen.has(f)) { shared = true; return; }
+      seen.add(f);
+      t += f.lc;
+    }));
+    return shared ? t : null;
+  }
   // Rows' quantity, added up by unit — the unit as typed on the bid line,
   // or by keyOf (Planned vs Actual merges TN and TON) and listed under the
   // first spelling seen.
@@ -1734,10 +1837,16 @@
       c.installed_to_date = factQty(rows, () => true);
       c.installed_period = factQty(rows, f => f.inP);
       c.remaining_qty = null;
-      c.actual_cost = rows.reduce((t, f) => t + f.cost, 0);
       c.labor_hours = rows.reduce((t, f) => t + f.hrs, 0);
-      c.variance = (c.bid_total || 0) - c.actual_cost;
       inst = typeof c.installed_to_date === 'number' ? c.installed_to_date : 0;
+    }
+    // What they cost, the same way: each row's share and each piece of
+    // equipment moved onto the lines (priceRows) counted once — also when
+    // only a piece is on two of them.
+    const cost = sharedCost(recs.flatMap(r => [r.m.rows, r.m.eq]), toEndRow);
+    if (cost !== null) {
+      c.actual_cost = cost;
+      c.variance = (c.bid_total || 0) - cost;
     }
     c.cost_per_unit = one !== null && inst > 0 ? c.actual_cost / inst : null;
     c.units_per_mh = one !== null && c.labor_hours > 0 ? inst / c.labor_hours : null;
@@ -1792,7 +1901,7 @@
           units_per_equip_hr: made > 0 && eqH > 0 ? made / eqH : null,
         },
         m: { unit: s.unit, days: s.daysP, byDay: s.qtyByDayP, empsByDay: s.empsByDayP, costP: s.costP,
-          facts, tickets: tix, ton: normUnit(b.unit) === 'TON' },
+          facts, eq: piecesForItem(ix, b).filter(e => e.inP), tickets: tix, ton: normUnit(b.unit) === 'TON' },
         job: p,
       });
     });
@@ -1846,7 +1955,10 @@
       factsByJob.forEach((set, jk) => set.forEach(f => { if (f.date && f.qty) byDay.set(jk + '|' + f.date, (byDay.get(jk + '|' + f.date) || 0) + f.qty); }));
     }
     const q = dup ? uniq.reduce((t, f) => t + (f.qty || 0), 0) : sumOf(recs, 'qty_period');
-    const cost = dup ? uniq.reduce((t, f) => t + (f.cost || 0), 0) : recs.reduce((t, r) => t + r.m.costP, 0);
+    // Cost by what each row and each moved piece of equipment counts on the
+    // lines (priceRows), each once.
+    const shc = sharedCost(recs.flatMap(r => [r.m.facts, r.m.eq]));
+    const cost = shc !== null ? shc : recs.reduce((t, r) => t + r.m.costP, 0);
     if (one !== null) {
       c.avg_per_day = c.days_period ? q / c.days_period : null;
       let best = null;
