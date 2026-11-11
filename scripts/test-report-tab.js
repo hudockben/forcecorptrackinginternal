@@ -46,7 +46,13 @@ function skip(label, why) { skipped++; console.log(`  ~ ${label} (skipped: ${why
 console.log('\nwiring — pages that open a report tab load the module');
 
 const htmlFiles = fs.readdirSync(ROOT).filter(f => f.endsWith('.html'));
-const callers = htmlFiles.filter(f => /\bdwReportTab\s*\(/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
+// A page calls it itself, or loads a module that does.
+const jsCallers = fs.readdirSync(ROOT).filter(f => f.endsWith('.js') && f !== 'report-tab.js'
+  && /\bdwReportTab\s*\(/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
+const callers = htmlFiles.filter(f => {
+  const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+  return /\bdwReportTab\s*\(/.test(s) || jsCallers.some(j => s.includes(`<script src="${j}`));
+});
 assert('the Job Summary pages call dwReportTab',
   ['tracker.html', 'paving.html', 'kiewit-pinetree.html'].every(f => callers.includes(f)), callers.join(', '));
 for (const f of callers) {
@@ -71,7 +77,106 @@ for (const f of ['tracker.html', 'paving.html', 'kiewit-pinetree.html']) {
 }
 
 const src = fs.readFileSync(path.join(ROOT, 'report-tab.js'), 'utf8');
-assert('the tab is opened with noopener', /window\.open\(url, '_blank', 'noopener'\)/.test(src));
+assert('the tab is opened with noopener',
+  /window\.open\(url, '_blank', o\.features \? 'noopener,' \+ o\.features : 'noopener'\)/.test(src));
+
+// No report window anywhere is opened the old way. A window.open('') the
+// page writes into is in the app's browsing context group, so its print
+// dialog freezes the app. Two are allowed: report-tab.js's own fallback for a
+// browser with no BroadcastChannel, and documents.js, which opens a tab only
+// to send it to a stored file's signed URL on another origin (no report, no
+// print() of ours).
+const ALLOWED_OPENERS = new Set(['report-tab.js', 'documents.js']);
+const oldStyle = [];
+for (const f of fs.readdirSync(ROOT).filter(f => /\.(html|js)$/.test(f) && !ALLOWED_OPENERS.has(f))) {
+  const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+  s.split('\n').forEach((line, i) => {
+    if (/window\.open\(\s*(''|""|``|'about:blank')/.test(line)) oldStyle.push(`${f}:${i + 1}`);
+  });
+}
+assert('no page opens a report window the old way, window.open(\'\')', oldStyle.length === 0, oldStyle.join(', '));
+// …nor prints one from here: w.print() on a window this page opened.
+const remotePrint = [];
+for (const f of fs.readdirSync(ROOT).filter(f => /\.(html|js)$/.test(f) && f !== 'report-tab.js')) {
+  const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
+  s.split('\n').forEach((line, i) => {
+    if (/\b(?!window\b)[A-Za-z_$][\w$]*\.print\(\)/.test(line) && !/contentWindow\.print\(\)/.test(line)) remotePrint.push(`${f}:${i + 1}`);
+  });
+}
+assert('no page calls print() on a report window it opened', remotePrint.length === 0, remotePrint.join(', '));
+
+
+// ── The fallback, against a stand-in window ───────────────────────────────
+// No BroadcastChannel on the window: the old protocol, exactly — which is
+// what the page tests' stand-in pop-ups record, and what an old Safari gets.
+console.log('\nthe fallback — the old window, opened and written as before');
+function standIn() {
+  const log = [];
+  const w = { closed: false, focus() { log.push('focus'); }, print() { log.push('print'); }, close() { w.closed = true; log.push('close-win'); },
+    document: { open() { log.push('open'); }, write(...c) { log.push('write:' + c.join('')); }, close() { log.push('close'); },
+      getElementById: id => (id === 'dw-wait' ? { set textContent(t) { log.push('say:' + t); } } : null) } };
+  const win = { opened: [], open(...a) { win.opened.push(a); return win.blocked ? null : w; },
+    dwBrand: h => 'BRANDED:' + h, dwWrite: (ww, h) => { log.push('dwWrite'); ww.document.write(win.dwBrand(h)); } };
+  new Function('window', src)(win);
+  return { win, w, log };
+}
+const tick = ms => new Promise(r => setTimeout(r, ms));
+const fallbackChecks = (async () => {
+  {
+    const { win, log } = standIn();
+    win.dwReportTab({}).fill('<p>r</p>');
+    await tick(20);
+    assert('a report built in the click: window.open(\'\', \'_blank\'), one dwWrite, then close — as before',
+      JSON.stringify(win.opened[0].slice(0, 2)) === '["","_blank"]'
+      && log.join('|') === 'dwWrite|write:BRANDED:<p>r</p>|close', log.join('|'));
+  }
+  {
+    const { win, log } = standIn();
+    const t = win.dwReportTab({ waiting: 'Preparing…' });
+    await tick(20);
+    t.progress('Read 1 of 2');
+    t.fill('<p>r</p>');
+    assert('one built later: the waiting page first, then progress, then open/write/close',
+      /^write:<!DOCTYPE html>.*Preparing…/.test(log[0]) && log[1] === 'say:Read 1 of 2'
+      && log.slice(2).join('|') === 'open|dwWrite|write:BRANDED:<p>r</p>|close', log.join('|'));
+  }
+  {
+    const { win, log } = standIn();
+    win.dwReportTab({ features: 'width=1100,height=800', print: true }).fill('<p>r</p>');
+    await tick(500);
+    assert('features reach window.open, and print: true focuses and prints it after the write',
+      win.opened[0][2] === 'width=1100,height=800' && log.slice(-2).join('|') === 'focus|print', log.join('|'));
+  }
+  {
+    const { win, log } = standIn();
+    win.dwReportTab({ brand: false }).fill('<p>raw</p>');
+    assert('brand: false writes the HTML exactly as given', log.join('|') === 'write:<p>raw</p>|close', log.join('|'));
+  }
+  {
+    const { win, w, log } = standIn();
+    const t = win.dwReportTab({});
+    t.close();
+    t.fill('<p>r</p>');
+    assert('close() closes the window, and nothing is written after', w.closed && t.closed && !log.some(l => /BRANDED/.test(l)), log.join('|'));
+  }
+  {
+    const { win } = standIn();
+    win.blocked = true;
+    let said = 0;
+    const t = win.dwReportTab({ onBlocked: () => { said++; } });
+    assert('a blocked pop-up is reported at once, and reads as closed', said === 1 && t.closed === true);
+    t.fill('<p>r</p>'); t.progress('x'); t.fail('y'); t.close();
+    assert('…and nothing else throws on it', true);
+  }
+  {
+    const { win, log } = standIn();
+    const t = win.dwReportTab({ title: 'Sheet' });
+    await tick(20);
+    t.fail('Could not read <it>');
+    assert('fail() replaces the waiting page with the message, escaped',
+      log.slice(1).join('|').startsWith('open|write:<!DOCTYPE html>') && /Could not read &lt;it&gt;/.test(log.join('|')), log.join('|'));
+  }
+})();
 
 // ── 2 & 3. In Chrome ───────────────────────────────────────────────────────
 function findChrome() {
@@ -99,6 +204,7 @@ const within = (p, ms) => Promise.race([p.then(v => ({ ok: true, v }), e => ({ o
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 (async () => {
+  await fallbackChecks;
   const chrome = findChrome();
   if (!chrome) {
     skip('the hand-over in Chrome', 'no Chrome/Chromium on this box');
@@ -209,10 +315,12 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
     await withBrowser(true, async (browser, app) => {
       // A blocked pop-up: window.open hands back null and no tab appears.
       await clickRun(app, `window.open = () => null; window.__blocked = 0;
-        dwReportTab({ onBlocked: () => { window.__blocked++; } });`);
-      await sleep(9000);
+        window.__t = dwReportTab({ onBlocked: () => { window.__blocked++; } });`);
+      await sleep(4000);
       assert('a blocked pop-up is reported once the tab has not asked in time',
         await app.evaluate(() => window.__blocked) === 1);
+      assert('…and the handle reads as closed, so a long build can stop',
+        await app.evaluate(() => window.__t.closed) === true);
     });
 
     await withBrowser(true, async (browser, app) => {
@@ -225,6 +333,83 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       const r = await readTab(tab);
       assert('no BroadcastChannel: the old window still gets the report, branded',
         r.ok && /Pine Rd/.test(r.v.text) && r.v.brand && r.v.loaded === 1, JSON.stringify(r.v));
+    });
+
+
+    await withBrowser(true, async (browser, app) => {
+      const tabs = nextTab(browser);
+      // Progress said before the tab can have asked is held for it.
+      await clickRun(app, `window.__t = dwReportTab({}); window.__t.progress('Reading 0 of 3…');`);
+      const [tab] = await tabs;
+      await sleep(500);
+      const r1 = await readTab(tab);
+      assert('progress said before the tab asked shows once it does', r1.ok && /Reading 0 of 3/.test(r1.v.text), JSON.stringify(r1.v));
+      await app.evaluate(() => window.__t.progress('Reading 2 of 3…'));
+      await sleep(300);
+      const r2 = await readTab(tab);
+      assert('…and later progress replaces it', r2.ok && /Reading 2 of 3/.test(r2.v.text) && !/0 of 3/.test(r2.v.text));
+      await app.evaluate(html => window.__t.fill(html), report('Elm St', MARK));
+      await sleep(400);
+      const r3 = await readTab(tab);
+      assert('…then the report replaces the lot', r3.ok && /Elm St/.test(r3.v.text) && !/Reading/.test(r3.v.text));
+    });
+
+    await withBrowser(true, async (browser, app) => {
+      const pagesBefore = (await browser.pages()).length;
+      const tabs = nextTab(browser);
+      await clickRun(app, `window.__t = dwReportTab({});`);
+      const [tab] = await tabs;
+      await sleep(400);
+      const closedTab = new Promise(r => tab.once('close', () => r(true)));
+      await app.evaluate(() => window.__t.close());
+      assert('close() gives up on the tab: it closes itself', (await within(closedTab, 3000)).ok);
+      assert('…and the handle reads as closed', await app.evaluate(() => window.__t.closed) === true);
+      await app.evaluate(html => window.__t.fill(html), report('Too Late', MARK));
+      await sleep(400);
+      assert('…and a report built after it goes nowhere', (await browser.pages()).length === pagesBefore);
+    });
+
+    await withBrowser(true, async (browser, app) => {
+      const tabs = nextTab(browser);
+      // Cancelled in the same click, before the tab can have asked.
+      await clickRun(app, `window.__t = dwReportTab({}); window.__t.fill('<p>never</p>'); window.__t.close();`);
+      const [tab] = await tabs;
+      const closedTab = new Promise(r => tab.once('close', () => r(true)));
+      assert('close() before the tab asked still closes it, and nothing prints', (await within(closedTab, 3000)).ok);
+    });
+
+    await withBrowser(true, async (browser, app) => {
+      const tabs = nextTab(browser);
+      await clickRun(app, `window.__t = dwReportTab({});`);
+      const [tab] = await tabs;
+      await sleep(400);
+      assert('an open tab does not read as closed', await app.evaluate(() => window.__t.closed) === false);
+      await tab.close();
+      await sleep(400);
+      assert('a tab the user closed before its report came reads as closed', await app.evaluate(() => window.__t.closed) === true);
+    });
+
+    await withBrowser(true, async (browser, app) => {
+      const tabs = nextTab(browser);
+      // A report that does not print itself: the page used to call w.print().
+      const quiet = '<!DOCTYPE html><html><head><title>Dispatch</title></head><body><h2>Dispatch</h2>'
+        + '<script>window.print = () => { window.__printed = (window.__printed || 0) + 1; };<\/script></body></html>';
+      await clickRun(app, `dwReportTab({ print: true }).fill(${JSON.stringify(quiet)});`);
+      const [tab] = await tabs;
+      await sleep(1200);
+      const r = await within(tab.evaluate(() => window.__printed || 0), 3000);
+      assert('print: true — the tab prints a report that does not print itself, once', r.ok && r.v === 1, JSON.stringify(r));
+    });
+
+    await withBrowser(true, async (browser, app) => {
+      const tabs = nextTab(browser);
+      await clickRun(app, `dwReportTab({ brand: false, features: 'width=1100,height=800' }).fill(${JSON.stringify(report('Raw Copy', MARK))});`);
+      const [tab] = await tabs;
+      await sleep(800);
+      const r = await readTab(tab);
+      assert('features: a sized window gets its report too', r.ok && /Raw Copy/.test(r.v.text) && r.v.loaded === 1, JSON.stringify(r.v));
+      assert('brand: false — written exactly as given, no band', r.ok && !r.v.brand);
+      assert('…and still not tied to the app', r.ok && r.v.opener === 'none');
     });
 
     console.log('\nthe app answers while the report\'s print dialog is open');
