@@ -6,8 +6,9 @@
  * Run: node scripts/test-report-branding.js
  *
  * Four layers:
- *   1. Structural — every page that calls dwWrite() also loads
- *      report-branding.js, and no page still writes a report document
+ *   1. Structural — every page that calls dwWrite(), or opens a report tab
+ *      with dwReportTab() (report-tab.js, which brands through dwWrite), also
+ *      loads report-branding.js, and no page still writes a report document
  *      straight to a popup (which would print unbranded).
  *   2. Text only — the band carries no image and nothing user-supplied, so it
  *      costs nothing in the report HTML (which /api/email/send-report caps at
@@ -36,21 +37,26 @@ function skip(label, why) { skipped++; console.log(`  ~ ${label} (skipped: ${why
 console.log('\nwiring — every page that brands reports loads the module');
 
 const htmlFiles = fs.readdirSync(ROOT).filter(f => f.endsWith('.html'));
+// The print paths open their report with dwReportTab(), which brands it with
+// the dwWrite/dwBrand this module defines — and, with this module missing,
+// prints it unbranded rather than failing. So a page that calls it needs the
+// module as much as one that calls dwWrite itself.
+const brandsReports = s => /\b(?:dwWrite|dwReportTab)\s*\(/.test(s);
 const missingTag = [];
 const stillDirect = [];
 for (const f of htmlFiles) {
   const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
-  if (/\bdwWrite\s*\(/.test(s) && !s.includes('report-branding.js')) missingTag.push(f);
+  if (brandsReports(s) && !s.includes('report-branding.js')) missingTag.push(f);
   // A leftover `win.document.write(` would print an unbranded report.
   if (/[A-Za-z_$][\w$]*\.document\.write\s*\(/.test(s)) stillDirect.push(f);
 }
-assert('every page calling dwWrite loads report-branding.js',
+assert('every page calling dwWrite or dwReportTab loads report-branding.js',
   missingTag.length === 0, missingTag.join(', '));
 assert('no page writes a report document directly any more',
   stillDirect.length === 0, stillDirect.join(', '));
 
 const pagesWithReports = htmlFiles.filter(f =>
-  /\bdwWrite\s*\(/.test(fs.readFileSync(path.join(ROOT, f), 'utf8')));
+  brandsReports(fs.readFileSync(path.join(ROOT, f), 'utf8')));
 assert('the transform actually reached the report pages',
   pagesWithReports.length >= 7, `${pagesWithReports.length} pages: ${pagesWithReports.join(', ')}`);
 

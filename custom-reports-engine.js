@@ -3218,8 +3218,9 @@ figure.crc figcaption{font-size:8.5px;color:#555;margin-top:3px;line-height:1.35
   /* The whole printable document: masthead, title, meta line, intro, then
      the sections — once per job (separate) or once for all (combined) — and
      the footer. Self-contained (inline CSS, no fonts, images or scripts):
-     it is printed from about:blank, rendered to PDF by headless Chrome, and
-     emailed. No print script — the builder adds that for the print window. */
+     it is printed from its own report tab (dwReportTab), rendered to PDF by
+     headless Chrome, and emailed. No print script — the builder adds that for
+     the print tab. */
   function buildReportHtml(def, ctx) {
     const d = normalizeDefinition(def);
     syncRange(d, ctx);

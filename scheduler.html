@@ -351,6 +351,7 @@
   </style>
 <script src="auto-report.js"></script>
 <script src="report-branding.js" defer></script>
+<script src="report-tab.js" defer></script>
 <script src="mathis.js" defer></script>
 </head>
 <body>
@@ -3628,8 +3629,8 @@ function printShell(title, body) {
 function doPrint() {
   const layout = document.getElementById('dpLayout').value, scope = document.getElementById('dpScope').value;
   const html = printShell(dispatchTitle(scope), buildDispatchBody(layout, dispatchDates(scope)));
-  const w = window.open('', '_blank'); if (!w) { toast('Allow pop-ups to print'); return; }
-  dwWrite(w, html); w.document.close(); w.focus(); setTimeout(() => { try { w.print(); } catch {} }, 350);
+  // The sheet does not print itself, so its tab prints it once written.
+  dwReportTab({ print: true, onBlocked: () => toast('Allow pop-ups to print') }).fill(html);
 }
 function parseEmails(s) { return String(s||'').split(/[,;\s]+/).map(x => x.trim()).filter(Boolean); }
 async function doEmail() {

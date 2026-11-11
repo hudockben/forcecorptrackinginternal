@@ -27,8 +27,9 @@
 const fs   = require('fs');
 const path = require('path');
 
-// The print path calls dwWrite(), which report-branding.js defines on window.
-// The real module is loaded rather than stubbed: printFinancials() produces a
+// The print path opens its report with dwReportTab() (report-tab.js), which
+// brands it through dwWrite(), which report-branding.js defines on window.
+// The real modules are loaded rather than stubbed: printFinancials() produces a
 // document a person receives on paper, and a fake dwWrite would let this file
 // and scripts/test-report-branding.js drift apart over what branding actually
 // does to it. The IIFE only reads `window`, so a bare object is enough.
@@ -38,6 +39,11 @@ const BRANDING = (() => {
   if (typeof win.dwWrite !== 'function') throw new Error('report-branding.js no longer defines dwWrite');
   return win;
 })();
+// report-tab.js is run against each harness's stand-in window, below: it reads
+// window.open and window.dwWrite off it, and a stand-in with no
+// BroadcastChannel gets the old protocol — window.open(''), then dwWrite into
+// it — which the stand-in records.
+const REPORT_TAB = fs.readFileSync(path.resolve(__dirname, '..', 'report-tab.js'), 'utf8');
 
 const FILES = ['tracker.html', 'paving.html', 'kiewit-pinetree.html'];
 // Each division's project card names the job's area in its own unit — turf
@@ -130,12 +136,21 @@ function loadFinancials(file, projects, opts = {}) {
     all:    { checked: true, addEventListener() {} },
     boxes:  [],
   };
+  // The page's window: the print window it opens records what is written into
+  // it, and dwReportTab is the real one, run against this window.
+  const win = {
+    open: () => ({ document: { write: (...chunks) => { captured.print += chunks.join(''); }, close() {} } }),
+    addEventListener: on,
+    dwWrite: BRANDING.dwWrite, dwBrand: BRANDING.dwBrand,
+  };
+  new Function('window', REPORT_TAB)(win);
+  if (typeof win.dwReportTab !== 'function') throw new Error('report-tab.js no longer defines dwReportTab');
 
   const api = new Function(
     'projectsList', 'document', 'window', 'alert', 'Blob', 'URL',
     'dailyRowCost', 'fmt', 'esc',
     'actualForBidItem', 'runningQtyForBidItem', 'bidItemComplete', 'getProj',
-    'dwWrite', 'dwBrand',
+    'dwWrite', 'dwBrand', 'dwReportTab',
     'perm', 'localStorage', 'apiGetChecked', 'apiPut', 'setTimeout', 'clearTimeout',
     'fetch', 'API_BASE', 'fctToken', 'DIVISION',
     `${code}
@@ -181,8 +196,7 @@ function loadFinancials(file, projects, opts = {}) {
       querySelectorAll: sel => (sel === '.finff-val-cb' ? dd.boxes : []),
       createElement: () => ({ href: '', download: '', click() { captured.download = this.download; } }),
     },
-    { open: () => ({ document: { write: (...chunks) => { captured.print += chunks.join(''); }, close() {} } }),
-      addEventListener: on },
+    win,
     m => captured.alerts.push(m),
     function (parts) { captured.csv = parts.join(''); },
     { createObjectURL: () => 'blob:stub', revokeObjectURL: () => {} },
@@ -193,7 +207,7 @@ function loadFinancials(file, projects, opts = {}) {
     (b, id) => (b._rqty || 0),
     (b, id) => !!b._done,
     () => null,
-    BRANDING.dwWrite, BRANDING.dwBrand,
+    BRANDING.dwWrite, BRANDING.dwBrand, win.dwReportTab,
     { canEdit: opts.canEdit !== false },
     { getItem: k => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)) },
     async key => {

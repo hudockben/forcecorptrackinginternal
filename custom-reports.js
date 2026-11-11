@@ -2061,17 +2061,15 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     if (S.mount) S.mount.querySelectorAll('[data-act="zoom"]').forEach(b => b.setAttribute('aria-pressed', String(b.getAttribute('data-zoom') === S.zoom)));
     fitPreview();
   }
-  // The same report, full size in its own tab — no print dialog.
+  // The same report, full size in its own tab — no print dialog, but a tab
+  // of its own all the same (dwReportTab): Ctrl+P in a window this page
+  // wrote into would freeze the app until that window closed.
   function openFullPreview() {
     if (!S.doc) return;
-    const win = window.open('', '_blank');
-    if (!win) { alert('Your browser blocked the preview window. Allow pop-ups for this site and try again.'); return; }
     let built;
     try { built = buildCurrent(); }
-    catch (err) { try { win.close(); } catch (_) { /* fine */ } toast('Couldn’t build the report: ' + err.message, 'error'); return; }
-    const write = window.dwWrite || ((w, h) => w.document.write(h));
-    write(win, built.html);
-    win.document.close();
+    catch (err) { toast('Couldn’t build the report: ' + err.message, 'error'); return; }
+    window.dwReportTab({ onBlocked: () => alert('Your browser blocked the preview window. Allow pop-ups for this site and try again.') }).fill(built.html);
   }
 
   // Every edit ends here: remember the report was touched, then redraw what
@@ -3037,42 +3035,43 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
     }).catch(e => console.warn('[custom-reports] could not log the run:', e && e.message));
   }
 
-  // Print / PDF. The window has to be opened inside the click itself or the
-  // browser calls it a pop-up, so it opens first and the report is written
-  // into it once the full daily-row history is in. What it prints is fixed at
-  // the click: if the report is closed or another opened in the meantime the
-  // window closes and says so, rather than print a different report into a
-  // tab the user believes holds the one they clicked.
+  // Print / PDF. The tab has to be claimed inside the click itself or the
+  // browser calls it a pop-up, so it is claimed first and the report is
+  // handed to it once the full daily-row history is in. It is a tab of its
+  // own (dwReportTab): a window this page opened and wrote into froze the app
+  // for as long as the report's print dialog stayed open. What it prints is
+  // fixed at the click: if the report is closed or another opened in the
+  // meantime the tab closes and says so, rather than print a different report
+  // into a tab the user believes holds the one they clicked.
   function doPrint() {
     if (!S.doc || !requireJobs()) return;
     const d = S.doc;
     let snap;
     try { snap = snapshot(); }
     catch (err) { toast('Couldn’t build the report: ' + err.message, 'error'); return; }
-    const win = window.open('', '_blank');
-    if (!win) { alert('Your browser blocked the print window. Allow pop-ups for this site and try again.'); return; }
+    const tab = window.dwReportTab({
+      title: 'Preparing report…',
+      waiting: 'Preparing your report…',
+      onBlocked: () => alert('Your browser blocked the print window. Allow pop-ups for this site and try again.'),
+    });
+    if (tab.closed) return; // blocked, where that is known at once
     const go = () => {
       let built;
       try { built = buildFrom(snap); }
-      catch (err) { try { win.close(); } catch (_) { /* fine */ } toast('Couldn’t build the report: ' + err.message, 'error'); return; }
-      const write = window.dwWrite || ((w, h) => w.document.write(h));
-      write(win, built.html + '<script>window.onload=()=>{window.print()}<\/script>');
-      win.document.close();
-      logRun('print', built);
+      catch (err) { tab.close(); toast('Couldn’t build the report: ' + err.message, 'error'); return; }
+      // Logged once the report is in its tab: a blocked tab is only known a
+      // few seconds on, and a print that never opened is not a run.
+      tab.fill(built.html + '<script>window.onload=()=>{window.print()}<\/script>')
+        .then(ok => { if (ok) logRun('print', built); });
     };
     if (S.readyDone) { go(); return; }
-    try {
-      win.document.write('<!DOCTYPE html><title>Preparing report…</title><p style="font:14px system-ui,sans-serif;padding:2rem;color:#444">Preparing your report…</p>');
-      win.document.close();
-    } catch (_) { /* the real write follows */ }
     whenReady().then(() => {
-      if (win.closed) return;
+      if (tab.closed) return;
       if (S.doc !== d) {
-        try { win.close(); } catch (_) { /* fine */ }
+        tab.close();
         toast('The report changed while it was being prepared — click Print again.', 'error');
         return;
       }
-      try { win.document.open(); } catch (_) { /* written fresh below */ }
       go();
     });
   }
@@ -3466,9 +3465,9 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
      allow-modals lets the Print button print the copy itself, with its own
      page setup. The shell's script is its own, not this page's, so the Print
      button and the fitting keep working after this tab moves on or reloads.
-     Nothing goes through dwWrite: an archive carries its own brand band, and
-     anything added in front of the shell would push the policy out of the
-     head, where browsers ignore it. */
+     Nothing is branded on the way in (dwReportTab with brand: false): an
+     archive carries its own brand band, and anything added in front of the
+     shell would push the policy out of the head, where browsers ignore it. */
   const lockedCsp = nonce => "default-src 'none'; script-src 'nonce-" + nonce + "'; img-src data:; style-src 'unsafe-inline'; font-src data:; form-action 'none'; base-uri 'none'";
   /* The copy window's own script: static code, nothing of the archive in it.
      It fits the frame to the copy on screen. Keyboard print (Ctrl/Cmd+P,
@@ -3591,46 +3590,41 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       + '<iframe sandbox="allow-same-origin allow-modals" title="' + esc(title) + '" srcdoc="' + esc(html) + '"></iframe>'
       + '<script nonce="' + nonce + '">' + COPY_WINDOW_JS + '</' + 'script></body></html>';
   }
-  function writeLockedDown(win, html, title) {
-    try { win.document.open(); } catch (_) { /* written fresh below */ }
-    win.document.write(lockedShell(html, title, copyNonce()));
-    try { win.document.close(); } catch (_) { /* fine */ }
-    // Nothing in that window needs this one.
-    try { win.opener = null; } catch (_) { /* fine */ }
-  }
   async function custOpen(id) {
     const run = custRun(id);
     if (!run) return;
     if (run.included_internal && !mayOpenInternal(run)) { toast(INTERNAL_ARCHIVE_MSG, 'error'); return; }
-    // Opened inside the click (the pop-up rule), filled once the copy is in.
-    const win = window.open('', '_blank');
-    if (!win) { alert('Your browser blocked the window. Allow pop-ups for this site and try again.'); return; }
-    try {
-      win.document.write('<!DOCTYPE html><title>Opening report…</title><p style="font:14px system-ui,sans-serif;padding:2rem;color:#444">Opening the report…</p>');
-      win.document.close();
-    } catch (_) { /* the real write follows */ }
-    const fail = msg => { try { win.close(); } catch (_) { /* fine */ } toast(msg, 'error'); };
+    // Claimed inside the click (the pop-up rule), filled once the copy is in,
+    // with the locked shell exactly as built (brand: false).
+    const tab = window.dwReportTab({
+      title: 'Opening report…',
+      waiting: 'Opening the report…',
+      brand: false,
+      onBlocked: () => alert('Your browser blocked the window. Allow pop-ups for this site and try again.'),
+    });
+    if (tab.closed) return; // blocked, where that is known at once
+    const fail = msg => { tab.close(); toast(msg, 'error'); };
     let html = null;
     try { html = await archivedHtml(run); }
     catch (e) {
       if (e.status === 403 && code(e) === 'internal_archive') { fail(INTERNAL_ARCHIVE_MSG); return; }
       // A 401 signs the app tab out (call() → onAuthError → logout navigates
-      // away); close the placeholder so it is not left orphaned, with no toast
+      // away); close the waiting tab so it is not left orphaned, with no toast
       // on top of the sign-out.
-      if (e.status === 401) { try { win.close(); } catch (_) { /* fine */ } return; }
+      if (e.status === 401) { tab.close(); return; }
       fail(`Couldn’t open it: ${e.message}`);
       return;
     }
     if (html == null) {
       try { html = rebuildRun(await runDetail(run), true).html; }
       catch (e) {
-        if (e.status === 401) { try { win.close(); } catch (_) { /* fine */ } }
+        if (e.status === 401) tab.close();
         else fail(`Couldn’t open it: ${e.message}`);
         return;
       }
     }
-    if (win.closed) return;
-    writeLockedDown(win, html, `Sent copy — ${txt(run.subject) || txt(run.report_name) || 'Report'}`);
+    if (tab.closed) return;
+    tab.fill(lockedShell(html, `Sent copy — ${txt(run.subject) || txt(run.report_name) || 'Report'}`, copyNonce()));
   }
   async function custResend(id) {
     const run = custRun(id);

@@ -1113,6 +1113,7 @@
   </style>
 <script src="auto-report.js"></script>
 <script src="report-branding.js" defer></script>
+<script src="report-tab.js" defer></script>
 <script src="mathis.js" defer></script>
 </head>
 <body>
@@ -6126,19 +6127,14 @@
 
     function schedSheetPrint() {
       const date = schedS().anchor;
-      const w = window.open('', '_blank');
       const msg = document.getElementById('sched-sheet-msg');
-      if (!w) {
-        if (msg) msg.textContent = 'Allow pop-ups for this site to open the print view.';
-        return;
-      }
       if (msg) msg.textContent = '';
       const ts = new Date().toLocaleString('en-US',
         { weekday: 'short', month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit' });
       const co = (user && (user.companyName || user.companyCode)) || 'Force Corp';
       // Seventeen columns will not fit a portrait page, so this one asks for
       // landscape and a smaller body than the plan report uses.
-      dwWrite(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${schedEsc(schedSheetTitle(date))}</title>
+      const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${schedEsc(schedSheetTitle(date))}</title>
         <style>@page{size:landscape;margin:10mm}body{margin:0}
         table{page-break-inside:auto;font-size:9.5px}tr{page-break-inside:avoid}thead{display:table-header-group}
         th,td{font-size:9.5px !important}</style></head>
@@ -6150,10 +6146,12 @@
           <div style="${_RP.h1}">${schedEsc(schedSheetTitle(date))}</div>
           <div style="${_RP.subT}">${schedEsc(co)} · Generated ${schedEsc(ts)}</div>
         </div>
-        ${schedSheetHTML(date)}</body></html>`);
-      w.document.close();
-      w.focus();
-      setTimeout(() => { try { w.print(); } catch { /* the user can still print manually */ } }, 350);
+        ${schedSheetHTML(date)}</body></html>`;
+      // The sheet does not print itself, so its tab prints it once written.
+      dwReportTab({
+        print: true,
+        onBlocked: () => { if (msg) msg.textContent = 'Allow pop-ups for this site to open the print view.'; },
+      }).fill(reportHtml);
     }
 
     /* ── Excel ──
@@ -6718,13 +6716,13 @@
       const scope  = document.getElementById('sched-rep-scope').value;
       const layout = document.getElementById('sched-rep-layout').value;
       const result = document.getElementById('sched-rep-result');
-      const w = window.open('', '_blank');
-      if (!w) { result.textContent = 'Allow pop-ups for this site to open the print view.'; return; }
       result.textContent = '';
-      dwWrite(w, schedRepShell(schedRepTitle(scope), schedRepBody(scope, layout)));
-      w.document.close();
-      w.focus();
-      setTimeout(() => { try { w.print(); } catch { /* the user can still print manually */ } }, 350);
+      const reportHtml = schedRepShell(schedRepTitle(scope), schedRepBody(scope, layout));
+      // The report does not print itself, so its tab prints it once written.
+      dwReportTab({
+        print: true,
+        onBlocked: () => { result.textContent = 'Allow pop-ups for this site to open the print view.'; },
+      }).fill(reportHtml);
     }
 
     function schedParseEmails(s) {

@@ -1458,13 +1458,19 @@ function pageTests() {
     /DELETE', '\/document-upload-url\?division=safety&storageKey=/.test(page));
 
   // ── Driven in jsdom ────────────────────────────────────────────────────
-  // jsdom does not fetch <script src>, and the printout is written through
-  // dwWrite() from report-branding.js — so the real file is inlined where the
-  // page loads it, and every sheet below goes through the branding it ships with.
+  // jsdom does not fetch <script src>, and the printout is opened through
+  // dwReportTab() from report-tab.js and written through dwWrite() from
+  // report-branding.js — so the real files are inlined where the page loads
+  // them, and every sheet below goes through the branding it ships with.
+  // jsdom has no BroadcastChannel, so dwReportTab falls back to the old way —
+  // window.open('') and written into — which is what popupsOn records.
   const brandingTag = '<script src="report-branding.js" defer></script>';
+  const tabTag      = '<script src="report-tab.js" defer></script>';
   // A function, not a string: a string replacement reads `$&` and friends in
   // the inlined source as patterns.
-  const pageWithBranding = page.replace(brandingTag, () => `<script>${read('report-branding.js')}</script>`);
+  const pageWithBranding = page
+    .replace(brandingTag, () => `<script>${read('report-branding.js')}</script>`)
+    .replace(tabTag, () => `<script>${read('report-tab.js')}</script>`);
 
   function boot(user, docs, report, opts = {}) {
     const calls = [];
@@ -1802,6 +1808,8 @@ function pageTests() {
   {
     assert('the page loads the branding its printout is written through',
       page.includes(brandingTag));
+    assert('  and the tab of its own the printout opens in',
+      page.includes(tabTag));
 
     const STATEMENT = safetyLib.SIGNATURE_STATEMENT;
     // A real 1x1 PNG, so it passes the same shape check the server applies.

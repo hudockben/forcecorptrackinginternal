@@ -51,6 +51,10 @@ const PREVIEW_WAIT = 320;   // the builder redraws the preview 250 ms after the 
 const ROOT     = path.resolve(__dirname, '..');
 const ENGINE   = fs.readFileSync(path.join(ROOT, 'custom-reports-engine.js'), 'utf8');
 const BRANDING = fs.readFileSync(path.join(ROOT, 'report-branding.js'), 'utf8');
+// The report-tab helper the pages load after report-branding.js. jsdom has no
+// BroadcastChannel, so it opens and writes the old way — into the stand-in
+// window.open below, which records what each report window was given.
+const REPORT_TAB = fs.readFileSync(path.join(ROOT, 'report-tab.js'), 'utf8');
 // CR_UI_FILE points the suite at another copy of the builder — used to prove
 // the checks catch a deliberately broken one without touching the repo file.
 const UI       = fs.readFileSync(process.env.CR_UI_FILE || path.join(ROOT, 'custom-reports.js'), 'utf8');
@@ -388,7 +392,7 @@ function boot(o) {
   const window = dom.window, document = window.document;
   const srv = o.server || makeServer();
   const data = o.data || fixture();
-  const h = { dom, window, document, srv, data, opened: [], dwCalls: [], email: [], confirms: [], answers: [], alerts: [],
+  const h = { dom, window, document, srv, data, opened: [], dwCalls: [], tabs: [], email: [], confirms: [], answers: [], alerts: [],
     blobs: [], downloads: [], authErrors: 0, consoleErrors: [], jsdomErrors };
   window.fetch = (url, init) => srv.handle(url, init);
   window.confirm = msg => { h.confirms.push(msg); return h.answers.length ? h.answers.shift() : true; };
@@ -408,8 +412,12 @@ function boot(o) {
   window.console.error = (...a) => { h.consoleErrors.push(a.join(' ')); };
   if (o.engine !== false) window.eval(ENGINE);
   window.eval(BRANDING);
+  window.eval(REPORT_TAB);
   const realDw = window.dwWrite;
   window.dwWrite = (w, ...c) => { h.dwCalls.push(c.join('')); return realDw(w, ...c); };
+  // What each report tab was asked for (report-tab.js), as the module calls it.
+  const realTab = window.dwReportTab;
+  window.dwReportTab = o => { h.tabs.push(o || {}); return realTab(o); };
   window.eval(UI);
 
   h.cfg = Object.assign({
@@ -761,6 +769,7 @@ function seed(srv) {
     section('Outputs — Print / PDF');
     h.click(h.act('print'));
     assert('Print opens the window inside the click', h.opened.length === 1);
+    assert('…a report tab of its own (dwReportTab), printed by its own script, not again from here', h.tabs.length === 1 && !h.tabs[0].print);
     assert('…and writes through dwWrite, with the print script', h.dwCalls.length === 1 && /data-dw-brand/.test(h.dwCalls[0])
       && /window\.print\(\)/.test(h.dwCalls[0]));
     assert('the written page has the DataWatch masthead exactly once', (h.opened[0].written.match(/data-dw-brand/g) || []).length === 1);
@@ -825,6 +834,9 @@ function seed(srv) {
     h.$$('.cr-job input')[0].click();
     h.click(h.act('print'));
     assert('a blocked pop-up is explained', /Allow pop-ups/.test(h.alerts[0] || ''));
+    await tick();
+    assert('…and no print run is logged for it — it never opened',
+      h.srv.calls('POST', e => e.q.action === 'run').length === 0);
     delete h.window.openReportEmailModal;
     h.click(h.act('email'));
     await tick();
@@ -843,6 +855,7 @@ function seed(srv) {
     h.$$('.cr-job input')[0].click();
     h.click(h.act('print'));
     assert('Print still opens the window inside the click', h.opened.length === 1 && h.dwCalls.length === 0);
+    await tick(1); // report-tab.js writes the waiting page a tick after the click
     assert('…showing "Preparing" meanwhile', /Preparing your report/.test(h.opened[0].written));
     release();
     await tick(6);
@@ -1203,7 +1216,9 @@ function seed(srv) {
     await h.render();
     h.click(h.$('[data-act="open"][data-id="11"]'));
     h.click(h.act('print'));
-    assert('Print opens the window and says "Preparing"', h.opened.length === 1 && /Preparing your report/.test(h.opened[0].written));
+    assert('Print opens the window inside the click', h.opened.length === 1);
+    await tick(1); // the waiting page goes in a tick after the click
+    assert('…and says "Preparing"', /Preparing your report/.test(h.opened[0].written));
     h.click(h.$('[data-act="open"][data-id="12"]'));
     assert('…another report is opened while it waits', h.S().doc.id === 12);
     release();
@@ -1469,7 +1484,8 @@ function seed(srv) {
     assert('Fit puts it back', !h.$('.cr-frame-wrap').classList.contains('cr-scroll') && h.window.localStorage.getItem('fct_cr_preview_zoom') === 'fit');
     h.click(h.act('full-preview'));
     assert('"Open full preview" opens the report in a new tab, without printing it',
-      h.opened.length === 1 && /Acme Weekly/.test(h.opened[0].written) && !/window\.print\(\)/.test(h.opened[0].written));
+      h.opened.length === 1 && /Acme Weekly/.test(h.opened[0].written) && !/window\.print\(\)/.test(h.opened[0].written)
+        && h.tabs.length === 1 && !h.tabs[0].print);
     assert('…and logs nothing (nothing was sent)', h.srv.calls('POST', e => e.q.action === 'run').length === 0);
     h.close();
   }
@@ -2260,6 +2276,7 @@ function seed(srv) {
     // Open: the archived copy.
     h.click(h.$('[data-act="cust-open"][data-id="1"]'));
     assert('Open opens the window inside the click', h.opened.length === 1);
+    assert('…a tab of its own (dwReportTab), given the locked shell unbranded', h.tabs.length === 1 && h.tabs[0].brand === false);
     await tick(6);
     let w = h.opened[0];
     // The shell, parsed as a browser would (no script runs here).

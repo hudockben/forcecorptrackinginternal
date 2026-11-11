@@ -2852,7 +2852,7 @@
   <script src="bid-xlsx.js" defer></script>
   <script src="documents.js" defer></script>
   <script src="custom-reports-engine.js?v=2" defer></script>
-  <script src="custom-reports.js?v=2" defer></script>
+  <script src="custom-reports.js?v=3" defer></script>
   <script src="custom-reports-ai.js?v=2" defer></script>
   <script src="mathis.js" defer></script>
 </head>
@@ -8587,8 +8587,9 @@ function _crmExportCsv(filename, cols, rows, table) {
  * Print view. Opens the rows as a plain light-on-white table and calls print,
  * which is also how they become a PDF — the browser's own "Save as PDF".
  * Matches how the rest of the page prints (see printFinancials), including
- * going through dwWrite so the printout carries the DataWatch header like
- * every other report (report-branding.js).
+ * going through dwReportTab, which brands it the way dwWrite does, so the
+ * printout carries the DataWatch header like every other report
+ * (report-branding.js).
  */
 function _crmPrintReport(title, subtitle, cols, rows, table) {
   const ordered = table ? _crmSortRows(rows, table, cols) : rows;
@@ -8597,9 +8598,7 @@ function _crmPrintReport(title, subtitle, cols, rows, table) {
     ? ordered.map(r => `<tr>${cols.map(c => `<td>${esc(_crmCellText(c, r))}</td>`).join('')}</tr>`).join('')
     : `<tr><td colspan="${cols.length}" style="text-align:center;padding:2rem;color:#666">Nothing to report.</td></tr>`;
 
-  const w = window.open('', '_blank');
-  if (!w) { alert('Allow pop-ups for this site to print.'); return; }
-  dwWrite(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
+  const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
     <style>
       @page { size: landscape; margin: 0.4in; }
       body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; color:#111; margin:0; padding:0.5rem; }
@@ -8616,8 +8615,8 @@ function _crmPrintReport(title, subtitle, cols, rows, table) {
     <p class="sub">${esc(subtitle)} · ${ordered.length} row${ordered.length === 1 ? '' : 's'} · printed ${new Date().toLocaleString()}</p>
     <table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>
     <script>window.onload=()=>{window.print();}<\/script>
-    </body></html>`);
-  w.document.close();
+    </body></html>`;
+  dwReportTab({ onBlocked: () => alert('Allow pop-ups for this site to print.') }).fill(reportHtml);
 }
 
 /**
@@ -12618,9 +12617,7 @@ function downloadInvPDF(year, selectedMonths) {
       }).join('')}
     </div>`;
 
-  const doc = window.open('', '_blank', 'width=1100,height=800');
-  if (!doc) return;
-  dwWrite(doc, `<!DOCTYPE html><html><head><meta charset="utf-8">
+  const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
   <title>Rubber Infill Inventory — ${year}</title>
   <style>
     body { font-family: Arial, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 1.5rem; }
@@ -12647,8 +12644,8 @@ function downloadInvPDF(year, selectedMonths) {
   ${cardsHTML}
   ${breakdownHTML}
   <script>window.onload=function(){window.print();}<\/script>
-  </body></html>`);
-  doc.document.close();
+  </body></html>`;
+  dwReportTab({ features: 'width=1100,height=800' }).fill(reportHtml);
 }
 
 let _invPDFYear = null;
@@ -21893,9 +21890,7 @@ function exportEquipPDF() {
   <script>window.onload=()=>{window.print();}<\/script>
   </body></html>`;
 
-  const win = window.open('', '_blank');
-  dwWrite(win, html);
-  win.document.close();
+  dwReportTab().fill(html);
 }
 
 /* ═══════════════════════════════════════════
@@ -23400,8 +23395,7 @@ function _printSoEDetail(detId) {
   const innerHtml = td.innerHTML;
   const dateStr   = new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
 
-  const win = window.open('', '_blank');
-  dwWrite(win, `<!DOCTYPE html><html><head><meta charset="utf-8">
+  const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
   <title>Scale of Economy Detail</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -23436,8 +23430,8 @@ function _printSoEDetail(detId) {
   </div>
   ${innerHtml}
   <script>window.onload = () => { window.print(); }<\/script>
-  </body></html>`);
-  win.document.close();
+  </body></html>`;
+  dwReportTab().fill(reportHtml);
 }
 
 function _toggleSoEDetail(detId, row) {
@@ -25280,9 +25274,7 @@ function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
   if (opts && opts.returnHtml) {
     return { html: _html, name, jobNo };
   }
-  const win = window.open('', '_blank');
-  dwWrite(win, _html);
-  win.document.close();
+  dwReportTab().fill(_html);
   return null;
 }
 
@@ -26258,9 +26250,7 @@ function printFinancials() {
     (finFilters.q || '').trim() ? 'Search: "' + esc2(finFilters.q.trim()) + '"' : '',
   ].filter(Boolean).join(' · ');
 
-  const win = window.open('', '_blank');
-  if (!win) { alert('Your browser blocked the print window. Allow pop-ups for this site and try again.'); return; }
-  dwWrite(win, `<!DOCTYPE html><html><head><meta charset="utf-8">
+  const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
   <title>Financials — ${esc2(_finDivisionLabel())}</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -26312,8 +26302,8 @@ function printFinancials() {
   </table>
   <p class="note">Projected Profit is contract value minus projected final cost. GP Earned to Date is the contract earned so far (cost to date over projected cost) less cost to date — blank until a job has spend, contract minus final cost once it is complete.${t.noContract ? ` ${t.noContract} job${t.noContract === 1 ? ' has' : 's have'} no contract amount and ${t.noContract === 1 ? 'is' : 'are'} excluded from both profit totals.` : ''} Net Profit is invoiced less actual cost. Bonus Amount is ${b.share}% of the net profit left after ${b.overhead}% overhead and the ${b.target}% profit target come off the invoiced amount; a job below that line shows a negative bonus, which nets against the total. Man Hours leave out travel. OT Hours are payroll's: each employee's hours past 40 in a Monday–Sunday week, credited to the job they were worked on and added up over every week${_finOtState === 'ready' ? '' : ' (not available for this printout)'}.${t.noInvoice ? ` ${t.noInvoice} job${t.noInvoice === 1 ? ' has' : 's have'} nothing invoiced yet and ${t.noInvoice === 1 ? 'is' : 'are'} left out of the Net Profit and Bonus totals.` : ''}${ranged ? ' The date range keeps the jobs with a daily entry dated inside it; every other column is the whole job, and Actual in Range is the cost of just the entries dated inside the range.' : ''}${filterNote ? ' Totals cover the filtered rows only.' : ''}</p>
   <script>window.onload = () => { window.print(); }<\/script>
-  </body></html>`);
-  win.document.close();
+  </body></html>`;
+  dwReportTab({ onBlocked: () => alert('Your browser blocked the print window. Allow pop-ups for this site and try again.') }).fill(reportHtml);
 }
 
 /* ── Custom Reporting ─────────────────────────────────────────────────────
@@ -27214,10 +27204,7 @@ function exportSubCodePDF() {
   <script>window.onload=()=>{window.print();}<\/script>
   </body></html>`;
 
-  const win = window.open('', '_blank');
-  if (!win) { alert('Pop-up blocked — please allow pop-ups for this site and try again.'); return; }
-  dwWrite(win, html);
-  win.document.close();
+  dwReportTab({ onBlocked: () => alert('Pop-up blocked — please allow pop-ups for this site and try again.') }).fill(html);
 }
 
 function _updateCostFilterButtons() {
@@ -27899,9 +27886,7 @@ function exportCrewSignInPDF(date) {
   <script>window.onload=()=>{window.print();}<\/script>
   </body></html>`;
 
-  const win = window.open('', '_blank');
-  dwWrite(win, html);
-  win.document.close();
+  dwReportTab().fill(html);
 }
 
 function openDailySummaryReport() {
@@ -28257,9 +28242,7 @@ function exportDailySummaryPDF(projVal, startDate, endDate, opts) {
   if (_returnHtml) {
     return { html: _html, titleStr, startDate, endDate, projVal };
   }
-  const win = window.open('', '_blank');
-  dwWrite(win, _html);
-  win.document.close();
+  dwReportTab().fill(_html);
   return null;
 }
 
@@ -29969,9 +29952,7 @@ function _sePrint() {
 
   const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
   const projLabel = _seProjName ? esc2(_seProjName) : 'Untitled Project';
-  const win = window.open('', '_blank');
-  if (!win) { alert('Pop-up blocked — allow pop-ups to export the schedule.'); return; }
-  dwWrite(win, `<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Project Schedule</title>
+  const reportHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Project Schedule</title>
   <style>
     *{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
     body{color:#111;background:#fff;padding:0.6cm 0.7cm}
@@ -30044,8 +30025,8 @@ function _sePrint() {
     <p class="fn">* Travel / project management span the full project. ${offField.length ? '&#8224; Off-field work is done after the field is handed over. ' : ''}A <b>*</b> after Work Days marks a manually set duration.${deadlineSet ? ` The vertical line is the field deadline (${_seFmtDate(deadlineCal)}).` : ''}</p>
     </div>
     <script>window.onload=function(){window.print();}<\/script>
-  </body></html>`);
-  win.document.close();
+  </body></html>`;
+  dwReportTab({ onBlocked: () => alert('Pop-up blocked — allow pop-ups to export the schedule.') }).fill(reportHtml);
 }
 
 
@@ -30400,8 +30381,7 @@ function exportProdSubCodePDF(panelId, projName, cc, sc) {
 
   const dateStr = new Date().toLocaleDateString('en-US', { year:'numeric', month:'long', day:'numeric' });
 
-  const win = window.open('', '_blank');
-  dwWrite(win, `<!DOCTYPE html>
+  const reportHtml = `<!DOCTYPE html>
 <html><head>
   <meta charset="UTF-8"/>
   <title>${projName} — ${cc} / ${sc} Production Report</title>
@@ -30427,8 +30407,8 @@ function exportProdSubCodePDF(panelId, projName, cc, sc) {
   <p class="meta">Production Rate Report &nbsp;&bull;&nbsp; Generated ${dateStr}</p>
   ${tableHtml}
   <script>window.onload = function(){ window.print(); }<\/script>
-</body></html>`);
-  win.document.close();
+</body></html>`;
+  dwReportTab().fill(reportHtml);
 }
 
 let bidFilters = {};
@@ -32845,9 +32825,7 @@ function printDailyPMReport(opts) {
     return { html, projId, projName, jobNum };
   }
 
-  const win = window.open('', '_blank');
-  dwWrite(win, html);
-  win.document.close();
+  dwReportTab().fill(html);
   return null;
 }
 
@@ -32871,12 +32849,26 @@ function emailDailyPMReport() {
 
 /* ── Schedule PDF Export ─────────────────────────────────────────────────── */
 
-async function printSchedulePDF() {
+async function printSchedulePDF(opts) {
   const sel    = document.getElementById('sched-proj-select');
   const projId = sel ? sel.value : '';
   if (!projId) return;
   const proj = getProj(projId);
   if (!proj) return;
+
+  // The tab is claimed now, inside the click, and filled once the report is
+  // built: the AI read below is awaited, and a pop-up asked for after it may
+  // be blocked. opts.returnHtml is that build, as in exportJobSummary.
+  if (!(opts && opts.returnHtml)) {
+    const tab = dwReportTab({ title: 'Schedule Report', waiting: 'Building the schedule report\u2026' });
+    try {
+      tab.fill(await printSchedulePDF({ returnHtml: true }));
+    } catch (e) {
+      tab.fail('The schedule report could not be built: ' + e.message);
+      throw e;
+    }
+    return;
+  }
 
   const aiResult  = await _fetchSchedAI(proj).catch(() => null);
   const deadline  = _schedGetDeadline(proj);
@@ -33095,9 +33087,7 @@ async function printSchedulePDF() {
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
 
-  const win = window.open('', '_blank');
-  dwWrite(win, html);
-  win.document.close();
+  return html;
 }
 
 /* ── Gantt Chart Modal (interactive) ────────────────────────────────────── */
@@ -33796,9 +33786,7 @@ function printGanttPDF() {
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
 
-  const win = window.open('', '_blank');
-  dwWrite(win, html);
-  win.document.close();
+  dwReportTab().fill(html);
 }
 
 /* ── AI Insights ─────────────────────────────────────────────────────────── */
@@ -36784,9 +36772,7 @@ function _csExportPdf() {
     </div>
     <div class="kpis">${kpis}</div>`;
 
-  const win = window.open('', '_blank');
-  if (!win) { alert('Pop-up blocked — allow pop-ups to export the schedule.'); return; }
-  dwWrite(win, `<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Construction Schedule — ${esc(titleTxt)}</title>
+  const reportHtml = `<!DOCTYPE html><html><head><meta charset="UTF-8"/><title>Construction Schedule — ${esc(titleTxt)}</title>
   <style>
     :root{--border:#d5d8dd;--muted:#666;--fg:#111;--surface:#f4f4f4;--red:#dc2626;--blue:#16a34a}
     *{box-sizing:border-box;margin:0;padding:0;font-family:Arial,Helvetica,sans-serif}
@@ -36837,8 +36823,8 @@ function _csExportPdf() {
       <p class="fn">Est. Working Days counts ${esc(wwLabel)}. Bars are colored by status with a % done fill; <span style="color:#dc2626;font-weight:700">red</span> marks the critical path (dependency chain that drives the finish date); the dashed line marks today; arrows show finish-to-start dependencies. Dashed bars are duration-only estimates charted in sequence, not scheduled dates${showSched ? '; dotted bars run ongoing across the job. "Same time" and ongoing work is excluded from the working-day count, since it runs alongside the rest of the schedule' : ''}.${hasOff ? ' <span style="color:#b45309;font-weight:700">&#9873;</span> marks off-field work (landscaping and the like), which is scheduled after the field and may finish past the amber field-deadline line — it is excluded from the field completion date and its working-day count.' : ''}</p>
     </div>
     <script>window.onload=function(){window.print();}<\/script>
-  </body></html>`);
-  win.document.close();
+  </body></html>`;
+  dwReportTab({ onBlocked: () => alert('Pop-up blocked — allow pop-ups to export the schedule.') }).fill(reportHtml);
 }
 
 /* ── Email the schedule — reuses the shared report-email modal ────────────── */

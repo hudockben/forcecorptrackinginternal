@@ -2,7 +2,9 @@
 /* DataWatch — a printed report in a tab of its own
  *
  *   const tab = dwReportTab({ title, waiting, onBlocked, features, print, brand });
- *   tab.fill(html)        // the report: branded, written in, prints itself
+ *   tab.fill(html)        // the report: branded, written in, prints itself.
+ *                         // Returns a promise of true once the report is in
+ *                         // its tab, false if it never got there
  *   tab.fail(message)     // the build failed: the tab says so
  *   tab.progress(text)    // while it builds: replace the waiting line
  *   tab.close()           // give up on it: the tab closes itself
@@ -51,7 +53,10 @@
   const CHANNEL  = 'dw-report-tab';
   const READY_MS = 3000;     // a tab that has not asked by now, with this page
                              // still in front, never opened
-  const HOLD_MS  = 120000;   // how long a built report waits on a late tab
+  const HOLD_MS  = 120000;   // how long a tab that has not asked for its report
+                             // is waited on — before and after the report is
+                             // built; a tab that has asked waits as long as
+                             // the build takes
   const PRINT_MS = 350;      // let a report lay out before print: true prints it
 
   const later = (fn, ms) => setTimeout(fn, ms);
@@ -111,6 +116,8 @@
     const win = window.open('', '_blank', o.features || undefined);
     let placed = false, settled = false, cancelled = false, waiting = o.waiting;
     if (!win && o.onBlocked) o.onBlocked();
+    // Nothing in the report needs this page; this page keeps its own handle.
+    if (win) { try { win.opener = null; } catch (e) { /* not ours to clear */ } }
     const place = () => {
       if (placed || settled || !win || win.closed) return;
       placed = true;
@@ -118,7 +125,7 @@
     };
     if (win) later(place, 0);
     const put = (html, raw) => {
-      if (settled || cancelled || !win || win.closed) return;
+      if (settled || cancelled || !win || win.closed) return false;
       settled = true;
       try {
         const d = win.document;
@@ -126,12 +133,14 @@
         if (!raw && o.brand && typeof window.dwWrite === 'function') window.dwWrite(win, html);
         else d.write(raw ? html : brandOf(o.brand, html));
         d.close();
-      } catch (e) { /* closed meanwhile */ }
+        return true;
+      } catch (e) { return false; /* closed meanwhile */ }
     };
     return {
       fill(html) {
-        put(html);
-        if (o.print && win) later(() => { try { win.focus(); win.print(); } catch (e) { /* they can still print */ } }, PRINT_MS);
+        const ok = put(html);
+        if (ok && o.print) later(() => { try { win.focus(); win.print(); } catch (e) { /* they can still print */ } }, PRINT_MS);
+        return Promise.resolve(ok);
       },
       fail(message) { put(placeholder(o.title, String(message || 'The report could not be built.'), true), true); },
       progress(text) {
@@ -170,9 +179,12 @@
 
     let ready = false, gone = false, blocked = false, over = false;
     let msg = null, note = null, readyTimer = 0, holdTimer = 0;
+    let delivered = null;
+    const landed = new Promise(r => { delivered = r; });
     const end = () => {
       if (over) return;
       over = true;
+      delivered(false); // no-op once the report has landed
       clearTimeout(readyTimer); clearTimeout(holdTimer);
       try { ch.close(); } catch (e) { /* already closed */ }
       // The tab has read the loader by now; nothing else will ask for it.
@@ -180,13 +192,16 @@
     };
     const deliver = () => {
       if (!ready || over) return;
-      if (msg) { ch.postMessage(msg); end(); return; }
+      if (msg) { ch.postMessage(msg); if (msg.type === 'html') delivered(true); end(); return; }
       if (note) { ch.postMessage(note); note = null; }
     };
     ch.onmessage = e => {
       const m = e.data || {};
       if (m.id !== id) return;
-      if (m.type === 'ready') { ready = true; deliver(); }
+      // The tab is there, so its report can take as long as it takes: a
+      // long build (Safety's Print all over a wide range) still lands, and
+      // 'gone' covers the tab being closed while it waits.
+      if (m.type === 'ready') { ready = true; clearTimeout(holdTimer); deliver(); }
       else if (m.type === 'gone') { gone = true; end(); }
     };
     // Only worth a word if they are still looking at this page: an opened tab
@@ -200,11 +215,17 @@
       blocked = true;
       if (o.onBlocked) o.onBlocked();
     }, READY_MS);
-    holdTimer = later(end, HOLD_MS);
+    const hold = () => { clearTimeout(holdTimer); holdTimer = later(end, HOLD_MS); };
+    hold();
 
-    const settle = m => { if (msg || over) return; msg = Object.assign({ id }, m); deliver(); };
+    const settle = m => {
+      if (msg || over) return;
+      msg = Object.assign({ id }, m);
+      if (!ready) hold(); // built: wait a while longer on a tab still to ask
+      deliver();
+    };
     return {
-      fill(html) { settle({ type: 'html', html: brandOf(o.brand, html), print: o.print }); },
+      fill(html) { settle({ type: 'html', html: brandOf(o.brand, html), print: o.print }); return landed; },
       fail(message) { settle({ type: 'error', message: String(message || 'The report could not be built.') }); },
       progress(text) {
         if (msg || over) return;
@@ -217,7 +238,8 @@
         msg = { type: 'close', id };
         deliver();
       },
-      get closed() { return gone || (blocked && !ready) || (!!msg && msg.type === 'close'); },
+      // over && !ready: the tab never asked, and no longer can.
+      get closed() { return gone || (blocked && !ready) || (over && !ready) || (!!msg && msg.type === 'close'); },
     };
   }
 

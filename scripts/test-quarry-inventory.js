@@ -17,8 +17,14 @@ const { JSDOM } = require('jsdom');
 
 const HTML_PATH = path.join(__dirname, '..', 'quarry.html');
 // quarry.html loads this with <script src>, and jsdom does not fetch external
-// resources — so its print path, which calls dwWrite(), threw on every export.
+// resources. Its print path goes through dwReportTab(), which brands the report
+// with dwWrite()/dwBrand() when this file is loaded and writes it unbranded
+// when it is not — so the Print / PDF checks assert the brand is there.
 const BRANDING_PATH = path.join(__dirname, '..', 'report-branding.js');
+// …and this one, which opens the report's tab (report-tab.js). jsdom's window
+// has no BroadcastChannel, so it opens the window the old way, which the
+// window.open stand-in below records.
+const REPORT_TAB_PATH = path.join(__dirname, '..', 'report-tab.js');
 const AS_OF     = '2026-07-30';
 
 // ── Fixture ────────────────────────────────────────────────────────────────
@@ -122,10 +128,11 @@ function loadPage(blobs, writes, gate) {
     url: 'https://example.test/quarry.html',
     pretendToBeVisual: true,
     beforeParse(win) {
-      // Stand in for the <script src="report-branding.js"> the page carries.
-      // Running the real file, as the browser does, rather than stubbing the
-      // two globals it exports.
+      // Stand in for the <script src="report-branding.js"> and
+      // <script src="report-tab.js"> the page carries. Running the real files,
+      // as the browser does, rather than stubbing the globals they export.
       win.eval(fs.readFileSync(BRANDING_PATH, 'utf8'));
+      win.eval(fs.readFileSync(REPORT_TAB_PATH, 'utf8'));
       win.localStorage.setItem('fct_token', 'test-token');
       win.localStorage.setItem('fct_user', JSON.stringify({
         userId: 1, username: 'tester', name: 'Test User', companyCode: 'TEST', companyName: 'Test Co',
@@ -532,6 +539,7 @@ async function main() {
   checkIncludes('export carries the roll-forward table', printed, 'Inventory Roll-Forward by Location');
   checkIncludes('export carries the monthly movement', printed, 'Monthly Movement');
   checkIncludes('export self-prints on load', printed, 'window.print()');
+  checkIncludes('export is branded', printed, 'data-dw-brand');
 
   // ── Home dashboard cards ──
   // The stockpile row reads the same engine as the Inventory tab, but balances

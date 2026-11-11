@@ -202,13 +202,16 @@ function checkMarkup(page, src, doc) {
 
   // v2 (spec Global): versioned src, so a browser holding last week's copy
   // fetches the new one rather than stripping v2 fields from a saved report.
+  // custom-reports.js is v3: it prints through dwReportTab (report-tab.js),
+  // which a page cached from before that change does not load, so a new
+  // copy must not be served to it under the old URL.
   const scripts = [...doc.querySelectorAll('script[src]')];
   const at = name => scripts.findIndex(s => s.getAttribute('src') === name);
   const count = name => scripts.filter(s => s.getAttribute('src') === name).length;
   const bare = name => scripts.filter(s => (s.getAttribute('src') || '').split('?')[0] === name).length;
-  const ENG = 'custom-reports-engine.js?v=2', UI = 'custom-reports.js?v=2', AI = 'custom-reports-ai.js?v=2', MAIL = 'report-email.js?v=2';
+  const ENG = 'custom-reports-engine.js?v=2', UI = 'custom-reports.js?v=3', AI = 'custom-reports-ai.js?v=2', MAIL = 'report-email.js?v=2';
   const eng = at(ENG), ui = at(UI), ai = at(AI), mail = at(MAIL), docs = at('documents.js');
-  assert('loads custom-reports-engine.js?v=2, custom-reports.js?v=2 and custom-reports-ai.js?v=2 once each',
+  assert('loads custom-reports-engine.js?v=2, custom-reports.js?v=3 and custom-reports-ai.js?v=2 once each',
     count(ENG) === 1 && count(UI) === 1 && count(AI) === 1);
   assert('…and no unversioned copy of any of them',
     bare('custom-reports-engine.js') === 1 && bare('custom-reports.js') === 1 && bare('custom-reports-ai.js') === 1);

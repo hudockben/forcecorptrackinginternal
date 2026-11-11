@@ -1860,43 +1860,35 @@
         </section>`;
     }
 
-    /* The window is claimed inside the click, BEFORE anything is fetched. A
+    /* The tab is claimed inside the click, BEFORE anything is fetched. A
        pop-up opened after an await is no longer answering a click as far as
        Safari and Chrome are concerned, and they swallow it — the sheet somebody
        came here for would simply never appear. It is filled in once the reads
-       land, the same way the job summary in kiewit-pinetree.html does it. */
+       land, the same way the job summary in kiewit-pinetree.html does it.
+
+       It is a tab of its own (dwReportTab, report-tab.js), not a window this
+       page opened and wrote into: while such a window's print dialog was up,
+       the browser held this page still too, and nothing here answered a click
+       until the printout was closed. Returns the tab's handle: `closed` at
+       once where a refused pop-up shows at once (a browser without
+       BroadcastChannel, which gets the old window), and otherwise a few
+       seconds on, when onBlocked says so. */
     function openPrintWindow(what) {
-      const w = window.open('', '_blank');
-      if (!w) {
-        toast('Your browser blocked the print window. Allow pop-ups for this site, then try again.', true);
-        return null;
-      }
-      try {
-        w.document.open();
-        dwWrite(w, `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Preparing…</title></head>
-          <body style="font:14px/1.5 system-ui,sans-serif;color:#475569;padding:28px">
-          <p id="prep">Preparing ${esc(what)}…</p></body></html>`);
-        w.document.close();
-      } catch { /* not writable yet — the real write below still lands */ }
-      return w;
+      return dwReportTab({
+        title: 'Preparing…',
+        waiting: `Preparing ${what}…`,
+        onBlocked: () => toast('Your browser blocked the print window. Allow pop-ups for this site, then try again.', true),
+      });
     }
 
-    function printProgress(w, text) {
-      try { const el = w.document.getElementById('prep'); if (el) el.textContent = text; }
-      catch { /* closed, or between documents */ }
+    // A tab they closed while it was being prepared is simply left unfilled.
+    function fillPrintWindow(tab, title, body, css) {
+      tab.fill(printShell(title, body, false, css));
     }
 
-    function fillPrintWindow(w, title, body, css) {
-      if (w.closed) return;   // they closed it while it was being prepared
-      w.document.open();
-      dwWrite(w, printShell(title, body, false, css));
-      w.document.close();
-      try { w.focus(); } catch { /* the browser's call */ }
-    }
-
-    function printFailed(w, err) {
+    function printFailed(tab, err) {
       if (err === PRINT_CANCELLED) return;
-      try { if (!w.closed) w.close(); } catch { /* already gone */ }
+      tab.close();
       toast('Could not build the printout: ' + err.message, true);
     }
 
@@ -1929,16 +1921,16 @@
         return toast('Nobody has signed this one and nobody is on the roster to sign it, so there is nothing to print.', true);
       }
       if (printBusy) return toast('Still preparing the last printout…');
-      const w = openPrintWindow('the sign-off sheet');
-      if (!w) return;
+      const tab = openPrintWindow('the sign-off sheet');
+      if (tab.closed) return;
       printBusy = true;
       try {
         const fresh = await fetchSignOff(id);
         if (!hasNames(fresh)) throw new Error('Nobody has signed this one and nobody is on the roster to sign it.');
         const d = fresh.document;
-        fillPrintWindow(w, `${d.title} — sign-off sheet — week of ${d.weekOf}`, sheetHTML(fresh, printInfo()));
+        fillPrintWindow(tab, `${d.title} — sign-off sheet — week of ${d.weekOf}`, sheetHTML(fresh, printInfo()));
       } catch (err) {
-        printFailed(w, err);
+        printFailed(tab, err);
       } finally {
         printBusy = false;
       }
@@ -1946,17 +1938,17 @@
 
     async function printSignature(id, username, signedAt) {
       if (printBusy) return toast('Still preparing the last printout…');
-      const w = openPrintWindow('the signature record');
-      if (!w) return;
+      const tab = openPrintWindow('the signature record');
+      if (tab.closed) return;
       printBusy = true;
       try {
         const g = await fetchSignOff(id);
         const s = g.signed.find(x => x.username === username && String(x.signedAt) === String(signedAt));
         if (!s) throw new Error('That signature could not be found. Reload the report and try again.');
-        fillPrintWindow(w, `${s.fullName} — ${g.document.title} — signed ${ymdOf(s.signedAt)}`,
+        fillPrintWindow(tab, `${s.fullName} — ${g.document.title} — signed ${ymdOf(s.signedAt)}`,
           personHTML(g, s, printInfo()));
       } catch (err) {
-        printFailed(w, err);
+        printFailed(tab, err);
       } finally {
         printBusy = false;
       }
@@ -2000,21 +1992,21 @@
       }
       if (printBusy) return toast('Still preparing the last printout…');
       const n = groups.length;
-      const w = openPrintWindow(n === 1 ? '1 document' : n + ' documents');
-      if (!w) return;
+      const tab = openPrintWindow(n === 1 ? '1 document' : n + ' documents');
+      if (tab.closed) return;
       printBusy = true;
       try {
         let read = 0;
         const { kept, skipped, title } = await signOffReads(all, {
-          beforeRead: () => { if (w.closed) throw PRINT_CANCELLED; },   // they gave up on it — stop reading
+          beforeRead: () => { if (tab.closed) throw PRINT_CANCELLED; },   // they gave up on it — stop reading
           afterRead:  () => {
             read++;
-            printProgress(w, `Preparing ${n} document${n === 1 ? '' : 's'}… ${read} of ${n} read.`);
+            tab.progress(`Preparing ${n} document${n === 1 ? '' : 's'}… ${read} of ${n} read.`);
           },
         });
-        fillPrintWindow(w, title, signOffBody(kept, skipped, printInfo()));
+        fillPrintWindow(tab, title, signOffBody(kept, skipped, printInfo()));
       } catch (err) {
-        printFailed(w, err);
+        printFailed(tab, err);
       } finally {
         printBusy = false;
       }
@@ -2703,9 +2695,10 @@
       const m = state.rate;
       if (state.rateLoading) return toast('Still loading the sign rate…');
       if (!m || !m.docs.length || !m.people.length) return toast('Nothing to print yet.', true);
-      const w = openPrintWindow('the sign rate');
-      if (!w) return;
-      fillPrintWindow(w, `Employee sign rate — ${rateFileStem(m)}`, rateSheetsHTML(m, printInfo()), RATE_PRINT_CSS);
+      // Built before the tab opens, so a sheet that fails to build leaves no
+      // tab behind still saying it is being prepared.
+      const html = printShell(`Employee sign rate — ${rateFileStem(m)}`, rateSheetsHTML(m, printInfo()), false, RATE_PRINT_CSS);
+      openPrintWindow('the sign rate').fill(html);
     }
 
     /* ── Excel ── */
@@ -3563,6 +3556,7 @@
     loadDocs();
   </script>
   <script src="report-branding.js" defer></script>
+  <script src="report-tab.js" defer></script>
   <script src="mathis.js" defer></script>
 </body>
 </html>

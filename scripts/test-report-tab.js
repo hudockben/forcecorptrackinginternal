@@ -83,27 +83,50 @@ assert('the tab is opened with noopener',
 // No report window anywhere is opened the old way. A window.open('') the
 // page writes into is in the app's browsing context group, so its print
 // dialog freezes the app. Two are allowed: report-tab.js's own fallback for a
-// browser with no BroadcastChannel, and documents.js, which opens a tab only
-// to send it to a stored file's signed URL on another origin (no report, no
-// print() of ours).
-const ALLOWED_OPENERS = new Set(['report-tab.js', 'documents.js']);
+// browser with no BroadcastChannel, and the one line in documents.js that
+// opens a tab only to send it to a stored file's signed URL on another origin
+// (no report, no print() of ours). Any spelling counts: window./self./top./
+// globalThis. or a bare open(, '' "" `` or about:blank.
+const OLD_OPEN = /(?:\b(?:window|self|top|globalThis)\s*\.\s*|(?<![\w.$]))open\(\s*(''|""|``|'about:blank'|"about:blank")/;
+const allowedOpen = (f, line) => f === 'report-tab.js'
+  || (f === 'documents.js' && /^\s*try \{ tab = window\.open\('', '_blank'\); \}/.test(line));
 const oldStyle = [];
-for (const f of fs.readdirSync(ROOT).filter(f => /\.(html|js)$/.test(f) && !ALLOWED_OPENERS.has(f))) {
+for (const f of fs.readdirSync(ROOT).filter(f => /\.(html|js)$/.test(f))) {
   const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
   s.split('\n').forEach((line, i) => {
-    if (/window\.open\(\s*(''|""|``|'about:blank')/.test(line)) oldStyle.push(`${f}:${i + 1}`);
+    if (OLD_OPEN.test(line) && !allowedOpen(f, line)) oldStyle.push(`${f}:${i + 1}`);
   });
 }
 assert('no page opens a report window the old way, window.open(\'\')', oldStyle.length === 0, oldStyle.join(', '));
-// …nor prints one from here: w.print() on a window this page opened.
+// …nor prints one from here: w.print() — or w?.print(), or w.print handed to
+// a timer — on a window this page opened. window.print() is the page's own
+// dialog, over the page itself; contentWindow.print() an iframe's in it.
+const REMOTE_PRINT = /\b([A-Za-z_$][\w$]*)\s*\??\.\s*print\s*(?:\(|(?=[,)]))/g;
 const remotePrint = [];
 for (const f of fs.readdirSync(ROOT).filter(f => /\.(html|js)$/.test(f) && f !== 'report-tab.js')) {
   const s = fs.readFileSync(path.join(ROOT, f), 'utf8');
   s.split('\n').forEach((line, i) => {
-    if (/\b(?!window\b)[A-Za-z_$][\w$]*\.print\(\)/.test(line) && !/contentWindow\.print\(\)/.test(line)) remotePrint.push(`${f}:${i + 1}`);
+    for (const m of line.matchAll(REMOTE_PRINT)) {
+      if (m[1] !== 'window' && m[1] !== 'contentWindow') { remotePrint.push(`${f}:${i + 1}`); break; }
+    }
   });
 }
 assert('no page calls print() on a report window it opened', remotePrint.length === 0, remotePrint.join(', '));
+// The sweeps above have to be able to fail: each spelling they are meant to
+// catch, caught.
+{
+  const opens = ["window.open('')", 'window.open("about:blank", "_blank")', "open('', '_blank')", "self.open('')",
+    "top.open('')", "globalThis.open(``)", "window . open( '' )"];
+  const prints = ['w.print()', 'w?.print()', 'w.print ()', 'setTimeout(w.print, 350)', 'x.contentWindow.print(); w.print()'];
+  const nots = ['window.print()', 'fr.contentWindow.print()', 'document.open()', "doc.open('')", 'const print = !!opts.print;',
+    '.print-scope {', "{ print: true }"];
+  assert('…the sweeps catch every spelling of the old way, and pass the right ones',
+    opens.every(l => OLD_OPEN.test(l))
+    && prints.every(l => [...l.matchAll(REMOTE_PRINT)].some(m => m[1] !== 'window' && m[1] !== 'contentWindow'))
+    && nots.every(l => !OLD_OPEN.test(l) && ![...l.matchAll(REMOTE_PRINT)].some(m => m[1] !== 'window' && m[1] !== 'contentWindow')),
+    JSON.stringify({ opens: opens.filter(l => !OLD_OPEN.test(l)),
+      prints: prints.filter(l => ![...l.matchAll(REMOTE_PRINT)].some(m => m[1] !== 'window' && m[1] !== 'contentWindow')) }));
+}
 
 
 // ── The fallback, against a stand-in window ───────────────────────────────
@@ -175,6 +198,27 @@ const fallbackChecks = (async () => {
     t.fail('Could not read <it>');
     assert('fail() replaces the waiting page with the message, escaped',
       log.slice(1).join('|').startsWith('open|write:<!DOCTYPE html>') && /Could not read &lt;it&gt;/.test(log.join('|')), log.join('|'));
+  }
+  {
+    const { win, w } = standIn();
+    const t = win.dwReportTab({});
+    assert('the old window is cut loose from this page (opener cleared), as custOpen used to',
+      w.opener === null);
+    assert('fill() says the report is in: a promise of true',
+      await t.fill('<p>r</p>') === true);
+  }
+  {
+    const { win } = standIn();
+    win.blocked = true;
+    const t = win.dwReportTab({});
+    assert('…of false for a blocked window, so nothing logs a print that never opened',
+      await t.fill('<p>r</p>') === false);
+  }
+  {
+    const { win } = standIn();
+    const t = win.dwReportTab({});
+    t.close();
+    assert('…and of false after close()', await t.fill('<p>r</p>') === false);
   }
 })();
 
@@ -387,6 +431,50 @@ const sleep = ms => new Promise(r => setTimeout(r, ms));
       await tab.close();
       await sleep(400);
       assert('a tab the user closed before its report came reads as closed', await app.evaluate(() => window.__t.closed) === true);
+    });
+
+    await withBrowser(true, async (browser, app) => {
+      const tabs = nextTab(browser);
+      await clickRun(app, `window.__t = dwReportTab({});`);
+      await tabs;
+      await sleep(400);
+      const r = await within(app.evaluate(html => window.__t.fill(html), report('Birch Ln', MARK)), 3000);
+      assert('fill() resolves true once the report is in its tab', r.ok && r.v === true, JSON.stringify(r));
+    });
+
+    // The long waits, shortened: 120 s becomes 400 ms (and 3 s, 300 ms), on the
+    // page's own timers, which report-tab.js reads when it sets them.
+    const SHORT = `const st = window.setTimeout;
+      window.setTimeout = (f, ms, ...a) => st(f, ms === 120000 ? 400 : ms === 3000 ? 300 : ms, ...a);`;
+    await withBrowser(true, async (browser, app) => {
+      const tabs = nextTab(browser);
+      // Safety's Print all over a wide range: the tab asks at once, the
+      // report takes longer than the 120 s a late tab is waited on.
+      await clickRun(app, `${SHORT} window.__t = dwReportTab({ waiting: 'Preparing 40 documents…' });`);
+      const [tab] = await tabs;
+      await sleep(1200);   // three "120 s" holds gone by
+      await app.evaluate(() => window.__t.progress('Read 39 of 40…'));
+      await sleep(200);
+      const p = await readTab(tab);
+      assert('a tab that has asked waits as long as the build takes: progress still lands',
+        p.ok && /Read 39 of 40/.test(p.v.text), JSON.stringify(p.v));
+      const r = await within(app.evaluate(html => window.__t.fill(html), report('Sign-offs', MARK)), 3000);
+      await sleep(400);
+      const t = await readTab(tab);
+      assert('…and so does the report, however long it took',
+        r.ok && r.v === true && t.ok && /Sign-offs/.test(t.v.text) && t.v.loaded === 1, JSON.stringify({ r, t: t.v }));
+    });
+
+    await withBrowser(true, async (browser, app) => {
+      await clickRun(app, `${SHORT} window.open = () => null;
+        window.__t = dwReportTab({}); window.__landed = 'pending';
+        window.__t.fill('<p>r</p>').then(ok => { window.__landed = ok; });`);
+      await sleep(250);
+      assert('a blocked tab\'s report is not called in before it is known blocked',
+        await app.evaluate(() => window.__landed) === 'pending');
+      await sleep(900);
+      assert('…and once a tab has not asked in the time allowed, fill() resolves false and the handle reads closed',
+        await app.evaluate(() => [window.__landed, window.__t.closed].join()) === 'false,true');
     });
 
     await withBrowser(true, async (browser, app) => {

@@ -3,7 +3,7 @@
  * Puts the DataWatch wordmark on the top left of every printed / emailed report.
  *
  *   dwBrand(html)      -> html with the header injected after <body>
- *   dwWrite(win, html) -> the same, written into a popup print window
+ *   dwWrite(win, html) -> the same, written into a window this page opened
  *
  * The reports are standalone print documents built as strings by ~50 report
  * builders across the division pages, each with its own header markup. Rather
@@ -12,15 +12,17 @@
  *
  * The band is text only — no image. That keeps it weightless (the HTML is
  * POSTed to /api/email/send-report under a 1.5MB cap) and sidesteps the three
- * places this markup renders that can't fetch from our origin: the about:blank
- * print window, the headless-Chrome PDF renderer (which aborts every non-data:
+ * places this markup renders that can't fetch from our origin: the report's
+ * print tab, the headless-Chrome PDF renderer (which aborts every non-data:
  * request), and an email client.
  *
- * The print path calls dwWrite() where it used to call win.document.write();
- * report-email.js calls dwBrand() before sending, guarded as
- * `(window.dwBrand||String)(html)` since an email is worth sending unbranded.
- * scripts/test-report-branding.js asserts every page that calls dwWrite also
- * loads this file, so the print path can rely on it being here.
+ * The print path is report-tab.js's dwReportTab, which brands the report
+ * with dwBrand() — dwWrite() in its fallback window, where a browser has no
+ * BroadcastChannel. report-email.js calls dwBrand() before sending, guarded
+ * as `(window.dwBrand||String)(html)` since an email is worth sending
+ * unbranded. scripts/test-report-branding.js asserts every page that calls
+ * dwWrite or dwReportTab also loads this file, so the print path can rely on
+ * it being here.
  */
 (function () {
   if (window.dwBrand) return; // already loaded
@@ -54,9 +56,9 @@
     return html.slice(0, at) + headerHtml() + html.slice(at);
   }
 
-  // Write a report document into a print window, branded. Report builders call
-  // this instead of win.document.write(...), so the header lands on the print
-  // path the same way it lands on the emailed one.
+  // Write a report document into a window, branded: report-tab.js's fallback
+  // window calls this instead of win.document.write(...), so the header lands
+  // on the print path the same way it lands on the emailed one.
   function dwWrite(win, ...chunks) {
     if (!win || !win.document) return;
     win.document.write(...chunks.map(c => dwBrand(String(c))));

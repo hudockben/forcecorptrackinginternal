@@ -2808,6 +2808,7 @@
 
   <script src="auto-report.js"></script>
   <script src="report-branding.js" defer></script>
+  <script src="report-tab.js" defer></script>
   <script src="report-email.js" defer></script>
   <script src="mathis.js" defer></script>
   <script>
@@ -7716,13 +7717,8 @@
         cloneTable('#inventoryProductTable',  'Tons Sold by Product'),
       ].join('');
 
-      const doc = window.open('', '_blank', 'width=1100,height=800');
-      if (!doc) {
-        alert('Pop-up blocked. Allow pop-ups for this site to download the PDF.');
-        return;
-      }
       const basisTxt = quarryInventory.basis === 'crusher' ? 'tons to crusher' : 'final screen tons';
-      dwWrite(doc, `<!DOCTYPE html><html><head><meta charset="utf-8">
+      const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Quarry Inventory — ${escapeHtml(asOfTxt)}</title>
 <style>
   body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 1.25rem; }
@@ -7752,8 +7748,11 @@
 ${kpis}
 ${sections}
 <script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>
-</body></html>`);
-      doc.document.close();
+</body></html>`;
+      dwReportTab({
+        features: 'width=1100,height=800',
+        onBlocked: () => alert('Pop-up blocked. Allow pop-ups for this site to download the PDF.'),
+      }).fill(reportHtml);
     }
 
     // ── Royalty owners editor (per pit) ───────────────────────────
@@ -10356,12 +10355,7 @@ ${sections}
         cloneTable('#analyticsYoyTable',      'Year over Year'),
       ].join('');
 
-      const doc = window.open('', '_blank', 'width=1100,height=800');
-      if (!doc) {
-        alert('Pop-up blocked. Allow pop-ups for this site to download the PDF.');
-        return;
-      }
-      dwWrite(doc, `<!DOCTYPE html><html><head><meta charset="utf-8">
+      const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Quarry Analytics — ${yrTitle}</title>
 <style>
   body { font-family: Arial, Helvetica, sans-serif; font-size: 11px; color: #111; background: #fff; padding: 1.25rem; }
@@ -10403,8 +10397,11 @@ ${sections}
 ${kpis}
 ${sections}
 <script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>
-</body></html>`);
-      doc.document.close();
+</body></html>`;
+      dwReportTab({
+        features: 'width=1100,height=800',
+        onBlocked: () => alert('Pop-up blocked. Allow pop-ups for this site to download the PDF.'),
+      }).fill(reportHtml);
     }
 
     // Builds the Break-Even report's inner HTML (style block + KPIs + tables +
@@ -10570,17 +10567,15 @@ ${sections}
 
     function downloadBreakevenPDF() {
       const { yrTitle, html } = buildBreakevenReport({ includeHeader: true });
-      const doc = window.open('', '_blank', 'width=1100,height=800');
-      if (!doc) {
-        alert('Pop-up blocked. Allow pop-ups for this site to download the PDF.');
-        return;
-      }
-      dwWrite(doc, `<!DOCTYPE html><html><head><meta charset="utf-8">`
+      const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">`
         + `<title>Quarry Break-Even — ${yrTitle}</title></head>`
         + `<body style="margin:0;padding:16px;background:#fff;">${html}`
         + `<` + `script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>`
-        + `</body></html>`);
-      doc.document.close();
+        + `</body></html>`;
+      dwReportTab({
+        features: 'width=1100,height=800',
+        onBlocked: () => alert('Pop-up blocked. Allow pop-ups for this site to download the PDF.'),
+      }).fill(reportHtml);
     }
 
     // Email the same report via the shared recipient-picker modal (report-email.js).
@@ -10666,16 +10661,14 @@ ${sections}
       @media print{.rp-page{padding:0;max-width:none}}
     `;
     function rptPrintWindow(title, html) {
-      const w = window.open('', '_blank', 'width=1000,height=800');
-      if (!w) {
-        alert('Pop-up blocked. Allow pop-ups for this site to print the report.');
-        return;
-      }
-      dwWrite(w, `<!DOCTYPE html><html><head><meta charset="utf-8">`
+      const reportHtml = `<!DOCTYPE html><html><head><meta charset="utf-8">`
         + `<title>${escapeHtml(title)}</title><style>${RPT_PRINT_CSS}</style></head><body>${html}`
         + `<` + `script>window.onload=function(){setTimeout(function(){window.print();},150);}<\/script>`
-        + `</body></html>`);
-      w.document.close();
+        + `</body></html>`;
+      dwReportTab({
+        features: 'width=1000,height=800',
+        onBlocked: () => alert('Pop-up blocked. Allow pop-ups for this site to print the report.'),
+      }).fill(reportHtml);
     }
 
     const QUARRY_ROY_PERIODS_KEY = 'fct_quarry_royalty_periods';
