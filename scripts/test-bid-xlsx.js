@@ -38,8 +38,10 @@ const WRITER = fs.readFileSync(path.join(ROOT, 'bid-xlsx.js'), 'utf8');
 // read the contract fields straight, so a contract CO does not move theirs.
 const CO_HELPERS = ['contractCOs', 'contractCOTotal', 'originalContract', 'revisedContract', 'projectContract'];
 // Paving alone splits equipment run on a Labor row onto the cost code's
-// Equipment line; its actualForBidItem reads the pieces through this.
-const PAVING_OWN = ['_bidEachCostPiece'];
+// Equipment line; its actualForBidItem reads the pieces through the first,
+// and its projectedCostForProject adds every line up off one walk of the rows
+// with the second.
+const PAVING_OWN = ['_bidEachCostPiece', '_bidCodeTotals'];
 const PAGES  = [
   { file: 'tracker.html',         area: 'SF', costTotal: 'Cost Total',     contract: 9000, extra: [], own: [] },
   { file: 'paving.html',          area: 'SY', costTotal: 'Bid Cost Total', contract: 9500, extra: CO_HELPERS, own: PAVING_OWN },

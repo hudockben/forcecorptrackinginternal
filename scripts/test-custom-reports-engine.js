@@ -70,8 +70,9 @@ const OPTIONAL = ['projectContract', 'originalContract', 'revisedContract', 'con
   // The Schedule tab's pace math, for planned-rate parity.
   '_workingDaysBetween', '_schedDaysRemaining', '_schedStatus', '_ppWorkingDaysRemaining', '_schedCalcRow',
   // Paving's per-line actuals: equipment on a Labor row counts on the cost
-  // code's Equipment line.
-  '_bidEachCostPiece'];
+  // code's Equipment line. Its projected cost adds every line up off one walk
+  // of the job's rows (_bidCodeTotals).
+  '_bidEachCostPiece', '_bidCodeTotals'];
 function pageEngine(file) {
   const SRC = fs.readFileSync(path.join(ROOT, file), 'utf8');
   const haul = /const HAUL_FIELD_TYPE_RE\s*=\s*([^;]+);/.exec(SRC);
