@@ -430,11 +430,11 @@ function pavingEquipToEquipLine(groups, bidLines) {
     }
   }
   if (!equipLine.size) return groups;
-  // A move never changes how many times the money is counted: only when as
-  // many bid lines take the Equipment sub code as take the Labor one, a group
-  // on no line counting once (off-bid). A cost-code-only line beside an
-  // Equipment line, with no Labor line, would otherwise count the machine
-  // twice. Same wildcard rule as lineMatchesGroup below.
+  // A move never counts the machine more times than where it was booked: only
+  // when no more bid lines take the Equipment sub code than take the Labor
+  // one, a group on no line counting once (off-bid). A cost-code-only line
+  // beside an Equipment line, with no Labor line, would otherwise count the
+  // machine twice. Same wildcard rule as lineMatchesGroup below.
   const reachOf = (cc, sc) => lines.filter(b =>
     (b.cost_code ? cc === b.cost_code : true) && (b.sub_code ? sc === b.sub_code : true)).length || 1;
   const out   = groups.map(g => ({ ...g }));
@@ -445,7 +445,7 @@ function pavingEquipToEquipLine(groups, bidLines) {
     const to = g.cost_code ? equipLine.get(g.cost_code) : undefined;
     if (to === undefined || g.sub_code === to || !(g.equipActual > 0)
         || !PAVING_LABOR_RE.test(g.sub_code) || PAVING_EQUIP_RE.test(g.sub_code)
-        || reachOf(g.cost_code, g.sub_code) !== reachOf(g.cost_code, to)) continue;
+        || reachOf(g.cost_code, to) > reachOf(g.cost_code, g.sub_code)) continue;
     const key = g.cost_code + '\u0000' + to;
     let e = byKey.get(key);
     if (!e) {

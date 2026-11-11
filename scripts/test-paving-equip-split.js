@@ -289,7 +289,7 @@ section('the prevailing-wage preview');
   t.pv(false, 0);
 }
 
-section('a move never counts the money a different number of times');
+section('a move never counts the machine more times than where it was booked');
 {
   // Bid lines overlap: a line with only a cost code takes every row under it.
   // Beside an Equipment line, with no Labor line, the Labor row is counted
@@ -316,6 +316,16 @@ section('a move never counts the money a different number of times');
     near(t.actualForBidItem(q.bidItems[1], q.id), WAGES) && near(t.actualForBidItem(q.bidItems[2], q.id), 765));
   assert('…and the lines add up to what they did before the split (the blank line\'s overlap, no more)',
     near(sum, 2 * rowsTotal(q)), `${sum} vs ${2 * rowsTotal(q)}`);
+
+  // The other way about: two lines share the Labor row (a sub-code-only one
+  // beside the full one), one takes Equipment. Splitting counts the machine
+  // once, on Equipment, instead of on both Labor lines — so it goes ahead.
+  const d = job({ bidItems: lines([{ cost_code: CC, sub_code: LAB }, { cost_code: '', sub_code: LAB }, { cost_code: CC, sub_code: EQP }]) });
+  d.dailyRows = d.dailyRows.filter(x => x.sub_code === LAB);
+  t.set([d]);
+  assert('two lines sharing the Labor row, one Equipment line: each Labor line is the wages, Equipment the machine, once',
+    near(t.actualForBidItem(d.bidItems[0], d.id), WAGES) && near(t.actualForBidItem(d.bidItems[1], d.id), WAGES)
+      && near(t.actualForBidItem(d.bidItems[2], d.id), 765));
 
   const r = job({ bidItems: lines([{ cost_code: '', sub_code: LAB }, { cost_code: CC, sub_code: EQP }]) });
   r.dailyRows = r.dailyRows.filter(x => x.sub_code === LAB);

@@ -96,6 +96,8 @@ const CASES = [
   ['a cost-code-only line beside Labor and Equipment: it still splits', job([lab()], done(bids([CC, ''], [CC, LAB], [CC, EQP])))],
   ['Labor not on the bid, all lines complete', job([lab()], done(bids([CC, EQP])))],
   ['a sub-code-only Labor line', job([lab()], bids(['', LAB], [CC, EQP]))],
+  ['two lines sharing the Labor row, one Equipment line: it splits', job([lab()], done(bids([CC, LAB], ['', LAB], [CC, EQP])))],
+  ['a cost-code-only line beside a sub-code-only Equipment line', job([lab()], done(bids([CC, ''], [CC, LAB], ['', EQP], [CC, EQP])))],
   ['no cost code on the row', job([lab({ cost_code: '' })])],
   ['no sub code on the row', job([lab({ sub_code: '' })])],
   ['material on the Labor row', job([lab({ material_cost: '120' })])],

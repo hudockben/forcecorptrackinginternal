@@ -8755,13 +8755,16 @@ function _bidGroupMeasureEdit(el) {
    imported Total Cost can be less than the row's own equipment figure; what
    moves is capped at the row's cost, so the Labor piece never goes below zero.
 
-   A move never changes how many times the money is counted. Bid lines can
-   overlap: one with only a cost code takes every row under it, so a bid of a
-   cost-code-only line and an Equipment line, with no Labor line, counts a
-   Labor row once (on the cost-code line) but the Equipment sub code twice.
-   Moving the machine there would add it to the job a second time. So the row
-   is split only when as many bid lines take its Equipment piece as take the
-   row where it was booked, a row on no line counting once (off-bid).
+   A move never counts the machine more times than it was counted where it
+   was booked. Bid lines can overlap: one with only a cost code takes every
+   row under it, so a bid of a cost-code-only line and an Equipment line, with
+   no Labor line, counts a Labor row once (on the cost-code line) but the
+   Equipment sub code twice. Moving the machine there would add it to the job
+   a second time. So the row is split only when no more bid lines take its
+   Equipment piece than take the row where it was booked, a row on no line
+   counting once (off-bid). The other way about — two lines sharing the Labor
+   row, one Equipment line — the split goes ahead: the machine then counts
+   once, on Equipment, instead of on both Labor lines.
 
    The travel and word tests are spelled the same way, character for
    character, as the query in api/executive/report.js, which mirrors this so
@@ -8802,7 +8805,7 @@ function _bidEachCostPiece(p, rows, fn, want) {
     const sc    = r.sub_code || '';
     const moves = to !== undefined && sc !== to && LABOR.test(sc) && !EQUIP.test(sc)
       && !TRAVEL_FIELD.test(r.field_type || '') && !TRAVEL_CODE.test(sc) && !TRAVEL_CODE.test(r.cost_code || '')
-      && reachOf(r.cost_code, r.sub_code) === reachOf(r.cost_code, to);
+      && reachOf(r.cost_code, to) <= reachOf(r.cost_code, r.sub_code);
     const own   = !want || want(r.cost_code, r.sub_code);
     const eqTo  = moves && (!want || want(r.cost_code, to));
     if (!own && !eqTo) return;
