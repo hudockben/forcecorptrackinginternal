@@ -220,6 +220,14 @@ async function run(browser, cfg) {
   await sleep(400);
   await page.evaluate(() => _togglePOLines('po3'));
   await sleep(200);
+  const notice = page.locator('#po-root details.po-orphans');
+  ok('the notice of PO #s with no order starts folded', await notice.count() === 1
+    && !(await notice.evaluate(d => d.open)) && !(await notice.locator('ul').isVisible()));
+  await notice.locator('summary').click();
+  await sleep(150);
+  await page.evaluate(() => renderPOTab());
+  await sleep(150);
+  ok('  and, once opened, stays open through a re-render', await page.locator('#po-root details.po-orphans').evaluate(d => d.open));
   const text = await page.locator('#po-root').innerText();
   ok('the PO tab tags the delivery with its row\'s codes', /from Daily Tracking · 02-100 \/ 0420/.test(text), text.slice(0, 500));
   ok('  and shows a lock, not a ✕, on it',
