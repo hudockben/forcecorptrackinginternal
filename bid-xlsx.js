@@ -240,7 +240,10 @@
         const rqty   = runningQtyForBidItem(b, projId);
         const days   = _workDaysForItems([b], projId);
         const auto   = _autoBidDates(days);
-        const pa     = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code, projId);
+        // true: Paving's Past Avg costs past jobs the way its Actual Cost does
+        // (equipment on a Labor row on its Equipment line); the other pages'
+        // computeSizeAwarePastAvg takes four arguments and ignores it.
+        const pa     = computeSizeAwarePastAvg(bidQty, b.cost_code, b.sub_code, projId, true);
         return {
           costCode, subCode: b.sub_code || '', unit: b.unit || '',
           bidQty, uc, bidTot, actual, rqty,

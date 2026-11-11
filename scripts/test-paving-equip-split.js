@@ -52,7 +52,7 @@ const line = (src, startsWith) => {
 const LIFT = ['calcDaily', 'dailyRowCost', '_bidEachCostPiece', '_bidCodeTotals', 'actualForBidItem', 'runningQtyForBidItem',
   'cumulativeHoursForBidItem', 'laborerCountForBidItem', '_rowMaterialInCost', 'materialForBidItem',
   '_bidMaterialEntry', '_dailySortDate', 'offBidForProject', 'projIsDone', 'projForBidItem',
-  'projectedCostForProject', 'buildProjectSubCodeAgg', 'computeSizeAwarePastAvg'];
+  'projectedCostForProject', '_projSubAggBids', 'buildProjectSubCodeAgg', 'computeSizeAwarePastAvg'];
 
 function page() {
   const ctx = vm.createContext({ console });
@@ -63,13 +63,21 @@ function page() {
     'let scaleManualEntries = [];',
     'let _projSubAggCache = null;',
     'let _projSubAggCacheRowCount = -1;',
+    'let _projSubAggBidSig = null;',
+    'let _projSubAggCacheBids = null;',
     'function getProj(id) { return projectsList.find(p => p.id === id); }',
     'function getAllDailyRows() { return projectsList.reduce((a, p) => a.concat(p.dailyRows || []), []); }',
     'function bidItemComplete(b) { return !!b.is_complete; }',
     ...LIFT.map(n => requireFn(SRC, n, 'paving.html')),
+    // Counts every row the page prices, so a test can say which rows a figure
+    // had to look at.
+    'let _priced = 0;',
+    'const _realDailyRowCost = dailyRowCost;',
+    'dailyRowCost = function (r) { _priced++; return _realDailyRowCost(r); };',
     `this.__t = {
        set(list) { projectsList = list; _projSubAggCache = null; _projSubAggCacheRowCount = -1; },
        pv(active, rate) { pvPreview = { active, rate }; },
+       priced() { const n = _priced; _priced = 0; return n; },
        ${LIFT.map(n => `${n}`).join(', ')}
      };`,
   ].join('\n'), ctx);
@@ -160,6 +168,32 @@ section('travel keeps its pickup, wherever it was booked');
   t.set([q]);
   assert('a "Labor - Travel" sub code is travel, and keeps its pickup', near(t.actualForBidItem(q.bidItems[0], q.id), 80)
     && t.actualForBidItem(q.bidItems[1], q.id) === 0);
+
+  const c = job({ bidItems: [
+    { id: 'a', cost_code: 'Travel Overlay', sub_code: 'Travel Overlay - Labor', unit: 'HR', quantity: '1', unit_cost: '1' },
+    { id: 'b', cost_code: 'Travel Overlay', sub_code: 'Travel Overlay - Equipment', unit: 'LS', quantity: '1', unit_cost: '1' }] });
+  c.dailyRows = [{ id: 'ct', date: '2026-11-06', cost_code: 'Travel Overlay', sub_code: 'Travel Overlay - Labor', rate: '45',
+    labor_hours: '1', equip_unit_cost: '35', equip_hours: '1' }];
+  t.set([c]);
+  assert('"travel" in the cost code makes it travel too', near(t.actualForBidItem(c.bidItems[0], c.id), 80)
+    && t.actualForBidItem(c.bidItems[1], c.id) === 0);
+
+  // Spelled the way the Executive report's query spells it, so the two agree
+  // on every row: ASCII spaces only, and a word edge is anything but an ASCII
+  // letter, digit or underscore. scripts/test-paving-equip-split-sql.js holds
+  // Postgres to the same answers.
+  const one = (sub, ft) => {
+    const j = job({ bidItems: [{ id: 'a', cost_code: CC, sub_code: sub, unit: 'HR', quantity: '1', unit_cost: '1' },
+                               { id: 'b', cost_code: CC, sub_code: EQP, unit: 'LS', quantity: '1', unit_cost: '1' }] });
+    j.dailyRows = [{ id: 'o', date: '2026-11-06', cost_code: CC, sub_code: sub, field_type: ft, rate: '45', labor_hours: '1',
+      equip_unit_cost: '35', equip_hours: '1' }];
+    t.set([j]);
+    return t.actualForBidItem(j.bidItems[1], j.id);    // what reached Equipment
+  };
+  assert('a no-break space or a newline around the stamp is not travel — the row splits',
+    one(LAB, 'Travel\u00a0') === 35 && one(LAB, 'Travel\n') === 35);
+  assert('"travel" after a non-ASCII letter is still a word ("Labor éTravel" keeps its pickup)', one('Labor éTravel', '') === 0);
+  assert('…but not inside a longer word ("Labor - Travelers" splits)', one('Labor - Travelers', '') === 35);
 }
 
 section('only when there is an Equipment line to take it');
@@ -204,6 +238,17 @@ section('the names are read the way people type them');
   t.set([q]);
   assert('a "Labor & Equipment" line already carries its machine — it is never split',
     near(t.actualForBidItem(q.bidItems[0], q.id), WAGES + 765) && t.actualForBidItem(q.bidItems[1], q.id) === 0);
+
+  const first = job({
+    bidItems: [
+      { id: 'a', cost_code: CC, sub_code: 'Labor & Equipment', unit: 'SY', quantity: '1', unit_cost: '1' },
+      { id: 'b', cost_code: CC, sub_code: LAB, unit: 'SY', quantity: '3523', unit_cost: '1.2' },
+      { id: 'c', cost_code: CC, sub_code: EQP, unit: 'LS', quantity: '1', unit_cost: '1' },
+    ],
+  });
+  t.set([first]);
+  assert('…nor is it ever the Equipment line, even listed first: the Weiler goes to the real one',
+    near(t.actualForBidItem(first.bidItems[2], first.id), 765) && t.actualForBidItem(first.bidItems[0], first.id) === 0);
 
   const w = job({ bidItems: [{ id: 'a', cost_code: CC, sub_code: 'Laborer Equipment', unit: 'LS', quantity: '1', unit_cost: '1' }] });
   w.dailyRows.push({ id: 'y', date: '2026-11-06', cost_code: CC, sub_code: 'Laborers', rate: '10', labor_hours: '1', equip_unit_cost: '5', equip_hours: '1' });
@@ -250,12 +295,49 @@ section('the prevailing-wage preview');
   t.pv(false, 0);
 }
 
-section('a bid line with only a cost code still takes the whole row');
+section('a move never counts the machine more times than where it was booked');
 {
-  const p = job({ bidItems: [{ id: 'w', cost_code: CC, sub_code: '', unit: 'LS', quantity: '1', unit_cost: '1' },
-                             { id: 'e', cost_code: CC, sub_code: EQP, unit: 'LS', quantity: '1', unit_cost: '1' }] });
+  // Bid lines overlap: a line with only a cost code takes every row under it.
+  // Beside an Equipment line, with no Labor line, the Labor row is counted
+  // once (on the cost-code line) and the Equipment sub code twice — moving the
+  // machine there would add it to the job again.
+  const lines = list => list.map((b, i) => Object.assign({ id: 'w' + i, unit: 'LS', quantity: '1', unit_cost: '1', is_complete: true }, b));
+  const p = job({ bidItems: lines([{ cost_code: CC, sub_code: '' }, { cost_code: CC, sub_code: EQP }]) });
   t.set([p]);
-  assert('both halves land under the cost code', near(t.actualForBidItem(p.bidItems[0], p.id), rowsTotal(p)));
+  assert('a cost-code-only line beside Equipment, no Labor line: the cost-code line takes every row',
+    near(t.actualForBidItem(p.bidItems[0], p.id), rowsTotal(p)));
+  assert('…and the machine stays with it rather than being counted again on Equipment',
+    t.actualForBidItem(p.bidItems[1], p.id) === 0, t.actualForBidItem(p.bidItems[1], p.id));
+  assert('…so a finished job still projects what it cost', near(t.projectedCostForProject(p), rowsTotal(p)),
+    `${t.projectedCostForProject(p)} vs ${rowsTotal(p)}`);
+
+  // "+ Sub Code" leaves a blank line under the cost code until it is filled
+  // in. Beside Labor and Equipment the Labor row and Equipment are both taken
+  // twice already, so the split goes on, and the overlap counts what it did.
+  const q = job({ bidItems: lines([{ cost_code: CC, sub_code: '' }, { cost_code: CC, sub_code: LAB }, { cost_code: CC, sub_code: EQP }]) });
+  q.dailyRows = q.dailyRows.filter(r => r.sub_code === LAB);
+  t.set([q]);
+  const sum = q.bidItems.reduce((s, b) => s + t.actualForBidItem(b, q.id), 0);
+  assert('a blank "+ Sub Code" line beside Labor and Equipment does not stop the split',
+    near(t.actualForBidItem(q.bidItems[1], q.id), WAGES) && near(t.actualForBidItem(q.bidItems[2], q.id), 765));
+  assert('…and the lines add up to what they did before the split (the blank line\'s overlap, no more)',
+    near(sum, 2 * rowsTotal(q)), `${sum} vs ${2 * rowsTotal(q)}`);
+
+  // The other way about: two lines share the Labor row (a sub-code-only one
+  // beside the full one), one takes Equipment. Splitting counts the machine
+  // once, on Equipment, instead of on both Labor lines — so it goes ahead.
+  const d = job({ bidItems: lines([{ cost_code: CC, sub_code: LAB }, { cost_code: '', sub_code: LAB }, { cost_code: CC, sub_code: EQP }]) });
+  d.dailyRows = d.dailyRows.filter(x => x.sub_code === LAB);
+  t.set([d]);
+  assert('two lines sharing the Labor row, one Equipment line: each Labor line is the wages, Equipment the machine, once',
+    near(t.actualForBidItem(d.bidItems[0], d.id), WAGES) && near(t.actualForBidItem(d.bidItems[1], d.id), WAGES)
+      && near(t.actualForBidItem(d.bidItems[2], d.id), 765));
+
+  const r = job({ bidItems: lines([{ cost_code: '', sub_code: LAB }, { cost_code: CC, sub_code: EQP }]) });
+  r.dailyRows = r.dailyRows.filter(x => x.sub_code === LAB);
+  t.set([r]);
+  assert('a Labor line with only a sub code splits as a full one does',
+    near(t.actualForBidItem(r.bidItems[0], r.id), WAGES) && near(t.actualForBidItem(r.bidItems[1], r.id), 765));
 }
 
 // ── Off-bid and projected cost ──────────────────────────────────────────────
@@ -337,15 +419,81 @@ section('the Past Avg UC benchmark');
   t.set([p, past]);
   const agg = t.buildProjectSubCodeAgg();
   const lab = agg[CC + '||' + LAB].find(x => x.projId === 'p25001');
-  const eqp = agg[CC + '||' + EQP].find(x => x.projId === 'p25001');
-  assert('a past job\'s Labor cost leaves out its machine', near(lab.totalCost, WAGES), lab.totalCost);
-  assert('…its monthly cost too', near(lab.monthly['2026-11'].cost, WAGES));
+  assert('a past job\'s Labor carries a split cost without its machine', near(lab.splitCost, WAGES), lab.splitCost);
+  assert('…beside the whole-row cost every other reader still uses', near(lab.totalCost, WAGES + 765) && near(lab.monthly['2026-11'].cost, WAGES + 765));
   assert('…while its quantity, hours and machine-hours stay on Labor', lab.runQty === 3523 && lab.laborHrs === 32 && lab.equipHrs === 9);
-  assert('the machine\'s cost lands on the past job\'s Equipment line', near(eqp.totalCost, 765) && eqp.runQty === 0);
-  const pa = t.computeSizeAwarePastAvg(3523, CC, LAB, 'p26058');
-  assert('Labor\'s Past Avg UC is wage per SY — the same measure as its Running Unit Cost', near(pa.histUC, WAGES / 3523), pa && pa.histUC);
-  const job$ = Object.values(agg).flat().filter(x => x.projId === 'p25001').reduce((s, x) => s + x.totalCost, 0);
-  assert('the past job\'s total is unchanged', near(job$, rowsTotal(past)));
+  assert('an Equipment line with no rows of its own gets no entry — it has no quantity to cost over', !agg[CC + '||' + EQP]);
+  const split = t.computeSizeAwarePastAvg(3523, CC, LAB, 'p26058', true);
+  assert('the Bid Items page\'s Past Avg UC (split) is wage per SY — the measure of its Running Unit Cost',
+    near(split.histUC, WAGES / 3523), split && split.histUC);
+  const whole = t.computeSizeAwarePastAvg(3523, CC, LAB, 'p26058');
+  assert('Sub Code Performance and the Production Rate view, which cost whole rows, still get a whole-row benchmark',
+    near(whole.histUC, (WAGES + 765) / 3523), whole && whole.histUC);
+
+}
+
+// The cache is keyed on row counts; the split also moves with bid lines. An
+// edit to a bid line arrives as an event — a task of its own — so the check
+// waits a tick between the two, as the page would.
+async function pastAvgFollowsBidLines() {
+  section('the Past Avg cache follows bid-line edits');
+  const p = job(), q = job({ id: 'p25002' });
+  q.bidItems = q.bidItems.filter(b => b.sub_code !== EQP);
+  t.set([p, q]);
+  const tick = () => new Promise(r => setTimeout(r, 0));
+  await tick();
+  assert('a past job with no Equipment line keeps its machine on Labor',
+    near(t.computeSizeAwarePastAvg(3523, CC, LAB, 'p26058', true).histUC, (WAGES + 765) / 3523));
+  const lookups = [];
+  for (let i = 0; i < 5; i++) lookups.push(t.computeSizeAwarePastAvg(3523, CC, LAB, 'p26058', true).histUC);
+  assert('…and every lookup in the same render reads the same cached figure', lookups.every(v => v === lookups[0]));
+  await tick();
+  q.bidItems.push({ id: 'b2', cost_code: CC, sub_code: EQP, unit: 'LS', quantity: '1', unit_cost: '2500' });
+  assert('adding its Equipment line refreshes the benchmark — no row was added, so the row count alone would not',
+    near(t.computeSizeAwarePastAvg(3523, CC, LAB, 'p26058', true).histUC, WAGES / 3523));
+}
+
+section('a line prices only the rows that can land on it');
+{
+  // actualForBidItem() runs once per bid line over every row of the job, so a
+  // row neither piece of which can land on the line must not be priced.
+  const p = job(); t.set([p]); t.priced();
+  line$(p, LAB);
+  assert('the Labor line prices only the three Labor rows', t.priced() === 3);
+  line$(p, TRV);
+  assert('the Travel line prices only the two travel rows', t.priced() === 2);
+  line$(p, EQP);
+  assert('the Equipment line prices the Labor rows, whose machines can move to it, and nothing else', t.priced() === 3);
+  line$(p, MAT);
+  assert('the Material line prices only the PO row', t.priced() === 1);
+}
+
+section('whole-row totals are the same sum they always were');
+{
+  // Sub Code Performance, the Daily Production Rate view and Scale of Economy
+  // read totalCost and the monthly cost: they must be the rows' costs added in
+  // row order, as before the split — not the split pieces added back together,
+  // which floating point can land a hair away from it.
+  let seed = 7;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const dec = () => (Math.floor(rnd() * 100000) / 100).toFixed(2);
+  const p = job({ id: 'pf' });
+  p.dailyRows = Array.from({ length: 400 }, (_, i) => ({ id: 'f' + i, date: '2026-1' + (i % 2) + '-0' + (1 + i % 9),
+    cost_code: CC, sub_code: [LAB, LAB, TRV, MAT][i % 4], rate: dec(), labor_hours: (rnd() * 12).toFixed(2),
+    equip_unit_cost: dec(), equip_hours: (rnd() * 9).toFixed(2), material_cost: i % 5 ? '' : dec(), quantity: dec() }));
+  t.set([p]);
+  const agg = t.buildProjectSubCodeAgg();
+  const exact = [LAB, TRV, MAT].every(sc => {
+    const rows = p.dailyRows.filter(r => r.sub_code === sc);
+    const e = agg[CC + '||' + sc][0];
+    const want = rows.reduce((s, r) => s + t.dailyRowCost(r), 0);
+    const months = {};
+    rows.forEach(r => { const mo = r.date.slice(0, 7); months[mo] = (months[mo] || 0) + t.dailyRowCost(r); });
+    return e.totalCost === want && Object.keys(months).every(mo => e.monthly[mo].cost === months[mo]);
+  });
+  assert('totalCost and the monthly cost equal the row-order sums exactly (===), split rows included', exact);
+  const lab = agg[CC + '||' + LAB][0];
+  assert('…while Labor\'s split cost leaves the machines out', lab.splitCost < lab.totalCost);
 }
 
 // ── 2. Executive ────────────────────────────────────────────────────────────
@@ -363,8 +511,8 @@ const report = require(path.join(ROOT, 'api/executive/report.js'));
       const e = g.get(k) || { project_id: projectId, cost_code: r.cost_code || '', sub_code: r.sub_code || '',
         actual: 0, range_actual: 0, range_rows: 0, rqty: 0, equip_actual: 0 };
       // Travel rows are left out of equip_actual: the pickup stays with the travel.
-      const travel = /^\s*travel\s*$/i.test(r.field_type || '') || /\btravel\b/i.test(r.sub_code || '')
-        || /\btravel\b/i.test(r.cost_code || '');
+      const word = /(^|[^a-z0-9_])travel([^a-z0-9_]|$)/i;
+      const travel = /^ *travel *$/i.test(r.field_type || '') || word.test(r.sub_code || '') || word.test(r.cost_code || '');
       e.actual += cost; e.rqty += n(r.quantity); if (!travel) e.equip_actual += Math.max(0, Math.min(eq, cost));
       g.set(k, e);
     });
@@ -390,7 +538,7 @@ const report = require(path.join(ROOT, 'api/executive/report.js'));
     assert('…and nothing reads off-bid', pp.offBid === 0);
     assert('travel rows are filtered out of the equipment sum, by field type and by code',
       /filter \(where not is_travel\)/.test(sqlSeen) && /coalesce\(field_type, ''\) ~\*/.test(sqlSeen)
-      && dailyValues.includes('^\\s*travel\\s*$') && dailyValues.includes('\\mtravel\\M'),
+      && dailyValues.includes('^ *travel *$') && dailyValues.includes('(^|[^a-z0-9_])travel([^a-z0-9_]|$)'),
       JSON.stringify(dailyValues));
     assert('…with company, division and job ids still the first three parameters',
       dailyValues[0] === 'C' && dailyValues[1] === 'paving' && Array.isArray(dailyValues[2]));
@@ -421,7 +569,7 @@ const report = require(path.join(ROOT, 'api/executive/report.js'));
     assert('no Equipment line: the groups come back as they were',
       report.pavingEquipToEquipLine(groups, [{ cost_code: CC, sub_code: LAB }]) === groups);
   };
-  run().then(finish, e => { failed++; console.error(e); finish(); });
+  run().then(pastAvgFollowsBidLines).then(finish, e => { failed++; console.error(e); finish(); });
 }
 
 // ── 3. Structural ───────────────────────────────────────────────────────────

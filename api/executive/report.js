@@ -412,19 +412,31 @@ const PAVING_EQUIP_RE = /\bequip/i;
 // Travel is never split — the pickup stays with the travel — by the test
 // payroll prices travel by (isTravelSplitRow / the 'Travel' stamp in
 // api/timesheet-entries.js). Field type is not a group key, so the query
-// leaves travel rows out of equip_actual itself. Passed as parameters: a
-// backslash written into the sql`` template is not the one Postgres would see.
-const SQL_TRAVEL_FIELD_RE = '^\\s*travel\\s*$';
-const SQL_TRAVEL_CODE_RE  = '\\mtravel\\M';
+// leaves travel rows out of equip_actual itself. Spelled character for
+// character as the page's TRAVEL_FIELD / TRAVEL_CODE in _bidEachCostPiece:
+// ASCII spaces only, and a word edge is anything but an ASCII letter, digit or
+// underscore — Postgres's \s, \m and \M follow the locale, and would call a
+// row travel that the page does not. Passed as parameters: a backslash written
+// into the sql`` template is not the one Postgres would see.
+const SQL_TRAVEL_FIELD_RE = '^ *travel *$';
+const SQL_TRAVEL_CODE_RE  = '(^|[^a-z0-9_])travel([^a-z0-9_]|$)';
 function pavingEquipToEquipLine(groups, bidLines) {
+  const lines = bidLines.filter(b => b.cost_code || b.sub_code);
   const equipLine = new Map();   // cost code → the sub code of its Equipment line
-  for (const b of bidLines) {
+  for (const b of lines) {
     if (b.cost_code && b.sub_code && !equipLine.has(b.cost_code)
         && PAVING_EQUIP_RE.test(b.sub_code) && !PAVING_LABOR_RE.test(b.sub_code)) {
       equipLine.set(b.cost_code, b.sub_code);
     }
   }
   if (!equipLine.size) return groups;
+  // A move never counts the machine more times than where it was booked: only
+  // when no more bid lines take the Equipment sub code than take the Labor
+  // one, a group on no line counting once (off-bid). A cost-code-only line
+  // beside an Equipment line, with no Labor line, would otherwise count the
+  // machine twice. Same wildcard rule as lineMatchesGroup below.
+  const reachOf = (cc, sc) => lines.filter(b =>
+    (b.cost_code ? cc === b.cost_code : true) && (b.sub_code ? sc === b.sub_code : true)).length || 1;
   const out   = groups.map(g => ({ ...g }));
   const byKey = new Map(out.map(g => [g.cost_code + '\u0000' + g.sub_code, g]));
   const n = out.length;
@@ -432,7 +444,8 @@ function pavingEquipToEquipLine(groups, bidLines) {
     const g  = out[i];
     const to = g.cost_code ? equipLine.get(g.cost_code) : undefined;
     if (to === undefined || g.sub_code === to || !(g.equipActual > 0)
-        || !PAVING_LABOR_RE.test(g.sub_code) || PAVING_EQUIP_RE.test(g.sub_code)) continue;
+        || !PAVING_LABOR_RE.test(g.sub_code) || PAVING_EQUIP_RE.test(g.sub_code)
+        || reachOf(g.cost_code, to) > reachOf(g.cost_code, g.sub_code)) continue;
     const key = g.cost_code + '\u0000' + to;
     let e = byKey.get(key);
     if (!e) {
