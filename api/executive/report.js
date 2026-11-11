@@ -396,6 +396,49 @@ async function runDiagnostics(sql, companyCode) {
 // daily_tracking by project_id + division. The other tiles
 // (Trucking / Dust / IC) read from their own normalized tables.
 
+// Paving bids a cost code's equipment on a line of its own ("… - Equipment"),
+// but an approved timesheet books the man and the machine he ran onto one job
+// row under the Labor sub code. Mirrors _bidEachCostPiece() in paving.html: a
+// Labor group's equipment moves to the Equipment bid line of the same cost
+// code, so each line projects off the same actual the Bid Items page shows.
+// Both have to say what they are — "Labor" in the group's sub code, "Equip" in
+// the bid line's (the first such line under the cost code) — and without an
+// Equipment line nothing moves. Money only moves within one cost code, so the
+// project's actual is unchanged. The windowed figures stay where they were:
+// they are only ever summed for the whole project. Returns new group objects;
+// the inputs are not touched.
+const PAVING_LABOR_RE = /\blabou?r\b/i;
+const PAVING_EQUIP_RE = /\bequip/i;
+function pavingEquipToEquipLine(groups, bidLines) {
+  const equipLine = new Map();   // cost code → the sub code of its Equipment line
+  for (const b of bidLines) {
+    if (b.cost_code && b.sub_code && !equipLine.has(b.cost_code)
+        && PAVING_EQUIP_RE.test(b.sub_code) && !PAVING_LABOR_RE.test(b.sub_code)) {
+      equipLine.set(b.cost_code, b.sub_code);
+    }
+  }
+  if (!equipLine.size) return groups;
+  const out   = groups.map(g => ({ ...g }));
+  const byKey = new Map(out.map(g => [g.cost_code + '\u0000' + g.sub_code, g]));
+  const n = out.length;
+  for (let i = 0; i < n; i++) {
+    const g  = out[i];
+    const to = g.cost_code ? equipLine.get(g.cost_code) : undefined;
+    if (to === undefined || g.sub_code === to || !(g.equipActual > 0)
+        || !PAVING_LABOR_RE.test(g.sub_code) || PAVING_EQUIP_RE.test(g.sub_code)) continue;
+    const key = g.cost_code + '\u0000' + to;
+    let e = byKey.get(key);
+    if (!e) {
+      e = { cost_code: g.cost_code, sub_code: to, actual: 0, rangeActual: 0, rangeRows: 0, rqty: 0, equipActual: 0 };
+      out.push(e);
+      byKey.set(key, e);
+    }
+    g.actual -= g.equipActual;
+    e.actual += g.equipActual;
+  }
+  return out;
+}
+
 // Aggregate per-bid-item projection that mirrors tracker.html's
 // projForBidItem(): if the item has start/target dates and any actuals,
 // scale by elapsed-vs-total time; else if a running quantity exists,
@@ -440,6 +483,8 @@ async function buildFinancials(sql, companyCode, division, projects, range) {
                        COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0))
             + COALESCE(material_cost, 0)
           )                      AS row_cost,
+          COALESCE(NULLIF(equip_total_override, 0),
+                   COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)) AS equip_cost,
           COALESCE(quantity, 0)  AS qty,
           date
         FROM daily_tracking
@@ -459,7 +504,10 @@ async function buildFinancials(sql, companyCode, division, projects, range) {
         SUM(row_cost)::float                                        AS actual,
         COALESCE(SUM(row_cost) FILTER (WHERE in_range), 0)::float    AS range_actual,
         (COUNT(*) FILTER (WHERE in_range))::int                      AS range_rows,
-        SUM(qty)::float                                              AS rqty
+        SUM(qty)::float                                              AS rqty,
+        -- The equipment a Labor row carries, capped at the row's own cost:
+        -- what paving moves onto the Equipment line. See pavingEquipToEquipLine.
+        SUM(GREATEST(0, LEAST(equip_cost, row_cost)))::float         AS equip_actual
       FROM flagged
       GROUP BY project_id, cost_code, sub_code
     `;
@@ -472,6 +520,7 @@ async function buildFinancials(sql, companyCode, division, projects, range) {
         rangeActual: Number(r.range_actual) || 0,
         rangeRows:   Number(r.range_rows)   || 0,
         rqty:        Number(r.rqty)         || 0,
+        equipActual: Number(r.equip_actual) || 0,
       });
       groupsByProject.set(r.project_id, list);
     }
@@ -494,8 +543,10 @@ async function buildFinancials(sql, companyCode, division, projects, range) {
 
   for (const p of projects) {
     contract_total += projContract(p);
-    const groups   = groupsByProject.get(p.id) || [];
     const bidLines = projBidLines(p);
+    const groups   = division === 'paving'
+      ? pavingEquipToEquipLine(groupsByProject.get(p.id) || [], bidLines)
+      : (groupsByProject.get(p.id) || []);
 
     // Project actual = every daily group (matches the home page's all-rows sum).
     // Off-bid spend is included here, then surfaced separately below, so the
@@ -2013,6 +2064,7 @@ module.exports.readTurfProjects   = readTurfProjects;
 module.exports.readPavingProjects = readPavingProjects;
 module.exports.readKiewitProjects = readKiewitProjects;
 module.exports.buildFinancials    = buildFinancials;
+module.exports.pavingEquipToEquipLine = pavingEquipToEquipLine;
 module.exports.gpEarnedToDate     = gpEarnedToDate;
 module.exports.projName           = projName;
 module.exports.projJob            = projJob;

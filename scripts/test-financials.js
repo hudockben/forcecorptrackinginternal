@@ -75,6 +75,9 @@ function extractFunction(src, name) {
 // The whole Financials block — filter state, table, export and print all live
 // together — plus the real projection chain it depends on, over a stub DOM.
 const CHAIN = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject', 'gpEarnedToDate', 'statusBadgeClass', '_rowIsWorkDay'];
+// Lifted where a page has them: paving's offBidForProject reads its pieces
+// (equipment on a Labor row counted on the Equipment line) through this.
+const OWN_CHAIN = ['_bidEachCostPiece'];
 
 // paving.html routes every contract read through projectContract(), which
 // folds in contract change orders; the other division files still inline the
@@ -101,7 +104,8 @@ function loadFinancials(file, projects, opts = {}) {
   const end   = src.indexOf('function renderSubCodePerf');
   if (start < 0 || end < 0) throw new Error(`Financials block not found in ${file}`);
   const code = contractHelperCode(src) + '\n\n'
-             + CHAIN.map(n => extractFunction(src, n)).join('\n\n') + '\n\n' + src.slice(start, end);
+             + CHAIN.concat(OWN_CHAIN.filter(n => src.includes(`function ${n}(`)))
+                 .map(n => extractFunction(src, n)).join('\n\n') + '\n\n' + src.slice(start, end);
 
   const bar = { innerHTML: '' }, table = { innerHTML: '' };
   // The range menu: finSetDate() points it at Custom without a redraw.

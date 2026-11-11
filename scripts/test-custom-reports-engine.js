@@ -68,7 +68,10 @@ const OPTIONAL = ['projectContract', 'originalContract', 'revisedContract', 'con
   '_lineAmt', '_lineTax', '_lineTaxPct', '_poNum', '_poNum0', '_normalizeNumeric',
   '_localDateStr', '_usHolidays', '_isHoliday', '_addWorkingDays', '_poTotals',
   // The Schedule tab's pace math, for planned-rate parity.
-  '_workingDaysBetween', '_schedDaysRemaining', '_schedStatus', '_ppWorkingDaysRemaining', '_schedCalcRow'];
+  '_workingDaysBetween', '_schedDaysRemaining', '_schedStatus', '_ppWorkingDaysRemaining', '_schedCalcRow',
+  // Paving's per-line actuals: equipment on a Labor row counts on the cost
+  // code's Equipment line.
+  '_bidEachCostPiece'];
 function pageEngine(file) {
   const SRC = fs.readFileSync(path.join(ROOT, file), 'utf8');
   const haul = /const HAUL_FIELD_TYPE_RE\s*=\s*([^;]+);/.exec(SRC);
