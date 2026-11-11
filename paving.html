@@ -2613,6 +2613,7 @@
   <script defer src="/_vercel/speed-insights/script.js"></script>
   <script src="auto-report.js"></script>
   <script src="report-branding.js" defer></script>
+  <script src="report-tab.js" defer></script>
   <script src="report-email.js?v=2" defer></script>
   <script src="bid-xlsx.js" defer></script>
   <script src="documents.js" defer></script>
@@ -19744,15 +19745,25 @@ async function _jsScheduleSectionHtml(projId, forEmail) {
 
 async function exportJobSummary(projId, opts = {}) {
   const p = getProj(projId); if (!p) return null;
-  // A pop-up is only granted inside the click that asked for the report, so
-  // the window is claimed up front and written into once the schedule — which
-  // has to be fetched — is in hand.
-  const win = (opts && opts.returnHtml) ? null : window.open('', '_blank');
-  if (win) {
+  // Printing: the tab is claimed now, inside the click that asked for the
+  // report — the only time a pop-up is allowed — and filled once the schedule,
+  // which has to be fetched, is in hand. It is a tab of its own (dwReportTab,
+  // report-tab.js): a window this page opened and wrote into itself froze the
+  // app for as long as the report's print dialog stayed open.
+  if (!(opts && opts.returnHtml)) {
+    const tab = dwReportTab({
+      title: 'Job Summary',
+      waiting: 'Building the job summary report\u2026',
+      onBlocked: () => alert('Your browser blocked the report tab. Allow pop-ups for this site and try again.'),
+    });
     try {
-      dwWrite(win, '<!DOCTYPE html><meta charset="utf-8"><title>Job Summary</title>'
-        + '<body style="font:13px/1.5 system-ui,sans-serif;color:#475569;padding:26px">Building the job summary report&hellip;');
-    } catch (e) { /* not writable yet — the real write below still lands */ }
+      const built = await exportJobSummary(projId, Object.assign({}, opts, { returnHtml: true }));
+      tab.fill(built.html);
+    } catch (e) {
+      tab.fail('The job summary could not be built: ' + e.message);
+      throw e;
+    }
+    return null;
   }
   const name  = p['project-name'] || 'Project';
   const jobNo = p['job-number'] ? ` — ${p['job-number']}` : '';
@@ -20165,11 +20176,7 @@ async function exportJobSummary(projId, opts = {}) {
   <script>window.onload = () => { window.print(); }<\/script>
   </body></html>`;
 
-  if (opts && opts.returnHtml) {
-    return { html: _html, name, jobNo, ganttPng: schedule.png };
-  }
-  if (win) { win.document.open(); dwWrite(win, _html); win.document.close(); }
-  return null;
+  return { html: _html, name, jobNo, ganttPng: schedule.png };
 }
 
 function exportBidPDF(projId, selectedCostCodes = null, opts = {}) {
