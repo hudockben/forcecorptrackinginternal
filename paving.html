@@ -8745,9 +8745,12 @@ function _bidGroupMeasureEdit(el) {
    Both lines have to say what they are. The row's sub code has "Labor" in its
    name, and the job's bid has a sub code with "Equip" in its name under the
    same cost code (the first one, if there are several). Without an Equipment
-   line to take it, the cost stays on Labor where it was booked. Travel,
-   Trucking and Mobilization rows are not Labor and are never split. Only a
-   positive equipment cost moves. An imported Total Cost can be less than the
+   line to take it, the cost stays on Labor where it was booked. Trucking and
+   Mobilization rows are not Labor and are never split, and neither is travel:
+   the pickup on a travel row stays with the travel, whether the row sits on
+   the Travel sub code or is a row payroll stamped Travel under the Labor one
+   (the same test payroll prices travel by — a "Travel" field type, or "travel"
+   as a word in the cost or sub code). Only a positive equipment cost moves. An imported Total Cost can be less than the
    row's own equipment figure; what moves is capped at the row's cost, so the
    Labor piece never goes below zero.
 
@@ -8762,7 +8765,7 @@ function _bidGroupMeasureEdit(el) {
    forty that lands on the line, is what made a big job's report crawl. A
    callback rather than a list for the same reason. */
 function _bidEachCostPiece(p, rows, fn, want) {
-  const LABOR = /\blabou?r\b/i, EQUIP = /\bequip/i;
+  const LABOR = /\blabou?r\b/i, EQUIP = /\bequip/i, TRAVEL = /\btravel\b/i;
   const equipLine = new Map();   // cost code → the sub code of its Equipment line
   ((p && p.bidItems) || []).forEach(b => {
     const cc = b && b.cost_code, sc = b && b.sub_code;
@@ -8772,7 +8775,8 @@ function _bidEachCostPiece(p, rows, fn, want) {
   (rows || []).forEach(r => {
     const to    = split && r.cost_code ? equipLine.get(r.cost_code) : undefined;
     const sc    = r.sub_code || '';
-    const moves = to !== undefined && sc !== to && LABOR.test(sc) && !EQUIP.test(sc);
+    const moves = to !== undefined && sc !== to && LABOR.test(sc) && !EQUIP.test(sc)
+      && !/^\s*travel\s*$/i.test(r.field_type || '') && !TRAVEL.test(sc) && !TRAVEL.test(r.cost_code || '');
     const own   = !want || want(r.cost_code, r.sub_code);
     const eqTo  = moves && (!want || want(r.cost_code, to));
     if (!own && !eqTo) return;

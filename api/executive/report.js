@@ -403,12 +403,19 @@ async function runDiagnostics(sql, companyCode) {
 // code, so each line projects off the same actual the Bid Items page shows.
 // Both have to say what they are — "Labor" in the group's sub code, "Equip" in
 // the bid line's (the first such line under the cost code) — and without an
-// Equipment line nothing moves. Money only moves within one cost code, so the
-// project's actual is unchanged. The windowed figures stay where they were:
-// they are only ever summed for the whole project. Returns new group objects;
-// the inputs are not touched.
+// Equipment line nothing moves. Travel rows never move (see SQL_TRAVEL_*).
+// Money only moves within one cost code, so the project's actual is unchanged.
+// The windowed figures stay where they were: they are only ever summed for the
+// whole project. Returns new group objects; the inputs are not touched.
 const PAVING_LABOR_RE = /\blabou?r\b/i;
 const PAVING_EQUIP_RE = /\bequip/i;
+// Travel is never split — the pickup stays with the travel — by the test
+// payroll prices travel by (isTravelSplitRow / the 'Travel' stamp in
+// api/timesheet-entries.js). Field type is not a group key, so the query
+// leaves travel rows out of equip_actual itself. Passed as parameters: a
+// backslash written into the sql`` template is not the one Postgres would see.
+const SQL_TRAVEL_FIELD_RE = '^\\s*travel\\s*$';
+const SQL_TRAVEL_CODE_RE  = '\\mtravel\\M';
 function pavingEquipToEquipLine(groups, bidLines) {
   const equipLine = new Map();   // cost code → the sub code of its Equipment line
   for (const b of bidLines) {
@@ -486,7 +493,8 @@ async function buildFinancials(sql, companyCode, division, projects, range) {
           COALESCE(NULLIF(equip_total_override, 0),
                    COALESCE(equip_hours, 0) * COALESCE(equip_unit_cost, 0)) AS equip_cost,
           COALESCE(quantity, 0)  AS qty,
-          date
+          date,
+          field_type
         FROM daily_tracking
         WHERE company_code = ${companyCode}
           AND division     = ${division}
@@ -494,7 +502,10 @@ async function buildFinancials(sql, companyCode, division, projects, range) {
       ), flagged AS (
         SELECT src.*,
                (${rStart}::date IS NULL OR date >= ${rStart}::date)
-           AND (${rEnd}::date   IS NULL OR date <= ${rEnd}::date) AS in_range
+           AND (${rEnd}::date   IS NULL OR date <= ${rEnd}::date) AS in_range,
+               (COALESCE(field_type, '') ~* ${SQL_TRAVEL_FIELD_RE}
+                OR sub_code ~* ${SQL_TRAVEL_CODE_RE}
+                OR COALESCE(cost_code, '') ~* ${SQL_TRAVEL_CODE_RE})                AS is_travel
         FROM src
       )
       SELECT
@@ -506,8 +517,10 @@ async function buildFinancials(sql, companyCode, division, projects, range) {
         (COUNT(*) FILTER (WHERE in_range))::int                      AS range_rows,
         SUM(qty)::float                                              AS rqty,
         -- The equipment a Labor row carries, capped at the row's own cost:
-        -- what paving moves onto the Equipment line. See pavingEquipToEquipLine.
-        SUM(GREATEST(0, LEAST(equip_cost, row_cost)))::float         AS equip_actual
+        -- what paving moves onto the Equipment line. Travel rows keep their
+        -- pickup, so they are left out. See pavingEquipToEquipLine.
+        COALESCE(SUM(GREATEST(0, LEAST(equip_cost, row_cost)))
+                 FILTER (WHERE NOT is_travel), 0)::float              AS equip_actual
       FROM flagged
       GROUP BY project_id, cost_code, sub_code
     `;

@@ -140,6 +140,28 @@ section('the Weiler is costed to the Equipment line');
     && t.laborerCountForBidItem(p.bidItems[1], p.id) === 0);
 }
 
+section('travel keeps its pickup, wherever it was booked');
+{
+  // Payroll stamps a split row "Travel" when the man ticked it as travel, even
+  // when he left it on the Labor sub code. The pickup stays with the travel.
+  const p = job(); t.set([p]);
+  p.dailyRows.push({ id: 'tv', date: '2026-11-06', cost_code: CC, sub_code: LAB, field_type: 'Travel', employee: 'Collin Kelley',
+    rate: '45', labor_hours: '0.5', equipment: 'Pickup', equip_unit_cost: '35', equip_hours: '0.5' });
+  assert('a Travel-stamped row on the Labor sub code is not split: its pickup stays on Labor with it',
+    near(line$(p, LAB), WAGES + 22.5 + 17.5) && near(line$(p, EQP), 765), `${line$(p, LAB)} / ${line$(p, EQP)}`);
+  p.dailyRows[p.dailyRows.length - 1].field_type = ' travel ';
+  assert('…whatever the case or spacing of the stamp', near(line$(p, EQP), 765));
+
+  const q = job({ bidItems: [
+    { id: 'a', cost_code: CC, sub_code: 'Labor - Travel', unit: 'HR', quantity: '1', unit_cost: '1' },
+    { id: 'b', cost_code: CC, sub_code: EQP, unit: 'LS', quantity: '1', unit_cost: '1' }] });
+  q.dailyRows = [{ id: 'lt', date: '2026-11-06', cost_code: CC, sub_code: 'Labor - Travel', rate: '45', labor_hours: '1',
+    equip_unit_cost: '35', equip_hours: '1' }];
+  t.set([q]);
+  assert('a "Labor - Travel" sub code is travel, and keeps its pickup', near(t.actualForBidItem(q.bidItems[0], q.id), 80)
+    && t.actualForBidItem(q.bidItems[1], q.id) === 0);
+}
+
 section('only when there is an Equipment line to take it');
 {
   const p = job(); p.bidItems = p.bidItems.filter(b => b.sub_code !== EQP); t.set([p]);
@@ -291,15 +313,19 @@ const report = require(path.join(ROOT, 'api/executive/report.js'));
       const k = (r.cost_code || '') + '\u0000' + (r.sub_code || '');
       const e = g.get(k) || { project_id: projectId, cost_code: r.cost_code || '', sub_code: r.sub_code || '',
         actual: 0, range_actual: 0, range_rows: 0, rqty: 0, equip_actual: 0 };
-      e.actual += cost; e.rqty += n(r.quantity); e.equip_actual += Math.max(0, Math.min(eq, cost));
+      // Travel rows are left out of equip_actual: the pickup stays with the travel.
+      const travel = /^\s*travel\s*$/i.test(r.field_type || '') || /\btravel\b/i.test(r.sub_code || '')
+        || /\btravel\b/i.test(r.cost_code || '');
+      e.actual += cost; e.rqty += n(r.quantity); if (!travel) e.equip_actual += Math.max(0, Math.min(eq, cost));
       g.set(k, e);
     });
     return [...g.values()];
   };
-  let sqlSeen = '';
-  const fakeSql = rows => (strings) => {
+  let sqlSeen = '', dailyValues = null;
+  const fakeSql = rows => (strings, ...values) => {
     const q = strings.join('?').replace(/\s+/g, ' ').toLowerCase();
     sqlSeen += q;
+    if (q.includes('from daily_tracking')) dailyValues = values;
     return Promise.resolve(q.includes('from daily_tracking') ? rows : []);
   };
 
@@ -313,6 +339,20 @@ const report = require(path.join(ROOT, 'api/executive/report.js'));
       `${pp.projected} vs ${t.projectedCostForProject(p)}`);
     assert('…and the actual is every row, unchanged', near(pp.actual, rowsTotal(p)));
     assert('…and nothing reads off-bid', pp.offBid === 0);
+    assert('travel rows are filtered out of the equipment sum, by field type and by code',
+      /filter \(where not is_travel\)/.test(sqlSeen) && /coalesce\(field_type, ''\) ~\*/.test(sqlSeen)
+      && dailyValues.includes('^\\s*travel\\s*$') && dailyValues.includes('\\mtravel\\M'),
+      JSON.stringify(dailyValues));
+    assert('…with company, division and job ids still the first three parameters',
+      dailyValues[0] === 'C' && dailyValues[1] === 'paving' && Array.isArray(dailyValues[2]));
+
+    const tv = job(); tv.bidItems[0].quantity = '7046';
+    tv.dailyRows.push({ id: 'tv', date: '2026-11-06', cost_code: CC, sub_code: LAB, field_type: 'Travel', employee: 'Collin Kelley',
+      rate: '45', labor_hours: '0.5', equipment: 'Pickup', equip_unit_cost: '35', equip_hours: '0.5' });
+    t.set([tv]);
+    const ftv = (await report.buildFinancials(fakeSql(groupRows(tv.id, tv.dailyRows)), 'C', 'paving', [tv])).perProject.get(tv.id);
+    assert('a Travel-stamped Labor row: the Executive projection still matches the page',
+      near(ftv.projected, t.projectedCostForProject(tv)), `${ftv.projected} vs ${t.projectedCostForProject(tv)}`);
 
     const q = job(); q.bidItems = q.bidItems.filter(b => b.sub_code !== LAB); t.set([q]);
     const fq = (await report.buildFinancials(fakeSql(groupRows(q.id, q.dailyRows)), 'C', 'paving', [q])).perProject.get(q.id);
