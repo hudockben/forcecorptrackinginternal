@@ -69,9 +69,15 @@ function page() {
     'function getAllDailyRows() { return projectsList.reduce((a, p) => a.concat(p.dailyRows || []), []); }',
     'function bidItemComplete(b) { return !!b.is_complete; }',
     ...LIFT.map(n => requireFn(SRC, n, 'paving.html')),
+    // Counts every row the page prices, so a test can say which rows a figure
+    // had to look at.
+    'let _priced = 0;',
+    'const _realDailyRowCost = dailyRowCost;',
+    'dailyRowCost = function (r) { _priced++; return _realDailyRowCost(r); };',
     `this.__t = {
        set(list) { projectsList = list; _projSubAggCache = null; _projSubAggCacheRowCount = -1; },
        pv(active, rate) { pvPreview = { active, rate }; },
+       priced() { const n = _priced; _priced = 0; return n; },
        ${LIFT.map(n => `${n}`).join(', ')}
      };`,
   ].join('\n'), ctx);
@@ -396,6 +402,49 @@ async function pastAvgFollowsBidLines() {
   q.bidItems.push({ id: 'b2', cost_code: CC, sub_code: EQP, unit: 'LS', quantity: '1', unit_cost: '2500' });
   assert('adding its Equipment line refreshes the benchmark — no row was added, so the row count alone would not',
     near(t.computeSizeAwarePastAvg(3523, CC, LAB, 'p26058', true).histUC, WAGES / 3523));
+}
+
+section('a line prices only the rows that can land on it');
+{
+  // actualForBidItem() runs once per bid line over every row of the job, so a
+  // row neither piece of which can land on the line must not be priced.
+  const p = job(); t.set([p]); t.priced();
+  line$(p, LAB);
+  assert('the Labor line prices only the three Labor rows', t.priced() === 3);
+  line$(p, TRV);
+  assert('the Travel line prices only the two travel rows', t.priced() === 2);
+  line$(p, EQP);
+  assert('the Equipment line prices the Labor rows, whose machines can move to it, and nothing else', t.priced() === 3);
+  line$(p, MAT);
+  assert('the Material line prices only the PO row', t.priced() === 1);
+}
+
+section('whole-row totals are the same sum they always were');
+{
+  // Sub Code Performance, the Daily Production Rate view and Scale of Economy
+  // read totalCost and the monthly cost: they must be the rows' costs added in
+  // row order, as before the split — not the split pieces added back together,
+  // which floating point can land a hair away from it.
+  let seed = 7;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const dec = () => (Math.floor(rnd() * 100000) / 100).toFixed(2);
+  const p = job({ id: 'pf' });
+  p.dailyRows = Array.from({ length: 400 }, (_, i) => ({ id: 'f' + i, date: '2026-1' + (i % 2) + '-0' + (1 + i % 9),
+    cost_code: CC, sub_code: [LAB, LAB, TRV, MAT][i % 4], rate: dec(), labor_hours: (rnd() * 12).toFixed(2),
+    equip_unit_cost: dec(), equip_hours: (rnd() * 9).toFixed(2), material_cost: i % 5 ? '' : dec(), quantity: dec() }));
+  t.set([p]);
+  const agg = t.buildProjectSubCodeAgg();
+  const exact = [LAB, TRV, MAT].every(sc => {
+    const rows = p.dailyRows.filter(r => r.sub_code === sc);
+    const e = agg[CC + '||' + sc][0];
+    const want = rows.reduce((s, r) => s + t.dailyRowCost(r), 0);
+    const months = {};
+    rows.forEach(r => { const mo = r.date.slice(0, 7); months[mo] = (months[mo] || 0) + t.dailyRowCost(r); });
+    return e.totalCost === want && Object.keys(months).every(mo => e.monthly[mo].cost === months[mo]);
+  });
+  assert('totalCost and the monthly cost equal the row-order sums exactly (===), split rows included', exact);
+  const lab = agg[CC + '||' + LAB][0];
+  assert('…while Labor\'s split cost leaves the machines out', lab.splitCost < lab.totalCost);
 }
 
 // ── 2. Executive ────────────────────────────────────────────────────────────

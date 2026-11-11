@@ -8771,8 +8771,12 @@ function _bidGroupMeasureEdit(el) {
    the Executive report projects the same lines: ASCII spaces around the field
    type, and a word edge is anything but a letter, digit or underscore.
 
-   Hands each piece to fn(cost_code, sub_code, cost, row), in row order: a
-   split row gives its Labor piece and then its Equipment piece. `want`, when
+   Hands each piece to fn(cost_code, sub_code, cost, row, whole), in row
+   order: a split row gives its Labor piece and then its Equipment piece.
+   `whole` is the row's whole cost on its own piece and 0 on the Equipment
+   one, for a caller that also adds rows up whole (buildProjectSubCodeAgg):
+   added that way, a whole-row total is the same sum it always was, to the
+   last bit, not the pieces added back together. `want`, when
    given, is asked first, by codes alone, which pieces the caller needs, and a
    row with none is never priced: actualForBidItem() walks every row of the job
    once per bid line, and pricing all of them each time, for the one row in
@@ -8789,36 +8793,42 @@ function _bidEachCostPiece(p, rows, fn, want) {
   });
   // How many bid lines take a piece with these codes — the wildcard rule
   // actualForBidItem() matches by — and 1 for a piece on none (off-bid).
+  // Worked out once per pair of codes, in a map of maps: no key is built.
   const reach = new Map();
   const reachOf = (cc, sc) => {
-    const k = (cc || '') + '\u0000' + (sc || '');
-    let n = reach.get(k);
+    let m = reach.get(cc);
+    if (!m) reach.set(cc, m = new Map());
+    let n = m.get(sc);
     if (n === undefined) {
       n = lines.filter(b => (b.cost_code ? cc === b.cost_code : true) && (b.sub_code ? sc === b.sub_code : true)).length || 1;
-      reach.set(k, n);
+      m.set(sc, n);
     }
     return n;
   };
   const split = equipLine.size > 0;
   (rows || []).forEach(r => {
-    const to    = split && r.cost_code ? equipLine.get(r.cost_code) : undefined;
-    const sc    = r.sub_code || '';
-    const moves = to !== undefined && sc !== to && LABOR.test(sc) && !EQUIP.test(sc)
+    const to   = split && r.cost_code ? equipLine.get(r.cost_code) : undefined;
+    const sc   = r.sub_code || '';
+    const cand = to !== undefined && sc !== to;   // a row that could split
+    // `want` first, by codes alone: a row neither piece of which the caller
+    // needs goes no further — no name tests, no counting of lines, no pricing.
+    const own  = !want || want(r.cost_code, r.sub_code);
+    const eqW  = cand && (!want || want(r.cost_code, to));
+    if (!own && !eqW) return;
+    const moves = cand && LABOR.test(sc) && !EQUIP.test(sc)
       && !TRAVEL_FIELD.test(r.field_type || '') && !TRAVEL_CODE.test(sc) && !TRAVEL_CODE.test(r.cost_code || '')
       && reachOf(r.cost_code, to) <= reachOf(r.cost_code, r.sub_code);
-    const own   = !want || want(r.cost_code, r.sub_code);
-    const eqTo  = moves && (!want || want(r.cost_code, to));
-    if (!own && !eqTo) return;
+    if (!own && !moves) return;   // wanted only for an Equipment piece it does not give
     const cost = dailyRowCost(r);
     if (moves) {
       const eq = Math.min(calcDaily(r).equip_total, cost);
       if (eq > 0) {
-        if (own)  fn(r.cost_code, r.sub_code, cost - eq, r);
-        if (eqTo) fn(r.cost_code, to, eq, r);
+        if (own) fn(r.cost_code, r.sub_code, cost - eq, r, cost);
+        if (eqW) fn(r.cost_code, to, eq, r, 0);
         return;
       }
     }
-    if (own) fn(r.cost_code, r.sub_code, cost, r);
+    if (own) fn(r.cost_code, r.sub_code, cost, r, cost);
   });
 }
 
@@ -15133,7 +15143,12 @@ function buildProjectSubCodeAgg() {
   // Held apart from cacheKey, not appended to it: within a task it is the same
   // string, so the check is a pointer compare rather than a copy of every bid.
   const bids      = _projSubAggBids();
-  if (_projSubAggCache && _projSubAggCacheRowCount === cacheKey && _projSubAggCacheBids === bids) return _projSubAggCache;
+  if (_projSubAggCache && _projSubAggCacheRowCount === cacheKey && _projSubAggCacheBids === bids) {
+    // Equal strings from different tasks are compared character by character;
+    // holding this task's one makes every later lookup in it a pointer compare.
+    _projSubAggCacheBids = bids;
+    return _projSubAggCache;
+  }
   const agg = {};
   projectsList.forEach(p => {
     const bidItems  = p.bidItems  || [];
@@ -15186,10 +15201,12 @@ function buildProjectSubCodeAgg() {
     // line that only ever receives moved equipment has no quantity to put a
     // cost over.
     Object.values(projAgg).forEach(d => { d.splitCost = 0; });
-    _bidEachCostPiece(p, dailyRows, (cc, sc, cost, row) => {
-      const own = projAgg[(row.cost_code || '') + '||' + (row.sub_code || '')];
-      own.totalCost += cost;
-      if (row.date) own.monthly[row.date.substring(0, 7)].cost += cost;
+    _bidEachCostPiece(p, dailyRows, (cc, sc, cost, row, whole) => {
+      if (whole) {
+        const own = projAgg[(row.cost_code || '') + '||' + (row.sub_code || '')];
+        own.totalCost += whole;
+        if (row.date) own.monthly[row.date.substring(0, 7)].cost += whole;
+      }
       const d = projAgg[(cc || '') + '||' + (sc || '')];
       if (d) d.splitCost += cost;
     });
