@@ -49,7 +49,7 @@ const line = (src, startsWith) => {
 };
 
 // ── The page, lifted ────────────────────────────────────────────────────────
-const LIFT = ['calcDaily', 'dailyRowCost', '_bidEachCostPiece', 'actualForBidItem', 'runningQtyForBidItem',
+const LIFT = ['calcDaily', 'dailyRowCost', '_bidEachCostPiece', '_bidCodeTotals', 'actualForBidItem', 'runningQtyForBidItem',
   'cumulativeHoursForBidItem', 'laborerCountForBidItem', '_rowMaterialInCost', 'materialForBidItem',
   '_bidMaterialEntry', '_dailySortDate', 'offBidForProject', 'projIsDone', 'projForBidItem',
   'projectedCostForProject', 'buildProjectSubCodeAgg', 'computeSizeAwarePastAvg'];
@@ -281,6 +281,55 @@ section('projected cost');
     near(labProj, WAGES * 2), labProj);
 }
 
+section('projected cost reads every line off one walk of the job');
+{
+  // projectedCostForProject adds the pieces up once (_bidCodeTotals) instead of
+  // walking the job's rows once per line. Each line's figure has to be the one
+  // the walk gives it — exactly, not to the cent — through the split, travel,
+  // an imported total, the PV preview and every wildcard a line can carry.
+  const tv = job();
+  tv.dailyRows.push({ id: 'tv', date: '2026-11-06', cost_code: CC, sub_code: LAB, field_type: 'Travel', employee: 'Collin Kelley',
+    rate: '45', labor_hours: '0.5', equipment: 'Pickup', equip_unit_cost: '35', equip_hours: '0.5' });
+  const imp = job();
+  imp.dailyRows.find(r => r.id === 'r3').total_cost = '500';
+  const wild = job();
+  wild.bidItems.push(
+    { id: 'w1', cost_code: CC,  sub_code: '',  unit: 'LS', quantity: '1', unit_cost: '1' },   // the whole cost code
+    { id: 'w2', cost_code: '',  sub_code: EQP, unit: 'LS', quantity: '1', unit_cost: '1' },   // the sub code, under any code
+    { id: 'w3', cost_code: '',  sub_code: '',  unit: 'LS', quantity: '1', unit_cost: '1' },   // nothing
+    { id: 'w4', cost_code: SUP, sub_code: LAB, unit: 'LS', quantity: '1', unit_cost: '1' });
+  wild.dailyRows.push(
+    { id: 'z1', date: '2026-11-07', cost_code: SUP, sub_code: EQP, rate: '10', labor_hours: '2', quantity: '7' },
+    // No Equipment line under SUP: this row's machine stays on its Labor line.
+    { id: 'z2', date: '2026-11-07', cost_code: SUP, sub_code: LAB, rate: '10', labor_hours: '1', equip_unit_cost: '5', equip_hours: '1', quantity: '3' });
+  const cases = [['the job', job(), false], ['a Travel-stamped Labor row', tv, false], ['an imported total', imp, false],
+    ['the PV preview', job(), true], ['every wildcard', wild, false]];
+  for (const [label, p, pv] of cases) {
+    t.set([p]); t.pv(pv, pv ? 70 : 0);
+    const totals = t._bidCodeTotals(p);
+    const off = p.bidItems.filter(b => t.actualForBidItem(b, p.id, totals) !== t.actualForBidItem(b, p.id)
+      || t.runningQtyForBidItem(b, p.id, totals) !== t.runningQtyForBidItem(b, p.id)).map(b => b.id);
+    assert(`${label}: every line's actual and quantity are the walk's own`, off.length === 0, off.join(', '));
+    t.pv(false, 0);
+  }
+  t.set([wild]);
+  assert('…the wildcards read what they should: the whole code, the sub code under both codes, nothing, the pair',
+    near(t.actualForBidItem(wild.bidItems[5], wild.id), rowsTotal(job()))
+      && near(t.actualForBidItem(wild.bidItems[6], wild.id), 765 + 20) && t.runningQtyForBidItem(wild.bidItems[6], wild.id) === 7
+      && t.actualForBidItem(wild.bidItems[7], wild.id) === 0
+      && near(t.actualForBidItem(wild.bidItems[8], wild.id), 15) && t.runningQtyForBidItem(wild.bidItems[8], wild.id) === 3,
+    wild.bidItems.slice(5).map(b => t.actualForBidItem(b, wild.id)).join(' / '));
+  // And the job's projected cost is the line-by-line sum, one walk per line.
+  const byLine = wild.bidItems.reduce((s, b) => {
+    const q = parseFloat(b.quantity) || 0;
+    return s + t.projForBidItem(b, t.actualForBidItem(b, wild.id), t.runningQtyForBidItem(b, wild.id), q,
+      q * (parseFloat(b.unit_cost) || 0), !!b.is_complete);
+  }, 0);
+  const want = Math.max(byLine + t.offBidForProject(wild).total, rowsTotal(wild));
+  assert('the projected cost is what walking it one line at a time gives', t.projectedCostForProject(wild) === want,
+    `${t.projectedCostForProject(wild)} vs ${want}`);
+}
+
 // ── Past average ────────────────────────────────────────────────────────────
 section('the Past Avg UC benchmark');
 {
@@ -383,7 +432,10 @@ function structural() {
   assert('…and so does the Job Summary report', /actualForBidItem\(b, projId\)/.test(body('exportJobSummary')));
   assert('…and the bid PDF', /actualForBidItem\(b, projId\)/.test(body('exportBidPDF')));
   assert('…and the bid XLSX', /actualForBidItem\(b, projId\)/.test(fs.readFileSync(path.join(ROOT, 'bid-xlsx.js'), 'utf8')));
-  assert('…and the projected cost', /actualForBidItem\(b, p\.id\)/.test(body('projectedCostForProject')));
+  // Every line off one walk of the job's rows, which reads the same pieces.
+  assert('…and the projected cost', /actualForBidItem\(b, p\.id, totals\)/.test(body('projectedCostForProject'))
+    && /const totals = _bidCodeTotals\(p\);/.test(body('projectedCostForProject'))
+    && /_bidEachCostPiece\(p, rows,/.test(body('_bidCodeTotals')));
   // Custom Reports work out each line's figures in custom-reports-engine.js;
   // the page hands it the split itself (behaviour: test-custom-reports-engine.js).
   assert('…and Custom Reports are handed the split itself',

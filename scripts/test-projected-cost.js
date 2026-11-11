@@ -74,8 +74,10 @@ const PROJECTION_FNS = ['offBidForProject', 'projIsDone', 'projForBidItem', 'pro
 function loadProjectionBlock(file, stubs) {
   const src   = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
   // Paving's offBidForProject reads its pieces (equipment on a Labor row
-  // counted on the Equipment line) through a helper only it has.
-  const own   = src.includes('function _bidEachCostPiece(') ? ['_bidEachCostPiece'] : [];
+  // counted on the Equipment line) through a helper only it has, and its
+  // projectedCostForProject adds every line's figures up off one walk of the
+  // rows (_bidCodeTotals) before asking the stubs below for each line.
+  const own   = ['_bidEachCostPiece', '_bidCodeTotals'].filter(n => src.includes(`function ${n}(`));
   const block = PROJECTION_FNS.concat(own).map(n => extractFunction(src, n)).join('\n\n');
   return new Function('actualForBidItem', 'runningQtyForBidItem', 'bidItemComplete', 'dailyRowCost', 'getProj',
     `${block}

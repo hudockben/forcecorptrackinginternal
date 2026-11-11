@@ -76,8 +76,10 @@ function extractFunction(src, name) {
 // together — plus the real projection chain it depends on, over a stub DOM.
 const CHAIN = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject', 'gpEarnedToDate', 'statusBadgeClass', '_rowIsWorkDay'];
 // Lifted where a page has them: paving's offBidForProject reads its pieces
-// (equipment on a Labor row counted on the Equipment line) through this.
-const OWN_CHAIN = ['_bidEachCostPiece'];
+// (equipment on a Labor row counted on the Equipment line) through the first,
+// and its projectedCostForProject adds every line up off one walk of the rows
+// with the second.
+const OWN_CHAIN = ['_bidEachCostPiece', '_bidCodeTotals'];
 
 // paving.html routes every contract read through projectContract(), which
 // folds in contract change orders; the other division files still inline the

@@ -8794,8 +8794,51 @@ function _bidEachCostPiece(p, rows, fn, want) {
   });
 }
 
-function actualForBidItem(b, projId) {
+/* Every bid line's Actual Cost and running quantity, off one walk of the job.
+   actualForBidItem() and runningQtyForBidItem() each walk all of a job's rows
+   for the one line they are asked about, so asking them for every line walks
+   the job once per line: 40 lines over 2,500 rows is 100,000 visits, each
+   running the Labor / Equipment tests. projectedCostForProject() asks for every
+   line, and the home page, the Financials table and each Custom Report run it
+   per job. A caller like that builds this once and hands it to both functions
+   as `totals`, and they read the line off it instead of the rows.
+
+   The same figures, not close to them. Cost is added up by the same pieces
+   (_bidEachCostPiece(), so equipment on a Labor row is already on its
+   Equipment line) and quantity by each row's own codes, as the two functions
+   count them. Each is added up three ways, one per way a bid line can match:
+   by cost code and sub code together, by cost code alone (a line with no sub
+   code takes its whole code) and by sub code alone (a line with no cost code
+   takes the sub code under any code). Added in row order starting from zero,
+   each sum is the one the walk makes, to the last bit. Keyed by the codes as
+   they are, in Maps rather than joined strings, so a code matches only what
+   === matches there. */
+function _bidCodeTotals(p) {
+  const tally = () => ({ both: new Map(), cc: new Map(), sc: new Map() });
+  const cost = tally(), qty = tally();
+  const add = (t, cc, sc, v) => {
+    let bySc = t.both.get(cc);
+    if (!bySc) t.both.set(cc, bySc = new Map());
+    bySc.set(sc, (bySc.get(sc) ?? 0) + v);
+    t.cc.set(cc, (t.cc.get(cc) ?? 0) + v);
+    t.sc.set(sc, (t.sc.get(sc) ?? 0) + v);
+  };
+  const rows = (p && p.dailyRows) || [];
+  _bidEachCostPiece(p, rows, (cc, sc, c) => add(cost, cc, sc, c));
+  rows.forEach(r => add(qty, r.cost_code, r.sub_code, parseFloat(r.quantity) || 0));
+  // A line with neither code takes nothing, as in the two functions.
+  const line = t => b =>
+    !b.cost_code && !b.sub_code ? 0
+    : b.cost_code && b.sub_code ? (t.both.get(b.cost_code)?.get(b.sub_code) ?? 0)
+    : ((b.cost_code ? t.cc.get(b.cost_code) : t.sc.get(b.sub_code)) ?? 0);
+  return { cost: line(cost), qty: line(qty) };
+}
+
+// `totals`, from _bidCodeTotals(), when the caller is pricing every line of the
+// job: the same figure, without walking the job's rows again for this one.
+function actualForBidItem(b, projId, totals) {
   if (!b.cost_code && !b.sub_code) return 0;
+  if (totals) return totals.cost(b);
   const proj = getProj(projId);
   const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
   // By piece, not by row: equipment run on a Labor row counts on the cost
@@ -9074,8 +9117,10 @@ function _bidMatRefreshDue() {
   renderBidTable(id);
 }
 
-function runningQtyForBidItem(b, projId) {
+// `totals`: as for actualForBidItem().
+function runningQtyForBidItem(b, projId, totals) {
   if (!b.cost_code && !b.sub_code) return 0;
+  if (totals) return totals.qty(b);
   const proj = getProj(projId);
   const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
   return rows.reduce((s, r) => {
@@ -9421,11 +9466,14 @@ function projectedCostForProject(p) {
   const _effQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
   const totalActual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
   if (projIsDone(p)) return totalActual;
+  // Every line's actual and running quantity off one walk of the job's rows,
+  // not one walk per line. See _bidCodeTotals().
+  const totals = _bidCodeTotals(p);
   const sumLines = (p.bidItems||[]).reduce((s,b) => {
     const bidQty = _effQty(b);
     const bidTot = bidQty * (parseFloat(b.unit_cost)||0);
-    const actual = actualForBidItem(b, p.id);
-    const rqty   = runningQtyForBidItem(b, p.id);
+    const actual = actualForBidItem(b, p.id, totals);
+    const rqty   = runningQtyForBidItem(b, p.id, totals);
     const done   = bidItemComplete(b, p.id);
     return s + projForBidItem(b, actual, rqty, bidQty, bidTot, done);
   }, 0);
