@@ -16972,6 +16972,8 @@ async function createPOFromDaily(projId, poNum) {
 }
 
 /** The notice above the order list: job rows naming an order this tab cannot show. */
+// It starts folded to its heading; a re-render keeps it open once someone opens it.
+let _poOrphansOpen = false;
 function _poDailyOrphansHTML() {
   // Against a list that failed to load, every PO # would read as orphaned —
   // and the button beside each would raise a duplicate of a real order.
@@ -16995,11 +16997,11 @@ function _poDailyOrphansHTML() {
       <span style="font-family:monospace">${escT(g.poNum)}</span>
       <span>${escT(g.projName)} &middot; ${what}</span>${action}</li>`;
   }).join('');
-  return `<div style="border:1px solid rgba(234,179,8,0.4);background:rgba(234,179,8,0.08);border-radius:6px;padding:0.6rem 0.85rem;margin-bottom:0.85rem;font-size:0.78rem;color:var(--text)">
-    <div style="font-weight:700;color:var(--yellow);margin-bottom:0.2rem">PO numbers in Daily Tracking with no purchase order on that job</div>
-    <div style="color:var(--muted);margin-bottom:0.3rem">These job rows name an order this list does not have, so their material shows on the job but not here.</div>
+  return `<details class="po-orphans" ${_poOrphansOpen ? 'open' : ''} ontoggle="_poOrphansOpen=this.open" style="border:1px solid rgba(234,179,8,0.4);background:rgba(234,179,8,0.08);border-radius:6px;padding:0.6rem 0.85rem;margin-bottom:0.85rem;font-size:0.78rem;color:var(--text)">
+    <summary style="font-weight:700;color:var(--yellow);cursor:pointer">PO numbers in Daily Tracking with no purchase order on that job <span style="font-weight:400;color:var(--muted)">(${groups.length})</span></summary>
+    <div style="color:var(--muted);margin:0.3rem 0">These job rows name an order this list does not have, so their material shows on the job but not here.</div>
     <ul style="margin:0;padding-left:1rem">${items}</ul>
-  </div>`;
+  </details>`;
 }
 
 function _subCodeOpts(po) {
