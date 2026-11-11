@@ -137,6 +137,9 @@ function load(src) {
     ${extractFunction(src, 'dailyRowCost')}
     ${extractFunction(src, '_dailySortDate')}
     ${extractFunction(src, 'actualForBidItem')}
+    ${/* Paving's actualForBidItem counts by piece — equipment on a Labor row
+         lands on the Equipment line — through a helper only it has. */
+      src.includes('function _bidEachCostPiece(') ? extractFunction(src, '_bidEachCostPiece') : ''}
     ${extractFunction(src, 'runningQtyForBidItem')}
     ${extractFunction(src, 'cumulativeHoursForBidItem')}
     ${extractFunction(src, 'laborerCountForBidItem')}

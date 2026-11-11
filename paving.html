@@ -8727,17 +8727,83 @@ function _bidGroupMeasureEdit(el) {
   wrap.title = _bidGroupUnitCostTip(t, qty, unit);
 }
 
+/* ── Equipment on a Labor line is costed to the Equipment line ──────────────
+   Paving bids a cost code's equipment on a line of its own — "4 1/2" 25MM
+   Overlay - Equipment" beside "… - Labor" — but an approved timesheet puts the
+   man and the machine he ran on one job row, under the sub code he booked his
+   time to: the Labor line. Left there, Labor's Actual Cost carries the machine
+   and the Equipment line reads $0 against its bid.
+
+   So wherever a job row's cost is counted against a bid line, a row on a Labor
+   sub code is split in two: its equipment cost goes to the Equipment line of
+   the same cost code, and the rest (the wage, any material) stays on Labor.
+   Only where the money is counted moves. The row itself is left as approved:
+   Daily Tracking shows it unchanged, and its hours, quantity, laborer and days
+   stay on Labor. The two pieces add back to the row's cost, so a cost code's
+   total and the job's total never move.
+
+   Both lines have to say what they are. The row's sub code has "Labor" in its
+   name, and the job's bid has a sub code with "Equip" in its name under the
+   same cost code (the first one, if there are several). Without an Equipment
+   line to take it, the cost stays on Labor where it was booked. Trucking and
+   Mobilization rows are not Labor and are never split, and neither is travel:
+   the pickup on a travel row stays with the travel, whether the row sits on
+   the Travel sub code or is a row payroll stamped Travel under the Labor one
+   (the same test payroll prices travel by — a "Travel" field type, or "travel"
+   as a word in the cost or sub code). Only a positive equipment cost moves. An imported Total Cost can be less than the
+   row's own equipment figure; what moves is capped at the row's cost, so the
+   Labor piece never goes below zero.
+
+   Mirrored server-side by the paving branch of buildFinancials in
+   api/executive/report.js, so the Executive report projects the same lines.
+
+   Hands each piece to fn(cost_code, sub_code, cost, row), in row order: a
+   split row gives its Labor piece and then its Equipment piece. `want`, when
+   given, is asked first, by codes alone, which pieces the caller needs, and a
+   row with none is never priced: actualForBidItem() walks every row of the job
+   once per bid line, and pricing all of them each time, for the one row in
+   forty that lands on the line, is what made a big job's report crawl. A
+   callback rather than a list for the same reason. */
+function _bidEachCostPiece(p, rows, fn, want) {
+  const LABOR = /\blabou?r\b/i, EQUIP = /\bequip/i, TRAVEL = /\btravel\b/i;
+  const equipLine = new Map();   // cost code → the sub code of its Equipment line
+  ((p && p.bidItems) || []).forEach(b => {
+    const cc = b && b.cost_code, sc = b && b.sub_code;
+    if (cc && sc && !equipLine.has(cc) && EQUIP.test(sc) && !LABOR.test(sc)) equipLine.set(cc, sc);
+  });
+  const split = equipLine.size > 0;
+  (rows || []).forEach(r => {
+    const to    = split && r.cost_code ? equipLine.get(r.cost_code) : undefined;
+    const sc    = r.sub_code || '';
+    const moves = to !== undefined && sc !== to && LABOR.test(sc) && !EQUIP.test(sc)
+      && !/^\s*travel\s*$/i.test(r.field_type || '') && !TRAVEL.test(sc) && !TRAVEL.test(r.cost_code || '');
+    const own   = !want || want(r.cost_code, r.sub_code);
+    const eqTo  = moves && (!want || want(r.cost_code, to));
+    if (!own && !eqTo) return;
+    const cost = dailyRowCost(r);
+    if (moves) {
+      const eq = Math.min(calcDaily(r).equip_total, cost);
+      if (eq > 0) {
+        if (own)  fn(r.cost_code, r.sub_code, cost - eq, r);
+        if (eqTo) fn(r.cost_code, to, eq, r);
+        return;
+      }
+    }
+    if (own) fn(r.cost_code, r.sub_code, cost, r);
+  });
+}
+
 function actualForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
   const proj = getProj(projId);
   const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
-  return rows.reduce((s, r) => {
-    if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
-        (b.sub_code  ? r.sub_code  === b.sub_code  : true)) {
-      return s + dailyRowCost(r);
-    }
-    return s;
-  }, 0);
+  // By piece, not by row: equipment run on a Labor row counts on the cost
+  // code's Equipment line. See _bidEachCostPiece().
+  let s = 0;
+  _bidEachCostPiece(proj, rows, (cc, sc, cost) => { s += cost; }, (cc, sc) =>
+    (b.cost_code ? cc === b.cost_code : true) &&
+    (b.sub_code  ? sc === b.sub_code  : true));
+  return s;
 }
 
 /* Material booked to a bid line: the material on every job row its cost code
@@ -9259,26 +9325,26 @@ function _bidPlanRateOnChange(e) {
 document.addEventListener('change', _bidPlanRateOnChange);
 
 // Daily costs whose cost/sub code matches no bid line. Same wildcard rule as
-// actualForBidItem(), so on-bid spend is never miscounted as off-bid. Accepts a
-// project id or the project object itself.
+// actualForBidItem(), and the same pieces (equipment on a Labor row counted on
+// its Equipment line), so on-bid spend is never miscounted as off-bid. Accepts
+// a project id or the project object itself.
 function offBidForProject(projIdOrProj) {
   const p = (projIdOrProj && typeof projIdOrProj === 'object') ? projIdOrProj : getProj(projIdOrProj);
   if (!p) return { total: 0, codes: [] };
   const bids = p.bidItems || [];
   const hasKey  = b => !!((b.cost_code || '') || (b.sub_code || ''));
-  const matches = (b, r) =>
-    (b.cost_code ? r.cost_code === b.cost_code : true) &&
-    (b.sub_code  ? r.sub_code  === b.sub_code  : true);
+  const matches = (b, cc, sc) =>
+    (b.cost_code ? cc === b.cost_code : true) &&
+    (b.sub_code  ? sc === b.sub_code  : true);
   const map = new Map();
-  (p.dailyRows || []).forEach(r => {
-    if (bids.some(b => hasKey(b) && matches(b, r))) return;  // on-bid — skip
-    const cost = dailyRowCost(r);
+  const offBid = (cc, sc) => !bids.some(b => hasKey(b) && matches(b, cc, sc));
+  _bidEachCostPiece(p, p.dailyRows || [], (cost_code, sub_code, cost) => {
     if (!cost) return;
-    const key = (r.cost_code || '') + '\u0000' + (r.sub_code || '');
-    const e = map.get(key) || { cost_code: r.cost_code || '', sub_code: r.sub_code || '', actual: 0 };
+    const key = (cost_code || '') + '\u0000' + (sub_code || '');
+    const e = map.get(key) || { cost_code: cost_code || '', sub_code: sub_code || '', actual: 0 };
     e.actual += cost;
     map.set(key, e);
-  });
+  }, offBid);   // on-bid pieces are skipped before they are priced
   const codes = [...map.values()]
     .filter(c => Math.abs(c.actual) > 0.005)
     .sort((a, b) => b.actual - a.actual);
@@ -15027,30 +15093,38 @@ function buildProjectSubCodeAgg() {
     });
     // Aggregate this project's daily rows by sub code
     const projAgg = {};
+    const touch = key => projAgg[key] || (projAgg[key] = {
+      runQty: 0, totalCost: 0, laborHrs: 0, equipHrs: 0, dates: new Set(),
+      monthly: {},    // 'YYYY-MM' → { cost, qty }
+      employees: {},  // name → labor hours
+      equipment: {},  // name → equip hours
+    });
+    const addCost = (d, date, cost) => {
+      d.totalCost += cost;
+      if (!date) return;
+      const mo = date.substring(0, 7); // 'YYYY-MM'
+      if (!d.monthly[mo]) d.monthly[mo] = { cost: 0, qty: 0 };
+      d.monthly[mo].cost += cost;
+    };
+    // Cost by the same pieces the bid table's Actual Cost adds up, so a sub
+    // code's past average is a like-for-like benchmark for its Running Unit
+    // Cost: equipment run on a Labor row counts on the cost code's Equipment
+    // line, here as there. See _bidEachCostPiece().
+    _bidEachCostPiece(p, dailyRows, (cc, sc, cost, row) =>
+      addCost(touch((cc || '') + '||' + (sc || '')), row.date, cost));
     dailyRows.forEach(row => {
       const key = (row.cost_code || '') + '||' + (row.sub_code || '');
-      if (!projAgg[key]) projAgg[key] = {
-        runQty: 0, totalCost: 0, laborHrs: 0, equipHrs: 0, dates: new Set(),
-        monthly: {},    // 'YYYY-MM' → { cost, qty }
-        employees: {},  // name → labor hours
-        equipment: {},  // name → equip hours
-      };
-      const d     = projAgg[key];
-      const c     = calcDaily(row);
-      const importedCost = parseFloat(row.total_cost) || 0;
-      const rowCost = (pvPreview.active && pvPreview.rate > 0) ? c.total_cost : (importedCost > 0 ? importedCost : c.total_cost);
+      const d     = touch(key);
       const qty   = parseFloat(row.quantity)    || 0;
       const lh    = parseFloat(row.labor_hours) || 0;
       const eh    = parseFloat(row.equip_hours) || 0;
       d.runQty    += qty;
-      d.totalCost += rowCost;
       d.laborHrs  += lh;
       d.equipHrs  += eh;
       if (row.date) {
         d.dates.add(row.date);
         const mo = row.date.substring(0, 7); // 'YYYY-MM'
         if (!d.monthly[mo]) d.monthly[mo] = { cost: 0, qty: 0 };
-        d.monthly[mo].cost += rowCost;
         d.monthly[mo].qty  += qty;
       }
       if (row.employee && lh > 0) {

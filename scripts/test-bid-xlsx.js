@@ -37,10 +37,13 @@ const WRITER = fs.readFileSync(path.join(ROOT, 'bid-xlsx.js'), 'utf8');
 // Paving quotes the contract through its change-order helpers; the other two
 // read the contract fields straight, so a contract CO does not move theirs.
 const CO_HELPERS = ['contractCOs', 'contractCOTotal', 'originalContract', 'revisedContract', 'projectContract'];
+// Paving alone splits equipment run on a Labor row onto the cost code's
+// Equipment line; its actualForBidItem reads the pieces through this.
+const PAVING_OWN = ['_bidEachCostPiece'];
 const PAGES  = [
-  { file: 'tracker.html',         area: 'SF', costTotal: 'Cost Total',     contract: 9000, extra: [] },
-  { file: 'paving.html',          area: 'SY', costTotal: 'Bid Cost Total', contract: 9500, extra: CO_HELPERS },
-  { file: 'kiewit-pinetree.html', area: 'SY', costTotal: 'Bid Cost Total', contract: 9000, extra: [] },
+  { file: 'tracker.html',         area: 'SF', costTotal: 'Cost Total',     contract: 9000, extra: [], own: [] },
+  { file: 'paving.html',          area: 'SY', costTotal: 'Bid Cost Total', contract: 9500, extra: CO_HELPERS, own: PAVING_OWN },
+  { file: 'kiewit-pinetree.html', area: 'SY', costTotal: 'Bid Cost Total', contract: 9000, extra: [], own: [] },
 ];
 
 // The page's bid figures, lifted rather than restated — a second copy of a
@@ -173,7 +176,7 @@ async function runPage(page) {
     'let _bidPDFProjId = null;',
     'const _bidCsComplete = {};',
     "const BID_GROUP_UNIT_DEFAULT = 'SY';",
-    ...LIFT.concat(page.extra).map(n => requireFn(SRC, n, page.file)),
+    ...LIFT.concat(page.extra, page.own).map(n => requireFn(SRC, n, page.file)),
   ].join('\n'), ctx);
   vm.runInContext(WRITER, ctx, { filename: 'bid-xlsx.js' });
 

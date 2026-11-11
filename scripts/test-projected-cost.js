@@ -73,7 +73,10 @@ function extractFunction(src, name) {
 const PROJECTION_FNS = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject'];
 function loadProjectionBlock(file, stubs) {
   const src   = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
-  const block = PROJECTION_FNS.map(n => extractFunction(src, n)).join('\n\n');
+  // Paving's offBidForProject reads its pieces (equipment on a Labor row
+  // counted on the Equipment line) through a helper only it has.
+  const own   = src.includes('function _bidEachCostPiece(') ? ['_bidEachCostPiece'] : [];
+  const block = PROJECTION_FNS.concat(own).map(n => extractFunction(src, n)).join('\n\n');
   return new Function('actualForBidItem', 'runningQtyForBidItem', 'bidItemComplete', 'dailyRowCost', 'getProj',
     `${block}
      return { projIsDone, projForBidItem, projectedCostForProject, offBidForProject };`
