@@ -4448,8 +4448,11 @@ select.cr-input.cr-sm{font-size:.74rem;padding:.26rem .4rem}
       },
       applyDefinition: (def, info) => aiApply(def, info),
       undo: () => aiUndo(),
-      // Only what the builder needs to pick jobs: never a contract or cost.
-      getJobs: () => projects().map(p => ({ id: String(p.id), name: jobName(p), number: txt(p['job-number']), client: txt(p.client), status: txt(p.status) })),
+      // Only what the builder needs to pick jobs and the work on them: never a
+      // contract or cost. The codes on a job's bid items let the AI tell what
+      // a job carries — and ask, rather than guess, when it lacks the work named.
+      getJobs: () => projects().map(p => ({ id: String(p.id), name: jobName(p), number: txt(p['job-number']), client: txt(p.client), status: txt(p.status),
+        costCodes: E.costCodesFor([p]), subCodes: subCodesFor([p]).map(x => txt(x.code)) })),
       getCodes: () => {
         const all = projects();
         return {
