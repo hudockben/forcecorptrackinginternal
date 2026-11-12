@@ -6,7 +6,7 @@
  * the answer from /api/ai/report-builder is a report definition, which this
  * panel checks and hands to the builder as one undoable change.
  *
- *   window.FCTReportAI = { mount(el, adapter) → { destroy, send, reset, refresh, sync }, _internals }
+ *   window.FCTReportAI = { mount(el, adapter) → { destroy, send, stop, reset, refresh, sync }, _internals }
  *
  * custom-reports.js owns the report and supplies the adapter:
  *   getDefinition()            the report on screen, as a definition
@@ -49,7 +49,11 @@
   const MAX_JOBS = 1000;
   const MAX_CODES = 500;
   const MAX_FIELD = 120;
-  const CLIENT_TIMEOUT_MS = 75000; // the server gives up first, at about 55 s
+  // The server answers by about 270 s and its function is cut off at 300 s, so
+  // this only fires when the answer itself never arrives.
+  const CLIENT_TIMEOUT_MS = 320000;
+  // A turn can run a couple of minutes: past this the bubble says so.
+  const WAIT_HINT_AFTER_MS = 20000;
   const HEADER_KEEP = ['preparedBy', 'contactName', 'contactPhone', 'contactEmail'];
   const INTERNAL_ON_TEXT = 'Internal data is on — don\u2019t send this report to a customer.';
 
@@ -63,6 +67,8 @@
   };
   const plural = (n, one, many) => `${n} ${n === 1 ? one : (many || one + 's')}`;
   const pad = n => String(n).padStart(2, '0');
+  // 0:07, 1:42 — how long the AI builder has been working.
+  const clock = ms => { const s = Math.max(0, Math.floor(ms / 1000)); return `${Math.floor(s / 60)}:${pad(s % 60)}`; };
   function localToday() {
     const d = new Date();
     return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -209,6 +215,7 @@
 .crai-bubble{max-width:92%;min-width:0;padding:.5rem .65rem;border-radius:8px;border:1px solid var(--border,#2a2a3a);background:var(--surface2,#1a1a26);overflow-wrap:anywhere;word-break:break-word}
 .crai-user .crai-bubble{background:color-mix(in srgb,var(--green,#22c55e) 16%,transparent);border-color:color-mix(in srgb,var(--green,#22c55e) 45%,transparent);white-space:pre-wrap}
 .crai-err .crai-bubble{border-color:#ef4444;background:rgba(239,68,68,.1);color:#fecaca}
+.crai-err.crai-quiet .crai-bubble{border-color:var(--border,#2a2a3a);background:var(--surface2,#1a1a26);color:var(--text,#e0e0e0)}
 .crai-reply{margin:0}
 .crai-q{margin:.45rem 0 0;padding:.4rem .5rem;border-left:3px solid var(--yellow,#eab308);background:rgba(234,179,8,.1);border-radius:0 5px 5px 0}
 .crai-q-tag{display:block;font-size:.68rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;opacity:.8}
@@ -222,7 +229,12 @@
 .crai-btn:disabled{opacity:.45;cursor:not-allowed}
 .crai-btn-warn{border-color:#ef4444;color:#fca5a5}
 .crai-done{font-size:.74rem;opacity:.7;align-self:center}
-.crai-typing .crai-bubble{display:inline-flex;align-items:center;gap:.3rem;opacity:.85}
+.crai-wait-row{display:flex;align-items:center;flex-wrap:wrap;gap:.3rem}
+.crai-wait-text{opacity:.85}
+.crai-elapsed{opacity:.7;font-variant-numeric:tabular-nums}
+.crai-wait-row .crai-btn{margin-left:.4rem}
+.crai-wait-hint{margin:.35rem 0 0;font-size:.74rem;opacity:.75}
+.crai-wait-hint[hidden]{display:none}
 .crai-dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.4;animation:crai-b 1.2s infinite ease-in-out}
 .crai-dot:nth-child(2){animation-delay:.15s}.crai-dot:nth-child(3){animation-delay:.3s}
 @keyframes crai-b{0%,80%,100%{opacity:.25}40%{opacity:1}}
@@ -271,7 +283,9 @@
       ctrl: null,
       chips: suggestions(adapter),
       lastText: '',
-      gen: 0,           // bumped by reset(): an answer to a cleared chat is dropped
+      gen: 0,           // bumped by reset() and stop(): an answer to a cleared chat or a stopped request is dropped
+      sentAt: 0,        // when the request in flight went out
+      clock: null,      // the interval that keeps the waiting bubble's time
     };
 
     el.innerHTML = `<div class="crai" role="region" aria-label="AI report builder">
@@ -312,7 +326,7 @@
     function turnHtml(t, i) {
       if (t.role === 'user') return `<div class="crai-msg crai-user"><div class="crai-bubble">${esc(t.text)}</div></div>`;
       if (t.role === 'error') {
-        return `<div class="crai-msg crai-err" role="alert"><div class="crai-bubble"><p class="crai-reply">${esc(t.text)}</p>${
+        return `<div class="crai-msg crai-err${t.quiet ? ' crai-quiet' : ''}"${t.quiet ? '' : ' role="alert"'}><div class="crai-bubble"><p class="crai-reply">${esc(t.text)}</p>${
           t.retry && i === st.turns.length - 1 ? '<div class="crai-acts"><button type="button" class="crai-btn" data-crai-act="retry">Try again</button></div>' : ''}</div></div>`;
       }
       const parts = [];
@@ -354,7 +368,12 @@
       if (st.destroyed) return;
       const welcome = `<div class="crai-welcome"><p><strong>Describe the report you want.</strong> I'll draft it in the builder for ${esc(call(() => adapter.divisionLabel, '') || 'this division')} — you check it, undo it if it's wrong, and save or send it yourself.</p>
 <p class="crai-fine">Customer-safe by default. I can't switch on internal data (costs, hours, pay, names), and I never send anything.</p></div>`;
-      const typing = st.busy ? '<div class="crai-msg crai-bot crai-typing" aria-label="The AI builder is working"><div class="crai-bubble"><span class="crai-dot"></span><span class="crai-dot"></span><span class="crai-dot"></span><span>Building…</span></div></div>' : '';
+      const waited = st.busy ? Date.now() - st.sentAt : 0;
+      const typing = st.busy ? `<div class="crai-msg crai-bot crai-typing" aria-label="The AI builder is working"><div class="crai-bubble">`
+        + `<div class="crai-wait-row"><span class="crai-dot"></span><span class="crai-dot"></span><span class="crai-dot"></span><span class="crai-wait-text">Building…</span>`
+        + `<span class="crai-elapsed" aria-hidden="true">${clock(waited)}</span>`
+        + `<button type="button" class="crai-btn" data-crai-act="stop">Stop</button></div>`
+        + `<p class="crai-wait-hint"${waited >= WAIT_HINT_AFTER_MS ? '' : ' hidden'}>Still working — bigger reports can take a couple of minutes.</p></div></div>` : '';
       log.innerHTML = welcome + st.turns.map(turnHtml).join('') + typing;
       log.scrollTop = log.scrollHeight;
       chipsEl.hidden = st.turns.length > 0;
@@ -389,8 +408,10 @@
       const gen = st.gen;
       st.lastText = message;
       st.busy = true;
+      st.sentAt = Date.now();
       input.value = '';
       render();
+      startClock();
 
       const body = buildBody(adapter, message, st.history);
       // What the answer will be built on: if the report is changed by hand
@@ -415,11 +436,15 @@
         status = -1;
       } finally {
         if (timer) clearTimeout(timer);
-        st.ctrl = null;
+        // Only this request's own: after a Stop or a Clear chat, the next one
+        // may already be out with its controller and its clock.
+        if (st.ctrl === ctrl) st.ctrl = null;
+        if (gen === st.gen) stopClock();
       }
       // The report was switched (or the drawer torn down, or the chat
-      // cleared) while this was in flight: the answer was about a report or a
-      // conversation that is no longer there.
+      // cleared, or Stop pressed) while this was in flight: the answer was
+      // about a report or a conversation that is no longer there, or no
+      // longer wanted.
       if (st.destroyed || gen !== st.gen) return false;
       st.busy = false;
 
@@ -559,9 +584,45 @@
       });
     }
 
+    // The waiting bubble's clock, kept in place: redrawing the whole log every
+    // second would scroll it and redraw what the person is about to click.
+    function startClock() {
+      stopClock();
+      st.clock = setInterval(tickClock, 1000);
+    }
+    function stopClock() {
+      if (st.clock) { clearInterval(st.clock); st.clock = null; }
+    }
+    function tickClock() {
+      if (st.destroyed || !st.busy) { stopClock(); return; }
+      const waited = Date.now() - st.sentAt;
+      const time = log.querySelector('.crai-elapsed');
+      if (time) time.textContent = clock(waited);
+      const hint = log.querySelector('.crai-wait-hint');
+      if (hint && waited >= WAIT_HINT_AFTER_MS) hint.hidden = false;
+    }
+
+    // The person stopped waiting. Whatever comes back is dropped, as after
+    // Clear chat; their message stays, with Try again. The report is as it
+    // was. (The server finishes the turn anyway, and it counts for the day.)
+    function stop() {
+      if (!st.busy || st.destroyed) return false;
+      st.gen++;
+      if (st.ctrl) { try { st.ctrl.abort(); } catch (_) { /* gone */ } }
+      st.ctrl = null;
+      stopClock();
+      st.busy = false;
+      st.turns.push({ role: 'error', quiet: true, retry: true, text: 'Stopped — the report was not changed.' });
+      render();
+      input.focus();
+      return true;
+    }
+
     function reset() {
       st.gen++;
       if (st.ctrl) { try { st.ctrl.abort(); } catch (_) { /* gone */ } }
+      st.ctrl = null;
+      stopClock();
       st.turns = [];
       st.history = [];
       st.busy = false;
@@ -582,6 +643,7 @@
       else if (act === 'discard-stale') discardStale(Number(b.getAttribute('data-turn')));
       else if (act === 'internal') askInternal();
       else if (act === 'retry') send(st.lastText);
+      else if (act === 'stop') stop();
       else if (act === 'clear') { reset(); input.focus(); }
     }
     function onSubmit(e) { e.preventDefault(); send(input.value); }
@@ -602,6 +664,7 @@
 
     return {
       send: t => send(t),
+      stop,
       reset,
       refresh: () => render(),
       // Re-reads the report's state (read-only, say, after a Save As made it
@@ -610,6 +673,7 @@
       destroy() {
         st.destroyed = true;
         if (st.ctrl) { try { st.ctrl.abort(); } catch (_) { /* gone */ } }
+        stopClock();
         panel.removeEventListener('click', onClick);
         form.removeEventListener('submit', onSubmit);
         input.removeEventListener('keydown', onKey);
@@ -624,7 +688,7 @@
 
   root.FCTReportAI = {
     mount,
-    _internals: { esc, jobList, codeList, buildBody, prepareDefinition, sameDefinition, suggestions, errorFor,
-      MAX_MESSAGE, MAX_HISTORY, MAX_JOBS, MAX_CODES, CSS },
+    _internals: { esc, jobList, codeList, buildBody, prepareDefinition, sameDefinition, suggestions, errorFor, clock,
+      MAX_MESSAGE, MAX_HISTORY, MAX_JOBS, MAX_CODES, CLIENT_TIMEOUT_MS, WAIT_HINT_AFTER_MS, CSS },
   };
 })();

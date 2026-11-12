@@ -84,14 +84,25 @@ const MAX_OPTION_CODES = 300;
 const MAX_OPTION_CODE_LEN = 120;
 const DIVISIONS = ['turf', 'paving', 'kiewit'];
 const DIV_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree' };
-// The function is given 60 s. The model call gets what is left of 50 s — the
-// whole streamed answer, not just its first byte — so a slow turn ends in a
-// message the panel can show rather than a killed request. The environment
-// may only shorten it (the tests do).
+// vercel.json gives the function 300 s. The model call gets what is left of
+// 270 s — the whole streamed answer, not just its first byte — so a turn that
+// overruns ends in a message the panel can show rather than a killed request,
+// with time left for the database and the reply.
+//
+// It was 50 s inside a 60 s function, and a turn — thinking, then the whole
+// definition written out — regularly needed longer than that, short request
+// or not: the panel answered "took too long" to "list the codes for one job".
+// A long wait is handled in the panel (a clock, and Stop), the way the CRM
+// search handles its own. The environment may only shorten the budget (the
+// tests do).
+const MODEL_BUDGET_DEFAULT_MS = 270000;
 const MODEL_BUDGET_MS = (() => {
   const v = Number(process.env.REPORT_BUILDER_MODEL_BUDGET_MS);
-  return Number.isFinite(v) && v > 0 && v < 50000 ? v : 50000;
+  return Number.isFinite(v) && v > 0 && v < MODEL_BUDGET_DEFAULT_MS ? v : MODEL_BUDGET_DEFAULT_MS;
 })();
+// A retry after an overloaded or failing API only starts while this much of
+// the budget is left: less, and it would only end in "took too long" later.
+const RETRY_MIN_LEFT_MS = 90000;
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
 // ── Text in, text out ──────────────────────────────────────────────────────
@@ -564,7 +575,7 @@ function postProcess(raw, { jobs, codes, current, division }) {
  */
 //
 // The SDK's own retries are off: a retry it made after a slow first attempt
-// would run past the function's 60 s. One retry is made here instead, for an
+// would run past the function's limit. One retry is made here instead, for an
 // overloaded or failing API, and only while there is time for it to finish.
 //
 // The SDK's timeout stops counting once the response headers are in, so a
@@ -595,7 +606,7 @@ async function callModel(client, body, started) {
     return await withFallback();
   } catch (err) {
     if (err && err.status === 400) return await once(body);
-    if (err && TRANSIENT.includes(err.status) && left() > 30000) return await withFallback();
+    if (err && TRANSIENT.includes(err.status) && left() > RETRY_MIN_LEFT_MS) return await withFallback();
     throw err;
   }
 }
@@ -697,7 +708,7 @@ module.exports = async (req, res) => {
     if (err && err.status === 429) return fail(res, 429, 'The AI builder is busy right now — try again in a moment.');
     if ((err && err.budgetExceeded)
       || (typeof Anthropic.APIConnectionTimeoutError === 'function' && err instanceof Anthropic.APIConnectionTimeoutError)) {
-      return fail(res, 504, 'The AI builder took too long on that one. Try a shorter request.');
+      return fail(res, 504, 'The AI builder took too long on that one. Try again, or ask for one change at a time.');
     }
     return fail(res, 502, 'The AI builder could not answer just now. Try again in a moment.');
   }
@@ -731,6 +742,7 @@ module.exports = async (req, res) => {
 };
 
 module.exports.MODEL = MODEL;
+module.exports.MODEL_BUDGET_MS = MODEL_BUDGET_MS;
 module.exports.DAILY_TURN_CAP = DAILY_TURN_CAP;
 module.exports.OUTPUT_SCHEMA = OUTPUT_SCHEMA;
 module.exports.INSTRUCTIONS = INSTRUCTIONS;
