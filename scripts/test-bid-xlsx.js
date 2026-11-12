@@ -50,7 +50,7 @@ const PAGES  = [
 
 // The page's bid figures, lifted rather than restated — a second copy of a
 // rule is a second place for it to drift.
-const LIFT = ['fmt', 'qfmt', 'actualForBidItem', 'runningQtyForBidItem', 'cumulativeHoursForBidItem',
+const LIFT = ['fmt', 'qfmt', '_codeKey', '_bidLineMatcher', 'actualForBidItem', 'runningQtyForBidItem', 'cumulativeHoursForBidItem',
   'laborerCountForBidItem', '_rowIsWorkDay', '_workDaysForItems', 'daysWorkedForGroup', '_autoBidDates',
   'autoBidDates', '_bidCsKey', 'bidItemComplete', 'bidGroupPct', 'bidProjectPct', '_bidGroupMeasure',
   '_bidGroupUnitCostText', 'projIsDone', 'projForBidItem', 'projectedCostForProject', 'offBidForProject',

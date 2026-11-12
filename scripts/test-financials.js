@@ -74,7 +74,7 @@ function extractFunction(src, name) {
 
 // The whole Financials block — filter state, table, export and print all live
 // together — plus the real projection chain it depends on, over a stub DOM.
-const CHAIN = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject', 'gpEarnedToDate', 'statusBadgeClass', '_rowIsWorkDay'];
+const CHAIN = ['_codeKey', '_bidLineMatcher', 'offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject', 'gpEarnedToDate', 'statusBadgeClass', '_rowIsWorkDay'];
 // Lifted where a page has them: paving's offBidForProject reads its pieces
 // (equipment on a Labor row counted on the Equipment line) through the first,
 // and its projectedCostForProject adds every line up off one walk of the rows

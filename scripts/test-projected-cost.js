@@ -70,7 +70,7 @@ function extractFunction(src, name) {
 // The whole projection block with its data lookups injected, so the footer
 // total can be checked against the rows it is supposed to sum. offBidForProject
 // comes along for the ride so the real wildcard matching is under test too.
-const PROJECTION_FNS = ['offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject'];
+const PROJECTION_FNS = ['_codeKey', '_bidLineMatcher', 'offBidForProject', 'projIsDone', 'projForBidItem', 'projectedCostForProject'];
 function loadProjectionBlock(file, stubs) {
   const src   = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
   // Paving's offBidForProject reads its pieces (equipment on a Labor row

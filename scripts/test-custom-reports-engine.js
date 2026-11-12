@@ -58,7 +58,7 @@ function bareEngine(extra) {
 }
 
 // ── A division page's helpers, lifted, with the engine loaded beside them ──
-const LIFT = ['dailyRowCost', 'calcDaily', 'bidItemComplete', '_bidCsKey', 'bidProjectPct', 'bidGroupPct',
+const LIFT = ['dailyRowCost', 'calcDaily', 'bidItemComplete', '_bidCsKey', '_codeKey', '_bidLineMatcher', 'bidProjectPct', 'bidGroupPct',
   'runningQtyForBidItem', 'actualForBidItem', 'cumulativeHoursForBidItem', 'laborerCountForBidItem',
   '_rowIsWorkDay', '_workDaysForItems', 'projForBidItem', 'projectedCostForProject', 'offBidForProject',
   'projIsDone', 'gpEarnedToDate', 'bidContractFigures', 'getProj', 'getAllDailyRows'];

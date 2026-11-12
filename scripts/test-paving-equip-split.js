@@ -49,7 +49,7 @@ const line = (src, startsWith) => {
 };
 
 // ── The page, lifted ────────────────────────────────────────────────────────
-const LIFT = ['calcDaily', 'dailyRowCost', '_bidEachCostPiece', '_bidCodeTotals', 'actualForBidItem', 'runningQtyForBidItem',
+const LIFT = ['calcDaily', 'dailyRowCost', '_codeKey', '_bidLineMatcher', '_bidEachCostPiece', '_bidCodeTotals', 'actualForBidItem', 'runningQtyForBidItem',
   'cumulativeHoursForBidItem', 'laborerCountForBidItem', '_rowMaterialInCost', 'materialForBidItem',
   '_bidMaterialEntry', '_dailySortDate', 'offBidForProject', 'projIsDone', 'projForBidItem',
   'projectedCostForProject', '_projSubAggBids', 'buildProjectSubCodeAgg', 'computeSizeAwarePastAvg'];

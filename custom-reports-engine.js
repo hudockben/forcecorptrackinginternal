@@ -93,6 +93,28 @@
   const clamp = (n, lo, hi) => Math.max(lo, Math.min(hi, n));
   const cap1 = s => { s = txt(s); return s ? s.charAt(0).toUpperCase() + s.slice(1) : ''; };
 
+  // A cost code or sub code as a bid line matches it: the pages' _codeKey(),
+  // restated. Capitals, spaces at either end or doubled up (non-breaking ones
+  // included), zero-width characters, and which dash or quote was typed don't
+  // make two codes different. Whether a code is blank, and so a wildcard, is
+  // still read off the code as saved, as the pages' _bidLineMatcher() reads it.
+  const codeKeyMemo = new Map();
+  function codeKey(v) {
+    if (v == null || v === '') return '';
+    let k = codeKeyMemo.get(v);
+    if (k === undefined) {
+      k = String(v)
+        .replace(/[\u00AD\u200B-\u200D\u2060\uFEFF]/g, '')
+        .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-')
+        .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'")
+        .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')
+        .replace(/\s+/g, ' ').trim().toLowerCase();
+      if (codeKeyMemo.size >= 10000) codeKeyMemo.clear();
+      codeKeyMemo.set(v, k);
+    }
+    return k;
+  }
+
   // Every user-typed string that reaches the HTML goes through this. The
   // pages' own esc() only escapes quotes, which is not enough for a job name
   // like "<img onerror=…>" printed into a document that is opened, printed
@@ -1089,7 +1111,10 @@
   // item with only a cost code takes everything on that code, one with only
   // a sub code everything on that sub code, one with neither nothing.
   const newCodeIndex = () => ({ byCC: new Map(), bySC: new Map(), byPair: new Map() });
-  function codeIndexPut(k, cc, sc, x) {
+  // Filed and found by codeKey(), so a row lands on the bid item the pages put
+  // it on, however its codes were spaced, capitalised or dashed.
+  function codeIndexPut(k, rcc, rsc, x) {
+    const cc = codeKey(rcc), sc = codeKey(rsc);
     const push = (m, key) => { const a = m.get(key); if (a) a.push(x); else m.set(key, [x]); };
     push(k.byCC, cc);
     push(k.bySC, sc);
@@ -1098,9 +1123,9 @@
     push(m, sc);
   }
   function codeIndexGet(k, b) {
-    if (b.cost_code && b.sub_code) { const m = k.byPair.get(b.cost_code); return (m && m.get(b.sub_code)) || []; }
-    if (b.cost_code) return k.byCC.get(b.cost_code) || [];
-    if (b.sub_code) return k.bySC.get(b.sub_code) || [];
+    if (b.cost_code && b.sub_code) { const m = k.byPair.get(codeKey(b.cost_code)); return (m && m.get(codeKey(b.sub_code))) || []; }
+    if (b.cost_code) return k.byCC.get(codeKey(b.cost_code)) || [];
+    if (b.sub_code) return k.bySC.get(codeKey(b.sub_code)) || [];
     return [];
   }
 
@@ -1138,12 +1163,13 @@
     const unitPair = new Map(), unitCC = new Map(), unitSC = new Map();
     items.forEach(b => {
       const u = txt(b.unit);
+      const cc = codeKey(b.cost_code), sc = codeKey(b.sub_code);
       if (b.cost_code && b.sub_code) {
-        let m = unitPair.get(b.cost_code);
-        if (!m) { m = new Map(); unitPair.set(b.cost_code, m); }
-        if (!m.has(b.sub_code)) m.set(b.sub_code, u);
-      } else if (b.cost_code) { if (!unitCC.has(b.cost_code)) unitCC.set(b.cost_code, u); }
-      else if (b.sub_code) { if (!unitSC.has(b.sub_code)) unitSC.set(b.sub_code, u); }
+        let m = unitPair.get(cc);
+        if (!m) { m = new Map(); unitPair.set(cc, m); }
+        if (!m.has(sc)) m.set(sc, u);
+      } else if (b.cost_code) { if (!unitCC.has(cc)) unitCC.set(cc, u); }
+      else if (b.sub_code) { if (!unitSC.has(sc)) unitSC.set(sc, u); }
     });
     ix = { p, facts, byCC, bySC, byPair, eq, maxDate, items, unitPair, unitCC, unitSC, stats: new Map(), job: null,
       plans: new Map(), cs: undefined };
@@ -1218,10 +1244,11 @@
   // Whether a row lands on any bid line, and the unit of the line it lands on
   // (the most specific match first).
   function unitForRow(ix, r) {
-    const m = ix.unitPair.get(r.cost_code);
-    if (m && m.has(r.sub_code)) return { on: true, unit: m.get(r.sub_code) };
-    if (ix.unitCC.has(r.cost_code)) return { on: true, unit: ix.unitCC.get(r.cost_code) };
-    if (ix.unitSC.has(r.sub_code)) return { on: true, unit: ix.unitSC.get(r.sub_code) };
+    const cc = codeKey(r.cost_code), sc = codeKey(r.sub_code);
+    const m = ix.unitPair.get(cc);
+    if (m && m.has(sc)) return { on: true, unit: m.get(sc) };
+    if (ix.unitCC.has(cc)) return { on: true, unit: ix.unitCC.get(cc) };
+    if (ix.unitSC.has(sc)) return { on: true, unit: ix.unitSC.get(sc) };
     return { on: false, unit: '' };
   }
 
@@ -1374,7 +1401,7 @@
     const off = new Map();
     ix.facts.forEach(f => {
       if (!f.lc || unitForRow(ix, f.r).on) return;
-      const k = (f.r.cost_code || '') + '\u0000' + (f.r.sub_code || '');
+      const k = codeKey(f.r.cost_code) + '\u0000' + codeKey(f.r.sub_code);
       off.set(k, (off.get(k) || 0) + f.lc);
     });
     let offBid = 0;
@@ -1467,8 +1494,8 @@
   }
   // A ticket lands on a bid line by the line's own codes (the wildcard rule).
   function ticketOnItem(t, b) {
-    const cc = txt(b.cost_code).toLowerCase(), sc = txt(b.sub_code).toLowerCase();
-    const tc = txt(t.cost_code).toLowerCase(), ts = txt(t.sub_code).toLowerCase();
+    const cc = codeKey(b.cost_code), sc = codeKey(b.sub_code);
+    const tc = codeKey(t.cost_code), ts = codeKey(t.sub_code);
     if (cc && sc) return tc === cc && ts === sc;
     if (cc) return tc === cc;
     if (sc) return ts === sc;

@@ -136,6 +136,8 @@ function load(src) {
     ${extractFunction(src, 'calcDaily')}
     ${extractFunction(src, 'dailyRowCost')}
     ${extractFunction(src, '_dailySortDate')}
+    ${extractFunction(src, '_codeKey')}
+    ${extractFunction(src, '_bidLineMatcher')}
     ${extractFunction(src, 'actualForBidItem')}
     ${/* Paving's actualForBidItem counts by piece — equipment on a Labor row
          lands on the Equipment line — through a helper only it has. */

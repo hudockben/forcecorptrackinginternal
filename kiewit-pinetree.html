@@ -8651,13 +8651,63 @@ function _bidGroupMeasureEdit(el) {
   wrap.title = _bidGroupUnitCostTip(t, qty, unit);
 }
 
+/* ── Which job rows a bid line takes ──
+   Every figure the bid view puts against a line (Actual Cost, running
+   quantity, hours, laborers, days, material) and the ⚠ off-bid total, which
+   is whatever no line takes, match rows to lines by one rule: a line takes a
+   row when its cost code is blank or is the row's cost code, and its sub code
+   is blank or is the row's sub code.
+
+   "Is" means reads the same on screen (_codeKey). Capitals, spaces at either
+   end or doubled up (the non-breaking kind a paste out of Procore or Excel
+   brings included), zero-width characters, which dash was typed ("-", "–",
+   "—") and curly or straight quotes don't make two codes different. Compared
+   exactly, they did: the timesheet split's code list trims every name, so a
+   day approved against a bid line saved as "Walkway - Wearing Course " landed
+   on no line at all, and the off-bid badge listed codes that looked identical
+   to the ones on the bid.
+
+   Whether a code is blank, which lets the line take every row under the other
+   code, is still read off the code as saved. So no line takes a row it didn't
+   before, other than the ones that were the same code all along. */
+function _codeKey(s) {
+  if (s == null || s === '') return '';
+  // Remembered on the function itself, so the cache travels with it wherever
+  // it is lifted, and a job walked once per bid line normalises each distinct
+  // code once rather than once per visit.
+  const memo = _codeKey.memo || (_codeKey.memo = new Map());
+  let k = memo.get(s);
+  if (k === undefined) {
+    k = String(s)
+      .replace(/[\u00AD\u200B-\u200D\u2060\uFEFF]/g, '')          // soft hyphen, zero-width
+      .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-')   // every dash
+      .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'")          // curly single quotes
+      .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')          // curly double quotes
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    if (memo.size >= 10000) memo.clear();
+    memo.set(s, k);
+  }
+  return k;
+}
+
+// One line's half of the rule, built once per line so its own codes are read
+// once and not once per row: takes(costCode, subCode) says whether the line
+// takes a row (or a piece of one) carrying those codes. A line with neither
+// code takes nothing.
+function _bidLineMatcher(b) {
+  const cc = b && b.cost_code ? _codeKey(b.cost_code) : null;   // null: blank, any code
+  const sc = b && b.sub_code  ? _codeKey(b.sub_code)  : null;
+  if (cc === null && sc === null) return () => false;
+  return (rcc, rsc) => (cc === null || _codeKey(rcc) === cc) && (sc === null || _codeKey(rsc) === sc);
+}
+
 function actualForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
+  const takes = _bidLineMatcher(b);
   const proj = getProj(projId);
   const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
   return rows.reduce((s, r) => {
-    if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
-        (b.sub_code  ? r.sub_code  === b.sub_code  : true)) {
+    if (takes(r.cost_code, r.sub_code)) {
       return s + dailyRowCost(r);
     }
     return s;
@@ -8713,11 +8763,11 @@ function _rowMaterialInCost(r) {
 function materialForBidItem(b, projId, src) {
   const out = { total: 0, entries: [] };
   if (!b || (!b.cost_code && !b.sub_code)) return out;
+  const takes = _bidLineMatcher(b);
   const proj = getProj(projId);
   const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
   rows.forEach(r => {
-    if (!((b.cost_code ? r.cost_code === b.cost_code : true) &&
-          (b.sub_code  ? r.sub_code  === b.sub_code  : true))) return;
+    if (!takes(r.cost_code, r.sub_code)) return;
     const amount = _rowMaterialInCost(r);
     if (!amount) return;
     if (!src) src = _bidMaterialSources();
@@ -8933,11 +8983,11 @@ function _bidMatRefreshDue() {
 
 function runningQtyForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
+  const takes = _bidLineMatcher(b);
   const proj = getProj(projId);
   const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
   return rows.reduce((s, r) => {
-    if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
-        (b.sub_code  ? r.sub_code  === b.sub_code  : true)) {
+    if (takes(r.cost_code, r.sub_code)) {
       return s + (parseFloat(r.quantity) || 0);
     }
     return s;
@@ -8946,11 +8996,11 @@ function runningQtyForBidItem(b, projId) {
 
 function cumulativeHoursForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
+  const takes = _bidLineMatcher(b);
   const proj = getProj(projId);
   const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
   return rows.reduce((s, r) => {
-    if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
-        (b.sub_code  ? r.sub_code  === b.sub_code  : true)) {
+    if (takes(r.cost_code, r.sub_code)) {
       return s + (parseFloat(r.labor_hours) || 0);
     }
     return s;
@@ -8959,13 +9009,12 @@ function cumulativeHoursForBidItem(b, projId) {
 
 function laborerCountForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
+  const takes = _bidLineMatcher(b);
   const proj = getProj(projId);
   const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
   const names = new Set();
   rows.forEach(r => {
-    if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
-        (b.sub_code  ? r.sub_code  === b.sub_code  : true) &&
-        r.employee) {
+    if (takes(r.cost_code, r.sub_code) && r.employee) {
       names.add(r.employee);
     }
   });
@@ -8992,15 +9041,13 @@ function _rowIsWorkDay(r) {
 function _workDaysForItems(groupItems, projId) {
   const items = (groupItems || []).filter(b => b && (b.cost_code || b.sub_code));
   if (!items.length) return [];
+  const takers = items.map(_bidLineMatcher);
   const proj = getProj(projId);
   const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
   const days = new Set();
   rows.forEach(r => {
     if (!r.date || days.has(r.date) || !_rowIsWorkDay(r)) return;
-    const worked = items.some(b =>
-      (b.cost_code ? r.cost_code === b.cost_code : true) &&
-      (b.sub_code  ? r.sub_code  === b.sub_code  : true));
-    if (worked) days.add(r.date);
+    if (takers.some(takes => takes(r.cost_code, r.sub_code))) days.add(r.date);
   });
   return [...days].sort();
 }
@@ -9183,22 +9230,20 @@ function _bidPlanRateOnChange(e) {
 document.addEventListener('change', _bidPlanRateOnChange);
 
 // Daily costs whose cost/sub code matches no bid line. Same wildcard rule as
-// actualForBidItem(), so on-bid spend is never miscounted as off-bid. Accepts a
-// project id or the project object itself.
+// actualForBidItem() (_bidLineMatcher), so on-bid spend is never miscounted as
+// off-bid, and the same code spelled with different capitals, spaces or dashes
+// is on-bid. One entry per code as matched, under the first spelling met.
+// Accepts a project id or the project object itself.
 function offBidForProject(projIdOrProj) {
   const p = (projIdOrProj && typeof projIdOrProj === 'object') ? projIdOrProj : getProj(projIdOrProj);
   if (!p) return { total: 0, codes: [] };
-  const bids = p.bidItems || [];
-  const hasKey  = b => !!((b.cost_code || '') || (b.sub_code || ''));
-  const matches = (b, r) =>
-    (b.cost_code ? r.cost_code === b.cost_code : true) &&
-    (b.sub_code  ? r.sub_code  === b.sub_code  : true);
+  const takers = (p.bidItems || []).filter(b => b && (b.cost_code || b.sub_code)).map(_bidLineMatcher);
   const map = new Map();
   (p.dailyRows || []).forEach(r => {
-    if (bids.some(b => hasKey(b) && matches(b, r))) return;  // on-bid — skip
+    if (takers.some(takes => takes(r.cost_code, r.sub_code))) return;  // on-bid — skip
     const cost = dailyRowCost(r);
     if (!cost) return;
-    const key = (r.cost_code || '') + '\u0000' + (r.sub_code || '');
+    const key = _codeKey(r.cost_code) + '\u0001' + _codeKey(r.sub_code);
     const e = map.get(key) || { cost_code: r.cost_code || '', sub_code: r.sub_code || '', actual: 0 };
     e.actual += cost;
     map.set(key, e);
@@ -9223,14 +9268,26 @@ function _renderBidOffBidBadge(projId) {
     return;
   }
   const lines = info.codes.slice(0, 12)
-    .map(c => `  ${c.cost_code || '(blank)'}${c.sub_code ? ' / ' + c.sub_code : ''}: $${fmt(c.actual)}`)
+    .map(c => `  ${c.cost_code || '(blank)'}${c.sub_code ? ' / ' + c.sub_code : ''}: $${fmt(c.actual)}${_offBidElsewhere(projId, c)}`)
     .join('\n');
   const more = info.codes.length > 12 ? `\n  …and ${info.codes.length - 12} more` : '';
   el.textContent = `⚠ $${fmt(info.total)} off-bid`;
   el.title = `$${fmt(info.total)} in daily costs aren't matching any bid line, so they don't show against a bid item above.\n`
     + `They are still counted in the project's actual and projected cost.\n`
-    + `Usually the cost code / sub code spelling or case doesn't match the bid line. Check these:\n${lines}${more}`;
+    + `Capitals, extra spaces and dash style are already ignored, so each of these is a cost code / sub code pair the bid doesn't have. `
+    + `Add it to the bid, or recode the daily rows to a bid line:\n${lines}${more}`;
   el.style.display = '';
+}
+
+// " (on the bid under <cost code>)" when an off-bid entry's sub code is on the
+// bid, but under a different cost code: the commonest way left for a day to
+// miss its line once spelling no longer can, and invisible from the list alone.
+function _offBidElsewhere(projId, c) {
+  const p = getProj(projId);
+  if (!p || !c || !c.sub_code) return '';
+  const sc = _codeKey(c.sub_code), cc = _codeKey(c.cost_code);
+  const hit = (p.bidItems || []).find(b => b && b.sub_code && _codeKey(b.sub_code) === sc && _codeKey(b.cost_code) !== cc);
+  return hit ? ` (on the bid under ${hit.cost_code || 'no cost code'})` : '';
 }
 
 // A finished project's projected cost is simply what it cost — nothing is left

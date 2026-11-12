@@ -66,6 +66,8 @@ function load(src) {
     function getAllDailyRows() { return []; }
     ${extractFunction(src, 'esc')}
     ${extractFunction(src, '_rowIsWorkDay')}
+    ${extractFunction(src, '_codeKey')}
+    ${extractFunction(src, '_bidLineMatcher')}
     ${extractFunction(src, '_workDaysForItems')}
     ${extractFunction(src, '_workDaySpanLabel')}
     ${extractFunction(src, '_autoBidDates')}
