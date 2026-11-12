@@ -61,6 +61,14 @@ function assert(label, cond, detail) {
   else      { failed++; console.error(`  ✗ ${label}${detail !== undefined ? '  — ' + String(detail).slice(0, 500) : ''}`); }
 }
 const section = t => console.log(`\n${t}`);
+// The endpoint's one log line per turn, kept for the tests to read rather
+// than printed between the results.
+const LOGS = [];
+const origLog = console.log;
+console.log = (...a) => {
+  if (typeof a[0] === 'string' && a[0].startsWith('[report-builder]')) { LOGS.push(a.join(' ')); return; }
+  origLog.apply(console, a);
+};
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const tick = async (n = 6) => { for (let i = 0; i < n; i++) await sleep(0); };
 const clone = v => JSON.parse(JSON.stringify(v));
@@ -441,7 +449,8 @@ async function cleanUp() {
     assert('the model is the one the spec names', req.model === EXPECTED_MODEL_ID, req.model);
     assert('max_tokens 16000', req.max_tokens === 16000, req.max_tokens);
     assert('adaptive thinking', req.thinking && req.thinking.type === 'adaptive' && Object.keys(req.thinking).length === 1, JSON.stringify(req.thinking));
-    assert('effort medium', req.output_config && req.output_config.effort === 'medium', JSON.stringify(req.output_config && req.output_config.effort));
+    // 'medium' left a one-job request thinking past two and a half minutes.
+    assert('effort low', req.output_config && req.output_config.effort === 'low', JSON.stringify(req.output_config && req.output_config.effort));
     const fmt = req.output_config && req.output_config.format;
     assert('structured output: output_config.format is a json_schema', fmt && fmt.type === 'json_schema' && fmt.schema && fmt.schema.type === 'object');
     assert('the schema has no includeInternal anywhere', !/includeInternal/i.test(JSON.stringify(fmt.schema)));
@@ -657,15 +666,15 @@ async function cleanUp() {
     r = await call('POST', T, body(), TURF.token);
     assert('…but only once: two 500s → 502 after two calls', r.statusCode === 502 && SDK.calls.length === 2, show(r));
     assert('the SDK\'s own retries are off on every call (the budget is the function\'s)', SDK.calls.every(c => c.options.maxRetries === 0));
-    // A retry needs time to finish: with under a minute and a half of the
-    // budget left it is not started, and the person hears at once.
-    process.env.REPORT_BUILDER_MODEL_BUDGET_MS = '60000';
+    // A retry needs time to finish: with under a minute of the budget left it
+    // is not started, and the person hears at once.
+    process.env.REPORT_BUILDER_MODEL_BUDGET_MS = '45000';
     let tight;
     try { tight = loadServer(); } finally { delete process.env.REPORT_BUILDER_MODEL_BUDGET_MS; }
     SDK.calls.length = 0;
     SDK.queue.push(apiError(529, 'overloaded'), messageFor(canned()));
     r = await call('POST', T, body(), TURF.token, null, tight);
-    assert('…and not when too little of the budget is left: a 529 with 60 s to go → 502 after one call', r.statusCode === 502 && SDK.calls.length === 1, show(r));
+    assert('…and not when too little of the budget is left: a 529 with 45 s to go → 502 after one call', r.statusCode === 502 && SDK.calls.length === 1, show(r));
     SDK.queue.length = 0;
     SDK.calls.length = 0;
     SDK.queue.push(apiError(429, 'rate limited'));
@@ -696,13 +705,13 @@ async function cleanUp() {
   // ─────────────────────────────────────────────────────────────────────
   section('Time enough for a turn');
   {
-    // A turn — thinking, then the whole definition written out — regularly
-    // ran past the old 50 s inside a 60 s function, and every one of those
-    // ended in "took too long", however short the request.
+    // At 'medium' effort a one-job request ran out the old 50 s, and with
+    // 270 s a person still watched the clock pass five minutes. The answer is
+    // due a couple of minutes after the request arrives, inside the function.
     const budget = handler.MODEL_BUDGET_MS;
-    assert(`vercel.json gives the endpoint minutes, not one (${FN_SECONDS} s)`, FN_SECONDS >= 240, FN_SECONDS);
-    assert(`the model call's budget is minutes too (${budget / 1000} s)`, budget >= 180000, budget);
-    assert('…and ends at least 20 s before the function is cut off, so an overrun comes back as a message', budget + 20000 <= FN_SECONDS * 1000,
+    assert(`the answer is due in a couple of minutes (${budget / 1000} s): room for a long report, an answer before anyone gives up`,
+      budget >= 120000 && budget <= 180000, budget);
+    assert(`…at least 20 s inside the function's ${FN_SECONDS} s, so an overrun comes back as a message`, budget + 20000 <= FN_SECONDS * 1000,
       `${budget} ms in a ${FN_SECONDS} s function`);
   }
 
@@ -746,6 +755,7 @@ async function cleanUp() {
     const origErr = console.error;
     console.error = (...a) => errs.push(a.join(' '));
     const marker = 'UNIQUE-REQUEST-MARKER-55';
+    const nLogs = LOGS.length;
     try {
       await call('POST', T, body({ message: `Show ${marker} for Quillfeather` }), TURF.token);
       SDK.queue.push(apiError(401, 'invalid x-api-key'));
@@ -758,6 +768,11 @@ async function cleanUp() {
       writes.map(s => s.text.trim().slice(0, 60)).join(' | '));
     assert('no statement carries the message or a job name', !DB.statements.some(s => JSON.stringify(s.values).includes(marker) || JSON.stringify(s.values).includes('Quillfeather')));
     assert('error logs carry neither the message nor job data', errs.length >= 2 && !errs.some(e => e.includes(marker) || e.includes('Quillfeather') || e.includes(SECRET.contract)), errs.join(' / '));
+    const turnLogs = LOGS.slice(nLogs);
+    assert('each answered turn leaves one log line: its timings, tokens, effort and stop — and nothing it was asked',
+      turnLogs.length === 2 && turnLogs.every(l => /^\[report-builder\] turf turn: [\d.]+ s in all, model asked at [\d.]+ s, [^;]*; tokens in \d+ \(\d+ from cache\), out \d+; effort low; stop \w+$/.test(l))
+        && !turnLogs.some(l => l.includes(marker) || l.includes('Quillfeather') || l.includes('Zorvath') || l.includes(SECRET.contract)), turnLogs.join(' / '));
+    assert('…and the failed call\'s error line says how long it ran', errs.some(e => /model call failed: 401/.test(e) && /[\d.]+ s in all/.test(e)), errs.join(' / '));
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -833,6 +848,30 @@ async function realSdkTests(user) {
         res.end();
         return;
       }
+      if (step === 'slowthink') {
+        // Thinks for 400 ms before any text, then writes for 200 ms: the log
+        // line has to put the time in the right places.
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' });
+        const ev3 = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ type, ...data })}\n\n`);
+        const json3 = JSON.stringify(canned({ reply: 'Thought, then wrote.' }));
+        ev3('message_start', { message: { id: 'msg_think', type: 'message', role: 'assistant', model: 'local', content: [], stop_reason: null, stop_sequence: null,
+          usage: { input_tokens: 12, output_tokens: 1, cache_read_input_tokens: 3000, cache_creation_input_tokens: 0 } } });
+        ev3('content_block_start', { index: 0, content_block: { type: 'thinking', thinking: '', signature: '' } });
+        setTimeout(() => {
+          ev3('content_block_delta', { index: 0, delta: { type: 'signature_delta', signature: 'sig-think' } });
+          ev3('content_block_stop', { index: 0 });
+          ev3('content_block_start', { index: 1, content_block: { type: 'text', text: '' } });
+          ev3('content_block_delta', { index: 1, delta: { type: 'text_delta', text: json3.slice(0, 40) } });
+          setTimeout(() => {
+            ev3('content_block_delta', { index: 1, delta: { type: 'text_delta', text: json3.slice(40) } });
+            ev3('content_block_stop', { index: 1 });
+            ev3('message_delta', { delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 640 } });
+            ev3('message_stop', {});
+            res.end();
+          }, 200);
+        }, 400);
+        return;
+      }
       if (step === '400') {
         res.writeHead(400, { 'content-type': 'application/json', 'request-id': 'req_test' });
         res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'fallbacks: Extra inputs are not permitted' } }));
@@ -881,7 +920,7 @@ async function realSdkTests(user) {
     assert('…as a stream, with the fallback parameter and its beta header', first.body.stream === true && first.body.fallbacks === 'default'
       && first.headers['anthropic-beta'] === 'server-side-fallback-2026-07-01', first.headers['anthropic-beta']);
     assert('…carrying model, adaptive thinking, effort and the json_schema format on the wire', first.body.model === EXPECTED_MODEL_ID
-      && first.body.thinking.type === 'adaptive' && first.body.output_config.effort === 'medium' && first.body.output_config.format.type === 'json_schema'
+      && first.body.thinking.type === 'adaptive' && first.body.output_config.effort === 'low' && first.body.output_config.format.type === 'json_schema'
       && first.body.max_tokens === 16000);
     assert('…and the cached system block', first.body.system[0].cache_control.type === 'ephemeral');
 
@@ -903,6 +942,21 @@ async function realSdkTests(user) {
     assert('a streamed mid-output fallback through the real SDK (partial, fallback block, continuation) → 200 with the whole answer',
       r.statusCode === 200 && r.body.ok === true && r.body.reply === 'Finished by the fallback model.', show(r));
 
+    // Where a turn's time went, from the stream itself: 400 ms thinking, then
+    // 200 ms writing, and the tokens it read and wrote.
+    seen.length = 0;
+    plan.push('slowthink');
+    const nLogs = LOGS.length;
+    r = await call('POST', { division: 'turf' }, body(), user.token, null, real);
+    const line = LOGS.slice(nLogs).pop() || '';
+    const num = re => { const m = line.match(re); return m ? Number(m[1]) : NaN; };
+    const total = num(/^\[report-builder\] turf turn: ([\d.]+) s in all/), asked = num(/model asked at ([\d.]+) s/),
+      began = num(/response began ([\d.]+) s/), thought = num(/thinking until ([\d.]+) s/);
+    assert('a turn that thinks, then writes → 200, and one log line that puts the time where it went',
+      r.statusCode === 200 && r.body.ok === true && asked <= began && began <= thought - 0.2 && thought >= 0.3 && total - thought >= 0.05 && total < 5, line);
+    assert('…with the tokens it read (the cache included) and wrote, the effort and how it stopped',
+      /; tokens in 3012 \(3000 from cache\), out 640; effort low; stop end_turn$/.test(line), line);
+
     // The budget bounds the whole stream, not just its first byte: a turn
     // that starts and then stalls ends in the "took too long" reply, on time,
     // and the connection to the API is dropped.
@@ -913,12 +967,17 @@ async function realSdkTests(user) {
     seen.length = 0;
     plan.push('stall');
     const t0 = Date.now();
-    r = await call('POST', { division: 'turf' }, body(), user.token, null, quick);
+    const stallErrs = [];
+    const origErr = console.error;
+    console.error = (...a) => stallErrs.push(a.join(' '));
+    try { r = await call('POST', { division: 'turf' }, body(), user.token, null, quick); } finally { console.error = origErr; }
     const took = Date.now() - t0;
     await new Promise(res2 => setTimeout(res2, 300));
     assert('a stream that starts and then stalls → 504 "took too long" within the budget (3 s here), not the function\'s 60 s kill',
       r.statusCode === 504 && /took too long/.test(r.body.error) && took < 4500, `${show(r)} after ${took} ms`);
     assert('…and the stream to the API was closed when the budget ran out', stalls.length === 1 && stalls[0] - t0 < 4500, JSON.stringify(stalls.map(x => x - t0)));
+    assert('…and the log says the response began but no answer text came: the time went in the model, not before it',
+      stallErrs.some(l => /model call failed/.test(l) && /model asked at [\d.]+ s, response began [\d.]+ s, no answer text/.test(l)), stallErrs.join(' / '));
   } finally {
     await new Promise(r => server.close(r));
     if (saved.base === undefined) delete process.env.ANTHROPIC_BASE_URL; else process.env.ANTHROPIC_BASE_URL = saved.base;
@@ -1051,8 +1110,9 @@ async function uiTests() {
   assert('the third is planned vs actual', chips[2] === 'Planned vs actual for every In Progress job');
   assert('styles injected once', win.document.querySelectorAll('#crai-styles').length === 1);
   const I = win.FCTReportAI._internals;
-  assert(`the panel waits longer than the function may run (${FN_SECONDS} s), so the server's own message arrives first`,
-    I.CLIENT_TIMEOUT_MS > FN_SECONDS * 1000, I.CLIENT_TIMEOUT_MS);
+  assert(`the panel waits 30 s past the server's deadline (${handler.MODEL_BUDGET_MS / 1000} s), so that message arrives first, `
+    + `and gives up before the function's ${FN_SECONDS} s`, I.CLIENT_TIMEOUT_MS >= handler.MODEL_BUDGET_MS + 30000
+    && I.CLIENT_TIMEOUT_MS < FN_SECONDS * 1000, I.CLIENT_TIMEOUT_MS);
   assert('the waiting clock reads m:ss', I.clock(0) === '0:00' && I.clock(7400) === '0:07' && I.clock(102000) === '1:42' && I.clock(-5) === '0:00',
     [0, 7400, 102000, -5].map(I.clock).join(' '));
   assert('no inline event handlers in the panel', !/\son[a-z]+\s*=/i.test(host.innerHTML), host.innerHTML.match(/\son[a-z]+\s*=/i));
