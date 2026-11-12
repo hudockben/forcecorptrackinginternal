@@ -1208,10 +1208,13 @@ async function cleanUp() {
     await page.waitForSelector('.cr-ai-drawer [data-crai-act="undo"]', { timeout: 20000 }).catch(() => {});
     const req = SDK_CALLS[SDK_CALLS.length - 1];
     const reqText = req ? JSON.stringify(req.body.messages) : '';
-    ok('the request reached the model through the real endpoint: its model, adaptive thinking, a JSON-schema answer with no includeInternal',
+    // The answer's schema rides in the system prompt; the API's strict output
+    // format is not asked for (with it on, the service never began answering).
+    ok('the request reached the model through the real endpoint: its model, adaptive thinking, the answer\'s schema in the prompt with no includeInternal, no strict format',
       req && req.body.model === ROUTES['/api/ai/report-builder'].MODEL && req.body.thinking && req.body.thinking.type === 'adaptive'
-        && req.body.output_config && req.body.output_config.format && req.body.output_config.format.type === 'json_schema'
-        && !JSON.stringify(req.body.output_config.format.schema).includes('includeInternal'), req && JSON.stringify(Object.keys(req.body)));
+        && req.body.output_config && !('format' in req.body.output_config)
+        && Array.isArray(req.body.system) && req.body.system[0].text.includes('ANSWER SCHEMA (JSON Schema):\n' + JSON.stringify(ROUTES['/api/ai/report-builder'].OUTPUT_SCHEMA))
+        && !JSON.stringify(ROUTES['/api/ai/report-builder'].OUTPUT_SCHEMA).includes('includeInternal'), req && JSON.stringify(Object.keys(req.body)));
     ok('…the system prompt is one cached block, with no job in it', req && Array.isArray(req.body.system) && req.body.system.length === 1
       && req.body.system[0].cache_control && !JSON.stringify(req.body.system).includes(JOB1));
     ok('…and the jobs went as id, name, number, client and status only — no contract, PM or dates', req && reqText.includes(JOB1)
