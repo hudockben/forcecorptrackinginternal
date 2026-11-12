@@ -15,7 +15,8 @@
  *                              undone, false when it could not be,
  *                              'declined' when the person said no to its
  *                              "edits since will be lost" question
- *   getJobs()                  [{ id, name, number, client, status }]
+ *   getJobs()                  [{ id, name, number, client, status,
+ *                                costCodes: [...], subCodes: [...] }]  (codes optional)
  *   getCodes()                 { costCodes: [...], subCodes: [{ code, description, unit }] }
  *   division, divisionLabel, apiBase, getToken(), onAuthError()
  *   requestInternal()          the builder's own "include internal data" confirm
@@ -31,7 +32,12 @@
  *   - apply anything that has not been through the engine's
  *     normalizeDefinition — the same pass a saved report gets.
  *   - send a job's contract, costs or anything else beyond id, name, number,
- *     client and status to the server (which whitelists them again).
+ *     client, status and the codes on its bid items to the server (which
+ *     whitelists them again).
+ *
+ * When the AI cannot tell what was meant — a job it cannot find, work a job
+ * does not carry — it asks instead of guessing, and offers up to four
+ * answers as buttons. A button sends its text as the person's own reply.
  *
  * The conversation lives in memory for the open report; the builder mounts a
  * fresh panel when another report is opened. At most the last 12 messages go
@@ -49,6 +55,8 @@
   const MAX_JOBS = 1000;
   const MAX_CODES = 500;
   const MAX_FIELD = 120;
+  const MAX_JOB_CODES = 80;        // of each kind, per job
+  const MAX_CHOICES = 4;           // tap-to-answer replies to a question
   // The server's answer is due 150 s after the request reaches it, so this
   // only fires when that answer never arrives (a dropped connection, a stuck
   // request) — and says so well before the function would be cut off at 300 s.
@@ -79,8 +87,19 @@
   }
 
   // ── What goes to the server ─────────────────────────────────────────
-  /* The division's jobs, five fields each and nothing else: a job object
-     carrying a contract value or costs still sends only these. */
+  /* The division's jobs: id, name, number, client, status and the codes on
+     each job's bid items, and nothing else — a job object carrying a contract
+     value or costs still sends only these. A code is a short string, never a
+     quantity or a cost. */
+  function codeStrings(raw) {
+    if (!Array.isArray(raw)) return undefined;
+    const out = [];
+    raw.forEach(v => {
+      const c = field(isObj(v) ? v.code : v, MAX_FIELD);
+      if (c && out.length < MAX_JOB_CODES && !out.includes(c)) out.push(c);
+    });
+    return out;
+  }
   function jobList(adapter) {
     const raw = call(() => adapter.getJobs(), []);
     const out = [], seen = new Set();
@@ -90,7 +109,8 @@
       if (!id || seen.has(id)) return;
       seen.add(id);
       out.push({ id, name: field(j.name, MAX_FIELD), number: field(j.number, MAX_FIELD),
-        client: field(j.client, MAX_FIELD), status: field(j.status, MAX_FIELD) });
+        client: field(j.client, MAX_FIELD), status: field(j.status, MAX_FIELD),
+        costCodes: codeStrings(j.costCodes), subCodes: codeStrings(j.subCodes) });
     });
     return out;
   }
@@ -245,6 +265,10 @@
 .crai-chip{font:inherit;font-size:.74rem;text-align:left;padding:.3rem .6rem;border-radius:999px;border:1px solid var(--border,#2a2a3a);background:var(--surface2,#1a1a26);color:var(--text,#e0e0e0);cursor:pointer;max-width:100%;overflow-wrap:anywhere}
 .crai-chip:hover:not(:disabled){border-color:var(--green,#22c55e)}
 .crai-chip:disabled{opacity:.45;cursor:not-allowed}
+.crai-choices{display:flex;flex-wrap:wrap;gap:.35rem;margin-top:.45rem}
+.crai-choice{font:inherit;font-size:.76rem;text-align:left;padding:.32rem .65rem;border-radius:999px;border:1px solid var(--yellow,#eab308);background:rgba(234,179,8,.08);color:var(--text,#e0e0e0);cursor:pointer;max-width:100%;overflow-wrap:anywhere}
+.crai-choice:hover:not(:disabled){background:rgba(234,179,8,.18)}
+.crai-choice:disabled{opacity:.45;cursor:not-allowed}
 .crai-form{border-top:1px solid var(--border,#2a2a3a);padding:.6rem .8rem .7rem;display:flex;flex-direction:column;gap:.4rem;margin:0}
 .crai-in{width:100%;min-height:3.6rem;max-height:12rem;resize:vertical;background:var(--bg,#0a0a0f);border:1px solid var(--border,#2a2a3a);color:var(--text,#e0e0e0);border-radius:5px;padding:.45rem .55rem;font:inherit;font-size:.82rem;line-height:1.45}
 .crai-in:focus{border-color:var(--green,#22c55e);outline:none}
@@ -333,11 +357,18 @@
       const parts = [];
       parts.push(`<p class="crai-reply">${esc(t.reply).replace(/\n/g, '<br>')}</p>`);
       if (t.question) parts.push(`<p class="crai-q"><span class="crai-q-tag">Question</span>${esc(t.question)}</p>`);
+      // Answers to tap — on the latest message only: once the conversation
+      // has moved on, the question has been answered or passed over.
+      if (t.choices && t.choices.length && i === st.turns.length - 1) {
+        const off = st.busy || readOnly() ? ' disabled' : '';
+        parts.push(`<div class="crai-choices" role="group" aria-label="Answers">${t.choices.map((c, k) =>
+          `<button type="button" class="crai-choice" data-crai-act="choice" data-turn="${i}" data-i="${k}"${off}>${esc(c)}</button>`).join('')}</div>`);
+      }
       if (t.changes.length) parts.push(`<ul class="crai-changes" aria-label="What changed">${t.changes.map(c => `<li>${esc(c)}</li>`).join('')}</ul>`);
       const notes = [];
       if (t.droppedJobs) notes.push(`Left out ${plural(t.droppedJobs, 'job')} that ${t.droppedJobs === 1 ? 'is' : 'are'} not in this division's list.`);
       if (t.droppedCodes) notes.push(`Left out ${plural(t.droppedCodes, 'code')} not found on these jobs.`);
-      if (t.unchanged) notes.push('The report is unchanged.');
+      if (t.unchanged) notes.push(t.question ? 'Nothing is changed until you answer.' : 'The report is unchanged.');
       if (t.stale) notes.push('The report changed while I was working, so this was not applied. Apply it anyway (your edits since then would be replaced), or discard it.');
       if (t.discarded) notes.push('Discarded — the report is as you left it.');
       if (t.applyError) notes.push(t.applyError);
@@ -385,6 +416,7 @@
     function historyText(t) {
       const bits = [t.reply];
       if (t.question) bits.push(`Question: ${t.question}`);
+      if (t.choices && t.choices.length) bits.push(`Answers offered: ${t.choices.join(' | ')}`);
       if (t.changes.length) bits.push(`Changes: ${t.changes.join('; ')}`);
       if (!t.applied && !t.unchanged) bits.push('(This was not applied to the report.)');
       if (t.undone) bits.push('(The user undid this change.)');
@@ -473,6 +505,7 @@
         role: 'assistant',
         reply: typeof data.reply === 'string' && data.reply.trim() ? data.reply.trim() : 'Done.',
         question: typeof data.clarifying_question === 'string' ? data.clarifying_question.trim() : '',
+        choices: [],
         changes: (Array.isArray(data.changes) ? data.changes : []).filter(c => typeof c === 'string' && c.trim()).map(c => c.trim()).slice(0, 20),
         needsInternal: data.needs_internal === true,
         droppedJobs: Number(data.dropped && data.dropped.jobs) || 0,
@@ -480,6 +513,10 @@
         applied: false, undone: false, unchanged: false, applyError: '', undoError: '',
         stale: false, pending: null, discarded: false,
       };
+      // Answers to tap go with a question only: a few, one line each.
+      if (turn.question) {
+        turn.choices = [...new Set((Array.isArray(data.choices) ? data.choices : []).map(c => field(c, 120)).filter(Boolean))].slice(0, MAX_CHOICES);
+      }
       const current = currentDefinition(adapter);
       const prep = prepareDefinition(data.definition, adapter, current);
       if (prep.error) turn.applyError = prep.error;
@@ -644,6 +681,11 @@
       else if (act === 'discard-stale') discardStale(Number(b.getAttribute('data-turn')));
       else if (act === 'internal') askInternal();
       else if (act === 'retry') send(st.lastText);
+      else if (act === 'choice') {
+        const t = st.turns[Number(b.getAttribute('data-turn'))];
+        const c = t && Array.isArray(t.choices) ? t.choices[Number(b.getAttribute('data-i'))] : '';
+        if (c) { input.value = ''; send(c); }
+      }
       else if (act === 'stop') stop();
       else if (act === 'clear') { reset(); input.focus(); }
     }

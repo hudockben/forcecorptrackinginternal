@@ -16,15 +16,18 @@
  *   codes       { costCodes: [...], subCodes: [{ code, description, unit }] }
  *   today       the user's date, YYYY-MM-DD
  * → 200 { ok: true, reply, changes, needs_internal, clarifying_question,
- *         definition, dropped, turnsUsed, turnsRemaining }
+ *         choices, definition, dropped, turnsUsed, turnsRemaining }
+ *   choices     up to 4 answers to clarifying_question the panel offers as
+ *               buttons; [] when there is no question
  * → 200 { ok: false, error }  when the model declined
  *
  * What keeps this safe to point at a customer-facing report:
  *
  *   The model never sees a figure. It is told the catalog (section types and
  *   columns, each flagged internal / financial), the division's job list —
- *   id, name, number, client and status, and nothing else, whatever the
- *   browser sends — the code lists and the current definition. A report's
+ *   id, name, number, client, status and the codes on each job's bid items,
+ *   and nothing else, whatever the browser sends — the code lists and the
+ *   current definition. A report's
  *   numbers are worked out in the browser when it runs, so there is nothing
  *   here for it to misquote, and nothing of a job's money to leak.
  *
@@ -101,6 +104,13 @@ const MAX_JOBS  = 1000;
 const MAX_CODES = 500;
 const MAX_FIELD = 120;
 const MAX_SECTIONS = 20;
+const MAX_CHOICES = 4;
+const MAX_CHOICE_CHARS = 120;
+// A job's own codes, from its bid items: per job, and across the whole
+// request, so a division of many big jobs cannot swell the prompt without end.
+const MAX_JOB_COST_CODES = 40;
+const MAX_JOB_SUB_CODES = 80;
+const MAX_JOB_CODES_TOTAL = 8000;
 const MAX_FILTER_CODES = 200;
 const MAX_FILTER_CODE_LEN = 60;
 const MAX_OPTION_CODES = 300;
@@ -212,6 +222,7 @@ function buildOutputSchema(catalog) {
     changes: { type: 'array', items: str, description: 'One short line per change; empty when nothing changed.' },
     needs_internal: { type: 'boolean', description: 'True when the definition has internal or financial columns the user asked for.' },
     clarifying_question: { anyOf: [str, { type: 'null' }] },
+    choices: { type: 'array', items: str, description: 'Up to 4 short answers to clarifying_question the user can tap; [] when there is no question.' },
     definition: obj({
       title: str,
       description: str,
@@ -278,18 +289,20 @@ These reports go to customers. A report is customer-safe unless the user deliber
 - Never write a figure, a cost or a rate of pay into a title, label, intro, footer or note unless the user typed it for you.
 
 PICKING JOBS
-- JOBS in the request is every job in this division you may use: id, job number, name, client, status. Put ids from that list into definition.jobs.ids exactly as written. Never invent or guess an id.
+- JOBS in the request is every job in this division you may use: id, job number, name, client, status, and the codes on its bid items (costCodes, subCodes). Put ids from that list into definition.jobs.ids exactly as written. Never invent or guess an id.
 - "Active", "in progress", "current", "running" or "open" jobs means every job whose status is In Progress; "finished", "complete" or "closed" means status Complete. Compare statuses without regard to case.
-- Match names, job numbers and clients loosely: "Maple" finds "Maple Ave Phase 2", "the Acme jobs" finds every job whose client is Acme Township, "26101" is a job number. When several jobs fit and the user plainly meant one, pick the likeliest and ask which they meant.
-- Nothing matches: keep the current jobs, say what you could not find, and ask.
+- Match names, job numbers and clients loosely: "Maple" finds "Maple Ave Phase 2", "the Acme jobs" finds every job whose client is Acme Township, "26101" is a job number. When several jobs fit and you cannot tell which one the user meant, do not pick: ask which (ASKING INSTEAD OF GUESSING).
+- Nothing matches: keep the current jobs, say what you could not find, and ask, offering the closest jobs as choices.
 - Keep the current jobs unless the request is about other jobs. Keep jobs.mode as it is; "saved" means the jobs are saved with the report, "pick" means they are chosen each time it runs — change it only when the user asks.
 - Several jobs: layout "separate" gives each job its own part of the report (pageBreakPerJob starts each on a new page); "combined" puts every job in one set of tables with a Job column — "all in one table", "roll-up", "side by side".
 
 SUB CODES AND COST CODES
 - The request lists the division's COST CODES and SUB CODES (code, description, unit). A request about a kind of work — "Turf Install", "base course", "the milling", "seeding" — is a sub code filter. Match it against the list by code or by description, ignoring case, and use the code exactly as listed. Several sub codes can share a description; take all of them.
+- Each job's line in JOBS lists the codes on that job's bid items. When the request is about particular jobs, the codes that matter are theirs.
 - Report-wide filters (definition.filters) apply to every data section: use them when the report is about that work — "Turf Install on every active job".
 - A section's own options.subCodes / options.costCodes narrow that one section. Use them only when one section should differ from the rest.
-- Never invent a code. If nothing in the list matches, say so and ask; do not filter on a guess.
+- To show which codes a job has, use Bid Item Progress: its rows are the job's bid items, with Cost Code and Sub Code columns. Do not copy codes into a filter or a note to list them.
+- Never invent a code. If nothing matches — or the jobs named do not carry the work asked for — say so and ask, offering the codes those jobs do carry as choices; do not filter on a guess.
 
 DATES
 - TODAY in the request is the user's date. Weeks run Monday to Sunday.
@@ -316,12 +329,18 @@ HEADER
 - preparedFor: the customer, owner or general contractor the report is for, when the user says. intro: a short message at the top, only when asked; otherwise keep it as it is. footer: keep unless asked.
 - showGenerated, branding ("company" heads the report with the company's name and logo, "datawatch" leaves them off) and showPmContact: keep as they are unless asked.
 
+ASKING INSTEAD OF GUESSING
+- When you cannot find what the user named — a job, a code, a kind of work — or the request could mean more than one thing and the difference changes the report, do not guess. Ask one short question in clarifying_question, offer up to four choices, return the current definition unchanged, and make changes [].
+- Each choice is a whole answer the user can tap as their reply: a job as "Maple Ave Phase 2 (#26101)", a code as its code and description, a range as "Last week". Offer the real candidates you found, never "Other" or "Something else" — the user can always type.
+- When the request is clear enough to act on, act and ask nothing: clarifying_question null, choices []. Do not ask the user to confirm what they plainly said.
+
 YOUR ANSWER
 Answer with one JSON object that follows ANSWER SCHEMA below — every key it lists, the values it allows — and nothing else: no code fences, no text before or after the object.
 - reply: plain text, at most 80 words, no markdown. Say what you built or changed and anything the user has to do next — pick a job, choose a sub code, switch on internal data. Write like a colleague in the office.
 - changes: one short line per change — "Added Planned vs Actual", "Filtered to sub code Turf Install", "Dates set to last week". [] when nothing changed.
 - needs_internal: true only when the definition you return has internal or financial columns the user asked for.
-- clarifying_question: one short question when the request is genuinely ambiguous — which job, which sub code, which dates — and still return your best attempt. Otherwise null.
+- clarifying_question: the one short question, when you need an answer before you can build what was asked (ASKING INSTEAD OF GUESSING). Otherwise null.
+- choices: up to four short answers to that question, which the user can tap. [] when there is no question.
 - A question rather than a change ("what does Pace vs Plan mean?", "can it show tons per load?") gets its answer in the reply, the current definition back unchanged, and changes [].
 - Anything that is not about building this report: say in a sentence that you build reports, and return the current definition unchanged.
 
@@ -336,17 +355,43 @@ DIVISIONS.forEach(d => {
 const systemFor = division => [{ type: 'text', text: SYSTEM_TEXT[division], cache_control: { type: 'ephemeral' } }];
 
 // ── Reading the request ────────────────────────────────────────────────────
-// Only these five fields of a job ever reach the model, whatever else the
-// browser put on it — a contract value or a cost on a job object goes nowhere.
+// Only these fields of a job ever reach the model, whatever else the browser
+// put on it — a contract value or a cost on a job object goes nowhere: id,
+// number, name, client, status, and the codes on its bid items (each code a
+// short string — never a quantity or a cost). The codes let the model tell
+// what work a job has, and ask when a job lacks the work named.
+//
+// A job's codes are sent whole or not at all: once the request's allowance
+// would run out, that job and every later one go without them (no keys, not
+// empty lists, which would read as "no codes"), and the context says so. So
+// do jobs from a browser that sent no codes.
+function codesIn(raw, cap) {
+  const out = [];
+  raw.forEach(v => {
+    const c = line(isObj(v) ? v.code : v, MAX_FIELD);
+    if (c && out.length < cap && !out.includes(c)) out.push(c);
+  });
+  return out;
+}
 function readJobs(raw) {
   const out = [], seen = new Set();
+  let left = MAX_JOB_CODES_TOTAL;
   (Array.isArray(raw) ? raw : []).slice(0, MAX_JOBS).forEach(j => {
     if (!isObj(j)) return;
     const id = line(j.id, MAX_FIELD);
     if (!id || seen.has(id)) return;
     seen.add(id);
-    out.push({ id, number: line(j.number, MAX_FIELD), name: line(j.name, MAX_FIELD),
-      client: line(j.client, MAX_FIELD), status: line(j.status, MAX_FIELD) });
+    const job = { id, number: line(j.number, MAX_FIELD), name: line(j.name, MAX_FIELD),
+      client: line(j.client, MAX_FIELD), status: line(j.status, MAX_FIELD) };
+    if (Array.isArray(j.costCodes) && Array.isArray(j.subCodes) && left > 0) {
+      const costCodes = codesIn(j.costCodes, MAX_JOB_COST_CODES), subCodes = codesIn(j.subCodes, MAX_JOB_SUB_CODES);
+      if (costCodes.length + subCodes.length <= left) {
+        job.costCodes = costCodes;
+        job.subCodes = subCodes;
+        left -= costCodes.length + subCodes.length;
+      } else left = 0;
+    }
+    out.push(job);
   });
   return out;
 }
@@ -431,6 +476,9 @@ function contextText({ today, division, jobs, codes }) {
   if (jobs.length) {
     out.push(`JOBS (${jobs.length}) — one per line:`);
     jobs.forEach(j => out.push(JSON.stringify(j)));
+    const without = jobs.filter(j => !j.subCodes).length;
+    if (without === jobs.length) out.push('(No job came with its codes (costCodes, subCodes): which codes a job carries is not known here.)');
+    else if (without) out.push(`(${without} of these jobs came without their codes (costCodes, subCodes): for ${without === 1 ? 'that job, which codes it carries' : 'those, which codes they carry'} is not known here.)`);
   } else {
     out.push('JOBS: none — there are no jobs to pick in this division.');
   }
@@ -855,12 +903,18 @@ module.exports = async (req, res) => {
 
   const { definition, dropped, addedInternal } = postProcess(out.definition, { jobs, codes, current: cur.def, division });
   const clar = typeof out.clarifying_question === 'string' ? line(out.clarifying_question, 400) : '';
+  // Tap-to-answer choices go with a question only: a few, one line each, no
+  // repeats. The panel sends the one tapped back as the person's own reply.
+  const choices = clar
+    ? uniq((Array.isArray(out.choices) ? out.choices : []).map(c => line(c, MAX_CHOICE_CHARS)).filter(Boolean)).slice(0, MAX_CHOICES)
+    : [];
   return res.status(200).json({
     ok: true,
     reply: para(out.reply, 1200),
     changes: (Array.isArray(out.changes) ? out.changes : []).map(c => line(c, 200)).filter(Boolean).slice(0, 20),
     needs_internal: out.needs_internal === true || addedInternal,
     clarifying_question: clar || null,
+    choices,
     definition,
     dropped,
     ...counts,

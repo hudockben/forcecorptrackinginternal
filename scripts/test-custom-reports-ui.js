@@ -3872,10 +3872,14 @@ function seed(srv) {
     assert('the adapter has exactly the spec\'s members', JSON.stringify(Object.keys(a).sort()) === JSON.stringify(keys.slice().sort()), Object.keys(a).join());
     assert('…division, label, API base and token', a.division === 'paving' && a.divisionLabel === 'Paving' && a.apiBase === '/api' && a.getToken() === 'tok-123');
     const jobs = a.getJobs();
-    assert('getJobs gives id, name, number, client, status — and nothing else (no contract or money)', jobs.length === 3
-      && jobs.every(j => JSON.stringify(Object.keys(j)) === '["id","name","number","client","status"]')
-      && JSON.stringify(jobs[0]) === '{"id":"p1","name":"Route 30 Resurfacing","number":"26101","client":"Acme Township","status":"In Progress"}'
-      && !/250000|80000|contract/.test(JSON.stringify(jobs)));
+    // The codes on a job's bid items let the AI tell what work a job has, and
+    // ask rather than guess when it lacks the work named. Codes only: no
+    // quantity, unit cost or anything else off a bid item.
+    assert('getJobs gives id, name, number, client, status and the codes on its bid items — and nothing else (no contract, quantities or money)', jobs.length === 3
+      && jobs.every(j => JSON.stringify(Object.keys(j)) === '["id","name","number","client","status","costCodes","subCodes"]')
+      && JSON.stringify(jobs[0]) === '{"id":"p1","name":"Route 30 Resurfacing","number":"26101","client":"Acme Township","status":"In Progress",'
+        + '"costCodes":["Milling","Paving"],"subCodes":["Base Course","Mill 2in","Surface Course"]}'
+      && !/250000|80000|contract|85\.57|92\.25|Aggregate base/.test(JSON.stringify(jobs)), JSON.stringify(jobs[0]));
     const codes = a.getCodes();
     assert('getCodes gives the division\'s cost codes and sub codes', codes.costCodes.includes('Paving') && codes.costCodes.includes('Sealcoat')
       && codes.subCodes.some(x => x.code === 'Coat') && codes.subCodes.every(x => JSON.stringify(Object.keys(x)) === '["code","description","unit"]'));
