@@ -451,8 +451,17 @@ async function cleanUp() {
     assert('adaptive thinking', req.thinking && req.thinking.type === 'adaptive' && Object.keys(req.thinking).length === 1, JSON.stringify(req.thinking));
     // 'medium' left a one-job request thinking past two and a half minutes.
     assert('effort low', req.output_config && req.output_config.effort === 'low', JSON.stringify(req.output_config && req.output_config.effort));
-    const fmt = req.output_config && req.output_config.format;
-    assert('structured output: output_config.format is a json_schema', fmt && fmt.type === 'json_schema' && fmt.schema && fmt.schema.type === 'object');
+    // The answer's shape rides in the system prompt. The API's strict format
+    // is not asked for: with it on, the service never began to answer.
+    assert('no strict output format: output_config is the effort and nothing else',
+      req.output_config && JSON.stringify(Object.keys(req.output_config)) === '["effort"]', JSON.stringify(req.output_config));
+    const sysText = (req.system && req.system[0] && req.system[0].text) || '';
+    const schemaLine = sysText.match(/\nANSWER SCHEMA \(JSON Schema\):\n(.+)\n/);
+    let answerSchema = null;
+    try { answerSchema = JSON.parse(schemaLine[1]); } catch (_) { /* asserted next */ }
+    assert('the system prompt carries the answer\'s JSON Schema, and asks for that one object and nothing else',
+      answerSchema && answerSchema.type === 'object' && /Answer with one JSON object that follows ANSWER SCHEMA/.test(sysText) && /no code fences/.test(sysText));
+    const fmt = { schema: answerSchema || { properties: { definition: { properties: { sections: { items: { properties: {} } }, dates: { properties: { preset: { enum: [] } } } } } }, required: [] } };
     assert('the schema has no includeInternal anywhere', !/includeInternal/i.test(JSON.stringify(fmt.schema)));
     const ss = schemaStats(fmt.schema);
     assert('every object in the schema has additionalProperties:false', !ss.open.length, ss.open.join());
@@ -525,7 +534,7 @@ async function cleanUp() {
     assert('…none of either request\'s jobs are in it', !/Zebrastripe|Zedrock|Quillfeather|Brindlewood/.test(sys2[0].text));
     const lastText = SDK.calls[0].body.messages.slice(-1)[0].content.slice(-1)[0].text;
     assert('no report open → the model is told to build a new one', /CURRENT DEFINITION: none/.test(lastText));
-    assert('…and the output schema is identical too', JSON.stringify(SDK.calls[0].body.output_config) === firstOutputConfig);
+    assert('…and the output config is identical too', JSON.stringify(SDK.calls[0].body.output_config) === firstOutputConfig);
     SDK.calls.length = 0;
     await call('POST', { division: 'paving' }, body({ jobs: [] }), PAVE.token);
     const pavSys = SDK.calls[0].body.system[0].text;
@@ -638,6 +647,27 @@ async function cleanUp() {
     SDK.queue.push(messageFor('this is not json'));
     r = await call('POST', T, body(), TURF.token);
     assert('an unreadable answer → 502', r.statusCode === 502 && r.body.ok === false, show(r));
+    // Asked for the bare object (nothing enforces it now): a fence or a
+    // sentence around it still reads, and postProcess checks it as ever.
+    SDK.queue.push(messageFor('```json\n' + JSON.stringify(canned({ reply: 'Fenced.' })) + '\n```'));
+    r = await call('POST', T, body(), TURF.token);
+    assert('an answer in a code fence is still read → 200', r.statusCode === 200 && r.body.ok === true && r.body.reply === 'Fenced.', show(r));
+    SDK.queue.push(messageFor('Here is the report:\n' + JSON.stringify(canned({ reply: 'Wrapped.' })) + '\nLet me know.'));
+    r = await call('POST', T, body(), TURF.token);
+    assert('…and so is one with a sentence either side', r.statusCode === 200 && r.body.ok === true && r.body.reply === 'Wrapped.', show(r));
+    // Nor is the whole definition enforced: a part the answer leaves out is
+    // the report's own, kept as it is — a missing list never empties it.
+    const partial = canned();
+    delete partial.definition.sections;
+    delete partial.definition.jobs;
+    SDK.queue.push(messageFor(partial));
+    r = await call('POST', T, body(), TURF.token);
+    assert('an answer that leaves out the sections and jobs keeps the report\'s own, not an emptied report', r.statusCode === 200 && r.body.ok === true
+      && r.body.definition.sections.map(s => s.type).join() === 'bid_progress,notes' && r.body.definition.sections[1].text === 'See you Monday.'
+      && JSON.stringify(r.body.definition.jobs.ids) === '["t1"]' && r.body.definition.title === 'Weekly Turf Install', show(r));
+    SDK.queue.push(messageFor(canned({ definition: { ...canned().definition, sections: [] } })));
+    r = await call('POST', T, body(), TURF.token);
+    assert('…while an empty list it does send ("start over") still empties it', r.statusCode === 200 && r.body.definition.sections.length === 0, show(r));
     SDK.queue.push(messageFor({ reply: 'no definition here', changes: [] }));
     r = await call('POST', T, body(), TURF.token);
     assert('an answer with no definition → 502', r.statusCode === 502, show(r));
@@ -713,6 +743,9 @@ async function cleanUp() {
       budget >= 120000 && budget <= 180000, budget);
     assert(`…at least 20 s inside the function's ${FN_SECONDS} s, so an overrun comes back as a message`, budget + 20000 <= FN_SECONDS * 1000,
       `${budget} ms in a ${FN_SECONDS} s function`);
+    const first = handler.FIRST_RESPONSE_MS;
+    assert(`a service that has not begun to answer is given up on early (${first / 1000} s): long enough to read an uncached prompt, well short of the budget`,
+      first >= 20000 && first <= 60000 && first < budget, first);
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -770,7 +803,7 @@ async function cleanUp() {
     assert('error logs carry neither the message nor job data', errs.length >= 2 && !errs.some(e => e.includes(marker) || e.includes('Quillfeather') || e.includes(SECRET.contract)), errs.join(' / '));
     const turnLogs = LOGS.slice(nLogs);
     assert('each answered turn leaves one log line: its timings, tokens, effort and stop — and nothing it was asked',
-      turnLogs.length === 2 && turnLogs.every(l => /^\[report-builder\] turf turn: [\d.]+ s in all, model asked at [\d.]+ s, [^;]*; tokens in \d+ \(\d+ from cache\), out \d+; effort low; stop \w+$/.test(l))
+      turnLogs.length === 2 && turnLogs.every(l => /^\[report-builder\] turf turn: [\d.]+ s in all, model asked at [\d.]+ s, [^;]*; sent \d+ KB; tokens in \d+ \(\d+ from cache\), out \d+; effort low; stop \w+$/.test(l))
         && !turnLogs.some(l => l.includes(marker) || l.includes('Quillfeather') || l.includes('Zorvath') || l.includes(SECRET.contract)), turnLogs.join(' / '));
     assert('…and the failed call\'s error line says how long it ran', errs.some(e => /model call failed: 401/.test(e) && /[\d.]+ s in all/.test(e)), errs.join(' / '));
   }
@@ -848,6 +881,19 @@ async function realSdkTests(user) {
         res.end();
         return;
       }
+      if (step === 'silent') {
+        // Takes the request — headers, then pings — and never begins: what
+        // production saw, "no response began" for the whole budget.
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', 'request-id': 'req_silent' });
+        const iv = setInterval(() => { try { res.write('event: ping\ndata: {"type":"ping"}\n\n'); } catch (_) { /* closed */ } }, 300);
+        res.on('close', () => { clearInterval(iv); stalls.push(Date.now()); });
+        return;
+      }
+      if (step === 'deaf') {
+        // Never answers at all, not even headers.
+        res.on('close', () => { stalls.push(Date.now()); });
+        return;
+      }
       if (step === 'slowthink') {
         // Thinks for 400 ms before any text, then writes for 200 ms: the log
         // line has to put the time in the right places.
@@ -919,8 +965,8 @@ async function realSdkTests(user) {
       && first.headers['x-api-key'] === process.env.ANTHROPIC_API_KEY, first && first.url);
     assert('…as a stream, with the fallback parameter and its beta header', first.body.stream === true && first.body.fallbacks === 'default'
       && first.headers['anthropic-beta'] === 'server-side-fallback-2026-07-01', first.headers['anthropic-beta']);
-    assert('…carrying model, adaptive thinking, effort and the json_schema format on the wire', first.body.model === EXPECTED_MODEL_ID
-      && first.body.thinking.type === 'adaptive' && first.body.output_config.effort === 'low' && first.body.output_config.format.type === 'json_schema'
+    assert('…carrying model, adaptive thinking and effort on the wire, and no strict output format', first.body.model === EXPECTED_MODEL_ID
+      && first.body.thinking.type === 'adaptive' && first.body.output_config.effort === 'low' && !('format' in first.body.output_config)
       && first.body.max_tokens === 16000);
     assert('…and the cached system block', first.body.system[0].cache_control.type === 'ephemeral');
 
@@ -976,8 +1022,35 @@ async function realSdkTests(user) {
     assert('a stream that starts and then stalls → 504 "took too long" within the budget (3 s here), not the function\'s 60 s kill',
       r.statusCode === 504 && /took too long/.test(r.body.error) && took < 4500, `${show(r)} after ${took} ms`);
     assert('…and the stream to the API was closed when the budget ran out', stalls.length === 1 && stalls[0] - t0 < 4500, JSON.stringify(stalls.map(x => x - t0)));
-    assert('…and the log says the response began but no answer text came: the time went in the model, not before it',
-      stallErrs.some(l => /model call failed/.test(l) && /model asked at [\d.]+ s, response began [\d.]+ s, no answer text/.test(l)), stallErrs.join(' / '));
+    assert('…and the log says the service replied and the response began, but no answer text came: the time went in the model, not before it',
+      stallErrs.some(l => /model call failed/.test(l) && /model asked at [\d.]+ s, service replied [\d.]+ s, response began [\d.]+ s, no answer text/.test(l)), stallErrs.join(' / '));
+
+    // Nothing from the service by the first-response deadline (1 s here): the
+    // person hears now, not when the whole budget is gone, and the log says
+    // whether the service took the request up at all.
+    process.env.REPORT_BUILDER_FIRST_RESPONSE_MS = '1000';
+    let firstDeadline;
+    REAL_SDK = true;
+    try { firstDeadline = loadServer(); } finally { REAL_SDK = false; delete process.env.REPORT_BUILDER_FIRST_RESPONSE_MS; }
+    for (const [step, what, says] of [
+      ['silent', 'takes the request but never begins', /model asked at [\d.]+ s, service replied [\d.]+ s, no response began, request req_silent/],
+      ['deaf', 'never even replies', /model asked at [\d.]+ s, no reply from the service/],
+    ]) {
+      seen.length = 0;
+      stalls.length = 0;
+      plan.push(step);
+      const errs3 = [];
+      const origErr3 = console.error;
+      console.error = (...a) => errs3.push(a.join(' '));
+      const t1 = Date.now();
+      try { r = await call('POST', { division: 'turf' }, body(), user.token, null, firstDeadline); } finally { console.error = origErr3; }
+      const took1 = Date.now() - t1;
+      await new Promise(res2 => setTimeout(res2, 200));
+      assert(`a service that ${what} → 504 "did not start answering" at the 1 s first-response deadline, not the 150 s budget`,
+        r.statusCode === 504 && /did not start answering/.test(r.body.error) && took1 < 2500, `${show(r)} after ${took1} ms`);
+      assert('…the connection to it is dropped, and the log line says how far it got', stalls.length === 1
+        && errs3.some(l => /model call failed/.test(l) && says.test(l) && /; sent \d+ KB$/.test(l)), errs3.join(' / '));
+    }
   } finally {
     await new Promise(r => server.close(r));
     if (saved.base === undefined) delete process.env.ANTHROPIC_BASE_URL; else process.env.ANTHROPIC_BASE_URL = saved.base;

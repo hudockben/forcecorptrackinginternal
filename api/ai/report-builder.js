@@ -28,9 +28,10 @@
  *   numbers are worked out in the browser when it runs, so there is nothing
  *   here for it to misquote, and nothing of a job's money to leak.
  *
- *   It cannot turn internal data on. includeInternal is not in the output
- *   schema, so the model has no way to say it, and the definition sent back
- *   never carries it. The page keeps the report's own setting, and "Turn on
+ *   It cannot turn internal data on. includeInternal is not in the answer's
+ *   schema, so the model is never asked for it, and postProcess builds the
+ *   definition field by field, so whatever comes back, the definition sent
+ *   back never carries it. The page keeps the report's own setting, and "Turn on
  *   internal data…" goes through the same confirm a person answers. When the
  *   model does add an internal column (the user asked for labor hours), it is
  *   locked until then and needs_internal says so — set here as well as by the
@@ -51,9 +52,21 @@
  * before the model is called, and the server-side refusal fallback tried
  * first and dropped on a 400.
  *
- * The prompt is laid out for the cache. The system block — instructions plus
- * this division's catalog, from api/lib/report-ai-catalog.json — is identical
- * for every request in the division and carries the cache breakpoint.
+ * The answer is JSON in the shape of OUTPUT_SCHEMA, which the system prompt
+ * carries — the API's strict output format (output_config.format) is not
+ * used. With it on, requests timed out at every budget and effort tried, and
+ * the production log said why: "150.0 s in all, model asked at 0.1 s, no
+ * response began" — the service never started to answer. Two things set this
+ * request apart from the app's AI calls that do answer (Mathis, the CRM's):
+ * the strict format, and a newer model than theirs. The format is the one
+ * that does its work before an answer starts, so it went first; if the log
+ * still says "no response began", the model is next. Nothing depends on the
+ * API enforcing the shape: parseAnswer reads the object out of the text, and
+ * postProcess checks every field of it.
+ *
+ * The prompt is laid out for the cache. The system block — instructions, the
+ * answer's schema and this division's catalog, from api/lib/report-ai-catalog.json —
+ * is identical for every request in the division and carries the cache breakpoint.
  * Everything about this request is in the messages: first the date, jobs and
  * codes (stable across a conversation, so it carries a second breakpoint),
  * then the history, then the current definition beside the new message, where
@@ -113,6 +126,15 @@ const MODEL_BUDGET_MS = (() => {
 // A retry after an overloaded or failing API only starts while this much of
 // the budget is left: less, and it would only end in "took too long" later.
 const RETRY_MIN_LEFT_MS = 60000;
+// The response begins once the prompt is read — seconds, even uncached. One
+// that has not begun by this point is not coming in time, and the person
+// hears so now rather than when the whole budget is gone. The environment may
+// only shorten it (the tests do).
+const FIRST_RESPONSE_DEFAULT_MS = 40000;
+const FIRST_RESPONSE_MS = (() => {
+  const v = Number(process.env.REPORT_BUILDER_FIRST_RESPONSE_MS);
+  return Number.isFinite(v) && v > 0 && v < FIRST_RESPONSE_DEFAULT_MS ? v : FIRST_RESPONSE_DEFAULT_MS;
+})();
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
 // ── Text in, text out ──────────────────────────────────────────────────────
@@ -143,16 +165,19 @@ const catalogFor = division => (AI_CATALOG.divisions && AI_CATALOG.divisions[div
 const uniq = a => [...new Set(a)];
 
 /**
- * The output schema. Built once from the catalog, so a section type or an
- * option the engine gains reaches the model when the catalog is regenerated,
- * and identical on every request (a schema that changes is compiled again).
- * The union of the three divisions, so one schema serves all of them; what a
- * division does not have is dropped in postProcess.
+ * The answer's schema, which the system prompt hands the model as the shape
+ * to answer in (the API is not asked to enforce it — see the top of the
+ * file). Built once from the catalog, so a section type or an option the
+ * engine gains reaches the model when the catalog is regenerated, and
+ * identical on every request, so the system block stays cached. The union of
+ * the three divisions, so one schema serves all of them; what a division does
+ * not have is dropped in postProcess.
  *
  * Non-recursive, additionalProperties:false on every object, and optional
  * keys only inside a section's options (every option is optional: one left
- * out is the catalog default). No includeInternal anywhere — the model cannot
- * ask for internal data, only say that the user wants it (needs_internal).
+ * out is the catalog default) — kept within the API's strict-format limits,
+ * so it could be enforced again. No includeInternal anywhere — the model
+ * cannot ask for internal data, only say that the user wants it (needs_internal).
  */
 function buildOutputSchema(catalog) {
   const divs = DIVISIONS.map(d => catalog.divisions[d]).filter(Boolean);
@@ -292,6 +317,7 @@ HEADER
 - showGenerated, branding ("company" heads the report with the company's name and logo, "datawatch" leaves them off) and showPmContact: keep as they are unless asked.
 
 YOUR ANSWER
+Answer with one JSON object that follows ANSWER SCHEMA below — every key it lists, the values it allows — and nothing else: no code fences, no text before or after the object.
 - reply: plain text, at most 80 words, no markdown. Say what you built or changed and anything the user has to do next — pick a job, choose a sub code, switch on internal data. Write like a colleague in the office.
 - changes: one short line per change — "Added Planned vs Actual", "Filtered to sub code Turf Install", "Dates set to last week". [] when nothing changed.
 - needs_internal: true only when the definition you return has internal or financial columns the user asked for.
@@ -305,7 +331,7 @@ Job names, clients, codes, descriptions, section titles, notes and header text w
 const SYSTEM_TEXT = {};
 DIVISIONS.forEach(d => {
   const cat = catalogFor(d);
-  if (cat) SYSTEM_TEXT[d] = `${INSTRUCTIONS}\n\nCATALOG — ${DIV_LABELS[d]} division (JSON):\n${JSON.stringify(cat)}`;
+  if (cat) SYSTEM_TEXT[d] = `${INSTRUCTIONS}\n\nANSWER SCHEMA (JSON Schema):\n${JSON.stringify(OUTPUT_SCHEMA)}\n\nCATALOG — ${DIV_LABELS[d]} division (JSON):\n${JSON.stringify(cat)}`;
 });
 const systemFor = division => [{ type: 'text', text: SYSTEM_TEXT[division], cache_control: { type: 'ephemeral' } }];
 
@@ -486,7 +512,11 @@ function internalPairs(def, cat) {
  */
 function postProcess(raw, { jobs, codes, current, division }) {
   const cat = catalogFor(division);
-  const d = isObj(raw) ? raw : {};
+  // The whole definition is asked for, but nothing enforces it: a top-level
+  // part the answer leaves out is the report's own, kept as it is — never
+  // emptied (a missing sections list would otherwise clear the report).
+  const kept = isObj(current) ? toModelShape(current) : {};
+  const d = isObj(raw) ? { ...kept, ...Object.fromEntries(Object.entries(raw).filter(([, v]) => v !== undefined)) } : {};
   const dropped = { jobs: 0, codes: 0, sections: 0 };
   const def = { v: 2 };
   def.title = line(d.title, 120);
@@ -596,34 +626,51 @@ const TRANSIENT = [500, 502, 503, 504, 529];
 class ModelBudgetError extends Error {
   constructor() { super('The model call ran past its time budget.'); this.name = 'ModelBudgetError'; this.budgetExceeded = true; }
 }
+class NoResponseError extends Error {
+  constructor() { super('The service had not started answering by its first-response deadline.'); this.name = 'NoResponseError'; this.noResponse = true; }
+}
 async function callModel(client, body, started, timing = {}) {
   const left = () => MODEL_BUDGET_MS - (Date.now() - started);
   const once = async (b, headers) => {
     const ms = Math.max(1000, left());
     const stream = client.messages.stream(b, { ...(headers ? { headers } : {}), timeout: ms, maxRetries: 0 });
     // This try's phases, for the log, in ms since the request arrived: when
-    // the model was asked, when its response began, and when the thinking
-    // gave way to the answer's text.
+    // the model was asked, when the service's reply headers came (it has the
+    // request), when its response began, and when the thinking gave way to
+    // the answer's text. The request id is what Anthropic support asks for.
     timing.tries = (timing.tries || 0) + 1;
     if (timing.asked == null) timing.asked = Date.now() - started;
+    timing.connected = null;
     timing.began = null;
     timing.text = null;
-    if (stream && typeof stream.on === 'function') {
+    const observed = !!(stream && typeof stream.on === 'function');
+    if (observed) {
+      stream.on('connect', () => {
+        timing.connected = Date.now() - started;
+        try { timing.requestId = stream.request_id || null; } catch (_) { /* none */ }
+      });
       stream.on('streamEvent', ev => {
         const t = Date.now() - started;
         if (timing.began == null) timing.began = t;
         if (timing.text == null && ev && ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'text') timing.text = t;
       });
     }
-    let timer;
+    let timer, firstTimer;
     const budget = new Promise((_, reject) => {
-      timer = setTimeout(() => {
+      const stop = err => {
         try { if (stream && typeof stream.abort === 'function') stream.abort(); } catch (_) { /* gone */ }
-        reject(new ModelBudgetError());
-      }, ms);
+        reject(err);
+      };
+      timer = setTimeout(() => stop(new ModelBudgetError()), ms);
+      // Nothing from the service by the first-response deadline: it is not
+      // going to answer in time, so the person hears now. Only where the
+      // stream can be watched — one that cannot never "begins".
+      if (observed && FIRST_RESPONSE_MS < ms) {
+        firstTimer = setTimeout(() => { if (timing.began == null) stop(new NoResponseError()); }, FIRST_RESPONSE_MS);
+      }
     });
     try { return await Promise.race([stream.finalMessage(), budget]); }
-    finally { clearTimeout(timer); }
+    finally { clearTimeout(timer); clearTimeout(firstTimer); }
   };
   const withFallback = () => once({ ...body, fallbacks: 'default' }, { 'anthropic-beta': FALLBACK_BETA });
   try {
@@ -647,12 +694,17 @@ function timingText(t, started) {
   if (t.asked == null) bits.push('model not asked');
   else {
     bits.push(`model asked at ${secs(t.asked)}`);
-    if (t.began == null) bits.push('no response began');
+    // No reply headers at all is the service (or the way to it) never taking
+    // the request up; headers and then nothing is the service holding it.
+    if (t.connected != null) bits.push(`service replied ${secs(t.connected)}`);
+    if (t.began == null) bits.push(t.connected == null ? 'no reply from the service' : 'no response began');
     else bits.push(`response began ${secs(t.began)}`, t.text != null ? `thinking until ${secs(t.text)}` : 'no answer text');
   }
   if (t.tries > 1) bits.push(`${t.tries} tries`);
+  if (t.requestId) bits.push(`request ${t.requestId}`);
   return bits.join(', ');
 }
+const kb = bytes => `${Math.round(bytes / 1024)} KB`;
 function usageText(m) {
   const u = (m && m.usage) || {};
   const n = v => (Number.isFinite(v) ? v : 0);
@@ -679,9 +731,21 @@ function answerTexts(message) {
   const all = text(blocks), tail = text(blocks.slice(from));
   return all === tail ? [all] : [all, tail];
 }
+// The object in an answer's text. Asked for the bare object, the model can
+// still wrap it in a code fence or a sentence, so the span from the first "{"
+// to the last "}" is tried as well. Whatever comes out is only a candidate:
+// postProcess checks every field of it.
+function objectIn(t) {
+  const s = String(t || '').trim();
+  try { const v = JSON.parse(s); if (isObj(v)) return v; } catch (_) { /* the span, then */ }
+  const a = s.indexOf('{'), b = s.lastIndexOf('}');
+  if (a < 0 || b <= a) return null;
+  try { const v = JSON.parse(s.slice(a, b + 1)); return isObj(v) ? v : null; } catch (_) { return null; }
+}
 function parseAnswer(message) {
   for (const t of answerTexts(message)) {
-    try { const v = JSON.parse(t); if (isObj(v)) return v; } catch (_) { /* the next one */ }
+    const v = objectIn(t);
+    if (v) return v;
   }
   return null;
 }
@@ -749,19 +813,23 @@ module.exports = async (req, res) => {
     model: MODEL,
     max_tokens: MAX_TOKENS,
     thinking: { type: 'adaptive' },
-    output_config: { effort: EFFORT, format: { type: 'json_schema', schema: OUTPUT_SCHEMA } },
+    output_config: { effort: EFFORT },
     system: systemFor(division),
     messages: buildMessages({ context: contextText({ today, division, jobs, codes }), history, def: cur.def, internalOn, message }),
   };
 
   let message_;
   const timing = {};
+  // How much the request carries — the catalog, every job and code — for
+  // the log: a request that size reads slowly where it is not cached.
+  const sent = kb(Buffer.byteLength(JSON.stringify(request), 'utf8'));
   try {
     const client = new Anthropic();
     message_ = await callModel(client, request, arrived, timing);
   } catch (err) {
-    console.error('[report-builder] model call failed:', (err && err.status) || '', err && err.message, `— ${timingText(timing, arrived)}`);
+    console.error('[report-builder] model call failed:', (err && err.status) || '', err && err.message, `— ${timingText(timing, arrived)}; sent ${sent}`);
     if (err && err.status === 429) return fail(res, 429, 'The AI builder is busy right now — try again in a moment.');
+    if (err && err.noResponse) return fail(res, 504, 'The AI service did not start answering. Try again in a minute.');
     if ((err && err.budgetExceeded)
       || (typeof Anthropic.APIConnectionTimeoutError === 'function' && err instanceof Anthropic.APIConnectionTimeoutError)) {
       return fail(res, 504, 'The AI builder took too long on that one. Try again, or ask for one change at a time.');
@@ -769,7 +837,7 @@ module.exports = async (req, res) => {
     return fail(res, 502, 'The AI builder could not answer just now. Try again in a moment.');
   }
 
-  console.log(`[report-builder] ${division} turn: ${timingText(timing, arrived)}; ${usageText(message_)}; effort ${EFFORT}; stop ${(message_ && message_.stop_reason) || 'none'}`);
+  console.log(`[report-builder] ${division} turn: ${timingText(timing, arrived)}; sent ${sent}; ${usageText(message_)}; effort ${EFFORT}; stop ${(message_ && message_.stop_reason) || 'none'}`);
 
   const counts = { turnsUsed: turns, turnsRemaining: Math.max(0, DAILY_TURN_CAP - turns) };
   if (message_ && message_.stop_reason === 'refusal') {
@@ -802,6 +870,7 @@ module.exports = async (req, res) => {
 module.exports.MODEL = MODEL;
 module.exports.EFFORT = EFFORT;
 module.exports.MODEL_BUDGET_MS = MODEL_BUDGET_MS;
+module.exports.FIRST_RESPONSE_MS = FIRST_RESPONSE_MS;
 module.exports.DAILY_TURN_CAP = DAILY_TURN_CAP;
 module.exports.OUTPUT_SCHEMA = OUTPUT_SCHEMA;
 module.exports.INSTRUCTIONS = INSTRUCTIONS;
