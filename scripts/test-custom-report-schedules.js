@@ -403,8 +403,9 @@ FAKE.browser = { newPage: async () => fakePage(), close: async () => {}, process
     const vj = JSON.parse(fs.readFileSync(path.join(ROOT, 'vercel.json'), 'utf8')).functions;
     assert('vercel.json gives the new endpoint 300 s and 2 GB, like Auto Reports',
       JSON.stringify(vj['api/custom-report-schedules.js']) === '{"includeFiles":"api/**","memory":2048,"maxDuration":300}');
-    assert('…and the AI builder 60 s and 1 GB',
-      JSON.stringify(vj['api/ai/report-builder.js']) === '{"includeFiles":"api/**","memory":1024,"maxDuration":60}');
+    // 300 s: a turn regularly ran past the 50 s a 60 s function left it.
+    assert('…and the AI builder 300 s and 1 GB',
+      JSON.stringify(vj['api/ai/report-builder.js']) === '{"includeFiles":"api/**","memory":1024,"maxDuration":300}');
   }
 
   // ─────────────────────────────────────────────────────────────────────

@@ -66,6 +66,9 @@ const tick = async (n = 6) => { for (let i = 0; i < n; i++) await sleep(0); };
 const clone = v => JSON.parse(JSON.stringify(v));
 
 const SERVER_FILE = path.join(ROOT, 'api', 'ai', 'report-builder.js');
+// What vercel.json gives the endpoint. The model call's budget, the SDK's
+// timeout and the panel's own all have to fit around it.
+const FN_SECONDS = (JSON.parse(fs.readFileSync(path.join(ROOT, 'vercel.json'), 'utf8')).functions['api/ai/report-builder.js'] || {}).maxDuration;
 const EXPECTED_MODEL_ID = 'claude-opus-5-5';
 const MODEL_WORDS = /claude|opus|sonnet|haiku|fable|mythos/i;
 const UI_FILE     = path.join(ROOT, 'custom-reports-ai.js');
@@ -473,7 +476,7 @@ async function cleanUp() {
 
     assert('first try asks for the refusal fallback (fallbacks:"default" + its beta header)', req.fallbacks === 'default'
       && options.headers && options.headers['anthropic-beta'] === 'server-side-fallback-2026-07-01', JSON.stringify(options));
-    assert('…with a timeout under the function\'s 60 s', options.timeout > 0 && options.timeout <= 50000, options.timeout);
+    assert(`…with a timeout that ends at least 20 s inside the function's ${FN_SECONDS} s`, options.timeout > 0 && options.timeout <= FN_SECONDS * 1000 - 20000, options.timeout);
 
     const msgs = req.messages;
     assert('messages start and end with the user and alternate', msgs[0].role === 'user' && msgs[msgs.length - 1].role === 'user'
@@ -653,7 +656,17 @@ async function cleanUp() {
     SDK.queue.push(apiError(500, 'boom'), apiError(500, 'boom again'));
     r = await call('POST', T, body(), TURF.token);
     assert('…but only once: two 500s → 502 after two calls', r.statusCode === 502 && SDK.calls.length === 2, show(r));
-    assert('the SDK\'s own retries are off on every call (the budget is the function\'s 60 s)', SDK.calls.every(c => c.options.maxRetries === 0));
+    assert('the SDK\'s own retries are off on every call (the budget is the function\'s)', SDK.calls.every(c => c.options.maxRetries === 0));
+    // A retry needs time to finish: with under a minute and a half of the
+    // budget left it is not started, and the person hears at once.
+    process.env.REPORT_BUILDER_MODEL_BUDGET_MS = '60000';
+    let tight;
+    try { tight = loadServer(); } finally { delete process.env.REPORT_BUILDER_MODEL_BUDGET_MS; }
+    SDK.calls.length = 0;
+    SDK.queue.push(apiError(529, 'overloaded'), messageFor(canned()));
+    r = await call('POST', T, body(), TURF.token, null, tight);
+    assert('…and not when too little of the budget is left: a 529 with 60 s to go → 502 after one call', r.statusCode === 502 && SDK.calls.length === 1, show(r));
+    SDK.queue.length = 0;
     SDK.calls.length = 0;
     SDK.queue.push(apiError(429, 'rate limited'));
     r = await call('POST', T, body(), TURF.token);
@@ -661,6 +674,8 @@ async function cleanUp() {
     SDK.queue.push(new FakeTimeoutError('Request timed out.'));
     r = await call('POST', T, body(), TURF.token);
     assert('a timeout → 504 with a friendly message', r.statusCode === 504 && /too long/i.test(r.body.error), show(r));
+    assert('…that says to try again, not to blame the length of the request (short ones ran out too)', /try again/i.test(r.body.error)
+      && !/shorter request/i.test(r.body.error), r.body.error);
     // After a server-side fallback, the answer is the text after the switch.
     SDK.queue.push(messageFor(canned({ reply: 'from the fallback' }), 'end_turn',
       [{ type: 'text', text: '{"reply":"partial from the model that decl' }, { type: 'fallback', from: { model: 'a' }, to: { model: 'b' } }]));
@@ -676,6 +691,19 @@ async function cleanUp() {
     r = await call('POST', T, body(), TURF.token);
     assert('a streamed mid-output fallback that continues the partial: the two halves are one answer → 200', r.statusCode === 200 && r.body.ok === true
       && r.body.reply === 'continued across the switch', show(r));
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  section('Time enough for a turn');
+  {
+    // A turn — thinking, then the whole definition written out — regularly
+    // ran past the old 50 s inside a 60 s function, and every one of those
+    // ended in "took too long", however short the request.
+    const budget = handler.MODEL_BUDGET_MS;
+    assert(`vercel.json gives the endpoint minutes, not one (${FN_SECONDS} s)`, FN_SECONDS >= 240, FN_SECONDS);
+    assert(`the model call's budget is minutes too (${budget / 1000} s)`, budget >= 180000, budget);
+    assert('…and ends at least 20 s before the function is cut off, so an overrun comes back as a message', budget + 20000 <= FN_SECONDS * 1000,
+      `${budget} ms in a ${FN_SECONDS} s function`);
   }
 
   // ─────────────────────────────────────────────────────────────────────
@@ -964,6 +992,19 @@ function stubFetch(win) {
   };
   return f;
 }
+// A fetch that answers only when the test says so, and notes an abort —
+// rejecting on it, as a browser does, unless set deaf (an answer already on
+// its way back when the abort came).
+function heldFetch(win) {
+  const hf = { calls: [], deaf: false };
+  win.fetch = (url, init) => new Promise((resolve, reject) => {
+    const deaf = hf.deaf;
+    const c = { url, body: JSON.parse(init.body), aborted: false, answer: b => resolve({ status: 200, json: () => Promise.resolve(b) }) };
+    if (init.signal) init.signal.addEventListener('abort', () => { c.aborted = true; if (!deaf) reject(new Error('The user aborted a request.')); });
+    hf.calls.push(c);
+  });
+  return hf;
+}
 function okResponse(over = {}) {
   return {
     ok: true,
@@ -1009,6 +1050,11 @@ async function uiTests() {
   assert('the second names the first In Progress job', chips[1] === 'Customer progress update for Maple Ave Phase 2', chips[1]);
   assert('the third is planned vs actual', chips[2] === 'Planned vs actual for every In Progress job');
   assert('styles injected once', win.document.querySelectorAll('#crai-styles').length === 1);
+  const I = win.FCTReportAI._internals;
+  assert(`the panel waits longer than the function may run (${FN_SECONDS} s), so the server's own message arrives first`,
+    I.CLIENT_TIMEOUT_MS > FN_SECONDS * 1000, I.CLIENT_TIMEOUT_MS);
+  assert('the waiting clock reads m:ss', I.clock(0) === '0:00' && I.clock(7400) === '0:07' && I.clock(102000) === '1:42' && I.clock(-5) === '0:00',
+    [0, 7400, 102000, -5].map(I.clock).join(' '));
   assert('no inline event handlers in the panel', !/\son[a-z]+\s*=/i.test(host.innerHTML), host.innerHTML.match(/\son[a-z]+\s*=/i));
   assert('nothing fetched at mount', f.calls.length === 0);
   const pav = makeAdapter(win, { division: 'paving', codes: { costCodes: [], subCodes: [{ code: 'BC', description: 'Base Course', unit: 'TON' }] } });
@@ -1023,6 +1069,8 @@ async function uiTests() {
   type(win, input, 'Turf Install on all active jobs, last week');
   key(win, input, 'Enter');
   assert('while waiting: a typing indicator, Send disabled', !!$('.crai-typing') && $('.crai-send').disabled);
+  assert('…with a clock at 0:00, a Stop button, and no "still working" line yet', $('.crai-typing .crai-elapsed').textContent === '0:00'
+    && !!$('.crai-typing [data-crai-act="stop"]') && $('.crai-typing .crai-wait-hint').hidden === true);
   await tick();
   assert('Enter sends one request', f.calls.length === 1, f.calls.length);
   const c0 = f.calls[0];
@@ -1275,6 +1323,90 @@ async function uiTests() {
   assert('a builder that refuses the change → said so, no Undo offered', /could not take that change/.test(host.textContent) && !host.querySelector('[data-crai-act="undo"]'));
   h.destroy();
 
+  section('Panel — a long wait');
+  // A turn can take a couple of minutes. The bubble keeps time, says so past
+  // 20 s, and Stop hands the panel back.
+  win = makeWindow(); host = win.document.querySelector('.cr-ai-body');
+  ad = makeAdapter(win);
+  h = win.FCTReportAI.mount(host, ad);
+  const hf = heldFetch(win);
+  const q = s => host.querySelector(s);
+  const realNow = win.Date.now;
+  const pLong = h.send('Every cost and sub code on the Hempfield jobs, grouped by job');
+  await tick();
+  win.Date.now = () => realNow.call(win.Date) + 25000;
+  await sleep(1100);
+  assert('the clock runs while the AI works', /^0:2\d$/.test(q('.crai-typing .crai-elapsed').textContent), q('.crai-typing .crai-elapsed').textContent);
+  assert('…and past 20 s a line says it can take a couple of minutes', q('.crai-wait-hint').hidden === false
+    && /couple of minutes/.test(q('.crai-wait-hint').textContent));
+  h.refresh();
+  assert('a redraw while waiting keeps the time and the line', /^0:2\d$/.test(q('.crai-typing .crai-elapsed').textContent) && q('.crai-wait-hint').hidden === false);
+  win.Date.now = realNow;
+  hf.calls[0].answer(okResponse());
+  await pLong; await tick();
+  assert('when the answer comes the bubble goes, the clock stops and the answer is applied', !q('.crai-typing') && h._state().clock === null
+    && ad.applied.length === 1);
+
+  const pStop = h.send('list out all the cost & sub codes for Hempfield Baseball');
+  await tick();
+  click(win, q('.crai-typing [data-crai-act="stop"]'));
+  const stopped = await pStop;
+  await tick();
+  const stopMsg = [...host.querySelectorAll('.crai-msg')].pop();
+  assert('Stop aborts the request in flight', hf.calls[1].aborted === true && stopped === false);
+  assert('…says the report was not changed, quietly (no alarm), with Try again', /Stopped — the report was not changed/.test(stopMsg.textContent)
+    && stopMsg.classList.contains('crai-quiet') && !stopMsg.hasAttribute('role') && !!stopMsg.querySelector('[data-crai-act="retry"]'), stopMsg.outerHTML);
+  assert('…and hands the panel back: no bubble, the textarea and Send live, Clear chat offered, no clock', !q('.crai-typing') && !q('.crai-in').disabled
+    && !q('.crai-send').disabled && !q('[data-crai-act="clear"]').hidden && h._state().clock === null && h._state().busy === false
+    && ad.applied.length === 1);
+  click(win, q('[data-crai-act="retry"]'));
+  await tick();
+  assert('Try again sends the same message once more, in place of the stopped one', hf.calls.length === 3
+    && hf.calls[2].body.message === 'list out all the cost & sub codes for Hempfield Baseball'
+    && [...host.querySelectorAll('.crai-user .crai-bubble')].filter(b => /Hempfield Baseball/.test(b.textContent)).length === 1
+    && !/Stopped/.test(host.textContent));
+  hf.calls[2].answer(okResponse({ definition: { ...okResponse().definition, title: 'Hempfield Baseball codes' } }));
+  await tick(); await tick();
+  assert('…and its answer is applied', ad.applied.length === 2 && ad.def.title === 'Hempfield Baseball codes' && !q('.crai-typing'),
+    `${ad.applied.length} applied, title ${ad.def.title}`);
+
+  // Stopped, then a new request before the old one settles: the old one's
+  // late end must not take the new one's controller or stop its clock.
+  hf.deaf = true;
+  const pA = h.send('first, then stopped');
+  await tick();
+  hf.deaf = false;
+  click(win, q('.crai-typing [data-crai-act="stop"]'));
+  const pB = h.send('second');
+  await tick();
+  hf.calls[3].answer(okResponse({ reply: 'A late answer to the stopped one.', definition: { ...okResponse().definition, title: 'Late' } }));
+  await pA; await tick();
+  assert('a stopped request\'s late answer is dropped, and the new one is still waiting, clock running', ad.applied.length === 2
+    && ad.def.title === 'Hempfield Baseball codes' && !/late answer/.test(host.textContent) && !!q('.crai-typing') && h._state().clock !== null
+    && h._state().ctrl !== null, JSON.stringify({ applied: ad.applied.length, title: ad.def.title, typing: !!q('.crai-typing'),
+      clock: h._state().clock !== null, ctrl: h._state().ctrl !== null }));
+  click(win, q('.crai-typing [data-crai-act="stop"]'));
+  // Checked at once: a Stop that missed would only be rescued, minutes later,
+  // by the panel's own timeout.
+  const reachedB = hf.calls[4].aborted === true;
+  await Promise.race([pB, sleep(1000)]);
+  assert('…so Stop still reaches the new request', reachedB && !q('.crai-typing') && h._state().clock === null);
+
+  const pC = h.send('one more');
+  await tick();
+  h.reset();
+  assert('Clear chat while waiting stops the clock', h._state().clock === null && !q('.crai-typing'));
+  // Sent before the cleared one has settled: its late end must leave this
+  // one's controller alone, or closing the panel could not stop it.
+  const pD = h.send('and another');
+  await tick();
+  const lastState = h._state();
+  h.destroy();
+  assert('…and so does closing the panel, which drops the request in flight too', lastState.clock === null && hf.calls[6].aborted === true,
+    JSON.stringify({ clock: lastState.clock !== null, calls: hf.calls.length, aborted: hf.calls.map(c => c.aborted) }));
+  await Promise.race([Promise.all([pC, pD]), sleep(1000)]);
+  assert('no script errors through the long wait', !win.__errors.length, win.__errors.join(' | '));
+
   section('Panel — source rules');
   assert('no inline on…= handlers in the source markup', !/<[^>]*\son(click|load|error|input|change|submit|keydown|mouse\w+)\s*=/i.test(UI_SRC));
   assert('no eval / Function / document.write', !/\beval\(|new Function\(|document\.write/.test(UI_SRC));
@@ -1312,12 +1444,13 @@ async function phoneTest() {
         const E = window.FCTReportEngine;
         let def = E.normalizeDefinition({ title: 'Phone', sections: [{ type: 'bid_progress' }] });
         window.__applied = 0;
-        window.fetch = () => Promise.resolve({ status: 200, json: () => Promise.resolve({ ok: true,
+        // Held until the test has looked at the waiting bubble.
+        window.fetch = () => new Promise(resolve => { window.__release = () => resolve({ status: 200, json: () => Promise.resolve({ ok: true,
           reply: 'Built it for ' + longJob + ' — a very long reply that has to wrap inside the drawer at phone width without pushing anything sideways.',
           changes: ['Added Planned vs Actual for ' + longJob, 'Filtered to sub code TURF-INSTALL-SUPERLONGCODE-0000000000000001'],
           needs_internal: true, clarifying_question: 'Did you mean ' + longJob + '?',
-          definition: { title: 'X', sections: [{ type: 'chart' }] }, dropped: { jobs: 1, codes: 0 } }) });
-        window.FCTReportAI.mount(document.querySelector('.cr-ai-body'), {
+          definition: { title: 'X', sections: [{ type: 'chart' }] }, dropped: { jobs: 1, codes: 0 } }) }); });
+        window.__h = window.FCTReportAI.mount(document.querySelector('.cr-ai-body'), {
           getDefinition: () => def, applyDefinition: d => { def = d; window.__applied++; return true; }, undo: () => true,
           getJobs: () => [{ id: 'j1', name: longJob, number: '1', client: 'C', status: 'In Progress' }],
           getCodes: () => ({ costCodes: [], subCodes: [] }), division: 'turf', divisionLabel: 'Turf Management', apiBase: '/api',
@@ -1326,6 +1459,23 @@ async function phoneTest() {
       }, 'Maple-Avenue-Phase-2-Northside-Extension-With-An-Unbroken-Name-' + 'X'.repeat(80));
       await page.fill('.crai-in', 'Customer progress update please');
       await page.press('.crai-in', 'Enter');
+      await page.waitForSelector('.crai-typing [data-crai-act="stop"]');
+      // Waiting, past 20 s: the clock, the "couple of minutes" line and Stop.
+      const w = await page.evaluate(() => {
+        const realNow = Date.now;
+        Date.now = () => realNow.call(Date) + 25000;
+        window.__h.refresh();
+        Date.now = realNow;
+        const over = [...document.querySelectorAll('.crai *')].filter(el => {
+          const r = el.getBoundingClientRect();
+          return r.width > 0 && (r.right > window.innerWidth + 1 || r.left < -1);
+        }).map(el => el.className);
+        const stop = document.querySelector('.crai-typing [data-crai-act="stop"]').getBoundingClientRect();
+        const hint = document.querySelector('.crai-wait-hint');
+        return { over, stopOn: stop.width > 0 && stop.right <= window.innerWidth, hint: !!hint && !hint.hidden && hint.getBoundingClientRect().height > 0 };
+      });
+      assert(`${width}px: while waiting, the clock, the line and Stop all fit`, !w.over.length && w.stopOn && w.hint, JSON.stringify(w));
+      await page.evaluate(() => window.__release());
       await page.waitForSelector('.crai-bot .crai-reply');
       const m = await page.evaluate(() => {
         const d = document.documentElement;
