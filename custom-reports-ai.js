@@ -49,9 +49,10 @@
   const MAX_JOBS = 1000;
   const MAX_CODES = 500;
   const MAX_FIELD = 120;
-  // The server answers by about 270 s and its function is cut off at 300 s, so
-  // this only fires when the answer itself never arrives.
-  const CLIENT_TIMEOUT_MS = 320000;
+  // The server's answer is due 150 s after the request reaches it, so this
+  // only fires when that answer never arrives (a dropped connection, a stuck
+  // request) — and says so well before the function would be cut off at 300 s.
+  const CLIENT_TIMEOUT_MS = 190000;
   // A turn can run a couple of minutes: past this the bubble says so.
   const WAIT_HINT_AFTER_MS = 20000;
   const HEADER_KEEP = ['preparedBy', 'contactName', 'contactPhone', 'contactEmail'];

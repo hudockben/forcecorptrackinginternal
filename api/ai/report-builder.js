@@ -43,7 +43,8 @@
  *   authoritative pass; this one keeps junk off the wire.
  *
  *   Nothing the user asked or any job data is stored. The only write is the
- *   daily turn counter.
+ *   daily turn counter, and the only log line a turn leaves is its timings
+ *   and token counts.
  *
  * House pattern (api/ai/mathis.js): division auth re-read from the database,
  * an ANTHROPIC_API_KEY guard, an atomic per-user daily counter incremented
@@ -65,6 +66,15 @@ const { requireDivision, isSalesIn } = require('../lib/auth');
 const AI_CATALOG = require('../lib/report-ai-catalog.json');
 
 const MODEL = 'claude-opus-5-5';
+// How long the model thinks before it writes anything. At 'medium' (its
+// default) a one-job request — "list the cost & sub codes on Hempfield
+// Baseball #26057" — sat past two and a half minutes behind the spinner. The
+// definition itself is a few hundred tokens and the prompt is read from the
+// cache in seconds, which leaves the thinking. A definition is a form
+// filled in from the catalog, and the person checks it and can undo it, so
+// 'low' keeps the thinking short. Each turn's timings go to the log (below):
+// if turns are still slow, that line says where the time went.
+const EFFORT = 'low';
 // Thinking spends from the same allowance as the definition itself, and a
 // twenty-section definition is several thousand tokens of JSON on its own.
 const MAX_TOKENS = 16000;
@@ -84,25 +94,25 @@ const MAX_OPTION_CODES = 300;
 const MAX_OPTION_CODE_LEN = 120;
 const DIVISIONS = ['turf', 'paving', 'kiewit'];
 const DIV_LABELS = { turf: 'Turf Management', paving: 'Paving', kiewit: 'Kiewit Pinetree' };
-// vercel.json gives the function 300 s. The model call gets what is left of
-// 270 s — the whole streamed answer, not just its first byte — so a turn that
-// overruns ends in a message the panel can show rather than a killed request,
-// with time left for the database and the reply.
+// The answer is due 150 s after the request arrives: sign-in, the turn
+// counter and the model call — the whole streamed answer, not just its first
+// byte — all count, and a turn that overruns ends in a message the panel can
+// show. vercel.json gives the function 300 s, so there is room past it.
 //
-// It was 50 s inside a 60 s function, and a turn — thinking, then the whole
-// definition written out — regularly needed longer than that, short request
-// or not: the panel answered "took too long" to "list the codes for one job".
-// A long wait is handled in the panel (a clock, and Stop), the way the CRM
-// search handles its own. The environment may only shorten the budget (the
-// tests do).
-const MODEL_BUDGET_DEFAULT_MS = 270000;
+// It was 50 s for the model alone in a 60 s function, and at 'medium' effort
+// that ran out on a one-job request. Then 270 s, and a person still watched
+// the clock pass five minutes with no answer at all. A report draft nobody
+// will wait for is no use: with the thinking kept short (EFFORT) a turn needs
+// far less, and past this it should say so. The environment may only shorten
+// the budget (the tests do).
+const MODEL_BUDGET_DEFAULT_MS = 150000;
 const MODEL_BUDGET_MS = (() => {
   const v = Number(process.env.REPORT_BUILDER_MODEL_BUDGET_MS);
   return Number.isFinite(v) && v > 0 && v < MODEL_BUDGET_DEFAULT_MS ? v : MODEL_BUDGET_DEFAULT_MS;
 })();
 // A retry after an overloaded or failing API only starts while this much of
 // the budget is left: less, and it would only end in "took too long" later.
-const RETRY_MIN_LEFT_MS = 90000;
+const RETRY_MIN_LEFT_MS = 60000;
 const FALLBACK_BETA = 'server-side-fallback-2026-07-01';
 
 // ── Text in, text out ──────────────────────────────────────────────────────
@@ -586,11 +596,25 @@ const TRANSIENT = [500, 502, 503, 504, 529];
 class ModelBudgetError extends Error {
   constructor() { super('The model call ran past its time budget.'); this.name = 'ModelBudgetError'; this.budgetExceeded = true; }
 }
-async function callModel(client, body, started) {
+async function callModel(client, body, started, timing = {}) {
   const left = () => MODEL_BUDGET_MS - (Date.now() - started);
   const once = async (b, headers) => {
     const ms = Math.max(1000, left());
     const stream = client.messages.stream(b, { ...(headers ? { headers } : {}), timeout: ms, maxRetries: 0 });
+    // This try's phases, for the log, in ms since the request arrived: when
+    // the model was asked, when its response began, and when the thinking
+    // gave way to the answer's text.
+    timing.tries = (timing.tries || 0) + 1;
+    if (timing.asked == null) timing.asked = Date.now() - started;
+    timing.began = null;
+    timing.text = null;
+    if (stream && typeof stream.on === 'function') {
+      stream.on('streamEvent', ev => {
+        const t = Date.now() - started;
+        if (timing.began == null) timing.began = t;
+        if (timing.text == null && ev && ev.type === 'content_block_start' && ev.content_block && ev.content_block.type === 'text') timing.text = t;
+      });
+    }
     let timer;
     const budget = new Promise((_, reject) => {
       timer = setTimeout(() => {
@@ -609,6 +633,34 @@ async function callModel(client, body, started) {
     if (err && TRANSIENT.includes(err.status) && left() > RETRY_MIN_LEFT_MS) return await withFallback();
     throw err;
   }
+}
+
+// One line per turn in the function's log — times and token counts, never
+// what was asked or any job's data — so a slow turn can be told apart: a slow
+// sign-in or counter (the model asked late), a slow start (reading the
+// prompt, a queue), long thinking, or a long answer. "out" counts the
+// thinking as well as the text. A turn with no line at all never reached the
+// end of its budget: look for the function being cut off instead.
+const secs = ms => `${(ms / 1000).toFixed(1)} s`;
+function timingText(t, started) {
+  const bits = [`${secs(Date.now() - started)} in all`];
+  if (t.asked == null) bits.push('model not asked');
+  else {
+    bits.push(`model asked at ${secs(t.asked)}`);
+    if (t.began == null) bits.push('no response began');
+    else bits.push(`response began ${secs(t.began)}`, t.text != null ? `thinking until ${secs(t.text)}` : 'no answer text');
+  }
+  if (t.tries > 1) bits.push(`${t.tries} tries`);
+  return bits.join(', ');
+}
+function usageText(m) {
+  const u = (m && m.usage) || {};
+  const n = v => (Number.isFinite(v) ? v : 0);
+  const cached = n(u.cache_read_input_tokens);
+  const fellBack = (Array.isArray(m && m.content) && m.content.some(b => b && b.type === 'fallback'))
+    || (Array.isArray(u.iterations) && u.iterations.some(e => e && e.type === 'fallback_message'));
+  return `tokens in ${n(u.input_tokens) + cached + n(u.cache_creation_input_tokens)} (${cached} from cache), out ${n(u.output_tokens)}`
+    + (fellBack ? ', answered by the fallback' : '');
 }
 
 // The answer's text, as candidates to parse in turn. A streamed request that
@@ -642,6 +694,9 @@ module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   if (req.method === 'OPTIONS') return res.status(200).end();
   if (req.method !== 'POST') return fail(res, 405, 'Method not allowed');
+  // The budget counts from here: a slow sign-in or counter leaves the model
+  // less, rather than pushing the answer past it.
+  const arrived = Date.now();
 
   const guard = await requireDivision(req, res, { required: true });
   if (!guard) return;
@@ -694,17 +749,18 @@ module.exports = async (req, res) => {
     model: MODEL,
     max_tokens: MAX_TOKENS,
     thinking: { type: 'adaptive' },
-    output_config: { effort: 'medium', format: { type: 'json_schema', schema: OUTPUT_SCHEMA } },
+    output_config: { effort: EFFORT, format: { type: 'json_schema', schema: OUTPUT_SCHEMA } },
     system: systemFor(division),
     messages: buildMessages({ context: contextText({ today, division, jobs, codes }), history, def: cur.def, internalOn, message }),
   };
 
   let message_;
+  const timing = {};
   try {
     const client = new Anthropic();
-    message_ = await callModel(client, request, Date.now());
+    message_ = await callModel(client, request, arrived, timing);
   } catch (err) {
-    console.error('[report-builder] model call failed:', (err && err.status) || '', err && err.message);
+    console.error('[report-builder] model call failed:', (err && err.status) || '', err && err.message, `— ${timingText(timing, arrived)}`);
     if (err && err.status === 429) return fail(res, 429, 'The AI builder is busy right now — try again in a moment.');
     if ((err && err.budgetExceeded)
       || (typeof Anthropic.APIConnectionTimeoutError === 'function' && err instanceof Anthropic.APIConnectionTimeoutError)) {
@@ -712,6 +768,8 @@ module.exports = async (req, res) => {
     }
     return fail(res, 502, 'The AI builder could not answer just now. Try again in a moment.');
   }
+
+  console.log(`[report-builder] ${division} turn: ${timingText(timing, arrived)}; ${usageText(message_)}; effort ${EFFORT}; stop ${(message_ && message_.stop_reason) || 'none'}`);
 
   const counts = { turnsUsed: turns, turnsRemaining: Math.max(0, DAILY_TURN_CAP - turns) };
   if (message_ && message_.stop_reason === 'refusal') {
@@ -742,6 +800,7 @@ module.exports = async (req, res) => {
 };
 
 module.exports.MODEL = MODEL;
+module.exports.EFFORT = EFFORT;
 module.exports.MODEL_BUDGET_MS = MODEL_BUDGET_MS;
 module.exports.DAILY_TURN_CAP = DAILY_TURN_CAP;
 module.exports.OUTPUT_SCHEMA = OUTPUT_SCHEMA;
