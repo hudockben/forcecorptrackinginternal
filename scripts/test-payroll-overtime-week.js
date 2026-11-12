@@ -61,6 +61,13 @@ const MONDAY = (() => {
 const ymd = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const day = n => { const d = new Date(MONDAY); d.setDate(MONDAY.getDate() + n); return ymd(d); };
 const MON = day(0), SUN = day(6), LAST_MON = day(-7), LAST_SUN = day(-1);
+const WED = day(2), THU = day(3), FRI = day(4), SAT = day(5);
+
+// The page's clock, pinned to 8 PM on the Wednesday of the week in progress —
+// when the scheduled report goes out. The week in progress is carried forward
+// from "today" to Friday, so an unpinned clock would make this file's answers
+// depend on the day it is run. Same week as MONDAY, so every date above holds.
+const PIN = (() => { const d = new Date(MONDAY); d.setDate(MONDAY.getDate() + 2); d.setHours(20, 0, 0, 0); return d.getTime(); })();
 
 const E = (id, username, dayN, hours, over = {}) => Object.assign({
   id, username, entry_type: 'daily', status: 'approved', division: 'paving',
@@ -174,6 +181,14 @@ function bootPage() {
     virtualConsole: vc,
     pretendToBeVisual: true,
     beforeParse(w) {
+      // new Date() and Date.now() read the pinned Wednesday evening; a date
+      // built from parts or a string is untouched.
+      const RealDate = w.Date;
+      class PinnedDate extends RealDate {
+        constructor(...a) { if (a.length) super(...a); else super(PIN); }
+        static now() { return PIN; }
+      }
+      w.Date = PinnedDate;
       w.localStorage.setItem('fct_token', 'harness');
       w.localStorage.setItem('fct_user', JSON.stringify({
         userId: 1, username: 'office', companyCode: 'FCT', companyName: 'Force Corp', isPlatformAdmin: true,
@@ -199,14 +214,27 @@ const isWeek   = u => asks(u, MON, SUN);
 
 function readReport(doc) {
   const wrap = doc.getElementById('overtimeWrap');
+  const heads = [...wrap.querySelectorAll('table.otw-table thead th')].map(th => th.textContent.trim());
+  // Cells are read by their column's heading, not their position: the week in
+  // progress puts three projection columns in before Status.
   const readRow = tr => {
     const td = [...tr.children];
+    const at = h => td[heads.indexOf(h)] || null;
+    const txt = c => (c ? c.textContent.trim() : undefined);
+    const tip = c => (c ? c.getAttribute('title') || '' : '');
+    const st = at('Status'), pill = st && st.querySelector('.pill');
+    // The chip or dash inside Enters OT — or, on a closed week's row, the cell.
+    const en = at('Enters OT'), when = en && (en.querySelector('.otw-when, .otw-na') || en);
     return {
-      name: td[0].textContent.trim(), approved: +td[1].textContent, pending: +td[2].textContent,
-      worked: +td[3].textContent, left: +td[4].textContent, ot: +td[5].textContent,
-      status: td[6].textContent.trim(), pill: (td[6].querySelector('.pill') || {}).className || '',
-      leftCls: td[4].className, otCls: td[5].className, nameTitle: td[0].getAttribute('title') || '',
-      statusTitle: (td[6].querySelector('.pill') || { getAttribute: () => '' }).getAttribute('title') || '',
+      name: txt(td[0]), approved: +txt(at('Approved Hrs')), pending: +txt(at('Pending Hrs')),
+      worked: +txt(at('Hours Worked')), left: +txt(at('Hours Left Until OT')), ot: +txt(at('OT Hrs')),
+      status: txt(st), pill: pill ? pill.className : '',
+      leftCls: at('Hours Left Until OT').className, otCls: at('OT Hrs').className, nameTitle: tip(td[0]),
+      statusTitle: tip(pill),
+      // The projection, where the week in progress has it.
+      avg: txt(at('Avg Hrs/Day')), onPace: txt(at('On Pace For')), enters: txt(en),
+      onPaceCls: at('On Pace For') ? at('On Pace For').className : '', onPaceTitle: tip(at('On Pace For')),
+      enCls: when ? when.className : '', enTitle: tip(when),
     };
   };
   // One <tbody> per week; a band heads it when there is more than one.
@@ -222,7 +250,6 @@ function readReport(doc) {
       rows: [...tb.querySelectorAll('tr.otw-row')].map(readRow),
     };
   });
-  const heads = [...wrap.querySelectorAll('table.otw-table thead th')].map(th => th.textContent.trim());
   const foot  = [...wrap.querySelectorAll('table.otw-table tfoot td')].map(td => td.textContent.trim());
   const tiles = [...wrap.querySelectorAll('.proj-stat')].map(s => ({
     label: s.querySelector('.proj-stat-label').textContent.trim(),
@@ -295,6 +322,9 @@ console.log('\n[the page boots, and agrees with this file about which week it is
 assert('nothing throws while the page loads', state.errors.length === 0, state.errors[0]);
 assert(`the page's week opens on ${MON}`, win.eval('ymd(thisWeekMonday())') === MON,
   `page says ${win.eval('ymd(thisWeekMonday())')}`);
+assert(`and its clock reads Wednesday evening, ${WED}, the hour the report is sent`,
+  win.eval('ymd(new Date())') === WED && win.eval('new Date().getHours()') === 20,
+  win.eval('String(new Date())'));
 
 // Open Reports and point the range at LAST week before Overtime is opened: it
 // must load the dates in the boxes, not the week in progress.
@@ -359,6 +389,14 @@ console.log('\n[a closed week]');
   row('gus', 40, 0, 40, 0,  0, 'At 40');
   row('cal', 16, 8, 24, 16, 0, 'Under 40');
 
+  assert('a closed week has nothing ahead to project: the seven columns, no more',
+    JSON.stringify(r.heads) === JSON.stringify(
+      ['Employee', 'Approved Hrs', 'Pending Hrs', 'Hours Worked', 'Hours Left Until OT', 'OT Hrs', 'Status']),
+    JSON.stringify(r.heads));
+  assert('  and no Projected OT tile, pill or note',
+    r.tiles.length === 4 && !r.tiles.some(t => t.label === 'Projected OT') &&
+    !/Projected OT|On Pace For/.test(r.text), JSON.stringify(r.tiles.map(t => t.label)));
+
   assert('one week, so no week bands', r.bands.length === 0 && r.bodies.length === 1);
   assert('the head names the week, and does not call it this week',
     r.text.includes(`Week · ${long(LAST_MON)} – ${long(LAST_SUN)}`) && !r.text.includes('This week ·'), r.text.slice(0, 240));
@@ -374,7 +412,7 @@ console.log('\n[a closed week]');
   assert('tiles: 3 employees, 1 in overtime, 1 near it, 8.00 pending',
     tileOf(r, 'Employees').value === '3' && tileOf(r, 'In Overtime').value === '1' &&
     tileOf(r, 'Near Overtime').value === '1' && tileOf(r, 'Pending Hours').value === '8.00', JSON.stringify(r.tiles));
-  assert('  and they speak of that week, not of "so far"',
+  assert('  and they speak of that week, not of "so far" — nor of any pace',
     tileOf(r, 'Employees').sub === '112.00 h worked that week' && tileOf(r, 'In Overtime').sub === '8.00 OT hours',
     JSON.stringify(r.tiles.map(t => t.sub)));
   assert('the totals row adds that week up',
@@ -402,9 +440,10 @@ console.log('\n[the table — the week in progress]');
 // ─────────────────────────────────────────────────────────────────────────────
 {
   const r = readReport(doc);
-  assert('the columns are the ones asked for, in reading order',
+  assert('the columns are the ones asked for, in reading order — the projection before Status',
     JSON.stringify(r.heads) === JSON.stringify(
-      ['Employee', 'Approved Hrs', 'Pending Hrs', 'Hours Worked', 'Hours Left Until OT', 'OT Hrs', 'Status']),
+      ['Employee', 'Approved Hrs', 'Pending Hrs', 'Hours Worked', 'Hours Left Until OT', 'OT Hrs',
+       'Avg Hrs/Day', 'On Pace For', 'Enters OT', 'Status']),
     JSON.stringify(r.heads));
   assert('one row per person with time this week', r.rows.length === 6, names(r));
   assert('closest to overtime first', names(r) === 'ava,ben,dee,cal,eli,fay', names(r));
@@ -422,8 +461,54 @@ console.log('\n[the table — the week in progress]');
   row('ben', 30,  12, 42,   0,    2, 'Overtime');
   row('dee', 40,   0, 40,   0,    0, 'At 40');
   row('cal', 30,   4, 34,   6,    0, 'Near OT');
-  row('eli', 17.5, 0, 17.5, 22.5, 0, 'Under 40');
+  // 22.5 h left is more than a day — but at 8.75 h a day, with Wednesday not
+  // in yet, Wednesday and Thursday take him to 35 and Friday past 40.
+  row('eli', 17.5, 0, 17.5, 22.5, 0, 'Projected OT');
   row('fay', 8,    0, 8,    32,   0, 'Under 40');
+
+  // Where each is heading, Wednesday evening.
+  const proj = (who, avg, onPace, enters) => {
+    const x = by[who] || {};
+    assert(`${who}: ${avg} h a day, on pace for ${onPace} · enters OT ${enters}`,
+      x.avg === avg && x.onPace === onPace && x.enters === enters,
+      JSON.stringify({ avg: x.avg, onPace: x.onPace, enters: x.enters }));
+  };
+  proj('ava', '9.20',  '46.00', 'Fri · 1st half');   // forty by Thursday's end: all of Friday is OT
+  proj('ben', '10.50', '52.50', 'Fri · 2nd half');   // Thursday is blank and still ahead of him
+  proj('dee', '10.00', '50.00', 'Fri · 1st half');   // on 40: Friday's first hour is overtime
+  proj('cal', '8.50',  '42.50', 'Fri · 2nd half');   // 6 h left of an 8.5 h day
+  proj('eli', '8.75',  '43.75', 'Fri · 2nd half');   // 5 h into Friday's 8.75
+  proj('fay', '8.00',  '32.00', '—');                // her vacation day is not a short day
+  assert('eli\'s pill is the projection\'s, and says where the 40th hour lands',
+    /pill-pace/.test(by.eli.pill) &&
+    by.eli.statusTitle === '17.50 h this week — 22.50 h left, but at 8.75 h a day the 40th hour lands on Friday, in the second half of the day. Projected, not yet worked.',
+    `${by.eli.pill} | ${by.eli.statusTitle}`);
+  assert('  On Pace For shows its working, and that Wednesday is still counted ahead',
+    by.eli.onPaceTitle === '17.50 h so far + 8.75 h a day × 3 weekdays still ahead (Wed, Thu, Fri) = 43.75 h, 3.75 h past 40.',
+    by.eli.onPaceTitle);
+  assert('  Enters OT says how far into the day, and that it is projected',
+    /otw-when-proj/.test(by.eli.enCls) &&
+    by.eli.enTitle === 'At 8.75 h a day the 40th hour lands 5.00 h into Friday — the second half of the day. Projected, not yet worked.',
+    by.eli.enTitle);
+  assert('someone on exactly 40 enters at the start of the next day ahead',
+    /otw-when-proj/.test(by.dee.enCls) &&
+    by.dee.enTitle === 'At 40 now, so the next hour worked is overtime — on pace, the start of Friday. Projected, not yet worked.',
+    by.dee.enTitle);
+  assert('someone already past 40 is shown where they passed it, as worked rather than projected',
+    /otw-when-past/.test(by.ava.enCls) && !/otw-when-proj/.test(by.ava.enCls) &&
+    by.ava.enTitle === 'Passed 40 on Friday, 0.00 h into that day\'s 6.00 h.' &&
+    by.ben.enTitle === 'Passed 40 on Friday, 10.00 h into that day\'s 12.00 h.', `${by.ava.enTitle} | ${by.ben.enTitle}`);
+  assert('  and On Pace For carries them on: ben\'s blank Thursday at 10.5 h',
+    by.ben.onPaceTitle === '42.00 h so far + 10.50 h a day × 1 weekday still ahead (Thu) = 52.50 h, 12.50 h past 40.',
+    by.ben.onPaceTitle);
+  assert('nobody past 40 at their pace reads a dash, and says why',
+    by.fay.enCls === 'otw-na' && by.fay.enTitle === 'Not on pace to pass 40 by Friday.' &&
+    by.fay.onPaceTitle === '8.00 h so far + 8.00 h a day × 3 weekdays still ahead (Wed, Thu, Fri) = 32.00 h, 8.00 h under 40.',
+    `${by.fay.enTitle} | ${by.fay.onPaceTitle}`);
+  assert('On Pace For is coloured as overtime only past 40',
+    /num-ot/.test(by.eli.onPaceCls) && /num-ot/.test(by.ava.onPaceCls) && !/num-ot/.test(by.fay.onPaceCls));
+  assert('the projection changes no figure that was worked: eli is still 17.50 worked, 22.50 left, 0 OT',
+    near(by.eli.worked, 17.5) && near(by.eli.left, 22.5) && near(by.eli.ot, 0));
 
   assert('pending time is counted — ava is in overtime on a day nobody has approved',
     near(by.ava.worked, by.ava.approved + by.ava.pending) && by.ava.ot > 0);
@@ -436,9 +521,9 @@ console.log('\n[the table — the week in progress]');
     /num-ot/.test(by.ava.otCls) && !/num-ot/.test(by.cal.otCls));
   assert('hours left are coloured only where there are some',
     /num-room/.test(by.cal.leftCls) && !/num-room/.test(by.dee.leftCls));
-  assert('each standing wears its pill: orange over, amber near, teal under',
+  assert('each standing wears its pill: orange over, amber near, amber outline projected, teal under',
     /pill-ot/.test(by.ava.pill) && /pill-near/.test(by.dee.pill) &&
-    /pill-near/.test(by.cal.pill) && /pill-room/.test(by.eli.pill));
+    /pill-near/.test(by.cal.pill) && /pill-pace/.test(by.eli.pill) && /pill-room/.test(by.fay.pill));
   assert('the status says when the overtime rests on pending time',
     /6\.00 h of it is still pending approval/.test(by.ava.statusTitle), by.ava.statusTitle);
   assert('  and does not say it when none is pending', !/pending/.test(by.dee.statusTitle), by.dee.statusTitle);
@@ -452,18 +537,28 @@ console.log('\n[the table — the week in progress]');
     r.foot[0] === 'Totals (6 employees)' &&
     near(r.foot[1], 165.5) && near(r.foot[2], 22) && near(r.foot[3], 187.5) &&
     near(r.foot[4], 60.5) && near(r.foot[5], 8), JSON.stringify(r.foot));
-  assert('  and counts the standings', r.foot[6] === '2 in overtime · 2 near', r.foot[6]);
+  assert('  and the week on pace: no average of averages, 266.75 h projected, nothing under Enters OT',
+    r.foot[6] === '' && near(r.foot[7], 266.75) && r.foot[8] === '', JSON.stringify(r.foot));
+  assert('  and counts the standings', r.foot[9] === '2 in overtime · 2 near · 1 projected', r.foot[9]);
   assert('the totals row spans every column', r.foot.length === r.heads.length);
 
-  assert('tiles: 6 employees, 2 in overtime, 2 near it, 22.00 pending',
+  assert('tiles: 6 employees, 2 in overtime, 2 near it, 1 projected, 22.00 pending',
     tileOf(r, 'Employees').value === '6' && tileOf(r, 'In Overtime').value === '2' &&
-    tileOf(r, 'Near Overtime').value === '2' && tileOf(r, 'Pending Hours').value === '22.00',
+    tileOf(r, 'Near Overtime').value === '2' && tileOf(r, 'Projected OT').value === '1' &&
+    tileOf(r, 'Pending Hours').value === '22.00',
     JSON.stringify(r.tiles));
-  assert('  the week in progress is "so far"',
-    tileOf(r, 'Employees').sub === '187.50 h worked this week' && tileOf(r, 'In Overtime').sub === '8.00 OT hours so far',
+  assert('  in that order, five across',
+    r.tiles.map(t => t.label).join(',') === 'Employees,In Overtime,Near Overtime,Projected OT,Pending Hours' &&
+    /\botw-stats-5\b/.test(doc.querySelector('#overtimeWrap .proj-stats').className),
+    r.tiles.map(t => t.label).join(','));
+  assert('  the week in progress is "so far", and on pace for 34.75 OT hours by Friday',
+    tileOf(r, 'Employees').sub === '187.50 h worked this week' &&
+    tileOf(r, 'In Overtime').sub === '8.00 OT hours so far · 34.75 on pace by Fri' &&
+    tileOf(r, 'Projected OT').sub === 'on pace to pass 40 by Fri',
     JSON.stringify(r.tiles.map(t => t.sub)));
-  assert('  the overtime tile is orange and the near tile amber when there are any',
-    / ot\b/.test(tileOf(r, 'In Overtime').cls) && / near\b/.test(tileOf(r, 'Near Overtime').cls));
+  assert('  the overtime tile is orange, and the near and projected tiles amber when there are any',
+    / ot\b/.test(tileOf(r, 'In Overtime').cls) && / near\b/.test(tileOf(r, 'Near Overtime').cls) &&
+    / near\b/.test(tileOf(r, 'Projected OT').cls));
 
   assert('the head names the report and the week',
     r.text.includes('Weekly Overtime Report') &&
@@ -472,6 +567,10 @@ console.log('\n[the table — the week in progress]');
   assert('the note under the table states the rule',
     /Overtime is anything past 40 hours in the Monday–Sunday week\./.test(r.text) &&
     /pending days included/.test(r.text) && /Paid time off does not count toward the 40/.test(r.text), r.text.slice(-500));
+  assert('  and says the projection is one, and how it is made',
+    /On Pace For and Enters OT are projections, not hours worked\./.test(r.text) &&
+    /today too, until its time is in/.test(r.text) && /Saturday and Sunday are not projected/.test(r.text) &&
+    /Projected OT marks anyone more than 8 h from 40 who is on pace to pass it by Friday\./.test(r.text), r.text.slice(-900));
   assert('Export to Excel is live', r.excel && !r.excel.disabled);
   assert('no "new week" caveat on a week that is current', !/A new week has started/.test(r.text));
 }
@@ -567,6 +666,19 @@ await pressRange(doc, 'last_and_this_week');
     /6 employees/.test(r.bands[1].text) && /187\.50 h worked/.test(r.bands[1].text) &&
     /8\.00 OT hrs · 2 in overtime/.test(r.bands[1].text) && /2 near/.test(r.bands[1].text),
     JSON.stringify(r.bands.map(b => b.text)));
+  assert('  the week in progress\'s band counts who is projected; last week\'s has nobody to project',
+    /1 projected/.test(r.bands[1].text) && !/projected/.test(r.bands[0].text),
+    JSON.stringify(r.bands.map(b => b.text)));
+  assert('the projection\'s columns show, since the week in progress is in view',
+    r.heads.includes('On Pace For') && r.heads.length === 10, JSON.stringify(r.heads));
+  const lastWeek = r.bodies[0].rows, thisWeek = r.bodies[1].rows;
+  assert('  last week\'s rows have dashes in them — a closed week has nothing ahead of it',
+    lastWeek.every(x => x.avg === '—' && x.onPace === '—' && x.enters === '—' && x.enCls === 'otw-na' &&
+      /week in progress only/.test(x.onPaceTitle)),
+    JSON.stringify(lastWeek.map(x => [x.name, x.avg, x.onPace, x.enters])));
+  assert('  and last week\'s standings are the record, never Projected OT',
+    lastWeek.every(x => x.status !== 'Projected OT') &&
+    (thisWeek.find(x => x.name === 'eli') || {}).status === 'Projected OT');
   assert('  and is edged orange when its week has overtime', r.bands.every(b => /\botw-band-ot\b/.test(b.cls)));
 
   assert('the head counts the weeks and names the span',
@@ -574,16 +686,20 @@ await pressRange(doc, 'last_and_this_week');
   assert('the tiles count each person once — 7 employees over 2 weeks',
     tileOf(r, 'Employees').value === '7' && tileOf(r, 'Employees').sub === '299.50 h worked over 2 weeks',
     JSON.stringify(tileOf(r, 'Employees')));
-  assert('  in overtime is anyone past 40 in either week: ava and ben',
-    tileOf(r, 'In Overtime').value === '2' && tileOf(r, 'In Overtime').sub === '16.00 OT hours' &&
+  assert('  in overtime is anyone past 40 in either week: ava and ben — and the pace is this week\'s',
+    tileOf(r, 'In Overtime').value === '2' && tileOf(r, 'In Overtime').sub === '16.00 OT hours · this week on pace for 34.75' &&
     /Each person counted once/.test(tileOf(r, 'In Overtime').title), JSON.stringify(tileOf(r, 'In Overtime')));
   assert('  near is anyone close in a week without passing it in any: dee, cal and gus',
     tileOf(r, 'Near Overtime').value === '3' && tileOf(r, 'Near Overtime').sub === '8 h or less before 40 in a week',
     JSON.stringify(tileOf(r, 'Near Overtime')));
+  assert('  projected is eli, counted once like everyone else',
+    tileOf(r, 'Projected OT').value === '1' && /Each person counted once/.test(tileOf(r, 'Projected OT').title),
+    JSON.stringify(tileOf(r, 'Projected OT')));
   assert('the totals row adds both weeks and counts people, not rows',
     r.foot[0] === 'Totals (7 employees · 2 weeks)' &&
     near(r.foot[1], 269.5) && near(r.foot[2], 30) && near(r.foot[3], 299.5) &&
-    near(r.foot[4], 76.5) && near(r.foot[5], 16) && r.foot[6] === '2 in overtime · 3 near', JSON.stringify(r.foot));
+    near(r.foot[4], 76.5) && near(r.foot[5], 16) && near(r.foot[7], 266.75) &&
+    r.foot[9] === '2 in overtime · 3 near · 1 projected', JSON.stringify(r.foot));
   assert('the note says each week is counted on its own, and how people are counted',
     /in the Monday–Sunday week, each week counted on its own\./.test(r.text) &&
     /count each person once, by the furthest any of their weeks went/.test(r.text), r.text.slice(-600));
@@ -599,6 +715,8 @@ await pressRange(doc, 'last_and_this_week');
     !/\botw-band-ot\b/.test(g.bands[1].cls), JSON.stringify(g.bands.map(b => b.text)));
   assert('  and the totals are his: 1 employee, 2 weeks',
     g.foot[0] === 'Totals (1 employee · 2 weeks)' && g.foot[6] === '0 in overtime · 1 near', JSON.stringify(g.foot));
+  assert('  with nobody listed in the week in progress there is nothing to project — the seven columns, four tiles',
+    g.heads.length === 7 && g.tiles.length === 4 && g.bands.every(b => b.span === 7), JSON.stringify(g.heads));
   usr.value = 'zzz';
   usr.dispatchEvent(new win.Event('input'));
   assert('a filter matching nobody in any of the weeks says so',
@@ -837,12 +955,89 @@ console.log('\n[a slow reply does not land over a newer one]');
 console.log('\n[where the line falls]');
 // ─────────────────────────────────────────────────────────────────────────────
 {
-  const s = (left, ot) => win.eval(`otwStanding(${left}, ${ot}).label`);
+  const s = (left, ot, pace) => win.eval(`otwStanding(${left}, ${ot}, ${Boolean(pace)}).label`);
   assert('any overtime at all is Overtime', s(0, 0.25) === 'Overtime');
   assert('exactly 40 is At 40', s(0, 0) === 'At 40');
   assert('eight hours left is still Near OT', s(8, 0) === 'Near OT');
   assert('eight and a quarter is Under 40', s(8.25, 0) === 'Under 40');
   assert('the near line is one full day', win.eval('OTW_NEAR_HOURS') === 8);
+  assert('eight and a quarter on pace to pass 40 by Friday is Projected OT', s(8.25, 0, true) === 'Projected OT');
+  assert('  but the pace never outranks what was worked: Near OT, At 40 and Overtime stand',
+    s(6, 0, true) === 'Near OT' && s(0, 0, true) === 'At 40' && s(0, 2, true) === 'Overtime');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n[the projection, by the numbers]');
+// ─────────────────────────────────────────────────────────────────────────────
+{
+  // otwProjection for the week in progress, its days given as { date: hours }.
+  const P = (today, days, off = []) => {
+    const worked = Object.values(days).reduce((a, b) => a + b, 0);
+    return JSON.parse(win.eval(`JSON.stringify(otwProjection({ weekStart: '${MON}', today: '${today}', worked: ${worked},
+      dayHours: new Map(${JSON.stringify(Object.entries(days))}), offDays: new Set(${JSON.stringify(off)}) }))`));
+  };
+  const at = (p, d, into, half) => p.enters && p.enters.day === d && near(p.enters.into, into) && p.enters.half === half;
+  const show = p => JSON.stringify({ pace: p.pace, ahead: p.ahead, off: p.off, projected: p.projected, enters: p.enters });
+
+  let p = P(WED, { [MON]: 10, [day(1)]: 10, [WED]: 10 });
+  assert('30 h by Wednesday night on ten-hour days: Thursday takes him to 40, Friday\'s first hour is overtime',
+    near(p.pace, 10) && p.ahead.join() === [THU, FRI].join() && near(p.projected, 50) && at(p, FRI, 0, 1), show(p));
+  p = P(WED, { [MON]: 8.5, [day(1)]: 8.5, [WED]: 8.5 });
+  assert('25.5 h on 8.5 h days: 34 on Thursday, past 40 six hours into Friday — its second half',
+    near(p.projected, 42.5) && at(p, FRI, 6, 2), show(p));
+  p = P(WED, { [MON]: 10, [day(1)]: 10, [WED]: 11 });
+  assert('31 h at 10.33 h a day: nine hours left, so the 40th hour comes late on Thursday',
+    near(p.pace, 31 / 3) && at(p, THU, 9, 2), show(p));
+  p = P(WED, { [MON]: 8, [day(1)]: 8, [WED]: 8 });
+  assert('eight-hour days land on exactly 40 by Friday — not past it',
+    near(p.projected, 40) && p.enters === null && near(p.projectedOt, 0), show(p));
+
+  p = P(WED, { [MON]: 16, [day(1)]: 16 });
+  assert('the line exactly at the day\'s midpoint starts the overtime in its second half',
+    at(p, WED, 8, 2), show(p));
+  p = P(WED, { [MON]: 16, [day(1)]: 16.5 });
+  assert('  and a quarter hour short of it, in the first', at(p, WED, 7.5, 1), show(p));
+
+  p = P(WED, { [MON]: 10, [day(1)]: 10, [WED]: 10, [THU]: 10 });
+  assert('on 40 exactly, overtime starts at the top of the next day ahead', at(p, FRI, 0, 1), show(p));
+  p = P(WED, { [MON]: 14, [day(1)]: 14, [WED]: 14 });
+  assert('already past 40 there is nothing to enter — but the week is still carried on',
+    p.enters === null && near(p.projected, 70) && near(p.projectedOt, 30), show(p));
+
+  p = P(WED, { [MON]: 10, [day(1)]: 10 });
+  assert('today with no time in yet is a day still ahead', p.ahead.join() === [WED, THU, FRI].join(), show(p));
+  p = P(WED, { [MON]: 10, [day(1)]: 10, [WED]: 10 });
+  assert('  and once its time is in, it is not', p.ahead.join() === [THU, FRI].join(), show(p));
+  p = P(WED, { [MON]: 10, [day(1)]: 10, [FRI]: 10 });
+  assert('a day with time in is never ahead, even one after today', p.ahead.join() === [WED, THU].join(), show(p));
+  p = P(WED, { [MON]: 10, [day(1)]: 10, [WED]: 10 }, [FRI]);
+  assert('a day with time off booked is left out, and said to be',
+    p.ahead.join() === THU && p.off.join() === FRI && near(p.projected, 40) && p.enters === null, show(p));
+  p = P(SAT, { [MON]: 10, [day(1)]: 10, [WED]: 10 });
+  assert('Saturday and Sunday are never projected: on a Saturday nothing is ahead',
+    !p.ahead.length && near(p.projected, 30) && p.enters === null, show(p));
+  p = P(WED, { [MON]: 10, [day(1)]: 0 });
+  assert('a day with no hours on it is neither a short day nor a day ahead',
+    near(p.pace, 10) && p.ahead.join() === [WED, THU, FRI].join(), show(p));
+  p = P(WED, { [MON]: 0 });
+  assert('no hours at all is no pace, and no projection past where it stands',
+    near(p.pace, 0) && near(p.projected, 0) && p.enters === null, show(p));
+
+  // Where 40 was passed, off weeklyOvertime's own walk.
+  const passed = list => JSON.parse(win.eval(
+    `JSON.stringify(otwPassedForty(weeklyOvertime(${JSON.stringify(list)}).weeks[0]) || null)`));
+  let x = passed([E(1, 'z', 0, 14), E(2, 'z', 1, 14), E(3, 'z', 2, 14)]);
+  assert('fourteen-hour days pass 40 twelve hours into Wednesday — its second half',
+    x && x.day === WED && near(x.into, 12) && near(x.dayHours, 14) && x.half === 2, JSON.stringify(x));
+  x = passed([E(1, 'z', 0, 10), E(2, 'z', 1, 10), E(3, 'z', 2, 10), E(4, 'z', 3, 10), E(5, 'z', 4, 6)]);
+  assert('forty by Thursday\'s end passes it at the top of Friday', x && x.day === FRI && near(x.into, 0) && x.half === 1,
+    JSON.stringify(x));
+  x = passed([E(1, 'z', 0, 10), E(2, 'z', 1, 10), E(3, 'z', 2, 10),
+              E(4, 'z', 3, 6, { created_at: `${THU}T08:00:00Z` }), E(5, 'z', 3, 6, { created_at: `${THU}T20:00:00Z` })]);
+  assert('two blocks on one day are taken in order: 6 h, then 4 of the next 6 — ten hours into Thursday\'s twelve',
+    x && x.day === THU && near(x.into, 10) && near(x.dayHours, 12) && x.half === 2, JSON.stringify(x));
+  x = passed([E(1, 'z', 0, 10), E(2, 'z', 1, 10)]);
+  assert('under 40 has passed nothing', x === null, JSON.stringify(x));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -914,18 +1109,28 @@ console.log('\n[Export to Excel]');
   assert('the sheet is well-formed XML', ok);
   assert('it opens with the title and the week',
     rows[0][0] === 'Weekly Overtime Report' && rows[1][0] === 'Force Corp' && /^This week · /.test(rows[2][0]), JSON.stringify(rows.slice(0, 3)));
-  assert('the header row is the table\'s columns, with the week\'s dates beside the name',
+  assert('the header row is the table\'s columns, with the week\'s dates beside the name and the projection before Status',
     JSON.stringify(rows[6]) === JSON.stringify(['Employee', 'Week Starting (Mon)', 'Week Ending (Sun)', 'Approved Hrs', 'Pending Hrs',
-      'Hours Worked (approved + pending)', 'Hours Left Until OT (40 − worked)', 'OT Hrs (past 40)', 'Status']),
+      'Hours Worked (approved + pending)', 'Hours Left Until OT (40 − worked)', 'OT Hrs (past 40)',
+      'Avg Hrs/Day (this week)', 'On Pace For (projected to Fri)', 'Enters OT (day · half)', 'Status']),
     JSON.stringify(rows[6]));
+  assert('  and the sheet says, in words, that the projection is one',
+    /On Pace For and Enters OT are projections, not hours worked/.test(rows[4][0]) &&
+    /Projected OT marks anyone more than 8 h from 40/.test(rows[4][0]), rows[4] && rows[4][0]);
   assert('one row per person, in the order on screen',
     rows.slice(7, 13).map(r => r[0]).join(',') === 'ava,ben,dee,cal,eli,fay', rows.slice(7, 13).map(r => r[0]).join(','));
-  assert('ava\'s figures are numbers, not text, the week as real dates: 40 · 6 · 46 · 0 · 6 · Overtime',
-    JSON.stringify(rows[7]) === JSON.stringify(['ava', serial(MON), serial(SUN), 40, 6, 46, 0, 6, 'Overtime']), JSON.stringify(rows[7]));
+  assert('ava\'s figures are numbers, not text, the week as real dates: 40 · 6 · 46 · 0 · 6 · 9.2 · 46 · Fri · Overtime',
+    JSON.stringify(rows[7]) === JSON.stringify(['ava', serial(MON), serial(SUN), 40, 6, 46, 0, 6, 9.2, 46, 'Fri · 1st half', 'Overtime']),
+    JSON.stringify(rows[7]));
+  assert('eli\'s row carries his projection the way the screen does',
+    JSON.stringify(rows[11]) === JSON.stringify(['eli', serial(MON), serial(SUN), 17.5, 0, 17.5, 22.5, 0, 8.75, 43.75, 'Fri · 2nd half', 'Projected OT']),
+    JSON.stringify(rows[11]));
+  assert('  and fay, under 40 at her pace, has nothing under Enters OT',
+    rows[12][10] === '' && rows[12][11] === 'Under 40', JSON.stringify(rows[12]));
   assert('the totals row matches the screen',
-    JSON.stringify(rows[13]) === JSON.stringify(['Totals (6 employees)', '', '', 165.5, 22, 187.5, 60.5, 8, '2 in overtime · 2 near']),
+    JSON.stringify(rows[13]) === JSON.stringify(['Totals (6 employees)', '', '', 165.5, 22, 187.5, 60.5, 8, '', 266.75, '', '2 in overtime · 2 near · 1 projected']),
     JSON.stringify(rows[13]));
-  assert('the header is frozen and filterable', /ySplit="7"/.test(xml) && /<autoFilter ref="A7:I13"\/>/.test(xml));
+  assert('the header is frozen and filterable', /ySplit="7"/.test(xml) && /<autoFilter ref="A7:L13"\/>/.test(xml));
 
   await pressRange(doc, 'last_and_this_week');
   xml = win.eval('overtimeWeekSheetXml(buildOvertimeWeekModel())');
@@ -937,13 +1142,20 @@ console.log('\n[Export to Excel]');
       ['ava', 'gus', 'cal'].map(n => `${n}@${serial(LAST_MON)}`).concat(
       ['ava', 'ben', 'dee', 'cal', 'eli', 'fay'].map(n => `${n}@${serial(MON)}`)).join(','),
     rows.slice(7, 16).map(r => `${r[0]}@${r[1]}`).join(','));
-  assert('  ava\'s last week is its own row: 48 worked, 8 over',
-    JSON.stringify(rows[7]) === JSON.stringify(['ava', serial(LAST_MON), serial(LAST_SUN), 48, 0, 48, 0, 8, 'Overtime']),
+  assert('  ava\'s last week is its own row: 48 worked, 8 over — blanks where there is nothing to project',
+    JSON.stringify(rows[7]) === JSON.stringify(['ava', serial(LAST_MON), serial(LAST_SUN), 48, 0, 48, 0, 8, '', '', '', 'Overtime']),
     JSON.stringify(rows[7]));
   assert('  the totals row counts people and weeks',
-    JSON.stringify(rows[16]) === JSON.stringify(['Totals (7 employees · 2 weeks)', '', '', 269.5, 30, 299.5, 76.5, 16, '2 in overtime · 3 near']),
+    JSON.stringify(rows[16]) === JSON.stringify(['Totals (7 employees · 2 weeks)', '', '', 269.5, 30, 299.5, 76.5, 16, '', 266.75, '', '2 in overtime · 3 near · 1 projected']),
     JSON.stringify(rows[16]));
-  assert('  and the filter covers every row', /<autoFilter ref="A7:I16"\/>/.test(xml));
+  assert('  and the filter covers every row', /<autoFilter ref="A7:L16"\/>/.test(xml));
+
+  await pressRange(doc, 'last_week');
+  xml = win.eval('overtimeWeekSheetXml(buildOvertimeWeekModel())');
+  ({ ok, rows } = sheetRows(xml));
+  assert('a closed week alone exports the nine columns it always did',
+    ok && rows[6].length === 9 && rows[6][8] === 'Status' && !/projection/.test(rows[4][0]) &&
+    /<autoFilter ref="A7:I10"\/>/.test(xml), JSON.stringify(rows[6]));
   await pressRange(doc, 'current_week');
 }
 
@@ -958,7 +1170,7 @@ console.log('\n[the scheduled Weekly Overtime is still the week in progress]');
     // its day falls in.
     await pressRange(doc, 'last_week');
     before = listUrls(state).length;
-    const out = await build({ type: 'payroll_overtime', today: ymd(new Date()), options: {} });
+    const out = await build({ type: 'payroll_overtime', today: WED, options: {} });
     const fresh = listUrls(state).slice(before);
     assert('  it loads the week in progress, not the boxes\' week',
       fresh.length === 1 && isWeek(fresh[0]) && !params(fresh[0]).has('division'), fresh.join(' | '));
@@ -969,8 +1181,111 @@ console.log('\n[the scheduled Weekly Overtime is still the week in progress]');
       JSON.stringify({ subject: out.subject, summary: out.summary }));
     assert('  with no note about widened dates — it asked for a whole week',
       out.html && !/Whole Monday–Sunday weeks for the dates set/.test(out.html) && !/No dates set/.test(out.html));
+    const sum = out.summary || [];
+    assert('  its summary pairs who is past 40 and close, then hours so far against hours on pace',
+      sum.map(x => x.label).join(',') ===
+        'Employees,In Overtime,Near Overtime,Projected OT,Hours Worked,Overtime,OT Hrs on Pace,Pending',
+      sum.map(x => x.label).join(','));
+    const item = l => sum.find(x => x.label === l) || {};
+    assert('  1 projected, in amber; 34.75 OT hours on pace, in red',
+      item('Projected OT').value === '1' && item('Projected OT').tone === 'actual' &&
+      item('OT Hrs on Pace').value === '34.75' && item('OT Hrs on Pace').tone === 'bad',
+      JSON.stringify(sum));
+    assert('  and the emailed table carries the projection, its flag and its note',
+      /Enters OT/.test(out.html) && /Fri · 2nd half/.test(out.html) && /pill-pace/.test(out.html) &&
+      /On Pace For and Enters OT are projections/.test(out.html));
     await pressRange(doc, 'current_week');
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('\n[Wednesday night: who goes into overtime Thursday afternoon or Friday]');
+// ─────────────────────────────────────────────────────────────────────────────
+// The report as it goes out midweek, with a crew a supervisor would recognise.
+// Before the projection, everyone here with more than 8 h left read Under 40 —
+// al, tom, jim and lou among them, though each passes 40 before Friday is out.
+{
+  const W = (id, who, dayN, hours, over) => E(id, who, dayN, hours, over);
+  const CREW = [
+    // tom — ten-hour days: 30 now, 40 at Thursday's end, all of Friday overtime.
+    W(201, 'tom', 0, 10), W(202, 'tom', 1, 10), W(203, 'tom', 2, 10),
+    // jim — 8.5 h days: 34 on Thursday, past 40 six hours into Friday.
+    W(211, 'jim', 0, 8.5), W(212, 'jim', 1, 8.5), W(213, 'jim', 2, 8.5),
+    // al — 31 h: nine left, so late on Thursday — the back half of the day.
+    W(221, 'al', 0, 10), W(222, 'al', 1, 10), W(223, 'al', 2, 11),
+    // sue — 33 h on 11 h days: seven left. Near OT already, and it says when.
+    W(231, 'sue', 0, 11), W(232, 'sue', 1, 11), W(233, 'sue', 2, 11),
+    // max — eight-hour days land on exactly 40 by Friday. Not overtime.
+    W(241, 'max', 0, 8), W(242, 'max', 1, 8), W(243, 'max', 2, 8),
+    // lou — Wednesday's time is not in yet: still ahead of him, not skipped.
+    W(251, 'lou', 0, 10), W(252, 'lou', 1, 10),
+    // kim — ten-hour days, but Friday is booked off: Thursday takes her to 40.
+    W(261, 'kim', 0, 10), W(262, 'kim', 1, 10), W(263, 'kim', 2, 10),
+    { id: 264, username: 'kim', entry_type: 'time_off', status: 'approved', work_date: FRI,
+      time_off_type: 'vacation', time_off_hours: 8, created_at: `${MON}T12:00:00Z` },
+    // ray — fourteen-hour days: past 40 on Wednesday already.
+    W(271, 'ray', 0, 14), W(272, 'ray', 1, 14), W(273, 'ray', 2, 14),
+  ];
+  state.rows = CREW.slice();
+  win.eval('loadOvertimeWeek()');
+  await settle();
+  let r = readReport(doc);
+  const by = Object.fromEntries(r.rows.map(x => [x.name, x]));
+  const crew = (who, status, avg, onPace, enters) => {
+    const x = by[who] || {};
+    assert(`${who}: ${status} · ${avg} h/day · on pace for ${onPace} · enters OT ${enters}`,
+      x.status === status && x.avg === avg && x.onPace === onPace && x.enters === enters,
+      JSON.stringify({ status: x.status, avg: x.avg, onPace: x.onPace, enters: x.enters }));
+  };
+  crew('ray', 'Overtime',     '14.00', '70.00', 'Wed · 2nd half');
+  crew('sue', 'Near OT',      '11.00', '55.00', 'Thu · 2nd half');
+  crew('al',  'Projected OT', '10.33', '51.67', 'Thu · 2nd half');
+  crew('tom', 'Projected OT', '10.00', '50.00', 'Fri · 1st half');
+  crew('jim', 'Projected OT', '8.50',  '42.50', 'Fri · 2nd half');
+  crew('lou', 'Projected OT', '10.00', '50.00', 'Fri · 1st half');
+  crew('kim', 'Under 40',     '10.00', '40.00', '—');
+  crew('max', 'Under 40',     '8.00',  '40.00', '—');
+  assert('each of the four was Under 40 by hours left alone — more than 8 h from the line',
+    ['al', 'tom', 'jim', 'lou'].every(n => by[n] && by[n].left > 8 &&
+      win.eval(`otwStanding(${by[n].left}, 0).label`) === 'Under 40'));
+  assert('lou\'s Wednesday, not in yet, is counted as a day still ahead',
+    by.lou && by.lou.onPaceTitle === '20.00 h so far + 10.00 h a day × 3 weekdays still ahead (Wed, Thu, Fri) = 50.00 h, 10.00 h past 40.',
+    by.lou && by.lou.onPaceTitle);
+  assert('kim\'s booked Friday is left out, and the figure says so',
+    by.kim && by.kim.onPaceTitle === '30.00 h so far + 10.00 h a day × 1 weekday still ahead (Thu) = 40.00 h, exactly 40. Fri left out — time off is booked.',
+    by.kim && by.kim.onPaceTitle);
+  assert('max lands on the line and not past it, and is told so',
+    by.max && by.max.onPaceTitle === '24.00 h so far + 8.00 h a day × 2 weekdays still ahead (Thu, Fri) = 40.00 h, exactly 40.' &&
+    by.max.enTitle === 'Not on pace to pass 40 by Friday.', by.max && by.max.onPaceTitle);
+  assert('tiles: 8 employees, 1 in overtime, 1 near, 4 projected — 79.17 OT hours on pace by Friday',
+    tileOf(r, 'Employees').value === '8' && tileOf(r, 'In Overtime').value === '1' &&
+    tileOf(r, 'Near Overtime').value === '1' && tileOf(r, 'Projected OT').value === '4' &&
+    tileOf(r, 'In Overtime').sub === '2.00 OT hours so far · 79.17 on pace by Fri', JSON.stringify(r.tiles));
+  assert('  and the totals row counts them', r.foot[r.foot.length - 1] === '1 in overtime · 1 near · 4 projected',
+    JSON.stringify(r.foot));
+
+  const build = state.ar.payroll_overtime;
+  if (typeof build === 'function') {
+    // The same crew, sent as of Thursday — the page's own clock still says
+    // Wednesday. lou's Wednesday is behind the report now, so only Thursday
+    // and Friday are ahead of him: 40, not 50.
+    let out = await build({ type: 'payroll_overtime', today: THU, options: {} });
+    let fig = l => ((out.summary || []).find(s => s.label === l) || {}).value;
+    r = readReport(doc);
+    const lou = r.rows.find(x => x.name === 'lou') || {};
+    assert('a scheduled send projects from its own day, not the clock: as of Thursday, lou is Under 40',
+      win.eval('buildOvertimeWeekModel().asOfDay') === THU && lou.status === 'Under 40' && lou.onPace === '40.00' &&
+      fig('Projected OT') === '3', JSON.stringify({ lou, summary: out.summary }));
+    out = await build({ type: 'payroll_overtime', today: SAT, options: {} });
+    fig = l => ((out.summary || []).find(s => s.label === l) || {}).value;
+    r = readReport(doc);
+    assert('  and as of Saturday nothing is ahead: nobody projected, OT on pace is only what was worked',
+      fig('Projected OT') === '0' && fig('OT Hrs on Pace') === '2.00' &&
+      r.rows.filter(x => x.name !== 'ray').every(x => x.enters === '—'), JSON.stringify(out.summary));
+  }
+  state.rows = ALL.slice();
+  await pressRange(doc, 'current_week');
+  assert('back on the usual week, the usual six', readReport(doc).rows.length === 6);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
