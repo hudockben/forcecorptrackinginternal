@@ -1387,17 +1387,22 @@
     .report thead th.th-room { color: var(--teal); }
 
     /* ── Reports ▸ Overtime ──
-       Seven columns, so none of the Hours Report's sticky-column machinery: its
-       rules are child chains through .report-scroll and do not reach this
-       table, which is the point — they are pinned to that table's column
-       numbers. One rule splits the two halves of the row: what has been
-       worked, and where that leaves the person against the 40. */
+       Seven columns — ten with the week in progress's projection — so none of
+       the Hours Report's sticky-column machinery: its rules are child chains
+       through .report-scroll and do not reach this table, which is the point —
+       they are pinned to that table's column numbers. One rule splits the two
+       halves of the row: what has been worked, and where that leaves the
+       person against the 40; a second sets the projection apart from both. */
     .otw-scroll { overflow-x: auto; }
     /* Even columns. Left to auto layout, the longest heading ("Hours Left
        Until OT") took the most room and OT Hrs the least, which pressed the
        overtime figure up against the Status pill beside it. */
     .otw-table thead th:first-child { width: 24%; }
     .otw-table thead th:nth-child(n+2):nth-child(-n+6) { width: 12%; }
+    /* With the week in progress listed, three projection columns go in
+       before Status — the same even spread, over ten. */
+    .otw-table.otw-proj thead th:first-child { width: 16%; }
+    .otw-table.otw-proj thead th:nth-child(n+2):nth-child(-n+9) { width: 9%; }
     .otw-table th:last-child,
     .otw-table td:last-child { padding-left: 1.1rem; }
     .otw-table th.otw-split,
@@ -1470,7 +1475,18 @@
     .pill-ot   { background: rgba(249,115,22,0.14); color: var(--orange); }
     .pill-near { background: rgba(234,179,8,0.12);  color: var(--yellow); }
     .pill-room { background: rgba(45,212,191,0.12); color: var(--teal); }
+    /* Projected OT: amber like Near OT, since it is the same warning, but in
+       dashed outline — it rests on hours nobody has worked yet. */
+    .pill-pace { background: rgba(234,179,8,0.05); color: var(--yellow); border: 1px dashed rgba(234,179,8,0.6); }
     .otw-foot-status { font-size: 0.72rem; color: var(--muted); font-weight: 600; }
+    /* Enters OT: orange where 40 has already been passed, amber where the
+       pace says it is coming. */
+    .otw-when      { white-space: nowrap; font-weight: 700; font-size: 0.78rem; }
+    .otw-when-past { color: var(--orange); }
+    .otw-when-proj { color: var(--yellow); }
+    .otw-table .otw-na { color: var(--muted); }
+    /* Five tiles with the projection's, in one row. */
+    .proj-stats.otw-stats-5 { grid-template-columns: repeat(5, 1fr); }
 
     /* ── Print: hide everything except the active report / audit log ── */
     @media print {
@@ -1607,7 +1623,13 @@
       .pill-ot      { background: #fed7aa !important; color: #7c2d12 !important; }
       .pill-near    { background: #fde68a !important; color: #6b3a00 !important; }
       .pill-room    { background: #ccfbf1 !important; color: #134e4a !important; }
+      .pill-pace    { background: #fffbeb !important; color: #6b3a00 !important; border: 1px dashed #b45309 !important; }
       .otw-foot-status { color: #000 !important; }
+      /* In the table's own point size: in rem it printed larger than the
+         figures beside it. */
+      .otw-when { font-size: inherit !important; }
+      .otw-when-past, .otw-when-proj { color: #000 !important; }
+      .otw-table .otw-na { color: #555 !important; }
       /* Its week bands, grey and black like the Hours Report's, and in the
          table's own point size — in rem they printed larger than the figures
          they head. */
@@ -2741,7 +2763,7 @@
       .bulk .btn-approve { width: 100%; }
       .ana-bar-row { grid-template-columns: 90px 1fr 95px; gap: 0.45rem; }
       .ana-bar-label, .ana-bar-value { font-size: 0.78rem; }
-      .proj-stats { grid-template-columns: repeat(2, 1fr); }
+      .proj-stats, .proj-stats.otw-stats-5 { grid-template-columns: repeat(2, 1fr); }
       .pc-row { grid-template-columns: 110px 1fr 120px; gap: 0.45rem; }
       .pc-label, .pc-value { font-size: 0.72rem; }
       .pc-legend { margin-left: 0; }
@@ -6194,6 +6216,123 @@
     // Hours left at or under which someone is flagged as close: one full day.
     const OTW_NEAR_HOURS = 8;
 
+    // ── The week in progress, carried to Friday ──
+    //
+    // Near OT is a fact about hours left, and on its own it cannot see the man
+    // the midweek report is opened to find. Ten hours short on Wednesday
+    // night, on ten-hour days: Thursday takes him to 40 and every hour he works
+    // on Friday is overtime — yet with more than a day left he read Under 40.
+    // Nine short at ten a day passes 40 late on Thursday and read the same. So
+    // the week in progress is also carried forward at the pace each person has
+    // kept, and the day the fortieth hour lands on is named.
+    //
+    // A day is AHEAD when it is a weekday of the week, not behind the as-of
+    // day, and has nothing on it yet — no time worked and no time off booked.
+    // Today stays ahead until its time is in: a report built on Wednesday
+    // evening reads a crew whose Wednesday is not submitted yet as having it
+    // still to work, rather than carrying them a day short all the way to
+    // Friday. Saturday and Sunday are never projected; hours worked on them
+    // count the way all hours do, once they are in.
+    //
+    // It is a projection, and says so wherever it shows. Nothing worked out
+    // here feeds Hours Worked, OT Hrs or Hours Left — those stay what was
+    // submitted.
+    const OTW_DOW = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const OTW_DOW_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    // The weekdays a projection may carry hours onto: Monday through Friday.
+    const OTW_WORKDAYS = 5;
+
+    // A YYYY-MM-DD `n` days on, in UTC like weekStartOf, so no clock or zone
+    // can move it a day.
+    function otwDayAfter(d, n) {
+      const t = new Date(`${d}T00:00:00Z`);
+      t.setUTCDate(t.getUTCDate() + n);
+      return t.toISOString().slice(0, 10);
+    }
+    function otwDow(d, long) {
+      const i = new Date(`${d}T00:00:00Z`).getUTCDay();
+      return (long ? OTW_DOW_LONG : OTW_DOW)[i];
+    }
+    // "Fri · 1st half" — where a fortieth hour falls, as Enters OT shows it.
+    function otwWhen(x) {
+      return `${otwDow(x.day)} · ${x.half === 1 ? '1st' : '2nd'} half`;
+    }
+
+    /**
+     * One person's week in progress, carried to Friday at the pace they have
+     * kept so far.
+     *
+     *   weekStart  the week's Monday
+     *   today      the as-of day: the day the report is for
+     *   worked     the hours counted toward the 40 so far (work + travel)
+     *   dayHours   Map date → hours, for every day they have time in
+     *   offDays    Set of dates with paid time off booked, or nothing
+     *
+     * pace is their hours over the days that HAVE hours — an average working
+     * day, not the week divided by the days gone by, so a day off does not
+     * read as a short day. projected is worked plus that pace on every day
+     * ahead.
+     *
+     * enters is where the fortieth hour lands: the day, how many hours into
+     * it, and which half of an average day that is — the overtime starts in
+     * the second half when the line is at or past the day's midpoint. Someone
+     * on exactly 40 enters at the start of the next day ahead. null when the
+     * pace does not reach past 40 by Friday, or the 40 is already behind them.
+     */
+    function otwProjection({ weekStart, today, worked, dayHours, offDays }) {
+      const T = OT_WEEKLY_THRESHOLD;
+      let daysWorked = 0;
+      for (const h of dayHours.values()) if (h > 0.001) daysWorked++;
+      const pace = daysWorked ? worked / daysWorked : 0;
+      const ahead = [], off = [];
+      for (let i = 0; i < OTW_WORKDAYS; i++) {
+        const d = otwDayAfter(weekStart, i);
+        if (d < today || dayHours.has(d)) continue;
+        if (offDays && offDays.has(d)) { off.push(d); continue; }
+        ahead.push(d);
+      }
+      const projected = worked + pace * ahead.length;
+      let enters = null;
+      if (pace > 0.001 && worked <= T + 0.001) {
+        let cum = worked;
+        for (const d of ahead) {
+          if (cum + pace > T + 0.001) {
+            const into = Math.max(0, T - cum);
+            enters = { day: d, into, half: into < pace / 2 ? 1 : 2 };
+            break;
+          }
+          cum += pace;
+        }
+      }
+      return { pace, daysWorked, ahead, off, projected, projectedOt: Math.max(0, projected - T), enters };
+    }
+
+    /**
+     * Where the fortieth hour fell in a week already past it — the day, and
+     * which half of that day's own hours — read off weeklyOvertime's walk, so
+     * it is the entry its overtime starts on. Two blocks on one day are taken
+     * in the walk's order, the first block's hours coming before the second's.
+     */
+    function otwPassedForty(otWeek) {
+      if (!otWeek || !(otWeek.otHours > 0.001)) return null;
+      const dayOf = r => String(r.entry.work_date || '').slice(0, 10);
+      const dayTotal = new Map();
+      for (const r of otWeek.rows) dayTotal.set(dayOf(r), (dayTotal.get(dayOf(r)) || 0) + r.hours);
+      const before = new Map();
+      for (const r of otWeek.rows) {
+        const d = dayOf(r);
+        // Past 0.001, not 0: a sum of quarter hours can land a hair over 40 on
+        // the day that ends exactly at it, and that is not where it was passed.
+        if (r.otHours > 0.001) {
+          const into  = (before.get(d) || 0) + (r.hours - r.otHours);
+          const total = dayTotal.get(d) || r.hours;
+          return { day: d, into, dayHours: total, half: into < total / 2 ? 1 : 2 };
+        }
+        before.set(d, (before.get(d) || 0) + r.hours);
+      }
+      return null;
+    }
+
     /**
      * The weeks Reports ▸ Overtime covers for a From and a To: every
      * Monday–Sunday week the two dates touch, whole.
@@ -6287,13 +6426,21 @@
 
     // Where someone stands against the 40 in a week. Decided here once, so the
     // pill, the tiles and the workbook's Status column cannot disagree.
-    function otwStanding(left, otHours) {
+    //
+    // `onPace` is the week in progress's projection reaching past 40 by
+    // Friday (otwProjection). It only ever moves someone off Under 40: what
+    // has been worked outranks what is projected, so a man in overtime or
+    // within a day of it keeps that pill whatever his pace says.
+    function otwStanding(left, otHours, onPace) {
       if (otHours > 0.001) return { key: 'over', cls: 'pill-ot',   label: 'Overtime' };
       // Exactly on the line: nothing left, and the next hour worked is overtime.
       if (left < 0.005)    return { key: 'near', cls: 'pill-near', label: 'At 40' };
       if (left <= OTW_NEAR_HOURS + 0.001) {
         return { key: 'near', cls: 'pill-near', label: 'Near OT' };
       }
+      // More than a day left, but at their pace the 40 goes before Friday is
+      // out: the Thursday-afternoon and Friday overtime Near OT cannot see.
+      if (onPace) return { key: 'pace', cls: 'pill-pace', label: 'Projected OT' };
       return { key: 'room', cls: 'pill-room', label: 'Under 40' };
     }
 
@@ -6311,8 +6458,11 @@
         (document.getElementById('flt-from') || {}).value,
         (document.getElementById('flt-to')   || {}).value);
       const T          = OT_WEEKLY_THRESHOLD;
-      const thisMonday = ymd(thisWeekMonday());
-      const today      = ymd(new Date());
+      // The day the report is as of: today, unless a scheduled send names its
+      // own day (asOfDay) — a Wednesday-night report the server reaches after
+      // midnight is still Wednesday's, and projects from Wednesday.
+      const today      = (scope && scope.asOfDay) || ymd(new Date());
+      const thisMonday = weekStartOf(today);
       const divEl   = document.getElementById('flt-division');
       const div     = divEl ? divEl.value : '';
       const userRaw = (document.getElementById('flt-user').value || '').trim();
@@ -6324,19 +6474,30 @@
       // filter — the filters below pick people, and a person's week is all of
       // their hours in it.
       const byWeek = new Map();
+      // Days with paid time off booked, by week and person. Never hours — time
+      // off counts toward nothing — only the days the projection must not
+      // carry work onto.
+      const offByWeek = new Map();
       for (const e of otwEntries) {
-        if (!e || e.entry_type !== 'daily') continue;
+        if (!e || (e.entry_type !== 'daily' && e.entry_type !== 'time_off')) continue;
         if (e.status !== 'submitted' && e.status !== 'approved') continue;
         // The fetch asked for these weeks; a row dated outside them is not in them.
         const d  = String(e.work_date || '').slice(0, 10);
         const wk = weekStartOf(d);
         if (!wk || d < scope.from || d > scope.to) continue;
+        const u = e.username || '—';
+        if (e.entry_type === 'time_off') {
+          if (!offByWeek.has(wk)) offByWeek.set(wk, new Map());
+          const off = offByWeek.get(wk);
+          if (!off.has(u)) off.set(u, new Set());
+          off.get(u).add(d);
+          continue;
+        }
         if (!byWeek.has(wk)) byWeek.set(wk, new Map());
         const people = byWeek.get(wk);
-        const u = e.username || '—';
         if (!people.has(u)) people.set(u, {
           username: u, entries: [], approvedHours: 0, pendingHours: 0,
-          divisions: new Set(), supervisors: new Set(), days: new Set(),
+          divisions: new Set(), supervisors: new Set(), days: new Set(), dayHours: new Map(),
         });
         const acc = people.get(u);
         // Work + travel — what the day is owed, and what counts toward 40.
@@ -6347,6 +6508,7 @@
         if (e.division)        acc.divisions.add(e.division);
         if (e.supervisor_name) acc.supervisors.add(String(e.supervisor_name).toLowerCase());
         acc.days.add(d);
+        acc.dayHours.set(d, (acc.dayHours.get(d) || 0) + h);
       }
 
       const sumRows = list => {
@@ -6375,6 +6537,12 @@
           if (supQ  && ![...acc.supervisors].some(s => s.includes(supQ))) continue;
           const ot   = weeklyOvertime(acc.entries, { from: wk, to: wkEnd });
           const left = Math.max(0, T - ot.totalHours);
+          // Only the week in progress has days ahead to carry hours onto. A
+          // closed week is a record, and one not begun has no pace.
+          const proj = wk === thisMonday ? otwProjection({
+            weekStart: wk, today, worked: ot.totalHours, dayHours: acc.dayHours,
+            offDays: (offByWeek.get(wk) || new Map()).get(acc.username),
+          }) : null;
           rows.push({
             username:      acc.username,
             weekStart:     wk,
@@ -6384,14 +6552,17 @@
             worked:        ot.totalHours,
             left,
             otHours:       ot.otHours,
-            standing:      otwStanding(left, ot.otHours),
+            standing:      otwStanding(left, ot.otHours, Boolean(proj && proj.enters)),
+            proj,
+            // Already past 40 this week: where it was passed, for Enters OT.
+            passed:        proj ? otwPassedForty(ot.weeks[0]) : null,
             divisions:     [...acc.divisions].sort(),
             days:          acc.days.size,
           });
         }
         // Closest to overtime first — the rows someone opens this to find.
         rows.sort((a, b) => b.worked - a.worked || a.username.localeCompare(b.username));
-        const counts = { over: 0, near: 0, room: 0 };
+        const counts = { over: 0, near: 0, pace: 0, room: 0 };
         for (const r of rows) counts[r.standing.key]++;
         weeks.push({
           from: wk, to: wkEnd, rows, counts, tot: sumRows(rows),
@@ -6407,15 +6578,26 @@
       const tot  = sumRows(rows);
       // Each person once, at the furthest any of their weeks went: past 40 in
       // any week is In Overtime whatever the others did, and Near is inside a
-      // day of it in some week without ever passing it.
-      const RANK = { room: 0, near: 1, over: 2 };
+      // day of it in some week without ever passing it. Projected sits under
+      // Near — it is hours nobody has worked yet.
+      const RANK = { room: 0, pace: 1, near: 2, over: 3 };
       const furthest = new Map();
       for (const r of rows) {
         const was = furthest.get(r.username);
         if (was === undefined || RANK[r.standing.key] > RANK[was]) furthest.set(r.username, r.standing.key);
       }
-      const counts = { over: 0, near: 0, room: 0 };
+      const counts = { over: 0, near: 0, pace: 0, room: 0 };
       for (const k of furthest.values()) counts[k]++;
+
+      // The projection's columns, tile and note show when the week in
+      // progress has someone listed in it — the only rows it is worked out for.
+      const projRows = rows.filter(r => r.proj);
+      const projecting = projRows.length > 0;
+      // The week in progress at everyone's pace: their projected totals, and
+      // how far past 40 those land — overtime already worked included, since
+      // "on pace for" is the whole week.
+      const projTotal = projRows.reduce((s, r) => s + r.proj.projected, 0);
+      const projOtHours = projRows.reduce((s, r) => s + r.proj.projectedOt, 0);
 
       const listedBits = [];
       if (div)     listedBits.push(`${prettyDiv(div)} division`);
@@ -6454,6 +6636,7 @@
 
       return {
         weeks, rows, tot, counts, people: furthest.size,
+        projecting, projTotal, projOtHours, asOfDay: today,
         listedBits, single, isCurrent, weekLine, spanNote, asOf, companyName,
         from: scope.from, to: scope.to, reversed: Boolean(scope.reversed),
         includesCurrent: !scope.reversed && scope.from <= thisMonday && thisMonday <= scope.to,
@@ -6536,6 +6719,49 @@
 
       const { tot, counts } = m;
       const nWeeks = m.weeks.length;
+      // With the week in progress listed, three more columns carry it to
+      // Friday: Avg Hrs/Day, On Pace For and Enters OT.
+      const P    = m.projecting;
+      const COLS = P ? 10 : 7;
+      const dayList = ds => ds.map(d => otwDow(d)).join(', ');
+      // The projection's three cells for a row. A row from another week gets
+      // dashes: there is nothing ahead of a closed week to carry anything onto.
+      const projCells = r => {
+        if (!P) return '';
+        const p = r.proj;
+        if (!p) {
+          const na = 'Projected for the week in progress only.';
+          return `<td class="num otw-na" title="${na}">—</td><td class="num otw-na" title="${na}">—</td><td class="otw-na" title="${na}">—</td>`;
+        }
+        const paceTitle = `${hrs(r.worked)} h over the ${p.daysWorked} day${p.daysWorked === 1 ? '' : 's'} with time in this week.`;
+        const offNote = p.off.length ? ` ${dayList(p.off)} left out — time off is booked.` : '';
+        const onPaceTitle = p.ahead.length
+          ? `${hrs(r.worked)} h so far + ${hrs(p.pace)} h a day × ${p.ahead.length} weekday${p.ahead.length === 1 ? '' : 's'} still ahead (${dayList(p.ahead)}) = ${hrs(p.projected)} h`
+            + (p.projectedOt > 0.001 ? `, ${hrs(p.projectedOt)} h past ${T}.`
+              : p.projected > T - 0.005 ? `, exactly ${T}.` : `, ${hrs(T - p.projected)} h under ${T}.`) + offNote
+          : `No weekdays left to carry forward this week, so this is the week as it stands.${offNote}`;
+        let enters;
+        if (r.passed) {
+          enters = `<span class="otw-when otw-when-past" title="${escapeHtml(
+            `Passed ${T} on ${otwDow(r.passed.day, true)}, ${hrs(r.passed.into)} h into that day's ${hrs(r.passed.dayHours)} h.`
+          )}">${otwWhen(r.passed)}</span>`;
+        } else if (p.enters) {
+          const e = p.enters;
+          const t = e.into < 0.005
+            ? `At ${T} now, so the next hour worked is overtime — on pace, the start of ${otwDow(e.day, true)}. Projected, not yet worked.`
+            : `At ${hrs(p.pace)} h a day the ${T}th hour lands ${hrs(e.into)} h into ${otwDow(e.day, true)} — the ${e.half === 1 ? 'first' : 'second'} half of the day. Projected, not yet worked.`;
+          enters = `<span class="otw-when otw-when-proj" title="${escapeHtml(t)}">${otwWhen(e)}</span>`;
+        } else {
+          const t = r.left < 0.005 && r.otHours <= 0.001
+            ? `At ${T}, with no weekdays left this week to carry forward.`
+            : `Not on pace to pass ${T} by Friday.`;
+          enters = `<span class="otw-na" title="${escapeHtml(t)}">—</span>`;
+        }
+        return `
+            <td class="num" title="${escapeHtml(paceTitle)}">${hrs(p.pace)}</td>
+            <td class="num${p.projected > T + 0.001 ? ' num-ot' : ''}" title="${escapeHtml(onPaceTitle)}">${hrs(p.projected)}</td>
+            <td>${enters}</td>`;
+      };
       const rowHtml = (r, w) => {
         // A closed week is a record, not a forecast: nothing more can be
         // worked in it, so its hours left are hours it finished under the 40.
@@ -6549,6 +6775,8 @@
             ? (w.closed
                 ? `${hrs(r.worked)} h ${when} — exactly ${T}, none of it overtime.${pendNote}`
                 : `${hrs(r.worked)} h ${when} — at ${T}, so the next hour worked is overtime.${pendNote}`)
+            : r.standing.key === 'pace'
+              ? `${hrs(r.worked)} h ${when} — ${hrs(r.left)} h left, but at ${hrs(r.proj.pace)} h a day the ${T}th hour lands on ${otwDow(r.proj.enters.day, true)}, in the ${r.proj.enters.half === 1 ? 'first' : 'second'} half of the day. Projected, not yet worked.${pendNote}`
             : (w.closed
                 ? `${hrs(r.worked)} h ${when} — it closed ${hrs(r.left)} h under ${T}.${pendNote}`
                 : `${hrs(r.worked)} h ${when} — ${hrs(r.left)} h left before overtime starts.${pendNote}`);
@@ -6561,7 +6789,7 @@
             <td class="num">${hrs(r.pendingHours)}</td>
             <td class="num otw-split otw-worked">${hrs(r.worked)}</td>
             <td class="num${r.left > 0.001 ? ' num-room' : ''}">${hrs(r.left)}</td>
-            <td class="num${r.otHours > 0.001 ? ' num-ot' : ''}">${hrs(r.otHours)}</td>
+            <td class="num${r.otHours > 0.001 ? ' num-ot' : ''}${P ? ' otw-split' : ''}">${hrs(r.otHours)}</td>${projCells(r)}
             <td><span class="pill ${r.standing.cls}" title="${escapeHtml(standTitle)}">${escapeHtml(r.standing.label)}</span></td>
           </tr>`;
       };
@@ -6573,7 +6801,7 @@
           const why = w.hidden
             ? 'no time from anyone matching these filters'
             : `no time submitted${w.closed ? '' : ' yet'}`;
-          return `<tr class="otw-band"><td colspan="7"><span class="otw-band-label">${escapeHtml(label)}</span> <span class="otw-band-note">${escapeHtml(why)}</span></td></tr>`;
+          return `<tr class="otw-band"><td colspan="${COLS}"><span class="otw-band-label">${escapeHtml(label)}</span> <span class="otw-band-note">${escapeHtml(why)}</span></td></tr>`;
         }
         const ot = w.tot.otHours > 0.001;
         const n  = w.rows.length;
@@ -6585,7 +6813,8 @@
             : '<span class="otw-band-note">no overtime</span>',
         ];
         if (w.counts.near) bits.push(`<span class="otw-band-fig">${w.counts.near} near</span>`);
-        return `<tr class="otw-band${ot ? ' otw-band-ot' : ''}"><td colspan="7"><span class="otw-band-label">${escapeHtml(label)}</span> ${bits.join(' ')}</td></tr>`;
+        if (w.counts.pace) bits.push(`<span class="otw-band-fig">${w.counts.pace} projected</span>`);
+        return `<tr class="otw-band${ot ? ' otw-band-ot' : ''}"><td colspan="${COLS}"><span class="otw-band-label">${escapeHtml(label)}</span> ${bits.join(' ')}</td></tr>`;
       };
       const bodies = m.weeks.map(w => `
             <tbody>${m.single ? '' : bandHtml(w)}${w.rows.map(r => rowHtml(r, w)).join('')}</tbody>`).join('');
@@ -6599,6 +6828,13 @@
         : m.single
           ? `Straight-time hours the people listed finished that week under ${T}, added up. Anyone at or past ${T} adds nothing.`
           : `Straight-time hours left before overtime, added up across every week shown. Anyone at or past ${T} in a week adds nothing for it.`;
+      // The OT tile's second figure: the week in progress at everyone's pace.
+      const otOnPace = !P ? '' : m.single
+        ? ` · ${hrs(m.projOtHours)} on pace by Fri`
+        : ` · this week on pace for ${hrs(m.projOtHours)}`;
+      const paceTileTitle = `More than ${OTW_NEAR_HOURS} h from ${T}, but at their average day so far the ${T}th hour comes before Friday is out — Enters OT says which day, and which half of it.${
+        m.single ? '' : ' Each person counted once, by the furthest any of their weeks went.'}`;
+      const foot = `${counts.over} in overtime · ${counts.near} near${P ? ` · ${counts.pace} projected` : ''}`;
 
       wrap.innerHTML = `
         <div class="report">
@@ -6606,7 +6842,7 @@
             <button class="btn-print btn-excel" onclick="exportOvertimeExcel()" title="Download this report as an Excel workbook (.xlsx)">&#8681; Export to Excel</button>
             ${printBtn}`)}
 
-          <div class="proj-stats">
+          <div class="proj-stats${P ? ' otw-stats-5' : ''}">
             <div class="proj-stat">
               <div class="proj-stat-label">Employees</div>
               <div class="proj-stat-value">${m.people}</div>
@@ -6615,13 +6851,18 @@
             <div class="proj-stat${counts.over ? ' ot' : ''}"${overTitle}>
               <div class="proj-stat-label">In Overtime</div>
               <div class="proj-stat-value">${counts.over}</div>
-              <div class="proj-stat-sub">${hrs(tot.otHours)} OT hours${m.isCurrent ? ' so far' : ''}</div>
+              <div class="proj-stat-sub">${hrs(tot.otHours)} OT hours${m.isCurrent ? ' so far' : ''}${otOnPace}</div>
             </div>
             <div class="proj-stat${counts.near ? ' near' : ''}"${nearTitle}>
               <div class="proj-stat-label">Near Overtime</div>
               <div class="proj-stat-value">${counts.near}</div>
               <div class="proj-stat-sub">${OTW_NEAR_HOURS} h or less before ${T}${m.single ? '' : ' in a week'}</div>
-            </div>
+            </div>${P ? `
+            <div class="proj-stat${counts.pace ? ' near' : ''}" title="${escapeHtml(paceTileTitle)}">
+              <div class="proj-stat-label">Projected OT</div>
+              <div class="proj-stat-value">${counts.pace}</div>
+              <div class="proj-stat-sub">on pace to pass ${T} by Fri</div>
+            </div>` : ''}
             <div class="proj-stat">
               <div class="proj-stat-label">Pending Hours</div>
               <div class="proj-stat-value">${hrs(tot.pendingHours)}</div>
@@ -6630,7 +6871,7 @@
           </div>
 
           <div class="otw-scroll">
-          <table class="otw-table">
+          <table class="otw-table${P ? ' otw-proj' : ''}">
             <thead>
               <tr>
                 <th>Employee</th>
@@ -6638,8 +6879,11 @@
                 <th style="text-align:right" title="Hours submitted for the week but not yet approved. They are counted in Hours Worked, so a pending day can still change the figures when it is reviewed.">Pending Hrs</th>
                 <th class="otw-split" style="text-align:right" title="Approved + pending: every hour submitted for the Monday–Sunday week, in every division. Work + travel; paid time off does not count toward the ${T}.">Hours Worked</th>
                 <th class="th-room" style="text-align:right" title="${T} minus Hours Worked — what can still be worked in the week before overtime starts, or for a week already over, what it finished under ${T}. Zero once someone reaches ${T}.">Hours Left Until OT</th>
-                <th class="th-ot" style="text-align:right" title="Hours past ${T} in the week, counted across every division.">OT Hrs</th>
-                <th title="Overtime: past ${T} · At 40 / Near OT: ${OTW_NEAR_HOURS} h or less before ${T} · Under 40: more than ${OTW_NEAR_HOURS} h left">Status</th>
+                <th class="th-ot${P ? ' otw-split' : ''}" style="text-align:right" title="Hours past ${T} in the week, counted across every division.">OT Hrs</th>${P ? `
+                <th style="text-align:right" title="The week in progress: Hours Worked over the days with time in — an average working day so far.">Avg Hrs/Day</th>
+                <th style="text-align:right" title="Projected: Hours Worked plus Avg Hrs/Day on every weekday still ahead this week — today too, until its time is in — leaving out days with time off booked. Saturday and Sunday are not projected.">On Pace For</th>
+                <th title="When overtime starts: the day the ${T}th hour falls on and which half of the working day — projected at Avg Hrs/Day, or, for anyone already past ${T}, where they passed it.">Enters OT</th>` : ''}
+                <th title="Overtime: past ${T} · At 40 / Near OT: ${OTW_NEAR_HOURS} h or less before ${T}${P ? ` · Projected OT: more than ${OTW_NEAR_HOURS} h left, but on pace to pass ${T} by Friday` : ''} · Under 40: more than ${OTW_NEAR_HOURS} h left${P ? ' and not on pace to pass it' : ''}">Status</th>
               </tr>
             </thead>${bodies}
             <tfoot>
@@ -6649,8 +6893,11 @@
                 <td class="num">${hrs(tot.pendingHours)}</td>
                 <td class="num otw-split">${hrs(tot.worked)}</td>
                 <td class="num" title="${escapeHtml(leftTotTitle)}">${hrs(tot.left)}</td>
-                <td class="num${tot.otHours > 0.001 ? ' num-ot' : ''}">${hrs(tot.otHours)}</td>
-                <td><span class="otw-foot-status">${counts.over} in overtime · ${counts.near} near</span></td>
+                <td class="num${tot.otHours > 0.001 ? ' num-ot' : ''}${P ? ' otw-split' : ''}">${hrs(tot.otHours)}</td>${P ? `
+                <td class="num"></td>
+                <td class="num" title="${escapeHtml(`The week in progress on pace: everyone listed in it, added up — ${hrs(m.projOtHours)} h of it past ${T}.`)}">${hrs(m.projTotal)}</td>
+                <td></td>` : ''}
+                <td><span class="otw-foot-status">${foot}</span></td>
               </tr>
             </tfoot>
           </table>
@@ -6663,7 +6910,15 @@
             count toward the ${T}, and anyone with no time submitted in a week is not listed for it.${
             m.single ? '' : ' The tiles and the totals row count each person once, by the furthest any of their weeks went.'}${
             m.listedBits.length ? ' The filters above choose who is listed; each person\'s hours are still their whole week.' : ''}
-          </p>
+          </p>${P ? `
+          <p class="proj-note otw-note">
+            <strong>On Pace For and Enters OT are projections, not hours worked.</strong>
+            Avg Hrs/Day is each person's hours this week over the days they have time in. On Pace For carries that
+            average onto every weekday still ahead — today too, until its time is in — and leaves out days with
+            time off already booked; Saturday and Sunday are not projected. Enters OT is the day the ${T}th hour
+            lands on at that pace, and whether it falls in the first or second half of an average day.
+            <strong>Projected OT</strong> marks anyone more than ${OTW_NEAR_HOURS} h from ${T} who is on pace to pass it by Friday.
+          </p>` : ''}
           ${m.stale ? '<p class="report-caveat">A new week has started since these hours were loaded. Press This Week to load the week in progress.</p>' : ''}
         </div>`;
     }
@@ -7952,11 +8207,19 @@
     function overtimeWeekSheetXml(model) {
       const { rows, tot, counts, people, single, weeks, weekLine, spanNote, listedBits, asOf, companyName } = model;
       const T = OT_WEEKLY_THRESHOLD;
+      // The projection's three columns go in before Status, as on screen, and
+      // only when the screen has them.
+      const P = model.projecting;
       const headers = ['Employee', 'Week Starting (Mon)', 'Week Ending (Sun)', 'Approved Hrs', 'Pending Hrs',
         'Hours Worked (approved + pending)', `Hours Left Until OT (${T} − worked)`,
-        `OT Hrs (past ${T})`, 'Status'];
+        `OT Hrs (past ${T})`,
+        ...(P ? ['Avg Hrs/Day (this week)', 'On Pace For (projected to Fri)', 'Enters OT (day · half)'] : []),
+        'Status'];
       const HEADER_ROW = 7;
-      const NUM_COLS   = new Set([3, 4, 5, 6, 7]);
+      const NUM_COLS   = new Set(P ? [3, 4, 5, 6, 7, 8, 9] : [3, 4, 5, 6, 7]);
+      const projNote = P
+        ? ` On Pace For and Enters OT are projections, not hours worked: each person's average day this week (Avg Hrs/Day — their hours over the days they have time in) carried onto every weekday still ahead, today too until its time is in, leaving out days with time off booked; Saturday and Sunday are not projected. Enters OT is the day the ${T}th hour lands on at that pace and which half of an average day — or, for anyone already past ${T}, where they passed it. Projected OT marks anyone more than ${OTW_NEAR_HOURS} h from ${T} who is on pace to pass it by Friday.`
+        : '';
 
       const sheet = [
         [cTxt('Weekly Overtime Report', XS.title)],
@@ -7965,10 +8228,19 @@
           .filter(Boolean).join(' · '), XS.sub)],
         [cTxt(asOf ? `As of ${asOf}` : '', XS.sub)],
         // Spreadsheets have no tooltips, so the rule is stated on the sheet.
-        [cTxt(`Overtime is anything past ${T} hours in a Monday–Sunday week, each week counted on its own. Hours Worked is work + travel on every submitted and approved day of the week, in every division — pending days included, so a figure can still change when one is reviewed. Paid time off does not count toward the ${T}.`, XS.sub)],
+        [cTxt(`Overtime is anything past ${T} hours in a Monday–Sunday week, each week counted on its own. Hours Worked is work + travel on every submitted and approved day of the week, in every division — pending days included, so a figure can still change when one is reviewed. Paid time off does not count toward the ${T}.${projNote}`, XS.sub)],
         [],
         headers.map((h, i) => cTxt(h, NUM_COLS.has(i) ? XS.headNum : XS.head)),
       ];
+
+      // A row from a closed week has nothing to project: blanks, not zeros.
+      const projCells = r => {
+        if (!P) return [];
+        const p = r.proj;
+        if (!p) return [cTxt('', XS.text), cTxt('', XS.text), cTxt('', XS.text)];
+        const when = r.passed ? otwWhen(r.passed) : p.enters ? otwWhen(p.enters) : '';
+        return [cNum(p.pace, XS.num), cNum(p.projected, XS.num), cTxt(when, XS.text)];
+      };
 
       for (const r of rows) {
         sheet.push([
@@ -7980,6 +8252,7 @@
           cNum(r.worked,         XS.num),
           cNum(r.left,           XS.num),
           cNum(r.otHours,        XS.num),
+          ...projCells(r),
           cTxt(r.standing.label, XS.text),
         ]);
       }
@@ -7993,14 +8266,15 @@
         cNum(tot.worked,        XS.totNum),
         cNum(tot.left,          XS.totNum),
         cNum(tot.otHours,       XS.totNum),
-        cTxt(`${counts.over} in overtime · ${counts.near} near`, XS.totText),
+        ...(P ? [cTxt('', XS.totText), cNum(model.projTotal, XS.totNum), cTxt('', XS.totText)] : []),
+        cTxt(`${counts.over} in overtime · ${counts.near} near${P ? ` · ${counts.pace} projected` : ''}`, XS.totText),
       ]);
 
       return xlsxSheetXml({
-        colWidths: [26, 18, 18, 14, 14, 20, 22, 14, 14],
+        colWidths: [26, 18, 18, 14, 14, 20, 22, 14, ...(P ? [14, 18, 18] : []), 14],
         rows: sheet,
         freezeRow: HEADER_ROW,
-        autoFilterRef: `A${HEADER_ROW}:I${HEADER_ROW + rows.length}`,
+        autoFilterRef: `A${HEADER_ROW}:${colLetter(headers.length)}${HEADER_ROW + rows.length}`,
         tabSelected: true,
       });
     }
@@ -17476,7 +17750,11 @@
         document.getElementById('flt-supervisor').value = '';
         document.getElementById('flt-user').value       = '';
         const [mon, sun] = rangeFor('current_week', dueDay(spec));
-        await loadOvertimeWeek(overtimeSpan(ymd(mon), ymd(sun)));
+        // Projected from the schedule's own day, not the server's clock: a
+        // Wednesday-night send reached after midnight still carries Wednesday
+        // forward, the day its subject line says it is as of.
+        const asOfDay = dueDay(spec) ? spec.today : undefined;
+        await loadOvertimeWeek({ ...overtimeSpan(ymd(mon), ymd(sun)), asOfDay });
         if (otwError) throw new Error("This week's time did not load — " + otwError);
         if (!otwScope) throw new Error("This week's time did not load.");
         const m = buildOvertimeWeekModel();
@@ -17484,6 +17762,8 @@
         renderOvertimeReport();
         const asOf = new Date((spec.today || ymd(new Date())) + 'T12:00:00')
           .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+        // Paired two to a row in the email: who is past 40 and who is close,
+        // then the hours so far against the hours on pace.
         return {
           html:    emailDocument(emailCopy('#overtimeWrap > .report'), 'Weekly Overtime Report'),
           subject: `Weekly Overtime — ${spanWords(m.from, m.to)} (so far, as of ${asOf})`,
@@ -17491,8 +17771,14 @@
             { label: 'Employees',     value: String(m.people) },
             { label: 'In Overtime',   value: String(m.counts.over), ...(m.counts.over ? { tone: 'bad' } : {}) },
             { label: 'Near Overtime', value: String(m.counts.near), ...(m.counts.near ? { tone: 'actual' } : {}) },
+            ...(m.projecting ? [
+              { label: 'Projected OT', value: String(m.counts.pace), ...(m.counts.pace ? { tone: 'actual' } : {}) },
+            ] : []),
             { label: 'Hours Worked',  value: hrs(m.tot.worked) },
             { label: 'Overtime',      value: hrs(m.tot.otHours) },
+            ...(m.projecting ? [
+              { label: 'OT Hrs on Pace', value: hrs(m.projOtHours), ...(m.projOtHours > 0.001 ? { tone: 'bad' } : {}) },
+            ] : []),
             { label: 'Pending',       value: hrs(m.tot.pendingHours) },
           ],
         };

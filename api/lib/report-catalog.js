@@ -168,7 +168,7 @@ const SCHEDULE_DEFS = {
   payroll_projects:       { name: 'Project Overtime Report', scope: 'division', payRange: 'last_week',
     blurb: 'Hours and overtime by job, the crew capacity board, and each job\'s crew.' },
   payroll_overtime:       { name: 'Weekly Overtime', scope: 'division',
-    blurb: 'The week in progress so far: each man\'s hours against 40, who is in overtime and who is close. Best sent midweek.' },
+    blurb: 'The week in progress so far: each man\'s hours against 40, who is in overtime and who is close, and who is on pace to pass 40 by Friday — with the day and half-day it happens. Best sent midweek.' },
   // Forms are filed under their week's Monday, and the tab's From week / To
   // week take whole weeks — so a period is the weeks its days fall in, which
   // leaves nothing a day-sized period would add.
