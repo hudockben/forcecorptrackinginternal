@@ -396,6 +396,39 @@ async function runDiagnostics(sql, companyCode) {
 // daily_tracking by project_id + division. The other tiles
 // (Trucking / Dust / IC) read from their own normalized tables.
 
+// A cost code or sub code as a bid line matches it — the division pages'
+// _codeKey(), restated so the Executive report puts every daily group on the
+// bid line the Bid Items page puts it on. Capitals, spaces at either end or
+// doubled up (non-breaking ones included), zero-width characters, and which
+// dash or quote was typed don't make two codes different: compared exactly, a
+// timesheet day booked to a trimmed copy of a bid line's sub code was reported
+// off-bid. Whether a code is blank, and so a wildcard, is still read off the
+// code as saved.
+const _codeKeyMemo = new Map();
+function codeKey(v) {
+  if (v == null || v === '') return '';
+  let k = _codeKeyMemo.get(v);
+  if (k === undefined) {
+    k = String(v)
+      .replace(/[\u00AD\u200B-\u200D\u2060\uFEFF]/g, '')
+      .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-')
+      .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'")
+      .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    if (_codeKeyMemo.size >= 10000) _codeKeyMemo.clear();
+    _codeKeyMemo.set(v, k);
+  }
+  return k;
+}
+
+// The pages' wildcard rule (actualForBidItem / _bidLineMatcher): a bid line
+// takes codes when its cost code is blank or reads the same, and its sub code
+// is blank or reads the same.
+function lineMatchesCodes(b, cc, sc) {
+  return (b.cost_code ? codeKey(cc) === codeKey(b.cost_code) : true) &&
+         (b.sub_code  ? codeKey(sc) === codeKey(b.sub_code)  : true);
+}
+
 // Paving bids a cost code's equipment on a line of its own ("… - Equipment"),
 // but an approved timesheet books the man and the machine he ran onto one job
 // row under the Labor sub code. Mirrors _bidEachCostPiece() in paving.html: a
@@ -422,11 +455,11 @@ const SQL_TRAVEL_FIELD_RE = '^ *travel *$';
 const SQL_TRAVEL_CODE_RE  = '(^|[^a-z0-9_])travel([^a-z0-9_]|$)';
 function pavingEquipToEquipLine(groups, bidLines) {
   const lines = bidLines.filter(b => b.cost_code || b.sub_code);
-  const equipLine = new Map();   // cost code → the sub code of its Equipment line
+  const equipLine = new Map();   // cost code (as codeKey reads it) → the sub code of its Equipment line
   for (const b of lines) {
-    if (b.cost_code && b.sub_code && !equipLine.has(b.cost_code)
+    if (b.cost_code && b.sub_code && !equipLine.has(codeKey(b.cost_code))
         && PAVING_EQUIP_RE.test(b.sub_code) && !PAVING_LABOR_RE.test(b.sub_code)) {
-      equipLine.set(b.cost_code, b.sub_code);
+      equipLine.set(codeKey(b.cost_code), b.sub_code);
     }
   }
   if (!equipLine.size) return groups;
@@ -435,18 +468,19 @@ function pavingEquipToEquipLine(groups, bidLines) {
   // one, a group on no line counting once (off-bid). A cost-code-only line
   // beside an Equipment line, with no Labor line, would otherwise count the
   // machine twice. Same wildcard rule as lineMatchesGroup below.
-  const reachOf = (cc, sc) => lines.filter(b =>
-    (b.cost_code ? cc === b.cost_code : true) && (b.sub_code ? sc === b.sub_code : true)).length || 1;
+  const reachOf = (cc, sc) => lines.filter(b => lineMatchesCodes(b, cc, sc)).length || 1;
+  const keyOf = (cc, sc) => codeKey(cc) + '\u0000' + codeKey(sc);
   const out   = groups.map(g => ({ ...g }));
-  const byKey = new Map(out.map(g => [g.cost_code + '\u0000' + g.sub_code, g]));
+  const byKey = new Map();
+  for (const g of out) { const k = keyOf(g.cost_code, g.sub_code); if (!byKey.has(k)) byKey.set(k, g); }
   const n = out.length;
   for (let i = 0; i < n; i++) {
     const g  = out[i];
-    const to = g.cost_code ? equipLine.get(g.cost_code) : undefined;
-    if (to === undefined || g.sub_code === to || !(g.equipActual > 0)
+    const to = g.cost_code ? equipLine.get(codeKey(g.cost_code)) : undefined;
+    if (to === undefined || codeKey(g.sub_code) === codeKey(to) || !(g.equipActual > 0)
         || !PAVING_LABOR_RE.test(g.sub_code) || PAVING_EQUIP_RE.test(g.sub_code)
         || reachOf(g.cost_code, to) > reachOf(g.cost_code, g.sub_code)) continue;
-    const key = g.cost_code + '\u0000' + to;
+    const key = keyOf(g.cost_code, to);
     let e = byKey.get(key);
     if (!e) {
       e = { cost_code: g.cost_code, sub_code: to, actual: 0, rangeActual: 0, rangeRows: 0, rqty: 0, equipActual: 0 };
@@ -561,9 +595,8 @@ async function buildFinancials(sql, companyCode, division, projects, range) {
   // is blank OR equal. A blank bid sub_code therefore catches every sub_code
   // under that cost code (the home page treats it as a wildcard, so we must too
   // or on-bid spend gets falsely flagged as off-bid).
-  const lineMatchesGroup = (b, g) =>
-    (b.cost_code ? g.cost_code === b.cost_code : true) &&
-    (b.sub_code  ? g.sub_code  === b.sub_code  : true);
+  // Codes compared as codeKey() reads them, as the page's _bidLineMatcher().
+  const lineMatchesGroup = (b, g) => lineMatchesCodes(b, g.cost_code, g.sub_code);
   // tracker skips bid lines with neither code (actualForBidItem returns 0).
   const lineHasKey = b => !!(b.cost_code || b.sub_code);
 
@@ -628,13 +661,18 @@ async function buildFinancials(sql, companyCode, division, projects, range) {
     // included in `actual` above but attributed to no bid item. Flag them with
     // the offending codes + amounts. By construction actual === on-bid + offBid.
     let offBid = 0;
-    const offBidCodes = [];
+    const offBidByKey = new Map();
     for (const g of groups) {
       if (bidLines.some(b => lineHasKey(b) && lineMatchesGroup(b, g))) continue;
       offBid += g.actual;
-      offBidCodes.push({ cost_code: g.cost_code, sub_code: g.sub_code, actual: g.actual });
+      // One entry per code as matched, under the first spelling met, as the
+      // page's off-bid list has them: two spellings of one code are one code.
+      const k = codeKey(g.cost_code) + '\u0000' + codeKey(g.sub_code);
+      const e = offBidByKey.get(k);
+      if (e) e.actual += g.actual;
+      else offBidByKey.set(k, { cost_code: g.cost_code, sub_code: g.sub_code, actual: g.actual });
     }
-    offBidCodes.sort((a, b) => b.actual - a.actual);
+    const offBidCodes = [...offBidByKey.values()].sort((a, b) => b.actual - a.actual);
 
     // A finished project cost what it cost. Otherwise off-bid spend belongs to
     // no bid line's projection, so it adds ON TOP of the line sum — and the

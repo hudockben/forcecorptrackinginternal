@@ -62,6 +62,8 @@ function load(src) {
     function getProj() { return _proj; }
     function getAllDailyRows() { return []; }
     ${extractFunction(src, '_rowIsWorkDay')}
+    ${extractFunction(src, '_codeKey')}
+    ${extractFunction(src, '_bidLineMatcher')}
     ${extractFunction(src, '_workDaysForItems')}
     ${extractFunction(src, 'daysWorkedForGroup')}
     ${extractFunction(src, '_bidGroupDaysHTML')}

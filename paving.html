@@ -8728,6 +8728,56 @@ function _bidGroupMeasureEdit(el) {
   wrap.title = _bidGroupUnitCostTip(t, qty, unit);
 }
 
+/* ── Which job rows a bid line takes ──
+   Every figure the bid view puts against a line (Actual Cost, running
+   quantity, hours, laborers, days, material) and the ⚠ off-bid total, which
+   is whatever no line takes, match rows to lines by one rule: a line takes a
+   row when its cost code is blank or is the row's cost code, and its sub code
+   is blank or is the row's sub code.
+
+   "Is" means reads the same on screen (_codeKey). Capitals, spaces at either
+   end or doubled up (the non-breaking kind a paste out of Procore or Excel
+   brings included), zero-width characters, which dash was typed ("-", "–",
+   "—") and curly or straight quotes don't make two codes different. Compared
+   exactly, they did: the timesheet split's code list trims every name, so a
+   day approved against a bid line saved as "Walkway - Wearing Course " landed
+   on no line at all, and the off-bid badge listed codes that looked identical
+   to the ones on the bid.
+
+   Whether a code is blank, which lets the line take every row under the other
+   code, is still read off the code as saved. So no line takes a row it didn't
+   before, other than the ones that were the same code all along. */
+function _codeKey(s) {
+  if (s == null || s === '') return '';
+  // Remembered on the function itself, so the cache travels with it wherever
+  // it is lifted, and a job walked once per bid line normalises each distinct
+  // code once rather than once per visit.
+  const memo = _codeKey.memo || (_codeKey.memo = new Map());
+  let k = memo.get(s);
+  if (k === undefined) {
+    k = String(s)
+      .replace(/[\u00AD\u200B-\u200D\u2060\uFEFF]/g, '')          // soft hyphen, zero-width
+      .replace(/[\u2010-\u2015\u2212\uFE58\uFE63\uFF0D]/g, '-')   // every dash
+      .replace(/[\u2018\u2019\u201A\u201B\u2032]/g, "'")          // curly single quotes
+      .replace(/[\u201C\u201D\u201E\u201F\u2033]/g, '"')          // curly double quotes
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+    if (memo.size >= 10000) memo.clear();
+    memo.set(s, k);
+  }
+  return k;
+}
+
+// One line's half of the rule, built once per line so its own codes are read
+// once and not once per row: takes(costCode, subCode) says whether the line
+// takes a row (or a piece of one) carrying those codes. A line with neither
+// code takes nothing.
+function _bidLineMatcher(b) {
+  const cc = b && b.cost_code ? _codeKey(b.cost_code) : null;   // null: blank, any code
+  const sc = b && b.sub_code  ? _codeKey(b.sub_code)  : null;
+  if (cc === null && sc === null) return () => false;
+  return (rcc, rsc) => (cc === null || _codeKey(rcc) === cc) && (sc === null || _codeKey(rsc) === sc);
+}
+
 /* ── Equipment on a Labor line is costed to the Equipment line ──────────────
    Paving bids a cost code's equipment on a line of its own — "4 1/2" 25MM
    Overlay - Equipment" beside "… - Labor" — but an approved timesheet puts the
@@ -8786,30 +8836,36 @@ function _bidEachCostPiece(p, rows, fn, want) {
   const LABOR = /\blabou?r\b/i, EQUIP = /\bequip/i;
   const TRAVEL_FIELD = /^ *travel *$/i, TRAVEL_CODE = /(^|[^a-z0-9_])travel([^a-z0-9_]|$)/i;
   const lines = ((p && p.bidItems) || []).filter(b => b && (b.cost_code || b.sub_code));
-  const equipLine = new Map();   // cost code → the sub code of its Equipment line
+  // Codes are compared as _codeKey() reads them, as every bid line matches its
+  // rows (_bidLineMatcher). The pieces handed to fn still carry the codes as
+  // saved — the row's own, or the Equipment line's sub code — since callers
+  // tell a row's own piece from a moved one by them.
+  const equipLine = new Map();   // cost code (as read) → the sub code of its Equipment line
   lines.forEach(b => {
-    const cc = b.cost_code, sc = b.sub_code;
-    if (cc && sc && !equipLine.has(cc) && EQUIP.test(sc) && !LABOR.test(sc)) equipLine.set(cc, sc);
+    const cc = b.cost_code, sc = b.sub_code, k = _codeKey(cc);
+    if (cc && sc && !equipLine.has(k) && EQUIP.test(sc) && !LABOR.test(sc)) equipLine.set(k, sc);
   });
   // How many bid lines take a piece with these codes — the wildcard rule
   // actualForBidItem() matches by — and 1 for a piece on none (off-bid).
   // Worked out once per pair of codes, in a map of maps: no key is built.
+  const takers = lines.map(_bidLineMatcher);
   const reach = new Map();
   const reachOf = (cc, sc) => {
-    let m = reach.get(cc);
-    if (!m) reach.set(cc, m = new Map());
-    let n = m.get(sc);
+    const kc = _codeKey(cc), ks = _codeKey(sc);
+    let m = reach.get(kc);
+    if (!m) reach.set(kc, m = new Map());
+    let n = m.get(ks);
     if (n === undefined) {
-      n = lines.filter(b => (b.cost_code ? cc === b.cost_code : true) && (b.sub_code ? sc === b.sub_code : true)).length || 1;
-      m.set(sc, n);
+      n = takers.filter(takes => takes(cc, sc)).length || 1;
+      m.set(ks, n);
     }
     return n;
   };
   const split = equipLine.size > 0;
   (rows || []).forEach(r => {
-    const to   = split && r.cost_code ? equipLine.get(r.cost_code) : undefined;
+    const to   = split && r.cost_code ? equipLine.get(_codeKey(r.cost_code)) : undefined;
     const sc   = r.sub_code || '';
-    const cand = to !== undefined && sc !== to;   // a row that could split
+    const cand = to !== undefined && _codeKey(sc) !== _codeKey(to);   // a row that could split
     // `want` first, by codes alone: a row neither piece of which the caller
     // needs goes no further — no name tests, no counting of lines, no pricing.
     const own  = !want || want(r.cost_code, r.sub_code);
@@ -8848,13 +8904,14 @@ function _bidEachCostPiece(p, rows, fn, want) {
    by cost code and sub code together, by cost code alone (a line with no sub
    code takes its whole code) and by sub code alone (a line with no cost code
    takes the sub code under any code). Added in row order starting from zero,
-   each sum is the one the walk makes, to the last bit. Keyed by the codes as
-   they are, in Maps rather than joined strings, so a code matches only what
-   === matches there. */
+   each sum is the one the walk makes, to the last bit. Keyed by each code as
+   _codeKey() reads it, in Maps rather than joined strings, so a code matches
+   exactly what the walk's _bidLineMatcher() matches there. */
 function _bidCodeTotals(p) {
   const tally = () => ({ both: new Map(), cc: new Map(), sc: new Map() });
   const cost = tally(), qty = tally();
-  const add = (t, cc, sc, v) => {
+  const add = (t, rcc, rsc, v) => {
+    const cc = _codeKey(rcc), sc = _codeKey(rsc);
     let bySc = t.both.get(cc);
     if (!bySc) t.both.set(cc, bySc = new Map());
     bySc.set(sc, (bySc.get(sc) ?? 0) + v);
@@ -8864,11 +8921,12 @@ function _bidCodeTotals(p) {
   const rows = (p && p.dailyRows) || [];
   _bidEachCostPiece(p, rows, (cc, sc, c) => add(cost, cc, sc, c));
   rows.forEach(r => add(qty, r.cost_code, r.sub_code, parseFloat(r.quantity) || 0));
-  // A line with neither code takes nothing, as in the two functions.
+  // A line with neither code takes nothing, as in the two functions. Whether a
+  // code is blank is read off the code as saved, as _bidLineMatcher() reads it.
   const line = t => b =>
     !b.cost_code && !b.sub_code ? 0
-    : b.cost_code && b.sub_code ? (t.both.get(b.cost_code)?.get(b.sub_code) ?? 0)
-    : ((b.cost_code ? t.cc.get(b.cost_code) : t.sc.get(b.sub_code)) ?? 0);
+    : b.cost_code && b.sub_code ? (t.both.get(_codeKey(b.cost_code))?.get(_codeKey(b.sub_code)) ?? 0)
+    : ((b.cost_code ? t.cc.get(_codeKey(b.cost_code)) : t.sc.get(_codeKey(b.sub_code))) ?? 0);
   return { cost: line(cost), qty: line(qty) };
 }
 
@@ -8882,9 +8940,7 @@ function actualForBidItem(b, projId, totals) {
   // By piece, not by row: equipment run on a Labor row counts on the cost
   // code's Equipment line. See _bidEachCostPiece().
   let s = 0;
-  _bidEachCostPiece(proj, rows, (cc, sc, cost) => { s += cost; }, (cc, sc) =>
-    (b.cost_code ? cc === b.cost_code : true) &&
-    (b.sub_code  ? sc === b.sub_code  : true));
+  _bidEachCostPiece(proj, rows, (cc, sc, cost) => { s += cost; }, _bidLineMatcher(b));
   return s;
 }
 
@@ -8937,11 +8993,11 @@ function _rowMaterialInCost(r) {
 function materialForBidItem(b, projId, src) {
   const out = { total: 0, entries: [] };
   if (!b || (!b.cost_code && !b.sub_code)) return out;
+  const takes = _bidLineMatcher(b);
   const proj = getProj(projId);
   const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
   rows.forEach(r => {
-    if (!((b.cost_code ? r.cost_code === b.cost_code : true) &&
-          (b.sub_code  ? r.sub_code  === b.sub_code  : true))) return;
+    if (!takes(r.cost_code, r.sub_code)) return;
     const amount = _rowMaterialInCost(r);
     if (!amount) return;
     if (!src) src = _bidMaterialSources();
@@ -9159,11 +9215,11 @@ function _bidMatRefreshDue() {
 function runningQtyForBidItem(b, projId, totals) {
   if (!b.cost_code && !b.sub_code) return 0;
   if (totals) return totals.qty(b);
+  const takes = _bidLineMatcher(b);
   const proj = getProj(projId);
   const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
   return rows.reduce((s, r) => {
-    if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
-        (b.sub_code  ? r.sub_code  === b.sub_code  : true)) {
+    if (takes(r.cost_code, r.sub_code)) {
       return s + (parseFloat(r.quantity) || 0);
     }
     return s;
@@ -9172,11 +9228,11 @@ function runningQtyForBidItem(b, projId, totals) {
 
 function cumulativeHoursForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
+  const takes = _bidLineMatcher(b);
   const proj = getProj(projId);
   const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
   return rows.reduce((s, r) => {
-    if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
-        (b.sub_code  ? r.sub_code  === b.sub_code  : true)) {
+    if (takes(r.cost_code, r.sub_code)) {
       return s + (parseFloat(r.labor_hours) || 0);
     }
     return s;
@@ -9185,13 +9241,12 @@ function cumulativeHoursForBidItem(b, projId) {
 
 function laborerCountForBidItem(b, projId) {
   if (!b.cost_code && !b.sub_code) return 0;
+  const takes = _bidLineMatcher(b);
   const proj = getProj(projId);
   const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
   const names = new Set();
   rows.forEach(r => {
-    if ((b.cost_code ? r.cost_code === b.cost_code : true) &&
-        (b.sub_code  ? r.sub_code  === b.sub_code  : true) &&
-        r.employee) {
+    if (takes(r.cost_code, r.sub_code) && r.employee) {
       names.add(r.employee);
     }
   });
@@ -9218,15 +9273,13 @@ function _rowIsWorkDay(r) {
 function _workDaysForItems(groupItems, projId) {
   const items = (groupItems || []).filter(b => b && (b.cost_code || b.sub_code));
   if (!items.length) return [];
+  const takers = items.map(_bidLineMatcher);
   const proj = getProj(projId);
   const rows = proj ? (proj.dailyRows || []) : getAllDailyRows();
   const days = new Set();
   rows.forEach(r => {
     if (!r.date || days.has(r.date) || !_rowIsWorkDay(r)) return;
-    const worked = items.some(b =>
-      (b.cost_code ? r.cost_code === b.cost_code : true) &&
-      (b.sub_code  ? r.sub_code  === b.sub_code  : true));
-    if (worked) days.add(r.date);
+    if (takers.some(takes => takes(r.cost_code, r.sub_code))) days.add(r.date);
   });
   return [...days].sort();
 }
@@ -9409,22 +9462,20 @@ function _bidPlanRateOnChange(e) {
 document.addEventListener('change', _bidPlanRateOnChange);
 
 // Daily costs whose cost/sub code matches no bid line. Same wildcard rule as
-// actualForBidItem(), and the same pieces (equipment on a Labor row counted on
-// its Equipment line), so on-bid spend is never miscounted as off-bid. Accepts
-// a project id or the project object itself.
+// actualForBidItem() (_bidLineMatcher), and the same pieces (equipment on a
+// Labor row counted on its Equipment line), so on-bid spend is never miscounted
+// as off-bid, and the same code spelled with different capitals, spaces or
+// dashes is on-bid. One entry per code as matched, under the first spelling
+// met. Accepts a project id or the project object itself.
 function offBidForProject(projIdOrProj) {
   const p = (projIdOrProj && typeof projIdOrProj === 'object') ? projIdOrProj : getProj(projIdOrProj);
   if (!p) return { total: 0, codes: [] };
-  const bids = p.bidItems || [];
-  const hasKey  = b => !!((b.cost_code || '') || (b.sub_code || ''));
-  const matches = (b, cc, sc) =>
-    (b.cost_code ? cc === b.cost_code : true) &&
-    (b.sub_code  ? sc === b.sub_code  : true);
+  const takers = (p.bidItems || []).filter(b => b && (b.cost_code || b.sub_code)).map(_bidLineMatcher);
   const map = new Map();
-  const offBid = (cc, sc) => !bids.some(b => hasKey(b) && matches(b, cc, sc));
+  const offBid = (cc, sc) => !takers.some(takes => takes(cc, sc));
   _bidEachCostPiece(p, p.dailyRows || [], (cost_code, sub_code, cost) => {
     if (!cost) return;
-    const key = (cost_code || '') + '\u0000' + (sub_code || '');
+    const key = _codeKey(cost_code) + '\u0000' + _codeKey(sub_code);
     const e = map.get(key) || { cost_code: cost_code || '', sub_code: sub_code || '', actual: 0 };
     e.actual += cost;
     map.set(key, e);
@@ -9449,14 +9500,26 @@ function _renderBidOffBidBadge(projId) {
     return;
   }
   const lines = info.codes.slice(0, 12)
-    .map(c => `  ${c.cost_code || '(blank)'}${c.sub_code ? ' / ' + c.sub_code : ''}: $${fmt(c.actual)}`)
+    .map(c => `  ${c.cost_code || '(blank)'}${c.sub_code ? ' / ' + c.sub_code : ''}: $${fmt(c.actual)}${_offBidElsewhere(projId, c)}`)
     .join('\n');
   const more = info.codes.length > 12 ? `\n  …and ${info.codes.length - 12} more` : '';
   el.textContent = `⚠ $${fmt(info.total)} off-bid`;
   el.title = `$${fmt(info.total)} in daily costs aren't matching any bid line, so they don't show against a bid item above.\n`
     + `They are still counted in the project's actual and projected cost.\n`
-    + `Usually the cost code / sub code spelling or case doesn't match the bid line. Check these:\n${lines}${more}`;
+    + `Capitals, extra spaces and dash style are already ignored, so each of these is a cost code / sub code pair the bid doesn't have. `
+    + `Add it to the bid, or recode the daily rows to a bid line:\n${lines}${more}`;
   el.style.display = '';
+}
+
+// " (on the bid under <cost code>)" when an off-bid entry's sub code is on the
+// bid, but under a different cost code: the commonest way left for a day to
+// miss its line once spelling no longer can, and invisible from the list alone.
+function _offBidElsewhere(projId, c) {
+  const p = getProj(projId);
+  if (!p || !c || !c.sub_code) return '';
+  const sc = _codeKey(c.sub_code), cc = _codeKey(c.cost_code);
+  const hit = (p.bidItems || []).find(b => b && b.sub_code && _codeKey(b.sub_code) === sc && _codeKey(b.cost_code) !== cc);
+  return hit ? ` (on the bid under ${hit.cost_code || 'no cost code'})` : '';
 }
 
 // A finished project's projected cost is simply what it cost — nothing is left
