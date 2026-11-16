@@ -39,6 +39,11 @@
  * is mirrored to po_deliveries — the JSON blob carries `tax_pct` and is the
  * source of truth on read, so the normalized fallback below losing it is fine:
  * the frontend re-derives the percentage from the dollar amount.
+ *
+ * Both writes take `editedFields`, the order-level fields the page changed —
+ * a list on POST, `{ [orderId]: [...] }` on PUT. Only those are taken from the
+ * page's copy; the rest keep their stored values, so a copy a minute old cannot
+ * blank what someone else filled in. See settleHeaderFields in api/lib/po-sync.js.
  */
 const { neon } = require('@neondatabase/serverless');
 const {
@@ -289,6 +294,7 @@ module.exports = async (req, res) => {
       // recovered is written straight back out.
       let mergedLines = 0;      // deliveries the client had not seen
       let mergedLinks = 0;      // po_row_ids restored onto lines it had
+      let mergedFields = 0;     // order fields kept over a copy that had not changed them
       const supersededRows = [];  // cost rows a stale copy minted over a stored one
 
       if (!isNaN(baseTs) && req.query.force !== '1') {
@@ -321,6 +327,34 @@ module.exports = async (req, res) => {
           // the client sent. A client that is up to date replaces its own
           // orders exactly as before, so removing a delivery still removes it.
           const storedById = new Map(stored.filter(p => p && p.id).map(p => [p.id, p]));
+
+          // ...and the orders' own fields. The tab sends every order it holds,
+          // each as old as its last refresh, and storing them whole put back
+          // whatever purchasing had changed since on orders the tab never
+          // touched: a Turf foreman approving PO-0364 reverted PO-0365's title,
+          // supplier, code and status to the blank copy the tab loaded. A tab
+          // that says which fields it changed has only those taken from it —
+          // see settleHeaderFields. An order the map does not name is one it
+          // changed nothing on.
+          //
+          // Before the link checks below: they compare the job, and a stale
+          // copy's old job read as the tab having MOVED the order — which
+          // swept the cost rows purchasing had put on the new one.
+          const editedByOrder = poSync.editedFieldsByOrder((req.body || {}).editedFields);
+          if (editedByOrder) {
+            toWrite = toWrite.map(po => {
+              const was = po && po.id ? storedById.get(po.id) : null;
+              if (!was || po === was) return po;
+              const copy = { ...po };
+              const kept = poSync.settleHeaderFields(copy, was, editedByOrder.get(String(po.id)) || new Set());
+              if (!kept.length) return po;
+              mergedFields += kept.length;
+              return copy;
+            });
+            if (mergedFields) {
+              console.warn(`[purchase-orders] kept ${mergedFields} stored order field(s) a stale copy had not changed for ${blobKey}`);
+            }
+          }
 
           // A stored link is only worth restoring if the row it names is still
           // there. A null from the client means one of two opposite things and
@@ -555,8 +589,11 @@ module.exports = async (req, res) => {
       return res.json({
         ok: true,
         updatedAt: written.length ? written[0].updated_at : null,
-        merged: mergedOrders + mergedLines + mergedLinks,
-        mergedOrders, mergedLines, mergedLinks,
+        // Kept fields count too: a tab told nothing was merged adopts this
+        // version, its next save skips the merge, and its stale copy of those
+        // fields goes straight back out.
+        merged: mergedOrders + mergedLines + mergedLinks + mergedFields,
+        mergedOrders, mergedLines, mergedLinks, mergedFields,
         // Orders whose Daily Tracking lines the job rows changed from what the
         // tab sent: its copy is behind, and it re-reads the list.
         derived,
@@ -623,6 +660,14 @@ module.exports = async (req, res) => {
       const editedLineIds = Array.isArray((req.body || {}).editedLineIds)
         ? (req.body || {}).editedLineIds.map(String).slice(0, 500)
         : [];
+      // The order's own fields the caller changed — title, status, code and the
+      // rest. Every other field keeps its stored value, so a screen holding an
+      // older copy cannot blank what somebody else filled in by approving it.
+      // Absent — a page still running older code — and the order is stored
+      // whole, as it always was. See settleHeaderFields in api/lib/po-sync.js.
+      const editedFields = Array.isArray((req.body || {}).editedFields)
+        ? (req.body || {}).editedFields.map(String).slice(0, 50)
+        : null;
 
       // The division the order was stored under before this save. Purchasing
       // sends it when someone re-ties an order to a different division, so the
@@ -642,6 +687,7 @@ module.exports = async (req, res) => {
         from,
         deletedLineIds,
         editedLineIds,
+        editedFields,
         // Stamped as who raised the order only if it is new and the page sent
         // no stamp of its own.
         username: payload.username,

@@ -1548,6 +1548,134 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
       Boolean(ins2) && !ins2.vals.includes('not a time'), ins2 && JSON.stringify(ins2.vals));
   }
 
+  console.log('\n[a save takes only the fields its page changed]');
+  {
+    // Two screens loaded PO-0365 while it was blank. One fills it in; the
+    // other — its 60s refresh skipped because a field had focus — approves it.
+    // The approval carried the whole blank copy and was stored whole: the
+    // order came out approved with its title and supplier gone.
+    const blank = () => makePO({ id: 'po365', po_number: 'PO-0365', title: '', supplier: '',
+                                 project_id: 'job1', cost_code: '100', sub_code: 'A',
+                                 lines: [{ id: 'L1', qty: '10', unit_cost: '4' }] });
+    const stored = () => st.getBlob(KEY('turf')).find(p => p.id === 'po365');
+
+    st = makeStore();
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: blank(), editedFields: [] });
+    const rowId = stored().lines[0].po_row_id;
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf',
+      po: Object.assign(blank(), { title: 'Drain Fabric', supplier: 'Hanes Geo Components',
+                                   cost_code: '300', sub_code: 'C' }),
+      editedFields: ['title', 'supplier', 'cost_code', 'sub_code'] });
+
+    const approve = Object.assign(blank(), { status: 'approved',
+      status_changed_at: '2026-11-16T14:47:00.000Z', status_changed_by: 'hudockben' });
+    const res = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: approve,
+                                                editedFields: ['status'] });
+    assert('approving from a stale copy keeps the title and supplier somebody filled in',
+      stored().title === 'Drain Fabric' && stored().supplier === 'Hanes Geo Components', JSON.stringify(stored()));
+    assert('  and the code', stored().cost_code === '300' && stored().sub_code === 'C', JSON.stringify(stored()));
+    assert('  and is approved, stamped by who approved it',
+      stored().status === 'approved' && stored().status_changed_by === 'hudockben'
+      && stored().status_changed_at === '2026-11-16T14:47:00.000Z', JSON.stringify(stored()));
+    assert('  and the order it answers with is the stored one, for the page to take on',
+      res.purchaseOrder.title === 'Drain Fabric' && res.purchaseOrder.status === 'approved',
+      JSON.stringify(res.purchaseOrder));
+    // codesChanged compares the order with its stored copy: the stale copy's
+    // old code read as a re-code and was pushed onto the job's row.
+    assert('  and the job\'s cost row keeps the order\'s real code',
+      st.daily.get(rowId) && st.daily.get(rowId).cost_code === '300' && st.daily.get(rowId).sub_code === 'C',
+      JSON.stringify(st.daily.get(rowId)));
+    assert('  and its real supplier', st.daily.get(rowId).supplier === 'Hanes Geo Components',
+      JSON.stringify(st.daily.get(rowId)));
+
+    // The other way round: the screen that changed the status had an older
+    // status stamp too. Editing the title must not put the old status back.
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf',
+      po: Object.assign(blank(), { title: 'Drain fabric, 12 oz' }), editedFields: ['title'] });
+    assert('a title edit from a copy that predates the approval leaves it approved',
+      stored().status === 'approved' && stored().status_changed_by === 'hudockben'
+      && stored().title === 'Drain fabric, 12 oz' && stored().supplier === 'Hanes Geo Components',
+      JSON.stringify(stored()));
+
+    // Clearing a field is an edit like any other.
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf',
+      po: Object.assign(blank(), { notes: '' , supplier: '' }), editedFields: ['supplier'] });
+    assert('emptying a field the page changed empties it', stored().supplier === '' && stored().title === 'Drain fabric, 12 oz',
+      JSON.stringify(stored()));
+
+    // A page still running the code from before this sends no list at all, and
+    // is stored whole, as it always was.
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf',
+      po: Object.assign(blank(), { title: 'Old page' }) });
+    assert('a page that says nothing is stored whole, as before',
+      stored().title === 'Old page' && stored().status === 'pending', JSON.stringify(stored()));
+
+    // A new order has nothing stored to keep: everything comes from the page.
+    st = makeStore();
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', editedFields: [],
+      po: makePO({ id: 'fresh', title: 'Geogrid', supplier: 'Tensar', status: 'approved' }) });
+    const fresh = st.getBlob(KEY('turf'))[0];
+    assert('a new order is stored as the page raised it',
+      fresh.title === 'Geogrid' && fresh.supplier === 'Tensar' && fresh.status === 'approved', JSON.stringify(fresh));
+  }
+  {
+    // A move that half landed leaves the order in BOTH lists, and the retry
+    // comes from a page whose edits the first attempt already confirmed — it
+    // no longer names the job or number it changed. Settled against the old
+    // list's copy, the retry would move the order straight back.
+    st = makeStore();
+    const moving = makePO({ id: 'mv', po_number: 'PO-0009', project_id: 'pav1', title: 'Curb mix',
+                            lines: [{ id: 'L1', qty: '2', unit_cost: '5' }] });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'paving', po: moving, editedFields: [] });
+    const realSql = st.sql;
+    let blocking = true;
+    const blockedSql = (strings, ...vals) => {
+      const q = strings.join(' ').replace(/\s+/g, ' ');
+      if (blocking && /^ *UPDATE app_data SET value =/.test(q) && vals[1] === KEY('paving')) return Promise.resolve([]);
+      return realSql(strings, ...vals);
+    };
+    const moved = Object.assign({}, moving, { project_id: 'turf1', po_number: 'PO-0031' });
+    const first = await poSync.upsertPO(blockedSql, { companyCode: 'FCT', division: 'turf', po: moved, from: 'paving',
+      editedFields: ['project_id', 'cost_code', 'sub_code', 'po_number'] });
+    assert('(the move half lands)', first.ok && first.staleCopy === true);
+    blocking = false;
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', from: 'paving',
+      po: Object.assign({}, moved, { lines: st.getBlob(KEY('turf'))[0].lines }), editedFields: [] });
+    const t = st.getBlob(KEY('turf'))[0];
+    assert('the retry finishes the move on the job and number it was moved to',
+      t && t.project_id === 'turf1' && t.po_number === 'PO-0031' && st.getBlob(KEY('paving')).length === 0,
+      JSON.stringify(t));
+  }
+  {
+    console.log('\n[settleHeaderFields on its own]');
+    const s = (po, stored, edited) => ({ kept: poSync.settleHeaderFields(po, stored, edited), po });
+    let r = s({ title: 'stale', status: 'approved', status_changed_by: 'me' },
+              { title: 'real', status: 'pending', status_changed_by: 'them' }, new Set(['status']));
+    assert('a field the page did not change takes the stored value', r.po.title === 'real');
+    assert('  one it did change keeps the page\'s, with its byline',
+      r.po.status === 'approved' && r.po.status_changed_by === 'me');
+    assert('  and it says which it kept', JSON.stringify(r.kept) === '["title"]', JSON.stringify(r.kept));
+    r = s({ title: '', notes: null }, { notes: '' }, new Set());
+    assert('blank, missing and null are the same nothing — no churn',
+      r.kept.length === 0 && r.po.title === '', JSON.stringify(r));
+    r = s({ title: 'x', supplier: 'stale' }, { title: 'x' }, new Set());
+    assert('a field the stored order never had is dropped, not kept from the copy',
+      !('supplier' in r.po) && JSON.stringify(r.kept) === '["supplier"]', JSON.stringify(r));
+    r = s({ title: 'x', lines: [1], created_by: 'a', origin: 'purchasing', id: 'z' },
+          { title: 'y', lines: [2], created_by: 'b', origin: 'turf', id: 'z' }, new Set());
+    assert('lines, the creation stamp and the rest are not this function\'s',
+      r.po.lines[0] === 1 && r.po.created_by === 'a' && r.po.origin === 'purchasing' && r.po.title === 'y');
+    assert('no stored copy, or no list from the page: left as sent',
+      s({ title: 'a' }, null, new Set()).kept.length === 0 && s({ title: 'a' }, { title: 'b' }, null).po.title === 'a');
+    assert('editedFieldSet: a list is a set, anything else is "did not say"',
+      poSync.editedFieldSet(['title', 7]).has('7') && poSync.editedFieldSet('title') === null
+      && poSync.editedFieldSet(undefined) === null);
+    const by = poSync.editedFieldsByOrder({ a: ['title'], b: 'nope' });
+    assert('editedFieldsByOrder: per order, dropping what is not a list',
+      by.get('a').has('title') && !by.has('b') && poSync.editedFieldsByOrder(['a']) === null
+      && poSync.editedFieldsByOrder(null) === null);
+  }
+
   console.log('\n[blob keys]');
   assert('key is company:blob:division',
     poSync.blobKeyFor('FCT', 'paving') === 'FCT:fct_purchase_orders:paving');

@@ -6994,6 +6994,23 @@ let purchaseOrders = [];
 // central purchasing writes into this same list, and without it a save made
 // from a stale list erases whatever it raised in the meantime.
 let _poBaseUpdatedAt = null;
+// The order-level fields this tab has CHANGED and no save has confirmed, per
+// order: field → the number of the change. Sent with every save, so the server
+// takes only those from this tab's list and keeps the stored value of every
+// other field. The list here is as old as its last refresh, and the refresh is
+// skipped while a field has focus — so without this, editing one order wrote
+// the tab's stale copy of every OTHER order back over whatever central
+// purchasing had changed on them since: title, supplier, code, status.
+//
+// Numbered rather than just listed so a save forgets only the edits it
+// carried: saves here are not queued, and one changed again while an earlier
+// save was in flight is still owed to the next.
+const _poEditedFields = {};
+let _poEditSeq = 0;
+function _poNoteEdit(poId, ...fields) {
+  const m = _poEditedFields[poId] || (_poEditedFields[poId] = new Map());
+  fields.forEach(f => m.set(f, ++_poEditSeq));
+}
 // Whether a read of the purchase orders has worked. Nothing that reads the list
 // for what is MISSING from it (the PO # notice, Create) may run against the
 // empty list a failed read leaves behind.
@@ -7056,12 +7073,25 @@ function _migratePOs(list = purchaseOrders) {
 }
 
 function savePurchaseOrders() {
+  // What this save carries — a snapshot, so an edit made while it is in flight
+  // is not forgotten when it lands.
+  const sentFields = {}, editedFields = {};
+  Object.keys(_poEditedFields).forEach(id => {
+    sentFields[id]   = new Map(_poEditedFields[id]);
+    editedFields[id] = [...sentFields[id].keys()];
+  });
   fetch(`${API_BASE}/purchase-orders?division=turf`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
-    body: JSON.stringify({ purchaseOrders, baseUpdatedAt: _poBaseUpdatedAt })
+    body: JSON.stringify({ purchaseOrders, baseUpdatedAt: _poBaseUpdatedAt, editedFields })
   }).then(async r => {
     if (r.ok) {
+      Object.keys(sentFields).forEach(id => {
+        const now = _poEditedFields[id];
+        if (!now) return;
+        sentFields[id].forEach((seq, f) => { if (now.get(f) === seq) now.delete(f); });
+        if (!now.size) delete _poEditedFields[id];
+      });
       // The version this save produced, so the next one is judged against
       // what the server actually holds rather than a base already stale.
       try {
@@ -16633,6 +16663,7 @@ function deletePO(id) {
     }
   }
   _poExpanded.delete(id);
+  delete _poEditedFields[id];
   purchaseOrders = purchaseOrders.filter(p => p.id !== id);
   savePurchaseOrders();
   renderPOTab();
@@ -17667,6 +17698,7 @@ function _handlePOEvent(e) {
     if ((cc || '') === (po.cost_code || '') && (sc || '') === (po.sub_code || '')) return;
     po.cost_code = cc || '';
     po.sub_code  = sc || '';
+    _poNoteEdit(po.id, 'cost_code', 'sub_code');
     savePurchaseOrders();
     // The codes themselves changed here, so they do propagate to the rows.
     // Fire and forget: it may read the job's rows first, and nothing after
@@ -17689,10 +17721,13 @@ function _handlePOEvent(e) {
     // linked daily rows in the block below.
     if (newProj === oldProj) return;
     po.project_id = newProj;
+    // The codes are cleared below: they belonged to the old job.
+    _poNoteEdit(po.id, 'project_id', 'cost_code', 'sub_code');
   } else {
     // No-op commit for supplier / title / date / status — skip the redundant save.
     if (po[field] === el.value) return;
     po[field] = el.value;
+    _poNoteEdit(po.id, field);
   }
 
   if (field === 'status') {

@@ -675,6 +675,76 @@ function settleCreationStamps(list, storedList, ctx) {
   return list;
 }
 
+// ── The order's own fields: only what the page changed ──────────────────────
+//
+// Every save carries the order whole — central purchasing one order at a time,
+// a division tab its entire list — as that page last saw it. The page's copy is
+// often minutes old: each one refreshes every 60 seconds, but skips while a
+// field has focus, which on a screen somebody is working in is most of the
+// time. Storing that copy whole put back every field as the page had it, so:
+//
+//  - approving an order on a screen that loaded it before someone filled in
+//    its title, supplier and code stored it approved and BLANK; and
+//  - a Turf tab editing one order wrote its stale copy of every other order in
+//    the list back over purchasing's changes to them, status included.
+//
+// A page that says which fields it changed — `editedFields` — has only those
+// taken from its copy. Every other field keeps the value stored. A page that
+// says nothing (one still running the code from before this) is stored whole,
+// as it always was.
+
+/** The order-level fields a page edits. Lines and the creation stamp have rules of their own. */
+const HEADER_KEYS = [
+  'po_number', 'date_created', 'project_id', 'cost_code', 'sub_code',
+  'title', 'supplier', 'status', 'notes',
+];
+// Who set the status and when. They travel with the status they describe:
+// taken from the page only when the page changed the status.
+const STATUS_STAMP_KEYS = ['status_changed_at', 'status_changed_by'];
+
+/** A request's edited-field list as a Set, or null when it sent none. */
+function editedFieldSet(v) {
+  if (!Array.isArray(v)) return null;
+  return new Set(v.slice(0, 50).map(String));
+}
+
+/**
+ * The full-list form: `{ [orderId]: [field, ...] }` → Map of id → Set, or null
+ * when the request sent none. An order the map does not mention is one the page
+ * changed nothing on.
+ */
+function editedFieldsByOrder(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const out = new Map();
+  for (const [id, fields] of Object.entries(v).slice(0, 5000)) {
+    const set = editedFieldSet(fields);
+    if (set) out.set(String(id), set);
+  }
+  return out;
+}
+
+const _headerText = v => (v == null ? '' : String(v));
+
+/**
+ * Put back the stored value of every order-level field `edited` does not name.
+ * Mutates `po`; returns the fields it took from `stored`.
+ *
+ * No `stored` copy — the order is new — or no `edited` set — the page did not
+ * say — leaves `po` as sent.
+ */
+function settleHeaderFields(po, stored, edited) {
+  if (!po || typeof po !== 'object' || !stored || !edited) return [];
+  const kept = [];
+  const keep = k => {
+    if (_headerText(po[k]) === _headerText(stored[k])) return;
+    if (stored[k] === undefined) delete po[k]; else po[k] = stored[k];
+    kept.push(k);
+  };
+  for (const k of HEADER_KEYS) if (!edited.has(k)) keep(k);
+  if (!edited.has('status')) STATUS_STAMP_KEYS.forEach(keep);
+  return kept;
+}
+
 /**
  * Read a division's purchase-order list along with the timestamp to compare
  * against when writing it back. `exists` distinguishes an absent row from one
@@ -1142,11 +1212,8 @@ function unseenLines(po, priorCopies, deletedLineIds) {
  * purchasing re-tied it to a different one. The order is removed from that list
  * in the same call, so it can never exist in two divisions at once.
  */
-async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, editedLineIds, username }) {
+async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, editedLineIds, editedFields, username }) {
   const prevDivision = from && from !== division ? from : null;
-  // syncPOCostRows makes the same call; made here first because the Daily
-  // Tracking lines below are derived against the job the order is saved with.
-  if (!PO_JOB_DIVISIONS.includes(division) && po.project_id) po.project_id = '';
 
   // Every list this order might already be stored in. The target's copy matters
   // as much as the source's after a move that half landed, when the order is in
@@ -1169,6 +1236,23 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
   // Who raised it and when, from whichever copy is already stored — a move
   // carries the stamp with it. Only an order stored nowhere is new.
   settleCreationStamp(po, priorCopies.find(c => c.created_at) || priorCopies[0] || null, { username });
+
+  // The order's own fields: the ones the page changed, and the stored value of
+  // the rest — see settleHeaderFields. Before anything below reads them: the
+  // job and codes decide which rows are reconciled and whether their codes
+  // follow, and a stale copy's old code would otherwise be pushed back onto
+  // the job's rows as a re-code.
+  //
+  // Settled against the copy in THIS list where there is one. After a move
+  // that half landed it is the newer of the two — the one the move already
+  // wrote — and the page, whose edits that save confirmed, no longer names the
+  // job or number it changed; settling against the old list's copy would
+  // quietly move the order back.
+  settleHeaderFields(po, targetCopy || prevPO, editedFieldSet(editedFields));
+
+  // syncPOCostRows makes the same call; made here first because the Daily
+  // Tracking lines below are derived against the job the order is saved with.
+  if (!PO_JOB_DIVISIONS.includes(division) && po.project_id) po.project_id = '';
 
   // Deliveries somebody else added while this caller was holding a stale copy.
   // Merged back BEFORE the cost rows are reconciled, so their rows are not read
@@ -1465,6 +1549,10 @@ module.exports = {
   safeTimestamp,
   settleCreationStamp,
   settleCreationStamps,
+  HEADER_KEYS,
+  editedFieldSet,
+  editedFieldsByOrder,
+  settleHeaderFields,
   unseenLines,
   findPOInDivision,
   resolvePODocScope,

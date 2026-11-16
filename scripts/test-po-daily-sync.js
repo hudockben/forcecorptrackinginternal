@@ -389,11 +389,30 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
     assert('the delivery rows draw the tag', /dailyLineTagHTML\(l\)/.test(rows));
     assert('  and a lock in place of the ✕ on a Daily Tracking line', /isDailyLine\(l\)\s*\n\s*\? '<span[\s\S]{0,300}?&#128274;<\/span>'/.test(rows));
     assert('deleteLine refuses one', /if \(isDailyLine\(\(po\.lines \|\| \[\]\)\.find\(l => l\.id === lineId\)\)\) return;/.test(requireFn(src, 'deleteLine')));
-    assert('an edit is remembered per line', /\(_editedLines\[poId\] \|\| \(_editedLines\[poId\] = new Set\(\)\)\)\.add\(lineId\);/.test(requireFn(src, 'setLineField')));
+    assert('an edit is remembered per line', /noteEdit\(_editedLines, poId, lineId\);/.test(requireFn(src, 'setLineField')));
     const write = requireFn(src, '_savePOWrite');
-    assert('every save says which lines it edited', /editedLineIds:\s*sentEdits,/.test(write));
-    assert('  and forgets them once the server has them', /sentEdits\.forEach\(id => _editedLines\[po\.id\]\.delete\(id\)\);/.test(write));
+    assert('every save says which lines it edited', /editedLineIds:\s*\[\.\.\.sentEdits\.keys\(\)\],/.test(write));
+    assert('  and forgets them once the server has them', /clearSentEdits\(_editedLines, po\.id, sentEdits\);/.test(write));
     assert('so does the save made as the tab closes', /editedLineIds:\s*editedLinesFor\(id\),/.test(src));
+
+    // The page's own bookkeeping, run. A delivery edited AGAIN while the save
+    // carrying its first edit was in flight is still owed to the next save.
+    // With a plain set the first save's landing forgot it, the queued save went
+    // out saying the line was untouched, and the server kept the row's figures
+    // over the second edit.
+    const bk = vm.createContext({});
+    vm.runInContext('const _editedLines = {}; let _editSeq = 0;' +
+      ['noteEdit', 'pendingEdits', 'clearSentEdits', 'editedLinesFor'].map(n => requireFn(src, n)).join('\n'), bk);
+    const run = e => vm.runInContext(e, bk);
+    run(`noteEdit(_editedLines, 'po1', 'dr-r1'); noteEdit(_editedLines, 'po1', 'dr-r2');
+         var sent = pendingEdits(_editedLines, 'po1');      // the first save leaves
+         noteEdit(_editedLines, 'po1', 'dr-r1');            // edited again meanwhile
+         clearSentEdits(_editedLines, 'po1', sent);         // the first save lands`);
+    assert('  a line edited again while its save was in flight is still sent',
+      run('JSON.stringify(editedLinesFor("po1"))') === '["dr-r1"]', run('JSON.stringify(editedLinesFor("po1"))'));
+    run(`clearSentEdits(_editedLines, 'po1', pendingEdits(_editedLines, 'po1'))`);
+    assert('  and forgotten once a save carrying it lands', run('JSON.stringify(editedLinesFor("po1"))') === '[]'
+      && run('"po1" in _editedLines') === false);
   }
 
   console.log('\n────────────────────────────────────────');

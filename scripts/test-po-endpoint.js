@@ -1078,6 +1078,128 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
     }
   }
 
+  console.log('\n[a division tab\'s save takes only the fields it changed]');
+  {
+    // The Turf tab loaded its list at 14:40, when PO-0365 was blank. Purchasing
+    // filled it in and approved it at 14:46. At 14:47 the foreman approved a
+    // DIFFERENT order — and the tab's whole list went up, its blank PO-0365
+    // with it, and was stored over purchasing's.
+    const T_READ  = '2026-11-16T14:40:00.000Z';
+    const T_MOVED = '2026-11-16T14:46:00.000Z';
+    const T_NEW   = '2026-11-16T14:47:00.000Z';
+    const STORED = () => [
+      { id: 'po365', po_number: 'PO-0365', title: 'Drain Fabric', supplier: 'Hanes Geo Components',
+        project_id: 'job2', cost_code: '300', sub_code: 'C', status: 'approved',
+        status_changed_at: '2026-11-16T14:46:30.000Z', status_changed_by: 'hudockben',
+        // A delivery purchasing recorded after the tab loaded, charged to job2.
+        lines: [{ id: 'L1', qty: '10', unit_cost: '4', po_row_id: 'row-on-job2' }] },
+      { id: 'po364', po_number: 'PO-0364', title: 'Fabric', status: 'pending', project_id: 'job1', lines: [] },
+    ];
+    const TAB = () => [
+      { id: 'po365', po_number: 'PO-0365', title: '', supplier: '', project_id: 'job1',
+        cost_code: '', sub_code: '', status: 'pending', lines: [] },
+      { id: 'po364', po_number: 'PO-0364', title: 'Fabric', status: 'approved', project_id: 'job1',
+        status_changed_at: '2026-11-16T14:47:00.000Z', status_changed_by: 'foreman', lines: [] },
+    ];
+    function stub(storedUpdatedAt) {
+      const seen = [];
+      const sql = (strings, ...vals) => {
+        let q = ''; strings.forEach((x, i) => { q += x; if (i < vals.length) q += `$${i + 1}`; });
+        q = q.replace(/\s+/g, ' ').trim();
+        seen.push({ q, vals });
+        if (/^SELECT value, updated_at FROM app_data/.test(q)) {
+          return Promise.resolve([{ value: STORED(), updated_at: new Date(storedUpdatedAt) }]);
+        }
+        if (/^SELECT value FROM app_data/.test(q)) return Promise.resolve([{ value: STORED() }]);
+        if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
+        if (/^SELECT COUNT\(\*\)::int AS count FROM po_deliveries/.test(q)) return Promise.resolve([{ count: 0 }]);
+        return Promise.resolve([]);
+      };
+      sql.written = () => {
+        const hit = seen.find(c => /^INSERT INTO app_data/.test(c.q));
+        return Object.fromEntries((hit ? JSON.parse(hit.vals[1]) : []).map(p => [p.id, p]));
+      };
+      sql.rowDeletes = () => seen.filter(c => /^DELETE FROM daily_tracking/.test(c.q));
+      return sql;
+    }
+    const put = async (sqlStub, body) => {
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED, body }, res);
+      return res;
+    };
+
+    {
+      const sqlStub = stub(T_MOVED);
+      const res = await put(sqlStub, { purchaseOrders: TAB(), baseUpdatedAt: T_READ,
+                                       editedFields: { po364: ['status'] } });
+      const w = sqlStub.written();
+      check('an order the tab did not touch keeps what purchasing filled in',
+        w.po365 && w.po365.title === 'Drain Fabric' && w.po365.supplier === 'Hanes Geo Components'
+        && w.po365.cost_code === '300' && w.po365.sub_code === 'C', JSON.stringify(w.po365));
+      check('  stays approved, with purchasing\'s byline',
+        w.po365.status === 'approved' && w.po365.status_changed_by === 'hudockben', JSON.stringify(w.po365));
+      // The link checks read the job: a stale copy's old one looked like the
+      // tab MOVING the order, and swept the cost rows purchasing had put on
+      // the new job.
+      check('  and stays on the job purchasing put it on', w.po365.project_id === 'job2', JSON.stringify(w.po365));
+      check('the order the tab DID change takes its change',
+        w.po364 && w.po364.status === 'approved' && w.po364.status_changed_by === 'foreman', JSON.stringify(w.po364));
+      // Reported, or the tab adopts this version, its next save skips the
+      // merge, and the blank copy goes straight back out.
+      check('the kept fields are reported as merged, so the tab keeps its old version',
+        res.body && res.body.merged > 0 && res.body.mergedFields === 8, JSON.stringify(res.body));
+      // Read as a move, the delivery the tab never saw lost its link and its
+      // cost row on job2 was deleted — the job silently lost the charge.
+      check('  the delivery the tab never saw keeps its cost row link',
+        (w.po365.lines || []).some(l => l.id === 'L1' && l.po_row_id === 'row-on-job2'), JSON.stringify(w.po365.lines));
+      check('  and no cost row is deleted on the stale job\'s account',
+        sqlStub.rowDeletes().length === 0, JSON.stringify(sqlStub.rowDeletes()));
+    }
+    {
+      // A tab running the code from before this says nothing, and is stored
+      // whole as before — the fix arrives when it reloads, and breaks nothing
+      // until then.
+      const sqlStub = stub(T_MOVED);
+      const res = await put(sqlStub, { purchaseOrders: TAB(), baseUpdatedAt: T_READ });
+      const w = sqlStub.written();
+      check('a tab that sends no edited fields is stored whole, as before',
+        w.po365.title === '' && w.po365.status === 'pending' && res.body.mergedFields === 0, JSON.stringify(w.po365));
+    }
+    {
+      // Up to date: nothing was written since the tab read, so its copy IS the
+      // stored one plus its own edits, and it is taken as sent.
+      const sqlStub = stub(T_READ);
+      const res = await put(sqlStub, { purchaseOrders: TAB(), baseUpdatedAt: T_READ, editedFields: {} });
+      const w = sqlStub.written();
+      check('an up-to-date tab is stored as sent', w.po365.title === '' && res.body.merged === 0,
+        JSON.stringify(res.body));
+    }
+    {
+      // An order the stored list does not have yet — raised on the tab — has
+      // nothing to keep.
+      const sqlStub = stub(T_MOVED);
+      await put(sqlStub, { purchaseOrders: TAB().concat([{ id: 'new', po_number: 'PO-0366', title: 'Geogrid', lines: [] }]),
+                           baseUpdatedAt: T_READ, editedFields: {} });
+      check('an order raised on the tab is stored as raised', sqlStub.written().new.title === 'Geogrid');
+    }
+  }
+  {
+    const calls = [];
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' }, calls });
+    const res = makeRes();
+    await handler({ method: 'POST', query: { division: 'paving' }, headers: AUTHED,
+                    body: { purchaseOrder: PO, editedFields: ['status', 7] } }, res);
+    check('a single-order save passes on the fields it changed',
+      calls[0] && JSON.stringify(calls[0].args.editedFields) === '["status","7"]',
+      calls[0] && JSON.stringify(calls[0].args.editedFields));
+    const res2 = makeRes();
+    await handler({ method: 'POST', query: { division: 'paving' }, headers: AUTHED,
+                    body: { purchaseOrder: PO } }, res2);
+    check('  and one that names none passes on "did not say" — stored whole',
+      calls[1] && calls[1].args.editedFields === null, calls[1] && JSON.stringify(calls[1].args.editedFields));
+  }
+
   console.log('\n[who raised an order, and when]');
   {
     // The division tabs save their whole list on every edit, so every order in

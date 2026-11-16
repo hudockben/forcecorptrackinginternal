@@ -35,6 +35,20 @@ const assert = (msg, cond, detail) => {
 
 const PAGE = read('purchase-orders.html');
 
+// The bookkeeping every edit and every save now goes through: which of an
+// order's fields and deliveries this page changed, so the server takes only
+// those from its copy. The page's own functions and lists, lifted — any
+// context running a setter or _savePOWrite needs them. `_editedLines` is left
+// to each context, which already declares it.
+const EDIT_BOOKKEEPING = [
+  'const _editedFields = {};',
+  'let _editSeq = 0;',
+  sliceSource(PAGE, 'const PO_HEADER_FIELDS', '\nconst PO_STATUS_STAMP_FIELDS', 'the header field list'),
+  (PAGE.match(/const PO_STATUS_STAMP_FIELDS = [^\n]*/) || [''])[0],
+  ...['noteEdit', 'pendingEdits', 'clearSentEdits', 'editedFieldsFor', 'adoptStoredFields', 'isTyping']
+    .map(n => requireFn(PAGE, n, 'purchase-orders.html')),
+].join('\n');
+
 // The line math sits on top of the page's own number reading — a comma in a
 // money field is read the same way here, in the division tabs and on the
 // server. Any context that runs lineAmt / lineTax needs these three lifted
@@ -346,6 +360,7 @@ console.log('\n[re-tying an order]');
     const toasted = [];
     function toast(msg) { toasted.push(msg); }
   `, ctx);
+  vm.runInContext(EDIT_BOOKKEEPING, ctx);
   ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber', 'setDivision', 'setProject', 'setSubCode']
     .forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
   const run = expr => vm.runInContext(expr, ctx);
@@ -1354,6 +1369,7 @@ console.log('\n[an order re-tied after a page reload]');
     function savePO(po) { sent.push({ to: po._division, from: _savedDivision[po.id] }); }
     function render() {}
   `, ctx);
+  vm.runInContext(EDIT_BOOKKEEPING, ctx);
   ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber', 'setDivision']
     .forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
 
@@ -1574,8 +1590,10 @@ console.log('\n[who raised an order, and when]');
       function savePurchaseOrders() { saves++; }
       function _syncPOHeaderToLines() { return Promise.resolve(); }
       function renderProjectPOs() {}
+      const _poEditedFields = {};
+      let _poEditSeq = 0;
     `, hctx);
-    ['_poStampWhen', '_handlePOEvent'].forEach(n => vm.runInContext(requireFn(src, n, f), hctx));
+    ['_poStampWhen', '_poNoteEdit', '_handlePOEvent'].forEach(n => vm.runInContext(requireFn(src, n, f), hctx));
     dom.window.document.querySelector('select').value = 'closed';
     vm.runInContext('_handlePOEvent({ type: "change", target: document.querySelector("select") })', hctx);
     const meta = dom.window.document.getElementById('po-status-meta-a');
@@ -1588,6 +1606,11 @@ console.log('\n[who raised an order, and when]');
     assert(`${f}:   keeps who raised the order`,
       po.created_by === 'hudockben' && po.created_at === T1 && vm.runInContext('saves', hctx) === 1,
       JSON.stringify(po));
+    // ...and tells the save it changed the status, and nothing else on the
+    // order — so the server keeps every other field as stored.
+    assert(`${f}:   and records the status as this tab's edit`,
+      vm.runInContext('JSON.stringify([...(_poEditedFields.a || new Map()).keys()])', hctx) === '["status"]',
+      vm.runInContext('JSON.stringify([...(_poEditedFields.a || new Map()).keys()])', hctx));
   });
 }
 
@@ -1688,6 +1711,7 @@ console.log('\n[a keystroke while a delete is in flight]');
     function editedLinesFor() { return []; }
     async function api(method, path) { calls.push(method + ' ' + path); return {}; }
   `, ctx);
+  vm.runInContext(EDIT_BOOKKEEPING, ctx);
   ['savePO', '_savePONow', '_savePOWrite', 'deletePO', 'setField']
     .forEach(n => {
       const src = requireFn(PAGE, n, 'purchase-orders.html');
@@ -1752,6 +1776,7 @@ console.log('\n[a keystroke while a delete is in flight]');
     function editedLinesFor() { return []; }
     async function api(method, path) { calls.push(method + ' ' + path); return {}; }
   `, ctx2);
+  vm.runInContext(EDIT_BOOKKEEPING, ctx2);
   ['savePO', '_savePONow', '_savePOWrite', 'deletePO']
     .forEach(n => vm.runInContext(
       (/^(deletePO|_savePOWrite)$/.test(n) ? 'async ' : '') +
@@ -1825,6 +1850,7 @@ console.log('\n[a keystroke while a delete is in flight]');
       return {};
     }
   `, ctx3);
+  vm.runInContext(EDIT_BOOKKEEPING, ctx3);
   ['savePO', '_savePONow', '_savePOWrite', 'deletePO', 'setField']
     .forEach(n => vm.runInContext(
       (/^(deletePO|_savePOWrite)$/.test(n) ? 'async ' : '') +
@@ -2123,7 +2149,8 @@ console.log('\n[cost / sub code, vendor and received by are typeahead pickers]')
      function render() { renders++; }
      function recalcLineTax() {}
      function updateTotalsInPlace() {}`,
-    ...['esc', 'isTyping', 'listDivs', 'divMeta', 'projectsFor', 'projectFor', 'pickableProjects',
+    EDIT_BOOKKEEPING,
+    ...['esc', 'listDivs', 'divMeta', 'projectsFor', 'projectFor', 'pickableProjects',
         'projectOptionLabel', 'codesFor', 'codeLabel', 'codeValue', 'subCodePickerHTML', 'vendorPickerHTML',
         'receivedByPickerHTML', 'updateCodeInPlace', 'cardJobLineHTML', 'divChipHTML', 'divColor', 'divLabel',
         'hasJobs', 'projectSelectHTML', 'setSubCode', 'setField', 'setLineField', 'onScanDivision', 'onScanProject',
@@ -2382,6 +2409,163 @@ console.log('\n[cost / sub code, vendor and received by are typeahead pickers]')
   assert('a quarry order\'s row has no job picker', !/<select/.test(qJob) && /No jobs in Quarry/.test(qJob), qJob);
   assert('  nor a code picker', !/class="cb/.test(qCode) && />—</.test(qCode), qCode);
   assert('  and its chip is quarry\'s colour', /var\(--div-quarry\)/.test(window.eval("divChipHTML('quarry')")));
+}
+
+console.log('\n[a save says which of the order\'s fields it changed]');
+{
+  // Every save carried the whole order as this page last saw it, and the server
+  // stored it whole — so approving PO-0365 on a screen that had loaded it blank
+  // wiped the title and supplier somebody else had filled in. The page now
+  // tells the server which fields it changed; the server keeps the rest.
+  //
+  // The page's own setters and save, run against a stubbed api().
+  const dom = new JSDOM('<!doctype html><html><body><input id="elsewhere"></body></html>');
+  const ctx = vm.createContext({ document: dom.window.document, console, JSON, Promise, Set, Math,
+                                 setTimeout, clearTimeout });
+  vm.runInContext(`
+    const GENERAL = 'purchase_orders';
+    let purchaseOrders = [{ id: 'po365', po_number: 'PO-0365', _division: 'paving', project_id: 'p1',
+                            cost_code: '', sub_code: '', title: '', supplier: '', status: 'pending', lines: [] }];
+    let sourceDivs = [{ division: 'paving', label: 'Paving', projects: [] }, { division: 'turf', label: 'Turf', projects: [] }];
+    const loadedLists = new Set(['paving', 'turf']);
+    const fctUser = { username: 'hudockben' };
+    const _saveTimers = {}, _unsaved = new Set(), _deletedLines = {}, _editedLines = {};
+    const _savedDivision = { po365: 'paving' }, _saveChain = {}, _deleting = new Set(), _deferredSaves = new Set();
+    let _inflight = 0, _saveEpoch = 0, renders = 0;
+    const sent = [];
+    let answer = null, hold = null;
+    function capsFor() { return { canEdit: true, canDelete: true }; }
+    function showSave() {} function toast() {} function updateCodeInPlace() {}
+    function render() { renders++; }
+    function deletedLinesFor() { return []; }
+    function poPayload(po) { const o = {}; Object.keys(po).forEach(k => { if (k[0] !== '_') o[k] = po[k]; }); return o; }
+    // The save the server answers: the order as it stored it.
+    async function api(method, path, body) {
+      sent.push(JSON.parse(JSON.stringify(body)));
+      if (hold) await hold;
+      return { ok: true, purchaseOrder: Object.assign({}, body.purchaseOrder, answer || {}) };
+    }
+  `, ctx);
+  vm.runInContext(EDIT_BOOKKEEPING, ctx);
+  ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber',
+   'setField', 'setSubCode', 'setProject', 'setDivision', 'savePO', '_savePONow', '_savePOWrite']
+    .forEach(n => vm.runInContext((n === '_savePOWrite' ? 'async ' : '') + requireFn(PAGE, n, 'purchase-orders.html'), ctx));
+  const run = e => vm.runInContext(e, ctx);
+  const fields = () => run('JSON.stringify(editedFieldsFor("po365"))');
+  const settle = () => new Promise(r => setTimeout(r, 20));
+
+  // ── What each setter records ──
+  run("setField('po365', 'status', 'approved')");
+  assert('a status change is recorded as the field it changed', fields() === '["status"]', fields());
+  run("setSubCode('po365', '420||Base')");
+  assert('  a code change as both halves of the code', fields() === '["status","cost_code","sub_code"]', fields());
+  run("clearSentEdits(_editedFields, 'po365', pendingEdits(_editedFields, 'po365'))");
+  run("setProject('po365', 'p2')");
+  assert('  a job change as the job and the codes it clears', fields() === '["project_id","cost_code","sub_code"]', fields());
+  run("clearSentEdits(_editedFields, 'po365', pendingEdits(_editedFields, 'po365'))");
+  run("setDivision('po365', 'turf')");
+  assert('  a move as the job, the codes and the number', fields() === '["project_id","cost_code","sub_code","po_number"]', fields());
+  run("clearSentEdits(_editedFields, 'po365', pendingEdits(_editedFields, 'po365'))");
+  Object.values(run('_saveTimers')).forEach(t => clearTimeout(t));
+  run("Object.keys(_saveTimers).forEach(k => delete _saveTimers[k]); sent.length = 0");
+
+  // ── What a save sends, and what it takes back ──
+  // This screen approves; somebody else filled the order in meanwhile, and the
+  // server answers with the stored title and supplier.
+  run(`purchaseOrders[0]._division = 'paving'; _savedDivision.po365 = 'paving';
+       answer = { title: 'Drain Fabric', supplier: 'Hanes Geo Components', status: 'approved' };
+       setField('po365', 'status', 'approved')`);
+  await settle();
+  assert('the save names the one field it changed',
+    JSON.stringify(run('sent[0] && sent[0].editedFields')) === '["status"]', JSON.stringify(run('sent[0]')));
+  assert('  and forgets it once stored', fields() === '[]', fields());
+  assert('the screen takes on what the server kept',
+    run('purchaseOrders[0].title') === 'Drain Fabric' && run('purchaseOrders[0].supplier') === 'Hanes Geo Components',
+    run('JSON.stringify(purchaseOrders[0])'));
+  assert('  and shows it', run('renders') > 0);
+
+  // A field typed AGAIN while the save carrying it is in flight is owed to the
+  // next save. Forgetting it when the first landed sent the second save out
+  // saying nothing had changed, and the server kept the old value.
+  run(`answer = null; let release; hold = new Promise(r => { release = r; }); globalThis.release = release;
+       sent.length = 0; purchaseOrders[0].title = 'Drain'; noteEdit(_editedFields, 'po365', 'title');
+       var first = _savePONow(purchaseOrders[0]);`);
+  await settle();
+  run(`purchaseOrders[0].title = 'Drain fabric, 12 oz'; noteEdit(_editedFields, 'po365', 'title');
+       var second = _savePONow(purchaseOrders[0]);`);
+  run('hold = null; release()');
+  await settle();
+  assert('a field edited again mid-save is sent again by the next save',
+    run('sent.length') === 2 && JSON.stringify(run('sent[1].editedFields')) === '["title"]'
+    && run('sent[1].purchaseOrder.title') === 'Drain fabric, 12 oz', JSON.stringify(run('sent')));
+
+  // While a field has focus the screen is left alone — re-rendering would tear
+  // the input out from under the typing — and the poll catches it up instead.
+  run(`answer = { supplier: 'Someone Else Supply' }; sent.length = 0; renders = 0`);
+  dom.window.document.getElementById('elsewhere').focus();
+  await run('_savePONow(purchaseOrders[0])');
+  assert('nothing is taken on while the user is typing',
+    run('purchaseOrders[0].supplier') === 'Hanes Geo Components' && run('renders') === 0,
+    run('JSON.stringify(purchaseOrders[0])'));
+  dom.window.document.getElementById('elsewhere').blur();
+
+  // A field with an edit still owed keeps the user's value over the server's.
+  run(`answer = { title: 'stale', supplier: 'Someone Else Supply' }; noteEdit(_editedFields, 'po365', 'title');
+       purchaseOrders[0].title = 'typed after this save left';`);
+  run(`hold = new Promise(r => { globalThis.release2 = r; }); var p3 = _savePONow(purchaseOrders[0]);`);
+  await settle();
+  run(`noteEdit(_editedFields, 'po365', 'title'); hold = null; release2()`);
+  await settle();
+  assert('a field edited since the save left keeps what the user typed',
+    run('purchaseOrders[0].title') === 'typed after this save left'
+    && run('purchaseOrders[0].supplier') === 'Someone Else Supply', run('JSON.stringify(purchaseOrders[0])'));
+
+  // The two other ways an order leaves this page.
+  assert('the save made as the tab closes says which fields it changed too',
+    /editedFields:\s*editedFieldsFor\(id\),/.test(PAGE));
+  const scan = requireFn(PAGE, 'commitScan', 'purchase-orders.html');
+  assert('a receipt scanned into an order records the supplier and title it fills',
+    /fill\('supplier'/.test(scan) && /fill\('title'/.test(scan) && /noteEdit\(_editedFields, po\.id, k\)/.test(scan));
+  assert('  and a save that fails takes those notes back', /noted\.forEach\(/.test(scan));
+  assert('a deleted order\'s notes go with it',
+    (requireFn(PAGE, 'deletePO', 'purchase-orders.html').match(/delete _editedFields\[poId\];/g) || []).length === 2);
+
+  // The division tabs save their whole list, so every order in it travels with
+  // each save — the one being edited and every other one, as old as the tab's
+  // last refresh. The save says which fields of which orders it changed.
+  for (const f of ['tracker.html', 'paving.html', 'kiewit-pinetree.html']) {
+    const src = read(f);
+    const tctx = vm.createContext({ console, JSON, Promise, Object, setTimeout });
+    vm.runInContext(`
+      const API_BASE = '/api', fctToken = 't';
+      let purchaseOrders = [{ id: 'a', status: 'approved', lines: [] }, { id: 'b', title: 'stale', lines: [] }];
+      let _poBaseUpdatedAt = '2026-11-16T14:40:00.000Z';
+      const _poEditedFields = {};
+      let _poEditSeq = 0;
+      const bodies = [];
+      let release = null;
+      function fetch(url, init) {
+        bodies.push(JSON.parse(init.body));
+        return new Promise(r => { release = () => r({ ok: true, status: 200,
+          json: async () => ({ ok: true, updatedAt: '2026-11-16T14:47:00.000Z', merged: 0 }) }); });
+      }
+      function _showSaveError() {} function _poRefreshDailyLines() {}
+    `, tctx);
+    ['_poNoteEdit', 'savePurchaseOrders'].forEach(n => vm.runInContext(requireFn(src, n, f), tctx));
+    const t = e => vm.runInContext(e, tctx);
+    t(`_poNoteEdit('a', 'status'); savePurchaseOrders();`);
+    assert(`${f}: a save names the fields it changed, per order — and nothing for the orders it did not touch`,
+      JSON.stringify(t('bodies[0].editedFields')) === '{"a":["status"]}', JSON.stringify(t('bodies[0]')));
+    t(`_poNoteEdit('a', 'status'); var r1 = release;`);   // changed again while the save is out
+    t('r1()');
+    await settle();
+    assert(`${f}:   one changed again while it was in flight is still owed to the next save`,
+      t('JSON.stringify([...(_poEditedFields.a || new Map()).keys()])') === '["status"]');
+    t('savePurchaseOrders(); release()');
+    await settle();
+    assert(`${f}:   and forgotten once a save carrying it lands`, t('Object.keys(_poEditedFields).length') === 0,
+      t('JSON.stringify(Object.keys(_poEditedFields))'));
+  }
 }
 
 console.log(`\n${failed === 0 ? 'All checks passed.' : failed + ' check(s) failed.'}`);
