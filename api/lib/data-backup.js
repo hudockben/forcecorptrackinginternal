@@ -29,8 +29,9 @@
  * The check
  *   Counts the entries in every company-level list — each array record, and
  *   each array inside an object record (fct_lists.employees,
- *   fct_lists.equipment...) — plus daily-tracking rows per division, and
- *   compares with the previous run. A list that empties, or loses half of six
+ *   fct_lists.equipment...) — plus the live rows of the tables that hold
+ *   data of their own (daily-tracking rows, Procurement rows, supplier
+ *   contacts) per division, and compares with the previous run. A list that empties, or loses half of six
  *   or more, is reported. Records that shrink as a matter of course are not
  *   watched: one job's own record, schedules that roll forward, presence, the
  *   news hub.
@@ -175,7 +176,10 @@ async function pruneSnapshots(sql, at) {
 /**
  * Every watched list's size right now: [{ company_code, measure, n }].
  * `measure` is the record's key without the company prefix, with the array's
- * property appended for object records, or daily_tracking.<division>.
+ * property appended for object records, or <table>.<division> for the tables
+ * in TABLE_MEASURES. Procurement rows and supplier contacts are deleted softly,
+ * so their counts are of LIVE rows: a mass delete shows up as a drop like an
+ * emptied list does, though the rows themselves are still there.
  */
 async function readCounts(sql) {
   // jsonb_each is guarded by the CASE rather than by the WHERE: a lateral
@@ -198,6 +202,16 @@ async function readCounts(sql) {
     SELECT company_code, 'daily_tracking.' || division, count(*)::int
     FROM daily_tracking
     WHERE company_code <> ''
+    GROUP BY company_code, division
+    UNION ALL
+    SELECT company_code, 'procurement_items.' || division, count(*)::int
+    FROM procurement_items
+    WHERE deleted_at IS NULL
+    GROUP BY company_code, division
+    UNION ALL
+    SELECT company_code, 'supplier_contacts.' || division, count(*)::int
+    FROM supplier_contacts
+    WHERE deleted_at IS NULL
     GROUP BY company_code, division
   `;
   return rows
@@ -255,9 +269,22 @@ const DIVISION_PREFIXES = [
   ['intercompany_', 'Intercompany'], ['crm_', 'Turf CRM'],
 ];
 
+// Rows that live in tables of their own rather than in app_data. They are
+// counted per division with the lists, but this backup does not copy them:
+// daily-tracking rows are restored from Neon's history, and the two soft-
+// deleted tables by clearing deleted_at (softRestoreSql).
+const TABLE_MEASURES = {
+  'daily_tracking.':    'Daily tracking rows',
+  'procurement_items.': 'Procurement rows',
+  'supplier_contacts.': 'Supplier contacts',
+};
+const SOFT_DELETED = ['procurement_items.', 'supplier_contacts.'];
+const tableOf = measure => Object.keys(TABLE_MEASURES).find(p => String(measure).startsWith(p)) || null;
+
 /** 'fct_lists.employees' → 'Turf: lists › employees'. */
 function labelFor(measure) {
-  if (measure.startsWith('daily_tracking.')) return `Daily tracking rows (${measure.slice(15)})`;
+  const table = tableOf(measure);
+  if (table) return `${TABLE_MEASURES[table]} (${measure.slice(table.length)})`;
   const dot = measure.indexOf('.');
   let key  = dot < 0 ? measure : measure.slice(0, dot);
   const prop = dot < 0 ? '' : measure.slice(dot + 1);
@@ -308,6 +335,31 @@ function restoreSql(companyCode, measure, since) {
 }
 
 /**
+ * The SQL that brings back the rows of a soft-deleted table that one
+ * division lost since `since`. Nothing was destroyed — the rows only carry a
+ * deleted_at — so this is a look and an UPDATE, not a copy put back. It also
+ * brings back any row somebody deleted on purpose in that window, which is
+ * why it shows them first.
+ */
+function softRestoreSql(companyCode, measure, since) {
+  const table = SOFT_DELETED.find(p => measure.startsWith(p)).slice(0, -1);
+  const division = measure.slice(table.length + 1);
+  const where = `WHERE company_code = '${sqlText(companyCode)}' AND division = '${sqlText(division)}'\n`
+    + `  AND deleted_at >= TIMESTAMPTZ '${sqlText(since)}'`;
+  const bump = table === 'procurement_items' ? ', version = version + 1' : '';
+  return [
+    `-- Look first: the rows removed since ${human(since)}.`,
+    `SELECT * FROM ${table}`,
+    where,
+    `ORDER BY deleted_at;`,
+    ``,
+    `-- Put them back.`,
+    `UPDATE ${table} SET deleted_at = NULL, deleted_by = NULL, updated_at = NOW()${bump}`,
+    `${where};`,
+  ].join('\n');
+}
+
+/**
  * The email for one company's drops. `since` is the run whose counts were
  * fuller, `at` the run that found them smaller. `late` marks an alert a
  * later run is sending because the run that found it could not.
@@ -321,7 +373,7 @@ function buildAlert({ companyCode, companyName, since, at, drops, late = false }
         <td style="padding:6px 10px;border-bottom:1px solid #e5e7eb;text-align:right;color:#991b1b;font-weight:700">${esc(d.after)}</td>
       </tr>`).join('');
   // One snippet per record — two arrays inside fct_lists are one restore.
-  const records = [...new Set(drops.filter(d => !d.measure.startsWith('daily_tracking.'))
+  const records = [...new Set(drops.filter(d => !tableOf(d.measure))
     .map(d => d.measure.split('.')[0]))];
   const snippets = records.map(r => `
       <div style="margin-top:14px;font-weight:700">${esc(labelFor(r))}</div>
@@ -330,6 +382,14 @@ function buildAlert({ companyCode, companyName, since, at, drops, late = false }
     ? `<p style="font-size:13px">Daily-tracking rows are not in this backup. Restore them from Neon's
        history — create a branch from ${esc(human(since))}, when they were last counted in full — while
        that time is still inside the project's restore window.</p>`
+    : '';
+  const soft = drops.filter(d => SOFT_DELETED.some(p => d.measure.startsWith(p)));
+  const softNote = soft.length
+    ? `<p style="font-size:13px">Procurement rows and supplier contacts are deleted softly: the rows are
+       still there, only marked deleted. Each snippet shows what went since ${esc(human(since))}, then puts it back.</p>`
+      + soft.map(d => `
+      <div style="margin-top:14px;font-weight:700">${esc(labelFor(d.measure))}</div>
+      <pre style="background:#f3f4f6;border:1px solid #e5e7eb;border-radius:4px;padding:10px;font-size:12px;white-space:pre-wrap">${esc(softRestoreSql(companyCode, d.measure, since))}</pre>`).join('')
     : '';
   const bodyHtml = `
     <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="border-collapse:collapse;width:100%;font-size:13px">
@@ -342,7 +402,8 @@ function buildAlert({ companyCode, companyName, since, at, drops, late = false }
     ${records.length ? `<h3 style="font-size:15px;margin:22px 0 4px">To restore</h3>
     <p style="font-size:13px;margin:0">If the drop was not deliberate, run these in the Neon SQL editor
       (Primary branch). Each puts the record back as the ${esc(human(since))} copy has it.</p>${snippets}` : ''}
-    ${dailyNote}`;
+    ${dailyNote}
+    ${softNote}`;
   const lists = drops.length === 1 ? 'a list' : `${drops.length} lists`;
   const html = buildEmailHtml({
     title: 'Lists that shrank',
@@ -566,6 +627,6 @@ async function runNight(sql, at, send, recipients, result) {
 
 module.exports = {
   RETAIN_DAYS, COUNTS_RETAIN_DAYS, MAX_SEND_ATTEMPTS, EMPTIED_MIN, HALVED_MIN, SKIP_BACKUP, DELETED,
-  isWatched, runInstant, shiftDays, human, findDrops, labelFor, restoreSql, buildAlert, buildFailure,
+  isWatched, runInstant, shiftDays, human, findDrops, labelFor, restoreSql, softRestoreSql, buildAlert, buildFailure,
   alertRecipients, deliver, backupAppData, pruneSnapshots, readCounts, recordCounts, previousCounts, runDataBackup,
 };

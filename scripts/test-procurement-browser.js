@@ -1,0 +1,821 @@
+#!/usr/bin/env node
+'use strict';
+/**
+ * The Procurement tab end to end, in a real browser.
+ *
+ * Run: node scripts/test-procurement-browser.js
+ *      (skips cleanly when playwright is not installed: npm i --no-save playwright)
+ *      PW_CHROMIUM=/path/to/chrome picks the browser binary.
+ *      PROC_SHOTS=/some/dir also saves screenshots of the tab, the Send
+ *      checklist and the Suppliers tab there (for looking at, not asserted).
+ *
+ * scripts/test-procurement-frontend.js drives procurement.js in jsdom against
+ * a stub page, and scripts/test-procurement-page.js reads tracker.html's
+ * wiring. Neither has the two halves meeting: tracker.html's real combobox
+ * (which commits 120 ms after blur, on mousedown, through a synthetic change),
+ * its real fctAddSupplier / fctCreatePurchaseOrder, the bid page's button, the
+ * tab switch after a send, and a browser's own focus and date inputs. This
+ * boots the whole of tracker.html, as an admin, a level1 and a salesman, with
+ * the network answered by an in-memory stand-in for the two Procurement APIs
+ * that follows the contract (api/procurement.js, api/supplier-contacts.js) —
+ * so a save really round-trips: what the page PATCHes is what the next GET
+ * returns.
+ *
+ * The job is turf's own kind: Penn Cambria, job 26119, whose bid has a
+ * Stormwater cost code with Geofabric and a perforated drain as sub codes (in
+ * these bids the sub code IS the material) and a lump-sum Mobilization line,
+ * and one purchase order already raised for the Geofabric.
+ *
+ * Harness traps (see test-row-delete-browser.js): served over HTTP, not
+ * file://, and fct_division must match the page or it bounces to
+ * divisions.html.
+ */
+let chromium;
+try { ({ chromium } = require('playwright')); }
+catch { console.log('playwright not installed — skipping browser checks'); process.exit(0); }
+const path = require('path');
+const http = require('http');
+const fs   = require('fs');
+const ROOT = path.resolve(__dirname, '..');
+const CHROME = process.env.PW_CHROMIUM || '/opt/pw-browsers/chromium';
+const SHOTS = process.env.PROC_SHOTS || '';
+
+const server = http.createServer((req, res) => {
+  // Vercel's own analytics script, injected by the host in production; not
+  // the page's, and a 404 for it would read as a console error below.
+  if (req.url.startsWith('/_vercel/')) { res.writeHead(200, { 'Content-Type': 'text/javascript' }); return res.end(''); }
+  const f = path.join(ROOT, decodeURIComponent(req.url.split('?')[0]));
+  if (!f.startsWith(ROOT) || !fs.existsSync(f) || fs.statSync(f).isDirectory()) {
+    res.writeHead(404); return res.end('no');
+  }
+  res.writeHead(200, { 'Content-Type': f.endsWith('.js') ? 'text/javascript' : 'text/html' });
+  res.end(fs.readFileSync(f));
+});
+const BASE = new Promise(r => server.listen(0, '127.0.0.1', () => r('http://127.0.0.1:' + server.address().port)));
+
+let passed = 0, failed = 0;
+const ok = (l, c, d) => {
+  if (c) { passed++; console.log('  ✓ ' + l); }
+  else   { failed++; console.log('  ✗ ' + l + (d !== undefined && d !== '' ? '  — ' + (typeof d === 'string' ? d : JSON.stringify(d)) : '')); }
+};
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+async function until(fn, timeout = 5000) {
+  const end = Date.now() + timeout;
+  for (;;) {
+    let v;
+    try { v = await fn(); } catch { v = false; }
+    if (v) return v;
+    if (Date.now() > end) return v;
+    await sleep(50);
+  }
+}
+const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+// The browser runs on this machine's clock, so the dates are worked out from
+// it: a fixed date would turn "due soon" into "late" the week after it was
+// written.
+const pad = n => String(n).padStart(2, '0');
+const ymd = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const TODAY = ymd(new Date());
+const plusDays = n => { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(d.getDate() + n); return ymd(d); };
+const us = s => `${s.slice(5, 7)}/${s.slice(8, 10)}/${s.slice(0, 4)}`;
+
+// ── The world the page sees ──────────────────────────────────────────────────
+const DRAIN = 'Perimeter Collector Drain 15" Perf';
+const PROJECTS = {
+  p1: { id: 'p1', 'project-name': 'Penn Cambria', 'job-number': '26119', status: 'In Progress',
+    bidItems: [
+      { id: 'b1', cost_code: 'Stormwater',   sub_code: 'Geofabric',    unit: 'SF', quantity: '12500' },
+      // 901 LF bid, plus a 49 LF change order: Procurement is sent the 950
+      // the bid table's Bid Qty column shows.
+      { id: 'b2', cost_code: 'Stormwater',   sub_code: DRAIN,          unit: 'LF', quantity: '901',
+        change_orders: [{ id: 'co1', qty_delta: '49', description: 'Added run at the east end' }] },
+      { id: 'b3', cost_code: 'Mobilization', sub_code: 'Mobilization', unit: 'LS', quantity: '1' },
+    ] },
+  p2: { id: 'p2', 'project-name': 'Franklin Field', 'job-number': '26049', status: 'Awarded', bidItems: [] },
+};
+const PO_GEO = { id: 'po7', po_number: 'PO-0007', title: 'Geofabric', supplier: 'LB Water', status: 'pending',
+  date_created: plusDays(-3), project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Geofabric', notes: '', lines: [] };
+
+function makeWorld() {
+  return {
+    rows: [],                 // procurement_items, deleted ones included
+    contacts: [],             // supplier_contacts
+    pos: [JSON.parse(JSON.stringify(PO_GEO))],
+    lists: { suppliers: [{ name: 'LB Water', state: 'PA', address: '', phone: '814-555-0100', website: '' },
+                         { name: 'New Enterprise', state: 'PA', address: '', phone: '', website: '' }],
+             employees: [], equipment: [], _crm_lists_seeded: true },
+    listsAt: '2026-11-01T12:00:00.000Z',
+    log: [],                  // every call to the two Procurement APIs, and the list / PO writes
+    seq: 0,
+  };
+}
+
+// ── api/procurement.js, in memory (contract section 3) ───────────────────────
+const EDIT = ['admin', 'level3', 'level2'];
+const ALLOWED = ['description', 'quantity', 'unit', 'sca_status', 'date_needed', 'lead_time_days', 'date_ordered',
+  'date_delivered', 'vendor', 'quote_number', 'contact', 'email', 'po_id', 'po_auto', 'cost_code', 'sub_code',
+  'bid_item_id', 'bid_qty_at_send', 'bid_unit_at_send'];
+const BLANK_ROW = {
+  source: 'manual', bid_item_id: null, cost_code: '', sub_code: '', description: '', quantity: null, unit: '',
+  bid_qty_at_send: null, bid_unit_at_send: null, sca_status: 'Pending', date_needed: null, lead_time_days: null,
+  date_ordered: null, date_delivered: null, vendor: '', quote_number: '', contact: '', email: '', po_id: null,
+  po_auto: true, version: 1, created_by: 'Ada', updated_by: 'Ada', deleted_at: null,
+};
+const numOrNull = v => (v === '' || v == null ? null : Number(String(v).replace(/,/g, '')));
+
+function procurementApi(W, role, method, q, body) {
+  if (!q.division) return [400, { ok: false, error: 'division_required' }];
+  if (role === 'sales') return [403, { ok: false, error: 'no_access' }];
+  const canEdit = EDIT.includes(role);
+  const stamp = () => new Date(Date.UTC(2026, 10, 1) + (++W.seq) * 1000).toISOString();
+  const live = r => !r.deleted_at;
+  const pick = (r, f) => { for (const [k, v] of Object.entries(f)) r[k] = ['quantity', 'bid_qty_at_send'].includes(k) ? numOrNull(v) : v; };
+  if (method === 'GET') {
+    if (!q.project_id) return [400, { ok: false, error: 'project_id_required' }];
+    const items = W.rows.filter(r => r.project_id === q.project_id && (q.include_deleted === '1' || live(r)))
+      .sort((a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : a.id < b.id ? -1 : 1));
+    return [200, { ok: true, items: JSON.parse(JSON.stringify(items)), canEdit }];
+  }
+  if (!canEdit) return [403, { ok: false, error: 'read_only', message: 'View only.' }];
+  const touch = r => { r.version++; r.updated_at = stamp(); return r; };
+  const out = r => JSON.parse(JSON.stringify(r));
+  const badField = f => Object.keys(f || {}).find(k => !ALLOWED.includes(k));
+  if (method === 'POST' && q.action === 'send') {
+    const restored = [];
+    for (const e of body.restore_ids || []) {
+      const id = typeof e === 'string' ? e : e && e.id;
+      const r = W.rows.find(x => x.id === id && x.project_id === body.project_id && x.deleted_at);
+      if (!r) continue;
+      r.deleted_at = null;
+      if (typeof e === 'object') Object.assign(r, { bid_item_id: e.bid_item_id, cost_code: e.cost_code || '', sub_code: e.sub_code || '' });
+      restored.push(out(touch(r)));
+    }
+    const created = [];
+    for (const it of body.items || []) {
+      // The bid-line unique index: one bid row per line, deleted rows included.
+      if (W.rows.some(r => r.source === 'bid' && r.project_id === body.project_id && r.bid_item_id === it.bid_item_id)) continue;
+      if (W.rows.some(r => r.id === it.id)) continue;
+      const t = stamp();
+      const r = { ...BLANK_ROW, id: it.id, project_id: body.project_id, source: 'bid', bid_item_id: it.bid_item_id,
+        cost_code: it.cost_code || '', sub_code: it.sub_code || '', quantity: numOrNull(it.quantity), unit: it.unit || '',
+        bid_qty_at_send: numOrNull(it.quantity), bid_unit_at_send: it.unit || '', created_at: t, updated_at: t };
+      W.rows.push(r);
+      created.push(out(r));
+    }
+    return [200, { ok: true, created, restored, skipped: (body.items || []).length - created.length }];
+  }
+  if (method === 'POST') {
+    const it = body.item || {};
+    if (W.rows.some(r => r.id === it.id)) return [409, { ok: false, error: 'duplicate' }];
+    const f = {};
+    for (const k of ALLOWED) if (k in it) f[k] = it[k];
+    const t = stamp();
+    const r = { ...BLANK_ROW, id: it.id, project_id: it.project_id, created_at: t, updated_at: t };
+    pick(r, f);
+    W.rows.push(r);
+    return [201, { ok: true, item: out(r) }];
+  }
+  if (method === 'PATCH' && q.action === 'bulk') {
+    const bad = badField(body.fields);
+    if (bad) return [400, { ok: false, error: 'field_not_allowed', field: bad }];
+    const rows = W.rows.filter(r => live(r) && (body.ids || []).includes(r.id));
+    const pids = [...new Set(rows.map(r => r.project_id))];
+    if (pids.length > 1 || (body.project_id && pids.length === 1 && pids[0] !== body.project_id)) {
+      return [400, { ok: false, error: 'mixed_projects' }];
+    }
+    if (!rows.length) return [404, { ok: false, error: 'not_found' }];
+    rows.forEach(r => { pick(r, body.fields); touch(r); });
+    return [200, { ok: true, items: rows.map(out), missing: body.ids.filter(id => !rows.some(r => r.id === id)) }];
+  }
+  if (method === 'PATCH') {
+    const r = W.rows.find(x => x.id === q.id && live(x));
+    if (!r) return [404, { ok: false, error: 'not_found' }];
+    const bad = badField(body.fields);
+    if (bad) return [400, { ok: false, error: 'field_not_allowed', field: bad }];
+    if (!Object.keys(body.fields || {}).length) return [400, { ok: false, error: 'no_fields' }];
+    pick(r, body.fields);
+    return [200, { ok: true, item: out(touch(r)) }];
+  }
+  if (method === 'DELETE') {
+    let hit;
+    if (q.project_id) {
+      if (!['admin', 'level3'].includes(role)) return [403, { ok: false, error: 'level3_required' }];
+      hit = W.rows.filter(r => live(r) && r.project_id === q.project_id);
+    } else {
+      const ids = (q.ids || q.id || '').split(',').filter(Boolean);
+      hit = W.rows.filter(r => live(r) && ids.includes(r.id));
+      if (q.id && !hit.length) return [404, { ok: false, error: 'not_found' }];
+    }
+    hit.forEach(r => { r.deleted_at = stamp(); touch(r); });
+    return [200, { ok: true, deleted: hit.length }];
+  }
+  return [405, { ok: false, error: 'method_not_allowed' }];
+}
+
+// ── api/supplier-contacts.js, in memory ──────────────────────────────────────
+function contactsApi(W, role, method, q, body) {
+  if (!q.division) return [400, { ok: false, error: 'division_required' }];
+  if (role === 'sales') return [403, { ok: false, error: 'no_access' }];
+  const canEdit = EDIT.includes(role);
+  const L = s => String(s || '').trim().toLowerCase();
+  const live = W.contacts.filter(c => !c.deleted_at);
+  const out = c => ({ id: c.id, supplier_name: c.supplier_name, name: c.name, email: c.email, phone: c.phone, updated_at: c.updated_at });
+  if (method === 'GET') {
+    return [200, { ok: true, canEdit, contacts: live.slice()
+      .sort((a, b) => L(a.supplier_name).localeCompare(L(b.supplier_name)) || L(a.name).localeCompare(L(b.name))).map(out) }];
+  }
+  if (!canEdit) return [403, { ok: false, error: 'read_only' }];
+  const now = () => new Date(Date.UTC(2026, 10, 2) + (++W.seq) * 1000).toISOString();
+  if (method === 'POST' && q.action === 'rename') {
+    const moving = live.filter(c => L(c.supplier_name) === L(body.from));
+    moving.forEach(c => { c.supplier_name = String(body.to).trim(); c.updated_at = now(); });
+    const rows = W.rows.filter(r => L(r.vendor) === L(body.from) && r.vendor !== String(body.to).trim());
+    rows.forEach(r => { r.vendor = String(body.to).trim(); r.version++; r.updated_at = now(); });
+    return [200, { ok: true, moved: moving.length, merged: 0, rows: rows.length }];
+  }
+  if (method === 'POST') {
+    const sup = String(body.supplier_name || '').trim(), name = String(body.name || '').trim();
+    const email = String(body.email || '').trim(), phone = String(body.phone || '').trim();
+    if (!sup || (!name && !email)) return [400, { ok: false, error: 'invalid' }];
+    const same = live.filter(c => L(c.supplier_name) === L(sup));
+    const hit = email ? same.find(c => L(c.email) === L(email)) : same.find(c => L(c.name) === L(name));
+    if (hit) {
+      if (!hit.name) hit.name = name;
+      if (!hit.email) hit.email = email;
+      if (!hit.phone) hit.phone = phone;
+      return [200, { ok: true, contact: out(hit), existed: true }];
+    }
+    const c = { id: 'sc' + (++W.seq), supplier_name: sup, name, email, phone, updated_at: now(), deleted_at: null };
+    W.contacts.push(c);
+    return [201, { ok: true, contact: out(c), existed: false }];
+  }
+  const c = live.find(x => x.id === q.id);
+  if (!c) return [404, { ok: false, error: 'not_found' }];
+  if (method === 'PATCH') {
+    for (const k of ['name', 'email', 'phone']) if (k in body) c[k] = String(body[k] || '').trim();
+    c.updated_at = now();
+    return [200, { ok: true, contact: out(c) }];
+  }
+  if (method === 'DELETE') { c.deleted_at = now(); return [200, { ok: true, id: c.id }]; }
+  return [405, { ok: false, error: 'method_not_allowed' }];
+}
+
+// ── One signed-in browser page ───────────────────────────────────────────────
+async function openPage(browser, W, role, { viewport = { width: 1474, height: 900 }, storage = {} } = {}) {
+  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, acceptDownloads: true });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', e => errors.push('pageerror: ' + e.message));
+  // Console errors count too — except a resource the sandbox cannot fetch
+  // from the internet (the map library on unpkg), which is not this page's.
+  page.on('console', m => {
+    if (m.type() !== 'error') return;
+    const loc = (m.location() && m.location().url) || '';
+    if (/Failed to load resource/.test(m.text()) && !loc.startsWith('http://127.0.0.1')) return;
+    errors.push('console: ' + m.text() + (loc ? ` (${loc})` : ''));
+  });
+  const dialogs = [];
+  page.on('dialog', d => { dialogs.push(d.message()); d.accept().catch(() => {}); });
+  const user = { id: 7, username: role === 'admin' ? 'ada' : role, name: role === 'admin' ? 'Ada' : role, role,
+    companyCode: 'FCT', divisionRoles: { turf: role }, allowedDivisions: ['turf'] };
+  await page.addInitScript(({ user, storage }) => {
+    localStorage.setItem('fct_token', 'x.y.z');
+    localStorage.setItem('fct_user', JSON.stringify(user));
+    localStorage.setItem('fct_division', 'turf');
+    for (const [k, v] of Object.entries(storage)) localStorage.setItem(k, v);
+  }, { user, storage });
+
+  await page.route('**/api/**', async route => {
+    const req = route.request();
+    const u = new URL(req.url());
+    const p = u.pathname;
+    const m = req.method();
+    const q = Object.fromEntries(u.searchParams);
+    let body = null;
+    try { body = req.postData() ? JSON.parse(req.postData()) : null; } catch { body = null; }
+    const send = (status, b) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(b) });
+    if (p === '/api/supplier-contacts' && m === 'GET' && W.contactsDelay) await sleep(W.contactsDelay);
+    if (p === '/api/procurement' || p === '/api/supplier-contacts') {
+      W.log.push({ api: p.slice(5), method: m, q, body, role });
+      const [status, b] = (p === '/api/procurement' ? procurementApi : contactsApi)(W, role, m, q, body || {});
+      return send(status, b);
+    }
+    if (p === '/api/purchase-orders') {
+      if (m === 'GET') return send(200, { purchaseOrders: JSON.parse(JSON.stringify(W.pos)), updatedAt: '2026-11-01T00:00:00.000Z' });
+      if (m === 'POST' && body && body.purchaseOrder) {
+        W.log.push({ api: 'purchase-orders', method: m, q, body, role });
+        const po = { ...body.purchaseOrder, lines: body.purchaseOrder.lines || [] };
+        W.pos.push(po);
+        return send(200, { ok: true, purchaseOrder: po, rows: [], staleCopy: false, mergedLines: 0 });
+      }
+      return send(200, { ok: true });
+    }
+    if (p === '/api/daily-rows') return m === 'GET' ? send(200, { rows: [], hasMore: false }) : send(200, { ok: true });
+    if (p === '/api/data/_batch') {
+      const values = {};
+      for (const k of (q.keys || '').split(',')) {
+        if (k.startsWith('fct_project_') && PROJECTS[k.slice(12)]) values[k] = PROJECTS[k.slice(12)];
+        if (k === 'fct_lists') values[k] = W.lists;
+      }
+      return send(200, { values });
+    }
+    if (p === '/api/data/fct_projects_index') return send(200, { value: Object.keys(PROJECTS) });
+    if (p === '/api/data/fct_lists') {
+      if (m === 'GET') return send(200, { value: W.lists, updated_at: W.listsAt });
+      if (m === 'PUT') {
+        W.log.push({ api: 'data/fct_lists', method: m, q, body, role });
+        if (body.baseUpdatedAt && body.baseUpdatedAt !== W.listsAt) return send(409, { error: 'conflict' });
+        W.lists = body.value;
+        W.listsAt = new Date(Date.parse(W.listsAt) + 60000).toISOString();
+        return send(200, { ok: true });
+      }
+    }
+    if (p.startsWith('/api/data/fct_project_') && m === 'GET') {
+      const pr = PROJECTS[p.slice('/api/data/fct_project_'.length)];
+      return send(200, { value: pr || null });
+    }
+    if (p.startsWith('/api/data/')) return send(200, { value: null });
+    return send(200, {});
+  });
+
+  await page.goto((await BASE) + '/tracker.html');
+  await page.waitForFunction(() => typeof projectsList !== 'undefined' && projectsList.length === 2
+    && !!window.FCTProcurement && typeof _listsLoaded !== 'undefined' && _listsLoaded && _poLoadOk, null, { timeout: 20000 });
+  await sleep(300);
+  return { page, ctx, errors, dialogs };
+}
+
+// ── Helpers over the grid ────────────────────────────────────────────────────
+const cell = (page, rowId, field) => page.locator(`#procurement-root [data-pr="${rowId}"][data-pf="${field}"]`);
+const rowTr = (page, rowId) => page.locator(`#procurement-root tr.fctproc-row[data-row="${rowId}"]`);
+
+/** Type into one of tracker's comboboxes and click the option holding `optionText`. */
+async function cbPick(page, input, typed, optionText) {
+  await input.click();
+  await input.fill(typed);
+  const opt = page.locator('.cb-menu:not([hidden]) .cb-opt', { hasText: optionText }).first();
+  await opt.waitFor({ timeout: 3000 });
+  await opt.click();
+  await sleep(250);                      // the commit, and the redraw after it
+}
+
+/** Somewhere neutral to click: the tab's title, outside every row. */
+const clickAway = page => page.locator('#procurement-root .fctproc-title').click();
+
+const patchesFor = (W, id) => W.log.filter(l => l.api === 'procurement' && l.method === 'PATCH' && l.q.id === id);
+const fieldsSent = (W, id) => patchesFor(W, id).reduce((acc, l) => ({ ...acc, ...l.body.fields }), {});
+
+async function sendLines(page) {
+  return page.$$eval('.fctproc-modal .fctproc-send-line', ls => ls.map(l => ({
+    sub: l.querySelector('.sub').textContent.trim(),
+    checked: l.querySelector('input').checked,
+    disabled: l.querySelector('input').disabled,
+    state: ['new', 'added', 'removed'].find(s => l.classList.contains(s)),
+    tag: (l.querySelector('.fctproc-tag') || { textContent: '' }).textContent.trim(),
+  })));
+}
+
+async function shot(page, name) {
+  if (!SHOTS) return;
+  fs.mkdirSync(SHOTS, { recursive: true });
+  await page.screenshot({ path: path.join(SHOTS, name) });
+}
+
+// ── Admin: the whole flow ────────────────────────────────────────────────────
+async function asAdmin(browser, W) {
+  console.log('\nadmin');
+  const { page, ctx, errors } = await openPage(browser, W, 'admin');
+
+  // Send to Procurement from the bid page before the tab has ever been drawn:
+  // the checklist still gets the sheet's styles (they used to arrive only
+  // with the tab, leaving it as bare run-together text).
+  ok('the tab has not been drawn yet', await page.evaluate(() => activeTab !== 'procurement' && !document.getElementById('fctproc-styles')));
+  await page.evaluate(() => openBidView('p1'));
+  await page.click('#bid-fs-procurement');
+  await page.waitForSelector('.fctproc-modal .fctproc-send-line');
+  ok('opened first from the bid page, the checklist is styled', await page.evaluate(() => !!document.getElementById('fctproc-styles')
+    && getComputedStyle(document.querySelector('.fctproc-send-line')).display === 'flex'));
+  await page.click('.fctproc-modal [data-send="cancel"]');
+  await page.evaluate(() => closeBidView());
+  ok('…and Cancel sends nothing', !W.log.some(l => l.method !== 'GET'));
+
+  // Open the tab and pick the job.
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await page.waitForSelector('#fctproc-proj');
+  ok('the tab asks for a job first', /Pick a job above/.test(await page.textContent('#fctproc-body')));
+  await cbPick(page, page.locator('#fctproc-proj'), 'penn', 'Penn Cambria');
+  await until(() => page.locator('#procurement-root .fctproc-job').count());
+  ok('picking the job reads its rows', W.log.some(l => l.api === 'procurement' && l.method === 'GET' && l.q.project_id === 'p1' && l.q.division === 'turf'));
+  ok('…shows its name and Job #', (await page.textContent('#procurement-root .fctproc-head')).includes('Penn Cambria')
+    && (await page.textContent('#procurement-root .fctproc-head')).includes('Job #26119'));
+  ok('…and, with no rows yet, says how to bring them in', /No procurement rows for this job yet/.test(await page.textContent('#fctproc-wrap')));
+  ok('the job is remembered for next time', await page.evaluate(() => localStorage.getItem('fct_proc_project_turf')) === 'p1');
+
+  // Leave the tab, open the bid, Send to Procurement from there.
+  await page.click('.tab-btn[data-tab="info"]');
+  await page.evaluate(() => openBidView('p1'));
+  await sleep(200);
+  ok('the bid page shows Send to Procurement', await page.isVisible('#bid-fs-procurement'));
+  ok('…between Import Procore Estimate and + Add Item', await page.evaluate(() => {
+    const ids = [...document.querySelectorAll('#bid-fullscreen button[id^="bid-fs-"]')].map(b => b.id);
+    return ids.indexOf('bid-fs-procore') + 1 === ids.indexOf('bid-fs-procurement') && ids.indexOf('bid-fs-procurement') + 1 === ids.indexOf('bid-fs-add');
+  }));
+  await page.click('#bid-fs-procurement');
+  await page.waitForSelector('.fctproc-modal .fctproc-send-line');
+  let lines = await sendLines(page);
+  const byName = n => lines.find(l => l.sub === n) || {};
+  ok('the checklist lists every bid line', lines.length === 3, lines);
+  ok('…Geofabric and the drain ticked', byName('Geofabric').checked && byName(DRAIN).checked, lines);
+  ok('…the lump-sum Mobilization not', byName('Mobilization').checked === false && byName('Mobilization').disabled === false, lines);
+  ok('…grouped by cost code', eq(await page.$$eval('.fctproc-modal .fctproc-send-h > span:first-child', s => s.map(x => x.textContent.trim())), ['Stormwater', 'Mobilization']));
+  const go = page.locator('.fctproc-modal [data-send="go"]');
+  ok('the button counts what goes', (await go.textContent()).trim() === 'Send 2 lines', await go.textContent());
+  await shot(page, 'send-modal.png');
+  await go.click();
+  await until(() => page.evaluate(() => activeTab === 'procurement' && !bidViewProjId));
+  const send = W.log.find(l => l.api === 'procurement' && l.method === 'POST' && l.q.action === 'send');
+  ok('Send POSTs action=send for the job', send && send.body.project_id === 'p1' && send.q.division === 'turf', send);
+  ok('…with the two ticked lines, codes, change-order quantity and unit', send && eq(send.body.items.map(i => [i.bid_item_id, i.cost_code, i.sub_code, i.quantity, i.unit]),
+    [['b1', 'Stormwater', 'Geofabric', 12500, 'SF'], ['b2', 'Stormwater', DRAIN, 950, 'LF']]), send && send.body.items);
+  ok('…new row ids, and nothing to restore', send && send.body.items.every(i => /^[A-Za-z0-9_-]{1,64}$/.test(i.id)) && eq(send.body.restore_ids, []));
+  ok('after the send the bid page closes and the Procurement tab is open', await page.evaluate(() => activeTab === 'procurement'
+    && document.getElementById('bid-fullscreen').style.display === 'none'));
+
+  const geo = W.rows.find(r => r.bid_item_id === 'b1').id;
+  const drain = W.rows.find(r => r.bid_item_id === 'b2').id;
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 2));
+  ok('the sent lines are rows in the tab', await page.locator('#procurement-root tr.fctproc-row').count() === 2);
+  ok('…in bid order', eq(await page.$$eval('#procurement-root tr.fctproc-row', t => t.map(r => r.dataset.row)), [geo, drain]));
+  ok('…with the bid\'s codes and quantity', (await rowTr(page, drain).textContent()).includes(DRAIN)
+    && await cell(page, drain, 'quantity').inputValue() === '950');
+
+  // PO # fills itself for the Geofabric row: the one PO with its codes.
+  ok('the Geofabric row\'s PO # fills in from the job\'s PO', await cell(page, geo, 'po').inputValue() === 'PO-0007');
+  ok('…marked auto', (await rowTr(page, geo).locator('td.c-po .fctproc-tag').textContent()).trim() === 'auto');
+  ok('…which makes it Ordered', (await rowTr(page, geo).locator('td.c-status .fctproc-pill').textContent()).trim() === 'Ordered');
+  ok('…with Date Ordered taken from the PO, shown as worked out', await cell(page, geo, 'date_ordered').inputValue() === PO_GEO.date_created
+    && await cell(page, geo, 'date_ordered').evaluate(e => e.classList.contains('derived')));
+  ok('the drain row has no PO and is Not Ordered', await cell(page, drain, 'po').inputValue() === ''
+    && (await rowTr(page, drain).locator('td.c-status .fctproc-pill').textContent()).trim() === 'Not Ordered');
+  ok('no PATCH was needed to show any of that', patchesFor(W, geo).length === 0);
+
+  // Date Needed + Lead Time → Order By and the flag; only those two are sent.
+  const needed = plusDays(20);
+  await cell(page, drain, 'date_needed').fill(needed);
+  await cell(page, drain, 'lead_time_days').click();
+  await cell(page, drain, 'lead_time_days').fill('10');
+  await clickAway(page);
+  await until(() => eq(Object.keys(fieldsSent(W, drain)).sort(), ['date_needed', 'lead_time_days']));
+  ok('the PATCHes carry only Date Needed and Lead Time', eq(fieldsSent(W, drain), { date_needed: needed, lead_time_days: 10 }), patchesFor(W, drain).map(l => l.body));
+  ok('…as field-level PATCHes of the row', patchesFor(W, drain).every(l => l.q.division === 'turf' && l.body.fields && !('id' in l.body.fields)));
+  ok('…which the server kept', W.rows.find(r => r.id === drain).date_needed === needed && W.rows.find(r => r.id === drain).lead_time_days === 10);
+  ok('Order By = Date Needed − Lead Time', (await rowTr(page, drain).locator('td.c-order_by').textContent()).trim() === us(plusDays(10)),
+    await rowTr(page, drain).locator('td.c-order_by').textContent());
+  ok('…and the row is flagged Due soon', (await rowTr(page, drain).locator('td.c-status').textContent()).includes('Due soon'));
+  ok('…with an amber edge', await rowTr(page, drain).locator('td.c-status').evaluate(e => e.classList.contains('flag-amber')));
+  ok('the saved indicator settles', await until(() => page.evaluate(() => /Saved|^$/.test(document.querySelector('#fctproc-save .si-text').textContent))));
+
+  // A vendor nobody has used: "+ Add" puts it on the supplier list.
+  await cbPick(page, cell(page, drain, 'vendor'), 'Ferguson Waterworks', '+ Add "Ferguson Waterworks" as new supplier');
+  const listPut = await until(() => W.log.find(l => l.api === 'data/fct_lists' && l.method === 'PUT'));
+  ok('"+ Add" saves the supplier list', !!listPut);
+  ok('…with the new supplier on it, and the ones already there', listPut && eq(listPut.body.value.suppliers.map(s => s.name), ['LB Water', 'New Enterprise', 'Ferguson Waterworks']),
+    listPut && listPut.body.value.suppliers);
+  ok('…guarded against a colleague\'s save in between (baseUpdatedAt)', listPut && listPut.body.baseUpdatedAt === '2026-11-01T12:00:00.000Z');
+  ok('the page\'s own list has it too', await page.evaluate(() => lists.suppliers.some(s => s.name === 'Ferguson Waterworks')));
+  ok('the row keeps the vendor', await cell(page, drain, 'vendor').inputValue() === 'Ferguson Waterworks');
+
+  // A contact and an email typed on the row are remembered under the vendor.
+  const contactBox = cell(page, drain, 'contact');
+  await contactBox.click();
+  await contactBox.fill('Dana Reyes');
+  await contactBox.press('Tab');
+  await sleep(200);
+  ok('Tab from Contact lands in Email', await page.evaluate(() => document.activeElement && document.activeElement.dataset.pf === 'email'));
+  await page.keyboard.type('dana@ferguson.test');
+  // Tab on out of Email lands on the row's own "+ Material"; the click
+  // elsewhere after that is when the row is left.
+  await page.keyboard.press('Tab');
+  ok('Tab from Email lands on the row\'s + Material', await page.evaluate(() => document.activeElement && document.activeElement.dataset.act === 'material'));
+  await clickAway(page);
+  const remembered = await until(() => W.log.find(l => l.api === 'supplier-contacts' && l.method === 'POST'));
+  ok('leaving the row remembers the contact', remembered && eq(remembered.body,
+    { supplier_name: 'Ferguson Waterworks', name: 'Dana Reyes', email: 'dana@ferguson.test', phone: '' }), remembered && remembered.body);
+  await until(() => fieldsSent(W, drain).email);
+  ok('…and the row saved vendor, contact and email', (() => { const f = fieldsSent(W, drain);
+    return f.vendor === 'Ferguson Waterworks' && f.contact === 'Dana Reyes' && f.email === 'dana@ferguson.test'; })(), fieldsSent(W, drain));
+  ok('only one contact was made of it', W.contacts.length === 1);
+
+  // "+ Material" under the drain, then pick the saved contact on that row.
+  await rowTr(page, drain).locator('[data-act="material"]').click();
+  const matPost = await until(() => W.log.find(l => l.api === 'procurement' && l.method === 'POST' && !l.q.action));
+  ok('+ Material POSTs a manual row under the same bid line', matPost && matPost.body.item.bid_item_id === 'b2'
+    && matPost.body.item.sub_code === DRAIN && matPost.body.item.unit === 'LF' && matPost.body.item.project_id === 'p1', matPost && matPost.body);
+  const mat = matPost.body.item.id;
+  await until(() => rowTr(page, mat).count());
+  ok('…drawn right under it', eq(await page.$$eval('#procurement-root tr.fctproc-row', t => t.map(r => r.dataset.row)), [geo, drain, mat]));
+  ok('…with Description focused to type in', await page.evaluate(id => document.activeElement && document.activeElement.dataset.pr === id
+    && document.activeElement.dataset.pf === 'description', mat));
+  await page.keyboard.type('Couplers and end caps');
+  await cbPick(page, cell(page, mat, 'vendor'), 'ferg', 'Ferguson Waterworks');
+  ok('the new supplier is offered on the next row', await cell(page, mat, 'vendor').inputValue() === 'Ferguson Waterworks');
+  await cell(page, mat, 'contact').click();
+  const offered = await page.$$eval('.cb-menu:not([hidden]) .cb-opt', o => o.map(x => x.textContent.trim()));
+  ok('the Contact cell offers that vendor\'s saved contacts', offered.length === 1 && offered[0].includes('Dana Reyes') && offered[0].includes('dana@ferguson.test'), offered);
+  await page.locator('.cb-menu:not([hidden]) .cb-opt', { hasText: 'Dana Reyes' }).click();
+  await sleep(250);
+  ok('picking one fills Contact', await cell(page, mat, 'contact').inputValue() === 'Dana Reyes');
+  ok('…and Email', await cell(page, mat, 'email').inputValue() === 'dana@ferguson.test');
+  await clickAway(page);
+  await until(() => fieldsSent(W, mat).email);
+  ok('…saved with the description and vendor', eq(fieldsSent(W, mat), { description: 'Couplers and end caps', vendor: 'Ferguson Waterworks',
+    contact: 'Dana Reyes', email: 'dana@ferguson.test' }), fieldsSent(W, mat));
+  ok('…and no second contact was made', W.contacts.length === 1 && W.log.filter(l => l.api === 'supplier-contacts' && l.method === 'POST').length === 1);
+
+  // Bulk: Quote # on two rows at once.
+  await page.check(`#procurement-root [data-sel="${drain}"]`);
+  await page.check(`#procurement-root [data-sel="${mat}"]`);
+  ok('selecting rows shows the bulk bar', /2\s*selected/.test(await page.textContent('#fctproc-bulk')));
+  await page.selectOption('#fctproc-bulk-field', 'quote_number');
+  await page.fill('#fctproc-bulk-val', 'Q-4471');
+  await page.click('[data-act="bulk-apply"]');
+  const bulk = await until(() => W.log.find(l => l.api === 'procurement' && l.method === 'PATCH' && l.q.action === 'bulk'));
+  ok('Apply sends one bulk PATCH for the two rows', bulk && eq(bulk.body, { ids: [drain, mat], fields: { quote_number: 'Q-4471' }, project_id: 'p1' }), bulk && bulk.body);
+  await until(() => cell(page, mat, 'quote_number').inputValue().then(v => v === 'Q-4471'));
+  ok('…and both rows show it', await cell(page, drain, 'quote_number').inputValue() === 'Q-4471' && await cell(page, mat, 'quote_number').inputValue() === 'Q-4471');
+
+  // A quick chip.
+  await page.click('[data-chip="not_ordered"]');
+  await sleep(150);
+  ok('the Not ordered chip leaves the two rows not on a PO', eq(await page.$$eval('#procurement-root tr.fctproc-row', t => t.map(r => r.dataset.row)), [drain, mat]));
+  ok('…and says so', /2 of 3 rows/.test(await page.textContent('#fctproc-shown')));
+  await page.click('[data-chip="all"]');
+  await sleep(150);
+  ok('All brings the rest back', await page.locator('#procurement-root tr.fctproc-row').count() === 3);
+
+  // Create PO from the two selected rows.
+  ok('the selection survived the bulk edit and the chips', /2\s*selected/.test(await page.textContent('#fctproc-bulk')));
+  await page.click('[data-act="bulk-po"]');
+  const poPost = await until(() => W.log.find(l => l.api === 'purchase-orders' && l.method === 'POST'));
+  const npo = poPost && poPost.body.purchaseOrder;
+  ok('Create PO POSTs one new order', !!npo && W.log.filter(l => l.api === 'purchase-orders').length === 1);
+  ok('…numbered after the last one, pending, dated today, no lines', npo && npo.po_number === 'PO-0008' && npo.status === 'pending'
+    && npo.date_created === TODAY && eq(npo.lines, []), npo);
+  ok('…seeded from the rows: job, codes, vendor, quote', npo && npo.project_id === 'p1' && npo.cost_code === 'Stormwater'
+    && npo.sub_code === DRAIN && npo.supplier === 'Ferguson Waterworks' && npo.notes === 'Quote Q-4471'
+    && npo.title === 'Ferguson Waterworks materials', npo);
+  const link = await until(() => W.log.filter(l => l.api === 'procurement' && l.q.action === 'bulk').find(l => l.body.fields.po_id));
+  ok('…then links both rows to it by id', link && eq(link.body.ids, [drain, mat]) && link.body.fields.po_id === npo.id && link.body.fields.po_auto === true, link && link.body);
+  await until(() => cell(page, drain, 'po').inputValue().then(v => v === 'PO-0008'));
+  ok('the rows show the new PO number', await cell(page, drain, 'po').inputValue() === 'PO-0008' && await cell(page, mat, 'po').inputValue() === 'PO-0008');
+  ok('…and are Ordered now', (await rowTr(page, drain).locator('td.c-status .fctproc-pill').textContent()).trim() === 'Ordered');
+  ok('…which the PO tab has too', await page.evaluate(() => purchaseOrders.some(p => p.po_number === 'PO-0008')));
+  ok('the selection clears', !(await page.textContent('#fctproc-bulk')).trim());
+
+  // Grouping.
+  await page.click('[data-group="vendor"]');
+  await sleep(150);
+  const vGroups = await page.$$eval('#procurement-root tr.fctproc-grp', g => g.map(x => x.textContent.replace(/\s+/g, ' ').trim()));
+  ok('Vendor / Quote groups the rows under vendor headers', vGroups.length === 2 && vGroups[0].includes('Ferguson Waterworks')
+    && vGroups[0].includes('Q-4471') && vGroups[0].includes('Dana Reyes') && vGroups[1].includes('No vendor yet'), vGroups);
+  await page.click('[data-group="cost"]');
+  await sleep(150);
+  const cGroups = await page.$$eval('#procurement-root tr.fctproc-grp', g => g.map(x => x.textContent.replace(/\s+/g, ' ').trim()));
+  ok('Cost code groups them under Stormwater', cGroups.length === 1 && /^▼\s*Stormwater/.test(cGroups[0]) && /3 rows/.test(cGroups[0]), cGroups);
+  await page.click('[data-group="none"]');
+  await sleep(150);
+  ok('None has no headers', await page.locator('#procurement-root tr.fctproc-grp').count() === 0);
+  ok('the grouping is remembered', await page.evaluate(() => localStorage.getItem('fct_proc_group_turf')) === 'none');
+  await page.click('[data-group="cost"]');
+  await sleep(150);
+
+  // Exports.
+  const [xl] = await Promise.all([page.waitForEvent('download'), page.click('[data-act="xlsx"]')]);
+  ok('Excel downloads as "Procurement - <job> - <date>.xlsx"', xl.suggestedFilename() === `Procurement - Penn Cambria - ${TODAY}.xlsx`, xl.suggestedFilename());
+  const xbytes = fs.readFileSync(await xl.path());
+  ok('…a zip (an .xlsx)', xbytes.slice(0, 2).toString() === 'PK' && xbytes.includes(Buffer.from('xl/worksheets/sheet1.xml')));
+  ok('…holding the rows', xbytes.includes(Buffer.from('Couplers and end caps')) && xbytes.includes(Buffer.from('PO-0008')));
+  const [cv] = await Promise.all([page.waitForEvent('download'), page.click('[data-act="csv"]')]);
+  ok('CSV downloads as "Procurement - <job> - <date>.csv"', cv.suggestedFilename() === `Procurement - Penn Cambria - ${TODAY}.csv`, cv.suggestedFilename());
+  const csv = fs.readFileSync(await cv.path(), 'utf8').replace(/^﻿/, '').trim().split(/\r?\n/);
+  ok('…the columns in the sheet\'s order, then the Notes (flags and badges)', csv[0] === ['Status', 'PO #', 'Sub-Contractor Agreement', 'Date Needed', 'Lead Time (days)', 'Order By',
+    'Date Ordered', 'Date Delivered', 'Quantity', 'Unit', 'Cost Code', 'Sub Code', 'Description', 'Vendor', 'Quote #', 'Contact', 'Email', 'Notes']
+    .map(h => `"${h}"`).join(','), csv[0]);
+  ok('…one line per row, in screen order', csv.length === 4 && csv[1].includes('"PO-0007"') && csv[2].includes('"Dana Reyes"') && csv[3].includes('"Couplers and end caps"'), csv);
+
+  // Send again: what is already there is greyed.
+  await page.click('#procurement-root [data-act="send"]');
+  await page.waitForSelector('.fctproc-modal .fctproc-send-line');
+  lines = await sendLines(page);
+  ok('re-opening Send shows the sent lines as already added', byName('Geofabric').state === 'added' && byName('Geofabric').disabled
+    && byName(DRAIN).state === 'added' && byName(DRAIN).disabled && byName(DRAIN).tag === 'already added', lines);
+  ok('…and only Mobilization left to send, still unticked', byName('Mobilization').state === 'new' && !byName('Mobilization').checked, lines);
+  ok('…so there is nothing to send yet', await page.locator('.fctproc-modal [data-send="go"]').isDisabled());
+  await page.click('.fctproc-modal [data-send="cancel"]');
+  ok('Cancel closes it', await page.locator('.fctproc-modal').count() === 0);
+
+  // + Add Row, then its ✕: the module's own inline confirm, not the page's
+  // global "Are you sure?" that answers every .del-btn[data-tab].
+  await page.click('#procurement-root [data-act="add"]');
+  const addPost = await until(() => W.log.filter(l => l.api === 'procurement' && l.method === 'POST' && !l.q.action)[1]);
+  const extra = addPost && addPost.body.item.id;
+  ok('+ Add Row POSTs a bare row for the job', addPost && addPost.body.item.project_id === 'p1' && !addPost.body.item.bid_item_id, addPost && addPost.body);
+  await until(() => rowTr(page, extra).count());
+  await clickAway(page);
+  await rowTr(page, extra).locator('[data-act="del"]').click();
+  ok('its ✕ asks inline', (await rowTr(page, extra).textContent()).includes('Delete?') && await page.locator('.del-confirm').count() === 0);
+  await rowTr(page, extra).locator('[data-act="del-yes"]').click();
+  const del = await until(() => W.log.find(l => l.api === 'procurement' && l.method === 'DELETE'));
+  ok('Yes deletes that row (softly, on the server)', del && del.q.id === extra && !!W.rows.find(r => r.id === extra).deleted_at, del && del.q);
+  await until(() => rowTr(page, extra).count().then(n => n === 0));
+  ok('…and it leaves the grid', await page.locator('#procurement-root tr.fctproc-row').count() === 3);
+
+  // ↗ beside a PO number opens that order on the Purchase Orders tab.
+  await rowTr(page, geo).locator('[data-act="open-po"]').click();
+  await until(() => page.evaluate(() => activeTab === 'po'));
+  ok('↗ opens the Purchase Orders tab searched to that order', await page.evaluate(() => activeTab === 'po' && poSearch === 'PO-0007'));
+  ok('…showing it', (await page.textContent('#tab-po')).includes('PO-0007'));
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 3));
+  ok('coming back, the job and its rows are still there', await page.inputValue('#fctproc-proj') === 'Penn Cambria'
+    && await page.locator('#procurement-root tr.fctproc-row').count() === 3);
+
+  // Screenshots of the tab, wide and laptop width (asserted on nowhere).
+  if (SHOTS) {
+    const scrollTo = x => page.evaluate(x => { const w = document.getElementById('fctproc-wrap'); w.scrollLeft = x === 'end' ? w.scrollWidth : x; }, x);
+    await page.evaluate(() => document.querySelectorAll('.fctproc-toast').forEach(t => t.remove()));
+    await page.setViewportSize({ width: 1920, height: 1000 });
+    await scrollTo(0); await sleep(300);
+    await shot(page, 'tab-1920.png');
+    await scrollTo('end'); await sleep(200);
+    await shot(page, 'tab-1920-right.png');
+    await page.setViewportSize({ width: 1474, height: 900 });
+    await scrollTo(0); await sleep(300);
+    await shot(page, 'tab-1474.png');
+    await scrollTo('end'); await sleep(200);
+    await shot(page, 'tab-1474-right.png');
+    await scrollTo(0);
+  }
+
+  // Suppliers tab: the search and the contacts.
+  await page.evaluate(() => adminSwitchTab('supplier'));
+  await page.waitForSelector('#sup-search');
+  await page.fill('#sup-search', 'dana');
+  await sleep(200);
+  const supNames = await page.$$eval('#supplier-root [data-sup-field="name"]', i => i.map(x => x.value));
+  ok('the Suppliers search finds a supplier by its contact', eq(supNames, ['Ferguson Waterworks']), supNames);
+  ok('…and keeps the caret in the box', await page.evaluate(() => document.activeElement && document.activeElement.id === 'sup-search'));
+  await page.locator('#supplier-root [data-supc-toggle]').first().click();
+  await sleep(200);
+  const contactVals = await page.$$eval('#supplier-root [data-supc-id]', i => i.map(x => x.value));
+  ok('its contacts open with name, email and phone', eq(contactVals, ['Dana Reyes', 'dana@ferguson.test', '']), contactVals);
+  await page.fill('#sup-search', '');
+  await sleep(200);
+  await shot(page, 'suppliers.png');
+
+  ok('no page errors', errors.length === 0, errors.join(' | '));
+  await ctx.close();
+}
+
+
+// ── Fixes from review: the table fits the window, dates, the Suppliers tab ────
+async function reviewFixes(browser) {
+  console.log('\nfit, dates and supplier renames');
+  const W = makeWorld();
+  // A long job: forty materials, the second of them from LB Water.
+  for (let i = 0; i < 40; i++) {
+    const t = new Date(Date.UTC(2026, 9, 1) + i * 1000).toISOString();
+    W.rows.push({ ...BLANK_ROW, id: 'L' + String(i).padStart(2, '0'), project_id: 'p1', description: `Material ${String(i).padStart(2, '0')}`,
+      vendor: i === 1 ? 'LB Water' : '', date_needed: i === 0 ? '2026-12-01' : null, created_at: t, updated_at: t });
+  }
+  const { page, ctx, errors } = await openPage(browser, W, 'admin', { viewport: { width: 1920, height: 1000 }, storage: { fct_proc_project_turf: 'p1' } });
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 40));
+  await sleep(150);
+  const fit = () => page.evaluate(() => {
+    const w = document.getElementById('fctproc-wrap').getBoundingClientRect();
+    const d = document.documentElement;
+    return { bottom: Math.round(w.bottom), inner: innerHeight, pageScrolls: d.scrollHeight > d.clientHeight + 1, height: Math.round(w.height) };
+  });
+  let f = await fit();
+  ok('1920×1000: the table box ends inside the window and the page itself does not scroll', f.bottom <= f.inner && !f.pageScrolls && f.height > 400, f);
+  await page.locator('#procurement-root [data-sel="L05"]').check();
+  await sleep(150);
+  f = await fit();
+  ok('…with the bulk bar open too', f.bottom <= f.inner && !f.pageScrolls, f);
+  await page.setViewportSize({ width: 1474, height: 900 });
+  await sleep(250);
+  f = await fit();
+  ok('1474×900 (the nav on two lines), bulk bar open: still inside the window', f.bottom <= f.inner && !f.pageScrolls && f.height > 250, f);
+  await page.locator('#procurement-root [data-act="bulk-clear"]').click();
+  await sleep(150);
+  f = await fit();
+  ok('…and the box grows back when the bar closes', f.bottom <= f.inner && !f.pageScrolls, f);
+
+  // A date typed with a two-digit year, the way Chrome takes it: 0026.
+  const box = cell(page, 'L00', 'date_needed');
+  const patchesBefore = patchesFor(W, 'L00').length;
+  await box.focus();
+  await page.keyboard.type('120126', { delay: 60 });
+  await clickAway(page);
+  await sleep(800);
+  const toastText = (await page.$$eval('.fctproc-toast', ts => ts.map(t => t.textContent))).join(' | ');
+  ok('a two-digit year is not sent, and the date saved before is not wiped', patchesFor(W, 'L00').length === patchesBefore
+    && W.rows.find(r => r.id === 'L00').date_needed === '2026-12-01' && await box.inputValue() === '2026-12-01', [patchesFor(W, 'L00').map(l => l.body), await box.inputValue()]);
+  ok('…and the PM is told why', /not saved/.test(toastText) && /all four digits/.test(toastText), toastText);
+  await box.focus();
+  await page.keyboard.type('01152027', { delay: 60 });
+  await clickAway(page);
+  await sleep(800);
+  ok('typing a whole date sends only that date (not the part-typed years on the way)',
+    eq(patchesFor(W, 'L00').slice(patchesBefore).map(l => l.body.fields.date_needed), ['2027-01-15']), patchesFor(W, 'L00').map(l => l.body));
+
+  // Suppliers: a colleague saves a contact after this tab read the list.
+  await page.evaluate(() => adminSwitchTab('supplier'));
+  await until(() => page.evaluate(() => _supContactsLoad.state === 'ok'));
+  W.contacts.push({ id: 'sc-late', supplier_name: 'LB Water', name: 'Pat Kline', email: 'pat@lbwater.com', phone: '', updated_at: '2026-11-03T00:00:00Z', deleted_at: null });
+  const nameBox = page.locator('#supplier-root [data-sup-field="name"]').first();
+  ok('the first supplier is LB Water', await nameBox.inputValue() === 'LB Water');
+  await nameBox.fill('LB Water Service');
+  await page.locator('#supplier-root').click({ position: { x: 5, y: 5 } });
+  await sleep(500);
+  const renames = W.log.filter(l => l.api === 'supplier-contacts' && l.q.action === 'rename');
+  ok('a rename is always sent, even when this tab\'s copy listed no contacts', renames.length === 1
+    && eq(renames[0].body, { from: 'LB Water', to: 'LB Water Service' }), renames.map(r => r.body));
+  ok('…so the contact saved meanwhile moves with it', W.contacts.find(c => c.id === 'sc-late').supplier_name === 'LB Water Service');
+  ok('…and so does the Procurement row\'s Vendor', W.rows.find(r => r.id === 'L01').vendor === 'LB Water Service');
+
+  // A slow contacts read lands while a supplier's name is being typed.
+  W.contactsDelay = 1200;
+  await page.evaluate(() => { _supContactsLoad = { state: 'idle', at: 0, busy: false }; renderSupplierTab(); });
+  const nb = page.locator('#supplier-root [data-sup-field="name"]').first();
+  await nb.click();
+  await page.keyboard.press('End');
+  await page.keyboard.type(' Inc', { delay: 450 });
+  await until(() => page.evaluate(() => _supContactsLoad.state === 'ok'), 4000);
+  const still = await page.evaluate(() => { const a = document.activeElement; return { field: a && a.dataset && a.dataset.supField, value: a && a.value }; });
+  ok('the read landing does not redraw the box being typed in', still.field === 'name' && still.value === 'LB Water Service Inc', still);
+  ok('…and no rename went out for a half-typed name', W.log.filter(l => l.api === 'supplier-contacts' && l.q.action === 'rename').length === 1);
+  W.contactsDelay = 0;
+  await page.locator('#supplier-root').click({ position: { x: 5, y: 5 } });
+  await sleep(500);
+  const r2 = W.log.filter(l => l.api === 'supplier-contacts' && l.q.action === 'rename');
+  ok('leaving the box sends the one rename, for the whole name', r2.length === 2 && eq(r2[1].body, { from: 'LB Water Service', to: 'LB Water Service Inc' }), r2.map(r => r.body));
+  ok('…then the tab redraws, the contact counted under the new name',
+    await until(() => page.locator('#supplier-root [data-supc-toggle]').first().textContent().then(t => /\b1\b/.test(t))),
+    await page.locator('#supplier-root [data-supc-toggle]').first().textContent());
+
+  ok('no page errors', errors.length === 0, errors.join(' | '));
+  await ctx.close();
+}
+
+// ── level1: read the sheet, change nothing ───────────────────────────────────
+async function asLevel1(browser, W) {
+  console.log('\nlevel1');
+  const before = W.log.length;
+  const { page, ctx, errors } = await openPage(browser, W, 'level1', { storage: { fct_proc_project_turf: 'p1' } });
+  ok('level1 has the Procurement tab', await page.isVisible('.tab-btn[data-tab="procurement"]'));
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 3));
+  ok('it shows the job\'s rows', await page.locator('#procurement-root tr.fctproc-row').count() === 3);
+  ok('…as plain text: no inputs, selects or checkboxes in the grid', await page.locator('#fctproc-wrap input, #fctproc-wrap select').count() === 0);
+  ok('…no Send, + Add Row or row buttons', await page.locator('#procurement-root [data-act="send"], #procurement-root [data-act="add"], #procurement-root [data-act="material"], #procurement-root [data-act="del"]').count() === 0);
+  ok('…but the values are there', (await page.textContent('#fctproc-wrap')).includes('Couplers and end caps')
+    && (await page.textContent('#fctproc-wrap')).includes('PO-0008'));
+  ok('…and export still works', await page.locator('#procurement-root [data-act="xlsx"]').count() === 1 && await page.locator('#procurement-root [data-act="csv"]').count() === 1);
+  await page.click('[data-chip="not_ordered"]');
+  await sleep(150);
+  ok('…and so do the chips', /0 of 3 rows/.test(await page.textContent('#fctproc-shown')) || /No rows match/.test(await page.textContent('#fctproc-wrap')));
+  ok('level1 sent no writes', W.log.slice(before).every(l => l.method === 'GET'), W.log.slice(before).filter(l => l.method !== 'GET'));
+  ok('no page errors', errors.length === 0, errors.join(' | '));
+  await ctx.close();
+}
+
+// ── sales: no tab at all ─────────────────────────────────────────────────────
+async function asSales(browser, W) {
+  console.log('\nsales');
+  const before = W.log.length;
+  const { page, ctx, errors } = await openPage(browser, W, 'sales');
+  ok('sales has no Procurement tab', !(await page.isVisible('.tab-btn[data-tab="procurement"]')));
+  ok('…lands on the CRM', await page.evaluate(() => activeTab) === 'crm');
+  ok('…and nothing asked the Procurement APIs', W.log.slice(before).length === 0, W.log.slice(before));
+  ok('no page errors', errors.length === 0, errors.join(' | '));
+  await ctx.close();
+}
+
+(async () => {
+  const browser = await chromium.launch({ executablePath: CHROME });
+  try {
+    const W = makeWorld();
+    await asAdmin(browser, W);
+    await asLevel1(browser, W);
+    await asSales(browser, W);
+    await reviewFixes(browser);
+  } finally {
+    await browser.close();
+    server.close();
+  }
+  console.log(`\n${passed} passed, ${failed} failed`);
+  process.exit(failed ? 1 : 0);
+})().catch(e => { console.error(e); server.close(); process.exit(1); });

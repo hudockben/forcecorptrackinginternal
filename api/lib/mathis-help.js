@@ -105,6 +105,15 @@ const JOB_TOPICS = {
       'Analytics or Daily Summary, and no job contract, cost or profit figures from Mathis either. ' +
       'Mathis answers within whatever the asking person holds: the figures it will not show are the same ones ' +
       'their own screen will not show.',
+    // Procurement is turf-only for now (procurement.js, switched on by
+    // tracker.html alone), so the sentence about who sees it is turf's.
+    perDivision: {
+      turf: {
+        claims: ['data-tab="procurement"', "new Set(['info', 'po', 'procurement', 'trucking', 'docs'])"],
+        text: 'On this page there is also a Procurement tab, each job\'s material buy-out sheet: level1 sees it ' +
+          'and can export it, level2 and up edit it and send bid lines to it, and the sales level does not see it.',
+      },
+    },
   },
 
   // The one topic where the three pages genuinely differ. Written as a common
@@ -127,8 +136,9 @@ const JOB_TOPICS = {
       'Tabs a level cannot use are hidden rather than disabled, so a missing tab means missing permission, not a bug.',
     perDivision: {
       turf: {
-        claims: ['schedules-item-schedule', 'schedules-item-construction', 'data-tab="crm"'],
-        text: 'On this page the Schedule and the Construction Schedule sit behind a Schedules ▾ dropdown, and there is a CRM tab.',
+        claims: ['schedules-item-schedule', 'schedules-item-construction', 'data-tab="crm"', 'data-tab="procurement"'],
+        text: 'On this page the Schedule and the Construction Schedule sit behind a Schedules ▾ dropdown, and there is a CRM tab. ' +
+          'A Procurement tab sits right of Purchase Orders: pick a job there to track buying its materials.',
       },
       paving: {
         claims: ['data-tab="schedule"', 'data-tab="crm"'],

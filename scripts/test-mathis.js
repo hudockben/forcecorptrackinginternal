@@ -2074,8 +2074,10 @@ console.log('\n══════════ the help text is still true ══
   // that the sentence around it is right. These pin the specific facts most
   // likely to drift and most costly if they do.
   const perm = pages['tracker.html'];
-  assert('level1 really does see only those four tabs',
-    /visibleTabs: \(r === 'level1'\) \? new Set\(\['info', 'po', 'trucking', 'docs'\]\)/.test(perm),
+  // Turf's level1 also reads Procurement, a tab only tracker.html has. The
+  // four the common access_levels text names are still exactly the rest.
+  assert('level1 really does see only those four tabs (plus turf\'s Procurement)',
+    /visibleTabs: \(r === 'level1'\) \? new Set\(\['info', 'po', 'procurement', 'trucking', 'docs'\]\)/.test(perm),
     'the access_levels topic lists exactly these');
   assert('  and the Admin menu really is hidden below level3',
     /anyAdminVisible = perm\.visibleTabs\.has\('equip'\) \|\| perm\.visibleTabs\.has\('supplier'\) \|\| perm\.isAdmin/.test(perm),
