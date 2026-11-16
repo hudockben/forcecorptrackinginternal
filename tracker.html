@@ -2590,6 +2590,7 @@
       .tab-btn[data-tab="cost"],
       .tab-btn[data-tab="info"],
       .tab-btn[data-tab="po"],
+      .tab-btn[data-tab="procurement"],
       .tab-btn[data-tab="trucking"],
       .admin-dropdown-wrap,
       .tab-btn:not([data-tab]):not(#admin-tab-btn) { display: none !important; }
@@ -2891,6 +2892,7 @@
     </div>
   </div>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
+  <button class="tab-btn"        data-tab="procurement">Procurement</button>
   <button class="tab-btn"        data-tab="docs">&#128193; Documents</button>
   <button class="tab-btn"        data-tab="trucking">&#128666; Trucking</button>
   <button class="tab-btn"        data-tab="inventory">Infill Inventory</button>
@@ -3170,6 +3172,11 @@
 <!-- ══════════════ PURCHASE ORDERS TAB ══════════════ -->
 <div class="tab-panel" id="tab-po">
   <div id="po-root"></div>
+</div>
+
+<!-- ══════════════ PROCUREMENT TAB ══════════════ -->
+<div class="tab-panel" id="tab-procurement">
+  <div id="procurement-root"></div>
 </div>
 
 <!-- ══════════════ DOCUMENTS TAB ══════════════ -->
@@ -5148,6 +5155,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'info')     renderProjectInfoComputed();
     if (activeTab === 'supplier') renderSupplierTab();
     if (activeTab === 'po')       renderPOTab();
+    if (activeTab === 'procurement') renderProcurementTab();
     if (activeTab === 'docs')     renderDocsTab();
     if (activeTab === 'trucking')  _trOpenTab();
     if (activeTab === 'inventory') renderInventoryTab();
@@ -18615,6 +18623,22 @@ function _invBreakdownHTML(year, selectedMonths) {
   }
 
   return monthBlocks + yearBlock;
+}
+
+/* ── Procurement Tab ──
+   Placeholder for now: the tab exists and switches like the others, but
+   what it holds and how it ties into Purchase Orders and the other tabs
+   is still to be built. */
+function renderProcurementTab() {
+  const root = document.getElementById('procurement-root');
+  if (!root) return;
+  root.innerHTML = `
+    <div style="padding:1.5rem">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:0.85rem">
+        <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Procurement</span>
+      </div>
+      <p style="color:var(--muted);font-size:0.85rem;margin:0">Nothing here yet.</p>
+    </div>`;
 }
 
 function renderInventoryTab() {
