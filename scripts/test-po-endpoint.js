@@ -862,6 +862,77 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
         JSON.stringify(del.vals).includes('PO-0001'), del ? JSON.stringify(del.vals) : '');
     }
     {
+      // The same two stale copies, with the job's rows as they really stand
+      // while the save runs. The order's own row carries its PO # on its job,
+      // and so does the one the tab minted — that one is only deleted after the
+      // blob lands. Neither is a Daily Tracking delivery: re-derived as one, the
+      // order listed the delivery twice, the second time against a row that was
+      // about to go.
+      const STORED = [
+        { id: 'a', po_number: 'PO-0001', project_id: 'job1',
+          lines: [{ id: 'L1', qty: '10', unit_cost: '4', po_row_id: 'row-server' }] },
+        { id: 'b', po_number: 'PO-0002', project_id: 'job1',
+          lines: [{ id: 'dr-row-b', source: 'daily', qty: '10', unit_cost: '4', date: '2026-11-01', po_row_id: 'row-b' }] },
+      ];
+      const ROW = id => ({ row_id: id, project_id: 'job1', po_num: id === 'row-b' ? 'PO-0002' : 'PO-0001',
+        units_purchased: 10, unit_cost: 4, material_cost: 40, date: '2026-11-01', employee: '' });
+      const run = async (sentLine, live) => {
+        const seen = [];
+        const sqlStub = (strings, ...vals) => {
+          let q = ''; strings.forEach((x, i) => { q += x; if (i < vals.length) q += `$${i + 1}`; });
+          q = q.replace(/\s+/g, ' ').trim();
+          seen.push({ q, vals });
+          if (/^SELECT value, updated_at FROM app_data/.test(q)) {
+            return Promise.resolve([{ value: STORED, updated_at: new Date(T_MOVED) }]);
+          }
+          if (/^SELECT row_id FROM daily_tracking/.test(q)) return Promise.resolve([{ row_id: 'row-server' }]);
+          if (/^SELECT row_id, project_id, date, employee, cost_code, sub_code, po_num/.test(q)) {
+            const ids = vals[2], projects = vals[3];
+            return Promise.resolve(live.concat(['row-b']).map(ROW).filter(r => ids.includes(r.row_id)
+              || (projects.includes(r.project_id) && String(r.po_num || '').trim())));
+          }
+          if (/^INSERT INTO app_data/.test(q)) return Promise.resolve([{ updated_at: new Date(T_NEW) }]);
+          return Promise.resolve([]);
+        };
+        const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+        const res = makeRes();
+        await handler({ method: 'PUT', query: { division: 'turf' }, headers: AUTHED,
+                        body: { purchaseOrders: [
+                                  { id: 'a', po_number: 'PO-0001', project_id: 'job1', lines: [sentLine] },
+                                  JSON.parse(JSON.stringify(STORED[1])) ],
+                                baseUpdatedAt: T_READ } }, res);
+        const hit = seen.find(c => /^INSERT INTO app_data/.test(c.q));
+        const written = hit ? JSON.parse(hit.vals[1]) : [];
+        const linesOf = id => (written.find(o => o && o.id === id) || {}).lines || [];
+        return { res, seen, lines: linesOf('a'), linesB: linesOf('b') };
+      };
+      const desc = ls => JSON.stringify((ls || []).map(l => `${l.id}->${l.po_row_id}`));
+
+      let out = await run({ id: 'L1', qty: '10', unit_cost: '4' }, ['row-server']);
+      check('a linkless copy of a delivery is stored as one line, on its own row',
+        desc(out.lines) === '["L1->row-server"]', desc(out.lines));
+      check('  and nothing is reported as derived', out.res.body && out.res.body.derived === 0,
+        JSON.stringify(out.res.body));
+
+      out = await run({ id: 'L1', qty: '10', unit_cost: '4', po_row_id: 'row-tab-minted' },
+        ['row-server', 'row-tab-minted']);
+      check('the row a stale copy minted is not recorded as a Daily Tracking line',
+        desc(out.lines) === '["L1->row-server"]', desc(out.lines));
+      check('  nothing is reported as derived', out.res.body && out.res.body.derived === 0,
+        JSON.stringify(out.res.body));
+      const del = out.seen.find(c => /^DELETE FROM daily_tracking/.test(c.q));
+      check('  and the row itself still goes', Boolean(del) && JSON.stringify(del.vals).includes('row-tab-minted'),
+        del ? JSON.stringify(del.vals) : 'no DELETE issued');
+
+      // A stale line naming another order's Daily Tracking row: the DELETE
+      // cannot match it (another PO #), so it is not this save's to retire, and
+      // the order it names keeps it.
+      out = await run({ id: 'L1', qty: '10', unit_cost: '4', po_row_id: 'row-b' }, ['row-server']);
+      check('a stale link to another order\'s row leaves that order\'s line alone',
+        desc(out.linesB) === '["dr-row-b->row-b"]' && desc(out.lines) === '["L1->row-server"]',
+        desc(out.lines) + ' / ' + desc(out.linesB));
+    }
+    {
       // The attack the scoping exists for. A caller with a role in ONE division
       // names another division's cost row as their line's link. Before the
       // scoping, the id went straight into a DELETE guarded only by

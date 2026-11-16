@@ -1196,7 +1196,17 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
     deriveDailyLines([po], rows, {
       aliases,
       editedLineIds: edited,
-      raisedRowIds: raisedRowIdsOf(targetList.filter(p => p && p.id !== po.id)),
+      // Every row a raised line names, this order's STORED copies included.
+      // The row a delivery line raised carries the order's PO # on its job,
+      // which is exactly what a Daily Tracking row naming the order looks like,
+      // and the incoming copy is no authority on which rows those are: a page
+      // that loaded the order before the server minted a link sends the line
+      // without it, and syncPOCostRows puts it back from the stored copy only
+      // after this has run. Read from the incoming copy alone, the order's own
+      // row was recorded a second time beside its line. A row the stored copy
+      // names that this save retires instead — its line deleted or emptied —
+      // is deleted once the order is stored, so it is not recorded either.
+      raisedRowIds: raisedRowIdsOf(targetList.filter(p => p && p.id !== po.id).concat(priorCopies)),
     });
   } catch (err) {
     console.error('[po-sync] could not read the job rows behind Daily Tracking lines:', err.message);
@@ -1215,6 +1225,12 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
     priorCopies: priorCopies.map(raisedOnly),
   });
   po.project_id = raisedView.project_id;
+  // One row is one delivery, checked again now the links are final: the stored
+  // ones put back, the new ones minted. The derivation already leaves out every
+  // row the stored copies name, so this only finds something when the read
+  // above failed and the lines went through as they came — a copy that lost a
+  // line's link and still carries the Daily Tracking line beside it.
+  dropShadowedDailyLines(po);
 
   // The new list is written FIRST, and only then is the old one emptied.
   // The reverse order has a window where the order is in neither list, and a

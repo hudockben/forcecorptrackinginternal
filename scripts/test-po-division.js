@@ -1154,6 +1154,108 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
       linesOf(st, 'turf', 'A') === '', linesOf(st, 'turf', 'A'));
   }
 
+  console.log('\n[Daily Tracking: an order\'s own delivery is not recorded a second time]');
+  {
+    // The row a delivery line raised carries the order's PO # on its job, which
+    // is exactly what a Daily Tracking row naming the order looks like. A copy
+    // that loaded before the server minted the link sends the line without it;
+    // syncPOCostRows puts the stored link back, but the derivation ran first,
+    // read the order's own row as a Daily Tracking row, and added dr-<row> beside
+    // the line. The job was charged once; the order listed the delivery twice.
+    st = makeStore();
+    const fabric = () => makePO({ id: 'po1', po_number: 'PO-0001', title: 'Fabric', status: 'pending',
+      project_id: 'job1', cost_code: '100', sub_code: 'A', lines: [{ id: 'L1', qty: '10', unit_cost: '4' }] });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: fabric() });
+    const rowId = (lineOf(st, 'turf', 'po1', 'L1') || {}).po_row_id;
+    const totals = o => (o.lines || []).reduce((t, l) => ({
+      qty: t.qty + Number(l.qty || 0), money: t.money + poSync.lineAmt(l) + poSync.lineTax(l),
+    }), { qty: 0, money: 0 });
+    const order = () => st.getBlob(KEY('turf')).find(p => p.id === 'po1');
+    const before = totals(order());
+    assert('the first save mints one row for the delivery', st.daily.size === 1 && Boolean(rowId));
+
+    const res = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf',
+      po: Object.assign(fabric(), { status: 'approved' }) });   // the copy without the link
+    assert('a copy without the link stores one line for the row', linesOf(st, 'turf', 'po1') === 'L1',
+      linesOf(st, 'turf', 'po1'));
+    assert('  the line it raised, linked to it again', lineOf(st, 'turf', 'po1', 'L1').po_row_id === rowId);
+    assert('  exactly one line per cost row',
+      order().lines.filter(l => String(l.po_row_id) === String(rowId)).length === 1,
+      JSON.stringify(order().lines));
+    assert('  and the order\'s totals are what they were',
+      JSON.stringify(totals(order())) === JSON.stringify(before) && before.money === 40,
+      JSON.stringify({ before, after: totals(order()) }));
+    assert('  the order handed back to the page says the same',
+      res.ok && res.purchaseOrder.lines.map(l => l.id).join() === 'L1', JSON.stringify(res.purchaseOrder.lines));
+    assert('  as does the mirror the Purchase Orders page lists from',
+      st.deliveries.filter(d => d.po_id === 'po1').length === 1, JSON.stringify(st.deliveries));
+    assert('  still one row on the job', st.daily.size === 1, [...st.daily.keys()].join());
+    assert('the status flip itself is saved', order().status === 'approved');
+
+    // And a save after it, from the copy the page took back, changes nothing.
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: JSON.parse(JSON.stringify(order())) });
+    assert('a further save keeps the one line', linesOf(st, 'turf', 'po1') === 'L1', linesOf(st, 'turf', 'po1'));
+  }
+  {
+    // The line goes, from a copy that never had its link. Its row goes with it
+    // once the order is stored, so it is not recorded on the way out either: a
+    // Daily Tracking line naming a row about to be deleted would list a
+    // delivery the job no longer has.
+    st = makeStore();
+    const two = () => makePO({ id: 'po1', po_number: 'PO-0001', project_id: 'job1', lines: [
+      { id: 'L1', qty: '10', unit_cost: '4' }, { id: 'L2', qty: '2', unit_cost: '5' }] });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: two() });
+    const r2 = lineOf(st, 'turf', 'po1', 'L2').po_row_id;
+    const drop = two(); drop.lines = drop.lines.filter(l => l.id !== 'L2');
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: drop, deletedLineIds: ['L2'] });
+    assert('a deleted line from a copy without links leaves no Daily Tracking line',
+      linesOf(st, 'turf', 'po1') === 'L1', linesOf(st, 'turf', 'po1'));
+    assert('  its row is gone from the job', !st.daily.has(r2) && st.daily.size === 1, [...st.daily.keys()].join());
+
+    const empty = two(); empty.lines = [{ id: 'L1', qty: '', unit_cost: '' }];
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: empty });
+    assert('a line emptied on a copy without its link is not recorded from its row',
+      linesOf(st, 'turf', 'po1') === 'L1' && !lineOf(st, 'turf', 'po1', 'L1').po_row_id,
+      JSON.stringify(st.getBlob(KEY('turf'))[0].lines));
+    assert('  and that row is gone too', st.daily.size === 0, [...st.daily.keys()].join());
+  }
+  {
+    // An order already stored with the duplicate — what a save on the code
+    // before this fix left behind — comes back to one line on its next save,
+    // and on the once-per-load catch-up.
+    const dup = (rowId) => makePO({ id: 'po1', po_number: 'PO-0001', project_id: 'job1', lines: [
+      { id: 'L1', qty: '10', unit_cost: '4', po_row_id: rowId },
+      { id: 'dr-' + rowId, source: 'daily', qty: '10', unit_cost: '4', po_row_id: rowId }] });
+    st = makeStore();
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf',
+      po: makePO({ id: 'po1', po_number: 'PO-0001', project_id: 'job1', lines: [{ id: 'L1', qty: '10', unit_cost: '4' }] }) });
+    const rowId = lineOf(st, 'turf', 'po1', 'L1').po_row_id;
+    st.setBlob(KEY('turf'), [dup(rowId)]);
+    const copy = dup(rowId); copy.lines[0].po_row_id = null;
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: copy });
+    assert('a stored duplicate is cleared by the next save', linesOf(st, 'turf', 'po1') === 'L1',
+      linesOf(st, 'turf', 'po1'));
+    st.setBlob(KEY('turf'), [dup(rowId)]);
+    await poSync.reconcileDailyLines(st.sql, { companyCode: 'FCT', division: 'turf' });
+    assert('  and by the catch-up', linesOf(st, 'turf', 'po1') === 'L1', linesOf(st, 'turf', 'po1'));
+
+    // The same copy saved while the job rows cannot be read: nothing is
+    // derived, the lines go through as they came, and the link put back on L1
+    // is what shows dr-<row> to be its copy.
+    st.setBlob(KEY('turf'), [dup(rowId)]);
+    const down = (strings, ...vals) => (/^\s*SELECT row_id, project_id, date/.test(strings[0])
+      ? Promise.reject(new Error('connection dropped')) : st.sql(strings, ...vals));
+    const errs = []; const origErr = console.error; console.error = (...a) => errs.push(a.join(' '));
+    try {
+      const again = dup(rowId); again.lines[0].po_row_id = null;
+      const r2 = await poSync.upsertPO(down, { companyCode: 'FCT', division: 'turf', po: again });
+      assert('a failed read of the rows still stores one line for the row',
+        r2.ok && linesOf(st, 'turf', 'po1') === 'L1' && lineOf(st, 'turf', 'po1', 'L1').po_row_id === rowId,
+        JSON.stringify(st.getBlob(KEY('turf'))[0].lines));
+    } finally { console.error = origErr; }
+    assert('  and says why it could not derive', errs.some(e => /Daily Tracking/.test(e)), errs.join(' | '));
+  }
+
   console.log('\n[Daily Tracking: nothing done to an order removes the field\'s row]');
   {
     st = makeStore();

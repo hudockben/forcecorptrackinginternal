@@ -483,7 +483,20 @@ module.exports = async (req, res) => {
       if (PO_JOB_DIVISIONS.includes(division)) {
         try {
           const linkRows = await poSync.fetchLinkRows(sql, companyCode, division, poSync.linkScope(toWrite));
-          derived = poSync.deriveDailyLines(toWrite, linkRows).size;
+          // A row the merge took a stale copy's line off is that line's
+          // delivery, raised under the order's own PO # on its job — which is
+          // what a Daily Tracking row naming the order looks like — and it is
+          // deleted once the blob lands. Recorded here it would list the
+          // delivery a second time, against a row about to go. Only a row the
+          // DELETE below will match counts: its id came from the request body,
+          // and one that is some other order's delivery stays that order's.
+          const retiring = new Set(supersededRows.filter(Boolean)
+            .map(r => [r.rowId, r.projectId, r.poNum].join('\u0000')));
+          derived = poSync.deriveDailyLines(toWrite, linkRows, {
+            raisedRowIds: linkRows
+              .filter(r => retiring.has([String(r.row_id), String(r.project_id || ''), String(r.po_num || '')].join('\u0000')))
+              .map(r => r.row_id),
+          }).size;
         } catch (err) {
           console.error('[purchase-orders] could not read the job rows behind Daily Tracking lines:', err.message);
           for (const po of toWrite) poSync.dropShadowedDailyLines(po);
