@@ -1154,7 +1154,7 @@ const _unsaved = new Set();
 // Without this the server cannot tell a delivery the user DELETED from one
 // somebody else added while this page held a stale copy — and it has to keep
 // the second kind, so it has to be told about the first.
-const _deletedLines = {};
+const _deletedLines = Object.create(null);
 
 // Deliveries this page has EDITED, per order, until a save confirms it. A line
 // recorded from a Daily Tracking row takes its figures from that row, so the
@@ -1162,7 +1162,36 @@ const _deletedLines = {};
 // for it — and writes them to the row — when told the user changed them here.
 // A line merely re-sent from a copy a minute old must not put old figures back
 // on the job.
-const _editedLines = {};
+const _editedLines = Object.create(null);
+
+// The order's own fields this page has CHANGED, per order, until a save
+// confirms them — title, supplier, status, code, job, number, date, notes. The
+// server takes only these from this page's copy and keeps the stored value of
+// every other field. Without it every save sent the whole order as this page
+// last saw it: approving an order on a screen that had loaded it before
+// somebody filled in its title and supplier stored it approved and blank.
+const _editedFields = Object.create(null);
+
+// Both of the above map what was changed to the number of the change, rather
+// than just listing it, so a save forgets only the edits it actually carried. A
+// field changed AGAIN while that save was in flight is owed to the next one —
+// and a plain set forgot it when the first save landed, so the next save went
+// out saying nothing had changed and the server kept the old value.
+let _editSeq = 0;
+function noteEdit(store, poId, key) {
+  (store[poId] || (store[poId] = new Map())).set(key, ++_editSeq);
+}
+/** A snapshot of an order's outstanding edits, for one save to carry. */
+function pendingEdits(store, poId) {
+  return new Map(store[poId] || []);
+}
+/** Forget the edits a save carried — unless they have been made again since. */
+function clearSentEdits(store, poId, sent) {
+  const now = store[poId];
+  if (!now) return;
+  sent.forEach((seq, key) => { if (now.get(key) === seq) now.delete(key); });
+  if (!now.size) delete store[poId];
+}
 
 // The save in flight for each order, so a second one QUEUES behind it instead
 // of racing it. Without this, two saves of one order could both read the stored
@@ -1202,9 +1231,125 @@ function deletedLinesFor(poId) {
   return _deletedLines[poId] ? [..._deletedLines[poId]] : [];
 }
 
+/*
+ * A delivery's edits are kept per key — `<key>:<line id>` — so a save can say
+ * which of a delivery's figures changed and the server keeps its stored value
+ * of the rest. Line-level was not enough: typing an invoice # on a delivery
+ * whose quantity this page held stale sent the stale quantity as an edit, and
+ * the server wrote it to the job's cost row.
+ */
+function lineEditKey(lineId, key) { return key + ':' + lineId; }
+function lineEditSplit(k) {
+  const at = k.indexOf(':');
+  return { key: k.slice(0, at), lineId: k.slice(at + 1) };
+}
+
 /** The deliveries edited on this order and not yet confirmed to the server. */
-function editedLinesFor(poId) {
-  return _editedLines[poId] ? [..._editedLines[poId]] : [];
+function editedLinesFor(poId, from) {
+  const keys = from ? [...from.keys()] : (_editedLines[poId] ? [..._editedLines[poId].keys()] : []);
+  return [...new Set(keys.map(k => lineEditSplit(k).lineId))];
+}
+
+/** The same, per delivery: `{ lineId: [key, ...] }`. */
+function editedLineFieldsFor(poId, from) {
+  const keys = from ? [...from.keys()] : (_editedLines[poId] ? [..._editedLines[poId].keys()] : []);
+  // No prototype: a delivery id named like one of its keys must stay a key.
+  const out = Object.create(null);
+  keys.forEach(k => { const e = lineEditSplit(k); (out[e.lineId] || (out[e.lineId] = [])).push(e.key); });
+  return out;
+}
+
+/** The order's own fields changed here and not yet confirmed to the server. */
+function editedFieldsFor(poId) {
+  return _editedFields[poId] ? [..._editedFields[poId].keys()] : [];
+}
+
+/*
+ * The order-level fields, and the status byline that goes with the status —
+ * the same lists settleHeaderFields keeps in api/lib/po-sync.js.
+ */
+const PO_HEADER_FIELDS = ['po_number', 'date_created', 'project_id', 'cost_code', 'sub_code',
+                          'title', 'supplier', 'status', 'notes'];
+const PO_STATUS_STAMP_FIELDS = ['status_changed_at', 'status_changed_by'];
+
+/**
+ * Take on the stored value of every order-level field this page has no edit
+ * outstanding for. The server kept those rather than this page's copy, so
+ * where the copy was behind — somebody else filled in the title, or approved
+ * the order — this is what puts the screen right without waiting for the poll.
+ * Returns whether anything changed.
+ */
+function adoptStoredFields(po, stored) {
+  const pending = _editedFields[po.id];
+  let changed = false;
+  const take = k => {
+    if (pending && pending.has(k)) return;
+    const v = stored[k];
+    if ((po[k] == null ? '' : String(po[k])) === (v == null ? '' : String(v))) return;
+    if (v === undefined) delete po[k]; else po[k] = v;
+    changed = true;
+  };
+  PO_HEADER_FIELDS.forEach(take);
+  if (!(pending && pending.has('status'))) PO_STATUS_STAMP_FIELDS.forEach(take);
+  return changed;
+}
+
+// A delivery's own keys, as the server stores them. A Daily Tracking line's
+// codes come from its row, so they are taken too.
+const PO_LINE_FIELDS = ['invoice_num', 'date', 'qty', 'unit_cost', 'tax_pct', 'tax', 'employee',
+                        'cost_code', 'sub_code', 'source'];
+const PO_LINE_MONEY = ['qty', 'unit_cost', 'tax_pct'];
+
+/**
+ * Take on the deliveries as stored, the same way: every key of every delivery
+ * this page has no edit outstanding for, the deliveries somebody else added,
+ * and not the ones the server dropped (a Daily Tracking delivery whose row
+ * moved on). A delivery added, or changed, since the save left is this page's
+ * and stays. Replaces the old wholesale swap, which threw away an edit made
+ * while the save was in flight — and the next save then sent the server's
+ * older figure back marked as the user's.
+ *
+ * `sentIds` are the deliveries the save carried. Returns how many were added.
+ */
+function adoptStoredLines(po, stored, sentIds) {
+  const pending = _editedLines[po.id];
+  const isPending = (id, k) => Boolean(pending && pending.has(lineEditKey(id, k)));
+  const deleted = _deletedLines[po.id];
+  const byId = new Map((stored || []).filter(l => l && l.id != null).map(l => [String(l.id), l]));
+  let changed = false;
+  let added = 0;
+  const out = [];
+  (po.lines || []).forEach(l => {
+    if (!l || l.id == null) { out.push(l); return; }
+    const id = String(l.id);
+    const srv = byId.get(id);
+    if (!srv) {
+      const newer = !sentIds.has(id) || PO_LINE_FIELDS.some(k => isPending(id, k));
+      if (newer) out.push(l); else changed = true;
+      return;
+    }
+    byId.delete(id);
+    const moneyPending = PO_LINE_MONEY.some(k => isPending(id, k));
+    PO_LINE_FIELDS.forEach(k => {
+      if (isPending(id, k) || (k === 'tax' && moneyPending)) return;
+      const v = srv[k];
+      if ((l[k] == null ? '' : String(l[k])) === (v == null ? '' : String(v))) return;
+      if (v === undefined) delete l[k]; else l[k] = v;
+      changed = true;
+    });
+    out.push(l);
+  });
+  byId.forEach((srv, id) => {
+    if (deleted && deleted.has(id)) return;
+    out.push(JSON.parse(JSON.stringify(srv)));
+    added++;
+    changed = true;
+  });
+  if (changed) {
+    po.lines = out;
+    migratePO(po);   // a legacy line stored without tax_pct gets it back on screen
+  }
+  return { changed, added };
 }
 
 /**
@@ -1257,11 +1402,15 @@ async function _savePOWrite(po) {
     const qs = '/purchase-orders?division=' + encodeURIComponent(po._division)
              + (from && from !== po._division ? '&from=' + encodeURIComponent(from) : '');
     const sentDeletions = deletedLinesFor(po.id);
-    const sentEdits     = editedLinesFor(po.id);
+    const sentEdits     = pendingEdits(_editedLines, po.id);
+    const sentFields    = pendingEdits(_editedFields, po.id);
+    const sentLineIds   = new Set((po.lines || []).filter(l => l && l.id != null).map(l => String(l.id)));
     const res = await api('POST', qs, {
       purchaseOrder: poPayload(po),
-      deletedLineIds: sentDeletions,
-      editedLineIds:  sentEdits,
+      deletedLineIds:   sentDeletions,
+      editedLineIds:    editedLinesFor(po.id, sentEdits),
+      editedLineFields: editedLineFieldsFor(po.id, sentEdits),
+      editedFields:     [...sentFields.keys()],
     });
 
     // The deletions this save carried are now on the server, so stop resending
@@ -1270,10 +1419,15 @@ async function _savePOWrite(po) {
       sentDeletions.forEach(id => _deletedLines[po.id].delete(id));
       if (!_deletedLines[po.id].size) delete _deletedLines[po.id];
     }
-    if (_editedLines[po.id]) {
-      sentEdits.forEach(id => _editedLines[po.id].delete(id));
-      if (!_editedLines[po.id].size) delete _editedLines[po.id];
-    }
+    clearSentEdits(_editedLines, po.id, sentEdits);
+    clearSentEdits(_editedFields, po.id, sentFields);
+
+    // Fields this page had not changed came back as stored, which is newer than
+    // this copy wherever someone else edited the order since it loaded. Not
+    // while a field has focus: re-rendering would tear it out from under the
+    // typing, and leaving the copy as it is lets the poll catch it up instead.
+    let refresh = false;
+    if (res && res.purchaseOrder && !isTyping()) refresh = adoptStoredFields(po, res.purchaseOrder);
 
     // The server mints a po_row_id for any delivery line it created a job cost
     // row for. Keeping those is what stops the next save creating a SECOND row
@@ -1285,17 +1439,20 @@ async function _savePOWrite(po) {
         if (l && byId[l.id]) l.po_row_id = byId[l.id].po_row_id || null;
       });
 
-      // Deliveries somebody else recorded on this order while this page held an
-      // older copy. The server kept them rather than letting this save drop
-      // them; take them on screen too, so the list stops being short and the
-      // user can see what arrived.
-      if (res.mergedLines > 0 && !isTyping()) {
-        po.lines = res.purchaseOrder.lines;
-        toast(res.mergedLines + ' ' + (res.mergedLines === 1 ? 'delivery was' : 'deliveries were') +
-              ' added to ' + (po.po_number || 'this order') + ' by someone else — shown now.');
-        render();
+      // The deliveries as stored: figures somebody else changed since this
+      // copy was read, which the server kept rather than this page's, and
+      // deliveries somebody else recorded on the order meanwhile. Not while a
+      // field has focus — the poll catches it up instead.
+      if (!isTyping()) {
+        const took = adoptStoredLines(po, res.purchaseOrder.lines, sentLineIds);
+        if (took.added) {
+          toast(took.added + ' ' + (took.added === 1 ? 'delivery was' : 'deliveries were') +
+                ' added to ' + (po.po_number || 'this order') + ' by someone else — shown now.');
+        }
+        if (took.changed) refresh = true;
       }
     }
+    if (refresh) render();
     // Only once the server confirms the order is out of the list it came from.
     // staleCopy means the move half-landed: the order is saved, but the old
     // division still lists it. Leaving this note alone means the next save
@@ -1365,7 +1522,9 @@ window.addEventListener('beforeunload', () => {
         body: JSON.stringify({
           purchaseOrder:  poPayload(po),
           deletedLineIds: deletedLinesFor(id),
-          editedLineIds:  editedLinesFor(id),
+          editedLineIds:    editedLinesFor(id),
+          editedLineFields: editedLineFieldsFor(id),
+          editedFields:     editedFieldsFor(id),
         }),
       });
     } catch { /* the tab is closing; nothing useful to do */ }
@@ -1486,6 +1645,7 @@ async function deletePO(poId) {
       delete _saveChain[poId];
       delete _deletedLines[poId];
       delete _editedLines[poId];
+      delete _editedFields[poId];
       showSave('saved', 'Removed');
       render();
       return;
@@ -1504,6 +1664,7 @@ async function deletePO(poId) {
       delete _saveChain[poId];
       delete _deletedLines[poId];
       delete _editedLines[poId];
+      delete _editedFields[poId];
       // A DELETE is a server write like any other: a poll that fetched before it
       // would otherwise bring the order back.
       _saveEpoch++;
@@ -1569,6 +1730,7 @@ function setDivision(poId, value) {
   po.cost_code  = '';
   po.sub_code   = '';
   po.po_number  = nextNum;
+  ['project_id', 'cost_code', 'sub_code', 'po_number'].forEach(k => noteEdit(_editedFields, poId, k));
   savePO(po, { immediate: true });
   render();
 }
@@ -1581,6 +1743,7 @@ function setProject(poId, value) {
   // Codes come from the job's own bid items, so they cannot survive a job change.
   po.cost_code = '';
   po.sub_code  = '';
+  ['project_id', 'cost_code', 'sub_code'].forEach(k => noteEdit(_editedFields, poId, k));
   savePO(po, { immediate: true });
   render();
 }
@@ -1591,6 +1754,8 @@ function setSubCode(poId, value) {
   const parts = String(value || '').split('||');
   po.cost_code = parts[0] || '';
   po.sub_code  = parts[1] || '';
+  noteEdit(_editedFields, poId, 'cost_code');
+  noteEdit(_editedFields, poId, 'sub_code');
   savePO(po, { immediate: true });
   updateCodeInPlace(po);
 }
@@ -1603,6 +1768,7 @@ function setField(poId, field, value) {
     po.status_changed_by = (fctUser && fctUser.username) || '';
   }
   po[field] = value;
+  noteEdit(_editedFields, poId, field);
   savePO(po, field === 'status' ? { immediate: true } : undefined);
   if (field === 'status') render();
 }
@@ -1613,7 +1779,7 @@ function setLineField(poId, lineId, field, value) {
   const line = (po.lines || []).find(l => l.id === lineId);
   if (!line) return;
   line[field] = value;
-  (_editedLines[poId] || (_editedLines[poId] = new Set())).add(lineId);
+  noteEdit(_editedLines, poId, lineEditKey(lineId, field));
   if (field === 'qty' || field === 'unit_cost' || field === 'tax_pct') recalcLineTax(line);
   savePO(po);
   updateTotalsInPlace(po, line);
@@ -3472,9 +3638,29 @@ async function commitScan() {
       const before = (po.lines || []).slice();
       const hadSupplier = po.supplier, hadTitle = po.title;
       po.lines = (po.lines || []).concat([line]);
-      if (!po.supplier) po.supplier = document.getElementById('sc-vendor').value || '';
-      if (!po.title)    po.title    = document.getElementById('sc-title').value || '';
-      undo = () => { po.lines = before; po.supplier = hadSupplier; po.title = hadTitle; };
+      // A blank supplier or title is filled from the receipt — and noted as an
+      // edit, or the server keeps the stored blank. Each note is remembered
+      // with what it replaced, so a save that fails takes back exactly what it
+      // added and nothing the user changed meanwhile.
+      const noted = [];
+      const fill = (k, v) => {
+        if (po[k] || !v) return;
+        const prior = _editedFields[po.id] && _editedFields[po.id].get(k);
+        po[k] = v;
+        noteEdit(_editedFields, po.id, k);
+        noted.push([k, _editedFields[po.id].get(k), prior]);
+      };
+      fill('supplier', document.getElementById('sc-vendor').value || '');
+      fill('title',    document.getElementById('sc-title').value || '');
+      undo = () => {
+        po.lines = before; po.supplier = hadSupplier; po.title = hadTitle;
+        noted.forEach(([k, seq, prior]) => {
+          const now = _editedFields[po.id];
+          if (!now || now.get(k) !== seq) return;   // changed again since: that edit stands
+          if (prior === undefined) now.delete(k); else now.set(k, prior);
+          if (!now.size) delete _editedFields[po.id];
+        });
+      };
       expanded.add(po.id);
       await _savePONow(po);
     } else {

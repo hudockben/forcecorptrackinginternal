@@ -17,6 +17,8 @@
  *  - clearing the row's PO # takes it off; picking it again puts it back
  *  - the PO tab tags it, locks it, and lists a PO # no order holds, whose
  *    Create raises the order with the row on it
+ *  - approving an order, or typing an invoice # on a delivery, sends a save
+ *    that says what changed and PUTs no job row from the page
  *  - deleting the order leaves the field's row on the job
  *  - nothing throws
  */
@@ -81,6 +83,7 @@ async function run(browser, cfg) {
   const stamp = () => '2026-11-10T00:00:0' + (version++) + '.000Z';
   let updatedAt = stamp();
   const listPuts = [], rowDeletes = [];
+  const listPutBodies = [], rowPuts = [];
   const dbRows = () => [...rows.values()].map(asDbRow);
   const syncRows = (ids, deleted) => {
     const byId = new Map(dbRows().map(r => [r.row_id, r]));
@@ -117,6 +120,7 @@ async function run(browser, cfg) {
       }
       if (m === 'PUT') {
         const id = u.searchParams.get('id');
+        rowPuts.push(id);
         const before = rows.get(id);
         rows.set(id, { ...body.row, id, _projectId: body.projectId || (before && before._projectId) });
         const orders = (String((before && before.po_num) || '').trim() || String(body.row.po_num || '').trim()) ? syncRows([id]) : [];
@@ -146,8 +150,17 @@ async function run(browser, cfg) {
       if (m === 'PUT') {
         const list = body.purchaseOrders || [];
         listPuts.push(JSON.parse(JSON.stringify(list)));
+        listPutBodies.push(JSON.parse(JSON.stringify(body)));
+        const sentById = new Map(list.map(po => [po.id, JSON.stringify(po)]));
         const derived = poSync.deriveDailyLines(list, dbRows()).size;
         blob = list; updatedAt = stamp();
+        // As api/purchase-orders.js answers a tab that says what it changed:
+        // with every order that came out different. (Without it the tab takes
+        // the server for one from before this, and writes the rows itself.)
+        if (body.editedLineFields && typeof body.editedLineFields === 'object') {
+          const orders = list.filter(po => sentById.get(po.id) !== JSON.stringify(po));
+          return json({ ok: true, updatedAt, merged: 0, derived, orders: JSON.parse(JSON.stringify(orders)) });
+        }
         return json({ ok: true, updatedAt, merged: 0, derived });
       }
     }
@@ -241,6 +254,36 @@ async function run(browser, cfg) {
     made && made.project_id === 'p1' && made.lines.length === 1 && made.lines[0].po_row_id === 'r2', JSON.stringify(made));
   ok('  saved as that one order', blob.some(o => o.po_number === 'PO-0099') && listPuts.length === 0);
   ok('  and the notice is gone', !/with no purchase order on that job/.test(await page.locator('#po-root').innerText()));
+
+  // ── Approving the order, and an invoice # on its delivery ───────────────
+  // The tab used to PUT every delivery's job row whole from its own copy of
+  // the job whenever the order's header or a delivery changed — so approving
+  // an order put back figures somebody else had changed on those rows since.
+  // Now the save says what changed and the server writes the rows.
+  const putsFrom = listPutBodies.length, rowPutsFrom = rowPuts.length;
+  await page.locator('select[data-po-id="po3"][data-po-field="status"]').selectOption('approved');
+  await sleep(500);
+  const inv = page.locator('input[data-po-id="po3"][data-line-id="dr-r1"][data-line-field="invoice_num"]');
+  ok('the delivery\'s invoice # is on screen to type in', await inv.count() === 1);
+  if (await inv.count() === 1) {
+    await inv.fill('INV-77');
+    await inv.blur();
+  }
+  await sleep(700);
+  const sent = listPutBodies.slice(putsFrom);
+  const sentSummary = JSON.stringify(sent.map(b => ({ f: b.editedFields, l: b.editedLineFields })));
+  const approval = sent.find(b => b.editedFields && (b.editedFields.po3 || []).includes('status'));
+  ok('approving sends the list saying the status is what changed', Boolean(approval), sentSummary);
+  ok('  and nothing about the deliveries, whose figures it holds as loaded',
+    approval && approval.editedLineFields && !approval.editedLineFields.po3, sentSummary);
+  ok('an invoice # on the delivery is sent as that key of that delivery',
+    sent.some(b => b.editedLineFields && b.editedLineFields.po3
+      && JSON.stringify(b.editedLineFields.po3['dr-r1']) === '["invoice_num"]'), sentSummary);
+  ok('  with what this tab deleted, which is nothing',
+    sent.length > 0 && sent.every(b => JSON.stringify(b.deletedLineIds) === '{}' && JSON.stringify(b.deletedOrderIds) === '[]'),
+    JSON.stringify(sent.map(b => [b.deletedLineIds, b.deletedOrderIds])));
+  ok('and neither PUTs a job row from the page — the server writes them', rowPuts.length === rowPutsFrom,
+    rowPuts.slice(rowPutsFrom).join());
 
   // ── Deleting the order ──────────────────────────────────────────────────
   await page.locator('.del-btn[data-tab="po"][data-po-id="po3"]').click();

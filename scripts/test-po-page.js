@@ -35,6 +35,26 @@ const assert = (msg, cond, detail) => {
 
 const PAGE = read('purchase-orders.html');
 
+// The bookkeeping every edit and every save now goes through: which of an
+// order's fields and deliveries this page changed, so the server takes only
+// those from its copy. The page's own functions and lists, lifted — any
+// context running a setter or _savePOWrite needs them. `_editedLines` is left
+// to each context, which already declares it.
+const EDIT_BOOKKEEPING = [
+  'const _editedFields = {};',
+  'let _editSeq = 0;',
+  sliceSource(PAGE, 'const PO_HEADER_FIELDS', '\nconst PO_STATUS_STAMP_FIELDS', 'the header field list'),
+  (PAGE.match(/const PO_STATUS_STAMP_FIELDS = [^\n]*/) || [''])[0],
+  (PAGE.match(/const PO_LINE_FIELDS = \[[\s\S]*?\];/) || [''])[0],
+  (PAGE.match(/const PO_LINE_MONEY = [^\n]*/) || [''])[0],
+  // adoptStoredLines re-runs the load-time tax migration; a context that has
+  // not lifted the real one gets a no-op.
+  'var migratePO = typeof migratePO === "function" ? migratePO : function () {};',
+  ...['noteEdit', 'pendingEdits', 'clearSentEdits', 'editedFieldsFor', 'adoptStoredFields', 'isTyping',
+      'lineEditKey', 'lineEditSplit', 'editedLinesFor', 'editedLineFieldsFor', 'adoptStoredLines']
+    .map(n => requireFn(PAGE, n, 'purchase-orders.html')),
+].join('\n');
+
 // The line math sits on top of the page's own number reading — a comma in a
 // money field is read the same way here, in the division tabs and on the
 // server. Any context that runs lineAmt / lineTax needs these three lifted
@@ -346,6 +366,7 @@ console.log('\n[re-tying an order]');
     const toasted = [];
     function toast(msg) { toasted.push(msg); }
   `, ctx);
+  vm.runInContext(EDIT_BOOKKEEPING, ctx);
   ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber', 'setDivision', 'setProject', 'setSubCode']
     .forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
   const run = expr => vm.runInContext(expr, ctx);
@@ -1003,14 +1024,17 @@ console.log('\n[deliveries this page did not know about]');
   assert('removed deliveries are remembered per order',
     /\(_deletedLines\[poId\] \|\| \(_deletedLines\[poId\] = new Set\(\)\)\)\.add\(lineId\);/.test(PAGE));
   assert('and sent with the save',
-    /deletedLineIds: sentDeletions/.test(PAGE));
+    /deletedLineIds:\s*sentDeletions/.test(PAGE));
   assert('only the ones this save carried are forgotten',
     /sentDeletions\.forEach\(id => _deletedLines\[po\.id\]\.delete\(id\)\);/.test(PAGE));
   assert('deleting the order drops its pending removals',
     (PAGE.match(/delete _deletedLines\[poId\];/g) || []).length === 2);
-  // A merge means the list on screen is short — show what arrived.
+  // A merge means the list on screen is short — show what arrived. Taken on
+  // delivery by delivery and key by key now (adoptStoredLines, run in
+  // "[a save says which of the order's fields it changed]"), never by a
+  // wholesale swap that threw away an edit made while the save was out.
   assert('merged deliveries are taken on screen',
-    /if \(res\.mergedLines > 0 && !isTyping\(\)\)/.test(PAGE));
+    /if \(!isTyping\(\)\) \{\s*const took = adoptStoredLines\(po, res\.purchaseOrder\.lines, sentLineIds\);/.test(PAGE));
   assert('but never while the user is mid-edit', /function isTyping\(\)/.test(PAGE));
   assert('and the poll shares that same test', /const isEditing = isTyping;/.test(PAGE));
 }
@@ -1354,6 +1378,7 @@ console.log('\n[an order re-tied after a page reload]');
     function savePO(po) { sent.push({ to: po._division, from: _savedDivision[po.id] }); }
     function render() {}
   `, ctx);
+  vm.runInContext(EDIT_BOOKKEEPING, ctx);
   ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber', 'setDivision']
     .forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
 
@@ -1574,8 +1599,10 @@ console.log('\n[who raised an order, and when]');
       function savePurchaseOrders() { saves++; }
       function _syncPOHeaderToLines() { return Promise.resolve(); }
       function renderProjectPOs() {}
+      const _poEditedFields = {};
+      let _poEditSeq = 0;
     `, hctx);
-    ['_poStampWhen', '_handlePOEvent'].forEach(n => vm.runInContext(requireFn(src, n, f), hctx));
+    ['_poStampWhen', '_poNoteEdit', '_handlePOEvent'].forEach(n => vm.runInContext(requireFn(src, n, f), hctx));
     dom.window.document.querySelector('select').value = 'closed';
     vm.runInContext('_handlePOEvent({ type: "change", target: document.querySelector("select") })', hctx);
     const meta = dom.window.document.getElementById('po-status-meta-a');
@@ -1588,6 +1615,11 @@ console.log('\n[who raised an order, and when]');
     assert(`${f}:   keeps who raised the order`,
       po.created_by === 'hudockben' && po.created_at === T1 && vm.runInContext('saves', hctx) === 1,
       JSON.stringify(po));
+    // ...and tells the save it changed the status, and nothing else on the
+    // order — so the server keeps every other field as stored.
+    assert(`${f}:   and records the status as this tab's edit`,
+      vm.runInContext('JSON.stringify([...(_poEditedFields.a || new Map()).keys()])', hctx) === '["status"]',
+      vm.runInContext('JSON.stringify([...(_poEditedFields.a || new Map()).keys()])', hctx));
   });
 }
 
@@ -1630,18 +1662,24 @@ console.log('\n[a cost row this page has not loaded — run]');
     { project_id:'p1', cost_code:'100', sub_code:'A', title:'Stone', supplier:'Acme', po_number:'PO-0007' },
     { id:'L1', po_row_id:'row-1', date:'2026-02-02', employee:'Sam', qty:'10', unit_cost:'5' })`, ctx);
 
-  const out = vm.runInContext('written[0]', ctx);
+  // The row on screen follows the delivery; the row on the server is written
+  // by the order's own save, from the delivery as stored (writeTabRows). This
+  // page PUTting the row whole from its own copy of the job is what put a
+  // stale quantity back on the job whenever anything else on it was edited.
+  const out = vm.runInContext('proj.dailyRows.find(r => r.id === "row-1")', ctx);
   assert('the job\'s rows are fetched rather than assumed empty',
     vm.runInContext('fetched', ctx) === 1, String(vm.runInContext('fetched', ctx)));
-  assert('the delivery figures reach the row',
+  assert('the delivery figures reach the row on screen',
     out && out.units_purchased === '10' && out.unit_cost === '5' && out.material_cost === '50',
     JSON.stringify(out));
   assert('and the installed quantity is left alone',      out.quantity  === '250', JSON.stringify(out));
   assert('and the job class',                             out.job_class === 'Operator', JSON.stringify(out));
   assert('and the cost code the supervisor re-coded',
     out.cost_code === '999' && out.sub_code === 'SUPERVISOR', JSON.stringify(out));
-  assert('and it is the stored row that was written, not a new one',
-    out.id === 'row-1' && vm.runInContext('written.length', ctx) === 1);
+  assert('and it is the stored row, not a new one',
+    vm.runInContext('proj.dailyRows.length', ctx) === 1);
+  assert('and this page writes no row itself — the order\'s save does, on the server',
+    vm.runInContext('written.length', ctx) === 0, JSON.stringify(vm.runInContext('written', ctx)));
 }
 
 console.log('\n[a keystroke while a delete is in flight]');
@@ -1688,6 +1726,7 @@ console.log('\n[a keystroke while a delete is in flight]');
     function editedLinesFor() { return []; }
     async function api(method, path) { calls.push(method + ' ' + path); return {}; }
   `, ctx);
+  vm.runInContext(EDIT_BOOKKEEPING, ctx);
   ['savePO', '_savePONow', '_savePOWrite', 'deletePO', 'setField']
     .forEach(n => {
       const src = requireFn(PAGE, n, 'purchase-orders.html');
@@ -1752,6 +1791,7 @@ console.log('\n[a keystroke while a delete is in flight]');
     function editedLinesFor() { return []; }
     async function api(method, path) { calls.push(method + ' ' + path); return {}; }
   `, ctx2);
+  vm.runInContext(EDIT_BOOKKEEPING, ctx2);
   ['savePO', '_savePONow', '_savePOWrite', 'deletePO']
     .forEach(n => vm.runInContext(
       (/^(deletePO|_savePOWrite)$/.test(n) ? 'async ' : '') +
@@ -1825,6 +1865,7 @@ console.log('\n[a keystroke while a delete is in flight]');
       return {};
     }
   `, ctx3);
+  vm.runInContext(EDIT_BOOKKEEPING, ctx3);
   ['savePO', '_savePONow', '_savePOWrite', 'deletePO', 'setField']
     .forEach(n => vm.runInContext(
       (/^(deletePO|_savePOWrite)$/.test(n) ? 'async ' : '') +
@@ -2123,7 +2164,8 @@ console.log('\n[cost / sub code, vendor and received by are typeahead pickers]')
      function render() { renders++; }
      function recalcLineTax() {}
      function updateTotalsInPlace() {}`,
-    ...['esc', 'isTyping', 'listDivs', 'divMeta', 'projectsFor', 'projectFor', 'pickableProjects',
+    EDIT_BOOKKEEPING,
+    ...['esc', 'listDivs', 'divMeta', 'projectsFor', 'projectFor', 'pickableProjects',
         'projectOptionLabel', 'codesFor', 'codeLabel', 'codeValue', 'subCodePickerHTML', 'vendorPickerHTML',
         'receivedByPickerHTML', 'updateCodeInPlace', 'cardJobLineHTML', 'divChipHTML', 'divColor', 'divLabel',
         'hasJobs', 'projectSelectHTML', 'setSubCode', 'setField', 'setLineField', 'onScanDivision', 'onScanProject',
@@ -2382,6 +2424,761 @@ console.log('\n[cost / sub code, vendor and received by are typeahead pickers]')
   assert('a quarry order\'s row has no job picker', !/<select/.test(qJob) && /No jobs in Quarry/.test(qJob), qJob);
   assert('  nor a code picker', !/class="cb/.test(qCode) && />—</.test(qCode), qCode);
   assert('  and its chip is quarry\'s colour', /var\(--div-quarry\)/.test(window.eval("divChipHTML('quarry')")));
+}
+
+console.log('\n[a save says which of the order\'s fields it changed]');
+{
+  // Every save carried the whole order as this page last saw it, and the server
+  // stored it whole — so approving PO-0365 on a screen that had loaded it blank
+  // wiped the title and supplier somebody else had filled in. The page now
+  // tells the server which fields it changed; the server keeps the rest.
+  //
+  // The page's own setters and save, run against a stubbed api().
+  const dom = new JSDOM('<!doctype html><html><body><input id="elsewhere"></body></html>');
+  const ctx = vm.createContext({ document: dom.window.document, console, JSON, Promise, Set, Math,
+                                 setTimeout, clearTimeout });
+  vm.runInContext(`
+    const GENERAL = 'purchase_orders';
+    let purchaseOrders = [{ id: 'po365', po_number: 'PO-0365', _division: 'paving', project_id: 'p1',
+                            cost_code: '', sub_code: '', title: '', supplier: '', status: 'pending', lines: [] }];
+    let sourceDivs = [{ division: 'paving', label: 'Paving', projects: [] }, { division: 'turf', label: 'Turf', projects: [] }];
+    const loadedLists = new Set(['paving', 'turf']);
+    const fctUser = { username: 'hudockben' };
+    const _saveTimers = {}, _unsaved = new Set(), _deletedLines = {}, _editedLines = {};
+    const _savedDivision = { po365: 'paving' }, _saveChain = {}, _deleting = new Set(), _deferredSaves = new Set();
+    let _inflight = 0, _saveEpoch = 0, renders = 0;
+    const sent = [];
+    let answer = null, hold = null;
+    function capsFor() { return { canEdit: true, canDelete: true }; }
+    function showSave() {} function toast() {} function updateCodeInPlace() {}
+    function render() { renders++; }
+    function deletedLinesFor() { return []; }
+    function poPayload(po) { const o = {}; Object.keys(po).forEach(k => { if (k[0] !== '_') o[k] = po[k]; }); return o; }
+    // The save the server answers: the order as it stored it.
+    async function api(method, path, body) {
+      sent.push(JSON.parse(JSON.stringify(body)));
+      if (hold) await hold;
+      return { ok: true, purchaseOrder: Object.assign({}, body.purchaseOrder, answer || {}) };
+    }
+  `, ctx);
+  vm.runInContext(EDIT_BOOKKEEPING, ctx);
+  ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber',
+   'setField', 'setSubCode', 'setProject', 'setDivision', 'savePO', '_savePONow', '_savePOWrite']
+    .forEach(n => vm.runInContext((n === '_savePOWrite' ? 'async ' : '') + requireFn(PAGE, n, 'purchase-orders.html'), ctx));
+  const run = e => vm.runInContext(e, ctx);
+  const fields = () => run('JSON.stringify(editedFieldsFor("po365"))');
+  const settle = () => new Promise(r => setTimeout(r, 20));
+
+  // ── What each setter records ──
+  run("setField('po365', 'status', 'approved')");
+  assert('a status change is recorded as the field it changed', fields() === '["status"]', fields());
+  run("setSubCode('po365', '420||Base')");
+  assert('  a code change as both halves of the code', fields() === '["status","cost_code","sub_code"]', fields());
+  run("clearSentEdits(_editedFields, 'po365', pendingEdits(_editedFields, 'po365'))");
+  run("setProject('po365', 'p2')");
+  assert('  a job change as the job and the codes it clears', fields() === '["project_id","cost_code","sub_code"]', fields());
+  run("clearSentEdits(_editedFields, 'po365', pendingEdits(_editedFields, 'po365'))");
+  run("setDivision('po365', 'turf')");
+  assert('  a move as the job, the codes and the number', fields() === '["project_id","cost_code","sub_code","po_number"]', fields());
+  run("clearSentEdits(_editedFields, 'po365', pendingEdits(_editedFields, 'po365'))");
+  Object.values(run('_saveTimers')).forEach(t => clearTimeout(t));
+  run("Object.keys(_saveTimers).forEach(k => delete _saveTimers[k]); sent.length = 0");
+
+  // ── What a save sends, and what it takes back ──
+  // This screen approves; somebody else filled the order in meanwhile, and the
+  // server answers with the stored title and supplier.
+  run(`purchaseOrders[0]._division = 'paving'; _savedDivision.po365 = 'paving';
+       answer = { title: 'Drain Fabric', supplier: 'Hanes Geo Components', status: 'approved' };
+       setField('po365', 'status', 'approved')`);
+  await settle();
+  assert('the save names the one field it changed',
+    JSON.stringify(run('sent[0] && sent[0].editedFields')) === '["status"]', JSON.stringify(run('sent[0]')));
+  assert('  and forgets it once stored', fields() === '[]', fields());
+  assert('the screen takes on what the server kept',
+    run('purchaseOrders[0].title') === 'Drain Fabric' && run('purchaseOrders[0].supplier') === 'Hanes Geo Components',
+    run('JSON.stringify(purchaseOrders[0])'));
+  assert('  and shows it', run('renders') > 0);
+
+  // A field typed AGAIN while the save carrying it is in flight is owed to the
+  // next save. Forgetting it when the first landed sent the second save out
+  // saying nothing had changed, and the server kept the old value.
+  run(`answer = null; let release; hold = new Promise(r => { release = r; }); globalThis.release = release;
+       sent.length = 0; purchaseOrders[0].title = 'Drain'; noteEdit(_editedFields, 'po365', 'title');
+       var first = _savePONow(purchaseOrders[0]);`);
+  await settle();
+  run(`purchaseOrders[0].title = 'Drain fabric, 12 oz'; noteEdit(_editedFields, 'po365', 'title');
+       var second = _savePONow(purchaseOrders[0]);`);
+  run('hold = null; release()');
+  await settle();
+  assert('a field edited again mid-save is sent again by the next save',
+    run('sent.length') === 2 && JSON.stringify(run('sent[1].editedFields')) === '["title"]'
+    && run('sent[1].purchaseOrder.title') === 'Drain fabric, 12 oz', JSON.stringify(run('sent')));
+
+  // While a field has focus the screen is left alone — re-rendering would tear
+  // the input out from under the typing — and the poll catches it up instead.
+  run(`answer = { supplier: 'Someone Else Supply' }; sent.length = 0; renders = 0`);
+  dom.window.document.getElementById('elsewhere').focus();
+  await run('_savePONow(purchaseOrders[0])');
+  assert('nothing is taken on while the user is typing',
+    run('purchaseOrders[0].supplier') === 'Hanes Geo Components' && run('renders') === 0,
+    run('JSON.stringify(purchaseOrders[0])'));
+  dom.window.document.getElementById('elsewhere').blur();
+
+  // A field with an edit still owed keeps the user's value over the server's.
+  run(`answer = { title: 'stale', supplier: 'Someone Else Supply' }; noteEdit(_editedFields, 'po365', 'title');
+       purchaseOrders[0].title = 'typed after this save left';`);
+  run(`hold = new Promise(r => { globalThis.release2 = r; }); var p3 = _savePONow(purchaseOrders[0]);`);
+  await settle();
+  run(`noteEdit(_editedFields, 'po365', 'title'); hold = null; release2()`);
+  await settle();
+  assert('a field edited since the save left keeps what the user typed',
+    run('purchaseOrders[0].title') === 'typed after this save left'
+    && run('purchaseOrders[0].supplier') === 'Someone Else Supply', run('JSON.stringify(purchaseOrders[0])'));
+
+  // The two other ways an order leaves this page.
+  assert('the save made as the tab closes says which fields it changed too',
+    /editedFields:\s*editedFieldsFor\(id\),/.test(PAGE));
+  const scan = requireFn(PAGE, 'commitScan', 'purchase-orders.html');
+  assert('a receipt scanned into an order records the supplier and title it fills',
+    /fill\('supplier'/.test(scan) && /fill\('title'/.test(scan) && /noteEdit\(_editedFields, po\.id, k\)/.test(scan));
+  assert('  and a save that fails takes those notes back', /noted\.forEach\(/.test(scan));
+  assert('a deleted order\'s notes go with it',
+    (requireFn(PAGE, 'deletePO', 'purchase-orders.html').match(/delete _editedFields\[poId\];/g) || []).length === 2);
+
+  // The division tabs save their whole list, so every order in it travels with
+  // each save — the one being edited and every other one, as old as the tab's
+  // last refresh. The save says which fields of which orders, and which keys of
+  // which deliveries, it changed — and what it deleted — goes out one at a
+  // time, and takes back what the server merged. The page's own code, run.
+  for (const f of ['tracker.html', 'paving.html', 'kiewit-pinetree.html']) {
+    const src = read(f);
+    const tctx = vm.createContext({ console, JSON, Promise, Object, Map, Set, setTimeout });
+    vm.runInContext(`
+      const window = { addEventListener() {} };
+      const document = { activeElement: null };
+      const API_BASE = '/api', fctToken = 't', activeTab = 'po';
+      let purchaseOrders = [
+        { id: 'a', status: 'pending', project_id: '', lines: [{ id: 'L1', qty: '10', unit_cost: '16', tax_pct: '' }] },
+        { id: 'b', title: '', project_id: '', lines: [] },
+      ];
+      let _poBaseUpdatedAt = 'V0';
+      const bodies = [], answers = [];
+      let renders = 0, errors = 0;
+      // Each request waits for the test to answer it.
+      function fetch(url, init) {
+        bodies.push(JSON.parse(init.body));
+        return new Promise((ok, bad) => answers.push({ ok, bad }));
+      }
+      function reply(i, j) { answers[i].ok({ ok: true, status: 200, json: async () => j }); }
+      function _showSaveError() { errors++; }
+      function _poRefreshDailyLines() {}
+      function renderPOTab() { renders++; }
+      function renderProjectPOs() {}
+      function _migratePOs() {}
+      function getProj() { return null; }
+      function _poLineFromDaily(l) { return Boolean(l && l.source === 'daily'); }
+    `, tctx);
+    vm.runInContext(sliceSource(src, 'const _poEditedFields = Object.create(null);', '// Whether a read of the purchase orders has worked.',
+      f + ' PO edit state'), tctx);
+    ['savePurchaseOrders', '_poAdoptSaved', '_poMergeLine', '_poRowsFollowOrder']
+      .forEach(n => vm.runInContext(requireFn(src, n, f), tctx));
+    const t = e => vm.runInContext(e, tctx);
+    const J = e => JSON.stringify(t(e));
+
+    // ── What a save says ──
+    t(`purchaseOrders[0].status = 'approved'; _poNoteEdit('a', 'status');
+       purchaseOrders[0].lines[0].qty = '12'; _poNoteLineEdit('a', 'L1', 'qty');
+       savePurchaseOrders();`);
+    assert(`${f}: a save names the order fields it changed — and nothing for orders it did not touch`,
+      J('bodies[0].editedFields') === '{"a":["status"]}', J('bodies[0]'));
+    assert(`${f}:   and each delivery's keys`, J('bodies[0].editedLineFields') === '{"a":{"L1":["qty"]}}',
+      J('bodies[0].editedLineFields'));
+    assert(`${f}:   and what it deleted (nothing yet)`,
+      J('bodies[0].deletedLineIds') === '{}' && J('bodies[0].deletedOrderIds') === '[]');
+
+    // ── One at a time ──
+    t(`purchaseOrders[0].lines[0].qty = '14'; _poNoteLineEdit('a', 'L1', 'qty'); savePurchaseOrders();
+       savePurchaseOrders();`);
+    assert(`${f}: a second save waits for the first instead of racing it`, t('bodies.length') === 1);
+    // The first lands. Purchasing had filled in order b meanwhile, so it comes
+    // back; order a comes back as stored by THIS save — qty 12 — while the
+    // screen already says 14.
+    t(`reply(0, { ok: true, updatedAt: 'V1', orders: [
+         { id: 'a', status: 'approved', project_id: '', lines: [{ id: 'L1', qty: '12', unit_cost: '16', tax_pct: '' }] },
+         { id: 'b', title: 'Drain Fabric', project_id: '', lines: [] } ] })`);
+    await settle();
+    assert(`${f}:   the merged order is taken on`, t('purchaseOrders[1].title') === 'Drain Fabric', J('purchaseOrders[1]'));
+    assert(`${f}:   but not over a key typed since the save left`, t('purchaseOrders[0].lines[0].qty') === '14',
+      J('purchaseOrders[0]'));
+    assert(`${f}:   and the version is adopted, the list now being the stored one`, t('_poBaseUpdatedAt') === 'V1');
+    assert(`${f}:   the waiting save goes once the first has landed — once`, t('bodies.length') === 2, String(t('bodies.length')));
+    assert(`${f}:   carrying only what is still owed`,
+      J('bodies[1].editedFields') === '{}' && J('bodies[1].editedLineFields') === '{"a":{"L1":["qty"]}}',
+      J('bodies[1]'));
+    t(`reply(1, { ok: true, updatedAt: 'V2', orders: [] })`);
+    await settle();
+    assert(`${f}:   and nothing is owed once it lands`,
+      t('Object.keys(_poEditedFields).length + Object.keys(_poEditedLines).length') === 0);
+
+    // ── Deletions, and a save that does not land ──
+    t(`(_poDeletedLines.a || (_poDeletedLines.a = new Set())).add('L9'); _poDeletedOrders.add('gone');
+       purchaseOrders[1].title = 'x'; _poNoteEdit('b', 'title'); savePurchaseOrders();`);
+    assert(`${f}: what was deleted is said`,
+      J('bodies[2].deletedLineIds') === '{"a":["L9"]}' && J('bodies[2].deletedOrderIds') === '["gone"]', J('bodies[2]'));
+    t(`answers[2].bad(new TypeError('Failed to fetch'))`);
+    await settle();
+    assert(`${f}:   a save that does not land is owed again, its edits and deletions kept`,
+      t('_poSaveFailed') === true && t('_poEditedFields.b && _poEditedFields.b.has("title")') === true
+      && t('_poDeletedOrders.has("gone")') === true && t('errors') === 1);
+    t(`savePurchaseOrders(); answers[3].bad(new TypeError('Failed to fetch'))`);
+    await settle();
+    assert(`${f}:   and failing again says so once, not every retry`, t('errors') === 1, String(t('errors')));
+    t(`savePurchaseOrders(); reply(4, { ok: true, updatedAt: 'V3', orders: [] })`);
+    await settle();
+    assert(`${f}:   until one lands`, t('_poSaveFailed') === false && t('_poDeletedOrders.size') === 0
+      && !t('"a" in _poDeletedLines') && !t('"b" in _poEditedFields'));
+
+    // ── A delivery the server dropped, and one added here meanwhile ──
+    t(`purchaseOrders[0].lines.push({ id: 'dr-9', source: 'daily', qty: '1', po_row_id: '9' });
+       savePurchaseOrders();
+       purchaseOrders[0].lines.push({ id: 'NEW', qty: '' });
+       reply(5, { ok: true, updatedAt: 'V4', orders: [
+         { id: 'a', status: 'approved', project_id: '', lines: [{ id: 'L1', qty: '14', unit_cost: '16', tax_pct: '' }] } ] })`);
+    await settle();
+    assert(`${f}: a delivery the server dropped goes; one added since the save stays`,
+      J('purchaseOrders[0].lines.map(l => l.id)') === '["L1","NEW"]', J('purchaseOrders[0].lines'));
+  }
+}
+
+console.log('\n[a delivery\'s figures are kept key by key, and the tabs write no cost row]');
+{
+  // 7e1efb3 stopped a stale copy of an ORDER putting back fields somebody else
+  // had changed. A delivery's figures went the same way one level down: a page
+  // held each delivery as it last saw it, typing an invoice # on one sent its
+  // old quantity along as an edit, and the server wrote that quantity to the
+  // job's cost row. Now an edit is noted per KEY of a delivery, what a save
+  // stored is taken back key by key, and the division tabs no longer PUT the
+  // cost row themselves — the order's save writes it on the server, from the
+  // delivery as stored. The pages' own functions, run.
+
+  // Every await below waits on a promise this test settles by hand. One that
+  // never settles would end the run part-way without a word — Node exits on
+  // an empty event loop, and the summary line is never reached — so say so.
+  process.once('beforeExit', () => {
+    console.error('  ✗ the run stopped part-way: something it awaited never settled');
+    process.exit(1);
+  });
+
+  // ── Purchasing: what a save's answer puts back on screen ──
+  const pdom = new JSDOM('<!doctype html><html><body><input id="typing"></body></html>');
+  const pctx = vm.createContext({ document: pdom.window.document, console, setTimeout, clearTimeout });
+  vm.runInContext('const _editedLines = {}, _deletedLines = {};', pctx);
+  // The real load-time migration, so "re-run after adoption" is the page's.
+  NUM_FNS.concat(['lineAmt', 'lineTaxPct', 'lineTax', 'recalcLineTax', 'uid', 'localDateStr', 'migratePO'])
+    .forEach(n => vm.runInContext(requireFn(PAGE, n, 'purchase-orders.html'), pctx));
+  vm.runInContext(EDIT_BOOKKEEPING, pctx);
+  const p  = e => vm.runInContext(e, pctx);
+  const PJ = e => JSON.stringify(p(e));
+
+  // The screen's copy of PO-0412. The save in question carried L1–L4; L5 was
+  // added after it left. While it was out the user typed a quantity on L1 and
+  // an invoice # on L4, and removed L8 — which somebody else had recorded.
+  p(`
+    var po = { id: 'po412', po_number: 'PO-0412', lines: [
+      { id: 'L1', invoice_num: '', date: '2026-11-02', qty: '12', unit_cost: '16', tax_pct: '5', tax: '9.6', employee: 'Sam' },
+      { id: 'L2', invoice_num: 'INV-1', date: '2026-11-03', qty: '4', unit_cost: '20', tax_pct: '', tax: '', employee: 'Lee' },
+      { id: 'L3', invoice_num: '', date: '2026-11-04', qty: '1', unit_cost: '5', tax_pct: '', tax: '', employee: '',
+        source: 'daily', po_row_id: 'r3' },
+      { id: 'L4', invoice_num: 'INV-4', date: '2026-11-05', qty: '2', unit_cost: '5', tax_pct: '', tax: '', employee: '' },
+      { id: 'L5', invoice_num: '', date: '2026-11-06', qty: '', unit_cost: '', tax_pct: '', tax: '', employee: '' },
+    ] };
+    var sent = new Set(['L1', 'L2', 'L3', 'L4']);
+    noteEdit(_editedLines, 'po412', lineEditKey('L1', 'qty'));
+    noteEdit(_editedLines, 'po412', lineEditKey('L4', 'invoice_num'));
+    (_deletedLines.po412 = new Set()).add('L8');
+  `);
+  // The order as stored. Purchasing's quantity on L1 is the one this save
+  // displaced; L2 was re-figured by somebody else; L3, a Daily Tracking
+  // delivery whose row moved on, and L4 are gone from it; L6 and L8 were
+  // recorded elsewhere — L6 by a page from before the tax percentage, so it
+  // carries only a dollar tax.
+  const took = p(`adoptStoredLines(po, [
+      { id: 'L1', invoice_num: 'INV-7', date: '2026-11-02', qty: '10', unit_cost: '16', tax_pct: '5', tax: '8', employee: 'Sam' },
+      { id: 'L2', invoice_num: 'INV-1', date: '2026-11-03', qty: '6', unit_cost: '20', tax_pct: '10', tax: '12', employee: 'Max' },
+      { id: 'L6', invoice_num: 'INV-6', date: '2026-11-07', qty: '10', unit_cost: '10', tax: '8', employee: 'Ann' },
+      { id: 'L8', invoice_num: '', date: '2026-11-08', qty: '1', unit_cost: '1', tax_pct: '', tax: '', employee: '' },
+    ], sent)`);
+  const pl = id => p(`po.lines.find(l => l.id === '${id}')`) || {};
+  assert('purchasing: a delivery key with an edit still owed keeps what the user typed',
+    pl('L1').qty === '12', JSON.stringify(pl('L1')));
+  assert('purchasing:   while the same delivery\'s other keys take the stored value',
+    pl('L1').invoice_num === 'INV-7', JSON.stringify(pl('L1')));
+  assert('purchasing:   and its tax is not taken while a figure it is worked out from is pending',
+    pl('L1').tax === '9.6', JSON.stringify(pl('L1')));
+  assert('purchasing: a delivery with nothing pending takes every stored key, tax included',
+    pl('L2').qty === '6' && pl('L2').employee === 'Max' && pl('L2').tax_pct === '10' && pl('L2').tax === '12',
+    JSON.stringify(pl('L2')));
+  assert('purchasing: a delivery somebody else recorded is added — and counted, for the notice',
+    Boolean(pl('L6').id) && took.added === 1 && took.changed === true, JSON.stringify(took));
+  assert('purchasing:   but not one removed here since the save left',
+    !pl('L8').id, PJ('po.lines.map(l => l.id)'));
+  assert('purchasing: a delivery the save carried and the server dropped goes',
+    !pl('L3').id, PJ('po.lines.map(l => l.id)'));
+  assert('purchasing:   unless it has been changed here since — that edit is still owed',
+    pl('L4').invoice_num === 'INV-4', PJ('po.lines.map(l => l.id)'));
+  assert('purchasing: a delivery added since the save left stays',
+    Boolean(pl('L5').id), PJ('po.lines.map(l => l.id)'));
+  assert('purchasing:   in the order they were on screen, the newcomer last',
+    PJ('po.lines.map(l => l.id)') === '["L1","L2","L4","L5","L6"]', PJ('po.lines.map(l => l.id)'));
+  assert('purchasing: the load-time tax migration is re-run on what was taken',
+    pl('L6').tax_pct === '8', JSON.stringify(pl('L6')));
+  p(`var shown = po.lines;
+     var again = adoptStoredLines(po, JSON.parse(JSON.stringify(po.lines)), new Set(po.lines.map(l => l.id)));`);
+  assert('purchasing: an answer that matches the screen changes nothing, so nothing is redrawn',
+    p('again.changed') === false && p('again.added') === 0 && p('po.lines === shown'), PJ('again'));
+
+  // ── Purchasing: what an edit notes, and what the save says ──
+  p(`
+    let purchaseOrders = [{ id: 'po9', po_number: 'PO-0009', _division: 'paving', lines: [
+      { id: 'L1', invoice_num: '', date: '2026-11-02', qty: '10', unit_cost: '16', tax_pct: '5', tax: '8', employee: 'Sam' } ] }];
+    let saves = 0;
+    function capsFor() { return { canEdit: true, canDelete: true }; }
+    function savePO() { saves++; }
+    function updateTotalsInPlace() {}
+  `);
+  p(requireFn(PAGE, 'setLineField', 'purchase-orders.html'));
+  p(`setLineField('po9', 'L1', 'qty', '12')`);
+  assert('purchasing: a quantity typed on a delivery is noted as that key of that delivery',
+    PJ('[...(_editedLines.po9 || new Map()).keys()]') === '["qty:L1"]', PJ('[...(_editedLines.po9 || new Map()).keys()]'));
+  assert('purchasing:   its tax is worked out again, and the save is queued',
+    p('purchaseOrders[0].lines[0].tax') === '9.6' && p('saves') === 1, PJ('purchaseOrders[0].lines[0]'));
+  p(`setLineField('po9', 'L1', 'invoice_num', 'INV-3')`);
+  assert('purchasing: a second key on the same delivery is noted beside the first',
+    PJ('editedLineFieldsFor("po9")') === '{"L1":["qty","invoice_num"]}', PJ('editedLineFieldsFor("po9")'));
+  assert('purchasing:   and the delivery is still named once',
+    PJ('editedLinesFor("po9")') === '["L1"]', PJ('editedLinesFor("po9")'));
+  assert('purchasing: a delivery id with a colon in it survives the round trip',
+    PJ(`editedLineFieldsFor('x', new Map([[lineEditKey('dr:r7', 'qty'), 1]]))`) === '{"dr:r7":["qty"]}',
+    PJ(`editedLineFieldsFor('x', new Map([[lineEditKey('dr:r7', 'qty'), 1]]))`));
+
+  // The save itself: it names the delivery's keys, and takes the stored order
+  // back key by key — a unit cost typed while it was out stays as typed.
+  p(`
+    const _saveTimers = {}, _savedDivision = { po9: 'paving' }, _unsaved = new Set();
+    let _inflight = 0, _saveEpoch = 0, renders = 0;
+    const toasts = [], bodies = [];
+    let release, answer;
+    function showSave() {} function render() { renders++; } function toast(m) { toasts.push(m); }
+    function divLabel(d) { return d; }
+    function poPayload(po) { const o = {}; Object.keys(po).forEach(k => { if (k[0] !== '_') o[k] = po[k]; }); return o; }
+    async function api(method, path, body) {
+      bodies.push(JSON.parse(JSON.stringify(body)));
+      await new Promise(r => { release = r; });
+      return { ok: true, purchaseOrder: answer };
+    }
+  `);
+  p(requireFn(PAGE, 'deletedLinesFor', 'purchase-orders.html'));
+  p('async ' + requireFn(PAGE, '_savePOWrite', 'purchase-orders.html'));
+  p('var saving = _savePOWrite(purchaseOrders[0])');
+  assert('purchasing: the save names each delivery\'s changed keys',
+    PJ('bodies[0].editedLineFields') === '{"L1":["qty","invoice_num"]}' && PJ('bodies[0].editedLineIds') === '["L1"]',
+    PJ('bodies[0]'));
+  p(`setLineField('po9', 'L1', 'unit_cost', '18');
+     answer = { id: 'po9', po_number: 'PO-0009', lines: [
+       { id: 'L1', invoice_num: 'INV-3', date: '2026-11-02', qty: '12', unit_cost: '16', tax_pct: '5', tax: '9.6', employee: 'Sam', po_row_id: 'row-1' },
+       { id: 'L7', invoice_num: 'INV-70', date: '2026-11-09', qty: '3', unit_cost: '2', tax_pct: '', tax: '', employee: 'Max' } ] };
+     release();`);
+  await p('saving');
+  assert('purchasing: what the save carried is forgotten; the key typed since is still owed',
+    PJ('[...(_editedLines.po9 || new Map()).keys()]') === '["unit_cost:L1"]',
+    PJ('[...(_editedLines.po9 || new Map()).keys()]'));
+  assert('purchasing:   and keeps what was typed over the stored figure',
+    p('purchaseOrders[0].lines[0].unit_cost') === '18' && p('purchaseOrders[0].lines[0].po_row_id') === 'row-1',
+    PJ('purchaseOrders[0].lines[0]'));
+  assert('purchasing:   a delivery recorded elsewhere meanwhile is shown, and said so',
+    PJ('purchaseOrders[0].lines.map(l => l.id)') === '["L1","L7"]' && p('renders') === 1
+    && /^1 delivery was added to PO-0009/.test(p('toasts[0]') || ''), PJ('[purchaseOrders[0].lines, toasts]'));
+
+  // ── The division tabs ──
+  // Each tab's copy of the job, and an order on it: L1 and L2 raised cost rows
+  // r1 and r2 — r1 since re-coded by a supervisor, with an installed quantity
+  // and a job class of their own — and dr-r5 was recorded from the field's
+  // row r5 in Daily Tracking.
+  const TAB_STATE = `
+    const window = { addEventListener() {} };
+    const fctUser = { username: 'farmerykaleb' };
+    let activeTab = 'po';
+    let _aggCacheRowCount = 7, _projSubAggCacheRowCount = 7;
+    const _poExpanded = new Set();
+    const proj = { id: 'p1', _drFullLoaded: true, dailyRows: [
+      { id: 'r1', _projectId: 'p1', date: '2026-11-02', employee: 'Sam', cost_code: '999', sub_code: 'SUPERVISOR',
+        job_class: 'Operator', quantity: '250', material: 'Stone', supplier: 'Acme', po_num: 'PO-0007',
+        units_purchased: '10', unit_cost: '16.8', material_cost: '168' },
+      { id: 'r2', _projectId: 'p1', date: '2026-11-03', employee: 'Lee', cost_code: '100', sub_code: 'A',
+        job_class: '', quantity: '', material: 'Stone', supplier: 'Acme', po_num: 'PO-0007',
+        units_purchased: '4', unit_cost: '20', material_cost: '80' },
+      { id: 'r5', _projectId: 'p1', date: '2026-11-04', employee: 'Kim', cost_code: '02-100', sub_code: '0420',
+        job_class: '', quantity: '', material: 'Field sand', supplier: 'Pit 9', po_num: 'PO-0007',
+        units_purchased: '3', unit_cost: '7', material_cost: '21' },
+    ] };
+    let purchaseOrders = [
+      { id: 'a', po_number: 'PO-0007', title: 'Stone', supplier: 'Acme', status: 'pending', project_id: 'p1',
+        cost_code: '100', sub_code: 'A', lines: [
+        { id: 'L1', invoice_num: '', date: '2026-11-02', qty: '10', unit_cost: '16', tax_pct: '5', tax: '8',
+          employee: 'Sam', po_row_id: 'r1' },
+        { id: 'L2', invoice_num: 'INV-1', date: '2026-11-03', qty: '4', unit_cost: '20', tax_pct: '', tax: '',
+          employee: 'Lee', po_row_id: 'r2' },
+        { id: 'dr-r5', source: 'daily', invoice_num: '', date: '2026-11-04', qty: '3', unit_cost: '7', tax_pct: '',
+          tax: '', employee: 'Kim', cost_code: '02-100', sub_code: '0420', po_row_id: 'r5' } ] },
+      { id: 'b', po_number: 'PO-0008', title: '', project_id: '', lines: [] },
+    ];
+    let _poBaseUpdatedAt = 'V0', _poLoadOk = false;
+    function getProj(id) { return id === 'p1' ? proj : undefined; }
+  `;
+  // The line math and the Daily Tracking test every tab context needs.
+  const TAB_MATH = ['_normalizeNumeric', '_poNum', '_poNum0', '_lineAmt', '_lineTaxPct', '_lineTax', '_recalcLineTax',
+                    '_lineUnitCostWithTax', '_poTotals', '_poLineFromDaily'];
+  const liftTab = (src, f, ctx, names) => {
+    vm.runInContext(sliceSource(src, 'const _poEditedFields = Object.create(null);', '// Whether a read of the purchase orders has worked.',
+      f + ' PO edit state', '_poSaveEpoch'), ctx);
+    const daily = src.match(/const PO_DAILY_SOURCE = [^\n]*/);
+    if (!daily) throw new Error('PO_DAILY_SOURCE not found in ' + f);
+    vm.runInContext(daily[0], ctx);
+    TAB_MATH.concat(names).forEach(n => vm.runInContext(requireFn(src, n, f), ctx));
+  };
+  const TAB_HTML = '<!doctype html><body>'
+    + '<select data-po-id="a" data-po-field="status"><option value="pending">Pending</option>'
+    + '<option value="approved">Approved</option></select>'
+    + '<input data-po-id="a" data-po-field="title">'
+    + '<input data-po-id="a" data-line-id="L1" data-line-field="qty">'
+    + '<input data-po-id="a" data-line-id="L1" data-line-field="invoice_num">'
+    + '<input data-po-id="a" data-line-id="dr-r5" data-line-field="qty">'
+    + '<div id="po-status-meta-a"></div></body>';
+  // A tab with its real edit handler and row syncs. Every collaborator that
+  // could write to the server is a counter; the rows are only ever in memory.
+  const makeTab = (f, src) => {
+    const dom = new JSDOM(TAB_HTML);
+    const ctx = vm.createContext({ document: dom.window.document, console, setTimeout });
+    vm.runInContext(TAB_STATE + `
+      let saves = 0, puts = 0, posts = 0, reads = 0, renders = 0;
+      const deletes = [];
+      function savePurchaseOrders() { saves++; }
+      function drPutNow() { puts++; }
+      function drPost() { posts++; }
+      function drDelete(id) { deletes.push(String(id)); }
+      async function drGetAll() { reads++; return { rows: [] }; }
+      function renderDailyTable() { renders++; }
+      function renderProjectPOs() {}
+      function renderPOTab() {}
+    `, ctx);
+    liftTab(src, f, ctx, ['fmt', 'qfmt', '_poStampWhen', '_ensurePOLineRow', '_handlePOEvent', 'deletePOLine', 'deletePO',
+                          '_poAdoptServerOrders', '_poMergeLine', '_poRowsFollowOrder']);
+    ['_syncPOHeaderToLines', '_syncPOLineToRow'].forEach(n => vm.runInContext('async ' + requireFn(src, n, f), ctx));
+    const t = e => vm.runInContext(e, ctx);
+    const fire = (sel, value) => {
+      const el = dom.window.document.querySelector(sel);
+      el.value = value;
+      t('_handlePOEvent')({ type: 'change', target: el });
+    };
+    return { t, J: e => JSON.stringify(t(e)), fire };
+  };
+  const settle = () => new Promise(r => setTimeout(r, 10));
+
+  for (const f of ['tracker.html', 'paving.html', 'kiewit-pinetree.html']) {
+    const src = read(f);
+
+    // ── An edit on the PO tab ──
+    {
+      const { t, J, fire } = makeTab(f, src);
+      const fieldMarks = () => J('[...(_poEditedFields.a || new Map()).keys()]');
+      const lineMarks  = () => J('[...(_poEditedLines.a || new Map()).keys()]');
+      const row = id => t(`proj.dailyRows.find(r => r.id === '${id}')`);
+
+      fire('select[data-po-field="status"]', 'approved');
+      await settle();
+      assert(`${f}: approving an order notes its status — and no delivery`,
+        fieldMarks() === '["status"]' && lineMarks() === '[]', fieldMarks() + ' ' + lineMarks());
+      assert(`${f}:   and saves the list`, t('saves') === 1, String(t('saves')));
+
+      fire('input[data-po-field="title"]', 'Stone, 57');
+      await settle();
+      assert(`${f}: retitling notes the title beside it`, fieldMarks() === '["status","title"]', fieldMarks());
+      assert(`${f}:   the cost row on screen takes the new title`, row('r1').material === 'Stone, 57',
+        JSON.stringify(row('r1')));
+      assert(`${f}:   but keeps the codes a supervisor gave it — the title changed, not the codes`,
+        row('r1').cost_code === '999' && row('r1').sub_code === 'SUPERVISOR', JSON.stringify(row('r1')));
+      assert(`${f}:   and the field's own row keeps its description`, row('r5').material === 'Field sand',
+        JSON.stringify(row('r5')));
+
+      fire('input[data-line-id="L1"][data-line-field="qty"]', '12');
+      await settle();
+      assert(`${f}: a quantity typed on a delivery notes that key of that delivery, not the order`,
+        lineMarks() === '["qty:L1"]' && fieldMarks() === '["status","title"]', lineMarks());
+      assert(`${f}:   and saves the list`, t('saves') === 3, String(t('saves')));
+      assert(`${f}:   the cost row on screen follows the delivery, its tax in the unit cost`,
+        row('r1').units_purchased === '12' && row('r1').unit_cost === '16.8' && row('r1').material_cost === '201.6',
+        JSON.stringify(row('r1')));
+      assert(`${f}:   leaving the supervisor's installed quantity, job class and codes alone`,
+        row('r1').quantity === '250' && row('r1').job_class === 'Operator' && row('r1').cost_code === '999',
+        JSON.stringify(row('r1')));
+
+      // That save has landed. Typing an invoice # now must not carry the
+      // quantity it sits beside, which this tab may hold stale.
+      t('_poForgetSentEdits(_poEditedLines, _poSnapshotEdits(_poEditedLines))');
+      fire('input[data-line-id="L1"][data-line-field="invoice_num"]', 'INV-9');
+      await settle();
+      assert(`${f}: an invoice # notes the invoice # alone — not the quantity beside it`,
+        lineMarks() === '["invoice_num:L1"]', lineMarks());
+      assert(`${f}:   and saves the list`, t('saves') === 4, String(t('saves')));
+
+      fire('input[data-line-id="dr-r5"][data-line-field="qty"]', '5');
+      await settle();
+      assert(`${f}: a Daily Tracking delivery's edit is noted the same way`,
+        lineMarks() === '["invoice_num:L1","qty:dr-r5"]', lineMarks());
+      assert(`${f}:   and its row on screen follows it`,
+        row('r5').units_purchased === '5' && row('r5').material_cost === '35', JSON.stringify(row('r5')));
+
+      const before = t('saves');
+      fire('input[data-line-id="L1"][data-line-field="qty"]', '12');
+      assert(`${f}: committing a value that did not change is no edit and no save`,
+        t('saves') === before && lineMarks() === '["invoice_num:L1","qty:dr-r5"]', lineMarks());
+
+      assert(`${f}: through all of it the tab PUT no cost row — the order's save writes them on the server`,
+        t('puts') === 0, String(t('puts')));
+      assert(`${f}:   nor minted one: every delivery already had its row`, t('posts') === 0, String(t('posts')));
+      assert(`${f}:   nor read the job again: its rows were loaded`, t('reads') === 0, String(t('reads')));
+      assert(`${f}:   and the job's totals are worked out again from the rows on screen`,
+        t('_aggCacheRowCount') === -1 && t('_projSubAggCacheRowCount') === -1 && t('renders') > 0);
+    }
+
+    // ── Deleting a delivery ──
+    {
+      const { t, J } = makeTab(f, src);
+      t(`deletePOLine('a', 'L2')`);
+      assert(`${f}: deleting a delivery is recorded until a save confirms it`,
+        J('[...(_poDeletedLines.a || [])]') === '["L2"]', J('[...(_poDeletedLines.a || [])]'));
+      assert(`${f}:   the delivery and its cost row leave the screen, and the list is saved`,
+        J('purchaseOrders[0].lines.map(l => l.id)') === '["L1","dr-r5"]'
+        && !t('proj.dailyRows.some(r => r.id === "r2")') && t('saves') === 1,
+        J('purchaseOrders[0].lines.map(l => l.id)'));
+      t(`deletePOLine('a', 'dr-r5')`);
+      assert(`${f}: a delivery recorded in Daily Tracking is not deleted here, so nothing is recorded`,
+        J('[...(_poDeletedLines.a || [])]') === '["L2"]' && t('purchaseOrders[0].lines.length') === 2
+        && t('saves') === 1, J('[...(_poDeletedLines.a || [])]'));
+    }
+
+    // ── Deleting an order ──
+    {
+      const { t, J } = makeTab(f, src);
+      t(`_poNoteEdit('a', 'title'); _poNoteLineEdit('a', 'L1', 'qty'); (_poDeletedLines.a = new Set()).add('L9');
+         _poNoteEdit('b', 'title');
+         deletePO('a');`);
+      assert(`${f}: deleting an order is recorded until a save confirms it`,
+        t('_poDeletedOrders.has("a")') === true, J('[..._poDeletedOrders]'));
+      assert(`${f}:   and its own marks go with it — there is nothing left to send them for`,
+        !t('"a" in _poEditedFields') && !t('"a" in _poEditedLines') && !t('"a" in _poDeletedLines'));
+      assert(`${f}:   but another order's stay`,
+        J('[...(_poEditedFields.b || new Map()).keys()]') === '["title"]');
+      assert(`${f}:   the order leaves the list, which is saved`,
+        J('purchaseOrders.map(p => p.id)') === '["b"]' && t('saves') === 1);
+      assert(`${f}:   the rows its deliveries raised go with it; the field's row stays on the job`,
+        J('deletes') === '["r1","r2"]' && t('proj.dailyRows.some(r => r.id === "r5")') === true, J('deletes'));
+    }
+
+    // ── An order a job-row write answered with ──
+    {
+      const { t, J } = makeTab(f, src);
+      // Typed here, not yet stored: L1's quantity and dr-r5's.
+      t(`const ls = purchaseOrders[0].lines;
+         ls[0].qty = '12'; _recalcLineTax(ls[0]); _poNoteLineEdit('a', 'L1', 'qty');
+         ls[2].qty = '5'; _poNoteLineEdit('a', 'dr-r5', 'qty');`);
+      const n = t(`_poAdoptServerOrders([{ id: 'a', po_number: 'PO-0007', project_id: 'p1', lines: [
+          { id: 'L1', invoice_num: 'INV-7', date: '2026-11-02', qty: '10', unit_cost: '16', tax_pct: '5', tax: '8',
+            employee: 'Sam', po_row_id: 'r1' },
+          { id: 'L2', invoice_num: 'INV-1', date: '2026-11-03', qty: '6', unit_cost: '20', tax_pct: '', tax: '',
+            employee: 'Max', po_row_id: 'r2' },
+          { id: 'dr-r5', source: 'daily', invoice_num: '', date: '2026-11-04', qty: '3', unit_cost: '7', tax_pct: '',
+            tax: '', employee: 'Ari', cost_code: '03-300', sub_code: '0610', po_row_id: 'r5' } ] }])`);
+      const L = id => t(`purchaseOrders[0].lines.find(l => l.id === '${id}')`) || {};
+      assert(`${f}: an order a row write answered with is taken on`, n === 1, String(n));
+      assert(`${f}:   but a raised delivery's quantity typed here and not yet stored stays as typed`,
+        L('L1').qty === '12', JSON.stringify(L('L1')));
+      assert(`${f}:   with its tax, which follows the figures it is worked out from`,
+        L('L1').tax === '9.6', JSON.stringify(L('L1')));
+      assert(`${f}:   while its other keys take the stored value`, L('L1').invoice_num === 'INV-7',
+        JSON.stringify(L('L1')));
+      assert(`${f}:   a delivery with nothing pending is taken as stored`,
+        L('L2').qty === '6' && L('L2').employee === 'Max', JSON.stringify(L('L2')));
+      assert(`${f}:   a Daily Tracking delivery's pending quantity stays as typed too`,
+        L('dr-r5').qty === '5', JSON.stringify(L('dr-r5')));
+      assert(`${f}:   and the rest of it is taken — its codes are its row's`,
+        L('dr-r5').employee === 'Ari' && L('dr-r5').cost_code === '03-300', JSON.stringify(L('dr-r5')));
+      assert(`${f}:   with nothing else lost or doubled`,
+        J('purchaseOrders[0].lines.map(l => l.id)') === '["L1","L2","dr-r5"]', J('purchaseOrders[0].lines'));
+    }
+
+    // ── The rows an order raised follow it on screen ──
+    {
+      const { t, J } = makeTab(f, src);
+      t(`Object.assign(purchaseOrders[0], { po_number: 'PO-0017', title: 'Stone, 57', supplier: 'Acme Stone & Sand',
+                                            cost_code: '300', sub_code: 'C' });
+         Object.assign(purchaseOrders[0].lines[0], { qty: '15', unit_cost: '20', tax_pct: '5', tax: '15',
+                                                     date: '2026-11-05', employee: 'Ann' });
+         purchaseOrders[0].lines[2].qty = '99';
+         purchaseOrders[0].lines.push({ id: 'L9', qty: '1', unit_cost: '1', po_row_id: 'not-loaded' });
+         _poRowsFollowOrder(purchaseOrders[0]);`);
+      const r1 = t('proj.dailyRows.find(r => r.id === "r1")');
+      assert(`${f}: a raised delivery's row on screen takes the stored figures, tax in its unit cost`,
+        r1.units_purchased === '15' && r1.unit_cost === '21' && r1.material_cost === '315'
+        && r1.date === '2026-11-05' && r1.employee === 'Ann', JSON.stringify(r1));
+      assert(`${f}:   and the order's number, title and supplier`,
+        r1.po_num === 'PO-0017' && r1.material === 'Stone, 57' && r1.supplier === 'Acme Stone & Sand', JSON.stringify(r1));
+      assert(`${f}:   but not its codes, which the supervisor re-coded, nor the job class or installed quantity`,
+        r1.cost_code === '999' && r1.sub_code === 'SUPERVISOR' && r1.job_class === 'Operator' && r1.quantity === '250',
+        JSON.stringify(r1));
+      // A Daily Tracking delivery's figures were derived from its row by the
+      // server a moment ago, so the copy on screen follows them back: editing
+      // the delivery here wrote this page's figures over it in memory, and the
+      // next edit to the row in Daily Tracking would send those whole. Its
+      // description, supplier and codes stay the row's own.
+      const r5 = t('proj.dailyRows.find(r => r.id === "r5")');
+      assert(`${f}:   a Daily Tracking delivery's row follows its figures and the order's number`,
+        r5.units_purchased === '99' && r5.po_num === 'PO-0017', JSON.stringify(r5));
+      assert(`${f}:   but keeps the row's own description, supplier and codes`,
+        r5.material !== 'Stone, 57' && r5.supplier !== 'Acme Stone & Sand' && r5.cost_code !== '300',
+        JSON.stringify(r5));
+      assert(`${f}:   a row this page has not loaded is skipped, not invented`,
+        t('proj.dailyRows.length') === 3, J('proj.dailyRows.map(r => r.id)'));
+      assert(`${f}:   the job's table is redrawn once, and nothing is PUT`,
+        t('renders') === 1 && t('puts') === 0, String(t('renders')));
+      t('_poRowsFollowOrder(purchaseOrders[0])');
+      assert(`${f}:   and a second pass, with nothing to change, draws nothing`, t('renders') === 1, String(t('renders')));
+    }
+
+    // ── The poll ──
+    {
+      // _pollPurchaseOrders lives inside the boot IIFE; lifted with the real
+      // queued save it calls, against a fetch the test answers by hand.
+      const ctx = vm.createContext({ console, setTimeout });
+      vm.runInContext(TAB_STATE + `
+        const document = { activeElement: null };
+        const API_BASE = '/api', fctToken = 't';
+        const calls = [];
+        let renders = 0;
+        function fetch(url, init) {
+          const call = { method: (init && init.method) || 'GET', url, body: init && init.body ? JSON.parse(init.body) : null };
+          calls.push(call);
+          return new Promise((resolve, reject) => { call.resolve = resolve; call.reject = reject; });
+        }
+        function answer(i, j) { calls[i].resolve({ ok: true, status: 200, json: async () => j }); }
+        function _showSaveError() {}
+        function _poRefreshDailyLines() {}
+        function renderPOTab() { renders++; }
+        function renderProjectPOs() {}
+        function renderDailyTable() {}
+        function _migratePOs() {}
+        function _isEditing() { return false; }
+        function _bidMatListChanged() {}
+      `, ctx);
+      liftTab(src, f, ctx, ['savePurchaseOrders', '_poAdoptSaved', '_poMergeLine', '_poRowsFollowOrder']);
+      vm.runInContext(sliceSource(src, '  async function _pollPurchaseOrders() {', '\n  async function _pollTrucking',
+        f + ' purchase-order poll', '_bidMatListChanged(_poBefore, incoming)'), ctx);
+      const q = e => vm.runInContext(e, ctx);
+      const QJ = e => JSON.stringify(q(e));
+      const stored = (title, qty) => ({ purchaseOrders: [
+        { id: 'a', po_number: 'PO-0007', title, supplier: 'Acme', status: 'pending', project_id: 'p1',
+          cost_code: '100', sub_code: 'A', lines: [
+          { id: 'L1', invoice_num: '', date: '2026-11-02', qty, unit_cost: '16', tax_pct: '5', tax: String(qty * 16 * 0.05),
+            employee: 'Sam', po_row_id: 'r1' } ] } ] });
+
+      // Started, never awaited outright: a poll that reads when it should not
+      // waits on a fetch nobody answers, and awaiting it would end the run
+      // without a word rather than fail it. Says whether it returned, and what
+      // it sent.
+      const pollOnce = async () => {
+        const before = q('calls.length');
+        let done = false;
+        q('_pollPurchaseOrders()').then(() => { done = true; });
+        await settle();
+        return { done, sent: JSON.stringify(q(`calls.slice(${before}).map(c => c.method)`)) };
+      };
+
+      // A save that did not land: the poll sends it again, and reads nothing.
+      q(`purchaseOrders[0].title = 'Stone, 57'; _poNoteEdit('a', 'title'); _poSaveFailed = true;`);
+      let polled = await pollOnce();
+      assert(`${f}: the poll sends a save that did not land again`,
+        polled.sent.startsWith('["PUT"') && QJ('calls[0].body.editedFields') === '{"a":["title"]}',
+        QJ('calls.map(c => [c.method, c.body && c.body.editedFields])'));
+      assert(`${f}:   and reads nothing over it`, polled.done && polled.sent === '["PUT"]', JSON.stringify(polled));
+      polled = await pollOnce();
+      assert(`${f}: while a save is out the poll neither sends it again nor reads`,
+        polled.done && polled.sent === '[]', JSON.stringify(polled));
+      q(`answer(0, { ok: true, updatedAt: 'V1', orders: [] })`);
+      await settle();
+      assert(`${f}:   once it lands nothing is owed`,
+        q('_poSaveFailed') === false && q('_poSaving') === false && q('Object.keys(_poEditedFields).length') === 0);
+
+      // Anything this tab has not had stored yet: the list here is newer than a
+      // read could bring, and adopting one would show the stored values over it.
+      for (const [what, set, clear] of [
+        ['an order field',     `_poNoteEdit('a', 'title')`,               `delete _poEditedFields.a`],
+        ['a delivery key',     `_poNoteLineEdit('a', 'L1', 'qty')`,       `delete _poEditedLines.a`],
+        ['a deleted delivery', `(_poDeletedLines.a = new Set()).add('L2')`, `delete _poDeletedLines.a`],
+        ['a deleted order',    `_poDeletedOrders.add('z')`,               `_poDeletedOrders.clear()`],
+      ]) {
+        q(set);
+        polled = await pollOnce();
+        assert(`${f}: with ${what} changed here and not yet stored, the poll reads nothing`,
+          polled.done && polled.sent === '[]', JSON.stringify(polled));
+        q(clear);
+      }
+
+      // A read answered after a save that went out and landed while it was in
+      // the air: computed before that save, so older than the screen.
+      let n = q('calls.length');
+      q('var polling = _pollPurchaseOrders()');
+      assert(`${f}: with nothing owed the poll reads`, q(`calls[${n}].method`) === 'GET', QJ('calls.map(c => c.method)'));
+      q(`purchaseOrders[0].title = 'Stone, 58'; _poNoteEdit('a', 'title'); savePurchaseOrders();
+         answer(${n + 1}, { ok: true, updatedAt: 'V2', orders: [] })`);
+      await settle();
+      q(`answer(${n}, ${JSON.stringify(Object.assign(stored('Stone', '10'), { updatedAt: 'V-OLD' }))})`);
+      await q('polling');
+      assert(`${f}: a read that a save landed during is dropped — the save's version and title stand`,
+        q('purchaseOrders[0].title') === 'Stone, 58' && q('_poBaseUpdatedAt') === 'V2' && q('renders') === 0,
+        QJ('[purchaseOrders[0].title, _poBaseUpdatedAt, renders]'));
+
+      // ...and one answered while a save is still out.
+      n = q('calls.length');
+      q('var polling2 = _pollPurchaseOrders()');
+      q(`purchaseOrders[0].title = 'Stone, 59'; _poNoteEdit('a', 'title'); savePurchaseOrders();`);
+      q(`answer(${n}, ${JSON.stringify(Object.assign(stored('Stone', '10'), { updatedAt: 'V-OLD' }))})`);
+      await q('polling2');
+      assert(`${f}: a read answered while a save is out is dropped too`,
+        q('purchaseOrders[0].title') === 'Stone, 59' && q('_poBaseUpdatedAt') === 'V2' && q('renders') === 0,
+        QJ('[purchaseOrders[0].title, _poBaseUpdatedAt, renders]'));
+      q(`answer(${n + 1}, { ok: true, updatedAt: 'V3', orders: [] })`);
+      await settle();
+
+      // With nothing owed and no save in the window it still takes the list on
+      // — or the guards would only have stopped the poll. Purchasing has since
+      // re-figured L1.
+      n = q('calls.length');
+      q('var polling3 = _pollPurchaseOrders()');
+      q(`answer(${n}, ${JSON.stringify(Object.assign(stored('Stone, 59', '14'), { updatedAt: 'V4' }))})`);
+      await q('polling3');
+      assert(`${f}: a quiet poll takes the stored list on, and its version`,
+        q('purchaseOrders[0].lines[0].qty') === '14' && q('_poBaseUpdatedAt') === 'V4' && q('renders') === 1,
+        QJ('[purchaseOrders[0].lines[0], _poBaseUpdatedAt, renders]'));
+      // The job's row that delivery raised has to follow it, exactly as it does
+      // after this tab's own save (_poRowsFollowOrder): left at the quantity
+      // this tab loaded, the next Daily Tracking edit to anything on that row
+      // PUTs it whole — and the server copies the row's figures back onto the
+      // order (applyRowToLine), undoing purchasing's change on both.
+      assert(`${f}:   and the cost row that delivery raised follows it on screen`,
+        q('proj.dailyRows.find(r => r.id === "r1").units_purchased') === '14',
+        QJ('proj.dailyRows.find(r => r.id === "r1")'));
+    }
+  }
 }
 
 console.log(`\n${failed === 0 ? 'All checks passed.' : failed + ' check(s) failed.'}`);
