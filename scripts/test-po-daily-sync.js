@@ -215,6 +215,11 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
       fetch: async (url, opts) => { state.fetches.push({ url, opts }); return state.reply ? state.reply(url, opts) : { ok: false, status: 500 }; },
     });
     ctx.getProj = id => ctx.projectsList.find(p => p.id === id);
+    ctx.window = { addEventListener() {} };
+    // What this tab has changed and not yet stored — the block below keeps
+    // those keys over the server's when it takes orders on.
+    evalSlice(sliceSource(src, 'const _poEditedFields = {};', '// Whether a read of the purchase orders has worked.',
+      `the PO edit state in ${page}`), ctx, `the PO edit state from ${page}`);
     LIFTED.forEach(name => {
       const fn = requireFn(src, name, page);
       evalSlice((src.includes(`async function ${name}(`) ? 'async ' : '') + fn, ctx, `${name} from ${page}`);
@@ -389,9 +394,10 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
     assert('the delivery rows draw the tag', /dailyLineTagHTML\(l\)/.test(rows));
     assert('  and a lock in place of the ✕ on a Daily Tracking line', /isDailyLine\(l\)\s*\n\s*\? '<span[\s\S]{0,300}?&#128274;<\/span>'/.test(rows));
     assert('deleteLine refuses one', /if \(isDailyLine\(\(po\.lines \|\| \[\]\)\.find\(l => l\.id === lineId\)\)\) return;/.test(requireFn(src, 'deleteLine')));
-    assert('an edit is remembered per line', /noteEdit\(_editedLines, poId, lineId\);/.test(requireFn(src, 'setLineField')));
+    assert('an edit is remembered per line, per key', /noteEdit\(_editedLines, poId, lineEditKey\(lineId, field\)\);/.test(requireFn(src, 'setLineField')));
     const write = requireFn(src, '_savePOWrite');
-    assert('every save says which lines it edited', /editedLineIds:\s*\[\.\.\.sentEdits\.keys\(\)\],/.test(write));
+    assert('every save says which lines it edited', /editedLineIds:\s*editedLinesFor\(po\.id, sentEdits\),/.test(write));
+    assert('  and which keys of each', /editedLineFields:\s*editedLineFieldsFor\(po\.id, sentEdits\),/.test(write));
     assert('  and forgets them once the server has them', /clearSentEdits\(_editedLines, po\.id, sentEdits\);/.test(write));
     assert('so does the save made as the tab closes', /editedLineIds:\s*editedLinesFor\(id\),/.test(src));
 
@@ -402,14 +408,17 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
     // over the second edit.
     const bk = vm.createContext({});
     vm.runInContext('const _editedLines = {}; let _editSeq = 0;' +
-      ['noteEdit', 'pendingEdits', 'clearSentEdits', 'editedLinesFor'].map(n => requireFn(src, n)).join('\n'), bk);
+      ['noteEdit', 'pendingEdits', 'clearSentEdits', 'lineEditKey', 'lineEditSplit', 'editedLinesFor', 'editedLineFieldsFor']
+        .map(n => requireFn(src, n)).join('\n'), bk);
     const run = e => vm.runInContext(e, bk);
-    run(`noteEdit(_editedLines, 'po1', 'dr-r1'); noteEdit(_editedLines, 'po1', 'dr-r2');
-         var sent = pendingEdits(_editedLines, 'po1');      // the first save leaves
-         noteEdit(_editedLines, 'po1', 'dr-r1');            // edited again meanwhile
-         clearSentEdits(_editedLines, 'po1', sent);         // the first save lands`);
+    run(`noteEdit(_editedLines, 'po1', lineEditKey('dr-r1', 'qty')); noteEdit(_editedLines, 'po1', lineEditKey('dr-r2', 'date'));
+         var sent = pendingEdits(_editedLines, 'po1');                // the first save leaves
+         noteEdit(_editedLines, 'po1', lineEditKey('dr-r1', 'qty'));   // edited again meanwhile
+         clearSentEdits(_editedLines, 'po1', sent);                   // the first save lands`);
     assert('  a line edited again while its save was in flight is still sent',
       run('JSON.stringify(editedLinesFor("po1"))') === '["dr-r1"]', run('JSON.stringify(editedLinesFor("po1"))'));
+    assert('  with the key that was edited',
+      run('JSON.stringify(editedLineFieldsFor("po1"))') === '{"dr-r1":["qty"]}', run('JSON.stringify(editedLineFieldsFor("po1"))'));
     run(`clearSentEdits(_editedLines, 'po1', pendingEdits(_editedLines, 'po1'))`);
     assert('  and forgotten once a save carrying it lands', run('JSON.stringify(editedLinesFor("po1"))') === '[]'
       && run('"po1" in _editedLines') === false);

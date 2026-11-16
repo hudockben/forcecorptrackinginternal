@@ -1231,9 +1231,31 @@ function deletedLinesFor(poId) {
   return _deletedLines[poId] ? [..._deletedLines[poId]] : [];
 }
 
+/*
+ * A delivery's edits are kept per key — `<key>:<line id>` — so a save can say
+ * which of a delivery's figures changed and the server keeps its stored value
+ * of the rest. Line-level was not enough: typing an invoice # on a delivery
+ * whose quantity this page held stale sent the stale quantity as an edit, and
+ * the server wrote it to the job's cost row.
+ */
+function lineEditKey(lineId, key) { return key + ':' + lineId; }
+function lineEditSplit(k) {
+  const at = k.indexOf(':');
+  return { key: k.slice(0, at), lineId: k.slice(at + 1) };
+}
+
 /** The deliveries edited on this order and not yet confirmed to the server. */
-function editedLinesFor(poId) {
-  return _editedLines[poId] ? [..._editedLines[poId].keys()] : [];
+function editedLinesFor(poId, from) {
+  const keys = from ? [...from.keys()] : (_editedLines[poId] ? [..._editedLines[poId].keys()] : []);
+  return [...new Set(keys.map(k => lineEditSplit(k).lineId))];
+}
+
+/** The same, per delivery: `{ lineId: [key, ...] }`. */
+function editedLineFieldsFor(poId, from) {
+  const keys = from ? [...from.keys()] : (_editedLines[poId] ? [..._editedLines[poId].keys()] : []);
+  const out = {};
+  keys.forEach(k => { const e = lineEditSplit(k); (out[e.lineId] || (out[e.lineId] = [])).push(e.key); });
+  return out;
 }
 
 /** The order's own fields changed here and not yet confirmed to the server. */
@@ -1269,6 +1291,64 @@ function adoptStoredFields(po, stored) {
   PO_HEADER_FIELDS.forEach(take);
   if (!(pending && pending.has('status'))) PO_STATUS_STAMP_FIELDS.forEach(take);
   return changed;
+}
+
+// A delivery's own keys, as the server stores them. A Daily Tracking line's
+// codes come from its row, so they are taken too.
+const PO_LINE_FIELDS = ['invoice_num', 'date', 'qty', 'unit_cost', 'tax_pct', 'tax', 'employee',
+                        'cost_code', 'sub_code', 'source'];
+const PO_LINE_MONEY = ['qty', 'unit_cost', 'tax_pct'];
+
+/**
+ * Take on the deliveries as stored, the same way: every key of every delivery
+ * this page has no edit outstanding for, the deliveries somebody else added,
+ * and not the ones the server dropped (a Daily Tracking delivery whose row
+ * moved on). A delivery added, or changed, since the save left is this page's
+ * and stays. Replaces the old wholesale swap, which threw away an edit made
+ * while the save was in flight — and the next save then sent the server's
+ * older figure back marked as the user's.
+ *
+ * `sentIds` are the deliveries the save carried. Returns how many were added.
+ */
+function adoptStoredLines(po, stored, sentIds) {
+  const pending = _editedLines[po.id];
+  const isPending = (id, k) => Boolean(pending && pending.has(lineEditKey(id, k)));
+  const deleted = _deletedLines[po.id];
+  const byId = new Map((stored || []).filter(l => l && l.id != null).map(l => [String(l.id), l]));
+  let changed = false;
+  let added = 0;
+  const out = [];
+  (po.lines || []).forEach(l => {
+    if (!l || l.id == null) { out.push(l); return; }
+    const id = String(l.id);
+    const srv = byId.get(id);
+    if (!srv) {
+      const newer = !sentIds.has(id) || PO_LINE_FIELDS.some(k => isPending(id, k));
+      if (newer) out.push(l); else changed = true;
+      return;
+    }
+    byId.delete(id);
+    const moneyPending = PO_LINE_MONEY.some(k => isPending(id, k));
+    PO_LINE_FIELDS.forEach(k => {
+      if (isPending(id, k) || (k === 'tax' && moneyPending)) return;
+      const v = srv[k];
+      if ((l[k] == null ? '' : String(l[k])) === (v == null ? '' : String(v))) return;
+      if (v === undefined) delete l[k]; else l[k] = v;
+      changed = true;
+    });
+    out.push(l);
+  });
+  byId.forEach((srv, id) => {
+    if (deleted && deleted.has(id)) return;
+    out.push(JSON.parse(JSON.stringify(srv)));
+    added++;
+    changed = true;
+  });
+  if (changed) {
+    po.lines = out;
+    migratePO(po);   // a legacy line stored without tax_pct gets it back on screen
+  }
+  return { changed, added };
 }
 
 /**
@@ -1323,11 +1403,13 @@ async function _savePOWrite(po) {
     const sentDeletions = deletedLinesFor(po.id);
     const sentEdits     = pendingEdits(_editedLines, po.id);
     const sentFields    = pendingEdits(_editedFields, po.id);
+    const sentLineIds   = new Set((po.lines || []).filter(l => l && l.id != null).map(l => String(l.id)));
     const res = await api('POST', qs, {
       purchaseOrder: poPayload(po),
-      deletedLineIds: sentDeletions,
-      editedLineIds:  [...sentEdits.keys()],
-      editedFields:   [...sentFields.keys()],
+      deletedLineIds:   sentDeletions,
+      editedLineIds:    editedLinesFor(po.id, sentEdits),
+      editedLineFields: editedLineFieldsFor(po.id, sentEdits),
+      editedFields:     [...sentFields.keys()],
     });
 
     // The deletions this save carried are now on the server, so stop resending
@@ -1356,15 +1438,17 @@ async function _savePOWrite(po) {
         if (l && byId[l.id]) l.po_row_id = byId[l.id].po_row_id || null;
       });
 
-      // Deliveries somebody else recorded on this order while this page held an
-      // older copy. The server kept them rather than letting this save drop
-      // them; take them on screen too, so the list stops being short and the
-      // user can see what arrived.
-      if (res.mergedLines > 0 && !isTyping()) {
-        po.lines = res.purchaseOrder.lines;
-        toast(res.mergedLines + ' ' + (res.mergedLines === 1 ? 'delivery was' : 'deliveries were') +
-              ' added to ' + (po.po_number || 'this order') + ' by someone else — shown now.');
-        refresh = true;
+      // The deliveries as stored: figures somebody else changed since this
+      // copy was read, which the server kept rather than this page's, and
+      // deliveries somebody else recorded on the order meanwhile. Not while a
+      // field has focus — the poll catches it up instead.
+      if (!isTyping()) {
+        const took = adoptStoredLines(po, res.purchaseOrder.lines, sentLineIds);
+        if (took.added) {
+          toast(took.added + ' ' + (took.added === 1 ? 'delivery was' : 'deliveries were') +
+                ' added to ' + (po.po_number || 'this order') + ' by someone else — shown now.');
+        }
+        if (took.changed) refresh = true;
       }
     }
     if (refresh) render();
@@ -1437,8 +1521,9 @@ window.addEventListener('beforeunload', () => {
         body: JSON.stringify({
           purchaseOrder:  poPayload(po),
           deletedLineIds: deletedLinesFor(id),
-          editedLineIds:  editedLinesFor(id),
-          editedFields:   editedFieldsFor(id),
+          editedLineIds:    editedLinesFor(id),
+          editedLineFields: editedLineFieldsFor(id),
+          editedFields:     editedFieldsFor(id),
         }),
       });
     } catch { /* the tab is closing; nothing useful to do */ }
@@ -1693,7 +1778,7 @@ function setLineField(poId, lineId, field, value) {
   const line = (po.lines || []).find(l => l.id === lineId);
   if (!line) return;
   line[field] = value;
-  noteEdit(_editedLines, poId, lineId);
+  noteEdit(_editedLines, poId, lineEditKey(lineId, field));
   if (field === 'qty' || field === 'unit_cost' || field === 'tax_pct') recalcLineTax(line);
   savePO(po);
   updateTotalsInPlace(po, line);

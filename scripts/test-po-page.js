@@ -45,7 +45,13 @@ const EDIT_BOOKKEEPING = [
   'let _editSeq = 0;',
   sliceSource(PAGE, 'const PO_HEADER_FIELDS', '\nconst PO_STATUS_STAMP_FIELDS', 'the header field list'),
   (PAGE.match(/const PO_STATUS_STAMP_FIELDS = [^\n]*/) || [''])[0],
-  ...['noteEdit', 'pendingEdits', 'clearSentEdits', 'editedFieldsFor', 'adoptStoredFields', 'isTyping']
+  (PAGE.match(/const PO_LINE_FIELDS = \[[\s\S]*?\];/) || [''])[0],
+  (PAGE.match(/const PO_LINE_MONEY = [^\n]*/) || [''])[0],
+  // adoptStoredLines re-runs the load-time tax migration; a context that has
+  // not lifted the real one gets a no-op.
+  'var migratePO = typeof migratePO === "function" ? migratePO : function () {};',
+  ...['noteEdit', 'pendingEdits', 'clearSentEdits', 'editedFieldsFor', 'adoptStoredFields', 'isTyping',
+      'lineEditKey', 'lineEditSplit', 'editedLinesFor', 'editedLineFieldsFor', 'adoptStoredLines']
     .map(n => requireFn(PAGE, n, 'purchase-orders.html')),
 ].join('\n');
 
@@ -1018,14 +1024,17 @@ console.log('\n[deliveries this page did not know about]');
   assert('removed deliveries are remembered per order',
     /\(_deletedLines\[poId\] \|\| \(_deletedLines\[poId\] = new Set\(\)\)\)\.add\(lineId\);/.test(PAGE));
   assert('and sent with the save',
-    /deletedLineIds: sentDeletions/.test(PAGE));
+    /deletedLineIds:\s*sentDeletions/.test(PAGE));
   assert('only the ones this save carried are forgotten',
     /sentDeletions\.forEach\(id => _deletedLines\[po\.id\]\.delete\(id\)\);/.test(PAGE));
   assert('deleting the order drops its pending removals',
     (PAGE.match(/delete _deletedLines\[poId\];/g) || []).length === 2);
-  // A merge means the list on screen is short — show what arrived.
+  // A merge means the list on screen is short — show what arrived. Taken on
+  // delivery by delivery and key by key now (adoptStoredLines, run in
+  // "[a save says which of the order's fields it changed]"), never by a
+  // wholesale swap that threw away an edit made while the save was out.
   assert('merged deliveries are taken on screen',
-    /if \(res\.mergedLines > 0 && !isTyping\(\)\)/.test(PAGE));
+    /if \(!isTyping\(\)\) \{\s*const took = adoptStoredLines\(po, res\.purchaseOrder\.lines, sentLineIds\);/.test(PAGE));
   assert('but never while the user is mid-edit', /function isTyping\(\)/.test(PAGE));
   assert('and the poll shares that same test', /const isEditing = isTyping;/.test(PAGE));
 }
@@ -1653,18 +1662,24 @@ console.log('\n[a cost row this page has not loaded — run]');
     { project_id:'p1', cost_code:'100', sub_code:'A', title:'Stone', supplier:'Acme', po_number:'PO-0007' },
     { id:'L1', po_row_id:'row-1', date:'2026-02-02', employee:'Sam', qty:'10', unit_cost:'5' })`, ctx);
 
-  const out = vm.runInContext('written[0]', ctx);
+  // The row on screen follows the delivery; the row on the server is written
+  // by the order's own save, from the delivery as stored (writeTabRows). This
+  // page PUTting the row whole from its own copy of the job is what put a
+  // stale quantity back on the job whenever anything else on it was edited.
+  const out = vm.runInContext('proj.dailyRows.find(r => r.id === "row-1")', ctx);
   assert('the job\'s rows are fetched rather than assumed empty',
     vm.runInContext('fetched', ctx) === 1, String(vm.runInContext('fetched', ctx)));
-  assert('the delivery figures reach the row',
+  assert('the delivery figures reach the row on screen',
     out && out.units_purchased === '10' && out.unit_cost === '5' && out.material_cost === '50',
     JSON.stringify(out));
   assert('and the installed quantity is left alone',      out.quantity  === '250', JSON.stringify(out));
   assert('and the job class',                             out.job_class === 'Operator', JSON.stringify(out));
   assert('and the cost code the supervisor re-coded',
     out.cost_code === '999' && out.sub_code === 'SUPERVISOR', JSON.stringify(out));
-  assert('and it is the stored row that was written, not a new one',
-    out.id === 'row-1' && vm.runInContext('written.length', ctx) === 1);
+  assert('and it is the stored row, not a new one',
+    vm.runInContext('proj.dailyRows.length', ctx) === 1);
+  assert('and this page writes no row itself — the order\'s save does, on the server',
+    vm.runInContext('written.length', ctx) === 0, JSON.stringify(vm.runInContext('written', ctx)));
 }
 
 console.log('\n[a keystroke while a delete is in flight]');
@@ -2532,39 +2547,106 @@ console.log('\n[a save says which of the order\'s fields it changed]');
 
   // The division tabs save their whole list, so every order in it travels with
   // each save — the one being edited and every other one, as old as the tab's
-  // last refresh. The save says which fields of which orders it changed.
+  // last refresh. The save says which fields of which orders, and which keys of
+  // which deliveries, it changed — and what it deleted — goes out one at a
+  // time, and takes back what the server merged. The page's own code, run.
   for (const f of ['tracker.html', 'paving.html', 'kiewit-pinetree.html']) {
     const src = read(f);
-    const tctx = vm.createContext({ console, JSON, Promise, Object, setTimeout });
+    const tctx = vm.createContext({ console, JSON, Promise, Object, Map, Set, setTimeout });
     vm.runInContext(`
-      const API_BASE = '/api', fctToken = 't';
-      let purchaseOrders = [{ id: 'a', status: 'approved', lines: [] }, { id: 'b', title: 'stale', lines: [] }];
-      let _poBaseUpdatedAt = '2026-11-16T14:40:00.000Z';
-      const _poEditedFields = {};
-      let _poEditSeq = 0;
-      const bodies = [];
-      let release = null;
+      const window = { addEventListener() {} };
+      const document = { activeElement: null };
+      const API_BASE = '/api', fctToken = 't', activeTab = 'po';
+      let purchaseOrders = [
+        { id: 'a', status: 'pending', project_id: '', lines: [{ id: 'L1', qty: '10', unit_cost: '16', tax_pct: '' }] },
+        { id: 'b', title: '', project_id: '', lines: [] },
+      ];
+      let _poBaseUpdatedAt = 'V0';
+      const bodies = [], answers = [];
+      let renders = 0, errors = 0;
+      // Each request waits for the test to answer it.
       function fetch(url, init) {
         bodies.push(JSON.parse(init.body));
-        return new Promise(r => { release = () => r({ ok: true, status: 200,
-          json: async () => ({ ok: true, updatedAt: '2026-11-16T14:47:00.000Z', merged: 0 }) }); });
+        return new Promise((ok, bad) => answers.push({ ok, bad }));
       }
-      function _showSaveError() {} function _poRefreshDailyLines() {}
+      function reply(i, j) { answers[i].ok({ ok: true, status: 200, json: async () => j }); }
+      function _showSaveError() { errors++; }
+      function _poRefreshDailyLines() {}
+      function renderPOTab() { renders++; }
+      function renderProjectPOs() {}
+      function _migratePOs() {}
+      function getProj() { return null; }
+      function _poLineFromDaily(l) { return Boolean(l && l.source === 'daily'); }
     `, tctx);
-    ['_poNoteEdit', 'savePurchaseOrders'].forEach(n => vm.runInContext(requireFn(src, n, f), tctx));
+    vm.runInContext(sliceSource(src, 'const _poEditedFields = {};', '// Whether a read of the purchase orders has worked.',
+      f + ' PO edit state'), tctx);
+    ['savePurchaseOrders', '_poAdoptSaved', '_poMergeLine', '_poRowsFollowOrder']
+      .forEach(n => vm.runInContext(requireFn(src, n, f), tctx));
     const t = e => vm.runInContext(e, tctx);
-    t(`_poNoteEdit('a', 'status'); savePurchaseOrders();`);
-    assert(`${f}: a save names the fields it changed, per order — and nothing for the orders it did not touch`,
-      JSON.stringify(t('bodies[0].editedFields')) === '{"a":["status"]}', JSON.stringify(t('bodies[0]')));
-    t(`_poNoteEdit('a', 'status'); var r1 = release;`);   // changed again while the save is out
-    t('r1()');
+    const J = e => JSON.stringify(t(e));
+
+    // ── What a save says ──
+    t(`purchaseOrders[0].status = 'approved'; _poNoteEdit('a', 'status');
+       purchaseOrders[0].lines[0].qty = '12'; _poNoteLineEdit('a', 'L1', 'qty');
+       savePurchaseOrders();`);
+    assert(`${f}: a save names the order fields it changed — and nothing for orders it did not touch`,
+      J('bodies[0].editedFields') === '{"a":["status"]}', J('bodies[0]'));
+    assert(`${f}:   and each delivery's keys`, J('bodies[0].editedLineFields') === '{"a":{"L1":["qty"]}}',
+      J('bodies[0].editedLineFields'));
+    assert(`${f}:   and what it deleted (nothing yet)`,
+      J('bodies[0].deletedLineIds') === '{}' && J('bodies[0].deletedOrderIds') === '[]');
+
+    // ── One at a time ──
+    t(`purchaseOrders[0].lines[0].qty = '14'; _poNoteLineEdit('a', 'L1', 'qty'); savePurchaseOrders();
+       savePurchaseOrders();`);
+    assert(`${f}: a second save waits for the first instead of racing it`, t('bodies.length') === 1);
+    // The first lands. Purchasing had filled in order b meanwhile, so it comes
+    // back; order a comes back as stored by THIS save — qty 12 — while the
+    // screen already says 14.
+    t(`reply(0, { ok: true, updatedAt: 'V1', orders: [
+         { id: 'a', status: 'approved', project_id: '', lines: [{ id: 'L1', qty: '12', unit_cost: '16', tax_pct: '' }] },
+         { id: 'b', title: 'Drain Fabric', project_id: '', lines: [] } ] })`);
     await settle();
-    assert(`${f}:   one changed again while it was in flight is still owed to the next save`,
-      t('JSON.stringify([...(_poEditedFields.a || new Map()).keys()])') === '["status"]');
-    t('savePurchaseOrders(); release()');
+    assert(`${f}:   the merged order is taken on`, t('purchaseOrders[1].title') === 'Drain Fabric', J('purchaseOrders[1]'));
+    assert(`${f}:   but not over a key typed since the save left`, t('purchaseOrders[0].lines[0].qty') === '14',
+      J('purchaseOrders[0]'));
+    assert(`${f}:   and the version is adopted, the list now being the stored one`, t('_poBaseUpdatedAt') === 'V1');
+    assert(`${f}:   the waiting save goes once the first has landed — once`, t('bodies.length') === 2, String(t('bodies.length')));
+    assert(`${f}:   carrying only what is still owed`,
+      J('bodies[1].editedFields') === '{}' && J('bodies[1].editedLineFields') === '{"a":{"L1":["qty"]}}',
+      J('bodies[1]'));
+    t(`reply(1, { ok: true, updatedAt: 'V2', orders: [] })`);
     await settle();
-    assert(`${f}:   and forgotten once a save carrying it lands`, t('Object.keys(_poEditedFields).length') === 0,
-      t('JSON.stringify(Object.keys(_poEditedFields))'));
+    assert(`${f}:   and nothing is owed once it lands`,
+      t('Object.keys(_poEditedFields).length + Object.keys(_poEditedLines).length') === 0);
+
+    // ── Deletions, and a save that does not land ──
+    t(`(_poDeletedLines.a || (_poDeletedLines.a = new Set())).add('L9'); _poDeletedOrders.add('gone');
+       purchaseOrders[1].title = 'x'; _poNoteEdit('b', 'title'); savePurchaseOrders();`);
+    assert(`${f}: what was deleted is said`,
+      J('bodies[2].deletedLineIds') === '{"a":["L9"]}' && J('bodies[2].deletedOrderIds') === '["gone"]', J('bodies[2]'));
+    t(`answers[2].bad(new TypeError('Failed to fetch'))`);
+    await settle();
+    assert(`${f}:   a save that does not land is owed again, its edits and deletions kept`,
+      t('_poSaveFailed') === true && t('_poEditedFields.b && _poEditedFields.b.has("title")') === true
+      && t('_poDeletedOrders.has("gone")') === true && t('errors') === 1);
+    t(`savePurchaseOrders(); answers[3].bad(new TypeError('Failed to fetch'))`);
+    await settle();
+    assert(`${f}:   and failing again says so once, not every retry`, t('errors') === 1, String(t('errors')));
+    t(`savePurchaseOrders(); reply(4, { ok: true, updatedAt: 'V3', orders: [] })`);
+    await settle();
+    assert(`${f}:   until one lands`, t('_poSaveFailed') === false && t('_poDeletedOrders.size') === 0
+      && !t('"a" in _poDeletedLines') && !t('"b" in _poEditedFields'));
+
+    // ── A delivery the server dropped, and one added here meanwhile ──
+    t(`purchaseOrders[0].lines.push({ id: 'dr-9', source: 'daily', qty: '1', po_row_id: '9' });
+       savePurchaseOrders();
+       purchaseOrders[0].lines.push({ id: 'NEW', qty: '' });
+       reply(5, { ok: true, updatedAt: 'V4', orders: [
+         { id: 'a', status: 'approved', project_id: '', lines: [{ id: 'L1', qty: '14', unit_cost: '16', tax_pct: '' }] } ] })`);
+    await settle();
+    assert(`${f}: a delivery the server dropped goes; one added since the save stays`,
+      J('purchaseOrders[0].lines.map(l => l.id)') === '["L1","NEW"]', J('purchaseOrders[0].lines'));
   }
 }
 

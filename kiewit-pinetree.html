@@ -6564,11 +6564,87 @@ let _poBaseUpdatedAt = null;
 // carried: saves here are not queued, and one changed again while an earlier
 // save was in flight is still owed to the next.
 const _poEditedFields = {};
+// ...and the same for delivery lines, per KEY — `<key>:<line id>` → the number
+// of the change. A key this tab did not touch keeps the value stored for it, so
+// a stale copy cannot put back a quantity or unit cost purchasing — or a
+// supervisor re-figuring the job's cost row — changed since the tab loaded, and
+// typing an invoice # does not carry the line's old quantity along with it.
+const _poEditedLines = {};
+// Deliveries and orders this tab deleted, until a save confirms it. A save the
+// server merges against a newer list cannot otherwise tell a delivery deleted
+// here from one this tab never saw, and put it back — with its cost row gone.
+const _poDeletedLines = {};          // order id → Set of line ids
+const _poDeletedOrders = new Set();
 let _poEditSeq = 0;
 function _poNoteEdit(poId, ...fields) {
   const m = _poEditedFields[poId] || (_poEditedFields[poId] = new Map());
   fields.forEach(f => m.set(f, ++_poEditSeq));
 }
+function _poNoteLineEdit(poId, lineId, key) {
+  const m = _poEditedLines[poId] || (_poEditedLines[poId] = new Map());
+  m.set(key + ':' + lineId, ++_poEditSeq);
+}
+/** Has this tab changed `key` of that delivery, unsaved? */
+function _poLineEditPending(poId, lineId, key) {
+  const m = _poEditedLines[String(poId)];
+  return Boolean(m && m.has(key + ':' + lineId));
+}
+/** ...any key of it? */
+function _poLinePending(poId, lineId) {
+  const m = _poEditedLines[String(poId)];
+  if (!m) return false;
+  const tail = ':' + lineId;
+  for (const k of m.keys()) if (k.endsWith(tail) && k.indexOf(':') === k.length - tail.length) return true;
+  return false;
+}
+/** Every order's outstanding edits in `store`, copied, for one save to carry. */
+function _poSnapshotEdits(store) {
+  const out = {};
+  Object.keys(store).forEach(id => { out[id] = new Map(store[id]); });
+  return out;
+}
+/** A snapshot as the request sends it: order id → the names changed. */
+function _poEditList(snap) {
+  const out = {};
+  Object.keys(snap).forEach(id => { out[id] = [...snap[id].keys()]; });
+  return out;
+}
+/** Delivery edits as the request sends them: order id → { line id: [keys] }. */
+function _poLineEditList(snap) {
+  const out = {};
+  Object.keys(snap).forEach(id => {
+    const lines = {};
+    snap[id].forEach((seq, k) => {
+      const at = k.indexOf(':');
+      const key = k.slice(0, at), lineId = k.slice(at + 1);
+      (lines[lineId] || (lines[lineId] = [])).push(key);
+    });
+    out[id] = lines;
+  });
+  return out;
+}
+/** Forget what a save carried — unless it has been changed again since. */
+function _poForgetSentEdits(store, sent) {
+  Object.keys(sent).forEach(id => {
+    const now = store[id];
+    if (!now) return;
+    sent[id].forEach((seq, k) => { if (now.get(k) === seq) now.delete(k); });
+    if (!now.size) delete store[id];
+  });
+}
+// One save at a time. Two in the air could land in either order, and the
+// later-sent one landing first left the earlier one's older figures as the
+// stored ones — with this tab's marks already forgotten, so nothing put them
+// right. An edit made while a save is out is sent by one follow-up save.
+let _poSaving = false;
+let _poSaveAgain = false;
+// The last save did not land and is owed again: the poll and a returning
+// connection retry it. The edits stay marked until one does.
+let _poSaveFailed = false;
+// Bumped as each save settles, so a poll whose read was answered before it
+// does not put the older list back.
+let _poSaveEpoch = 0;
+window.addEventListener('online', () => { if (_poSaveFailed && !_poSaving) savePurchaseOrders(); });
 // Whether a read of the purchase orders has worked. Nothing that reads the list
 // for what is MISSING from it (the PO # notice, Create) may run against the
 // empty list a failed read leaves behind.
@@ -6631,49 +6707,82 @@ function _migratePOs(list = purchaseOrders) {
 }
 
 function savePurchaseOrders() {
-  // What this save carries — a snapshot, so an edit made while it is in flight
+  if (_poSaving) { _poSaveAgain = true; return; }
+  _poSaving = true;
+  // What this save carries — snapshots, so an edit made while it is in flight
   // is not forgotten when it lands.
-  const sentFields = {}, editedFields = {};
-  Object.keys(_poEditedFields).forEach(id => {
-    sentFields[id]   = new Map(_poEditedFields[id]);
-    editedFields[id] = [...sentFields[id].keys()];
-  });
+  const sentFields = _poSnapshotEdits(_poEditedFields);
+  const sentLines  = _poSnapshotEdits(_poEditedLines);
+  const sentDeletedLines = {};
+  Object.keys(_poDeletedLines).forEach(id => { sentDeletedLines[id] = [..._poDeletedLines[id]]; });
+  const sentDeletedOrders = [..._poDeletedOrders];
+  // Each delivery's link as sent, so the answer can tell a delivery the server
+  // dropped from one added here since, and a link minted here since from one
+  // the server replaced.
+  const sentLinks = new Map(purchaseOrders.filter(p => p && p.id).map(p => [String(p.id),
+    new Map((p.lines || []).filter(l => l && l.id != null).map(l => [String(l.id), l.po_row_id || null]))]));
+  const wasFailing = _poSaveFailed;
+  const failed = (show) => {
+    _poSaveFailed = true;
+    if (!wasFailing) show();
+  };
   fetch(`${API_BASE}/purchase-orders?division=kiewit`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
-    body: JSON.stringify({ purchaseOrders, baseUpdatedAt: _poBaseUpdatedAt, editedFields })
+    // Says what this tab changed — the orders' fields, the deliveries' keys,
+    // what it deleted — so the server keeps the stored value of everything
+    // else, writes what changed to the job's cost rows itself, and answers
+    // with every order that came out different.
+    body: JSON.stringify({ purchaseOrders, baseUpdatedAt: _poBaseUpdatedAt,
+                           editedFields: _poEditList(sentFields), editedLineFields: _poLineEditList(sentLines),
+                           deletedLineIds: sentDeletedLines, deletedOrderIds: sentDeletedOrders })
   }).then(async r => {
     if (r.ok) {
-      Object.keys(sentFields).forEach(id => {
-        const now = _poEditedFields[id];
+      _poSaveFailed = false;
+      _poForgetSentEdits(_poEditedFields, sentFields);
+      _poForgetSentEdits(_poEditedLines, sentLines);
+      Object.keys(sentDeletedLines).forEach(id => {
+        const now = _poDeletedLines[id];
         if (!now) return;
-        sentFields[id].forEach((seq, f) => { if (now.get(f) === seq) now.delete(f); });
-        if (!now.size) delete _poEditedFields[id];
+        sentDeletedLines[id].forEach(l => now.delete(l));
+        if (!now.size) delete _poDeletedLines[id];
       });
-      // The version this save produced, so the next one is judged against
-      // what the server actually holds rather than a base already stale.
+      sentDeletedOrders.forEach(id => _poDeletedOrders.delete(id));
       try {
         const j = await r.json();
-        // Not after a merge. The server kept orders this tab has never seen, so
-        // the list here is already behind what is stored; adopting the new
-        // version would make the next save look up to date and erase them
-        // again. Keeping the old version keeps the merge protecting them until
-        // the poll brings the real list in.
-        if (j && j.updatedAt && !j.merged) _poBaseUpdatedAt = j.updatedAt;
-        // The job rows said something different about the Daily Tracking
-        // lines than this list did, so the list is behind; take theirs on.
-        if (j && j.derived) _poRefreshDailyLines();
+        if (j && Array.isArray(j.orders)) {
+          // The server's merge, taken on wherever this tab has nothing newer —
+          // after which this tab holds the stored list, and its version.
+          _poAdoptSaved(j.orders, sentLinks);
+          if (j.updatedAt) _poBaseUpdatedAt = j.updatedAt;
+        } else {
+          // A server from before this: as it always was. Not after a merge —
+          // the list here is behind what is stored, and adopting the version
+          // would make the next save look up to date and erase it again.
+          if (j && j.updatedAt && !j.merged) _poBaseUpdatedAt = j.updatedAt;
+          if (j && j.derived) _poRefreshDailyLines();
+        }
       } catch {}
       return;
     }
     if (r.status === 409) {
       let detail = 'A purchase-order save was refused to prevent accidental data loss.';
-      try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch {}
-      _showSaveError(false, detail);
+      let wipe = false;
+      try { const j = await r.json(); if (j && j.detail) detail = j.detail; wipe = Boolean(j && /wipe/i.test(j.error || '')); } catch {}
+      // Saving at the same moment as someone else is worth another go; the
+      // wipe guard says the same thing however often it is asked.
+      if (wipe) _showSaveError(false, detail); else failed(() => _showSaveError(false, detail));
       return;
     }
+    // Saved, but the job's rows were not: the same edits again finish it.
+    if (r.status >= 500 || r.status === 408 || r.status === 429) { failed(() => _showSaveError(false)); return; }
     _showSaveError(r.status === 401);
-  }).catch(() => _showSaveError(false));
+  }).catch(() => failed(() => _showSaveError(false)))
+    .finally(() => {
+      _poSaving = false;
+      _poSaveEpoch++;
+      if (_poSaveAgain) { _poSaveAgain = false; savePurchaseOrders(); }
+    });
 }
 
 function nextPONumber() {
@@ -11781,6 +11890,7 @@ function deletePOLine(poId, lineId) {
     }
   }
   po.lines = (po.lines || []).filter(l => l.id !== lineId);
+  (_poDeletedLines[poId] || (_poDeletedLines[poId] = new Set())).add(String(lineId));
   savePurchaseOrders();
   renderPOTab();
   if (po.project_id) renderProjectPOs(po.project_id);
@@ -11805,6 +11915,9 @@ function deletePO(id) {
   }
   _poExpanded.delete(id);
   delete _poEditedFields[id];
+  delete _poEditedLines[id];
+  delete _poDeletedLines[id];
+  _poDeletedOrders.add(String(id));
   purchaseOrders = purchaseOrders.filter(p => p.id !== id);
   savePurchaseOrders();
   renderPOTab();
@@ -11860,8 +11973,14 @@ async function _syncPOHeaderToLines(po, syncCodes) {
         r.sub_code  = po.sub_code || '';
       }
     }
-    drPutNow(r.id, r);
+    // On screen only. The order's save writes these columns to the row on the
+    // server (writeTabRows in api/lib/po-sync.js). PUTting the row from here
+    // sent it WHOLE from this page's copy of the job — which nothing refreshes
+    // when purchasing or the job's own tab changes it — so approving or
+    // retitling an order put back every delivery's old quantity and cost.
   });
+  _aggCacheRowCount = -1;
+  _projSubAggCacheRowCount = -1;
   renderDailyTable(po.project_id);
 }
 
@@ -11933,7 +12052,12 @@ async function _syncPOLineToRow(po, line) {
   r.units_purchased= line.qty      || '';
   r.unit_cost      = line.unit_cost ? String(_lineUnitCostWithTax(line)) : '';
   r.material_cost  = String(_lineAmt(line) + _lineTax(line));
-  drPutNow(r.id, r);
+  // On screen only: the order's save writes the row on the server, from the
+  // delivery as stored — the keys changed here and the stored rest. Writing it
+  // from here sent the row whole, so typing an invoice # on a delivery this
+  // page held stale put its old quantity and cost back on the job.
+  _aggCacheRowCount = -1;
+  _projSubAggCacheRowCount = -1;
   renderDailyTable(po.project_id);
 }
 
@@ -12029,17 +12153,19 @@ function _poAdoptServerOrders(orders) {
   let n = 0;
   const projects = new Set();
   orders.forEach(srv => {
-    if (!srv || !srv.id) return;
+    if (!srv || !srv.id || _poDeletedOrders.has(String(srv.id))) return;
     const local = purchaseOrders.find(p => p && p.id === srv.id);
     if (!local) { purchaseOrders.push(JSON.parse(JSON.stringify(srv))); n++; if (srv.project_id) projects.add(srv.project_id); return; }
     const srvLines = Array.isArray(srv.lines) ? srv.lines : [];
     const srvById  = new Map(srvLines.filter(l => l && l.id).map(l => [String(l.id), l]));
+    const localById = new Map((local.lines || []).filter(l => l && l.id).map(l => [String(l.id), l]));
     const raised = (local.lines || []).filter(l => l && !_poLineFromDaily(l))
       .map(l => (srvById.has(String(l.id)) && !_poLineFromDaily(srvById.get(String(l.id))))
-        ? JSON.parse(JSON.stringify(srvById.get(String(l.id)))) : l);
+        ? _poMergeLine(local.id, l, srvById.get(String(l.id))) : l);
     const owned = new Set(raised.filter(l => l.po_row_id != null && l.po_row_id !== '').map(l => String(l.po_row_id)));
     const daily = srvLines.filter(l => _poLineFromDaily(l) && !(l.po_row_id != null && owned.has(String(l.po_row_id))))
-      .map(l => JSON.parse(JSON.stringify(l)));
+      .map(l => localById.has(String(l.id)) ? _poMergeLine(local.id, localById.get(String(l.id)), l)
+                                            : JSON.parse(JSON.stringify(l)));
     const next = raised.concat(daily);
     if (JSON.stringify(next) !== JSON.stringify(local.lines || [])) {
       local.lines = next; n++;
@@ -12053,6 +12179,134 @@ function _poAdoptServerOrders(orders) {
     projects.forEach(id => { if (typeof renderProjectPOs === 'function') renderProjectPOs(id); });
   }
   return n;
+}
+
+/**
+ * The server's copy of a delivery, but with the keys this tab changed and has
+ * not had stored yet kept as typed here — and the tax with them, which follows
+ * the quantity, unit cost and percentage it was worked out from.
+ */
+function _poMergeLine(poId, local, srv) {
+  const out = JSON.parse(JSON.stringify(srv));
+  const money = ['qty', 'unit_cost', 'tax_pct'].some(k => _poLineEditPending(poId, local.id, k));
+  ['invoice_num', 'date', 'qty', 'unit_cost', 'tax_pct', 'tax', 'employee'].forEach(k => {
+    if (_poLineEditPending(poId, local.id, k) || (k === 'tax' && money)) {
+      if (local[k] === undefined) delete out[k]; else out[k] = local[k];
+    }
+  });
+  return out;
+}
+
+/**
+ * Take on what a save stored, from the orders it answered with — the ones
+ * that came out different from what was sent: merged with somebody else's
+ * work, settled back to stored values this tab had not changed, or re-derived
+ * from the job rows. Anything this tab changed since the save left stays as it
+ * is here, as does a delivery added or deleted here since.
+ *
+ * `sentLinks`: order id → (line id → the link the save carried).
+ */
+function _poAdoptSaved(orders, sentLinks) {
+  if (!Array.isArray(orders) || !orders.length || !Array.isArray(purchaseOrders)) return 0;
+  let n = 0;
+  const projects = new Set();
+  orders.forEach(srv => {
+    if (!srv || !srv.id || _poDeletedOrders.has(String(srv.id))) return;
+    const id = String(srv.id);
+    const local = purchaseOrders.find(p => p && String(p.id) === id);
+    if (!local) {
+      const copy = JSON.parse(JSON.stringify(srv));
+      _migratePOs([copy]);
+      purchaseOrders.push(copy);
+      n++;
+      if (copy.project_id) projects.add(copy.project_id);
+      return;
+    }
+    const before = JSON.stringify(local);
+    const pending = _poEditedFields[id];
+    Object.keys(srv).forEach(k => {
+      if (k === 'lines' || k.charAt(0) === '_') return;
+      if (pending && (pending.has(k)
+          || (pending.has('status') && (k === 'status_changed_at' || k === 'status_changed_by')))) return;
+      local[k] = JSON.parse(JSON.stringify(srv[k]));
+    });
+    const sent = sentLinks.get(id) || new Map();
+    const gone = _poDeletedLines[id];
+    const srvById = new Map((Array.isArray(srv.lines) ? srv.lines : [])
+      .filter(l => l && l.id != null).map(l => [String(l.id), l]));
+    const out = [];
+    (local.lines || []).forEach(l => {
+      if (!l || l.id == null) { out.push(l); return; }
+      const lid = String(l.id);
+      const s = srvById.get(lid);
+      if (!s) {
+        // Not stored: the server dropped it (a Daily Tracking delivery whose
+        // row moved on) — unless it is newer than the save.
+        if (!sent.has(lid) || _poLinePending(id, lid)) out.push(l);
+        return;
+      }
+      srvById.delete(lid);
+      const merged = _poMergeLine(id, l, s);
+      // A link minted here while the save was out is this tab's row; the next
+      // save hands it to the server, which keeps it or retires it.
+      if (sent.has(lid) && String(l.po_row_id || '') !== String(sent.get(lid) || '')) merged.po_row_id = l.po_row_id;
+      out.push(merged);
+    });
+    srvById.forEach((s, lid) => {
+      if (gone && gone.has(lid)) return;
+      out.push(JSON.parse(JSON.stringify(s)));
+    });
+    local.lines = out;
+    _migratePOs([local]);
+    if (JSON.stringify(local) !== before) {
+      n++;
+      if (local.project_id) projects.add(local.project_id);
+      _poRowsFollowOrder(local);
+    }
+  });
+  if (n) {
+    const el = document.activeElement;
+    const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+    if (activeTab === 'po' && !typing) renderPOTab();
+    projects.forEach(pid => { if (typeof renderProjectPOs === 'function') renderProjectPOs(pid); });
+  }
+  return n;
+}
+
+/**
+ * Bring this page's copy of the job rows an order raised up to the order as
+ * stored — on screen only; the server holds them already. Without it a row
+ * kept the figures this page loaded, and editing anything else on it in Daily
+ * Tracking sends the row whole, old figures and all.
+ */
+function _poRowsFollowOrder(po) {
+  if (!po || !po.project_id) return;
+  const proj = getProj(po.project_id);
+  if (!proj || !Array.isArray(proj.dailyRows)) return;
+  let n = 0;
+  (po.lines || []).forEach(line => {
+    if (!line || !line.po_row_id || _poLineFromDaily(line)) return;
+    const r = proj.dailyRows.find(x => String(x.id) === String(line.po_row_id));
+    if (!r) return;
+    const want = {
+      date:            line.date || r.date,
+      employee:        line.employee || '',
+      units_purchased: line.qty || '',
+      unit_cost:       line.unit_cost ? String(_lineUnitCostWithTax(line)) : '',
+      material_cost:   String(_lineAmt(line) + _lineTax(line)),
+      po_num:          po.po_number || '',
+      material:        po.title || '',
+      supplier:        po.supplier || '',
+    };
+    Object.keys(want).forEach(k => {
+      if (String(r[k] == null ? '' : r[k]) !== String(want[k] == null ? '' : want[k])) { r[k] = want[k]; n++; }
+    });
+  });
+  if (n) {
+    _aggCacheRowCount = -1;
+    _projSubAggCacheRowCount = -1;
+    renderDailyTable(po.project_id);
+  }
 }
 
 /** A daily-rows response, read for the orders its write changed. Never throws. */
@@ -12758,6 +13012,7 @@ function _handlePOEvent(e) {
     // No-op commit (e.g. focus+blur of the employee combobox) — skip redundant work.
     if (line[lineField] === el.value) return;
     line[lineField] = el.value;
+    _poNoteLineEdit(poId, lineId, lineField);
     // Live update line amount/tax/total cells
     if (['qty','unit_cost','tax_pct'].includes(lineField)) {
       _recalcLineTax(line);   // tax % is applied on top of the line amount
@@ -24709,10 +24964,22 @@ const _bootReady = (async () => {
   }
 
   async function _pollPurchaseOrders() {
+    // A save that did not land goes again first, and while one is out — or
+    // this tab has edits it has not stored — the list here is newer than
+    // anything a read could bring. Adopting it would put the stored values
+    // back on screen over them, and they would then be sent as this tab's.
+    if (_poSaveFailed && !_poSaving) savePurchaseOrders();
+    if (_poSaving || _poSaveFailed) return;
+    if (Object.keys(_poEditedFields).length || Object.keys(_poEditedLines).length
+        || Object.keys(_poDeletedLines).length || _poDeletedOrders.size) return;
+    // ...and a read answered before a save that has since landed is older
+    // than what that save stored.
+    const epoch = _poSaveEpoch;
     const r = await fetch(`${API_BASE}/purchase-orders?division=kiewit`, {
       headers: { 'Authorization': `Bearer ${fctToken}` }
     });
     if (!r.ok) return;
+    if (_poSaving || _poSaveEpoch !== epoch) return;
     const data = await r.json();
     const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
     _poLoadOk = true;
@@ -24722,6 +24989,7 @@ const _bootReady = (async () => {
     _migratePOs(incoming);
     if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) return;
     if (_isEditing()) return; // don't overwrite pending edits
+    if (_poSaving || _poSaveEpoch !== epoch) return;
     // The version is adopted HERE, with the list it belongs to. Taking it
     // before the bail above left this tab believing it held the newest list
     // while still showing the old one, so its next save skipped the merge that

@@ -167,6 +167,16 @@ function lineHasCost(line) {
 const DAILY_SOURCE = 'daily';
 
 /** Was this delivery line recorded from a Daily Tracking row? */
+// A delivery line's own figures — what a page types into it. po_row_id is the
+// link to its job row and has rules of its own; a Daily Tracking line's codes
+// come from its row.
+const LINE_KEYS = ['invoice_num', 'date', 'qty', 'unit_cost', 'tax_pct', 'tax', 'employee'];
+// The ones a job row carries. The invoice # is the order's alone.
+const LINE_ROW_KEYS = ['date', 'qty', 'unit_cost', 'tax_pct', 'tax', 'employee'];
+// The ones a line's money is made of. Tax follows the other three wherever a
+// percentage is set.
+const LINE_MONEY_KEYS = ['qty', 'unit_cost', 'tax_pct', 'tax'];
+
 function isDailyLine(line) {
   return Boolean(line && line.source === DAILY_SOURCE);
 }
@@ -267,15 +277,22 @@ function lineFiguresFromRow(row, line) {
  * cost / sub code, which is what the PO tab shows under it: the order's header
  * code is the order's own and can differ.
  */
-function applyRowToLine(line, row, daily) {
+function applyRowToLine(line, row, daily, keep) {
   if (!line || !row) return false;
+  // `keep`: the keys a page changed on this line in the save being stored. They
+  // stand; the row supplies the rest. Money moves as one — a quantity typed
+  // against the row's price is still that row's price — so any money key kept
+  // keeps all of it, and the save writes it to the row (writeDailyRows).
+  const kept = keep || new Set();
+  const keepMoney = LINE_MONEY_KEYS.some(k => kept.has(k));
   let changed = false;
   const set = (k, v) => {
+    if (kept.has(k)) return;
     const now = line[k] == null ? '' : String(line[k]);
     const to  = v == null ? '' : String(v);
     if (now !== to) { line[k] = v; changed = true; }
   };
-  const f = lineFiguresFromRow(row, line);
+  const f = keepMoney ? null : lineFiguresFromRow(row, line);
   if (f) {
     const m = rowMaterial(row);
     const sameQty = Math.abs(floatOrZero(line.qty) - floatOrZero(f.qty)) < 1e-9;
@@ -339,7 +356,12 @@ function raisedRowIdsOf(list) {
  * opts.aliases         order id → other numbers it answers to (a renumbered
  *                      order's rows still carry the old one until written)
  * opts.raisedRowIds    rows a line raised on an order outside `list` owns
- * opts.editedLineIds   lines purchasing edited: their figures stand
+ * opts.editedLineIds   lines a page edited, whole: all their figures stand
+ * opts.editedLineFields  the same per key — line id → Set of keys — for a page
+ *                      that says which it changed; the row supplies the rest.
+ *                      Wins over editedLineIds. A Map, or a function taking
+ *                      the order and returning one (the full-list save, where
+ *                      every order carries its own).
  */
 function deriveDailyLines(list, rows, opts) {
   opts = opts || {};
@@ -349,6 +371,14 @@ function deriveDailyLines(list, rows, opts) {
   const raised = raisedRowIdsOf(list);
   (opts.raisedRowIds || []).forEach(id => raised.add(String(id)));
   const edited = opts.editedLineIds || new Set();
+  const fieldsFor = po => typeof opts.editedLineFields === 'function'
+    ? opts.editedLineFields(po) : opts.editedLineFields;
+  const ALL = null;   // keep every key: the line is the page's, whole
+  const keepFor = (po, line) => {
+    const byLine = fieldsFor(po);
+    if (byLine) return byLine.get(String(line.id)) || new Set();
+    return edited.has(String(line.id)) ? ALL : new Set();
+  };
 
   const want = new Map();   // order id → rows it should carry
   for (const row of rows || []) {
@@ -384,8 +414,9 @@ function deriveDailyLines(list, rows, opts) {
         po.lines.push(line);
         changed.add(po.id);
       }
-      if (edited.has(String(line.id))) continue;
-      if (applyRowToLine(line, row, true)) changed.add(po.id);
+      const keep = keepFor(po, line);
+      if (keep === ALL) continue;
+      if (applyRowToLine(line, row, true, keep)) changed.add(po.id);
     }
   }
   return changed;
@@ -602,6 +633,105 @@ async function writeDailyRows(sql, { companyCode, division, po, editedLineIds, r
   return n;
 }
 
+/**
+ * Write to the job rows what a division tab's save changed on one order.
+ *
+ * The tabs used to do this themselves, PUTting each row whole from their own
+ * copy of the job — which nothing refreshes when purchasing or a row sync
+ * changes a row on the server. So approving an order on a tab, or retitling
+ * it, put back every linked row's quantity and cost as the tab had last read
+ * them; the row sync then carried those onto the order. A tab now only says
+ * what it changed, and this writes exactly that, from the order as stored:
+ *
+ *  - a delivery whose figures it changed: the row's figures, from the settled
+ *    line — the tab's keys and the stored rest. Created if absent, like
+ *    writeRow, and scoped like it to this job and division and never a payroll
+ *    row. A line emptied of quantity and cost leaves its row at zero, as the
+ *    tab's own write did.
+ *  - the order's title, supplier or number: those columns on every row the
+ *    order raised, and its codes only when the codes are what changed — a
+ *    supervisor's re-coding on the job stands otherwise. Only ever an UPDATE.
+ *  - a Daily Tracking delivery: writeDailyRows, as on a purchasing save.
+ *
+ * Never on an order whose job the tab just moved: the tab re-minted those rows
+ * from its own figures, and they are the job's now.
+ */
+async function writeTabRows(sql, { companyCode, division, po, headerEdits, lineEdits, rowsById }) {
+  if (!po || !po.project_id || !PO_JOB_DIVISIONS.includes(division)) return 0;
+  const h = headerEdits || new Set();
+  const codes  = h.has('cost_code') || h.has('sub_code');
+  const header = codes || h.has('title') || h.has('supplier') || h.has('po_number');
+  const figures = rowEditedLineIds(lineEdits);
+  const projectId = String(po.project_id);
+  let n = 0;
+  for (const line of (Array.isArray(po.lines) ? po.lines : [])) {
+    if (!line || !line.po_row_id || isDailyLine(line) || isInjectedRowId(line.po_row_id)) continue;
+    const rowId = String(line.po_row_id);
+    if (figures.has(String(line.id)) && lineHasCost(line)) {
+      const date = safeDate(line.date) || safeDate(po.date_created) || new Date().toISOString().slice(0, 10);
+      await sql`
+        INSERT INTO daily_tracking (
+          row_id, project_id, company_code, division,
+          date, field_type, employee, cost_code, sub_code,
+          material, supplier, po_num,
+          units_purchased, unit_cost, material_cost
+        ) VALUES (
+          ${rowId}, ${projectId}, ${companyCode}, ${division},
+          ${date}, 'Material', ${line.employee || null},
+          ${po.cost_code || null}, ${po.sub_code || null},
+          ${po.title || null}, ${po.supplier || null}, ${po.po_number || null},
+          ${floatOrZero(line.qty)}, ${lineUnitCostWithTax(line)}, ${lineAmt(line) + lineTax(line)}
+        )
+        ON CONFLICT (row_id) DO UPDATE SET
+          cost_code       = CASE WHEN ${codes} THEN EXCLUDED.cost_code ELSE daily_tracking.cost_code END,
+          sub_code        = CASE WHEN ${codes} THEN EXCLUDED.sub_code  ELSE daily_tracking.sub_code  END,
+          material        = EXCLUDED.material,
+          supplier        = EXCLUDED.supplier,
+          po_num          = EXCLUDED.po_num,
+          date            = EXCLUDED.date,
+          employee        = EXCLUDED.employee,
+          units_purchased = EXCLUDED.units_purchased,
+          unit_cost       = EXCLUDED.unit_cost,
+          material_cost   = EXCLUDED.material_cost,
+          updated_at      = NOW()
+        WHERE daily_tracking.company_code = ${companyCode}
+          AND daily_tracking.division   = ${division}
+          AND daily_tracking.project_id = ${projectId}
+          AND daily_tracking.timesheet_entry_id IS NULL
+      `;
+      n++;
+    } else if (figures.has(String(line.id))) {
+      await sql`
+        UPDATE daily_tracking SET
+          units_purchased = 0, unit_cost = 0, material_cost = 0,
+          date            = COALESCE(${safeDate(line.date)}::date, daily_tracking.date),
+          employee        = ${line.employee || null},
+          updated_at      = NOW()
+        WHERE company_code = ${companyCode} AND division = ${division}
+          AND project_id = ${projectId} AND row_id = ${rowId}
+          AND timesheet_entry_id IS NULL
+      `;
+      n++;
+    } else if (header) {
+      await sql`
+        UPDATE daily_tracking SET
+          material   = ${po.title || null},
+          supplier   = ${po.supplier || null},
+          po_num     = ${po.po_number || null},
+          cost_code  = CASE WHEN ${codes} THEN ${po.cost_code || null} ELSE cost_code END,
+          sub_code   = CASE WHEN ${codes} THEN ${po.sub_code || null}  ELSE sub_code  END,
+          updated_at = NOW()
+        WHERE company_code = ${companyCode} AND division = ${division}
+          AND project_id = ${projectId} AND row_id = ${rowId}
+          AND timesheet_entry_id IS NULL
+      `;
+      n++;
+    }
+  }
+  n += await writeDailyRows(sql, { companyCode, division, po, editedLineIds: [...figures], rowsById });
+  return n;
+}
+
 // ── Who raised an order, and when ───────────────────────────────────────────
 // created_at / created_by sit beside status_changed_at / status_changed_by and
 // are shown in the same place, under the order's status. The page that raises
@@ -732,16 +862,117 @@ const _headerText = v => (v == null ? '' : String(v));
  * No `stored` copy — the order is new — or no `edited` set — the page did not
  * say — leaves `po` as sent.
  */
-function settleHeaderFields(po, stored, edited) {
+function settleHeaderFields(po, stored, edited, keys) {
   if (!po || typeof po !== 'object' || !stored || !edited) return [];
+  const scope = keys || HEADER_KEYS;
   const kept = [];
   const keep = k => {
     if (_headerText(po[k]) === _headerText(stored[k])) return;
     if (stored[k] === undefined) delete po[k]; else po[k] = stored[k];
     kept.push(k);
   };
-  for (const k of HEADER_KEYS) if (!edited.has(k)) keep(k);
-  if (!edited.has('status')) STATUS_STAMP_KEYS.forEach(keep);
+  for (const k of scope) if (!edited.has(k)) keep(k);
+  if (scope.includes('status') && !edited.has('status')) STATUS_STAMP_KEYS.forEach(keep);
+  return kept;
+}
+
+// The order's fields no job row carries. Safe to settle again at the moment
+// of the write, after the rows were reconciled against the earlier read —
+// the job, codes, number, title, supplier and date all reach the rows.
+const ROWLESS_HEADER_KEYS = ['status', 'notes'];
+
+// ── A delivery's own figures: only what the page changed ────────────────────
+//
+// The same staleness, one level down. A page's copy of a delivery is as old as
+// its last refresh, and storing it whole put back a quantity purchasing had
+// corrected, a unit cost a supervisor re-figured on the job's own row, an
+// invoice # somebody else typed. Worse, the purchasing save then wrote those
+// figures to the job's cost row.
+//
+// Per KEY, not per line: typing the invoice # on a stale line must not carry
+// that line's old quantity with it. A page that says which keys of which lines
+// it changed — `editedLineFields` — has only those taken; every other key of a
+// line the stored order also has keeps its stored value. A line the stored
+// order does not have is new and comes as sent. A page that says nothing is
+// stored whole, as it always was.
+
+/** `{ lineId: [key, ...] }` as a Map of id → Set, or null when the request sent none. */
+function editedLineFieldMap(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const out = new Map();
+  for (const [id, keys] of Object.entries(v).slice(0, 2000)) {
+    if (Array.isArray(keys)) out.set(String(id), new Set(keys.slice(0, 20).map(String)));
+  }
+  return out;
+}
+
+/** The full-list form, `{ orderId: { lineId: [key, ...] } }`, or null. */
+function editedLineFieldsByOrder(v) {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const out = new Map();
+  for (const [id, lines] of Object.entries(v).slice(0, 5000)) {
+    const m = editedLineFieldMap(lines);
+    if (m) out.set(String(id), m);
+  }
+  return out;
+}
+
+/** The lines whose edits reach their job row — anything but the invoice # alone. */
+function rowEditedLineIds(edits) {
+  const out = new Set();
+  (edits || new Map()).forEach((keys, id) => {
+    if (LINE_ROW_KEYS.some(k => keys.has(k))) out.add(String(id));
+  });
+  return out;
+}
+
+/** A percentage tax re-taken on the line's amount, as the pages do it (recalcLineTax). */
+function recalcLineTax(line) {
+  if (!line || line.tax_pct == null) return;
+  const pct = safeFloat(line.tax_pct);
+  const t = pct === null ? 0 : lineAmt(line) * pct / 100;
+  if (Math.abs(floatOrZero(line.tax) - t) >= 1e-9) line.tax = t ? String(t) : '';
+}
+
+const _NO_KEYS = new Set();
+
+/**
+ * Put back the stored value of every key `edits` does not name, on every line
+ * of `po` that `stored` also has. Lines are replaced, never mutated — the
+ * request's objects may be shared. Returns the ids of the lines it changed.
+ *
+ * Tax is not a key anyone types: it follows qty × unit cost × tax %. Where
+ * those came from different copies it is worked out again from the result,
+ * and a legacy flat dollar tax (no tax_pct at all) is kept like any figure.
+ *
+ * opts.raisedOnly leaves Daily Tracking lines alone — for a settle made after
+ * they were derived from their rows, which are newer than any stored copy.
+ */
+function settleLineFigures(po, stored, edits, opts) {
+  if (!po || !stored || !edits || !Array.isArray(po.lines) || !Array.isArray(stored.lines)) return [];
+  const before = new Map(stored.lines.filter(l => l && l.id != null).map(l => [String(l.id), l]));
+  const kept = [];
+  po.lines = po.lines.map(l => {
+    if (!l || l.id == null) return l;
+    const was = before.get(String(l.id));
+    if (!was || isDailyLine(was) !== isDailyLine(l)) return l;
+    if (opts && opts.raisedOnly && isDailyLine(l)) return l;
+    const mine = edits.get(String(l.id)) || _NO_KEYS;
+    let out = null;
+    const take = k => {
+      if (mine.has(k) || _headerText(l[k]) === _headerText(was[k])) return;
+      out = out || { ...l };
+      if (was[k] === undefined) delete out[k]; else out[k] = was[k];
+    };
+    LINE_KEYS.forEach(k => { if (k !== 'tax') take(k); });
+    if (!mine.has('tax')) {
+      if ((out || l).tax_pct == null) take('tax');
+      else if (out) recalcLineTax(out);
+    }
+    if (!out) return l;
+    kept.push(String(l.id));
+    return out;
+  });
   return kept;
 }
 
@@ -941,7 +1172,7 @@ async function deletePORows(sql, companyCode, rowIds) {
  * re-tied order clean up after itself: when the project or the division moves,
  * every row the old project carried is removed before the new ones are written.
  */
-async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivision, priorCopies }) {
+async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivision, priorCopies, figureLineIds }) {
   const lines = Array.isArray(po.lines) ? po.lines : [];
   // Only turf, paving and kiewit keep a job ledger a purchase order can charge.
   // An order filed anywhere else carries no job: the general list by design,
@@ -1088,7 +1319,7 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
    * is what makes that safe to act on: a row the WHERE excludes comes back
    * empty instead of silently doing nothing.
    */
-  async function writeRow(rowId, line) {
+  async function writeRow(rowId, line, withFigures) {
     const cost = lineAmt(line) + lineTax(line);
     const date = safeDate(line.date) || safeDate(po.date_created) || new Date().toISOString().slice(0, 10);
     const out = await sql`
@@ -1107,16 +1338,16 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
       ON CONFLICT (row_id) DO UPDATE SET
         project_id      = EXCLUDED.project_id,
         division        = EXCLUDED.division,
-        date            = EXCLUDED.date,
-        employee        = EXCLUDED.employee,
         cost_code       = CASE WHEN ${codesChanged} THEN EXCLUDED.cost_code ELSE daily_tracking.cost_code END,
         sub_code        = CASE WHEN ${codesChanged} THEN EXCLUDED.sub_code  ELSE daily_tracking.sub_code  END,
         material        = EXCLUDED.material,
         supplier        = EXCLUDED.supplier,
         po_num          = EXCLUDED.po_num,
-        units_purchased = EXCLUDED.units_purchased,
-        unit_cost       = EXCLUDED.unit_cost,
-        material_cost   = EXCLUDED.material_cost,
+        date            = CASE WHEN ${withFigures} THEN EXCLUDED.date            ELSE daily_tracking.date            END,
+        employee        = CASE WHEN ${withFigures} THEN EXCLUDED.employee        ELSE daily_tracking.employee        END,
+        units_purchased = CASE WHEN ${withFigures} THEN EXCLUDED.units_purchased ELSE daily_tracking.units_purchased END,
+        unit_cost       = CASE WHEN ${withFigures} THEN EXCLUDED.unit_cost       ELSE daily_tracking.unit_cost       END,
+        material_cost   = CASE WHEN ${withFigures} THEN EXCLUDED.material_cost   ELSE daily_tracking.material_cost   END,
         updated_at      = NOW()
       WHERE daily_tracking.company_code = ${companyCode}
         AND daily_tracking.division   = ${division}
@@ -1147,15 +1378,22 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
     // point at one. Only payroll creates and removes those.
     if (linked && isInjectedRowId(linked)) continue;
 
+    // The figures a row already carries are rewritten only by a save that
+    // changed them. A purchasing save that touched something else — the status,
+    // the title, another delivery — used to rewrite every row's quantity and
+    // cost from its own copy, putting back whatever a supervisor had re-figured
+    // on the job since that copy was read. `figureLineIds` is null for a page
+    // that does not say which deliveries it changed: as before, all of them.
+    const withFigures = !figureLineIds || startAfresh || figureLineIds.has(String(line.id));
     let rowId = linked || crypto.randomUUID();
-    let ok = await writeRow(rowId, line);
+    let ok = await writeRow(rowId, line, withFigures);
     if (!ok && linked) {
       // The id named a row this caller has no claim to — another tenant's, or
       // one payroll owns. Give the delivery a row of its own rather than
       // dropping it: a fresh uuid cannot collide, so this write always lands,
       // and the job gets charged exactly once either way.
       rowId = crypto.randomUUID();
-      ok = await writeRow(rowId, line);
+      ok = await writeRow(rowId, line, true);
     }
     if (!ok) continue;
 
@@ -1212,8 +1450,13 @@ function unseenLines(po, priorCopies, deletedLineIds) {
  * purchasing re-tied it to a different one. The order is removed from that list
  * in the same call, so it can never exist in two divisions at once.
  */
-async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, editedLineIds, editedFields, username }) {
+async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, editedLineIds, editedFields, editedLineFields, username }) {
   const prevDivision = from && from !== division ? from : null;
+  // What the page says it changed: the order's own fields, and — per key — its
+  // deliveries'. Null where it did not say (a page from before), which keeps
+  // that part stored whole, as it always was.
+  const headerEdits = editedFieldSet(editedFields);
+  const lineEdits   = editedLineFieldMap(editedLineFields);
 
   // Every list this order might already be stored in. The target's copy matters
   // as much as the source's after a move that half landed, when the order is in
@@ -1248,7 +1491,10 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
   // wrote — and the page, whose edits that save confirmed, no longer names the
   // job or number it changed; settling against the old list's copy would
   // quietly move the order back.
-  settleHeaderFields(po, targetCopy || prevPO, editedFieldSet(editedFields));
+  settleHeaderFields(po, targetCopy || prevPO, headerEdits);
+  // ...and every delivery's, key by key, for the same reason: the rows below
+  // are written from these figures. See settleLineFigures.
+  if (lineEdits) settleLineFigures(po, targetCopy || prevPO, lineEdits);
 
   // syncPOCostRows makes the same call; made here first because the Daily
   // Tracking lines below are derived against the job the order is saved with.
@@ -1280,6 +1526,7 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
     deriveDailyLines([po], rows, {
       aliases,
       editedLineIds: edited,
+      editedLineFields: lineEdits,
       raisedRowIds: raisedRowIdsOf(targetList.filter(p => p && p.id !== po.id)),
     });
   } catch (err) {
@@ -1294,9 +1541,12 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
   // shared, so the links it mints land on the order itself.
   const raisedOnly = o => (o ? { ...o, lines: (Array.isArray(o.lines) ? o.lines : []).filter(l => !isDailyLine(l)) } : o);
   const raisedView = raisedOnly(po);
+  // The deliveries whose figures this save changed — the only rows whose
+  // quantity and cost it rewrites (null: a page that did not say, so all).
+  const figureLineIds = lineEdits ? rowEditedLineIds(lineEdits) : null;
   const rows = await syncPOCostRows(sql, {
     companyCode, division, po: raisedView, prevPO: raisedOnly(prevPO), prevDivision,
-    priorCopies: priorCopies.map(raisedOnly),
+    priorCopies: priorCopies.map(raisedOnly), figureLineIds,
   });
   po.project_id = raisedView.project_id;
 
@@ -1328,6 +1578,17 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
     // Stored since the read at the top — the same new order's first save, from
     // another request, landing first. The stamp it was stored with stands.
     if (list[idx].created_at) settleCreationStamp(po, list[idx]);
+
+    // What this save did not change, settled again against the list actually
+    // being written over. A supervisor re-figuring a delivery's row while this
+    // call was reconciling moves the stored line (syncRowsToOrders); the row
+    // above was not rewritten for a delivery this save did not touch, so taking
+    // the stored figures here keeps order and row together. The order's own
+    // fields only where no row carries them — the rest were already written to
+    // the rows from the earlier read, and must match them.
+    // Not a Daily Tracking line: it was derived from its row a moment ago.
+    if (lineEdits) settleLineFigures(po, list[idx], lineEdits, { raisedOnly: true });
+    if (headerEdits) settleHeaderFields(po, list[idx], headerEdits, ROWLESS_HEADER_KEYS);
 
     // Idempotent across retries: unseenLines skips any id already in po.lines.
     // A Daily Tracking line the copies read at the top already carried was
@@ -1396,7 +1657,8 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
 
   // What purchasing changed on Daily Tracking deliveries reaches their rows.
   try {
-    await writeDailyRows(sql, { companyCode, division, po, editedLineIds: [...edited], rowsById: dailyRowsById });
+    await writeDailyRows(sql, { companyCode, division, po, rowsById: dailyRowsById,
+      editedLineIds: lineEdits ? [...rowEditedLineIds(lineEdits)] : [...edited] });
   } catch (err) {
     console.error('[po-sync] could not write Daily Tracking deliveries to their rows:', err.message);
   }
@@ -1553,6 +1815,13 @@ module.exports = {
   editedFieldSet,
   editedFieldsByOrder,
   settleHeaderFields,
+  LINE_KEYS,
+  LINE_ROW_KEYS,
+  editedLineFieldMap,
+  editedLineFieldsByOrder,
+  rowEditedLineIds,
+  settleLineFigures,
+  writeTabRows,
   unseenLines,
   findPOInDivision,
   resolvePODocScope,
