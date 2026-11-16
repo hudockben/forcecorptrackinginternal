@@ -728,6 +728,26 @@ async function writeTabRows(sql, { companyCode, division, po, headerEdits, lineE
       n++;
     }
   }
+  // A renumbered order's Daily Tracking deliveries carry its number on their
+  // rows, which is how they are matched back to it. Renumbered here by id,
+  // whatever the save managed to read of them: left to writeDailyRows alone,
+  // a failed read left the rows on the old number, and the next save — no
+  // longer seeing two numbers — dropped those deliveries from the order.
+  if (h.has('po_number')) {
+    const dailyRowIds = (Array.isArray(po.lines) ? po.lines : [])
+      .filter(l => l && isDailyLine(l) && l.po_row_id && !isInjectedRowId(l.po_row_id))
+      .map(l => String(l.po_row_id));
+    if (dailyRowIds.length) {
+      await sql`
+        UPDATE daily_tracking SET po_num = ${po.po_number || null}, updated_at = NOW()
+        WHERE company_code = ${companyCode} AND division = ${division}
+          AND project_id = ${projectId} AND row_id = ANY(${dailyRowIds})
+          AND timesheet_entry_id IS NULL
+          AND COALESCE(po_num, '') <> ${po.po_number || ''}
+      `;
+      n++;
+    }
+  }
   n += await writeDailyRows(sql, { companyCode, division, po, editedLineIds: [...figures], rowsById });
   return n;
 }
@@ -937,6 +957,25 @@ function recalcLineTax(line) {
 const _NO_KEYS = new Set();
 
 /**
+ * Did the page convert this line's legacy tax? A line stored before tax was a
+ * percentage has a flat dollar tax and no tax_pct. The pages convert it on
+ * load (migratePO / _migratePOs) without calling it an edit, so a percentage
+ * the page sends that reproduces the stored tax on the stored amount — the
+ * conversion's own test — is the page's, kept, and the tax re-taken on the
+ * amount. Settling it away kept the old tax dollars after a quantity change
+ * that the screen had taxed in full.
+ */
+function legacyTaxConverted(stored, pctText) {
+  if (!stored || stored.tax_pct != null || pctText == null) return false;
+  const t = floatOrZero(stored.tax);
+  if (t <= 0) return _headerText(pctText) === '';
+  const amt = lineAmt(stored);
+  const pct = safeFloat(pctText);
+  if (amt <= 0 || pct === null) return false;
+  return Math.abs(amt * pct / 100 - t) < 0.005;
+}
+
+/**
  * Put back the stored value of every key `edits` does not name, on every line
  * of `po` that `stored` also has. Lines are replaced, never mutated — the
  * request's objects may be shared. Returns the ids of the lines it changed.
@@ -947,6 +986,7 @@ const _NO_KEYS = new Set();
  *
  * opts.raisedOnly leaves Daily Tracking lines alone — for a settle made after
  * they were derived from their rows, which are newer than any stored copy.
+ * opts.skip: line ids to leave exactly as they are.
  */
 function settleLineFigures(po, stored, edits, opts) {
   if (!po || !stored || !edits || !Array.isArray(po.lines) || !Array.isArray(stored.lines)) return [];
@@ -957,10 +997,13 @@ function settleLineFigures(po, stored, edits, opts) {
     const was = before.get(String(l.id));
     if (!was || isDailyLine(was) !== isDailyLine(l)) return l;
     if (opts && opts.raisedOnly && isDailyLine(l)) return l;
+    if (opts && opts.skip && opts.skip.has(String(l.id))) return l;
     const mine = edits.get(String(l.id)) || _NO_KEYS;
+    const converted = legacyTaxConverted(was, l.tax_pct);
     let out = null;
     const take = k => {
-      if (mine.has(k) || _headerText(l[k]) === _headerText(was[k])) return;
+      if (mine.has(k) || (k === 'tax_pct' && converted)) return;
+      if (_headerText(l[k]) === _headerText(was[k])) return;
       out = out || { ...l };
       if (was[k] === undefined) delete out[k]; else out[k] = was[k];
     };
@@ -1300,7 +1343,7 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
     for (const line of lines) {
       if (line && line.po_row_id && !ownsRow(line.po_row_id)) line.po_row_id = null;
     }
-    return { staleIds, written: 0, writtenIds: [], createdIds: [] };
+    return { staleIds, written: 0, writtenIds: [], createdIds: [], figuresWritten: new Set() };
   }
 
   /**
@@ -1365,6 +1408,9 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
   // cost row the order still points at — which is what a routine second save
   // was doing to the job every time.
   const createdIds = [];
+  // Deliveries whose row this call wrote the figures of — edited, new, or the
+  // whole order on a move. The order has to be stored with exactly those.
+  const figuresWritten = new Set();
   for (const line of lines) {
     if (!line || !lineHasCost(line)) continue;
 
@@ -1400,10 +1446,11 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
     line.po_row_id = rowId;
     writtenIds.push(rowId);
     if (rowId !== linked) createdIds.push(rowId);
+    if (withFigures || rowId !== linked) figuresWritten.add(String(line.id));
     written++;
   }
 
-  return { staleIds, written, writtenIds, createdIds };
+  return { staleIds, written, writtenIds, createdIds, figuresWritten };
 }
 
 /**
@@ -1586,8 +1633,11 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
     // the stored figures here keeps order and row together. The order's own
     // fields only where no row carries them — the rest were already written to
     // the rows from the earlier read, and must match them.
-    // Not a Daily Tracking line: it was derived from its row a moment ago.
-    if (lineEdits) settleLineFigures(po, list[idx], lineEdits, { raisedOnly: true });
+    // Not a Daily Tracking line: it was derived from its row a moment ago. Nor
+    // a delivery whose row this call just wrote the figures of: the order has
+    // to say what the row says, and taking a figure somebody changed since
+    // would leave the job charged one amount and the order showing another.
+    if (lineEdits) settleLineFigures(po, list[idx], lineEdits, { raisedOnly: true, skip: rows.figuresWritten });
     if (headerEdits) settleHeaderFields(po, list[idx], headerEdits, ROWLESS_HEADER_KEYS);
 
     // Idempotent across retries: unseenLines skips any id already in po.lines.

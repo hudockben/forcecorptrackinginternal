@@ -218,7 +218,7 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
     ctx.window = { addEventListener() {} };
     // What this tab has changed and not yet stored — the block below keeps
     // those keys over the server's when it takes orders on.
-    evalSlice(sliceSource(src, 'const _poEditedFields = {};', '// Whether a read of the purchase orders has worked.',
+    evalSlice(sliceSource(src, 'const _poEditedFields = Object.create(null);', '// Whether a read of the purchase orders has worked.',
       `the PO edit state in ${page}`), ctx, `the PO edit state from ${page}`);
     LIFTED.forEach(name => {
       const fn = requireFn(src, name, page);

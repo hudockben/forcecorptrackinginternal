@@ -1154,7 +1154,7 @@ const _unsaved = new Set();
 // Without this the server cannot tell a delivery the user DELETED from one
 // somebody else added while this page held a stale copy — and it has to keep
 // the second kind, so it has to be told about the first.
-const _deletedLines = {};
+const _deletedLines = Object.create(null);
 
 // Deliveries this page has EDITED, per order, until a save confirms it. A line
 // recorded from a Daily Tracking row takes its figures from that row, so the
@@ -1162,7 +1162,7 @@ const _deletedLines = {};
 // for it — and writes them to the row — when told the user changed them here.
 // A line merely re-sent from a copy a minute old must not put old figures back
 // on the job.
-const _editedLines = {};
+const _editedLines = Object.create(null);
 
 // The order's own fields this page has CHANGED, per order, until a save
 // confirms them — title, supplier, status, code, job, number, date, notes. The
@@ -1170,7 +1170,7 @@ const _editedLines = {};
 // every other field. Without it every save sent the whole order as this page
 // last saw it: approving an order on a screen that had loaded it before
 // somebody filled in its title and supplier stored it approved and blank.
-const _editedFields = {};
+const _editedFields = Object.create(null);
 
 // Both of the above map what was changed to the number of the change, rather
 // than just listing it, so a save forgets only the edits it actually carried. A
@@ -1253,7 +1253,8 @@ function editedLinesFor(poId, from) {
 /** The same, per delivery: `{ lineId: [key, ...] }`. */
 function editedLineFieldsFor(poId, from) {
   const keys = from ? [...from.keys()] : (_editedLines[poId] ? [..._editedLines[poId].keys()] : []);
-  const out = {};
+  // No prototype: a delivery id named like one of its keys must stay a key.
+  const out = Object.create(null);
   keys.forEach(k => { const e = lineEditSplit(k); (out[e.lineId] || (out[e.lineId] = [])).push(e.key); });
   return out;
 }

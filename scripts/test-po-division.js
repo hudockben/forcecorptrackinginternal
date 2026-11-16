@@ -22,6 +22,11 @@
  *  - syncPOCostRows: which deliveries become job cost rows, which do not, and
  *    what happens to the rows when an order is re-tied or a line emptied.
  *  - removePO: the order, its deliveries and its cost rows all go.
+ *  - editedLineFields: a save takes only the delivery figures its page
+ *    changed (settleLineFigures, at the top and again at the write), rewrites
+ *    a job row's figures only for those deliveries, and a page that does not
+ *    say is stored whole as before. writeTabRows: what a division tab's save
+ *    writes to its job rows.
  *  - resolvePODocScope: a receipt's carve-out needs a real order id.
  *
  * No DB and no server — the neon driver is a small in-memory store.
@@ -69,6 +74,23 @@ function makeStore() {
   // Set to a function to interfere with a write once — used to simulate
   // another writer landing between this one's read and its update.
   let interfere = null;
+  // Every job row whose figures a statement actually wrote, in order. A row
+  // can come out of a save with the same numbers whether or not the save
+  // rewrote them; this tells the two apart.
+  const figureWrites = [];
+  const FIGURE_COLS = ['date', 'employee', 'units_purchased', 'unit_cost', 'material_cost'];
+  // The row an `UPDATE daily_tracking ... WHERE company_code = .. AND division
+  // = .. AND project_id = .. AND row_id = .. AND timesheet_entry_id IS NULL`
+  // reaches, or null — read off the statement's own WHERE.
+  function scopedRow(q, vals) {
+    const w = q.match(/WHERE company_code = \$(\d+) AND division = \$(\d+) AND project_id = \$(\d+) AND row_id = \$(\d+) AND timesheet_entry_id IS NULL$/);
+    if (!w) throw new Error('daily_tracking UPDATE with a scope this store does not know: ' + q);
+    const p = n => vals[Number(n) - 1];
+    const r = daily.get(p(w[4]));
+    if (!r || r.company_code !== p(w[1]) || r.division !== p(w[2])
+        || r.project_id !== p(w[3]) || r.timesheet_entry_id) return null;
+    return r;
+  }
 
   function sql(strings, ...vals) {
     let q = '';
@@ -139,24 +161,52 @@ function makeStore() {
       return Promise.resolve(gone);
     }
     if (/^INSERT INTO daily_tracking/.test(q)) {
-      // 'Material' is a literal in the INSERT, so it is NOT one of the
+      // Two statements share this shape: syncPOCostRows' writeRow and
+      // writeTabRows' upsert. The VALUES are the same; the conflict arms are
+      // not. 'Material' is a literal in the INSERT, so it is NOT one of the
       // parameters — the columns after date shift down by one.
       const [rowId, projectId, companyCode, division, date, employee,
              costCode, subCode, material, supplier, poNum,
-             qty, unitCost, cost, codesChanged] = vals;
+             qty, unitCost, cost] = vals;
+      const returning = /RETURNING row_id\s*$/.test(q);
       const existing = daily.get(rowId);
       if (existing) {
-        // The conflict arm: scoped to this company, never a payroll-injected
-        // row, and the codes only follow the order when the order changed them.
-        if (existing.company_code !== companyCode) return Promise.resolve([]);
-        if (existing.timesheet_entry_id) return Promise.resolve([]);
-        Object.assign(existing, {
+        // The conflict arm, read off the statement itself rather than off fixed
+        // parameter positions: each column is either taken outright
+        // (`col = EXCLUDED.col`), taken only when its CASE's parameter is true
+        // (`col = CASE WHEN $n THEN EXCLUDED.col ELSE daily_tracking.col END` —
+        // the codes on codesChanged, the figures on writeRow's withFigures), or
+        // not set at all. A column the arm leaves out keeps the row's value.
+        const arm = q.split('ON CONFLICT (row_id) DO UPDATE SET')[1];
+        if (!arm) throw new Error('INSERT INTO daily_tracking without the conflict arm this store knows: ' + q);
+        const scope = arm.match(/WHERE daily_tracking\.company_code = \$(\d+) AND daily_tracking\.division = \$(\d+) AND daily_tracking\.project_id = \$(\d+) AND daily_tracking\.timesheet_entry_id IS NULL/);
+        if (!scope) throw new Error('daily_tracking upsert with a conflict scope this store does not know: ' + q);
+        const p = n => vals[Number(n) - 1];
+        // The conflict arm's WHERE: this company, this division, this job, never
+        // a payroll-injected row. A row it excludes is neither updated nor
+        // inserted over — the conflict still happened — and RETURNING is empty.
+        if (existing.company_code !== p(scope[1]) || existing.division !== p(scope[2])
+            || existing.project_id !== p(scope[3]) || existing.timesheet_entry_id) {
+          return Promise.resolve([]);
+        }
+        const EXCLUDED = {
           project_id: projectId, division, date, employee,
-          material, supplier, po_num: poNum,
+          cost_code: costCode, sub_code: subCode, material, supplier, po_num: poNum,
           units_purchased: qty, unit_cost: unitCost, material_cost: cost,
-        });
-        if (codesChanged) { existing.cost_code = costCode; existing.sub_code = subCode; }
-        return Promise.resolve([{ row_id: rowId }]);
+        };
+        const takes = col => {
+          const when = arm.match(new RegExp(`\\b${col} = CASE WHEN \\$(\\d+) THEN EXCLUDED\\.${col} ELSE daily_tracking\\.${col} END`));
+          if (when) return Boolean(p(when[1]));
+          return new RegExp(`\\b${col} = EXCLUDED\\.${col}\\b`).test(arm);
+        };
+        let figures = false;
+        for (const col of Object.keys(EXCLUDED)) {
+          if (!takes(col)) continue;
+          existing[col] = EXCLUDED[col];
+          if (FIGURE_COLS.includes(col)) figures = true;
+        }
+        if (figures) figureWrites.push(rowId);
+        return Promise.resolve(returning ? [{ row_id: rowId }] : []);
       }
       daily.set(rowId, {
         row_id: rowId, project_id: projectId, company_code: companyCode, division,
@@ -165,7 +215,8 @@ function makeStore() {
         material, supplier, po_num: poNum,
         units_purchased: qty, unit_cost: unitCost, material_cost: cost,
       });
-      return Promise.resolve([{ row_id: rowId }]);
+      figureWrites.push(rowId);
+      return Promise.resolve(returning ? [{ row_id: rowId }] : []);
     }
     // ── daily_tracking, as the Daily Tracking derivation reads and writes it ──
     if (/^SELECT row_id, project_id, date, employee, cost_code, sub_code, po_num/.test(q)) {
@@ -179,13 +230,40 @@ function makeStore() {
       }
       return Promise.resolve(out);
     }
-    if (/^UPDATE daily_tracking SET units_purchased =/.test(q)) {
-      const [qty, unitCost, cost, date, employee, poNum, companyCode, division, projectId, rowId] = vals;
-      const r = daily.get(rowId);
-      if (r && r.company_code === companyCode && r.division === division
-          && r.project_id === projectId && !r.timesheet_entry_id) {
+    // writeTabRows: a delivery the tab emptied leaves its row at zero. Matched
+    // before writeDailyRows' figure write below, which opens the same way but
+    // binds real figures.
+    if (/^UPDATE daily_tracking SET units_purchased = 0, unit_cost = 0, material_cost = 0, date = COALESCE\(\$1::date, daily_tracking\.date\), employee = \$2,/.test(q)) {
+      const r = scopedRow(q, vals);
+      if (r) {
+        Object.assign(r, { units_purchased: 0, unit_cost: 0, material_cost: 0, employee: vals[1] });
+        if (vals[0]) r.date = vals[0];
+        figureWrites.push(r.row_id);
+      }
+      return Promise.resolve([]);
+    }
+    // writeDailyRows: purchasing's figures for a Daily Tracking delivery.
+    if (/^UPDATE daily_tracking SET units_purchased = \$1, unit_cost = \$2, material_cost = \$3,/.test(q)) {
+      const [qty, unitCost, cost, date, employee, poNum] = vals;
+      const r = scopedRow(q, vals);
+      if (r) {
         Object.assign(r, { units_purchased: qty, unit_cost: unitCost, material_cost: cost, employee, po_num: poNum });
         if (date) r.date = date;
+        figureWrites.push(r.row_id);
+      }
+      return Promise.resolve([]);
+    }
+    // writeTabRows: the order's title, supplier and number on a row it raised,
+    // and its codes only when the CASE's parameter says the codes changed.
+    if (/^UPDATE daily_tracking SET material = /.test(q)) {
+      const m = q.match(/^UPDATE daily_tracking SET material = \$(\d+), supplier = \$(\d+), po_num = \$(\d+), cost_code = CASE WHEN \$(\d+) THEN \$(\d+) ELSE cost_code END, sub_code = CASE WHEN \$(\d+) THEN \$(\d+) ELSE sub_code END, updated_at = NOW\(\) WHERE/);
+      if (!m) throw new Error('header UPDATE of daily_tracking this store does not know: ' + q);
+      const p = n => vals[Number(n) - 1];
+      const r = scopedRow(q, vals);
+      if (r) {
+        Object.assign(r, { material: p(m[1]), supplier: p(m[2]), po_num: p(m[3]) });
+        if (p(m[4])) r.cost_code = p(m[5]);
+        if (p(m[6])) r.sub_code  = p(m[7]);
       }
       return Promise.resolve([]);
     }
@@ -202,7 +280,7 @@ function makeStore() {
   }
 
   return {
-    sql, appData, poRows, deliveries, daily, log,
+    sql, appData, poRows, deliveries, daily, log, figureWrites,
     setBlob(key, list) { appData.set(key, { value: list, updatedAt: stamp() }); },
     getBlob(key) { const r = appData.get(key); return r ? r.value : null; },
     onNextWrite(f) { interfere = f; },
@@ -1674,6 +1752,540 @@ console.log('\n[endpoint guard — the full-list PUT stays shut]');
     assert('editedFieldsByOrder: per order, dropping what is not a list',
       by.get('a').has('title') && !by.has('b') && poSync.editedFieldsByOrder(['a']) === null
       && poSync.editedFieldsByOrder(null) === null);
+  }
+
+  // ══════════════════════════════════════════════════════════════════════
+  // A delivery's figures: only the keys a page changed
+  // ══════════════════════════════════════════════════════════════════════
+  // The same staleness one level down. Every screen's copy of a delivery is as
+  // old as its last refresh — and the refresh skips while a field has focus —
+  // so a save carrying the whole line put back a quantity another screen had
+  // corrected, and then wrote that stale figure onto the job's cost row over
+  // whatever the supervisor had re-figured there. A page now says which keys of
+  // which deliveries it changed (editedLineFields); every other key comes from
+  // the stored order, and a job row's figures are rewritten only for a delivery
+  // whose figures the save changed.
+  const editsOf = o => new Map(Object.entries(o || {}).map(([id, keys]) => [id, new Set(keys)]));
+  const near = (a, b) => Math.abs(Number(a) - Number(b)) < 0.001;
+
+  console.log('\n[a save takes only the delivery figures its page changed]');
+  {
+    st = makeStore();
+    const stored = () => st.getBlob(KEY('turf')).find(p => p.id === 'pf');
+    const storedLine = id => (stored().lines || []).find(l => l.id === id);
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', editedFields: [], editedLineFields: {},
+      po: makePO({ id: 'pf', po_number: 'PO-0042', project_id: 'job1', cost_code: '100', sub_code: 'A',
+                   lines: [{ id: 'L1', date: '2026-11-02', qty: '10', unit_cost: '4', employee: 'Sam' }] }) });
+    const rowId = storedLine('L1').po_row_id;
+    const row = () => st.daily.get(rowId);
+    assert('(a new order\'s delivery still gets its job row, figures and all)',
+      Boolean(row()) && row().units_purchased === 10 && near(row().material_cost, 40), JSON.stringify(row()));
+    assert('(the store reads writeRow\'s figures CASE off the statement)',
+      st.log.some(q => /date = CASE WHEN \$(\d+) THEN EXCLUDED\.date/.test(q)));
+
+    // Two screens hold the order as it is now. The first corrects the quantity.
+    const snap = JSON.stringify(stored());
+    const staleCopy = () => JSON.parse(snap);
+    const fix = staleCopy();
+    fix.lines[0].qty = '12';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: fix,
+      editedFields: [], editedLineFields: { L1: ['qty'] } });
+    assert('(the correction lands, on the order and on the job row)',
+      storedLine('L1').qty === '12' && row().units_purchased === 12 && near(row().material_cost, 48), JSON.stringify(row()));
+
+    // The second — still showing 10 — approves the order.
+    const approve = Object.assign(staleCopy(), { status: 'approved', status_changed_by: 'buyer' });
+    st.figureWrites.length = 0;
+    let res = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: approve,
+      editedFields: ['status'], editedLineFields: {} });
+    assert('approving from a stale screen keeps the quantity another screen corrected',
+      res.ok && storedLine('L1').qty === '12' && stored().status === 'approved', JSON.stringify(stored()));
+    assert('  and answers with it, for the page to take on',
+      res.purchaseOrder.lines.find(l => l.id === 'L1').qty === '12');
+    assert('  the job row still reads the corrected figures',
+      row().units_purchased === 12 && near(row().material_cost, 48), JSON.stringify(row()));
+    assert('  because the save never wrote the row\'s figures at all — it changed none',
+      !st.figureWrites.includes(rowId), JSON.stringify(st.figureWrites));
+    assert('  and the delivery keeps its one row', st.daily.size === 1 && storedLine('L1').po_row_id === rowId);
+
+    // Typing the invoice # on that same stale line.
+    const inv = staleCopy();
+    inv.lines[0].invoice_num = 'INV-7';
+    st.figureWrites.length = 0;
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: inv,
+      editedFields: [], editedLineFields: { L1: ['invoice_num'] } });
+    assert('an invoice # typed on a stale line is taken',
+      storedLine('L1').invoice_num === 'INV-7', JSON.stringify(storedLine('L1')));
+    assert('  without the stale quantity and cost riding along with it',
+      storedLine('L1').qty === '12' && storedLine('L1').unit_cost === '4', JSON.stringify(storedLine('L1')));
+    assert('  nor the stale status (the order\'s own fields settle the same way)', stored().status === 'approved');
+    assert('  and the invoice # is the order\'s alone: the job row is not written',
+      !st.figureWrites.includes(rowId) && row().units_purchased === 12, JSON.stringify(st.figureWrites));
+
+    // The supervisor re-figures the row on the job's own cost tab. Purchasing,
+    // still on its old copy, adds a note.
+    Object.assign(row(), { units_purchased: 11, unit_cost: 4, material_cost: 44, employee: 'Ana', date: '2026-11-05' });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf',
+      po: Object.assign(staleCopy(), { notes: 'call the yard' }), editedFields: ['notes'], editedLineFields: {} });
+    assert('a supervisor\'s re-figured job row survives an unrelated purchasing save',
+      row().units_purchased === 11 && near(row().material_cost, 44) && row().unit_cost === 4, JSON.stringify(row()));
+    assert('  with the date and receiver they put on it',
+      row().employee === 'Ana' && row().date === '2026-11-05', JSON.stringify(row()));
+    assert('  while the save itself landed', stored().notes === 'call the yard');
+    assert('  and still carried the order\'s own columns to the row',
+      row().material === 'Stone' && row().po_num === 'PO-0042', JSON.stringify(row()));
+
+    // The row sync that follows a row write brings the order to the row; then a
+    // purchasing save that DOES change the quantity writes it.
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: [rowId] });
+    const more = JSON.parse(JSON.stringify(stored()));
+    more.lines[0].qty = '13';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: more,
+      editedFields: [], editedLineFields: { L1: ['qty'] } });
+    assert('a save that changes a delivery\'s quantity still writes it to the row',
+      row().units_purchased === 13 && near(row().material_cost, 52), JSON.stringify(row()));
+    assert('  onto the date and receiver the row sync brought to the order',
+      row().employee === 'Ana' && row().date === '2026-11-05', JSON.stringify(row()));
+  }
+  {
+    // Two screens correct two different figures of one delivery. A percentage
+    // tax follows both.
+    st = makeStore();
+    const stored = () => st.getBlob(KEY('turf')).find(p => p.id === 'tx');
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', editedFields: [], editedLineFields: {},
+      po: makePO({ id: 'tx', project_id: 'job1', lines: [
+        { id: 'L1', date: '2026-11-02', qty: '10', unit_cost: '4', tax_pct: '6', tax: '2.4' }] }) });
+    const rowId = stored().lines[0].po_row_id;
+    const snap = JSON.stringify(stored());
+
+    // Screen X fixes the price; its page re-takes the tax as the user types.
+    const x = JSON.parse(snap);
+    Object.assign(x.lines[0], { unit_cost: '5', tax: '3' });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: x,
+      editedFields: [], editedLineFields: { L1: ['unit_cost'] } });
+    // Screen Y, loaded before that, doubles the quantity — its tax on the OLD price.
+    const y = JSON.parse(snap);
+    Object.assign(y.lines[0], { qty: '20', tax: '4.8' });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: y,
+      editedFields: [], editedLineFields: { L1: ['qty'] } });
+    const l = stored().lines[0];
+    assert('a quantity from one screen and a price from another both survive',
+      l.qty === '20' && l.unit_cost === '5', JSON.stringify(l));
+    assert('  and the tax is re-taken on the two together, not left on the old price',
+      near(l.tax, 6) && l.tax_pct === '6', JSON.stringify(l));
+    const r = st.daily.get(rowId);
+    assert('  the job row is the new quantity at the stored price, tax included',
+      r.units_purchased === 20 && near(r.material_cost, 106) && near(r.unit_cost, 5.3), JSON.stringify(r));
+  }
+  {
+    // A legacy flat-dollar tax (no tax_pct key at all) is a figure like any
+    // other: it is not re-taken, and a stale copy cannot change it.
+    st = makeStore();
+    st.setBlob(KEY('turf'), [makePO({ id: 'lg', project_id: 'job1',
+      lines: [{ id: 'L1', qty: '10', unit_cost: '10', tax: '3.21', po_row_id: null }] })]);
+    const copy = JSON.parse(JSON.stringify(st.getBlob(KEY('turf'))[0]));
+    Object.assign(copy.lines[0], { qty: '12', tax: '9.99' });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: copy,
+      editedFields: [], editedLineFields: { L1: ['qty'] } });
+    const l = st.getBlob(KEY('turf'))[0].lines[0];
+    assert('a legacy dollar tax keeps its stored figure when the page did not change it',
+      l.qty === '12' && l.tax === '3.21' && !('tax_pct' in l), JSON.stringify(l));
+    const r = st.daily.get(l.po_row_id);
+    assert('  and the row carries those dollars', Boolean(r) && near(r.material_cost, 123.21), JSON.stringify(r));
+  }
+
+  console.log('\n[a delivery figure that changed while the save was in flight]');
+  {
+    // The save reconciles the job rows from the list it read at the top, then
+    // writes under the compare-and-set. A row sync landing in between moves a
+    // delivery the save did not touch; the write must not put it back.
+    st = makeStore();
+    const stored = () => st.getBlob(KEY('turf')).find(p => p.id === 'ms');
+    const storedLine = id => stored().lines.find(l => l.id === id);
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', editedFields: [], editedLineFields: {},
+      po: makePO({ id: 'ms', project_id: 'job1', lines: [
+        { id: 'L1', qty: '10', unit_cost: '4' }, { id: 'L2', qty: '5', unit_cost: '3' }] }) });
+    const r1 = storedLine('L1').po_row_id, r2 = storedLine('L2').po_row_id;
+    const mine = JSON.parse(JSON.stringify(stored()));
+    mine.lines.find(l => l.id === 'L2').qty = '6';
+    st.onNextWrite(() => {
+      // The supervisor re-figures L1's row, and the row sync carries it to the order.
+      Object.assign(st.daily.get(r1), { units_purchased: 12, material_cost: 48 });
+      const list = st.getBlob(KEY('turf'));
+      list.find(p => p.id === 'ms').lines.find(l => l.id === 'L1').qty = '12';
+      st.setBlob(KEY('turf'), list);
+    });
+    const res = await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: mine,
+      editedFields: [], editedLineFields: { L2: ['qty'] } });
+    assert('the save lands on its retry', res.ok === true);
+    assert('a delivery the save did not touch keeps the figure a row sync gave it mid-save',
+      storedLine('L1').qty === '12', JSON.stringify(storedLine('L1')));
+    assert('  and its row keeps the supervisor\'s figures',
+      st.daily.get(r1).units_purchased === 12 && near(st.daily.get(r1).material_cost, 48), JSON.stringify(st.daily.get(r1)));
+    assert('  so order and row still agree',
+      near(poSync.lineAmt(storedLine('L1')), st.daily.get(r1).material_cost));
+    assert('the delivery it did change is stored, and written to its row',
+      storedLine('L2').qty === '6' && st.daily.get(r2).units_purchased === 6 && near(st.daily.get(r2).material_cost, 18),
+      JSON.stringify(st.daily.get(r2)));
+  }
+  {
+    // The same window, on a delivery the save DID edit. Purchasing changes the
+    // quantity; the supervisor re-prices that delivery's row on the job after
+    // the save's first read and before it writes the row, and the row sync
+    // carries the price to the stored order. The save then writes the row from
+    // what it read first. Whatever the merge, the order and the job must come
+    // out charging the same money — nothing re-syncs a raised delivery later.
+    st = makeStore();
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', editedFields: [], editedLineFields: {},
+      po: makePO({ id: 'rp', project_id: 'job1', lines: [{ id: 'L1', qty: '10', unit_cost: '4' }] }) });
+    const rowId = st.getBlob(KEY('turf'))[0].lines[0].po_row_id;
+    const mine = JSON.parse(JSON.stringify(st.getBlob(KEY('turf'))[0]));
+    mine.lines[0].qty = '12';
+    let repriced = false;
+    const racing = (strings, ...vals) => {
+      if (!repriced && /^\s*INSERT INTO daily_tracking/.test(strings[0])) {
+        repriced = true;
+        Object.assign(st.daily.get(rowId), { unit_cost: 4.5, material_cost: 45 });
+        return poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: [rowId] })
+          .then(() => st.sql(strings, ...vals));
+      }
+      return st.sql(strings, ...vals);
+    };
+    const res = await poSync.upsertPO(racing, { companyCode: 'FCT', division: 'turf', po: mine,
+      editedFields: [], editedLineFields: { L1: ['qty'] } });
+    const l = st.getBlob(KEY('turf'))[0].lines[0];
+    const r = st.daily.get(rowId);
+    assert('(the re-price landed inside the save)', repriced && res.ok);
+    assert('an edited delivery re-priced on the job mid-save: order and row still charge the same',
+      near(poSync.lineAmt(l) + poSync.lineTax(l), r.material_cost) && near(l.qty, r.units_purchased),
+      `order ${l.qty} × ${l.unit_cost} = ${poSync.lineAmt(l)}; row ${r.units_purchased} × ${r.unit_cost} = ${r.material_cost}`);
+  }
+  {
+    // The order's own fields no row carries — status and notes — settle again
+    // at the write in the same way.
+    st = makeStore();
+    st.setBlob(KEY('turf'), [makePO({ id: 'hs', project_id: 'job1', lines: [] })]);
+    const copy = Object.assign(JSON.parse(JSON.stringify(st.getBlob(KEY('turf'))[0])), { title: 'Geogrid' });
+    st.onNextWrite(() => {
+      const list = st.getBlob(KEY('turf'));
+      Object.assign(list[0], { status: 'approved', status_changed_by: 'boss', notes: 'rush' });
+      st.setBlob(KEY('turf'), list);
+    });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: copy,
+      editedFields: ['title'], editedLineFields: {} });
+    const s = st.getBlob(KEY('turf'))[0];
+    assert('an approval that landed mid-save survives a title edit',
+      s.title === 'Geogrid' && s.status === 'approved' && s.status_changed_by === 'boss' && s.notes === 'rush',
+      JSON.stringify(s));
+  }
+
+  console.log('\n[a page that does not say which figures it changed]');
+  {
+    // A tab still running the code from before: no editedLineFields at all.
+    // Its figures are stored whole and written to the rows, as they always were.
+    st = makeStore();
+    const stored = () => st.getBlob(KEY('turf')).find(p => p.id === 'old');
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf',
+      po: makePO({ id: 'old', project_id: 'job1', lines: [{ id: 'L1', date: '2026-11-02', qty: '10', unit_cost: '4' }] }) });
+    const rowId = stored().lines[0].po_row_id;
+    const snap = JSON.stringify(stored());
+    const fix = JSON.parse(snap);
+    fix.lines[0].qty = '12';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: fix,
+      editedFields: [], editedLineFields: { L1: ['qty'] } });
+    Object.assign(st.daily.get(rowId), { units_purchased: 11, material_cost: 44 });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf',
+      po: Object.assign(JSON.parse(snap), { status: 'approved' }) });
+    assert('its copy of the delivery is stored whole', stored().lines[0].qty === '10' && stored().status === 'approved',
+      JSON.stringify(stored()));
+    assert('  and its figures are written over the row\'s',
+      st.daily.get(rowId).units_purchased === 10 && near(st.daily.get(rowId).material_cost, 40),
+      JSON.stringify(st.daily.get(rowId)));
+  }
+
+  console.log('\n[Daily Tracking deliveries: the keys only the order holds]');
+  {
+    // A Daily Tracking delivery takes its figures from its row on every save —
+    // except the invoice # and tax rate, which no row carries. A stale copy
+    // used to blank them: the row could not put them back.
+    st = makeStore();
+    st.daily.set('r1', dRow('r1'));                         // 20 × $16 = $320
+    st.setBlob(KEY('turf'), [makePO({ id: 'A', po_number: 'PO-0001', project_id: 'job1' })]);
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r1'] });
+    const snap = JSON.stringify(st.getBlob(KEY('turf'))[0]);
+
+    const typed = JSON.parse(snap);
+    Object.assign(typed.lines[0], { invoice_num: 'T-118', tax_pct: '6', tax: '19.2' });
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: typed,
+      editedFields: [], editedLineFields: { 'dr-r1': ['invoice_num', 'tax_pct'] } });
+    let l = lineOf(st, 'turf', 'A', 'dr-r1');
+    assert('(purchasing\'s invoice # and tax rate land)', l.invoice_num === 'T-118' && l.tax_pct === '6', JSON.stringify(l));
+    assert('(and the tax reaches the field\'s row, which charges the job)',
+      near(st.daily.get('r1').material_cost, 339.2) && st.daily.get('r1').units_purchased === 20,
+      JSON.stringify(st.daily.get('r1')));
+
+    st.figureWrites.length = 0;
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf',
+      po: Object.assign(JSON.parse(snap), { status: 'approved' }), editedFields: ['status'], editedLineFields: {} });
+    l = lineOf(st, 'turf', 'A', 'dr-r1');
+    assert('a stale save keeps a Daily Tracking delivery\'s invoice # and tax rate',
+      l.invoice_num === 'T-118' && l.tax_pct === '6' && near(l.tax, 19.2), JSON.stringify(l));
+    assert('  its quantity and price still the row\'s', l.qty === '20' && l.unit_cost === '16', JSON.stringify(l));
+    assert('  and the field\'s row is left alone',
+      !st.figureWrites.includes('r1') && near(st.daily.get('r1').material_cost, 339.2), JSON.stringify(st.daily.get('r1')));
+    assert('  while the approval lands', st.getBlob(KEY('turf'))[0].status === 'approved');
+  }
+  {
+    // Purchasing corrects the quantity on a Daily Tracking delivery while the
+    // foreman re-dates the row and signs for it. Each keeps what they changed.
+    st = makeStore();
+    st.daily.set('r1', dRow('r1'));
+    st.setBlob(KEY('turf'), [makePO({ id: 'A', po_number: 'PO-0001', project_id: 'job1' })]);
+    await poSync.syncRowsToOrders(st.sql, { companyCode: 'FCT', division: 'turf', rowIds: ['r1'] });
+    const copy = JSON.parse(JSON.stringify(st.getBlob(KEY('turf'))[0]));
+    Object.assign(st.daily.get('r1'), { date: '2026-11-04', employee: 'Ana' });   // no sync yet
+    copy.lines[0].qty = '22';
+    await poSync.upsertPO(st.sql, { companyCode: 'FCT', division: 'turf', po: copy,
+      editedFields: [], editedLineFields: { 'dr-r1': ['qty'] } });
+    const l = lineOf(st, 'turf', 'A', 'dr-r1');
+    assert('the quantity purchasing typed stands on the delivery, at the price it was typed against',
+      l.qty === '22' && l.unit_cost === '16', JSON.stringify(l));
+    assert('  the keys it did not touch come from the row: the foreman\'s date and name',
+      l.date === '2026-11-04' && l.employee === 'Ana', JSON.stringify(l));
+    const r = st.daily.get('r1');
+    assert('  and the row takes the new quantity without losing them',
+      r.units_purchased === 22 && near(r.material_cost, 352) && r.date === '2026-11-04' && r.employee === 'Ana',
+      JSON.stringify(r));
+    assert('  nor its codes', r.cost_code === '02-100' && r.sub_code === '0420');
+  }
+  {
+    // The same derivation on its own. Per key, and a function per order for
+    // the full-list save; it wins over the old whole-line list.
+    const row = dRow('r1', { date: '2026-11-04', employee: 'Ana', units_purchased: 25, unit_cost: 16, material_cost: 400 });
+    const order = () => makePO({ id: 'A', po_number: 'PO-0001', project_id: 'job1', lines: [
+      { id: 'dr-r1', source: 'daily', po_row_id: 'r1', qty: '20', unit_cost: '16', date: '2026-11-02', employee: 'Sam',
+        tax_pct: '', tax: '', cost_code: '02-100', sub_code: '0420' }] });
+    let o = order();
+    poSync.deriveDailyLines([o], [row], { editedLineFields: editsOf({ 'dr-r1': ['date'] }) });
+    assert('deriveDailyLines: a date the page changed stands; the money follows the row',
+      o.lines[0].date === '2026-11-02' && o.lines[0].qty === '25' && o.lines[0].employee === 'Ana', JSON.stringify(o.lines[0]));
+    o = order();
+    poSync.deriveDailyLines([o], [row], { editedLineFields: () => editsOf({ 'dr-r1': ['unit_cost'] }) });
+    assert('  any money key the page changed keeps all the money; the row supplies the rest',
+      o.lines[0].qty === '20' && o.lines[0].unit_cost === '16' && o.lines[0].date === '2026-11-04', JSON.stringify(o.lines[0]));
+    o = order();
+    poSync.deriveDailyLines([o], [row], { editedLineIds: new Set(['dr-r1']), editedLineFields: editsOf({}) });
+    assert('  and a per-key list wins over the whole-line one',
+      o.lines[0].qty === '25' && o.lines[0].date === '2026-11-04', JSON.stringify(o.lines[0]));
+    o = order();
+    poSync.deriveDailyLines([o], [row], { editedLineIds: new Set(['dr-r1']) });
+    assert('  which, alone, still keeps the whole line (a page from before)',
+      o.lines[0].qty === '20' && o.lines[0].date === '2026-11-02', JSON.stringify(o.lines[0]));
+    const line = { qty: '20', unit_cost: '16', date: '2026-11-02', employee: 'Sam' };
+    poSync.applyRowToLine(line, row, false, new Set(['employee']));
+    assert('applyRowToLine: a kept key is the only one the row does not supply',
+      line.employee === 'Sam' && line.qty === '25' && line.date === '2026-11-04', JSON.stringify(line));
+  }
+
+  console.log('\n[writeTabRows — a division tab\'s changes to its job rows]');
+  {
+    // The tabs used to PUT every linked row whole from their own copy of the
+    // job. Now they say what they changed, and the server writes exactly that.
+    st = makeStore();
+    const jobRow = (id, over) => Object.assign({
+      row_id: id, project_id: 'job1', company_code: 'FCT', division: 'turf', date: '2026-11-02',
+      field_type: 'Material', employee: 'Sam', cost_code: '100', sub_code: 'A',
+      material: 'Stone', supplier: 'Acme', po_num: 'PO-0001',
+      units_purchased: 10, unit_cost: 4, material_cost: 40, timesheet_entry_id: null,
+    }, over || {});
+    st.daily.set('R1', jobRow('R1'));
+    st.daily.set('R2', jobRow('R2', { cost_code: '250', sub_code: 'B' }));   // re-coded on the job
+    st.daily.set('r9', dRow('r9'));                                         // the field's own row
+    st.daily.set('Rjob2', jobRow('Rjob2', { project_id: 'job2' }));
+    st.daily.set('Rpav', jobRow('Rpav', { division: 'paving' }));
+    st.daily.set('ts5-abc-0-x', jobRow('ts5-abc-0-x', { timesheet_entry_id: 5 }));
+    const snapOf = id => JSON.stringify(st.daily.get(id));
+    const untouched = ['r9', 'Rjob2', 'Rpav', 'ts5-abc-0-x'];
+    const before = new Map(untouched.map(id => [id, snapOf(id)]));
+    const tabPO = over => makePO(Object.assign({
+      id: 'tab', po_number: 'PO-0001', project_id: 'job1', title: 'Gravel', supplier: 'Beta',
+      cost_code: '300', sub_code: 'C', lines: [
+        { id: 'L1', date: '2026-11-02', qty: '10', unit_cost: '4', employee: 'Sam', po_row_id: 'R1' },
+        { id: 'L2', date: '2026-11-02', qty: '10', unit_cost: '4', employee: 'Sam', po_row_id: 'R2' },
+        { id: 'dr-r9', source: 'daily', po_row_id: 'r9', qty: '20', unit_cost: '16', date: '2026-11-02', employee: 'Sam',
+          tax_pct: '', tax: '', cost_code: '02-100', sub_code: '0420' },
+        { id: 'L3', qty: '10', unit_cost: '4', po_row_id: 'Rjob2' },
+        { id: 'L4', qty: '10', unit_cost: '4', po_row_id: 'Rpav' },
+        { id: 'L5', qty: '10', unit_cost: '4', po_row_id: 'ts5-abc-0-x' },
+      ] }, over || {}));
+    const W = (po, headerEdits, lineEdits, division) => poSync.writeTabRows(st.sql, {
+      companyCode: 'FCT', division: division || 'turf', po,
+      headerEdits: new Set(headerEdits || []), lineEdits: editsOf(lineEdits),
+      rowsById: new Map([['r9', st.daily.get('r9')]]),
+    });
+
+    await W(tabPO(), ['title', 'supplier']);
+    let R1 = st.daily.get('R1'), R2 = st.daily.get('R2');
+    assert('a retitle reaches every row the order raised',
+      R1.material === 'Gravel' && R1.supplier === 'Beta' && R2.material === 'Gravel' && R2.supplier === 'Beta',
+      JSON.stringify([R1, R2]));
+    assert('  without re-coding them: the codes are not what changed',
+      R1.cost_code === '100' && R2.cost_code === '250' && R2.sub_code === 'B', JSON.stringify([R1, R2]));
+    assert('  nor touching their figures', R1.units_purchased === 10 && near(R1.material_cost, 40)
+      && st.figureWrites.length === 0, JSON.stringify(st.figureWrites));
+    assert('  nor the field\'s row, which is not the order\'s', snapOf('r9') === before.get('r9'), snapOf('r9'));
+
+    await W(tabPO(), ['cost_code']);
+    R1 = st.daily.get('R1'); R2 = st.daily.get('R2');
+    assert('re-coding the order re-codes the rows it raised, the supervisor\'s re-code included',
+      R1.cost_code === '300' && R1.sub_code === 'C' && R2.cost_code === '300' && R2.sub_code === 'C',
+      JSON.stringify([R1, R2]));
+    assert('  but never the field\'s row', st.daily.get('r9').cost_code === '02-100');
+
+    Object.assign(st.daily.get('R2'), { cost_code: '250', sub_code: 'B' });   // the supervisor re-codes again
+    const fig = tabPO();
+    Object.assign(fig.lines[0], { qty: '12', employee: 'Ana', date: '2026-11-06' });
+    st.figureWrites.length = 0;
+    await W(fig, [], { L1: ['qty', 'employee', 'date'] });
+    R1 = st.daily.get('R1');
+    assert('a figure the tab changed is written to its row from the line',
+      R1.units_purchased === 12 && near(R1.material_cost, 48) && R1.unit_cost === 4
+      && R1.employee === 'Ana' && R1.date === '2026-11-06', JSON.stringify(R1));
+    assert('  and only that delivery\'s row', JSON.stringify(st.figureWrites) === '["R1"]', JSON.stringify(st.figureWrites));
+    assert('  a figure edit is not a re-code', st.daily.get('R2').cost_code === '250');
+
+    const fresh = tabPO();
+    fresh.lines.push({ id: 'L6', date: '2026-11-07', qty: '3', unit_cost: '10', po_row_id: 'Rgone' });
+    await W(fresh, [], { L6: ['qty'] });
+    const g = st.daily.get('Rgone');
+    assert('a delivery whose row is missing gets it back, on the order\'s job',
+      Boolean(g) && g.project_id === 'job1' && g.division === 'turf' && g.units_purchased === 3
+      && near(g.material_cost, 30) && g.cost_code === '300' && g.material === 'Gravel', JSON.stringify(g));
+
+    const emptied = tabPO();
+    Object.assign(emptied.lines[1], { qty: '', unit_cost: '' });
+    await W(emptied, [], { L2: ['qty', 'unit_cost'] });
+    const z = st.daily.get('R2');
+    assert('a delivery the tab emptied leaves its row at zero, not deleted',
+      Boolean(z) && z.units_purchased === 0 && z.unit_cost === 0 && z.material_cost === 0, JSON.stringify(z));
+    assert('  its date kept where the line has none to give', z.date === '2026-11-02');
+
+    st.figureWrites.length = 0;
+    const invOnly = tabPO();
+    invOnly.lines[0].invoice_num = 'INV-9';
+    const n = await W(invOnly, [], { L1: ['invoice_num'] });
+    assert('an invoice # alone writes nothing to the job', n === 0 && st.figureWrites.length === 0, String(n));
+
+    const daily = tabPO();
+    daily.lines[2].qty = '25';
+    await W(daily, [], { 'dr-r9': ['qty'] });
+    assert('a Daily Tracking delivery\'s figure reaches its row the way purchasing\'s does',
+      st.daily.get('r9').units_purchased === 25 && near(st.daily.get('r9').material_cost, 400)
+      && st.daily.get('r9').cost_code === '02-100', JSON.stringify(st.daily.get('r9')));
+    before.set('r9', snapOf('r9'));
+
+    // Every other row a line names: another job's, another division's, payroll's.
+    const all = tabPO({ title: 'Clobber', cost_code: '999' });
+    all.lines.forEach(l => { l.qty = '99'; });
+    await W(all, ['title', 'cost_code'], { L3: ['qty'], L4: ['qty'], L5: ['qty'] });
+    assert('a row on another job is left alone', snapOf('Rjob2') === before.get('Rjob2'), snapOf('Rjob2'));
+    assert('  and one in another division', snapOf('Rpav') === before.get('Rpav'), snapOf('Rpav'));
+    assert('  and payroll\'s', snapOf('ts5-abc-0-x') === before.get('ts5-abc-0-x'), snapOf('ts5-abc-0-x'));
+    assert('  while the order\'s own rows did take the header', st.daily.get('R1').material === 'Clobber');
+
+    const renum = tabPO({ po_number: 'PO-0002' });
+    await W(renum, ['po_number']);
+    assert('a renumber reaches the raised rows', st.daily.get('R1').po_num === 'PO-0002');
+    assert('  and the field\'s row, so it still names the order',
+      st.daily.get('r9').po_num === 'PO-0002' && st.daily.get('r9').material === '57 stone', JSON.stringify(st.daily.get('r9')));
+
+    const sizeBefore = st.daily.size;
+    const q = await W(tabPO({ title: 'Nope' }), ['title'], { L1: ['qty'] }, 'quarry');
+    const nj = await W(tabPO({ project_id: '', title: 'Nope' }), ['title'], { L1: ['qty'] });
+    assert('a division with no jobs, or an order with none, writes nothing',
+      q === 0 && nj === 0 && st.daily.size === sizeBefore && st.daily.get('R1').material !== 'Nope');
+  }
+
+  console.log('\n[settleLineFigures on its own]');
+  {
+    const S = (po, stored, edits, opts) => ({ kept: poSync.settleLineFigures(po, stored, editsOf(edits), opts), po });
+    const stale = { id: 'L1', invoice_num: '', date: '2026-11-02', qty: '10', unit_cost: '4', tax_pct: '6', tax: '2.4', employee: 'Sam', po_row_id: 'R' };
+    const store = { id: 'L1', invoice_num: 'INV', date: '2026-11-03', qty: '12', unit_cost: '5', tax_pct: '6', tax: '3.6', employee: 'Ana', po_row_id: 'R' };
+
+    let sent = { lines: [Object.assign({}, stale, { qty: '20', tax: '4.8' })] };
+    const sentLine = sent.lines[0];
+    let r = S(sent, { lines: [store] }, { L1: ['qty'] });
+    let l = r.po.lines[0];
+    assert('every key the page did not name takes the stored value',
+      l.qty === '20' && l.unit_cost === '5' && l.invoice_num === 'INV' && l.date === '2026-11-03' && l.employee === 'Ana',
+      JSON.stringify(l));
+    assert('  the tax re-taken on what came out (20 × 5 × 6%)', near(l.tax, 6), JSON.stringify(l));
+    assert('  the line is replaced, never mutated — the request\'s objects may be shared',
+      l !== sentLine && sentLine.qty === '20' && sentLine.unit_cost === '4');
+    assert('  and it says which lines it changed', JSON.stringify(r.kept) === '["L1"]', JSON.stringify(r.kept));
+
+    r = S({ lines: [Object.assign({}, stale, { tax: '7.77' })] }, { lines: [store] }, { L1: ['tax'] });
+    assert('a tax the page typed itself stands', r.po.lines[0].tax === '7.77', JSON.stringify(r.po.lines[0]));
+
+    r = S({ lines: [{ id: 'L1', qty: '12', unit_cost: '10', tax: '9.99' }] },
+          { lines: [{ id: 'L1', qty: '10', unit_cost: '10', tax: '3.21' }] }, { L1: ['qty'] });
+    assert('a legacy flat tax is kept like any figure, not re-taken',
+      r.po.lines[0].tax === '3.21' && !('tax_pct' in r.po.lines[0]), JSON.stringify(r.po.lines[0]));
+
+    r = S({ lines: [{ id: 'L1', qty: '12', unit_cost: '10', tax_pct: '6', tax: '7.2' }] },
+          { lines: [{ id: 'L1', qty: '10', unit_cost: '10', tax: '3.21' }] }, { L1: ['qty'] });
+    assert('a stale copy cannot turn a legacy line into a percentage one',
+      !('tax_pct' in r.po.lines[0]) && r.po.lines[0].tax === '3.21', JSON.stringify(r.po.lines[0]));
+
+    const dl = { id: 'dr-r1', source: 'daily', qty: '20', unit_cost: '16', invoice_num: '' };
+    const raised = { id: 'L1', qty: '10', unit_cost: '4' };
+    r = S({ lines: [Object.assign({}, dl), Object.assign({}, raised)] },
+          { lines: [Object.assign({}, dl, { qty: '25', invoice_num: 'T' }), Object.assign({}, raised, { qty: '12' })] },
+          {}, { raisedOnly: true });
+    assert('raisedOnly leaves a Daily Tracking line as it came (it was just derived from its row)',
+      r.po.lines[0].qty === '20' && r.po.lines[0].invoice_num === '', JSON.stringify(r.po.lines[0]));
+    assert('  and still settles a raised one', r.po.lines[1].qty === '12', JSON.stringify(r.po.lines[1]));
+
+    const fresh = { id: 'NEW', qty: '3', unit_cost: '9' };
+    r = S({ lines: [fresh] }, { lines: [store] }, {});
+    assert('a line the stored order does not have is new, and comes as sent',
+      r.po.lines[0] === fresh && r.kept.length === 0);
+
+    r = S({ lines: [{ id: 'X', qty: '1', unit_cost: '1' }] }, { lines: [{ id: 'X', source: 'daily', qty: '9', unit_cost: '9' }] }, {});
+    assert('a raised line is not settled against a Daily Tracking line of the same id',
+      r.po.lines[0].qty === '1' && r.kept.length === 0, JSON.stringify(r));
+    r = S({ lines: [{ id: 'X', source: 'daily', qty: '1', unit_cost: '1' }] }, { lines: [{ id: 'X', qty: '9', unit_cost: '9' }] }, {});
+    assert('  nor the other way round', r.po.lines[0].qty === '1' && r.kept.length === 0, JSON.stringify(r));
+
+    r = S({ lines: [{ id: 'L1', qty: '10', unit_cost: '4', employee: 'stale' }] }, { lines: [{ id: 'L1', qty: '10', unit_cost: '4' }] }, {});
+    assert('a key the stored line never had is dropped, not kept from the copy',
+      !('employee' in r.po.lines[0]), JSON.stringify(r.po.lines[0]));
+    r = S({ lines: [{ id: 'L1', qty: '10', invoice_num: null, po_row_id: 'mine' }] },
+          { lines: [{ id: 'L1', qty: '10', invoice_num: '', po_row_id: 'theirs' }] }, {});
+    assert('blank and null are the same nothing, and the row link is not a figure',
+      r.kept.length === 0 && r.po.lines[0].po_row_id === 'mine', JSON.stringify(r));
+    assert('no stored copy, or no edits from the page: left as sent',
+      poSync.settleLineFigures({ lines: [{ id: 'L1', qty: '1' }] }, null, editsOf({})).length === 0
+      && poSync.settleLineFigures({ lines: [{ id: 'L1', qty: '1' }] }, { lines: [{ id: 'L1', qty: '2' }] }, null).length === 0);
+  }
+
+  console.log('\n[editedLineFields: reading what a page sent]');
+  {
+    const m = poSync.editedLineFieldMap({ L1: ['qty', 7], L2: 'qty', L3: [] });
+    assert('editedLineFieldMap: per line, a Set of keys, dropping what is not a list',
+      m.get('L1').has('qty') && m.get('L1').has('7') && !m.has('L2') && m.get('L3').size === 0);
+    assert('  anything that is not an object is "did not say" — distinct from an empty one',
+      poSync.editedLineFieldMap(['L1']) === null && poSync.editedLineFieldMap(null) === null
+      && poSync.editedLineFieldMap(undefined) === null && poSync.editedLineFieldMap({}).size === 0);
+    const by = poSync.editedLineFieldsByOrder({ A: { L1: ['qty'] }, B: ['nope'], C: {} });
+    assert('editedLineFieldsByOrder: per order, dropping what is not a map',
+      by.get('A').get('L1').has('qty') && !by.has('B') && by.get('C').size === 0
+      && poSync.editedLineFieldsByOrder(null) === null && poSync.editedLineFieldsByOrder([]) === null);
+    const ids = poSync.rowEditedLineIds(editsOf({ a: ['invoice_num'], b: ['qty'], c: ['tax'], d: ['employee', 'invoice_num'], e: [] }));
+    assert('rowEditedLineIds: every edit but the invoice # alone reaches the row',
+      [...ids].sort().join() === 'b,c,d', [...ids].join());
+    assert('  the invoice # is the one figure no row carries',
+      poSync.LINE_KEYS.filter(k => !poSync.LINE_ROW_KEYS.includes(k)).join() === 'invoice_num');
   }
 
   console.log('\n[blob keys]');

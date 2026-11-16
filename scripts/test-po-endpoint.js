@@ -1200,6 +1200,619 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
       calls[1] && calls[1].args.editedFields === null, calls[1] && JSON.stringify(calls[1].args.editedFields));
   }
 
+  console.log('\n[a division tab\'s save: delivery figures per key, its cost rows written here]');
+  {
+    // The Turf tab loaded its list at 09:00. Since then purchasing corrected
+    // PO-0100's first delivery from 8 t at $4.00 to 10 t at $5.00, typed its
+    // invoice #, and filled in the supplier. The tab's copy has none of that,
+    // and every save sends the whole list as the tab holds it. Before this,
+    // approving the order there stored the 8 t at $4.00 again — and the tab
+    // then PUT that onto the job's cost row itself.
+    const T_READ  = '2026-11-16T09:00:00.000Z';   // when the tab read the list
+    const T_MOVED = '2026-11-16T09:04:00.000Z';   // purchasing's save since
+    const T_LATER = '2026-11-16T09:05:00.000Z';   // a write that lands mid-save
+    const T_NEW   = '2026-11-16T09:06:00.000Z';   // what this save produces
+    const STAMP = { created_at: '2026-11-01T12:00:00.000Z', created_by: 'purchasing' };
+    // What Postgres hands back for updated_at::text — not the ISO form the tab
+    // sends, which is why the compare-and-set carries the text it read.
+    const pgText = iso => iso.replace('T', ' ').replace('Z', '+00');
+    const clone = v => JSON.parse(JSON.stringify(v));
+
+    const storedA = (over = {}) => Object.assign({
+      id: 'A', po_number: 'PO-0100', project_id: 'job1', title: 'Stone', supplier: 'Hanes Aggregates',
+      cost_code: '02-100', sub_code: '0420', status: 'pending', notes: '',
+      lines: [
+        { id: 'L1', invoice_num: 'INV-77', date: '2026-11-10', qty: '10', unit_cost: '5', tax_pct: '6', tax: '3',
+          employee: 'Sam', po_row_id: 'row-L1' },
+        // Saved before tax was a percentage: a flat dollar figure, no tax_pct.
+        { id: 'L2', invoice_num: '', date: '2026-11-11', qty: '4', unit_cost: '20', tax: '1.5',
+          employee: 'Lee', po_row_id: 'row-L2' },
+      ],
+    }, STAMP, over);
+    // The same order as the tab loaded it, before purchasing's changes.
+    const tabA = (over = {}) => {
+      const a = storedA(Object.assign({ supplier: '' }, over));
+      if (!over.lines) Object.assign(a.lines[0], { invoice_num: '', qty: '8', unit_cost: '4', tax: '1.92' });
+      return a;
+    };
+    const orderB = () => Object.assign({ id: 'B', po_number: 'PO-0101', project_id: 'job1', title: 'Sand',
+      supplier: 'Hanes Aggregates', cost_code: '02-100', sub_code: '0420', status: 'pending', notes: '', lines: [] }, STAMP);
+    // The rows A's deliveries raised. They carry its number, so the read
+    // behind the Daily Tracking derivation finds them — and must pass them by.
+    const RAISED_ROWS = [
+      { row_id: 'row-L1', project_id: 'job1', po_num: 'PO-0100', units_purchased: 10, unit_cost: 5.3,
+        material_cost: 53, date: '2026-11-10', employee: 'Sam', cost_code: '02-100', sub_code: '0420' },
+      { row_id: 'row-L2', project_id: 'job1', po_num: 'PO-0100', units_purchased: 4, unit_cost: 20.375,
+        material_cost: 81.5, date: '2026-11-11', employee: 'Lee', cost_code: '02-100', sub_code: '0420' },
+    ];
+
+    // A daily_tracking INSERT as { column: bound value }, read off its own
+    // column and VALUES lists — so a check names the column it means.
+    function insertedRow(call) {
+      const m = /^INSERT INTO daily_tracking \(([^)]*)\) VALUES \(([^)]*)\)/.exec(call.q);
+      if (!m) return {};
+      const cols = m[1].split(',').map(s => s.trim());
+      const vals = m[2].split(',').map(s => s.trim());
+      const out = {};
+      cols.forEach((c, i) => {
+        const p = /^\$(\d+)$/.exec(vals[i] || '');
+        out[c] = p ? call.vals[Number(p[1]) - 1] : String(vals[i]).replace(/^'|'$/g, '');
+      });
+      return out;
+    }
+    // A daily_tracking UPDATE's plain `col = $n` / `col = 0` assignments, SET
+    // and WHERE apart.
+    function updatedRow(call) {
+      const m = /^UPDATE daily_tracking SET (.*?) WHERE (.*)$/.exec(call.q);
+      const pick = s => {
+        const out = {};
+        for (const [, c, v] of String(s || '').matchAll(/(\w+) = (\$\d+|\d+(?:\.\d+)?)(?=,| |$)/g)) {
+          out[c] = v[0] === '$' ? call.vals[Number(v.slice(1)) - 1] : Number(v);
+        }
+        return out;
+      };
+      return { set: pick(m && m[1]), where: pick(m && m[2]), q: call.q, vals: call.vals };
+    }
+    // The value a `col = CASE WHEN $n ...` column is written under: whether
+    // the save re-codes the row.
+    function caseFlag(call, col) {
+      const m = new RegExp(col + ' = CASE WHEN \\$(\\d+)').exec(call.q);
+      return m ? call.vals[Number(m[1]) - 1] : undefined;
+    }
+
+    /**
+     * The database as the new-protocol PUT sees it.
+     *
+     *  versions       what the blob holds on each successive read; null is no
+     *                 row. A compare-and-set that loses moves the blob on to
+     *                 the next one — somebody else's write landed in between.
+     *  loseCas        how many writes lose before one may land (Infinity: all)
+     *  linkRows       the job rows fetchLinkRows finds, filtered as its WHERE would
+     *  liveRows       the row ids the cost-row existence check finds
+     *  failRowWrites  every daily_tracking INSERT / UPDATE rejects
+     *
+     * The UPDATE lands only when the text it carries is the version's own:
+     * it is a real compare-and-set, not a counter.
+     */
+    function tabStub({ versions, loseCas = 0, linkRows = [], liveRows = [], failRowWrites = false }) {
+      const seen = [];
+      let at = 0, lost = 0;
+      const cur = () => versions[Math.min(at, versions.length - 1)];
+      const sql = (strings, ...vals) => {
+        let q = ''; strings.forEach((x, i) => { q += x; if (i < vals.length) q += `$${i + 1}`; });
+        q = q.replace(/\s+/g, ' ').trim();
+        seen.push({ q, vals });
+        const v = cur();
+        const land = json => { sql.landed = JSON.parse(json); return [{ updated_at: new Date(T_NEW) }]; };
+        if (/^SELECT value, updated_at, updated_at::text AS updated_at_text FROM app_data/.test(q)) {
+          return Promise.resolve(v ? [{ value: clone(v.list), updated_at: new Date(v.at), updated_at_text: pgText(v.at) }] : []);
+        }
+        if (/^SELECT value, updated_at FROM app_data/.test(q)) {
+          return Promise.resolve(v ? [{ value: clone(v.list), updated_at: new Date(v.at) }] : []);
+        }
+        if (/^SELECT value FROM app_data/.test(q)) return Promise.resolve(v ? [{ value: clone(v.list) }] : []);
+        if (/^UPDATE app_data SET value = \$1::jsonb, updated_at = clock_timestamp\(\) WHERE key = \$2 AND updated_at = \$3::timestamptz RETURNING updated_at$/.test(q)) {
+          if (lost < loseCas) { lost++; at++; return Promise.resolve([]); }
+          return Promise.resolve(v && vals[2] === pgText(v.at) ? land(vals[0]) : []);
+        }
+        if (/^INSERT INTO app_data .* ON CONFLICT \(key\) DO NOTHING RETURNING updated_at$/.test(q)) {
+          if (!v && lost >= loseCas) return Promise.resolve(land(vals[1]));
+          if (!v) { lost++; at++; }    // another first save created the row
+          return Promise.resolve([]);
+        }
+        if (/^INSERT INTO app_data .* ON CONFLICT \(key\) DO UPDATE/.test(q)) return Promise.resolve(land(vals[1]));
+        if (/^SELECT row_id FROM daily_tracking/.test(q)) {
+          return Promise.resolve((vals[1] || []).filter(id => liveRows.includes(id)).map(row_id => ({ row_id })));
+        }
+        if (/^SELECT row_id, project_id, date, employee, cost_code, sub_code, po_num/.test(q)) {
+          const ids = vals[2], projects = vals[3];
+          return Promise.resolve(clone(linkRows.filter(r => ids.includes(r.row_id)
+            || (projects.includes(r.project_id) && String(r.po_num || '').trim()))));
+        }
+        if (/^SELECT COUNT\(\*\)::int AS count FROM po_deliveries/.test(q)) return Promise.resolve([{ count: 0 }]);
+        if (failRowWrites && /^(INSERT INTO|UPDATE) daily_tracking/.test(q)) {
+          return Promise.reject(new Error('connection terminated'));
+        }
+        return Promise.resolve([]);
+      };
+      sql.landed = null;
+      sql.calls = seen;
+      sql.written = () => Object.fromEntries((sql.landed || []).map(p => [p.id, p]));
+      sql.casReads = () => seen.filter(c => /updated_at::text AS updated_at_text/.test(c.q));
+      sql.casWrites = () => seen.filter(c => /^UPDATE app_data/.test(c.q) || /DO NOTHING/.test(c.q));
+      sql.plainWrites = () => seen.filter(c => /^INSERT INTO app_data .* DO UPDATE/.test(c.q));
+      sql.rowWrites = () => seen.filter(c => /^(INSERT INTO|UPDATE|DELETE FROM) daily_tracking/.test(c.q));
+      sql.upserts = () => seen.filter(c => /^INSERT INTO daily_tracking/.test(c.q));
+      sql.updates = () => seen.filter(c => /^UPDATE daily_tracking/.test(c.q)).map(updatedRow);
+      // Each superseded row as "row|project|po#", the way the DELETE pairs them.
+      sql.dropped = () => seen.filter(c => /^DELETE FROM daily_tracking d USING unnest/.test(c.q))
+        .flatMap(c => c.vals[0].map((id, i) => [id, c.vals[1][i], c.vals[2][i]].join('|')));
+      sql.at = re => seen.findIndex(c => re.test(c.q));
+      return sql;
+    }
+    const put = async (sqlStub, body, query = {}) => {
+      const handler = loadEndpoint({ roles: { turf: 'level3' }, sqlStub });
+      const res = makeRes();
+      const logs = [];
+      const { warn, error } = console;
+      console.warn = (...a) => logs.push(a.join(' '));
+      console.error = (...a) => logs.push(a.join(' '));
+      try {
+        await handler({ method: 'PUT', query: Object.assign({ division: 'turf' }, query), headers: AUTHED, body }, res);
+      } finally { console.warn = warn; console.error = error; }
+      res.logs = logs;
+      return res;
+    };
+    // What a current tab sends: everything, even when it is empty.
+    const tabBody = (purchaseOrders, extra = {}) => Object.assign({
+      purchaseOrders, baseUpdatedAt: T_READ,
+      editedFields: {}, editedLineFields: {}, deletedLineIds: {}, deletedOrderIds: [],
+    }, extra);
+    const lineOf = (po, id) => ((po && po.lines) || []).find(l => l && l.id === id) || {};
+    const near = (a, b) => typeof a === 'number' && Math.abs(a - b) < 1e-9;
+    const approvedA = () => tabA({ status: 'approved', status_changed_at: '2026-11-16T09:05:30.000Z',
+                                   status_changed_by: 'foreman' });
+
+    {
+      // The report this came from: a foreman approving an order put back the
+      // quantity and cost purchasing had corrected on it.
+      const sqlStub = tabStub({ versions: [{ list: [storedA(), orderB()], at: T_MOVED }],
+        linkRows: RAISED_ROWS, liveRows: ['row-L1', 'row-L2'] });
+      const res = await put(sqlStub, tabBody([approvedA(), orderB()], { editedFields: { A: ['status'] } }));
+      const w = sqlStub.written();
+      const l1 = lineOf(w.A, 'L1');
+      check('a stale tab approving an order saves', res.statusCode === 200 && res.body.ok === true,
+        res.statusCode + ' ' + JSON.stringify(res.body));
+      check('  the approval is what it takes from the tab',
+        w.A && w.A.status === 'approved' && w.A.status_changed_by === 'foreman', JSON.stringify(w.A));
+      check('  the delivery keeps purchasing\'s corrected figures, not the copy the tab loaded',
+        l1.qty === '10' && l1.unit_cost === '5' && l1.tax === '3', JSON.stringify(l1));
+      check('  and the invoice # purchasing typed', l1.invoice_num === 'INV-77', JSON.stringify(l1));
+      check('  a legacy flat-tax delivery the tab had right is left exactly as it was',
+        JSON.stringify(lineOf(w.A, 'L2')) === JSON.stringify(storedA().lines[1]), JSON.stringify(lineOf(w.A, 'L2')));
+      // Approving touches no figure, so no cost row is the tab's to write.
+      check('an approval writes no cost-row figures at all',
+        sqlStub.rowWrites().length === 0, JSON.stringify(sqlStub.rowWrites().map(c => c.q.slice(0, 70))));
+      check('the kept figures are reported, and counted in `merged`',
+        res.body.mergedLineFigures === 1 && res.body.merged >= res.body.mergedLineFigures + res.body.mergedFields,
+        JSON.stringify(res.body));
+      // The tab takes these on, after which it does hold the stored list —
+      // without them its next save would carry the 8 t at $4.00 again.
+      const backA = (res.body.orders || []).find(o => o.id === 'A');
+      check('the order comes back as stored, so the tab shows purchasing\'s figures',
+        backA && lineOf(backA, 'L1').qty === '10' && backA.supplier === 'Hanes Aggregates',
+        JSON.stringify(res.body.orders));
+      check('  and an order that came out exactly as sent does not',
+        Array.isArray(res.body.orders) && !res.body.orders.some(o => o.id === 'B'), JSON.stringify(res.body.orders));
+      const cas = sqlStub.casWrites();
+      check('the save is a compare-and-set against the version it read',
+        cas.length === 1 && /^UPDATE app_data/.test(cas[0].q) && cas[0].vals[2] === pgText(T_MOVED)
+        && sqlStub.plainWrites().length === 0, JSON.stringify(cas.map(c => c.vals[2])));
+      check('  and the version it produced comes back',
+        new Date(res.body.updatedAt).getTime() === Date.parse(T_NEW), JSON.stringify(res.body.updatedAt));
+    }
+    {
+      // Nobody wrote since the tab read — and its copy still differs from the
+      // store: it took a row write's echo or a poll mid-save. Whatever it did
+      // not mark is not its edit, so the settle runs on every save, not only
+      // when the list moved.
+      const sqlStub = tabStub({ versions: [{ list: [storedA(), orderB()], at: T_READ }],
+        linkRows: RAISED_ROWS, liveRows: ['row-L1', 'row-L2'] });
+      const res = await put(sqlStub, tabBody([approvedA(), orderB()], { editedFields: { A: ['status'] } }));
+      const w = sqlStub.written();
+      check('an up-to-date tab still keeps the stored figures it did not change',
+        lineOf(w.A, 'L1').qty === '10' && lineOf(w.A, 'L1').unit_cost === '5' && res.body.mergedLineFigures === 1,
+        JSON.stringify(lineOf(w.A, 'L1')) + ' ' + JSON.stringify(res.body));
+      check('  and the stored order fields', w.A && w.A.supplier === 'Hanes Aggregates' && w.A.status === 'approved',
+        JSON.stringify(w.A));
+      check('  still under the compare-and-set, against the version both agree on',
+        sqlStub.casWrites().length === 1 && sqlStub.casWrites()[0].vals[2] === pgText(T_READ));
+    }
+    {
+      // ...which an older tab, saying nothing about its lines, does not get:
+      // up to date, it is stored as sent, exactly as before this change.
+      const sqlStub = tabStub({ versions: [{ list: [storedA(), orderB()], at: T_READ }],
+        linkRows: RAISED_ROWS, liveRows: ['row-L1', 'row-L2'] });
+      const res = await put(sqlStub, { purchaseOrders: [approvedA(), orderB()], baseUpdatedAt: T_READ,
+                                       editedFields: { A: ['status'] } });
+      const w = sqlStub.written();
+      check('an older up-to-date tab is still stored exactly as sent',
+        lineOf(w.A, 'L1').qty === '8' && w.A.supplier === '' && res.body.merged === 0,
+        JSON.stringify(w.A) + ' ' + JSON.stringify(res.body));
+    }
+    {
+      // Typing the invoice # on a stale line must not carry the line's old
+      // quantity with it — and the invoice # is the order's alone: no job row
+      // carries it, so there is nothing to write there.
+      const a = tabA();
+      a.lines[0].invoice_num = 'INV-80';
+      const sqlStub = tabStub({ versions: [{ list: [storedA(), orderB()], at: T_MOVED }],
+        linkRows: RAISED_ROWS, liveRows: ['row-L1', 'row-L2'] });
+      const res = await put(sqlStub, tabBody([a, orderB()], { editedLineFields: { A: { L1: ['invoice_num'] } } }));
+      const l1 = lineOf(sqlStub.written().A, 'L1');
+      check('an invoice # typed on a stale delivery is taken', l1.invoice_num === 'INV-80', JSON.stringify(l1));
+      check('  without the stale quantity and cost beside it', l1.qty === '10' && l1.unit_cost === '5', JSON.stringify(l1));
+      check('  and no cost row is written for it',
+        res.statusCode === 200 && sqlStub.rowWrites().length === 0,
+        res.statusCode + ' ' + JSON.stringify(sqlStub.rowWrites().map(c => c.q.slice(0, 70))));
+    }
+    {
+      // The two sides of one delivery changed apart: the tab typed 12 t while
+      // purchasing had re-priced it at $5.00. The tab's figure is the quantity
+      // alone; the price is purchasing's, and the job row has to come to that
+      // — not to 12 t at the $4.00 the tab still showed.
+      const a = tabA();
+      Object.assign(a.lines[0], { qty: '12', tax: '2.88' });   // the tab's own re-figuring on $4.00
+      const sqlStub = tabStub({ versions: [{ list: [storedA(), orderB()], at: T_MOVED }],
+        linkRows: RAISED_ROWS, liveRows: ['row-L1', 'row-L2'] });
+      const res = await put(sqlStub, tabBody([a, orderB()], { editedLineFields: { A: { L1: ['qty'] } } }));
+      const l1 = lineOf(sqlStub.written().A, 'L1');
+      check('a quantity typed on a stale delivery is taken, at the stored price',
+        l1.qty === '12' && l1.unit_cost === '5' && l1.invoice_num === 'INV-77', JSON.stringify(l1));
+      check('  its tax worked out again on the amount it now has (12 × $5.00 × 6%)',
+        l1.tax_pct === '6' && l1.tax === '3.6', JSON.stringify(l1));
+      const ups = sqlStub.upserts();
+      const row = ups.length ? insertedRow(ups[0]) : {};
+      check('the server writes that delivery\'s cost row — one row, the one the line names',
+        ups.length === 1 && row.row_id === 'row-L1' && row.project_id === 'job1' && row.division === 'turf'
+        && row.company_code === 'FCT', JSON.stringify(row));
+      check('  carrying the tab\'s quantity', near(row.units_purchased, 12), JSON.stringify(row));
+      check('  and the stored unit cost with its tax in it ($5.00 + $3.60 / 12), not the tab\'s $4.00',
+        near(row.unit_cost, 5.3), JSON.stringify(row));
+      check('  and a material cost that is the delivery\'s total', near(row.material_cost, 63.6), JSON.stringify(row));
+      // The row is written from the order as stored, so the tab's blank copy of
+      // the supplier does not blank the job's row.
+      check('  with the order\'s stored header, not the tab\'s blank copy of it',
+        row.material === 'Stone' && row.supplier === 'Hanes Aggregates' && row.po_num === 'PO-0100'
+        && row.employee === 'Sam' && row.date === '2026-11-10' && row.field_type === 'Material', JSON.stringify(row));
+      check('  leaving a supervisor\'s re-coding of the row alone: the codes were not edited',
+        ups.length === 1 && caseFlag(ups[0], 'cost_code') === false && caseFlag(ups[0], 'sub_code') === false,
+        ups.length ? ups[0].q : 'no upsert');
+      // The id came in the request body; the update must still prove the row
+      // is this order's job's, in this division, and not payroll's.
+      check('  and an existing row is only updated when it is on this job, in this division, and not payroll\'s',
+        ups.length === 1 && /WHERE daily_tracking\.company_code = \$\d+ AND daily_tracking\.division = \$\d+ AND daily_tracking\.project_id = \$\d+ AND daily_tracking\.timesheet_entry_id IS NULL$/.test(ups[0].q),
+        ups.length ? ups[0].q.slice(-200) : '');
+      check('no row is written for the delivery the tab did not touch',
+        !sqlStub.rowWrites().some(c => JSON.stringify(c.vals).includes('row-L2')),
+        JSON.stringify(sqlStub.rowWrites().map(c => c.vals[0])));
+      check('the row is written only after the order it comes from has landed',
+        sqlStub.at(/^UPDATE app_data/) >= 0 && sqlStub.at(/^UPDATE app_data/) < sqlStub.at(/^INSERT INTO daily_tracking/));
+      check('and the save answers ok', res.statusCode === 200 && res.body.ok === true, JSON.stringify(res.body));
+    }
+    {
+      // A delivery added on the tab: the tab mints its row id, and the row
+      // itself is now the server's to create.
+      const a = storedA();
+      a.lines.push({ id: 'L5', invoice_num: '', date: '2026-11-13', qty: '2', unit_cost: '10', tax_pct: '', tax: '',
+                     employee: 'Sam', po_row_id: 'row-tab-L5' });
+      const sqlStub = tabStub({ versions: [{ list: [storedA(), orderB()], at: T_MOVED }],
+        linkRows: RAISED_ROWS, liveRows: ['row-L1', 'row-L2'] });
+      await put(sqlStub, tabBody([a, orderB()], { editedLineFields: { A: { L5: ['qty', 'unit_cost'] } } }));
+      const ups = sqlStub.upserts().map(insertedRow);
+      check('a delivery added on the tab has its cost row created by the server',
+        ups.length === 1 && ups[0].row_id === 'row-tab-L5' && near(ups[0].units_purchased, 2)
+        && near(ups[0].unit_cost, 10) && near(ups[0].material_cost, 20), JSON.stringify(ups));
+      check('  and the delivery is stored as the tab typed it',
+        lineOf(sqlStub.written().A, 'L5').qty === '2', JSON.stringify(lineOf(sqlStub.written().A, 'L5')));
+    }
+    {
+      // A retitle reaches every row the order raised — and only the columns
+      // the order owns. A payroll row a line points at is never touched, and a
+      // line with no row has none to write.
+      const extra = [
+        { id: 'L3', invoice_num: '', date: '2026-11-12', qty: '1', unit_cost: '9', tax: '', employee: '', po_row_id: 'ts12-abc' },
+        { id: 'L4', invoice_num: '', date: '', qty: '', unit_cost: '', tax: '', employee: '', po_row_id: null },
+      ];
+      const stored = storedA({ lines: storedA().lines.concat(clone(extra)) });
+      // Its lines as stored, so only the header is in question; its supplier
+      // still the blank it loaded.
+      const tab = tabA({ title: 'Crushed Stone', lines: storedA().lines.concat(clone(extra)) });
+      const sqlStub = tabStub({ versions: [{ list: [stored, orderB()], at: T_MOVED }],
+        linkRows: RAISED_ROWS, liveRows: ['row-L1', 'row-L2'] });
+      const res = await put(sqlStub, tabBody([tab, orderB()], { editedFields: { A: ['title'] } }));
+      const ups = sqlStub.updates();
+      const ids = ups.map(u => u.where.row_id).sort();
+      check('a title edited on the tab is written to every row the order raised',
+        res.statusCode === 200 && ids.join() === 'row-L1,row-L2', JSON.stringify(ids));
+      check('  as the row\'s material, with the order\'s stored supplier and number',
+        ups.length === 2 && ups.every(u => u.set.material === 'Crushed Stone' && u.set.supplier === 'Hanes Aggregates'
+          && u.set.po_num === 'PO-0100'), JSON.stringify(ups.map(u => u.set)));
+      check('  scoped to the order\'s job, this division and this company',
+        ups.length === 2 && ups.every(u => u.where.project_id === 'job1' && u.where.division === 'turf'
+          && u.where.company_code === 'FCT' && /timesheet_entry_id IS NULL/.test(u.q)), JSON.stringify(ups.map(u => u.where)));
+      check('  without re-coding the rows, since the codes were not what changed',
+        ups.length === 2 && ups.every(u => caseFlag(u, 'cost_code') === false && caseFlag(u, 'sub_code') === false),
+        JSON.stringify(ups.map(u => u.q)));
+      check('  and without touching any row\'s quantity or cost',
+        sqlStub.upserts().length === 0 && ups.every(u => !('units_purchased' in u.set) && !('unit_cost' in u.set)),
+        JSON.stringify(ups.map(u => u.set)));
+      check('a payroll row a line points at is never written',
+        !sqlStub.rowWrites().some(c => JSON.stringify(c.vals).includes('ts12-abc')));
+    }
+    {
+      // The tab lost the compare-and-set: purchasing re-priced the delivery
+      // again, renamed the supplier, raised D and deleted C between the tab's
+      // read and its write. The second attempt merges against THAT list.
+      const orderC = Object.assign({ id: 'C', po_number: 'PO-0102', project_id: 'job1', title: 'Gravel',
+        status: 'pending', lines: [] }, STAMP);
+      const orderD = Object.assign({ id: 'D', po_number: 'PO-0103', project_id: 'job1', title: 'Topsoil',
+        status: 'pending', lines: [] }, STAMP);
+      const a2 = storedA({ supplier: 'Hanes Aggregates Ltd' });
+      Object.assign(a2.lines[0], { unit_cost: '5.5', tax: '3.3' });
+      const sqlStub = tabStub({
+        versions: [{ list: [storedA(), orderB(), orderC], at: T_MOVED },
+                   { list: [a2, orderB(), orderD], at: T_LATER }],
+        loseCas: 1, linkRows: RAISED_ROWS, liveRows: ['row-L1', 'row-L2'],
+      });
+      const res = await put(sqlStub, tabBody([approvedA(), orderB()], { editedFields: { A: ['status'] } }));
+      const w = sqlStub.written();
+      const cas = sqlStub.casWrites();
+      check('a save that loses the compare-and-set reads the list again and retries',
+        res.statusCode === 200 && sqlStub.casReads().length === 2 && cas.length === 2,
+        res.statusCode + ' reads=' + sqlStub.casReads().length + ' writes=' + cas.length);
+      check('  each attempt against the version it had just read',
+        cas.length === 2 && cas[0].vals[2] === pgText(T_MOVED) && cas[1].vals[2] === pgText(T_LATER),
+        JSON.stringify(cas.map(c => c.vals[2])));
+      check('  the newer list\'s changes survive the retry',
+        w.A && w.A.supplier === 'Hanes Aggregates Ltd' && lineOf(w.A, 'L1').unit_cost === '5.5'
+        && lineOf(w.A, 'L1').tax === '3.3', JSON.stringify(w.A));
+      check('  alongside the tab\'s own', w.A && w.A.status === 'approved', JSON.stringify(w.A));
+      check('  an order raised in between is kept', Boolean(w.D), Object.keys(w).join());
+      // The first attempt merged C in. Its result must not leak into the
+      // second, or an order purchasing deleted comes back.
+      check('  and one deleted in between stays deleted — the first attempt\'s merge is not reused',
+        !w.C, Object.keys(w).join());
+      check('  the tab is sent the order as it finally landed',
+        lineOf((res.body.orders || []).find(o => o.id === 'A'), 'L1').unit_cost === '5.5', JSON.stringify(res.body.orders));
+    }
+    {
+      // Every attempt lost. Nothing landed, so nothing may be written to the
+      // job's rows from it either — they would describe an order that is not
+      // stored.
+      const a = tabA();
+      Object.assign(a.lines[0], { qty: '12' });
+      const sqlStub = tabStub({ versions: [{ list: [storedA(), orderB()], at: T_MOVED }],
+        loseCas: Infinity, linkRows: RAISED_ROWS, liveRows: ['row-L1', 'row-L2'] });
+      const res = await put(sqlStub, tabBody([a, orderB()], { editedLineFields: { A: { L1: ['qty'] } } }));
+      check('a compare-and-set lost on every attempt is a 409',
+        res.statusCode === 409 && /try again/i.test(JSON.stringify(res.body)), res.statusCode + ' ' + JSON.stringify(res.body));
+      check('  after exactly the attempts it is allowed',
+        sqlStub.casWrites().length === realPoSync.CAS_ATTEMPTS && sqlStub.casReads().length === realPoSync.CAS_ATTEMPTS,
+        String(sqlStub.casWrites().length));
+      check('  and nothing is written to the cost rows or the mirror for a save that did not land',
+        sqlStub.landed === null && sqlStub.rowWrites().length === 0
+        && !sqlStub.calls.some(c => /^INSERT INTO purchase_orders/.test(c.q)),
+        JSON.stringify(sqlStub.rowWrites().map(c => c.q.slice(0, 50))));
+    }
+    {
+      // No row at all (the blob was cleared) — and another first save creates
+      // it at the same moment. An INSERT that overwrote would erase that one;
+      // this one re-reads and merges instead.
+      const sqlStub = tabStub({ versions: [null, { list: [orderB()], at: T_LATER }],
+        loseCas: 1, linkRows: RAISED_ROWS, liveRows: ['row-L1', 'row-L2'] });
+      const res = await put(sqlStub, tabBody([storedA()]));
+      const cas = sqlStub.casWrites();
+      check('with no stored row the save inserts only if it is still the first',
+        cas.length >= 1 && /ON CONFLICT \(key\) DO NOTHING/.test(cas[0].q), cas.length ? cas[0].q : 'no write');
+      check('  and losing that to another first save re-reads and lands on top of it',
+        res.statusCode === 200 && cas.length === 2 && /^UPDATE app_data/.test(cas[1].q)
+        && cas[1].vals[2] === pgText(T_LATER), res.statusCode + ' ' + JSON.stringify(cas.map(c => c.q.slice(0, 40))));
+      check('  keeping what that save stored', Boolean(sqlStub.written().B) && Boolean(sqlStub.written().A),
+        Object.keys(sqlStub.written()).join());
+    }
+    {
+      // A current tab says what it deleted. Without that, a list that moved on
+      // made a deleted delivery read as one the tab never saw — and the merge
+      // put it back, with its cost row already gone.
+      //
+      // deletePOLine removes the delivery's cost row as it removes the line,
+      // so row-L2 is gone from the job by the time this save reads it. (Were
+      // it still there, it would name PO-0100 with no line raising it, and the
+      // derivation would — by its own rule — record it as a Daily Tracking
+      // delivery until the row's delete synced.)
+      const a = storedA();
+      a.lines = a.lines.filter(l => l.id === 'L1');
+      const versions = [{ list: [storedA(), orderB()], at: T_MOVED }];
+      const ROWS_AFTER_DELETE = RAISED_ROWS.filter(r => r.row_id !== 'row-L2');
+      const sqlStub = tabStub({ versions, linkRows: ROWS_AFTER_DELETE, liveRows: ['row-L1'] });
+      const res = await put(sqlStub, tabBody([a], { deletedLineIds: { A: ['L2'] }, deletedOrderIds: ['B'] }));
+      const w = sqlStub.written();
+      check('a delivery the tab deleted stays deleted on a list that moved',
+        w.A && w.A.lines.map(l => l.id).join() === 'L1', JSON.stringify(w.A && w.A.lines.map(l => l.id)));
+      check('  and an order it deleted stays deleted', !w.B, Object.keys(w).join());
+      check('  neither is reported as merged back', res.body.mergedLines === 0 && res.body.mergedOrders === 0,
+        JSON.stringify(res.body));
+
+      // The same save without the tab's word: both read as never seen.
+      const again = tabStub({ versions, linkRows: ROWS_AFTER_DELETE, liveRows: ['row-L1'] });
+      const res2 = await put(again, tabBody([a]));
+      const w2 = again.written();
+      check('without it, the missing delivery and order are put back as unseen — the safe direction',
+        lineOf(w2.A, 'L2').id === 'L2' && Boolean(w2.B) && res2.body.mergedLines === 1 && res2.body.mergedOrders === 1,
+        JSON.stringify(res2.body));
+
+      // And a tab that does not speak the new protocol cannot use them.
+      const old = tabStub({ versions, linkRows: ROWS_AFTER_DELETE, liveRows: ['row-L1'] });
+      await put(old, { purchaseOrders: [a], baseUpdatedAt: T_READ, deletedLineIds: { A: ['L2'] }, deletedOrderIds: ['B'] });
+      check('an older tab\'s save merges them back as it always did',
+        lineOf(old.written().A, 'L2').id === 'L2' && Boolean(old.written().B), JSON.stringify(Object.keys(old.written())));
+    }
+    {
+      // The tab moved the order to job2. It removed the rows its copy named
+      // and minted new ones on job2 from its own figures, so the order must
+      // keep those figures — and a row purchasing raised on job1 after the tab
+      // loaded is one the tab never knew, left charging job1 for an order that
+      // is now on job2.
+      const stored = storedA({ lines: [
+        { id: 'L1', invoice_num: '', date: '2026-11-10', qty: '10', unit_cost: '5', tax_pct: '', tax: '',
+          employee: 'Sam', po_row_id: 'row-purch-L1' },
+        { id: 'L2', invoice_num: '', date: '2026-11-11', qty: '4', unit_cost: '20', tax: '1.5',
+          employee: 'Lee', po_row_id: 'row-L2' },
+        { id: 'L3', invoice_num: '', date: '2026-11-12', qty: '1', unit_cost: '9', tax: '',
+          employee: '', po_row_id: 'ts12-abc' },
+      ] });
+      const tab = storedA({ project_id: 'job2', lines: [
+        { id: 'L1', invoice_num: '', date: '2026-11-10', qty: '7', unit_cost: '3', tax_pct: '', tax: '',
+          employee: 'Sam', po_row_id: 'row-job2-L1' },
+        { id: 'L2', invoice_num: '', date: '2026-11-11', qty: '4', unit_cost: '20', tax: '1.5',
+          employee: 'Lee', po_row_id: 'row-job2-L2' },
+        { id: 'L3', invoice_num: '', date: '2026-11-12', qty: '1', unit_cost: '9', tax: '',
+          employee: '', po_row_id: null },
+      ] });
+      const sqlStub = tabStub({ versions: [{ list: [stored, orderB()], at: T_MOVED }], liveRows: ['row-purch-L1', 'row-L2'] });
+      const res = await put(sqlStub, tabBody([tab, orderB()], {
+        editedFields: { A: ['project_id'] }, editedLineFields: { A: { L1: ['qty', 'unit_cost'] } } }));
+      const w = sqlStub.written();
+      check('a job move is stored', res.statusCode === 200 && w.A && w.A.project_id === 'job2', JSON.stringify(w.A));
+      check('  with the figures the tab minted job2\'s rows from — no settle against the old job\'s copy',
+        lineOf(w.A, 'L1').qty === '7' && lineOf(w.A, 'L1').unit_cost === '3' && res.body.mergedLineFigures === 0,
+        JSON.stringify(lineOf(w.A, 'L1')) + ' ' + JSON.stringify(res.body));
+      check('  and the links it minted there', lineOf(w.A, 'L1').po_row_id === 'row-job2-L1', JSON.stringify(lineOf(w.A, 'L1')));
+      const dropped = sqlStub.dropped();
+      check('the row purchasing raised on the old job, which the tab never knew, is removed there',
+        dropped.includes('row-purch-L1|job1|PO-0100'), JSON.stringify(dropped));
+      check('  matched against the OLD job, which is where it sits',
+        !dropped.some(d => /\|job2\|/.test(d)), JSON.stringify(dropped));
+      check('  never a payroll row', !dropped.some(d => d.startsWith('ts12-')), JSON.stringify(dropped));
+      check('  and the removal is scoped past the id alone',
+        /d\.project_id\s*=\s*t\.project_id/.test((sqlStub.calls.find(c => /^DELETE FROM daily_tracking d/.test(c.q)) || {}).q || '')
+        && /d\.timesheet_entry_id IS NULL/.test((sqlStub.calls.find(c => /^DELETE FROM daily_tracking d/.test(c.q)) || {}).q || ''));
+      // The tab minted job2's rows from the figures it had at the move. A
+      // delivery edited in the same save — queued behind the move, or carried
+      // by its retry — has to reach them too, so the order's edits are written
+      // to job2's rows, under the links the tab minted. Never job1's.
+      const ups = sqlStub.upserts();
+      check('a delivery edited in the same save as a job move is written to the new job\'s row',
+        ups.length === 1 && ups[0].vals.includes('row-job2-L1') && ups[0].vals.includes('job2'),
+        JSON.stringify(sqlStub.rowWrites().map(c => c.q.slice(0, 60))));
+      check('  and nothing on the old job is written',
+        !sqlStub.rowWrites().some(c => /^(INSERT|UPDATE)/.test(c.q) && c.vals.includes('job1')),
+        JSON.stringify(sqlStub.rowWrites().map(c => c.vals)));
+    }
+    {
+      // The order landed, the cost rows did not. That is not a success: the
+      // tab keeps its marks only when the save fails, and the marks are what
+      // get the rows written on the next one.
+      const a = tabA();
+      Object.assign(a.lines[0], { qty: '12' });
+      const sqlStub = tabStub({ versions: [{ list: [storedA(), orderB()], at: T_MOVED }],
+        linkRows: RAISED_ROWS, liveRows: ['row-L1', 'row-L2'], failRowWrites: true });
+      const res = await put(sqlStub, tabBody([a, orderB()], { editedLineFields: { A: { L1: ['qty'] } } }));
+      check('a cost-row write that fails fails the save',
+        res.statusCode === 500 && res.body && res.body.ok !== true, res.statusCode + ' ' + JSON.stringify(res.body));
+      check('  saying the order itself was stored, so the tab does not treat it as lost',
+        res.body && res.body.stored === true, JSON.stringify(res.body));
+      check('  which it was — before the row write was tried',
+        lineOf(sqlStub.written().A, 'L1').qty === '12'
+        && sqlStub.at(/^UPDATE app_data/) < sqlStub.at(/^INSERT INTO daily_tracking/), JSON.stringify(lineOf(sqlStub.written().A, 'L1')));
+      check('  and the mirror kept step with it', sqlStub.calls.some(c => /^INSERT INTO purchase_orders/.test(c.q)));
+      check('  and the failure is logged', res.logs.some(l => /cost rows/.test(l)), JSON.stringify(res.logs));
+    }
+    {
+      // The renumbered order still owns the Daily Tracking row carrying its
+      // OLD number until the server rewrites it — and the quantity the tab
+      // typed on that delivery is written to the row from here, while the
+      // receiver a supervisor has since entered on the row stands.
+      const ROW_D = { row_id: 'rowD', project_id: 'job1', po_num: 'PO-0100', units_purchased: 3, unit_cost: 4,
+                      material_cost: 12, date: '2026-11-12', employee: 'Lee', cost_code: '02-100', sub_code: '0420' };
+      const dailyLine = over => Object.assign({ id: 'dr-rowD', source: 'daily', invoice_num: '', date: '2026-11-12',
+        qty: '3', unit_cost: '4', tax: '', tax_pct: '', employee: 'Lee', cost_code: '02-100', sub_code: '0420',
+        po_row_id: 'rowD' }, over);
+      const stored = storedA({ lines: storedA().lines.concat([dailyLine({})]) });
+      const tab = storedA({ po_number: 'PO-0100A', lines: storedA().lines.concat([dailyLine({ qty: '5', employee: '' })]) });
+      const sqlStub = tabStub({ versions: [{ list: [stored, orderB()], at: T_MOVED }],
+        linkRows: RAISED_ROWS.concat([ROW_D]), liveRows: ['row-L1', 'row-L2'] });
+      const res = await put(sqlStub, tabBody([tab, orderB()], {
+        editedFields: { A: ['po_number'] }, editedLineFields: { A: { 'dr-rowD': ['qty'] } } }));
+      const d = lineOf(sqlStub.written().A, 'dr-rowD');
+      check('a renumbered order keeps the Daily Tracking delivery whose row still has the old number',
+        res.statusCode === 200 && d.id === 'dr-rowD', JSON.stringify(sqlStub.written().A && sqlStub.written().A.lines));
+      check('  with the quantity the tab typed, at the row\'s price', d.qty === '5' && d.unit_cost === '4', JSON.stringify(d));
+      check('  and the row\'s receiver, which the tab\'s copy did not have', d.employee === 'Lee', JSON.stringify(d));
+      const ups = sqlStub.updates();
+      const rowD = ups.find(u => u.where.row_id === 'rowD');
+      check('the Daily Tracking row is given the new number and the typed quantity',
+        rowD && rowD.set.po_num === 'PO-0100A' && near(rowD.set.units_purchased, 5)
+        && near(rowD.set.unit_cost, 4) && near(rowD.set.material_cost, 20) && rowD.set.employee === 'Lee',
+        JSON.stringify(rowD));
+      check('  and the rows the order raised take the new number too',
+        ['row-L1', 'row-L2'].every(id => (ups.find(u => u.where.row_id === id) || { set: {} }).set.po_num === 'PO-0100A'),
+        JSON.stringify(ups.map(u => [u.where.row_id, u.set.po_num])));
+    }
+    {
+      // A tab running the code from before this — no editedLineFields — gets
+      // exactly what it always did: the plain write, no compare-and-set read,
+      // its deliveries stored as sent, nothing written to the job's rows from
+      // here (it writes them itself), and no `orders` it would not read.
+      const sqlStub = tabStub({ versions: [{ list: [storedA(), orderB()], at: T_MOVED }],
+        linkRows: RAISED_ROWS, liveRows: ['row-L1', 'row-L2'] });
+      const a = approvedA();
+      Object.assign(a.lines[0], { qty: '12' });
+      const res = await put(sqlStub, { purchaseOrders: [a, orderB()], baseUpdatedAt: T_READ,
+                                       editedFields: { A: ['status'] } });
+      const w = sqlStub.written();
+      check('an older tab still saves', res.statusCode === 200 && res.body.ok === true, JSON.stringify(res.body));
+      check('  through the plain write it always had',
+        sqlStub.plainWrites().length === 1 && sqlStub.casWrites().length === 0, JSON.stringify(sqlStub.calls.map(c => c.q.slice(0, 40))));
+      check('  reading the list the way it always did, with no compare-and-set read',
+        sqlStub.casReads().length === 0 && sqlStub.at(/^SELECT value, updated_at FROM app_data/) >= 0);
+      check('  its deliveries stored as it sent them',
+        lineOf(w.A, 'L1').qty === '12' && lineOf(w.A, 'L1').unit_cost === '4' && res.body.mergedLineFigures === 0,
+        JSON.stringify(lineOf(w.A, 'L1')));
+      check('  the order fields it did not change still kept, as before this',
+        w.A.supplier === 'Hanes Aggregates' && w.A.status === 'approved', JSON.stringify(w.A));
+      check('  nothing written to the job\'s rows from here', sqlStub.rowWrites().length === 0,
+        JSON.stringify(sqlStub.rowWrites().map(c => c.q.slice(0, 60))));
+      check('  and no `orders` in the answer', !('orders' in res.body), JSON.stringify(Object.keys(res.body)));
+    }
+  }
+  {
+    // Purchasing's single-order save carries the same per-key edits, and the
+    // upsert is what settles and writes with them.
+    const calls = [];
+    const handler = loadEndpoint({ roles: { purchase_orders: 'level3' }, calls });
+    const send = async extra => {
+      const res = makeRes();
+      await handler({ method: 'POST', query: { division: 'paving' }, headers: AUTHED,
+                      body: Object.assign({ purchaseOrder: PO }, extra) }, res);
+      return calls[calls.length - 1];
+    };
+    const sent = await send({ editedLineFields: { L1: ['qty', 'unit_cost'] } });
+    check('a single-order save passes on the delivery keys it changed',
+      sent && JSON.stringify(sent.args.editedLineFields) === '{"L1":["qty","unit_cost"]}',
+      sent && JSON.stringify(sent.args.editedLineFields));
+    const empty = await send({ editedLineFields: {} });
+    check('  "none" is still an answer, and is passed on as one',
+      empty && empty.args.editedLineFields && typeof empty.args.editedLineFields === 'object'
+      && !Object.keys(empty.args.editedLineFields).length, empty && JSON.stringify(empty.args.editedLineFields));
+    for (const [label, v] of [['a list', ['L1']], ['a string', 'L1'], ['nothing', undefined]]) {
+      const got = await send(v === undefined ? {} : { editedLineFields: v });
+      check(`  ${label} in its place is "did not say" — deliveries stored whole`,
+        got && got.args.editedLineFields === null, got && JSON.stringify(got.args.editedLineFields));
+    }
+  }
+
   console.log('\n[who raised an order, and when]');
   {
     // The division tabs save their whole list on every edit, so every order in
