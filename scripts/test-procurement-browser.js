@@ -303,7 +303,15 @@ async function openPage(browser, W, role, { viewport = { width: 1474, height: 90
     }
     if (p === '/api/purchase-orders') {
       if (m === 'GET') return send(200, { purchaseOrders: JSON.parse(JSON.stringify(W.pos)), updatedAt: '2026-11-01T00:00:00.000Z' });
+      // A whole-list save (the Purchase Orders tab's, a supplier rename's).
+      if (m === 'PUT' && body && Array.isArray(body.purchaseOrders)) {
+        W.log.push({ api: 'purchase-orders', method: m, q, body, role });
+        W.pos = JSON.parse(JSON.stringify(body.purchaseOrders));
+        return send(200, { ok: true, updatedAt: '2026-11-01T00:00:01.000Z' });
+      }
       if (m === 'POST' && body && body.purchaseOrder) {
+        // A cold serverless start answers slowly.
+        if (W.poDelay) await sleep(W.poDelay);
         W.log.push({ api: 'purchase-orders', method: m, q, body, role });
         const po = { ...body.purchaseOrder, lines: body.purchaseOrder.lines || [] };
         W.pos.push(po);
@@ -804,6 +812,112 @@ async function asSales(browser, W) {
   await ctx.close();
 }
 
+// ── Round two: Tab through cells, dates cleared, one PO per click, a renamed
+// supplier's orders, the bid page header ─────────────────────────────────────
+async function roundTwoFixes(browser) {
+  console.log('\ntabbing, clearing dates, Create PO, supplier rename, bid header');
+  const W = makeWorld();
+  const t = i => new Date(Date.UTC(2026, 9, 2) + i * 1000).toISOString();
+  W.rows.push(
+    // As "+ Add Row" makes it: everything blank.
+    { ...BLANK_ROW, id: 'T1', project_id: 'p1', description: 'new row', created_at: t(1), updated_at: t(1) },
+    // Hand-added, coded off the drain line, a unit of its own.
+    { ...BLANK_ROW, id: 'T2', project_id: 'p1', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: DRAIN, unit: 'roll', vendor: 'LB Water',
+      description: 'coded', created_at: t(2), updated_at: t(2) },
+    // On PO-0007 automatically (same job, codes and vendor), delivered once.
+    { ...BLANK_ROW, id: 'T3', project_id: 'p1', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', unit: 'SF',
+      vendor: 'LB Water', description: 'auto po', date_delivered: '2026-11-10', created_at: t(3), updated_at: t(3) },
+  );
+  W.contacts.push({ id: 'sc1', supplier_name: 'LB Water', name: 'Al Jones', email: 'al.jones@lbwater.com', phone: '', updated_at: t(0), deleted_at: null });
+  const { page, ctx, errors } = await openPage(browser, W, 'admin', { viewport: { width: 1920, height: 1000 }, storage: { fct_proc_project_turf: 'p1' } });
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 3));
+  await page.click('#procurement-root [data-group="none"]');
+  await sleep(200);
+
+  // Tab through every cell of each row, typing nothing. The page's combobox
+  // puts its first option into a box whose text matches no option — and Tab
+  // used to commit it.
+  const before = JSON.stringify(W.rows);
+  for (const id of ['T1', 'T2', 'T3']) {
+    await page.click(`#procurement-root [data-sel="${id}"]`);
+    await page.click(`#procurement-root [data-sel="${id}"]`);
+    for (let i = 0; i < 24; i++) { await page.keyboard.press('Tab'); await sleep(60); }
+    await clickAway(page);
+    await sleep(500);
+  }
+  const writes = W.log.filter(l => l.api === 'procurement' && l.method !== 'GET');
+  ok('Tab through every cell of three rows, typing nothing: nothing is saved', writes.length === 0 && JSON.stringify(W.rows) === before,
+    writes.map(l => [l.q.id, l.body && l.body.fields]));
+  ok('…the auto-matched row is still on PO-0007 automatically', (await rowTr(page, 'T3').locator('.c-po').textContent()).includes('auto')
+    && W.rows.find(r => r.id === 'T3').po_id === null);
+  ok('…and no contact was filed', !W.log.some(l => l.api === 'supplier-contacts' && l.method === 'POST'));
+  // Typed and then Tab still commits.
+  await cell(page, 'T1', 'vendor').click();
+  await page.keyboard.type('new ent', { delay: 30 });
+  await page.keyboard.press('Tab');
+  await sleep(400);
+  await clickAway(page);
+  await sleep(800);
+  ok('typed, then Tab: the vendor picked from the typing is saved', W.rows.find(r => r.id === 'T1').vendor === 'New Enterprise', W.rows.find(r => r.id === 'T1').vendor);
+
+  // Clearing a date from the keyboard: each segment emptied, then away.
+  const dd = cell(page, 'T3', 'date_delivered');
+  await dd.click({ position: { x: 8, y: 8 } });
+  for (let i = 0; i < 3; i++) { await page.keyboard.press('Backspace'); await page.keyboard.press('ArrowRight'); }
+  await clickAway(page);
+  await sleep(900);
+  const toasts = (await page.$$eval('.fctproc-toast', ts => ts.map(x => x.textContent))).join(' | ');
+  ok('a date emptied from the keyboard is saved as cleared', W.rows.find(r => r.id === 'T3').date_delivered === null
+    && await dd.inputValue() === '', [W.rows.find(r => r.id === 'T3').date_delivered, await dd.inputValue()]);
+  ok('…with no "not saved" message', !/not saved/.test(toasts), toasts);
+
+  // Create PO from selected, clicked twice while the first is out.
+  W.poDelay = 1200;
+  await page.locator('#procurement-root [data-sel="T2"]').check();
+  await sleep(150);
+  await page.locator('#procurement-root [data-act="bulk-po"]').dblclick();
+  ok('while a PO is being created its button is disabled', await page.locator('#procurement-root [data-act="bulk-po"]').isDisabled());
+  await sleep(2200);
+  const made = W.log.filter(l => l.api === 'purchase-orders' && l.method === 'POST');
+  ok('a double click raises ONE purchase order', made.length === 1, made.map(l => l.body.purchaseOrder.po_number));
+  ok('…numbered after the last one', made.length && made[0].body.purchaseOrder.po_number === 'PO-0008', made.map(l => l.body.purchaseOrder.po_number));
+  W.poDelay = 0;
+
+  // Rename LB Water on Admin > Suppliers: the purchase orders follow, so the
+  // rows matched to them stay ordered.
+  await page.evaluate(() => adminSwitchTab('supplier'));
+  await until(() => page.evaluate(() => _supContactsLoad.state === 'ok'));
+  const nameBox = page.locator('#supplier-root [data-sup-field="name"]').first();
+  await nameBox.fill('LB Water Works');
+  await page.locator('#supplier-root').click({ position: { x: 5, y: 5 } });
+  await sleep(700);
+  ok('a supplier rename carries to the purchase orders naming it', W.pos.filter(po => po.supplier === 'LB Water').length === 0
+    && W.pos.filter(po => po.supplier === 'LB Water Works').length === 2, W.pos.map(po => po.po_number + ':' + po.supplier));
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await sleep(600);
+  // (Its Date Delivered was cleared above, so "Ordered" comes from the PO.)
+  const poShown = await cell(page, 'T3', 'po').inputValue();
+  const status = await rowTr(page, 'T3').locator('.c-status .fctproc-pill').textContent();
+  ok('…so the row matched to PO-0007 by vendor still finds it, and is still Ordered', poShown === 'PO-0007' && status === 'Ordered', [poShown, status]);
+
+  // The bid page's header on a laptop: every button on one line.
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.evaluate(() => openBidView('p1'));
+  await sleep(300);
+  const tops = await page.$$eval('#bid-fullscreen > div:first-child [id^="bid-fs-"].btn', bs => bs.filter(b => b.offsetParent).map(b => {
+    const r = b.getBoundingClientRect(); return { id: b.id, top: Math.round(r.top), h: Math.round(r.height) };
+  }));
+  // One line of label is ~30px tall; a label folded onto two is ~50.
+  ok('1366 wide: the bid page\'s header buttons sit in one row, no label folded onto two lines',
+    tops.length === 7 && new Set(tops.map(x => x.top)).size === 1 && tops.every(x => x.h < 40), tops);
+  await shot(page, 'bid-header-1366.png');
+  await page.evaluate(() => closeBidView());
+
+  ok('no page errors', errors.length === 0, errors.join(' | '));
+  await ctx.close();
+}
+
 (async () => {
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
@@ -812,6 +926,7 @@ async function asSales(browser, W) {
     await asLevel1(browser, W);
     await asSales(browser, W);
     await reviewFixes(browser);
+    await roundTwoFixes(browser);
   } finally {
     await browser.close();
     server.close();

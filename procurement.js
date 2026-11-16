@@ -251,6 +251,9 @@
    * Which purchase order a row is on.
    *   kind 'linked'   po_id set and the PO exists
    *        'removed'  po_id set but the PO is gone (shown red, counts as no PO)
+   *        'moved'    po_id set but that PO now belongs to another job (or to
+   *                   none) — re-pointed on the Purchase Orders tab. Shown
+   *                   red like 'removed' and, like it, not this job's order
    *        'auto'     no link, and exactly one PO on the job has the row's
    *                   live cost + sub code and a compatible vendor
    *        'multiple' several such POs — the user has to pick
@@ -263,7 +266,10 @@
     if (row.po_id) {
       if (!ctx.poLoaded) return out('loading');
       const po = ctxIndex(ctx).poById.get(String(row.po_id));
-      return po ? out('linked', po, [po]) : out('removed');
+      if (!po) return out('removed');
+      const pid = row.project_id || ctx.projectId;
+      if (pid && String(po.project_id || '') !== String(pid)) return out('moved', po, [po]);
+      return out('linked', po, [po]);
     }
     if (row.po_auto === false) return out('nopo');
     const k = keyFn(ctx);
@@ -397,13 +403,29 @@
    * that material on purpose, and a re-import is no reason to offer it again
    * ticked. Its entry carries `relink` (the line's id and codes) for the
    * restore to put on the row; a deleted row cannot be PATCHed.
+   *
+   * A 'new' line whose material plainly has a row already starts UNTICKED,
+   * with `hint` saying why, so Send never makes a second row of it by
+   * default:
+   *   - `orphans`: live rows of the job that are "not on bid" (their line is
+   *     gone) and carry this line's cost + sub code. The re-link only moves a
+   *     row when exactly one line has its codes (section 1), so after a
+   *     "Replace all" two lines with the same codes — the estimate's own
+   *     duplicates, or two that differ only in case or spacing — are left to
+   *     the PM; so is a row whose re-link failed.
+   *   - `handRows`: hand-added rows coded off this very line, with no bid row
+   *     on it ("+ Add Row", then the line picked in Sub Code).
    */
   function sendPlan(bidLines, rows, codeKey) {
     const k = typeof codeKey === 'function' ? codeKey : defaultCodeKey;
-    const live = new Map(), dead = new Map();
+    const live = new Map(), dead = new Map(), hand = new Map();
     for (const r of rows || []) {
-      if (!r || r.source !== 'bid' || r.bid_item_id == null) continue;
+      if (!r || r.bid_item_id == null) continue;
       const key = String(r.bid_item_id);
+      if (r.source !== 'bid') {
+        if (!r.deleted_at) hand.set(key, (hand.get(key) || 0) + 1);
+        continue;
+      }
       if (r.deleted_at) { if (!dead.has(key)) dead.set(key, r); }
       else if (!live.has(key)) live.set(key, r);
     }
@@ -422,6 +444,16 @@
       if (!l || live.has(id) || dead.has(id) || wanted.has(id) || moved.has(id)) return;
       moved.set(id, r);
     });
+    // Live rows of the job whose line is gone, by their codes.
+    const codesOf = (cc, sc) => ck(k, cc) + '\u0000' + ck(k, sc);
+    const orphanRows = new Map();
+    (rows || []).filter(r => r && !r.deleted_at && (r.source === 'bid' || r.bid_item_id != null) && orphaned(r, lineIds))
+      .forEach(r => {
+        if (!ck(k, r.cost_code) && !ck(k, r.sub_code)) return;
+        const key = codesOf(r.cost_code, r.sub_code);
+        if (!orphanRows.has(key)) orphanRows.set(key, []);
+        orphanRows.get(key).push(String(r.id));
+      });
     const groups = [], byCode = new Map();
     const counts = { total: 0, new: 0, added: 0, removed: 0, checked: 0 };
     for (const line of ordered) {
@@ -432,7 +464,20 @@
       else if (moved.has(id)) {
         entry = { line, state: 'removed', checked: false, restoreId: moved.get(id).id, rowId: moved.get(id).id,
           relink: { bid_item_id: id, cost_code: str(line.cost_code), sub_code: str(line.sub_code) } };
-      } else entry = { line, state: 'new', checked: !SKIP_UNITS.has(normUnit(line.unit)), restoreId: null, rowId: null };
+      } else {
+        entry = { line, state: 'new', checked: !SKIP_UNITS.has(normUnit(line.unit)), restoreId: null, rowId: null };
+        const orphans = orphanRows.get(codesOf(line.cost_code, line.sub_code)) || [];
+        const handRows = hand.get(id) || 0;
+        if (orphans.length) {
+          entry.checked = false;
+          entry.orphans = orphans.slice();
+          entry.hint = `${orphans.length} row${orphans.length === 1 ? '' : 's'} on this job ${orphans.length === 1 ? 'has' : 'have'} these codes but ${orphans.length === 1 ? 'is' : 'are'} not on the bid`;
+        } else if (handRows) {
+          entry.checked = false;
+          entry.handRows = handRows;
+          entry.hint = handRows === 1 ? 'has a hand-added row' : `has ${handRows} hand-added rows`;
+        }
+      }
       const code = String(line.cost_code == null ? '' : line.cost_code).trim();
       let g = byCode.get(code);
       if (!g) { g = { cost_code: code, lines: [] }; byCode.set(code, g); groups.push(g); }
@@ -486,6 +531,33 @@
   }
 
   /**
+   * The stored cost + sub code of a row is only what it falls back to when
+   * its line is gone — and what the re-link above matches a new line by. A
+   * line renamed on the bid page ("Perf Drain 15\"" → "Perimeter Drain 15in
+   * Perf") shows the new name on the sheet at once, but the stored copy kept
+   * the old one, so after a later "Replace all" with the new spelling the
+   * row would find no line. This brings the stored copy of each live row
+   * whose line is still there up to that line's codes. A line whose code was
+   * just blanked (half way through being renamed) is left until it has one.
+   * Returns PATCHes in relinkPlan's shape (`sync: true`).
+   */
+  function codeSyncPlan(bidLines, rows, codeKey) {
+    const k = typeof codeKey === 'function' ? codeKey : defaultCodeKey;
+    const byId = new Map((bidLines || []).filter(l => l && l.id != null).map(l => [String(l.id), l]));
+    const out = [];
+    for (const r of rows || []) {
+      if (!r || r.deleted_at || r.bid_item_id == null) continue;
+      const l = byId.get(String(r.bid_item_id));
+      if (!l) continue;
+      const lc_ = ck(k, l.cost_code), ls = ck(k, l.sub_code), rc = ck(k, r.cost_code), rs = ck(k, r.sub_code);
+      if (lc_ === rc && ls === rs) continue;
+      if ((!lc_ && rc) || (!ls && rs)) continue;
+      out.push({ id: r.id, bid_item_id: String(l.id), cost_code: str(l.cost_code), sub_code: str(l.sub_code), sync: true });
+    }
+    return out;
+  }
+
+  /**
    * Bid order: by the bid line's position, the row sent from the bid ahead of
    * the materials added under it, then oldest first. Rows whose line is not
    * on the bid (or never was) go last.
@@ -514,6 +586,7 @@
       case 'linked': case 'auto': return str(e.po && e.po.po_number) || '(no number)';
       case 'multiple': return `${e.candidates.length} POs match`;
       case 'removed': return 'PO removed';
+      case 'moved': return 'PO on another job';
       case 'nopo': return 'No PO';
       case 'loading': return '…';
       default: return '';
@@ -923,8 +996,12 @@
     try { purchaseOrders = cfg.getPurchaseOrders() || []; } catch { /* none */ }
     try { bidLines = pid ? (cfg.getBidLines(pid) || []) : []; } catch { /* none */ }
     try { poLoaded = typeof cfg.isPOListLoaded === 'function' ? !!cfg.isPOListLoaded() : true; } catch { poLoaded = false; }
+    // Not loaded because the read FAILED (and is being retried), rather than
+    // still on its way — said differently on screen.
+    let poFailed = false;
+    try { poFailed = !poLoaded && typeof cfg.poLoadFailed === 'function' && !!cfg.poLoadFailed(); } catch { poFailed = false; }
     return {
-      purchaseOrders, bidLines, poLoaded,
+      purchaseOrders, bidLines, poLoaded, poFailed,
       codeKey: typeof cfg.codeKey === 'function' ? cfg.codeKey : defaultCodeKey,
       today: today(),
       projectId: pid,
@@ -978,7 +1055,21 @@
     }
     // keepalive lets a save started as the page is closed outlive the page.
     if (opts.keepalive) init.keepalive = true;
-    const r = await fetch(`${cfg.apiBase || '/api'}${path}`, init);
+    let r;
+    try {
+      r = await fetch(`${cfg.apiBase || '/api'}${path}`, init);
+    } catch (e) {
+      // No answer at all — offline, the connection dropped, a blocked
+      // request. The browser's own words ("Failed to fetch") say nothing to
+      // a PM. No status: the caller cannot tell whether the server acted.
+      const err = new Error('could not reach the server — check the connection');
+      err.status = 0;
+      err.code = 'network';
+      err.field = '';
+      err.network = true;
+      err.cause = e;
+      throw err;
+    }
     let data = null;
     try { data = await r.json(); } catch { /* empty body */ }
     if (!r.ok || (data && data.ok === false)) {
@@ -999,6 +1090,9 @@
 
   // ── Toast + modal (the documents.js shells) ─────────────────────────
   function toast(message, kind) {
+    // A combobox commits twice (on Tab or a pick, and again as it blurs), so
+    // whatever it says would be said twice, stacked.
+    if ([...document.querySelectorAll('.fctproc-toast')].some(t => t.textContent === message)) return;
     const el = document.createElement('div');
     el.textContent = message;
     el.className = 'fctproc-toast';
@@ -1143,6 +1237,11 @@
       .fctproc-table td.c-status.flag-amber { box-shadow: inset 3px 0 0 var(--yellow,#eab308), 2px 0 0 var(--border,#2a2a3a); }
       .fctproc-txt { display:block; overflow:hidden; text-overflow: ellipsis; white-space: nowrap; padding:0 0.15rem; }
       .fctproc-txt.wrap { white-space: normal; overflow-wrap:anywhere; line-height:1.3; }
+      /* The Sub Code IS the material in these bids, so it is shown whole
+         (two lines) rather than cut to "Perimeter Collector Drain …" three
+         times over for three different drains. */
+      .fctproc-txt.wrap2 { white-space: normal; overflow-wrap:anywhere; line-height:1.25; display:-webkit-box;
+        -webkit-line-clamp:2; line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; text-overflow: clip; }
       .fctproc-txt.num { text-align:right; font-variant-numeric: tabular-nums; }
       .fctproc-dim { color: var(--muted,#777); }
       .fctproc-amber { color:#fbbf24; }
@@ -1190,6 +1289,7 @@
       .fctproc-pill.st-not { background: rgba(156,163,175,0.10); color:#9ca3af; border-color: rgba(156,163,175,0.28); }
       .fctproc-pill.st-ord { background: rgba(96,165,250,0.14); color: var(--blue,#60a5fa); border-color: rgba(96,165,250,0.4); }
       .fctproc-pill.st-unk { background: transparent; color: var(--muted,#9ca3af); border-color: rgba(156,163,175,0.28); border-style: dashed; }
+      .fctproc-pill.st-unk.po-failed { color:#fbbf24; border-color: rgba(251,191,36,0.45); }
       .fctproc-pill.st-del { background: rgba(34,197,94,0.14); color: var(--green,#22c55e); border-color: rgba(34,197,94,0.4); }
       .fctproc-pill.n-red { background: rgba(239,68,68,0.14); color:#f87171; border-color: rgba(239,68,68,0.4); }
       .fctproc-pill .n { font-variant-numeric: tabular-nums; margin-left:0.25rem; }
@@ -1445,13 +1545,32 @@
 
   // Recently remembered, so leaving a row twice does not post twice.
   const remembered = new Set();
+  // Rows whose Contact or Email was typed or picked on this page since they
+  // were last remembered. Only those are remembered: a row merely LEFT —
+  // after a Date Delivered was typed on it, say — still shows whatever
+  // contact it had, and saving that again would bring back a contact an
+  // admin has since corrected or removed on Admin > Suppliers.
+  const contactTouched = new Set();
+
+  /** The saved contact of `vendor` that a row's Contact / Email is, or null. */
+  function savedContactOf(vendor, row) {
+    if (!row || !String(vendor || '').trim()) return null;
+    const name = lc(row.contact), typed = lc(row.email);
+    if (!name && !typed) return null;
+    return contacts.list(vendor).find(c => (typed && (lc(c.email) === typed || lc(c.phone) === typed))
+      || (name && lc(c.name) === name)) || null;
+  }
+
   function rememberContact(row) {
-    if (!row || !canEdit()) return;
+    if (!row || !canEdit() || !contactTouched.has(row.id)) return;
     const vendor = row.vendor.trim(), name = row.contact.trim(), typed = row.email.trim();
     const phone = looksLikePhone(typed) ? typed : '';
     const email = phone ? '' : typed;
+    const done = () => contactTouched.delete(row.id);
     // A phone alone is no contact (the server needs a name or an email).
-    if (!vendor || (!name && !email)) return;
+    if (!name && !email) { done(); return; }
+    // No vendor yet: kept for when there is one, which is who it is for.
+    if (!vendor) return;
     // Contacts hang off the supplier list's names, and Admin > Suppliers is
     // the only place they are seen or tidied: saved under a vendor that was
     // typed but never added to the list, they could be neither. Once it is
@@ -1463,12 +1582,48 @@
       ? saved.find(c => lc(c.email) === lc(email) && (c.name || !name))
       // Same name, and nothing new to add: a phone only fills a blank one.
       : saved.find(c => lc(c.name) === lc(name) && (!phone || c.phone));
-    if (hit) return;
+    if (hit) { done(); return; }
+    // An address another supplier's saved contact has is that supplier's
+    // person — carried over on a row whose vendor was changed, most likely —
+    // and is not filed under this one as well.
+    if (email && contacts.all().some(c => lc(c.supplier_name) !== lc(vendor) && lc(c.email) === lc(email))) { done(); return; }
     const key = [lc(vendor), lc(name), lc(email), lc(phone)].join('|');
+    done();
     if (remembered.has(key)) return;
     remembered.add(key);
-    contacts.upsert({ supplier_name: vendor, name, email, phone })
-      .catch(err => { remembered.delete(key); console.warn('[procurement] could not remember the contact', err); });
+    // The page's supplier list is up to a minute old: a supplier renamed (or
+    // removed) by someone else since is still offered here, and a contact
+    // filed under its old name would be seen nowhere. So the list is asked
+    // first, when the page can; "don't know" goes ahead.
+    const listed = typeof cfg.isSupplierListed === 'function'
+      ? Promise.resolve().then(() => cfg.isSupplierListed(vendor)).catch(() => null) : Promise.resolve(null);
+    listed.then(on => {
+      if (on === false) {
+        remembered.delete(key);
+        console.warn(`[procurement] "${vendor}" is no longer on the supplier list; the contact was not remembered`);
+        return null;
+      }
+      return contacts.upsert({ supplier_name: vendor, name, email, phone });
+    }).catch(err => { remembered.delete(key); console.warn('[procurement] could not remember the contact', err); });
+  }
+
+  /**
+   * Set a row's Vendor. When its Contact / Email are a saved contact of the
+   * vendor it had, they are that supplier's person, not the new one's: both
+   * are cleared (and said so), rather than left beside the new vendor to be
+   * emailed by mistake — and filed under it as one of its people.
+   */
+  function changeVendor(rowId, name) {
+    const row = rowById(rowId);
+    if (!row || name === row.vendor) return false;
+    const old = row.vendor.trim();
+    const was = old && lc(old) !== lc(name) ? savedContactOf(old, row) : null;
+    if (was) {
+      setFields(rowId, { vendor: name, contact: '', email: '' });
+      contactTouched.delete(row.id);
+      toast(`Contact and Email cleared: ${was.name || was.email || 'that contact'} is a contact of ${old}, not of ${name || 'the new vendor'}.`);
+    } else setField(rowId, 'vendor', name);
+    return true;
   }
 
   // ── Row store + saving ──────────────────────────────────────────────
@@ -1500,6 +1655,9 @@
     if (!r) return null;
     const known = server.get(r.id);
     if (known && Number(r.version) < Number(known.version)) return rowById(r.id);
+    // Moved to another line by someone else: a re-link this page tried for
+    // it (and would otherwise never try again) may be the right one now.
+    if (known && known.bid_item_id !== r.bid_item_id) forgetRelinks(r.id);
     if (r.deleted_at) { dropRow(r.id); return null; }
     touched.set(r.id, ++touchSeq);
     server.set(r.id, { ...r });
@@ -1524,6 +1682,7 @@
   function setField(rowId, field, value, { delay = SAVE_DELAY } = {}) {
     const row = rowById(rowId);
     if (!row || !canEdit()) return false;
+    if ((field === 'contact' || field === 'email') && !sameVal(row[field], value)) contactTouched.add(row.id);
     row[field] = value;
     const inFlight = fly.get(row.id);
     const base = inFlight && field in inFlight ? inFlight[field] : (server.get(row.id) || {})[field];
@@ -1670,6 +1829,16 @@
   // A save started as the page goes away (closed, reloaded, switched to
   // another browser tab) has to be sent now and survive the unload.
   window.addEventListener('pagehide', () => { flushAll({ keepalive: true }); });
+  // …but a save that has already failed (the server or the connection is
+  // down) will fail again as the page closes, and one still out may never be
+  // answered. The banner promised those edits are kept and sent again, so
+  // leaving now asks first — the browser's own "Leave site?" — the way the
+  // page already does for unsent Daily rows.
+  window.addEventListener('beforeunload', e => {
+    if (!failed.size && !fly.size && !pend.size) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') flushAll({ keepalive: true });
   });
@@ -1704,7 +1873,14 @@
       st.loadState = 'ok';
       st.loadedFor = projectId;
       if (!wasOk || !quiet) renderBody();
-      else if (signature() !== before) { renderTable(); updateCounts(); renderHead(); }
+      else if (signature() !== before) {
+        // The answer can land after the PM has started typing (the poll only
+        // checks as it starts): then the rows are redrawn around the cell in
+        // use, never the table under it — see redrawAround.
+        if (cellInUse()) redrawAround();
+        else { renderTable(); updateCounts(); }
+        renderHead();
+      }
       autoRelink(projectId);
     } catch (err) {
       if (gen !== loadGen) return;
@@ -1722,6 +1898,48 @@
   }
   function signature() {
     return st.rows.map(r => `${r.id}:${r.version}:${r.updated_at}`).sort().join('|');
+  }
+
+  /**
+   * Whether the table holds a cell being typed in, or a combobox that has
+   * just been left and is about to commit (120 ms after blur).
+   */
+  function cellInUse() {
+    const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
+    if (!wrap) return false;
+    const a = document.activeElement;
+    return !!((a && a !== document.body && wrap.contains(a)) || wrap.querySelector('[data-pcommit]'));
+  }
+
+  /**
+   * Other people's changes, merged in around a cell in use. Rebuilding the
+   * table would replace the box being typed in: a combobox loses its menu
+   * and the rest of the word, a date box restarts at its month — so the
+   * day and year keys land in the wrong place and a wrong date is saved.
+   * Instead each row on screen is redrawn in place (refreshRow keeps the
+   * cell in use as it is), rows deleted elsewhere go, and the full redraw —
+   * for rows added elsewhere, and the order and grouping — waits until the
+   * table is left.
+   */
+  let redrawDeferred = false;
+  function redrawAround() {
+    const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
+    if (!wrap) return;
+    const shown = new Set([...wrap.querySelectorAll('tr.fctproc-row')].map(tr => tr.dataset.row));
+    shown.forEach(id => refreshRow(id));
+    if (st.rows.some(r => !shown.has(r.id))) redrawDeferred = true;
+    updateCounts();
+  }
+  function redrawWhenFree() {
+    if (!redrawDeferred || !isMounted()) return;
+    const wrap = st.mountEl.querySelector('#fctproc-wrap');
+    // A combobox still committing: shortly. Another cell taken: the next
+    // time one is left.
+    if (wrap && wrap.querySelector('[data-pcommit]')) { setTimeout(redrawWhenFree, 250); return; }
+    if (cellInUse()) return;
+    redrawDeferred = false;
+    renderTable();
+    updateCounts();
   }
 
   function selectProject(id) {
@@ -1825,7 +2043,9 @@
     return `<span class="fctproc-pill st-not" title="Not ordered yet">Not Ordered<span class="n">${n['Not Ordered']}</span></span>
       <span class="fctproc-pill st-ord" title="On a PO or given a date ordered, not delivered">Ordered<span class="n">${n.Ordered}</span></span>
       <span class="fctproc-pill st-del" title="Date delivered filled in">Delivered<span class="n">${n.Delivered}</span></span>
-      ${n[UNKNOWN] ? `<span class="fctproc-pill st-unk" title="The purchase orders have not loaded yet, so whether these rows are ordered is not known">POs loading…<span class="n">${n[UNKNOWN]}</span></span>` : ''}
+      ${n[UNKNOWN] ? (ctx.poFailed
+        ? `<span class="fctproc-pill st-unk po-failed" title="The purchase orders could not be read from the server. The page tries again every minute; until then whether these rows are ordered is not known.">POs not loaded — retrying<span class="n">${n[UNKNOWN]}</span></span>`
+        : `<span class="fctproc-pill st-unk" title="The purchase orders have not loaded yet, so whether these rows are ordered is not known">POs loading…<span class="n">${n[UNKNOWN]}</span></span>`) : ''}
       ${n.late ? `<span class="fctproc-pill n-red" title="Late to order, or late to arrive">Late<span class="n">${n.late}</span></span>` : ''}`;
   }
 
@@ -1941,20 +2161,23 @@
     { key: 'status', label: 'Status', w: 11.2, filter: 'status', stick: true },
     { key: 'po', label: 'PO #', w: 9, filter: 'po' },
     { key: 'sca_status', label: 'Sub-Contractor Agreement', w: 7.6, filter: 'sca_status' },
-    { key: 'date_needed', label: 'Date Needed', w: 7.7 },
-    { key: 'lead_time_days', label: 'Lead Time (days)', w: 4.6, num: true },
-    { key: 'order_by', label: 'Order By', w: 6.4, title: 'Date Needed minus Lead Time' },
-    { key: 'date_ordered', label: 'Date Ordered', w: 7.7 },
-    { key: 'date_delivered', label: 'Date Delivered', w: 7.7 },
-    { key: 'quantity', label: 'Quantity', w: 8.2, num: true },
+    // Every column filters, as every column of the old sheet did — a blank
+    // Date Needed is exactly the row the late flags can never catch, and
+    // "(blank)" in its filter is how it is found.
+    { key: 'date_needed', label: 'Date Needed', w: 7.7, filter: 'date_needed' },
+    { key: 'lead_time_days', label: 'Lead Time (days)', w: 4.6, num: true, filter: 'lead_time_days' },
+    { key: 'order_by', label: 'Order By', w: 6.4, title: 'Date Needed minus Lead Time', filter: 'order_by' },
+    { key: 'date_ordered', label: 'Date Ordered', w: 7.7, filter: 'date_ordered' },
+    { key: 'date_delivered', label: 'Date Delivered', w: 7.7, filter: 'date_delivered' },
+    { key: 'quantity', label: 'Quantity', w: 8.2, num: true, filter: 'quantity' },
     { key: 'unit', label: 'Unit', w: 4.8, filter: 'unit' },
     { key: 'cost_code', label: 'Cost Code', w: 10.5, filter: 'cost_code' },
     { key: 'sub_code', label: 'Sub Code', w: 11.5, filter: 'sub_code' },
-    { key: 'description', label: 'Description', w: 15 },
+    { key: 'description', label: 'Description', w: 15, filter: 'description' },
     { key: 'vendor', label: 'Vendor', w: 10.5, filter: 'vendor' },
     { key: 'quote_number', label: 'Quote #', w: 7, filter: 'quote_number' },
     { key: 'contact', label: 'Contact', w: 9, filter: 'contact' },
-    { key: 'email', label: 'Email', w: 11 },
+    { key: 'email', label: 'Email', w: 11, filter: 'email' },
     { key: 'actions', label: '', w: 6.2, edit: true },
   ];
   const colsFor = edit => COLS.filter(c => !c.edit || edit);
@@ -2016,6 +2239,7 @@
   function renderTable() {
     const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
     if (!wrap) return;
+    redrawDeferred = false;
     const ctx = makeCtx();
     const edit = canEdit();
     const cols = colsFor(edit);
@@ -2024,8 +2248,10 @@
     const width = cols.reduce((s, c) => s + c.w, 0);
     let body = '';
     if (!st.rows.length) {
-      body = `<tr class="fctproc-nomatch"><td colspan="${cols.length}">No procurement rows for this job yet.${edit
-        ? ' Use <b>Send to Procurement</b> to bring in the bid lines, or <b>+ Add Row</b> for a material by hand.' : ''}</td></tr>`;
+      const hasBid = (ctx.bidLines || []).length > 0;
+      body = `<tr class="fctproc-nomatch"><td colspan="${cols.length}">No procurement rows for this job yet.${!edit ? ''
+        : hasBid ? ' Use <b>Send to Procurement</b> to bring in the bid lines, or <b>+ Add Row</b> for a material by hand.'
+        : ' This job has no bid lines yet — add them on the bid page (or import a Procore estimate) to send them here, or use <b>+ Add Row</b> for a material by hand.'}</td></tr>`;
     } else if (!rows.length) {
       body = `<tr class="fctproc-nomatch"><td colspan="${cols.length}">No rows match the filters.
         <button type="button" class="fctproc-link" data-act="clear">Clear filters</button></td></tr>`;
@@ -2204,7 +2430,7 @@
             return td('', cbCell('proc_codes:' + (r.project_id || st.projectId), codes.sub_code, 'Pick bid line…',
               `${at('codes')} data-cb-value="${esc(r.bid_item_id || '')}" title="${esc([codes.cost_code, codes.sub_code].filter(Boolean).join(' / '))}"`));
           }
-          return td('', txt(codes.sub_code));
+          return td('', txt(codes.sub_code, 'wrap2'));
         case 'description':
           return td('', edit ? textIn('description', r.source === 'bid' ? '' : 'What is it?') : txt(r.description, 'wrap'));
         case 'vendor': {
@@ -2241,18 +2467,24 @@
   function poCellHtml(r, ep, edit, td) {
     const id = esc(r.id);
     const num = ep.po ? str(ep.po.po_number) || '(no number)' : '';
-    const cls = ep.kind === 'multiple' ? 'po-multi' : ep.kind === 'removed' ? 'po-removed' : ep.kind === 'nopo' ? 'po-nopo' : '';
+    const cls = ep.kind === 'multiple' ? 'po-multi' : (ep.kind === 'removed' || ep.kind === 'moved') ? 'po-removed' : ep.kind === 'nopo' ? 'po-nopo' : '';
     const autoTag = ep.kind === 'auto'
       ? '<span class="fctproc-tag" title="Matched automatically: the only PO on this job with this cost code, sub code and vendor">auto</span>' : '';
     const open = ep.po ? `<button type="button" class="fctproc-open" data-act="open-po" data-po="${esc(ep.po.id)}" title="Open ${esc(num)} on the Purchase Orders tab">&#8599;</button>` : '';
-    const multiTitle = ep.kind === 'multiple' ? ep.candidates.map(p => str(p.po_number)).join(', ') : '';
+    let multiTitle = ep.kind === 'multiple' ? ep.candidates.map(p => str(p.po_number)).join(', ') : '';
+    if (ep.kind === 'moved') {
+      // Linked here, then re-pointed to another job on the Purchase Orders
+      // tab: it is not this job's order any more, so the row is not ordered.
+      const other = ep.po.project_id ? project(String(ep.po.project_id)) : null;
+      multiTitle = `${num} now belongs to ${other ? projLabel(other) : ep.po.project_id ? 'another job' : 'no job'}, so it is not this job's order. Pick this job's PO, or "Auto".`;
+    }
     if (!edit) {
       const text = ep.kind === 'multiple' ? `${ep.candidates.length} POs match` : poText(ep);
       return td(cls, `<div class="fctproc-po"><span class="fctproc-txt" title="${esc(multiTitle || text)}">${esc(text)}</span>${autoTag}${open}</div>`);
     }
     const value = ep.kind === 'linked' || ep.kind === 'auto' ? num : ep.kind === 'nopo' ? 'No PO' : '';
     const placeholder = ep.kind === 'multiple' ? `${ep.candidates.length} POs match — pick`
-      : ep.kind === 'removed' ? 'PO removed' : ep.kind === 'loading' ? '…' : '—';
+      : ep.kind === 'removed' ? 'PO removed' : ep.kind === 'moved' ? `${num} is on another job` : ep.kind === 'loading' ? '…' : '—';
     const cbv = r.po_id ? r.po_id : r.po_auto === false ? '__none__' : '__auto__';
     return td(cls, `<div class="fctproc-po">${cbCell('proc_pos:' + r.id, value, placeholder,
       `data-pr="${id}" data-pf="po" data-cb-value="${esc(cbv)}"${multiTitle ? ` title="${esc(multiTitle)}"` : ''}`)}${autoTag}${open}</div>`);
@@ -2295,8 +2527,18 @@
   function bulkValueHtml() {
     switch (st.bulkField) {
       case 'vendor': return cbCell('proc_vendors', '', 'Vendor…', 'id="fctproc-bulk-vendor" aria-label="Vendor"');
-      case 'contact_email': return `<input type="text" id="fctproc-bulk-contact" placeholder="Contact" maxlength="${MAX_LEN.contact}">
+      case 'contact_email': {
+        // When the rows ticked share one vendor, its saved contacts are
+        // offered (picking one fills Email too), as the row's own cell does.
+        const rows = [...st.selected].map(rowById).filter(Boolean);
+        const vendors = [...new Set(rows.map(r => lc(r.vendor)))];
+        const offer = rows.length && vendors.length === 1 && vendors[0] && contacts.list(rows[0].vendor).length;
+        const contact = offer
+          ? cbCell('proc_contacts:' + rows[0].id, '', 'Contact…', `id="fctproc-bulk-contact" aria-label="Contact" maxlength="${MAX_LEN.contact}"`)
+          : `<input type="text" id="fctproc-bulk-contact" placeholder="Contact" maxlength="${MAX_LEN.contact}">`;
+        return `${contact}
         <input type="text" id="fctproc-bulk-email" placeholder="Email" maxlength="${MAX_LEN.email}">`;
+      }
       case 'sca_status': return `<select id="fctproc-bulk-val">${SCA_VALUES.map(v => `<option>${esc(v)}</option>`).join('')}</select>`;
       case 'date_needed': case 'date_ordered': case 'date_delivered': return `<input type="date" id="fctproc-bulk-val" aria-label="Date" min="${DATE_MIN}" max="${DATE_MAX}">`;
       case 'lead_time_days': return '<input type="number" id="fctproc-bulk-val" min="0" max="3650" step="1" style="width:5rem" aria-label="Days">';
@@ -2321,7 +2563,7 @@
       <span id="fctproc-bulk-valbox" style="display:inline-flex;gap:0.35rem;align-items:center">${bulkValueHtml()}</span>
       <button type="button" class="btn btn-green fctproc-b" data-act="bulk-apply">Apply to ${n}</button>
       <span class="fctproc-spacer"></span>
-      <button type="button" class="btn btn-ghost fctproc-b" data-act="bulk-po" title="Raise a purchase order for these rows and link them to it">Create PO from selected</button>
+      <button type="button" class="btn btn-ghost fctproc-b" data-act="bulk-po" title="Raise a purchase order for these rows and link them to it"${creatingPO ? ' disabled' : ''}>${creatingPO ? 'Creating PO…' : 'Create PO from selected'}</button>
       ${st.bulkConfirmDel
         ? `<span style="color:#f87171">Delete ${n} row${n === 1 ? '' : 's'}?</span>
            <button type="button" class="btn btn-danger fctproc-b" data-act="bulk-del-yes">Yes, delete</button>
@@ -2424,6 +2666,12 @@
     el.addEventListener('click', onClick);
     el.addEventListener('focusout', onFocusOut);
     el.addEventListener('keydown', onKeyDown);
+    // What a combobox held, and whether anything was chosen in it (see
+    // cbUntouched). On the way down, before the combobox's own handlers.
+    el.addEventListener('focusin', onCbFocusIn, true);
+    el.addEventListener('input', onCbInputCapture, true);
+    el.addEventListener('keydown', onCbKeyCapture, true);
+    el.addEventListener('mousedown', onCbMouseDownCapture, true);
   }
 
   function readNumberInput(el, field) {
@@ -2438,13 +2686,19 @@
     return n;
   }
 
+  const SEARCH_LIVE_ROWS = 120, SEARCH_DELAY = 220;
+  let searchTimer = null;
   function onInput(e) {
     const el = e.target;
     if (el.id === 'fctproc-search') {
       st.search = el.value;
       st.forceShow.clear();
-      renderTable();
-      updateCounts();
+      // Every key rebuilds the table, which on a big job (hundreds of rows,
+      // thousands of boxes) takes longer than the next key takes to come:
+      // there it waits for a pause in the typing. A small job keeps up.
+      clearTimeout(searchTimer);
+      if (st.rows.length > SEARCH_LIVE_ROWS) searchTimer = setTimeout(() => { renderTable(); updateCounts(); }, SEARCH_DELAY);
+      else { renderTable(); updateCounts(); }
       return;
     }
     // Comboboxes are acted on at commit ('change'); their 'input' is the
@@ -2464,7 +2718,9 @@
 
   function onChange(e) {
     const el = e.target;
-    if (el.id === 'fctproc-proj') { pickProject(el); return; }
+    if (el.id === 'fctproc-proj') { if (!cbUntouched(el)) pickProject(el); return; }
+    if (el.id === 'fctproc-bulk-vendor') { cbUntouched(el); return; }
+    if (el.id === 'fctproc-bulk-contact' && isCb(el)) { if (!cbUntouched(el)) pickBulkContact(el); return; }
     if (el.id === 'fctproc-showall') { st.showAll = el.checked; storeSet('showall', el.checked ? '1' : ''); return; }
     if (el.id === 'fctproc-bulk-field') { st.bulkField = el.value; const vb = st.mountEl.querySelector('#fctproc-bulk-valbox'); if (vb) vb.innerHTML = bulkValueHtml(); return; }
     if (el.id === 'fctproc-selall') {
@@ -2543,8 +2799,10 @@
   }
 
   // The box was left holding a date that cannot be saved: say so, and put
-  // the cell back to the date that is saved.
-  function refuseDate(el) {
+  // the cell back to the date that is saved. `next` is where the click or
+  // Tab that left it is going — a box of the same row that the redraw below
+  // must not replace, or that click lands nowhere.
+  function refuseDate(el, next) {
     const why = el.dataset.badDate;
     delete el.dataset.badDate;
     el.classList.remove('bad');
@@ -2555,19 +2813,63 @@
     el.classList.toggle('empty', !keep);
     toast(`${FIELD_LABEL[field] || 'Date'}: ${typed ? typed + ' was' : 'the date was'} not saved — ${why}. `
       + (keep ? `It is back to ${fmtDate(keep)}.` : 'The cell is left blank.'), 'error');
-    if (row) refreshRow(row.id);
+    if (row) refreshRow(row.id, next || null);
+  }
+
+  // ── What a combobox held when it took focus ─────────────────────────
+  // The page's combobox highlights its FIRST option whenever the box's text
+  // matches no option label — an empty Vendor, Unit or Contact, a Sub Code
+  // (the cell shows the bare sub code, the options read "Cost / Sub"), a PO
+  // matched automatically — and Tab or Enter then commits the highlighted
+  // option. In a sheet moved through with Tab, that wrote LB Water, SF and
+  // the first bid line into every cell tabbed past. So a commit counts only
+  // when the user chose something since the box took focus: typed in it,
+  // moved the highlight with the arrow keys, or clicked an option. Anything
+  // else puts the box back as it was and saves nothing — as Excel leaves a
+  // cell tabbed through.
+  const cbSession = new WeakMap();
+  const isCb = el => !!(el && el.classList && el.classList.contains('cb-input'));
+  function cbChosen(el) { const s = cbSession.get(el); if (s) s.chosen = true; }
+  function onCbFocusIn(e) {
+    const el = e.target;
+    if (!isCb(el)) return;
+    cbSession.set(el, { value: el.value, cbValue: el.dataset.cbValue || '', chosen: false });
+  }
+  function onCbInputCapture(e) {
+    // The synthetic input of a commit is not typing (tracker sets the flag
+    // around it); real typing is stopped by the combobox before it bubbles,
+    // so this listens on the way down.
+    if (isCb(e.target) && !e.target._cbBypassFilter) cbChosen(e.target);
+  }
+  function onCbKeyCapture(e) {
+    if (isCb(e.target) && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) cbChosen(e.target);
+  }
+  function onCbMouseDownCapture(e) {
+    const opt = e.target && e.target.closest && e.target.closest('.cb-opt');
+    const menu = opt && opt.closest('.cb-menu');
+    const input = menu && menu.previousElementSibling;
+    if (isCb(input)) cbChosen(input);
+  }
+  /** True (and the box put back) when this commit chose nothing. */
+  function cbUntouched(input) {
+    const s = cbSession.get(input);
+    if (!s || s.chosen) return false;
+    input.value = s.value;
+    if (s.cbValue) input.dataset.cbValue = s.cbValue; else delete input.dataset.cbValue;
+    return true;
   }
 
   function commitCombo(rowId, field, input) {
     const row = rowById(rowId);
     if (!row) return;
+    if (cbUntouched(input)) return;
     const v = input.dataset.cbValue || '';
     const typed = input.value.trim();
     if (field === 'vendor') {
       if (v.startsWith('__new__:')) { addVendor(rowId, v.slice(8).trim(), input); return; }
       const name = canonicalSupplier(typed).slice(0, MAX_LEN.vendor);
       input.value = name;
-      if (name !== row.vendor) { setField(rowId, 'vendor', name); updateCounts(); }
+      if (changeVendor(rowId, name)) updateCounts();
       return;
     }
     if (field === 'contact') {
@@ -2595,8 +2897,14 @@
       const line = v ? (makeCtx().bidLines || []).find(l => String(l.id) === v) : null;
       if (line) setFields(rowId, { bid_item_id: String(line.id), cost_code: str(line.cost_code), sub_code: str(line.sub_code) });
       else if (!typed) setFields(rowId, { bid_item_id: null, cost_code: '', sub_code: '' });
-      // Anything else typed matches no bid line: the codes are the bid's, so
-      // the cell goes back to what it was (refreshRow after the commit).
+      else {
+        // Anything else typed matches no bid line: the codes are the bid's
+        // (section 1), so the cell goes back to what it was (refreshRow
+        // after the commit) — and says why, rather than just undoing it.
+        const n = (makeCtx().bidLines || []).length;
+        toast(n ? `Sub Code: "${typed.slice(0, 60)}" is not a line on this job's bid — pick one from the list. A material that is not on the bid can go in Description.`
+          : `Sub Code: this job has no bid lines yet, so there is no cost / sub code to pick. Add the bid items on the bid page first; the material can go in Description meanwhile.`, 'error');
+      }
       updateCounts();
       return;
     }
@@ -2612,7 +2920,7 @@
   async function addVendor(rowId, name, input) {
     if (!name) return;
     if (input) input.value = name;
-    setField(rowId, 'vendor', name);
+    changeVendor(rowId, name);
     if (typeof cfg.addSupplier !== 'function') return;
     try {
       const canon = String((await cfg.addSupplier(name)) || name).trim();
@@ -2652,7 +2960,25 @@
     const tr0 = el.closest && el.closest('tr.fctproc-row');
     const rowId = (el.dataset && el.dataset.pr) || (tr0 && tr0.dataset.row);
     if (!rowId) return;
-    if (el.type === 'date' && el.dataset.badDate) refuseDate(el);
+    if (el.type === 'date' && el.dataset.badDate) {
+      // Chrome fires change only on the FIRST key of a box being emptied
+      // (the box is then part-filled, so it is marked bad) and none once the
+      // last segment is cleared — so what the box holds now decides, not the
+      // mark. Emptied all the way, it is a cleared date, and saved as one.
+      const now = dateProblem(el);
+      if (now) refuseDate(el, e.relatedTarget);
+      else {
+        delete el.dataset.badDate;
+        el.classList.remove('bad');
+        el.removeAttribute('title');
+        el.classList.toggle('empty', !el.value);
+        if (rowById(rowId)) {
+          setField(rowId, el.dataset.pf, ymdOf(el.value) || null);
+          refreshRow(rowId, e.relatedTarget || null);
+          updateCounts();
+        }
+      }
+    }
     if (el.classList.contains('cb-input') && el.dataset.pr) {
       // The page's combobox commits 120 ms after blur. Mark it so nothing
       // redraws it out from under that commit, then tidy the row once it has.
@@ -2668,6 +2994,8 @@
       flushRow(rowId);
       rememberContact(rowById(rowId));
       if (!el.classList.contains('cb-input')) refreshRow(rowId);
+      // A redraw held back while this cell was in use (redrawAround).
+      if (redrawDeferred) setTimeout(redrawWhenFree, el.classList.contains('cb-input') ? 250 : 0);
     }, 0);
   }
 
@@ -2768,7 +3096,23 @@
     const item = { id: uid(), project_id: st.projectId, ...seed };
     setSave('saving');
     try {
-      const data = await api('POST', '/procurement' + q({}), { item });
+      let data;
+      try {
+        data = await api('POST', '/procurement' + q({}), { item });
+      } catch (err) {
+        // No answer: the server may have added the row and the answer been
+        // lost. Asked again with the SAME id, it is added once either way —
+        // "duplicate" means the first one landed.
+        if (!err.network) throw err;
+        try {
+          data = await api('POST', '/procurement' + q({}), { item });
+        } catch (err2) {
+          if (err2.code !== 'duplicate') throw err2;
+          data = { item: { ...item, source: 'manual', version: 1, created_at: new Date().toISOString() } };
+          // The row as the server has it comes with the next read.
+          setTimeout(() => { if (st.projectId === item.project_id) load(item.project_id, { quiet: true }); }, 0);
+        }
+      }
       const row = adoptServerRow(data.item || item);
       if (row) st.forceShow.add(row.id);
       setSave('saved');
@@ -2778,7 +3122,9 @@
       return row;
     } catch (err) {
       setSave('error');
-      showError(`Procurement: the row could not be added (${err.message}).`);
+      showError(err.network
+        ? `Procurement: the row may not have been added (${err.message}). It shows here once the server answers — check before adding it again.`
+        : `Procurement: the row could not be added (${err.message}).`);
       return null;
     }
   }
@@ -2876,6 +3222,16 @@
     return data;
   }
 
+  // A saved contact picked in the bulk bar fills its Email box too.
+  function pickBulkContact(input) {
+    const v = input.dataset.cbValue || '';
+    const c = v && contacts.all().find(x => x.id === v);
+    if (!c) return;
+    input.value = c.name || '';
+    const em = st.mountEl && st.mountEl.querySelector('#fctproc-bulk-email');
+    if (em) em.value = c.email || c.phone || '';
+  }
+
   async function bulkApply() {
     const ids = [...st.selected].filter(id => rowById(id));
     if (!ids.length || !canEdit()) return;
@@ -2893,12 +3249,32 @@
       try { ok = window.confirm(`Clear ${label} on ${ids.length} row${ids.length === 1 ? '' : 's'}?`); } catch { ok = false; }
       if (!ok) return;
     }
+    // A new vendor on rows whose Contact / Email are a saved contact of the
+    // vendor they had: that person is the old supplier's, so those rows have
+    // them cleared in the same change (changeVendor, for many rows).
+    let groups = [[ids, fields]];
+    if ('vendor' in fields && !('contact' in fields)) {
+      const clear = ids.filter(id => {
+        const r = rowById(id);
+        return r && r.vendor.trim() && lc(r.vendor) !== lc(fields.vendor) && savedContactOf(r.vendor, r);
+      });
+      if (clear.length) {
+        groups = [[ids.filter(id => !clear.includes(id)), fields], [clear, { ...fields, contact: '', email: '' }]].filter(g => g[0].length);
+      }
+    }
     try {
-      await bulkPatch(ids, fields);
-      if ('contact' in fields || 'vendor' in fields) ids.forEach(id => rememberContact(rowById(id)));
+      let cleared = 0;
+      for (const [gIds, gFields] of groups) {
+        await bulkPatch(gIds, gFields);
+        if ('contact' in gFields && !('contact' in fields)) { cleared += gIds.length; gIds.forEach(id => contactTouched.delete(id)); }
+      }
+      // Contact + Email set on purpose: remembered under each row's vendor.
+      if ('contact' in fields) ids.forEach(id => contactTouched.add(id));
+      ids.forEach(id => rememberContact(rowById(id)));
       renderTable();
       updateCounts();
-      toast(`Updated ${ids.length} row${ids.length === 1 ? '' : 's'}`);
+      toast(`Updated ${ids.length} row${ids.length === 1 ? '' : 's'}`
+        + (cleared ? ` — Contact and Email cleared on ${cleared}, whose contact was the previous vendor's` : ''));
     } catch (err) {
       setSave('error');
       showError(`Procurement: the bulk change could not be saved (${err.message}).`);
@@ -2922,14 +3298,33 @@
     });
   }
 
+  // One "Create PO from selected" at a time: a second click while the first
+  // is still out (a cold server takes a second or two) raised a second order
+  // for the same rows — with the same number, since neither was on the list
+  // yet when the next number was worked out.
+  let creatingPO = false;
+  function setPOButtonBusy(busy) {
+    const b = st.mountEl && st.mountEl.querySelector('[data-act="bulk-po"]');
+    if (!b) return;
+    b.disabled = busy;
+    b.textContent = busy ? 'Creating PO…' : 'Create PO from selected';
+  }
   async function createPOFromSelected() {
-    if (!canEdit()) return;
+    if (!canEdit() || creatingPO) return;
+    creatingPO = true;
+    setPOButtonBusy(true);
+    try { await createPOFromSelectedNow(); } finally {
+      creatingPO = false;
+      setPOButtonBusy(false);
+    }
+  }
+  async function createPOFromSelectedNow() {
     const ctx = makeCtx();
     let rows = sortRows([...st.selected].map(rowById).filter(Boolean), ctx);
     if (!rows.length) return;
     const explain = msg => { toast(msg, 'error'); };
     if (typeof cfg.createPurchaseOrder !== 'function') { explain('Purchase orders cannot be created from here.'); return; }
-    if (!ctx.poLoaded) { explain('The purchase orders are still loading — try again in a moment.'); return; }
+    if (!ctx.poLoaded) { explain(ctx.poFailed ? 'The purchase orders could not be read from the server, so no PO can be raised from here yet. The page tries again every minute.' : 'The purchase orders are still loading — try again in a moment.'); return; }
     if (rows.some(r => r.project_id && r.project_id !== st.projectId)) { explain('Every selected row has to be on the job that is open.'); return; }
 
     // A row already on a PO — linked, or matched automatically — is material
@@ -3042,7 +3437,9 @@
     // Ordered with no Date Ordered — a sheet that says the opposite of what
     // is true, and gets mailed on. The list is read again on the page's poll.
     if (!ctx.poLoaded) {
-      toast('The purchase orders have not loaded yet, so the export would show ordered rows as not ordered. Try again once they have (the PO # column stops showing "…").', 'error');
+      toast(ctx.poFailed
+        ? 'The purchase orders could not be read from the server, so the export would show ordered rows as not ordered. The page tries again every minute — export once the PO # column stops showing "…".'
+        : 'The purchase orders have not loaded yet, so the export would show ordered rows as not ordered. Try again once they have (the PO # column stops showing "…").', 'error');
       return;
     }
     const rows = shownInOrder(ctx);
@@ -3051,6 +3448,74 @@
   }
 
   // ── Send to Procurement ─────────────────────────────────────────────
+  /**
+   * The job's bid as the server holds it now, or null when that cannot be
+   * said (the read failed). The page's own copy (cfg.getBidLines) is what it
+   * drew, and can be behind: a colleague's Procore "Replace all" not polled
+   * in yet, or a boot still showing yesterday's cached copy.
+   */
+  async function serverBidLines(pid) {
+    if (typeof cfg.getFreshBidLines !== 'function') {
+      // A page that cannot read its bid again (a test, an older host) has
+      // only its own copy to go by.
+      try { return cfg.getBidLines(pid) || []; } catch { return null; }
+    }
+    try {
+      const lines = await cfg.getFreshBidLines(pid);
+      return Array.isArray(lines) ? lines : null;
+    } catch (err) {
+      console.warn('[procurement] could not read the bid', err);
+      return null;
+    }
+  }
+  /** Whether two copies of a bid have the same lines with the same codes. */
+  function sameBid(a, b, codeKey) {
+    const k = typeof codeKey === 'function' ? codeKey : defaultCodeKey;
+    const sig = lines => (lines || []).filter(l => l && l.id != null)
+      .map(l => `${l.id}\u0000${ck(k, l.cost_code)}\u0000${ck(k, l.sub_code)}`).sort().join('\u0001');
+    return sig(a) === sig(b);
+  }
+  /**
+   * The bid lines a re-link may move rows by: the page's, and only when the
+   * server holds the very same ones. Disagreeing either way means the rows
+   * would be moved by a bid that is not the current one — the page behind (a
+   * colleague's "Replace all" not polled in yet: its re-link would put every
+   * row back on the deleted lines), or ahead of a save still on its way — so
+   * nothing is moved until the two agree, on a later load.
+   *   { lines }                  agreed
+   *   { lines: null, why }       'unread' (the server could not be asked) or
+   *                              'differs'
+   */
+  async function bidAgreed(pid, { patience = 0 } = {}) {
+    for (let tries = 0; ; tries++) {
+      const server = await serverBidLines(pid);
+      if (!server) return { lines: null, why: 'unread' };
+      const ctx = makeCtx(pid);
+      if (sameBid(server, ctx.bidLines, ctx.codeKey)) return { lines: ctx.bidLines || [], why: '' };
+      // A save of this page's own that was already on its way when the bid
+      // was read lands a moment later: asked again once, when worth waiting.
+      if (tries >= (patience ? 1 : 0)) return { lines: null, why: 'differs' };
+      await new Promise(r => setTimeout(r, patience));
+    }
+  }
+
+  // The rows of a job, deleted ones included, as the checklist needs them.
+  async function readAllRows(pid) {
+    const data = await api('GET', '/procurement' + q({ project_id: pid, include_deleted: 1 }));
+    return (data.items || []).map(normRow).filter(Boolean);
+  }
+
+  // Live rows of the job whose bid line is gone ("not on bid").
+  function notOnBidRows(rows, lines) {
+    const ids = new Set((lines || []).filter(l => l && l.id != null).map(l => String(l.id)));
+    return (rows || []).filter(r => r && !r.deleted_at && (r.source === 'bid' || r.bid_item_id != null) && orphaned(r, ids));
+  }
+
+  const relinkWords = done => {
+    const names = [...new Set(done.map(r => [r.cost_code, r.sub_code].filter(Boolean).join(' / ')).filter(Boolean))];
+    return `${names.slice(0, 3).join('; ')}${names.length > 3 ? ` and ${names.length - 3} more` : ''}`;
+  };
+
   async function openSendModal(projectId) {
     const pid = projectId || st.projectId;
     if (!pid) { toast('Pick a job first.', 'error'); return null; }
@@ -3059,52 +3524,43 @@
     const jobName = p ? projLabel(p) : 'this job';
     const m = modal(`Send to Procurement — ${jobName}`, '<div style="color:var(--muted,#888);padding:1rem 0">Loading the bid lines…</div>', { wide: true });
 
-    let rows;
+    if (!(makeCtx(pid).bidLines || []).length) {
+      m.body.innerHTML = `<div class="fctproc-empty" style="border:none">${esc(jobName)} has no bid lines yet.
+        Add bid items or import a Procore estimate on the bid page first.</div>`;
+      return m;
+    }
+    // What is offered has to be the bid the server holds: lines from a copy
+    // that is behind would be sent as rows tied to lines that are gone.
+    const bid = await bidAgreed(pid, { patience: 900 });
+    if (bid.why === 'differs') {
+      m.body.innerHTML = `<div class="fctproc-err">The bid on this page is not the one saved for ${esc(jobName)} — it has
+        been changed somewhere else since this page read it, or a change made here has not reached the server.
+        Reload the page, then Send to Procurement again. Nothing was sent.</div>`;
+      return m;
+    }
+
+    // Re-link rows orphaned by a Procore "Replace all" before deciding what is
+    // new — otherwise every line would come up as new and be sent twice. One
+    // re-link at a time: the automatic one may be under way (the bid poll
+    // redrew the tab), and two would PATCH the same rows twice.
+    let rows, relinked = [];
     try {
-      const data = await api('GET', '/procurement' + q({ project_id: pid, include_deleted: 1 }));
-      rows = (data.items || []).map(normRow).filter(Boolean);
+      await relinkExclusive(async () => {
+        rows = await readAllRows(pid);
+        if (bid.lines && m.el.isConnected) {
+          relinked = await applyRelinks(relinkPlan(bid.lines, rows, makeCtx(pid).codeKey), rows, pid);
+          rows = rows.map(r => relinked.find(d => d.id === r.id) || r);
+        }
+      });
     } catch (err) {
       m.body.innerHTML = `<div class="fctproc-err">Could not read what is already in Procurement for ${esc(jobName)}: ${esc(err.message)}.
         Nothing was sent.</div>`;
       return m;
     }
-    const ctx = makeCtx(pid);
-    const lines = ctx.bidLines || [];
-    if (!lines.length) {
-      m.body.innerHTML = `<div class="fctproc-empty" style="border:none">${esc(jobName)} has no bid lines yet.
-        Add bid items or import a Procore estimate on the bid page first.</div>`;
-      return m;
-    }
+    if (!m.el.isConnected) return m;     // closed meanwhile
 
-    // Re-link rows orphaned by a Procore "Replace all" before deciding what is
-    // new — otherwise every line would come up as new and be sent twice.
-    const done = await applyRelinks(relinkPlan(lines, rows, ctx.codeKey), rows, pid);
-    const relinked = done.length;
-    rows = rows.map(r => done.find(d => d.id === r.id) || r);
-
-    const plan = sendPlan(lines, rows, ctx.codeKey);
-    const entries = plan.groups.flatMap(g => g.lines);
     const tags = { added: '<span class="fctproc-tag">already added</span>', removed: '<span class="fctproc-tag amber" title="This line\'s row was deleted. Tick it to bring that row back.">removed earlier</span>' };
-    m.body.innerHTML = `
-      <p style="margin:0 0 0.7rem;line-height:1.5;color:var(--muted,#9ca3af)">
-        Tick the bid lines to track. Each one becomes a row with the bid's cost code, sub code, quantity and unit.
-        Lump-sum (LS) and hourly (HR) lines start unticked — there is rarely anything to buy for them.
-        Sending again later only adds lines; it never changes rows already there.</p>
-      ${relinked ? `<p style="margin:0 0 0.7rem;color:var(--green,#22c55e)">Re-linked ${relinked} row${relinked === 1 ? '' : 's'} to the bid's new lines (same cost and sub code).</p>` : ''}
-      ${plan.groups.map((g, gi) => `
-        <div class="fctproc-send-grp">
-          <div class="fctproc-send-h"><span>${esc(g.cost_code || 'No cost code')}</span>
-            <span class="gm">${g.lines.length} line${g.lines.length === 1 ? '' : 's'}</span><span class="fctproc-spacer"></span>
-            <button type="button" class="fctproc-link" data-sall="${gi}">All</button><button type="button" class="fctproc-link" data-snone="${gi}">None</button></div>
-          ${g.lines.map(en => {
-            const i = entries.indexOf(en);
-            const qty = en.line.quantity == null ? '' : fmtQty(en.line.quantity);
-            return `<label class="fctproc-send-line ${en.state}">
-              <input type="checkbox" data-si="${i}" ${en.checked ? 'checked' : ''} ${en.state === 'added' ? 'disabled' : ''}>
-              <span class="sub" title="${esc(en.line.sub_code)}">${esc(en.line.sub_code || '(no sub code)')}</span>
-              <span class="qty">${esc([qty, normUnit(en.line.unit)].filter(Boolean).join(' '))}</span>${tags[en.state] || ''}</label>`;
-          }).join('')}
-        </div>`).join('')}`;
+    let plan = null, entries = [];
     const foot = document.createElement('div');
     foot.style.cssText = 'display:flex;align-items:center;gap:0.5rem;justify-content:flex-end;flex-wrap:wrap;padding:0.7rem 1rem;border-top:1px solid var(--border,#2a2a3a)';
     foot.innerHTML = `<span id="fctproc-send-count" style="margin-right:auto;color:var(--muted,#9ca3af)"></span>
@@ -3121,10 +3577,52 @@
       go.textContent = `Send ${n} line${n === 1 ? '' : 's'}`;
       go.disabled = n === 0;
     };
-    sync();
+
+    // The checklist, drawn from `rows` — again after a send that failed, from
+    // a fresh read, so it shows what the server now holds.
+    function draw(rowsNow) {
+      const lines = makeCtx(pid).bidLines || [];
+      plan = sendPlan(lines, rowsNow, makeCtx(pid).codeKey);
+      entries = plan.groups.flatMap(g => g.lines);
+      const off = notOnBidRows(rowsNow, lines);
+      const offNames = [...new Set(off.map(r => [r.cost_code, r.sub_code].filter(Boolean).join(' / ') || '(no code)'))];
+      m.body.innerHTML = `
+        <p style="margin:0 0 0.7rem;line-height:1.5;color:var(--muted,#9ca3af)">
+          Tick the bid lines to track. Each one becomes a row with the bid's cost code, sub code, quantity and unit.
+          Lump-sum (LS) and hourly (HR) lines start unticked — there is rarely anything to buy for them.
+          Sending again later only adds lines; it never changes rows already there.</p>
+        ${relinked.length ? `<p style="margin:0 0 0.7rem;color:var(--green,#22c55e)">Re-linked ${relinked.length} row${relinked.length === 1 ? '' : 's'}
+          to the current bid line${relinked.length === 1 ? '' : 's'} with the same cost and sub code (${esc(relinkWords(relinked))}).</p>` : ''}
+        ${bid.why === 'unread' ? `<p style="margin:0 0 0.7rem;color:#fbbf24">The bid could not be checked against the server just now,
+          so no rows were re-linked to it.</p>` : ''}
+        ${off.length ? `<p class="fctproc-send-off" style="margin:0 0 0.7rem;line-height:1.5;color:#fbbf24">
+          ${off.length} row${off.length === 1 ? ' on this job is' : 's on this job are'} <b>not on the bid</b>:
+          ${esc(offNames.slice(0, 6).join('; '))}${offNames.length > 6 ? ` and ${offNames.length - 6} more` : ''}.
+          Lines with the same codes start unticked — tick one only for a material that has no row yet.</p>` : ''}
+        ${plan.groups.map((g, gi) => `
+          <div class="fctproc-send-grp">
+            <div class="fctproc-send-h"><span>${esc(g.cost_code || 'No cost code')}</span>
+              <span class="gm">${g.lines.length} line${g.lines.length === 1 ? '' : 's'}</span><span class="fctproc-spacer"></span>
+              <button type="button" class="fctproc-link" data-sall="${gi}">All</button><button type="button" class="fctproc-link" data-snone="${gi}">None</button></div>
+            ${g.lines.map(en => {
+              const i = entries.indexOf(en);
+              const qty = en.line.quantity == null ? '' : fmtQty(en.line.quantity);
+              const tag = tags[en.state] || (en.hint ? `<span class="fctproc-tag amber" title="${esc(en.orphans
+                ? 'Rows with this cost and sub code are already on this job, kept from an earlier bid. Sending this line adds another row for it.'
+                : 'A row added by hand is already coded to this line. Sending it adds the bid\'s own row as well.')}">${esc(en.hint)}</span>` : '');
+              return `<label class="fctproc-send-line ${en.state}${en.hint ? ' hinted' : ''}">
+                <input type="checkbox" data-si="${i}" ${en.checked ? 'checked' : ''} ${en.state === 'added' ? 'disabled' : ''}>
+                <span class="sub" title="${esc(en.line.sub_code)}">${esc(en.line.sub_code || '(no sub code)')}</span>
+                <span class="qty">${esc([qty, normUnit(en.line.unit)].filter(Boolean).join(' '))}</span>${tag}</label>`;
+            }).join('')}
+          </div>`).join('')}`;
+      sync();
+    }
+    draw(rows);
+
     m.body.addEventListener('change', e => {
       const i = e.target.dataset.si;
-      if (i == null) return;
+      if (i == null || !entries[+i]) return;
       entries[+i].checked = e.target.checked;
       sync();
     });
@@ -3132,11 +3630,15 @@
       const all = e.target.closest('[data-sall]'), none = e.target.closest('[data-snone]');
       if (!all && !none) return;
       const g = plan.groups[+(all ? all.dataset.sall : none.dataset.snone)];
+      if (!g) return;
       g.lines.forEach(en => { if (en.state !== 'added') en.checked = !!all; });
       m.body.querySelectorAll('[data-si]').forEach(cb => { cb.checked = entries[+cb.dataset.si].checked; });
       sync();
     });
     foot.querySelector('[data-send="cancel"]').addEventListener('click', () => m.close());
+
+    // The sheet behind, brought to what the server holds.
+    const reloadSheet = () => { if (pid === st.projectId && isMounted() && st.loadState === 'ok') load(pid, { quiet: true }); };
 
     let sending = false;
     go.addEventListener('click', async () => {
@@ -3159,7 +3661,8 @@
       sending = true;
       go.disabled = true;
       go.textContent = 'Sending…';
-      foot.querySelector('#fctproc-send-err').textContent = '';
+      const errBox = foot.querySelector('#fctproc-send-err');
+      errBox.textContent = '';
       try {
         const data = await api('POST', '/procurement' + q({ action: 'send' }), { project_id: pid, items, restore_ids: restoreIds });
         m.close();
@@ -3169,51 +3672,93 @@
         if (pid === st.projectId) {
           created.concat(restored).forEach(adoptServerRow);
           if (isMounted()) { renderTable(); updateCounts(); }
+          // Fewer rows came back than were ticked: they were there already —
+          // an earlier try whose answer was lost, or a colleague's send. The
+          // sheet reads them, rather than waiting for the next poll.
+          if (created.length + restored.length < picked.length) reloadSheet();
         } else {
           selectProjectQuietly(pid);
         }
         const n = created.length + restored.length;
-        toast(`Sent ${n} line${n === 1 ? '' : 's'} to Procurement${data.skipped ? ` (${data.skipped} were already there)` : ''}`);
+        const already = picked.length - n;
+        toast(n
+          ? `Sent ${n} line${n === 1 ? '' : 's'} to Procurement${already > 0 ? ` (${already} ${already === 1 ? 'was' : 'were'} already there)` : ''}`
+          : `${already === 1 ? 'That line was' : `All ${already} lines were`} already in Procurement — nothing new was added.`);
         window.dispatchEvent(new CustomEvent('fct:procurement-sent', { detail: { projectId: pid, created: created.length, restored: restored.length } }));
       } catch (err) {
+        // Whatever happened on the server (an answer lost on the way back is
+        // a send that DID happen), the checklist and the sheet are read
+        // again, so the next click is decided on what is there now.
+        try {
+          const fresh = await readAllRows(pid);
+          if (m.el.isConnected) draw(fresh);
+        } catch (e2) { console.warn('[procurement] could not read the checklist again', e2); }
+        reloadSheet();
         sending = false;
-        go.disabled = false;
-        sync();
-        foot.querySelector('#fctproc-send-err').textContent = `Not sent: ${err.message}`;
+        if (m.el.isConnected) {
+          sync();
+          // A 409 says itself which line and that nothing was sent.
+          foot.querySelector('#fctproc-send-err').textContent = err.status === 409
+            ? `${err.message} The list above has been read again.`
+            : `Not sent: ${err.message}. The list above has been read again — check it before sending again.`;
+        }
       }
     });
     return m;
   }
 
   // ── Re-linking after a Procore "Replace all" ────────────────────────
-  // Rows whose re-link was already tried this session ("row>line"), so a
-  // PATCH the server refuses is not sent again on every poll.
+  // Re-links already tried this session ("row>line", or "row>line:codes" for
+  // a code sync), so a PATCH the server refuses is not sent again on every
+  // poll. A row's entries are forgotten when its line changes underneath the
+  // page (adoptServerRow), so a row moved elsewhere can be put right here.
   const relinkTried = new Set();
+  const tryKey = p => `${p.id}>${p.bid_item_id}${p.sync ? `:${p.cost_code}\u0000${p.sub_code}` : ''}`;
+  function forgetRelinks(rowId) {
+    const pre = `${rowId}>`;
+    [...relinkTried].forEach(k => { if (k.startsWith(pre)) relinkTried.delete(k); });
+  }
   let relinking = null;
+  // Run `fn` with no other re-link pass going (see openSendModal).
+  async function relinkExclusive(fn) {
+    while (relinking) { try { await relinking; } catch { /* warned where it failed */ } }
+    let release;
+    const mine = new Promise(r => { release = r; });
+    relinking = mine;
+    try { return await fn(); } finally {
+      if (relinking === mine) relinking = null;
+      release();
+    }
+  }
 
   /**
-   * PATCH each planned re-link (relinkPlan). Returns the rows as the server
-   * now has them. The open job's table is redrawn when any moved: the poll's
-   * change check would not do it, since the rows on screen are already the
-   * new versions by then.
+   * PATCH each planned re-link (relinkPlan) or code sync (codeSyncPlan).
+   * Returns the rows as the server now has them. The open job's table is
+   * redrawn when any moved: the poll's change check would not do it, since
+   * the rows on screen are already the new versions by then.
    */
   async function applyRelinks(plan, rows, pid) {
-    const done = [];
+    const done = [], synced = new Set();
     for (const rl of plan) {
-      relinkTried.add(rl.id + '>' + rl.bid_item_id);
+      relinkTried.add(tryKey(rl));
       try {
         const data = await api('PATCH', '/procurement' + q({ id: rl.id }),
-          { fields: { bid_item_id: rl.bid_item_id, cost_code: rl.cost_code, sub_code: rl.sub_code } });
+          { fields: rl.sync ? { cost_code: rl.cost_code, sub_code: rl.sub_code }
+            : { bid_item_id: rl.bid_item_id, cost_code: rl.cost_code, sub_code: rl.sub_code } });
         const before = (rows || []).find(r => r.id === rl.id) || {};
         const item = normRow(data.item) || { ...before, bid_item_id: rl.bid_item_id, cost_code: rl.cost_code, sub_code: rl.sub_code };
+        if (rl.sync) synced.add(item);
         done.push(item);
         if (pid === st.projectId) adoptServerRow(item);
       } catch (err) {
         console.warn('[procurement] re-link failed for', rl.id, err);
       }
     }
-    if (done.length && pid === st.projectId && isMounted()) { renderTable(); updateCounts(); }
-    return done;
+    if (done.length && pid === st.projectId && isMounted()) {
+      if (cellInUse()) redrawAround(); else { renderTable(); updateCounts(); }
+    }
+    // The code syncs are housekeeping; what is reported is what moved.
+    return done.filter(d => !synced.has(d));
   }
 
   /**
@@ -3221,33 +3766,44 @@
    * someone opens Send to Procurement: a Procore "Replace all" answered "no"
    * to "Send the bid lines now?" (or done by a colleague) would otherwise
    * leave every row of the job "not on bid", out of bid order and with its
-   * codes frozen, until somebody happened to open the checklist. The rows on
-   * screen are only the live ones, and the bid-line rule counts deleted rows
-   * too, so a re-link that looks possible is planned again off the full list
-   * (include_deleted) before anything is sent.
+   * codes frozen, until somebody happened to open the checklist. It also
+   * keeps each row's stored codes up to its line's (codeSyncPlan).
+   *
+   * Only against the bid the server holds, and only while the page holds
+   * that same bid (bidAgreed): a page whose copy is behind — a colleague's
+   * Replace all not polled in yet, a boot drawn from yesterday's cache, a
+   * bid read that failed once — would otherwise "re-link" every row back to
+   * the lines that were replaced. The rows on screen are only the live ones,
+   * and the bid-line rule counts deleted rows too, so the plan is made again
+   * off the full list (include_deleted) before anything is sent.
    */
   function autoRelink(pid) {
     if (relinking || !canEdit() || pid !== st.projectId || st.loadState !== 'ok') return relinking;
     const ctx = makeCtx(pid);
     if (!ctx.bidLines.length) return null;
-    const fresh = p => !relinkTried.has(p.id + '>' + p.bid_item_id);
-    const looks = relinkPlan(ctx.bidLines, st.rows, ctx.codeKey).filter(fresh);
+    const untried = p => !relinkTried.has(tryKey(p));
+    const plans = (lines, rows, k) => relinkPlan(lines, rows, k).concat(codeSyncPlan(lines, rows, k));
+    const looks = plans(ctx.bidLines, st.rows, ctx.codeKey).filter(untried);
     if (!looks.length) return null;
     relinking = (async () => {
+      const bid = await bidAgreed(pid);
+      // Not agreed (or not known): nothing is marked tried, so the next load
+      // looks again — by then the page has caught up.
+      if (!bid.lines || pid !== st.projectId) return;
       let all;
-      try {
-        const data = await api('GET', '/procurement' + q({ project_id: pid, include_deleted: 1 }));
-        all = (data.items || []).map(normRow).filter(Boolean);
-      } catch (err) { console.warn('[procurement] re-link check failed', err); return; }
+      try { all = await readAllRows(pid); } catch (err) { console.warn('[procurement] re-link check failed', err); return; }
       if (pid !== st.projectId) return;
       const now = makeCtx(pid);
-      const plan = relinkPlan(now.bidLines, all, now.codeKey).filter(fresh);
+      // The bid moved while the rows were read: next time.
+      if (!sameBid(bid.lines, now.bidLines, now.codeKey)) return;
+      const plan = plans(now.bidLines, all, now.codeKey).filter(untried);
       // Looked at, whatever the full list says: one the deleted rows rule out
       // stays ruled out, and is not read for again on every poll.
-      looks.forEach(p => relinkTried.add(p.id + '>' + p.bid_item_id));
+      looks.forEach(p => relinkTried.add(tryKey(p)));
       const done = await applyRelinks(plan, all, pid);
       if (done.length && pid === st.projectId && isMounted()) {
-        toast(`Re-linked ${done.length} row${done.length === 1 ? '' : 's'} to the bid's new lines (same cost and sub code).`);
+        toast(`Re-linked ${done.length} row${done.length === 1 ? '' : 's'} to the current bid line${done.length === 1 ? '' : 's'} `
+          + `with the same cost and sub code (${relinkWords(done)}) — the bid's lines were replaced.`);
       }
     })().finally(() => { relinking = null; });
     return relinking;
@@ -3306,11 +3862,14 @@
       const p = project(st.projectId);
       if (picker && picker !== a && p) { picker.value = projLabel(p); picker.dataset.cbValue = p.id; }
       if (st.projectId && !p) { renderBody(); return; }
-      const wrap = st.mountEl.querySelector('#fctproc-wrap');
-      if (wrap && a && wrap.contains(a)) {
+      // The bid changed under the open job (a line renamed, a Replace all):
+      // rows re-link and their stored codes follow now, not at the next read.
+      // autoRelink checks the bid with the server first, and does nothing
+      // when there is nothing to do.
+      if (st.projectId && st.loadState === 'ok' && st.loadedFor === st.projectId) autoRelink(st.projectId);
+      if (cellInUse()) {
         // Someone is in a cell: redraw every row around it, not the table.
-        st.rows.forEach(r => refreshRow(r.id));
-        updateCounts();
+        redrawAround();
         return;
       }
       // The table is redrawn in place only when it is on screen; a body that
@@ -3342,7 +3901,7 @@
     // Pure helpers, for scripts/test-procurement-frontend.js.
     _test: {
       effectivePO, effectiveDateOrdered, orderBy, statusOf, flagsOf, liveCodes, bidChange,
-      sendPlan, relinkPlan, sortRows, applyFilters, csvEscape, addDays,
+      sendPlan, relinkPlan, codeSyncPlan, sameBid, sortRows, applyFilters, csvEscape, addDays,
       chipMatch, fieldValue, vendorCompatible, normRow, ymdOf, fmtDate, fmtQty, esc, uid, looksLikePhone,
       exportMatrix, buildCsv, xlsxParts, buildXlsx, defaultCodeKey,
       state: () => st,

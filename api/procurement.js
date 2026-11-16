@@ -474,55 +474,84 @@ module.exports = async (req, res) => {
         lines.push(line);
       }
 
-      // "Removed earlier" lines the user ticked again: the same row comes
-      // back, with everything that was typed on it before it was deleted —
-      // and, when the entry said so, tied to its bid line's new id.
+      // ONE statement, so the send happens whole or not at all: "removed
+      // earlier" lines the user ticked again come back, and the new lines go
+      // in, together. Two statements left a send whose insert failed half
+      // done — the restore kept, the page told "Not sent".
+      //
+      // Restored: the same row comes back, with everything that was typed on
+      // it before it was deleted — and, when the entry said so, tied to its
+      // bid line's new id.
+      //
+      // Inserted: ON CONFLICT DO NOTHING with no target: the bid-line unique
+      // index is what stops a second row for a line already on the sheet —
+      // live, or deleted ("skipped") — whether the duplicate comes from a
+      // double click, a retry with the same ids, or a colleague sending the
+      // same job at the same moment (the second insert waits for the first to
+      // commit, then does nothing). A retried request reuses its row ids, so a
+      // primary-key clash is answered the same way rather than as an error.
+      // created_at is clock_timestamp() so the rows keep the bid's order.
       const rl = id => relink.get(id) || {};
-      let restored = [];
-      if (restore.value.length) {
+      let out = [];
+      if (restore.value.length || lines.length) {
         try {
-          restored = await sql`
-            UPDATE procurement_items p
-               SET deleted_at = NULL, deleted_by = NULL, version = p.version + 1, updated_at = NOW(), updated_by = ${who},
-                   bid_item_id = COALESCE(t.bid_item_id, p.bid_item_id),
-                   cost_code   = CASE WHEN t.bid_item_id IS NULL THEN p.cost_code ELSE t.cost_code END,
-                   sub_code    = CASE WHEN t.bid_item_id IS NULL THEN p.sub_code  ELSE t.sub_code  END
-              FROM unnest(${restore.value}::text[], ${restore.value.map(id => rl(id).bid_item_id ?? null)}::text[],
-                          ${restore.value.map(id => rl(id).cost_code ?? '')}::text[], ${restore.value.map(id => rl(id).sub_code ?? '')}::text[])
-                   AS t(id, bid_item_id, cost_code, sub_code)
-             WHERE p.company_code = ${company} AND p.division = ${division} AND p.project_id = ${pid.value}
-               AND p.id = t.id AND p.deleted_at IS NOT NULL
-             RETURNING p.*`;
+          out = await sql`
+            WITH restored AS (
+              UPDATE procurement_items p
+                 SET deleted_at = NULL, deleted_by = NULL, version = p.version + 1, updated_at = NOW(), updated_by = ${who},
+                     bid_item_id = COALESCE(t.bid_item_id, p.bid_item_id),
+                     cost_code   = CASE WHEN t.bid_item_id IS NULL THEN p.cost_code ELSE t.cost_code END,
+                     sub_code    = CASE WHEN t.bid_item_id IS NULL THEN p.sub_code  ELSE t.sub_code  END
+                FROM unnest(${restore.value}::text[], ${restore.value.map(id => rl(id).bid_item_id ?? null)}::text[],
+                            ${restore.value.map(id => rl(id).cost_code ?? '')}::text[], ${restore.value.map(id => rl(id).sub_code ?? '')}::text[])
+                     AS t(id, bid_item_id, cost_code, sub_code)
+               WHERE p.company_code = ${company} AND p.division = ${division} AND p.project_id = ${pid.value}
+                 AND p.id = t.id AND p.deleted_at IS NOT NULL
+               RETURNING p.*
+            ), created AS (
+              INSERT INTO procurement_items
+                (id, company_code, division, project_id, source, bid_item_id, cost_code, sub_code,
+                 quantity, unit, bid_qty_at_send, bid_unit_at_send, created_at, created_by, updated_at, updated_by)
+              SELECT t.id, ${company}, ${division}, ${pid.value}, 'bid', t.bid_item_id, t.cost_code, t.sub_code,
+                     t.quantity, t.unit, t.quantity, t.unit, clock_timestamp(), ${who}, clock_timestamp(), ${who}
+                FROM unnest(${lines.map(l => l.id)}::text[], ${lines.map(l => l.bid_item_id)}::text[],
+                            ${lines.map(l => l.cost_code)}::text[], ${lines.map(l => l.sub_code)}::text[],
+                            ${lines.map(l => l.quantity)}::numeric[], ${lines.map(l => l.unit)}::text[])
+                     WITH ORDINALITY AS t(id, bid_item_id, cost_code, sub_code, quantity, unit, ord)
+               ORDER BY t.ord
+              ON CONFLICT DO NOTHING
+              RETURNING *
+            )
+            SELECT 'restored' AS send_kind, r.* FROM restored r
+            UNION ALL
+            SELECT 'created' AS send_kind, c.* FROM created c`;
         } catch (err) {
-          // The new line already has a bid row (a colleague sent it a moment
-          // ago): nothing is restored or sent, and the checklist read again
-          // will show that line as already added.
+          // A line a restore was to be tied to already has a bid row (a
+          // colleague sent it a moment ago): nothing at all went in. Said by
+          // name, so the PM knows which line, and the page reads its
+          // checklist again.
+          if (isUniqueViolation(err)) {
+            const wanted = [...new Set([...relink.values()].map(v => v.bid_item_id).filter(Boolean))];
+            let held = [];
+            try {
+              held = wanted.length ? await sql`
+                SELECT DISTINCT bid_item_id, cost_code, sub_code FROM procurement_items
+                 WHERE company_code = ${company} AND division = ${division} AND project_id = ${pid.value}
+                   AND source = 'bid' AND bid_item_id = ANY(${wanted}::text[]) AND NOT (id = ANY(${restore.value}::text[]))` : [];
+            } catch { held = []; }
+            const names = held.map(h => [h.cost_code, h.sub_code].filter(Boolean).join(' / ') || h.bid_item_id);
+            return fail(res, 409, 'duplicate', names.length
+              ? `Another row is already linked to the bid line${names.length === 1 ? '' : 's'} ${names.map(n => `"${n}"`).join(', ')} — someone may have sent ${names.length === 1 ? 'it' : 'them'} a moment ago — so nothing was sent.`
+              : 'Another row is already linked to one of those bid lines, so nothing was sent.',
+              { lines: held.map(h => h.bid_item_id) });
+          }
           if (constraintAnswer(res, err)) return;
           throw err;
         }
       }
-
-      // ON CONFLICT DO NOTHING with no target: the bid-line unique index is
-      // what stops a second row for a line already on the sheet — live, or
-      // deleted ("skipped") — whether the duplicate comes from a double
-      // click, a retry with the same ids, or a colleague sending the same job
-      // at the same moment (the second insert waits for the first to commit,
-      // then does nothing). A retried request reuses its row ids, so a
-      // primary-key clash is answered the same way rather than as an error.
-      // created_at is clock_timestamp() so the rows keep the bid's order.
-      const created = lines.length ? await sql`
-        INSERT INTO procurement_items
-          (id, company_code, division, project_id, source, bid_item_id, cost_code, sub_code,
-           quantity, unit, bid_qty_at_send, bid_unit_at_send, created_at, created_by, updated_at, updated_by)
-        SELECT t.id, ${company}, ${division}, ${pid.value}, 'bid', t.bid_item_id, t.cost_code, t.sub_code,
-               t.quantity, t.unit, t.quantity, t.unit, clock_timestamp(), ${who}, clock_timestamp(), ${who}
-          FROM unnest(${lines.map(l => l.id)}::text[], ${lines.map(l => l.bid_item_id)}::text[],
-                      ${lines.map(l => l.cost_code)}::text[], ${lines.map(l => l.sub_code)}::text[],
-                      ${lines.map(l => l.quantity)}::numeric[], ${lines.map(l => l.unit)}::text[])
-               WITH ORDINALITY AS t(id, bid_item_id, cost_code, sub_code, quantity, unit, ord)
-         ORDER BY t.ord
-        ON CONFLICT DO NOTHING
-        RETURNING *` : [];
+      // The RETURNING order of each half: the inserted rows in send order.
+      const restored = out.filter(r => r.send_kind === 'restored');
+      const created  = out.filter(r => r.send_kind === 'created');
 
       return res.json({
         ok: true,

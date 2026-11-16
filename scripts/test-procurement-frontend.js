@@ -349,6 +349,16 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   assert('a linked PO wins whatever its codes', e.kind === 'linked' && e.po.id === 'po3');
   e = T.effectivePO({ ...r1, po_id: 'deleted-po' }, C());
   assert('a linked PO that was deleted -> "PO removed"', e.kind === 'removed' && !e.po);
+  // A linked PO moved to another job on the Purchase Orders tab is not this
+  // job's order any more: red, and the row is not "Ordered" by it.
+  e = T.effectivePO({ ...r1, project_id: 'p1', po_id: 'po9' }, C());
+  assert('a linked PO now on ANOTHER job -> "moved", not linked', e.kind === 'moved' && e.po.id === 'po9', e.kind);
+  assert('…the row is Not Ordered, with no Date Ordered from it',
+    T.statusOf({ ...r1, project_id: 'p1', po_id: 'po9' }, C()) === 'Not Ordered'
+    && T.effectiveDateOrdered({ ...r1, project_id: 'p1', po_id: 'po9' }, C()) === '');
+  assert('…and its PO # reads "PO on another job"', T.fieldValue({ ...r1, project_id: 'p1', po_id: 'po9' }, 'po', C()) === 'PO on another job');
+  e = T.effectivePO({ ...r1, project_id: 'p1', po_id: 'pox' }, C({ purchaseOrders: POS.concat({ id: 'pox', po_number: 'PO-0011', project_id: '', cost_code: '', sub_code: '' }) }));
+  assert('…so is one taken off every job', e.kind === 'moved', e.kind);
   e = T.effectivePO({ ...r1, po_auto: false }, C());
   assert('"No PO" stays No PO even when a PO matches', e.kind === 'nopo');
   e = T.effectivePO({ ...r1, po_auto: false }, C({ poLoaded: false }));
@@ -470,11 +480,16 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   assert('a line a live bid row has -> "added", unticked', flat.b1.state === 'added' && !flat.b1.checked && flat.b1.rowId === 'live1');
   assert('a line whose bid row was deleted -> "removed", unticked, restores that row',
     flat.b2.state === 'removed' && !flat.b2.checked && flat.b2.restoreId === 'dead2');
-  assert('a hand-added row on a line does not make it "added"', flat.b3.state === 'new' && flat.b3.checked);
+  // Not "added" (a hand row may be an extra material coded off the line),
+  // but not ticked by default either: Send would put a second row of the
+  // same material beside the one the PM started by hand.
+  assert('a hand-added row on a line does not make it "added"…', flat.b3.state === 'new');
+  assert('…but the line starts unticked, saying it has a hand-added row',
+    !flat.b3.checked && flat.b3.handRows === 1 && /hand-added row/.test(flat.b3.hint), flat.b3);
   assert('a new EA line starts ticked', flat.b6.state === 'new' && flat.b6.checked);
   assert('an LS line starts unticked', flat.b4.state === 'new' && !flat.b4.checked);
   assert('an HR line starts unticked (unit case-insensitive)', flat.b5.state === 'new' && !flat.b5.checked);
-  assert('counts add up', eq(plan.counts, { total: 6, new: 4, added: 1, removed: 1, checked: 2 }), plan.counts);
+  assert('counts add up', eq(plan.counts, { total: 6, new: 4, added: 1, removed: 1, checked: 1 }), plan.counts);
   assert('a live row wins over a deleted one for the same line',
     T.sendPlan([LINES[0]], [row({ id: 'd', source: 'bid', bid_item_id: 'b1', deleted_at: 'x' }), row({ id: 'l', source: 'bid', bid_item_id: 'b1' })])
       .groups[0].lines[0].state === 'added');
@@ -514,6 +529,63 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     ], CK);
     assert('…two deleted rows for one line: one is offered back (the earlier one), never both',
       sp.counts.removed === 1 && sp.groups.flatMap(g => g.lines).find(x => x.line.id === 'n4').restoreId === 'older');
+  }
+
+  {
+    // After a Replace all, two new lines with the SAME codes (the estimate's
+    // own duplicates) are not re-linked — section 1: only when exactly one
+    // candidate exists. Send must not then tick them as new: the job's rows
+    // for that material are still there, badged "not on bid".
+    const DUP = [
+      { id: 'n1', cost_code: 'Stormwater', sub_code: 'Geofabric', unit: 'SF', quantity: 12500, index: 0 },
+      { id: 'n2', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"', unit: 'LF', quantity: 901, index: 1 },
+      { id: 'n2b', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"', unit: 'LF', quantity: 450, index: 2 },
+      { id: 'n3', cost_code: 'E&S', sub_code: 'PVC Pipe 4"', unit: 'LF', quantity: 80, index: 3 },
+      { id: 'n3b', cost_code: 'E&S', sub_code: 'PVC pipe  4"', unit: 'LF', quantity: 40, index: 4 },
+    ];
+    const worked = [
+      row({ id: 'R2', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"', vendor: 'LB Water', quote_number: 'FW-2231' }),
+      row({ id: 'R2b', source: 'bid', bid_item_id: 'b2b', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"', vendor: 'LB Water' }),
+      row({ id: 'R3', source: 'bid', bid_item_id: 'b3', cost_code: 'E&S', sub_code: 'PVC Pipe 4"' }),
+    ];
+    assert('duplicate codes: the re-link leaves them alone (exactly one candidate only)',
+      T.relinkPlan(DUP, worked, CK).length === 0, T.relinkPlan(DUP, worked, CK));
+    const sp = T.sendPlan(DUP, worked, CK);
+    const en = Object.fromEntries(sp.groups.flatMap(g => g.lines).map(x => [x.line.id, x]));
+    assert('…Send offers both drain lines UNTICKED, not "new / ticked"',
+      en.n2.state === 'new' && !en.n2.checked && en.n2b.state === 'new' && !en.n2b.checked, [en.n2, en.n2b]);
+    assert('…saying rows with these codes are on the job but not on the bid',
+      /2 rows on this job have these codes but are not on the bid/.test(en.n2.hint) && eq(en.n2.orphans.sort(), ['R2', 'R2b']), en.n2.hint);
+    assert('…the same for lines that differ only in case or spacing',
+      !en.n3.checked && !en.n3b.checked && /1 row on this job has these codes/.test(en.n3b.hint), [en.n3.hint, en.n3b.hint]);
+    assert('…a line with no such row is still ticked as new', en.n1.state === 'new' && en.n1.checked && !en.n1.hint);
+    // A live orphan whose re-link PATCH failed is just as much the line's.
+    const sp2 = T.sendPlan([DUP[0]], [row({ id: 'G', source: 'bid', bid_item_id: 'old1', cost_code: 'Stormwater', sub_code: 'Geofabric' })], CK);
+    assert('…and an orphan whose re-link failed keeps its line unticked',
+      sp2.groups[0].lines[0].state === 'new' && !sp2.groups[0].lines[0].checked, sp2.groups[0].lines[0]);
+    // A deleted orphan is not a live row: its line is offered as before.
+    const sp3 = T.sendPlan(DUP.slice(0, 2), [row({ id: 'D', source: 'bid', bid_item_id: 'old9', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"', deleted_at: 'x' })], CK);
+    assert('…a DELETED orphan does not hold a line back (it is "removed earlier")', sp3.groups[0].lines[1].state === 'removed');
+  }
+
+  // ── codeSyncPlan ──────────────────────────────────────────────────────
+  console.log('\n[codeSyncPlan]');
+  {
+    const L = [{ id: 'b2', cost_code: 'Stormwater', sub_code: 'Perimeter Drain 15in Perf', unit: 'LF', quantity: 901, index: 0 },
+               { id: 'b3', cost_code: 'E&S', sub_code: '', unit: 'LF', quantity: 1, index: 1 }];
+    const cs = T.codeSyncPlan(L, [
+      row({ id: 'R2', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"' }),
+      row({ id: 'M2', source: 'manual', bid_item_id: 'b2', cost_code: 'stormwater', sub_code: 'perimeter drain 15IN perf' }),
+      row({ id: 'R3', source: 'bid', bid_item_id: 'b3', cost_code: 'E&S', sub_code: 'Silt Sock' }),
+      row({ id: 'G', source: 'bid', bid_item_id: 'gone', cost_code: 'X', sub_code: 'Y' }),
+      row({ id: 'D', source: 'bid', bid_item_id: 'b2', cost_code: 'Old', sub_code: 'Old', deleted_at: 'x' }),
+    ], CK);
+    assert('a row whose line was renamed on the bid page gets the line\'s codes stored',
+      eq(cs, [{ id: 'R2', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: 'Perimeter Drain 15in Perf', sync: true }]), cs);
+    assert('…not one that differs only in case or spacing, a line half way through a rename (blank code), a line that is gone, or a deleted row', cs.length === 1);
+    assert('sameBid: same ids and codes (any case) agree', T.sameBid(L, L.map(l => ({ ...l, cost_code: l.cost_code.toUpperCase(), quantity: 5 })), CK));
+    assert('…another id or another sub code does not', !T.sameBid(L, [L[0], { ...L[1], id: 'n3' }], CK)
+      && !T.sameBid(L, [L[0], { ...L[1], sub_code: 'Silt Sock' }], CK));
   }
 
   // ── relinkPlan ────────────────────────────────────────────────────────
@@ -1523,9 +1595,21 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       row({ id: 'g3', source: 'bid', bid_item_id: 'o3', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', quote_number: 'Q-SILT-1', created_at: '2026-03-01T00:00:03Z', deleted_at: '2026-03-02T00:00:00Z' }),
       row({ id: 'm1', source: 'manual', bid_item_id: 'o1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: 'Geogrid BX1200', created_at: '2026-03-01T00:00:04Z' }),
     ];
+    // 0. Send opened from the bid page right after the Replace all, the tab
+    //    never drawn: the checklist itself re-links first, and says so.
+    {
+      const b = makeEnv({ rows: RROWS.map(r => ({ ...r })), bidLines: NEWB });
+      await b.P.openSendModal('p1');
+      const rel0 = b.patches().map(p => p.q.id + '>' + p.body.fields.bid_item_id).sort();
+      assert('Send re-links the bid rows AND the "+ Material" row to the new lines', eq(rel0, ['g1>No1', 'g2>No2', 'm1>No1']), rel0);
+      const said = b.$('.fctproc-modal').textContent.replace(/\s+/g, ' ');
+      assert('…and says so, naming the lines',
+        said.includes('Re-linked 3 rows to the current bid lines with the same cost and sub code (Stormwater / Geofabric; Stormwater / 15" Perf drain)'), said);
+    }
     // 1. Replace all done while the tab is open on the job (the bid poll
-    //    redraws it), then Send opened: the checklist re-links, and the grid
-    //    shows it at once — Send or Cancel.
+    //    redraws it): the redraw re-links the rows, and Send opened straight
+    //    after waits for that rather than PATCHing the same rows again. The
+    //    grid shows it at once — Send or Cancel.
     let bid = OLD;
     const e = makeEnv({ rows: RROWS });
     e.P.configure({ getBidLines: id => (id === 'p1' ? bid : []) });
@@ -1537,8 +1621,9 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('the bid replaced under the open tab: every row says "not on bid"', e.$$('.c-cost_code .fctproc-tag').length === 3);
     await e.P.openSendModal('p1');
     const rel = e.patches().map(p => p.q.id + '>' + p.body.fields.bid_item_id).sort();
-    assert('Send re-links the bid rows AND the "+ Material" row to the new lines', eq(rel, ['g1>No1', 'g2>No2', 'm1>No1']), rel);
-    assert('…and says so', /Re-linked 3 rows/.test(e.$('.fctproc-modal').textContent));
+    assert('the rows are re-linked — each once, not by the redraw AND by Send', eq(rel, ['g1>No1', 'g2>No2', 'm1>No1']), rel);
+    assert('…and the PM is told', e.$$('.fctproc-toast').some(t => /Re-linked 3 rows/.test(t.textContent))
+      || /Re-linked 3 rows/.test(e.$('.fctproc-modal').textContent));
     assert('…and the grid behind it already shows it', e.$$('.c-cost_code .fctproc-tag').length === 0);
     const lines = Object.fromEntries(e.$$('.fctproc-modal .fctproc-send-line').map(l => [l.querySelector('.sub').textContent, l]));
     const silt = lines['Silt Sock 12inch'];
@@ -1739,6 +1824,329 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     await e.P.contacts.rename('LB Water', 'LB Water Service');
     assert('the open job is read again, so its rows show the new name', e.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement').length === before + 1
       && e.field('s1', 'vendor').value === 'LB Water Service');
+  }
+
+
+  console.log('\n[re-link only against the bid the server holds]');
+  {
+    const OLD = [
+      { id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', unit: 'SF', quantity: 8110, index: 0 },
+      { id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', unit: 'LF', quantity: 950, index: 1 },
+    ];
+    const NEWB = OLD.map(l => ({ ...l, id: 'n' + l.id.slice(1) }));
+    // Ada has already re-linked the rows to the new lines; Bea's page still
+    // holds the old bid (her poll has not brought the Replace all in yet).
+    const relinked = [
+      row({ id: 'R1', source: 'bid', bid_item_id: 'n1', cost_code: 'Stormwater', sub_code: 'Geofabric' }),
+      row({ id: 'R2', source: 'bid', bid_item_id: 'n2', cost_code: 'Stormwater', sub_code: '15" Perf drain' }),
+      row({ id: 'M1', source: 'manual', bid_item_id: 'n1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: 'Stakes' }),
+    ];
+    let mine = OLD, server = NEWB;
+    const bea = makeEnv({ rows: relinked });
+    bea.P.configure({ getBidLines: id => (id === 'p1' ? mine : []), getFreshBidLines: async () => server });
+    bea.P.renderTab(bea.root);
+    await sleep(40);
+    assert('a page holding an OLD bid never moves rows back to its lines', bea.patches().length === 0, bea.patches().map(p => p.body));
+    assert('…and says nothing about re-linking', !bea.$$('.fctproc-toast').some(t => /Re-linked/.test(t.textContent)));
+    mine = NEWB;                       // the page's poll catches up
+    bea.P.rerender();
+    await bea.P.refresh(); await sleep(30);
+    assert('…once it has the current bid, the rows are simply on it', bea.patches().length === 0 && bea.$$('.c-cost_code .fctproc-tag').length === 0);
+
+    // A boot drawn from a cached copy behind the server, and a bid read
+    // that failed: no re-link, and nothing marked tried, so it happens once
+    // the two agree.
+    let fail = true;
+    const ada = makeEnv({ rows: relinked.map(r => ({ ...r, bid_item_id: r.bid_item_id.replace('n', 'b') })) });
+    ada.P.configure({ getBidLines: id => (id === 'p1' ? NEWB : []), getFreshBidLines: async () => { if (fail) throw new Error('offline'); return NEWB; } });
+    ada.P.renderTab(ada.root);
+    await sleep(40);
+    assert('the bid could not be read: no re-link yet', ada.patches().length === 0);
+    fail = false;
+    await ada.P.refresh(); await sleep(40);
+    const moved = ada.patches().map(p => p.q.id + '>' + p.body.fields.bid_item_id).sort();
+    assert('…read on the next load, the rows re-link to the current lines', eq(moved, ['M1>n1', 'R1>n1', 'R2>n2']), moved);
+    const t = ada.$$('.fctproc-toast').map(x => x.textContent).join(' | ');
+    assert('…and the message names the lines they moved to', /Re-linked 3 rows to the current bid lines with the same cost and sub code \(Stormwater \/ Geofabric; Stormwater \/ 15" Perf drain\)/.test(t), t);
+
+    // Send to Procurement from a page whose bid is not the server's.
+    const stale = makeEnv({ rows: [] });
+    stale.P.configure({ getBidLines: id => (id === 'p1' ? OLD : []), getFreshBidLines: async () => NEWB });
+    await stale.P.openSendModal('p1');
+    assert('Send refuses a checklist from a bid that is not the saved one', /not the one saved/.test(stale.$('.fctproc-modal').textContent)
+      && !stale.$('.fctproc-modal [data-send="go"]') && !stale.calls.some(c => c.q.action === 'send'));
+  }
+
+  console.log('\n[stored codes follow a line renamed on the bid page]');
+  {
+    let bid = [{ id: 'b2', cost_code: 'Stormwater', sub_code: 'Perimeter Drain 15in Perf', unit: 'LF', quantity: 950, index: 0 }];
+    const e = makeEnv({ rows: [row({ id: 'R2', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"', quote_number: 'Q1' })] });
+    e.P.configure({ getBidLines: id => (id === 'p1' ? bid : []), getFreshBidLines: async () => bid });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const p = e.patches();
+    assert('loading the job stores the line\'s current codes on the row', p.length === 1 && eq(p[0].body.fields, { cost_code: 'Stormwater', sub_code: 'Perimeter Drain 15in Perf' }), p.map(x => x.body));
+    assert('…quietly (it is not a re-link)', !e.$$('.fctproc-toast').some(t => /Re-linked/.test(t.textContent)));
+    // Then a Replace all with the new spelling: the row finds its new line.
+    bid = [{ id: 'z2', cost_code: 'Stormwater', sub_code: 'Perimeter Drain 15in Perf', unit: 'LF', quantity: 950, index: 0 }];
+    e.P.rerender();
+    await e.P.refresh(); await sleep(40);
+    assert('…so after a Replace all with that spelling, the row re-links to the new line',
+      e.db.rows[0].bid_item_id === 'z2' && e.$$('.c-cost_code .fctproc-tag').length === 0, e.db.rows[0]);
+  }
+
+  console.log('\n[a combobox tabbed through saves nothing]');
+  {
+    const e = makeEnv({ rows: [row({ id: 't1', source: 'manual', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', unit: 'roll' }),
+      row({ id: 't2' })] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    // What tracker's combobox does on Tab when the box's text matches no
+    // option: the FIRST option goes into the box, then input + change.
+    const tabThrough = (el, label, cbValue) => {
+      el.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+      el.value = label;
+      if (cbValue == null) delete el.dataset.cbValue; else el.dataset.cbValue = cbValue;
+      el._cbBypassFilter = true;
+      e.fire(el, 'input'); e.fire(el, 'change');
+      delete el._cbBypassFilter;
+    };
+    tabThrough(e.field('t1', 'codes'), 'Stormwater / Geofabric', 'b1');
+    tabThrough(e.field('t1', 'unit'), 'SF');
+    tabThrough(e.field('t2', 'vendor'), 'LB Water');
+    tabThrough(e.field('t2', 'po'), 'Auto', '__auto__');
+    await e.P._test.flushAll(); await sleep(20);
+    assert('Tab through Sub Code, Unit, Vendor and PO # without typing: nothing is saved', e.patches().length === 0, e.patches().map(p => p.body));
+    assert('…and the boxes show what they held', e.field('t1', 'unit').value === 'roll' && e.field('t2', 'vendor').value === '');
+    // Typed, then Tab: that is a choice.
+    const v = e.field('t2', 'vendor');
+    v.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    v.value = 'acme'; e.fire(v, 'input');           // real typing (no bypass flag)
+    v.value = 'Acme Supply'; v._cbBypassFilter = true; e.fire(v, 'input'); e.fire(v, 'change'); delete v._cbBypassFilter;
+    await e.P._test.flushAll(); await sleep(20);
+    assert('…typed and then Tab: the vendor is saved', e.db.rows.find(r => r.id === 't2').vendor === 'Acme Supply');
+    // An option picked with the arrow keys is a choice too.
+    const u = e.field('t1', 'unit');
+    u.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    u.dispatchEvent(new e.w.KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    u.value = 'LF'; u._cbBypassFilter = true; e.fire(u, 'input'); e.fire(u, 'change'); delete u._cbBypassFilter;
+    await e.P._test.flushAll(); await sleep(20);
+    assert('…and so is one moved to with the arrow keys', e.db.rows.find(r => r.id === 't1').unit === 'LF');
+  }
+
+  console.log('\n[contacts: only what was typed or picked is remembered]');
+  {
+    const e = makeEnv({
+      rows: [row({ id: 'k1', vendor: 'LB Water', contact: 'Dave Ross', email: 'dave@lbwater.com' }),
+             row({ id: 'k2', vendor: 'LB Water', contact: 'Mike Hanlon', email: 'mhanlon@lbwater.com' })],
+      contacts: [{ id: 'c1', supplier_name: 'LB Water', name: 'Dave Ross', email: 'dave.ross@lbwater.com', phone: '' },
+                 { id: 'c2', supplier_name: 'LB Water', name: 'Mike Hanlon', email: 'mhanlon@lbwater.com', phone: '' }],
+    });
+    e.P.renderTab(e.root);
+    await sleep(30);
+    const posts = () => e.calls.filter(c => c.path === '/api/supplier-contacts' && c.method === 'POST');
+    // Only a Date Delivered typed on a row whose contact an admin has since
+    // corrected: leaving it must not save the old address back.
+    const dd = e.field('k1', 'date_delivered');
+    dd.focus(); dd.value = '2026-03-09'; e.fire(dd, 'change'); dd.blur();
+    await sleep(30);
+    assert('a row left after an edit elsewhere does not re-save its old contact', posts().length === 0, posts().map(c => c.body));
+    // Typed into Email: remembered.
+    const em = e.field('k1', 'email');
+    em.focus(); em.value = 'dross@lbwater.com'; e.fire(em, 'input'); em.blur();
+    await sleep(30);
+    assert('…a contact typed on the row is', posts().length === 1 && posts()[0].body.email === 'dross@lbwater.com', posts().map(c => c.body));
+
+    // Vendor changed on a row whose contact is the old vendor's: cleared.
+    const vd = e.field('k2', 'vendor');
+    vd.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    e.pick(vd, 'Beta Corp');
+    vd.blur();
+    await sleep(30);
+    const k2 = e.P._test.state().rows.find(r => r.id === 'k2');
+    assert('a new vendor clears the old vendor\'s saved contact from the row', k2.vendor === 'Beta Corp' && k2.contact === '' && k2.email === '', k2);
+    assert('…says so', e.$$('.fctproc-toast').some(t => /Contact and Email cleared: Mike Hanlon is a contact of LB Water, not of Beta Corp/.test(t.textContent)));
+    assert('…and files nobody under the new vendor', !posts().some(c => /beta/i.test(c.body.supplier_name)), posts().map(c => c.body));
+    // An address another supplier already has is not filed under this one.
+    const k1 = e.field('k1', 'contact');
+    e.pick(e.field('k1', 'vendor'), 'Acme Supply');
+    await sleep(10);
+    e.pick(k1, 'Somebody');
+    const em1 = e.field('k1', 'email');
+    em1.focus(); em1.value = 'mhanlon@lbwater.com'; e.fire(em1, 'input'); em1.blur();
+    await sleep(30);
+    assert('…and an email that is another supplier\'s contact is not filed again', !posts().some(c => /acme/i.test(c.body.supplier_name)), posts().map(c => c.body));
+  }
+
+  console.log('\n[clearing a date from the keyboard]');
+  {
+    const e = makeEnv({ rows: [row({ id: 'd1', date_delivered: '2026-03-05' })] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const dd = e.field('d1', 'date_delivered');
+    dd.focus();
+    // Chrome: the first Backspace leaves the box part-filled (marked bad);
+    // the last one empties it and fires no change at all.
+    dd.dataset.badDate = 'that is not a whole date';
+    dd.value = '';
+    dd.blur();
+    await e.P._test.flushAll(); await sleep(20);
+    assert('a date box emptied all the way is saved as a cleared date', e.db.rows[0].date_delivered == null, e.db.rows[0].date_delivered);
+    assert('…with no "not saved" message', !e.$$('.fctproc-toast').some(t => /not saved/.test(t.textContent)));
+  }
+
+  console.log('\n[a refresh that lands while a cell is being typed in]');
+  {
+    const e = makeEnv({ rows: [row({ id: 'w1', description: 'one' }), row({ id: 'w2', description: 'two', created_at: '2026-03-01T10:00:01Z' })] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    let release;
+    // A colleague's edit and a row they added, which the next read returns.
+    e.db.rows[1].description = 'changed elsewhere'; e.db.rows[1].version = 5;
+    e.db.rows.push(row({ id: 'w3', description: 'added elsewhere', created_at: '2026-03-01T10:00:02Z' }));
+    e.hold = new Promise(r => { release = r; });
+    const pending = e.P.refresh();                 // the poll starts with nothing focused
+    await tick();
+    const v = e.field('w1', 'vendor');
+    v.focus();                                     // ...then the PM starts typing
+    release(); await pending; await tick();
+    assert('the cell being typed in is the same box, still focused', e.w.document.activeElement === v && v.isConnected);
+    assert('…the other row shows the colleague\'s change', e.field('w2', 'description').value === 'changed elsewhere');
+    assert('…the added row waits for the table to be left', !e.$('tr[data-row="w3"]'));
+    v.blur();
+    await sleep(320);                             // a combobox commits 120 ms after blur
+    assert('…and appears once it is', !!e.$('tr[data-row="w3"]'));
+  }
+
+  console.log('\n[Create PO from selected: one click, one PO]');
+  {
+    const e = makeEnv({ rows: [row({ id: 'c1', source: 'bid', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', vendor: 'LB Water' })] });
+    let made = 0, releasePO;
+    e.P.configure({ createPurchaseOrder: seed => new Promise(r => { made++; releasePO = () => r({ id: 'npo' + made, po_number: 'PO-07' + made, ...seed }); }) });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const sel = e.$('[data-sel="c1"]'); sel.checked = true; e.fire(sel, 'change');
+    e.$('[data-act="bulk-po"]').click();
+    await tick();
+    assert('while the PO is being created the button is disabled', e.$('[data-act="bulk-po"]').disabled);
+    e.$('[data-act="bulk-po"]').click();
+    e.P._test.state();
+    await tick();
+    releasePO(); await sleep(30);
+    assert('a second click meanwhile raises no second PO', made === 1, made);
+  }
+
+  console.log('\n[a send whose answer is lost]');
+  {
+    const e = makeEnv({ rows: [] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    await e.P.openSendModal('p1');
+    const handle = e.handle;
+    let lose = true;
+    e.handle = c => {
+      const res = handle(c);
+      if (lose && c.q.action === 'send') { lose = false; return { status: 504, body: { ok: false, error: 'timeout', message: 'Gateway timeout' } }; }
+      return res;
+    };
+    e.$('.fctproc-modal [data-send="go"]').click();
+    await sleep(40);
+    assert('the server applied it but the page got a 504: the error is shown',
+      /Gateway timeout/.test(e.$('.fctproc-modal #fctproc-send-err').textContent), e.$('.fctproc-modal #fctproc-send-err').textContent);
+    const lines = [...e.$$('.fctproc-modal .fctproc-send-line')];
+    // The four ticked by default (not the LS and HR lines) went in.
+    assert('…the checklist is read again: those lines are now "already added"', lines.filter(l => l.classList.contains('added')).length === 4
+      && e.$('.fctproc-modal [data-send="go"]').disabled, lines.map(l => l.className));
+    assert('…and the sheet behind shows the rows the server has', e.$$('tr.fctproc-row').length === 4, e.$$('tr.fctproc-row').length);
+  }
+
+  console.log('\n[+ Add Row when the answer is lost]');
+  {
+    const e = makeEnv({ rows: [] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const fetch0 = e.w.fetch;
+    let drop = true;
+    e.w.fetch = async (url, init) => {
+      const r = await fetch0(url, init);
+      if (drop && init && init.method === 'POST' && !/action=/.test(String(url))) { drop = false; throw new TypeError('Failed to fetch'); }
+      return r;
+    };
+    e.$('[data-act="add"]').click();
+    await sleep(40);
+    assert('the row the server added is shown once, with no error', e.db.rows.length === 1 && e.$$('tr.fctproc-row').length === 1 && !e.errors.length,
+      { db: e.db.rows.length, shown: e.$$('tr.fctproc-row').length, errors: e.errors });
+  }
+
+  console.log('\n[a linked PO moved to another job]');
+  {
+    const e = makeEnv({ rows: [row({ id: 'mv', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', po_id: 'po9' })] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const td = e.$('tr[data-row="mv"] .c-po');
+    assert('shows red "on another job", not that PO as this job\'s order', td.classList.contains('po-removed')
+      && /PO-0009 is on another job/.test(e.field('mv', 'po').placeholder) && e.field('mv', 'po').value === '', e.field('mv', 'po').placeholder);
+    assert('…and the row is Not Ordered', e.$('tr[data-row="mv"] .fctproc-pill').textContent === 'Not Ordered');
+  }
+
+  console.log('\n[a job with no bid lines]');
+  {
+    const e = makeEnv({ rows: [], bidLines: [] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    assert('the empty sheet does not point at Send to Procurement', !/Use <b>Send to Procurement<\/b>|Use Send to Procurement/.test(e.$('#fctproc-wrap').textContent)
+      && /no bid lines yet/.test(e.$('#fctproc-wrap').textContent), e.$('#fctproc-wrap').textContent);
+    e.$('[data-act="add"]').click();
+    await sleep(20);
+    const id = e.P._test.state().rows[0].id;
+    const codes = e.field(id, 'codes');
+    codes.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    e.pick(codes, 'Stormwater');
+    assert('a code typed with no bid line to match says why it is not kept', e.$$('.fctproc-toast').some(t => /no bid lines yet/.test(t.textContent)));
+  }
+
+  console.log('\n[every column filters]');
+  {
+    const e = makeEnv({ rows: [row({ id: 'f1', date_needed: '2026-04-01' }), row({ id: 'f2', created_at: '2026-03-01T10:00:01Z' })] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const fbs = e.$$('[data-pff]').map(b => b.dataset.pff);
+    for (const f of ['date_needed', 'lead_time_days', 'order_by', 'date_ordered', 'date_delivered', 'quantity', 'description', 'email']) {
+      assert(`a filter on ${f}`, fbs.includes(f));
+    }
+    e.$('[data-pff="date_needed"]').click();
+    const blank = [...e.w.document.querySelectorAll('#fctproc-ff-list .fctproc-ff-val')].find(c => c.value === '');
+    [...e.w.document.querySelectorAll('#fctproc-ff-list .fctproc-ff-val')].forEach(c => { c.checked = c === blank; });
+    e.w.document.querySelector('#fctproc-filter-dd [data-ff="apply"]').click();
+    assert('…"(blank)" Date Needed finds the row the late flags never catch', e.$$('tr.fctproc-row').map(t => t.dataset.row).join() === 'f2');
+  }
+
+  console.log('\n[bulk Contact + Email offers the vendor\'s saved contacts]');
+  {
+    const e = makeEnv({ rows: [row({ id: 'u1', vendor: 'LB Water' }), row({ id: 'u2', vendor: 'lb water', created_at: '2026-03-01T10:00:01Z' })],
+      contacts: [{ id: 'c9', supplier_name: 'LB Water', name: 'Mike Hanlon', email: 'mhanlon@lbwater.com', phone: '' }] });
+    e.P.renderTab(e.root);
+    await sleep(30);
+    for (const id of ['u1', 'u2']) { const b = e.$(`[data-sel="${id}"]`); b.checked = true; e.fire(b, 'change'); }
+    const f = e.$('#fctproc-bulk-field'); f.value = 'contact_email'; e.fire(f, 'change');
+    const c = e.$('#fctproc-bulk-contact');
+    assert('the bulk Contact is the vendor\'s contact picker', c.classList.contains('cb-input') && /proc_contacts:u1/.test(c.closest('.cb').dataset.list));
+    e.pick(c, 'Mike Hanlon', 'c9');
+    assert('…and picking one fills Email too', e.$('#fctproc-bulk-email').value === 'mhanlon@lbwater.com');
+  }
+
+  console.log('\n[leaving with a change that could not be saved]');
+  {
+    const e = makeEnv({ rows: [row({ id: 'x1' })] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    e.db.failPatch = 5;
+    const d = e.field('x1', 'description');
+    d.focus(); d.value = 'Type M inlet'; e.fire(d, 'input'); e.fire(d, 'change');
+    await sleep(20);
+    const ev = new e.w.Event('beforeunload', { cancelable: true });
+    e.w.dispatchEvent(ev);
+    assert('the browser is asked to confirm leaving', ev.defaultPrevented);
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

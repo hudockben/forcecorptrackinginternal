@@ -56,7 +56,7 @@ function makeSql(c) {
   };
 }
 
-const DB = { fail: false };
+const DB = { fail: false, failInsert: false };
 const origLoad = Module._load;
 Module._load = function (request) {
   if (request === '@neondatabase/serverless') {
@@ -64,6 +64,11 @@ Module._load = function (request) {
       const sql = makeSql(pool);
       return (strings, ...values) => {
         if (DB.fail && strings.join('?').includes('procurement_items')) {
+          return Promise.reject(new Error('connection reset by peer at 10.0.0.7:5432'));
+        }
+        // A statement that ADDS procurement rows fails (as a dropped
+        // connection would): whatever it was sent with must not happen alone.
+        if (DB.failInsert && strings.join('?').includes('INSERT INTO procurement_items')) {
           return Promise.reject(new Error('connection reset by peer at 10.0.0.7:5432'));
         }
         return sql(strings, ...values);
@@ -462,6 +467,20 @@ function schemaStatements() {
     assert('re-linking onto a line another bid row already has → 409, nothing restored or sent', r.statusCode === 409 && r.body.error === 'duplicate'
       && Boolean((await rowOf(a[2].id)).deleted_at) && (await rowOf(a[2].id)).version === v0
       && (await q("SELECT 1 FROM procurement_items WHERE bid_item_id = 'ra-new-x'")).length === 0, show(r));
+    assert('…and the answer names the line that is taken', /"Stormwater \/ B"/.test(r.body.message || '') && JSON.stringify(r.body.lines) === '["ra-b2"]', show(r));
+
+    // The restore and the new lines are one statement: a send whose insert
+    // fails restores nothing either, and the same send tried again works.
+    DB.failInsert = true;
+    r = await send(L2, { project_id: 'job-ra', items: [line('ra-new-y')], restore_ids: [a[2].id] });
+    DB.failInsert = false;
+    assert('a send whose new lines fail to go in restores nothing either (500, nothing half done)', r.statusCode === 500
+      && Boolean((await rowOf(a[2].id)).deleted_at) && (await rowOf(a[2].id)).version === v0
+      && (await q("SELECT 1 FROM procurement_items WHERE bid_item_id = 'ra-new-y'")).length === 0, show(r));
+    r = await send(L2, { project_id: 'job-ra', items: [line('ra-new-y')], restore_ids: [a[2].id] });
+    assert('…and sent again it all happens', r.statusCode === 200 && r.body.restored.length === 1 && r.body.created.length === 1
+      && !(await rowOf(a[2].id)).deleted_at, show(r));
+    await del(L2, { id: a[2].id });          // deleted again, for the checks below
     for (const [entry, what] of [
       [{ id: 'bad id', bid_item_id: 'x' }, 'a re-link entry with a bad id'],
       [{ id: a[2].id }, 'a re-link entry with no bid line'],

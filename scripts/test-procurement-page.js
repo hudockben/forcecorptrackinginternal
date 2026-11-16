@@ -148,8 +148,33 @@ console.log('\n[tracker.html — wiring]');
   assert('contact inputs carry their own attributes, so the per-keystroke supplier listener skips them',
     !/data-sup-idx="\$\{i\}" data-supc/.test(SRC) && /data-supc-id="\$\{_cbEsc\(c\.id\)\}" data-supc-field="name"/.test(SRC));
   assert('a rename carries the contacts to the new name',
-    /if \(el\.dataset\.supField === 'name'\) _supRenamed\(el\);/.test(SRC) && /C\.rename\(from, to\)/.test(requireFn(SRC, '_supRenamed'))
-      && /addEventListener\('focusin'[\s\S]{0,200}el\.dataset\.supOldName = el\.value/.test(SRC));
+    /if \(el\.dataset\.supField === 'name'\) _supRenamed\(el\);/.test(SRC) && /C\.rename\(from, target\)/.test(requireFn(SRC, '_supRenamed'))
+      // The old name a box had on focus — or, when an earlier visit left it
+      // blank or a redraw took it mid-word, the last real one (still pending).
+      && /addEventListener\('focusin'[\s\S]{0,400}el\.dataset\.supOldName = \(entry && _supPendingFrom\.get\(entry\)\) \|\| el\.value/.test(SRC));
+  const renamed = requireFn(SRC, '_supRenamed');
+  assert('a rename onto another supplier\'s name is asked (confirm), never a silent merge',
+    /const other = lists\.suppliers\.findIndex\([\s\S]*confirm\(/.test(renamed) && /lists\.suppliers\.splice\(idx, 1\)/.test(renamed));
+  assert('  a box a redraw took away, or one left blank, renames nothing',
+    /if \(!el\.isConnected\)/.test(renamed) && /if \(!to\) \{ if \(entry && from\) _supPendingFrom\.set\(entry, from\)/.test(renamed));
+  assert('  and the rename is carried to the purchase orders', /_supCarryRenameToPOs\(from, target\)/.test(renamed)
+    && /savePurchaseOrders\(\)/.test(requireFn(SRC, '_supCarryRenameToPOs')) && /if \(!_poLoadOk/.test(requireFn(SRC, '_supCarryRenameToPOs')));
+  assert('a contact saved on the Suppliers tab redraws only when nobody is typing there',
+    /_supRedrawWhenIdle\(\)/.test(requireFn(SRC, '_supContactFieldChanged')) && !/renderSupplierTab\(\)/.test(requireFn(SRC, '_supContactFieldChanged')));
+  assert('+ Add contact files the contact under the supplier shown beside it, not by list index',
+    /const supplier = _supNameFor\(btn\)/.test(requireFn(SRC, '_supAddContact')));
+  const pollPOs = requireFn(SRC, '_pollPurchaseOrders');
+  assert('the PO list counts as loaded only once the list in hand is the server\'s',
+    pollPOs.indexOf('_poLoadOk = true') > pollPOs.indexOf('JSON.stringify(incoming) === JSON.stringify(purchaseOrders)')
+      && pollPOs.lastIndexOf('_poLoadOk = true') > pollPOs.indexOf('purchaseOrders = incoming;')
+      && pollPOs.indexOf('_poLoadOk = true') < pollPOs.indexOf('if (_isEditing()) return;'));
+  assert('  and the sheet redraws when an unchanged list is first confirmed', /if \(!wasOk && activeTab === 'procurement'\) _procRerender\(\);/.test(pollPOs));
+  const cfgFn = requireFn(SRC, '_procEnsureConfigured');
+  assert('procurement.js can read the bid fresh, knows a failed PO read, and can check the supplier list',
+    /getFreshBidLines: procFreshBidLines/.test(cfgFn) && /poLoadFailed: \(\) => _poLoadFailed/.test(cfgFn) && /isSupplierListed:/.test(cfgFn));
+  assert('  the fresh bid read sends this page\'s pending bid edits first', /await _procFlushProjectSaves\(projId\)/.test(requireFn(SRC, 'procFreshBidLines')));
+  assert('a PO number handed out and not saved yet is not handed out again',
+    /_poNumbersOut/.test(requireFn(SRC, 'nextPONumber')) && /_poNumbersOut\.add\(number\)[\s\S]*finally \{\s*_poNumbersOut\.delete\(number\)/.test(requireFn(SRC, 'fctCreatePurchaseOrder')));
   assert('the contact ✕ is not a data-tab delete the page-wide handler would answer too',
     !/data-supc-del="[^"]*"[^>]*data-tab=/.test(SRC));
   assert('fctCreatePurchaseOrder sits outside the Daily Tracking → PO block the three pages share',
@@ -583,6 +608,50 @@ async function runAdminChecks(b, cfg) {
     await settle(50);
     assert('renaming a supplier moves its contacts to the new name',
       renames.length === 1 && renames[0].from === 'Acme Supply' && renames[0].to === 'Acme Supply Co', JSON.stringify(renames));
+
+    // Renamed by first clearing the box, leaving it, and coming back: the
+    // rename still goes from the last real name.
+    const nameBox = () => doc.querySelector('[data-sup-idx="0"][data-sup-field="name"]');
+    const typeName = async (v, leave = true) => {
+      const el = nameBox();
+      el.dispatchEvent(new w.FocusEvent('focusin', { bubbles: true }));
+      el.value = v;
+      el.dispatchEvent(new w.Event('input', { bubbles: true }));
+      if (leave) el.dispatchEvent(new w.Event('change', { bubbles: true }));
+      await settle(50);
+    };
+    renames.length = 0;
+    await typeName('');
+    assert('a name box left blank renames nothing yet', renames.length === 0, JSON.stringify(renames));
+    await typeName('Acme Supply Group');
+    assert('  the name typed next renames from the last real one',
+      renames.length === 1 && renames[0].from === 'Acme Supply Co' && renames[0].to === 'Acme Supply Group', JSON.stringify(renames));
+
+    // The rename reaches the purchase orders too, so Procurement still
+    // matches its rows to them.
+    const poPuts = () => calls.filter(c => c.method === 'PUT' && /\/api\/purchase-orders/.test(c.url));
+    w.eval(`purchaseOrders = [{ id: 'po7', po_number: 'PO-0007', supplier: 'acme supply group', project_id: '', cost_code: '', sub_code: '', status: 'pending', lines: [] },
+      { id: 'po8', po_number: 'PO-0008', supplier: 'Bolt Bros', project_id: '', cost_code: '', sub_code: '', status: 'pending', lines: [] }]; _poLoadOk = true;`);
+    renames.length = 0;
+    const putsAtRename = poPuts().length;
+    await typeName('Acme Group');
+    assert('  a rename carries over to the purchase orders naming the supplier',
+      w.eval("purchaseOrders.find(p => p.id === 'po7').supplier") === 'Acme Group'
+      && w.eval("purchaseOrders.find(p => p.id === 'po8').supplier") === 'Bolt Bros' && poPuts().length === putsAtRename + 1,
+      w.eval('JSON.stringify(purchaseOrders.map(p => p.supplier))'));
+
+    // Renamed to another supplier's name: asked first.
+    renames.length = 0;
+    w.confirm = () => false;
+    await typeName('Bolt Bros');
+    assert('renaming onto another supplier asks first, and Cancel puts the name back',
+      renames.length === 0 && nameBox().value === 'Acme Group'
+      && w.eval("lists.suppliers.map(s => s.name).join('|')") === 'Acme Group|Bolt Bros', w.eval("lists.suppliers.map(s => s.name).join('|')"));
+    w.confirm = () => true;
+    await typeName('bolt bros');
+    assert('  and OK merges them: one entry left, its contacts and rows moved',
+      renames.length === 1 && renames[0].from === 'Acme Group' && renames[0].to === 'Bolt Bros'
+      && w.eval("lists.suppliers.map(s => s.name).join('|')") === 'Bolt Bros', w.eval("lists.suppliers.map(s => s.name).join('|')"));
     routes.shift();
   }
 }
