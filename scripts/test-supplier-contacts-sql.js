@@ -500,6 +500,22 @@ function sectionStatements() {
     assert('…and renaming again carries it over', r.statusCode === 200 && r.body.pos === 1
       && (await listOf(key('turf'))).find(po => po.id === 'po09').supplier === 'Acme Supply Co'
       && (await listOf(key('turf'))).find(po => po.id === 'po09').status === 'approved', show(r));
+
+    // The page takes "Delta  Pipe" (two spaces) and "Delta Pipe" (a
+    // non-breaking space) for Delta Pipe — it matches a row to its order so —
+    // and so does a rename: every order and row the page reads as the
+    // supplier goes to the new name, or the rows drop off their orders.
+    await putList(key('turf'), (await listOf(key('turf'))).concat([PO('po12', 'Delta  Pipe'), PO('po13', 'Delta Pipe'), PO('po14', 'Delta Pipes')]));
+    for (const [id, vendor] of [['sc-ws1', 'Delta  Pipe'], ['sc-ws2', ' delta pipe'], ['sc-ws3', 'Delta Pipes']]) {
+      await q(`INSERT INTO procurement_items (id, company_code, division, project_id, vendor) VALUES ($1, $2, 'turf', 'job-1', $3)`, [id, CO, vendor]);
+    }
+    r = await rename(L2, 'Delta Pipe', 'Delta Pipe & Supply');
+    const ws = Object.fromEntries((await listOf(key('turf'))).map(po => [po.id, po.supplier]));
+    assert('a rename takes the orders whose Supplier differs from it only in spacing (two spaces, a non-breaking space)', r.statusCode === 200
+      && r.body.pos === 2 && ws.po12 === 'Delta Pipe & Supply' && ws.po13 === 'Delta Pipe & Supply' && ws.po14 === 'Delta Pipes', JSON.stringify([r.body, ws]));
+    const wsRows = Object.fromEntries((await q("SELECT id, vendor FROM procurement_items WHERE id LIKE 'sc-ws%'")).map(x => [x.id, x.vendor]));
+    assert('…and the Procurement rows so spelled', r.body.rows === 2 && wsRows['sc-ws1'] === 'Delta Pipe & Supply'
+      && wsRows['sc-ws2'] === 'Delta Pipe & Supply' && wsRows['sc-ws3'] === 'Delta Pipes', JSON.stringify([r.body.rows, wsRows]));
   }
 
   // ─────────────────────────────────────────────────────────────────────

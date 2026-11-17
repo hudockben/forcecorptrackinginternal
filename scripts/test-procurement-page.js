@@ -182,6 +182,14 @@ console.log('\n[tracker.html — wiring]');
       && pollPOs.indexOf('_poLoadOk = true') < pollPOs.indexOf("if (_isEditing() && activeTab !== 'procurement') return;")
       && pollPOs.indexOf("if (_isEditing() && activeTab !== 'procurement') return;") > 0);
   assert('  and the sheet redraws when an unchanged list is first confirmed', /if \(!wasOk && activeTab === 'procurement'\) _procRerender\(\);/.test(pollPOs));
+  // A list equal to the one in hand is that version (a rename the server made
+  // and the page applied itself): kept on the old version, the next save of
+  // the list looked stale, and the server merged back what it deleted.
+  const eqPoll = pollPOs.slice(pollPOs.indexOf('JSON.stringify(incoming) === JSON.stringify(purchaseOrders)'), pollPOs.indexOf("if (_isEditing() && activeTab !== 'procurement') return;"));
+  const eqReread = reread.slice(reread.indexOf('JSON.stringify(incoming) === JSON.stringify(purchaseOrders)'), reread.indexOf('const before = purchaseOrders;'));
+  assert('  an unchanged list read back is taken with its version, by the poll and by a re-read alike',
+    /_poTakeBase\(data\.updatedAt\)/.test(eqPoll) && /_poTakeBase\(data\.updatedAt\)/.test(eqReread));
+  assert('  never an older version than the one held', /if \(at && !\(Date\.parse\(at\) < Date\.parse\(_poBaseUpdatedAt\)\)\) _poBaseUpdatedAt = at;/.test(requireFn(SRC, '_poTakeBase')));
   assert('  a list the server did send is no longer "could not be read", even while an edit holds it back',
     pollPOs.indexOf('_poLoadFailed = false') > pollPOs.indexOf('const data = await r.json();')
       && pollPOs.indexOf('_poLoadFailed = false') < pollPOs.indexOf("if (_isEditing() && activeTab !== 'procurement') return;"));

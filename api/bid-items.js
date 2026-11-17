@@ -232,8 +232,13 @@ module.exports = async (req, res) => {
     //    opened this job there; a re-import before that left the row "not on
     //    bid" for good, and Send made a second, blank row for the material.
     //    A code blanked half way through a rename is not copied over.
+    //    Only the rows of the job whose bid was just written: the job is read
+    //    off projectKey (the blob changed above), never off projectId, which
+    //    nothing ties to it — a request naming another job there would
+    //    rewrite that job's rows while its own bid stayed as it was.
     //    Non-fatal, like the mirror: the bid edit has landed either way.
     try {
+      const keyProjectId = projectKey.replace(/^fct_(?:paving_|kiewit_)?project_/, '');
       // As Procurement stores text: one line, trimmed.
       const oneLine = v => String(v || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
       const cc = oneLine(item.cost_code), sc = oneLine(item.sub_code);
@@ -244,13 +249,13 @@ module.exports = async (req, res) => {
                version    = version + 1,
                updated_at = NOW()
          WHERE company_code = ${companyCode} AND division = ${division}
-           AND project_id = ${projectId} AND bid_item_id = ${item.id}
+           AND project_id = ${keyProjectId} AND bid_item_id = ${item.id}
            AND ((${cc}::text <> '' AND cost_code <> ${cc}::text) OR (${sc}::text <> '' AND sub_code <> ${sc}::text))
       `;
     } catch (procErr) {
       console.warn(
         `[bid-items] procurement code copy failed for company=${companyCode} ` +
-        `project=${projectId} bidItem=${item.id}: ${procErr.message}`
+        `project=${projectKey} bidItem=${item.id}: ${procErr.message}`
       );
     }
 

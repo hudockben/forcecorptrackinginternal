@@ -311,6 +311,8 @@ async function openPage(browser, W, role, { viewport = { width: 1474, height: 90
     const send = (status, b) => route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(b) });
     if (p === '/api/supplier-contacts' && m === 'GET' && W.contactsDelay) await sleep(W.contactsDelay);
     if (p === '/api/procurement' && m === 'GET' && !q.include_deleted && W.procGetDelay) await sleep(W.procGetDelay);
+    // One PATCH held until the test lets it go (set W.procPatchHold to a promise).
+    if (p === '/api/procurement' && m === 'PATCH' && W.procPatchHold) { const h = W.procPatchHold; W.procPatchHold = null; await h; }
     if (p === '/api/procurement' || p === '/api/supplier-contacts') {
       W.log.push({ api: p.slice(5), method: m, q, body, role });
       const [status, b] = (p === '/api/procurement' ? procurementApi : contactsApi)(W, role, m, q, body || {});
@@ -321,11 +323,22 @@ async function openPage(browser, W, role, { viewport = { width: 1474, height: 90
         W.poGets = (W.poGets || 0) + 1;
         return send(200, { purchaseOrders: JSON.parse(JSON.stringify(W.pos)), updatedAt: W.posAt });
       }
-      // A whole-list save (the Purchase Orders tab's, a supplier rename's).
+      // A whole-list save (the Purchase Orders tab's). As api/purchase-orders.js
+      // does: a save made from a list older than the stored one (its
+      // baseUpdatedAt is not the stored version) keeps the stored orders it
+      // did not send — so a delete made from a stale base does not stick.
       if (m === 'PUT' && body && Array.isArray(body.purchaseOrders)) {
         W.log.push({ api: 'purchase-orders', method: m, q, body, role });
-        W.pos = JSON.parse(JSON.stringify(body.purchaseOrders));
-        return send(200, { ok: true, updatedAt: '2026-11-01T00:00:01.000Z' });
+        let next = JSON.parse(JSON.stringify(body.purchaseOrders)), merged = 0;
+        if (body.baseUpdatedAt && body.baseUpdatedAt !== W.posAt) {
+          const sent = new Set(next.map(po => po.id));
+          const unseen = W.pos.filter(po => !sent.has(po.id));
+          merged = unseen.length;
+          next = next.concat(JSON.parse(JSON.stringify(unseen)));
+        }
+        W.pos = next;
+        W.posAt = new Date(Date.parse(W.posAt) + 1000).toISOString();
+        return send(200, { ok: true, updatedAt: W.posAt, merged, mergedOrders: merged });
       }
       if (m === 'POST' && body && body.purchaseOrder) {
         // A cold serverless start answers slowly.
@@ -1146,6 +1159,246 @@ async function roundThreeSaveFixes(browser) {
   await ctx.close();
 }
 
+// ── Round four: a stale bid line refused with its codes, a delete after a
+// rename, the bulk bar under a refresh, the sheet under a refresh ────────────
+async function roundFourFixes(browser) {
+  console.log('\na refused bid line, a delete after a rename, the bulk bar and the sheet under a refresh');
+  const t = i => new Date(Date.UTC(2026, 9, 3) + i * 1000).toISOString();
+
+  // ── A Sub Code picked from a bid that has since been replaced elsewhere ──
+  {
+    const W = makeWorld();
+    W.rows.push({ ...BLANK_ROW, id: 'H1', project_id: 'p1', description: '', created_at: t(1), updated_at: t(1) });
+    const { page, ctx, errors } = await openPage(browser, W, 'level2', { viewport: { width: 1920, height: 1000 }, storage: { fct_proc_project_turf: 'p1' } });
+    const saved = PROJECTS.p1.bidItems;
+    try {
+      await page.click('.tab-btn[data-tab="procurement"]');
+      await until(() => rowTr(page, 'H1').count());
+      // A colleague's Procore "Replace all" lands on the server (new line
+      // ids); this page has not read the bid since.
+      PROJECTS.p1.bidItems = saved.map(b => ({ ...b, id: 'n' + b.id }));
+      await page.evaluate(() => { const b = document.getElementById('save-error-banner'); window.__banner = [];
+        new MutationObserver(() => window.__banner.push(b.textContent.replace(/\s+/g, ' ').trim())).observe(b, { childList: true, subtree: true, characterData: true }); });
+      await cell(page, 'H1', 'description').click();
+      await page.keyboard.type('Couplers', { delay: 10 });
+      await cbPick(page, cell(page, 'H1', 'codes'), 'Perim', 'Perimeter');
+      await sleep(1500);
+      const ps = patchesFor(W, 'H1');
+      const h1 = W.rows.find(r => r.id === 'H1');
+      ok('a Sub Code pick refused as no longer on the bid (stale_bid) saves none of its codes: the row stays uncoded',
+        h1.bid_item_id === null && h1.cost_code === '' && h1.sub_code === '', [h1.bid_item_id, h1.cost_code, h1.sub_code]);
+      ok('…no save carries the codes without their line, and the line is not sent again', ps.every(l => !('sub_code' in l.body.fields) || 'bid_item_id' in l.body.fields)
+        && ps.filter(l => 'bid_item_id' in l.body.fields).length === 1, ps.map(l => l.body.fields));
+      ok('…the Description typed in the same edit is saved', h1.description === 'Couplers', h1.description);
+      const shown = { sub: await cell(page, 'H1', 'codes').inputValue(), cost: (await rowTr(page, 'H1').locator('.c-cost_code').textContent()).trim() };
+      ok('…and the cells are back to what was saved, as the message says', shown.sub === '' && shown.cost === '', shown);
+      const banner = (await page.evaluate(() => window.__banner)).filter(Boolean).pop() || '';
+      ok('…the message names the pick once ("Cost / Sub Code was not saved")', /Cost \/ Sub Code was not saved/.test(banner) && !/Sub Code, Cost Code/.test(banner), banner);
+      // The refusal itself is the browser's logged 409, and expected.
+      const other = errors.filter(e => !/status of 409 \(Conflict\).*\/api\/procurement/.test(e));
+      ok('no page errors', other.length === 0, other.join(' | '));
+    } finally {
+      PROJECTS.p1.bidItems = saved;
+      await ctx.close();
+    }
+  }
+
+  // ── …and a live line picked while that refused pick was still out ───────
+  {
+    const W = makeWorld();
+    W.rows.push({ ...BLANK_ROW, id: 'H2', project_id: 'p1', description: 'Couplers', created_at: t(2), updated_at: t(2) });
+    const { page, ctx, errors } = await openPage(browser, W, 'level2', { viewport: { width: 1920, height: 1000 }, storage: { fct_proc_project_turf: 'p1' } });
+    const saved = PROJECTS.p1.bidItems;
+    let release = () => {};
+    try {
+      await page.click('.tab-btn[data-tab="procurement"]');
+      await until(() => rowTr(page, 'H2').count());
+      // Only the drain line was replaced elsewhere; Geofabric (same Cost
+      // Code) is still on the bid.
+      PROJECTS.p1.bidItems = saved.map(b => (b.id === 'b2' ? { ...b, id: 'nb2' } : b));
+      W.procPatchHold = new Promise(r => { release = r; });
+      await cbPick(page, cell(page, 'H2', 'codes'), 'Perim', 'Perimeter');
+      await clickAway(page);
+      await sleep(300);
+      // Before the drain pick is answered, the PM picks Geofabric instead.
+      await cbPick(page, cell(page, 'H2', 'codes'), 'Geofab', 'Geofabric');
+      await clickAway(page);
+      await sleep(300);
+      release();
+      await until(() => W.rows.find(r => r.id === 'H2').bid_item_id === 'b1');
+      await sleep(400);
+      const h2 = W.rows.find(r => r.id === 'H2');
+      ok('a live line picked while a refused (stale_bid) pick was out is saved with all of its codes, the shared Cost Code included',
+        h2.bid_item_id === 'b1' && h2.cost_code === 'Stormwater' && h2.sub_code === 'Geofabric', [h2.bid_item_id, h2.cost_code, h2.sub_code, patchesFor(W, 'H2').map(l => l.body.fields)]);
+      const other = errors.filter(e => !/status of 409 \(Conflict\).*\/api\/procurement/.test(e));
+      ok('no page errors', other.length === 0, other.join(' | '));
+    } finally {
+      release();
+      W.procPatchHold = null;
+      PROJECTS.p1.bidItems = saved;
+      await ctx.close();
+    }
+  }
+
+  // ── A purchase order deleted after a supplier rename ─────────────────────
+  {
+    const W = makeWorld();
+    W.pos.push({ id: 'po8', po_number: 'PO-0008', title: 'Infill', supplier: 'Acme Supply', status: 'pending', date_created: plusDays(-2),
+      project_id: 'p1', cost_code: 'Synthetic Turf', sub_code: 'Infill', notes: '', lines: [] });
+    const { page, ctx, errors } = await openPage(browser, W, 'admin');
+    await page.evaluate(() => adminSwitchTab('supplier'));
+    await until(() => page.evaluate(() => _supContactsLoad.state === 'ok'));
+    const lbIdx = await page.evaluate(() => lists.suppliers.findIndex(s => s.name === 'LB Water'));
+    const box = page.locator(`#supplier-root [data-sup-field="name"][data-sup-idx="${lbIdx}"]`);
+    await box.fill('LB Water Works');
+    await page.locator('#supplier-root').click({ position: { x: 5, y: 5 } });
+    await until(() => W.log.some(l => l.q.action === 'rename'));
+    await until(() => page.evaluate(() => (purchaseOrders.find(po => po.id === 'po7') || {}).supplier === 'LB Water Works'));
+    await sleep(600);
+    ok('after a rename the server made to the order list, the page holds that list\'s version', await page.evaluate(() => _poBaseUpdatedAt) === W.posAt,
+      [await page.evaluate(() => _poBaseUpdatedAt), W.posAt]);
+    await page.evaluate(() => deletePO('po8'));
+    const put = await until(() => W.log.find(l => l.api === 'purchase-orders' && l.method === 'PUT'));
+    await sleep(300);
+    ok('…so an order deleted next is saved against it, and stays deleted', !!put && !W.pos.some(po => po.id === 'po8')
+      && W.pos.some(po => po.id === 'po7' && po.supplier === 'LB Water Works'), W.pos.map(po => `${po.id}:${po.supplier}`));
+    ok('no page errors', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  }
+
+  // ── The sheet and its bulk bar while the order list changes ──────────────
+  {
+    const W = makeWorld();
+    const row = (id, f) => ({ ...BLANK_ROW, id, project_id: 'p1', created_at: t(id.charCodeAt(1)), updated_at: t(id.charCodeAt(1)), ...f });
+    W.rows.push(
+      row('F1', { description: 'geofabric pins', vendor: 'New Enterprise', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' }),
+      row('F2', { description: 'staples', vendor: 'New Enterprise', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' }),
+      row('F3', { description: 'mob trailer', vendor: 'LB Water', bid_item_id: 'b3', cost_code: 'Mobilization', sub_code: 'Mobilization' }),
+      row('F4', { description: 'mob fuel', vendor: 'LB Water', bid_item_id: 'b3', cost_code: 'Mobilization', sub_code: 'Mobilization' }),
+    );
+    const { page, ctx, errors } = await openPage(browser, W, 'level2', { viewport: { width: 1920, height: 1000 },
+      storage: { fct_proc_project_turf: 'p1', fct_proc_group_turf: 'cost' } });
+    await page.click('.tab-btn[data-tab="procurement"]');
+    await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 4));
+    await sleep(300);
+    let k = 0;
+    const raisePO = (pid, f) => W.pos.push({ id: 'pr' + (++k), po_number: 'PO-80' + k, title: 'x', supplier: 'Else', status: 'pending',
+      date_created: plusDays(-1), project_id: pid, cost_code: '', sub_code: '', notes: '', lines: [], ...f });
+    const reread = () => page.evaluate(() => _poReread());
+    const activeIs = () => page.evaluate(() => { const a = document.activeElement; return a ? (a.dataset.act ? `${a.dataset.act}@${a.dataset.row}` : a.id || a.tagName) : null; });
+
+    // Tab out of an edited Email: its save is answered while focus is on the
+    // row's "+ Material" — which keeps it.
+    await cell(page, 'F1', 'email').click();
+    await page.keyboard.type('pins@ne.com', { delay: 10 });
+    await page.keyboard.press('Tab');
+    await until(() => W.rows.find(r => r.id === 'F1').email === 'pins@ne.com');
+    await sleep(300);
+    const afterEmail = await activeIs();
+    await page.keyboard.press('Tab');
+    ok('Tab out of an edited Email lands on "+ Material", and stays there once the save is answered; Tab goes on to the row\'s ✕',
+      afterEmail === 'material@F1' && await activeIs() === 'del@F1', [afterEmail, await activeIs()]);
+    await clickAway(page); await sleep(300);
+
+    // An order raised on another job lands while a cell is typed in: nothing
+    // on this job changes, so no row is rebuilt — now, or when the table is left.
+    await page.evaluate(() => { document.querySelector('#procurement-root tr.fctproc-row[data-row="F4"]').__mark = 1; });
+    await cell(page, 'F2', 'description').click();
+    await page.keyboard.press('End');
+    await page.keyboard.type(' x', { delay: 20 });
+    raisePO('p2');
+    await reread();
+    const kept = () => page.evaluate(() => !!document.querySelector('#procurement-root tr.fctproc-row[data-row="F4"]').__mark);
+    const midEdit = await kept();
+    await clickAway(page); await sleep(500);
+    ok('an order list change that touches no row of this job rebuilds no row mid-edit, nor when the table is left', midEdit && await kept(), [midEdit, await kept()]);
+
+    // One that does (an order for the Mobilization line) is redrawn around the
+    // cell, in place.
+    await cell(page, 'F2', 'description').click();
+    await page.keyboard.press('End');
+    await page.keyboard.type('y', { delay: 20 });
+    raisePO('p1', { supplier: 'LB Water', cost_code: 'Mobilization', sub_code: 'Mobilization' });
+    await reread();
+    ok('an order for the Mobilization line shows on its rows mid-edit', await until(() => cell(page, 'F3', 'po').inputValue().then(v => /PO-80/.test(v))));
+    await clickAway(page);
+    ok('…and the typing goes on and is saved', await until(() => W.rows.find(r => r.id === 'F2').description === 'staples xy'), W.rows.find(r => r.id === 'F2').description);
+    await sleep(400);
+
+    // A colleague moves F1 to the Mobilization line; the refresh lands while
+    // the PM types, so the regroup is owed until the table is left. The PM
+    // leaves it with a press on a group header: that click still folds it.
+    const f1 = W.rows.find(r => r.id === 'F1');
+    Object.assign(f1, { bid_item_id: 'b3', cost_code: 'Mobilization', sub_code: 'Mobilization', version: f1.version + 1, updated_at: t(700) });
+    W.procGetDelay = 700;
+    const refreshing = page.evaluate(() => FCTProcurement.refresh());
+    await sleep(100);
+    await cell(page, 'F2', 'description').click();
+    await page.keyboard.press('End');
+    await page.keyboard.type('z', { delay: 20 });
+    await refreshing; await sleep(200);
+    W.procGetDelay = 0;
+    const hdr = await page.locator('#fctproc-wrap tr.fctproc-grp', { hasText: 'Stormwater' }).boundingBox();
+    // (The table is scrolled sideways by now — the Description cell — so the
+    // press is made where the header shows, near the window's left.)
+    await page.mouse.move(Math.max(hdr.x, 0) + 200, hdr.y + hdr.height / 2);
+    await page.mouse.down(); await sleep(80); await page.mouse.up();
+    await sleep(600);
+    const folded = await page.evaluate(() => [...FCTProcurement._test.state().collapsed].some(g => /stormwater/i.test(g)));
+    ok('a press on a group header that leaves a cell with a regroup owed still folds the group (the redraw waits for the button to come up)', folded,
+      await page.evaluate(() => [...FCTProcurement._test.state().collapsed]));
+    const underMob = await page.evaluate(() => {
+      let head = '';
+      for (const tr of document.querySelectorAll('#fctproc-wrap tbody tr')) {
+        if (tr.classList.contains('fctproc-grp')) head = tr.textContent; else if (tr.dataset.row === 'F1') return /Mobilization/.test(head);
+      }
+      return false;
+    });
+    ok('…and the owed regroup is drawn after it (F1 under Mobilization)', underMob);
+    if (folded) { await page.locator('#fctproc-wrap tr.fctproc-grp', { hasText: 'Stormwater' }).click(); await sleep(200); }
+
+    // The bulk bar: a Quote # typed there survives the order list changing.
+    await page.locator('#procurement-root [data-sel="F1"]').check();
+    await page.locator('#procurement-root [data-sel="F2"]').check();
+    await page.selectOption('#fctproc-bulk-field', 'quote_number');
+    await page.locator('#fctproc-bulk-val').click();
+    await page.keyboard.type('Q-7', { delay: 20 });
+    raisePO('p2');
+    await reread();
+    const typed = await page.evaluate(() => ({ active: document.activeElement.id, val: document.getElementById('fctproc-bulk-val').value }));
+    await page.keyboard.type('77', { delay: 20 });
+    const typedOn = await page.evaluate(() => ({ active: document.activeElement.id, val: document.getElementById('fctproc-bulk-val').value }));
+    ok('a refresh of the order list while a value is typed in the bulk bar keeps the value and the focus, and typing goes on',
+      eq(typed, { active: 'fctproc-bulk-val', val: 'Q-7' }) && eq(typedOn, { active: 'fctproc-bulk-val', val: 'Q-777' }), [typed, typedOn]);
+    // Left (not applied), and redrawn again: still there, and Apply uses it.
+    await clickAway(page); await sleep(200);
+    raisePO('p2');
+    await reread();
+    ok('…and once the box is left, a later refresh keeps it too', await page.locator('#fctproc-bulk-val').inputValue() === 'Q-777');
+    await page.locator('#procurement-root [data-act="bulk-apply"]').click();
+    await until(() => W.rows.filter(r => r.quote_number === 'Q-777').length === 2);
+    ok('…Apply sets it on the rows ticked', W.rows.filter(r => r.quote_number === 'Q-777').map(r => r.id).sort().join() === 'F1,F2',
+      W.rows.map(r => `${r.id}:${r.quote_number}`));
+
+    // A bulk button with focus ("Apply to 2", say) is no reason to keep the
+    // bar stale: an order raised meanwhile shows in its PO list, and the
+    // button keeps focus.
+    await page.selectOption('#fctproc-bulk-field', 'po');
+    await page.focus('#procurement-root [data-act="bulk-apply"]');
+    raisePO('p1', { supplier: 'LB Water', cost_code: 'Mobilization', sub_code: 'Mobilization' });
+    const newNo = W.pos[W.pos.length - 1].po_number;
+    await reread();
+    await sleep(200);
+    const bar = await page.evaluate(() => ({ active: document.activeElement && document.activeElement.dataset.act,
+      opts: [...document.querySelectorAll('#fctproc-bulk-val option')].map(o => o.textContent.split(' — ')[0].trim()) }));
+    ok('…a refresh while a bulk button has focus redraws the bar (the new order is in its PO list), and the button keeps focus',
+      bar.active === 'bulk-apply' && bar.opts.includes(newNo), [newNo, bar]);
+
+    ok('no page errors', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  }
+}
+
 (async () => {
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
@@ -1157,6 +1410,7 @@ async function roundThreeSaveFixes(browser) {
     await roundTwoFixes(browser);
     await roundThreeFixes(browser);
     await roundThreeSaveFixes(browser);
+    await roundFourFixes(browser);
   } finally {
     await browser.close();
     server.close();

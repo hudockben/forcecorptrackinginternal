@@ -1796,28 +1796,64 @@
    * which value it was, the whole of that PATCH is what was refused.
    */
   function refuseFields(rowId, p, err) {
-    const named = err.field && Object.prototype.hasOwnProperty.call(p, err.field) ? [err.field] : Object.keys(p);
+    let named = err.field && Object.prototype.hasOwnProperty.call(p, err.field) ? [err.field] : Object.keys(p);
+    // A bid line refused (stale_bid) takes its codes with it: they came from
+    // the same pick, and saved without the line they would leave the row
+    // coded but tied to nothing — never re-linked, never renamed with the
+    // bid, and offered again by Send as a new line.
+    if (named.includes('bid_item_id')) named = [...new Set([...named, ...['cost_code', 'sub_code'].filter(k => k in p)])];
     const row = rowById(rowId), saved = server.get(rowId) || {};
     const newer = pend.get(rowId) || {};
     const rest = {};
     Object.keys(p).forEach(k => { if (!named.includes(k)) rest[k] = p[k]; });
     // A value typed into the same cell since this PATCH went is the user's
     // next try, and is sent on its own merits.
-    named.forEach(k => { if (row && !(k in newer) && k in saved) row[k] = saved[k]; });
-    const next = { ...rest, ...newer };
+    // A newer bid-line pick made while the refused one was out owns the
+    // codes now: a code it shares with the refused pick was left out of it
+    // (equal to the one in flight), so it is carried into the next save
+    // rather than put back — else the row would be saved linked with a
+    // blank stored code.
+    const repick = 'bid_item_id' in newer;
+    const carried = {};
+    named.forEach(k => {
+      if (!row || k in newer || !(k in saved)) return;
+      if (repick && (k === 'cost_code' || k === 'sub_code')) {
+        if (!sameVal(row[k], saved[k])) carried[k] = row[k];
+        return;
+      }
+      row[k] = saved[k];
+    });
+    const next = { ...rest, ...carried, ...newer };
     if (Object.keys(next).length) pend.set(rowId, next); else pend.delete(rowId);
     failed.delete(rowId);
-    const what = [...new Set(named.map(k => FIELD_LABEL[k] || k))];
+    // The line and its codes are one pick, named as one.
+    const one = named.includes('bid_item_id') ? named.filter(k => k !== 'cost_code' && k !== 'sub_code') : named;
+    const what = [...new Set(one.map(k => FIELD_LABEL[k] || k))];
     // A bid line's id means nothing to a PM; its codes are named instead.
-    const vals = named.length === 1 && named[0] !== 'bid_item_id' ? ` "${shownValue(named[0], p[named[0]])}"` : '';
-    showError(`Procurement: ${what.join(', ')}${vals} ${named.length === 1 ? 'was' : 'were'} not saved — ${err.message}. `
-      + `${named.length === 1 ? 'The cell is' : 'Those cells are'} back to what was saved`
+    const vals = one.length === 1 && one[0] !== 'bid_item_id' ? ` "${shownValue(one[0], p[one[0]])}"` : '';
+    showError(`Procurement: ${what.join(', ')}${vals} ${one.length === 1 ? 'was' : 'were'} not saved — ${err.message}. `
+      + `${one.length === 1 ? 'The cell is' : 'Those cells are'} back to what was saved`
       + `${Object.keys(rest).length ? '; the rest of the row\'s changes go on without it' : ''}.`);
+    if (named.includes('bid_item_id') && row && !('bid_item_id' in newer)) resetCodesBox(rowId);
     refreshRow(rowId);
     updateCounts();
     // Shown as not saved even when nothing else is left to send — "Saved"
     // would be the wrong word for an edit that was thrown away.
     if (!fly.size && !Object.keys(next).length) setSave('error');
+  }
+  // The refused line's Sub Code box can outlive the redraw (it is about to
+  // commit, 120 ms after blur, or still has focus) and still holds the pick:
+  // it would commit that line again and be refused again. So it is put back
+  // to the saved codes, and its pick forgotten — a later commit of it is
+  // "nothing chosen" until the user picks again.
+  function resetCodesBox(rowId) {
+    const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
+    const box = wrap && wrap.querySelector(`[data-pr="${cssEsc(rowId)}"][data-pf="codes"]`);
+    const row = rowById(rowId);
+    if (!box || !row) return;
+    box.value = liveCodes(row, makeCtx()).sub_code || '';
+    if (row.bid_item_id) box.dataset.cbValue = String(row.bid_item_id); else delete box.dataset.cbValue;
+    cbSession.set(box, { value: box.value, cbValue: box.dataset.cbValue || '', chosen: false, nav: false, cleared: false });
   }
 
   function flushAll(opts) {
@@ -1940,20 +1976,50 @@
    * cell in use as it is), rows deleted elsewhere go, and the full redraw —
    * for rows added elsewhere, and the order and grouping (a row moved to
    * another vendor or cost code, a group's count) — waits until the table
-   * is left. It is always owed: a row redrawn in place can belong under
-   * another header now, which nothing here can tell cheaply.
+   * is left — when the table drawn now would not have the same rows, in the
+   * same order, under the same headers as the one on screen.
+   *
+   * Only a row whose drawing has changed is redrawn: a refresh that changes
+   * nothing on this job (an order raised on another one, say) costs a pass
+   * over the rows' HTML, not hundreds of rows rebuilt under the PM's typing,
+   * and leaves no full redraw owed.
    */
   let redrawDeferred = false;
+  // When a mouse button went down in the sheet, until it comes up (0).
+  let pressedAt = 0;
+  function onSheetMouseDown(e) { if (e.button === 0) pressedAt = Date.now(); }
+  function onDocMouseUp() {
+    if (!pressedAt) return;
+    pressedAt = 0;
+    if (redrawDeferred) setTimeout(redrawWhenFree, 0);
+  }
+  document.addEventListener('mouseup', onDocMouseUp, true);
+  window.addEventListener('blur', onDocMouseUp);
   function redrawAround() {
     const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
     if (!wrap) return;
     const shown = new Set([...wrap.querySelectorAll('tr.fctproc-row')].map(tr => tr.dataset.row));
-    shown.forEach(id => refreshRow(id));
-    redrawDeferred = true;
+    const ctx = makeCtx();
+    shown.forEach(id => refreshRow(id, null, ctx, true));
+    if (layoutOf(visibleRows(ctx), ctx) !== drawnLayout) redrawDeferred = true;
     updateCounts();
+  }
+  // What the table on screen is made of — its rows, their order, the headers
+  // over them — as renderTable drew it, and as it would draw it now.
+  let drawnLayout = '';
+  function layoutOf(rows, ctx, groups) {
+    if (!st.rows.length || !rows.length) return '';     // a note, not a table
+    if (!groups) groups = groupRows(rows, ctx);
+    return `${st.rows.length}/${rows.length}/${st.grouping}\n` + groups.map(g => (st.grouping === 'none' ? '' : `G:${g.key}|${g.label}|${g.meta}\n`)
+      + (st.grouping === 'none' || !st.collapsed.has(g.key) ? g.rows.map(r => r.id).join('\n') : '')).join('\n');
   }
   function redrawWhenFree() {
     if (!redrawDeferred || !isMounted()) return;
+    // A press in the sheet (on a group header, a filter button) blurs the
+    // cell first: redrawn now, the header under the pointer is replaced
+    // before the button comes up, and the click lands on nothing. Paid once
+    // the button is up — after the click it was aimed at.
+    if (pressedAt && Date.now() - pressedAt < 5000) return;
     const wrap = st.mountEl.querySelector('#fctproc-wrap');
     // A combobox still committing: shortly. Another cell taken: the next
     // time one is left.
@@ -2281,6 +2347,7 @@
     const rows = visibleRows(ctx);
     const groups = groupRows(rows, ctx);
     const width = cols.reduce((s, c) => s + c.w, 0);
+    const drawn = new Map();
     let body = '';
     if (!st.rows.length) {
       const hasBid = (ctx.bidLines || []).length > 0;
@@ -2294,7 +2361,7 @@
       body = groups.map(g => {
         const head = st.grouping === 'none' ? '' : groupHeaderHtml(g, cols.length, ctx);
         const open = st.grouping === 'none' || !st.collapsed.has(g.key);
-        return head + (open ? g.rows.map(r => rowHtml(r, ctx, edit, cols)).join('') : '');
+        return head + (open ? g.rows.map(r => { const h = rowHtml(r, ctx, edit, cols); drawn.set(r.id, h); return h; }).join('') : '');
       }).join('');
     }
 
@@ -2305,6 +2372,8 @@
     wrap.innerHTML = `<table class="fctproc-table" style="width:${width}rem;min-width:${width}rem">
       <colgroup>${cols.map(c => `<col style="width:${c.w}rem">`).join('')}</colgroup>
       <thead>${headerHtml(cols)}</thead><tbody>${body}</tbody></table>`;
+    wrap.querySelectorAll('tr.fctproc-row').forEach(tr => { const h = drawn.get(tr.dataset.row); if (h) drawnHtml.set(tr, h); });
+    drawnLayout = layoutOf(rows, ctx, groups);
     wrap.scrollTop = top;
     wrap.scrollLeft = leftScroll;
     restoreFocus(wrap, focus);
@@ -2363,7 +2432,8 @@
   function captureFocus(scope) {
     const a = document.activeElement;
     if (!a || !scope.contains(a) || !a.dataset) return null;
-    const f = { pr: a.dataset.pr || null, pf: a.dataset.pf || null, id: a.id || null, start: null, end: null };
+    const f = { pr: a.dataset.pr || null, pf: a.dataset.pf || null, id: a.id || null, start: null, end: null,
+      act: a.tagName === 'BUTTON' && a.dataset.act && a.dataset.row ? [a.dataset.act, a.dataset.row] : null };
     try { f.start = a.selectionStart; f.end = a.selectionEnd; } catch { /* not a text box */ }
     return f;
   }
@@ -2371,6 +2441,7 @@
     if (!f) return;
     let el = null;
     if (f.pr && f.pf) el = scope.querySelector(`[data-pr="${cssEsc(f.pr)}"][data-pf="${cssEsc(f.pf)}"]`);
+    else if (f.act) el = scope.querySelector(`button[data-act="${cssEsc(f.act[0])}"][data-row="${cssEsc(f.act[1])}"]`);
     else if (f.id) el = scope.querySelector('#' + cssEsc(f.id));
     // Focusing a combobox opens its menu and selects its text — not what a
     // background redraw should do to someone. Those are left unfocused.
@@ -2529,28 +2600,48 @@
   // just lost focus and is about to commit (it commits 120 ms after blur, and
   // a replaced box would commit into nothing) — is left exactly as it is, and
   // so is `hold`, the box whose own change asked for the redraw.
-  function refreshRow(rowId, hold) {
+  //
+  // `onlyIfChanged` (a background refresh): a row drawn from the same HTML as
+  // last time is left alone. Never for an edit's own redraw, which also puts
+  // back a box whose typing was refused.
+  const drawnHtml = new WeakMap();      // tr → the HTML it was drawn from
+  function refreshRow(rowId, hold, ctx0, onlyIfChanged) {
     const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
     if (!wrap) return;
     const tr = wrap.querySelector(`tr[data-row="${cssEsc(rowId)}"]`);
     if (!tr) return;
     const row = rowById(rowId);
     if (!row) { tr.remove(); return; }
-    const ctx = makeCtx();
+    const ctx = ctx0 || makeCtx();
     const edit = canEdit();
+    const html = rowHtml(row, ctx, edit, colsFor(edit));
+    if (onlyIfChanged && drawnHtml.get(tr) === html) return;
     const tmp = document.createElement('tbody');
-    tmp.innerHTML = rowHtml(row, ctx, edit, colsFor(edit));
+    tmp.innerHTML = html;
     const fresh = tmp.firstElementChild;
     if (!fresh) return;
     // Only a box being typed in holds its cell; a button that was just
     // clicked (the ✕ asking "Delete?", "Use bid qty") is redrawn like the rest.
     const active = document.activeElement;
     const typing = active && /^(INPUT|SELECT|TEXTAREA)$/.test(active.tagName) && active.type !== 'checkbox';
+    // …but keyboard focus on one of the row's buttons ("+ Material", which
+    // Tab out of Email lands on) stays on it when it is still there, or the
+    // next Tab would start over from the top of the page.
+    const btn = active && active.tagName === 'BUTTON' && tr.contains(active) && active.dataset.act ? active.dataset.act : null;
     const busy = td => (typing && td.contains(active)) || (hold && td.contains(hold)) || td.querySelector('[data-pcommit]');
-    if (![...tr.children].some(busy)) { tr.replaceWith(fresh); return; }
-    tr.className = fresh.className;
-    const next = Array.from(fresh.children);
-    Array.from(tr.children).forEach((td, i) => { if (next[i] && !busy(td)) td.replaceWith(next[i]); });
+    let host = fresh;
+    if (![...tr.children].some(busy)) tr.replaceWith(fresh);
+    else {
+      host = tr;
+      tr.className = fresh.className;
+      const next = Array.from(fresh.children);
+      Array.from(tr.children).forEach((td, i) => { if (next[i] && !busy(td)) td.replaceWith(next[i]); });
+    }
+    drawnHtml.set(host, html);
+    if (btn && !host.contains(document.activeElement)) {
+      const again = host.querySelector(`button[data-act="${cssEsc(btn)}"]`);
+      if (again) { try { again.focus({ preventScroll: true }); } catch { again.focus(); } }
+    }
   }
 
   // ── Bulk bar ────────────────────────────────────────────────────────
@@ -2585,6 +2676,14 @@
   function renderBulk() {
     const box = st.mountEl && st.mountEl.querySelector('#fctproc-bulk');
     if (!box) return;
+    // A value typed or picked in the bar and not yet applied survives the
+    // bar being drawn again (a row ticked, the order list refreshed): drawn
+    // empty, Apply would offer to clear the field on every row selected.
+    const keep = [];
+    const vb0 = box.querySelector('#fctproc-bulk-valbox');
+    if (vb0 && vb0.dataset.field === st.bulkField) {
+      vb0.querySelectorAll('input[id], select[id]').forEach(el => keep.push([el.id, el.value, el.dataset.cbValue]));
+    }
     st.selected.forEach(id => { if (!rowById(id)) st.selected.delete(id); });
     const n = st.selected.size;
     if (!canEdit() || !n) { box.innerHTML = ''; box.className = ''; st.bulkConfirmDel = false; fitWrap(); return; }
@@ -2595,7 +2694,7 @@
       <select id="fctproc-bulk-field" aria-label="Field to set">${BULK_FIELDS.map(([k, l]) =>
         `<option value="${k}"${k === st.bulkField ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>
       <span style="color:var(--muted,#888)">to</span>
-      <span id="fctproc-bulk-valbox" style="display:inline-flex;gap:0.35rem;align-items:center">${bulkValueHtml()}</span>
+      <span id="fctproc-bulk-valbox" data-field="${esc(st.bulkField)}" style="display:inline-flex;gap:0.35rem;align-items:center">${bulkValueHtml()}</span>
       <button type="button" class="btn btn-green fctproc-b" data-act="bulk-apply">Apply to ${n}</button>
       <span class="fctproc-spacer"></span>
       <button type="button" class="btn btn-ghost fctproc-b" data-act="bulk-po" title="Raise a purchase order for these rows and link them to it"${creatingPO ? ' disabled' : ''}>${creatingPO ? 'Creating PO…' : 'Create PO from selected'}</button>
@@ -2605,6 +2704,13 @@
            <button type="button" class="btn btn-ghost fctproc-b" data-act="bulk-del-no">No</button>`
         : `<button type="button" class="btn btn-danger fctproc-b" data-act="bulk-del">Delete selected</button>`}
       <button type="button" class="btn btn-ghost fctproc-b" data-act="bulk-clear">Clear selection</button>`;
+    keep.forEach(([id, value, cbValue]) => {
+      const el = box.querySelector('#' + cssEsc(id));
+      // A PO no longer on the list is not picked again.
+      if (!el || (el.tagName === 'SELECT' && ![...el.options].some(o => o.value === value))) return;
+      el.value = value;
+      if (cbValue) el.dataset.cbValue = cbValue; else delete el.dataset.cbValue;
+    });
     fitWrap();
   }
 
@@ -2727,6 +2833,7 @@
     el.addEventListener('input', onCbInputCapture, true);
     el.addEventListener('keydown', onCbKeyCapture, true);
     el.addEventListener('mousedown', onCbMouseDownCapture, true);
+    el.addEventListener('mousedown', onSheetMouseDown, true);
   }
 
   function readNumberInput(el, field) {
@@ -2777,7 +2884,7 @@
     if (el.id === 'fctproc-bulk-vendor') { cbUntouched(el); return; }
     if (el.id === 'fctproc-bulk-contact' && isCb(el)) { if (!cbUntouched(el)) pickBulkContact(el); return; }
     if (el.id === 'fctproc-showall') { st.showAll = el.checked; storeSet('showall', el.checked ? '1' : ''); return; }
-    if (el.id === 'fctproc-bulk-field') { st.bulkField = el.value; const vb = st.mountEl.querySelector('#fctproc-bulk-valbox'); if (vb) vb.innerHTML = bulkValueHtml(); return; }
+    if (el.id === 'fctproc-bulk-field') { st.bulkField = el.value; const vb = st.mountEl.querySelector('#fctproc-bulk-valbox'); if (vb) { vb.innerHTML = bulkValueHtml(); vb.dataset.field = st.bulkField; } return; }
     if (el.id === 'fctproc-selall') {
       const vis = visibleRows(makeCtx());
       vis.forEach(r => { if (el.checked) st.selected.add(r.id); else st.selected.delete(r.id); });
@@ -4040,7 +4147,21 @@
         renderHead();
         renderTable();
         updateCounts();
-        renderBulk();
+        // The bulk bar is left alone while it is being typed in (its value
+        // box, a Vendor menu open): drawn again, the box would lose focus
+        // and the keys typed next would go nowhere. Its PO list catches up
+        // the next time it is drawn. A focused button ("Apply to N", say)
+        // is no reason to keep a stale bar: it is drawn again and the same
+        // button gets focus back.
+        const bulk = st.mountEl.querySelector('#fctproc-bulk');
+        const inBulk = bulk && a && bulk.contains(a);
+        if (!inBulk) renderBulk();
+        else if (!/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) {
+          const act = a.dataset && a.dataset.act;
+          renderBulk();
+          const again = act && bulk.querySelector(`[data-act="${cssEsc(act)}"]`);
+          if (again) again.focus();
+        }
       } else renderBody();
     },
 

@@ -98,6 +98,18 @@ const isUniqueViolation = err => Boolean(err) && (err.code === '23505' || /dupli
 const isCheckViolation  = err => Boolean(err) && (err.code === '23514' || /violates check constraint/i.test(err.message || ''));
 const fail = (res, status, error, message, extra) =>
   res.status(status).json({ ok: false, error, ...(message ? { message } : {}), ...(extra || {}) });
+// One supplier, however its name was spaced: the page matches an order or a
+// row to a supplier trimmed, lower-cased and with each run of white space (a
+// non-breaking space pasted from a web page or a spreadsheet included) read
+// as one space — so a rename moves every order and row the page takes for
+// `from`. SUP_WS is the same run, for Postgres (whose \s alone does not take
+// a non-breaking space). Contacts are still matched by lower() alone: two
+// spellings can each hold the same person (the unique indexes key on
+// lower(supplier_name)), and moving both onto `to` in one statement would
+// collide.
+const supKey = v => String(v == null ? '' : v).replace(/\s+/g, ' ').trim().toLowerCase();
+const SUP_WS = '[\\s\\u00a0]+';
+
 // What a rename says about the purchase orders (renamePOs).
 const poAnswer = po => ({ pos: po.pos, po_ids: po.ids, ...(po.error ? { po_error: po.error } : {}) });
 
@@ -235,7 +247,7 @@ function renameStatement(sql, { company, division, who }, from, to) {
       UPDATE procurement_items
          SET vendor = ${to}, version = version + 1, updated_at = NOW(), updated_by = ${who}
        WHERE company_code = ${company} AND division = ${division}
-         AND lower(btrim(vendor)) = lower(${from}) AND vendor <> ${to}
+         AND lower(btrim(regexp_replace(vendor, ${SUP_WS}, ' ', 'g'))) = ${supKey(from)} AND vendor <> ${to}
       RETURNING id
     )
     SELECT (SELECT count(*) FROM moved)::int   AS moved,
@@ -271,7 +283,7 @@ async function renamePOs(sql, payload, scope, from, to) {
 }
 async function renamePOsNow(sql, payload, { company, division }, from, to) {
   const key = poSync.blobKeyFor(company, division);
-  const k = v => String(v == null ? '' : v).trim().toLowerCase();
+  const k = supKey;
   const names = po => po && k(po.supplier) === k(from) && po.supplier !== to;
   if (!poCapabilities(payload, division).canUpload) {
     // Not allowed to change orders: said only when there is one to change.
@@ -377,7 +389,7 @@ module.exports = async (req, res) => {
             UPDATE procurement_items
                SET vendor = ${to.value}, version = version + 1, updated_at = NOW(), updated_by = ${who}
              WHERE company_code = ${company} AND division = ${division}
-               AND lower(btrim(vendor)) = lower(${from.value}) AND vendor <> ${to.value}
+               AND lower(btrim(regexp_replace(vendor, ${SUP_WS}, ' ', 'g'))) = ${supKey(from.value)} AND vendor <> ${to.value}
              RETURNING id
           )
           SELECT (SELECT count(*) FROM moved)::int AS moved, (SELECT count(*) FROM vendors)::int AS rows`)[0] || {};

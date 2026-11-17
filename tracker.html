@@ -7060,6 +7060,15 @@ async function loadPurchaseOrders() {
 }
 
 /**
+ * Take `at` as the version of the list in hand — only when the list in hand
+ * is exactly the stored one at that version. Never an OLDER version than the
+ * one held: a read that went out before this page's own save landed can
+ * answer after the save did.
+ */
+function _poTakeBase(at) {
+  if (at && !(Date.parse(at) < Date.parse(_poBaseUpdatedAt))) _poBaseUpdatedAt = at;
+}
+/**
  * Read the stored order list again and take it on now, rather than at the
  * next poll — after a supplier rename the server made, and before Procurement
  * decides whether rows are already on an order. Kept from the PO tab only
@@ -7077,7 +7086,14 @@ function _poReread() {
       const data = await r.json();
       const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
       _migratePOs(incoming);
-      if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) { _poLoadOk = true; _poLoadFailed = false; return true; }
+      if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) {
+        // The list in hand IS that version (a supplier rename the server
+        // made and this page applied itself, say), so it is this page's base
+        // now. Left on the version before, the next save of the list would
+        // look stale and the server would merge back what it deletes.
+        _poTakeBase(data.updatedAt);
+        _poLoadOk = true; _poLoadFailed = false; return true;
+      }
       const a = document.activeElement;
       if (activeTab === 'po' && a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return false;
       const before = purchaseOrders;
@@ -32219,6 +32235,8 @@ const _bootReady = (async () => {
     // although the list it was reading was still that empty one.
     if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) {
       const wasOk = _poLoadOk;
+      // Same list, so its version is this page's base (see _poTakeBase).
+      _poTakeBase(data.updatedAt);
       _poLoadOk = true;
       _poLoadFailed = false;
       // An empty list that was right after all: the rows' "…" become real.

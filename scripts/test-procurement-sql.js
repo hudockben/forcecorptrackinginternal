@@ -800,6 +800,21 @@ function schemaStatements() {
     r = await putLine(L2, PID, { id: 'rb1', cost_code: 'Stormwater', sub_code: '', quantity: 950, unit: 'LF' });
     assert('a sub code blanked half way through a rename is not copied over', (await rowOf(R1.id)).sub_code === 'Perimeter Drain 15in Perf'
       && await ver(R1.id) === vNow);
+    // projectId naming one job and projectKey another: the blob written is
+    // the key's, so only the key's job's rows follow — never projectId's,
+    // whose bid did not change.
+    const PID2 = 'prtest-renamejob2';
+    await q(`INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [`${CO}:fct_project_${PID2}`, JSON.stringify({ id: PID2, bidItems: [{ id: 'rb1', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"', quantity: 10, unit: 'LF' }] })]);
+    const B1 = (await create(L2, { id: uid('m'), project_id: PID2, bid_item_id: 'rb1', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"' })).body.item;
+    r = await putLine(L2, PID, { id: 'rb1', cost_code: 'ZZZ', sub_code: 'Written through another job', quantity: 10, unit: 'LF' }, `fct_project_${PID2}`);
+    const [r1b, b1] = [await rowOf(R1.id), await rowOf(B1.id)];
+    assert('a PUT whose projectId names another job than its projectKey leaves projectId\'s rows alone', r.statusCode === 200
+      && r1b.sub_code === 'Perimeter Drain 15in Perf' && r1b.cost_code === 'Stormwater' && r1b.version === vNow,
+      JSON.stringify([r.statusCode, r1b.cost_code, r1b.sub_code, r1b.version]));
+    assert('…and renames the rows of the job whose bid it wrote', b1.cost_code === 'ZZZ' && b1.sub_code === 'Written through another job',
+      JSON.stringify([b1.cost_code, b1.sub_code]));
+    await q('DELETE FROM app_data WHERE key = $1', [`${CO}:fct_project_${PID2}`]);
   }
 
   // ─────────────────────────────────────────────────────────────────────
