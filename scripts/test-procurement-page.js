@@ -142,7 +142,26 @@ console.log('\n[tracker.html — wiring]');
   const reread = requireFn(SRC, '_poReread');
   assert('the order list can be read again on demand (Create PO, a job picked, a rename): taken with its version, never blanked by a failed read',
     /purchaseOrders = incoming;[\s\S]*_poBaseUpdatedAt = data\.updatedAt/.test(reread) && /if \(!r\.ok\) return false;/.test(reread)
-      && !/purchaseOrders = \[\]/.test(reread) && /refreshPurchaseOrders: \(\) => _poReread\(\)/.test(SRC));
+      && !/purchaseOrders = \[\]/.test(reread) && /refreshPurchaseOrders: \(\) => _procRefreshPOs\(\)/.test(SRC)
+      && /return _poReread\(\);\s*\}$/.test(requireFn(SRC, '_procRefreshPOs')));
+  // A read is not taken while a save of the list is out, so Procurement's
+  // re-read waits for one (bounded) — and says when something unsaved still
+  // held it back, so Create decides on no stale copy.
+  const procRefresh = requireFn(SRC, '_procRefreshPOs');
+  assert('  Procurement\'s re-read waits for a save of the list that is out (briefly), then takes what it answered',
+    /for \(let i = 0; \(_poSaving \|\| _poSaveAgain\) && i < \d+; i\+\+\) await new Promise/.test(procRefresh)
+      && procRefresh.indexOf('_poApplyDeferred();') > procRefresh.indexOf('_poSaveAgain')
+      && procRefresh.indexOf('_poApplyDeferred();') < procRefresh.indexOf('return _poReread();'));
+  assert('  and says when the list in hand holds a change not stored yet', /poListUnsaved: \(\) => _poHoldsUnsaved\(\)/.test(requireFn(SRC, '_procEnsureConfigured')));
+  // A save's answer taken on while the sheet is shown redraws it: the poll
+  // then finds the list unchanged and would not.
+  assert('a save\'s answer taken on redraws Procurement (the hook the three pages\' PO code calls)',
+    /if \(typeof _poAfterAdopt === 'function'\) _poAfterAdopt\(changed\);/.test(requireFn(SRC, '_poApplyDeferred'))
+      && /changed \+= _poAdoptSaved\(q\.orders, q\.links\);/.test(requireFn(SRC, '_poApplyDeferred'))
+      && /if \(changed && activeTab === 'procurement'\) _procRerender\(\);/.test(requireFn(SRC, '_poAfterAdopt')));
+  // An order raised here settles like a save: a read out across its POST is let go.
+  assert('an order raised from Procurement bumps the save epoch when its POST settles',
+    /finally \{[\s\S]*_poNumbersOut\.delete\(number\);[\s\S]*_poSaveEpoch\+\+;\s*\}\s*\}$/.test(requireFn(SRC, 'fctCreatePurchaseOrder')));
   assert('  and so does a job reload', /await loadProjects\(\);[\s\S]*if \(activeTab === 'procurement'\) _procRerender\(\);/.test(requireFn(SRC, '_pollProjects')));
   assert('_procRerender redraws without fetching',
     /FCTProcurement\.rerender\(\)/.test(requireFn(SRC, '_procRerender')));
@@ -168,7 +187,13 @@ console.log('\n[tracker.html — wiring]');
   assert('  and the purchase orders follow, renamed by the server: the page takes the answer on and saves no copy of its list',
     /C\.rename\(from, target\)\)\.then\(ans => \{\s*_supAfterPORename\(from, target, ans \|\| \{\}\)/.test(renamed)
       && !/savePurchaseOrders\(\)/.test(renamed) && !/savePurchaseOrders\(\)/.test(afterRename) && !/_supCarryRenameToPOs/.test(SRC)
-      && /ans\.po_ids/.test(afterRename) && /_poReread\(\)/.test(afterRename) && /if \(ans\.po_error\)[\s\S]*_showSaveError\(/.test(afterRename));
+      && /ans\.po_ids/.test(afterRename) && /_poRereadWhenSettled\(\);\s*\}$/.test(afterRename) && /if \(ans\.po_error\)[\s\S]*_showSaveError\(/.test(afterRename));
+  // A save of the list out across the rename answers with the order as stored
+  // before it: the re-read waits for that answer rather than being dropped.
+  const settled = requireFn(SRC, '_poRereadWhenSettled');
+  assert('  read again once nothing unsaved holds the read back — owed meanwhile, and called back once a save\'s answer is in',
+    /if \(_poHoldsUnsaved\(\)\) \{ _poRereadOwed = true; return; \}/.test(settled) && /_poReread\(\)\.then\(/.test(settled)
+      && /if \(_poRereadOwed\) setTimeout\(_poRereadWhenSettled, 0\);/.test(requireFn(SRC, '_poAfterAdopt')));
   assert('  a redraw waits while a new contact is typed but not added (its button would be replaced under the click)',
     /_supNewContactTyped\(root\)/.test(requireFn(SRC, '_supRedrawWhenIdle')) && /data-supc-new-field/.test(requireFn(SRC, '_supNewContactTyped')));
   assert('a contact saved on the Suppliers tab redraws only when nobody is typing there',

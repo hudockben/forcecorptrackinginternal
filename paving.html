@@ -6603,10 +6603,14 @@ function _poApplyDeferred() {
   if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) return;
   const queued = _poDeferredAdopt;
   _poDeferredAdopt = [];
+  let changed = 0;
   queued.forEach(q => {
-    _poAdoptSaved(q.orders, q.links);
+    changed += _poAdoptSaved(q.orders, q.links);
     if (q.updatedAt) _poBaseUpdatedAt = q.updatedAt;
   });
+  // A page that draws more than this tab from the list (turf's Procurement
+  // sheet) follows what was taken on.
+  if (typeof _poAfterAdopt === 'function') _poAfterAdopt(changed);
 }
 function _poAdoptOrDefer(orders, links, updatedAt) {
   _poDeferredAdopt.push({ orders, links, updatedAt });

@@ -7144,10 +7144,14 @@ function _poApplyDeferred() {
   if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) return;
   const queued = _poDeferredAdopt;
   _poDeferredAdopt = [];
+  let changed = 0;
   queued.forEach(q => {
-    _poAdoptSaved(q.orders, q.links);
+    changed += _poAdoptSaved(q.orders, q.links);
     if (q.updatedAt) _poBaseUpdatedAt = q.updatedAt;
   });
+  // A page that draws more than this tab from the list (turf's Procurement
+  // sheet) follows what was taken on.
+  if (typeof _poAfterAdopt === 'function') _poAfterAdopt(changed);
 }
 function _poAdoptOrDefer(orders, links, updatedAt) {
   _poDeferredAdopt.push({ orders, links, updatedAt });
@@ -7350,6 +7354,52 @@ function _poReread() {
     }
   })();
   return _poRereading;
+}
+// A read of the list owed once nothing unsaved holds it back (_poRereadWhenSettled).
+let _poRereadOwed = false;
+/**
+ * _poReread, now or as soon as nothing unsaved holds a read back — after a
+ * supplier rename the server made. A save of the list out across the rename
+ * answers with its orders as stored BEFORE it, and taking that answer on put
+ * the old supplier back on this page's order (Procurement's rows on it then
+ * read "Not Ordered") until the next poll. _poAfterAdopt calls back once a
+ * save's answer is in.
+ */
+function _poRereadWhenSettled() {
+  _poRereadOwed = false;
+  if (_poHoldsUnsaved()) { _poRereadOwed = true; return; }
+  const epoch = _poSaveEpoch;
+  _poReread().then(done => {
+    if (done) return;
+    // Held back after all: a save (or an order raised here) started or
+    // landed while the read was out.
+    if (_poHoldsUnsaved()) _poRereadOwed = true;
+    else if (_poSaveEpoch !== epoch) setTimeout(_poRereadWhenSettled, 0);
+  });
+}
+/**
+ * A purchase-order save's answer was taken on (_poApplyDeferred). Procurement
+ * works PO #, Date Ordered and Status out from this list, so an order the
+ * answer brought in (raised in central purchasing since) shows on its rows
+ * now — the poll then finds the list unchanged and would redraw nothing. And
+ * a re-read owed since a supplier rename goes, the answer being in.
+ */
+function _poAfterAdopt(changed) {
+  if (changed && activeTab === 'procurement') _procRerender();
+  if (_poRereadOwed) setTimeout(_poRereadWhenSettled, 0);
+}
+/**
+ * Procurement's "read the stored list again" (before "Create PO from
+ * selected" decides which rows are already on an order, and when a job is
+ * picked). A read is not taken while a save of the list is out, so that save
+ * is waited for first, for up to 15 s (it normally answers in a moment).
+ * What still holds the read back after it (a save that failed and is owed)
+ * is said by poListUnsaved, and Create then raises nothing.
+ */
+async function _procRefreshPOs() {
+  for (let i = 0; (_poSaving || _poSaveAgain) && i < 150; i++) await new Promise(r => setTimeout(r, 100));
+  _poApplyDeferred();
+  return _poReread();
 }
 
 function _migratePOs(list = purchaseOrders) {
@@ -19329,9 +19379,13 @@ function _procEnsureConfigured() {
     isPOListLoaded: () => _poLoadOk,
     // Read the stored list again now (before "Create PO from selected"
     // decides which rows are already on an order, and when a job is picked).
-    refreshPurchaseOrders: () => _poReread(),
+    refreshPurchaseOrders: () => _procRefreshPOs(),
     // …and whether that is because the read failed (retried on the poll).
     poLoadFailed: () => _poLoadFailed,
+    // Whether the list in hand holds a purchase-order change the stored one
+    // does not have yet (a save that failed and is owed), so the read above
+    // was not taken and Create must not decide on the list in hand.
+    poListUnsaved: () => _poHoldsUnsaved(),
     codeKey:      s => _codeKey(s),
     getSuppliers: () => (lists.suppliers || []).map(s => (typeof s === 'string' ? s : s && s.name)).filter(Boolean),
     addSupplier:  name => fctAddSupplier(name),
@@ -19488,6 +19542,12 @@ async function fctCreatePurchaseOrder(seed) {
     return null;
   } finally {
     _poNumbersOut.delete(number);
+    // A read of the list that was out across this POST may have been
+    // answered before the order was stored. Taken on whole (the poll does on
+    // this tab even while a cell is being typed in), it dropped the order
+    // from the page, and the next one raised got its number again. Settling
+    // counts as a save, so such a read is let go (see _poSaveEpoch).
+    _poSaveEpoch++;
   }
 }
 
@@ -20908,8 +20968,9 @@ function _supAfterPORename(from, to, ans) {
   if (activeTab === 'po') renderPOTab();
   [...new Set(hit.map(po => po.project_id).filter(Boolean))].forEach(pid => { renderProjectPOs(pid); renderDailyTable(pid); });
   _procRerender();
-  // The stored list itself, with the version it belongs to.
-  _poReread();
+  // The stored list itself, with the version it belongs to — once a save of
+  // the list that is out has answered (its answer predates the rename).
+  _poRereadWhenSettled();
 }
 
 function _supContactErrText(err, what) {

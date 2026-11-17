@@ -3566,6 +3566,14 @@
     if (!rows.length) return;
     const explain = msg => { toast(msg, 'error'); };
     if (typeof cfg.createPurchaseOrder !== 'function') { explain('Purchase orders cannot be created from here.'); return; }
+    // The page holds a purchase-order change the stored list does not have
+    // yet (a save that failed and is owed), so the stored list was not read:
+    // deciding on the page's copy raised a second order, with the same
+    // number, for rows a colleague had already ordered.
+    if (typeof cfg.poListUnsaved === 'function' && cfg.poListUnsaved()) {
+      explain('A purchase-order change on this page has not been saved yet, so whether these rows are already on an order cannot be checked. No PO was created — try again once it has saved (the page retries every minute).');
+      return;
+    }
     if (!ctx.poLoaded) { explain(ctx.poFailed ? 'The purchase orders could not be read from the server, so no PO can be raised from here yet. The page tries again every minute.' : 'The purchase orders are still loading — try again in a moment.'); return; }
     if (rows.some(r => r.project_id && r.project_id !== st.projectId)) { explain('Every selected row has to be on the job that is open.'); return; }
 

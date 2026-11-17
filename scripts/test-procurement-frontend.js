@@ -2251,6 +2251,31 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('…and so does picking a job', refreshed === 2, refreshed);
   }
 
+  console.log('\n[Create PO while the page holds a purchase-order change not stored yet]');
+  {
+    // A save of the list failed and is owed: the host could not read the
+    // stored list (it would drop that change), so whether the row is already
+    // on an order — a colleague's — cannot be told from the page's copy.
+    const e = makeEnv({ rows: [row({ id: 'u1', source: 'bid', bid_item_id: 'b3', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', vendor: 'Acme' })] });
+    let unsaved = true, refreshed = 0;
+    e.P.configure({ refreshPurchaseOrders: async () => { refreshed++; return false; }, poListUnsaved: () => unsaved });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const sel = e.$('[data-sel="u1"]'); sel.checked = true; e.fire(sel, 'change');
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(30);
+    assert('nothing is created while the stored list could not be read for an unsaved PO change',
+      refreshed === 1 && !e.created.some(x => x[0] === 'po') && !e.$('.fctproc-modal'), e.created);
+    assert('…and the PM is told why', e.$$('.fctproc-toast').some(t => /has not been saved yet[\s\S]*No PO was created/.test(t.textContent)),
+      e.$$('.fctproc-toast').map(t => t.textContent));
+    assert('…with the row still selected, to try again', e.$('[data-sel="u1"]').checked);
+    // Saved now: the same click raises the order.
+    unsaved = false;
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(40);
+    assert('once it is saved, Create raises the order', e.created.filter(x => x[0] === 'po').length === 1, e.created);
+  }
+
   console.log('\n[a contact typed against a supplier renamed meanwhile]');
   {
     const e = makeEnv({ rows: [row({ id: 'j1', vendor: 'LB Water' })] });
