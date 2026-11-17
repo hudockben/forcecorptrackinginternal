@@ -2582,6 +2582,13 @@
       .pp-main { overflow: visible !important; height: auto !important; }
     }
 
+    /* The bid page's header buttons keep their labels on one line. With
+       Send to Procurement added they no longer all fit a laptop screen at
+       full length, so below 1500px that one shortens to "Procurement" (the
+       tooltip still says what it does) rather than every label folding. */
+    #bid-fullscreen > div:first-child .btn { white-space: nowrap; }
+    @media (max-width: 1500px) { #bid-fs-procurement .bid-fs-long { display: none; } }
+
     /* ════════════════════════════════════════
        MOBILE RESPONSIVE (≤768px)
     ════════════════════════════════════════ */
@@ -2590,9 +2597,13 @@
       .tab-btn[data-tab="cost"],
       .tab-btn[data-tab="info"],
       .tab-btn[data-tab="po"],
+      .tab-btn[data-tab="procurement"],
       .tab-btn[data-tab="trucking"],
       .admin-dropdown-wrap,
-      .tab-btn:not([data-tab]):not(#admin-tab-btn) { display: none !important; }
+      .tab-btn:not([data-tab]):not(#admin-tab-btn),
+      /* Procurement is desktop-only, so its bid-page button is too: a send
+         from a phone would land on a tab the phone does not show. */
+      #bid-fs-procurement { display: none !important; }
       /* Show mobile-only tab */
       .tab-btn[data-tab="mob-entry"] { display: flex !important; }
 
@@ -2851,6 +2862,7 @@
   <script src="report-email.js?v=2" defer></script>
   <script src="bid-xlsx.js" defer></script>
   <script src="documents.js" defer></script>
+  <script src="procurement.js" defer></script>
   <script src="custom-reports-engine.js?v=2" defer></script>
   <script src="custom-reports.js?v=2" defer></script>
   <script src="custom-reports-ai.js?v=2" defer></script>
@@ -2891,6 +2903,7 @@
     </div>
   </div>
   <button class="tab-btn"        data-tab="po">Purchase Orders</button>
+  <button class="tab-btn"        data-tab="procurement">Procurement</button>
   <button class="tab-btn"        data-tab="docs">&#128193; Documents</button>
   <button class="tab-btn"        data-tab="trucking">&#128666; Trucking</button>
   <button class="tab-btn"        data-tab="inventory">Infill Inventory</button>
@@ -3049,6 +3062,7 @@
       <button class="btn btn-ghost" id="bid-fs-pdf">&#8595; PDF</button>
       <button class="btn btn-ghost" id="bid-fs-copy" title="Copy these bid items into another project, or into a new one">&#10697; Copy Bid</button>
       <button class="btn btn-ghost" id="bid-fs-procore" title="Fill these bid items in from a Procore estimate export (.xlsx or .csv)">&#8681; Import Procore Estimate</button>
+      <button class="btn btn-ghost" id="bid-fs-procurement" title="Send these bid lines to the Procurement tab, to track buying out the material on each one" style="display:none">&#10148;&nbsp;<span class="bid-fs-long">Send to&nbsp;</span>Procurement</button>
       <button class="btn btn-green" id="bid-fs-add">+ Add Item</button>
     </div>
   </div>
@@ -3170,6 +3184,13 @@
 <!-- ══════════════ PURCHASE ORDERS TAB ══════════════ -->
 <div class="tab-panel" id="tab-po">
   <div id="po-root"></div>
+</div>
+
+<!-- ══════════════ PROCUREMENT TAB ══════════════ -->
+<div class="tab-panel" id="tab-procurement">
+  <!-- Padded here, like the Purchase Orders tab's own wrapper: procurement.js
+       draws edge to edge into whatever it is mounted on. -->
+  <div id="procurement-root" style="padding:1.5rem"></div>
 </div>
 
 <!-- ══════════════ DOCUMENTS TAB ══════════════ -->
@@ -4535,8 +4556,13 @@ const perm = (() => {
     // Dollar figures that live outside a tab — the Daily Summary report.
     canSeeCosts:      !isSales,
     // tabs visible to this role (null = all). The first is where they land.
-    visibleTabs: (r === 'level1') ? new Set(['info', 'po', 'trucking', 'docs'])
-               : (r === 'level2') ? new Set(['info', 'schedule', 'po', 'trucking', 'docs'])
+    // Procurement is turf's material buy-out sheet: level1 reads it (and can
+    // export it), level2 edits it like the purchase orders beside it. Sales
+    // does not get it — buying out a job is not their work, and
+    // api/procurement.js refuses them as well, so a hidden tab is not the
+    // only thing standing in the way.
+    visibleTabs: (r === 'level1') ? new Set(['info', 'po', 'procurement', 'trucking', 'docs'])
+               : (r === 'level2') ? new Set(['info', 'schedule', 'po', 'procurement', 'trucking', 'docs'])
                : isSales          ? new Set(['crm', 'schedule', 'construction', 'po', 'docs', 'trucking'])
                : null,
   };
@@ -4792,6 +4818,10 @@ function cbHtml(listKey, currentValue, placeholder, passthroughAttrs, wrapperAtt
 }
 
 function cbOptionsFor(listKey) {
+  // Procurement's pickers (job, vendor, contact, codes, PO, unit) are owned by
+  // procurement.js, which knows the rows they belong to. Nothing to offer
+  // until that deferred script has run.
+  if (String(listKey).startsWith('proc_')) return window.FCTProcurement ? FCTProcurement.cbOptions(listKey) : [];
   if (listKey === 'suppliers') return (lists.suppliers || []).map(s => s && s.name).filter(Boolean).slice().sort((a,b) => a.localeCompare(b));
   if (listKey === 'employees') return (lists.employees || []).map(e => e && e.name).filter(Boolean).slice().sort((a,b) => a.localeCompare(b));
   if (listKey === 'equipment') return (lists.equipment || []).map(e => e && e.name).filter(Boolean).slice().sort((a,b) => a.localeCompare(b));
@@ -4882,6 +4912,9 @@ const _cbValue = o => typeof o === 'string' ? o : o.value;
 // entry here when it wants its own ordering or wants to offer rows that aren't
 // in the source list (the bid sub code picker offers "create this one").
 function cbFilterFor(listKey, rawQuery, options) {
+  // Procurement filters its own lists; the vendor picker adds the
+  // "+ Add … as new supplier" row there.
+  if (String(listKey || '').startsWith('proc_')) return window.FCTProcurement ? FCTProcurement.cbFilter(listKey, rawQuery, options) : options;
   if (String(listKey || '').startsWith('bid_subcodes')) return _bidSubCodeFilter(listKey, rawQuery, options);
   const q = String(rawQuery || '').trim().toLowerCase();
   // Projects also match on the job number in their note — looking a job up by
@@ -5148,6 +5181,7 @@ document.querySelectorAll('.tab-btn').forEach(btn => {
     if (activeTab === 'info')     renderProjectInfoComputed();
     if (activeTab === 'supplier') renderSupplierTab();
     if (activeTab === 'po')       renderPOTab();
+    if (activeTab === 'procurement') renderProcurementTab();
     if (activeTab === 'docs')     renderDocsTab();
     if (activeTab === 'trucking')  _trOpenTab();
     if (activeTab === 'inventory') renderInventoryTab();
@@ -6954,7 +6988,7 @@ function _doBidItemPut(projId, biId, keepalive) {
     + `?id=${encodeURIComponent(biId)}`
     + `&projectId=${encodeURIComponent(projId)}`
     + `&projectKey=${encodeURIComponent(projectKey)}`;
-  fetch(url, init).then(async r => {
+  return fetch(url, init).then(async r => {
     if (r.ok) return;
     console.warn(`[bid-items] PUT ${biId} failed: HTTP ${r.status}`);
     if (r.status === 401) { _showSaveError(true); return; }
@@ -7110,10 +7144,14 @@ function _poApplyDeferred() {
   if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) return;
   const queued = _poDeferredAdopt;
   _poDeferredAdopt = [];
+  let changed = 0;
   queued.forEach(q => {
-    _poAdoptSaved(q.orders, q.links);
+    changed += _poAdoptSaved(q.orders, q.links);
     if (q.updatedAt) _poBaseUpdatedAt = q.updatedAt;
   });
+  // A page that draws more than this tab from the list (turf's Procurement
+  // sheet) follows what was taken on.
+  if (typeof _poAfterAdopt === 'function') _poAfterAdopt(changed);
 }
 function _poAdoptOrDefer(orders, links, updatedAt) {
   _poDeferredAdopt.push({ orders, links, updatedAt });
@@ -7214,6 +7252,9 @@ function _poLegacyRowWrites(fields, lines) {
 // for what is MISSING from it (the PO # notice, Create) may run against the
 // empty list a failed read leaves behind.
 let _poLoadOk = false;
+// The last read of the list FAILED (rather than not having answered yet).
+// Procurement says "POs not loaded — retrying" for it instead of "loading".
+let _poLoadFailed = false;
 
 async function loadPurchaseOrders() {
   try {
@@ -7226,13 +7267,139 @@ async function loadPurchaseOrders() {
       purchaseOrders = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
       _poBaseUpdatedAt = data.updatedAt || null;
       _poLoadOk = true;
+      _poLoadFailed = false;
     } else {
       purchaseOrders = [];
+      _poLoadFailed = true;
     }
   } catch {
     purchaseOrders = [];
+    _poLoadFailed = true;
   }
   _migratePOs();
+}
+
+/**
+ * Take `at` as the version of the list in hand — only when the list in hand
+ * is exactly the stored one at that version. Never an OLDER version than the
+ * one held: a read that went out before this page's own save landed can
+ * answer after the save did.
+ */
+function _poTakeBase(at) {
+  if (at && !(Date.parse(at) < Date.parse(_poBaseUpdatedAt))) _poBaseUpdatedAt = at;
+}
+/**
+ * Read the stored order list again and take it on now, rather than at the
+ * next poll — after a supplier rename the server made, and before Procurement
+ * decides whether rows are already on an order. Kept from the PO tab only
+ * while a box there is being typed in (the poll's own rule). Resolves true
+ * when the list in hand is the server's. A failed read changes nothing: the
+ * list already held is kept, never blanked.
+ */
+let _poRereading = null;
+/**
+ * Whether the order list in hand holds something the stored one does not yet:
+ * a save out, one that failed and is owed, an answer waiting for focus to
+ * leave a box, or edits and deletes not saved. A read then is older than what
+ * is here, and taking it whole would drop them (the poll's own rule).
+ */
+function _poHoldsUnsaved() {
+  return Boolean(_poSaving || _poSaveFailed || _poDeferredAdopt.length
+    || Object.keys(_poEditedFields).length || Object.keys(_poEditedLines).length
+    || Object.keys(_poDeletedLines).length || _poDeletedOrders.size);
+}
+function _poReread() {
+  if (_poRereading) return _poRereading;
+  _poRereading = (async () => {
+    try {
+      if (_poHoldsUnsaved()) return false;
+      const epoch = _poSaveEpoch;
+      const r = await fetch(`${API_BASE}/purchase-orders?division=turf`, { headers: { 'Authorization': `Bearer ${fctToken}` } });
+      if (!r.ok) return false;
+      // A save started, or landed, while this read was out: it is older.
+      if (_poSaveEpoch !== epoch || _poHoldsUnsaved()) return false;
+      const data = await r.json();
+      const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+      _migratePOs(incoming);
+      if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) {
+        // The list in hand IS that version (a supplier rename the server
+        // made and this page applied itself, say), so it is this page's base
+        // now. Left on the version before, the next save of the list would
+        // look stale and the server would merge back what it deletes.
+        _poTakeBase(data.updatedAt);
+        _poLoadOk = true; _poLoadFailed = false; return true;
+      }
+      const a = document.activeElement;
+      if (activeTab === 'po' && a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return false;
+      if (_poSaveEpoch !== epoch || _poHoldsUnsaved()) return false;
+      const before = purchaseOrders;
+      purchaseOrders = incoming;
+      _poBaseUpdatedAt = data.updatedAt || _poBaseUpdatedAt;
+      _poLoadOk = true;
+      _poLoadFailed = false;
+      // The job rows behind what changed follow on screen, as the poll does.
+      incoming.forEach(po => {
+        const was = po && before.find(p => p && p.id === po.id);
+        if (po && (!was || JSON.stringify(was) !== JSON.stringify(po))) _poRowsFollowOrder(po);
+      });
+      if (activeTab === 'po') renderPOTab();
+      _bidMatListChanged(before, incoming);
+      _procRerender();
+      return true;
+    } catch (err) {
+      console.warn('[po] could not read the purchase orders again:', err && err.message);
+      return false;
+    } finally {
+      _poRereading = null;
+    }
+  })();
+  return _poRereading;
+}
+// A read of the list owed once nothing unsaved holds it back (_poRereadWhenSettled).
+let _poRereadOwed = false;
+/**
+ * _poReread, now or as soon as nothing unsaved holds a read back — after a
+ * supplier rename the server made. A save of the list out across the rename
+ * answers with its orders as stored BEFORE it, and taking that answer on put
+ * the old supplier back on this page's order (Procurement's rows on it then
+ * read "Not Ordered") until the next poll. _poAfterAdopt calls back once a
+ * save's answer is in.
+ */
+function _poRereadWhenSettled() {
+  _poRereadOwed = false;
+  if (_poHoldsUnsaved()) { _poRereadOwed = true; return; }
+  const epoch = _poSaveEpoch;
+  _poReread().then(done => {
+    if (done) return;
+    // Held back after all: a save (or an order raised here) started or
+    // landed while the read was out.
+    if (_poHoldsUnsaved()) _poRereadOwed = true;
+    else if (_poSaveEpoch !== epoch) setTimeout(_poRereadWhenSettled, 0);
+  });
+}
+/**
+ * A purchase-order save's answer was taken on (_poApplyDeferred). Procurement
+ * works PO #, Date Ordered and Status out from this list, so an order the
+ * answer brought in (raised in central purchasing since) shows on its rows
+ * now — the poll then finds the list unchanged and would redraw nothing. And
+ * a re-read owed since a supplier rename goes, the answer being in.
+ */
+function _poAfterAdopt(changed) {
+  if (changed && activeTab === 'procurement') _procRerender();
+  if (_poRereadOwed) setTimeout(_poRereadWhenSettled, 0);
+}
+/**
+ * Procurement's "read the stored list again" (before "Create PO from
+ * selected" decides which rows are already on an order, and when a job is
+ * picked). A read is not taken while a save of the list is out, so that save
+ * is waited for first, for up to 15 s (it normally answers in a moment).
+ * What still holds the read back after it (a save that failed and is owed)
+ * is said by poListUnsaved, and Create then raises nothing.
+ */
+async function _procRefreshPOs() {
+  for (let i = 0; (_poSaving || _poSaveAgain) && i < 150; i++) await new Promise(r => setTimeout(r, 100));
+  _poApplyDeferred();
+  return _poReread();
 }
 
 function _migratePOs(list = purchaseOrders) {
@@ -7356,9 +7523,13 @@ function savePurchaseOrders() {
     });
 }
 
+// Numbers handed to orders still being saved (fctCreatePurchaseOrder): they
+// are on no list yet, so without this the next order raised meanwhile — a
+// double click on Procurement's "Create PO from selected" — got the same one.
+const _poNumbersOut = new Set();
 function nextPONumber() {
-  const nums = purchaseOrders.map(po => {
-    const m = (po.po_number || '').match(/^PO-(\d+)$/);
+  const nums = purchaseOrders.map(po => (po && po.po_number) || '').concat([..._poNumbersOut]).map(n => {
+    const m = String(n).match(/^PO-(\d+)$/);
     return m ? parseInt(m[1], 10) : 0;
   });
   const next = nums.length ? Math.max(...nums) + 1 : 1;
@@ -13112,6 +13283,14 @@ function deleteProject(id) {
       method: 'DELETE',
       headers: { 'Authorization': `Bearer ${fctToken}` }
     }).catch(() => {});
+    // And its Procurement rows, for the same reason: they hang off the job by
+    // a plain project_id. Soft-deleted on the server, so recoverable there.
+    fetch(`${API_BASE}/procurement?division=${PROC_DIVISION}&project_id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: { 'Authorization': `Bearer ${fctToken}` }
+    }).then(r => {
+      if (!r.ok) console.warn(`[procurement] the deleted job's rows were not removed: HTTP ${r.status}`);
+    }).catch(err => console.warn('[procurement] the deleted job\'s rows were not removed:', err.message));
     renderProjectsTab();
   });
 
@@ -15190,6 +15369,9 @@ function commitProcoreImport() {
   if (added)   parts.push(`${added} line${added !== 1 ? 's' : ''} added`);
   if (updated) parts.push(`${updated} updated`);
   alert(`Imported from the Procore estimate — ${parts.join(', ')}.`);
+  // The estimate is usually the moment the buy-out starts, so offer to carry
+  // the lines straight over rather than leave the user to find the button.
+  _procOfferSendAfterImport(projId);
 }
 
 /* ═══════════════════════════════════════════
@@ -19044,6 +19226,467 @@ function _invBreakdownHTML(year, selectedMonths) {
   return monthBlocks + yearBlock;
 }
 
+/* ═══════════════════════════════════════════
+   PROCUREMENT TAB
+   The buy-out sheet itself — job picker, rows, filters, bulk edit, Send to
+   Procurement, exports — lives in procurement.js, written to be shared with
+   the other division pages the way documents.js is. This end tells it how to
+   read turf: the jobs and their bid lines, the purchase orders, the supplier
+   list, who may edit. It also owns the few things only this page can do:
+   raise a purchase order, add a supplier to the lists blob, and open an
+   order on the Purchase Orders tab.
+═══════════════════════════════════════════ */
+const PROC_DIVISION = 'turf';   // division these rows belong to
+let _procConfigured     = false;
+let _procWaitTicks      = 0;    // bounded wait for the deferred procurement.js
+let _procWaitTimer      = null;
+let _procSendWaitTicks  = 0;    // the same, for the bid page's Send button
+
+/** Whether this user's level shows the Procurement tab at all (sales does not). */
+function _procCanSee() {
+  return !perm.visibleTabs || perm.visibleTabs.has('procurement');
+}
+
+/**
+ * Whether this user may change Procurement rows and send bid lines to it:
+ * the same admin / level3 / level2 that edit purchase orders. Seeing the tab
+ * is part of it, so nothing is ever sent to a sheet its sender cannot open.
+ */
+function _procCanEdit() {
+  return perm.canEdit && _procCanSee();
+}
+
+/**
+ * A job's bid lines as procurement.js reads them: the codes, the unit and the
+ * quantity the bid table shows in its Bid Qty column — the base quantity plus
+ * every change order's delta (renderBidTable). A blank quantity with no change
+ * orders is null rather than 0, so the sheet can tell "not bid" from "bid as
+ * zero". Rounded to six places so 901.1 + 0.2 does not come out as
+ * 901.3000000000001 and read as a bid change against the 901.3 that was sent.
+ * `index` is the line's place on the bid, which the sheet sorts by.
+ */
+function procBidLines(projId) {
+  return _procBidLinesOf(projId ? getProj(projId) : null);
+}
+function _procBidLinesOf(p) {
+  const items = p && Array.isArray(p.bidItems) ? p.bidItems : [];
+  const out = [];
+  items.forEach((b, index) => {
+    if (!b || typeof b !== 'object' || b.id == null || b.id === '') return;
+    const cos   = Array.isArray(b.change_orders) ? b.change_orders : [];
+    const blank = b.quantity == null || String(b.quantity).trim() === '';
+    let quantity = null;
+    if (!blank || cos.length) {
+      const q = (parseFloat(b.quantity) || 0) + cos.reduce((s, co) => s + (parseFloat(co && co.qty_delta) || 0), 0);
+      quantity = Math.round(q * 1e6) / 1e6;
+    }
+    out.push({
+      id:        String(b.id),
+      cost_code: b.cost_code || '',
+      sub_code:  b.sub_code  || '',
+      unit:      b.unit      || '',
+      quantity,
+      index,
+    });
+  });
+  return out;
+}
+
+/**
+ * This page's edits to a job's bid that are still waiting to be sent (the
+ * 600 ms debounce of saveProject and of the per-item PUTs), sent now and
+ * waited for. Procurement reads the bid back from the server right after —
+ * and a "Replace all" from a Procore import is still in that debounce when
+ * "Send the bid lines to Procurement now?" opens the checklist.
+ */
+async function _procFlushProjectSaves(projId) {
+  const waits = [];
+  Object.keys(_biSavePending).forEach(biId => {
+    if (_biSavePending[biId] !== projId) return;
+    clearTimeout(_biSaveTimers[biId]);
+    delete _biSaveTimers[biId];
+    delete _biSavePending[biId];
+    waits.push(_doBidItemPut(projId, biId, false));
+  });
+  if (_saveProjTimers[projId]) {
+    clearTimeout(_saveProjTimers[projId]);
+    delete _saveProjTimers[projId];
+    const p = getProj(projId);
+    if (p) { waits.push(apiPut('fct_project_' + projId, _projBlob(p))); saveProjectIndex(); }
+  }
+  await Promise.all(waits);
+}
+
+/**
+ * A job's bid lines as the SERVER holds them, or null when it could not be
+ * read. procurement.js re-links rows to bid lines only when this agrees with
+ * what the page holds: the page's copy can be behind (a colleague's Procore
+ * "Replace all" not polled in yet, a boot drawn from yesterday's cached
+ * copy), and a re-link against it would move every row back onto lines that
+ * are gone.
+ */
+async function procFreshBidLines(projId) {
+  if (!projId) return null;
+  await _procFlushProjectSaves(projId);
+  const { ok, value } = await apiGetChecked('fct_project_' + projId);
+  if (!ok || !value || typeof value !== 'object') return null;
+  return _procBidLinesOf(value);
+}
+
+/**
+ * Whether a supplier is still on the division's list as the server holds it
+ * — true / false, or null when the list could not be read. The page's copy
+ * is up to a minute old; a contact filed under a name renamed away in that
+ * minute would be seen nowhere.
+ */
+async function procSupplierListed(name) {
+  const key = _procSupKey(name);
+  if (!key) return false;
+  const { ok, value } = await apiGetChecked('fct_lists');
+  if (!ok || !value || !Array.isArray(value.suppliers)) return null;
+  return value.suppliers.some(s => _procSupKey(_procSupName(s)) === key);
+}
+
+/**
+ * Hand procurement.js everything it reads turf through. Runs once, and only
+ * after the deferred script has loaded — the inline script here runs during
+ * parsing, well before it. The getters are read every time the sheet draws,
+ * so a poll that swaps in a new job or order list needs no further call.
+ */
+function _procEnsureConfigured() {
+  if (_procConfigured || !window.FCTProcurement) return;
+  let storage = null;
+  try { storage = window.localStorage; } catch { /* blocked: no remembered job */ }
+  FCTProcurement.configure({
+    division:     PROC_DIVISION,
+    apiBase:      API_BASE,
+    getToken:     () => fctToken,
+    getUserName:  () => (fctUser ? (fctUser.name || fctUser.username || '') : ''),
+    perm:         { canView: _procCanSee(), canEdit: _procCanEdit() },
+    getProjects:  () => projectsList,
+    getProject:   id => getProj(id),
+    getBidLines:  procBidLines,
+    getFreshBidLines: procFreshBidLines,
+    // Copies, so nothing the sheet does to an order can reach the list the
+    // Purchase Orders tab saves whole.
+    getPurchaseOrders: () => (Array.isArray(purchaseOrders) ? purchaseOrders : []).filter(Boolean).map(po => ({
+      id: po.id, po_number: po.po_number, project_id: po.project_id, cost_code: po.cost_code,
+      sub_code: po.sub_code, supplier: po.supplier, title: po.title, date_created: po.date_created,
+      status: po.status,
+    })),
+    // A failed read leaves an empty list; the sheet shows "…" rather than
+    // reporting every row as having no order.
+    isPOListLoaded: () => _poLoadOk,
+    // Read the stored list again now (before "Create PO from selected"
+    // decides which rows are already on an order, and when a job is picked).
+    refreshPurchaseOrders: () => _procRefreshPOs(),
+    // …and whether that is because the read failed (retried on the poll).
+    poLoadFailed: () => _poLoadFailed,
+    // Whether the list in hand holds a purchase-order change the stored one
+    // does not have yet (a save that failed and is owed), so the read above
+    // was not taken and Create must not decide on the list in hand.
+    poListUnsaved: () => _poHoldsUnsaved(),
+    codeKey:      s => _codeKey(s),
+    getSuppliers: () => (lists.suppliers || []).map(s => (typeof s === 'string' ? s : s && s.name)).filter(Boolean),
+    addSupplier:  name => fctAddSupplier(name),
+    isSupplierListed: name => procSupplierListed(name),
+    createPurchaseOrder: seed => fctCreatePurchaseOrder(seed),
+    openPurchaseOrder:   poId => openPurchaseOrder(poId),
+    // Every message procurement.js sends says itself whether anything was
+    // kept, so the banner does not add "Your edits are kept locally" — wrong
+    // for a row deleted elsewhere or a supplier that was not added.
+    showSaveError: msg => (msg ? _showSaveError(false, msg, false) : _showSaveError(false)),
+    today:        () => _localDateStr(),
+    storage,
+  });
+  _procConfigured = true;
+}
+
+/** Redraw the sheet from what is in memory (POs or bids changed). No fetch. */
+function _procRerender() {
+  if (window.FCTProcurement && _procConfigured) FCTProcurement.rerender();
+}
+
+function renderProcurementTab() {
+  const root = document.getElementById('procurement-root');
+  if (!root) return;
+  if (!_procCanSee()) { root.innerHTML = ''; return; }
+
+  if (!window.FCTProcurement) {
+    // procurement.js is deferred, so on a fast tab click it may not have run
+    // yet. Bounded, for the same reason the Documents tab's wait is: a script
+    // that failed to load would otherwise keep a retry chain going forever.
+    _procWaitTicks++;
+    if (_procWaitTicks > 40) {          // ~6 seconds
+      root.innerHTML = '<div style="color:var(--red)">'
+        + 'Procurement could not be loaded. Refresh the page to try again.</div>';
+      return;
+    }
+    root.innerHTML = '<div style="color:var(--muted)">Loading Procurement…</div>';
+    clearTimeout(_procWaitTimer);
+    _procWaitTimer = setTimeout(() => { if (activeTab === 'procurement') renderProcurementTab(); }, 150);
+    return;
+  }
+  _procWaitTicks = 0;
+  _procEnsureConfigured();
+  FCTProcurement.renderTab(root);
+}
+
+/** The bid page's "Send to Procurement" button: the checklist for this job. */
+function sendBidToProcurement(projId) {
+  if (!_procCanEdit()) return;
+  if (!window.FCTProcurement) {
+    // A click landing before the deferred script has run waits for it rather
+    // than doing nothing — but not forever, or a failed load leaves a click
+    // that silently never answers.
+    if (_procSendWaitTicks++ > 40) {
+      _procSendWaitTicks = 0;
+      alert('Procurement could not be loaded. Refresh the page and try again.');
+      return;
+    }
+    setTimeout(() => sendBidToProcurement(projId), 150);
+    return;
+  }
+  _procSendWaitTicks = 0;
+  _procEnsureConfigured();
+  FCTProcurement.openSendModal(projId);
+}
+
+/**
+ * Right after a Procore estimate lands on the bid: offer the same checklist.
+ * Asked, not done — an estimate is often re-imported to fix a quantity, and
+ * the user decides whether the buy-out starts now.
+ */
+function _procOfferSendAfterImport(projId) {
+  if (!_procCanEdit() || !window.FCTProcurement) return;
+  // Not on a phone, where the tab and the bid page's button are hidden too.
+  try { if (window.matchMedia && window.matchMedia('(max-width: 768px)').matches) return; } catch { /* no media queries: desktop */ }
+  const p = getProj(projId);
+  if (!p || !Array.isArray(p.bidItems) || !p.bidItems.length) return;
+  if (!confirm('Send the bid lines to Procurement now?')) return;
+  _procEnsureConfigured();
+  FCTProcurement.openSendModal(projId);
+}
+
+// After a send: land the user on the job's rows. procurement.js has already
+// pointed its own picker at the job, so all this does is get the tab on
+// screen — closing the bid page first when the send started there.
+window.addEventListener('fct:procurement-sent', () => {
+  if (!_procCanSee()) return;
+  if (bidViewProjId) closeBidView();
+  if (activeTab === 'procurement') return;   // already here; the sheet redrew itself
+  const btn = document.querySelector('.tab-btn[data-tab="procurement"]');
+  if (btn) btn.click();
+});
+
+/**
+ * A purchase order raised from Procurement's "Create PO from selected rows".
+ *
+ * The same order the "+ New PO" button makes — numbered here, pending, dated
+ * today, stamped with who raised it — but seeded with the job, codes,
+ * supplier and description the rows carry, and saved on its own the way
+ * createPOFromDaily saves one: a single-order POST, never a whole-list save,
+ * which from a page whose list failed to load would replace every order in
+ * the division with this one. Resolves to the order as stored, or null when
+ * it was not created (the reason is already in the save-error banner).
+ */
+async function fctCreatePurchaseOrder(seed) {
+  if (!perm.canEdit) return null;
+  if (!_poLoadOk) {
+    _showSaveError(false, 'The purchase orders have not loaded from the server, so the order was not created. '
+      + 'Reload the page, then try again.', false);
+    return null;
+  }
+  const s = seed || {};
+  const number = nextPONumber();
+  _poNumbersOut.add(number);
+  const po = {
+    id:           uid(),
+    po_number:    number,
+    title:        String(s.title    || ''),
+    supplier:     String(s.supplier || ''),
+    status:       'pending',
+    date_created: _localDateStr(),
+    project_id:   String(s.project_id || ''),
+    cost_code:    String(s.cost_code  || ''),
+    sub_code:     String(s.sub_code   || ''),
+    notes:        String(s.notes      || ''),
+    created_at:   new Date().toISOString(),
+    created_by:   fctUser ? (fctUser.name || fctUser.username || '') : '',
+    lines:        [],
+  };
+  try {
+    const r = await fetch(`${API_BASE}/purchase-orders?division=${DIVISION}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
+      body: JSON.stringify({ purchaseOrder: po })
+    });
+    if (r.status === 401) { _showSaveError(true); return null; }
+    if (!r.ok) {
+      let detail = 'The purchase order was not created. Try again.';
+      try { const j = await r.json(); if (j && (j.detail || j.error)) detail = j.detail || j.error; } catch {}
+      _showSaveError(false, detail, false);
+      return null;
+    }
+    let j = null;
+    try { j = await r.json(); } catch {}
+    const saved = (j && j.purchaseOrder) || po;
+    if (!purchaseOrders.some(x => x && x.id === saved.id)) purchaseOrders.push(saved);
+    _poExpanded.add(saved.id);
+    poPage = 0;   // the newest order is first on page 1
+    if (activeTab === 'po') renderPOTab();
+    if (saved.project_id) renderProjectPOs(saved.project_id);
+    return saved;
+  } catch {
+    _showSaveError(false, 'The purchase order was not created. Check the connection and try again.', false);
+    return null;
+  } finally {
+    _poNumbersOut.delete(number);
+    // A read of the list that was out across this POST may have been
+    // answered before the order was stored. Taken on whole (the poll does on
+    // this tab even while a cell is being typed in), it dropped the order
+    // from the page, and the next one raised got its number again. Settling
+    // counts as a save, so such a read is let go (see _poSaveEpoch).
+    _poSaveEpoch++;
+  }
+}
+
+/**
+ * Show one order on the Purchase Orders tab: filters cleared, searched down
+ * to its number, delivery lines open. A number is not unique across jobs, so
+ * this can leave a neighbour or two on screen — the order asked for is the
+ * one opened.
+ */
+function openPurchaseOrder(poId) {
+  const po = (Array.isArray(purchaseOrders) ? purchaseOrders : []).find(p => p && p.id === poId);
+  poFilters = {};
+  poSearch  = po ? String(po.po_number || '') : '';
+  poPage    = 0;
+  if (po) _poExpanded.add(po.id);
+  const btn = document.querySelector('.tab-btn[data-tab="po"]');
+  if (btn && activeTab !== 'po') btn.click();   // the tab's own handler draws it
+  else renderPOTab();
+}
+
+/**
+ * Add a supplier to the lists blob from Procurement's "+ Add "X" as new
+ * supplier", and resolve to the name as stored.
+ *
+ * fct_lists holds every pick list the company has — employees and their pay
+ * rates, equipment, cost codes, the CRM's lists — and saveLists() puts the
+ * whole of it back, last writer wins. A supplier added in passing from a
+ * table cell is exactly the write that should not undo somebody's rate change
+ * made a minute ago in Manage Lists. So this reads the blob fresh and saves it
+ * back with that read's updated_at as baseUpdatedAt: if anyone saved in
+ * between, the server answers 409 and this reads again and retries.
+ *
+ * Case-insensitive: "acme supply" finds "Acme Supply" and resolves to it,
+ * here and in the fresh copy (someone else may have just added it).
+ * Calls are queued, so two rows adding one new name do not add it twice.
+ */
+let _procSupplierAdding = Promise.resolve();
+function fctAddSupplier(name) {
+  const run = _procSupplierAdding.then(() => _procAddSupplierNow(name));
+  _procSupplierAdding = run.catch(() => {});
+  return run;
+}
+
+const _procSupName = s => (typeof s === 'string' ? s : (s && s.name) || '');
+const _procSupKey  = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
+
+/**
+ * The lists blob in the shape this page holds it — the same normalising
+ * _readLists() and the lists poll apply, so adopting a fresh copy here does
+ * not hand the pickers a bare string where they expect an object.
+ */
+function _procNormLists(saved) {
+  const out = { ...defaultLists, ...saved };
+  out.suppliers = (out.suppliers || []).map(s =>
+    typeof s === 'string' ? { name: s, state: '', address: '', phone: '', website: '' } : { address: '', phone: '', website: '', ...s });
+  out.employees = (out.employees || []).map(e =>
+    typeof e === 'string' ? { name: e, non_prevailing_rate: 0, prevailing_rate: 0, job_class: '' } : e);
+  out.cost_codes = (out.cost_codes || []).map(c =>
+    typeof c === 'string' ? { value: c, description: '' } : { value: '', description: '', ...c });
+  return out;
+}
+
+async function _procAddSupplierNow(name) {
+  const want = String(name == null ? '' : name).replace(/\s+/g, ' ').trim();
+  if (!want) throw new Error('A supplier needs a name.');
+  // The lists on this page are still the empty defaults: nothing here can
+  // say whether the name is new, and nothing may be saved over the real ones.
+  if (!_listsLoaded) {
+    _unloadedSaveRefused('supplier lists');   // "The supplier lists have not loaded…"
+    throw new Error('The supplier list has not loaded yet.');
+  }
+  if (!perm.canEdit) throw new Error('You have view-only access.');
+  const key = _procSupKey(want);
+  const known = (lists.suppliers || []).find(s => _procSupKey(_procSupName(s)) === key);
+  if (known) return _procSupName(known);
+
+  // This tab's own list saves land first, so the fresh read below has them.
+  await _listsSaving;
+  const savingAtStart = _listsSaving;
+  const entry = { name: want, state: '', address: '', phone: '', website: '' };
+  const headers = { 'Authorization': `Bearer ${fctToken}` };
+
+  // Settle the page's copy on what the server holds now. Only the whole of it
+  // when this tab saved no list meanwhile: one that did may hold edits newer
+  // than this read, and the lists poll brings the rest in a minute.
+  const adopt = saved => {
+    const incoming = _procNormLists(saved);
+    if (_listsSaving === savingAtStart) Object.assign(lists, incoming);
+    else if (!(lists.suppliers || []).some(s => _procSupKey(_procSupName(s)) === key)) {
+      lists.suppliers.push({ ...entry });
+    }
+    if (activeTab === 'supplier') renderSupplierTab();
+  };
+
+  try {
+    for (let attempt = 0; attempt <= 3; attempt++) {
+      const r = await fetch(`${API_BASE}/data/fct_lists`, { headers });
+      if (r.status === 401) { _showSaveError(true); throw new Error('Your session expired.'); }
+      if (!r.ok) throw new Error(`The supplier list could not be read (HTTP ${r.status}).`);
+      const got = await r.json();
+      const stored = got && got.value;
+      // No blob at all yet (a new company): the page's copy is the list.
+      const fresh = stored && typeof stored === 'object' && !Array.isArray(stored)
+        ? stored
+        : JSON.parse(JSON.stringify(lists));
+      const sups = Array.isArray(fresh.suppliers) ? fresh.suppliers : [];
+      const hit = sups.find(s => _procSupKey(_procSupName(s)) === key);
+      if (hit) { adopt(fresh); return _procSupName(hit); }   // someone got there first
+
+      const next = { ...fresh, suppliers: sups.concat([{ ...entry }]) };
+      // On the page's copy too, before the save goes out: a list save this tab
+      // makes while it is in flight then carries the new name as well, instead
+      // of landing after it and dropping it.
+      if (!(lists.suppliers || []).includes(entry)) (lists.suppliers = lists.suppliers || []).push(entry);
+
+      const body = { value: next };
+      if (got && got.updated_at) body.baseUpdatedAt = got.updated_at;
+      const w = await fetch(`${API_BASE}/data/fct_lists`, {
+        method: 'PUT',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (w.ok) { adopt(next); return want; }
+      if (w.status === 409 && attempt < 3) continue;    // changed since the read: read again
+      if (w.status === 401) { _showSaveError(true); throw new Error('Your session expired.'); }
+      let detail = `HTTP ${w.status}`;
+      try { const j = await w.json(); if (j && (j.detail || j.error)) detail = j.detail || j.error; } catch {}
+      throw new Error(`The supplier was not added: ${detail}`);
+    }
+    throw new Error('The supplier list kept changing while it was being saved. Try again.');
+  } catch (err) {
+    // Not saved: take the name back off the page's copy, so the next list
+    // save from this tab does not quietly add what was just reported as failed.
+    const at = (lists.suppliers || []).indexOf(entry);
+    if (at >= 0) lists.suppliers.splice(at, 1);
+    throw err;
+  }
+}
+
 function renderInventoryTab() {
   const root = document.getElementById('inventory-root');
   if (!root) return;
@@ -19846,9 +20489,177 @@ document.getElementById('crm-opportunities-root').addEventListener('click', e =>
 /* ── Supplier Tab ── */
 let _supPage   = 0;
 let _supLetter = null; // null = show all
+let _supSearch = '';   // free-text search over name, phone, address and contacts
 
 function _supFilterLetter(letter) { _supLetter = letter; _supPage = 0; renderSupplierTab(); }
 function _supChangePage(delta)    { _supPage += delta; renderSupplierTab(); }
+
+// Typing in the search box redraws the table under it, which rebuilds the box
+// too — so the caret is put back where it was, or every keystroke would drop
+// the focus after one letter.
+function _supSetSearch(el) {
+  const caret = el.selectionStart;
+  _supSearch = el.value;
+  _supPage = 0;
+  renderSupplierTab();
+  const box = document.getElementById('sup-search');
+  if (box) {
+    box.focus();
+    try { box.setSelectionRange(caret, caret); } catch { /* type=search in some browsers */ }
+  }
+}
+
+/*
+ * Supplier contacts — the people at each supplier, with email and phone.
+ *
+ * They are not on lists.suppliers: that blob is saved whole on every keystroke
+ * of this tab, last writer wins, and a contact remembered from a Procurement
+ * row would race it. They live in their own table instead (api/supplier-
+ * contacts.js), keyed by the supplier's name, read and written through the
+ * client procurement.js shares with its Contact picker — one cache, so a
+ * contact added here is offered on the next row at once. Before that deferred
+ * script has run, the list says so and fills in when it arrives.
+ */
+const _supContactsOpen = new Set();   // lower-cased supplier names showing their contacts
+// What this tab knows of the contacts. state: idle (never read) | loading
+// (first read out) | ok | error. `busy` covers a re-read while the list is
+// already on screen, so a refresh does not blank it to "Loading…".
+let _supContactsLoad   = { state: 'idle', at: 0, busy: false };
+let _supContactsWait   = 0;
+
+function _supContacts() {
+  if (!window.FCTProcurement || !FCTProcurement.contacts) return null;
+  _procEnsureConfigured();
+  return FCTProcurement.contacts;
+}
+
+/**
+ * Read the division's contacts when the tab opens. procurement.js caches them
+ * for the whole page, so without the forced re-read here a contact someone
+ * else added an hour ago would never show; with it, a list more than a minute
+ * old is read again (once — the search box redraws this tab on every key),
+ * and a failed read is retried at most every 30 seconds.
+ */
+function _supEnsureContacts() {
+  const C = _supContacts();
+  if (!C) {
+    // Bounded, like every other wait on a deferred script here.
+    if (_supContactsWait++ < 40) setTimeout(() => { if (activeTab === 'supplier') renderSupplierTab(); }, 150);
+    return null;
+  }
+  const L = _supContactsLoad, age = Date.now() - L.at;
+  const stale = L.state === 'idle' || (L.state === 'ok' && age > 60000) || (L.state === 'error' && age > 30000);
+  if (stale && !L.busy) {
+    L.busy = true;
+    if (L.state !== 'ok') L.state = 'loading';
+    Promise.resolve(C.load(true)).then(() => {
+      _supContactsLoad = { state: 'ok', at: Date.now(), busy: false };
+    }, err => {
+      console.warn('[suppliers] contacts did not load:', err && err.message);
+      // A failed refresh keeps the list already on screen.
+      _supContactsLoad = { state: L.state === 'ok' ? 'ok' : 'error', at: Date.now(), busy: false };
+    }).then(_supRedrawWhenIdle);
+  }
+  return C;
+}
+
+/*
+ * Redraw the Suppliers tab for something that arrived in the background (the
+ * contacts read, a rename answered) — but not under a box being typed in.
+ * The redraw replaces every box: focus would drop mid-word, the rest of the
+ * word would be typed into nothing, and the per-keystroke save would keep
+ * the half-typed supplier name. So while a supplier or contact box has focus
+ * it waits, and runs once focus leaves the tab's boxes. The search box is
+ * redrawn at once and handed its focus and caret back, as typing in it does.
+ */
+let _supRedrawDeferred = false;
+// A new contact typed but not added yet: the redraw would empty its row —
+// and replace its "+ Add contact" button between the press and the click
+// (focus leaving the boxes for the button is what runs a deferred redraw),
+// so the click would land on nothing and the contact be lost.
+function _supNewContactTyped(root) {
+  return !!root && [...root.querySelectorAll('[data-supc-new-field]')].some(b => String(b.value || '').trim());
+}
+function _supRedrawWhenIdle() {
+  if (activeTab !== 'supplier') { _supRedrawDeferred = false; return; }
+  const root = document.getElementById('supplier-root');
+  const a = document.activeElement;
+  if (root && ((a && root.contains(a) && a.tagName === 'INPUT' && a.id !== 'sup-search') || _supNewContactTyped(root))) {
+    _supRedrawDeferred = true;
+    return;
+  }
+  _supRedrawDeferred = false;
+  const inSearch = a && a.id === 'sup-search';
+  const caret = inSearch ? a.selectionStart : null;
+  renderSupplierTab();
+  if (inSearch) {
+    const box = document.getElementById('sup-search');
+    if (box) {
+      box.focus();
+      try { box.setSelectionRange(caret, caret); } catch { /* type=search in some browsers */ }
+    }
+  }
+}
+document.getElementById('supplier-root').addEventListener('focusout', () => {
+  // After the change that leaving the box fires (a rename goes out first).
+  if (_supRedrawDeferred) setTimeout(_supRedrawWhenIdle, 0);
+});
+
+/** One supplier's saved contacts, or [] while they are not in hand. */
+function _supContactsFor(C, name) {
+  if (!C || _supContactsLoad.state !== 'ok' || !String(name || '').trim()) return [];
+  try { return C.list(name) || []; } catch { return []; }
+}
+
+/** The expanded contacts list under one supplier's row. */
+function _supContactsRowHTML(C, s, i) {
+  const name = String(s.name || '').trim();
+  const cell = 'padding:0.25rem 0.4rem';
+  const inStyle = 'width:100%;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;padding:0.2rem 0.35rem';
+  let body;
+  if (!C) body = `<div style="color:var(--muted);font-size:0.8rem">Loading contacts…</div>`;
+  else if (_supContactsLoad.state === 'error') {
+    body = `<div style="color:var(--red);font-size:0.8rem">The contacts could not be loaded.
+      <button type="button" class="btn btn-ghost" data-supc-retry="1" style="font-size:0.72rem;padding:0.1rem 0.5rem;margin-left:0.4rem">Try again</button></div>`;
+  } else if (_supContactsLoad.state !== 'ok') body = `<div style="color:var(--muted);font-size:0.8rem">Loading contacts…</div>`;
+  else {
+    const list = _supContactsFor(C, name);
+    const rows = list.map(c => perm.canEdit ? `
+      <tr>
+        <td style="${cell}"><input type="text" value="${_cbEsc(c.name)}" data-supc-id="${_cbEsc(c.id)}" data-supc-field="name" placeholder="Name" maxlength="120" style="${inStyle}"></td>
+        <td style="${cell}"><input type="text" value="${_cbEsc(c.email)}" data-supc-id="${_cbEsc(c.id)}" data-supc-field="email" placeholder="Email" maxlength="200" style="${inStyle}"></td>
+        <td style="${cell}"><input type="text" value="${_cbEsc(c.phone)}" data-supc-id="${_cbEsc(c.id)}" data-supc-field="phone" placeholder="Phone" maxlength="60" style="${inStyle}"></td>
+        <td style="${cell};text-align:center;width:40px"><button type="button" class="del-btn" data-supc-del="${_cbEsc(c.id)}" title="Remove this contact">&#10005;</button></td>
+      </tr>` : `
+      <tr>
+        <td style="${cell};font-size:0.82rem">${_cbEsc(c.name) || '<span style="color:var(--muted)">—</span>'}</td>
+        <td style="${cell};font-size:0.82rem">${_cbEsc(c.email)}</td>
+        <td style="${cell};font-size:0.82rem">${_cbEsc(c.phone)}</td>
+        <td></td>
+      </tr>`).join('');
+    const addRow = perm.canEdit ? `
+      <tr data-supc-new-row="${i}">
+        <td style="${cell}"><input type="text" data-supc-new-field="name" placeholder="New contact name" maxlength="120" style="${inStyle}"></td>
+        <td style="${cell}"><input type="text" data-supc-new-field="email" placeholder="Email" maxlength="200" style="${inStyle}"></td>
+        <td style="${cell}"><input type="text" data-supc-new-field="phone" placeholder="Phone" maxlength="60" style="${inStyle}"></td>
+        <td style="${cell};white-space:nowrap"><button type="button" class="btn btn-green" data-supc-add="${i}" style="font-size:0.72rem;padding:0.2rem 0.55rem">+ Add contact</button></td>
+      </tr>` : '';
+    body = (rows || addRow) ? `
+      <table style="width:100%;max-width:820px;border-collapse:collapse">
+        <thead><tr>
+          <th style="text-align:left;${cell};color:var(--muted);font-size:0.62rem;letter-spacing:0.08em;text-transform:uppercase">Contact</th>
+          <th style="text-align:left;${cell};color:var(--muted);font-size:0.62rem;letter-spacing:0.08em;text-transform:uppercase">Email</th>
+          <th style="text-align:left;${cell};color:var(--muted);font-size:0.62rem;letter-spacing:0.08em;text-transform:uppercase">Phone</th>
+          <th></th>
+        </tr></thead>
+        <tbody>${rows}${addRow}</tbody>
+      </table>
+      ${list.length ? '' : '<div style="color:var(--muted);font-size:0.75rem;margin-top:0.25rem">No contacts saved yet. They are also remembered from the Contact and Email typed on Procurement rows.</div>'}`
+      : `<div style="color:var(--muted);font-size:0.8rem">No contacts saved for ${_cbEsc(name)}.</div>`;
+  }
+  return `<tr class="sup-contacts-row" style="border-bottom:1px solid var(--border);background:rgba(148,163,184,0.05)">
+    <td colspan="7" style="padding:0.5rem 0.6rem 0.65rem 1.5rem">${body}</td></tr>`;
+}
 
 function renderSupplierTab() {
   const root = document.getElementById('supplier-root');
@@ -19861,11 +20672,19 @@ function renderSupplierTab() {
     indexed.map(({ s }) => (s.name || '').charAt(0).toUpperCase()).filter(c => c >= 'A' && c <= 'Z')
   );
 
-  // Filter then sort alphabetically
+  // Contacts come from procurement.js's shared cache; null until it has run.
+  const C = _supEnsureContacts();
+
+  // Filter then sort alphabetically. The search reaches the contacts too, so
+  // "who is Dave at…" finds Dave's supplier.
+  const q = _supSearch.trim().toLowerCase();
+  const matches = s => !q || [s.name, s.phone, s.address].concat(
+    _supContactsFor(C, s.name).flatMap(c => [c.name, c.email, c.phone])
+  ).some(v => String(v || '').toLowerCase().includes(q));
   const filtered = (_supLetter
     ? indexed.filter(({ s }) => (s.name || '').charAt(0).toUpperCase() === _supLetter)
     : indexed
-  ).slice().sort((a, b) => (a.s.name || '').localeCompare(b.s.name || ''));
+  ).filter(({ s }) => matches(s)).slice().sort((a, b) => (a.s.name || '').localeCompare(b.s.name || ''));
 
   // Paginate
   const PAGE_SIZE  = 15;
@@ -19895,11 +20714,22 @@ function renderSupplierTab() {
     </div>`;
 
   // Table rows
+  const emptyMsg = q
+    ? `No suppliers match "${_cbEsc(_supSearch.trim())}"${_supLetter ? ` under "${_supLetter}"` : ''}.`
+    : _supLetter ? `No suppliers starting with "${_supLetter}".` : 'No suppliers yet. Click + Add Supplier to begin.';
   const rowsHTML = page.length === 0
-    ? `<tr><td colspan="6" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">${
-        _supLetter ? `No suppliers starting with "${_supLetter}".` : 'No suppliers yet. Click + Add Supplier to begin.'
-      }</td></tr>`
-    : page.map(({ s, i }) => `
+    ? `<tr><td colspan="7" style="padding:1.5rem;text-align:center;color:var(--muted);font-size:0.85rem">${emptyMsg}</td></tr>`
+    : page.map(({ s, i }) => {
+      const nameKey = _procSupKey(s.name);
+      const open    = !!nameKey && _supContactsOpen.has(nameKey);
+      const nContacts = _supContactsFor(C, s.name).length;
+      const countTxt  = !nameKey ? '' : (C && _supContactsLoad.state === 'ok') ? String(nContacts) : '…';
+      const toggle = nameKey
+        ? `<button type="button" class="btn btn-ghost" data-supc-toggle="${i}" aria-expanded="${open}"
+             title="${open ? 'Hide' : 'Show'} the contacts saved for this supplier"
+             style="font-size:0.72rem;padding:0.15rem 0.5rem;white-space:nowrap">&#128100; ${countTxt} ${open ? '&#9652;' : '&#9662;'}</button>`
+        : `<span style="color:var(--muted);font-size:0.72rem" title="Name the supplier first">—</span>`;
+      return `
       <tr style="border-bottom:1px solid var(--border)">
         <td style="padding:0.4rem 0.6rem">
           <input type="text" value="${esc(s.name || '')}" data-sup-idx="${i}" data-sup-field="name"
@@ -19931,10 +20761,12 @@ function renderSupplierTab() {
                  placeholder="https://example.com"
                  style="width:100%;background:transparent;border:none;color:var(--text);font-size:0.875rem;outline:none;padding:0.15rem 0">`}
         </td>
+        <td style="padding:0.4rem 0.6rem">${toggle}</td>
         <td style="text-align:center;padding:0.25rem">
           ${perm.canEdit ? `<button class="del-btn" onclick="deleteSupplier(${i})">&#10005;</button>` : ''}
         </td>
-      </tr>`).join('');
+      </tr>${open ? _supContactsRowHTML(C, s, i) : ''}`;
+    }).join('');
 
   // Pagination bar
   const paginationBar = totalPages > 1 ? `
@@ -19942,7 +20774,7 @@ function renderSupplierTab() {
       <button class="btn btn-ghost" style="font-size:0.8rem;padding:0.3rem 0.75rem" onclick="_supChangePage(-1)" ${_supPage === 0 ? 'disabled' : ''}>← Prev</button>
       <span style="font-size:0.8rem;color:var(--muted)">Page <strong style="color:var(--text)">${_supPage + 1}</strong> of ${totalPages} &nbsp;·&nbsp; ${filtered.length} supplier${filtered.length !== 1 ? 's' : ''}</span>
       <button class="btn btn-ghost" style="font-size:0.8rem;padding:0.3rem 0.75rem" onclick="_supChangePage(1)" ${_supPage >= totalPages - 1 ? 'disabled' : ''}>Next →</button>
-    </div>` : `<div style="font-size:0.72rem;color:var(--muted);margin-top:0.5rem">${filtered.length} supplier${filtered.length !== 1 ? 's' : ''}${_supLetter ? ` starting with "${_supLetter}"` : ''}</div>`;
+    </div>` : `<div style="font-size:0.72rem;color:var(--muted);margin-top:0.5rem">${filtered.length} supplier${filtered.length !== 1 ? 's' : ''}${_supLetter ? ` starting with "${_supLetter}"` : ''}${q ? ` matching "${_cbEsc(_supSearch.trim())}"` : ''}</div>`;
 
   root.innerHTML = `
     <div style="padding:1.5rem;max-width:1200px">
@@ -19950,6 +20782,9 @@ function renderSupplierTab() {
         <span style="font-size:1rem;font-weight:700;color:var(--text);letter-spacing:0.06em;text-transform:uppercase">Suppliers</span>
         ${perm.canEdit ? `<button class="btn btn-green" onclick="addSupplier()">+ Add Supplier</button>` : ''}
       </div>
+      <input id="sup-search" type="search" value="${_cbEsc(_supSearch)}" oninput="_supSetSearch(this)"
+        placeholder="&#128269; Search suppliers by name, phone, address or contact…" autocomplete="off"
+        style="width:100%;max-width:520px;margin-bottom:0.75rem;background:var(--surface);border:1px solid var(--border);border-radius:5px;color:var(--text);font-size:0.85rem;padding:0.45rem 0.65rem">
       ${alphaBar}
       <table style="width:100%;border-collapse:collapse;background:var(--surface);border-radius:6px;overflow:hidden">
         <thead>
@@ -19959,6 +20794,7 @@ function renderSupplierTab() {
             <th style="text-align:left;padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;width:150px">Phone</th>
             <th style="text-align:left;padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;width:70px">State</th>
             <th style="text-align:left;padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;width:180px">Website</th>
+            <th style="text-align:left;padding:0.55rem 0.6rem;color:var(--muted);font-size:0.68rem;letter-spacing:0.08em;text-transform:uppercase;width:90px">Contacts</th>
             <th style="width:40px"></th>
           </tr>
         </thead>
@@ -19972,6 +20808,7 @@ function addSupplier() {
   lists.suppliers.push({ name: '', state: '', address: '', phone: '', website: '' });
   saveLists();
   _supLetter = null; // show All so the blank new row is visible
+  _supSearch = '';   // …and no search hiding it either
   _supPage   = 0;
   renderSupplierTab();
   // Focus the new name input
@@ -20001,6 +20838,243 @@ document.getElementById('supplier-root').addEventListener('input', e => {
 document.getElementById('supplier-root').addEventListener('change', e => {
   const el = e.target;
   if (el.dataset.supField === 'website') renderSupplierTab();
+  if (el.dataset.supField === 'name') _supRenamed(el);
+  if (el.dataset.supcId) _supContactFieldChanged(el);
+});
+
+// The name a supplier had when its box took focus. Contacts hang off the name
+// (suppliers have no id), so a rename has to carry them to the new one —
+// known only once the edit is done, on change, by which time the per-keystroke
+// listener above has already overwritten the old name on the list.
+//
+// A rename not carried over yet is remembered against the supplier's list
+// entry: a box left blank on the way ("select all, Backspace, click away,
+// come back, type the new name"), or one replaced by a redraw mid-word,
+// still renames from the last REAL name, not from '' or from half a word.
+const _supPendingFrom = new WeakMap();
+document.getElementById('supplier-root').addEventListener('focusin', e => {
+  const el = e.target;
+  if (!el.dataset || el.dataset.supField !== 'name') return;
+  const entry = lists.suppliers[parseInt(el.dataset.supIdx)];
+  el.dataset.supOldName = (entry && _supPendingFrom.get(entry)) || el.value;
+});
+
+function _supRenamed(el) {
+  const idx   = parseInt(el.dataset.supIdx);
+  const entry = lists.suppliers[idx];
+  const from  = String(el.dataset.supOldName || (entry && _supPendingFrom.get(entry)) || '').trim();
+  const to    = String(el.value || '').trim();
+  // A box a redraw took away while it was typed in fires its change with
+  // the half-typed name. Not a rename: the box that replaced it does that,
+  // from the old name, when it is really left.
+  if (!el.isConnected) { if (entry && from) _supPendingFrom.set(entry, from); return; }
+  // Left blank: a supplier is not left nameless — its contacts, Procurement
+  // rows and orders hang off the name — so the last real one goes back, and
+  // the new name typed over it later renames from there. (Remembered against
+  // the list entry instead, it was lost whenever the lists poll replaced the
+  // entries in between.)
+  if (!to) {
+    el.dataset.supOldName = from;
+    if (from) {
+      el.value = from;
+      if (entry) { entry.name = from; saveLists(); projectsList.forEach(p => renderDailyTable(p.id)); }
+    }
+    return;
+  }
+  if (entry) _supPendingFrom.delete(entry);
+  el.dataset.supOldName = to;
+  if (!from || _procSupKey(from) === _procSupKey(to)) return;   // a case-only edit still matches
+
+  // Renamed to ANOTHER supplier's name: the two become one, and that cannot
+  // be undone by renaming it back (once merged, nothing tells whose rows and
+  // contacts were whose) — so it is asked, never done quietly.
+  const other = lists.suppliers.findIndex((sp, i) => i !== idx && _procSupKey(_procSupName(sp)) === _procSupKey(to));
+  // What it is renamed to: in a merge, the other supplier's name as listed.
+  let target = to;
+  if (other >= 0) {
+    const ok = confirm(`"${to}" is already on the supplier list.\n\nMerge "${from}" into it? `
+      + `Its saved contacts, and the Vendor of every Procurement row and purchase order naming "${from}", move to "${to}", `
+      + `and "${from}" comes off the list. Renaming it back afterwards will not separate them again.\n\n`
+      + `Cancel puts the name back to "${from}".`);
+    if (!ok) {
+      el.value = from;
+      el.dataset.supOldName = from;
+      if (entry) { entry.name = from; saveLists(); projectsList.forEach(p => renderDailyTable(p.id)); }
+      return;
+    }
+    target = String(_procSupName(lists.suppliers[other]) || to).trim() || to;
+    // One entry for the merged supplier: the one renamed onto it goes.
+    if (entry && lists.suppliers[idx] === entry) {
+      lists.suppliers.splice(idx, 1);
+      saveLists();
+    }
+    // Every box below the removed one now names the wrong entry by index.
+    if (activeTab === 'supplier') renderSupplierTab();
+  } else if (lists.suppliers.some(sp => sp !== entry && _procSupKey(_procSupName(sp)) === _procSupKey(from))) {
+    // The old name is still on the list under another entry (it was there
+    // twice): its contacts and rows stay with the one still called that.
+    return;
+  }
+  // An open contacts list follows the supplier to its new name.
+  if (_supContactsOpen.delete(_procSupKey(from))) _supContactsOpen.add(_procSupKey(target));
+  const C = _supContacts();
+  if (!C || !perm.canEdit) return;
+  // Always asked, even when this tab's copy lists no contacts for the old
+  // name: that copy can be a minute old or more, and a colleague may have
+  // saved one from a Procurement row since. It is one small request, the
+  // server answers "moved 0" when there is nothing, and the same request
+  // carries the Procurement rows' Vendor and the purchase orders' Supplier
+  // over to the new name — server-side, on the lists as they are stored
+  // (Procurement matches a row to its PO by vendor too: left on the old
+  // name, every row on a PO would read "Not Ordered", and "Create PO from
+  // selected" would raise a second order). Never by saving this page's copy
+  // of the order list, which can be minutes old.
+  Promise.resolve(C.rename(from, target)).then(ans => {
+    _supAfterPORename(from, target, ans || {});
+    _supRedrawWhenIdle();
+  }, err => {
+    _showSaveError(false, `The contacts, Procurement rows and purchase orders of "${from}" were not moved to "${target}": ${(err && err.message) || 'request failed'}.`, false);
+  });
+}
+
+/**
+ * What a supplier rename did to the purchase orders (the server renamed
+ * them), brought onto this page: the orders it names take the new Supplier
+ * here too, with the job rows their own deliveries made, and the stored list
+ * is read again. Nothing is saved from here. Orders the server could not
+ * rename are said, loudly — rows on them would otherwise read "Not Ordered".
+ */
+function _supAfterPORename(from, to, ans) {
+  if (ans.po_error) {
+    const why = ans.po_error === 'no_access' ? 'you do not have permission to change purchase orders'
+      : ans.po_error === 'busy' ? 'the purchase orders were being changed by someone else at the same moment'
+      : 'the purchase orders could not be saved just now';
+    _showSaveError(false, `The purchase orders naming "${from}" still say "${from}": ${why}. `
+      + `Change their Supplier to "${to}" on the Purchase Orders tab.`, false);
+  }
+  const ids = new Set((ans.po_ids || []).map(String));
+  if (!ids.size) return;
+  const hit = (Array.isArray(purchaseOrders) ? purchaseOrders : []).filter(po => po && ids.has(String(po.id)));
+  hit.forEach(po => {
+    po.supplier = to;
+    if (!po.project_id) return;
+    const proj = getProj(po.project_id);
+    (po.lines || []).forEach(line => {
+      if (!line || !line.po_row_id || _poLineFromDaily(line)) return;
+      const r = proj && (proj.dailyRows || []).find(x => String(x.id) === String(line.po_row_id));
+      if (r) r.supplier = to;
+    });
+  });
+  if (activeTab === 'po') renderPOTab();
+  [...new Set(hit.map(po => po.project_id).filter(Boolean))].forEach(pid => { renderProjectPOs(pid); renderDailyTable(pid); });
+  _procRerender();
+  // The stored list itself, with the version it belongs to — once a save of
+  // the list that is out has answered (its answer predates the rename).
+  _poRereadWhenSettled();
+}
+
+function _supContactErrText(err, what) {
+  if (err && err.code === 'duplicate') return `${what}: this supplier already has a contact with that name or email.`;
+  return `${what}: ${(err && err.message) || 'the request failed'}.`;
+}
+
+function _supContactFieldChanged(el) {
+  const C = _supContacts();
+  if (!C || !perm.canEdit) return;
+  const id = el.dataset.supcId, field = el.dataset.supcField;
+  if (!['name', 'email', 'phone'].includes(field)) return;
+  Promise.resolve(C.update(id, { [field]: el.value.trim() })).then(() => {
+    // Redraw only when no box is being typed in — a contact's, or a
+    // supplier's NAME: redrawn under it, the rest of the word would be lost
+    // and the half-typed name sent as a rename (see _supRedrawWhenIdle).
+    _supRedrawWhenIdle();
+  }, err => {
+    _showSaveError(false, _supContactErrText(err, 'The contact was not saved'), false);
+  });
+}
+
+/**
+ * The supplier a contacts row on screen belongs to: the name in the box of
+ * the supplier row above it — what the user sees beside the button. Not by
+ * the list index the row was drawn with: the lists poll can swap the list
+ * under an open tab (a colleague deleted a supplier above this one), and the
+ * index then names a different supplier.
+ */
+function _supNameFor(el) {
+  const inContacts = el && el.closest('tr.sup-contacts-row');
+  const supRow = inContacts ? inContacts.previousElementSibling : el && el.closest('tr');
+  const box = supRow && supRow.querySelector('[data-sup-field="name"]');
+  return String((box && box.value) || '').trim();
+}
+
+function _supAddContact(btn) {
+  const C = _supContacts();
+  if (!C || !perm.canEdit) return;
+  const supplier = _supNameFor(btn);
+  const row = btn.closest('[data-supc-new-row]');
+  if (!supplier || !row) return;
+  const val = f => String((row.querySelector(`[data-supc-new-field="${f}"]`) || {}).value || '').trim();
+  const name = val('name'), email = val('email'), phone = val('phone');
+  if (!name && !email) {
+    const box = row.querySelector('[data-supc-new-field="name"]');
+    if (box) { box.focus(); box.placeholder = 'A name or an email is needed'; }
+    return;
+  }
+  btn.disabled = true;
+  Promise.resolve(C.upsert({ supplier_name: supplier, name, email, phone })).then(() => {
+    if (activeTab !== 'supplier') return;
+    // This row's boxes are done with (unless typed over meanwhile), so they
+    // no longer hold a redraw back.
+    [['name', name], ['email', email], ['phone', phone]].forEach(([f, v]) => {
+      const b = row.querySelector(`[data-supc-new-field="${f}"]`);
+      if (b && String(b.value || '').trim() === v) b.value = '';
+    });
+    // Someone typing in another box meanwhile (a supplier's name, another
+    // new contact) is not cut off: the redraw waits for them.
+    const a = document.activeElement;
+    if (!row.isConnected || (a && a.tagName === 'INPUT' && a.id !== 'sup-search' && !row.contains(a))
+        || _supNewContactTyped(document.getElementById('supplier-root'))) { _supRedrawWhenIdle(); return; }
+    renderSupplierTab();
+    // Straight on to the next one.
+    const next = document.querySelector(`#supplier-root [data-supc-new-row="${btn.dataset.supcAdd}"] [data-supc-new-field="name"]`);
+    if (next) next.focus();
+  }, err => {
+    btn.disabled = false;
+    _showSaveError(false, _supContactErrText(err, 'The contact was not added'), false);
+  });
+}
+
+document.getElementById('supplier-root').addEventListener('click', e => {
+  const t = e.target.closest('[data-supc-toggle],[data-supc-add],[data-supc-del],[data-supc-retry]');
+  if (!t) return;
+  if (t.dataset.supcToggle != null) {
+    const k = _procSupKey(_supNameFor(t));
+    if (!k) return;
+    if (_supContactsOpen.has(k)) _supContactsOpen.delete(k); else _supContactsOpen.add(k);
+    renderSupplierTab();
+  } else if (t.dataset.supcAdd != null) {
+    _supAddContact(t);
+  } else if (t.dataset.supcDel != null) {
+    const C = _supContacts();
+    if (!C || !perm.canEdit) return;
+    const c = (typeof C.all === 'function' ? C.all() : []).find(x => x.id === t.dataset.supcDel);
+    const who = c ? (c.name || c.email) : 'this contact';
+    if (!confirm(`Remove ${who} from this supplier's contacts?`)) return;
+    Promise.resolve(C.remove(t.dataset.supcDel)).then(_supRedrawWhenIdle,
+      err => _showSaveError(false, _supContactErrText(err, 'The contact was not removed'), false));
+  } else if (t.dataset.supcRetry != null) {
+    _supContactsLoad = { state: 'idle', at: 0, busy: false };
+    renderSupplierTab();
+  }
+});
+
+// Enter in a new-contact box adds it, as the button beside it would.
+document.getElementById('supplier-root').addEventListener('keydown', e => {
+  if (e.key !== 'Enter' || !e.target.dataset || !e.target.dataset.supcNewField) return;
+  e.preventDefault();
+  const row = e.target.closest('[data-supc-new-row]');
+  const btn = row && row.querySelector('[data-supc-add]');
+  if (btn && !btn.disabled) _supAddContact(btn);
 });
 
 // Build <option> tags for a simple string list
@@ -28178,6 +29252,10 @@ function openBidView(projId) {
   document.getElementById('bid-fs-email').onclick = () => showBidPDFOptions(projId, 'email');
   document.getElementById('bid-fs-procore').onclick = () => showProcoreImport(projId);
   document.getElementById('bid-fs-copy').onclick = () => showBidCopy(projId);
+  // Only for someone who can both edit and see Procurement — sending rows a
+  // user could never open would be writing blind.
+  document.getElementById('bid-fs-procurement').style.display = _procCanEdit() ? '' : 'none';
+  document.getElementById('bid-fs-procurement').onclick = () => sendBidToProcurement(projId);
   // Point the generic tbody/tfoot ids to the fullscreen elements
   document.getElementById('bid-fs-tbody').id = 'btbody-' + projId;
   document.getElementById('bid-fs-tfoot').id = 'bfoot-' + projId;
@@ -31372,6 +32450,9 @@ const _bootReady = (async () => {
     renderProjectInfoComputed();
   }
   if (activeTab === 'po') renderPOTab();
+  // Opened before the jobs and orders arrived, it drew from the cached job
+  // list with no purchase orders; draw it again from the real ones.
+  if (activeTab === 'procurement') renderProcurementTab();
   if (activeTab === 'trucking') renderTruckingTab();
   if (activeTab === 'inventory') renderInventoryTab();
   if (activeTab === 'schedule') renderScheduleTab();
@@ -31533,10 +32614,15 @@ const _bootReady = (async () => {
       incoming.cost_codes = (incoming.cost_codes || []).map(c =>
         typeof c === 'string' ? { value: c, description: '' } : { value: '', description: '', ...c });
       if (JSON.stringify(incoming) === JSON.stringify(lists)) return;
+      const suppliersBefore = JSON.stringify(lists.suppliers);
       Object.assign(lists, incoming);
       // Refresh the manage-lists panel if it's currently open
       const anyPanelActive = document.querySelector('.list-panel.active');
       if (anyPanelActive) renderAllListPanels();
+      // An open Suppliers tab draws its boxes by list position: a supplier
+      // added or removed elsewhere shifts every one below it, so the tab is
+      // redrawn (once nobody is typing in it).
+      if (activeTab === 'supplier' && JSON.stringify(lists.suppliers) !== suppliersBefore) _supRedrawWhenIdle();
     } catch { /* non-fatal */ }
   }
 
@@ -31625,6 +32711,9 @@ const _bootReady = (async () => {
     }
     if (activeTab === 'home') renderHomeTab();
     if (activeTab === 'info') renderProjectInfoComputed();
+    // A bid edited elsewhere moves Procurement's live codes and its
+    // "bid changed" badges; the rows themselves are polled separately.
+    if (activeTab === 'procurement') _procRerender();
   }
 
   async function _pollPurchaseOrders() {
@@ -31643,20 +32732,48 @@ const _bootReady = (async () => {
     // ...and a read answered before a save that has since landed is older
     // than what that save stored.
     const epoch = _poSaveEpoch;
-    const r = await fetch(`${API_BASE}/purchase-orders?division=turf`, {
-      headers: { 'Authorization': `Bearer ${fctToken}` }
-    });
-    if (!r.ok) return;
+    let r;
+    try {
+      r = await fetch(`${API_BASE}/purchase-orders?division=turf`, {
+        headers: { 'Authorization': `Bearer ${fctToken}` }
+      });
+    } catch (err) {
+      if (!_poLoadOk) _poLoadFailed = true;
+      throw err;
+    }
+    if (!r.ok) { if (!_poLoadOk) _poLoadFailed = true; return; }
     if (_poSaving || _poSaveEpoch !== epoch) return;
     const data = await r.json();
     const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
-    _poLoadOk = true;
+    // The server answered, so the list is no longer "could not be read" —
+    // even when an edit in progress below keeps it from being taken yet
+    // (_poLoadOk stays where it is until it is).
+    _poLoadFailed = false;
     // Migrate before diffing: the conversion adds tax_pct to every line, so an
     // as-yet-unconverted blob would otherwise read as a change on every poll
     // and re-render the tab in a loop until someone saves a PO.
     _migratePOs(incoming);
-    if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) return;
-    if (_isEditing()) return; // don't overwrite pending edits
+    // _poLoadOk says the list IN HAND is the server's, so it is set only
+    // where that becomes true — never before the bail for an edit in
+    // progress, which keeps the empty list a failed first read left: set
+    // there, Procurement read every row as "Not Ordered" (and exported it)
+    // although the list it was reading was still that empty one.
+    if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) {
+      const wasOk = _poLoadOk;
+      // Same list, so its version is this page's base (see _poTakeBase).
+      _poTakeBase(data.updatedAt);
+      _poLoadOk = true;
+      _poLoadFailed = false;
+      // An empty list that was right after all: the rows' "…" become real.
+      if (!wasOk && activeTab === 'procurement') _procRerender();
+      return;
+    }
+    // Don't overwrite pending edits — except on the Procurement tab, which
+    // reads copies of the orders and edits none in place: its cells being
+    // typed in are no reason to keep showing (and matching rows against) a
+    // list that is behind, a supplier renamed since, say. (Edits on the
+    // Purchase Orders tab not stored yet already stopped the poll above.)
+    if (_isEditing() && activeTab !== 'procurement') return;
     if (_poSaving || _poSaveEpoch !== epoch) return;
     // The version is adopted HERE, with the list it belongs to. Taking it
     // before the bail above left this tab believing it held the newest list
@@ -31665,6 +32782,8 @@ const _bootReady = (async () => {
     _poBaseUpdatedAt = data.updatedAt || _poBaseUpdatedAt;
     const _poBefore = purchaseOrders;
     purchaseOrders = incoming;
+    _poLoadOk = true;
+    _poLoadFailed = false;
     // The job rows behind what changed follow on screen too — or the next
     // edit to one in Daily Tracking sends it whole, old figures and all.
     incoming.forEach(po => {
@@ -31673,6 +32792,9 @@ const _bootReady = (async () => {
     });
     if (activeTab === 'po') renderPOTab();
     _bidMatListChanged(_poBefore, incoming);   // an open bid's material tags
+    // Procurement's PO # / Date Ordered / Status are worked out from this list,
+    // so an order raised in central purchasing shows up on its rows.
+    if (activeTab === 'procurement') _procRerender();
   }
 
   async function _pollTrucking() {
@@ -31792,6 +32914,17 @@ const _bootReady = (async () => {
     if (changed && activeTab === 'scale') renderScaleOfEconomy();
   }
 
+  // The open job's Procurement rows, re-read so other people's edits arrive.
+  // Only while the tab is on screen: a hidden table has nothing to redraw,
+  // and each job's rows are read when it is opened anyway. procurement.js
+  // keeps the caret and scroll, and itself skips a cell being typed in.
+  async function _pollProcurement() {
+    if (_AUTO_REPORT || _fctPollsSuspended()) return;
+    if (activeTab !== 'procurement' || !window.FCTProcurement || !_procConfigured) return;
+    if (_isEditing()) return;
+    await FCTProcurement.refresh();
+  }
+
   // Board and deadlines live on the home tab; refresh them more frequently
   async function _pollHomeFeeds() {
     if (_fctPollsSuspended()) return;
@@ -31819,6 +32952,7 @@ const _bootReady = (async () => {
         _pollCrm(),
         _pollSoe(),
         _pollProjects(),
+        _pollProcurement(),
       ]);
     } finally {
       _pollCycleBusy = false;

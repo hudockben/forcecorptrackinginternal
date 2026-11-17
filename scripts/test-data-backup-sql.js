@@ -67,6 +67,12 @@ async function run(client) {
              updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`);
   await q(`CREATE TABLE IF NOT EXISTS daily_tracking (id SERIAL PRIMARY KEY, date DATE NOT NULL,
              company_code TEXT NOT NULL DEFAULT '', division TEXT NOT NULL DEFAULT 'turf')`);
+  // readCounts also counts the live rows of the two soft-deleted Procurement
+  // tables; only the columns it reads, on a database without the full schema.
+  for (const t of ['procurement_items', 'supplier_contacts']) {
+    await q(`CREATE TABLE IF NOT EXISTS ${t} (id TEXT PRIMARY KEY, company_code TEXT NOT NULL DEFAULT '',
+               division TEXT NOT NULL DEFAULT 'turf', deleted_at TIMESTAMPTZ)`);
+  }
   const schema = schemaStatements();
   assert('the schema file holds the four tables', ['app_data_snapshots', 'list_counts', 'list_alerts_pending', 'data_backup_lock']
     .every(t => schema.some(s => s.startsWith(`CREATE TABLE IF NOT EXISTS ${t}`))), schema.map(s => s.slice(0, 50)).join(' | '));

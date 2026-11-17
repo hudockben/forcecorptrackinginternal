@@ -131,7 +131,12 @@ async function run(browser, cfg) {
   const popovers = () => page.locator('.del-confirm').count();
   const ids      = () => page.evaluate(() => getProj('p1').dailyRows.map(r => r.id));
   const xDaily   = async id => page.locator(`.del-btn[data-tab="daily"][data-i="${(await ids()).indexOf(id)}"]`);
-  const away     = () => page.mouse.click(700, 120);   // the page, not a ✕ or the popover
+  // The page, not a ✕ or the popover — and not the tab bar, whose labels wrap
+  // onto more lines the more tabs share it, so its height moves.
+  const away     = async () => {
+    const nav = await page.locator('.tab-bar').boundingBox();
+    await page.mouse.click(700, Math.max(120, nav.y + nav.height + 12));
+  };
   const no       = async () => { if (await popovers()) await page.click('.del-confirm .dc-no'); await sleep(100); };
 
   await page.evaluate(() => openDailyView('p1'));

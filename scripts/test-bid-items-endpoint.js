@@ -262,7 +262,7 @@ async function run() {
     }), res);
     assert('happy path → 200',           res.statusCode === 200);
     assert('returns ok:true',            res.body && res.body.ok === true);
-    assert('issued 3 SQL statements',    sql._calls.length === 3,
+    assert('issued 4 SQL statements',    sql._calls.length === 4,
            `actual count=${sql._calls.length}`);
     // 1st: project blob jsonb_set
     assert('1st SQL updates app_data project blob', /UPDATE app_data[\s\S]+jsonb_set/i.test(sql._calls[0].sql));
@@ -280,6 +280,11 @@ async function run() {
     // Number coercion
     assert('quantity coerced from "3521" to 3521',   sql._calls[2].values.includes(3521));
     assert('unit_cost coerced from "20.53" to 20.53', sql._calls[2].values.includes(20.53));
+    // 4th: the Procurement rows tied to the line take its codes
+    // (scripts/test-procurement-sql.js runs it against a real Postgres).
+    assert('4th SQL copies the line\'s codes onto its Procurement rows', /UPDATE procurement_items/i.test(sql._calls[3].sql)
+      && /bid_item_id = \$\d+/.test(sql._calls[3].sql));
+    assert('  scoped to the company, division, job and line', ['forcecorp', 'turf', 'p1', 'b1'].every(v => sql._calls[3].values.includes(v)));
   }
 
   console.log('\n[happy path — paving project routes to paving index]');

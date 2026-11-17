@@ -901,8 +901,12 @@ console.log('\n[a cost row this page has not loaded]');
       /drGetAll\(\{ projectId: po\.project_id \}\)/.test(hBody));
     assert(`${f}: and still invents nothing when the row really is absent`,
       /if \(!r\) return;/.test(hBody) && !/defaultDailyRow/.test(hBody));
-    assert(`${f}: both its call sites catch`,
-      (src.match(/_syncPOHeaderToLines\(po(?:, true)?\)\.catch\(/g) || []).length === 2);
+    // Every call site catches — the PO tab's two, and on tracker.html the
+    // Suppliers tab's rename, which carries a new supplier name to the orders.
+    const headerCalls = (src.match(/_syncPOHeaderToLines\(/g) || []).length
+      - (src.match(/function _syncPOHeaderToLines\(/g) || []).length;
+    const caught = (src.match(/_syncPOHeaderToLines\(po(?:, true)?\)\.catch\(/g) || []).length;
+    assert(`${f}: every one of its call sites catches`, headerCalls >= 2 && caught === headerCalls, `${caught} of ${headerCalls}`);
 
     // The division tabs export the same purchase orders the purchasing page
     // does, and only that page's export had the formula guard. Its trucking

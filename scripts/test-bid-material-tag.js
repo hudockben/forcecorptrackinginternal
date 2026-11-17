@@ -697,7 +697,7 @@ for (const page of PAGES) {
     /\.bid-mat-pop table \{[^}]*white-space: normal;/.test(src) && /\.bid-mat-pop td \{ border: none;/.test(src));
   const poll = extractFunction(src, '_pollPurchaseOrders');
   assert('the PO poll hands the open bid the old and new lists, after its editing bail-out',
-    /if \(_isEditing\(\)\) return;[\s\S]*const _poBefore = purchaseOrders;\n    purchaseOrders = incoming;\n[\s\S]*_bidMatListChanged\(_poBefore, incoming\);/
+    /if \(_isEditing\(\)(?: && activeTab !== 'procurement')?\) return;[\s\S]*const _poBefore = purchaseOrders;\n    purchaseOrders = incoming;\n[\s\S]*_bidMatListChanged\(_poBefore, incoming\);/
       .test(poll), poll);
   const invPoll = extractFunction(src, '_pollInventory');
   assert('…and so does the inventory poll',

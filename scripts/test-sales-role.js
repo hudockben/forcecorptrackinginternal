@@ -213,6 +213,10 @@ const auth = require(root('api/lib/auth.js'));
           && !hidden(doc.getElementById('schedules-item-schedule'))
           && !hidden(doc.getElementById('schedules-item-construction')));
       assert('  Infill Inventory is not', hidden(doc.querySelector('.tab-btn[data-tab="inventory"]')));
+      // level1 and level2 read Procurement (scripts/test-procurement-page.js);
+      // sales is refused it here and by api/procurement.js.
+      assert('  nor is Procurement', hidden(doc.querySelector('.tab-btn[data-tab="procurement"]')));
+      assert('  nor the bid page\'s Send to Procurement', dom.window.eval('_procCanEdit()') === false);
     }
     dom.window.close();
   }

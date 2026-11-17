@@ -2739,6 +2739,167 @@ CREATE INDEX IF NOT EXISTS idx_ts_vacation
     WHERE entry_type = 'time_off' AND time_off_type = 'vacation';
 
 -- ─────────────────────────────────────────────────
+-- PROCUREMENT (Turf → Procurement tab)  api/procurement.js, api/supplier-contacts.js
+-- ─────────────────────────────────────────────────
+-- It sits here, ahead of the two Custom Reports sections, rather than at the
+-- end of the file: scripts/test-custom-reports-sql.js reads everything from
+-- the Custom Reporting v2 header to the end of the file as that section.
+--
+-- The material buy-out sheet a PM keeps per job: for each material on the
+-- bid, when it is needed, how long the supplier takes, who it is coming from,
+-- which quote and which PO, and whether it has been ordered and delivered.
+-- It replaces an Excel sheet per job, so one row here is one line of that
+-- sheet.
+--
+-- procurement_items: one row per material line on one job. Cost Code and Sub
+-- Code are the bid's own codes (in a turf bid the sub code IS the material,
+-- e.g. cost code "Stormwater", sub code "Geofabric"), and description is free
+-- text beside them because bid lines carry none.
+--   source 'bid'    the row was sent from a bid line by Send to Procurement.
+--                   bid_item_id is that line, and bid_qty_at_send and
+--                   bid_unit_at_send what the bid said when it was sent (or
+--                   last acknowledged), so the page can say "bid changed"
+--                   when the bid moves on without overwriting a takeoff
+--                   quantity somebody typed.
+--   source 'manual' added by hand ("+ Add Row", "+ Material"). bid_item_id is
+--                   set when the codes were picked from a bid line.
+-- cost_code and sub_code are a stored COPY. The page shows the live bid
+-- line's codes whenever bid_item_id still resolves, and the copy only when
+-- the line has gone from the bid.
+--
+-- No PO number is stored. po_id is the id of a PO the row was linked to by
+-- hand (or by "Create PO from selected"), and the number is read from the PO
+-- list when the page draws, so a renumbered PO never leaves a stale number
+-- behind. po_id NULL with po_auto TRUE means "match a PO by job, codes and
+-- vendor", po_id NULL with po_auto FALSE means somebody said "No PO".
+-- date_ordered NULL likewise means "use the linked PO's date".
+--
+-- Saves are field by field (api/procurement.js PATCH sends only the cells
+-- that changed), so two people editing different cells of one row never
+-- undo each other. version goes up on every write, which is how the page's
+-- poll notices a change.
+--
+-- project_id is plain TEXT with no foreign key, like project_documents: each
+-- division keeps its own job list and paving and kiewit jobs live only in
+-- app_data blobs. Nothing cascades when a job is deleted, so tracker.html
+-- soft-deletes the job's rows itself.
+--
+-- Deleting is soft (deleted_at). The unique index on the bid line includes
+-- deleted rows on purpose: a deleted bid row means "skipped, we are not
+-- buying this", and sending the bid again must not bring it back as a new
+-- row. Send to Procurement offers it as "removed earlier", and restoring it
+-- clears deleted_at on the same row. The same index is what makes Send
+-- idempotent: a double click, or two people sending one job at once, inserts
+-- each bid line once and the rest DO NOTHING.
+CREATE TABLE IF NOT EXISTS procurement_items (
+  id TEXT PRIMARY KEY,
+  company_code TEXT NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+  division TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  source TEXT NOT NULL DEFAULT 'manual',
+  bid_item_id TEXT,
+  cost_code TEXT NOT NULL DEFAULT '',
+  sub_code TEXT NOT NULL DEFAULT '',
+  description TEXT NOT NULL DEFAULT '',
+  quantity NUMERIC,
+  unit TEXT NOT NULL DEFAULT '',
+  bid_qty_at_send NUMERIC,
+  bid_unit_at_send TEXT,
+  sca_status TEXT NOT NULL DEFAULT 'Pending',
+  date_needed DATE,
+  lead_time_days INTEGER,
+  date_ordered DATE,
+  date_delivered DATE,
+  vendor TEXT NOT NULL DEFAULT '',
+  quote_number TEXT NOT NULL DEFAULT '',
+  contact TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL DEFAULT '',
+  po_id TEXT,
+  po_auto BOOLEAN NOT NULL DEFAULT TRUE,
+  version INTEGER NOT NULL DEFAULT 1,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_by TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_by TEXT,
+  deleted_at TIMESTAMPTZ,
+  deleted_by TEXT
+);
+
+-- The CHECKs are dropped and added again rather than declared inline, so a
+-- later change to a list (a fourth division, a fifth SCA status) is one edit
+-- here that every database picks up on the next deploy.
+ALTER TABLE procurement_items DROP CONSTRAINT IF EXISTS procurement_items_division_chk;
+ALTER TABLE procurement_items ADD  CONSTRAINT procurement_items_division_chk
+  CHECK (division IN ('turf','paving','kiewit'));
+ALTER TABLE procurement_items DROP CONSTRAINT IF EXISTS procurement_items_source_chk;
+ALTER TABLE procurement_items ADD  CONSTRAINT procurement_items_source_chk
+  CHECK (source IN ('bid','manual'));
+ALTER TABLE procurement_items DROP CONSTRAINT IF EXISTS procurement_items_sca_chk;
+ALTER TABLE procurement_items ADD  CONSTRAINT procurement_items_sca_chk
+  CHECK (sca_status IN ('Pending','Needed','Not Needed','Executed'));
+ALTER TABLE procurement_items DROP CONSTRAINT IF EXISTS procurement_items_lead_time_chk;
+ALTER TABLE procurement_items ADD  CONSTRAINT procurement_items_lead_time_chk
+  CHECK (lead_time_days IS NULL OR lead_time_days BETWEEN 0 AND 3650);
+-- A bid row always names its bid line. Without one it would fall outside the
+-- unique index below, and the next Send would add the same line again.
+ALTER TABLE procurement_items DROP CONSTRAINT IF EXISTS procurement_items_bid_line_chk;
+ALTER TABLE procurement_items ADD  CONSTRAINT procurement_items_bid_line_chk
+  CHECK (source <> 'bid' OR bid_item_id IS NOT NULL);
+
+-- What the tab reads: one job's live rows.
+CREATE INDEX IF NOT EXISTS idx_procurement_items_project
+  ON procurement_items (company_code, division, project_id) WHERE deleted_at IS NULL;
+-- One row per bid line per job, deleted rows included (see above).
+CREATE UNIQUE INDEX IF NOT EXISTS uq_procurement_items_bid_line
+  ON procurement_items (company_code, division, project_id, bid_item_id) WHERE source = 'bid';
+
+-- supplier_contacts: the people at a supplier a PM orders from. Typed once on
+-- a procurement row (Contact and Email) and remembered under that vendor, so
+-- the next row offers them, and listed and edited on Admin → Suppliers.
+--
+-- Suppliers themselves are not rows anywhere: they are the name entries of
+-- the division's lists blob (fct_lists suppliers), which have no ids. So a
+-- contact belongs to a supplier by NAME, compared trimmed and without case,
+-- and renaming a supplier on the Suppliers tab moves its contacts with it
+-- (POST /api/supplier-contacts?action=rename).
+--
+-- email is not checked for shape: the sheets this replaces have phone
+-- numbers in that column, and refusing them would only mean nobody saves
+-- the contact. A contact needs a name or an email.
+--
+-- The unique indexes cover live rows only: one contact per email per
+-- supplier, and, among contacts with no email, one per name. They are what
+-- keeps two people saving the same new contact at the same moment from
+-- making two of it.
+CREATE TABLE IF NOT EXISTS supplier_contacts (
+  id TEXT PRIMARY KEY,
+  company_code TEXT NOT NULL REFERENCES companies(code) ON DELETE CASCADE,
+  division TEXT NOT NULL,
+  supplier_name TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  email TEXT NOT NULL DEFAULT '',
+  phone TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_by TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_by TEXT,
+  deleted_at TIMESTAMPTZ,
+  deleted_by TEXT
+);
+ALTER TABLE supplier_contacts DROP CONSTRAINT IF EXISTS supplier_contacts_division_chk;
+ALTER TABLE supplier_contacts ADD  CONSTRAINT supplier_contacts_division_chk
+  CHECK (division IN ('turf','paving','kiewit'));
+ALTER TABLE supplier_contacts DROP CONSTRAINT IF EXISTS supplier_contacts_name_or_email_chk;
+ALTER TABLE supplier_contacts ADD  CONSTRAINT supplier_contacts_name_or_email_chk
+  CHECK (name <> '' OR email <> '');
+CREATE INDEX IF NOT EXISTS idx_supplier_contacts_supplier
+  ON supplier_contacts (company_code, division, lower(supplier_name)) WHERE deleted_at IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_supplier_contacts_email
+  ON supplier_contacts (company_code, division, lower(supplier_name), lower(email)) WHERE deleted_at IS NULL AND email <> '';
+CREATE UNIQUE INDEX IF NOT EXISTS uq_supplier_contacts_name
+  ON supplier_contacts (company_code, division, lower(supplier_name), lower(name)) WHERE deleted_at IS NULL AND email = '';
+
+-- ─────────────────────────────────────────────────
 -- CUSTOM REPORTS (Analytics → Custom Reporting)  api/custom-reports.js
 -- ─────────────────────────────────────────────────
 -- A report a PM builds for himself from a division's own data — which jobs,
