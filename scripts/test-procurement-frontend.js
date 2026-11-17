@@ -2376,6 +2376,47 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('…and picking one fills Email too', e.$('#fctproc-bulk-email').value === 'mhanlon@lbwater.com');
   }
 
+  console.log('\n[a column the page hides (turf hides Description for now)]');
+  {
+    const e = makeEnv({ rows: [row({ id: 'h1', description: 'secret glue', quote_number: 'Q-1' }), row({ id: 'h2', description: 'other thing', quote_number: 'Q-2' })] });
+    e.P.configure({ hiddenColumns: ['description'] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const heads = e.$$('#fctproc-wrap thead th').map(t => t.textContent.trim());
+    assert('no Description column or cells on the sheet; the rest are there', !heads.some(h => /^Description/.test(h)) && !e.field('h1', 'description')
+      && heads.some(h => /^Quote #/.test(h)) && !!e.field('h1', 'quote_number') && e.$$('tr.fctproc-row').length === 2, heads);
+    assert('…and the table is that column narrower', parseFloat(e.$('.fctproc-table').style.width) > 0
+      && !e.$$('#fctproc-wrap col').some(c => c.style.width === '15rem'), e.$('.fctproc-table').style.width);
+    const search = e.$('#fctproc-search');
+    search.value = 'secret'; e.fire(search, 'input');
+    await sleep(350);
+    assert('the search does not look in it', e.$$('tr.fctproc-row').length === 0, e.$$('tr.fctproc-row').map(t => t.dataset.row));
+    search.value = 'Q-1'; e.fire(search, 'input');
+    await sleep(350);
+    assert('…but does in the columns shown', e.$$('tr.fctproc-row').map(t => t.dataset.row).join() === 'h1');
+    search.value = ''; e.fire(search, 'input');
+    await sleep(350);
+    e.P._test.state().filters = { description: new Set(['other thing']) };
+    e.P.rerender();
+    assert('a filter left on it narrows nothing', e.$$('tr.fctproc-row').length === 2);
+    e.P._test.state().filters = {};
+    const m = e.P._test.exportMatrix(e.P._test.state().rows, C());
+    assert('the Excel / CSV columns leave it out', !m.header.includes('Description') && m.header.includes('Quote #') && m.header.length === 17
+      && m.rows.every(r => r.length === 17) && !m.rows.some(r => r.some(c => c.v === 'secret glue')), m.header);
+    assert('…so does the CSV text', !/secret glue|Description/.test(e.P._test.buildCsv(e.P._test.state().rows, C())));
+    const html = e.P._test.buildPrintHtml(C(), { printedAt: new Date(2026, 10, 17) });
+    assert('…and the print view', !/<th>Description<\/th>/.test(html) && !/secret glue/.test(html) && /Q-1/.test(html));
+    e.$('[data-act="add"]').click();
+    await sleep(40);
+    const added = e.P._test.state().rows.find(r => r.id !== 'h1' && r.id !== 'h2');
+    assert('+ Add Row puts the cursor in Quantity, Description being hidden', !!added && e.w.document.activeElement === e.field(added.id, 'quantity'));
+    assert('…and what is stored in Description is kept', e.db.rows.find(r => r.id === 'h1').description === 'secret glue'
+      && e.P._test.state().rows.find(r => r.id === 'h1').description === 'secret glue');
+    e.P.configure({ hiddenColumns: [] });
+    e.P.rerender();
+    assert('shown again once the page stops hiding it, with what it held', !!e.field('h1', 'description') && e.field('h1', 'description').value === 'secret glue');
+  }
+
   console.log('\n[leaving with a change that could not be saved]');
   {
     const e = makeEnv({ rows: [row({ id: 'x1' })] });

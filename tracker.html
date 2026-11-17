@@ -19363,6 +19363,9 @@ function _procEnsureConfigured() {
     getToken:     () => fctToken,
     getUserName:  () => (fctUser ? (fctUser.name || fctUser.username || '') : ''),
     perm:         { canView: _procCanSee(), canEdit: _procCanEdit() },
+    // Description is hidden for now: the bid's Sub Code already names each
+    // material. What is stored in it is kept; drop this line to show it again.
+    hiddenColumns: ['description'],
     getProjects:  () => projectsList,
     getProject:   id => getProj(id),
     getBidLines:  procBidLines,

@@ -641,10 +641,18 @@
    * Every word of the search has to appear somewhere in the row; the column
    * filters keep a row whose displayed value is one of the ticked ones.
    */
+  /**
+   * A column the page has hidden (cfg.hiddenColumns, by key — turf hides
+   * Description for now): left out of the sheet, its search, the Excel / CSV
+   * files and the print view. What is stored in it is kept, and it comes
+   * back as it was once the page stops hiding it.
+   */
+  const colHidden = key => Array.isArray(cfg.hiddenColumns) && cfg.hiddenColumns.includes(key);
+
   function applyFilters(rows, state, ctx) {
     const s = state || {};
     const words = lc(s.search).split(' ').filter(Boolean);
-    const filters = Object.entries(s.filters || {}).filter(([, set]) => set && (set.size || set.length));
+    const filters = Object.entries(s.filters || {}).filter(([f, set]) => set && (set.size || set.length) && !colHidden(f));
     const chip = s.chip || 'all';
     return (rows || []).filter(row => {
       for (const [field, set] of filters) {
@@ -653,7 +661,7 @@
       }
       if (chip !== 'all' && !chipMatch(chip, row, ctx)) return false;
       if (words.length) {
-        const hay = SEARCH_FIELDS.map(f => fieldValue(row, f, ctx))
+        const hay = SEARCH_FIELDS.filter(f => !colHidden(f)).map(f => fieldValue(row, f, ctx))
           .concat(flagsOf(row, ctx).map(f => f.label), [row.date_needed, row.date_ordered, row.date_delivered])
           .join(' ').toLowerCase();
         if (!words.every(w => hay.includes(w))) return false;
@@ -689,7 +697,7 @@
     { label: 'Unit', width: 7, get: r => ({ t: 's', v: r.unit }) },
     { label: 'Cost Code', width: 24, get: (r, c) => ({ t: 's', v: liveCodes(r, c).cost_code }) },
     { label: 'Sub Code', width: 26, get: (r, c) => ({ t: 's', v: liveCodes(r, c).sub_code }) },
-    { label: 'Description', width: 34, get: r => ({ t: 's', v: r.description }) },
+    { key: 'description', label: 'Description', width: 34, get: r => ({ t: 's', v: r.description }) },
     { label: 'Vendor', width: 22, get: r => ({ t: 's', v: r.vendor }) },
     { label: 'Quote #', width: 14, get: r => ({ t: 's', v: r.quote_number }) },
     { label: 'Contact', width: 18, get: r => ({ t: 's', v: r.contact }) },
@@ -710,11 +718,14 @@
     return notes.join('; ');
   }
 
+  // The file's columns: the sheet's, less any the page hides.
+  const exportCols = () => EXPORT_COLS.filter(c => !c.key || !colHidden(c.key));
   function exportMatrix(rows, ctx) {
+    const cols = exportCols();
     return {
-      header: EXPORT_COLS.map(c => c.label),
-      widths: EXPORT_COLS.map(c => c.width),
-      rows: (rows || []).map(r => EXPORT_COLS.map(c => c.get(r, ctx))),
+      header: cols.map(c => c.label),
+      widths: cols.map(c => c.width),
+      rows: (rows || []).map(r => cols.map(c => c.get(r, ctx))),
     };
   }
 
@@ -1326,6 +1337,9 @@
       tr.fctproc-grp .gl { position: sticky; left:0.6rem; display:inline-flex; gap:0.6rem; align-items: baseline; flex-wrap:wrap; }
       tr.fctproc-grp .tw { display:inline-block; width:0.8rem; font-size:0.65rem; }
       tr.fctproc-grp .fctproc-grpsel { margin:0 0 0 0.05rem; align-self:center; }
+      tr.fctproc-grp .fctproc-grpadd { background:none; border:1px solid #1e3a1e; color:#6f9a6f; border-radius:3px; font-size:0.66rem;
+        font-weight:500; padding:0.05rem 0.4rem; cursor:pointer; line-height:1.3; align-self:center; white-space:nowrap; }
+      tr.fctproc-grp .fctproc-grpadd:hover, tr.fctproc-grp .fctproc-grpadd:focus-visible { color: var(--green,#22c55e); border-color: var(--green,#22c55e); }
       tr.fctproc-grp .gm { color:#6f9a6f; font-weight:400; font-size:0.72rem; }
       tr.fctproc-grp .gm b { color:#9ccc9c; font-weight:600; }
       .fctproc-nomatch td { text-align:center; color: var(--muted,#888); padding:2rem 1rem !important; height:auto; }
@@ -2293,7 +2307,7 @@
     { key: 'email', label: 'Email', w: 11, filter: 'email' },
     { key: 'actions', label: '', w: 6.2, edit: true },
   ];
-  const colsFor = edit => COLS.filter(c => !c.edit || edit);
+  const colsFor = edit => COLS.filter(c => (!c.edit || edit) && !colHidden(c.key));
 
   function visibleRows(ctx) {
     const sorted = sortRows(st.rows, ctx);
@@ -2332,7 +2346,7 @@
     }
     rows.forEach(r => {
       const code = liveCodes(r, ctx).cost_code;
-      add('c:' + ck(k, code), () => ({ label: code.trim() || 'No cost code', meta: '' }), r);
+      add('c:' + ck(k, code), () => ({ label: code.trim() || 'No cost code', meta: '', code: code.trim() }), r);
     });
     return groups;
   }
@@ -2411,9 +2425,17 @@
     const box = canEdit() && g.rows.length
       ? `<input type="checkbox" class="fctproc-grpsel" data-grpsel="${esc(g.key)}"${n && n === g.rows.length ? ' checked' : ''}
           title="Select every row in this section" aria-label="Select every row in ${esc(g.label)}">` : '';
+    // …and a button that adds a row in the section (sectionSeed), not under
+    // "No cost code" as the toolbar's + Add Row does.
+    const into = st.grouping === 'vendor'
+      ? (g.vendor ? `for ${g.vendor}${g.quote ? `, quote # ${g.quote}` : ''}` : 'with no vendor yet')
+      : (g.code ? `under ${g.code}` : 'with no cost code');
+    const addBtn = canEdit()
+      ? `<button type="button" class="fctproc-grpadd" data-grpadd="${esc(g.key)}" title="${esc(`Add a row ${into}`)}"
+          aria-label="${esc(`Add a row ${into}`)}">+ Add Row</button>` : '';
     return `<tr class="fctproc-grp" data-grp="${esc(g.key)}" title="${open ? 'Fold' : 'Unfold'} this group"><td colspan="${span}">
       <span class="gl">${box}<span class="tw">${open ? '&#9660;' : '&#9654;'}</span><span>${esc(g.label)}</span>
-      ${g.meta ? `<span class="gm">${g.meta}</span>` : ''}<span class="gm gc">${groupCountsHtml(g.rows, ctx)}</span></span></td></tr>`;
+      ${g.meta ? `<span class="gm">${g.meta}</span>` : ''}<span class="gm gc">${groupCountsHtml(g.rows, ctx)}</span>${addBtn}</span></td></tr>`;
   }
 
   /**
@@ -3277,6 +3299,9 @@
     if (ff) { e.stopPropagation(); openFilter(ff.dataset.pff, ff); return; }
     // A section's box selects its rows (onChange); it does not fold it.
     if (e.target.closest('.fctproc-grpsel')) return;
+    // Nor does its + Add Row, which adds a row in it.
+    const ga = e.target.closest('[data-grpadd]');
+    if (ga) { addToSection(ga.dataset.grpadd); return; }
     const gh = e.target.closest('tr.fctproc-grp');
     if (gh) {
       const k = gh.dataset.grp;
@@ -3362,7 +3387,9 @@
       setSave('saved');
       renderTable();
       updateCounts();
-      if (row) focusField(row.id, 'description');
+      // Description to type in — or, with it hidden, Quantity (the Sub Code
+      // picker is left for a click: focused, it would open its menu).
+      if (row) focusField(row.id, colHidden('description') ? 'quantity' : 'description');
       return row;
     } catch (err) {
       setSave('error');
@@ -3371,6 +3398,38 @@
         : `Procurement: the row could not be added (${err.message}).`);
       return null;
     }
+  }
+  /**
+   * What a row added from a section header starts with, so that it lands in
+   * that section: its cost code (grouped by cost code; Sub Code is then
+   * picked from the bid lines as on any hand-added row), or its vendor and
+   * quote # (grouped by vendor / quote) — with the contact and email when
+   * every row there has the same one. "No cost code" / "No vendor yet" give
+   * a blank row, as the toolbar's + Add Row does.
+   */
+  function sectionSeed(g) {
+    if (st.grouping === 'vendor') {
+      const seed = {};
+      if (g.vendor) seed.vendor = g.vendor;
+      if (g.quote) seed.quote_number = g.quote;
+      const one = f => {
+        const vals = [...new Set(g.rows.map(r => str(r[f]).trim()).filter(Boolean))];
+        return vals.length === 1 ? vals[0] : '';
+      };
+      if (g.vendor && one('contact')) seed.contact = one('contact');
+      if (g.vendor && one('email')) seed.email = one('email');
+      return seed;
+    }
+    return g.code ? { cost_code: g.code } : {};
+  }
+  function addToSection(key) {
+    if (!canEdit() || st.loadState !== 'ok') return null;
+    const ctx = makeCtx();
+    const g = groupRows(visibleRows(ctx), ctx).find(x => x.key === key);
+    if (!g) return null;
+    // A folded section opens, so the row is seen going in.
+    if (st.collapsed.delete(key)) renderTable();
+    return addRow(sectionSeed(g));
   }
   function addMaterial(parentId) {
     const p = rowById(parentId);
@@ -3732,7 +3791,7 @@
     const groups = st.grouping === 'none' ? [{ key: '', label: '', meta: '', rows }] : groupRows(rows, ctx);
     // What a section's header already says is not repeated on every row.
     const drop = st.grouping === 'cost' ? ['Cost Code'] : st.grouping === 'vendor' ? ['Vendor', 'Quote #'] : [];
-    const cols = EXPORT_COLS.filter(c => !drop.includes(c.label));
+    const cols = exportCols().filter(c => !drop.includes(c.label));
     const p = project(st.projectId) || {};
     const name = str(p['project-name']) || 'Job';
     const job = str(p['job-number']);
