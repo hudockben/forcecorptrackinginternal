@@ -86,7 +86,10 @@ console.log('\n[tracker.html — wiring]');
   // by test-procore-import / test-bid-copy.
   const doc = new JSDOM(SRC).window.document;
   const btn = doc.getElementById('bid-fs-procurement');
-  assert('the bid page has a Send to Procurement button', btn && /Send to Procurement/.test(btn.textContent) && btn.classList.contains('btn-ghost'));
+  assert('the bid page has a Send to Procurement button', btn && /Send\sto\sProcurement/.test(btn.textContent) && btn.classList.contains('btn-ghost'));
+  // .btn is inline-flex: the span is a flex item, and plain spaces at its
+  // edges collapse ("➤Send toProcurement"). Non-breaking ones stay.
+  assert('  its label keeps its spaces inside the flex button', btn && /\u27A4\u00A0/.test(btn.textContent) && /Send to\u00A0$/.test((btn.querySelector('.bid-fs-long') || {}).textContent || ''));
   assert('  between Import Procore Estimate and + Add Item',
     btn && btn.previousElementSibling && btn.previousElementSibling.id === 'bid-fs-procore'
       && btn.nextElementSibling && btn.nextElementSibling.id === 'bid-fs-add');
@@ -134,8 +137,12 @@ console.log('\n[tracker.html — wiring]');
       && /if \(_isEditing\(\)\) return;/.test(pollProc)
       && /await FCTProcurement\.refresh\(\);/.test(pollProc));
   const pollPO = requireFn(SRC, '_pollPurchaseOrders');
-  assert('a new order list redraws it (after the editing bail-out)',
-    /if \(_isEditing\(\)\) return;[\s\S]*purchaseOrders = incoming;[\s\S]*if \(activeTab === 'procurement'\) _procRerender\(\);/.test(pollPO));
+  assert('a new order list redraws it (after the editing bail-out, which the Procurement tab — copies only — is not held by)',
+    /if \(_isEditing\(\) && activeTab !== 'procurement'\) return;[\s\S]*purchaseOrders = incoming;[\s\S]*if \(activeTab === 'procurement'\) _procRerender\(\);/.test(pollPO));
+  const reread = requireFn(SRC, '_poReread');
+  assert('the order list can be read again on demand (Create PO, a job picked, a rename): taken with its version, never blanked by a failed read',
+    /purchaseOrders = incoming;[\s\S]*_poBaseUpdatedAt = data\.updatedAt/.test(reread) && /if \(!r\.ok\) return false;/.test(reread)
+      && !/purchaseOrders = \[\]/.test(reread) && /refreshPurchaseOrders: \(\) => _poReread\(\)/.test(SRC));
   assert('  and so does a job reload', /await loadProjects\(\);[\s\S]*if \(activeTab === 'procurement'\) _procRerender\(\);/.test(requireFn(SRC, '_pollProjects')));
   assert('_procRerender redraws without fetching',
     /FCTProcurement\.rerender\(\)/.test(requireFn(SRC, '_procRerender')));
@@ -155,10 +162,15 @@ console.log('\n[tracker.html — wiring]');
   const renamed = requireFn(SRC, '_supRenamed');
   assert('a rename onto another supplier\'s name is asked (confirm), never a silent merge',
     /const other = lists\.suppliers\.findIndex\([\s\S]*confirm\(/.test(renamed) && /lists\.suppliers\.splice\(idx, 1\)/.test(renamed));
-  assert('  a box a redraw took away, or one left blank, renames nothing',
-    /if \(!el\.isConnected\)/.test(renamed) && /if \(!to\) \{ if \(entry && from\) _supPendingFrom\.set\(entry, from\)/.test(renamed));
-  assert('  and the rename is carried to the purchase orders', /_supCarryRenameToPOs\(from, target\)/.test(renamed)
-    && /savePurchaseOrders\(\)/.test(requireFn(SRC, '_supCarryRenameToPOs')) && /if \(!_poLoadOk/.test(requireFn(SRC, '_supCarryRenameToPOs')));
+  assert('  a box a redraw took away renames nothing; one left blank gets its last real name back',
+    /if \(!el\.isConnected\)/.test(renamed) && /if \(!to\) \{[\s\S]{0,120}if \(from\) \{\s*el\.value = from;\s*if \(entry\) \{ entry\.name = from; saveLists\(\);/.test(renamed));
+  const afterRename = requireFn(SRC, '_supAfterPORename');
+  assert('  and the purchase orders follow, renamed by the server: the page takes the answer on and saves no copy of its list',
+    /C\.rename\(from, target\)\)\.then\(ans => \{\s*_supAfterPORename\(from, target, ans \|\| \{\}\)/.test(renamed)
+      && !/savePurchaseOrders\(\)/.test(renamed) && !/savePurchaseOrders\(\)/.test(afterRename) && !/_supCarryRenameToPOs/.test(SRC)
+      && /ans\.po_ids/.test(afterRename) && /_poReread\(\)/.test(afterRename) && /if \(ans\.po_error\)[\s\S]*_showSaveError\(/.test(afterRename));
+  assert('  a redraw waits while a new contact is typed but not added (its button would be replaced under the click)',
+    /_supNewContactTyped\(root\)/.test(requireFn(SRC, '_supRedrawWhenIdle')) && /data-supc-new-field/.test(requireFn(SRC, '_supNewContactTyped')));
   assert('a contact saved on the Suppliers tab redraws only when nobody is typing there',
     /_supRedrawWhenIdle\(\)/.test(requireFn(SRC, '_supContactFieldChanged')) && !/renderSupplierTab\(\)/.test(requireFn(SRC, '_supContactFieldChanged')));
   assert('+ Add contact files the contact under the supplier shown beside it, not by list index',
@@ -167,8 +179,12 @@ console.log('\n[tracker.html — wiring]');
   assert('the PO list counts as loaded only once the list in hand is the server\'s',
     pollPOs.indexOf('_poLoadOk = true') > pollPOs.indexOf('JSON.stringify(incoming) === JSON.stringify(purchaseOrders)')
       && pollPOs.lastIndexOf('_poLoadOk = true') > pollPOs.indexOf('purchaseOrders = incoming;')
-      && pollPOs.indexOf('_poLoadOk = true') < pollPOs.indexOf('if (_isEditing()) return;'));
+      && pollPOs.indexOf('_poLoadOk = true') < pollPOs.indexOf("if (_isEditing() && activeTab !== 'procurement') return;")
+      && pollPOs.indexOf("if (_isEditing() && activeTab !== 'procurement') return;") > 0);
   assert('  and the sheet redraws when an unchanged list is first confirmed', /if \(!wasOk && activeTab === 'procurement'\) _procRerender\(\);/.test(pollPOs));
+  assert('  a list the server did send is no longer "could not be read", even while an edit holds it back',
+    pollPOs.indexOf('_poLoadFailed = false') > pollPOs.indexOf('const data = await r.json();')
+      && pollPOs.indexOf('_poLoadFailed = false') < pollPOs.indexOf("if (_isEditing() && activeTab !== 'procurement') return;"));
   const cfgFn = requireFn(SRC, '_procEnsureConfigured');
   assert('procurement.js can read the bid fresh, knows a failed PO read, and can check the supplier list',
     /getFreshBidLines: procFreshBidLines/.test(cfgFn) && /poLoadFailed: \(\) => _poLoadFailed/.test(cfgFn) && /isSupplierListed:/.test(cfgFn));
@@ -540,10 +556,11 @@ async function runAdminChecks(b, cfg) {
       { id: 'c1', supplier_name: 'acme supply', name: 'Dave Ruiz', email: 'dave@acme.test', phone: '412-555-0100', updated_at: null },
     ];
     const posts = [], renames = [];
+    let renameAnswer = { ok: true, moved: 1 };
     routes.unshift(c => {
       if (!/\/api\/supplier-contacts/.test(c.url)) return null;
       if (c.method === 'GET') return { status: 200, body: { ok: true, contacts, canEdit: true } };
-      if (c.method === 'POST' && /action=rename/.test(c.url)) { renames.push(c.body); return { status: 200, body: { ok: true, moved: 1 } }; }
+      if (c.method === 'POST' && /action=rename/.test(c.url)) { renames.push(c.body); return { status: 200, body: renameAnswer }; }
       if (c.method === 'POST') {
         posts.push(c.body);
         const made = { id: 'c' + (contacts.length + 1), ...c.body, updated_at: null };
@@ -623,6 +640,7 @@ async function runAdminChecks(b, cfg) {
     renames.length = 0;
     await typeName('');
     assert('a name box left blank renames nothing yet', renames.length === 0, JSON.stringify(renames));
+    assert('  and gets its last real name back', nameBox().value === 'Acme Supply Co' && w.eval('lists.suppliers[0].name') === 'Acme Supply Co', nameBox().value);
     await typeName('Acme Supply Group');
     assert('  the name typed next renames from the last real one',
       renames.length === 1 && renames[0].from === 'Acme Supply Co' && renames[0].to === 'Acme Supply Group', JSON.stringify(renames));
@@ -634,11 +652,23 @@ async function runAdminChecks(b, cfg) {
       { id: 'po8', po_number: 'PO-0008', supplier: 'Bolt Bros', project_id: '', cost_code: '', sub_code: '', status: 'pending', lines: [] }]; _poLoadOk = true;`);
     renames.length = 0;
     const putsAtRename = poPuts().length;
+    // The server renames the orders naming it and says which (po_ids); the
+    // page then reads the stored list again.
+    renameAnswer = { ok: true, moved: 1, pos: 1, po_ids: ['po7'] };
+    const storedPOs = { purchaseOrders: [{ id: 'po7', po_number: 'PO-0007', supplier: 'Acme Group', project_id: '', cost_code: '', sub_code: '', status: 'approved', lines: [] },
+      { id: 'po8', po_number: 'PO-0008', supplier: 'Bolt Bros', project_id: '', cost_code: '', sub_code: '', status: 'pending', lines: [] }], updatedAt: '2026-11-16T10:00:00.000Z' };
+    routes.unshift(c => (c.method === 'GET' && /\/api\/purchase-orders/.test(c.url) ? { status: 200, body: storedPOs } : null));
     await typeName('Acme Group');
-    assert('  a rename carries over to the purchase orders naming the supplier',
+    assert('  a rename carries over to the purchase orders naming the supplier — the ones the server renamed',
       w.eval("purchaseOrders.find(p => p.id === 'po7').supplier") === 'Acme Group'
-      && w.eval("purchaseOrders.find(p => p.id === 'po8').supplier") === 'Bolt Bros' && poPuts().length === putsAtRename + 1,
+      && w.eval("purchaseOrders.find(p => p.id === 'po8').supplier") === 'Bolt Bros',
       w.eval('JSON.stringify(purchaseOrders.map(p => p.supplier))'));
+    assert('  …without the page saving its copy of the order list', poPuts().length === putsAtRename, poPuts().length - putsAtRename);
+    await settle(50);
+    assert('  …and the stored list, read again, is taken on with its version', w.eval("purchaseOrders.find(p => p.id === 'po7').status") === 'approved'
+      && w.eval('_poBaseUpdatedAt') === '2026-11-16T10:00:00.000Z', w.eval('JSON.stringify(purchaseOrders)'));
+    routes.shift();
+    renameAnswer = { ok: true, moved: 1 };
 
     // Renamed to another supplier's name: asked first.
     renames.length = 0;

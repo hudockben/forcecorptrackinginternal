@@ -21,8 +21,14 @@
 //          → 201 { ok, contact, existed:false }   a new contact
 //          →     { ok, contact, existed:true }    one already saved, its blank
 //                                                 name/email/phone filled in
-// POST   ?division=…&action=rename { from, to }  → { ok, moved:n, merged:n, rows:n }
+// POST   ?division=…&action=rename { from, to }
+//          → { ok, moved:n, merged:n, rows:n, pos:n, po_ids:[…], po_error? }
 //          rows = Procurement rows whose Vendor was `from` and is now `to`
+//          pos  = the division's purchase orders whose Supplier was `from`
+//                 and is now `to` (po_ids names them). po_error is set when
+//                 orders naming `from` could not be renamed: 'no_access' (the
+//                 caller may not change purchase orders), 'busy' (the list
+//                 kept changing under the write) or 'failed'.
 // PATCH  ?division=…&id=X  { name?, email?, phone? }  → { ok, contact } | 409 duplicate
 // DELETE ?division=…&id=X                        → { ok, id }   (soft)
 //
@@ -36,8 +42,9 @@
 
 const crypto = require('crypto');
 const { neon } = require('@neondatabase/serverless');
-const { requireDivision, levelFor, isSalesIn } = require('./lib/auth');
+const { requireDivision, levelFor, isSalesIn, poCapabilities } = require('./lib/auth');
 const { cleanStr, isPlainObject } = require('./lib/custom-report-runs');
+const poSync = require('./lib/po-sync');
 
 const DIVISIONS    = ['turf', 'paving', 'kiewit'];
 const EDIT_LEVELS  = ['admin', 'level3', 'level2'];
@@ -91,6 +98,8 @@ const isUniqueViolation = err => Boolean(err) && (err.code === '23505' || /dupli
 const isCheckViolation  = err => Boolean(err) && (err.code === '23514' || /violates check constraint/i.test(err.message || ''));
 const fail = (res, status, error, message, extra) =>
   res.status(status).json({ ok: false, error, ...(message ? { message } : {}), ...(extra || {}) });
+// What a rename says about the purchase orders (renamePOs).
+const poAnswer = po => ({ pos: po.pos, po_ids: po.ids, ...(po.error ? { po_error: po.error } : {}) });
 
 /**
  * The live contact a save of `v` is about, or null. With an email, the
@@ -235,6 +244,73 @@ function renameStatement(sql, { company, division, who }, from, to) {
            (SELECT count(*) FROM vendors)::int AS rows`;
 }
 
+/**
+ * Rename the supplier on the division's purchase orders. Procurement fills a
+ * row's PO # from the job's order with its codes AND its vendor, so orders
+ * left on the old name would drop every row that was on one to "Not Ordered"
+ * (and Late), and "Create PO from selected" would raise a second order.
+ *
+ * Done here, not by the page: the page's copy of the order list can be
+ * minutes old (its poll does not take a new list while a box has focus, and
+ * on Admin > Suppliers one nearly always has), and saving that copy whole put
+ * back orders colleagues had deleted and undid their approvals. This touches
+ * ONLY the Supplier of the orders that name `from`, on the stored list as it
+ * is at the instant of the write — a compare-and-set that starts again from a
+ * fresh read whenever someone else saved in between (api/lib/po-sync.js) —
+ * then the normalized mirror and the job cost rows those orders' own
+ * deliveries made (the rows a Daily Tracking delivery came from keep their
+ * own supplier, as on every purchasing save).
+ */
+async function renamePOs(sql, payload, scope, from, to) {
+  // The contacts and rows are renamed by now: a failure here is reported
+  // with them (po_error), not as a failed rename.
+  try { return await renamePOsNow(sql, payload, scope, from, to); } catch (err) {
+    console.error('[supplier-contacts] rename: purchase orders not renamed:', err.message);
+    return { pos: 0, ids: [], error: 'failed' };
+  }
+}
+async function renamePOsNow(sql, payload, { company, division }, from, to) {
+  const key = poSync.blobKeyFor(company, division);
+  const k = v => String(v == null ? '' : v).trim().toLowerCase();
+  const names = po => po && k(po.supplier) === k(from) && po.supplier !== to;
+  if (!poCapabilities(payload, division).canUpload) {
+    // Not allowed to change orders: said only when there is one to change.
+    const { list } = await poSync.readPOBlob(sql, key);
+    return list.some(names) ? { pos: 0, ids: [], error: 'no_access' } : { pos: 0, ids: [] };
+  }
+  let hit = [];
+  const saved = await poSync.mutatePOBlob(sql, key, list => {
+    hit = [];
+    const next = list.map(po => {
+      if (!names(po)) return po;
+      const renamed = { ...po, supplier: to };
+      hit.push(renamed);
+      return renamed;
+    });
+    return hit.length ? next : null;
+  });
+  if (!saved.ok) return { pos: 0, ids: [], error: 'busy' };
+  if (!saved.changed || !hit.length) return { pos: 0, ids: [] };
+  const ids = hit.map(po => String(po.id));
+  // The stored list is the truth on read; these follow it, best effort.
+  try {
+    await sql`
+      UPDATE purchase_orders SET supplier = ${to}, updated_at = NOW()
+       WHERE company_code = ${company} AND division = ${division} AND id = ANY(${ids}::text[])`;
+    const rowIds = [...new Set(hit.flatMap(po => (Array.isArray(po.lines) ? po.lines : [])
+      .filter(l => l && l.po_row_id && !poSync.isDailyLine(l)).map(l => String(l.po_row_id))))];
+    if (rowIds.length) {
+      await sql`
+        UPDATE daily_tracking SET supplier = ${to}, updated_at = NOW()
+         WHERE company_code = ${company} AND division = ${division}
+           AND row_id = ANY(${rowIds}::text[]) AND timesheet_entry_id IS NULL`;
+    }
+  } catch (err) {
+    console.error('[supplier-contacts] rename: PO mirror / cost rows not updated:', err.message);
+  }
+  return { pos: hit.length, ids };
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PATCH, DELETE, OPTIONS');
@@ -305,18 +381,22 @@ module.exports = async (req, res) => {
              RETURNING id
           )
           SELECT (SELECT count(*) FROM moved)::int AS moved, (SELECT count(*) FROM vendors)::int AS rows`)[0] || {};
-        return res.json({ ok: true, moved: Number(r.moved) || 0, merged: 0, rows: Number(r.rows) || 0 });
+        const po = await renamePOs(sql, payload, scope, from.value, to.value);
+        return res.json({ ok: true, moved: Number(r.moved) || 0, merged: 0, rows: Number(r.rows) || 0, ...poAnswer(po) });
       }
       // A contact saved under `to` between the statement's snapshot and its
       // write is a unique violation; the next pass sees it and merges it.
+      let r;
       for (let attempt = 0; ; attempt++) {
         try {
-          const r = (await renameStatement(sql, scope, from.value, to.value))[0] || {};
-          return res.json({ ok: true, moved: Number(r.moved) || 0, merged: Number(r.merged) || 0, rows: Number(r.rows) || 0 });
+          r = (await renameStatement(sql, scope, from.value, to.value))[0] || {};
+          break;
         } catch (err) {
           if (!isUniqueViolation(err) || attempt >= ATTEMPTS - 1) throw err;
         }
       }
+      const po = await renamePOs(sql, payload, scope, from.value, to.value);
+      return res.json({ ok: true, moved: Number(r.moved) || 0, merged: Number(r.merged) || 0, rows: Number(r.rows) || 0, ...poAnswer(po) });
     }
 
     // ── POST — remember a contact ────────────────────────────────────────

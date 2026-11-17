@@ -54,14 +54,22 @@ function makeSql(c) {
   };
 }
 
-const DB = { fail: false };
+const DB = { fail: false, beforeCas: null, casLoses: false };
 const origLoad = Module._load;
 Module._load = function (request) {
   if (request === '@neondatabase/serverless') {
     return { neon: () => {
       const sql = makeSql(pool);
       return (strings, ...values) => {
-        if (DB.fail && strings.join('?').includes('supplier_contacts')) return Promise.reject(new Error('connection reset by peer'));
+        const text = strings.join('?');
+        if (DB.fail && text.includes('supplier_contacts')) return Promise.reject(new Error('connection reset by peer'));
+        // The compare-and-set write of a purchase-order list (api/lib/po-sync.js).
+        if (/UPDATE app_data\s+SET\s+value/.test(text) && /updated_at = \?::timestamptz/.test(text)) {
+          // Somebody else saves the list between this request's read and its write.
+          if (DB.beforeCas) { const f = DB.beforeCas; DB.beforeCas = null; return f().then(() => sql(strings, ...values)); }
+          // …or keeps saving it, every time.
+          if (DB.casLoses) return Promise.resolve([]);
+        }
         return sql(strings, ...values);
       };
     } };
@@ -109,6 +117,9 @@ async function cleanUp() {
   for (const co of [CO, CO2]) {
     await q('DELETE FROM supplier_contacts WHERE company_code = $1', [co]).catch(() => {});
     await q('DELETE FROM procurement_items WHERE company_code = $1', [co]).catch(() => {});
+    await q("DELETE FROM app_data WHERE key LIKE $1 || ':%'", [co]).catch(() => {});
+    await q('DELETE FROM purchase_orders WHERE company_code = $1', [co]).catch(() => {});
+    await q('DELETE FROM daily_tracking WHERE company_code = $1', [co]).catch(() => {});
     await q('DELETE FROM users WHERE company_code = $1', [co]);
     await q('DELETE FROM companies WHERE code = $1', [co]);
   }
@@ -416,6 +427,79 @@ function sectionStatements() {
     assert('a blank old name → 400', r.statusCode === 400, show(r));
     r = await rename(L2, 'NEW CO', 'n'.repeat(121));
     assert('a 121-character name → 400', r.statusCode === 400, show(r));
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nA rename carries the purchase orders — server-side, onto the list as stored');
+  {
+    const key = division => `${CO}:fct_purchase_orders:${division}`;
+    const putList = (k, list) => q(`INSERT INTO app_data (key, value, updated_at) VALUES ($1, $2::jsonb, NOW())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`, [k, JSON.stringify(list)]);
+    const listOf = async k => ((await q('SELECT value FROM app_data WHERE key = $1', [k]))[0] || {}).value;
+    const PO = (id, supplier, extra = {}) => ({ id, po_number: id.replace('po', 'PO-00'), title: 'Geofabric', supplier, status: 'pending',
+      date_created: '2026-11-01', project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Geofabric', notes: '', lines: [], ...extra });
+    const turfList = [
+      PO('po07', 'LB Water', { lines: [
+        { id: 'l1', qty: '10', unit_cost: '5', po_row_id: 'sc-dt-raised' },
+        { id: 'l2', source: 'daily', qty: '3', unit_cost: '5', po_row_id: 'sc-dt-daily' }] }),
+      PO('po09', 'Acme Supply', { status: 'approved', notes: 'approved by Lou' }),
+      PO('po10', 'Beta Materials'),
+      PO('po11', ' lb water '),
+    ];
+    await putList(key('turf'), turfList);
+    await putList(key('paving'), [PO('po21', 'LB Water')]);
+    await q(`INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [`${CO2}:fct_purchase_orders:turf`, JSON.stringify([PO('po31', 'LB Water')])]);
+    for (const [id, sup] of [['po07', 'LB Water'], ['po09', 'Acme Supply'], ['po11', ' lb water ']]) {
+      await q(`INSERT INTO purchase_orders (id, company_code, division, po_num, supplier, status) VALUES ($1, $2, 'turf', $3, $4, 'pending')`, [id, CO, id, sup]);
+    }
+    const dt = (rowId, sup) => q(`INSERT INTO daily_tracking (row_id, company_code, division, project_id, date, supplier) VALUES ($1, $2, 'turf', 'p1', '2026-11-02', $3)`, [rowId, CO, sup]);
+    await dt('sc-dt-raised', 'LB Water');
+    await dt('sc-dt-daily', 'Field Pick-up');
+    const stampOf = async () => (await q('SELECT updated_at::text AS t FROM app_data WHERE key = $1', [key('turf')]))[0].t;
+    const stampBefore = await stampOf();
+    // jsonb keeps no key order: compared with the keys sorted.
+    const canon = v => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x)
+      ? Object.fromEntries(Object.keys(x).sort().map(n => [n, x[n]])) : x));
+
+    // A colleague approves PO-0010 and deletes PO-0011 between this
+    // request's read of the list and its write: the write loses the
+    // compare-and-set and is made again onto their list.
+    DB.beforeCas = () => q(`UPDATE app_data SET value = $1::jsonb, updated_at = clock_timestamp() WHERE key = $2`,
+      [JSON.stringify(turfList.filter(po => po.id !== 'po11').map(po => (po.id === 'po10' ? { ...po, status: 'approved' } : po))), key('turf')]);
+    let r = await rename(L2, 'LB Water', 'LB Water Works');
+    assert('the rename answers which purchase orders it renamed', r.statusCode === 200 && r.body.pos === 1
+      && JSON.stringify(r.body.po_ids) === '["po07"]' && !r.body.po_error, show(r));
+    const after = await listOf(key('turf'));
+    const byId = Object.fromEntries(after.map(po => [po.id, po]));
+    assert('…on the list as stored: the colleague\'s approval stands and the order they deleted stays deleted',
+      byId.po10 && byId.po10.status === 'approved' && !byId.po11 && after.length === 3, JSON.stringify(after.map(po => [po.id, po.status, po.supplier])));
+    assert('…the order naming it has the new Supplier, and nothing else about it changed',
+      canon(byId.po07) === canon({ ...turfList[0], supplier: 'LB Water Works' }), JSON.stringify(byId.po07));
+    assert('…an order naming another supplier is untouched, header and all', canon(byId.po09) === canon(turfList[1]));
+    assert('…and the list\'s version moved', await stampOf() !== stampBefore);
+    const mirror = Object.fromEntries((await q('SELECT id, supplier FROM purchase_orders WHERE company_code = $1', [CO])).map(x => [x.id, x.supplier]));
+    assert('the normalized mirror follows for the renamed order only', mirror.po07 === 'LB Water Works' && mirror.po09 === 'Acme Supply' && mirror.po11 === ' lb water ',
+      JSON.stringify(mirror));
+    const rows = Object.fromEntries((await q('SELECT row_id, supplier FROM daily_tracking WHERE company_code = $1', [CO])).map(x => [x.row_id, x.supplier]));
+    assert('the job cost row its own delivery made follows; the row a Daily Tracking delivery came from keeps its supplier',
+      rows['sc-dt-raised'] === 'LB Water Works' && rows['sc-dt-daily'] === 'Field Pick-up', JSON.stringify(rows));
+    assert('paving\'s orders and another company\'s are untouched', (await listOf(key('paving')))[0].supplier === 'LB Water'
+      && (await listOf(`${CO2}:fct_purchase_orders:turf`))[0].supplier === 'LB Water');
+
+    r = await rename(L2, 'Nobody Supply', 'Somebody Supply');
+    assert('a supplier no order names: pos 0, the list not written', r.statusCode === 200 && r.body.pos === 0 && JSON.stringify(r.body.po_ids) === '[]'
+      && canon(await listOf(key('turf'))) === canon(after), show(r));
+    // The list keeps changing under every try: said, not silently skipped.
+    DB.casLoses = true;
+    r = await rename(L2, 'Acme Supply', 'Acme Supply Co');
+    DB.casLoses = false;
+    assert('a list that could not be written is reported (po_error busy), the rest of the rename still done', r.statusCode === 200
+      && r.body.po_error === 'busy' && r.body.pos === 0 && (await listOf(key('turf'))).find(po => po.id === 'po09').supplier === 'Acme Supply', show(r));
+    r = await rename(L2, 'Acme Supply', 'Acme Supply Co');
+    assert('…and renaming again carries it over', r.statusCode === 200 && r.body.pos === 1
+      && (await listOf(key('turf'))).find(po => po.id === 'po09').supplier === 'Acme Supply Co'
+      && (await listOf(key('turf'))).find(po => po.id === 'po09').status === 'approved', show(r));
   }
 
   // ─────────────────────────────────────────────────────────────────────

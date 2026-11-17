@@ -1037,6 +1037,7 @@
     forbidden: 'You do not have access to Procurement.',
     not_found: 'That row no longer exists — someone may have deleted it.',
     duplicate: 'That row already exists.',
+    stale_bid: 'that bid line is no longer on the job\'s bid (it was changed somewhere else) — reload the page',
   };
   function q(params) {
     const parts = [`division=${encodeURIComponent(cfg.division)}`];
@@ -1507,16 +1508,22 @@
       ccNotify();
       return true;
     },
-    /** A supplier was renamed: its contacts follow it, and so does the Vendor
-     *  of every Procurement row that named it (the server does both in one
-     *  request). Re-reads the contacts, since the server may have merged
-     *  duplicates on the way, and the open job's rows. */
+    /** A supplier was renamed: its contacts follow it, and so do the Vendor
+     *  of every Procurement row and the Supplier of every purchase order that
+     *  named it (the server does all of it in one request). Re-reads the
+     *  contacts, since the server may have merged duplicates on the way, and
+     *  the open job's rows. Resolves to the server's answer:
+     *  { moved, merged, rows, pos, po_ids, po_error? }. */
     async rename(from, to) {
       ccFresh();
       const data = await api('POST', '/supplier-contacts' + q({ action: 'rename' }), { from: str(from), to: str(to) });
       try { await contacts.load(true); } catch (e) { console.warn('[procurement] contacts reload after rename failed', e); }
       if (st.projectId && st.loadState === 'ok' && st.loadedFor === st.projectId) await load(st.projectId, { quiet: true });
-      return data.moved || 0;
+      return {
+        moved: data.moved || 0, merged: data.merged || 0, rows: data.rows || 0,
+        pos: data.pos || 0, po_ids: Array.isArray(data.po_ids) ? data.po_ids.map(String) : [],
+        ...(data.po_error ? { po_error: String(data.po_error) } : {}),
+      };
     },
     /** Called with the full list whenever it changes; returns an unsubscribe. */
     onChange(fn) { cc.listeners.add(fn); return () => cc.listeners.delete(fn); },
@@ -1600,7 +1607,13 @@
     listed.then(on => {
       if (on === false) {
         remembered.delete(key);
+        // Kept for later, as a vendor not on the list is (above): once the
+        // row's Vendor is put right, leaving it files the contact there.
+        // And the PM is told, not just the console.
+        contactTouched.add(row.id);
         console.warn(`[procurement] "${vendor}" is no longer on the supplier list; the contact was not remembered`);
+        toast(`${name || email} was not saved as a contact: "${vendor}" is no longer on the supplier list `
+          + '(renamed or removed on Admin > Suppliers). Pick the Vendor again from the list and it will be.', 'error');
         return null;
       }
       return contacts.upsert({ supplier_name: vendor, name, email, phone });
@@ -1736,7 +1749,10 @@
         renderTable();
         updateCounts();
         showError('A row you were editing was deleted by someone else, so that change could not be saved.');
-      } else if (err.status === 400) {
+      } else if (err.status === 400 || err.code === 'stale_bid') {
+        // Refused for good — a value the server will never take, or a bid
+        // line that is no longer on the job's bid: sent again, it would be
+        // refused again.
         refuseFields(rowId, p, err);
       } else {
         // Keep the user's values and try again on the next edit or refresh.
@@ -1792,7 +1808,8 @@
     if (Object.keys(next).length) pend.set(rowId, next); else pend.delete(rowId);
     failed.delete(rowId);
     const what = [...new Set(named.map(k => FIELD_LABEL[k] || k))];
-    const vals = named.length === 1 ? ` "${shownValue(named[0], p[named[0]])}"` : '';
+    // A bid line's id means nothing to a PM; its codes are named instead.
+    const vals = named.length === 1 && named[0] !== 'bid_item_id' ? ` "${shownValue(named[0], p[named[0]])}"` : '';
     showError(`Procurement: ${what.join(', ')}${vals} ${named.length === 1 ? 'was' : 'were'} not saved — ${err.message}. `
       + `${named.length === 1 ? 'The cell is' : 'Those cells are'} back to what was saved`
       + `${Object.keys(rest).length ? '; the rest of the row\'s changes go on without it' : ''}.`);
@@ -1880,6 +1897,9 @@
         if (cellInUse()) redrawAround();
         else { renderTable(); updateCounts(); }
         renderHead();
+      } else if (redrawDeferred && !cellInUse()) {
+        // A redraw still owed from an answer that landed mid-edit.
+        redrawWhenFree();
       }
       autoRelink(projectId);
     } catch (err) {
@@ -1918,8 +1938,10 @@
    * day and year keys land in the wrong place and a wrong date is saved.
    * Instead each row on screen is redrawn in place (refreshRow keeps the
    * cell in use as it is), rows deleted elsewhere go, and the full redraw —
-   * for rows added elsewhere, and the order and grouping — waits until the
-   * table is left.
+   * for rows added elsewhere, and the order and grouping (a row moved to
+   * another vendor or cost code, a group's count) — waits until the table
+   * is left. It is always owed: a row redrawn in place can belong under
+   * another header now, which nothing here can tell cheaply.
    */
   let redrawDeferred = false;
   function redrawAround() {
@@ -1927,7 +1949,7 @@
     if (!wrap) return;
     const shown = new Set([...wrap.querySelectorAll('tr.fctproc-row')].map(tr => tr.dataset.row));
     shown.forEach(id => refreshRow(id));
-    if (st.rows.some(r => !shown.has(r.id))) redrawDeferred = true;
+    redrawDeferred = true;
     updateCounts();
   }
   function redrawWhenFree() {
@@ -1962,6 +1984,19 @@
     st.loadState = next ? 'loading' : 'none';
     renderBody();
     if (next) load(next);
+    // The page's order list is read again alongside the rows: a PO list a
+    // few minutes behind (a supplier renamed since, an order raised in
+    // central purchasing) would otherwise show this job's rows as not on
+    // their orders until the page's next poll. The host redraws the sheet
+    // when the list it holds changes.
+    if (next) refreshPOs();
+  }
+  function refreshPOs() {
+    if (typeof cfg.refreshPurchaseOrders !== 'function') return Promise.resolve(false);
+    return Promise.resolve().then(() => cfg.refreshPurchaseOrders()).catch(err => {
+      console.warn('[procurement] could not read the purchase orders again', err);
+      return false;
+    });
   }
 
   // ── Rendering ───────────────────────────────────────────────────────
@@ -2635,13 +2670,33 @@
     if (dd) dd.style.display = 'none';
     ffField = null;
   }
+  /**
+   * The order of a filter's values: dates by the day (the list shows
+   * MM/DD/YYYY, which sorts January 2027 ahead of November 2026 as text),
+   * numbers by size (the thousands comma would split 12,500 at the comma),
+   * the rest as text.
+   */
+  const DATE_FILTERS = new Set(['date_needed', 'order_by', 'date_ordered', 'date_delivered']);
+  const NUMBER_FILTERS = new Set(['quantity', 'lead_time_days']);
+  function filterOrder(field, a, b) {
+    if (DATE_FILTERS.has(field)) {
+      const key = v => { const m = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/.exec(v); return m ? m[3] + m[1].padStart(2, '0') + m[2].padStart(2, '0') : v; };
+      const ka = key(a), kb = key(b);
+      return ka < kb ? -1 : ka > kb ? 1 : 0;
+    }
+    if (NUMBER_FILTERS.has(field)) {
+      const na = Number(a.replace(/,/g, '')), nb = Number(b.replace(/,/g, ''));
+      if (Number.isFinite(na) && Number.isFinite(nb) && na !== nb) return na - nb;
+    }
+    return a.localeCompare(b, undefined, { numeric: true });
+  }
   function openFilter(field, btn) {
     const dd = filterDd();
     if (ffField === field && dd.style.display !== 'none') { closeFilter(); return; }
     ffField = field;
     const ctx = makeCtx();
     const values = [...new Set(st.rows.map(r => fieldValue(r, field, ctx)))]
-      .sort((a, b) => (a === '') - (b === '') || a.localeCompare(b, undefined, { numeric: true }));
+      .sort((a, b) => (a === '') - (b === '') || filterOrder(field, a, b));
     const active = st.filters[field] || null;
     const list = dd.querySelector('#fctproc-ff-list');
     list.innerHTML = `<label class="dff-item ff-all"><input type="checkbox" id="fctproc-ff-all" ${active ? '' : 'checked'}> <span>(Select All)</span></label>`
@@ -2827,36 +2882,66 @@
   // moved the highlight with the arrow keys, or clicked an option. Anything
   // else puts the box back as it was and saves nothing — as Excel leaves a
   // cell tabbed through.
+  //
+  // A box the user emptied is the other half of that: the empty text matches
+  // no label either, so Tab or Enter would commit the first option in place
+  // of the blank the user asked for. Emptied, and no option then picked with
+  // the arrow keys, it commits as empty — as clicking away already did.
   const cbSession = new WeakMap();
   const isCb = el => !!(el && el.classList && el.classList.contains('cb-input'));
-  function cbChosen(el) { const s = cbSession.get(el); if (s) s.chosen = true; }
+  function cbChosen(el, nav) {
+    const s = cbSession.get(el);
+    if (!s) return;
+    s.chosen = true;
+    s.nav = !!nav;
+    s.cleared = false;
+  }
   function onCbFocusIn(e) {
     const el = e.target;
     if (!isCb(el)) return;
-    cbSession.set(el, { value: el.value, cbValue: el.dataset.cbValue || '', chosen: false });
+    cbSession.set(el, { value: el.value, cbValue: el.dataset.cbValue || '', chosen: false, nav: false, cleared: false });
   }
   function onCbInputCapture(e) {
     // The synthetic input of a commit is not typing (tracker sets the flag
     // around it); real typing is stopped by the combobox before it bubbles,
     // so this listens on the way down.
-    if (isCb(e.target) && !e.target._cbBypassFilter) cbChosen(e.target);
+    if (isCb(e.target) && !e.target._cbBypassFilter) cbChosen(e.target, false);
   }
   function onCbKeyCapture(e) {
-    if (isCb(e.target) && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) cbChosen(e.target);
+    const el = e.target;
+    if (!isCb(el)) return;
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { cbChosen(el, true); return; }
+    if (e.key === 'Tab' || e.key === 'Enter') {
+      // Seen before the combobox swaps in its highlighted option.
+      const s = cbSession.get(el);
+      if (s) s.cleared = s.chosen && !s.nav && !el.value.trim();
+    }
   }
   function onCbMouseDownCapture(e) {
     const opt = e.target && e.target.closest && e.target.closest('.cb-opt');
     const menu = opt && opt.closest('.cb-menu');
     const input = menu && menu.previousElementSibling;
-    if (isCb(input)) cbChosen(input);
+    if (isCb(input)) cbChosen(input, true);
   }
-  /** True (and the box put back) when this commit chose nothing. */
+  /**
+   * True (and the box put back) when this commit chose nothing. A box the
+   * user emptied before Tab or Enter is emptied again here, so it commits
+   * as blank whatever option the combobox highlighted.
+   */
   function cbUntouched(input) {
     const s = cbSession.get(input);
-    if (!s || s.chosen) return false;
-    input.value = s.value;
-    if (s.cbValue) input.dataset.cbValue = s.cbValue; else delete input.dataset.cbValue;
-    return true;
+    if (!s) return false;
+    if (!s.chosen) {
+      input.value = s.value;
+      if (s.cbValue) input.dataset.cbValue = s.cbValue; else delete input.dataset.cbValue;
+      return true;
+    }
+    if (s.cleared) {
+      s.cleared = false;
+      input.value = '';
+      delete input.dataset.cbValue;
+    }
+    return false;
   }
 
   function commitCombo(rowId, field, input) {
@@ -2959,7 +3044,12 @@
     // and the click elsewhere that follows is the moment the row is left.
     const tr0 = el.closest && el.closest('tr.fctproc-row');
     const rowId = (el.dataset && el.dataset.pr) || (tr0 && tr0.dataset.row);
-    if (!rowId) return;
+    if (!rowId) {
+      // Leaving the select-all box, a group header, a filter button: a
+      // redraw held back while it had focus is due once focus is elsewhere.
+      if (redrawDeferred) setTimeout(redrawWhenFree, 0);
+      return;
+    }
     if (el.type === 'date' && el.dataset.badDate) {
       // Chrome fires change only on the FIRST key of a box being emptied
       // (the box is then part-filled, so it is marked bad) and none once the
@@ -3319,6 +3409,13 @@
     }
   }
   async function createPOFromSelectedNow() {
+    if (![...st.selected].some(id => rowById(id))) return;
+    // Whether a row is already on an order is decided on the order list as
+    // stored, not on the page's copy, which can be a minute or more behind
+    // (a colleague's order, a supplier renamed since): a stale copy raised a
+    // second order for rows already on one, without asking. A read that
+    // fails leaves the list in hand.
+    await refreshPOs();
     const ctx = makeCtx();
     let rows = sortRows([...st.selected].map(rowById).filter(Boolean), ctx);
     if (!rows.length) return;
@@ -3558,6 +3655,13 @@
       return m;
     }
     if (!m.el.isConnected) return m;     // closed meanwhile
+    // The server refused a re-link: its bid is no longer the one checked a
+    // moment ago (replaced elsewhere in between). Same answer as above.
+    if (relinked.stale) {
+      m.body.innerHTML = `<div class="fctproc-err">The bid for ${esc(jobName)} was changed somewhere else just now, so this
+        page's copy of it is out of date. Reload the page, then Send to Procurement again. Nothing was sent.</div>`;
+      return m;
+    }
 
     const tags = { added: '<span class="fctproc-tag">already added</span>', removed: '<span class="fctproc-tag amber" title="This line\'s row was deleted. Tick it to bring that row back.">removed earlier</span>' };
     let plan = null, entries = [];
@@ -3579,11 +3683,20 @@
     };
 
     // The checklist, drawn from `rows` — again after a send that failed, from
-    // a fresh read, so it shows what the server now holds.
+    // a fresh read, so it shows what the server now holds. Drawn again, it
+    // keeps the PM's own ticks: a line still in the state it was in keeps its
+    // box as the PM left it (a line they unticked is never ticked again
+    // behind their back); only a line whose state moved — now "already
+    // added", say — takes that state's default.
     function draw(rowsNow) {
+      const before = new Map(entries.map(en => [String(en.line.id), en]));
       const lines = makeCtx(pid).bidLines || [];
       plan = sendPlan(lines, rowsNow, makeCtx(pid).codeKey);
       entries = plan.groups.flatMap(g => g.lines);
+      entries.forEach(en => {
+        const was = before.get(String(en.line.id));
+        if (was && was.state === en.state && en.state !== 'added') en.checked = was.checked;
+      });
       const off = notOnBidRows(rowsNow, lines);
       const offNames = [...new Set(off.map(r => [r.cost_code, r.sub_code].filter(Boolean).join(' / ') || '(no code)'))];
       m.body.innerHTML = `
@@ -3688,19 +3801,45 @@
       } catch (err) {
         // Whatever happened on the server (an answer lost on the way back is
         // a send that DID happen), the checklist and the sheet are read
-        // again, so the next click is decided on what is there now.
+        // again, so the next click is decided on what is there now — and the
+        // message says what that read shows, not what the error suggests.
+        let reread = false, landed = 0;
         try {
           const fresh = await readAllRows(pid);
-          if (m.el.isConnected) draw(fresh);
+          if (m.el.isConnected) {
+            draw(fresh);
+            reread = true;
+            // A ticked line now "already added" went in: a new line has its
+            // row, a "removed earlier" one is back.
+            const pickedIds = new Set(picked.map(en => String(en.line.id)));
+            landed = entries.filter(en => pickedIds.has(String(en.line.id)) && en.state === 'added').length;
+          }
         } catch (e2) { console.warn('[procurement] could not read the checklist again', e2); }
         reloadSheet();
         sending = false;
         if (m.el.isConnected) {
           sync();
-          // A 409 says itself which line and that nothing was sent.
-          foot.querySelector('#fctproc-send-err').textContent = err.status === 409
-            ? `${err.message} The list above has been read again.`
-            : `Not sent: ${err.message}. The list above has been read again — check it before sending again.`;
+          const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
+          let text, good = false;
+          if (err.status === 409) {
+            // A 409 says itself which line, and that nothing was sent.
+            text = `${err.message} The list above has been read again.`;
+          } else if (reread && landed && landed === picked.length) {
+            good = true;
+            text = `The send went through after all: ${n(landed, 'line is', 'lines are')} now in Procurement, shown above as `
+              + `"already added". Only the server's answer was lost on the way back — ${err.message}.`;
+          } else if (reread && landed) {
+            text = `${landed} of the ${n(picked.length, 'line', 'lines')} you ticked ${landed === 1 ? 'is' : 'are'} now in Procurement; `
+              + `the server's answer was lost — ${err.message}. The list above has been read again — check it before sending the rest.`;
+          } else if (reread) {
+            text = `Not sent: ${err.message}. The list above has been read again — check it before sending again.`;
+          } else {
+            text = `The send may not have gone through (${err.message}), and the list could not be read again to check. `
+              + 'Close this and open Send to Procurement again before resending — lines already in Procurement show as "already added".';
+          }
+          const box = foot.querySelector('#fctproc-send-err');
+          box.textContent = text;
+          box.style.color = good ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)';
         }
       }
     });
@@ -3739,6 +3878,7 @@
    */
   async function applyRelinks(plan, rows, pid) {
     const done = [], synced = new Set();
+    let stale = false;
     for (const rl of plan) {
       relinkTried.add(tryKey(rl));
       try {
@@ -3751,6 +3891,16 @@
         done.push(item);
         if (pid === st.projectId) adoptServerRow(item);
       } catch (err) {
+        // The line is not on the bid the server holds NOW: the bid moved
+        // since it was checked (a colleague's Replace all landing in between).
+        // Nothing more is moved by a bid that is not the current one, and
+        // nothing is marked tried — once the page has the new bid, it looks
+        // again.
+        if (err.code === 'stale_bid') {
+          relinkTried.delete(tryKey(rl));
+          stale = true;
+          break;
+        }
         console.warn('[procurement] re-link failed for', rl.id, err);
       }
     }
@@ -3758,7 +3908,9 @@
       if (cellInUse()) redrawAround(); else { renderTable(); updateCounts(); }
     }
     // The code syncs are housekeeping; what is reported is what moved.
-    return done.filter(d => !synced.has(d));
+    const moved = done.filter(d => !synced.has(d));
+    moved.stale = stale;
+    return moved;
   }
 
   /**
@@ -3794,13 +3946,23 @@
       try { all = await readAllRows(pid); } catch (err) { console.warn('[procurement] re-link check failed', err); return; }
       if (pid !== st.projectId) return;
       const now = makeCtx(pid);
-      // The bid moved while the rows were read: next time.
+      // The bid moved while the rows were read — on this page, or on the
+      // server (a colleague's Replace all landing while the read was out):
+      // asked again, and nothing moves unless the two still agree. The
+      // server checks each line once more as it is written (stale_bid).
       if (!sameBid(bid.lines, now.bidLines, now.codeKey)) return;
+      const again = await bidAgreed(pid);
+      if (!again.lines || pid !== st.projectId || !sameBid(again.lines, bid.lines, now.codeKey)) return;
       const plan = plans(now.bidLines, all, now.codeKey).filter(untried);
-      // Looked at, whatever the full list says: one the deleted rows rule out
-      // stays ruled out, and is not read for again on every poll.
-      looks.forEach(p => relinkTried.add(tryKey(p)));
       const done = await applyRelinks(plan, all, pid);
+      // Looked at, whatever the full list says: one the deleted rows rule out
+      // stays ruled out, and is not read for again on every poll. Not when
+      // the server said the bid had moved: then it is all looked at again.
+      if (done.stale) {
+        looks.concat(plan).forEach(p => relinkTried.delete(tryKey(p)));
+        return;
+      }
+      looks.forEach(p => relinkTried.add(tryKey(p)));
       if (done.length && pid === st.projectId && isMounted()) {
         toast(`Re-linked ${done.length} row${done.length === 1 ? '' : 's'} to the current bid line${done.length === 1 ? '' : 's'} `
           + `with the same cost and sub code (${relinkWords(done)}) — the bid's lines were replaced.`);

@@ -31,6 +31,15 @@
 // PATCH  ?division=…&action=bulk { ids:[…], fields:{…} }  → { ok, items:[…], missing:[…] }
 // DELETE ?division=…&id=X | &ids=a,b,c | &project_id=X    → { ok, deleted:n }
 //
+// A row is tied to a bid line (bid_item_id) only while that line is on the
+// job's bid as the server holds it NOW (the job's blob in app_data). A PATCH
+// that sets bid_item_id checks it in the same statement, and a send checks
+// every line it ties a row to; a line that is not there is 409 stale_bid and
+// nothing is written. The page's copy of the bid can be behind — a
+// colleague's Procore "Replace all" landing between its check and its write
+// — and would otherwise move rows back onto the lines just replaced. A job
+// with no blob at all (nothing to check against) is not refused.
+//
 // Who: every non-sales user with the division reads; admin, level3 and level2
 // write; level1 gets 403 read_only on every write; sales is refused outright
 // (the tab carries cost codes, and a sales login is kept away from job costs —
@@ -298,6 +307,14 @@ const isCheckViolation  = err => Boolean(err) && (err.code === '23514' || /viola
 const fail = (res, status, error, message, extra) =>
   res.status(status).json({ ok: false, error, ...(message ? { message } : {}), ...(extra || {}) });
 
+// Where each division keeps a job's blob, the bid (bidItems) included — the
+// keys api/bid-items.js and the pages write.
+const PROJECT_KEY_PREFIX = { turf: 'fct_project_', paving: 'fct_paving_project_', kiewit: 'fct_kiewit_project_' };
+const bidKeyPrefix = (company, division) => `${company}:${PROJECT_KEY_PREFIX[division]}`;
+// No closing stop: the page puts it inside a sentence of its own.
+const STALE_BID = 'that bid line is no longer on the job\'s bid — the bid was changed somewhere else since this page read it; '
+  + 'reload the page to see the current bid';
+
 /**
  * Apply one set of field changes to some live rows, in one statement.
  *
@@ -308,10 +325,17 @@ const fail = (res, status, error, message, extra) =>
  * changing two cells of one row both keep their change.
  *
  * `projectId`, when given, pins the rows to that one job (the bulk edit).
+ *
+ * A change that ties the rows to a bid line (bid_item_id) only lands while
+ * that line is on the job's stored bid; otherwise no row comes back, and the
+ * caller tells that apart from a missing row (staleBid below).
  */
 function updateRows(sql, { company, division, who }, ids, f, projectId) {
   const s = k => has(f, k);
   const v = k => (has(f, k) ? f[k] : null);
+  // The bid line the rows are being tied to, when they are: checked below.
+  const toLine = v('bid_item_id');
+  const keyPrefix = bidKeyPrefix(company, division);
   return sql`
     UPDATE procurement_items SET
       description      = CASE WHEN ${s('description')}::boolean      THEN ${v('description')}::text      ELSE description      END,
@@ -339,7 +363,31 @@ function updateRows(sql, { company, division, who }, ids, f, projectId) {
     WHERE company_code = ${company} AND division = ${division} AND deleted_at IS NULL
       AND id = ANY(${ids}::text[])
       AND (${projectId}::text IS NULL OR project_id = ${projectId}::text)
+      -- A bid line is taken only while it is on the job's bid as stored now,
+      -- read in this same statement (see the note at the top).
+      AND (${toLine}::text IS NULL
+        OR NOT EXISTS (SELECT 1 FROM app_data a WHERE a.key = ${keyPrefix}::text || procurement_items.project_id)
+        OR EXISTS (
+          SELECT 1 FROM app_data a
+           CROSS JOIN LATERAL jsonb_array_elements(
+             CASE WHEN jsonb_typeof(a.value->'bidItems') = 'array' THEN a.value->'bidItems' ELSE '[]'::jsonb END) e
+           WHERE a.key = ${keyPrefix}::text || procurement_items.project_id AND e->>'id' = ${toLine}::text))
     RETURNING *`;
+}
+
+/**
+ * Whether a write that ties rows to a bid line matched nothing because the
+ * line is not on the bid (rather than because the rows are gone): some of
+ * the rows are still there, live.
+ */
+async function staleBid(sql, { company, division }, ids, f) {
+  if (!has(f, 'bid_item_id') || f.bid_item_id == null) return false;
+  const live = await sql`
+    SELECT 1 FROM procurement_items
+     WHERE company_code = ${company} AND division = ${division} AND deleted_at IS NULL
+       AND id = ANY(${ids}::text[])
+     LIMIT 1`;
+  return live.length > 0;
 }
 
 /** The answer to a write the database refused on a constraint, or null. */
@@ -472,6 +520,32 @@ module.exports = async (req, res) => {
         if (bidSeen.has(line.bid_item_id)) continue;
         bidSeen.add(line.bid_item_id);
         lines.push(line);
+      }
+
+      // Every line a row is to be tied to has to be on the job's bid as the
+      // server holds it: the checklist was drawn from the page's copy, and a
+      // colleague's Procore "Replace all" since would otherwise get rows tied
+      // to lines that no longer exist (or rows moved back onto them). A
+      // restore that keeps its row's line is checked by that line.
+      if (restore.value.length || lines.length) {
+        const blob = await sql`SELECT value->'bidItems' AS items FROM app_data WHERE key = ${bidKeyPrefix(company, division) + pid.value}`;
+        if (blob.length) {
+          const items = Array.isArray(blob[0].items) ? blob[0].items : [];
+          const onBid = new Set(items.filter(e => e && e.id != null).map(e => String(e.id)));
+          const plain = restore.value.filter(id => !relink.has(id));
+          const kept = plain.length ? await sql`
+            SELECT bid_item_id FROM procurement_items
+             WHERE company_code = ${company} AND division = ${division} AND project_id = ${pid.value}
+               AND id = ANY(${plain}::text[]) AND deleted_at IS NOT NULL AND bid_item_id IS NOT NULL` : [];
+          const wanted = lines.map(l => l.bid_item_id)
+            .concat([...relink.values()].map(v => v.bid_item_id), kept.map(r => r.bid_item_id));
+          const off = [...new Set(wanted.filter(id => !onBid.has(String(id))))];
+          if (off.length) {
+            return fail(res, 409, 'stale_bid',
+              'The bid for this job was changed somewhere else since this list was drawn, so nothing was sent. '
+              + 'Reload the page, then Send to Procurement again.', { lines: off });
+          }
+        }
       }
 
       // ONE statement, so the send happens whole or not at all: "removed
@@ -637,6 +711,9 @@ module.exports = async (req, res) => {
         if (constraintAnswer(res, err)) return;
         throw err;
       }
+      if (!rows.length && await staleBid(sql, scope, ids.value, f.value)) {
+        return fail(res, 409, 'stale_bid', STALE_BID, { field: 'bid_item_id' });
+      }
       const got = new Set(rows.map(r => r.id));
       return res.json({ ok: true, items: rows.map(shape), missing: ids.value.filter(id => !got.has(id)) });
     }
@@ -655,7 +732,10 @@ module.exports = async (req, res) => {
         if (constraintAnswer(res, err)) return;
         throw err;
       }
-      if (!rows[0]) return fail(res, 404, 'not_found', 'That row does not exist any more.');
+      if (!rows[0]) {
+        if (await staleBid(sql, scope, [id.value], f.value)) return fail(res, 409, 'stale_bid', STALE_BID, { field: 'bid_item_id' });
+        return fail(res, 404, 'not_found', 'That row does not exist any more.');
+      }
       return res.json({ ok: true, item: shape(rows[0]) });
     }
 

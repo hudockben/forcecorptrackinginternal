@@ -123,6 +123,10 @@ const SHAPE_KEYS = ['id', 'project_id', 'source', 'bid_item_id', 'cost_code', 's
 
 async function cleanUp() {
   for (const co of [CO, CO2]) {
+    // The job blobs (bids) these tests store, and their normalized mirror.
+    await q("DELETE FROM app_data WHERE key LIKE $1 || ':%'", [co]).catch(() => {});
+    await q('DELETE FROM bid_items WHERE company_code = $1', [co]).catch(() => {});
+    await q('DELETE FROM projects WHERE company_code = $1', [co]).catch(() => {});
     await q('DELETE FROM procurement_items WHERE company_code = $1', [co]).catch(() => {});
     await q('DELETE FROM supplier_contacts WHERE company_code = $1', [co]).catch(() => {});
     await q('DELETE FROM users WHERE company_code = $1', [co]);
@@ -686,6 +690,116 @@ function schemaStatements() {
     await q(snippet[1]);
     r = await get(L1, { project_id: 'job-1' });
     assert('…and running its UPDATE puts the job\'s rows back', r.body.items.length === liveJob1, `${r.body.items.length} of ${liveJob1}`);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nA row is tied only to a line on the bid as it is stored now');
+  {
+    // The job's blob, as the pages and api/bid-items.js store it.
+    const PID = 'prtest-bidjob';
+    const blob = (pid, items) => q(`INSERT INTO app_data (key, value, updated_at) VALUES ($1, $2::jsonb, NOW())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`, [`${CO}:fct_project_${pid}`, JSON.stringify({ id: pid, bidItems: items })]);
+    const L = (id, sub) => ({ id, cost_code: 'Stormwater', sub_code: sub, quantity: 901, unit: 'LF' });
+    await blob(PID, [L('ob1', 'Geofabric'), L('ob2', 'Perf Drain 15"')]);
+    let r = await send(L2, { project_id: PID, items: [line('ob1'), line('ob2', { sub_code: 'Perf Drain 15"' })] });
+    assert('lines on the stored bid are sent', r.statusCode === 200 && r.body.created.length === 2, show(r));
+    const [g1, g2] = r.body.created;
+    const m1 = (await create(L2, { id: uid('m'), project_id: PID, bid_item_id: 'ob1', cost_code: 'Stormwater', sub_code: 'Geofabric' })).body.item;
+
+    // A Procore "Replace all": the stored bid's lines get new ids.
+    await blob(PID, [L('nb1', 'Geofabric'), L('nb2', 'Perf Drain 15"')]);
+    r = await patch(L2, g1.id, { bid_item_id: 'nb1', cost_code: 'Stormwater', sub_code: 'Geofabric' });
+    assert('a re-link to a line on the stored bid lands', r.statusCode === 200 && r.body.item.bid_item_id === 'nb1', show(r));
+    const v1 = (await rowOf(g1.id)).version;
+    // A page still holding the old bid (its check passed a moment before the
+    // Replace all landed) moves the row back: refused in the same statement.
+    r = await patch(L2, g1.id, { bid_item_id: 'ob1', cost_code: 'Stormwater', sub_code: 'Geofabric' });
+    assert('a re-link to a line the stored bid no longer has → 409 stale_bid, naming the field', r.statusCode === 409
+      && r.body.error === 'stale_bid' && r.body.field === 'bid_item_id' && /no longer on the job's bid/.test(r.body.message), show(r));
+    const g1Now = await rowOf(g1.id);
+    assert('…and nothing about the row changed', g1Now.bid_item_id === 'nb1' && g1Now.version === v1, JSON.stringify(g1Now));
+    r = await patch(L2, g2.id, { vendor: 'LB Water' });
+    assert('a change that ties nothing to a line is not checked (the row still on a gone line saves)', r.statusCode === 200 && r.body.item.vendor === 'LB Water', show(r));
+    r = await patch(L2, m1.id, { bid_item_id: null });
+    assert('…nor is untying a row', r.statusCode === 200 && r.body.item.bid_item_id === null, show(r));
+    r = await patch(L2, 'prtest-no-such-row', { bid_item_id: 'ob1' });
+    assert('a row that is not there is still 404, not stale_bid', r.statusCode === 404 && r.body.error === 'not_found', show(r));
+    r = await bulk(L2, [m1.id], { bid_item_id: 'ob2' });
+    assert('a bulk edit onto a gone line → 409 stale_bid', r.statusCode === 409 && r.body.error === 'stale_bid' && (await rowOf(m1.id)).bid_item_id === null, show(r));
+    r = await bulk(L2, [m1.id], { bid_item_id: 'nb2' });
+    assert('…onto a line the bid has, it lands', r.statusCode === 200 && r.body.items[0].bid_item_id === 'nb2', show(r));
+
+    // Send: every line a row is tied to has to be on the stored bid.
+    const count = async () => Number((await q('SELECT count(*) FROM procurement_items WHERE company_code = $1 AND project_id = $2', [CO, PID]))[0].count);
+    const n0 = await count();
+    r = await send(L2, { project_id: PID, items: [line('nb2', { sub_code: 'Perf Drain 15"' }), line('ob9')] });
+    assert('a send with a line the stored bid does not have → 409 stale_bid, naming it', r.statusCode === 409 && r.body.error === 'stale_bid'
+      && JSON.stringify(r.body.lines) === '["ob9"]', show(r));
+    assert('…and nothing at all went in, not even the good line', await count() === n0);
+    await del(L2, { id: g2.id });
+    r = await send(L2, { project_id: PID, restore_ids: [g2.id] });
+    assert('a plain restore of a row whose line is gone → 409 stale_bid', r.statusCode === 409 && r.body.error === 'stale_bid'
+      && !!(await rowOf(g2.id)).deleted_at, show(r));
+    r = await send(L2, { project_id: PID, restore_ids: [{ id: g2.id, bid_item_id: 'ob2', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"' }] });
+    assert('a restore re-tied to a gone line → 409 stale_bid', r.statusCode === 409 && !!(await rowOf(g2.id)).deleted_at, show(r));
+    r = await send(L2, { project_id: PID, restore_ids: [{ id: g2.id, bid_item_id: 'nb2', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"' }] });
+    const g2Now = await rowOf(g2.id);
+    assert('a restore re-tied to the current line comes back on it', r.statusCode === 200 && r.body.restored.length === 1
+      && !g2Now.deleted_at && g2Now.bid_item_id === 'nb2' && g2Now.vendor === 'LB Water', show(r));
+    r = await send(L2, { project_id: 'prtest-no-blob', items: [line('whatever-line')] });
+    assert('a job with no stored blob has nothing to check against, and is not refused', r.statusCode === 200 && r.body.created.length === 1, show(r));
+    // The blob key is the division's own.
+    await q(`INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [`${CO}:fct_paving_project_${PID}`, JSON.stringify({ id: PID, bidItems: [L('pv1', 'Base')] })]);
+    r = await send(PAVE, { project_id: PID, items: [line('nb1')] }, 'paving');
+    assert('paving checks the paving job\'s bid (a turf line is not on it)', r.statusCode === 409 && r.body.error === 'stale_bid', show(r));
+    r = await send(PAVE, { project_id: PID, items: [line('pv1', { sub_code: 'Base' })] }, 'paving');
+    assert('…and takes its own line', r.statusCode === 200 && r.body.created.length === 1, show(r));
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nA bid line renamed on the bid page renames the rows\' stored copy (api/bid-items.js)');
+  {
+    const bidHandler = require(path.join(ROOT, 'api/bid-items.js'));
+    const putLine = async (user, pid, item, key = `fct_project_${pid}`) => {
+      const res = fakeRes();
+      await bidHandler({ method: 'PUT', query: { id: item.id, projectId: pid, projectKey: key },
+        body: { bidItem: item, ts: Date.now() }, headers: { authorization: 'Bearer ' + user.token } }, res);
+      return res;
+    };
+    const PID = 'prtest-renamejob';
+    await q("INSERT INTO projects (id, company_code, name) VALUES ($1, $2, 'Rename job') ON CONFLICT (id) DO NOTHING", [PID, CO]);
+    await q(`INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [`${CO}:fct_project_${PID}`, JSON.stringify({ id: PID, bidItems: [
+        { id: 'rb1', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"', quantity: 901, unit: 'LF' },
+        { id: 'rb2', cost_code: 'E&S', sub_code: 'Silt Sock', quantity: 1200, unit: 'LF' }] })]);
+    let r = await send(L2, { project_id: PID, items: [line('rb1', { sub_code: 'Perf Drain 15"' }), line('rb2', { cost_code: 'E&S', sub_code: 'Silt Sock' })] });
+    const [R1, R2] = r.body.created;
+    const M1 = (await create(L2, { id: uid('m'), project_id: PID, bid_item_id: 'rb1', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"', description: 'Couplers' })).body.item;
+    const OTHER = (await create(L2, { id: uid('m'), project_id: 'prtest-other', bid_item_id: 'rb1', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"' })).body.item;
+    await del(L2, { id: R2.id });
+    const ver = async id => (await rowOf(id)).version;
+    const [vR1, vM1, vO] = [await ver(R1.id), await ver(M1.id), await ver(OTHER.id)];
+
+    r = await putLine(L2, PID, { id: 'rb1', cost_code: 'Stormwater', sub_code: 'Perimeter Drain 15in Perf', quantity: 901, unit: 'LF' });
+    assert('the bid line is saved', r.statusCode === 200 && r.body.ok, show(r));
+    const [r1, m1] = [await rowOf(R1.id), await rowOf(M1.id)];
+    assert('the rows tied to it — sent and hand-added — store its new sub code at once', r1.sub_code === 'Perimeter Drain 15in Perf'
+      && m1.sub_code === 'Perimeter Drain 15in Perf' && r1.cost_code === 'Stormwater' && r1.version === vR1 + 1 && m1.version === vM1 + 1,
+      JSON.stringify([r1.sub_code, m1.sub_code, r1.version, m1.version]));
+    assert('…and nothing else of theirs changes', m1.description === 'Couplers' && r1.bid_item_id === 'rb1');
+    const o = await rowOf(OTHER.id);
+    assert('…another job\'s row with the same line id is untouched', o.sub_code === 'Perf Drain 15"' && o.version === vO);
+    r = await putLine(L2, PID, { id: 'rb2', cost_code: 'Erosion Control', sub_code: 'Silt Sock 12in', quantity: 1200, unit: 'LF' });
+    const r2 = await rowOf(R2.id);
+    assert('a deleted row follows its line too (Send can offer it back on the new line)', r2.cost_code === 'Erosion Control'
+      && r2.sub_code === 'Silt Sock 12in' && !!r2.deleted_at, JSON.stringify([r2.cost_code, r2.sub_code]));
+    const vNow = await ver(R1.id);
+    r = await putLine(L2, PID, { id: 'rb1', cost_code: 'Stormwater', sub_code: 'Perimeter Drain 15in Perf', quantity: 950, unit: 'LF' });
+    assert('a quantity edit does not touch the rows (no version churn)', r.statusCode === 200 && await ver(R1.id) === vNow);
+    r = await putLine(L2, PID, { id: 'rb1', cost_code: 'Stormwater', sub_code: '', quantity: 950, unit: 'LF' });
+    assert('a sub code blanked half way through a rename is not copied over', (await rowOf(R1.id)).sub_code === 'Perimeter Drain 15in Perf'
+      && await ver(R1.id) === vNow);
   }
 
   // ─────────────────────────────────────────────────────────────────────

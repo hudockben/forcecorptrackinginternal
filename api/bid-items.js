@@ -222,6 +222,38 @@ module.exports = async (req, res) => {
       );
     }
 
+    // 4. Procurement rows tied to this line keep a copy of its cost and sub
+    //    code: it is what they show once the line is gone, and what a later
+    //    Procore "Replace all" re-links them by (procurement.js relinkPlan).
+    //    A line renamed here ("Perf Drain 15\"" → "Perimeter Drain 15in
+    //    Perf") therefore renames that copy in the same request — deleted
+    //    rows too, so Send to Procurement can offer one back on the new line.
+    //    Left to the Procurement tab, the copy only caught up when someone
+    //    opened this job there; a re-import before that left the row "not on
+    //    bid" for good, and Send made a second, blank row for the material.
+    //    A code blanked half way through a rename is not copied over.
+    //    Non-fatal, like the mirror: the bid edit has landed either way.
+    try {
+      // As Procurement stores text: one line, trimmed.
+      const oneLine = v => String(v || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+      const cc = oneLine(item.cost_code), sc = oneLine(item.sub_code);
+      await sql`
+        UPDATE procurement_items
+           SET cost_code  = CASE WHEN ${cc}::text <> '' THEN ${cc}::text ELSE cost_code END,
+               sub_code   = CASE WHEN ${sc}::text <> '' THEN ${sc}::text ELSE sub_code  END,
+               version    = version + 1,
+               updated_at = NOW()
+         WHERE company_code = ${companyCode} AND division = ${division}
+           AND project_id = ${projectId} AND bid_item_id = ${item.id}
+           AND ((${cc}::text <> '' AND cost_code <> ${cc}::text) OR (${sc}::text <> '' AND sub_code <> ${sc}::text))
+      `;
+    } catch (procErr) {
+      console.warn(
+        `[bid-items] procurement code copy failed for company=${companyCode} ` +
+        `project=${projectId} bidItem=${item.id}: ${procErr.message}`
+      );
+    }
+
     return res.json({ ok: true });
   } catch (err) {
     console.error('[bid-items]', err.message);

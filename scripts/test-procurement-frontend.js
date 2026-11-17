@@ -173,7 +173,10 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
         db.contacts.forEach(k => { if (k.supplier_name.toLowerCase() === c.body.from.toLowerCase()) { k.supplier_name = c.body.to; moved++; } });
         let n = 0;
         db.rows.forEach(r => { if (r.vendor.toLowerCase() === c.body.from.toLowerCase() && r.vendor !== c.body.to) { r.vendor = c.body.to; r.version++; n++; } });
-        return json(200, { ok: true, moved, merged: 0, rows: n });
+        // The orders the server renamed (api/supplier-contacts.js renamePOs).
+        const pos = (db.pos || []).filter(po => po.supplier.toLowerCase() === c.body.from.toLowerCase() && po.supplier !== c.body.to);
+        pos.forEach(po => { po.supplier = c.body.to; });
+        return json(200, { ok: true, moved, merged: 0, rows: n, pos: pos.length, po_ids: pos.map(po => po.id) });
       }
       if (c.method === 'POST') {
         const hit = db.contacts.find(k => k.supplier_name.toLowerCase() === c.body.supplier_name.toLowerCase()
@@ -1318,6 +1321,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   // ── Contacts client ───────────────────────────────────────────────────
   console.log('\n[contacts client]');
   const cenv = makeEnv({ contacts: [{ id: 'c1', supplier_name: 'Acme Supply', name: 'Dana', email: 'dana@acme.test', phone: '' }] });
+  cenv.db.pos = [{ id: 'po-acme', supplier: 'acme supply' }, { id: 'po-lb', supplier: 'LB Water' }];
   const K = cenv.P.contacts;
   const list1 = await K.load();
   await K.load();
@@ -1333,8 +1337,9 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   await K.update(made.id, { phone: '555-0199' });
   assert('update() patches and refreshes the cache', K.list('acme supply').find(c => c.id === made.id).phone === '555-0199'
     && cenv.calls.filter(c => c.method === 'PATCH').pop().q.id === made.id);
-  const moved = await K.rename('Acme Supply', 'Acme Supply Co');
-  assert('rename() moves the contacts and re-reads', moved === 2 && K.list('Acme Supply Co').length === 2 && K.list('Acme Supply').length === 0);
+  const ans = await K.rename('Acme Supply', 'Acme Supply Co');
+  assert('rename() moves the contacts and re-reads', ans.moved === 2 && K.list('Acme Supply Co').length === 2 && K.list('Acme Supply').length === 0, ans);
+  assert('…and answers what the server did to the purchase orders as well', ans.pos === 1 && eq(ans.po_ids, ['po-acme']) && !('po_error' in ans), ans);
   await K.remove('c1');
   assert('remove() deletes and drops it from the cache', K.all().every(c => c.id !== 'c1') && cenv.calls.filter(c => c.method === 'DELETE').pop().q.id === 'c1');
   off();
@@ -2058,6 +2063,215 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('…the checklist is read again: those lines are now "already added"', lines.filter(l => l.classList.contains('added')).length === 4
       && e.$('.fctproc-modal [data-send="go"]').disabled, lines.map(l => l.className));
     assert('…and the sheet behind shows the rows the server has', e.$$('tr.fctproc-row').length === 4, e.$$('tr.fctproc-row').length);
+  }
+
+  console.log('\n[a send that failed keeps the PM\'s own ticks]');
+  {
+    const e = makeEnv({ rows: [] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    await e.P.openSendModal('p1');
+    const lineEl = sub => e.$$('.fctproc-modal .fctproc-send-line').find(l => l.querySelector('.sub').textContent === sub);
+    const untick = sub => { const cb = lineEl(sub).querySelector('input'); cb.checked = false; e.fire(cb, 'change'); };
+    untick('15" Perf drain');
+    untick('Silt Sock 12inch');
+    assert('two lines unticked: 2 to send', /Send 2 lines/.test(e.$('.fctproc-modal [data-send="go"]').textContent), e.$('.fctproc-modal [data-send="go"]').textContent);
+    // The send fails and the server does nothing; the re-read is slow, and
+    // the PM ticks the LS line while it is out.
+    const handle = e.handle;
+    let fail = true, releaseRead = null;
+    e.handle = c => {
+      if (fail && c.q.action === 'send') { fail = false; return { status: 504, body: { ok: false, error: 'timeout', message: 'Gateway timeout' } }; }
+      return handle(c);
+    };
+    const fetch0 = e.w.fetch;
+    e.w.fetch = async (url, init) => {
+      if (/include_deleted=1/.test(String(url)) && releaseRead === null) await new Promise(r => { releaseRead = r; });
+      return fetch0(url, init);
+    };
+    e.$('.fctproc-modal [data-send="go"]').click();
+    for (let i = 0; i < 20 && !releaseRead; i++) await tick();
+    const mob = lineEl('Mobilization').querySelector('input');
+    mob.checked = true; e.fire(mob, 'change');
+    releaseRead();
+    await sleep(40);
+    const state = Object.fromEntries(e.$$('.fctproc-modal .fctproc-send-line').map(l => [l.querySelector('.sub').textContent, l.querySelector('input').checked]));
+    assert('after the failure, the lines the PM unticked are still unticked', state['15" Perf drain'] === false && state['Silt Sock 12inch'] === false, state);
+    assert('…the ones left ticked are still ticked, and one ticked while the list was read again stays ticked',
+      state.Geofabric === true && state.Elbows === true && state.Mobilization === true && state.Labor === false, state);
+    assert('…the message says nothing was sent', /^Not sent: Gateway timeout/.test(e.$('#fctproc-send-err').textContent), e.$('#fctproc-send-err').textContent);
+    e.$('.fctproc-modal [data-send="go"]').click();
+    await sleep(40);
+    const sent = e.db.rows.map(r => r.sub_code).sort();
+    assert('the next click sends only what the PM chose', eq(sent, ['Elbows', 'Geofabric', 'Mobilization']), sent);
+  }
+
+  console.log('\n[a send whose answer was lost says it went through]');
+  {
+    const e = makeEnv({ rows: [] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    await e.P.openSendModal('p1');
+    const handle = e.handle;
+    let lose = true;
+    e.handle = c => {
+      const res = handle(c);   // the server applies it…
+      if (lose && c.q.action === 'send') { lose = false; return { status: 504, body: { ok: false, error: 'timeout', message: 'Gateway timeout' } }; }
+      return res;              // …and the answer is lost on the way back
+    };
+    e.$('.fctproc-modal [data-send="go"]').click();
+    await sleep(40);
+    const said = e.$('#fctproc-send-err').textContent;
+    assert('the message reports what the re-read shows: it went through', /went through after all/.test(said) && /4 lines are now in Procurement/.test(said)
+      && !/Not sent/.test(said), said);
+    // Part of it in by somebody else, the rest refused: says how many.
+    const p = makeEnv({ rows: [] });
+    p.P.renderTab(p.root);
+    await tick(); await tick(); await tick();
+    await p.P.openSendModal('p1');
+    const h2 = p.handle;
+    p.handle = c => {
+      if (c.q.action === 'send') {
+        // A colleague's send of the Geofabric line lands; this one is lost.
+        h2({ ...c, body: { ...c.body, items: c.body.items.filter(it => it.bid_item_id === 'b1') } });
+        return { status: 502, body: { ok: false, error: 'bad_gateway', message: 'Bad gateway' } };
+      }
+      return h2(c);
+    };
+    p.$('.fctproc-modal [data-send="go"]').click();
+    await sleep(40);
+    const said2 = p.$('#fctproc-send-err').textContent;
+    assert('…and when only some of the ticked lines are in, says how many', /^1 of the 4 lines you ticked is now in Procurement/.test(said2), said2);
+  }
+
+  console.log('\n[the re-link checks the bid again, and the server refuses a stale one]');
+  {
+    const OLDB = [
+      { id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', unit: 'SF', quantity: 8110, index: 0 },
+      { id: 'b2', cost_code: 'Stormwater', sub_code: 'Perf Drain 15in', unit: 'LF', quantity: 950, index: 1 },
+    ];
+    const NEWB = OLDB.map(l => ({ ...l, id: 'n' + l.id.slice(1) }));
+    // Ada's page holds b1, b2 and has a code sync to do; while her full read
+    // is out, Bea's Replace all lands and her page re-links the rows to n1, n2.
+    let server = OLDB;
+    const e = makeEnv({ rows: [
+      row({ id: 'R1', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' }),
+      row({ id: 'R2', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"', created_at: '2026-03-01T10:00:01Z' }),
+    ], bidLines: OLDB });
+    e.P.configure({ getFreshBidLines: async () => server });
+    const handle = e.handle;
+    e.handle = c => {
+      if (c.q.include_deleted && server === OLDB) {
+        server = NEWB;
+        e.db.rows.forEach(r => { r.bid_item_id = 'n' + r.bid_item_id.slice(1); r.version++; });
+      }
+      return handle(c);
+    };
+    e.P.renderTab(e.root);
+    await sleep(60);
+    const moves = e.patches().filter(p => 'bid_item_id' in p.body.fields).map(p => p.q.id + '>' + p.body.fields.bid_item_id);
+    assert('a bid replaced on the server while the rows were read: no row is moved back to the old lines', moves.length === 0, moves);
+    assert('…and nobody is told rows were re-linked', !e.$$('.fctproc-toast').some(t => /Re-linked/.test(t.textContent)));
+    assert('…the rows stay on the current lines', e.db.rows.map(r => r.bid_item_id).join() === 'n1,n2', e.db.rows.map(r => r.bid_item_id));
+
+    // The bid moves between the second check and the PATCH: the server
+    // refuses it (stale_bid), nothing more is sent, nothing is marked tried.
+    let srv = OLDB;
+    const f = makeEnv({ rows: [
+      row({ id: 'S1', source: 'bid', bid_item_id: 'gone1', cost_code: 'Stormwater', sub_code: 'Geofabric' }),
+      row({ id: 'S2', source: 'bid', bid_item_id: 'gone2', cost_code: 'Stormwater', sub_code: 'Perf Drain 15in', created_at: '2026-03-01T10:00:01Z' }),
+    ], bidLines: OLDB });
+    let pageBid = OLDB;
+    f.P.configure({ getFreshBidLines: async () => srv, getBidLines: id => (id === 'p1' ? pageBid : []) });
+    const h2 = f.handle;
+    let tried = 0;
+    f.handle = c => {
+      if (c.method === 'PATCH' && c.body && c.body.fields && c.body.fields.bid_item_id) {
+        tried++;
+        srv = NEWB;     // a colleague's Replace all lands just now
+        if (!srv.some(l => l.id === c.body.fields.bid_item_id)) {
+          return { status: 409, body: { ok: false, error: 'stale_bid', message: 'That bid line is no longer on the job\'s bid', field: 'bid_item_id' } };
+        }
+      }
+      return h2(c);
+    };
+    f.P.renderTab(f.root);
+    await sleep(60);
+    assert('the server refusing a re-link (stale_bid) stops the pass after that one row', tried === 1 && f.db.rows.every(r => r.bid_item_id.startsWith('gone')), { tried, rows: f.db.rows.map(r => r.bid_item_id) });
+    assert('…with no "Re-linked" message', !f.$$('.fctproc-toast').some(t => /Re-linked/.test(t.textContent)));
+    pageBid = NEWB;          // the page's own poll catches up
+    f.P.rerender();
+    await sleep(60);
+    const moved2 = f.patches().filter(p => p.body.fields.bid_item_id && p.body.fields.bid_item_id.startsWith('n')).map(p => p.q.id + '>' + p.body.fields.bid_item_id).sort();
+    assert('…and once the page has the current bid, the rows re-link to it (nothing was marked tried)', eq(moved2, ['S1>n1', 'S2>n2']), moved2);
+
+    // A cell saved against a line the server's bid no longer has: refused
+    // for good, not retried on every edit.
+    const g = makeEnv({ rows: [row({ id: 'H1', description: 'stakes' })] });
+    g.P.renderTab(g.root);
+    await tick(); await tick(); await tick();
+    const h3 = g.handle;
+    g.handle = c => (c.method === 'PATCH' && c.body.fields.bid_item_id
+      ? { status: 409, body: { ok: false, error: 'stale_bid', message: 'That bid line is no longer on the job\'s bid', field: 'bid_item_id' } }
+      : h3(c));
+    const codes = g.field('H1', 'codes');
+    codes.dispatchEvent(new g.w.FocusEvent('focusin', { bubbles: true }));
+    g.pick(codes, 'Stormwater / Geofabric', 'b1');
+    await g.P._test.flushAll(); await sleep(30);
+    const pend = g.P._test.pending();
+    assert('a cell tied to a line the server no longer has is refused once, not kept to send again',
+      !pend.failed.has('H1') && !(pend.pend.get('H1') || {}).bid_item_id && g.errors.some(m => /no longer on the job's bid/.test(m)), { failed: [...pend.failed], errors: g.errors });
+  }
+
+  console.log('\n[Create PO reads the order list again first]');
+  {
+    const pos = POS.map(p => ({ ...p }));
+    const e = makeEnv({ rows: [row({ id: 'z1', source: 'bid', bid_item_id: 'b3', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', vendor: 'LB Water Works' })], purchaseOrders: pos });
+    let refreshed = 0;
+    // The stored list says PO-0003 is LB Water Works now (renamed elsewhere);
+    // the page's copy still says LB Water until it is read again.
+    e.P.configure({ refreshPurchaseOrders: async () => { refreshed++; pos.find(p => p.id === 'po3').supplier = 'LB Water Works'; return true; } });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    assert('on the page\'s stale copy the row looks unordered', e.$('tr[data-row="z1"] .fctproc-pill').textContent === 'Not Ordered');
+    let asked = null;
+    e.w.document.addEventListener('click', () => {}, true);
+    const sel = e.$('[data-sel="z1"]'); sel.checked = true; e.fire(sel, 'change');
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(30);
+    asked = e.$('.fctproc-modal') && e.$('.fctproc-modal').textContent;
+    assert('Create PO reads the list again before deciding', refreshed === 1);
+    assert('…and so asks, the row being on PO-0003 after all, rather than raising a second order',
+      /already on/.test(asked || '') && /PO-0003/.test(asked || '') && !e.created.some(x => x[0] === 'po'), asked);
+    // Picking a job reads the list again too.
+    e.P._test.selectProject('p2');
+    await sleep(20);
+    assert('…and so does picking a job', refreshed === 2, refreshed);
+  }
+
+  console.log('\n[a contact typed against a supplier renamed meanwhile]');
+  {
+    const e = makeEnv({ rows: [row({ id: 'j1', vendor: 'LB Water' })] });
+    let listed = ['LB Water Works'];
+    e.P.configure({ isSupplierListed: async name => listed.some(n => n.toLowerCase() === String(name).toLowerCase()) });
+    e.P.renderTab(e.root);
+    await sleep(30);
+    const posts = () => e.calls.filter(c => c.path === '/api/supplier-contacts' && c.method === 'POST' && !c.q.action);
+    const ct = e.field('j1', 'contact');
+    ct.focus(); ct.value = 'Joe Brandt'; e.fire(ct, 'input'); e.fire(ct, 'change'); ct.blur();
+    await sleep(40);
+    assert('not filed under a name no longer on the list', posts().length === 0);
+    assert('…and the PM is told so, not just the console', e.$$('.fctproc-toast').some(t => /Joe Brandt was not saved as a contact/.test(t.textContent)),
+      e.$$('.fctproc-toast').map(t => t.textContent));
+    // The Vendor put right: leaving the row files the contact there.
+    const v = e.field('j1', 'vendor');
+    v.focus();
+    e.pick(v, 'Beta Corp');
+    listed = ['LB Water Works', 'Beta Corp'];
+    v.blur();
+    await sleep(40);
+    assert('…once the Vendor is put right, the contact is filed under it', posts().length === 1 && posts()[0].body.supplier_name === 'Beta Corp'
+      && posts()[0].body.name === 'Joe Brandt', posts().map(c => c.body));
   }
 
   console.log('\n[+ Add Row when the answer is lost]');

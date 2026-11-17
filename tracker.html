@@ -3062,7 +3062,7 @@
       <button class="btn btn-ghost" id="bid-fs-pdf">&#8595; PDF</button>
       <button class="btn btn-ghost" id="bid-fs-copy" title="Copy these bid items into another project, or into a new one">&#10697; Copy Bid</button>
       <button class="btn btn-ghost" id="bid-fs-procore" title="Fill these bid items in from a Procore estimate export (.xlsx or .csv)">&#8681; Import Procore Estimate</button>
-      <button class="btn btn-ghost" id="bid-fs-procurement" title="Send these bid lines to the Procurement tab, to track buying out the material on each one" style="display:none">&#10148; <span class="bid-fs-long">Send to </span>Procurement</button>
+      <button class="btn btn-ghost" id="bid-fs-procurement" title="Send these bid lines to the Procurement tab, to track buying out the material on each one" style="display:none">&#10148;&nbsp;<span class="bid-fs-long">Send to&nbsp;</span>Procurement</button>
       <button class="btn btn-green" id="bid-fs-add">+ Add Item</button>
     </div>
   </div>
@@ -7057,6 +7057,46 @@ async function loadPurchaseOrders() {
     _poLoadFailed = true;
   }
   _migratePOs();
+}
+
+/**
+ * Read the stored order list again and take it on now, rather than at the
+ * next poll — after a supplier rename the server made, and before Procurement
+ * decides whether rows are already on an order. Kept from the PO tab only
+ * while a box there is being typed in (the poll's own rule). Resolves true
+ * when the list in hand is the server's. A failed read changes nothing: the
+ * list already held is kept, never blanked.
+ */
+let _poRereading = null;
+function _poReread() {
+  if (_poRereading) return _poRereading;
+  _poRereading = (async () => {
+    try {
+      const r = await fetch(`${API_BASE}/purchase-orders?division=turf`, { headers: { 'Authorization': `Bearer ${fctToken}` } });
+      if (!r.ok) return false;
+      const data = await r.json();
+      const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+      _migratePOs(incoming);
+      if (JSON.stringify(incoming) === JSON.stringify(purchaseOrders)) { _poLoadOk = true; _poLoadFailed = false; return true; }
+      const a = document.activeElement;
+      if (activeTab === 'po' && a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return false;
+      const before = purchaseOrders;
+      purchaseOrders = incoming;
+      _poBaseUpdatedAt = data.updatedAt || _poBaseUpdatedAt;
+      _poLoadOk = true;
+      _poLoadFailed = false;
+      if (activeTab === 'po') renderPOTab();
+      _bidMatListChanged(before, incoming);
+      _procRerender();
+      return true;
+    } catch (err) {
+      console.warn('[po] could not read the purchase orders again:', err && err.message);
+      return false;
+    } finally {
+      _poRereading = null;
+    }
+  })();
+  return _poRereading;
 }
 
 function _migratePOs(list = purchaseOrders) {
@@ -18823,6 +18863,9 @@ function _procEnsureConfigured() {
     // A failed read leaves an empty list; the sheet shows "…" rather than
     // reporting every row as having no order.
     isPOListLoaded: () => _poLoadOk,
+    // Read the stored list again now (before "Create PO from selected"
+    // decides which rows are already on an order, and when a job is picked).
+    refreshPurchaseOrders: () => _poReread(),
     // …and whether that is because the read failed (retried on the poll).
     poLoadFailed: () => _poLoadFailed,
     codeKey:      s => _codeKey(s),
@@ -20006,11 +20049,18 @@ function _supEnsureContacts() {
  * redrawn at once and handed its focus and caret back, as typing in it does.
  */
 let _supRedrawDeferred = false;
+// A new contact typed but not added yet: the redraw would empty its row —
+// and replace its "+ Add contact" button between the press and the click
+// (focus leaving the boxes for the button is what runs a deferred redraw),
+// so the click would land on nothing and the contact be lost.
+function _supNewContactTyped(root) {
+  return !!root && [...root.querySelectorAll('[data-supc-new-field]')].some(b => String(b.value || '').trim());
+}
 function _supRedrawWhenIdle() {
   if (activeTab !== 'supplier') { _supRedrawDeferred = false; return; }
   const root = document.getElementById('supplier-root');
   const a = document.activeElement;
-  if (root && a && root.contains(a) && a.tagName === 'INPUT' && a.id !== 'sup-search') {
+  if (root && ((a && root.contains(a) && a.tagName === 'INPUT' && a.id !== 'sup-search') || _supNewContactTyped(root))) {
     _supRedrawDeferred = true;
     return;
   }
@@ -20294,8 +20344,19 @@ function _supRenamed(el) {
   // the half-typed name. Not a rename: the box that replaced it does that,
   // from the old name, when it is really left.
   if (!el.isConnected) { if (entry && from) _supPendingFrom.set(entry, from); return; }
-  // Left blank: no rename yet. The next real name is renamed TO from this.
-  if (!to) { if (entry && from) _supPendingFrom.set(entry, from); el.dataset.supOldName = from; return; }
+  // Left blank: a supplier is not left nameless — its contacts, Procurement
+  // rows and orders hang off the name — so the last real one goes back, and
+  // the new name typed over it later renames from there. (Remembered against
+  // the list entry instead, it was lost whenever the lists poll replaced the
+  // entries in between.)
+  if (!to) {
+    el.dataset.supOldName = from;
+    if (from) {
+      el.value = from;
+      if (entry) { entry.name = from; saveLists(); projectsList.forEach(p => renderDailyTable(p.id)); }
+    }
+    return;
+  }
   if (entry) _supPendingFrom.delete(entry);
   el.dataset.supOldName = to;
   if (!from || _procSupKey(from) === _procSupKey(to)) return;   // a case-only edit still matches
@@ -20338,40 +20399,53 @@ function _supRenamed(el) {
   // name: that copy can be a minute old or more, and a colleague may have
   // saved one from a Procurement row since. It is one small request, the
   // server answers "moved 0" when there is nothing, and the same request
-  // carries the Procurement rows' Vendor over to the new name.
-  Promise.resolve(C.rename(from, target)).then(() => {
-    // The purchase orders follow too. Procurement fills a row's PO # from
-    // the job's PO with its codes AND its vendor: left on the old name, every
-    // row that was on a PO would read "Not Ordered" (and Late), and "Create
-    // PO from selected" would raise a second order for it.
-    _supCarryRenameToPOs(from, target);
+  // carries the Procurement rows' Vendor and the purchase orders' Supplier
+  // over to the new name — server-side, on the lists as they are stored
+  // (Procurement matches a row to its PO by vendor too: left on the old
+  // name, every row on a PO would read "Not Ordered", and "Create PO from
+  // selected" would raise a second order). Never by saving this page's copy
+  // of the order list, which can be minutes old.
+  Promise.resolve(C.rename(from, target)).then(ans => {
+    _supAfterPORename(from, target, ans || {});
     _supRedrawWhenIdle();
   }, err => {
-    _showSaveError(false, `The contacts and Procurement rows of "${from}" were not moved to "${target}": ${(err && err.message) || 'request failed'}.`, false);
+    _showSaveError(false, `The contacts, Procurement rows and purchase orders of "${from}" were not moved to "${target}": ${(err && err.message) || 'request failed'}.`, false);
   });
 }
 
 /**
- * Rename a supplier on this division's purchase orders, the way editing each
- * order's Supplier on the Purchase Orders tab would: the order, the job rows
- * its deliveries made, one save of the list. Only from a list that loaded —
- * a save from the empty one a failed read leaves would be refused anyway.
+ * What a supplier rename did to the purchase orders (the server renamed
+ * them), brought onto this page: the orders it names take the new Supplier
+ * here too, with the job rows their own deliveries made, and the stored list
+ * is read again. Nothing is saved from here. Orders the server could not
+ * rename are said, loudly — rows on them would otherwise read "Not Ordered".
  */
-function _supCarryRenameToPOs(from, to) {
-  if (!_poLoadOk || !perm.canEdit) return 0;
-  const k = _procSupKey(from);
-  const hit = (Array.isArray(purchaseOrders) ? purchaseOrders : []).filter(po => po && _procSupKey(po.supplier) === k);
-  if (!hit.length) return 0;
+function _supAfterPORename(from, to, ans) {
+  if (ans.po_error) {
+    const why = ans.po_error === 'no_access' ? 'you do not have permission to change purchase orders'
+      : ans.po_error === 'busy' ? 'the purchase orders were being changed by someone else at the same moment'
+      : 'the purchase orders could not be saved just now';
+    _showSaveError(false, `The purchase orders naming "${from}" still say "${from}": ${why}. `
+      + `Change their Supplier to "${to}" on the Purchase Orders tab.`, false);
+  }
+  const ids = new Set((ans.po_ids || []).map(String));
+  if (!ids.size) return;
+  const hit = (Array.isArray(purchaseOrders) ? purchaseOrders : []).filter(po => po && ids.has(String(po.id)));
   hit.forEach(po => {
     po.supplier = to;
-    _syncPOHeaderToLines(po).catch(err =>
-      console.warn('[suppliers] could not carry the new name to the order\'s cost rows:', err.message));
+    if (!po.project_id) return;
+    const proj = getProj(po.project_id);
+    (po.lines || []).forEach(line => {
+      if (!line || !line.po_row_id || _poLineFromDaily(line)) return;
+      const r = proj && (proj.dailyRows || []).find(x => String(x.id) === String(line.po_row_id));
+      if (r) r.supplier = to;
+    });
   });
-  savePurchaseOrders();
   if (activeTab === 'po') renderPOTab();
-  [...new Set(hit.map(po => po.project_id).filter(Boolean))].forEach(pid => renderProjectPOs(pid));
+  [...new Set(hit.map(po => po.project_id).filter(Boolean))].forEach(pid => { renderProjectPOs(pid); renderDailyTable(pid); });
   _procRerender();
-  return hit.length;
+  // The stored list itself, with the version it belongs to.
+  _poReread();
 }
 
 function _supContactErrText(err, what) {
@@ -20424,10 +20498,17 @@ function _supAddContact(btn) {
   btn.disabled = true;
   Promise.resolve(C.upsert({ supplier_name: supplier, name, email, phone })).then(() => {
     if (activeTab !== 'supplier') return;
-    // Someone typing in another box meanwhile (a supplier's name, say) is
-    // not cut off: the redraw waits for them.
+    // This row's boxes are done with (unless typed over meanwhile), so they
+    // no longer hold a redraw back.
+    [['name', name], ['email', email], ['phone', phone]].forEach(([f, v]) => {
+      const b = row.querySelector(`[data-supc-new-field="${f}"]`);
+      if (b && String(b.value || '').trim() === v) b.value = '';
+    });
+    // Someone typing in another box meanwhile (a supplier's name, another
+    // new contact) is not cut off: the redraw waits for them.
     const a = document.activeElement;
-    if (!row.isConnected || (a && a.tagName === 'INPUT' && a.id !== 'sup-search' && !row.contains(a))) { _supRedrawWhenIdle(); return; }
+    if (!row.isConnected || (a && a.tagName === 'INPUT' && a.id !== 'sup-search' && !row.contains(a))
+        || _supNewContactTyped(document.getElementById('supplier-root'))) { _supRedrawWhenIdle(); return; }
     renderSupplierTab();
     // Straight on to the next one.
     const next = document.querySelector(`#supplier-root [data-supc-new-row="${btn.dataset.supcAdd}"] [data-supc-new-field="name"]`);
@@ -32123,6 +32204,10 @@ const _bootReady = (async () => {
     if (!r.ok) { if (!_poLoadOk) _poLoadFailed = true; return; }
     const data = await r.json();
     const incoming = Array.isArray(data.purchaseOrders) ? data.purchaseOrders : [];
+    // The server answered, so the list is no longer "could not be read" —
+    // even when an edit in progress below keeps it from being taken yet
+    // (_poLoadOk stays where it is until it is).
+    _poLoadFailed = false;
     // Migrate before diffing: the conversion adds tax_pct to every line, so an
     // as-yet-unconverted blob would otherwise read as a change on every poll
     // and re-render the tab in a loop until someone saves a PO.
@@ -32140,7 +32225,11 @@ const _bootReady = (async () => {
       if (!wasOk && activeTab === 'procurement') _procRerender();
       return;
     }
-    if (_isEditing()) return; // don't overwrite pending edits
+    // Don't overwrite pending edits — except on the Procurement tab, which
+    // reads copies of the orders and edits none in place: its cells being
+    // typed in are no reason to keep showing (and matching rows against) a
+    // list that is behind, a supplier renamed since, say.
+    if (_isEditing() && activeTab !== 'procurement') return;
     // The version is adopted HERE, with the list it belongs to. Taking it
     // before the bail above left this tab believing it held the newest list
     // while still showing the old one, so its next save skipped the merge that
