@@ -52,9 +52,6 @@
   // allowed in the Unit cell — a supplier sells by the roll, the bag, the
   // stick — this is only what the menu offers.
   const UNITS = ['SF', 'LF', 'SY', 'CY', 'TN', 'TON', 'EA', 'LS', 'HR', 'GAL', 'LB', 'AC'];
-  // Lump-sum and hourly bid lines (design, mobilization, labour) almost never
-  // have anything to buy, so Send to Procurement leaves them unchecked.
-  const SKIP_UNITS = new Set(['LS', 'HR']);
   // A "live" job, the same rule the Scheduler and timesheets use.
   const LIVE_STATUSES = new Set(['', 'awarded', 'in progress', 'substantially complete']);
   const MAX_LEN = { description: 500, vendor: 120, quote_number: 120, contact: 120, email: 200, unit: 20 };
@@ -409,7 +406,8 @@
   /**
    * What Send to Procurement offers for a job: every bid line, grouped by cost
    * code in bid order, each one
-   *   'new'      not in Procurement yet — checked unless its unit is LS or HR
+   *   'new'      not in Procurement yet — unticked, like every line: the PM
+   *              ticks what to add (a section's All ticks the section)
    *   'added'    a live bid row already has it — shown greyed, not sendable
    *   'removed'  a bid row had it and was deleted — unchecked; checking it
    *              restores that row (restoreId) instead of adding a second one
@@ -423,9 +421,8 @@
    * ticked. Its entry carries `relink` (the line's id and codes) for the
    * restore to put on the row; a deleted row cannot be PATCHed.
    *
-   * A 'new' line whose material plainly has a row already starts UNTICKED,
-   * with `hint` saying why, so Send never makes a second row of it by
-   * default:
+   * A 'new' line whose material plainly has a row already carries a `hint`
+   * saying so, so it is not ticked into a second row of it unawares:
    *   - `orphans`: live rows of the job that are "not on bid" (their line is
    *     gone) and carry this line's cost + sub code. The re-link only moves a
    *     row when exactly one line has its codes (section 1), so after a
@@ -484,15 +481,13 @@
         entry = { line, state: 'removed', checked: false, restoreId: moved.get(id).id, rowId: moved.get(id).id,
           relink: { bid_item_id: id, cost_code: str(line.cost_code), sub_code: str(line.sub_code) } };
       } else {
-        entry = { line, state: 'new', checked: !SKIP_UNITS.has(normUnit(line.unit)), restoreId: null, rowId: null };
+        entry = { line, state: 'new', checked: false, restoreId: null, rowId: null };
         const orphans = orphanRows.get(codesOf(line.cost_code, line.sub_code)) || [];
         const handRows = hand.get(id) || 0;
         if (orphans.length) {
-          entry.checked = false;
           entry.orphans = orphans.slice();
           entry.hint = `${orphans.length} row${orphans.length === 1 ? '' : 's'} on this job ${orphans.length === 1 ? 'has' : 'have'} these codes but ${orphans.length === 1 ? 'is' : 'are'} not on the bid`;
         } else if (handRows) {
-          entry.checked = false;
           entry.handRows = handRows;
           entry.hint = handRows === 1 ? 'has a hand-added row' : `has ${handRows} hand-added rows`;
         }
@@ -4041,9 +4036,11 @@
     const sync = () => {
       const n = entries.filter(en => en.checked && en.state !== 'added').length;
       const already = entries.filter(en => en.state === 'added').length;
-      foot.querySelector('#fctproc-send-count').textContent = `${n} line${n === 1 ? '' : 's'} ticked`
+      // Nothing starts ticked, so the checklist opens on "Nothing ticked yet"
+      // and a plain (disabled) Add.
+      foot.querySelector('#fctproc-send-count').textContent = (n ? `${n} line${n === 1 ? '' : 's'} ticked` : 'Nothing ticked yet')
         + (already ? ` · ${already} already in Procurement` : '');
-      go.textContent = `Add ${n} line${n === 1 ? '' : 's'}`;
+      go.textContent = n ? `Add ${n} line${n === 1 ? '' : 's'}` : 'Add';
       go.disabled = n === 0;
     };
 
@@ -4066,8 +4063,8 @@
       const offNames = [...new Set(off.map(r => [r.cost_code, r.sub_code].filter(Boolean).join(' / ') || '(no code)'))];
       m.body.innerHTML = `
         <p style="margin:0 0 0.7rem;line-height:1.5;color:var(--muted,#9ca3af)">
-          Tick the bid lines to track. Each one becomes a row with the bid's cost code, sub code, quantity and unit.
-          Lump-sum (LS) and hourly (HR) lines start unticked — there is rarely anything to buy for them.
+          Tick the bid lines to track — nothing starts ticked (a section's <b>All</b> ticks every line in it).
+          Each one becomes a row with the bid's cost code, sub code, quantity and unit.
           Adding again later only adds lines; it never changes rows already there.</p>
         ${relinked.length ? `<p style="margin:0 0 0.7rem;color:var(--green,#22c55e)">Re-linked ${relinked.length} row${relinked.length === 1 ? '' : 's'}
           to the current bid line${relinked.length === 1 ? '' : 's'} with the same cost and sub code (${esc(relinkWords(relinked))}).</p>` : ''}
@@ -4076,7 +4073,7 @@
         ${off.length ? `<p class="fctproc-send-off" style="margin:0 0 0.7rem;line-height:1.5;color:#fbbf24">
           ${off.length} row${off.length === 1 ? ' on this job is' : 's on this job are'} <b>not on the bid</b>:
           ${esc(offNames.slice(0, 6).join('; '))}${offNames.length > 6 ? ` and ${offNames.length - 6} more` : ''}.
-          Lines with the same codes start unticked — tick one only for a material that has no row yet.</p>` : ''}
+          Lines with the same codes are marked — tick one only for a material that has no row yet.</p>` : ''}
         ${plan.groups.map((g, gi) => `
           <div class="fctproc-send-grp">
             <div class="fctproc-send-h"><span>${esc(g.cost_code || 'No cost code')}</span>

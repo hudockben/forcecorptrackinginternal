@@ -87,6 +87,16 @@ const row = (o) => ({
 // ── jsdom harness ─────────────────────────────────────────────────────────
 // A fake API that behaves like the contract in PROCUREMENT_DESIGN.md §3:
 // field-level PATCH, bulk PATCH, idempotent send, soft delete, contacts.
+// The checklist starts with nothing ticked. A test that sends "the four"
+// (every new line of LINES but the LS and HR ones) ticks them itself.
+const FOUR = ['Geofabric', '15" Perf drain', 'Elbows', 'Silt Sock 12inch'];
+function tickLines(env, subs = FOUR) {
+  env.$$('.fctproc-modal .fctproc-send-line').forEach(l => {
+    const cb = l.querySelector('input');
+    if (subs.includes(l.querySelector('.sub').textContent) && !cb.disabled && !cb.checked) { cb.checked = true; env.fire(cb, 'change'); }
+  });
+}
+
 function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCanEdit = true, contacts = [],
                    bidLines = LINES, purchaseOrders = POS.map(p => ({ ...p })), storage = { fct_proc_project_turf: 'p1' }, poLoaded = true } = {}) {
   // Warnings the module logs on purpose (a refresh that failed, a contact it
@@ -489,10 +499,10 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   assert('a hand-added row on a line does not make it "added"…', flat.b3.state === 'new');
   assert('…but the line starts unticked, saying it has a hand-added row',
     !flat.b3.checked && flat.b3.handRows === 1 && /hand-added row/.test(flat.b3.hint), flat.b3);
-  assert('a new EA line starts ticked', flat.b6.state === 'new' && flat.b6.checked);
-  assert('an LS line starts unticked', flat.b4.state === 'new' && !flat.b4.checked);
-  assert('an HR line starts unticked (unit case-insensitive)', flat.b5.state === 'new' && !flat.b5.checked);
-  assert('counts add up', eq(plan.counts, { total: 6, new: 4, added: 1, removed: 1, checked: 1 }), plan.counts);
+  assert('nothing starts ticked: a new EA line, an LS line and an HR line all start unticked, the PM ticks what to add',
+    flat.b6.state === 'new' && !flat.b6.checked && flat.b4.state === 'new' && !flat.b4.checked && flat.b5.state === 'new' && !flat.b5.checked
+    && !flat.b6.hint);
+  assert('counts add up', eq(plan.counts, { total: 6, new: 4, added: 1, removed: 1, checked: 0 }), plan.counts);
   assert('a live row wins over a deleted one for the same line',
     T.sendPlan([LINES[0]], [row({ id: 'd', source: 'bid', bid_item_id: 'b1', deleted_at: 'x' }), row({ id: 'l', source: 'bid', bid_item_id: 'b1' })])
       .groups[0].lines[0].state === 'added');
@@ -561,7 +571,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       /2 rows on this job have these codes but are not on the bid/.test(en.n2.hint) && eq(en.n2.orphans.sort(), ['R2', 'R2b']), en.n2.hint);
     assert('…the same for lines that differ only in case or spacing',
       !en.n3.checked && !en.n3b.checked && /1 row on this job has these codes/.test(en.n3b.hint), [en.n3.hint, en.n3b.hint]);
-    assert('…a line with no such row is still ticked as new', en.n1.state === 'new' && en.n1.checked && !en.n1.hint);
+    assert('…a line with no such row is new, with no hint (and, like every line, unticked)', en.n1.state === 'new' && !en.n1.checked && !en.n1.hint);
     // A live orphan whose re-link PATCH failed is just as much the line's.
     const sp2 = T.sendPlan([DUP[0]], [row({ id: 'G', source: 'bid', bid_item_id: 'old1', cost_code: 'Stormwater', sub_code: 'Geofabric' })], CK);
     assert('…and an orphan whose re-link failed keeps its line unticked',
@@ -1274,10 +1284,13 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   assert('the re-linked line counts as already added', byLine['Silt Sock 12inch'].disabled);
   assert('a line whose row was deleted is unticked "removed earlier"', !byLine['15" Perf drain'].checked && !byLine['15" Perf drain'].disabled
     && /removed earlier/.test(byLine['15" Perf drain'].closest('label').textContent));
-  assert('a new line starts ticked', byLine.Elbows.checked);
-  assert('LS and HR lines start unticked', !byLine.Mobilization.checked && !byLine.Labor.checked);
+  assert('nothing starts ticked: not a new line, nor LS and HR lines', !byLine.Elbows.checked && !byLine.Mobilization.checked && !byLine.Labor.checked);
   const go = s.$('.fctproc-modal [data-send="go"]');
-  assert('the button counts what will be sent', go.textContent === 'Add 1 line');
+  assert('…so Add waits for a tick', go.disabled, go.textContent);
+  assert('…and the note says so, and points at All', /nothing starts ticked/.test(s.$('.fctproc-modal').textContent) && !/start unticked/.test(s.$('.fctproc-modal').textContent));
+  byLine.Elbows.checked = true;
+  s.fire(byLine.Elbows, 'change');
+  assert('the button counts what will be sent', go.textContent === 'Add 1 line' && !go.disabled);
   byLine['15" Perf drain'].checked = true;
   s.fire(byLine['15" Perf drain'], 'change');
   assert('ticking "removed earlier" counts it', go.textContent === 'Add 2 lines');
@@ -1308,6 +1321,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   const other = makeEnv({ rows: [], storage: {} });
   other.P.renderTab(other.root);
   await other.P.openSendModal('p1');
+  other.$('.fctproc-modal [data-sall]').click();
   other.$('.fctproc-modal [data-send="go"]').click();
   await sleep(40);
   assert('sending a job selects it in the tab', other.P._test.state().projectId === 'p1' && other.store.fct_proc_project_turf === 'p1');
@@ -2049,6 +2063,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     e.P.renderTab(e.root);
     await tick(); await tick(); await tick();
     await e.P.openSendModal('p1');
+    tickLines(e);
     const handle = e.handle;
     let lose = true;
     e.handle = c => {
@@ -2061,7 +2076,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('the server applied it but the page got a 504: the error is shown',
       /Gateway timeout/.test(e.$('.fctproc-modal #fctproc-send-err').textContent), e.$('.fctproc-modal #fctproc-send-err').textContent);
     const lines = [...e.$$('.fctproc-modal .fctproc-send-line')];
-    // The four ticked by default (not the LS and HR lines) went in.
+    // The four ticked went in.
     assert('…the checklist is read again: those lines are now "already added"', lines.filter(l => l.classList.contains('added')).length === 4
       && e.$('.fctproc-modal [data-send="go"]').disabled, lines.map(l => l.className));
     assert('…and the sheet behind shows the rows the server has', e.$$('tr.fctproc-row').length === 4, e.$$('tr.fctproc-row').length);
@@ -2074,10 +2089,8 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     await tick(); await tick(); await tick();
     await e.P.openSendModal('p1');
     const lineEl = sub => e.$$('.fctproc-modal .fctproc-send-line').find(l => l.querySelector('.sub').textContent === sub);
-    const untick = sub => { const cb = lineEl(sub).querySelector('input'); cb.checked = false; e.fire(cb, 'change'); };
-    untick('15" Perf drain');
-    untick('Silt Sock 12inch');
-    assert('two lines unticked: 2 to send', /Add 2 lines/.test(e.$('.fctproc-modal [data-send="go"]').textContent), e.$('.fctproc-modal [data-send="go"]').textContent);
+    tickLines(e, ['Geofabric', 'Elbows']);
+    assert('two lines ticked: 2 to send', /Add 2 lines/.test(e.$('.fctproc-modal [data-send="go"]').textContent), e.$('.fctproc-modal [data-send="go"]').textContent);
     // The send fails and the server does nothing; the re-read is slow, and
     // the PM ticks the LS line while it is out.
     const handle = e.handle;
@@ -2098,7 +2111,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     releaseRead();
     await sleep(40);
     const state = Object.fromEntries(e.$$('.fctproc-modal .fctproc-send-line').map(l => [l.querySelector('.sub').textContent, l.querySelector('input').checked]));
-    assert('after the failure, the lines the PM unticked are still unticked', state['15" Perf drain'] === false && state['Silt Sock 12inch'] === false, state);
+    assert('after the failure, the lines the PM left unticked are still unticked', state['15" Perf drain'] === false && state['Silt Sock 12inch'] === false, state);
     assert('…the ones left ticked are still ticked, and one ticked while the list was read again stays ticked',
       state.Geofabric === true && state.Elbows === true && state.Mobilization === true && state.Labor === false, state);
     assert('…the message says nothing was sent', /^Not added: Gateway timeout/.test(e.$('#fctproc-send-err').textContent), e.$('#fctproc-send-err').textContent);
@@ -2114,6 +2127,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     e.P.renderTab(e.root);
     await tick(); await tick(); await tick();
     await e.P.openSendModal('p1');
+    tickLines(e);
     const handle = e.handle;
     let lose = true;
     e.handle = c => {
@@ -2131,6 +2145,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     p.P.renderTab(p.root);
     await tick(); await tick(); await tick();
     await p.P.openSendModal('p1');
+    tickLines(p);
     const h2 = p.handle;
     p.handle = c => {
       if (c.q.action === 'send') {

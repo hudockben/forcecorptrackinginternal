@@ -465,10 +465,14 @@ async function asAdmin(browser, W) {
   let lines = await sendLines(page);
   const byName = n => lines.find(l => l.sub === n) || {};
   ok('the checklist lists every bid line', lines.length === 3, lines);
-  ok('…Geofabric and the drain ticked', byName('Geofabric').checked && byName(DRAIN).checked, lines);
-  ok('…the lump-sum Mobilization not', byName('Mobilization').checked === false && byName('Mobilization').disabled === false, lines);
+  ok('…with nothing ticked to start with — Geofabric, the drain and the lump-sum Mobilization all unticked',
+    lines.every(l => l.checked === false && l.disabled === false), lines);
   ok('…grouped by cost code', eq(await page.$$eval('.fctproc-modal .fctproc-send-h > span:first-child', s => s.map(x => x.textContent.trim())), ['Stormwater', 'Mobilization']));
   const go = page.locator('.fctproc-modal [data-send="go"]');
+  ok('…so Add waits for a tick, and the footer says so', (await go.textContent()).trim() === 'Add' && await go.isDisabled()
+    && /Nothing ticked yet/.test(await page.textContent('#fctproc-send-count')), [await go.textContent(), await page.textContent('#fctproc-send-count')]);
+  await page.locator('.fctproc-modal .fctproc-send-line', { hasText: 'Geofabric' }).locator('input').check();
+  await page.locator('.fctproc-modal .fctproc-send-line', { hasText: 'Perimeter Collector' }).locator('input').check();
   ok('the button counts what goes', (await go.textContent()).trim() === 'Add 2 lines', await go.textContent());
   await shot(page, 'send-modal.png');
   await go.click();
