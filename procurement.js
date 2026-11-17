@@ -2163,7 +2163,7 @@
       ${p['job-number'] ? `<span class="fctproc-jobno">Job #${esc(p['job-number'])}</span>` : ''}
       <span class="fctproc-counts" id="fctproc-counts">${countsHtml(ctx)}</span>
       <span class="fctproc-cluster fctproc-right">
-      ${edit ? `<button type="button" class="btn btn-ghost fctproc-b" data-act="send" title="Pick bid lines to add as rows">&#10148; Send to Procurement</button>
+      ${edit ? `<button type="button" class="btn btn-ghost fctproc-b" data-act="send" title="Pick bid lines to add to this sheet as rows">&#10148; Add to Procurement</button>
                 <button type="button" class="btn btn-green fctproc-b" data-act="add">+ Add Row</button>` : ''}
       <button type="button" class="btn btn-ghost fctproc-b" data-act="xlsx" title="The rows shown, as an Excel workbook">&#11015; Excel</button>
       <button type="button" class="btn btn-ghost fctproc-b" data-act="csv" title="The rows shown, as CSV">&#11015; CSV</button>
@@ -2355,7 +2355,7 @@
     if (!st.rows.length) {
       const hasBid = (ctx.bidLines || []).length > 0;
       body = `<tr class="fctproc-nomatch"><td colspan="${cols.length}">No procurement rows for this job yet.${!edit ? ''
-        : hasBid ? ' Use <b>Send to Procurement</b> to bring in the bid lines, or <b>+ Add Row</b> for a material by hand.'
+        : hasBid ? ' Use <b>Add to Procurement</b> to bring in the bid lines, or <b>+ Add Row</b> for a material by hand.'
         : ' This job has no bid lines yet — add them on the bid page (or import a Procore estimate) to send them here, or use <b>+ Add Row</b> for a material by hand.'}</td></tr>`;
     } else if (!rows.length) {
       body = `<tr class="fctproc-nomatch"><td colspan="${cols.length}">No rows match the filters.
@@ -3868,7 +3868,7 @@
     if (!(cfg.perm && cfg.perm.canEdit)) { toast('You have view-only access to Procurement.', 'error'); return null; }
     const p = project(pid);
     const jobName = p ? projLabel(p) : 'this job';
-    const m = modal(`Send to Procurement — ${jobName}`, '<div style="color:var(--muted,#888);padding:1rem 0">Loading the bid lines…</div>', { wide: true });
+    const m = modal(`Add to Procurement — ${jobName}`, '<div style="color:var(--muted,#888);padding:1rem 0">Loading the bid lines…</div>', { wide: true });
 
     if (!(makeCtx(pid).bidLines || []).length) {
       m.body.innerHTML = `<div class="fctproc-empty" style="border:none">${esc(jobName)} has no bid lines yet.
@@ -3881,7 +3881,7 @@
     if (bid.why === 'differs') {
       m.body.innerHTML = `<div class="fctproc-err">The bid on this page is not the one saved for ${esc(jobName)} — it has
         been changed somewhere else since this page read it, or a change made here has not reached the server.
-        Reload the page, then Send to Procurement again. Nothing was sent.</div>`;
+        Reload the page, then open Add to Procurement again. Nothing was added.</div>`;
       return m;
     }
 
@@ -3900,7 +3900,7 @@
       });
     } catch (err) {
       m.body.innerHTML = `<div class="fctproc-err">Could not read what is already in Procurement for ${esc(jobName)}: ${esc(err.message)}.
-        Nothing was sent.</div>`;
+        Nothing was added.</div>`;
       return m;
     }
     if (!m.el.isConnected) return m;     // closed meanwhile
@@ -3908,7 +3908,7 @@
     // moment ago (replaced elsewhere in between). Same answer as above.
     if (relinked.stale) {
       m.body.innerHTML = `<div class="fctproc-err">The bid for ${esc(jobName)} was changed somewhere else just now, so this
-        page's copy of it is out of date. Reload the page, then Send to Procurement again. Nothing was sent.</div>`;
+        page's copy of it is out of date. Reload the page, then open Add to Procurement again. Nothing was added.</div>`;
       return m;
     }
 
@@ -3919,7 +3919,7 @@
     foot.innerHTML = `<span id="fctproc-send-count" style="margin-right:auto;color:var(--muted,#9ca3af)"></span>
       <span id="fctproc-send-err" style="color:var(--red,#ef4444)"></span>
       <button type="button" class="btn btn-ghost fctproc-b" data-send="cancel">Cancel</button>
-      <button type="button" class="btn btn-green fctproc-b" data-send="go">Send</button>`;
+      <button type="button" class="btn btn-green fctproc-b" data-send="go">Add</button>`;
     m.body.parentElement.appendChild(foot);
     const go = foot.querySelector('[data-send="go"]');
     const sync = () => {
@@ -3927,7 +3927,7 @@
       const already = entries.filter(en => en.state === 'added').length;
       foot.querySelector('#fctproc-send-count').textContent = `${n} line${n === 1 ? '' : 's'} ticked`
         + (already ? ` · ${already} already in Procurement` : '');
-      go.textContent = `Send ${n} line${n === 1 ? '' : 's'}`;
+      go.textContent = `Add ${n} line${n === 1 ? '' : 's'}`;
       go.disabled = n === 0;
     };
 
@@ -3952,7 +3952,7 @@
         <p style="margin:0 0 0.7rem;line-height:1.5;color:var(--muted,#9ca3af)">
           Tick the bid lines to track. Each one becomes a row with the bid's cost code, sub code, quantity and unit.
           Lump-sum (LS) and hourly (HR) lines start unticked — there is rarely anything to buy for them.
-          Sending again later only adds lines; it never changes rows already there.</p>
+          Adding again later only adds lines; it never changes rows already there.</p>
         ${relinked.length ? `<p style="margin:0 0 0.7rem;color:var(--green,#22c55e)">Re-linked ${relinked.length} row${relinked.length === 1 ? '' : 's'}
           to the current bid line${relinked.length === 1 ? '' : 's'} with the same cost and sub code (${esc(relinkWords(relinked))}).</p>` : ''}
         ${bid.why === 'unread' ? `<p style="margin:0 0 0.7rem;color:#fbbf24">The bid could not be checked against the server just now,
@@ -3970,8 +3970,8 @@
               const i = entries.indexOf(en);
               const qty = en.line.quantity == null ? '' : fmtQty(en.line.quantity);
               const tag = tags[en.state] || (en.hint ? `<span class="fctproc-tag amber" title="${esc(en.orphans
-                ? 'Rows with this cost and sub code are already on this job, kept from an earlier bid. Sending this line adds another row for it.'
-                : 'A row added by hand is already coded to this line. Sending it adds the bid\'s own row as well.')}">${esc(en.hint)}</span>` : '');
+                ? 'Rows with this cost and sub code are already on this job, kept from an earlier bid. Adding this line gives it another row.'
+                : 'A row added by hand is already coded to this line. Adding it brings in the bid\'s own row as well.')}">${esc(en.hint)}</span>` : '');
               return `<label class="fctproc-send-line ${en.state}${en.hint ? ' hinted' : ''}">
                 <input type="checkbox" data-si="${i}" ${en.checked ? 'checked' : ''} ${en.state === 'added' ? 'disabled' : ''}>
                 <span class="sub" title="${esc(en.line.sub_code)}">${esc(en.line.sub_code || '(no sub code)')}</span>
@@ -4022,7 +4022,7 @@
         .map(en => (en.relink ? { id: en.restoreId, ...en.relink } : en.restoreId));
       sending = true;
       go.disabled = true;
-      go.textContent = 'Sending…';
+      go.textContent = 'Adding…';
       const errBox = foot.querySelector('#fctproc-send-err');
       errBox.textContent = '';
       try {
@@ -4044,7 +4044,7 @@
         const n = created.length + restored.length;
         const already = picked.length - n;
         toast(n
-          ? `Sent ${n} line${n === 1 ? '' : 's'} to Procurement${already > 0 ? ` (${already} ${already === 1 ? 'was' : 'were'} already there)` : ''}`
+          ? `Added ${n} line${n === 1 ? '' : 's'} to Procurement${already > 0 ? ` (${already} ${already === 1 ? 'was' : 'were'} already there)` : ''}`
           : `${already === 1 ? 'That line was' : `All ${already} lines were`} already in Procurement — nothing new was added.`);
         window.dispatchEvent(new CustomEvent('fct:procurement-sent', { detail: { projectId: pid, created: created.length, restored: restored.length } }));
       } catch (err) {
@@ -4075,16 +4075,16 @@
             text = `${err.message} The list above has been read again.`;
           } else if (reread && landed && landed === picked.length) {
             good = true;
-            text = `The send went through after all: ${n(landed, 'line is', 'lines are')} now in Procurement, shown above as `
+            text = `They were added after all: ${n(landed, 'line is', 'lines are')} now in Procurement, shown above as `
               + `"already added". Only the server's answer was lost on the way back — ${err.message}.`;
           } else if (reread && landed) {
             text = `${landed} of the ${n(picked.length, 'line', 'lines')} you ticked ${landed === 1 ? 'is' : 'are'} now in Procurement; `
-              + `the server's answer was lost — ${err.message}. The list above has been read again — check it before sending the rest.`;
+              + `the server's answer was lost — ${err.message}. The list above has been read again — check it before adding the rest.`;
           } else if (reread) {
-            text = `Not sent: ${err.message}. The list above has been read again — check it before sending again.`;
+            text = `Not added: ${err.message}. The list above has been read again — check it before trying again.`;
           } else {
-            text = `The send may not have gone through (${err.message}), and the list could not be read again to check. `
-              + 'Close this and open Send to Procurement again before resending — lines already in Procurement show as "already added".';
+            text = `The lines may not have been added (${err.message}), and the list could not be read again to check. `
+              + 'Close this and open Add to Procurement again before trying again — lines already in Procurement show as "already added".';
           }
           const box = foot.querySelector('#fctproc-send-err');
           box.textContent = text;

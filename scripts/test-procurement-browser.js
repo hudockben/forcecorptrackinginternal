@@ -469,7 +469,7 @@ async function asAdmin(browser, W) {
   ok('…the lump-sum Mobilization not', byName('Mobilization').checked === false && byName('Mobilization').disabled === false, lines);
   ok('…grouped by cost code', eq(await page.$$eval('.fctproc-modal .fctproc-send-h > span:first-child', s => s.map(x => x.textContent.trim())), ['Stormwater', 'Mobilization']));
   const go = page.locator('.fctproc-modal [data-send="go"]');
-  ok('the button counts what goes', (await go.textContent()).trim() === 'Send 2 lines', await go.textContent());
+  ok('the button counts what goes', (await go.textContent()).trim() === 'Add 2 lines', await go.textContent());
   await shot(page, 'send-modal.png');
   await go.click();
   await until(() => page.evaluate(() => activeTab === 'procurement' && !bidViewProjId));

@@ -1277,14 +1277,14 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   assert('a new line starts ticked', byLine.Elbows.checked);
   assert('LS and HR lines start unticked', !byLine.Mobilization.checked && !byLine.Labor.checked);
   const go = s.$('.fctproc-modal [data-send="go"]');
-  assert('the button counts what will be sent', go.textContent === 'Send 1 line');
+  assert('the button counts what will be sent', go.textContent === 'Add 1 line');
   byLine['15" Perf drain'].checked = true;
   s.fire(byLine['15" Perf drain'], 'change');
-  assert('ticking "removed earlier" counts it', go.textContent === 'Send 2 lines');
+  assert('ticking "removed earlier" counts it', go.textContent === 'Add 2 lines');
   s.$$('.fctproc-modal [data-sall]')[2].click();
-  assert('group "All" ticks that group', byLine.Mobilization.checked && byLine.Labor.checked && go.textContent === 'Send 4 lines');
+  assert('group "All" ticks that group', byLine.Mobilization.checked && byLine.Labor.checked && go.textContent === 'Add 4 lines');
   s.$$('.fctproc-modal [data-snone]')[2].click();
-  assert('group "None" unticks it', !byLine.Mobilization.checked && go.textContent === 'Send 2 lines');
+  assert('group "None" unticks it', !byLine.Mobilization.checked && go.textContent === 'Add 2 lines');
   go.click();
   await sleep(30);
   const sendCall = s.calls.find(c => c.method === 'POST' && c.q.action === 'send');
@@ -1318,7 +1318,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   const failRead = makeEnv({ rows: [] });
   failRead.db.failGet = true;
   await failRead.P.openSendModal('p1');
-  assert('a failed read -> no checklist, nothing sent', /Nothing was sent/.test(failRead.$('.fctproc-modal').textContent) && !failRead.$('[data-si]'));
+  assert('a failed read -> no checklist, nothing sent', /Nothing was added/.test(failRead.$('.fctproc-modal').textContent) && !failRead.$('[data-si]'));
 
   // ── Contacts client ───────────────────────────────────────────────────
   console.log('\n[contacts client]');
@@ -2077,7 +2077,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     const untick = sub => { const cb = lineEl(sub).querySelector('input'); cb.checked = false; e.fire(cb, 'change'); };
     untick('15" Perf drain');
     untick('Silt Sock 12inch');
-    assert('two lines unticked: 2 to send', /Send 2 lines/.test(e.$('.fctproc-modal [data-send="go"]').textContent), e.$('.fctproc-modal [data-send="go"]').textContent);
+    assert('two lines unticked: 2 to send', /Add 2 lines/.test(e.$('.fctproc-modal [data-send="go"]').textContent), e.$('.fctproc-modal [data-send="go"]').textContent);
     // The send fails and the server does nothing; the re-read is slow, and
     // the PM ticks the LS line while it is out.
     const handle = e.handle;
@@ -2101,7 +2101,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('after the failure, the lines the PM unticked are still unticked', state['15" Perf drain'] === false && state['Silt Sock 12inch'] === false, state);
     assert('…the ones left ticked are still ticked, and one ticked while the list was read again stays ticked',
       state.Geofabric === true && state.Elbows === true && state.Mobilization === true && state.Labor === false, state);
-    assert('…the message says nothing was sent', /^Not sent: Gateway timeout/.test(e.$('#fctproc-send-err').textContent), e.$('#fctproc-send-err').textContent);
+    assert('…the message says nothing was sent', /^Not added: Gateway timeout/.test(e.$('#fctproc-send-err').textContent), e.$('#fctproc-send-err').textContent);
     e.$('.fctproc-modal [data-send="go"]').click();
     await sleep(40);
     const sent = e.db.rows.map(r => r.sub_code).sort();
@@ -2124,8 +2124,8 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     e.$('.fctproc-modal [data-send="go"]').click();
     await sleep(40);
     const said = e.$('#fctproc-send-err').textContent;
-    assert('the message reports what the re-read shows: it went through', /went through after all/.test(said) && /4 lines are now in Procurement/.test(said)
-      && !/Not sent/.test(said), said);
+    assert('the message reports what the re-read shows: it went through', /added after all/.test(said) && /4 lines are now in Procurement/.test(said)
+      && !/Not added/.test(said), said);
     // Part of it in by somebody else, the rest refused: says how many.
     const p = makeEnv({ rows: [] });
     p.P.renderTab(p.root);
@@ -2310,7 +2310,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     const e = makeEnv({ rows: [], bidLines: [] });
     e.P.renderTab(e.root);
     await tick(); await tick(); await tick();
-    assert('the empty sheet does not point at Send to Procurement', !/Use <b>Send to Procurement<\/b>|Use Send to Procurement/.test(e.$('#fctproc-wrap').textContent)
+    assert('the empty sheet does not point at Send to Procurement', !/Use <b>(Send|Add) to Procurement<\/b>|Use (Send|Add) to Procurement/.test(e.$('#fctproc-wrap').textContent)
       && /no bid lines yet/.test(e.$('#fctproc-wrap').textContent), e.$('#fctproc-wrap').textContent);
     e.$('[data-act="add"]').click();
     await sleep(20);
