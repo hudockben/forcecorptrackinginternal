@@ -27,6 +27,10 @@
  *  - a supplier rename made while a PO save's answer is still to come: the
  *    answer (stored before the rename) does not leave the old supplier on the
  *    page, and Procurement's row on that order reads Ordered
+ *  - a person's click (press, release) from a cell onto + Add Row or Create
+ *    PO from selected while a save's answer waits for focus to leave: the
+ *    press lets the answer in, the sheet's redraw for it waits for the
+ *    release, and the click is acted on
  *  - nothing throws
  */
 
@@ -457,6 +461,69 @@ const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: pa
       const stored = (await storedPOs()).find(p => p.id === 'po9');
       ok('  stored PO-0009: the new supplier', stored.supplier === 'Acme Supply Co', stored.supplier);
       await shot(page, 'rename-late-answer');
+      ok('  nothing threw', errors.length === 0, errors.join(' | '));
+      await ctx.close();
+    }
+
+    // ══ 6. A click from a cell onto a sheet button, with a save's answer held ══
+    // The press moves focus out of the cell, which lets the held answer in,
+    // and the sheet redraws for it: the redraw waits for the button to come
+    // up, so the button pressed is still there for the click.
+    for (const v of ['add', 'create']) {
+      const what = v === 'add' ? '+ Add Row, from a Quantity cell' : 'Create PO from selected, from a row\'s checkbox';
+      console.log(`\n[a person's click on ${what}, while a PO save's answer waits for focus to leave the sheet]`);
+      await seed();
+      const W = { log: [] };
+      const { ctx, page, errors } = await openPage(browser, W);
+      await showSheet(page, 3);
+      await tab(page, 'po');
+      ok('colleague raised PO-0010 for 04-300 / 0700, Acme Supply',
+        (await colleagueOrder('PO-0010', '04-300', '0700', 'Acme Supply')).statusCode === 200);
+      const title = page.locator('[data-po-id="po7"][data-po-field="title"]').first();
+      await title.click();
+      await title.fill('Geofabric rolls');
+      W.holdPutAnswer = 1500;
+      await page.click('.tab-btn[data-tab="procurement"]');   // the blur saves
+      await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(c => c === 3), 8000);
+      if (v === 'add') await page.locator('#procurement-root [data-pr="r1"][data-pf="quantity"]').click();
+      else await page.check('#procurement-root [data-sel="r1"]');
+      await until(() => W.log.some(l => l.api === 'purchase-orders' && l.method === 'PUT' && l.status === 200), 6000);
+      await until(() => page.evaluate(() => _poDeferredAdopt.length === 1), 4000);
+      ok('  the answer (with PO-0010) waits while the cell has focus', await page.evaluate(() => _poDeferredAdopt.length === 1
+        && !purchaseOrders.some(p => p.po_number === 'PO-0010')));
+      const sel = v === 'add' ? '#procurement-root [data-act="add"]' : '#procurement-root [data-act="bulk-po"]';
+      await page.evaluate(sel => {
+        window.__btn = document.querySelector(sel);
+        window.__clicks = 0;
+        document.addEventListener('click', e => { if (e.target.closest && e.target.closest(sel)) window.__clicks++; }, true);
+      }, sel);
+      const writesBefore = W.log.filter(l => l.api === 'procurement' && l.method !== 'GET').length;
+      const bb = await page.locator(sel).boundingBox();
+      await page.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2);
+      await page.mouse.down();
+      await sleep(120);
+      const mid = await page.evaluate(sel => ({
+        taken: purchaseOrders.some(p => p.po_number === 'PO-0010'),
+        same: window.__btn.isConnected && document.querySelector(sel) === window.__btn,
+      }), sel);
+      ok('  the press let the answer in, and the button pressed is still there', mid.taken && mid.same, mid);
+      await page.mouse.up();
+      if (v === 'add') {
+        await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(c => c === 4), 4000);
+        const writes = W.log.filter(l => l.api === 'procurement' && l.method !== 'GET').length - writesBefore;
+        ok('  the click is acted on: a row is added', await page.evaluate(() => window.__clicks) === 1 && writes >= 1
+          && await page.locator('#procurement-root tr.fctproc-row').count() === 4, { clicks: await page.evaluate(() => window.__clicks), writes });
+      } else {
+        await until(() => modalText(page).then(t => /already on/.test(t)), 6000);
+        ok('  the click is acted on: Create finds r1 already on PO-0010', await page.evaluate(() => window.__clicks) === 1
+          && /already on PO-0010/.test(await modalText(page)), await modalText(page));
+        await closeModal(page);
+      }
+      await until(async () => isOrdered(await rowSays(page, 'r1')), 3000);
+      const r1 = await rowSays(page, 'r1');
+      ok('  …and the sheet redraws for the answer once the button is up: r1 Ordered on PO-0010', isOrdered(r1) && r1.pos === 'PO-0010', r1);
+      ok('  no order raised', pagePosts(W).length === 0, pagePosts(W).map(l => l.body.purchaseOrder.po_number));
+      await shot(page, 'click-held-answer-' + v);
       ok('  nothing threw', errors.length === 0, errors.join(' | '));
       await ctx.close();
     }

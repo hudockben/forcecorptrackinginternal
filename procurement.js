@@ -1987,12 +1987,21 @@
    * and leaves no full redraw owed.
    */
   let redrawDeferred = false;
+  // A whole-sheet redraw the page asked for (rerender) while a press in the
+  // sheet was down: drawn once the button is up (see rerender).
+  let rerenderOwed = false;
   // When a mouse button went down in the sheet, until it comes up (0).
   let pressedAt = 0;
   function onSheetMouseDown(e) { if (e.button === 0) pressedAt = Date.now(); }
   function onDocMouseUp() {
     if (!pressedAt) return;
     pressedAt = 0;
+    // After the click the press was aimed at (it fires before this runs).
+    if (rerenderOwed) setTimeout(() => {
+      if (!rerenderOwed || pressedAt) return;       // drawn since, or pressed again
+      rerenderOwed = false;
+      window.FCTProcurement.rerender();
+    }, 0);
     if (redrawDeferred) setTimeout(redrawWhenFree, 0);
   }
   document.addEventListener('mouseup', onDocMouseUp, true);
@@ -4274,6 +4283,15 @@
     /** Redraw from what is in memory (POs or the bid changed). No fetch. */
     rerender() {
       if (!isMounted()) return;
+      // A press in the sheet is down (on a button, a header, a checkbox). The
+      // press moved focus out of a cell, and what that let through (a PO
+      // save's answer held while the cell had focus) asks for this redraw:
+      // drawn now, the button under the pointer is replaced before it comes
+      // up, and the click — Add Row, Create PO, an export — lands on nothing.
+      // Drawn once the button is up instead (onDocMouseUp), as redrawWhenFree
+      // is.
+      if (pressedAt && Date.now() - pressedAt < 5000) { rerenderOwed = true; return; }
+      rerenderOwed = false;
       const a = document.activeElement;
       // The job list moved under us: a rename shows in the picker, and a job
       // deleted elsewhere gets the "no longer on the list" note, not a table.
