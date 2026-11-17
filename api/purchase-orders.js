@@ -39,6 +39,20 @@
  * is mirrored to po_deliveries — the JSON blob carries `tax_pct` and is the
  * source of truth on read, so the normalized fallback below losing it is fine:
  * the frontend re-derives the percentage from the dollar amount.
+ *
+ * Both writes take `editedFields`, the order-level fields the page changed —
+ * a list on POST, `{ [orderId]: [...] }` on PUT — and `editedLineFields`, the
+ * same for each delivery's keys: `{ lineId: [...] }` on POST,
+ * `{ [orderId]: { lineId: [...] } }` on PUT. Only those are taken from the
+ * page's copy; the rest keep their stored values, so a copy a minute old cannot
+ * blank what someone else filled in or put back a quantity someone corrected.
+ * See settleHeaderFields / settleLineFigures in api/lib/po-sync.js.
+ *
+ * A tab sending `editedLineFields` on PUT also sends `deletedLineIds`
+ * (`{ [orderId]: [...] }`) and `deletedOrderIds`, has its save merged under a
+ * compare-and-set, has what it changed written to the job rows here (it no
+ * longer writes them itself), and gets back `orders`: every order that came out
+ * different from what it sent.
  */
 const { neon } = require('@neondatabase/serverless');
 const {
@@ -236,7 +250,8 @@ module.exports = async (req, res) => {
 
     // ── PUT (full sync) ───────────────────────────────────────────────────
     if (req.method === 'PUT') {
-      const { purchaseOrders } = req.body || {};
+      const body = req.body || {};
+      const { purchaseOrders } = body;
       if (!Array.isArray(purchaseOrders)) {
         return res.status(400).json({ error: 'purchaseOrders array required' });
       }
@@ -244,7 +259,12 @@ module.exports = async (req, res) => {
       // Bulk-wipe protection: empty incoming list against an existing
       // non-trivial blob is almost always a client bug. Single-row deletes
       // still work. Override with ?force=1 for genuine wipes.
-      if (purchaseOrders.length === 0 && req.query.force !== '1') {
+      // A tab that says what it deleted is judged on the merged result instead,
+      // below: an empty list with every stored order named as deleted is a
+      // deliberate delete, and one that merges back to orders is no wipe.
+      const saysDeleted = Boolean(body.editedLineFields && typeof body.editedLineFields === 'object'
+                                  && !Array.isArray(body.editedLineFields));
+      if (purchaseOrders.length === 0 && req.query.force !== '1' && !saysDeleted) {
         const existing = await sql`SELECT value FROM app_data WHERE key = ${blobKey}`;
         const existingArr = Array.isArray(existing[0]?.value) ? existing[0].value : null;
         if (existingArr && existingArr.length > 1) {
@@ -274,43 +294,153 @@ module.exports = async (req, res) => {
       //
       // The one imprecision is a delete racing an edit of the same order: the
       // order comes back. That is the safe direction, and it is recoverable —
-      // the other way round is not.
-      const baseUpdatedAt = (req.body || {}).baseUpdatedAt || null;
+      // the other way round is not. A tab that says what it deleted
+      // (deletedOrderIds / deletedLineIds) does not have even that.
+      const baseUpdatedAt = body.baseUpdatedAt || null;
       const baseTs = baseUpdatedAt ? Date.parse(baseUpdatedAt) : NaN;
-      let toWrite = purchaseOrders;
-      // The list as stored before this save, once something has read it. The
-      // creation stamps below are settled against it.
-      let storedList = null;
-      // Everything the merge arm put back, at any level. The response reports
-      // the SUM, because the client withholds the new version whenever this is
-      // non-zero — and a merge it is not told about is worse than no merge at
-      // all: the client adopts the post-merge version, its next save matches
-      // the compare-and-set, the merge does not fire, and what was just
-      // recovered is written straight back out.
-      let mergedLines = 0;      // deliveries the client had not seen
-      let mergedLinks = 0;      // po_row_ids restored onto lines it had
-      const supersededRows = [];  // cost rows a stale copy minted over a stored one
 
-      if (!isNaN(baseTs) && req.query.force !== '1') {
-        const cur = await sql`SELECT value, updated_at FROM app_data WHERE key = ${blobKey}`;
-        const stored = cur.length && Array.isArray(cur[0].value) ? cur[0].value : [];
-        storedList = stored;
-        // Compare instants, not strings — the driver hands back a Date and the
-        // client always sends the ISO form, so the two never match textually.
-        // Comparing them as text made `moved` true on EVERY save: a deleted
-        // order looked like one the client had never seen and was written
-        // straight back, so no division tab could delete a purchase order at
-        // all. api/data/[key].js carries the same warning over its own guard.
-        const curTs = cur.length && cur[0].updated_at ? new Date(cur[0].updated_at).getTime() : null;
-        const moved = curTs !== null && curTs !== baseTs;
+      // What the tab says it changed: the orders' own fields, and per key, the
+      // deliveries'. `editedLineFields` is what a tab sends from this version
+      // on, on every save, `{}` when nothing — its presence is what says the
+      // tab tracks its edits per key, its deletions, and takes the merged
+      // orders back (below). A tab still running older code sends none of it
+      // and is handled exactly as before.
+      const headerEditsByOrder = poSync.editedFieldsByOrder(body.editedFields);
+      const lineEditsByOrder   = poSync.editedLineFieldsByOrder(body.editedLineFields);
+      const newProtocol = lineEditsByOrder !== null;
+      const NO_LINES = new Map();
+      const lineEditsFor   = id => (lineEditsByOrder && lineEditsByOrder.get(String(id))) || NO_LINES;
+      const headerEditsFor = id => (headerEditsByOrder && headerEditsByOrder.get(String(id))) || new Set();
+      const deletedOrders = new Set(newProtocol && Array.isArray(body.deletedOrderIds)
+        ? body.deletedOrderIds.slice(0, 5000).map(String) : []);
+      const deletedLines = new Map();
+      if (newProtocol && body.deletedLineIds && typeof body.deletedLineIds === 'object' && !Array.isArray(body.deletedLineIds)) {
+        for (const [id, ids] of Object.entries(body.deletedLineIds).slice(0, 5000)) {
+          if (Array.isArray(ids)) deletedLines.set(String(id), new Set(ids.slice(0, 2000).map(String)));
+        }
+      }
+      const deletedLinesFor = id => deletedLines.get(String(id)) || new Set();
+
+      // A current tab merges even with no version to send — it read the list
+      // before there was one — so an order purchasing raised since is kept.
+      const mergePath = req.query.force !== '1' && (!isNaN(baseTs) || newProtocol);
+
+      // The orders exactly as the tab sent them — every attempt below merges a
+      // fresh copy, since the merge changes lines in place, and what the tab is
+      // sent back is whatever came out different.
+      const sentText = JSON.stringify(purchaseOrders);
+      const sentById = new Map(purchaseOrders.filter(p => p && p.id).map(p => [String(p.id), JSON.stringify(p)]));
+
+      /**
+       * One pass of the merge, over `list` (the tab's copy) against `stored`
+       * (the list as just read). Reads, but writes nothing, so the
+       * compare-and-set below can run it again over a newer list.
+       */
+      async function mergeInto(list, stored, moved) {
+        let toWrite = list;
+        // Everything the merge arm put back, at any level. The response
+        // reports the SUM, because an older tab withholds the new version
+        // whenever this is non-zero — and a merge it is not told about is worse
+        // than no merge at all: the client adopts the post-merge version, its
+        // next save matches the compare-and-set, the merge does not fire, and
+        // what was just recovered is written straight back out.
+        let mergedLines = 0;        // deliveries the client had not seen
+        let mergedLinks = 0;        // po_row_ids restored onto lines it had
+        let mergedFields = 0;       // order fields kept over a copy that had not changed them
+        let mergedLineFigures = 0;  // deliveries whose figures were kept the same way
+        const supersededRows = [];  // cost rows a stale copy minted over a stored one
+        const jobMovedIds = new Set();
+        const storedById = new Map(stored.filter(p => p && p.id).map(p => [p.id, p]));
+
         if (moved && stored.length) {
-          const sent = new Set(purchaseOrders.map(p => p && p.id).filter(Boolean));
-          const unseen = stored.filter(p => p && p.id && !sent.has(p.id));
+          const sent = new Set(list.map(p => p && p.id).filter(Boolean));
+          const unseen = stored.filter(p => p && p.id && !sent.has(p.id) && !deletedOrders.has(String(p.id)));
           if (unseen.length) {
             console.warn(`[purchase-orders] merged ${unseen.length} order(s) the client had not seen for ${blobKey}`);
-            toWrite = purchaseOrders.concat(unseen);
+            toWrite = list.concat(unseen);
           }
+        }
 
+        // ...and the orders' own fields. The tab sends every order it holds,
+        // each as old as its last refresh, and storing them whole put back
+        // whatever purchasing had changed since on orders the tab never
+        // touched: a Turf foreman approving PO-0364 reverted PO-0365's title,
+        // supplier, code and status to the blank copy the tab loaded. A tab
+        // that says which fields it changed has only those taken from it —
+        // see settleHeaderFields. An order the map does not name is one it
+        // changed nothing on.
+        //
+        // Before the link checks below: they compare the job, and a stale
+        // copy's old job read as the tab having MOVED the order — which
+        // swept the cost rows purchasing had put on the new one.
+        //
+        // A current tab gets it on every save, not only when the list moved:
+        // its copy can still differ where it took on a row write's echo or a
+        // poll mid-save, and anything it did not mark is not its edit.
+        if (headerEditsByOrder && stored.length && (moved || newProtocol)) {
+          toWrite = toWrite.map(po => {
+            const was = po && po.id ? storedById.get(po.id) : null;
+            if (!was || po === was) return po;
+            const copy = { ...po };
+            const kept = poSync.settleHeaderFields(copy, was, headerEditsFor(po.id));
+            if (!kept.length) return po;
+            mergedFields += kept.length;
+            return copy;
+          });
+          if (mergedFields) {
+            console.warn(`[purchase-orders] kept ${mergedFields} stored order field(s) a stale copy had not changed for ${blobKey}`);
+          }
+        }
+
+        // ...and the deliveries' figures, key by key — see settleLineFigures.
+        // Not on an order whose job the tab just moved: it re-minted those
+        // rows from its own figures, and the order must match them.
+        if (newProtocol && stored.length) {
+          toWrite = toWrite.map(po => {
+            const was = po && po.id ? storedById.get(po.id) : null;
+            if (!was || po === was) return po;
+            if (String(po.project_id || '') !== String(was.project_id || '')) {
+              jobMovedIds.add(String(po.id));
+              return po;
+            }
+            const copy = { ...po };
+            const kept = poSync.settleLineFigures(copy, was, lineEditsFor(po.id));
+            if (!kept.length) return po;
+            mergedLineFigures += kept.length;
+            return copy;
+          });
+          if (mergedLineFigures) {
+            console.warn(`[purchase-orders] kept the stored figures of ${mergedLineFigures} delivery line(s) a stale copy had not changed for ${blobKey}`);
+          }
+        }
+
+        // A delivery the tab deleted goes with the row the STORED order links it
+        // to. The tab removes the row its own copy names, but a row purchasing
+        // raised after the tab loaded is one it never knew: left behind, the
+        // job stayed charged, and the same save's derivation then recorded it
+        // on the order as a Daily Tracking delivery the PO tab cannot remove.
+        const goneRowIds = new Set();
+        if (newProtocol && deletedLines.size && stored.length) {
+          for (const po of toWrite) {
+            const was = po && po.id ? storedById.get(po.id) : null;
+            if (!was || !Array.isArray(was.lines)) continue;
+            const gone = deletedLinesFor(po.id);
+            if (!gone.size) continue;
+            const have = new Set((Array.isArray(po.lines) ? po.lines : []).filter(l => l && l.id != null).map(l => String(l.id)));
+            for (const l of was.lines) {
+              if (!l || l.id == null || !gone.has(String(l.id)) || have.has(String(l.id))) continue;
+              if (poSync.isDailyLine(l) || !l.po_row_id || /^ts\d+-/.test(String(l.po_row_id))) continue;
+              goneRowIds.add(String(l.po_row_id));
+              supersededRows.push({
+                rowId:     String(l.po_row_id),
+                projectId: String(was.project_id || ''),
+                poNum:     String(was.po_number  || ''),
+              });
+            }
+          }
+        }
+
+        if (moved && stored.length) {
           // ...and the same one level down. An order this client DID send may
           // still be missing deliveries added to it since — central purchasing
           // records them against this division's orders all day. Replacing the
@@ -320,7 +450,6 @@ module.exports = async (req, res) => {
           // Only on a detected race, and only for deliveries absent from what
           // the client sent. A client that is up to date replaces its own
           // orders exactly as before, so removing a delivery still removes it.
-          const storedById = new Map(stored.filter(p => p && p.id).map(p => [p.id, p]));
 
           // A stored link is only worth restoring if the row it names is still
           // there. A null from the client means one of two opposite things and
@@ -372,6 +501,7 @@ module.exports = async (req, res) => {
             const wasById = new Map(was.lines.filter(l => l && l.id).map(l => [l.id, l]));
             const mine = Array.isArray(po.lines) ? po.lines : [];
             const have = new Set(mine.map(l => l && l.id).filter(Boolean));
+            const gone = deletedLinesFor(po.id);
 
             // A delivery the client HAS but whose cost-row link is not the
             // stored one. Central purchasing creates those rows server-side, so
@@ -430,6 +560,26 @@ module.exports = async (req, res) => {
             });
             if (superseded.length) supersededRows.push(...superseded);
 
+            // The tab moved the job and removed the rows its copy named. A row
+            // purchasing raised for one of those deliveries after the tab loaded
+            // is one the tab never knew, so it stayed on the old job with
+            // nothing naming it — the old job charged for an order that now sits
+            // on another. It goes the way the tab's own did.
+            if (jobMoved && newProtocol) {
+              for (const l of mine) {
+                if (!l || !l.id || poSync.isDailyLine(l)) continue;
+                const before = wasById.get(l.id);
+                if (!before || !before.po_row_id || poSync.isDailyLine(before)) continue;
+                if (String(l.po_row_id || '') === String(before.po_row_id)) continue;
+                if (/^ts\d+-/.test(String(before.po_row_id))) continue;
+                supersededRows.push({
+                  rowId:     String(before.po_row_id),
+                  projectId: String(was.project_id || ''),
+                  poNum:     String(was.po_number  || po.po_number || ''),
+                });
+              }
+            }
+
             mergedLinks += relinked;
 
             // A delivery this client never saw. When the JOB moved it cannot
@@ -438,8 +588,12 @@ module.exports = async (req, res) => {
             // on the new one — so the new job is never charged for the
             // delivery while the old job still is. The guard above covered the
             // relinked lines and this arm of the same block was left out.
+            //
+            // Not one the tab says it deleted: it removed the row with it, and
+            // putting the delivery back left money on the order the job no
+            // longer had — which the next purchasing save then charged again.
             const missing = was.lines
-              .filter(l => l && l.id && !have.has(l.id))
+              .filter(l => l && l.id && !have.has(l.id) && !gone.has(String(l.id)))
               .map(l => {
                 // A Daily Tracking line comes back as it was stored; the
                 // derivation below keeps it only while its row still names this
@@ -469,45 +623,166 @@ module.exports = async (req, res) => {
             console.warn(`[purchase-orders] restored ${mergedLinks} cost-row link(s) a stale copy had dropped for ${blobKey}`);
           }
         }
+
+        // Every order's Daily Tracking lines are re-derived from the job rows
+        // before anything is stored — see "Deliveries recorded from Daily
+        // Tracking" in api/lib/po-sync.js. A tab's copy is often a minute behind:
+        // left to itself it would put back a line whose row has since moved to
+        // another order or been deleted (the merge above restores any stored line
+        // the copy lacks), or drop one a row sync added. The rows decide instead,
+        // so what this save stores is right whatever the tab held. A failed read
+        // stores the lines as they came, less any copy of a raised line's row.
+        //
+        // A tab that says what it changed keeps those keys of its Daily
+        // Tracking lines: they are written to the rows below, which no longer
+        // happens from the tab itself. And a renumbered order still owns rows
+        // carrying its old number until that write lands.
+        let derived = 0;
+        let linkRows = [];
+        if (PO_JOB_DIVISIONS.includes(division)) {
+          try {
+            linkRows = await poSync.fetchLinkRows(sql, companyCode, division, poSync.linkScope(toWrite));
+            const opts = {};
+            if (newProtocol) {
+              // The rows of deliveries deleted in this save are on their way
+              // out — never a Daily Tracking delivery of their own.
+              opts.raisedRowIds = [...goneRowIds];
+              opts.editedLineFields = po => lineEditsFor(po.id);
+              opts.aliases = new Map(toWrite.filter(po => po && po.id).map(po => {
+                const was = storedById.get(po.id);
+                const old = was && was.po_number && was.po_number !== po.po_number ? [was.po_number] : [];
+                return [po.id, old];
+              }));
+            }
+            derived = poSync.deriveDailyLines(toWrite, linkRows, opts).size;
+          } catch (err) {
+            console.error('[purchase-orders] could not read the job rows behind Daily Tracking lines:', err.message);
+            for (const po of toWrite) poSync.dropShadowedDailyLines(po);
+          }
+        }
+
+        // Who raised each order, and when. A tab saves its whole list every time,
+        // so without this a copy that lacked an order's stamp — or said something
+        // else — would replace it. Settled against the stored list, on ?force=1
+        // too: forcing is about which orders survive, not about rewriting who
+        // raised them.
+        poSync.settleCreationStamps(toWrite, stored, { username: payload.username });
+
+        return {
+          toWrite, stored, derived, linkRows, jobMovedIds, supersededRows,
+          mergedLines, mergedLinks, mergedFields, mergedLineFigures,
+        };
       }
 
-      // Every order's Daily Tracking lines are re-derived from the job rows
-      // before anything is stored — see "Deliveries recorded from Daily
-      // Tracking" in api/lib/po-sync.js. A tab's copy is often a minute behind:
-      // left to itself it would put back a line whose row has since moved to
-      // another order or been deleted (the merge above restores any stored line
-      // the copy lacks), or drop one a row sync added. The rows decide instead,
-      // so what this save stores is right whatever the tab held. A failed read
-      // stores the lines as they came, less any copy of a raised line's row.
-      let derived = 0;
-      if (PO_JOB_DIVISIONS.includes(division)) {
-        try {
-          const linkRows = await poSync.fetchLinkRows(sql, companyCode, division, poSync.linkScope(toWrite));
-          derived = poSync.deriveDailyLines(toWrite, linkRows).size;
-        } catch (err) {
-          console.error('[purchase-orders] could not read the job rows behind Daily Tracking lines:', err.message);
-          for (const po of toWrite) poSync.dropShadowedDailyLines(po);
+      // A tab that takes the merged orders back gets a compare-and-set: the
+      // merge is worked out against the list it actually replaces, and run
+      // again if anything — purchasing, a row sync, another tab — wrote in
+      // between. An older tab keeps the plain write it always had.
+      const useCas = mergePath && newProtocol;
+      let result = null;
+      let written = null;
+      for (let attempt = 0; attempt < (useCas ? poSync.CAS_ATTEMPTS : 1); attempt++) {
+        let stored = [];
+        let moved = false;
+        let exists = false;
+        let curText = null;
+        if (mergePath) {
+          const cur = useCas
+            ? await sql`SELECT value, updated_at, updated_at::text AS updated_at_text FROM app_data WHERE key = ${blobKey}`
+            : await sql`SELECT value, updated_at FROM app_data WHERE key = ${blobKey}`;
+          exists  = cur.length > 0;
+          stored  = exists && Array.isArray(cur[0].value) ? cur[0].value : [];
+          curText = exists ? cur[0].updated_at_text : null;
+          // Compare instants, not strings — the driver hands back a Date and the
+          // client always sends the ISO form, so the two never match textually.
+          // Comparing them as text made `moved` true on EVERY save: a deleted
+          // order looked like one the client had never seen and was written
+          // straight back, so no division tab could delete a purchase order at
+          // all. api/data/[key].js carries the same warning over its own guard.
+          const curTs = exists && cur[0].updated_at ? new Date(cur[0].updated_at).getTime() : null;
+          moved = curTs !== null && (isNaN(baseTs) || curTs !== baseTs);
+        } else {
+          const cur = await sql`SELECT value FROM app_data WHERE key = ${blobKey}`;
+          stored = cur.length && Array.isArray(cur[0].value) ? cur[0].value : [];
+        }
+
+        result = await mergeInto(JSON.parse(sentText), stored, moved);
+        if (saysDeleted && req.query.force !== '1' && !result.toWrite.length) {
+          const unexplained = stored.filter(p => p && p.id && !deletedOrders.has(String(p.id)));
+          if (unexplained.length > 1) {
+            console.warn(`[purchase-orders] refused empty PUT: would have wiped ${unexplained.length} POs for ${blobKey}`);
+            return res.status(409).json({
+              error: 'Refusing to wipe purchase orders',
+              detail: `Cannot replace ${unexplained.length} POs with an empty list. Pass ?force=1 to override.`,
+            });
+          }
+        }
+        const json = JSON.stringify(result.toWrite);
+
+        if (!useCas) {
+          // Always write to the division-specific JSON blob first — source of truth.
+          written = await sql`
+            INSERT INTO app_data (key, value, updated_at)
+            VALUES (${blobKey}, ${json}::jsonb, NOW())
+            ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+            RETURNING updated_at
+          `;
+          break;
+        }
+        // clock_timestamp(), as casWritePOBlob: NOW() is the transaction's
+        // start, and two writes could stamp the same version.
+        written = exists && curText
+          ? await sql`
+              UPDATE app_data SET value = ${json}::jsonb, updated_at = clock_timestamp()
+              WHERE key = ${blobKey} AND updated_at = ${curText}::timestamptz
+              RETURNING updated_at
+            `
+          : await sql`
+              INSERT INTO app_data (key, value, updated_at)
+              VALUES (${blobKey}, ${json}::jsonb, clock_timestamp())
+              ON CONFLICT (key) DO NOTHING
+              RETURNING updated_at
+            `;
+        if (written.length) break;
+        written = null;
+      }
+      if (!written) {
+        return res.status(409).json({
+          error: 'Purchase orders not saved',
+          detail: 'Someone else saved this division\'s purchase orders at the same moment. Try again.',
+        });
+      }
+      const { toWrite, derived, supersededRows,
+              mergedLines, mergedLinks, mergedFields, mergedLineFigures } = result;
+
+      // What the tab changed, written to the job rows from the order as stored
+      // — see writeTabRows. The tab no longer PUTs those rows whole from its
+      // own copy of the job, which is what used to put a stale quantity back
+      // on the job whenever someone approved or retitled an order there.
+      // Straight after the blob — the order is the record — and before the
+      // mirror rewrite, which loops over the whole division: a supervisor's
+      // row edit landing in a longer window would be overwritten from this
+      // save's copy. Also on an order whose job the tab just moved: it minted
+      // the new job's rows from the figures it had then, and an edit made since
+      // in the same save has to reach them. A failure is the save's: the order
+      // is stored, but the job is not, and the tab keeps its marks and sends
+      // them again.
+      let rowsFailed = 0;
+      if (newProtocol && PO_JOB_DIVISIONS.includes(division)) {
+        const rowsById = new Map((result.linkRows || []).map(r => [String(r.row_id), r]));
+        for (const po of toWrite) {
+          if (!po || !po.id || !sentById.has(String(po.id))) continue;
+          const headerEdits = headerEditsFor(po.id);
+          const lineEdits = lineEditsFor(po.id);
+          if (!headerEdits.size && !lineEdits.size) continue;
+          try {
+            await poSync.writeTabRows(sql, { companyCode, division, po, headerEdits, lineEdits, rowsById });
+          } catch (err) {
+            rowsFailed++;
+            console.error('[purchase-orders] could not write an order\'s changes to its cost rows:', err.message);
+          }
         }
       }
-
-      // Who raised each order, and when. A tab saves its whole list every time,
-      // so without this a copy that lacked an order's stamp — or said something
-      // else — would replace it. Settled against the stored list, read here if
-      // the merge above did not, and on ?force=1 too: forcing is about which
-      // orders survive, not about rewriting who raised them.
-      if (storedList === null) {
-        const cur = await sql`SELECT value FROM app_data WHERE key = ${blobKey}`;
-        storedList = cur.length && Array.isArray(cur[0].value) ? cur[0].value : [];
-      }
-      poSync.settleCreationStamps(toWrite, storedList, { username: payload.username });
-
-      // Always write to the division-specific JSON blob first — source of truth.
-      const written = await sql`
-        INSERT INTO app_data (key, value, updated_at)
-        VALUES (${blobKey}, ${JSON.stringify(toWrite)}::jsonb, NOW())
-        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-        RETURNING updated_at
-      `;
 
       // Only once the blob naming the STORED links has landed: until then the
       // tab's row is the only one anything references, and deleting it first
@@ -545,21 +820,40 @@ module.exports = async (req, res) => {
       try { await _syncPOs(sql, companyCode, division, toWrite); }
       catch (err) { console.error('[purchase-orders] normalize failed:', err.message); }
 
+      if (rowsFailed) {
+        return res.status(500).json({
+          error: 'Saved, but the job\'s cost rows were not updated. It will be retried.',
+          stored: true,
+        });
+      }
+
       // The new version, so the next save from this client takes the fast path
       // instead of re-merging against a base it already knows is stale.
-      // `merged` is every level summed, not just whole orders. The client reads
-      // it as "did the server have to put anything back" and withholds the new
-      // version when it did, so a delivery or a link merged back has to count
-      // too — reporting 0 for those let the next save erase them again.
+      // `merged` is every level summed, not just whole orders. An older tab
+      // reads it as "did the server have to put anything back" and withholds
+      // the new version when it did, so a delivery or a link merged back has
+      // to count too — reporting 0 for those let the next save erase them again.
+      //
+      // A current tab gets the orders themselves instead: every one that came
+      // out different from what it sent — merged, settled, derived, stamped.
+      // It takes them on wherever it has no newer edit of its own, after which
+      // it does hold the stored list, and can adopt this version.
       const mergedOrders = toWrite.length - purchaseOrders.length;
+      const orders = newProtocol
+        ? toWrite.filter(po => po && po.id && sentById.get(String(po.id)) !== JSON.stringify(po))
+        : undefined;
       return res.json({
         ok: true,
         updatedAt: written.length ? written[0].updated_at : null,
-        merged: mergedOrders + mergedLines + mergedLinks,
-        mergedOrders, mergedLines, mergedLinks,
+        // Kept fields count too: a tab told nothing was merged adopts this
+        // version, its next save skips the merge, and its stale copy of those
+        // fields goes straight back out.
+        merged: mergedOrders + mergedLines + mergedLinks + mergedFields + mergedLineFigures,
+        mergedOrders, mergedLines, mergedLinks, mergedFields, mergedLineFigures,
         // Orders whose Daily Tracking lines the job rows changed from what the
         // tab sent: its copy is behind, and it re-reads the list.
         derived,
+        ...(orders ? { orders } : {}),
       });
     }
 
@@ -623,6 +917,22 @@ module.exports = async (req, res) => {
       const editedLineIds = Array.isArray((req.body || {}).editedLineIds)
         ? (req.body || {}).editedLineIds.map(String).slice(0, 500)
         : [];
+      // The order's own fields the caller changed — title, status, code and the
+      // rest. Every other field keeps its stored value, so a screen holding an
+      // older copy cannot blank what somebody else filled in by approving it.
+      // Absent — a page still running older code — and the order is stored
+      // whole, as it always was. See settleHeaderFields in api/lib/po-sync.js.
+      const editedFields = Array.isArray((req.body || {}).editedFields)
+        ? (req.body || {}).editedFields.map(String).slice(0, 50)
+        : null;
+      // ...and its deliveries' keys, `{ lineId: [key, ...] }`. Every other key
+      // of a delivery the stored order also has keeps its stored value, and
+      // only a delivery whose figures changed has them written to its job row.
+      // Absent and deliveries are stored whole, as before. See
+      // settleLineFigures in api/lib/po-sync.js.
+      const rawLineFields = (req.body || {}).editedLineFields;
+      const editedLineFields = rawLineFields && typeof rawLineFields === 'object' && !Array.isArray(rawLineFields)
+        ? rawLineFields : null;
 
       // The division the order was stored under before this save. Purchasing
       // sends it when someone re-ties an order to a different division, so the
@@ -642,6 +952,8 @@ module.exports = async (req, res) => {
         from,
         deletedLineIds,
         editedLineIds,
+        editedFields,
+        editedLineFields,
         // Stamped as who raised the order only if it is new and the page sent
         // no stamp of its own.
         username: payload.username,
