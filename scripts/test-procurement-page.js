@@ -153,6 +153,7 @@ console.log('\n[tracker.html — wiring]');
       && procRefresh.indexOf('_poApplyDeferred();') > procRefresh.indexOf('_poSaveAgain')
       && procRefresh.indexOf('_poApplyDeferred();') < procRefresh.indexOf('return _poReread();'));
   assert('  and says when the list in hand holds a change not stored yet', /poListUnsaved: \(\) => _poHoldsUnsaved\(\)/.test(requireFn(SRC, '_procEnsureConfigured')));
+  assert('  and hides the Description column for now (what it holds is kept)', /hiddenColumns: \['description'\]/.test(requireFn(SRC, '_procEnsureConfigured')));
   // A save's answer taken on while the sheet is shown redraws it: the poll
   // then finds the list unchanged and would not.
   assert('a save\'s answer taken on redraws Procurement (the hook the three pages\' PO code calls)',
