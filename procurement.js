@@ -2167,6 +2167,7 @@
                 <button type="button" class="btn btn-green fctproc-b" data-act="add">+ Add Row</button>` : ''}
       <button type="button" class="btn btn-ghost fctproc-b" data-act="xlsx" title="The rows shown, as an Excel workbook">&#11015; Excel</button>
       <button type="button" class="btn btn-ghost fctproc-b" data-act="csv" title="The rows shown, as CSV">&#11015; CSV</button>
+      <button type="button" class="btn btn-ghost fctproc-b" data-act="pdf" title="The rows shown, to print or save as a PDF">&#11015; PDF</button>
       </span>`;
   }
 
@@ -3287,6 +3288,7 @@
       case 'del-yes': deleteRows([rowId]); break;
       case 'xlsx': exportRows('xlsx'); break;
       case 'csv': exportRows('csv'); break;
+      case 'pdf': printRows(); break;
       case 'clear': clearFilters(); break;
       case 'open-po': if (typeof cfg.openPurchaseOrder === 'function') cfg.openPurchaseOrder(b.dataset.po); break;
       case 'use-bid': useBid(rowId, true); break;
@@ -3670,21 +3672,125 @@
     if (st.grouping === 'none') return rows;
     return groupRows(rows, ctx).flatMap(g => g.rows);
   }
+  // Without the PO list, every row on a PO would go into the file as Not
+  // Ordered with no Date Ordered — a sheet that says the opposite of what
+  // is true, and gets mailed on. The list is read again on the page's poll.
+  function exportBlocked(ctx) {
+    if (ctx.poLoaded) return false;
+    toast(ctx.poFailed
+      ? 'The purchase orders could not be read from the server, so the export would show ordered rows as not ordered. The page tries again every minute — export once the PO # column stops showing "…".'
+      : 'The purchase orders have not loaded yet, so the export would show ordered rows as not ordered. Try again once they have (the PO # column stops showing "…").', 'error');
+    return true;
+  }
   function exportRows(kind) {
     if (st.loadState !== 'ok') return;
     const ctx = makeCtx();
-    // Without the PO list, every row on a PO would go into the file as Not
-    // Ordered with no Date Ordered — a sheet that says the opposite of what
-    // is true, and gets mailed on. The list is read again on the page's poll.
-    if (!ctx.poLoaded) {
-      toast(ctx.poFailed
-        ? 'The purchase orders could not be read from the server, so the export would show ordered rows as not ordered. The page tries again every minute — export once the PO # column stops showing "…".'
-        : 'The purchase orders have not loaded yet, so the export would show ordered rows as not ordered. Try again once they have (the PO # column stops showing "…").', 'error');
-      return;
-    }
+    if (exportBlocked(ctx)) return;
     const rows = shownInOrder(ctx);
     if (kind === 'csv') download(new Blob([buildCsv(rows, ctx)], { type: 'text/csv;charset=utf-8' }), exportName('csv'));
     else download(buildXlsx(rows, ctx), exportName('xlsx'));
+  }
+
+  /**
+   * Print / PDF: the rows shown (search and filters apply; a folded section
+   * prints whole), in their sections, as a light page in a new window that
+   * opens the print dialog — where "Save as PDF" makes the file, the way
+   * every other report on the page does. Written through dwWrite, so it
+   * carries the DataWatch header like them (report-branding.js).
+   */
+  function printRows() {
+    if (st.loadState !== 'ok') return;
+    const ctx = makeCtx();
+    if (exportBlocked(ctx)) return;
+    // Opened here, in the click, or the browser blocks it as a pop-up.
+    const win = window.open('', '_blank');
+    if (!win) { toast('Allow pop-ups for this site to print or save a PDF.', 'error'); return; }
+    const write = typeof window.dwWrite === 'function' ? window.dwWrite : (w, ...c) => w.document.write(...c);
+    write(win, buildPrintHtml(ctx));
+    win.document.close();
+  }
+
+  function buildPrintHtml(ctx, { printedAt = new Date() } = {}) {
+    const rows = visibleRows(ctx);
+    const groups = st.grouping === 'none' ? [{ key: '', label: '', meta: '', rows }] : groupRows(rows, ctx);
+    // What a section's header already says is not repeated on every row.
+    const drop = st.grouping === 'cost' ? ['Cost Code'] : st.grouping === 'vendor' ? ['Vendor', 'Quote #'] : [];
+    const cols = EXPORT_COLS.filter(c => !drop.includes(c.label));
+    const p = project(st.projectId) || {};
+    const name = str(p['project-name']) || 'Job';
+    const job = str(p['job-number']);
+    const NUM = new Set(['Quantity', 'Lead Time (days)']);
+    const DATE = new Set(['Date Needed', 'Order By', 'Date Ordered', 'Date Delivered']);
+    const WRAP = new Set(['Sub Code', 'Description', 'Cost Code', 'Vendor', 'Contact', 'Email', 'Notes']);
+    // Short values that read wrong broken across lines (PO-/0007, Not/Ordered).
+    const ONE_LINE = new Set(['Status', 'PO #', 'Sub-Contractor Agreement', 'Unit', 'Quote #']);
+    let derived = false;
+    const cell = (c, r) => {
+      const { t, v } = c.get(r, ctx);
+      let text = v == null ? '' : t === 'd' ? fmtDate(v) : c.label === 'Quantity' ? fmtQty(v) : String(v);
+      // Worked out, not typed: Order By always, Date Ordered when it is the PO's.
+      const calc = !!text && (c.label === 'Order By' || (c.label === 'Date Ordered' && !ymdOf(r.date_ordered)));
+      if (calc) derived = true;
+      const cls = [NUM.has(c.label) ? 'num' : '', DATE.has(c.label) || ONE_LINE.has(c.label) ? 'one' : '', WRAP.has(c.label) ? 'wrap' : '', calc ? 'calc' : '',
+        c.label === 'Status' ? 'st-' + (text === 'Delivered' ? 'del' : text === 'Ordered' ? 'ord' : 'not') : '',
+        c.label === 'Notes' && flagsOf(r, ctx).some(f => f.level === 'red') ? 'red' : c.label === 'Notes' && text ? 'amber' : ''].filter(Boolean).join(' ');
+      return `<td${cls ? ` class="${cls}"` : ''}>${esc(text)}</td>`;
+    };
+    const plainCounts = list => {
+      const notOrdered = list.filter(r => statusOf(r, ctx) === 'Not Ordered').length;
+      const late = list.filter(r => flagsOf(r, ctx).some(f => f.level === 'red')).length;
+      return `${list.length} row${list.length === 1 ? '' : 's'}${notOrdered ? ` · ${notOrdered} not ordered` : ''}${late ? ` · ${late} late` : ''}`;
+    };
+    const body = rows.length ? groups.map(g => (g.label
+      ? `<tr class="grp"><td colspan="${cols.length}"><b>${esc(g.label)}</b>`
+        + `${g.meta ? ` <span class="gm">· ${String(g.meta).replace(/<(?!\/?b>)[^>]*>/g, '')}</span>` : ''}`
+        + ` <span class="gm">· ${esc(plainCounts(g.rows))}</span></td></tr>` : '')
+      + g.rows.map(r => `<tr>${cols.map(c => cell(c, r)).join('')}</tr>`).join('')).join('')
+      : `<tr><td colspan="${cols.length}" class="none">No rows to print.</td></tr>`;
+    const n = { 'Not Ordered': 0, Ordered: 0, Delivered: 0 };
+    rows.forEach(r => { const s = statusOf(r, ctx); if (s in n) n[s]++; });
+    const late = rows.filter(r => flagsOf(r, ctx).some(f => f.level === 'red')).length;
+    const shown = rows.length === st.rows.length ? `${rows.length} row${rows.length === 1 ? '' : 's'}`
+      : `${rows.length} of ${st.rows.length} rows (filtered)`;
+    const title = `Procurement — ${name}${job ? ` — Job #${job}` : ''}`;
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
+  <style>
+    @page { size: landscape; margin: 0.4in; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif; color:#111; margin:0; padding:0.5rem; }
+    h1 { font-size:14pt; margin:0 0 0.15rem; }
+    .sub { font-size:8.5pt; color:#555; margin:0 0 0.45rem; }
+    .sum { display:flex; gap:0.5rem; flex-wrap:wrap; margin:0 0 0.55rem; font-size:8pt; }
+    .sum span { border:1px solid #ccc; border-radius:999px; padding:1px 8px; }
+    .sum .ord { border-color:#93c5fd; color:#1d4ed8; } .sum .del { border-color:#86efac; color:#166534; } .sum .late { border-color:#fca5a5; color:#b91c1c; }
+    table { width:100%; border-collapse:collapse; font-size:7pt; }
+    th { text-align:left; background:#eee; border:1px solid #bbb; padding:3px 3px; font-size:6pt; text-transform:uppercase;
+         letter-spacing:0.03em; vertical-align:bottom; }
+    td { border:1px solid #ddd; padding:2px 3px; vertical-align:top; }
+    td.num { text-align:right; white-space:nowrap; font-variant-numeric: tabular-nums; }
+    td.one { white-space:nowrap; }
+    /* Whole words to a line; only a word too long for its column (an email)
+       is broken. Breaking anywhere let the table squeeze Sub Code down to a
+       few letters a line while empty columns kept their room. */
+    td.wrap { overflow-wrap:break-word; word-break:normal; }
+    td.calc { color:#555; font-style:italic; }
+    td.st-ord { color:#1d4ed8; white-space:nowrap; } td.st-del { color:#166534; white-space:nowrap; } td.st-not { color:#444; white-space:nowrap; }
+    td.red { color:#b91c1c; } td.amber { color:#92400e; }
+    tr.grp td { background:#e8f5e9; color:#14532d; font-size:8pt; padding:4px 5px; border-top:1px solid #9ccc9c; }
+    tr.grp .gm { color:#4b5563; font-weight:400; }
+    tr.grp { break-after: avoid; page-break-after: avoid; }
+    td.none { text-align:center; padding:2rem; color:#666; }
+    tr { page-break-inside: avoid; }
+    thead { display: table-header-group; }
+    p.note { font-size:7pt; color:#555; margin:0.4rem 0 0; }
+  </style></head><body>
+  <h1>${esc(title)}</h1>
+  <p class="sub">${esc(shown)} · printed ${esc(printedAt.toLocaleString())}</p>
+  <div class="sum"><span>Not Ordered ${n['Not Ordered']}</span><span class="ord">Ordered ${n.Ordered}</span><span class="del">Delivered ${n.Delivered}</span>${late ? `<span class="late">Late ${late}</span>` : ''}</div>
+  <table><thead><tr>${cols.map(c => `<th>${esc(c.label)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>
+  ${derived ? '<p class="note">Dates in italics are worked out, not typed: Order By is Date Needed minus Lead Time, and a Date Ordered in italics is the date the row\'s PO was raised.</p>' : ''}
+  <script>window.onload = () => { window.print(); }<\/script>
+  </body></html>`;
   }
 
   // ── Send to Procurement ─────────────────────────────────────────────
@@ -4222,7 +4328,7 @@
       effectivePO, effectiveDateOrdered, orderBy, statusOf, flagsOf, liveCodes, bidChange,
       sendPlan, relinkPlan, codeSyncPlan, sameBid, sortRows, applyFilters, csvEscape, addDays,
       chipMatch, fieldValue, vendorCompatible, normRow, ymdOf, fmtDate, fmtQty, esc, uid, looksLikePhone,
-      exportMatrix, buildCsv, xlsxParts, buildXlsx, defaultCodeKey,
+      exportMatrix, buildCsv, xlsxParts, buildXlsx, buildPrintHtml, defaultCodeKey,
       state: () => st,
       pending: () => ({ pend: new Map(pend), fly: new Map(fly), failed: new Set(failed) }),
       flushAll,

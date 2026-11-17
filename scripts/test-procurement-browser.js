@@ -1513,6 +1513,83 @@ async function sectionSelect(browser) {
   await v.ctx.close();
 }
 
+// ── Print / PDF ─────────────────────────────────────────────────────────────
+async function printPdf(browser) {
+  console.log('\nPrint / PDF: the rows shown, in their sections, in a print window');
+  const t = i => new Date(Date.UTC(2026, 9, 5) + i * 1000).toISOString();
+  const row = (id, f) => ({ ...BLANK_ROW, id, project_id: 'p1', created_at: t(id.charCodeAt(1)), updated_at: t(id.charCodeAt(1)), ...f });
+  const W = makeWorld();
+  W.rows.push(
+    row('P1', { description: 'geofabric pins', vendor: 'LB Water', quote_number: 'Q-77', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric',
+      quantity: 1234567890, unit: 'SF', date_needed: '2026-12-12', lead_time_days: 21 }),
+    row('P2', { description: '<img src=x onerror="window.__xss=1">', vendor: 'New Enterprise', bid_item_id: 'b3', cost_code: 'Mobilization', sub_code: 'Mobilization', quantity: 1, unit: 'LS' }),
+  );
+  const storage = { fct_proc_project_turf: 'p1', fct_proc_group_turf: 'cost' };
+  const { page, ctx, errors } = await openPage(browser, W, 'level2', { viewport: { width: 1474, height: 900 }, storage });
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 2));
+  await sleep(300);
+  // The print window, caught: what is written into it.
+  const capture = () => page.evaluate(() => {
+    window.__printed = '';
+    window.open = () => ({ document: { write: (...c) => { window.__printed += c.join(''); }, close() {} } });
+  });
+  const printed = () => page.evaluate(() => window.__printed);
+  const heads = html => [...html.matchAll(/<th>([^<]*)<\/th>/g)].map(m => m[1]);
+
+  ok('a PDF button sits beside Excel and CSV', await page.locator('#procurement-root [data-act="pdf"]').count() === 1);
+  await capture();
+  await page.locator('#procurement-root [data-act="pdf"]').click();
+  let html = await printed();
+  ok('it writes a print page titled with the job, which opens the print dialog',
+    /<title>Procurement — Penn Cambria — Job #26119<\/title>/.test(html) && /window\.print\(\)/.test(html), html.slice(0, 300));
+  ok('…through the DataWatch report header, like the other reports', /DATAWATCH|datawatch/i.test(html.replace(/<title>.*?<\/title>/, '')));
+  ok('…landscape', /@page \{ size: landscape/.test(html));
+  ok('grouped by cost code: a section per cost code, and no Cost Code column', /class="grp"[^]*Stormwater[^]*class="grp"[^]*Mobilization/.test(html)
+    && !heads(html).includes('Cost Code') && heads(html).includes('Sub Code') && heads(html).includes('Vendor'), heads(html).join('|'));
+  ok('every row is on it, with its values', /geofabric pins/.test(html) && /1,234,567,890/.test(html) && /12\/12\/2026/.test(html) && /Q-77/.test(html));
+  ok('a worked-out date (Order By) prints in italics, with a note saying so', /class="one calc">11\/21\/2026/.test(html) && /Dates in italics are worked out/.test(html));
+  ok('text from the rows is escaped', /&lt;img src=x/.test(html) && !/<img src=x/.test(html));
+
+  await page.click('[data-group="vendor"]');
+  await sleep(200);
+  await capture();
+  await page.locator('#procurement-root [data-act="pdf"]').click();
+  html = await printed();
+  ok('grouped by vendor: a section per vendor and quote, and no Vendor or Quote # column',
+    /class="grp"[^]*LB Water[^]*Quote # <b>Q-77<\/b>/.test(html) && !heads(html).includes('Vendor') && !heads(html).includes('Quote #') && heads(html).includes('Cost Code'),
+    heads(html).join('|'));
+
+  await page.fill('#fctproc-search', 'pins');
+  await sleep(400);
+  await capture();
+  await page.locator('#procurement-root [data-act="pdf"]').click();
+  html = await printed();
+  ok('a search narrows what prints, and the page says it is filtered', /geofabric pins/.test(html) && !/Mobilization/.test(html) && /1 of 2 rows \(filtered\)/.test(html));
+  await page.fill('#fctproc-search', '');
+  await sleep(300);
+
+  // A blocked pop-up is said, not silently dropped.
+  await page.evaluate(() => { window.open = () => null; });
+  await page.locator('#procurement-root [data-act="pdf"]').click();
+  ok('a blocked pop-up is explained', await until(() => page.locator('text=Allow pop-ups for this site').count()));
+  ok('no page errors, nothing from the rows ran', errors.length === 0 && !(await page.evaluate(() => window.__xss)), errors.join(' | '));
+  await ctx.close();
+
+  // The real thing: a window opens on the click and asks to print.
+  const real = await openPage(browser, W, 'level1', { storage });
+  await real.ctx.addInitScript(() => { window.print = () => { window.__printCalled = true; }; });
+  await real.page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => real.page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 2));
+  const [pop] = await Promise.all([real.ctx.waitForEvent('page'), real.page.locator('#procurement-root [data-act="pdf"]').click()]);
+  await pop.waitForLoadState('load');
+  await sleep(300);
+  ok('a view-only user can print too: the window opens and the print dialog is asked for',
+    await pop.title() === 'Procurement — Penn Cambria — Job #26119' && await pop.evaluate(() => !!window.__printCalled));
+  ok('…with both rows on it', await pop.locator('tbody tr:not(.grp)').count() === 2);
+  await real.ctx.close();
+}
+
 (async () => {
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
@@ -1526,6 +1603,7 @@ async function sectionSelect(browser) {
     await roundThreeSaveFixes(browser);
     await roundFourFixes(browser);
     await sectionSelect(browser);
+    await printPdf(browser);
   } finally {
     await browser.close();
     server.close();
