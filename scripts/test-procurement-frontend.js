@@ -2417,6 +2417,81 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('shown again once the page stops hiding it, with what it held', !!e.field('h1', 'description') && e.field('h1', 'description').value === 'secret glue');
   }
 
+  console.log('\n[a row added from a section: a cost code alone, no bid line]');
+  {
+    const Tt = boot.P._test;
+    const own = { id: 'pos1', po_number: 'PO-0050', project_id: 'p1', cost_code: 'Stormwater', sub_code: '', supplier: 'LB Water', date_created: '2026-03-03', status: 'pending' };
+    const ctx = C({ purchaseOrders: POS.concat([own]) });
+    const blank = row({ id: 's1', cost_code: 'Stormwater' });
+    assert('a hand-added row with a cost code and no sub code matches no order — not the one a sibling raised for that code',
+      Tt.effectivePO(blank, ctx).kind === 'none' && Tt.statusOf(blank, ctx) === 'Not Ordered' && !Tt.effectiveDateOrdered(blank, ctx),
+      Tt.effectivePO(blank, ctx).kind);
+    assert('…with a vendor too', Tt.effectivePO({ ...blank, vendor: 'LB Water' }, ctx).kind === 'none');
+    assert('…while the sibling linked to it still reads Ordered on it', Tt.effectivePO({ ...blank, id: 's0', po_id: 'pos1' }, ctx).kind === 'linked'
+      && Tt.statusOf({ ...blank, id: 's0', po_id: 'pos1' }, ctx) === 'Ordered');
+    assert('…and a row on a bid line still auto-matches as before', Tt.effectivePO(row({ id: 's2', source: 'bid', bid_item_id: 'b1' }), ctx).kind === 'auto');
+    assert('its cost code still on the bid: no flag', !Tt.liveCodes(blank, ctx).costGone && !Tt.liveCodes(blank, ctx).notOnBid);
+    const left = row({ id: 's3', cost_code: 'Storm Sewer (old)' });
+    assert('its cost code gone from the bid (renamed there): flagged', Tt.liveCodes(left, ctx).costGone === true && !Tt.liveCodes(left, ctx).notOnBid);
+    assert('…and the flag is in the export notes', /Cost code not on bid/.test(Tt.exportMatrix([left], ctx).rows[0].slice(-1)[0].v));
+    assert('…but not on a job with no bid lines in hand, nor on a row with no cost code',
+      !Tt.liveCodes(left, C({ bidLines: [] })).costGone && !Tt.liveCodes(row({ id: 's4' }), ctx).costGone);
+    const e = makeEnv({ rows: [row({ id: 's3', cost_code: 'Storm Sewer (old)' }), row({ id: 's5', cost_code: 'Stormwater' })] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const tag = id => e.$(`tr[data-row="${id}"] .c-cost_code .fctproc-tag`);
+    assert('the sheet tags it "not on bid", and says why', !!tag('s3') && /no line on the bid has this cost code/i.test(tag('s3').title) && !tag('s5'),
+      tag('s3') && tag('s3').title);
+  }
+
+  console.log('\n[Create PO titles, and messages, with Description hidden]');
+  {
+    const e = makeEnv({ rows: [
+      row({ id: 't1', vendor: 'LB Water', description: 'hidden text' }),
+      row({ id: 't2', vendor: 'LB Water', cost_code: 'Stormwater', description: 'hidden too' }),
+      row({ id: 't3', source: 'bid', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', vendor: 'Beta Corp', description: 'old note' }),
+    ] });
+    e.P.configure({ hiddenColumns: ['description'] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const create = async id => {
+      e.P._test.state().selected.clear();
+      const sel = e.$(`[data-sel="${id}"]`); sel.checked = true; e.fire(sel, 'change');
+      e.$('[data-act="bulk-po"]').click();
+      await sleep(40);
+      const go = e.$('.fctproc-modal button.btn-green, .fctproc-modal [data-po="go"]');
+      if (go) { go.click(); await sleep(40); }
+      return (e.created.filter(x => x[0] === 'po').pop() || [])[1];
+    };
+    let seed = await create('t1');
+    assert('a hand-added row with no code: the PO is titled after the vendor, never blank, and not from the hidden Description',
+      seed && seed.title === 'LB Water materials', seed);
+    seed = await create('t2');
+    assert('…with a cost code alone: titled with the cost code', seed && seed.title === 'Stormwater', seed);
+    seed = await create('t3');
+    assert('…on a bid line: titled with its Sub Code, not the hidden Description', seed && seed.title === 'Elbows', seed);
+    const codes = e.field('t1', 'codes');
+    codes.focus(); e.pick(codes, 'Inlet couplers 15in', null); codes.blur();
+    await sleep(20);
+    const said = e.$$('.fctproc-toast').map(t => t.textContent).join(' | ');
+    assert('a Sub Code typed that is not on the bid: the message says to pick one, and no longer points at the hidden Description',
+      /is not a line on this job's bid — pick one from the list\./.test(said) && !/Description/.test(said), said);
+  }
+  {
+    const e = makeEnv({ rows: [row({ id: 't4', vendor: 'LB Water', description: 'Couplers' })] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const sel = e.$('[data-sel="t4"]'); sel.checked = true; e.fire(sel, 'change');
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(40);
+    const seed = (e.created.filter(x => x[0] === 'po').pop() || [])[1];
+    assert('with Description shown, one row\'s PO is still titled from its Description', seed && seed.title === 'Couplers', seed);
+    const codes = e.field('t4', 'codes');
+    codes.focus(); e.pick(codes, 'Inlet couplers 15in', null); codes.blur();
+    await sleep(20);
+    assert('…and the message still offers Description', e.$$('.fctproc-toast').some(t => /can go in Description/.test(t.textContent)));
+  }
+
   console.log('\n[leaving with a change that could not be saved]');
   {
     const e = makeEnv({ rows: [row({ id: 'x1' })] });

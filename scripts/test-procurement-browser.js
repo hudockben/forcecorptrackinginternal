@@ -1340,10 +1340,11 @@ async function roundFourFixes(browser) {
     await page.keyboard.type('z', { delay: 20 });
     await refreshing; await sleep(200);
     W.procGetDelay = 0;
-    const hdr = await page.locator('#fctproc-wrap tr.fctproc-grp', { hasText: 'Stormwater' }).boundingBox();
-    // (The table is scrolled sideways by now — the Quote # cell — so the
-    // press is made where the header shows, near the window's left.)
-    await page.mouse.move(Math.max(hdr.x, 0) + 200, hdr.y + hdr.height / 2);
+    // On the section's name (the label stays in view while the table is
+    // scrolled sideways — to the Quote # cell by now — and the section's
+    // + Add Row sits just after it).
+    const hdr = await page.locator('#fctproc-wrap tr.fctproc-grp', { hasText: 'Stormwater' }).locator('.gl > span:not(.tw):not(.gm)').boundingBox();
+    await page.mouse.move(hdr.x + hdr.width / 2, hdr.y + hdr.height / 2);
     await page.mouse.down(); await sleep(80); await page.mouse.up();
     await sleep(600);
     const folded = await page.evaluate(() => [...FCTProcurement._test.state().collapsed].some(g => /stormwater/i.test(g)));
@@ -1611,6 +1612,8 @@ async function sectionAdd(browser) {
   await sleep(250);
   ok('grouped by vendor, the headers carry + Add Row too', await addIn('LB Water').count() === 1 && await addIn('No vendor yet').count() === 1);
   ok('…saying which vendor and quote', await addIn('LB Water').getAttribute('title') === 'Add a row for LB Water, quote # Q-12', await addIn('LB Water').getAttribute('title'));
+  ok('…beside the section name, ahead of the quote, contact and counts (a long header cannot push it off a narrow screen)',
+    await hdr('LB Water').locator('.gl > span:not(.tw):not(.gm) + [data-grpadd]').count() === 1);
   it = await addVia('LB Water');
   ok('a vendor section\'s + Add Row POSTs its vendor, quote #, contact and email, and no cost code',
     it && it.vendor === 'LB Water' && it.quote_number === 'Q-12' && it.contact === 'Dana Reyes' && it.email === 'dana@lbwater.com' && !it.cost_code, it);
@@ -1625,6 +1628,28 @@ async function sectionAdd(browser) {
   ok('with no grouping there are no section buttons (the toolbar\'s + Add Row stays)',
     await page.locator('#fctproc-wrap [data-grpadd]').count() === 0 && await page.locator('#procurement-root [data-act="add"]').count() === 1);
   await page.click('[data-group="cost"]');
+  // A PO raised for a row added in a section, then another row added there:
+  // the new row is not on that order (a cost code alone matches nothing).
+  await sleep(250);
+  const a1 = await addVia('Stormwater');
+  await cbPick(page, cell(page, a1.id, 'vendor'), 'LB', 'LB Water');
+  await clickAway(page);
+  await sleep(300);
+  const poPosts = () => W.log.filter(l => l.api === 'purchase-orders' && l.method === 'POST');
+  const nPo = poPosts().length;
+  await page.check(`#procurement-root [data-sel="${a1.id}"]`);
+  await page.click('#procurement-root [data-act="bulk-po"]');
+  const made = await until(() => poPosts()[nPo], 6000);
+  const madePO = made && made.body.purchaseOrder;
+  ok('Create PO from a row added in a section raises its order, titled with the cost code (not blank)',
+    madePO && madePO.cost_code === 'Stormwater' && !madePO.sub_code && madePO.title === 'Stormwater' && madePO.supplier === 'LB Water', madePO);
+  await until(() => rowTr(page, a1.id).locator('td.c-status').textContent().then(t => /^\s*Ordered/.test(t)), 4000);
+  const a2 = await addVia('Stormwater');
+  await sleep(300);
+  const a2Status = (await rowTr(page, a2.id).locator('td.c-status').textContent()).replace(/\s+/g, ' ').trim();
+  const a2Po = await cell(page, a2.id, 'po').inputValue().catch(() => '?');
+  ok('…then another row added in that section reads Not Ordered, on no PO — not "auto" on the first row\'s order',
+    /^Not Ordered/.test(a2Status) && a2Po === '', { a2Status, a2Po });
   await shot(page, 'section-add.png');
   ok('no page errors', errors.length === 0, errors.join(' | '));
   await ctx.close();
