@@ -52,9 +52,6 @@
   // allowed in the Unit cell — a supplier sells by the roll, the bag, the
   // stick — this is only what the menu offers.
   const UNITS = ['SF', 'LF', 'SY', 'CY', 'TN', 'TON', 'EA', 'LS', 'HR', 'GAL', 'LB', 'AC'];
-  // Lump-sum and hourly bid lines (design, mobilization, labour) almost never
-  // have anything to buy, so Send to Procurement leaves them unchecked.
-  const SKIP_UNITS = new Set(['LS', 'HR']);
   // A "live" job, the same rule the Scheduler and timesheets use.
   const LIVE_STATUSES = new Set(['', 'awarded', 'in progress', 'substantially complete']);
   const MAX_LEN = { description: 500, vendor: 120, quote_number: 120, contact: 120, email: 200, unit: 20 };
@@ -230,14 +227,28 @@
   /** The codes a row shows: its bid line's current ones, else its stored copy. */
   function liveCodes(row, ctx) {
     const line = lineFor(row, ctx);
-    if (line) return { cost_code: str(line.cost_code), sub_code: str(line.sub_code), line, notOnBid: false };
+    if (line) return { cost_code: str(line.cost_code), sub_code: str(line.sub_code), line, notOnBid: false, costGone: false };
+    // A row sent from the bid whose line has gone, or a hand-added row that
+    // was coded off a bid line that has since gone. A hand-added row that
+    // was never tied to a line is just a row, not a problem.
+    const notOnBid = row.source === 'bid' || row.bid_item_id != null;
+    const cost = str(row.cost_code);
     return {
-      cost_code: str(row.cost_code), sub_code: str(row.sub_code), line: null,
-      // A row sent from the bid whose line has gone, or a hand-added row that
-      // was coded off a bid line that has since gone. A hand-added row that
-      // was never tied to a line is just a row, not a problem.
-      notOnBid: row.source === 'bid' || row.bid_item_id != null,
+      cost_code: cost, sub_code: str(row.sub_code), line: null, notOnBid,
+      // …except one given a cost code alone (+ Add Row on a section): it
+      // follows no line, so a rename of that code on the bid leaves it
+      // behind. Said once no line on the bid has the code.
+      costGone: !notOnBid && !!cost.trim() && costOffBid(cost, ctx),
     };
+  }
+  // Whether no line on the job's bid has this cost code. A job with no bid
+  // lines in hand (none yet, or not read yet) says nothing.
+  function costOffBid(cost, ctx) {
+    const lines = ctx.bidLines || [];
+    if (!lines.length) return false;
+    const m = ctxIndex(ctx), k = keyFn(ctx);
+    if (!m.costKeys) m.costKeys = new Set(lines.filter(Boolean).map(l => ck(k, l.cost_code)).filter(Boolean));
+    return !m.costKeys.has(ck(k, cost));
   }
 
   // Blank on either side matches: a row with no vendor yet takes any PO, and a
@@ -279,6 +290,11 @@
     // codes — and '+ New PO' saves one exactly like that. It matches none
     // whatever the list holds, so it does not wait for the list either.
     if (!cc && !sc) return out('none');
+    // Nor does a hand-added row with a cost code and no sub code (one added
+    // from a section header): a cost code alone names no material, and it
+    // would take the order a sibling row raised for that code — a blank row
+    // reading Ordered on someone else's PO.
+    if (!codes.line && !sc) return out('none');
     if (!ctx.poLoaded) return out('loading');
     const pid = row.project_id || ctx.projectId;
     const cands = (ctx.purchaseOrders || []).filter(po => po
@@ -390,7 +406,8 @@
   /**
    * What Send to Procurement offers for a job: every bid line, grouped by cost
    * code in bid order, each one
-   *   'new'      not in Procurement yet — checked unless its unit is LS or HR
+   *   'new'      not in Procurement yet — unticked, like every line: the PM
+   *              ticks what to add (a section's All ticks the section)
    *   'added'    a live bid row already has it — shown greyed, not sendable
    *   'removed'  a bid row had it and was deleted — unchecked; checking it
    *              restores that row (restoreId) instead of adding a second one
@@ -404,9 +421,8 @@
    * ticked. Its entry carries `relink` (the line's id and codes) for the
    * restore to put on the row; a deleted row cannot be PATCHed.
    *
-   * A 'new' line whose material plainly has a row already starts UNTICKED,
-   * with `hint` saying why, so Send never makes a second row of it by
-   * default:
+   * A 'new' line whose material plainly has a row already carries a `hint`
+   * saying so, so it is not ticked into a second row of it unawares:
    *   - `orphans`: live rows of the job that are "not on bid" (their line is
    *     gone) and carry this line's cost + sub code. The re-link only moves a
    *     row when exactly one line has its codes (section 1), so after a
@@ -465,15 +481,13 @@
         entry = { line, state: 'removed', checked: false, restoreId: moved.get(id).id, rowId: moved.get(id).id,
           relink: { bid_item_id: id, cost_code: str(line.cost_code), sub_code: str(line.sub_code) } };
       } else {
-        entry = { line, state: 'new', checked: !SKIP_UNITS.has(normUnit(line.unit)), restoreId: null, rowId: null };
+        entry = { line, state: 'new', checked: false, restoreId: null, rowId: null };
         const orphans = orphanRows.get(codesOf(line.cost_code, line.sub_code)) || [];
         const handRows = hand.get(id) || 0;
         if (orphans.length) {
-          entry.checked = false;
           entry.orphans = orphans.slice();
           entry.hint = `${orphans.length} row${orphans.length === 1 ? '' : 's'} on this job ${orphans.length === 1 ? 'has' : 'have'} these codes but ${orphans.length === 1 ? 'is' : 'are'} not on the bid`;
         } else if (handRows) {
-          entry.checked = false;
           entry.handRows = handRows;
           entry.hint = handRows === 1 ? 'has a hand-added row' : `has ${handRows} hand-added rows`;
         }
@@ -712,7 +726,9 @@
 
   function exportNotes(r, c) {
     const notes = flagsOf(r, c).map(f => f.label);
-    if (liveCodes(r, c).notOnBid) notes.push('Not on bid');
+    const live = liveCodes(r, c);
+    if (live.notOnBid) notes.push('Not on bid');
+    if (live.costGone) notes.push('Cost code not on bid');
     const bc = bidChange(r, c);
     if (bc) notes.push(`Bid changed: ${bc.label}`);
     return notes.join('; ');
@@ -2426,7 +2442,10 @@
       ? `<input type="checkbox" class="fctproc-grpsel" data-grpsel="${esc(g.key)}"${n && n === g.rows.length ? ' checked' : ''}
           title="Select every row in this section" aria-label="Select every row in ${esc(g.label)}">` : '';
     // …and a button that adds a row in the section (sectionSeed), not under
-    // "No cost code" as the toolbar's + Add Row does.
+    // "No cost code" as the toolbar's + Add Row does. Beside the name, ahead
+    // of the quote / contact / counts: after a long vendor header it sat past
+    // the sheet's right edge on a narrow screen, where the sticky label never
+    // scrolls it into view.
     const into = st.grouping === 'vendor'
       ? (g.vendor ? `for ${g.vendor}${g.quote ? `, quote # ${g.quote}` : ''}` : 'with no vendor yet')
       : (g.code ? `under ${g.code}` : 'with no cost code');
@@ -2434,8 +2453,8 @@
       ? `<button type="button" class="fctproc-grpadd" data-grpadd="${esc(g.key)}" title="${esc(`Add a row ${into}`)}"
           aria-label="${esc(`Add a row ${into}`)}">+ Add Row</button>` : '';
     return `<tr class="fctproc-grp" data-grp="${esc(g.key)}" title="${open ? 'Fold' : 'Unfold'} this group"><td colspan="${span}">
-      <span class="gl">${box}<span class="tw">${open ? '&#9660;' : '&#9654;'}</span><span>${esc(g.label)}</span>
-      ${g.meta ? `<span class="gm">${g.meta}</span>` : ''}<span class="gm gc">${groupCountsHtml(g.rows, ctx)}</span>${addBtn}</span></td></tr>`;
+      <span class="gl">${box}<span class="tw">${open ? '&#9660;' : '&#9654;'}</span><span>${esc(g.label)}</span>${addBtn}
+      ${g.meta ? `<span class="gm">${g.meta}</span>` : ''}<span class="gm gc">${groupCountsHtml(g.rows, ctx)}</span></span></td></tr>`;
   }
 
   /**
@@ -2586,7 +2605,8 @@
         case 'unit':
           return td('', edit ? cbCell('proc_units', r.unit, '', `${at('unit')} maxlength="${MAX_LEN.unit}"`) : txt(r.unit));
         case 'cost_code': {
-          const badge = codes.notOnBid ? '<span class="fctproc-tag amber" title="The bid line this row was tied to is no longer on the bid">not on bid</span>' : '';
+          const badge = codes.notOnBid ? '<span class="fctproc-tag amber" title="The bid line this row was tied to is no longer on the bid">not on bid</span>'
+            : codes.costGone ? '<span class="fctproc-tag amber" title="No line on the bid has this cost code any more (renamed or removed on the bid). Pick the row\'s Sub Code from the bid to put it under a current code.">not on bid</span>' : '';
           return td('', `<div class="fctproc-codes">${txt(codes.cost_code, codes.cost_code ? '' : 'fctproc-dim')}${badge}</div>`);
         }
         case 'sub_code':
@@ -3160,8 +3180,10 @@
         // (section 1), so the cell goes back to what it was (refreshRow
         // after the commit) — and says why, rather than just undoing it.
         const n = (makeCtx().bidLines || []).length;
-        toast(n ? `Sub Code: "${typed.slice(0, 60)}" is not a line on this job's bid — pick one from the list. A material that is not on the bid can go in Description.`
-          : `Sub Code: this job has no bid lines yet, so there is no cost / sub code to pick. Add the bid items on the bid page first; the material can go in Description meanwhile.`, 'error');
+        // (Description is only offered when the page shows it.)
+        const desc = !colHidden('description');
+        toast(n ? `Sub Code: "${typed.slice(0, 60)}" is not a line on this job's bid — pick one from the list.${desc ? ' A material that is not on the bid can go in Description.' : ''}`
+          : `Sub Code: this job has no bid lines yet, so there is no cost / sub code to pick. Add the bid items on the bid page first${desc ? '; the material can go in Description meanwhile' : ''}.`, 'error');
       }
       updateCounts();
       return;
@@ -3621,6 +3643,19 @@
       setPOButtonBusy(false);
     }
   }
+  /**
+   * A PO's title, from the rows it is raised for: one row's Description (when
+   * the page shows it — a hidden one is text the PM can neither see nor
+   * correct), else its Sub Code, else its Cost Code; several rows, the
+   * vendor's materials. Never blank: a hand-added row with no code made a PO
+   * with no title.
+   */
+  function poTitle(g, vendor) {
+    const one = g.rows.length === 1 ? g.rows[0] : null;
+    const desc = one && !colHidden('description') ? str(one.description).trim() : '';
+    if (one && (desc || g.sub_code || g.cost_code)) return desc || g.sub_code || g.cost_code;
+    return vendor ? `${vendor} materials` : (g.sub_code || g.cost_code || 'Materials');
+  }
   async function createPOFromSelectedNow() {
     if (![...st.selected].some(id => rowById(id))) return;
     // Whether a row is already on an order is decided on the order list as
@@ -3713,7 +3748,7 @@
         cost_code: g.cost_code,
         sub_code: g.sub_code,
         supplier: vendor,
-        title: g.rows.length === 1 ? (g.rows[0].description.trim() || g.sub_code) : (vendor ? `${vendor} materials` : (g.sub_code || 'Materials')),
+        title: poTitle(g, vendor),
         notes: quotes.length === 1 ? `Quote ${quotes[0]}` : '',
       };
       let po = null;
@@ -4001,9 +4036,11 @@
     const sync = () => {
       const n = entries.filter(en => en.checked && en.state !== 'added').length;
       const already = entries.filter(en => en.state === 'added').length;
-      foot.querySelector('#fctproc-send-count').textContent = `${n} line${n === 1 ? '' : 's'} ticked`
+      // Nothing starts ticked, so the checklist opens on "Nothing ticked yet"
+      // and a plain (disabled) Add.
+      foot.querySelector('#fctproc-send-count').textContent = (n ? `${n} line${n === 1 ? '' : 's'} ticked` : 'Nothing ticked yet')
         + (already ? ` · ${already} already in Procurement` : '');
-      go.textContent = `Add ${n} line${n === 1 ? '' : 's'}`;
+      go.textContent = n ? `Add ${n} line${n === 1 ? '' : 's'}` : 'Add';
       go.disabled = n === 0;
     };
 
@@ -4026,8 +4063,8 @@
       const offNames = [...new Set(off.map(r => [r.cost_code, r.sub_code].filter(Boolean).join(' / ') || '(no code)'))];
       m.body.innerHTML = `
         <p style="margin:0 0 0.7rem;line-height:1.5;color:var(--muted,#9ca3af)">
-          Tick the bid lines to track. Each one becomes a row with the bid's cost code, sub code, quantity and unit.
-          Lump-sum (LS) and hourly (HR) lines start unticked — there is rarely anything to buy for them.
+          Tick the bid lines to track — nothing starts ticked (a section's <b>All</b> ticks every line in it).
+          Each one becomes a row with the bid's cost code, sub code, quantity and unit.
           Adding again later only adds lines; it never changes rows already there.</p>
         ${relinked.length ? `<p style="margin:0 0 0.7rem;color:var(--green,#22c55e)">Re-linked ${relinked.length} row${relinked.length === 1 ? '' : 's'}
           to the current bid line${relinked.length === 1 ? '' : 's'} with the same cost and sub code (${esc(relinkWords(relinked))}).</p>` : ''}
@@ -4036,7 +4073,7 @@
         ${off.length ? `<p class="fctproc-send-off" style="margin:0 0 0.7rem;line-height:1.5;color:#fbbf24">
           ${off.length} row${off.length === 1 ? ' on this job is' : 's on this job are'} <b>not on the bid</b>:
           ${esc(offNames.slice(0, 6).join('; '))}${offNames.length > 6 ? ` and ${offNames.length - 6} more` : ''}.
-          Lines with the same codes start unticked — tick one only for a material that has no row yet.</p>` : ''}
+          Lines with the same codes are marked — tick one only for a material that has no row yet.</p>` : ''}
         ${plan.groups.map((g, gi) => `
           <div class="fctproc-send-grp">
             <div class="fctproc-send-h"><span>${esc(g.cost_code || 'No cost code')}</span>
