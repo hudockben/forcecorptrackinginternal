@@ -791,7 +791,9 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   assert('auto PO -> Ordered (blue pill)', tr1.querySelector('.fctproc-pill').textContent === 'Ordered' && tr1.querySelector('.fctproc-pill').classList.contains('st-ord'));
   assert("derived Date Ordered shows the PO's date, muted", env.field('r1', 'date_ordered').value === '2026-03-01' && env.field('r1', 'date_ordered').classList.contains('derived'));
   assert('not ordered + needed yesterday -> Late (red edge)', /Late/.test(tr2.querySelector('.c-status').textContent) && tr2.querySelector('.c-status').classList.contains('flag-red'));
-  assert('SCA Needed -> amber "Sub agreement open"', /Sub agreement open/.test(tr3.querySelector('.c-status').textContent) && tr3.querySelector('.c-status').classList.contains('flag-amber'));
+  // Shown short so the Status column stays narrow; the whole wording is its tooltip, and the export's.
+  assert('SCA Needed -> amber "Sub agmt open"', /Sub agmt open/.test(tr3.querySelector('.c-status').textContent) && tr3.querySelector('.c-status').classList.contains('flag-amber'));
+  assert('  with the whole wording as its tooltip', /sub-contractor agreement is needed/.test((tr3.querySelector('.c-status .fctproc-flag') || {}).title || ''));
   assert('bid changed badge with its two actions', /bid 901 → 950 LF/.test(tr2.querySelector('.c-quantity').textContent)
     && !!tr2.querySelector('[data-act="use-bid"]') && !!tr2.querySelector('[data-act="dismiss-bid"]'));
   assert('a bid row whose line is gone is badged "not on bid"', /not on bid/.test(tr4.querySelector('.c-cost_code').textContent));

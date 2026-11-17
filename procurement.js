@@ -346,7 +346,7 @@
       flags.push({ key: 'late_delivery', level: 'red', label: 'Late delivery', title: `Needed ${fmtDate(needed)} and not delivered yet` });
     }
     if (row.sca_status === 'Needed') {
-      flags.push({ key: 'sca_open', level: 'amber', label: 'Sub agreement open', title: 'A sub-contractor agreement is needed and not executed yet' });
+      flags.push({ key: 'sca_open', level: 'amber', label: 'Sub agreement open', short: 'Sub agmt open', title: 'A sub-contractor agreement is needed and not executed yet' });
     }
     return flags;
   }
@@ -1307,7 +1307,8 @@
       .fctproc-codes .fctproc-txt { flex: 1 1 auto; min-width:0; }
       .fctproc-qty { display:flex; flex-direction:column; gap:0.1rem; padding:0.1rem 0; }
       .fctproc-bidchg { display:flex; flex-direction:column; align-items:flex-end; gap:0.12rem; font-size:0.62rem; color:#fbbf24; line-height:1.25; text-align:right; }
-      .fctproc-bidchg .acts { display:flex; gap:0.2rem; white-space:nowrap; }
+      .fctproc-bidchg > span:first-child { white-space: normal; }
+      .fctproc-bidchg .acts { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:0.2rem; white-space:nowrap; }
       .fctproc-mini { background:none; border:1px solid rgba(234,179,8,0.4); color:#fbbf24; border-radius:3px; font-size:0.6rem;
         padding:0 0.25rem; cursor:pointer; line-height:1.4; }
       .fctproc-mini.ghost { border-color: var(--border,#2a2a3a); color: var(--muted,#9ca3af); }
@@ -2260,9 +2261,9 @@
   // of the old sheet were.
   const COLS = [
     { key: 'sel', label: '', w: 2, edit: true, stick: true },
-    { key: 'status', label: 'Status', w: 11.2, filter: 'status', stick: true },
+    { key: 'status', label: 'Status', w: 7.2, filter: 'status', stick: true },
     { key: 'po', label: 'PO #', w: 9, filter: 'po' },
-    { key: 'sca_status', label: 'Sub-Contractor Agreement', w: 7.6, filter: 'sca_status' },
+    { key: 'sca_status', label: 'Sub-Contractor Agreement', w: 6.9, filter: 'sca_status' },
     // Every column filters, as every column of the old sheet did — a blank
     // Date Needed is exactly the row the late flags can never catch, and
     // "(blank)" in its filter is how it is found.
@@ -2271,7 +2272,7 @@
     { key: 'order_by', label: 'Order By', w: 6.4, title: 'Date Needed minus Lead Time', filter: 'order_by' },
     { key: 'date_ordered', label: 'Date Ordered', w: 7.7, filter: 'date_ordered' },
     { key: 'date_delivered', label: 'Date Delivered', w: 7.7, filter: 'date_delivered' },
-    { key: 'quantity', label: 'Quantity', w: 8.2, num: true, filter: 'quantity' },
+    { key: 'quantity', label: 'Quantity', w: 7.4, num: true, filter: 'quantity' },
     { key: 'unit', label: 'Unit', w: 4.8, filter: 'unit' },
     { key: 'cost_code', label: 'Cost Code', w: 10.5, filter: 'cost_code' },
     { key: 'sub_code', label: 'Sub Code', w: 11.5, filter: 'sub_code' },
@@ -2512,7 +2513,7 @@
           const tip = status === UNKNOWN ? ' title="Waiting for the purchase orders to load"' : '';
           return td(red ? 'flag-red' : amber ? 'flag-amber' : '',
             `<span class="fctproc-pill ${cls}"${tip}>${esc(status)}</span>${flags.length ? `<span class="fctproc-flags">${flags.map(f =>
-              `<span class="fctproc-flag ${f.level}" title="${esc(f.title)}">${esc(f.label)}</span>`).join('')}</span>` : ''}`);
+              `<span class="fctproc-flag ${f.level}" title="${esc(f.title)}">${esc(f.short || f.label)}</span>`).join('')}</span>` : ''}`);
         }
         case 'po': return poCellHtml(r, ep, edit, td);
         case 'sca_status':
