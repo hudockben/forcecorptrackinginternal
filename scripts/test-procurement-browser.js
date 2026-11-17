@@ -1399,6 +1399,120 @@ async function roundFourFixes(browser) {
   }
 }
 
+// ── The section checkbox on each group header ─────────────────────────────
+async function sectionSelect(browser) {
+  console.log('\nthe section checkbox: tick a whole section, then delete or bulk-edit it');
+  const t = i => new Date(Date.UTC(2026, 9, 4) + i * 1000).toISOString();
+  const row = (id, f) => ({ ...BLANK_ROW, id, project_id: 'p1', created_at: t(id.charCodeAt(1)), updated_at: t(id.charCodeAt(1)), ...f });
+  const W = makeWorld();
+  W.rows.push(
+    row('S1', { description: 'geofabric pins', vendor: 'New Enterprise', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' }),
+    row('S2', { description: 'staples', vendor: 'New Enterprise', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' }),
+    row('S3', { description: 'drain couplers', vendor: 'LB Water', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: DRAIN }),
+    row('S4', { description: 'mob trailer', vendor: 'LB Water', bid_item_id: 'b3', cost_code: 'Mobilization', sub_code: 'Mobilization' }),
+    row('S5', { description: 'mob fuel', vendor: 'LB Water', bid_item_id: 'b3', cost_code: 'Mobilization', sub_code: 'Mobilization' }),
+  );
+  const storage = { fct_proc_project_turf: 'p1', fct_proc_group_turf: 'cost' };
+  const { page, ctx, errors } = await openPage(browser, W, 'level2', { viewport: { width: 1474, height: 900 }, storage });
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 5));
+  await sleep(300);
+  const box = name => page.locator('#fctproc-wrap tr.fctproc-grp', { hasText: name }).locator('[data-grpsel]');
+  const state = () => page.evaluate(() => ({
+    selected: [...FCTProcurement._test.state().selected].sort().join(),
+    rowsTicked: [...document.querySelectorAll('#fctproc-wrap [data-sel]:checked')].map(b => b.dataset.sel).sort().join(),
+    boxes: Object.fromEntries([...document.querySelectorAll('#fctproc-wrap [data-grpsel]')].map(b =>
+      [b.closest('tr').textContent.match(/Stormwater|Mobilization/)[0], b.indeterminate ? 'some' : b.checked ? 'all' : 'none'])),
+    bar: ((document.querySelector('#fctproc-bulk b') || {}).textContent || '0'),
+    folded: [...FCTProcurement._test.state().collapsed].length,
+  }));
+
+  ok('an editor gets a box on each section header', await box('Stormwater').count() === 1 && await box('Mobilization').count() === 1);
+  await box('Stormwater').click();
+  await sleep(200);
+  let s = await state();
+  ok('ticking a section ticks every row in it, and only those', s.selected === 'S1,S2,S3' && s.rowsTicked === 'S1,S2,S3', JSON.stringify(s));
+  ok('…the bulk bar counts them', s.bar === '3', s.bar);
+  ok('…and the click does not fold the section', s.folded === 0, s.folded);
+  ok('…its box reads ticked, the other section\'s not', s.boxes.Stormwater === 'all' && s.boxes.Mobilization === 'none', JSON.stringify(s.boxes));
+
+  await page.locator('#procurement-root [data-sel="S2"]').uncheck();
+  await sleep(150);
+  s = await state();
+  ok('unticking one of its rows leaves the section box half-ticked', s.boxes.Stormwater === 'some' && s.selected === 'S1,S3', JSON.stringify(s));
+  await page.locator('#procurement-root [data-sel="S2"]').check();
+  await sleep(150);
+  ok('ticking it again ticks the section box', (await state()).boxes.Stormwater === 'all');
+  await box('Stormwater').click();
+  await sleep(150);
+  s = await state();
+  ok('unticking the section box unticks its rows', s.selected === '' && s.boxes.Stormwater === 'none' && s.bar === '0', JSON.stringify(s));
+
+  // Keyboard: Space on the focused box ticks it and does not fold.
+  await box('Mobilization').focus();
+  await page.keyboard.press('Space');
+  await sleep(150);
+  s = await state();
+  ok('Space on a section box ticks it, without folding', s.selected === 'S4,S5' && s.folded === 0, JSON.stringify(s));
+  await page.locator('#procurement-root [data-act="bulk-clear"]').click();
+  await sleep(150);
+  ok('Clear selection unticks the section box too', (await state()).boxes.Mobilization === 'none');
+
+  // A search narrows what a section box ticks to the rows shown.
+  await page.fill('#fctproc-search', 'staples');
+  await sleep(400);
+  await box('Stormwater').click();
+  await sleep(150);
+  s = await state();
+  ok('with a search on, a section box ticks only the rows shown', s.selected === 'S2', JSON.stringify(s));
+  await page.locator('#procurement-root [data-act="bulk-clear"]').click();
+  await page.fill('#fctproc-search', '');
+  await sleep(400);
+
+  // A folded section's box still ticks its rows.
+  await page.locator('#fctproc-wrap tr.fctproc-grp', { hasText: 'Mobilization' }).locator('.tw').click();
+  await sleep(200);
+  ok('(the Mobilization section is folded)', (await state()).folded === 1);
+  await box('Mobilization').click();
+  await sleep(150);
+  s = await state();
+  ok('a folded section\'s box ticks its rows too, and leaves it folded', s.selected === 'S4,S5' && s.bar === '2' && s.folded === 1, JSON.stringify(s));
+
+  // Then Delete selected removes exactly that section.
+  await page.locator('#procurement-root [data-act="bulk-del"]').click();
+  await page.locator('#procurement-root [data-act="bulk-del-yes"]').click();
+  await until(() => W.rows.filter(r => r.deleted_at).length === 2);
+  await sleep(300);
+  ok('Delete selected then deletes that section\'s rows, and no others',
+    W.rows.filter(r => r.deleted_at).map(r => r.id).sort().join() === 'S4,S5' && W.rows.filter(r => !r.deleted_at).length === 3,
+    W.rows.map(r => `${r.id}:${r.deleted_at ? 'deleted' : 'live'}`).join());
+  ok('…and the section is gone from the sheet', await page.locator('#fctproc-wrap tr.fctproc-grp', { hasText: 'Mobilization' }).count() === 0
+    && await page.locator('#procurement-root tr.fctproc-row').count() === 3);
+
+  // A bulk edit of a section: Date Needed on every Stormwater row.
+  await box('Stormwater').click();
+  await page.selectOption('#fctproc-bulk-field', 'date_needed');
+  await page.fill('#fctproc-bulk-val', '2026-12-15');
+  await page.locator('#procurement-root [data-act="bulk-apply"]').click();
+  await until(() => W.rows.filter(r => !r.deleted_at && r.date_needed === '2026-12-15').length === 3);
+  ok('a bulk edit after ticking a section sets the field on every row in it',
+    W.rows.filter(r => !r.deleted_at).every(r => r.date_needed === '2026-12-15'), W.rows.map(r => `${r.id}:${r.date_needed}`).join());
+  await shot(page, 'section-select.png');
+  ok('no page errors', errors.length === 0, errors.join(' | '));
+  await ctx.close();
+
+  // A view-only user gets no boxes.
+  const W2 = makeWorld();
+  W2.rows.push(row('V1', { description: 'pins', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' }));
+  const v = await openPage(browser, W2, 'level1', { storage });
+  await v.page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => v.page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 1));
+  await sleep(300);
+  ok('a view-only user gets no section boxes', await v.page.locator('#fctproc-wrap [data-grpsel]').count() === 0
+    && await v.page.locator('#fctproc-wrap tr.fctproc-grp').count() > 0);
+  await v.ctx.close();
+}
+
 (async () => {
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
@@ -1411,6 +1525,7 @@ async function roundFourFixes(browser) {
     await roundThreeFixes(browser);
     await roundThreeSaveFixes(browser);
     await roundFourFixes(browser);
+    await sectionSelect(browser);
   } finally {
     await browser.close();
     server.close();

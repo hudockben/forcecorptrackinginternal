@@ -1324,6 +1324,7 @@
       tr.fctproc-grp:hover > td { background:#162216; }
       tr.fctproc-grp .gl { position: sticky; left:0.6rem; display:inline-flex; gap:0.6rem; align-items: baseline; flex-wrap:wrap; }
       tr.fctproc-grp .tw { display:inline-block; width:0.8rem; font-size:0.65rem; }
+      tr.fctproc-grp .fctproc-grpsel { margin:0 0 0 0.05rem; align-self:center; }
       tr.fctproc-grp .gm { color:#6f9a6f; font-weight:400; font-size:0.72rem; }
       tr.fctproc-grp .gm b { color:#9ccc9c; font-weight:600; }
       .fctproc-nomatch td { text-align:center; color: var(--muted,#888); padding:2rem 1rem !important; height:auto; }
@@ -2377,7 +2378,7 @@
     wrap.scrollTop = top;
     wrap.scrollLeft = leftScroll;
     restoreFocus(wrap, focus);
-    syncSelectAll(rows);
+    syncSelectAll(rows, groups);
     fitWrap();
     const shown = st.mountEl.querySelector('#fctproc-shown');
     if (shown) shown.textContent = rows.length === st.rows.length ? `${rows.length} row${rows.length === 1 ? '' : 's'}` : `${rows.length} of ${st.rows.length} rows`;
@@ -2393,8 +2394,14 @@
 
   function groupHeaderHtml(g, span, ctx) {
     const open = !st.collapsed.has(g.key);
+    // An editor's box ticks every row in the section (folded ones too), for
+    // Delete selected or a bulk edit; synced with the rows by syncSelectAll.
+    const n = g.rows.filter(r => st.selected.has(r.id)).length;
+    const box = canEdit() && g.rows.length
+      ? `<input type="checkbox" class="fctproc-grpsel" data-grpsel="${esc(g.key)}"${n && n === g.rows.length ? ' checked' : ''}
+          title="Select every row in this section" aria-label="Select every row in ${esc(g.label)}">` : '';
     return `<tr class="fctproc-grp" data-grp="${esc(g.key)}" title="${open ? 'Fold' : 'Unfold'} this group"><td colspan="${span}">
-      <span class="gl"><span class="tw">${open ? '&#9660;' : '&#9654;'}</span><span>${esc(g.label)}</span>
+      <span class="gl">${box}<span class="tw">${open ? '&#9660;' : '&#9654;'}</span><span>${esc(g.label)}</span>
       ${g.meta ? `<span class="gm">${g.meta}</span>` : ''}<span class="gm gc">${groupCountsHtml(g.rows, ctx)}</span></span></td></tr>`;
   }
 
@@ -2451,13 +2458,31 @@
   }
   const cssEsc = s => (window.CSS && CSS.escape ? CSS.escape(String(s)) : String(s).replace(/["\\]/g, '\\$&'));
 
-  function syncSelectAll(rows) {
+  function syncSelectAll(rows, groups) {
     const box = st.mountEl && st.mountEl.querySelector('#fctproc-selall');
     if (!box) return;
-    const vis = rows || visibleRows(makeCtx());
+    const ctx = rows && groups ? null : makeCtx();
+    const vis = rows || visibleRows(ctx);
     const n = vis.filter(r => st.selected.has(r.id)).length;
     box.checked = !!vis.length && n === vis.length;
     box.indeterminate = n > 0 && n < vis.length;
+    // Each section's box: ticked when all its rows are, half when some are.
+    const boxes = st.mountEl.querySelectorAll('[data-grpsel]');
+    if (!boxes.length) return;
+    const byKey = new Map((groups || groupRows(vis, ctx || makeCtx())).map(g => [g.key, g.rows]));
+    boxes.forEach(b => {
+      const in_ = byKey.get(b.dataset.grpsel) || [];
+      const k = in_.filter(r => st.selected.has(r.id)).length;
+      b.checked = !!in_.length && k === in_.length;
+      b.indeterminate = k > 0 && k < in_.length;
+    });
+  }
+  // The row boxes on screen, after the selection changed in bulk.
+  function paintSelection() {
+    st.mountEl.querySelectorAll('[data-sel]').forEach(b => {
+      b.checked = st.selected.has(b.dataset.sel);
+      const tr = b.closest('tr'); if (tr) tr.classList.toggle('sel', b.checked);
+    });
   }
 
   // One row's cells. Everything a cell shows is worked out here from the row
@@ -2888,10 +2913,18 @@
     if (el.id === 'fctproc-selall') {
       const vis = visibleRows(makeCtx());
       vis.forEach(r => { if (el.checked) st.selected.add(r.id); else st.selected.delete(r.id); });
-      st.mountEl.querySelectorAll('[data-sel]').forEach(b => {
-        b.checked = st.selected.has(b.dataset.sel);
-        const tr = b.closest('tr'); if (tr) tr.classList.toggle('sel', b.checked);
-      });
+      paintSelection();
+      syncSelectAll(vis);
+      renderBulk();
+      return;
+    }
+    if (el.dataset.grpsel != null) {
+      // A section's rows as shown: the filters and search apply, a fold does not.
+      const ctx = makeCtx();
+      const g = groupRows(visibleRows(ctx), ctx).find(x => x.key === el.dataset.grpsel);
+      (g ? g.rows : []).forEach(r => { if (el.checked) st.selected.add(r.id); else st.selected.delete(r.id); });
+      paintSelection();
+      syncSelectAll();
       renderBulk();
       return;
     }
@@ -3231,6 +3264,8 @@
     }
     const ff = e.target.closest('[data-pff]');
     if (ff) { e.stopPropagation(); openFilter(ff.dataset.pff, ff); return; }
+    // A section's box selects its rows (onChange); it does not fold it.
+    if (e.target.closest('.fctproc-grpsel')) return;
     const gh = e.target.closest('tr.fctproc-grp');
     if (gh) {
       const k = gh.dataset.grp;
