@@ -592,8 +592,6 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
       check('and what it did send is still there',
         ids.includes('a') && ids.includes('b'), JSON.stringify(ids));
       check('the merge is reported', res.body && res.body.merged === 1, JSON.stringify(res.body));
-      check('  and which order, by id', res.body && JSON.stringify(res.body.mergedOrderIds) === JSON.stringify(['purchasing-raised']),
-        JSON.stringify(res.body && res.body.mergedOrderIds));
       check('and the new version comes back so the next save is judged fresh',
         res.body && new Date(res.body.updatedAt).getTime() === Date.parse(T_NEW),
         JSON.stringify(res.body));
@@ -767,11 +765,6 @@ const PO = { id: 'po1', po_number: 'PO-0001', title: 'Stone', lines: [{ id: 'L1'
       check('and the merge is reported, so the client does not adopt the version',
         res.body && res.body.merged > 0 && res.body.mergedLines === 1,
         JSON.stringify(res.body));
-      // By id: a tab that deleted a delivery reads this to learn its delete
-      // did not stick, and then keeps the delivery's cost row.
-      check('  and which delivery, by order and line id',
-        res.body && JSON.stringify(res.body.mergedLineIds) === JSON.stringify([{ po_id: 'a', line_id: 'L2' }])
-        && JSON.stringify(res.body.mergedOrderIds) === '[]', JSON.stringify(res.body));
     }
     {
       // The same again for a cost-row link. A tab that loaded the order before

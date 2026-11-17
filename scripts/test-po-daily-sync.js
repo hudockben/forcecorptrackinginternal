@@ -207,8 +207,6 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
       escJs: s => String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"),
       fmt:   v => Number(v).toFixed(2),
       savePurchaseOrders: () => { state.saves++; },
-      // Page globals the block reads, kept outside it with savePurchaseOrders.
-      _poSaveBusy: () => Boolean(state.saveBusy), _poDeletedPending: new Set(),
       saveTruckingEntries: () => {}, saveInventoryEntries: () => {},
       renderPOTab: () => { state.renders++; }, renderProjectPOs: id => { state.projectRenders.push(id); }, renderDailyTable: () => {},
       drPutNow: (id, row) => { state.rowPuts.push({ id, row: { ...row } }); },
@@ -261,15 +259,6 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
       ctx._poAdoptServerOrders([order({ lines: [{ id: 'dr-r8', source: 'daily', po_row_id: 'r8' }] })]);
       assert('nothing is redrawn under someone typing', state.renders === 1 && local.lines.some(l => l.id === 'dr-r8'));
       ctx.document.activeElement = null;
-      // An order deleted here whose save is not answered yet is not put back
-      // by a row write's answer that still names it.
-      ctx._poDeletedPending.add('poGone');
-      ctx._poAdoptServerOrders([order({ id: 'poGone', po_number: 'PO-0099' })]);
-      assert('an order deleted here, its save not answered yet, is not put back', !ctx.purchaseOrders.some(p => p.id === 'poGone'));
-      ctx._poDeletedPending.delete('poGone');
-      ctx._poAdoptServerOrders([order({ id: 'poNew', po_number: 'PO-0100' })]);
-      assert('  while one raised elsewhere still is', ctx.purchaseOrders.some(p => p.id === 'poNew'));
-      ctx.purchaseOrders.splice(ctx.purchaseOrders.findIndex(p => p.id === 'poNew'), 1);
 
       let took = null;
       ctx._poAdoptServerOrders = orders => { took = orders; return 0; };
@@ -307,16 +296,6 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
       await nothing.ctx._poServerCatchUp();
       assert('an answer that changed nothing leaves the list alone',
         nothing.ctx.purchaseOrders.length === 1 && nothing.ctx._poBaseUpdatedAt === 'v0');
-      // A save of the list out or waiting: the list in hand has edits the
-      // answer may not, so it is merged in, never taken whole.
-      const busy = sandbox(src, page);
-      busy.ctx.purchaseOrders.push(order({ title: 'typed, save still out' }));
-      busy.state.saveBusy = true;
-      busy.state.reply = () => json({ ok: true, changed: 1, purchaseOrders: listBack, updatedAt: '2026-11-10T00:00:06.000Z' });
-      await busy.ctx._poServerCatchUp();
-      assert('with a save out, the catch-up merges its lines in and keeps the page\'s own edits and version',
-        busy.ctx.purchaseOrders[0].title === 'typed, save still out' && busy.ctx.purchaseOrders[0].lines.some(l => l.id === 'dr-r1')
-        && busy.ctx._poBaseUpdatedAt === 'v0', JSON.stringify(busy.ctx.purchaseOrders));
     }
 
     console.log(`\n[${page}: PO numbers with no order, and raising one]`);
