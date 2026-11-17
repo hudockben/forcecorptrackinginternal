@@ -7096,6 +7096,8 @@ function _poReread() {
       }
       const a = document.activeElement;
       if (activeTab === 'po' && a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return false;
+      // Nor while a save is out or waiting: its edits are not in what was read.
+      if (_poSaveBusy()) return false;
       const before = purchaseOrders;
       purchaseOrders = incoming;
       _poBaseUpdatedAt = data.updatedAt || _poBaseUpdatedAt;
@@ -7151,8 +7153,27 @@ function _migratePOs(list = purchaseOrders) {
   });
 }
 
+// One whole-list save at a time. Two out at once raced: the second carried
+// the version the first was about to replace, so the server read it as a
+// save from a copy that was behind and merged back whatever it deleted — a
+// delivery removed while the save of an edit was still out came back. A save
+// asked for while one is out goes once that one is answered, with the list
+// as it is then and the version that answer gave. Resolves with what the
+// save did ({ ok, merged, mergedOrderIds, mergedLineIds }), for a delete
+// that has to know whether it stuck.
+let _poSaving = null;     // the save under way
+let _poSaveNext = null;   // { done, resolve }: one asked for meanwhile
+function _poSaveBusy() { return Boolean(_poSaving || _poSaveNext); }
 function savePurchaseOrders() {
-  fetch(`${API_BASE}/purchase-orders?division=turf`, {
+  if (_poSaving) {
+    if (!_poSaveNext) {
+      let resolve;
+      const done = new Promise(res => { resolve = res; });
+      _poSaveNext = { done, resolve };
+    }
+    return _poSaveNext.done;
+  }
+  const run = fetch(`${API_BASE}/purchase-orders?division=turf`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ purchaseOrders, baseUpdatedAt: _poBaseUpdatedAt })
@@ -7160,8 +7181,9 @@ function savePurchaseOrders() {
     if (r.ok) {
       // The version this save produced, so the next one is judged against
       // what the server actually holds rather than a base already stale.
+      let j = null;
       try {
-        const j = await r.json();
+        j = await r.json();
         // Not after a merge. The server kept orders this tab has never seen, so
         // the list here is already behind what is stored; adopting the new
         // version would make the next save look up to date and erase them
@@ -7172,17 +7194,49 @@ function savePurchaseOrders() {
         // lines than this list did, so the list is behind; take theirs on.
         if (j && j.derived) _poRefreshDailyLines();
       } catch {}
-      return;
+      // An answer that cannot be read says nothing about what was merged.
+      return j ? { ok: true, merged: Number(j.merged) || 0, mergedOrderIds: j.mergedOrderIds, mergedLineIds: j.mergedLineIds }
+               : { ok: true, merged: null };
     }
     if (r.status === 409) {
       let detail = 'A purchase-order save was refused to prevent accidental data loss.';
       try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch {}
       _showSaveError(false, detail);
-      return;
+      return { ok: false };
     }
     _showSaveError(r.status === 401);
-  }).catch(() => _showSaveError(false));
+    return { ok: false };
+  }).catch(() => { try { _showSaveError(false); } catch {} return { ok: false }; });
+  _poSaving = run;
+  // Whatever happened to it, the next one goes: a save stuck "out" would
+  // hold every later one back for good.
+  const after = () => {
+    _poSaving = null;
+    const next = _poSaveNext;
+    _poSaveNext = null;
+    if (next) savePurchaseOrders().then(next.resolve, () => next.resolve({ ok: false }));
+  };
+  run.then(after, after);
+  return run;
 }
+// A save still waiting its turn as the page goes away is sent now, on its
+// own — nothing after this would send it. (Over what a request sent while
+// the page closes may carry, it is left to the poll of whoever opens it next.)
+window.addEventListener('pagehide', () => {
+  if (!_poSaveNext) return;
+  const body = JSON.stringify({ purchaseOrders, baseUpdatedAt: _poBaseUpdatedAt });
+  if (body.length > 60000) return;
+  _poSaveNext = null;
+  try {
+    fetch(`${API_BASE}/purchase-orders?division=turf`, {
+      method: 'PUT', keepalive: true, body,
+      headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` }
+    }).catch(() => {});
+  } catch {}
+});
+
+/** After a save the server had to merge: see _poReread (Procurement's own re-read). */
+function _poReadBack() { return _poReread(); }
 
 // Numbers handed to orders still being saved (fctCreatePurchaseOrder): they
 // are on no list yet, so without this the next order raised meanwhile — a
@@ -16709,26 +16763,33 @@ function addPOLine(poId) {
 function deletePOLine(poId, lineId) {
   const po = purchaseOrders.find(p => p.id === poId);
   if (!po) return;
-  const line = (po.lines || []).find(l => l.id === lineId);
+  const at = (po.lines || []).findIndex(l => l.id === lineId);
+  const line = at >= 0 ? po.lines[at] : undefined;
   // Recorded from a Daily Tracking row: the row says which order it is on, and
   // the server would only put it back. Change or clear the row's PO # instead.
   if (_poLineFromDaily(line)) return;
+  // Its cost row comes off the job here now, and off the server once the
+  // save has landed (_poDeleteSettled).
+  const rows = [];
   if (line && line.po_row_id && po.project_id) {
     const proj = getProj(po.project_id);
     if (proj) {
       proj.dailyRows = proj.dailyRows.filter(r => String(r.id) !== String(line.po_row_id));
-      drDelete(line.po_row_id);
+      rows.push(String(line.po_row_id));
     }
   }
   po.lines = (po.lines || []).filter(l => l.id !== lineId);
-  savePurchaseOrders();
+  const saving = savePurchaseOrders();
   renderPOTab();
   if (po.project_id) renderProjectPOs(po.project_id);
+  if (line) _poDeleteSettled(saving, { poId, lineId, line, at, projectId: po.project_id || '', rows, label: po.po_number || '' });
 }
 
 function deletePO(id) {
-  const po = purchaseOrders.find(p => p.id === id);
+  const at = purchaseOrders.findIndex(p => p.id === id);
+  const po = at >= 0 ? purchaseOrders[at] : undefined;
   const oldProj = po ? po.project_id : '';
+  const rows = [];
   if (po && oldProj) {
     const proj = getProj(oldProj);
     if (proj) {
@@ -16737,7 +16798,7 @@ function deletePO(id) {
         // PO # then shows in this tab's notice of numbers with no order.
         if (line.po_row_id && !_poLineFromDaily(line)) {
           proj.dailyRows = proj.dailyRows.filter(r => String(r.id) !== String(line.po_row_id));
-          drDelete(line.po_row_id);
+          rows.push(String(line.po_row_id));
         }
       });
       renderDailyTable(oldProj);
@@ -16745,9 +16806,86 @@ function deletePO(id) {
   }
   _poExpanded.delete(id);
   purchaseOrders = purchaseOrders.filter(p => p.id !== id);
-  savePurchaseOrders();
+  if (po) _poDeletedPending.add(String(id));
+  const saving = savePurchaseOrders();
   renderPOTab();
   if (oldProj) renderProjectPOs(oldProj);
+  if (po) _poDeleteSettled(saving, { poId: id, order: po, at, projectId: oldProj || '', rows, label: po.po_number || '' });
+}
+
+// Orders deleted here whose save has not been answered yet. A Daily Tracking
+// write answered meanwhile can name one (its row was a delivery on it), and
+// must not put it back on this page's list.
+const _poDeletedPending = new Set();
+
+/**
+ * Finish a delete made on this tab once the save that made it is answered.
+ *
+ * The cost rows behind a deleted delivery (or every delivery of a deleted
+ * order) are removed only now, and only when the delete stuck. They used to
+ * be removed alongside the save, and removing a row also updates the stored
+ * order list (the delivery on it is detached) — so when the row went first,
+ * the save looked like one from a copy that was behind, the server merged
+ * the "missing" delivery or order back, and it came back on the next poll,
+ * now with no cost on the job.
+ *
+ * When the server kept it after all (someone else had changed the orders
+ * since this page read them), or the save failed, it is put back here, its
+ * cost rows stay, and the job's rows and the order list are read again.
+ */
+async function _poDeleteSettled(saving, del) {
+  let out = null;
+  try { out = await saving; } catch { out = null; }
+  if (del.order) _poDeletedPending.delete(String(del.poId));
+  let kept;
+  if (out && out.ok && out.merged === 0) kept = false;
+  else if (out && out.ok && out.merged > 0 && Array.isArray(del.order ? out.mergedOrderIds : out.mergedLineIds)) {
+    kept = del.order
+      ? out.mergedOrderIds.map(String).includes(String(del.poId))
+      : out.mergedLineIds.some(m => m && String(m.po_id) === String(del.poId) && String(m.line_id) === String(del.lineId));
+  } else {
+    // A save that failed, or an answer that does not say: the server's list does.
+    kept = await _poStillStored(del);
+  }
+  if (!kept) {
+    del.rows.forEach(id => drDelete(id));
+    return;
+  }
+  if (del.order) {
+    if (!purchaseOrders.some(p => p && p.id === del.poId)) purchaseOrders.splice(Math.min(del.at, purchaseOrders.length), 0, del.order);
+  } else {
+    const po = purchaseOrders.find(p => p && p.id === del.poId);
+    if (po && !(po.lines || []).some(l => l && l.id === del.lineId)) {
+      po.lines = po.lines || [];
+      po.lines.splice(Math.min(del.at, po.lines.length), 0, del.line);
+    }
+  }
+  if (del.rows.length && del.projectId && getProj(del.projectId)) reloadDailyRows(del.projectId);
+  const el = document.activeElement;
+  const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+  if (activeTab === 'po' && !typing) renderPOTab();
+  if (del.projectId) renderProjectPOs(del.projectId);
+  if (out && out.ok) {
+    const what = del.order ? `${del.label || 'The purchase order'} was not deleted`
+                           : `${del.label ? del.label + ': the' : 'The'} delivery was not deleted`;
+    _showSaveError(false, `${what} — the purchase orders were changed elsewhere since this page read them, so it was kept. It is back on the list; delete it again if it should go.`, false);
+    _poReadBack();
+  }
+}
+
+/** Whether the stored order list still has what `del` deleted. Unknown (a failed read) counts as yes. */
+async function _poStillStored(del) {
+  try {
+    const r = await fetch(`${API_BASE}/purchase-orders?division=${DIVISION}`, { headers: { 'Authorization': `Bearer ${fctToken}` } });
+    if (!r.ok) return true;
+    const data = await r.json();
+    if (!data || !Array.isArray(data.purchaseOrders)) return true;
+    const po = data.purchaseOrders.find(p => p && String(p.id) === String(del.poId));
+    if (del.order) return Boolean(po);
+    return Boolean(po && Array.isArray(po.lines) && po.lines.some(l => l && String(l.id) === String(del.lineId)));
+  } catch {
+    return true;
+  }
 }
 
 // Sync all of a PO's lines to their daily rows after a header field changes.
@@ -16970,7 +17108,11 @@ function _poAdoptServerOrders(orders) {
   orders.forEach(srv => {
     if (!srv || !srv.id) return;
     const local = purchaseOrders.find(p => p && p.id === srv.id);
-    if (!local) { purchaseOrders.push(JSON.parse(JSON.stringify(srv))); n++; if (srv.project_id) projects.add(srv.project_id); return; }
+    if (!local) {
+      // Deleted here, its save not answered yet: not put back (see deletePO).
+      if (_poDeletedPending.has(String(srv.id))) return;
+      purchaseOrders.push(JSON.parse(JSON.stringify(srv))); n++; if (srv.project_id) projects.add(srv.project_id); return;
+    }
     const srvLines = Array.isArray(srv.lines) ? srv.lines : [];
     const srvById  = new Map(srvLines.filter(l => l && l.id).map(l => [String(l.id), l]));
     const raised = (local.lines || []).filter(l => l && !_poLineFromDaily(l))
@@ -17035,7 +17177,9 @@ async function _poServerCatchUp() {
     if (!data || !data.changed || !Array.isArray(data.purchaseOrders)) return;
     const el = document.activeElement;
     const typing = el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
-    if (typing) { _poAdoptServerOrders(data.purchaseOrders); return; }
+    // Nor while a save is out or waiting: the list in hand has edits the
+    // stored one does not, and taking it whole would drop them.
+    if (typing || _poSaveBusy()) { _poAdoptServerOrders(data.purchaseOrders); return; }
     const list = data.purchaseOrders;
     _migratePOs(list);
     purchaseOrders = list;
@@ -32248,6 +32392,9 @@ const _bootReady = (async () => {
     // typed in are no reason to keep showing (and matching rows against) a
     // list that is behind, a supplier renamed since, say.
     if (_isEditing() && activeTab !== 'procurement') return;
+    // Nor while a save of the list is out or waiting its turn: the list in
+    // hand has edits the one read here may not, and the next poll catches up.
+    if (_poSaveBusy()) return;
     // The version is adopted HERE, with the list it belongs to. Taking it
     // before the bail above left this tab believing it held the newest list
     // while still showing the old one, so its next save skipped the merge that

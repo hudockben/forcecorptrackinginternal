@@ -289,6 +289,12 @@ module.exports = async (req, res) => {
       // recovered is written straight back out.
       let mergedLines = 0;      // deliveries the client had not seen
       let mergedLinks = 0;      // po_row_ids restored onto lines it had
+      // Which ones, by id: a page that deleted an order or a delivery reads
+      // these to learn whether its delete stuck, and only then removes the
+      // cost rows behind it. Removing them for a delivery put back here would
+      // leave it on the order with no cost on the job.
+      const mergedOrderIds = [];
+      const mergedLineIds = [];  // { po_id, line_id }
       const supersededRows = [];  // cost rows a stale copy minted over a stored one
 
       if (!isNaN(baseTs) && req.query.force !== '1') {
@@ -309,6 +315,7 @@ module.exports = async (req, res) => {
           if (unseen.length) {
             console.warn(`[purchase-orders] merged ${unseen.length} order(s) the client had not seen for ${blobKey}`);
             toWrite = purchaseOrders.concat(unseen);
+            unseen.forEach(p => mergedOrderIds.push(String(p.id)));
           }
 
           // ...and the same one level down. An order this client DID send may
@@ -460,6 +467,7 @@ module.exports = async (req, res) => {
               });
             if (!missing.length && !relinked) return po;
             mergedLines += missing.length;
+            missing.forEach(l => mergedLineIds.push({ po_id: String(po.id), line_id: String(l.id) }));
             return { ...po, lines: kept.concat(missing) };
           });
           if (mergedLines) {
@@ -557,6 +565,7 @@ module.exports = async (req, res) => {
         updatedAt: written.length ? written[0].updated_at : null,
         merged: mergedOrders + mergedLines + mergedLinks,
         mergedOrders, mergedLines, mergedLinks,
+        mergedOrderIds, mergedLineIds,
         // Orders whose Daily Tracking lines the job rows changed from what the
         // tab sent: its copy is behind, and it re-reads the list.
         derived,
