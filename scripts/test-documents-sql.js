@@ -1267,6 +1267,99 @@ async function upload(folderId, filename, auth, extra = {}) {
     await cleanProcurement();
   }
 
+  // ── The folder chips' counts, counts only ──────────────────────────────
+  // GET ?costCodeCounts=1 answers what the browser used to count from the
+  // job's whole listing (documents.js countByCostCode), without the listing.
+  // Held to that: the same numbers, in the same order, as counting the
+  // listing GET returns for the same job.
+  {
+    console.log('\nCost-code folder counts (?costCodeCounts)');
+    const { countByCostCode } = require(path.resolve(__dirname, '..', 'api', 'lib', 'cost-code-counts.js'));
+    const CJ = 'proj-ccc-1', CJ2 = 'proj-ccc-2';
+    const ccCounts = (pid, auth = PM, extra = {}) =>
+      call('GET', { division: 'turf', costCodeCounts: '1', ...(pid ? { projectId: pid } : {}), ...extra }, null, auth);
+    const listing = async pid => (await call('GET', { division: 'turf', projectId: pid }, null, PM)).body;
+
+    const none = await ccCounts(CJ);
+    assert('a job with no folders yet answers 200 with no counts', none.statusCode === 200
+      && JSON.stringify(none.body) === JSON.stringify({ counts: {} }), JSON.stringify(none.body));
+
+    // Codes as a bid really carries them: integer-like ones (which reorder a
+    // plain object), and Stormwater twice, once with a trailing space.
+    const t1 = (await call('PUT', { division: 'turf', projectId: CJ }, {
+      costCodes: [{ code: '420', label: 'Paving' }, { code: '411', label: '' }, { code: 'Stormwater', label: '' },
+        { code: 'Stormwater ', label: 'Storm Sewer' }, { code: 'Empty', label: '' }],
+    }, PM)).body.folders;
+    await call('PUT', { division: 'turf', projectId: CJ2 }, { costCodes: [{ code: '420', label: 'Paving' }] }, PM);
+    const f = c => t1.find(x => x.kind === 'cost_code' && x.cost_code === c);
+    const safetyC = t1.find(x => x.slug === 'safety');
+    const sub = (await call('POST', { division: 'turf', projectId: CJ, folder: '1' }, { name: 'Tickets', parentId: f('420').id }, PM)).body.folder;
+    const subsub = (await call('POST', { division: 'turf', projectId: CJ, folder: '1' }, { name: 'Week 1', parentId: sub.id }, PM)).body.folder;
+    assert('fixture: the cost-code folders and a nested subfolder exist',
+      Boolean(f('420') && f('411') && f('Stormwater') && f('Stormwater ') && f('Empty') && sub && subsub),
+      t1.map(x => `${x.name}|${x.cost_code}`).join(' / '));
+
+    const up = async (folderId, name, pid = CJ) => (await upload(folderId, name, PM, { projectId: pid })).body.document.id;
+    await up(f('420').id, 'a.pdf');
+    await up(sub.id, 'in-sub.pdf');
+    await up(subsub.id, 'two-down.pdf');
+    const both = await up(f('420').id, 'both.pdf');
+    await call('PATCH', { division: 'turf', id: both }, { addFolderId: sub.id }, PM);          // 420 and its subfolder: once
+    const gone = await up(f('420').id, 'deleted.pdf');
+    await call('DELETE', { division: 'turf', id: gone }, null, ADMIN);                          // in the bin: not counted
+    await up(f('411').id, 'b.pdf');
+    const sw = await up(f('Stormwater').id, 'sw.pdf');
+    await call('PATCH', { division: 'turf', id: sw }, { addFolderId: f('Stormwater ').id }, PM); // both spellings: once
+    await up(f('Stormwater ').id, 'sw-space.pdf');
+    await up(safetyC.id, 'safety.pdf');                                                         // not a cost-code folder
+    await up((await listing(CJ2)).folders.find(x => x.cost_code === '420').id, 'other-job.pdf', CJ2);
+
+    const got = await ccCounts(CJ);
+    const lst = await listing(CJ);
+    const fromListing = countByCostCode(lst.folders, lst.documents);
+    assert('?costCodeCounts gives each cost code its count: subfolders included, each file once, the bin and other jobs left out',
+      got.statusCode === 200 && got.body.counts['420'] === 4 && got.body.counts['411'] === 1
+        && got.body.counts.Stormwater === 2 && got.body.counts.Empty === 0, JSON.stringify(got.body));
+    assert('…exactly what counting the job\'s whole listing gives, codes in the same order',
+      JSON.stringify(Object.entries(got.body.counts)) === JSON.stringify(Object.entries(fromListing)),
+      `${JSON.stringify(got.body.counts)} vs ${JSON.stringify(fromListing)}`);
+    assert('…and nothing but the counts: no folders, no documents, no file names',
+      Object.keys(got.body).join() === 'counts' && !/pdf/.test(JSON.stringify(got.body)), JSON.stringify(got.body));
+    assert('another job is counted on its own', JSON.stringify((await ccCounts(CJ2)).body.counts) === JSON.stringify({ 420: 1 }));
+
+    const viewerGot = await ccCounts(CJ, VIEWER);
+    assert('a view-only user reads the same counts (they may read the listing)', viewerGot.statusCode === 200
+      && JSON.stringify(viewerGot.body) === JSON.stringify(got.body), JSON.stringify(viewerGot.body));
+    const rival = await ccCounts(CJ, OTHERCO);
+    assert('another company sees none of it', rival.statusCode === 200
+      && JSON.stringify(rival.body.counts) === JSON.stringify({}), JSON.stringify(rival.body));
+    const paver = await call('GET', { division: 'paving', costCodeCounts: '1', projectId: CJ }, null, PAVER);
+    assert('nor does the same job id in another division', paver.statusCode === 200
+      && JSON.stringify(paver.body.counts) === JSON.stringify({}), JSON.stringify(paver.body));
+    const noTurf = await ccCounts(CJ, PAVER);
+    assert('a user without the division is refused (403)', noTurf.statusCode === 403, JSON.stringify(noTurf.body));
+    const BUYER2 = { companyCode: 'FCT', userId: 8, username: 'buyer2', role: 'level1', divisionRoles: { purchase_orders: 'level3' } };
+    const carve = await ccCounts(CJ, BUYER2);
+    assert('central purchasing without a role in the division is refused (403)', carve.statusCode === 403, JSON.stringify(carve.body));
+    const general = await ccCounts(null);
+    assert('no projectId counts the General area, as the listing does (no cost-code folders there)',
+      general.statusCode === 200 && JSON.stringify(general.body.counts) === JSON.stringify(
+        countByCostCode((await call('GET', { division: 'turf' }, null, PM)).body.folders,
+          (await call('GET', { division: 'turf' }, null, PM)).body.documents)), JSON.stringify(general.body));
+
+    // A folder seeded before the cost_code column, known only by its slug.
+    await client.query(
+      `INSERT INTO project_folders (id, company_code, division, project_id, parent_id, name, kind, slug, cost_code, sort_order)
+       VALUES ('ccc-legacy', 'FCT', 'turf', $1, NULL, '530 · Curb', 'cost_code', 'cc-530', NULL, 50)`, [CJ]);
+    await up('ccc-legacy', 'legacy.pdf');
+    const withLegacy = await ccCounts(CJ);
+    const lst2 = await listing(CJ);
+    assert('a slug-only cost-code folder from before the cost_code column is counted by its slug, as the browser does',
+      withLegacy.body.counts['530'] === 1
+        && JSON.stringify(Object.entries(withLegacy.body.counts)) === JSON.stringify(Object.entries(countByCostCode(lst2.folders, lst2.documents))),
+      JSON.stringify(withLegacy.body.counts));
+  }
+
   // ── Audit trail ─────────────────────────────────────────────────────────
   console.log('\nAudit trail');
   const log = await client.query(`SELECT action, actor, document_id FROM document_audit_log ORDER BY id`);

@@ -45,6 +45,8 @@ const fs   = require('fs');
 // The server's cost-code normalising, so the fake Vault below files a line's
 // attachment into the folder the real one would.
 const { codeKey } = require('../api/lib/procurement-docs');
+// …and its folder-chip count, behind GET ?costCodeCounts=1.
+const { countByCostCode: serverCountByCostCode } = require('../api/lib/cost-code-counts');
 const ROOT = path.resolve(__dirname, '..');
 const CHROME = process.env.PW_CHROMIUM || '/opt/pw-browsers/chromium';
 const SHOTS = process.env.PROC_SHOTS || '';
@@ -373,6 +375,13 @@ function documentsApi(W, role, username, method, q, body) {
         .sort(newestFirst).map(out) }];
     }
     if (q.poId) return [200, { documents: D.documents.filter(d => live(d) && linked(d, 'po').includes(q.poId)).sort(newestFirst).map(out) }];
+    // The folder chips' counts, by the server's own module, over the folders
+    // in the listing's order (sort_order, then name) and the live documents.
+    if (q.costCodeCounts) {
+      const fl = D.folders.filter(f => (f.project_id || null) === pid).map(folderOut)
+        .sort((a, b) => (a.sort_order - b.sort_order) || String(a.name).localeCompare(String(b.name)));
+      return [200, { counts: serverCountByCostCode(fl, D.documents.filter(d => live(d) && (d.project_id || null) === pid).map(out)) }];
+    }
     if (q.trash) return [200, { documents: [] }];
     return [200, {
       folders: D.folders.filter(f => (f.project_id || null) === pid).map(folderOut),
@@ -2071,6 +2080,8 @@ async function attachments(browser) {
   await sleep(80);
   ok('the sheet read the job\'s attachment counts along with its rows',
     await until(() => W.docLog.some(l => l.method === 'GET' && l.q.procurementCounts === '1' && l.q.projectId === 'p1')));
+  ok('…and its cost-code folder counts, as counts only (?costCodeCounts)',
+    await until(() => W.docLog.some(l => l.method === 'GET' && l.q.costCodeCounts === '1' && l.q.projectId === 'p1')));
   let s = await clipState(page, 'F1');
   ok('a line with nothing attached has an empty, muted paperclip that offers to attach',
     s.text === CLIP && !s.has && s.title === 'Attach a document', s);
@@ -2118,6 +2129,18 @@ async function attachments(browser) {
     await until(async () => await chipText(page, 'Stormwater') === `${FOLDER}1` && await chip(page, 'Stormwater').evaluate(b => b.classList.contains('has'))),
     await chipText(page, 'Stormwater'));
   ok('…and the Mobilization one does not', await chipText(page, 'Mobilization') === FOLDER);
+  // A poll of the sheet, with documents.js holding the job: the paperclips and
+  // the folder chips are read again as counts, never the job's whole listing.
+  const polledFrom = W.docLog.length;
+  await page.evaluate(() => FCTProcurement.refresh());
+  await until(() => W.docLog.slice(polledFrom).some(l => l.q.costCodeCounts === '1'));
+  await sleep(150);
+  const polled = W.docLog.slice(polledFrom).filter(l => l.api === 'documents');
+  ok('a poll reads the counts only — the line counts and the cost-code counts, not the listing, nothing written',
+    polled.length >= 2 && polled.every(l => l.method === 'GET' && (l.q.costCodeCounts === '1' || l.q.procurementCounts === '1'))
+      && polled.some(l => l.q.costCodeCounts === '1') && polled.some(l => l.q.procurementCounts === '1'),
+    polled.map(l => `${l.method} ${JSON.stringify(l.q)}`));
+  ok('…and the chip still counts the file', await chipText(page, 'Stormwater') === `${FOLDER}1`, await chipText(page, 'Stormwater'));
   const doc = W.docs.documents[0];
   const linksOf = type => W.docs.links.filter(l => doc && l.document_id === doc.id && l.link_type === type).map(l => l.target_id);
   ok('the file is stored once: on the line, and in the Stormwater folder',

@@ -1052,6 +1052,8 @@ console.log('\n[documents.js upload sequence]');
     let holdLoad = null, releaseLoad = null;        // stall the next listing GET for this job
     let holdCounts = null, releaseCounts = null;    // stall the next counts GET for this job
     let failCounts = false, failPatch = false, failList = false;
+    let holdCc = null, releaseCc = null, oldServer = false;   // the cost-code counts GET
+    const { countByCostCode: serverCountByCostCode } = require(path.join(__dirname, '..', 'api', 'lib', 'cost-code-counts.js'));
     const pcalls = [];
 
     const countsFor = pid => {
@@ -1100,6 +1102,19 @@ console.log('\n[documents.js upload sequence]');
         if (holdCounts && holdCounts === qp.projectId) {
           holdCounts = null;
           await new Promise(r => { releaseCounts = r; });
+        }
+        return json({ counts: snapshot });
+      }
+      // The folder chips' counts, counted the way api/documents.js counts them
+      // (its own module), over the same folders and documents the listing
+      // below hands out. `oldServer` plays a server from before the endpoint,
+      // which ignores the parameter and answers with the listing.
+      if (method === 'GET' && qp.costCodeCounts && !oldServer) {
+        const snapshot = serverCountByCostCode(PTREE[qp.projectId] || [],
+          PDOCS.filter(d => (d.project_id || '') === (qp.projectId || '')));
+        if (holdCc && holdCc === qp.projectId) {
+          holdCc = null;
+          await new Promise(r => { releaseCc = r; });
         }
         return json({ counts: snapshot });
       }
@@ -1734,8 +1749,10 @@ console.log('\n[documents.js upload sequence]');
     const toasts = kind => [...window.document.body.children]
       .filter(el => el.getAttribute && el.getAttribute('data-fctdoc-toast') === kind);
     const errorsBefore = () => toasts('error').length;
+    // Reads of the job's whole listing, and of its cost-code counts alone.
     const reads = () => pcalls.filter(c => c.method === 'GET' && c.q && c.q.projectId === 'p7'
-      && !c.q.procurementId && !c.q.procurementCounts);
+      && !c.q.procurementId && !c.q.procurementCounts && !c.q.costCodeCounts);
+    const ccReads = () => pcalls.filter(c => c.method === 'GET' && c.q && c.q.projectId === 'p7' && c.q.costCodeCounts);
     await FD.openProcurementAttach(LINE);          // the browser holds p7
     closeAll();
     const stormWas = FD.costCodeCount('p7', 'Stormwater');
@@ -1753,19 +1770,47 @@ console.log('\n[documents.js upload sequence]');
       pcalls.length === 0 && FD.costCodeCount('p7', 'Stormwater') === stormWas, pcalls.map(c => c.url).join(' | '));
     pcalls.length = 0;
     const freshCounts = await FD.refreshCostCodeCounts('p7', { fresh: true });
-    assert('a fresh count asks the server even for the job in hand: one listing GET, nothing seeded',
-      reads().length === 1 && !pcalls.some(c => c.method === 'PUT'), pcalls.map(c => `${c.method} ${c.url}`).join(' | '));
+    assert('a fresh count asks the server even for the job in hand: one counts-only GET, never the listing, nothing seeded',
+      ccReads().length === 1 && reads().length === 0 && !pcalls.some(c => c.method === 'PUT')
+        && pcalls.length === 1 && pcalls[0].q.costCodeCounts === '1' && pcalls[0].q.division === 'turf',
+      pcalls.map(c => `${c.method} ${c.url}`).join(' | '));
     assert('…and the chips follow the files the server moved',
       FD.costCodeCount('p7', 'Stormwater') === stormWas - 1 && FD.costCodeCount('p7', 'Mobilization') === mobWas + 2
         && freshCounts && freshCounts.Mobilization === mobWas + 2,
       `${stormWas}->${FD.costCodeCount('p7', 'Stormwater')} / ${mobWas}->${FD.costCodeCount('p7', 'Mobilization')}`);
+    // The counts said the copy in hand is behind, so nothing reads that copy
+    // as current any more — not even a plain count, which asks the server.
+    pcalls.length = 0;
+    await FD.refreshCostCodeCounts('p7');
+    assert('with the copy in hand known to be behind, a plain count asks the server (counts only) rather than count the copy',
+      ccReads().length === 1 && reads().length === 0 && FD.costCodeCount('p7', 'Mobilization') === mobWas + 2,
+      pcalls.map(c => `${c.method} ${c.url}`).join(' | '));
     pcalls.length = 0;
     const openedMob = await FD.openCostCodeFolder({ projectId: 'p7', costCode: 'Mobilization' });
     dlg = lastModal();
-    assert('the folder dialog lists what the chip now counts, from that same answer (no second read)',
-      openedMob === true && pcalls.length === 0 && /colleague\.pdf/.test(dlg.textContent) && /cut-sheet\.pdf/.test(dlg.textContent)
+    assert('the folder dialog reads the job again first (one listing), and lists what the chip counts',
+      openedMob === true && reads().length === 1 && /colleague\.pdf/.test(dlg.textContent) && /cut-sheet\.pdf/.test(dlg.textContent)
         && new RegExp(`${mobWas + 2} documents filed under this cost code`).test(dlg.textContent), dlg.textContent.slice(0, 300));
     closeAll();
+    // That read brought the copy up to date: the next fresh count agrees with
+    // it, and nothing reads the job again for a dialog or a plain count.
+    pcalls.length = 0;
+    await FD.refreshCostCodeCounts('p7', { fresh: true });
+    await FD.refreshCostCodeCounts('p7');
+    await FD.openCostCodeFolder({ projectId: 'p7', costCode: 'Mobilization' });
+    assert('a fresh count that agrees with the copy in hand leaves it trusted: no listing read, the plain count free again',
+      reads().length === 0 && ccReads().length === 1 && /colleague\.pdf/.test(lastModal().textContent),
+      pcalls.map(c => `${c.method} ${c.url}`).join(' | '));
+    closeAll();
+    // A server from before the counts endpoint answers with the listing: the
+    // chips are counted from that, as they used to be.
+    oldServer = true;
+    pcalls.length = 0;
+    const viaListing = await FD.refreshCostCodeCounts('p7', { fresh: true });
+    assert('a server without the counts endpoint (it answers with the listing) is still counted, the same numbers',
+      viaListing && viaListing.Mobilization === mobWas + 2 && FD.costCodeCount('p7', 'Stormwater') === stormWas - 1
+        && pcalls.length === 1 && pcalls[0].q.costCodeCounts === '1', JSON.stringify(viaListing));
+    oldServer = false;
 
     // The sheet's own folder chip opens fresh: the job is read again even
     // though it is the one in hand, so a re-file since the last count shows.
@@ -1821,15 +1866,39 @@ console.log('\n[documents.js upload sequence]');
     // that job on screen: the module state is the newer load's.
     await FD.openProcurementAttach(LINE);
     closeAll();
-    holdLoad = 'p7';
+    holdCc = 'p7';
     const slowFresh = FD.refreshCostCodeCounts('p7', { fresh: true });
     await settle();
     await FD.renderTab(mount);                       // the Documents tab loads p1 meanwhile
-    releaseLoad();
+    releaseCc();
     await slowFresh;
     mount.querySelector('[data-folder="f-p1"]').click();   // redraw from the module state
     assert('a fresh count landing late never puts its job\'s folders under another job',
       /Safety/.test(mount.innerHTML) && !/Stormwater/.test(mount.innerHTML), mount.innerHTML.slice(0, 300));
+    pcalls.length = 0;
+    await FD.renderTab(mount);
+    assert('…nor marks the job on screen as behind (the next draw of p1 reads nothing extra)',
+      !pcalls.some(c => c.method === 'GET' && c.q.projectId === 'p7'), pcalls.map(c => `${c.method} ${c.url}`).join(' | '));
+    // A fresh count that lands after a load of the SAME job started is older
+    // than that load: it neither overwrites the load's counts nor marks it behind.
+    await FD.openProcurementAttach(LINE);
+    closeAll();
+    const loadedCounts = FD.costCodeCount('p7', 'Stormwater');
+    holdCc = 'p7';
+    const slowSame = FD.refreshCostCodeCounts('p7', { fresh: true });
+    await settle();
+    PDOCS.push(doc({ id: 'pd12', project_id: 'p7', filename: 'mid-flight.pdf', folder_ids: ['f-storm'] }));
+    await FD.openCostCodeFolder({ projectId: 'p7', costCode: 'Stormwater', fresh: true });   // a load lands first
+    closeAll();
+    releaseCc();
+    await slowSame;
+    pcalls.length = 0;
+    await FD.openCostCodeFolder({ projectId: 'p7', costCode: 'Stormwater' });
+    assert('a fresh count older than a load of the same job keeps the load\'s counts and does not mark it behind',
+      FD.costCodeCount('p7', 'Stormwater') === loadedCounts + 1 && reads().length === 0
+        && /mid-flight\.pdf/.test(lastModal().textContent), `${loadedCounts} -> ${FD.costCodeCount('p7', 'Stormwater')}`);
+    closeAll();
+    PDOCS.splice(PDOCS.findIndex(d => d.id === 'pd12'), 1);
 
     // ── A section code with no folder yet ─────────────────────────────────
     // A line keeps a code that is not on the job's bid ("Paving" here: the
@@ -1927,6 +1996,59 @@ console.log('\n[documents.js upload sequence]');
       const odd = samples.filter(s => !(FD._codeKey(s) === trackerKey(s) && serverKey(s) === trackerKey(s)));
       assert('documents.js, the server and tracker.html normalise every sample code the same way',
         odd.length === 0, odd.map(s => `${JSON.stringify(s)}: ${JSON.stringify([FD._codeKey(s), serverKey(s), trackerKey(s)])}`).join(' | '));
+    }
+
+    // The two copies of the folder chips' count agree: documents.js's, which
+    // counts a listing in the browser, and the server's, behind
+    // ?costCodeCounts=1 (api/lib/cost-code-counts.js). Same numbers AND the
+    // same key order — costCodeCount()'s codeKey fallback takes the first
+    // match in that order, and integer-like codes ("420") reorder a plain
+    // object the same way on both sides only if both build it the same way.
+    {
+      const server = require(path.resolve(__dirname, '..', 'api', 'lib', 'cost-code-counts.js'));
+      const same = (fl, ds) => {
+        const a = FD._countByCostCode(fl, ds), b = server.countByCostCode(fl, ds);
+        return JSON.stringify(Object.entries(a)) === JSON.stringify(Object.entries(b));
+      };
+      const F = (id, o) => ({ id, parent_id: null, kind: 'cost_code', ...o });
+      const named = [
+        // nested subfolders, a document in two folders of one code, one in none
+        [[F('a', { cost_code: '420' }), { id: 'a1', parent_id: 'a', kind: 'user' }, { id: 'a2', parent_id: 'a1', kind: 'user' },
+          F('b', { cost_code: 'Stormwater' }), { id: 'x', parent_id: null, kind: 'fixed', slug: 'photos' }],
+         [{ folder_ids: ['a2'] }, { folder_ids: ['a', 'a1'] }, { folder_ids: ['x'] }, { folder_ids: [] }, { folder_ids: ['b', 'x'] }]],
+        // trailing-space and non-breaking-space spellings, legacy slug-only folders, a whitespace-only cost_code,
+        // a 'cc-' slug on a folder that is not kind cost_code (not a cost-code folder), integer-like codes out of order
+        [[F('s1', { cost_code: 'Stormwater ' }), F('s2', { cost_code: 'Stormwater ' }), F('s3', { slug: 'cc-Stormwater' }),
+          F('w', { cost_code: '  ', slug: 'cc-Walk' }), { id: 'u', parent_id: null, kind: 'user', slug: 'cc-Fake' },
+          F('n9', { cost_code: '900' }), F('n1', { cost_code: '100' }), F('z', { cost_code: 'zeta' }), F('e', { cost_code: '' })],
+         [{ folder_ids: ['s1'] }, { folder_ids: ['s2', 's3'] }, { folder_ids: ['u'] }, { folder_ids: ['n9'] }, { folder_ids: ['w'] }]],
+        [[], []],
+      ];
+      const badNamed = named.filter(([fl, ds]) => !same(fl, ds));
+      // …and a few hundred random trees.
+      let seed = 7;
+      const rnd = n => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed % n; };
+      const CODES = ['420', '100', 'Stormwater', 'Stormwater ', 'stormwater', 'Walk – Way', 'Walk - Way', '  ', ''];
+      const badRandom = [];
+      for (let t = 0; t < 300; t++) {
+        const fl = [];
+        const nF = 1 + rnd(9);
+        for (let i = 0; i < nF; i++) {
+          const kind = ['cost_code', 'cost_code', 'user', 'fixed'][rnd(4)];
+          const parent = i && rnd(3) === 0 ? fl[rnd(i)].id : null;
+          const code = CODES[rnd(CODES.length)];
+          fl.push({ id: `f${i}`, parent_id: parent, kind, cost_code: rnd(4) ? code : null, slug: rnd(2) ? `cc-${CODES[rnd(CODES.length)]}` : null });
+        }
+        const ds = Array.from({ length: rnd(8) }, () => ({ folder_ids: Array.from({ length: rnd(3) }, () => `f${rnd(nF + 1)}`) }));
+        if (!same(fl, ds)) badRandom.push(JSON.stringify([fl, ds]));
+      }
+      assert('documents.js and the server count the folder chips alike: same codes, same numbers, same order',
+        badNamed.length === 0 && badRandom.length === 0,
+        [...badNamed.map(x => JSON.stringify(x)), ...badRandom.slice(0, 2)].join(' | '));
+      assert('…including the codes that read alike and the nested folders',
+        JSON.stringify(server.countByCostCode(...named[0])) === JSON.stringify({ 420: 2, Stormwater: 1 })
+          && server.countByCostCode(...named[1]).Stormwater === 2 && server.countByCostCode(...named[1]).Walk === undefined,
+        JSON.stringify([server.countByCostCode(...named[0]), server.countByCostCode(...named[1])]));
     }
 
     window.confirm = realConfirm;

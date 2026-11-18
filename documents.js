@@ -110,6 +110,16 @@
   // job's heading.
   let loadGeneration = 0;
 
+  // The copy of the loaded job (loadedFor) is known to be behind the server:
+  // a fresh cost-code count (refreshCostCodeCounts) came back different from
+  // what that copy counts — the server re-filed a re-coded Procurement line's
+  // files, or a colleague attached one. Set only by that comparison, cleared
+  // by the next load(). While it is set, nothing reads the copy as if it were
+  // current: the next load, folder dialog or attach dialog reads the job
+  // again, and a plain count asks the server. The poll that notices costs one
+  // small counts request, not the job's whole listing.
+  let scopeBehind = false;
+
   // ── Helpers ─────────────────────────────────────────────────────────
   // obj[key] only when obj holds it itself. Row ids are free-form enough
   // (^[A-Za-z0-9_-]{1,64}$) that "__proto__" is a legal one, and a plain
@@ -276,7 +286,7 @@
 
   // ── Data ────────────────────────────────────────────────────────────
   async function load(projectId, { force = false } = {}) {
-    if (!force && loadedFor === projectId) return true;
+    if (!force && loadedFor === projectId && !scopeBehind) return true;
     const generation = ++loadGeneration;
 
     // Seed the generated tree first — the six fixed folders, the Purchase
@@ -313,6 +323,7 @@
 
     caps      = data.caps || cfg.perm;
     loadedFor = projectId;
+    scopeBehind = false;
     adoptScope(data);
 
     // Every upload, delete and re-file comes back through here, so recounting
@@ -324,9 +335,8 @@
     return true;
   }
 
-  // Take a listing of the scope already loaded (loadedFor) as the module's
-  // folders and documents. Shared by load() and by a fresh count of the same
-  // job (refreshCostCodeCounts), which fetches exactly the same listing.
+  // Take a listing of the scope just loaded (loadedFor) as the module's
+  // folders and documents.
   function adoptScope(data) {
     folders   = (data && data.folders) || [];
     documents = (data && data.documents) || [];
@@ -360,10 +370,13 @@
 
   /**
    * Fill in the per-cost-code document counts for one job, for the folder chips
-   * on the bid page's green cost-code bars.
+   * on the bid page's green cost-code bars and the Procurement sheet's
+   * cost-code sections.
    *
    * Free when the browser is already sitting on that job — load() counts as it
-   * goes — and otherwise one scoped GET whose result lands ONLY in ccCounts.
+   * goes — and otherwise one small GET (?costCodeCounts=1) that answers with
+   * just the numbers, counted on the server by the same rules countByCostCode
+   * uses here (api/lib/cost-code-counts.js). It lands ONLY in ccCounts.
    * Routing it through load() instead would have swapped `folders`, `documents`
    * and `caps` over to the bid page's job, and the Documents tab open behind it
    * would have redrawn under a heading for a job the user never picked.
@@ -379,20 +392,19 @@
    * Procurement line re-coded (a Sub Code picked, the bid's cost code
    * renamed) re-files its attachments, and a colleague attaches files. The
    * Procurement sheet's poll asks this way, so its section folder chips keep
-   * up with all of that; counting the copy in hand left the chip on the old
-   * section for as long as the browser stayed on the job. The bid page does
-   * not poll, and keeps the free count.
+   * up with all of that. The bid page does not poll, and keeps the free count.
    *
-   * A fresh answer for the job the browser is sitting on is also the newest
-   * copy of that job's folders and documents, so it replaces them — the folder
-   * dialog then lists what the chip counts — unless a load started while it
-   * was in flight, whose answer is newer still. Nothing is seeded and caps are
-   * left alone: this is a read, run unprompted on every poll.
+   * A fresh answer for the job the browser is sitting on that differs from
+   * what the copy in hand counts means that copy is behind: it is marked so
+   * (scopeBehind), and the next folder or attach dialog reads the job again
+   * rather than listing a folder the chip beside it no longer agrees with.
+   * Nothing is seeded, and neither the copy nor caps are touched: this is a
+   * read, run unprompted on every poll.
    */
   async function refreshCostCodeCounts(projectId, opts) {
     const fresh = Boolean(opts && opts.fresh);
     const key = projectId || '';
-    if (!fresh && loadedFor === projectId && folders.length) {
+    if (!fresh && loadedFor === projectId && folders.length && !scopeBehind) {
       ccCounts[key] = countByCostCode(folders, documents);
       return ccCounts[key];
     }
@@ -400,7 +412,7 @@
     const scopeGeneration = loadGeneration;
     let data;
     try {
-      data = await api('GET', `/documents${q({ projectId })}`);
+      data = await api('GET', `/documents${q({ projectId, costCodeCounts: 1 })}`);
     } catch (err) {
       // null, not an empty map: the caller caches "this job is counted" off
       // the result, and a failure that looked like a successful count of zero
@@ -413,9 +425,23 @@
     // numbers describe the job as it is now; ours describe it as it was before
     // whatever that was — writing them back would undo an upload's count.
     if (generation !== ccGeneration) return ccCounts[key] || null;
-    if (loadedFor === projectId && scopeGeneration === loadGeneration) adoptScope(data);
-    ccCounts[key] = countByCostCode((data && data.folders) || [], (data && data.documents) || []);
+    const got = data && data.counts;
+    const counts = got && typeof got === 'object' && !Array.isArray(got)
+      ? { ...got }
+      // A server from before the counts endpoint ignores costCodeCounts and
+      // answers with the job's whole listing; count that, as this used to.
+      : countByCostCode((data && data.folders) || [], (data && data.documents) || []);
+    if (loadedFor === projectId && scopeGeneration === loadGeneration && !sameCounts(counts, countByCostCode(folders, documents))) {
+      scopeBehind = true;
+    }
+    ccCounts[key] = counts;
     return ccCounts[key];
+  }
+
+  // Whether two { code: n } maps say the same thing.
+  function sameCounts(a, b) {
+    const ka = Object.keys(a), kb = Object.keys(b);
+    return ka.length === kb.length && ka.every(k => Object.prototype.hasOwnProperty.call(b, k) && Number(a[k]) === Number(b[k]));
   }
 
   /**
@@ -1880,7 +1906,7 @@
     // could list the second job's folder under the first job's heading.
     // A fresh open loads even the job in hand (see openCostCodeFolder).
     let loadedNow = false;
-    if (fresh || loadedFor !== projectId) {
+    if (fresh || loadedFor !== projectId || scopeBehind) {
       let ok;
       try { ok = await load(projectId, { force: true }); }
       catch (err) { toast(err.message, 'error'); return false; }
@@ -2053,7 +2079,7 @@
   // one was in flight and won, so the state now belongs to a different job.
   // `force` reads the job again even when it is the one in hand.
   async function loadScope(projectId, again, { force = false } = {}) {
-    if (!force && loadedFor === projectId) return 'already';
+    if (!force && loadedFor === projectId && !scopeBehind) return 'already';
     let fresh;
     try { fresh = await load(projectId, { force: true }); }
     catch (err) { toast(err.message, 'error'); return false; }
@@ -2386,5 +2412,8 @@
     // …and the cost-code normalising, held to tracker's _codeKey and the
     // server's codeKey character for character.
     _codeKey: codeKey,
+    // …and the folder chips' count, held to the server's copy
+    // (api/lib/cost-code-counts.js, behind ?costCodeCounts=1).
+    _countByCostCode: countByCostCode,
   };
 })();

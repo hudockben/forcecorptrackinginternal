@@ -10,6 +10,8 @@
  *                                                    — documents attached to one Procurement line
  * GET    /api/documents?division=turf&procurementCounts=1&projectId=Y
  *                                                    — { counts: { rowId: n } } for one job's Procurement sheet
+ * GET    /api/documents?division=turf&costCodeCounts=1&projectId=Y
+ *                                                    — { counts: { code: n } } for one job's cost-code folder chips
  * GET    /api/documents?division=turf&trash=1       — soft-deleted documents inside the 30-day window
  * PUT    /api/documents?division=turf&projectId=X   — ensure the generated folder tree exists
  * POST   /api/documents?division=turf               — register a file the browser just uploaded
@@ -36,6 +38,7 @@ const {
 } = require('./lib/auth');
 const { resolvePODocScope } = require('./lib/po-sync');
 const procDocs            = require('./lib/procurement-docs');
+const { costCodeCounts }  = require('./lib/cost-code-counts');
 const storage             = require('./lib/storage');
 const crypto              = require('crypto');
 
@@ -493,6 +496,18 @@ module.exports = async (req, res) => {
         `;
         const counts = {};
         for (const r of rows) counts[r.procurement_id] = r.n;
+        return res.json({ counts });
+      }
+
+      // The folder chips' counts: documents under each cost code's folder, for
+      // ONE job — exactly what the browser used to count from the job's whole
+      // listing (api/lib/cost-code-counts.js), without sending the listing.
+      // The Procurement sheet asks on every poll; the bid page when it opens a
+      // job the browser is not sitting on. Readable by anyone who may read
+      // the job's listing; not by the purchase-order carve-out.
+      if (req.query.costCodeCounts) {
+        if (poScope) return res.status(403).json({ error: 'You do not have access to this division' });
+        const counts = await costCodeCounts(sql, { companyCode, division, projectId });
         return res.json({ counts });
       }
 
