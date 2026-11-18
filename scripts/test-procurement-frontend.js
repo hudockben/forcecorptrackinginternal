@@ -955,7 +955,8 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   env.pick(codes, 'E&S / Silt Sock 12inch', 'b3');
   await sleep(700);
   pr3 = env.patches().filter(p => p.q.id === 'r3').pop();
-  assert('picking a bid line sets bid_item_id and both codes', eq(pr3.body.fields, { bid_item_id: 'b3', cost_code: 'E&S', sub_code: 'Silt Sock 12inch' }), pr3.body);
+  assert('picking a bid line sets bid_item_id and both codes, and the blank Quantity and Unit from the line',
+    eq(pr3.body.fields, { bid_item_id: 'b3', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', unit: 'LF', quantity: 1200 }), pr3.body);
   const un = env.field('r3', 'unit');
   env.pick(un, 'lf', null);
   await sleep(700);
@@ -2238,6 +2239,10 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     const pend = g.P._test.pending();
     assert('a cell tied to a line the server no longer has is refused once, not kept to send again',
       !pend.failed.has('H1') && !(pend.pend.get('H1') || {}).bid_item_id && g.errors.some(m => /no longer on the job's bid/.test(m)), { failed: [...pend.failed], errors: g.errors });
+    const h1 = g.P._test.state().rows.find(r => r.id === 'H1');
+    assert('…and the Quantity and Unit that pick filled in go back with it', h1.quantity == null && h1.unit === ''
+      && g.field('H1', 'quantity').value === '' && !g.P._test.pending().pend.has('H1'), { q: h1.quantity, u: h1.unit, pend: [...g.P._test.pending().pend] });
+    assert('…named as the one pick', g.errors.some(m => /Cost \/ Sub Code was not saved/.test(m)) && !g.errors.some(m => /Quantity|Unit/.test(m)), g.errors);
   }
 
   console.log('\n[Create PO reads the order list again first]');
@@ -2359,6 +2364,61 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     codes.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
     e.pick(codes, 'Stormwater');
     assert('a code typed with no bid line to match says why it is not kept', e.$$('.fctproc-toast').some(t => /no bid lines yet/.test(t.textContent)));
+  }
+
+  console.log('\n[a Sub Code pick fills Quantity and Unit from the bid line]');
+  {
+    const e = makeEnv({ rows: [
+      row({ id: 'q1' }),                                   // + Add Row: blank
+      row({ id: 'q2', unit: 'TON' }),                      // a unit of the PM's own
+      row({ id: 'q3', quantity: 75 }),                     // a quantity typed first
+      row({ id: 'q4', cost_code: 'Stormwater' }),          // + Add Row on a section
+    ] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const pickLine = async (id, label, lineId) => {
+      const box = e.field(id, 'codes');
+      box.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+      e.pick(box, label, lineId);
+      await e.P._test.flushAll(); await sleep(20);
+    };
+    const saved = id => e.db.rows.find(r => r.id === id);
+    const last = id => e.patches().filter(p => p.q.id === id).pop();
+
+    await pickLine('q1', 'Stormwater / Geofabric', 'b1');
+    assert('a blank row takes the line\'s quantity and unit with the codes',
+      eq(last('q1').body.fields, { bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', unit: 'SF', quantity: 8110 }), last('q1').body);
+    assert('…and shows them', e.field('q1', 'quantity').value.replace(/,/g, '') === '8110' && e.field('q1', 'unit').value === 'SF',
+      { q: e.field('q1', 'quantity').value, u: e.field('q1', 'unit').value });
+
+    await pickLine('q1', 'Stormwater / 15" Perf drain', 'b2');
+    assert('a corrected pick brings the new line\'s numbers (the old ones were the old line\'s)',
+      saved('q1').quantity === 950 && saved('q1').unit === 'LF', saved('q1'));
+
+    const qty = e.field('q1', 'quantity');
+    qty.focus(); qty.value = '400'; e.fire(qty, 'input'); e.fire(qty, 'change'); qty.blur();
+    await e.P._test.flushAll(); await sleep(20);
+    await pickLine('q1', 'E&S / Silt Sock 12inch', 'b3');
+    assert('a quantity the PM typed is kept on the next pick', saved('q1').quantity === 400 && saved('q1').unit === 'LF'
+      && saved('q1').bid_item_id === 'b3', saved('q1'));
+
+    await pickLine('q2', 'Stormwater / Geofabric', 'b1');
+    assert('a unit of the PM\'s own keeps the bid\'s quantity out too (it is counted in the bid\'s unit)',
+      saved('q2').bid_item_id === 'b1' && saved('q2').unit === 'TON' && saved('q2').quantity == null, saved('q2'));
+
+    await pickLine('q3', 'Stormwater / Elbows', 'b6');
+    assert('a quantity typed before the pick stays; the blank unit is filled',
+      saved('q3').quantity === 75 && saved('q3').unit === 'EA', saved('q3'));
+
+    await pickLine('q4', 'Stormwater / Geofabric', 'b1');
+    assert('a row added on a cost-code section fills too', saved('q4').quantity === 8110 && saved('q4').unit === 'SF', saved('q4'));
+
+    // Clearing the Sub Code leaves Quantity and Unit as they are.
+    const box = e.field('q4', 'codes');
+    box.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    e.pick(box, '', null);
+    await e.P._test.flushAll(); await sleep(20);
+    assert('emptying the Sub Code keeps Quantity and Unit', saved('q4').bid_item_id == null && saved('q4').quantity === 8110 && saved('q4').unit === 'SF', saved('q4'));
   }
 
   console.log('\n[every column filters]');

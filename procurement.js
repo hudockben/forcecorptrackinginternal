@@ -1833,7 +1833,16 @@
     // the same pick, and saved without the line they would leave the row
     // coded but tied to nothing — never re-linked, never renamed with the
     // bid, and offered again by Send as a new line.
-    if (named.includes('bid_item_id')) named = [...new Set([...named, ...['cost_code', 'sub_code'].filter(k => k in p)])];
+    // So does the Quantity / Unit that pick filled in (fillFromLine), unless
+    // something else has been put there since.
+    const fill = lineFill.get(rowId);
+    const filled = named.includes('bid_item_id') && fill && fill.bid_item_id === p.bid_item_id
+      ? Object.keys(fill.fields).filter(k => k in p && sameVal(p[k], fill.fields[k])) : [];
+    if (named.includes('bid_item_id')) {
+      named = [...new Set([...named, ...['cost_code', 'sub_code'].filter(k => k in p), ...filled])];
+      lineFill.delete(rowId);
+    }
+    const ofPick = k => k === 'cost_code' || k === 'sub_code' || filled.includes(k);
     const row = rowById(rowId), saved = server.get(rowId) || {};
     const newer = pend.get(rowId) || {};
     const rest = {};
@@ -1849,7 +1858,7 @@
     const carried = {};
     named.forEach(k => {
       if (!row || k in newer || !(k in saved)) return;
-      if (repick && (k === 'cost_code' || k === 'sub_code')) {
+      if (repick && ofPick(k)) {
         if (!sameVal(row[k], saved[k])) carried[k] = row[k];
         return;
       }
@@ -1859,7 +1868,7 @@
     if (Object.keys(next).length) pend.set(rowId, next); else pend.delete(rowId);
     failed.delete(rowId);
     // The line and its codes are one pick, named as one.
-    const one = named.includes('bid_item_id') ? named.filter(k => k !== 'cost_code' && k !== 'sub_code') : named;
+    const one = named.includes('bid_item_id') ? named.filter(k => !ofPick(k)) : named;
     const what = [...new Set(one.map(k => FIELD_LABEL[k] || k))];
     // A bid line's id means nothing to a PM; its codes are named instead.
     const vals = one.length === 1 && one[0] !== 'bid_item_id' ? ` "${shownValue(one[0], p[one[0]])}"` : '';
@@ -3137,6 +3146,30 @@
     return false;
   }
 
+  /**
+   * What picking a bid line in Sub Code puts in Quantity and Unit: the
+   * line's, as Add to Procurement gives a row. Only into a cell that is
+   * blank, or that still holds the previously picked line's value (that
+   * pick filled it, so correcting the pick brings the new line's numbers).
+   * A quantity the PM typed is theirs and stays. So does a unit of their
+   * own — and then the bid's quantity is not put in either, as it is
+   * counted in the bid's unit (4,002 SY of aggregate is not 4,002 TON).
+   */
+  const lineUnit = l => str(l && l.unit).slice(0, MAX_LEN.unit);
+  function fillFromLine(row, line, ctx) {
+    const prev = lineFor(row, ctx);
+    const unit = lineUnit(line), u = normUnit(row.unit);
+    if (u && u !== normUnit(unit) && !(prev && u === normUnit(lineUnit(prev)))) return {};
+    const out = {};
+    if (str(row.unit) !== unit) out.unit = unit;
+    const q = numOrNull(row.quantity), qty = numOrNull(line.quantity);
+    if ((q == null || (prev && sameNum(q, numOrNull(prev.quantity)))) && !sameNum(q, qty)) out.quantity = qty;
+    return out;
+  }
+  // The Quantity / Unit a Sub Code pick filled, by row id:
+  // { bid_item_id, fields }. A pick the server refuses takes them with it.
+  const lineFill = new Map();
+
   function commitCombo(rowId, field, input) {
     const row = rowById(rowId);
     if (!row) return;
@@ -3172,9 +3205,14 @@
     }
     if (field === 'codes') {
       if (v && v === String(row.bid_item_id || '')) return;
-      const line = v ? (makeCtx().bidLines || []).find(l => String(l.id) === v) : null;
-      if (line) setFields(rowId, { bid_item_id: String(line.id), cost_code: str(line.cost_code), sub_code: str(line.sub_code) });
-      else if (!typed) setFields(rowId, { bid_item_id: null, cost_code: '', sub_code: '' });
+      const ctx = makeCtx();
+      const line = v ? (ctx.bidLines || []).find(l => String(l.id) === v) : null;
+      if (line) {
+        const fill = fillFromLine(row, line, ctx);
+        if (Object.keys(fill).length) lineFill.set(rowId, { bid_item_id: String(line.id), fields: fill });
+        else lineFill.delete(rowId);
+        setFields(rowId, { bid_item_id: String(line.id), cost_code: str(line.cost_code), sub_code: str(line.sub_code), ...fill });
+      } else if (!typed) setFields(rowId, { bid_item_id: null, cost_code: '', sub_code: '' });
       else {
         // Anything else typed matches no bid line: the codes are the bid's
         // (section 1), so the cell goes back to what it was (refreshRow

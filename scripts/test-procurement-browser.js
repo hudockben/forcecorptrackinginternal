@@ -1198,6 +1198,9 @@ async function roundFourFixes(browser) {
       ok('…the Quote # typed in the same edit is saved', h1.quote_number === 'Couplers', h1.quote_number);
       const shown = { sub: await cell(page, 'H1', 'codes').inputValue(), cost: (await rowTr(page, 'H1').locator('.c-cost_code').textContent()).trim() };
       ok('…and the cells are back to what was saved, as the message says', shown.sub === '' && shown.cost === '', shown);
+      const qu = { q: await cell(page, 'H1', 'quantity').inputValue(), u: await cell(page, 'H1', 'unit').inputValue() };
+      ok('…the Quantity and Unit that pick filled in too, saved and shown', h1.quantity == null && h1.unit === '' && qu.q === '' && qu.u === '',
+        { saved: [h1.quantity, h1.unit], qu });
       const banner = (await page.evaluate(() => window.__banner)).filter(Boolean).pop() || '';
       ok('…the message names the pick once ("Cost / Sub Code was not saved")', /Cost \/ Sub Code was not saved/.test(banner) && !/Sub Code, Cost Code/.test(banner), banner);
       // The refusal itself is the browser's logged 409, and expected.
@@ -1236,6 +1239,8 @@ async function roundFourFixes(browser) {
       const h2 = W.rows.find(r => r.id === 'H2');
       ok('a live line picked while a refused (stale_bid) pick was out is saved with all of its codes, the shared Cost Code included',
         h2.bid_item_id === 'b1' && h2.cost_code === 'Stormwater' && h2.sub_code === 'Geofabric', [h2.bid_item_id, h2.cost_code, h2.sub_code, patchesFor(W, 'H2').map(l => l.body.fields)]);
+      ok('…with its own Quantity and Unit (12,500 SF), not the refused drain line\'s 950 LF',
+        Number(h2.quantity) === 12500 && h2.unit === 'SF', [h2.quantity, h2.unit, patchesFor(W, 'H2').map(l => l.body.fields)]);
       const other = errors.filter(e => !/status of 409 \(Conflict\).*\/api\/procurement/.test(e));
       ok('no page errors', other.length === 0, other.join(' | '));
     } finally {
@@ -1597,6 +1602,18 @@ async function sectionAdd(browser) {
   it = await addVia('Stormwater', 'enter');
   ok('Enter on a section\'s + Add Row adds a row there, without folding', it && it.cost_code === 'Stormwater' && (await sections())[it.id] === 'Stormwater'
     && await folded() === 0);
+  // Its Sub Code picked: Quantity and Unit come over from the bid line, the
+  // change order included (901 + 49), as Add to Procurement gives them.
+  await cbPick(page, cell(page, it.id, 'codes'), 'Perim', 'Perimeter');
+  await clickAway(page);
+  {
+    const id = it.id;
+    await until(() => W.rows.some(r => r.id === id && r.bid_item_id === 'b2' && Number(r.quantity) === 950), 4000);
+    const r = W.rows.find(x => x.id === id);
+    const qu = { q: (await cell(page, id, 'quantity').inputValue()).replace(/,/g, ''), u: await cell(page, id, 'unit').inputValue() };
+    ok('picking its Sub Code brings the bid line\'s Quantity and Unit (950 LF, change order included), saved and shown',
+      r.bid_item_id === 'b2' && Number(r.quantity) === 950 && r.unit === 'LF' && qu.q === '950' && qu.u === 'LF', { saved: [r.bid_item_id, r.quantity, r.unit], qu });
+  }
 
   // "No cost code" gives a blank row, as the toolbar's + Add Row does.
   it = await addVia('No cost code');
