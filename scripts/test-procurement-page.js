@@ -191,7 +191,7 @@ console.log('\n[tracker.html — wiring]');
   // then finds the list unchanged and would not.
   assert('a save\'s answer taken on redraws Procurement (the hook the three pages\' PO code calls)',
     /if \(typeof _poAfterAdopt === 'function'\) _poAfterAdopt\(changed\);/.test(requireFn(SRC, '_poApplyDeferred'))
-      && /changed \+= _poAdoptSaved\(q\.orders, q\.links\);/.test(requireFn(SRC, '_poApplyDeferred'))
+      && /changed \+= _poAdoptSaved\(q\.orders, q\.links, q\.updatedAt\);/.test(requireFn(SRC, '_poApplyDeferred'))
       && /if \(changed && activeTab === 'procurement'\) _procRerender\(\);/.test(requireFn(SRC, '_poAfterAdopt')));
   // An order raised here settles like a save: a read out across its POST is let go.
   assert('an order raised from Procurement bumps the save epoch when its POST settles',
