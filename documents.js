@@ -15,10 +15,13 @@
  *     getCostCodes:      id => [{ code: '420', label: 'Paving' }],
  *     getPurchaseOrders: () => [{ id, po_number, supplier, project_id }],
  *     perm:              { canUpload, canManage, canDelete },
+ *     getUserName:       () => 'ben',   // optional — who the server records as uploaded_by
  *   });
  *
- * then calls FCTDocuments.renderTab(mountEl) when the tab opens, and
- * FCTDocuments.openAttach(po) from a PO row.
+ * then calls FCTDocuments.renderTab(mountEl) when the tab opens,
+ * FCTDocuments.openAttach(po) from a PO row, and
+ * FCTDocuments.openProcurementAttach(line) from the paperclip on a line of the
+ * Procurement sheet.
  *
  * File bytes go straight from the browser to object storage with a presigned
  * URL — see api/lib/storage.js for why they cannot go through the API.
@@ -42,6 +45,11 @@
     getCostCodes: () => [],
     getPurchaseOrders: () => [],
     perm: { canUpload: false, canManage: false, canDelete: false },
+    // The logged-in username, the same string the server stamps on a file as
+    // uploaded_by. Optional: it only decides whether a level2 user is offered
+    // Detach on a file they uploaded themselves. Left unset, only managers get
+    // that button — the server allows exactly that much either way.
+    getUserName: undefined,
   };
 
   // ── State ───────────────────────────────────────────────────────────
@@ -77,6 +85,23 @@
   // lost a race they were never in.
   let ccGeneration = 0;
 
+  // How many documents hang off each line of the Procurement sheet, per job:
+  //   procCounts['<project id>']['<procurement row id>'] = 2
+  // What the paperclip on each line draws its number from. Kept per job and
+  // outside `folders`/`documents` for the same reason ccCounts is: the sheet
+  // asks about whatever job it is showing, which is routinely not the one the
+  // Documents tab is sitting on.
+  let procCounts = {};
+  // Stale-answer guard for the counts above. Every count request takes the
+  // next ticket; procLanded remembers, per job, the ticket whose answer is in
+  // procCounts. An answer is dropped only when a LATER request for the SAME job
+  // has already landed — so a slow poll cannot write its older numbers over an
+  // upload's fresher ones, while a refresh for one job never throws away an
+  // answer for another (the sheet and the Documents tab can each be counting a
+  // different job at once).
+  let procTicket = 0;
+  const procLanded = {};
+
   // Bumped by every load(). A response whose generation is stale — because the
   // job picker moved on, or because openAttach() started a load for a PO on
   // another job — is dropped instead of overwriting the state behind whatever
@@ -86,6 +111,13 @@
   let loadGeneration = 0;
 
   // ── Helpers ─────────────────────────────────────────────────────────
+  // obj[key] only when obj holds it itself. Row ids are free-form enough
+  // (^[A-Za-z0-9_-]{1,64}$) that "__proto__" is a legal one, and a plain
+  // lookup would answer it with Object.prototype instead of a count.
+  function own(obj, key) {
+    return obj && Object.prototype.hasOwnProperty.call(obj, key) ? obj[key] : undefined;
+  }
+
   function token() { return localStorage.getItem('fct_token') || ''; }
 
   function esc(s) {
@@ -190,6 +222,9 @@
   function toast(message, kind) {
     const el = document.createElement('div');
     el.textContent = message;
+    // Which kind it is, readable without parsing its colours: an error, or
+    // the plain notice everything else is.
+    el.setAttribute('data-fctdoc-toast', kind === 'error' ? 'error' : 'info');
     el.style.cssText = `
       position:fixed;bottom:1.25rem;left:50%;transform:translateX(-50%);z-index:${Z + 20};
       background:var(--surface2,#1a1a26);color:var(--text,#e0e0e0);
@@ -276,10 +311,9 @@
     // another job's folder list to build its filing picker from.
     if (generation !== loadGeneration) return false;
 
-    folders   = data.folders || [];
-    documents = data.documents || [];
     caps      = data.caps || cfg.perm;
     loadedFor = projectId;
+    adoptScope(data);
 
     // Every upload, delete and re-file comes back through here, so recounting
     // off the response we already hold keeps the bid page's folder chips honest
@@ -287,6 +321,15 @@
     // bar left the chip beside it still reading the old number.
     ccCounts[projectId || ''] = countByCostCode(folders, documents);
     ccGeneration++;
+    return true;
+  }
+
+  // Take a listing of the scope already loaded (loadedFor) as the module's
+  // folders and documents. Shared by load() and by a fresh count of the same
+  // job (refreshCostCodeCounts), which fetches exactly the same listing.
+  function adoptScope(data) {
+    folders   = (data && data.folders) || [];
+    documents = (data && data.documents) || [];
 
     // The folder that was open may not exist in the scope just loaded.
     if (currentFolderId && !folders.some(f => f.id === currentFolderId)) {
@@ -299,7 +342,6 @@
     for (const id of expanded) {
       if (!folders.some(f => f.id === id)) expanded.delete(id);
     }
-    return true;
   }
 
   async function refreshPoCounts() {
@@ -330,14 +372,32 @@
    * without a number, which is the same thing an untouched job draws. Failing
    * loudly here would put an error toast on the screen of someone who did
    * nothing but open a bid.
+   *
+   * `fresh` asks the server even when the browser is sitting on the job. The
+   * copy in hand only changes when this browser loads, uploads or detaches,
+   * and the server moves files between cost-code folders on its own: a
+   * Procurement line re-coded (a Sub Code picked, the bid's cost code
+   * renamed) re-files its attachments, and a colleague attaches files. The
+   * Procurement sheet's poll asks this way, so its section folder chips keep
+   * up with all of that; counting the copy in hand left the chip on the old
+   * section for as long as the browser stayed on the job. The bid page does
+   * not poll, and keeps the free count.
+   *
+   * A fresh answer for the job the browser is sitting on is also the newest
+   * copy of that job's folders and documents, so it replaces them — the folder
+   * dialog then lists what the chip counts — unless a load started while it
+   * was in flight, whose answer is newer still. Nothing is seeded and caps are
+   * left alone: this is a read, run unprompted on every poll.
    */
-  async function refreshCostCodeCounts(projectId) {
+  async function refreshCostCodeCounts(projectId, opts) {
+    const fresh = Boolean(opts && opts.fresh);
     const key = projectId || '';
-    if (loadedFor === projectId && folders.length) {
+    if (!fresh && loadedFor === projectId && folders.length) {
       ccCounts[key] = countByCostCode(folders, documents);
       return ccCounts[key];
     }
     const generation = ++ccGeneration;
+    const scopeGeneration = loadGeneration;
     let data;
     try {
       data = await api('GET', `/documents${q({ projectId })}`);
@@ -353,8 +413,51 @@
     // numbers describe the job as it is now; ours describe it as it was before
     // whatever that was — writing them back would undo an upload's count.
     if (generation !== ccGeneration) return ccCounts[key] || null;
-    ccCounts[key] = countByCostCode(data.folders || [], data.documents || []);
+    if (loadedFor === projectId && scopeGeneration === loadGeneration) adoptScope(data);
+    ccCounts[key] = countByCostCode((data && data.folders) || [], (data && data.documents) || []);
     return ccCounts[key];
+  }
+
+  /**
+   * Fill in how many documents are attached to each line of one job's
+   * Procurement sheet: { '<row id>': n }. One small GET; the answer lands only
+   * in procCounts, so asking never moves the Documents tab onto that job.
+   *
+   * Never rejects, and resolves null on a failure rather than an empty map —
+   * the same contract as refreshCostCodeCounts, for the same reason: a caller
+   * that read "{}" as "counted, nothing attached" would blank every paperclip
+   * on the sheet over one dropped request. The last good counts are kept.
+   */
+  async function refreshProcurementCounts(projectId) {
+    const key = projectId || '';
+    // A procurement line always belongs to a job (project_id is NOT NULL on
+    // procurement_items), so the General area has nothing to count and is not
+    // worth a request.
+    if (!key) {
+      procCounts[''] = {};
+      return procCounts[''];
+    }
+    const ticket = ++procTicket;
+    let data;
+    try {
+      data = await api('GET', `/documents${q({ procurementCounts: 1, projectId: key })}`);
+    } catch (err) {
+      console.warn('[documents] procurement counts refresh failed, keeping the last good set:', err.message);
+      return null;
+    }
+    // A request for this job that went out after ours has already answered.
+    // Its numbers include whatever happened in between — an upload, a detach —
+    // and ours would quietly undo them.
+    if ((own(procLanded, key) || 0) > ticket) return own(procCounts, key) || null;
+    procLanded[key] = ticket;
+    const raw = data && data.counts && typeof data.counts === 'object' ? data.counts : {};
+    const counts = {};
+    for (const [rowId, n] of Object.entries(raw)) {
+      const v = Number(n);
+      if (Number.isFinite(v) && v > 0) counts[rowId] = v;
+    }
+    procCounts[key] = counts;
+    return counts;
   }
 
   // ── Folder tree ─────────────────────────────────────────────────────
@@ -400,6 +503,60 @@
     return m ? m[1].trim() : '';
   }
 
+  /* A cost code as it reads on screen, for deciding whether two spellings are
+     the same code: letter case, spaces at either end or doubled up (the
+     non-breaking kind a paste out of Procore or Excel brings included),
+     zero-width characters, which dash was typed ("-", "–", "—") and curly or
+     straight quotes make no difference. The same normalising as tracker.html's
+     _codeKey, which the Procurement sheet groups its sections by, and as
+     codeKey in api/lib/procurement-docs.js, which the server files a line's
+     attachments by — so the section, the folder its files go into and the
+     chip that counts them all agree on which code is which. */
+  function codeKey(s) {
+    if (s == null || s === '') return '';
+    return String(s)
+      .replace(/[­​-‍⁠﻿]/g, '')          // soft hyphen, zero-width
+      .replace(/[‐-―−﹘﹣－]/g, '-')   // every dash
+      .replace(/[‘’‚‛′]/g, "'")          // curly single quotes
+      .replace(/[“”„‟″]/g, '"')          // curly double quotes
+      .replace(/\s+/g, ' ').trim().toLowerCase();
+  }
+
+  /* The folder that holds cost code `code`'s paperwork in `fldrs`, or null.
+     An exact match (both sides trimmed) wins; failing that, the first one
+     that reads the same on screen (codeKey) — another letter case, a dash
+     typed another way. The server files a procurement attachment the same
+     way, because a line's code can be typed on the sheet ("stormwater")
+     while the bid seeded the folder as "Stormwater". Without the fallback
+     the upload dialog opened on "pick a folder" for a file the server was
+     about to put in that very folder. */
+  function costCodeFolderFor(code, fldrs) {
+    const want = String(code == null ? '' : code).trim();
+    if (!want) return null;
+    const list = fldrs || folders;
+    const exact = list.find(f => folderCostCode(f) === want);
+    if (exact) return exact;
+    const key = codeKey(want);
+    if (!key) return null;
+    return list.find(f => {
+      const c = folderCostCode(f);
+      return c !== '' && codeKey(c) === key;
+    }) || null;
+  }
+
+  /* `folder` and every other cost-code folder in `fldrs` standing for the
+     same trimmed code. Normally just the one. Two happen when the bid carries
+     a code once as typed and once pasted with a non-breaking space after it:
+     the seed makes a folder for each spelling, and both trim to the same
+     code. They are one cost code to everyone reading the job, so the chip
+     counts them together and the folder dialog lists them together — counting
+     one and listing the other had the chip disagree with the dialog it opens. */
+  function sameCodeFolders(folder, fldrs) {
+    const code = folderCostCode(folder);
+    if (!code) return folder ? [folder] : [];
+    return (fldrs || folders).filter(f => f === folder || folderCostCode(f) === code);
+  }
+
   /* Every folder id at or under `rootId`. A cost-code folder is a folder like
      any other once it exists, so someone can and does file subfolders inside it
      ("420 / Tickets"); counting only the direct children reported nothing for a
@@ -421,16 +578,29 @@
     return ids;
   }
 
+  /* Every folder id at or under any of `roots`. */
+  function subtreesOf(roots, fldrs) {
+    const ids = new Set();
+    for (const r of roots) for (const id of subtreeIds(r.id, fldrs)) ids.add(id);
+    return ids;
+  }
+
   /* { '420': 7, '530': 0, ... } for one job's folder and document lists. Every
      cost-code folder is reported, zeroes included — the bid page needs to tell
      "no paperwork" apart from "no folder", and only the second is worth a
-     different message. */
+     different message.
+
+     Folders whose codes trim to the same code are counted as one, each file
+     once however many of them it is in (sameCodeFolders says why there can be
+     two). Counting each on its own let the one sorted last overwrite the
+     other's number. Codes that differ in more than spaces — "Stormwater" and
+     "stormwater" — stay apart: each is its own bar on the bid page. */
   function countByCostCode(fldrs, docs) {
     const counts = {};
     for (const f of fldrs) {
       const code = folderCostCode(f);
-      if (!code) continue;
-      const ids = subtreeIds(f.id, fldrs);
+      if (!code || Object.prototype.hasOwnProperty.call(counts, code)) continue;
+      const ids = subtreesOf(sameCodeFolders(f, fldrs), fldrs);
       counts[code] = docs.filter(d => (d.folder_ids || []).some(id => ids.has(id))).length;
     }
     return counts;
@@ -597,6 +767,10 @@
 
   function docRowHTML(d) {
     const pos = (d.po_ids || []).length;
+    // Lines of the Procurement sheet the file is attached to. A package, not
+    // the paperclip: the paperclip already means "purchase order" on this row,
+    // and a file can be on both at once.
+    const procs = (d.procurement_ids || []).length;
     return `
       <div data-doc="${esc(d.id)}"
            style="display:flex;align-items:center;gap:0.6rem;padding:0.5rem 0.6rem;
@@ -607,6 +781,8 @@
             <a href="#" data-open="${esc(d.id)}" style="color:var(--text,#e0e0e0);text-decoration:none">${esc(d.filename)}</a>
             ${pos ? `<span title="Attached to ${pos} purchase order${pos === 1 ? '' : 's'}"
                            style="margin-left:0.4rem;color:var(--green,#22c55e);font-size:0.72rem">&#128206;${pos}</span>` : ''}
+            ${procs ? `<span data-proc-chip title="Attached to ${procs} procurement line${procs === 1 ? '' : 's'}"
+                           style="margin-left:0.4rem;color:var(--blue,#60a5fa);font-size:0.72rem">&#128230;${procs}</span>` : ''}
           </div>
           <div style="${S.muted}">
             ${fmtBytes(d.size_bytes)} · ${esc(d.uploaded_by || 'unknown')} · ${fmtDate(d.uploaded_at)}
@@ -977,11 +1153,28 @@
    * a document vault turns into a junk drawer. The PO field is optional and is
    * what makes the link work from this side as well as from the PO tab.
    */
-  function openUpload({ folderId, files = [], poId = null, lockPo = false, projectId }) {
+  function openUpload({ folderId, files = [], poId = null, lockPo = false, projectId, procurement = null }) {
     // Default to the tab's selection, but let callers override: openAttach()
     // works against the PO's own job, which is not always the one on screen.
     if (projectId === undefined) projectId = cfg.getProjectId();
+    // `procurement` is the Procurement sheet line this upload is attached to,
+    // { id, label, costCode } — fixed, like a pinned PO, because the paperclip
+    // it came from belongs to that one line. A file attached to a line is
+    // filed under the line's cost code by the server whatever folder is picked
+    // here, so that cost code's folder is the natural place to offer first.
+    const procCode = procurement ? String(procurement.costCode == null ? '' : procurement.costCode).trim() : '';
+    if (!folderId && procurement) folderId = (costCodeFolderFor(procCode) || {}).id || '';
     if (!folderId) folderId = defaultFolderForPo(poId, projectId);
+    const procLine = procurement ? `
+        <div id="fctdoc-proc" data-proc-id="${esc(procurement.id)}"
+             title="Fixed: this upload is attached to the procurement line it was opened from"
+             style="${S.input};width:100%;box-sizing:border-box;opacity:0.85;cursor:default">
+          Procurement line: <strong>${esc(procurement.label || 'Procurement line')}</strong>
+        </div>` : '';
+    const procHint = !procurement ? ''
+      : procCode
+        ? `<div data-proc-hint style="${S.muted};margin-top:0.25rem">Filed under cost code ${esc(procCode)} as well, whichever folder you pick.</div>`
+        : `<div data-proc-hint style="${S.muted};margin-top:0.25rem">This line has no cost code yet, so the file is filed only in the folder you pick.</div>`;
     const m = modal('Upload documents', `
       <div style="display:flex;flex-direction:column;gap:0.85rem">
         <div>
@@ -989,10 +1182,12 @@
           <input type="file" id="fctdoc-files" multiple style="${S.input};width:100%" />
           <div id="fctdoc-filelist" style="${S.muted};margin-top:0.35rem"></div>
         </div>
+        ${procLine}
         <div>
           <label style="display:block;${S.muted};margin-bottom:0.25rem">Folder <span style="color:var(--red,#ef4444)">*</span></label>
           ${folderPickerHTML('fctdoc-folder', folderId, '— pick a folder —')}
           ${poId ? `<div style="${S.muted};margin-top:0.25rem">Filed under the purchase order as well, whichever folder you pick.</div>` : ''}
+          ${procHint}
         </div>
         <div>
           <label style="display:block;${S.muted};margin-bottom:0.25rem">Link to purchase order <span style="opacity:0.7">(optional)</span></label>
@@ -1080,6 +1275,7 @@
             folderId: chosenFolder, poId: chosenPo,
             poNumber: chosenPoRow && chosenPoRow.po_number,
             note, projectId,
+            procurementId: procurement ? procurement.id : undefined,
           });
           done++;
         } catch (err) {
@@ -1123,9 +1319,14 @@
       // unguarded it rejected, skipped the re-render, and left a green
       // "uploaded" toast above a listing that did not contain the file — so
       // people uploaded it a second time.
+      //
+      // The procurement counts are refreshed BEFORE onChange fires, because
+      // onChange is how the host redraws the sheet's paperclips — firing it
+      // first redrew them with the old number.
       try {
         await load(projectId, { force: true });
         await refreshPoCounts();
+        await refreshProcurementCounts(projectId);
         if (cfg.onChange) cfg.onChange();
         render();
       } catch (err) {
@@ -1197,7 +1398,7 @@
     return btoa(binary);
   }
 
-  async function uploadOne(file, { folderId, poId, poNumber, note, projectId }) {
+  async function uploadOne(file, { folderId, poId, poNumber, note, projectId, procurementId }) {
     const prepared = await maybeDownscale(file);
 
     // 1. Ticket. Nothing is written until step 3, so an abandoned ticket costs
@@ -1243,6 +1444,11 @@
         poId,
         poNumber,
         note,
+        // The Procurement sheet line this file is attached to, when it came
+        // from one. The server links the line and files the document under
+        // the line's cost code as well; left undefined, JSON drops the key and
+        // every other upload's body is exactly what it was.
+        procurementId,
       });
     } catch (err) {
       try {
@@ -1355,6 +1561,10 @@
       const po = (cfg.getPurchaseOrders() || []).find(p => p.id === poId);
       return po ? `${po.po_number || po.id}${po.supplier ? ` — ${po.supplier}` : ''}` : poId;
     });
+    // A count rather than names: this module has no copy of the Procurement
+    // sheet to name the lines from, and the sheet's own paperclip is where a
+    // line's files are listed.
+    const procLines = (doc.procurement_ids || []).length;
 
     const viewer = !info.inline
       ? `<div style="${S.muted};padding:2rem;text-align:center">
@@ -1387,6 +1597,9 @@
       </div>
       ${linkedPos.length ? `<div style="margin-top:0.4rem;font-size:0.8rem;color:var(--green,#22c55e)">
           &#128206; Linked to ${linkedPos.map(esc).join(', ')}
+        </div>` : ''}
+      ${procLines ? `<div data-proc-linked style="margin-top:0.4rem;font-size:0.8rem;color:var(--blue,#60a5fa)">
+          &#128230; On ${procLines} procurement line${procLines === 1 ? '' : 's'}
         </div>` : ''}
       <div style="margin-top:0.4rem;${S.muted}">
         Filed in ${(doc.folder_ids || []).map(fid => esc(folderById(fid)?.name || '—')).join(', ') || '—'}
@@ -1451,6 +1664,7 @@
         m.close();
         await load(projectId, { force: true });
         await refreshPoCounts();
+        await refreshProcurementCounts(projectId);
         if (cfg.onChange) cfg.onChange();
         render();
         toast('Linked.');
@@ -1464,12 +1678,19 @@
           m.close();
           await load(projectId, { force: true });
           await refreshPoCounts();
+          await refreshProcurementCounts(projectId);
           if (cfg.onChange) cfg.onChange();
           render();
           toast('Unlinked. The file is still in its folder.');
         } catch (err) { toast(err.message, 'error'); }
       });
     });
+  }
+
+  // The job a document belongs to, for recounting the procurement lines on
+  // it. Falls back to `otherwise` for a document row that does not say.
+  function jobOf(doc, otherwise) {
+    return doc && doc.project_id !== undefined ? (doc.project_id || null) : otherwise;
   }
 
   // ── Delete ──────────────────────────────────────────────────────────
@@ -1496,6 +1717,9 @@
         m.close();
         await load(cfg.getProjectId(), { force: true });
         await refreshPoCounts();
+        // A deleted file stops counting on every procurement line it was on —
+        // and those lines are on the file's own job.
+        await refreshProcurementCounts(jobOf(doc, cfg.getProjectId()));
         if (cfg.onChange) cfg.onChange();
         render();
         toast('Deleted. Recoverable for 30 days.');
@@ -1549,6 +1773,10 @@
     m.body.querySelector('[data-cancel]').addEventListener('click', m.close);
     m.body.querySelectorAll('[data-restore]').forEach(btn => {
       btn.addEventListener('click', async () => {
+        // The bin lists every job's files, so the one restored is not
+        // necessarily on the job the tab is showing. Note its own job now,
+        // while the row is in hand, to recount the procurement lines on it.
+        const restoredJob = jobOf(deleted.find(d => d.id === btn.dataset.restore), cfg.getProjectId());
         btn.disabled = true;
         btn.textContent = 'Restoring…';
         try {
@@ -1556,6 +1784,7 @@
           m.close();
           await load(cfg.getProjectId(), { force: true });
           await refreshPoCounts();
+          await refreshProcurementCounts(restoredJob);
           if (cfg.onChange) cfg.onChange();
           render();
           toast('Restored.');
@@ -1585,37 +1814,88 @@
   // dialog that had opened perfectly well from the second click.
   let ccOpening = false;
 
+  /**
+   * Opens the folder dialog for one cost code on one job. Resolves true when
+   * the dialog opened, 'missing' when the job has no folder for the code (and
+   * the user has been told why), and false or undefined when nothing opened
+   * for any other reason — already said, or another chip still opening.
+   *
+   * `fresh` reads the job again even when the browser is already sitting on
+   * it. The Procurement sheet asks this way: the server moves a line's files
+   * between cost-code folders whenever the line is re-coded, and a colleague
+   * attaches files, and neither reaches the copy in hand — trusting it listed
+   * "Nothing filed here yet" for files that were in the folder. The bid page
+   * keeps the cached copy; its codes only move when this browser moves them.
+   */
   async function openCostCodeFolder(opts) {
-    if (ccOpening) return;
+    if (ccOpening) return undefined;
     ccOpening = true;
     try { return await _openCostCodeFolder(opts || {}); }
     finally { ccOpening = false; }
   }
 
-  async function _openCostCodeFolder({ projectId = null, costCode, label = '' }) {
+  // Whether `code` is one of the job's bid cost codes (the ones the folder
+  // seed makes folders for), read the way the Procurement sheet reads codes.
+  function onJobBid(projectId, code) {
+    const key = codeKey(code);
+    if (!key) return false;
+    let list = [];
+    try { list = cfg.getCostCodes(projectId) || []; } catch { list = []; }
+    return list.some(c => codeKey(typeof c === 'string' ? c : c && c.code) === key);
+  }
+
+  // What to say when a job has no folder for `code`, and whether that is a
+  // fault. Run after a load (which seeds the bid's codes), so a code that is
+  // not on the bid is simply one nothing has been filed under yet: the server
+  // makes its folder when the first file is attached to a line carrying it,
+  // and until then there is nothing to show, to anyone. A code that IS on the
+  // bid should have been seeded on the way in — that failed, for a user who
+  // may not create folders or for some passing reason.
+  function missingFolderMessage(projectId, code) {
+    if (!onJobBid(projectId, code)) {
+      return {
+        kind: 'info',
+        text: `No document folder for cost code ${code} yet — nothing has been filed under it. `
+          + 'Its folder is made when the first file is attached to a line with this code.',
+      };
+    }
+    return {
+      kind: 'error',
+      text: caps.canUpload
+        ? `No document folder for cost code ${code} on this job. It could not be set up just now — try again, or open the job's Documents tab.`
+        : `Cost code ${code} has no folder yet, and creating one needs edit access.`,
+    };
+  }
+
+  async function _openCostCodeFolder({ projectId = null, costCode, label = '', fresh = false }) {
     const code = String(costCode == null ? '' : costCode).trim();
     if (!code) {
       toast('That group has no cost code yet, so there is no folder to open.', 'error');
-      return;
+      return false;
     }
 
     // The bid page is routinely open on a job the Documents tab is not sitting
     // on, so load that scope first — and honour the same generation guard
     // openAttach() uses. Without it, two chips clicked in quick succession
     // could list the second job's folder under the first job's heading.
+    // A fresh open loads even the job in hand (see openCostCodeFolder).
     let loadedNow = false;
-    if (loadedFor !== projectId) {
-      let fresh;
-      try { fresh = await load(projectId, { force: true }); }
-      catch (err) { toast(err.message, 'error'); return; }
-      if (!fresh) {
+    if (fresh || loadedFor !== projectId) {
+      let ok;
+      try { ok = await load(projectId, { force: true }); }
+      catch (err) { toast(err.message, 'error'); return false; }
+      if (!ok) {
         toast('Something else loaded while that was opening. Try the folder again.', 'error');
-        return;
+        return false;
       }
       loadedNow = true;
     }
 
-    let folder = folders.find(f => folderCostCode(f) === code);
+    // Exact first, then one that reads the same on screen (another letter
+    // case, a dash typed another way) — the same rule the server files a
+    // procurement attachment by, so the chip on a procurement section headed
+    // "stormwater" opens the "Stormwater" folder its files are in.
+    let folder = costCodeFolderFor(code);
 
     // A cost code typed into the green bar since the last load has no folder
     // yet — nothing creates one but the seed that runs on the way into load(),
@@ -1623,21 +1903,18 @@
     // existed. One forced reload settles it, rather than telling someone their
     // brand-new cost code has no folder when it is one request from having one.
     if (!folder && !loadedNow) {
-      let fresh = false;
-      try { fresh = await load(projectId, { force: true }); } catch { /* keep the message below */ }
-      if (fresh) { folder = folders.find(f => folderCostCode(f) === code); loadedNow = true; }
+      let ok = false;
+      try { ok = await load(projectId, { force: true }); } catch { /* keep the message below */ }
+      if (ok) { folder = costCodeFolderFor(code); loadedNow = true; }
     }
 
     if (!folder) {
-      // load() seeds the tree on the way in, so by here the folder is missing
-      // for one of two reasons and they need different answers: the seed 403'd
-      // because the user may not create folders, or it ran and skipped this one
-      // because another folder on the job already holds the name it wanted.
-      // "Folder not found" covered both and told nobody what to do next.
-      toast(caps.canUpload
-        ? `No document folder for cost code ${code} on this job. Check the Documents tab — another folder may already be using its name.`
-        : `Cost code ${code} has no folder yet, and creating one needs edit access.`, 'error');
-      return;
+      // A load ran either way, and its counts are the ones the chip should be
+      // drawing from now.
+      if (loadedNow && cfg.onChange) cfg.onChange();
+      const why = missingFolderMessage(projectId, code);
+      toast(why.text, why.kind === 'error' ? 'error' : undefined);
+      return 'missing';
     }
 
     // A load ran, which means the counts the bid page drew its chips from are
@@ -1646,7 +1923,11 @@
     // nothing over a dialog showing three files.
     if (loadedNow && cfg.onChange) cfg.onChange();
 
-    const ids  = subtreeIds(folder.id, folders);
+    // The folder and any other folder for the same code (sameCodeFolders),
+    // with everything under them: exactly what the chip counted.
+    const roots = sameCodeFolders(folder, folders);
+    const rootIds = new Set(roots.map(f => f.id));
+    const ids  = subtreesOf(roots, folders);
     const here = documents
       .filter(d => (d.folder_ids || []).some(id => ids.has(id)))
       .sort((a, b) => String(b.uploaded_at || '').localeCompare(String(a.uploaded_at || '')));
@@ -1657,7 +1938,7 @@
     const nameOf = {};
     for (const f of folders) nameOf[f.id] = f.name;
     const subOf = d => {
-      const at = (d.folder_ids || []).find(id => ids.has(id) && id !== folder.id);
+      const at = (d.folder_ids || []).find(id => ids.has(id) && !rootIds.has(id));
       return at ? nameOf[at] : '';
     };
 
@@ -1696,6 +1977,7 @@
       // "pick a folder" the user then has to find the cost code in.
       openUpload({ folderId: folder.id, projectId });
     });
+    return true;
   }
 
   // ── Purchase-order side ─────────────────────────────────────────────
@@ -1764,6 +2046,282 @@
     });
   }
 
+  // ── Procurement-line side ───────────────────────────────────────────
+  // Make sure the module state describes `projectId`'s folders. Resolves
+  // 'already' when it did, 'loaded' when it does now, and false — after saying
+  // why — when it cannot: the load failed, or another load started while this
+  // one was in flight and won, so the state now belongs to a different job.
+  // `force` reads the job again even when it is the one in hand.
+  async function loadScope(projectId, again, { force = false } = {}) {
+    if (!force && loadedFor === projectId) return 'already';
+    let fresh;
+    try { fresh = await load(projectId, { force: true }); }
+    catch (err) { toast(err.message, 'error'); return false; }
+    if (!fresh) {
+      toast(`Something else loaded while that was opening. ${again}`, 'error');
+      return false;
+    }
+    return 'loaded';
+  }
+
+  // The list a line's dialog just fetched is the freshest count there is for
+  // that line. When the paperclip the user clicked was drawing a different
+  // number — someone else attached a file since the sheet last counted —
+  // correct it. Reports whether anything changed, so the caller knows whether
+  // the host has something to redraw.
+  function noteProcurementCount(projectId, rowId, n) {
+    const key = projectId || '';
+    const forJob = own(procCounts, key) || (procCounts[key] = {});
+    if ((own(forJob, rowId) || 0) === n) return false;
+    if (n > 0) forJob[rowId] = n; else delete forJob[rowId];
+    return true;
+  }
+
+  /**
+   * The paperclip on a line of the Procurement sheet. Lists what is attached
+   * to that line and offers an upload that, in one action, files the document
+   * on the job, attaches it to the line, and — the server does this part —
+   * files it under the line's cost code as well. That last step is what makes
+   * a cost code's folder compile every attachment for its section of the
+   * sheet without anyone filing anything twice.
+   *
+   * `line` is { id, project_id, cost_code, sub_code, label }. cost_code is the
+   * line's live code as the sheet shows it (the bid line's, when the line is
+   * tied to one), already trimmed; label is what the dialog calls the line.
+   */
+  // One paperclip opening at a time — two clicks on a slow connection started
+  // two loads, and the loser toasted an error over a dialog that opened fine.
+  let procOpening = false;
+
+  async function openProcurementAttach(line) {
+    if (procOpening) return;
+    procOpening = true;
+    try { return await _openProcurementAttach(line || {}); }
+    finally { procOpening = false; }
+  }
+
+  async function _openProcurementAttach(line) {
+    const rowId     = String(line.id == null ? '' : line.id).trim();
+    const projectId = line.project_id || null;
+    const code      = String(line.cost_code == null ? '' : line.cost_code).trim();
+    const label     = String(line.label == null ? '' : line.label).trim() || 'Procurement line';
+
+    if (!rowId) {
+      toast('That line has not been saved yet, so nothing can be attached to it.', 'error');
+      return;
+    }
+    // procurement_items.project_id is NOT NULL, so this is a host bug rather
+    // than a user mistake — but listing without a job would have asked the
+    // server for the line's files across every job in the division.
+    if (!projectId) {
+      toast('That line is not on a job, so nothing can be attached to it.', 'error');
+      return;
+    }
+
+    // The sheet is routinely on a job the Documents tab is not, and the upload
+    // dialog builds its folder picker from whatever is loaded — so load the
+    // line's job first, under the same generation guard openAttach() uses.
+    let scope = await loadScope(projectId, 'Try the paperclip again.');
+    if (!scope) return;
+
+    // Scoped to the job as well as the line: a row id is unique on its own,
+    // but a file can only ever be attached to a line on its own job, and
+    // saying so keeps the server's answer honest if that ever drifts.
+    const listAttached = async () =>
+      (await api('GET', `/documents${q({ procurementId: rowId, projectId })}`)).documents || [];
+
+    let attached;
+    try { attached = await listAttached(); }
+    catch (err) { toast(err.message, 'error'); return; }
+
+    // The line holds a file the copy of the job in hand has never seen — a
+    // colleague attached it since this browser loaded the job. Whatever else
+    // changed with it (which cost-code folder it went into, a folder the
+    // server made for a new code) is missing from that copy too, and the
+    // upload dialog's folder picker and the cost-code folder are both built
+    // from it. Read the job again before offering either. A failed read keeps
+    // the copy in hand; the list above is right regardless.
+    if (scope === 'already') {
+      const known = new Set(documents.map(d => d.id));
+      if (attached.some(d => !known.has(d.id))) {
+        let ok = null;
+        try { ok = await load(projectId, { force: true }); }
+        catch (err) { console.warn('[documents] reading the job again failed:', err.message); }
+        if (ok === false) {
+          toast('Something else loaded while that was opening. Try the paperclip again.', 'error');
+          return;
+        }
+        if (ok) scope = 'loaded';
+      }
+    }
+
+    // A load ran (the cost-code chips on the sheet's section headers count off
+    // what it fetched), or the paperclip was showing a stale number. Either
+    // way the host has something to redraw, the same nudge openCostCodeFolder
+    // gives the bid page.
+    const countMoved = noteProcurementCount(projectId, rowId, attached.length);
+    if ((scope === 'loaded' || countMoved) && cfg.onChange) cfg.onChange();
+
+    // The label usually carries the cost code already ("Stormwater /
+    // Geofabric"); say it again only when it does not.
+    const title = code && !label.toLowerCase().includes(code.toLowerCase())
+      ? `${label} · cost code ${code}`
+      : label;
+    const m = modal(title, '', { wide: true });
+
+    // Detach is the server's rule, mirrored so nobody is offered a button that
+    // only answers 403: a manager may detach anything, an uploader only what
+    // they uploaded themselves.
+    let me = '';
+    try { me = typeof cfg.getUserName === 'function' ? String(cfg.getUserName() || '') : ''; }
+    catch { me = ''; }
+    const mayDetach = d => Boolean(caps.canManage
+      || (caps.canUpload && me !== '' && d.uploaded_by === me));
+
+    // Drawn into the dialog's body rather than built once, so a detach can
+    // redraw the list in place instead of closing and reopening the dialog.
+    function draw(docs) {
+      m.body.innerHTML = `
+        <div style="display:flex;flex-direction:column;gap:0.85rem">
+          <div>
+            <div style="${S.muted};margin-bottom:0.35rem">${docs.length} attached document${docs.length === 1 ? '' : 's'}</div>
+            <div data-proc-filing style="${S.muted};margin-bottom:0.5rem">${code
+              ? `Files attached here are also filed in the ${esc(code)} cost-code folder.`
+              : 'This line has no cost code yet, so files attached here are filed only in the folder picked for them.'}</div>
+            ${docs.length ? docs.map(d => `
+              <div data-proc-doc="${esc(d.id)}" style="display:flex;align-items:center;gap:0.6rem;padding:0.4rem 0;border-bottom:1px solid var(--border,#2a2a3a);font-size:0.82rem">
+                <span>${iconFor(d)}</span>
+                <div style="flex:1 1 auto;min-width:0">
+                  <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.filename)}</div>
+                  <div style="${S.muted}">${fmtBytes(d.size_bytes)} · ${esc(d.uploaded_by || 'unknown')} · ${fmtDate(d.uploaded_at)}${d.note ? ` · ${esc(d.note)}` : ''}</div>
+                </div>
+                <button data-pdl="${esc(d.id)}" style="${S.btn}" title="Download">&#11015;</button>
+                ${mayDetach(d) ? `<button data-detach="${esc(d.id)}" style="${S.btn}"
+                        title="Take this file off this procurement line. The file is not deleted: it stays in the Vault, in every folder it is filed in.">Detach</button>` : ''}
+              </div>`).join('')
+              : `<div style="${S.muted};padding:0.75rem 0">Nothing attached yet.</div>`}
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:0.5rem;flex-wrap:wrap">
+            <button data-cancel style="${S.btn}">Close</button>
+            ${code ? `<button data-open-folder style="${S.btn}" title="Everything filed under cost code ${esc(code)} on this job">&#128193; Open ${esc(code)} folder</button>` : ''}
+            ${caps.canUpload ? `<button data-attach-new style="${S.green}">&#11014; Attach a document</button>` : ''}
+          </div>
+        </div>`;
+
+      m.body.querySelector('[data-cancel]').addEventListener('click', m.close);
+      m.body.querySelectorAll('[data-pdl]').forEach(b =>
+        b.addEventListener('click', () => downloadDoc(b.dataset.pdl)));
+
+      // The cost code's whole folder, not just this line's share of it — the
+      // other lines in the section file there too.
+      //
+      // The job is read again first, as the sheet's own folder chip does: the
+      // server re-files a line's files when its code changes, and makes a
+      // code's folder when the first file is attached, and the copy in hand
+      // has neither. This dialog stays up until the folder is known to exist.
+      // A code that has none yet — one that is not on the job's bid and has
+      // nothing filed under it — has nothing to open, and closing this dialog
+      // first left the user with an error message and nothing on screen.
+      m.body.querySelector('[data-open-folder]')?.addEventListener('click', async ev => {
+        const btn = ev.currentTarget;
+        if (btn.disabled) return;
+        const was = btn.innerHTML;
+        btn.disabled = true;
+        btn.textContent = 'Opening…';
+        const ok = await loadScope(projectId, 'Try the folder again.', { force: true });
+        if (!document.body.contains(m.el)) return;            // closed meanwhile
+        btn.disabled = false;
+        btn.innerHTML = was;
+        if (!ok) return;
+        // The load recounted the job; the sheet's chips should hear about it
+        // whichever way this goes.
+        if (cfg.onChange) cfg.onChange();
+        if (!costCodeFolderFor(code)) {
+          const note = m.body.querySelector('[data-proc-filing]');
+          const why = missingFolderMessage(projectId, code);
+          if (why.kind === 'error') { toast(why.text, 'error'); return; }
+          if (note) note.textContent = `Nothing is filed under cost code ${code} yet, so it has no folder to open. `
+            + 'Its folder is made when the first file is attached to a line with this code.';
+          btn.remove();
+          return;
+        }
+        m.close();
+        // Just read, so the folder dialog lists from it without a second read.
+        openCostCodeFolder({ projectId, costCode: code, label: '' });
+      });
+
+      m.body.querySelector('[data-attach-new]')?.addEventListener('click', async () => {
+        m.close();
+        // Nothing should have moved the browser off this job while the dialog
+        // was up, but the upload dialog's folder picker is built from whatever
+        // is loaded, and offering another job's folders here would file a
+        // document against this line in a folder it can never be found from.
+        if (!(await loadScope(projectId, 'Try the paperclip again.'))) return;
+        // The line is fixed; the folder is still the user's call, opened on
+        // the cost code's own folder because that is where the server is
+        // filing the document anyway. No folder for the code (or no code) and
+        // the picker opens blank, so the user has to choose one.
+        const ccFolder = costCodeFolderFor(code);
+        openUpload({
+          folderId: ccFolder ? ccFolder.id : null,
+          procurement: { id: rowId, label, costCode: code },
+          projectId,
+        });
+      });
+
+      m.body.querySelectorAll('[data-detach]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const d = docs.find(x => x.id === btn.dataset.detach);
+          if (!d) return;
+          let ok = false;
+          try {
+            ok = window.confirm(`Detach ${d.filename} from ${label}?\n\n`
+              + 'The file is not deleted. It stays in the Vault, in every folder it is filed in.');
+          } catch { ok = false; }
+          if (!ok) return;
+
+          btn.disabled = true;
+          btn.textContent = 'Detaching…';
+          try {
+            await api('PATCH', `/documents${q({ id: d.id })}`, { removeProcurementId: rowId });
+          } catch (err) {
+            btn.disabled = false;
+            btn.textContent = 'Detach';
+            toast(err.message, 'error');
+            return;
+          }
+
+          // The detach is committed; only the refresh can fail from here. The
+          // counts are refreshed before onChange fires, since onChange is how
+          // the host redraws the paperclip that is about to read one fewer.
+          let fresh = null, stale = null;
+          try {
+            await load(projectId, { force: true });
+            await refreshProcurementCounts(projectId);
+            fresh = await listAttached();
+          } catch (err) { stale = err; }
+          // Failing a fresh list, the best answer left is the one on screen
+          // minus the file just detached — never a Detach button on a file
+          // that is no longer attached, nor a paperclip one too high.
+          const shown = fresh || docs.filter(x => x.id !== d.id);
+          noteProcurementCount(projectId, rowId, shown.length);
+          // The host is told whatever did or did not refresh: the line
+          // really did lose a file, and its paperclip should say so.
+          try {
+            if (cfg.onChange) cfg.onChange();
+            render();
+          } catch (err) { stale = stale || err; }
+          if (stale) toast(`Detached, but the list could not be refreshed: ${stale.message}`, 'error');
+          else toast('Detached. The file is still in the Vault, in every folder it was filed in.');
+          // Redraw only a dialog that is still up.
+          if (document.body.contains(m.el)) draw(shown);
+        });
+      });
+    }
+
+    draw(attached);
+  }
+
   // ── Public API ──────────────────────────────────────────────────────
   window.FCTDocuments = {
     configure(opts) {
@@ -1800,12 +2358,33 @@
     /** Documents filed under one cost code on one job, 0 until counted. */
     costCodeCount(projectId, code) {
       const forJob = ccCounts[projectId || ''];
-      return (forJob && forJob[String(code == null ? '' : code).trim()]) || 0;
+      if (!forJob) return 0;
+      const want = String(code == null ? '' : code).trim();
+      if (Object.prototype.hasOwnProperty.call(forJob, want)) return forJob[want] || 0;
+      // Then the first code that reads the same on screen (codeKey) — the
+      // same fallback, in the same folder order, costCodeFolderFor takes.
+      // The server files a procurement line's attachment into its cost
+      // code's folder by that rule, so a sheet section headed "stormwater" is
+      // counting the "Stormwater" folder its files actually went into.
+      const key = codeKey(want);
+      const near = key && Object.keys(forJob).find(k => codeKey(k) === key);
+      return (near && forJob[near]) || 0;
+    },
+
+    openProcurementAttach,
+    refreshProcurementCounts,
+    /** Documents attached to one Procurement sheet line, 0 until counted. */
+    procurementCount(projectId, rowId) {
+      const forJob = own(procCounts, projectId || '');
+      return (forJob && own(forJob, String(rowId == null ? '' : rowId))) || 0;
     },
 
     // exercised by scripts/test-documents-frontend.js — the upload sequence is
     // the one part of this file a static read cannot confirm.
     _uploadOne: uploadOne,
     _maybeDownscale: maybeDownscale,
+    // …and the cost-code normalising, held to tracker's _codeKey and the
+    // server's codeKey character for character.
+    _codeKey: codeKey,
   };
 })();

@@ -28,7 +28,12 @@
  *   - who may read, who may write and who may delete a whole job is the
  *     server's rule, not the page's;
  *   - the nightly shrink check counts the live rows, and the restore its
- *     email carries puts a deleted job's rows back.
+ *     email carries puts a deleted job's rows back;
+ *   - a line's attached files follow its cost code: a write that changes the
+ *     code (a re-picked Sub Code, the page's code sync, a bulk edit, a
+ *     restore onto a new bid line) moves them to the new code's Document
+ *     Vault folder, never strands one, and never fails the write when the
+ *     move goes wrong.
  */
 
 const fs     = require('fs');
@@ -56,13 +61,21 @@ function makeSql(c) {
   };
 }
 
-const DB = { fail: false, failInsert: false };
+// fail / failInsert: statements on procurement rows fail as a dropped
+// connection would. failFolders: statements on the Document Vault's folders
+// fail (a re-file breaking part way). log: when an array, every statement's
+// text is pushed onto it, so a check can see which tables a request touched.
+const DB = { fail: false, failInsert: false, failFolders: false, log: null };
 const origLoad = Module._load;
 Module._load = function (request) {
   if (request === '@neondatabase/serverless') {
     return { neon: () => {
       const sql = makeSql(pool);
       return (strings, ...values) => {
+        if (DB.log) DB.log.push(strings.join('?'));
+        if (DB.failFolders && strings.join('?').includes('project_folders')) {
+          return Promise.reject(new Error('connection reset by peer at 10.0.0.7:5432'));
+        }
         if (DB.fail && strings.join('?').includes('procurement_items')) {
           return Promise.reject(new Error('connection reset by peer at 10.0.0.7:5432'));
         }
@@ -129,6 +142,11 @@ async function cleanUp() {
     await q('DELETE FROM projects WHERE company_code = $1', [co]).catch(() => {});
     await q('DELETE FROM procurement_items WHERE company_code = $1', [co]).catch(() => {});
     await q('DELETE FROM supplier_contacts WHERE company_code = $1', [co]).catch(() => {});
+    // The attached files, folders and trail of the cost-code re-file checks.
+    await q('DELETE FROM document_audit_log WHERE company_code = $1', [co]).catch(() => {});
+    await q('DELETE FROM document_links WHERE company_code = $1', [co]).catch(() => {});
+    await q('DELETE FROM project_documents WHERE company_code = $1', [co]).catch(() => {});
+    await q('DELETE FROM project_folders WHERE company_code = $1', [co]).catch(() => {});
     await q('DELETE FROM users WHERE company_code = $1', [co]);
     await q('DELETE FROM companies WHERE code = $1', [co]);
   }
@@ -815,6 +833,303 @@ function schemaStatements() {
     assert('…and renames the rows of the job whose bid it wrote', b1.cost_code === 'ZZZ' && b1.sub_code === 'Written through another job',
       JSON.stringify([b1.cost_code, b1.sub_code]));
     await q('DELETE FROM app_data WHERE key = $1', [`${CO}:fct_project_${PID2}`]);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nA line\'s attached files follow its cost code (the Job Document Vault\'s cost-code folders)');
+  {
+    // A file attached to a line is filed in the folder picked AND in the
+    // folder for the line's cost code (api/lib/procurement-docs.js). These
+    // drive the real Procurement handler and look at where the files are
+    // filed afterwards. The files, folders and links are written straight to
+    // the tables, the way api/documents.js leaves them.
+    const procDocs = require(path.join(ROOT, 'api/lib/procurement-docs.js'));
+    const PID = 'prtest-files';
+    const BL = (id, cost, sub) => ({ id, cost_code: cost, sub_code: sub, quantity: 10, unit: 'LF' });
+    let bid = [BL('fb1', 'Stormwater', 'Geofabric'), BL('fb2', 'E&S', 'Silt Sock'), BL('fb5', 'E&S', 'Silt Sock 12in'),
+      BL('fb6', 'E&S', 'Silt Fence')];
+    const putBid = () => q(`INSERT INTO app_data (key, value, updated_at) VALUES ($1, $2::jsonb, NOW())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+      [`${CO}:fct_project_${PID}`, JSON.stringify({ id: PID, bidItems: bid })]);
+    await putBid();
+
+    let fseq = 0;
+    const folder = async (name, { kind = 'cost_code', code = null, slug, co = CO, pid = PID } = {}) => {
+      const id = `prtest-f${++fseq}`;
+      await q(`INSERT INTO project_folders (id, company_code, division, project_id, name, kind, slug, cost_code, sort_order)
+               VALUES ($1, $2, 'turf', $3, $4, $5, $6, $7, 10)`,
+        [id, co, pid, name, kind, slug === undefined ? (code ? 'cc-' + code : null) : slug, code]);
+      return id;
+    };
+    const SAFETY = await folder('Safety', { kind: 'fixed', slug: 'safety' });
+    const STORM  = await folder('Stormwater', { code: 'Stormwater' });
+    const ES     = await folder('E&S · Erosion & Sediment', { code: 'E&S' });
+
+    let dseq = 0;
+    const doc = async (rows, folders, { co = CO, deleted = false, pid = PID } = {}) => {
+      const id = `prtest-doc-${++dseq}`;
+      await q(`INSERT INTO project_documents (id, company_code, division, project_id, filename, content_type, size_bytes,
+                 storage_key, uploaded_by, deleted_at)
+               VALUES ($1, $2, 'turf', $3, $4, 'application/pdf', 10, $5, 'p_l2', $6)`,
+        [id, co, pid, `${id}.pdf`, `${co}/turf/${pid}/${id}/${id}.pdf`, deleted ? new Date() : null]);
+      for (const r of rows) {
+        await q(`INSERT INTO document_links (document_id, company_code, link_type, target_id) VALUES ($1, $2, 'procurement', $3)`, [id, co, r]);
+      }
+      for (const f of folders) {
+        await q(`INSERT INTO document_links (document_id, company_code, link_type, target_id) VALUES ($1, $2, 'folder', $3)`, [id, co, f]);
+      }
+      return id;
+    };
+    const foldersOf = async id => (await q(
+      `SELECT target_id FROM document_links WHERE document_id = $1 AND link_type = 'folder'`, [id])).map(r => r.target_id);
+    const same = (a, b) => JSON.stringify([...a].sort()) === JSON.stringify([...b].sort());
+    const ccFolder = code => q(`SELECT * FROM project_folders WHERE company_code = $1 AND division = 'turf' AND project_id = $2
+      AND kind = 'cost_code' AND lower(btrim(cost_code)) = lower(btrim($3))`, [CO, PID, code]);
+    const trail = id => q(`SELECT action, actor, folder_id, detail FROM document_audit_log WHERE document_id = $1 ORDER BY id`, [id]);
+    const folderCount = async () => Number((await q('SELECT count(*) FROM project_folders WHERE company_code = $1', [CO]))[0].count);
+    const manualRow = async (cost, extra = {}) => (await create(L2, { id: uid('fm'), project_id: PID, cost_code: cost, ...extra })).body.item;
+
+    // ── A hand-added line re-coded by picking another Sub Code ──
+    const m1 = await manualRow('Stormwater', { sub_code: 'Geofabric' });
+    const d1 = await doc([m1.id], [SAFETY, STORM]);
+    let r = await patch(L2, m1.id, { bid_item_id: 'fb2', cost_code: 'E&S', sub_code: 'Silt Sock' });
+    assert('a hand-added line re-coded by picking another Sub Code saves as it always did (200)',
+      r.statusCode === 200 && r.body.item.cost_code === 'E&S' && r.body.item.bid_item_id === 'fb2', show(r));
+    let now = await foldersOf(d1);
+    assert('…its file is filed in the new code\'s folder and leaves the old one, keeping the folder picked',
+      same(now, [SAFETY, ES]), JSON.stringify(now));
+    const t1 = await trail(d1);
+    assert('…both moves are in the document trail, by the person who saved, naming the line',
+      t1.length === 2
+        && t1.some(t => t.action === 'LINK' && t.folder_id === ES && t.detail.target_id === ES && t.detail.link_type === 'folder')
+        && t1.some(t => t.action === 'UNLINK' && t.folder_id === STORM && t.detail.target_id === STORM)
+        && t1.every(t => t.actor === 'p_l2' && t.detail.via === 'procurement_cost_code' && t.detail.procurement_id === m1.id),
+      JSON.stringify(t1));
+    r = await patch(L2, m1.id, { bid_item_id: null, cost_code: 'Stormwater', sub_code: 'Geofabric' });
+    now = await foldersOf(d1);
+    assert('…and typed back to the first code, it moves back', r.statusCode === 200 && same(now, [SAFETY, STORM]), JSON.stringify(now));
+
+    // ── Only case or spaces changed: the same section ──
+    const m2 = await manualRow('Stormwater');
+    const d2 = await doc([m2.id], [SAFETY, STORM]);
+    const nFolders = await folderCount();
+    r = await patch(L2, m2.id, { cost_code: '  stormwater ' });
+    assert('a code changed only in case or spaces saves (200)', r.statusCode === 200 && r.body.item.cost_code === 'stormwater', show(r));
+    assert('…and moves nothing: same folders, no new folder, nothing in the trail',
+      same(await foldersOf(d2), [SAFETY, STORM]) && await folderCount() === nFolders && (await trail(d2)).length === 0,
+      JSON.stringify(await foldersOf(d2)));
+
+    // ── A file on two lines of one section ──
+    const a = await manualRow('Stormwater');
+    const b2 = await manualRow('stormwater');
+    const d3 = await doc([a.id, b2.id], [SAFETY, STORM]);
+    r = await patch(L2, a.id, { cost_code: 'E&S' });
+    now = await foldersOf(d3);
+    assert('a file on two lines, one of them re-coded: it is filed under the new code too', r.statusCode === 200 && now.includes(ES), JSON.stringify(now));
+    assert('…and STAYS in the old section\'s folder while the other line is still in that section (case ignored)',
+      same(now, [SAFETY, STORM, ES]), JSON.stringify(now));
+    r = await patch(L2, b2.id, { cost_code: 'E&S' });
+    now = await foldersOf(d3);
+    assert('…and leaves it once the other line moves too', same(now, [SAFETY, ES]), JSON.stringify(now));
+
+    const c1 = await manualRow('Stormwater');
+    const cGone = await manualRow('Stormwater');
+    await del(L2, { id: cGone.id });
+    const d4 = await doc([c1.id, cGone.id], [SAFETY, STORM]);
+    r = await patch(L2, c1.id, { cost_code: 'E&S' });
+    now = await foldersOf(d4);
+    assert('a line deleted from the sheet does not hold a file in its old section', same(now, [SAFETY, ES]), JSON.stringify(now));
+
+    // ── A code blanked ──
+    const e1 = await manualRow('Stormwater');
+    const d5 = await doc([e1.id], [STORM]);
+    r = await patch(L2, e1.id, { cost_code: '' });
+    assert('a line whose code is cleared saves (200)', r.statusCode === 200 && r.body.item.cost_code === '', show(r));
+    assert('…a file whose ONLY folder is the old code\'s stays there — never filed nowhere',
+      same(await foldersOf(d5), [STORM]) && (await trail(d5)).length === 0, JSON.stringify(await foldersOf(d5)));
+    const f1 = await manualRow('Stormwater');
+    const d6 = await doc([f1.id], [SAFETY, STORM]);
+    r = await patch(L2, f1.id, { cost_code: '' });
+    assert('…while a file that has another folder leaves the old code\'s (the line is in no section now)',
+      same(await foldersOf(d6), [SAFETY]), JSON.stringify(await foldersOf(d6)));
+
+    // ── The page bringing a stale stored code into line with a renamed bid line ──
+    const s1 = (await send(L2, { project_id: PID, items: [line('fb1', { cost_code: 'Stormwater', sub_code: 'Geofabric' })] })).body.created[0];
+    const d7 = await doc([s1.id], [SAFETY, STORM]);
+    // The bid line is renamed on the bid page and the job saved whole: the
+    // sheet shows the new code at once, the row still stores the old one.
+    bid = bid.map(x => (x.id === 'fb1' ? BL('fb1', 'Storm Drainage', 'Geofabric') : x));
+    await putBid();
+    r = await patch(L2, s1.id, { vendor: 'Acme Supply' });
+    assert('a save that does not touch the codes moves nothing, even while the stored copy is stale',
+      r.statusCode === 200 && same(await foldersOf(d7), [SAFETY, STORM]), JSON.stringify(await foldersOf(d7)));
+    r = await patch(L2, s1.id, { cost_code: 'Storm Drainage', sub_code: 'Geofabric' });
+    const sd = await ccFolder('Storm Drainage');
+    now = await foldersOf(d7);
+    assert('the page\'s code sync (200) moves the file to the renamed code\'s folder, made for it',
+      r.statusCode === 200 && sd.length === 1 && same(now, [SAFETY, sd[0].id]), JSON.stringify({ now, sd }));
+    assert('…made the way the folder seed makes one (top level, kind cost_code, slug cc-<code>, the bare code as its name)',
+      sd[0] && sd[0].parent_id === null && sd[0].kind === 'cost_code' && sd[0].slug === 'cc-Storm Drainage'
+        && sd[0].name === 'Storm Drainage' && sd[0].cost_code === 'Storm Drainage' && sd[0].sort_order === 800 && sd[0].created_by === 'p_l2',
+      JSON.stringify(sd[0]));
+
+    // ── The bid page renaming a line's cost code (api/bid-items.js) ──
+    // That PUT rewrites the rows' stored copy in the same request, so the
+    // sheet has nothing left to bring into line and never sends the code
+    // itself: the files have to move there, or they stay in the old folder.
+    {
+      const bidHandler = require(path.join(ROOT, 'api/bid-items.js'));
+      const putBidLine = async item => {
+        const res = fakeRes();
+        await bidHandler({ method: 'PUT', query: { id: item.id, projectId: PID, projectKey: `fct_project_${PID}` },
+          body: { bidItem: item, ts: Date.now() }, headers: { authorization: 'Bearer ' + L2.token } }, res);
+        // Keep this test's copy of the bid in step with what the PUT stored.
+        bid = bid.map(x => (x.id === item.id ? BL(item.id, item.cost_code, item.sub_code) : x));
+        return res;
+      };
+      bid = bid.concat([BL('fb7', 'Stormwater', 'Drain Rock')]);
+      await putBid();
+      // The turf job's normalized mirror needs its projects row (step 3).
+      await q("INSERT INTO projects (id, company_code, name) VALUES ($1, $2, 'Files job') ON CONFLICT (id) DO NOTHING", [PID, CO]);
+      // One row sent from the line, one hand-added and tied to it.
+      const k1 = (await send(L2, { project_id: PID, items: [line('fb7', { cost_code: 'Stormwater', sub_code: 'Drain Rock' })] })).body.created[0];
+      const k2 = (await create(L2, { id: uid('m'), project_id: PID, bid_item_id: 'fb7', cost_code: 'Stormwater', sub_code: 'Drain Rock',
+        description: 'second' })).body.item;
+      const d12 = await doc([k1.id], [SAFETY, STORM]);
+      const before12 = (await trail(d12)).length;
+
+      DB.log = [];
+      r = await putBidLine({ id: 'fb7', cost_code: 'Stormwater', sub_code: 'Drain Rock', quantity: 20, unit: 'LF' });
+      const qtyLog = DB.log;
+      DB.log = null;
+      assert('a bid line\'s quantity edit (200) moves nothing and reads nothing more of the Vault than the copy statement',
+        r.statusCode === 200 && same(await foldersOf(d12), [SAFETY, STORM])
+          && qtyLog.filter(s => /document_links|project_folders|document_audit_log/.test(s)).length === 1
+          && !qtyLog.some(s => /project_folders|INSERT INTO document_links|DELETE FROM document_links/.test(s)),
+        JSON.stringify(qtyLog.filter(s => /document_links|project_folders/.test(s)).length));
+
+      r = await putBidLine({ id: 'fb7', cost_code: 'Stormwater', sub_code: 'Drain Rock #57', quantity: 20, unit: 'LF' });
+      assert('a sub code renamed on the bid page moves nothing (the section is the same)',
+        r.statusCode === 200 && (await rowOf(k1.id)).sub_code === 'Drain Rock #57' && same(await foldersOf(d12), [SAFETY, STORM])
+          && (await trail(d12)).length === before12, JSON.stringify(await foldersOf(d12)));
+
+      r = await putBidLine({ id: 'fb7', cost_code: 'Site Drainage', sub_code: 'Drain Rock #57', quantity: 20, unit: 'LF' });
+      const sdr = await ccFolder('Site Drainage');
+      now = await foldersOf(d12);
+      assert('the cost code renamed on the bid page (200): both rows store it, and the file moves to its folder, made for it',
+        r.statusCode === 200 && (await rowOf(k1.id)).cost_code === 'Site Drainage' && (await rowOf(k2.id)).cost_code === 'Site Drainage'
+          && sdr.length === 1 && same(now, [SAFETY, sdr[0].id]), JSON.stringify({ now, sdr, status: r.statusCode }));
+      const t12 = (await trail(d12)).slice(before12);
+      assert('…the move is in the document trail, by the person who renamed it, naming the line',
+        t12.length === 2 && t12.some(t => t.action === 'LINK' && t.folder_id === (sdr[0] && sdr[0].id))
+          && t12.some(t => t.action === 'UNLINK' && t.folder_id === STORM)
+          && t12.every(t => t.actor === 'p_l2' && t.detail.via === 'procurement_cost_code' && t.detail.procurement_id === k1.id),
+        JSON.stringify(t12));
+
+      const realRefile = procDocs.refileProcurementDocs;
+      procDocs.refileProcurementDocs = async () => { throw new Error('re-file exploded'); };
+      try { r = await putBidLine({ id: 'fb7', cost_code: 'Drainage', sub_code: 'Drain Rock #57', quantity: 20, unit: 'LF' }); }
+      finally { procDocs.refileProcurementDocs = realRefile; }
+      assert('a re-file that throws never fails the bid edit (200), and the rows still take the new code',
+        r.statusCode === 200 && r.body.ok && (await rowOf(k1.id)).cost_code === 'Drainage', show(r));
+      assert('…the file simply stays where it was', same(await foldersOf(d12), [SAFETY, sdr[0] && sdr[0].id]));
+    }
+
+    // ── Bulk edit ──
+    const g1 = await manualRow('Stormwater');
+    const g2 = await manualRow('E&S');
+    const g3 = await manualRow('Stormwater');
+    const d8 = await doc([g1.id], [SAFETY, STORM]);
+    const d9 = await doc([g2.id], [SAFETY, ES]);
+    r = await bulk(L2, [g1.id, g2.id, g3.id], { vendor: 'Bulk Supply' });
+    assert('a bulk edit of other cells moves nothing', r.statusCode === 200
+      && same(await foldersOf(d8), [SAFETY, STORM]) && same(await foldersOf(d9), [SAFETY, ES]));
+    r = await bulk(L2, [g1.id, g2.id, g3.id], { cost_code: 'Paving' });
+    const pav = await ccFolder('Paving');
+    assert('a bulk re-code (200) moves every line\'s files into the one new folder',
+      r.statusCode === 200 && r.body.items.length === 3 && pav.length === 1
+        && same(await foldersOf(d8), [SAFETY, pav[0].id]) && same(await foldersOf(d9), [SAFETY, pav[0].id]),
+      JSON.stringify({ d8: await foldersOf(d8), d9: await foldersOf(d9), pav }));
+
+    // ── Send: a deleted line restored onto its bid line's new id ──
+    const s5 = (await send(L2, { project_id: PID, items: [line('fb5', { cost_code: 'E&S', sub_code: 'Silt Sock 12in' })] })).body.created[0];
+    const s6 = (await send(L2, { project_id: PID, items: [line('fb6', { cost_code: 'E&S', sub_code: 'Silt Fence' })] })).body.created[0];
+    const d10 = await doc([s5.id], [SAFETY, ES]);
+    const d11 = await doc([s6.id], [SAFETY, ES]);
+    await del(L2, { ids: `${s5.id},${s6.id}` });
+    // A Procore "Replace all": the lines have new ids, one under a renamed code.
+    bid = bid.filter(x => x.id !== 'fb5' && x.id !== 'fb6')
+      .concat([BL('fb5n', 'Erosion Control', 'Silt Sock 12in'), BL('fb6n', 'e&s ', 'Silt Fence')]);
+    await putBid();
+    r = await send(L2, { project_id: PID, items: [], restore_ids: [
+      { id: s5.id, bid_item_id: 'fb5n', cost_code: 'Erosion Control', sub_code: 'Silt Sock 12in' },
+      { id: s6.id, bid_item_id: 'fb6n', cost_code: 'e&s', sub_code: 'Silt Fence' }] });
+    const ec = await ccFolder('Erosion Control');
+    assert('a deleted line restored onto its new bid line (200) brings its file to the new code\'s folder',
+      r.statusCode === 200 && r.body.restored.length === 2 && ec.length === 1 && same(await foldersOf(d10), [SAFETY, ec[0].id]),
+      JSON.stringify({ r: show(r).slice(0, 200), d10: await foldersOf(d10), ec }));
+    assert('…while one restored under the same code spelled differently stays put',
+      same(await foldersOf(d11), [SAFETY, ES]) && (await trail(d11)).length === 0, JSON.stringify(await foldersOf(d11)));
+
+    // ── Only this company's live files, in this line's own job ──
+    const iso = await manualRow('Stormwater');
+    const isoLive  = await doc([iso.id], [SAFETY, STORM]);
+    const isoGone  = await doc([iso.id], [SAFETY, STORM], { deleted: true });
+    const rivalF   = await folder('Stormwater', { code: 'Stormwater', co: CO2 });
+    const isoRival = await doc([iso.id], [rivalF], { co: CO2 });
+    const otherF   = await folder('Safety', { kind: 'fixed', slug: 'safety', pid: 'prtest-files-other' });
+    const isoOther = await doc([iso.id], [otherF], { pid: 'prtest-files-other' });
+    r = await patch(L2, iso.id, { cost_code: 'E&S' });
+    assert('the line\'s live file moves', r.statusCode === 200 && same(await foldersOf(isoLive), [SAFETY, ES]), JSON.stringify(await foldersOf(isoLive)));
+    assert('…a deleted file attached to it is left as it was', same(await foldersOf(isoGone), [SAFETY, STORM]));
+    assert('…so is another company\'s file naming the same line id', same(await foldersOf(isoRival), [rivalF]));
+    assert('…and a file filed under another job is not pulled into this job\'s tree', same(await foldersOf(isoOther), [otherF]));
+    assert('…and no folder was made in another company\'s tree',
+      (await q("SELECT 1 FROM project_folders WHERE company_code = $1 AND cost_code = 'E&S'", [CO2])).length === 0);
+
+    // ── What it costs: nothing extra unless the codes were part of the save ──
+    const bare = await manualRow('Stormwater');
+    DB.log = [];
+    r = await patch(L2, bare.id, { vendor: 'Nothing extra' });
+    const quiet = DB.log.filter(s => /document_links|project_documents|project_folders|document_audit_log/.test(s)).length;
+    DB.log = [];
+    const r2 = await patch(L2, bare.id, { cost_code: 'E&S' });
+    const coded = DB.log;
+    DB.log = null;
+    assert('a save of other cells reads nothing of the Document Vault', r.statusCode === 200 && quiet === 0, String(quiet));
+    assert('a re-code of a line with nothing attached costs one read, and touches no folder',
+      r2.statusCode === 200 && coded.filter(s => /document_links/.test(s)).length === 1
+        && !coded.some(s => /project_folders|INSERT INTO document_links|DELETE FROM document_links/.test(s)), coded.length);
+
+    // ── A re-file that fails never fails the save ──
+    const real = { refile: procDocs.refileProcurementDocs, live: procDocs.liveCostCodes, snap: procDocs.snapshotStoredCodes };
+    const h1 = await manualRow('Stormwater');
+    const dh1 = await doc([h1.id], [SAFETY, STORM]);
+    procDocs.refileProcurementDocs = async () => { throw new Error('re-file exploded'); };
+    try { r = await patch(L2, h1.id, { cost_code: 'E&S' }); } finally { procDocs.refileProcurementDocs = real.refile; }
+    assert('a re-file that throws: the save still answers 200 with the new code, and it is stored',
+      r.statusCode === 200 && r.body.ok && r.body.item.cost_code === 'E&S' && (await rowOf(h1.id)).cost_code === 'E&S', show(r));
+    assert('…the file simply stays where it was', same(await foldersOf(dh1), [SAFETY, STORM]));
+
+    procDocs.liveCostCodes = async () => { throw new Error('live codes exploded'); };
+    try { r = await bulk(L2, [h1.id], { cost_code: 'Paving' }); } finally { procDocs.liveCostCodes = real.live; }
+    assert('reading the live codes fails: the bulk save still answers 200', r.statusCode === 200 && r.body.items[0].cost_code === 'Paving', show(r));
+
+    procDocs.snapshotStoredCodes = async () => { throw new Error('snapshot exploded'); };
+    try { r = await patch(L2, h1.id, { cost_code: 'Stormwater' }); } finally { procDocs.snapshotStoredCodes = real.snap; }
+    assert('reading the codes before the save fails: the save still answers 200', r.statusCode === 200 && r.body.item.cost_code === 'Stormwater', show(r));
+
+    // The database itself failing part way through the re-file: the folder
+    // table unreachable.
+    const h2 = await manualRow('Stormwater');
+    const dh2 = await doc([h2.id], [SAFETY, STORM]);
+    DB.failFolders = true;
+    try { r = await patch(L2, h2.id, { cost_code: 'Brand New Code' }); } finally { DB.failFolders = false; }
+    assert('the folder table failing mid re-file: the save still answers 200', r.statusCode === 200 && r.body.item.cost_code === 'Brand New Code', show(r));
+    assert('…and the file is left where it was, filed', same(await foldersOf(dh2), [SAFETY, STORM]), JSON.stringify(await foldersOf(dh2)));
+    assert('…no folder half made', (await ccFolder('Brand New Code')).length === 0);
+    assert('the real helpers are back in place', procDocs.refileProcurementDocs === real.refile
+      && procDocs.liveCostCodes === real.live && procDocs.snapshotStoredCodes === real.snap);
   }
 
   // ─────────────────────────────────────────────────────────────────────

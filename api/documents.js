@@ -6,6 +6,10 @@
  * GET    /api/documents?division=turf               — the division-level General / Non-Job area
  * GET    /api/documents?division=turf&poId=X        — documents attached to one purchase order
  * GET    /api/documents?division=turf&poCounts=1    — { counts: { poId: n } } for the paperclip badges
+ * GET    /api/documents?division=turf&procurementId=X[&projectId=Y]
+ *                                                    — documents attached to one Procurement line
+ * GET    /api/documents?division=turf&procurementCounts=1&projectId=Y
+ *                                                    — { counts: { rowId: n } } for one job's Procurement sheet
  * GET    /api/documents?division=turf&trash=1       — soft-deleted documents inside the 30-day window
  * PUT    /api/documents?division=turf&projectId=X   — ensure the generated folder tree exists
  * POST   /api/documents?division=turf               — register a file the browser just uploaded
@@ -31,6 +35,7 @@ const {
   poCapabilities,
 } = require('./lib/auth');
 const { resolvePODocScope } = require('./lib/po-sync');
+const procDocs            = require('./lib/procurement-docs');
 const storage             = require('./lib/storage');
 const crypto              = require('crypto');
 
@@ -129,6 +134,7 @@ function documentOut(r) {
     deleted_at: r.deleted_at || null,
     folder_ids: Array.isArray(r.folder_ids) ? r.folder_ids : [],
     po_ids: Array.isArray(r.po_ids) ? r.po_ids : [],
+    procurement_ids: Array.isArray(r.procurement_ids) ? r.procurement_ids : [],
   };
 }
 
@@ -236,6 +242,106 @@ async function ensureRecoveredFolder(sql, { companyCode, division, username }) {
   }
 }
 
+/**
+ * The live Procurement line a document may be attached to, or null.
+ *
+ * A line belongs to one job, so the document has to be filed in that same job:
+ * a General / Non-Job document (projectId null) can never be attached to one,
+ * and nor can a line on another job, in another division or company, or one
+ * that has been deleted from the sheet.
+ */
+async function findProcurementLine(sql, { companyCode, division, projectId, procurementId }) {
+  if (!projectId || !procDocs.isProcurementId(procurementId)) return null;
+  const rows = await sql`
+    SELECT id, project_id FROM procurement_items
+    WHERE id = ${procurementId} AND company_code = ${companyCode} AND division = ${division}
+      AND project_id = ${projectId} AND deleted_at IS NULL
+  `;
+  return rows.length ? rows[0] : null;
+}
+
+const PROCUREMENT_NOT_FOUND = 'Procurement line not found';
+function procurementNotFoundDetail(projectId) {
+  return projectId
+    ? 'That line is not on this job\u2019s Procurement sheet any more. It may have been deleted. Reload the sheet and try again.'
+    : 'Procurement lines belong to a job, and this document is not filed under one.';
+}
+
+/**
+ * File a document attached to a Procurement line in the folder for that
+ * line's cost code too, so the cost-code folder compiles every attachment of
+ * its section — the same "own place, and duplicated where the job keeps that
+ * kind of paperwork" rule ensurePoFolder gives purchase orders.
+ *
+ * The code is the line's LIVE one (its bid line's code while that is on the
+ * bid, else its stored copy), the code the sheet shows it under. A line with
+ * no cost code files nowhere extra; the folder the person picked is enough.
+ *
+ * Returns { folderId, linked } (linked: this call made the link), or null.
+ * Never throws: the file is already correctly filed where it was put, and
+ * losing the upload over the extra folder would be worse.
+ */
+async function fileUnderCostCode(sql, { companyCode, division, projectId, documentId, procurementId, payload }) {
+  try {
+    const live = await procDocs.liveCostCodes(sql, { companyCode, division, rowIds: [procurementId] });
+    const line = live.get(procurementId);
+    if (!line || !line.code) return null;
+    const folderId = await procDocs.ensureCostCodeFolder(sql, {
+      companyCode, division, projectId, code: line.rawCode,
+      username: payload.username, userId: payload.userId,
+    });
+    if (!folderId) return null;
+    const made = await sql`
+      INSERT INTO document_links (document_id, company_code, link_type, target_id, created_by)
+      VALUES (${documentId}, ${companyCode}, 'folder', ${folderId}, ${payload.username || null})
+      ON CONFLICT DO NOTHING
+      RETURNING id
+    `;
+    return { folderId, linked: made.length > 0 };
+  } catch (err) {
+    console.warn(`[documents] cost-code folder for procurement line ${procurementId} failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * A restored document, filed again in the cost-code folder of every live
+ * Procurement line in its job it is attached to, each link audited the way
+ * attaching after the fact audits one. Lines deleted from the sheet, or on
+ * another job, are skipped: they put the file in no section.
+ *
+ * Never throws. The restore has landed; a cost-code folder that could not be
+ * filed in is a tidy-up, and the file is reachable from the folders it is in.
+ */
+async function refileOnRestore(sql, { companyCode, division, projectId, documentId, payload }) {
+  try {
+    const lines = await sql`
+      SELECT DISTINCT l.target_id
+        FROM document_links l
+        JOIN procurement_items p ON p.id = l.target_id
+       WHERE l.document_id  = ${documentId}
+         AND l.link_type    = 'procurement'
+         AND p.company_code = ${companyCode}
+         AND p.division     = ${division}
+         AND p.project_id   = ${projectId}
+         AND p.deleted_at IS NULL
+       ORDER BY l.target_id
+    `;
+    for (const { target_id: procurementId } of lines) {
+      const filed = await fileUnderCostCode(sql, { companyCode, division, projectId, documentId, procurementId, payload });
+      if (filed && filed.linked) {
+        await audit(sql, {
+          companyCode, division, projectId, documentId, folderId: filed.folderId,
+          action: 'LINK', payload,
+          detail: { link_type: 'folder', target_id: filed.folderId, via: 'procurement_cost_code', procurement_id: procurementId },
+        });
+      }
+    }
+  } catch (err) {
+    console.warn(`[documents] re-filing restored document ${documentId} under its procurement lines failed: ${err.message}`);
+  }
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
@@ -311,6 +417,12 @@ module.exports = async (req, res) => {
     if (isRegister && String((req.body && req.body.poId) || '') !== poScope.poId) {
       return res.status(403).json({ error: 'That upload does not belong to this purchase order' });
     }
+    // Nor to a job's Procurement line. The carve-out exists so purchasing can
+    // file a receipt under one order; attaching to the job's buy-out sheet,
+    // and filing into its cost-code folders with it, is a job role's work.
+    if (isRegister && req.body && req.body.procurementId != null && req.body.procurementId !== '') {
+      return res.status(403).json({ error: 'Attaching to a Procurement line needs a role in this division' });
+    }
     // The folder generator takes a caller-supplied cost-code list and both
     // creates folders from it and RELABELS existing ones. Seeding the standard
     // tree is all the carve-out needs; naming folders in a division it has no
@@ -343,7 +455,8 @@ module.exports = async (req, res) => {
           d.id, d.project_id, d.filename, d.content_type, d.size_bytes, d.note,
           d.uploaded_by, d.uploaded_at, d.deleted_at,
           COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'folder'), '[]'::jsonb) AS folder_ids,
-          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids
           FROM   project_documents d
           LEFT   JOIN document_links l ON l.document_id = d.id
           WHERE  d.company_code = ${companyCode}
@@ -354,6 +467,63 @@ module.exports = async (req, res) => {
                    WHERE pl.document_id = d.id
                      AND pl.link_type   = 'po'
                      AND pl.target_id   = ${String(req.query.poId)}
+                 )
+          GROUP BY d.id
+          ORDER BY d.uploaded_at DESC
+        `;
+        return res.json({ documents: rows.map(documentOut) });
+      }
+
+      // The Procurement sheet's paperclip counts: live documents per line, for
+      // ONE job. Scoped to the job (unlike poCounts) because the sheet shows one
+      // job at a time and a division can hold thousands of lines.
+      if (req.query.procurementCounts) {
+        if (poScope) return res.status(403).json({ error: 'You do not have access to this division' });
+        const rows = await sql`
+          SELECT l.target_id AS procurement_id, COUNT(DISTINCT d.id)::int AS n
+          FROM   document_links l
+          JOIN   project_documents d ON d.id = l.document_id
+          WHERE  l.company_code = ${companyCode}
+            AND  l.link_type    = 'procurement'
+            AND  d.company_code = ${companyCode}
+            AND  d.division     = ${division}
+            AND  COALESCE(d.project_id, '') = ${projectId || ''}
+            AND  d.deleted_at IS NULL
+          GROUP BY l.target_id
+        `;
+        const counts = {};
+        for (const r of rows) counts[r.procurement_id] = r.n;
+        return res.json({ counts });
+      }
+
+      // The documents attached to one Procurement line, newest first. Viewers
+      // can list and download them like any other document; the carve-out
+      // never reaches here (its GETs are poId and poCounts only).
+      if (req.query.procurementId) {
+        if (poScope) return res.status(403).json({ error: 'You do not have access to this division' });
+        const procurementId = String(req.query.procurementId);
+        if (!procDocs.isProcurementId(procurementId)) {
+          return res.status(400).json({ error: 'procurementId must be 1 to 64 letters, digits, - or _' });
+        }
+        const rows = await sql`
+          SELECT
+          d.id, d.project_id, d.filename, d.content_type, d.size_bytes, d.note,
+          d.uploaded_by, d.uploaded_at, d.deleted_at,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'folder'), '[]'::jsonb) AS folder_ids,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids
+          FROM   project_documents d
+          LEFT   JOIN document_links l ON l.document_id = d.id
+          WHERE  d.company_code = ${companyCode}
+            AND  d.division     = ${division}
+            AND  d.deleted_at IS NULL
+            AND  (${projectId}::text IS NULL OR COALESCE(d.project_id, '') = ${projectId}::text)
+            AND  EXISTS (
+                   SELECT 1 FROM document_links pl
+                   WHERE pl.document_id  = d.id
+                     AND pl.company_code = ${companyCode}
+                     AND pl.link_type    = 'procurement'
+                     AND pl.target_id    = ${procurementId}
                  )
           GROUP BY d.id
           ORDER BY d.uploaded_at DESC
@@ -374,7 +544,8 @@ module.exports = async (req, res) => {
           d.id, d.project_id, d.filename, d.content_type, d.size_bytes, d.note,
           d.uploaded_by, d.uploaded_at, d.deleted_at,
           COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'folder'), '[]'::jsonb) AS folder_ids,
-          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids
           FROM   project_documents d
           LEFT   JOIN document_links l ON l.document_id = d.id
           WHERE  d.company_code = ${companyCode}
@@ -400,7 +571,8 @@ module.exports = async (req, res) => {
           d.id, d.project_id, d.filename, d.content_type, d.size_bytes, d.note,
           d.uploaded_by, d.uploaded_at, d.deleted_at,
           COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'folder'), '[]'::jsonb) AS folder_ids,
-          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids
         FROM   project_documents d
         LEFT   JOIN document_links l ON l.document_id = d.id
         WHERE  d.company_code = ${companyCode}
@@ -699,6 +871,14 @@ module.exports = async (req, res) => {
       if (storageKey !== expectedKey) {
         return res.status(400).json({ error: 'storageKey does not match this document' });
       }
+      // Attached from a line on the Procurement sheet, when it came from one.
+      // Its shape is checked here with the other inputs; whether the line is
+      // really on this job is checked below, before anything is written.
+      const procurementId = (body.procurementId === undefined || body.procurementId === null || body.procurementId === '')
+        ? null : String(body.procurementId);
+      if (procurementId !== null && !procDocs.isProcurementId(procurementId)) {
+        return res.status(400).json({ error: 'procurementId must be 1 to 64 letters, digits, - or _' });
+      }
 
       // The declared size is not evidence of anything. Both the ticket and this
       // registration take it from the caller, and the presigned PUT signs only
@@ -738,6 +918,17 @@ module.exports = async (req, res) => {
         const allowedSlugs = [`po-${poScope.poId}`, PO_ROOT.slug, 'unassigned-pos'];
         if (!allowedSlugs.includes(folder[0].slug)) {
           return res.status(403).json({ error: 'A receipt can only be filed under its purchase order' });
+        }
+      }
+
+      // The line has to be live, on THIS job, in this company and division —
+      // checked before the document row exists, so a stale sheet (the line
+      // deleted by a colleague a minute ago) is refused cleanly instead of
+      // leaving a file attached to a line nobody can see.
+      if (procurementId) {
+        const line = await findProcurementLine(sql, { companyCode, division, projectId, procurementId });
+        if (!line) {
+          return res.status(404).json({ error: PROCUREMENT_NOT_FOUND, detail: procurementNotFoundDetail(projectId) });
         }
       }
 
@@ -785,10 +976,30 @@ module.exports = async (req, res) => {
         }
       }
 
+      // Attached to a Procurement line: the link to the line, and the file
+      // filed in the line's cost-code folder as well as the folder picked —
+      // whichever folder that was, so the cost-code folder compiles every
+      // attachment of its section.
+      let costCodeFolderId = null;
+      if (procurementId) {
+        await sql`
+          INSERT INTO document_links (document_id, company_code, link_type, target_id, created_by)
+          VALUES (${id}, ${companyCode}, 'procurement', ${procurementId}, ${payload.username || null})
+          ON CONFLICT DO NOTHING
+        `;
+        const filed = await fileUnderCostCode(sql, {
+          companyCode, division, projectId, documentId: id, procurementId, payload,
+        });
+        costCodeFolderId = filed ? filed.folderId : null;
+      }
+
       await audit(sql, {
         companyCode, division, projectId, documentId: id, folderId,
         action: 'UPLOAD', payload,
-        detail: { filename, size_bytes: trueSize, declared_bytes: sizeBytes, po_id: poId },
+        detail: {
+          filename, size_bytes: trueSize, declared_bytes: sizeBytes, po_id: poId,
+          procurement_id: procurementId, cost_code_folder_id: costCodeFolderId,
+        },
       });
 
       return res.status(201).json({
@@ -796,8 +1007,13 @@ module.exports = async (req, res) => {
           id, project_id: projectId, filename, content_type: contentType,
           size_bytes: trueSize, note: body.note || null,
           uploaded_by: payload.username || null, uploaded_at: new Date().toISOString(),
-          folder_ids: [folderId], po_ids: poId ? [poId] : [],
+          folder_ids: costCodeFolderId && costCodeFolderId !== folderId ? [folderId, costCodeFolderId] : [folderId],
+          po_ids: poId ? [poId] : [],
+          procurement_ids: procurementId ? [procurementId] : [],
         },
+        // The cost-code folder the file was compiled into, so the page can
+        // say where else it went (null: the line has no cost code yet).
+        costCodeFolderId,
       });
     }
 
@@ -889,15 +1105,36 @@ module.exports = async (req, res) => {
           action: 'RESTORE', payload,
           detail: rehomed ? { rehomed_to: 'General / Non-Job \u203a Recovered', from_project: doc.project_id } : undefined,
         });
+
+        // Back under the cost code each of its Procurement lines is in NOW.
+        // A line can be re-coded while the file sits in the bin \u2014 a Sub Code
+        // picked on the sheet, the cost code renamed on the bid page \u2014 and the
+        // re-file that follows a re-code (refileProcurementDocs) moves only
+        // live files. Without this the file came back on the line, its
+        // paperclip counting it under the new section, while that section's
+        // folder never held it; and nothing would ever file it there later,
+        // because the line's stored code already matched its live one.
+        //
+        // Adding is all this does. A cost-code folder the file is still in
+        // from before is left alone: it may equally be the folder the person
+        // picked when they uploaded it, and nothing here can tell the two
+        // apart. Not for a file re-homed to the General area just above \u2014
+        // it is no longer in the line's job.
+        if (!rehomed && doc.project_id) {
+          await refileOnRestore(sql, { companyCode, division, projectId: doc.project_id, documentId: id, payload });
+        }
       }
 
-      // Link changes. addFolderId / addPoId file the document somewhere new;
-      // the remove* pair only unfile it — destroying a file is DELETE.
+      // Link changes. addFolderId / addPoId / addProcurementId file the
+      // document somewhere new; the remove* ones only unfile it — destroying a
+      // file is DELETE.
       const links = [
-        ['addFolderId',    'folder', true],
-        ['addPoId',        'po',     true],
-        ['removeFolderId', 'folder', false],
-        ['removePoId',     'po',     false],
+        ['addFolderId',         'folder',      true],
+        ['addPoId',             'po',          true],
+        ['addProcurementId',    'procurement', true],
+        ['removeFolderId',      'folder',      false],
+        ['removePoId',          'po',          false],
+        ['removeProcurementId', 'procurement', false],
       ];
       for (const [field, linkType, adding] of links) {
         if (!body[field]) continue;
@@ -910,6 +1147,20 @@ module.exports = async (req, res) => {
               AND COALESCE(project_id, '') = ${doc.project_id || ''}
           `;
           if (!f.length) return res.status(404).json({ error: 'Folder not found' });
+        }
+
+        // A Procurement line belongs to one job: only a document filed in that
+        // same job may hang off it, and only while the line is on the sheet.
+        if (adding && linkType === 'procurement') {
+          if (!procDocs.isProcurementId(targetId)) {
+            return res.status(400).json({ error: 'procurementId must be 1 to 64 letters, digits, - or _' });
+          }
+          const line = await findProcurementLine(sql, {
+            companyCode, division, projectId: doc.project_id, procurementId: targetId,
+          });
+          if (!line) {
+            return res.status(404).json({ error: PROCUREMENT_NOT_FOUND, detail: procurementNotFoundDetail(doc.project_id) });
+          }
         }
 
         if (adding) {
@@ -931,6 +1182,23 @@ module.exports = async (req, res) => {
                 VALUES (${id}, ${companyCode}, 'folder', ${poFolderId}, ${payload.username || null})
                 ON CONFLICT DO NOTHING
               `;
+            }
+          }
+          // Attaching to a Procurement line after the fact files it in the
+          // line's cost-code folder too, the same as attaching at upload.
+          // Detaching (removeProcurementId) leaves that folder link alone, as
+          // removePoId leaves the PO subfolder: the file was put there, and
+          // taking it out of a folder is a separate, deliberate move.
+          if (linkType === 'procurement') {
+            const filed = await fileUnderCostCode(sql, {
+              companyCode, division, projectId: doc.project_id, documentId: id, procurementId: targetId, payload,
+            });
+            if (filed && filed.linked) {
+              await audit(sql, {
+                companyCode, division, projectId: doc.project_id, documentId: id, folderId: filed.folderId,
+                action: 'LINK', payload,
+                detail: { link_type: 'folder', target_id: filed.folderId, via: 'procurement_cost_code', procurement_id: targetId },
+              });
             }
           }
         } else {
@@ -973,7 +1241,8 @@ module.exports = async (req, res) => {
           d.id, d.project_id, d.filename, d.content_type, d.size_bytes, d.note,
           d.uploaded_by, d.uploaded_at, d.deleted_at,
           COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'folder'), '[]'::jsonb) AS folder_ids,
-          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids
         FROM   project_documents d
         LEFT   JOIN document_links l ON l.document_id = d.id
         WHERE  d.id = ${id}

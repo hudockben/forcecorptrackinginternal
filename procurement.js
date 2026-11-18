@@ -18,12 +18,18 @@
  *     getProjects, getProject, getBidLines, getPurchaseOrders, isPOListLoaded,
  *     codeKey, getSuppliers, addSupplier, createPurchaseOrder,
  *     openPurchaseOrder, showSaveError, today, storage,
+ *     // optional: the documents attached to each line, and the cost-code
+ *     // folder each section compiles them into (the page's Document Vault)
+ *     attachmentCount, refreshAttachmentCounts, openAttachments,
+ *     costCodeDocCount, openCostCodeFolder,
  *   });
  *   FCTProcurement.renderTab(document.getElementById('procurement-root'));
  *
  * It reaches nothing of the page's beyond that cfg and the combobox globals
  * (cbHtml and friends). The page routes every combobox list key that starts
- * with 'proc_' back here, through cbOptions / cbFilter.
+ * with 'proc_' back here, through cbOptions / cbFilter. Attachments are the
+ * same: the files live in the page's document module, and this sheet only
+ * asks the page for their counts and to open them — never that module itself.
  *
  * Where the numbers come from:
  *   - Rows live in procurement_items through /api/procurement — one row per
@@ -81,6 +87,22 @@
     showSaveError: msg => console.warn('[procurement]', msg),
     today: null,
     storage: null,
+    // Documents attached to a line, and the cost-code folders that compile
+    // them per section. All optional: without them no line has a paperclip
+    // and the section headers have no folder chip. Each is checked with
+    // typeof wherever it is used, so a page can hand over some and not others.
+    //   attachmentCount(projectId, rowId)  -> number, from the page's cache
+    //   refreshAttachmentCounts(projectId) -> promise, settles once that cache
+    //                                         (lines and cost codes) is fresh
+    //   openAttachments(line)              -> opens the line's documents;
+    //                                         line = { id, project_id, cost_code, sub_code, label }
+    //   costCodeDocCount(projectId, code)  -> number in that cost code's folder
+    //   openCostCodeFolder({ projectId, costCode }) -> opens that folder
+    attachmentCount: null,
+    refreshAttachmentCounts: null,
+    openAttachments: null,
+    costCodeDocCount: null,
+    openCostCodeFolder: null,
   };
 
   // ── Small pure helpers ──────────────────────────────────────────────
@@ -1016,6 +1038,18 @@
   function showError(msg) {
     try { cfg.showSaveError(msg); } catch (e) { console.warn('[procurement]', msg, e); }
   }
+  // How many documents the page knows of, attached to one line or filed in
+  // one cost code's folder. Only ever a number on a button, so anything odd
+  // from the page — no hook, a throw, a string, a negative — reads as none
+  // rather than taking the row's drawing down with it.
+  function docCount(hook, ...args) {
+    if (typeof hook !== 'function') return 0;
+    let n = 0;
+    try { n = Number(hook(...args)); } catch { return 0; }
+    return Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+  }
+  const attachmentCount = (projectId, rowId) => docCount(cfg.attachmentCount, projectId, rowId);
+  const costCodeDocCount = (projectId, code) => docCount(cfg.costCodeDocCount, projectId, code);
 
   function makeCtx(projectId) {
     const pid = projectId === undefined ? st.projectId : projectId;
@@ -1346,6 +1380,23 @@
       .fctproc-act:hover { color: var(--text,#e0e0e0); border-color: var(--muted,#666); }
       .fctproc-act.add:hover { color: var(--green,#22c55e); border-color: var(--green,#22c55e); }
       .fctproc-act.del:hover, .fctproc-act.danger { color:#f87171; border-color: rgba(239,68,68,0.6); }
+      /* The paperclip, beside the Status pill: muted with nothing attached,
+         green with a count, the way the Purchase Orders tab draws its own.
+         One fixed width whatever the count — the count is a badge on its
+         corner, not text beside it — so it fits beside the widest pill
+         ("Not Ordered") in the 7.2rem pinned column, and a line's height
+         never changes with how many files it has. */
+      .fctproc-clip { position:relative; display:inline-block; box-sizing:border-box; width:1.15rem; height:1.05rem;
+        background:none; border:1px solid var(--border,#2a2a3a); border-radius:3px; color: var(--muted,#9ca3af);
+        font-size:0.62rem; line-height:1; padding:0; margin-left:0.15rem; vertical-align: middle; text-align:center;
+        cursor:pointer; white-space:nowrap; }
+      .fctproc-clip .n { position:absolute; right:-0.24rem; bottom:-0.14rem; box-sizing:border-box; min-width:0.7rem; height:0.7rem;
+        padding:0 0.12rem; border-radius:999px; background: var(--green,#22c55e); color:#052e16; font-size:0.5rem; font-weight:700;
+        line-height:0.7rem; text-align:center; font-variant-numeric: tabular-nums; pointer-events:none; }
+      .fctproc-table td.c-status .fctproc-pill { padding-left:0.4rem; padding-right:0.4rem; }
+      .fctproc-clip:hover, .fctproc-clip:focus-visible { color: var(--text,#e0e0e0); border-color: var(--muted,#666); }
+      .fctproc-clip.has { color: var(--green,#22c55e); border-color: rgba(34,197,94,0.45); }
+      .fctproc-clip.has:hover, .fctproc-clip.has:focus-visible { border-color: var(--green,#22c55e); }
       tr.fctproc-grp > td { background:#111c11; color: var(--green,#22c55e); font-weight:600; font-size:0.78rem;
         padding:0.32rem 0.6rem; border-top:2px solid #1e3a1e; border-right:none; cursor:pointer; height:auto; user-select:none;
         overflow: visible; }
@@ -1356,6 +1407,11 @@
       tr.fctproc-grp .fctproc-grpadd { background:none; border:1px solid #1e3a1e; color:#6f9a6f; border-radius:3px; font-size:0.66rem;
         font-weight:500; padding:0.05rem 0.4rem; cursor:pointer; line-height:1.3; align-self:center; white-space:nowrap; }
       tr.fctproc-grp .fctproc-grpadd:hover, tr.fctproc-grp .fctproc-grpadd:focus-visible { color: var(--green,#22c55e); border-color: var(--green,#22c55e); }
+      tr.fctproc-grp .fctproc-grpdocs { background:none; border:1px solid #1e3a1e; color:#6f9a6f; border-radius:3px; font-size:0.66rem;
+        font-weight:500; padding:0.05rem 0.4rem; cursor:pointer; line-height:1.3; align-self:center; white-space:nowrap;
+        font-variant-numeric: tabular-nums; }
+      tr.fctproc-grp .fctproc-grpdocs.has { color: var(--green,#22c55e); }
+      tr.fctproc-grp .fctproc-grpdocs:hover, tr.fctproc-grp .fctproc-grpdocs:focus-visible { color: var(--green,#22c55e); border-color: var(--green,#22c55e); }
       tr.fctproc-grp .gm { color:#6f9a6f; font-weight:400; font-size:0.72rem; }
       tr.fctproc-grp .gm b { color:#9ccc9c; font-weight:600; }
       .fctproc-nomatch td { text-align:center; color: var(--muted,#888); padding:2rem 1rem !important; height:auto; }
@@ -1772,6 +1828,7 @@
       if (data.item) adoptServerRow(data.item);
       refreshRow(rowId);
       updateCounts();
+      if (touchesCode(p)) recountAfterRecode((data.item && data.item.project_id) || st.projectId, [rowId]);
     } catch (err) {
       if (fly.get(rowId) === p) fly.delete(rowId);
       if (err.status === 404) {
@@ -1833,7 +1890,16 @@
     // the same pick, and saved without the line they would leave the row
     // coded but tied to nothing — never re-linked, never renamed with the
     // bid, and offered again by Send as a new line.
-    if (named.includes('bid_item_id')) named = [...new Set([...named, ...['cost_code', 'sub_code'].filter(k => k in p)])];
+    // So does the Quantity / Unit that pick filled in (fillFromLine), unless
+    // something else has been put there since.
+    const fill = lineFill.get(rowId);
+    const filled = named.includes('bid_item_id') && fill && fill.bid_item_id === p.bid_item_id
+      ? Object.keys(fill.fields).filter(k => k in p && sameVal(p[k], fill.fields[k])) : [];
+    if (named.includes('bid_item_id')) {
+      named = [...new Set([...named, ...['cost_code', 'sub_code'].filter(k => k in p), ...filled])];
+      lineFill.delete(rowId);
+    }
+    const ofPick = k => k === 'cost_code' || k === 'sub_code' || filled.includes(k);
     const row = rowById(rowId), saved = server.get(rowId) || {};
     const newer = pend.get(rowId) || {};
     const rest = {};
@@ -1849,7 +1915,7 @@
     const carried = {};
     named.forEach(k => {
       if (!row || k in newer || !(k in saved)) return;
-      if (repick && (k === 'cost_code' || k === 'sub_code')) {
+      if (repick && ofPick(k)) {
         if (!sameVal(row[k], saved[k])) carried[k] = row[k];
         return;
       }
@@ -1859,7 +1925,7 @@
     if (Object.keys(next).length) pend.set(rowId, next); else pend.delete(rowId);
     failed.delete(rowId);
     // The line and its codes are one pick, named as one.
-    const one = named.includes('bid_item_id') ? named.filter(k => k !== 'cost_code' && k !== 'sub_code') : named;
+    const one = named.includes('bid_item_id') ? named.filter(k => !ofPick(k)) : named;
     const what = [...new Set(one.map(k => FIELD_LABEL[k] || k))];
     // A bid line's id means nothing to a PM; its codes are named instead.
     const vals = one.length === 1 && one[0] !== 'bid_item_id' ? ` "${shownValue(one[0], p[one[0]])}"` : '';
@@ -1970,6 +2036,10 @@
         redrawWhenFree();
       }
       autoRelink(projectId);
+      // The paperclip and folder counts are read with the rows — on the first
+      // read and on every poll — since a file a colleague attached changes no
+      // row, and so would never show here otherwise.
+      refreshDocCounts(projectId);
     } catch (err) {
       if (gen !== loadGen) return;
       // A failed poll leaves what is on screen alone. A failed first read is
@@ -1986,6 +2056,67 @@
   }
   function signature() {
     return st.rows.map(r => `${r.id}:${r.version}:${r.updated_at}`).sort().join('|');
+  }
+
+  // ── Attachment counts ───────────────────────────────────────────────
+  // Whether a save's fields can move a line to another cost code: its code
+  // itself, or the bid line it is tied to (whose code the line then shows).
+  const touchesCode = f => Boolean(f) && (Object.prototype.hasOwnProperty.call(f, 'cost_code')
+    || Object.prototype.hasOwnProperty.call(f, 'bid_item_id'));
+
+  /**
+   * After a save that can have moved lines to another cost code — a Sub Code
+   * picked, a re-link to a replaced bid line, a deleted line brought back on
+   * a new one. The server has already moved those lines' files to the new
+   * code's folder by the time it answers (api/procurement.js), so the
+   * section folder chips are counted again now: left to the next poll, the
+   * old section's chip went on counting a file for up to a minute after the
+   * line had left it. Only a line with something attached moves anything, so
+   * a re-code of lines with nothing attached asks for nothing.
+   */
+  function recountAfterRecode(projectId, rowIds) {
+    if (!projectId || !(rowIds || []).some(id => attachmentCount(projectId, id) > 0)) return;
+    refreshDocCounts(projectId);
+  }
+
+  // The counts live with the page (its document module keeps them); this
+  // asks it to read them again for a job and, once it has, redraws whatever
+  // they changed. Never rejects: a count that could not be read leaves the
+  // numbers already drawn, which is all a failed poll of the rows does too.
+  function refreshDocCounts(projectId) {
+    if (typeof cfg.refreshAttachmentCounts !== 'function' || !projectId) return Promise.resolve(false);
+    return Promise.resolve()
+      .then(() => cfg.refreshAttachmentCounts(projectId))
+      .then(() => {
+        // Another job was opened meanwhile: its own read asks for its counts.
+        if (projectId !== st.projectId) return false;
+        paintDocCounts();
+        return true;
+      }, err => {
+        console.warn('[procurement] could not read the attachment counts', err);
+        return false;
+      });
+  }
+
+  /**
+   * Redraw the paperclips and section folder chips whose count has changed,
+   * and nothing else. Each row on screen is redrawn the way a background
+   * refresh redraws it (refreshRow with onlyIfChanged): a row whose drawing
+   * is the same as before is left alone, so counts that did not move cost no
+   * redraw at all, and a cell being typed in keeps its box. Held while a
+   * press in the sheet is down, as a rerender is, so the button under the
+   * pointer — the paperclip itself, often — is not replaced before the click.
+   */
+  let docCountsOwed = false;
+  function paintDocCounts() {
+    if (!isMounted() || st.loadState !== 'ok' || st.loadedFor !== st.projectId) return;
+    const wrap = st.mountEl.querySelector('#fctproc-wrap');
+    if (!wrap) return;
+    if (pressedAt && Date.now() - pressedAt < 5000) { docCountsOwed = true; return; }
+    docCountsOwed = false;
+    const ctx = makeCtx();
+    [...wrap.querySelectorAll('tr.fctproc-row')].forEach(tr => refreshRow(tr.dataset.row, null, ctx, true));
+    updateGroupDocs(ctx);
   }
 
   /**
@@ -2033,6 +2164,8 @@
       window.FCTProcurement.rerender();
     }, 0);
     if (redrawDeferred) setTimeout(redrawWhenFree, 0);
+    // Counts that came in while the button was down (paintDocCounts).
+    if (docCountsOwed) setTimeout(() => { if (docCountsOwed && !pressedAt) paintDocCounts(); }, 0);
   }
   document.addEventListener('mouseup', onDocMouseUp, true);
   window.addEventListener('blur', onDocMouseUp);
@@ -2257,6 +2390,7 @@
     const clear = st.mountEl.querySelector('#fctproc-clear');
     if (clear) clear.hidden = !filtersActive();
     updateGroupCounts(ctx);
+    updateGroupDocs(ctx);
     fitWrap();
   }
 
@@ -2453,8 +2587,53 @@
       ? `<button type="button" class="fctproc-grpadd" data-grpadd="${esc(g.key)}" title="${esc(`Add a row ${into}`)}"
           aria-label="${esc(`Add a row ${into}`)}">+ Add Row</button>` : '';
     return `<tr class="fctproc-grp" data-grp="${esc(g.key)}" title="${open ? 'Fold' : 'Unfold'} this group"><td colspan="${span}">
-      <span class="gl">${box}<span class="tw">${open ? '&#9660;' : '&#9654;'}</span><span>${esc(g.label)}</span>${addBtn}
+      <span class="gl">${box}<span class="tw">${open ? '&#9660;' : '&#9654;'}</span><span>${esc(g.label)}</span>${grpDocsHtml(g, ctx)}${addBtn}
       ${g.meta ? `<span class="gm">${g.meta}</span>` : ''}<span class="gm gc">${groupCountsHtml(g.rows, ctx)}</span></span></td></tr>`;
+  }
+
+  /**
+   * The folder chip on a cost-code section: every document attached to a
+   * line in the section is filed in that cost code's folder as well, so the
+   * folder is the section's paperwork in one place, and this opens it. The
+   * same chip the bid page's green cost-code bars carry.
+   *
+   * Only on a cost-code section that has a code. "No cost code" has no
+   * folder (nothing makes one for a blank code), and a vendor section mixes
+   * cost codes. The count shows only once there is something in it — an
+   * empty folder is the state most sections are in, and a 0 on each would be
+   * noise.
+   */
+  function grpDocsHtml(g, ctx) {
+    if (st.grouping !== 'cost' || !g.code || typeof cfg.openCostCodeFolder !== 'function') return '';
+    const n = costCodeDocCount(ctx.projectId, g.code);
+    const tip = grpDocsTip(g.code, n);
+    return `<button type="button" class="fctproc-grpdocs${n ? ' has' : ''}" data-grpdocs="${esc(g.code)}" data-n="${n}"
+      title="${esc(tip)}" aria-label="${esc(tip)}">&#128193;${n || ''}</button>`;
+  }
+  const grpDocsTip = (code, n) => (n
+    ? `${n} document${n === 1 ? '' : 's'} filed under cost code ${code} — open the folder`
+    : `Open the document folder for cost code ${code}`);
+
+  /**
+   * The folder chips' counts, put right in place. An upload changes no row,
+   * so nothing else would redraw the header; and the chip is changed rather
+   * than replaced, so a chip with keyboard focus keeps it.
+   */
+  function updateGroupDocs(ctx) {
+    const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
+    if (!wrap) return;
+    const pid = ctx ? ctx.projectId : st.projectId;
+    wrap.querySelectorAll('tr.fctproc-grp [data-grpdocs]').forEach(b => {
+      const code = b.dataset.grpdocs;
+      const n = costCodeDocCount(pid, code);
+      if (b.dataset.n === String(n)) return;
+      b.dataset.n = String(n);
+      b.classList.toggle('has', n > 0);
+      b.textContent = '\u{1F4C1}' + (n || '');
+      const tip = grpDocsTip(code, n);
+      b.title = tip;
+      b.setAttribute('aria-label', tip);
+    });
   }
 
   /**
@@ -2492,7 +2671,10 @@
     const a = document.activeElement;
     if (!a || !scope.contains(a) || !a.dataset) return null;
     const f = { pr: a.dataset.pr || null, pf: a.dataset.pf || null, id: a.id || null, start: null, end: null,
-      act: a.tagName === 'BUTTON' && a.dataset.act && a.dataset.row ? [a.dataset.act, a.dataset.row] : null };
+      act: a.tagName === 'BUTTON' && a.dataset.act && a.dataset.row ? [a.dataset.act, a.dataset.row] : null,
+      // A section's folder chip, reached with Tab: the redraw after its
+      // folder changed (a file attached from it) puts the focus back on it.
+      grpdocs: a.tagName === 'BUTTON' && a.dataset.grpdocs != null ? a.dataset.grpdocs : null };
     try { f.start = a.selectionStart; f.end = a.selectionEnd; } catch { /* not a text box */ }
     return f;
   }
@@ -2501,6 +2683,7 @@
     let el = null;
     if (f.pr && f.pf) el = scope.querySelector(`[data-pr="${cssEsc(f.pr)}"][data-pf="${cssEsc(f.pf)}"]`);
     else if (f.act) el = scope.querySelector(`button[data-act="${cssEsc(f.act[0])}"][data-row="${cssEsc(f.act[1])}"]`);
+    else if (f.grpdocs != null) el = scope.querySelector(`button[data-grpdocs="${cssEsc(f.grpdocs)}"]`);
     else if (f.id) el = scope.querySelector('#' + cssEsc(f.id));
     // Focusing a combobox opens its menu and selects its text — not what a
     // background redraw should do to someone. Those are left unfocused.
@@ -2562,8 +2745,11 @@
         case 'status': {
           const cls = status === 'Delivered' ? 'st-del' : status === 'Ordered' ? 'st-ord' : status === UNKNOWN ? 'st-unk' : 'st-not';
           const tip = status === UNKNOWN ? ' title="Waiting for the purchase orders to load"' : '';
+          // The line's paperclip rides in its Status cell rather than a column
+          // of its own: Status is pinned to the left, so the paperclip is in
+          // reach however far the sheet is scrolled, and the sheet is no wider.
           return td(red ? 'flag-red' : amber ? 'flag-amber' : '',
-            `<span class="fctproc-pill ${cls}"${tip}>${esc(status)}</span>${flags.length ? `<span class="fctproc-flags">${flags.map(f =>
+            `<span class="fctproc-pill ${cls}"${tip}>${esc(status)}</span>${clipHtml(r, ctx, edit)}${flags.length ? `<span class="fctproc-flags">${flags.map(f =>
               `<span class="fctproc-flag ${f.level}" title="${esc(f.title)}">${esc(f.short || f.label)}</span>`).join('')}</span>` : ''}`);
         }
         case 'po': return poCellHtml(r, ep, edit, td);
@@ -2646,6 +2832,26 @@
       }
     }).join('');
     return `<tr class="fctproc-row${st.selected.has(r.id) ? ' sel' : ''}" data-row="${id}">${cells}</tr>`;
+  }
+
+  /**
+   * The paperclip on a line, drawn in its Status cell beside the pill: how
+   * many documents are attached to the line, and the button that lists them
+   * (and, for someone who may, attaches another). A viewer gets it too — they
+   * may open and download what is attached, as on the Documents tab. Drawn
+   * from the page's count, so refreshRow redraws it like the rest of the row.
+   * A page that cannot open attachments gets no button rather than one that
+   * does nothing. Never in the exports or the print view: a count is not data.
+   */
+  function clipHtml(r, ctx, edit) {
+    if (typeof cfg.openAttachments !== 'function') return '';
+    const n = attachmentCount(r.project_id || ctx.projectId, r.id);
+    const tip = n ? `${n} attached document${n === 1 ? '' : 's'}` : edit ? 'Attach a document' : 'No documents attached';
+    // The badge stops at 99+ so the button never grows; the tooltip and the
+    // label read out the real number.
+    const badge = n ? `<span class="n">${n > 99 ? '99+' : n}</span>` : '';
+    return `<button type="button" class="fctproc-clip${n ? ' has' : ''}" data-act="files" data-row="${esc(r.id)}"
+      title="${esc(tip)}" aria-label="${esc(tip)}">&#128206;${badge}</button>`;
   }
 
   function poCellHtml(r, ep, edit, td) {
@@ -3137,6 +3343,30 @@
     return false;
   }
 
+  /**
+   * What picking a bid line in Sub Code puts in Quantity and Unit: the
+   * line's, as Add to Procurement gives a row. Only into a cell that is
+   * blank, or that still holds the previously picked line's value (that
+   * pick filled it, so correcting the pick brings the new line's numbers).
+   * A quantity the PM typed is theirs and stays. So does a unit of their
+   * own — and then the bid's quantity is not put in either, as it is
+   * counted in the bid's unit (4,002 SY of aggregate is not 4,002 TON).
+   */
+  const lineUnit = l => str(l && l.unit).slice(0, MAX_LEN.unit);
+  function fillFromLine(row, line, ctx) {
+    const prev = lineFor(row, ctx);
+    const unit = lineUnit(line), u = normUnit(row.unit);
+    if (u && u !== normUnit(unit) && !(prev && u === normUnit(lineUnit(prev)))) return {};
+    const out = {};
+    if (str(row.unit) !== unit) out.unit = unit;
+    const q = numOrNull(row.quantity), qty = numOrNull(line.quantity);
+    if ((q == null || (prev && sameNum(q, numOrNull(prev.quantity)))) && !sameNum(q, qty)) out.quantity = qty;
+    return out;
+  }
+  // The Quantity / Unit a Sub Code pick filled, by row id:
+  // { bid_item_id, fields }. A pick the server refuses takes them with it.
+  const lineFill = new Map();
+
   function commitCombo(rowId, field, input) {
     const row = rowById(rowId);
     if (!row) return;
@@ -3171,10 +3401,22 @@
       return;
     }
     if (field === 'codes') {
-      if (v && v === String(row.bid_item_id || '')) return;
-      const line = v ? (makeCtx().bidLines || []).find(l => String(l.id) === v) : null;
-      if (line) setFields(rowId, { bid_item_id: String(line.id), cost_code: str(line.cost_code), sub_code: str(line.sub_code) });
-      else if (!typed) setFields(rowId, { bid_item_id: null, cost_code: '', sub_code: '' });
+      const ctx = makeCtx();
+      const line = v ? (ctx.bidLines || []).find(l => String(l.id) === v) : null;
+      if (v && v === String(row.bid_item_id || '')) {
+        // The line it already has, picked again: nothing to re-code, but a
+        // row coded before picks brought Quantity and Unit over (or with
+        // them emptied since) takes the blank ones now.
+        const fill = line ? fillFromLine(row, line, ctx) : {};
+        if (Object.keys(fill).length) setFields(rowId, fill);
+        return;
+      }
+      if (line) {
+        const fill = fillFromLine(row, line, ctx);
+        if (Object.keys(fill).length) lineFill.set(rowId, { bid_item_id: String(line.id), fields: fill });
+        else lineFill.delete(rowId);
+        setFields(rowId, { bid_item_id: String(line.id), cost_code: str(line.cost_code), sub_code: str(line.sub_code), ...fill });
+      } else if (!typed) setFields(rowId, { bid_item_id: null, cost_code: '', sub_code: '' });
       else {
         // Anything else typed matches no bid line: the codes are the bid's
         // (section 1), so the cell goes back to what it was (refreshRow
@@ -3324,6 +3566,11 @@
     // Nor does its + Add Row, which adds a row in it.
     const ga = e.target.closest('[data-grpadd]');
     if (ga) { addToSection(ga.dataset.grpadd); return; }
+    // Nor its folder chip, which opens the section's cost-code folder. Enter
+    // or Space on the chip arrives here as a click on it too, so the
+    // keyboard opens the folder and never folds the section either.
+    const gd = e.target.closest('[data-grpdocs]');
+    if (gd) { openSectionFolder(gd.dataset.grpdocs); return; }
     const gh = e.target.closest('tr.fctproc-grp');
     if (gh) {
       const k = gh.dataset.grp;
@@ -3347,6 +3594,7 @@
       case 'pdf': printRows(); break;
       case 'clear': clearFilters(); break;
       case 'open-po': if (typeof cfg.openPurchaseOrder === 'function') cfg.openPurchaseOrder(b.dataset.po); break;
+      case 'files': openAttachments(rowId); break;
       case 'use-bid': useBid(rowId, true); break;
       case 'dismiss-bid': useBid(rowId, false); break;
       case 'bulk-apply': bulkApply(); break;
@@ -3458,6 +3706,101 @@
     if (!p) return null;
     const codes = liveCodes(p, makeCtx());
     return addRow({ bid_item_id: p.bid_item_id || null, cost_code: codes.cost_code, sub_code: codes.sub_code, unit: p.unit || '' });
+  }
+
+  // ── Attachments ─────────────────────────────────────────────────────
+  /**
+   * What the documents dialog calls a line: its codes as the sheet shows them
+   * ("Stormwater / Geofabric"), else its Description when the page shows that
+   * column (a hidden one is text the PM can neither see nor correct), else
+   * plainly "Procurement line".
+   */
+  function lineLabel(r, codes) {
+    const named = [codes.cost_code.trim(), codes.sub_code.trim()].filter(Boolean).join(' / ');
+    if (named) return named;
+    const desc = colHidden('description') ? '' : str(r.description).trim();
+    return desc || 'Procurement line';
+  }
+
+  /**
+   * Wait for the row's edits to be saved, a few seconds at most. The server
+   * files a line's attachment under the cost code IT holds for the line, so
+   * a Sub Code picked a moment ago has to be saved before anything is
+   * attached: else the file is filed in the old cost code's folder (moved
+   * when the save lands, but listed in the wrong place meanwhile). Two things
+   * can still be on their way when the paperclip is clicked:
+   *   - the Sub Code box's own commit. The page's combobox commits 120 ms
+   *     after the box is left, and pressing the paperclip is what left it,
+   *     so the click comes first. The box is marked until then (data-pcommit).
+   *   - the row's save, which waits for a quiet spell before it goes, or is
+   *     already out with more queued behind it. Sent now and waited for.
+   * A save that fails stops the wait: the message about it is already up, and
+   * the attachment follows the line's code once the save does land.
+   */
+  async function settleRow(rowId, ms = 5000) {
+    const until = Date.now() + ms;
+    const wait = () => new Promise(res => setTimeout(res, 40));
+    const committing = () => {
+      const tr = st.mountEl && st.mountEl.querySelector(`tr[data-row="${cssEsc(rowId)}"]`);
+      return !!(tr && tr.querySelector('[data-pcommit]'));
+    };
+    while (committing() && Date.now() < until) await wait();
+    let sent = false;
+    while ((pend.has(rowId) || fly.has(rowId)) && Date.now() < until) {
+      if (fly.has(rowId)) { await wait(); continue; }
+      if (sent && failed.has(rowId)) break;
+      sent = true;
+      await flushRow(rowId);
+    }
+  }
+
+  /**
+   * The paperclip: the line's documents, opened by the page. The line is
+   * described the way the sheet shows it — its live codes (the bid line's
+   * own, when it is tied to one), trimmed — so the dialog can say which cost
+   * code's folder the file is filed in as well.
+   */
+  const filesOpening = new Set();     // rows whose paperclip is waiting on a save
+  async function openAttachments(rowId) {
+    if (typeof cfg.openAttachments !== 'function' || !rowById(rowId) || filesOpening.has(rowId)) return;
+    filesOpening.add(rowId);
+    let line = null;
+    try {
+      await settleRow(rowId);
+      const r = rowById(rowId);
+      // Deleted by someone else while its save was out: the message about
+      // that is up, and there is no line left to attach to.
+      if (!r) return;
+      const codes = liveCodes(r, makeCtx());
+      line = {
+        id: r.id,
+        project_id: r.project_id || st.projectId,
+        cost_code: codes.cost_code.trim(),
+        sub_code: codes.sub_code.trim(),
+        label: lineLabel(r, codes),
+      };
+    } finally {
+      filesOpening.delete(rowId);
+    }
+    // Not awaited: the page's dialog may stay open for as long as it likes.
+    try {
+      const p = cfg.openAttachments(line);
+      if (p && typeof p.then === 'function') p.then(null, err => console.warn('[procurement] could not open the attachments', err));
+    } catch (err) {
+      console.warn('[procurement] could not open the attachments', err);
+    }
+  }
+
+  /** A cost-code section's folder chip: that cost code's folder on this job. */
+  function openSectionFolder(code) {
+    const costCode = String(code == null ? '' : code).trim();
+    if (typeof cfg.openCostCodeFolder !== 'function' || !st.projectId || !costCode) return;
+    try {
+      const p = cfg.openCostCodeFolder({ projectId: st.projectId, costCode });
+      if (p && typeof p.then === 'function') p.then(null, err => console.warn('[procurement] could not open the cost-code folder', err));
+    } catch (err) {
+      console.warn('[procurement] could not open the cost-code folder', err);
+    }
   }
 
   async function deleteRows(ids) {
@@ -4147,6 +4490,10 @@
         if (pid === st.projectId) {
           created.concat(restored).forEach(adoptServerRow);
           if (isMounted()) { renderTable(); updateCounts(); }
+          // A line brought back on its bid line's replacement can come back
+          // under a new cost code, and its files with it. (A new line has
+          // nothing attached yet.)
+          recountAfterRecode(pid, restored.map(r => r && r.id).filter(Boolean));
           // Fewer rows came back than were ticked: they were there already —
           // an earlier try whose answer was lost, or a colleague's send. The
           // sheet reads them, rather than waiting for the next poll.
@@ -4269,6 +4616,9 @@
     if (done.length && pid === st.projectId && isMounted()) {
       if (cellInUse()) redrawAround(); else { renderTable(); updateCounts(); }
     }
+    // Every one of these PATCHes carries the line's codes: its files may
+    // have moved to another cost code's folder.
+    if (done.length && pid === st.projectId) recountAfterRecode(pid, done.map(d => d.id));
     // The code syncs are housekeeping; what is reported is what moved.
     const moved = done.filter(d => !synced.has(d));
     moved.stale = stale;
@@ -4376,7 +4726,11 @@
       if (st.projectId) load(st.projectId, { quiet: cached });
     },
 
-    /** Redraw from what is in memory (POs or the bid changed). No fetch. */
+    /**
+     * Redraw from what is in memory (POs or the bid changed, or the page's
+     * attachment counts — every paperclip and folder chip is drawn from them
+     * as it is drawn). No fetch.
+     */
     rerender() {
       if (!isMounted()) return;
       // A press in the sheet is down (on a button, a header, a checkbox). The
@@ -4438,6 +4792,18 @@
       if (editing) return;
       if (pend.size) await flushAll();
       await load(st.projectId, { quiet: st.loadState === 'ok' });
+    },
+
+    /**
+     * Read the open job's attachment counts again (through the page's
+     * refreshAttachmentCounts) and redraw the paperclips and folder chips
+     * whose number changed. No rows are read. The page calls it once a
+     * document has been attached, detached or deleted. Resolves true once
+     * the counts were read and drawn, false otherwise; never rejects.
+     */
+    refreshAttachmentCounts() {
+      if (!st.projectId || st.loadedFor !== st.projectId) return Promise.resolve(false);
+      return refreshDocCounts(st.projectId);
     },
 
     openSendModal,
