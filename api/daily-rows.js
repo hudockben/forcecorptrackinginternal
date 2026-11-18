@@ -12,13 +12,15 @@ const poSync              = require('./lib/po-sync');
 //
 // Never allowed to fail the row write it follows — the row is saved either
 // way, and the next write or page load reconciles. Answers with the orders it
-// changed, for the page that wrote the row to show at once.
+// changed, for the page that wrote the row to show at once, and the version of
+// the list they are from, so the page can tell them from a newer save's.
 async function syncOrders(sql, companyCode, division, rowIds, deletedIds) {
   const ids = (rowIds || []).filter(Boolean), gone = (deletedIds || []).filter(Boolean);
   if (!ids.length && !gone.length) return undefined;
   try {
     const out = await poSync.syncRowsToOrders(sql, { companyCode, division, rowIds: ids, deletedIds: gone });
-    return out.orders && out.orders.length ? { orders: out.orders } : undefined;
+    if (!out.orders || !out.orders.length) return undefined;
+    return { orders: out.orders, ...(out.updatedAt ? { updatedAt: out.updatedAt } : {}) };
   } catch (err) {
     console.error('[daily-rows] could not carry the rows to their purchase orders:', err.message);
     return undefined;
