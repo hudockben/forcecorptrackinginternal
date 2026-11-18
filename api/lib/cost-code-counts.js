@@ -115,4 +115,49 @@ async function costCodeCounts(sql, { companyCode, division, projectId }) {
   return countByCostCode(folders, [...byDoc.values()].map(folder_ids => ({ folder_ids })));
 }
 
-module.exports = { folderCostCode, countByCostCode, costCodeCounts };
+/**
+ * A fingerprint of everything one job's listing shows: its folders (name,
+ * place, kind, code, order), its live documents (name, note, type, size,
+ * who and when) and every link they hang by. It changes whenever any of
+ * that does, and only then.
+ *
+ * The listing (GET ?projectId=) carries it, and so does every count answer
+ * (GET ?costCodeCounts=1). documents.js keeps the one its copy of the job
+ * came with; a poll whose answer carries another knows that copy is behind
+ * — a file swapped for another, a folder made, a note edited — even when
+ * not one count moved, and without fetching the listing to find out.
+ *
+ * One aggregate row, read in the database. The listing reads it BEFORE its
+ * folders and documents, so a change that lands in between leaves the
+ * listing carrying an older fingerprint than its contents: the next poll
+ * then reads the job again (harmless), instead of the reverse, where a copy
+ * that missed a change would carry the fingerprint that says it had it.
+ */
+async function scopeVersion(sql, { companyCode, division, projectId }) {
+  const scope = projectId || '';
+  const rows = await sql`
+    SELECT md5(COALESCE(string_agg(x, E'\n' ORDER BY x), '')) AS v
+    FROM (
+      SELECT concat_ws('|', 'f', f.id, COALESCE(f.parent_id, ''), f.name, f.kind, COALESCE(f.slug, ''),
+                       COALESCE(f.cost_code, ''), f.sort_order::text, f.archived::text) AS x
+        FROM project_folders f
+       WHERE f.company_code = ${companyCode} AND f.division = ${division}
+         AND COALESCE(f.project_id, '') = ${scope}
+      UNION ALL
+      SELECT concat_ws('|', 'd', d.id, d.filename, COALESCE(d.content_type, ''), d.size_bytes::text,
+                       COALESCE(d.note, ''), COALESCE(d.uploaded_by, ''), d.uploaded_at::text)
+        FROM project_documents d
+       WHERE d.company_code = ${companyCode} AND d.division = ${division}
+         AND COALESCE(d.project_id, '') = ${scope} AND d.deleted_at IS NULL
+      UNION ALL
+      SELECT concat_ws('|', 'l', l.document_id, l.link_type, l.target_id)
+        FROM document_links l
+        JOIN project_documents d ON d.id = l.document_id
+       WHERE d.company_code = ${companyCode} AND d.division = ${division}
+         AND COALESCE(d.project_id, '') = ${scope} AND d.deleted_at IS NULL
+    ) t
+  `;
+  return rows[0] && rows[0].v ? String(rows[0].v) : null;
+}
+
+module.exports = { folderCostCode, countByCostCode, costCodeCounts, scopeVersion };

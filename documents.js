@@ -111,14 +111,19 @@
   let loadGeneration = 0;
 
   // The copy of the loaded job (loadedFor) is known to be behind the server:
-  // a fresh cost-code count (refreshCostCodeCounts) came back different from
-  // what that copy counts — the server re-filed a re-coded Procurement line's
-  // files, or a colleague attached one. Set only by that comparison, cleared
-  // by the next load(). While it is set, nothing reads the copy as if it were
-  // current: the next load, folder dialog or attach dialog reads the job
-  // again, and a plain count asks the server. The poll that notices costs one
-  // small counts request, not the job's whole listing.
+  // a fresh cost-code count (refreshCostCodeCounts) came back with another
+  // fingerprint of the job than the copy was loaded with (scopeVersion) — a
+  // file attached, swapped, re-filed or renamed, a folder made — or, from a
+  // server that sends no fingerprint, with counts the copy does not give.
+  // Set only by that comparison, cleared by the next load(). While it is set,
+  // nothing reads the copy as if it were current: the next load, folder
+  // dialog or attach dialog reads the job again, and a plain count asks the
+  // server. The poll that notices costs one small counts request, not the
+  // job's whole listing.
   let scopeBehind = false;
+  // The fingerprint the server sent with the copy in hand (the listing's
+  // `version`), or null when it sent none.
+  let scopeVersion = null;
 
   // ── Helpers ─────────────────────────────────────────────────────────
   // obj[key] only when obj holds it itself. Row ids are free-form enough
@@ -324,6 +329,7 @@
     caps      = data.caps || cfg.perm;
     loadedFor = projectId;
     scopeBehind = false;
+    scopeVersion = data && typeof data.version === 'string' && data.version ? data.version : null;
     adoptScope(data);
 
     // Every upload, delete and re-file comes back through here, so recounting
@@ -431,8 +437,14 @@
       // A server from before the counts endpoint ignores costCodeCounts and
       // answers with the job's whole listing; count that, as this used to.
       : countByCostCode((data && data.folders) || [], (data && data.documents) || []);
-    if (loadedFor === projectId && scopeGeneration === loadGeneration && !sameCounts(counts, countByCostCode(folders, documents))) {
-      scopeBehind = true;
+    // The job in hand, with no load since this went out: is the copy behind?
+    // Another fingerprint says so for any change, counted or not; the counts
+    // say so too, and are all an older server leaves to go on.
+    if (loadedFor === projectId && scopeGeneration === loadGeneration) {
+      const version = data && typeof data.version === 'string' && data.version ? data.version : null;
+      if ((version && scopeVersion && version !== scopeVersion) || !sameCounts(counts, countByCostCode(folders, documents))) {
+        scopeBehind = true;
+      }
     }
     ccCounts[key] = counts;
     return ccCounts[key];
@@ -2016,8 +2028,12 @@
 
     // A PO can belong to a different job than the one on screen, and a non-job
     // PO belongs to the General area — either way, load that scope's folders
-    // so the filing picker offers the right ones.
-    if (loadedFor !== projectId) {
+    // so the filing picker offers the right ones. The job in hand is read
+    // again too when a poll has found its copy behind (scopeBehind): the
+    // picker is built from that copy, and a PO subfolder the server made
+    // since would be missing from it, leaving the order's paperwork defaulted
+    // into the Purchase Orders root.
+    if (loadedFor !== projectId || scopeBehind) {
       let fresh;
       try { fresh = await load(projectId, { force: true }); }
       catch (err) { toast(err.message, 'error'); return; }

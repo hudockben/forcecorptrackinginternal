@@ -1282,7 +1282,8 @@ async function upload(folderId, filename, auth, extra = {}) {
 
     const none = await ccCounts(CJ);
     assert('a job with no folders yet answers 200 with no counts', none.statusCode === 200
-      && JSON.stringify(none.body) === JSON.stringify({ counts: {} }), JSON.stringify(none.body));
+      && JSON.stringify(none.body.counts) === JSON.stringify({}) && /^[0-9a-f]{32}$/.test(none.body.version || ''),
+      JSON.stringify(none.body));
 
     // Codes as a bid really carries them: integer-like ones (which reorder a
     // plain object), and Stormwater twice, once with a trailing space.
@@ -1323,8 +1324,8 @@ async function upload(folderId, filename, auth, extra = {}) {
     assert('…exactly what counting the job\'s whole listing gives, codes in the same order',
       JSON.stringify(Object.entries(got.body.counts)) === JSON.stringify(Object.entries(fromListing)),
       `${JSON.stringify(got.body.counts)} vs ${JSON.stringify(fromListing)}`);
-    assert('…and nothing but the counts: no folders, no documents, no file names',
-      Object.keys(got.body).join() === 'counts' && !/pdf/.test(JSON.stringify(got.body)), JSON.stringify(got.body));
+    assert('…and nothing but the counts and the job\'s fingerprint: no folders, no documents, no file names',
+      Object.keys(got.body).sort().join() === 'counts,version' && !/pdf/.test(JSON.stringify(got.body)), JSON.stringify(got.body));
     assert('another job is counted on its own', JSON.stringify((await ccCounts(CJ2)).body.counts) === JSON.stringify({ 420: 1 }));
 
     const viewerGot = await ccCounts(CJ, VIEWER);
@@ -1358,6 +1359,33 @@ async function upload(folderId, filename, auth, extra = {}) {
       withLegacy.body.counts['530'] === 1
         && JSON.stringify(Object.entries(withLegacy.body.counts)) === JSON.stringify(Object.entries(countByCostCode(lst2.folders, lst2.documents))),
       JSON.stringify(withLegacy.body.counts));
+
+    // The job's fingerprint: the listing and every count answer carry it, and
+    // it moves whenever anything the listing shows moves — counted or not.
+    const ver = async (pid = CJ) => (await ccCounts(pid)).body.version;
+    const v0 = await ver();
+    const listedV = (await listing(CJ)).version;
+    assert('the listing and the counts carry the same fingerprint for an unchanged job',
+      /^[0-9a-f]{32}$/.test(v0 || '') && listedV === v0 && (await ver()) === v0, `${listedV} / ${v0}`);
+    const swapOut = (await listing(CJ)).documents.find(d => d.filename === 'b.pdf');
+    await call('DELETE', { division: 'turf', id: swapOut.id }, null, ADMIN);
+    await up(f('411').id, 'b-rev2.pdf');
+    const vSwap = await ver();
+    assert('a file swapped for another moves no count but moves the fingerprint',
+      (await ccCounts(CJ)).body.counts['411'] === 1 && vSwap !== v0, `${v0} -> ${vSwap}`);
+    const renameMe = (await listing(CJ)).documents.find(d => d.filename === 'b-rev2.pdf');
+    await call('PATCH', { division: 'turf', id: renameMe.id }, { filename: 'b-rev2 (signed).pdf' }, PM);
+    const vRename = await ver();
+    assert('so does a rename', vRename !== vSwap);
+    await call('PATCH', { division: 'turf', id: renameMe.id }, { addFolderId: safetyC.id }, PM);
+    const vLink = await ver();
+    assert('and filing a file in one more folder', vLink !== vRename);
+    await call('POST', { division: 'turf', projectId: CJ, folder: '1' }, { name: 'Submittals 2', parentId: f('411').id }, PM);
+    const vFolder = await ver();
+    assert('and a new empty folder', vFolder !== vLink);
+    await up((await listing(CJ2)).folders.find(x => x.cost_code === '420').id, 'other-job-2.pdf', CJ2);
+    assert('but nothing on another job moves it', (await ver()) === vFolder);
+    assert('…and a listing read now carries the fingerprint the counts give', (await listing(CJ)).version === vFolder);
   }
 
   // ── Audit trail ─────────────────────────────────────────────────────────

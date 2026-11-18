@@ -1053,6 +1053,16 @@ console.log('\n[documents.js upload sequence]');
     let holdCounts = null, releaseCounts = null;    // stall the next counts GET for this job
     let failCounts = false, failPatch = false, failList = false;
     let holdCc = null, releaseCc = null, oldServer = false;   // the cost-code counts GET
+    // The job's fingerprint (the server's scopeVersion): it moves when anything
+    // the listing shows moves. `noVersion` plays a server that sends none.
+    let noVersion = false;
+    const versionOf = pid => {
+      const s = JSON.stringify([PTREE[pid] || [], PDOCS.filter(d => (d.project_id || '') === (pid || ''))
+        .map(d => [d.id, d.filename, d.note, d.folder_ids, d.po_ids, d.procurement_ids])]);
+      let h = 0;
+      for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0;
+      return 'v' + (h >>> 0).toString(16);
+    };
     const { countByCostCode: serverCountByCostCode } = require(path.join(__dirname, '..', 'api', 'lib', 'cost-code-counts.js'));
     const pcalls = [];
 
@@ -1112,11 +1122,12 @@ console.log('\n[documents.js upload sequence]');
       if (method === 'GET' && qp.costCodeCounts && !oldServer) {
         const snapshot = serverCountByCostCode(PTREE[qp.projectId] || [],
           PDOCS.filter(d => (d.project_id || '') === (qp.projectId || '')));
+        const ver = versionOf(qp.projectId);
         if (holdCc && holdCc === qp.projectId) {
           holdCc = null;
           await new Promise(r => { releaseCc = r; });
         }
-        return json({ counts: snapshot });
+        return json({ counts: snapshot, ...(noVersion ? {} : { version: ver }) });
       }
       if (method === 'GET' && qp.procurementId) {
         if (failList) return json({ error: 'Database error', detail: 'list down' }, 500);
@@ -1131,7 +1142,8 @@ console.log('\n[documents.js upload sequence]');
           await new Promise(r => { releaseLoad = r; });
         }
         return json({ folders: PTREE[qp.projectId] || [],
-          documents: PDOCS.filter(d => (d.project_id || '') === (qp.projectId || '')), caps: pcaps });
+          documents: PDOCS.filter(d => (d.project_id || '') === (qp.projectId || '')), caps: pcaps,
+          ...(noVersion ? {} : { version: versionOf(qp.projectId) }) });
       }
       if (method === 'POST') {
         const d = doc({ id: body.documentId, project_id: qp.projectId || null, filename: body.filename,
@@ -1899,6 +1911,72 @@ console.log('\n[documents.js upload sequence]');
         && /mid-flight\.pdf/.test(lastModal().textContent), `${loadedCounts} -> ${FD.costCodeCount('p7', 'Stormwater')}`);
     closeAll();
     PDOCS.splice(PDOCS.findIndex(d => d.id === 'pd12'), 1);
+
+    // ── A change that moves no count ──────────────────────────────────────
+    // A colleague swaps the Stormwater quote for its new revision: Stormwater
+    // still holds as many files as before. The counts cannot tell, but the
+    // job's fingerprint, sent with them, can.
+    await FD.openCostCodeFolder({ projectId: 'p7', costCode: 'Stormwater', fresh: true });   // the copy in hand is current
+    closeAll();
+    const pd1 = PDOCS.find(d => d.id === 'pd1');
+    PDOCS.splice(PDOCS.indexOf(pd1), 1);
+    PDOCS.push(doc({ id: 'pd1b', project_id: 'p7', filename: 'geofabric-quote-REV-C.pdf', folder_ids: ['f-storm'],
+      procurement_ids: ['pr-1'] }));
+    const stormSame = FD.costCodeCount('p7', 'Stormwater');
+    pcalls.length = 0;
+    await FD.refreshCostCodeCounts('p7', { fresh: true });
+    assert('a swap that moves no count leaves the chip on its number, and the poll still reads counts only',
+      FD.costCodeCount('p7', 'Stormwater') === stormSame && ccReads().length === 1 && reads().length === 0);
+    pcalls.length = 0;
+    await FD.openCostCodeFolder({ projectId: 'p7', costCode: 'Stormwater' });   // the bid page's chip: not a fresh open
+    dlg = lastModal();
+    assert('…but the fingerprint marks the copy behind: the folder dialog reads the job, lists the new revision and not the file taken away',
+      reads().length === 1 && /geofabric-quote-REV-C\.pdf/.test(dlg.textContent) && !/geofabric-quote\.pdf/.test(dlg.textContent),
+      dlg.textContent.slice(0, 300));
+    closeAll();
+
+    // The PO paperclip builds its upload picker from the copy too. Here a
+    // colleague's first attach to PO-0137 went into Photos: no count moves,
+    // but the server made the order's own subfolder, which is where its
+    // paperwork belongs by default.
+    PTREE.p7.push({ id: 'f-po-sub', parent_id: 'f-po7', name: 'PO PO-0137', kind: 'fixed', slug: 'po-po-1', sort_order: 1 });
+    PDOCS.push(doc({ id: 'pd13', project_id: 'p7', filename: 'po-receipt.pdf', folder_ids: ['f-photos', 'f-po-sub'], po_ids: ['po-1'] }));
+    await FD.refreshCostCodeCounts('p7', { fresh: true });
+    pcalls.length = 0;
+    await FD.openAttach({ id: 'po-1', po_number: 'PO-0137', project_id: 'p7' });
+    lastModal().querySelector('[data-attach-new]').click();
+    await settle();
+    up = lastModal();
+    assert('the PO paperclip reads the job again once the copy is behind, and its upload opens on the order\'s own new subfolder',
+      reads().length === 1 && up.querySelector('#fctdoc-folder').value === 'f-po-sub'
+        && [...up.querySelectorAll('#fctdoc-folder option')].some(o => o.value === 'f-po-sub'),
+      `${reads().length} reads; folder ${up.querySelector('#fctdoc-folder').value}`);
+    closeAll();
+    pcalls.length = 0;
+    await FD.refreshCostCodeCounts('p7', { fresh: true });
+    await FD.openAttach({ id: 'po-1', po_number: 'PO-0137', project_id: 'p7' });
+    assert('…and with nothing changed since, the poll leaves the copy trusted and the paperclip reads nothing more',
+      reads().length === 0 && ccReads().length === 1, pcalls.map(c => `${c.method} ${c.url}`).join(' | '));
+    closeAll();
+
+    // A server that sends no fingerprint: the counts are all there is, so a
+    // move that changes them is still noticed.
+    noVersion = true;
+    await FD.openCostCodeFolder({ projectId: 'p7', costCode: 'Stormwater', fresh: true });
+    closeAll();
+    const pd1b = PDOCS.find(d => d.id === 'pd1b');
+    pd1b.folder_ids = ['f-mob'];
+    await FD.refreshCostCodeCounts('p7', { fresh: true });
+    pcalls.length = 0;
+    await FD.openCostCodeFolder({ projectId: 'p7', costCode: 'Mobilization' });
+    assert('with no fingerprint from the server, a count that moved still marks the copy behind',
+      reads().length === 1 && /geofabric-quote-REV-C\.pdf/.test(lastModal().textContent), lastModal().textContent.slice(0, 200));
+    closeAll();
+    noVersion = false;
+    PTREE.p7.splice(PTREE.p7.findIndex(f => f.id === 'f-po-sub'), 1);
+    PDOCS.splice(PDOCS.findIndex(d => d.id === 'pd13'), 1);
+    PDOCS.splice(PDOCS.findIndex(d => d.id === 'pd1b'), 1);
+    PDOCS.push(pd1);
 
     // ── A section code with no folder yet ─────────────────────────────────
     // A line keeps a code that is not on the job's bid ("Paving" here: the

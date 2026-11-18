@@ -38,7 +38,7 @@ const {
 } = require('./lib/auth');
 const { resolvePODocScope } = require('./lib/po-sync');
 const procDocs            = require('./lib/procurement-docs');
-const { costCodeCounts }  = require('./lib/cost-code-counts');
+const { costCodeCounts, scopeVersion } = require('./lib/cost-code-counts');
 const storage             = require('./lib/storage');
 const crypto              = require('crypto');
 
@@ -505,10 +505,13 @@ module.exports = async (req, res) => {
       // The Procurement sheet asks on every poll; the bid page when it opens a
       // job the browser is not sitting on. Readable by anyone who may read
       // the job's listing; not by the purchase-order carve-out.
+      // `version` fingerprints the whole listing (scopeVersion), so a poll can
+      // tell the browser's copy of the job is behind even when no count moved.
       if (req.query.costCodeCounts) {
         if (poScope) return res.status(403).json({ error: 'You do not have access to this division' });
-        const counts = await costCodeCounts(sql, { companyCode, division, projectId });
-        return res.json({ counts });
+        const scope = { companyCode, division, projectId };
+        const [counts, version] = await Promise.all([costCodeCounts(sql, scope), scopeVersion(sql, scope)]);
+        return res.json({ counts, version });
       }
 
       // The documents attached to one Procurement line, newest first. Viewers
@@ -573,6 +576,10 @@ module.exports = async (req, res) => {
         return res.json({ documents: rows.map(documentOut) });
       }
 
+      // The listing's fingerprint (scopeVersion). Read first, so it can only
+      // be older than what is listed below, never newer.
+      const version = await scopeVersion(sql, { companyCode, division, projectId });
+
       const folders = await sql`
         SELECT * FROM project_folders
         WHERE  company_code = ${companyCode}
@@ -602,6 +609,7 @@ module.exports = async (req, res) => {
         folders:   folders.map(folderOut),
         documents: documents.map(documentOut),
         caps,
+        version,
       });
     }
 
