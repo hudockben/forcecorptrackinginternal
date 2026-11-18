@@ -645,8 +645,11 @@ module.exports = async (req, res) => {
             const opts = {};
             if (newProtocol) {
               // The rows of deliveries deleted in this save are on their way
-              // out — never a Daily Tracking delivery of their own.
-              opts.raisedRowIds = [...goneRowIds];
+              // out — never a Daily Tracking delivery of their own. Nor is a
+              // row a stale copy minted that the relink above just replaced:
+              // it is deleted once this is stored, and recorded here first it
+              // showed on the order as a delivery whose row no longer exists.
+              opts.raisedRowIds = [...new Set([...goneRowIds, ...supersededRows.map(r => r.rowId)])];
               opts.editedLineFields = po => lineEditsFor(po.id);
               opts.aliases = new Map(toWrite.filter(po => po && po.id).map(po => {
                 const was = storedById.get(po.id);

@@ -6644,22 +6644,63 @@ let _poSaveFailed = false;
 // Bumped as each save settles, so a poll whose read was answered before it
 // does not put the older list back.
 let _poSaveEpoch = 0;
-// The newest version of the stored list this page has had an answer from — a
-// save of the list (taken on at once or once focus leaves a box) or a job-row
-// write that changed orders. A row write's answer holds the orders as they
-// were when IT landed, and it can arrive after the answer to a save that
-// landed later: taken on then, it put the older copy back on screen — a
-// quantity just typed and stored read blank again. See _drAdoptPO.
-let _poNewestAt = null;
-function _poSawVersion(at) {
+// Per order: the newest version of the stored list this page has that order
+// from — or will have, once a save's answer held while a box has focus is
+// taken on. A save's answer covers every order the save sent (those it does
+// not return were stored as sent); a job-row write's answer covers only the
+// orders it returns. The two arrive in any order, and a copy older than one
+// already in hand put old figures back on screen: a row write's answer landing
+// after a later save's read a quantity just typed and stored as blank again,
+// and a save's answer held while focus was in a box, taken on after a newer row
+// write's, put back the quantity that write had changed — and a "from Daily
+// Tracking" copy of a delivery's own row beside it. See _drAdoptPO and
+// _poAdoptSaved.
+const _poOrderSeenAt = Object.create(null);
+function _poSeenOrder(id, at) {
   const t = Date.parse(at);
-  if (!isNaN(t) && !(t <= Date.parse(_poNewestAt))) _poNewestAt = at;
+  if (id == null || isNaN(t)) return;
+  const k = String(id);
+  if (!(t <= Date.parse(_poOrderSeenAt[k]))) _poOrderSeenAt[k] = at;
 }
-/** Is `at` older than a version of the list this page holds or has had an answer from? */
-function _poVersionIsOlder(at) {
+/**
+ * Is a copy of order `id` as stored at version `at` older than one this page
+ * has? `alsoBase`: or older than the list in hand, which holds every order.
+ */
+function _poOrderCopyIsOlder(id, at, alsoBase) {
   const t = Date.parse(at);
   if (isNaN(t)) return false;
-  return [_poNewestAt, _poBaseUpdatedAt].some(v => { const h = Date.parse(v); return !isNaN(h) && t < h; });
+  const seen = Date.parse(_poOrderSeenAt[String(id)]);
+  if (!isNaN(seen) && t < seen) return true;
+  const base = alsoBase ? Date.parse(_poBaseUpdatedAt) : NaN;
+  return !isNaN(base) && t < base;
+}
+// The links between a delivery and its job row this page changed — a row
+// minted for a delivery typed here, or a link let go with its deleted row —
+// that no save has stored yet: line id → the link ('' for none). An answer can
+// carry the order as stored before the save that carries the change, and
+// taking its link undid the change: a delivery whose row was minted a moment
+// ago read as having none, so the next keystroke minted another, and each row
+// left behind, naming the order, came back on it as a "from Daily Tracking"
+// delivery of its own (2 @ 0.00, 21.5 @ 0.00, 21.54 @ 2 ... while 21.54 @ 21.75
+// was typed) with the job charged for every one. Every other link is the
+// server's — one it let go with a deleted job's rows, or replaced with the one
+// purchasing raised — and is taken from its answers as before.
+const _poLinkChanges = new Map();
+function _poNoteLinkChange(lineId, rowId) {
+  if (lineId == null) return;
+  _poLinkChanges.set(String(lineId), rowId == null ? '' : String(rowId));
+}
+/** The link this page changed `line` to and has not had stored, or undefined. */
+function _poOwnLink(line) {
+  if (!line || line.id == null || !_poLinkChanges.has(String(line.id))) return undefined;
+  const want = _poLinkChanges.get(String(line.id));
+  return String(line.po_row_id == null ? '' : line.po_row_id) === want ? want : undefined;
+}
+/** A save landed: the links it carried are the server's to keep or replace now. */
+function _poForgetSentLinks(links) {
+  links.forEach(lines => lines.forEach((rowId, lineId) => {
+    if (_poLinkChanges.get(lineId) === (rowId == null ? '' : String(rowId))) _poLinkChanges.delete(lineId);
+  }));
 }
 // Automatic retries of a failed save since the last one landed. Capped: a save
 // the server takes the order from but cannot finish (a figure too large for
@@ -6687,7 +6728,7 @@ function _poApplyDeferred() {
   _poDeferredAdopt = [];
   let changed = 0;
   queued.forEach(q => {
-    changed += _poAdoptSaved(q.orders, q.links);
+    changed += _poAdoptSaved(q.orders, q.links, q.updatedAt);
     if (q.updatedAt) _poBaseUpdatedAt = q.updatedAt;
   });
   // A page that draws more than this tab from the list (turf's Procurement
@@ -6763,6 +6804,7 @@ function _poForgetSave(sent) {
 function _poGiveUp() {
   [_poEditedFields, _poEditedLines, _poDeletedLines].forEach(store => Object.keys(store).forEach(k => { delete store[k]; }));
   _poDeletedOrders.clear();
+  _poLinkChanges.clear();
   _poSaveFailed = false;
   _poSaveRetries = 0;
   _showSaveError(false, 'Some purchase-order changes could not be saved after several tries. The orders as stored are shown again.');
@@ -6895,7 +6937,11 @@ function savePurchaseOrders() {
       _poForgetSave(sent);
       try {
         const j = await r.json();
-        if (j && j.updatedAt) _poSawVersion(j.updatedAt);
+        _poForgetSentLinks(sent.links);
+        if (j && j.updatedAt) {
+          sent.links.forEach((_, id) => _poSeenOrder(id, j.updatedAt));
+          (Array.isArray(j.orders) ? j.orders : []).forEach(o => { if (o) _poSeenOrder(o.id, j.updatedAt); });
+        }
         if (j && Array.isArray(j.orders)) {
           // The server's merge, taken on wherever this tab has nothing newer —
           // after which this tab holds the stored list, and its version.
@@ -12240,6 +12286,7 @@ function _ensurePOLineRow(po, line) {
   };
   proj.dailyRows.push(row);
   line.po_row_id = row.id;
+  _poNoteLinkChange(line.id, row.id);
   drPost(po.project_id, row);
   renderDailyTable(po.project_id);
 }
@@ -12315,24 +12362,16 @@ function _poAdoptServerOrders(orders) {
     const srvLines = Array.isArray(srv.lines) ? srv.lines : [];
     const srvById  = new Map(srvLines.filter(l => l && l.id).map(l => [String(l.id), l]));
     const localById = new Map((local.lines || []).filter(l => l && l.id).map(l => [String(l.id), l]));
-    // A delivery typed here keeps the link to the cost row this page minted for
-    // it. That row's write is sent a moment before the save of the list that
-    // links the two, and its answer usually comes back first — carrying the
-    // order as stored BEFORE that save, the delivery still unlinked. Taking
-    // that link wiped the one minted here, so the next keystroke on the
-    // delivery minted a second row, and so on: each row left behind on the job
-    // with the order's number then came back on the order as a "from Daily
-    // Tracking" delivery holding whatever had been typed so far (2, 21.5,
-    // 21.54 at $2 ...) — the order showing deliveries twice, and the job
-    // charged for every one of them. A save's answer (_poAdoptSaved) is what
-    // brings back a link the server changed; an empty one here still takes
-    // the server's.
+    // A link this page changed and has not had stored stands (_poLinkChanges):
+    // a row's write is sent a moment before the save of the list that links
+    // it, and its answer usually comes back first, carrying the delivery as
+    // stored BEFORE that save — still unlinked.
     const raised = (local.lines || []).filter(l => l && !_poLineFromDaily(l))
       .map(l => {
         const s = srvById.get(String(l.id));
         if (!s || _poLineFromDaily(s)) return l;
         const merged = _poMergeLine(local.id, l, s);
-        if (l.po_row_id != null && l.po_row_id !== '') merged.po_row_id = l.po_row_id;
+        if (_poOwnLink(l) !== undefined) merged.po_row_id = l.po_row_id;
         return merged;
       });
     const owned = new Set(raised.filter(l => l.po_row_id != null && l.po_row_id !== '').map(l => String(l.po_row_id)));
@@ -12379,13 +12418,17 @@ function _poMergeLine(poId, local, srv) {
  *
  * `sentLinks`: order id → (line id → the link the save carried).
  */
-function _poAdoptSaved(orders, sentLinks) {
+function _poAdoptSaved(orders, sentLinks, at) {
   if (!Array.isArray(orders) || !orders.length || !Array.isArray(purchaseOrders)) return 0;
   let n = 0;
   const projects = new Set();
   orders.forEach(srv => {
     if (!srv || !srv.id || _poDeletedOrders.has(String(srv.id))) return;
     const id = String(srv.id);
+    // This page already has the order as stored later — a job-row write's
+    // answer that came in while this one was held for a box with focus, or a
+    // later save's. Taking this copy put that write's figures back.
+    if (at && _poOrderCopyIsOlder(id, at)) return;
     const local = purchaseOrders.find(p => p && String(p.id) === id);
     if (!local) {
       const copy = JSON.parse(JSON.stringify(srv));
@@ -12420,16 +12463,23 @@ function _poAdoptSaved(orders, sentLinks) {
       }
       srvById.delete(lid);
       const merged = _poMergeLine(id, l, s);
-      // A link minted here while the save was out is this tab's row; the next
-      // save hands it to the server, which keeps it or retires it.
-      if (sent.has(lid) && String(l.po_row_id || '') !== String(sent.get(lid) || '')) merged.po_row_id = l.po_row_id;
+      // A link this page changed since the save left — a row minted, or one
+      // let go with its deleted row — is the next save's to carry. Any other is
+      // the server's: it keeps the one this save sent, or puts back the one
+      // purchasing raised for the delivery (and retires the row minted here).
+      if (_poOwnLink(l) !== undefined) merged.po_row_id = l.po_row_id;
       out.push(merged);
     });
     srvById.forEach((s, lid) => {
       if (gone && gone.has(lid)) return;
       out.push(JSON.parse(JSON.stringify(s)));
     });
-    local.lines = out;
+    // One row is one delivery: no "from Daily Tracking" copy of a row a
+    // delivery here is linked to, as the server stores it (and as
+    // _poAdoptServerOrders shows it).
+    const owned = new Set(out.filter(l => l && !_poLineFromDaily(l) && l.po_row_id != null && l.po_row_id !== '')
+      .map(l => String(l.po_row_id)));
+    local.lines = out.filter(l => !(l && _poLineFromDaily(l) && l.po_row_id != null && owned.has(String(l.po_row_id))));
     _migratePOs([local]);
     if (JSON.stringify(local) !== before) {
       n++;
@@ -12488,20 +12538,21 @@ function _poRowsFollowOrder(po) {
 /**
  * A daily-rows response, read for the orders its write changed. Never throws.
  *
- * Not when those orders are older than a version of the list this page holds
- * or has had a save's answer from: that answer already carries them as they
- * are now, and this copy would put back figures and deliveries since replaced.
+ * Not an order this page already has as stored later — from a save's answer
+ * (taken on or still held), a newer row write's, or the list in hand: this copy
+ * would put back figures, links and deliveries since replaced.
  */
 function _drAdoptPO(response) {
   if (!response || !response.ok || typeof response.clone !== 'function') return;
   response.clone().json()
     .then(j => {
       if (!j || !j.po || !Array.isArray(j.po.orders)) return;
-      if (j.po.updatedAt) {
-        if (_poVersionIsOlder(j.po.updatedAt)) return;
-        _poSawVersion(j.po.updatedAt);
-      }
-      _poAdoptServerOrders(j.po.orders);
+      const at = j.po.updatedAt;
+      // Order by order: the answer holds only the orders this write changed,
+      // so a newer answer about one order says nothing about another.
+      const orders = at ? j.po.orders.filter(o => o && !_poOrderCopyIsOlder(o.id, at, true)) : j.po.orders;
+      if (at) orders.forEach(o => _poSeenOrder(o.id, at));
+      if (orders.length) _poAdoptServerOrders(orders);
     })
     .catch(() => {});
 }
@@ -13342,6 +13393,7 @@ function _handlePOEvent(e) {
             oldP.dailyRows = oldP.dailyRows.filter(r => String(r.id) !== String(line.po_row_id));
             _poRowDelete(line.po_row_id);
             line.po_row_id = null;
+            _poNoteLinkChange(line.id, null);
           }
         });
         renderDailyTable(oldProj);
@@ -13442,7 +13494,7 @@ function _detachLinkedRows(pred) {
       // than staying on the order as material the job no longer has.
       const keep = po.lines.filter(ln => !(hit(ln.po_row_id) && _poLineFromDaily(ln)));
       if (keep.length !== po.lines.length) { nPo += po.lines.length - keep.length; po.lines = keep; }
-      po.lines.forEach(ln => { if (hit(ln.po_row_id)) { ln.po_row_id = null; nPo++; } });
+      po.lines.forEach(ln => { if (hit(ln.po_row_id)) { ln.po_row_id = null; _poNoteLinkChange(ln.id, null); nPo++; } });
     });
   }
   if (nTr) saveTruckingEntries();
