@@ -7120,6 +7120,23 @@ let _poSaveFailed = false;
 // Bumped as each save settles, so a poll whose read was answered before it
 // does not put the older list back.
 let _poSaveEpoch = 0;
+// The newest version of the stored list this page has had an answer from — a
+// save of the list (taken on at once or once focus leaves a box) or a job-row
+// write that changed orders. A row write's answer holds the orders as they
+// were when IT landed, and it can arrive after the answer to a save that
+// landed later: taken on then, it put the older copy back on screen — a
+// quantity just typed and stored read blank again. See _drAdoptPO.
+let _poNewestAt = null;
+function _poSawVersion(at) {
+  const t = Date.parse(at);
+  if (!isNaN(t) && !(t <= Date.parse(_poNewestAt))) _poNewestAt = at;
+}
+/** Is `at` older than a version of the list this page holds or has had an answer from? */
+function _poVersionIsOlder(at) {
+  const t = Date.parse(at);
+  if (isNaN(t)) return false;
+  return [_poNewestAt, _poBaseUpdatedAt].some(v => { const h = Date.parse(v); return !isNaN(h) && t < h; });
+}
 // Automatic retries of a failed save since the last one landed. Capped: a save
 // the server takes the order from but cannot finish (a figure too large for
 // the job's cost row, say) fails the same way every time, and retrying it each
@@ -7483,6 +7500,7 @@ function savePurchaseOrders() {
       _poForgetSave(sent);
       try {
         const j = await r.json();
+        if (j && j.updatedAt) _poSawVersion(j.updatedAt);
         if (j && Array.isArray(j.orders)) {
           // The server's merge, taken on wherever this tab has nothing newer —
           // after which this tab holds the stored list, and its version.
@@ -17334,9 +17352,26 @@ function _poAdoptServerOrders(orders) {
     const srvLines = Array.isArray(srv.lines) ? srv.lines : [];
     const srvById  = new Map(srvLines.filter(l => l && l.id).map(l => [String(l.id), l]));
     const localById = new Map((local.lines || []).filter(l => l && l.id).map(l => [String(l.id), l]));
+    // A delivery typed here keeps the link to the cost row this page minted for
+    // it. That row's write is sent a moment before the save of the list that
+    // links the two, and its answer usually comes back first — carrying the
+    // order as stored BEFORE that save, the delivery still unlinked. Taking
+    // that link wiped the one minted here, so the next keystroke on the
+    // delivery minted a second row, and so on: each row left behind on the job
+    // with the order's number then came back on the order as a "from Daily
+    // Tracking" delivery holding whatever had been typed so far (2, 21.5,
+    // 21.54 at $2 ...) — the order showing deliveries twice, and the job
+    // charged for every one of them. A save's answer (_poAdoptSaved) is what
+    // brings back a link the server changed; an empty one here still takes
+    // the server's.
     const raised = (local.lines || []).filter(l => l && !_poLineFromDaily(l))
-      .map(l => (srvById.has(String(l.id)) && !_poLineFromDaily(srvById.get(String(l.id))))
-        ? _poMergeLine(local.id, l, srvById.get(String(l.id))) : l);
+      .map(l => {
+        const s = srvById.get(String(l.id));
+        if (!s || _poLineFromDaily(s)) return l;
+        const merged = _poMergeLine(local.id, l, s);
+        if (l.po_row_id != null && l.po_row_id !== '') merged.po_row_id = l.po_row_id;
+        return merged;
+      });
     const owned = new Set(raised.filter(l => l.po_row_id != null && l.po_row_id !== '').map(l => String(l.po_row_id)));
     const daily = srvLines.filter(l => _poLineFromDaily(l) && !(l.po_row_id != null && owned.has(String(l.po_row_id))))
       .map(l => localById.has(String(l.id)) ? _poMergeLine(local.id, localById.get(String(l.id)), l)
@@ -17487,11 +17522,24 @@ function _poRowsFollowOrder(po) {
   }
 }
 
-/** A daily-rows response, read for the orders its write changed. Never throws. */
+/**
+ * A daily-rows response, read for the orders its write changed. Never throws.
+ *
+ * Not when those orders are older than a version of the list this page holds
+ * or has had a save's answer from: that answer already carries them as they
+ * are now, and this copy would put back figures and deliveries since replaced.
+ */
 function _drAdoptPO(response) {
   if (!response || !response.ok || typeof response.clone !== 'function') return;
   response.clone().json()
-    .then(j => { if (j && j.po && Array.isArray(j.po.orders)) _poAdoptServerOrders(j.po.orders); })
+    .then(j => {
+      if (!j || !j.po || !Array.isArray(j.po.orders)) return;
+      if (j.po.updatedAt) {
+        if (_poVersionIsOlder(j.po.updatedAt)) return;
+        _poSawVersion(j.po.updatedAt);
+      }
+      _poAdoptServerOrders(j.po.orders);
+    })
     .catch(() => {});
 }
 

@@ -533,8 +533,11 @@ async function fetchLinkRows(sql, companyCode, division, scope) {
 
 /**
  * After job rows are written or deleted: bring the division's orders into line
- * with them, under the compare-and-set. Returns { ok, orders } — the orders it
- * changed, for the page that wrote the rows to take on at once.
+ * with them, under the compare-and-set. Returns { ok, orders, updatedAt } — the
+ * orders it changed, for the page that wrote the rows to take on at once, and
+ * the version of the list they are from. The answer can reach the page after
+ * the answer to a save of the list that landed later, and a page that took it
+ * on then put the older copy back over the newer one (see _drAdoptPO).
  *
  * Only rows that could matter are worth the read: the caller passes those that
  * carry a PO # before or after the write, and every deleted one.
@@ -560,7 +563,7 @@ async function syncRowsToOrders(sql, { companyCode, division, rowIds, deletedIds
     try { await mirrorOnePO(sql, companyCode, division, po); }
     catch (err) { console.error('[po-sync] could not mirror an order after a row sync:', err.message); }
   }
-  return { ok: true, orders: changedOrders };
+  return { ok: true, orders: changedOrders, updatedAt: res.changed ? (res.updatedAt || null) : null };
 }
 
 /**
@@ -1044,8 +1047,20 @@ async function readPOBlob(sql, blobKey) {
 }
 
 /**
+ * The version a write stamped, as the ISO time the list PUT answers with, so a
+ * page can put the answers of different writes in order. '' when the driver
+ * gave none.
+ */
+function versionText(v) {
+  if (v == null || v === '') return '';
+  const t = v instanceof Date ? v.getTime() : Date.parse(String(v));
+  return isNaN(t) ? '' : new Date(t).toISOString();
+}
+
+/**
  * Write `list` back to `blobKey`, but only if nobody else has written since
- * `base`. Returns false when the compare-and-set loses, so the caller re-reads.
+ * `base`. Returns null when the compare-and-set loses, so the caller re-reads;
+ * otherwise the version written (versionText — '' when there is none to give).
  *
  * clock_timestamp() rather than NOW(): NOW() is the transaction's start time,
  * so two writes could in principle stamp the same value and leave a third
@@ -1058,9 +1073,9 @@ async function casWritePOBlob(sql, blobKey, list, base) {
       UPDATE app_data
       SET    value = ${json}::jsonb, updated_at = clock_timestamp()
       WHERE  key = ${blobKey} AND updated_at = ${base.updatedAt}::timestamptz
-      RETURNING key
+      RETURNING key, updated_at
     `;
-    return updated.length > 0;
+    return updated.length > 0 ? versionText(updated[0].updated_at) : null;
   }
   // No row yet. DO NOTHING rather than DO UPDATE so a writer that created the
   // row a moment ago is not clobbered by one that read before it existed —
@@ -1069,9 +1084,9 @@ async function casWritePOBlob(sql, blobKey, list, base) {
     INSERT INTO app_data (key, value, updated_at)
     VALUES (${blobKey}, ${json}::jsonb, clock_timestamp())
     ON CONFLICT (key) DO NOTHING
-    RETURNING key
+    RETURNING key, updated_at
   `;
-  return inserted.length > 0;
+  return inserted.length > 0 ? versionText(inserted[0].updated_at) : null;
 }
 
 /**
@@ -1088,8 +1103,9 @@ async function mutatePOBlob(sql, blobKey, mutate) {
     const base = await readPOBlob(sql, blobKey);
     const next = await mutate(base.list);
     if (next === null) return { ok: true, changed: false, list: base.list };
-    if (await casWritePOBlob(sql, blobKey, next, base)) {
-      return { ok: true, changed: true, list: next };
+    const at = await casWritePOBlob(sql, blobKey, next, base);
+    if (at !== null) {
+      return { ok: true, changed: true, list: next, updatedAt: at || null };
     }
   }
   return { ok: false, changed: false, list: null };

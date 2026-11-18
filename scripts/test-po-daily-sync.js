@@ -275,6 +275,58 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
       ctx._drAdoptPO(json({ ok: true }));
       await new Promise(r => setTimeout(r, 0));
       assert('  and a failed or empty one is ignored', took === null);
+
+      // A row write's answer can reach the page after the answer to a save of
+      // the list that landed later. Its copy is the older one, and taking it
+      // put figures and deliveries since replaced back on screen.
+      const tick = () => new Promise(r => setTimeout(r, 0));
+      const answer = at => json({ ok: true, po: { orders: [srv], updatedAt: at } });
+      ctx._poBaseUpdatedAt = '2026-11-18T12:00:05.000Z';
+      ctx._drAdoptPO(answer('2026-11-18T12:00:04.000Z'));
+      await tick();
+      assert('  but not one older than the list this page holds', took === null);
+      ctx._poSawVersion('2026-11-18T12:00:09.000Z');   // a save's answer, taken on or still held
+      ctx._drAdoptPO(answer('2026-11-18T12:00:07.000Z'));
+      await tick();
+      assert('  nor one older than a save this page has had the answer to', took === null);
+      ctx._drAdoptPO(answer('2026-11-18T12:00:11.000Z'));
+      await tick();
+      assert('  a newer one is taken', took && took.length === 1);
+      took = null;
+      ctx._drAdoptPO(answer('2026-11-18T12:00:10.000Z'));
+      await tick();
+      assert('  after which one from before IT is not', took === null);
+      ctx._drAdoptPO(json({ ok: true, po: { orders: [srv] } }));
+      await tick();
+      assert('  and one from a server that sends no version is taken as before', took && took.length === 1);
+    }
+
+    console.log(`\n[${page}: a delivery typed here keeps the row it minted]`);
+    {
+      const { ctx } = sandbox(src, page);
+      // Its first figure minted row rM; the row's write came back before the
+      // save that links the two had landed, carrying the delivery unlinked and
+      // the row recorded on the order as a Daily Tracking delivery.
+      const local = order({ lines: [{ id: 'L1', qty: '2', unit_cost: '', po_row_id: 'rM' }] });
+      ctx.purchaseOrders.push(local);
+      ctx._poNoteLineEdit('po3', 'L1', 'qty');
+      ctx._poAdoptServerOrders([order({ lines: [
+        { id: 'L1', qty: '', unit_cost: '', po_row_id: null },
+        { id: 'dr-rM', source: 'daily', qty: '2', unit_cost: '0', po_row_id: 'rM' },
+      ] })]);
+      const L1 = local.lines.find(l => l.id === 'L1') || {};
+      assert('the link this page minted stands over a copy stored before the save linking them',
+        L1.po_row_id === 'rM', JSON.stringify(L1));
+      assert('  so its next key mints no second row, and its row is not shown again beside it',
+        local.lines.length === 1, JSON.stringify(local.lines));
+      assert('  and what was typed stays', L1.qty === '2', JSON.stringify(L1));
+      // With no link here, the server's is taken — a row purchasing raised for it.
+      const other = order({ id: 'po4', po_number: 'PO-0004', lines: [{ id: 'L2', qty: '3', unit_cost: '1', po_row_id: null }] });
+      ctx.purchaseOrders.push(other);
+      ctx._poAdoptServerOrders([order({ id: 'po4', po_number: 'PO-0004',
+        lines: [{ id: 'L2', qty: '3', unit_cost: '1', po_row_id: 'rP' }] })]);
+      assert('a delivery with no link here takes the server\'s', other.lines[0].po_row_id === 'rP',
+        JSON.stringify(other.lines));
     }
 
     console.log(`\n[${page}: the once-per-load catch-up]`);
