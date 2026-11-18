@@ -786,13 +786,13 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     env.$$('tr.fctproc-grp').map(t => t.textContent.replace(/\s+/g, ' ')));
   assert('rows in bid order (bid row, then its material, orphan last)', eq(env.$$('tr.fctproc-row').map(t => t.dataset.row), ['r1', 'r2', 'r3', 'r4']));
   const headers = env.$$('.fctproc-table th').map(th => th.textContent.replace('▼', '').trim());
-  // The paperclip (attached documents) sits right after PO #, as on the
-  // Purchase Orders tab. It is the sheet's column only: the exports below
-  // keep their own, unchanged list.
-  assert('columns in the agreed order', eq(headers, ['', 'Status', 'PO #', '\u{1F4CE}', 'Sub-Contractor Agreement', 'Date Needed', 'Lead Time (days)',
+  // The paperclip (attached documents) rides in the Status cell, so it adds
+  // no column: the sheet is exactly as wide as it was before attachments.
+  assert('columns in the agreed order', eq(headers, ['', 'Status', 'PO #', 'Sub-Contractor Agreement', 'Date Needed', 'Lead Time (days)',
     'Order By', 'Date Ordered', 'Date Delivered', 'Quantity', 'Unit', 'Cost Code', 'Sub Code', 'Description', 'Vendor', 'Quote #',
     'Contact', 'Email', '']), headers);
-  assert('  the paperclip column says what it is', (env.$$('.fctproc-table th')[3] || {}).title === 'Attached documents');
+  assert('  no paperclip column', !env.$$('.fctproc-table th').some(th => /\u{1F4CE}/u.test(th.textContent) || th.title === 'Attached documents')
+    && !env.$('td.c-files'));
   assert('select + Status columns are pinned left', env.$('th.c-sel').classList.contains('stk') && env.$$('.fctproc-table th')[1].classList.contains('stk'));
   assert('a checkbox per row and a select-all', env.$$('[data-sel]').length === 4 && !!env.$('#fctproc-selall'));
   assert('Send to Procurement and + Add Row for editors', !!env.$('[data-act="send"]') && !!env.$('[data-act="add"]'));
@@ -2642,10 +2642,14 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     const e = makeEnv({ rows: AROWS });
     const d = withDocs(e, { counts: { a1: 2, a2: 1 } });
     await drawn(e);
-    const clip = id => e.$(`tr[data-row="${id}"] td.c-files button`);
-    assert('every line has a paperclip, in the column right after PO #', ['a1', 'a2', 'a3'].every(id => !!clip(id))
-      && e.$('tr[data-row="a1"]').children[3] === e.$('tr[data-row="a1"] td.c-files')
-      && e.$('tr[data-row="a1"]').children[2].classList.contains('c-po'));
+    const clip = id => e.$(`tr[data-row="${id}"] td.c-status button.fctproc-clip`);
+    const pillOf = id => e.$(`tr[data-row="${id}"] td.c-status .fctproc-pill`);
+    assert('every line has a paperclip, in its Status cell right after the status pill', ['a1', 'a2', 'a3'].every(id => !!clip(id)
+      && pillOf(id).nextElementSibling === clip(id)));
+    assert('  and only there: one per line, no column of its own', e.$$('[data-act="files"]').length === 3 && !e.$('td.c-files')
+      && e.$$('tr.fctproc-row').every(tr => tr.querySelectorAll('[data-act="files"]').length === 1)
+      && !e.$$('.fctproc-table th').some(th => th.textContent.trim() === CLIP));
+    assert('  so it stays pinned at the left with Status', clip('a1').closest('td').classList.contains('stk'));
     assert('  a plain button the sheet answers (data-act="files", the row\'s id)',
       clip('a1').tagName === 'BUTTON' && clip('a1').type === 'button' && clip('a1').dataset.act === 'files' && clip('a1').dataset.row === 'a1');
     assert('  with its count beside it, green, and the count in its tooltip',
@@ -2669,9 +2673,9 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     const v = makeEnv({ perm: { canView: true, canEdit: false }, rows: AROWS });
     const dv = withDocs(v, { counts: { a1: 3 } });
     await drawn(v);
-    const vclip = id => v.$(`tr[data-row="${id}"] td.c-files button`);
-    assert('a viewer has the paperclips too (it is not an editor\'s column)', !!vclip('a1') && !!vclip('a3')
-      && v.$$('.fctproc-table th').some(th => th.textContent.trim() === CLIP) && v.$$('[data-pr]').length === 0);
+    const vclip = id => v.$(`tr[data-row="${id}"] td.c-status button.fctproc-clip`);
+    assert('a viewer has the paperclips too (it is not an editor\'s control)', !!vclip('a1') && !!vclip('a3')
+      && v.$$('[data-pr]').length === 0);
     assert('  with the count', vclip('a1').textContent === CLIP + '3' && vclip('a1').title === '3 attached documents');
     assert('  and, with nothing attached, says so rather than offering to attach', vclip('a3').title === 'No documents attached');
     vclip('a1').click();
@@ -2680,38 +2684,49 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       dv.opened.length === 1 && dv.opened[0].line.id === 'a1' && dv.opened[0].line.project_id === 'p1', dv.opened);
     assert('  and saves nothing', v.patches().length === 0);
 
-    e.P.configure({ hiddenColumns: ['files'] });
-    e.P.rerender();
-    assert('a page that hides the column (hiddenColumns) has no paperclips', !e.$('td.c-files') && !e.$('[data-act="files"]')
-      && !e.$$('.fctproc-table th').some(th => th.textContent.trim() === CLIP));
-    e.P.configure({ hiddenColumns: [] });
-    e.P.rerender();
-    assert('  and they are back once it stops', !!clip('a1'));
+    // A status flag shares the cell: pill, then paperclip, then the flags.
+    const f = makeEnv({ rows: [row({ id: 'f1', sca_status: 'Needed' })] });
+    const df = withDocs(f, { counts: { f1: 1 } });
+    await drawn(f);
+    const fcell = f.$('tr[data-row="f1"] td.c-status');
+    const fclip = fcell && fcell.querySelector('.fctproc-clip');
+    assert('a line with a status flag keeps its paperclip, between the pill and the flags',
+      !!fclip && !!fcell.querySelector('.fctproc-flags') && fcell.classList.contains('flag-amber')
+      && fcell.querySelector('.fctproc-pill').nextElementSibling === fclip
+      && fclip.nextElementSibling === fcell.querySelector('.fctproc-flags')
+      && fclip.textContent === CLIP + '1', fcell && fcell.innerHTML);
+    assert('  the flag and the Status filter read the status alone, not the paperclip',
+      /Sub agmt open/.test(fcell.textContent) && f.P._test.fieldValue(f.P._test.state().rows[0], 'status', C()) === 'Not Ordered');
+    fclip.click();
+    await sleep(20);
+    assert('  and it opens that line\'s documents', df.opened.length === 1 && df.opened[0].line.id === 'f1');
   }
 
   console.log('\n[a page with no document hooks]');
   {
     const e = makeEnv({ rows: [row({ id: 'n1', cost_code: 'Stormwater' })] });
     await drawn(e);
-    const cell = () => e.$('tr[data-row="n1"] td.c-files');
-    assert('the column is there, its cell empty, and nothing failed', !!cell() && cell().innerHTML === '' && !e.$('[data-act="files"]')
-      && e.$$('tr.fctproc-row').length === 1);
+    const cell = () => e.$('tr[data-row="n1"] td.c-status');
+    const clipIn = () => cell().querySelector('.fctproc-clip');
+    assert('the Status cell has its pill and no paperclip, and nothing failed', !!cell() && !!cell().querySelector('.fctproc-pill')
+      && !clipIn() && !e.$('[data-act="files"]') && e.$$('tr.fctproc-row').length === 1);
     assert('  no folder chip on the sections', !!e.$('tr.fctproc-grp') && !e.$('[data-grpdocs]'));
     await e.P.refresh();
     assert('  a refresh asks nothing of the page and still works', e.$$('tr.fctproc-row').length === 1
       && (await e.P.refreshAttachmentCounts()) === false);
     e.P.configure({ attachmentCount: () => 4 });
     e.P.rerender();
-    assert('a count with nothing to open the documents draws no button that would do nothing', cell().innerHTML === '');
+    assert('a count with nothing to open the documents draws no button that would do nothing', !clipIn());
     e.P.configure({ openAttachments: () => {}, attachmentCount: () => { throw new Error('not loaded'); } });
     e.P.rerender();
-    assert('a count that throws reads as none, and the row still draws', cell().textContent === CLIP && e.$$('tr.fctproc-row').length === 1);
+    assert('a count that throws reads as none, and the row still draws', !!clipIn() && clipIn().textContent === CLIP
+      && e.$$('tr.fctproc-row').length === 1);
     e.P.configure({ attachmentCount: () => 'lots' });
     e.P.rerender();
-    assert('  so does one that is not a number', cell().textContent === CLIP);
+    assert('  so does one that is not a number', clipIn().textContent === CLIP);
     e.P.configure({ attachmentCount: () => -2 });
     e.P.rerender();
-    assert('  or a negative one', cell().textContent === CLIP);
+    assert('  or a negative one', clipIn().textContent === CLIP);
     e.P.configure({ openCostCodeFolder: () => {}, costCodeDocCount: () => { throw new Error('not loaded'); } });
     e.P.rerender();
     assert('a folder count that throws: the chip, with no number', !!e.$('[data-grpdocs]') && e.$('[data-grpdocs]').textContent === FOLDER);

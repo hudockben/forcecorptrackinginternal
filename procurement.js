@@ -88,8 +88,8 @@
     today: null,
     storage: null,
     // Documents attached to a line, and the cost-code folders that compile
-    // them per section. All optional: without them the paperclip cells are
-    // empty and the section headers have no folder chip. Each is checked with
+    // them per section. All optional: without them no line has a paperclip
+    // and the section headers have no folder chip. Each is checked with
     // typeof wherever it is used, so a page can hand over some and not others.
     //   attachmentCount(projectId, rowId)  -> number, from the page's cache
     //   refreshAttachmentCounts(projectId) -> promise, settles once that cache
@@ -1380,11 +1380,11 @@
       .fctproc-act:hover { color: var(--text,#e0e0e0); border-color: var(--muted,#666); }
       .fctproc-act.add:hover { color: var(--green,#22c55e); border-color: var(--green,#22c55e); }
       .fctproc-act.del:hover, .fctproc-act.danger { color:#f87171; border-color: rgba(239,68,68,0.6); }
-      /* The paperclip: muted with nothing attached, green with a count, the
-         way the Purchase Orders tab draws its own. */
-      .fctproc-table td.c-files { text-align:center; padding:0 0.15rem; }
+      /* The paperclip, beside the Status pill: muted with nothing attached,
+         green with a count, the way the Purchase Orders tab draws its own. */
       .fctproc-clip { background:none; border:1px solid var(--border,#2a2a3a); border-radius:3px; color: var(--muted,#9ca3af);
-        font-size:0.68rem; line-height:1.3; padding:0.1rem 0.3rem; cursor:pointer; white-space:nowrap; font-variant-numeric: tabular-nums; }
+        font-size:0.66rem; line-height:1.25; padding:0.04rem 0.22rem; margin-left:0.2rem; vertical-align: middle;
+        cursor:pointer; white-space:nowrap; font-variant-numeric: tabular-nums; }
       .fctproc-clip:hover, .fctproc-clip:focus-visible { color: var(--text,#e0e0e0); border-color: var(--muted,#666); }
       .fctproc-clip.has { color: var(--green,#22c55e); border-color: rgba(34,197,94,0.45); }
       .fctproc-clip.has:hover, .fctproc-clip.has:focus-visible { border-color: var(--green,#22c55e); }
@@ -2428,12 +2428,6 @@
     { key: 'sel', label: '', w: 2, edit: true, stick: true },
     { key: 'status', label: 'Status', w: 7.2, filter: 'status', stick: true },
     { key: 'po', label: 'PO #', w: 9, filter: 'po' },
-    // The paperclip: the documents attached to the line (quotes, submittals,
-    // delivery tickets). Beside the PO, as on the Purchase Orders tab, where
-    // it is in reach without scrolling. Not an editor's column: a viewer may
-    // open and download what is attached, as on the Documents tab. Nothing to
-    // filter, and not in the exports (EXPORT_COLS) — a count is not data.
-    { key: 'files', label: '\u{1F4CE}', w: 3.2, title: 'Attached documents' },
     { key: 'sca_status', label: 'Sub-Contractor Agreement', w: 6.9, filter: 'sca_status' },
     // Every column filters, as every column of the old sheet did — a blank
     // Date Needed is exactly the row the late flags can never catch, and
@@ -2742,12 +2736,14 @@
         case 'status': {
           const cls = status === 'Delivered' ? 'st-del' : status === 'Ordered' ? 'st-ord' : status === UNKNOWN ? 'st-unk' : 'st-not';
           const tip = status === UNKNOWN ? ' title="Waiting for the purchase orders to load"' : '';
+          // The line's paperclip rides in its Status cell rather than a column
+          // of its own: Status is pinned to the left, so the paperclip is in
+          // reach however far the sheet is scrolled, and the sheet is no wider.
           return td(red ? 'flag-red' : amber ? 'flag-amber' : '',
-            `<span class="fctproc-pill ${cls}"${tip}>${esc(status)}</span>${flags.length ? `<span class="fctproc-flags">${flags.map(f =>
+            `<span class="fctproc-pill ${cls}"${tip}>${esc(status)}</span>${clipHtml(r, ctx, edit)}${flags.length ? `<span class="fctproc-flags">${flags.map(f =>
               `<span class="fctproc-flag ${f.level}" title="${esc(f.title)}">${esc(f.short || f.label)}</span>`).join('')}</span>` : ''}`);
         }
         case 'po': return poCellHtml(r, ep, edit, td);
-        case 'files': return td('', filesCellHtml(r, ctx, edit));
         case 'sca_status':
           return edit
             ? td('', `<select class="fctproc-in sca-${esc(r.sca_status.replace(/\s+/g, '-'))}" ${at('sca_status')}>${SCA_VALUES.map(v =>
@@ -2830,13 +2826,15 @@
   }
 
   /**
-   * The paperclip on a line: how many documents are attached to it, and the
-   * button that lists them (and, for someone who may, attaches another).
-   * Drawn from the page's count, so refreshRow redraws it like any other
-   * cell. A page that cannot open attachments gets an empty cell rather than
-   * a button that does nothing.
+   * The paperclip on a line, drawn in its Status cell beside the pill: how
+   * many documents are attached to the line, and the button that lists them
+   * (and, for someone who may, attaches another). A viewer gets it too — they
+   * may open and download what is attached, as on the Documents tab. Drawn
+   * from the page's count, so refreshRow redraws it like the rest of the row.
+   * A page that cannot open attachments gets no button rather than one that
+   * does nothing. Never in the exports or the print view: a count is not data.
    */
-  function filesCellHtml(r, ctx, edit) {
+  function clipHtml(r, ctx, edit) {
     if (typeof cfg.openAttachments !== 'function') return '';
     const n = attachmentCount(r.project_id || ctx.projectId, r.id);
     const tip = n ? `${n} attached document${n === 1 ? '' : 's'}` : edit ? 'Attach a document' : 'No documents attached';

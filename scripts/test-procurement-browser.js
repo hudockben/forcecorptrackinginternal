@@ -2007,7 +2007,7 @@ async function attachments(browser) {
   await page.click('#procurement-root [data-group="cost"]');
   await sleep(150);
 
-  const clip = (pg, id) => rowTr(pg, id).locator('td.c-files button.fctproc-clip[data-act="files"]');
+  const clip = (pg, id) => rowTr(pg, id).locator('td.c-status button.fctproc-clip[data-act="files"]');
   const clipState = (pg, id) => clip(pg, id).evaluate(b => ({ text: b.textContent.trim(), has: b.classList.contains('has'), title: b.title }));
   const chip = (pg, code) => pg.locator(`#procurement-root tr.fctproc-grp [data-grpdocs="${code}"]`);
   const chipText = async (pg, code) => (await chip(pg, code).textContent()).trim();
@@ -2017,8 +2017,32 @@ async function attachments(browser) {
 
   const heads = await page.$$eval('#procurement-root thead th', ths => ths.map(th => ({ text: th.textContent.trim(), title: th.title })));
   const poAt = heads.findIndex(h => /^PO #/.test(h.text));
-  ok('the sheet has a paperclip column, right after PO #',
-    poAt >= 0 && !!heads[poAt + 1] && heads[poAt + 1].text === CLIP && heads[poAt + 1].title === 'Attached documents', heads.map(h => h.text));
+  ok('no paperclip column: PO # is followed by Sub-Contractor Agreement as before',
+    poAt >= 0 && !!heads[poAt + 1] && /^Sub-Contractor Agreement/.test(heads[poAt + 1].text)
+      && !heads.some(h => h.text === CLIP || h.title === 'Attached documents'), heads.map(h => h.text));
+  // The paperclip rides in the Status cell, beside the pill, inside the
+  // cell's own width (Status is pinned at the left at a fixed width).
+  const fit = await rowTr(page, 'F1').locator('td.c-status').evaluate(td => {
+    const c = td.getBoundingClientRect(), b = td.querySelector('.fctproc-clip').getBoundingClientRect();
+    const p = td.querySelector('.fctproc-pill');
+    return { inside: b.left >= c.left - 0.5 && b.right <= c.right + 0.5 && b.top >= c.top - 0.5 && b.bottom <= c.bottom + 0.5,
+      afterPill: p.nextElementSibling === td.querySelector('.fctproc-clip'), w: c.width, sw: td.scrollWidth, cw: td.clientWidth };
+  });
+  ok('each line\'s paperclip sits in its Status cell after the pill, wholly inside the cell',
+    fit.inside && fit.afterPill && fit.sw <= fit.cw + 1, fit);
+  // Scrolled all the way right, the paperclip is still on screen and clickable.
+  await page.locator('#fctproc-wrap').evaluate(w => { w.scrollLeft = w.scrollWidth; });
+  await sleep(80);
+  const vis = await clip(page, 'F1').evaluate(b => {
+    const r = b.getBoundingClientRect(), wrap = document.querySelector('#fctproc-wrap').getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return { onScreen: r.left >= wrap.left && r.right <= wrap.right, topmost: hit === b || b.contains(hit),
+      scrolled: document.querySelector('#fctproc-wrap').scrollLeft };
+  });
+  ok('…and stays in reach with the sheet scrolled all the way right (Status is pinned)',
+    vis.scrolled > 0 && vis.onScreen && vis.topmost, vis);
+  await page.locator('#fctproc-wrap').evaluate(w => { w.scrollLeft = 0; });
+  await sleep(80);
   ok('the sheet read the job\'s attachment counts along with its rows',
     await until(() => W.docLog.some(l => l.method === 'GET' && l.q.procurementCounts === '1' && l.q.projectId === 'p1')));
   let s = await clipState(page, 'F1');
