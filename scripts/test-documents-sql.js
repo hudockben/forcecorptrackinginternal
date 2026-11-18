@@ -1360,6 +1360,24 @@ async function upload(folderId, filename, auth, extra = {}) {
         && JSON.stringify(Object.entries(withLegacy.body.counts)) === JSON.stringify(Object.entries(countByCostCode(lst2.folders, lst2.documents))),
       JSON.stringify(withLegacy.body.counts));
 
+    // Two codes that read alike, in folders whose sort_order, name and id
+    // orders all disagree: the endpoint's keys come out in the listing's
+    // order, which is the order costCodeCount()'s codeKey fallback searches.
+    await client.query(
+      `INSERT INTO project_folders (id, company_code, division, project_id, parent_id, name, kind, slug, cost_code, sort_order)
+       VALUES ('ccc-a', 'FCT', 'turf', $1, NULL, 'ZZ Walkway', 'cost_code', 'cc-Walk – Way', 'Walk – Way', 60),
+              ('ccc-b', 'FCT', 'turf', $1, NULL, 'AA Walkway', 'cost_code', 'cc-Walk - Way', 'Walk - Way', 61)`, [CJ]);
+    await up('ccc-a', 'walk-1.pdf');
+    await up('ccc-a', 'walk-2.pdf');
+    await up('ccc-b', 'walk-3.pdf');
+    const ordered = (await ccCounts(CJ)).body.counts;
+    const lst3 = await listing(CJ);
+    const keysOf = o => Object.keys(o).filter(k => /^Walk/.test(k));
+    assert('codes that read alike come out in the listing\'s folder order (sort_order, then name), not by name or id',
+      JSON.stringify(keysOf(ordered)) === JSON.stringify(['Walk – Way', 'Walk - Way'])
+        && JSON.stringify(Object.keys(ordered)) === JSON.stringify(Object.keys(countByCostCode(lst3.folders, lst3.documents))),
+      JSON.stringify(Object.keys(ordered)));
+
     // The job's fingerprint: the listing and every count answer carry it, and
     // it moves whenever anything the listing shows moves — counted or not.
     const ver = async (pid = CJ) => (await ccCounts(pid)).body.version;

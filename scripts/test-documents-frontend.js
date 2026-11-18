@@ -1978,6 +1978,29 @@ console.log('\n[documents.js upload sequence]');
     PDOCS.splice(PDOCS.findIndex(d => d.id === 'pd1b'), 1);
     PDOCS.push(pd1);
 
+    // ── The line paperclip honours a copy found behind, too ───────────────
+    // A colleague's file on another Paving line made the Paving folder since
+    // this browser read the job. The poll marks the copy behind; the line's
+    // own list holds nothing new, so only that flag makes the paperclip read
+    // the job again before building its upload picker.
+    await FD.openCostCodeFolder({ projectId: 'p7', costCode: 'Stormwater', fresh: true });
+    closeAll();
+    PTREE.p7.push({ id: 'f-pave-v', parent_id: null, name: 'Paving', kind: 'cost_code', slug: 'cc-Paving', cost_code: 'Paving', sort_order: 800 });
+    PDOCS.push(doc({ id: 'pd-v1', project_id: 'p7', filename: 'colleague-paving.pdf', folder_ids: ['f-pave-v'], procurement_ids: ['pr-6'] }));
+    await FD.refreshCostCodeCounts('p7', { fresh: true });
+    pcalls.length = 0;
+    await FD.openProcurementAttach({ id: 'pr-4', project_id: 'p7', cost_code: 'Paving', label: 'Paving / Base' });
+    lastModal().querySelector('[data-attach-new]').click();
+    await settle();
+    assert('the line paperclip reads the job again once the copy is behind, and its upload opens on the new Paving folder',
+      reads().length >= 1 && lastModal().querySelector('#fctdoc-folder').value === 'f-pave-v',
+      `${reads().length} reads; folder ${lastModal().querySelector('#fctdoc-folder').value}`);
+    closeAll();
+    PTREE.p7.splice(PTREE.p7.findIndex(f => f.id === 'f-pave-v'), 1);
+    PDOCS.splice(PDOCS.findIndex(d => d.id === 'pd-v1'), 1);
+    await FD.openCostCodeFolder({ projectId: 'p7', costCode: 'Stormwater', fresh: true });
+    closeAll();
+
     // ── A section code with no folder yet ─────────────────────────────────
     // A line keeps a code that is not on the job's bid ("Paving" here: the
     // bid seeds no codes in this fixture). The server makes its folder when
