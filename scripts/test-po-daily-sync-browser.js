@@ -129,7 +129,8 @@ async function run(browser, cfg) {
       if (m === 'DELETE') {
         const id = u.searchParams.get('id');
         rowDeletes.push(id); rows.delete(id);
-        const orders = syncRows([], [id]);
+        // As syncRowsToOrders: the deleted id is one of the rows decided.
+        const orders = syncRows([id], [id]);
         return json({ ok: true, ...(orders.length ? { po: { orders } } : {}) });
       }
     }

@@ -362,6 +362,20 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
         lines: [{ id: 'L3', qty: '3', unit_cost: '1', po_row_id: 'rP' }] })]);
       assert('a delivery with no link of this page\'s takes the server\'s', other.lines[0].po_row_id === 'rP',
         JSON.stringify(other.lines));
+
+      // A row deleted here: an answer from just before the delete still
+      // records it on the order. Its delivery is not shown again.
+      vm.runInContext("_deletedRowIds.add('rGone')", ctx);
+      ctx._poAdoptServerOrders([order({ id: 'po4', po_number: 'PO-0004', lines: [
+        { id: 'L3', qty: '3', unit_cost: '1', po_row_id: 'rP' },
+        { id: 'dr-rGone', source: 'daily', qty: '9', unit_cost: '1', po_row_id: 'rGone' } ] })]);
+      assert('a delivery recorded from a row deleted here is not shown again',
+        !other.lines.some(l => l.id === 'dr-rGone'), JSON.stringify(other.lines));
+      ctx._poAdoptSaved([order({ id: 'po4', po_number: 'PO-0004', lines: [
+        { id: 'L3', qty: '3', unit_cost: '1', po_row_id: 'rP' },
+        { id: 'dr-rGone', source: 'daily', qty: '9', unit_cost: '1', po_row_id: 'rGone' } ] })],
+        new Map([['po4', new Map([['L3', 'rP']])]]), '2026-11-18T13:00:00.000Z');
+      assert('  nor by a save\'s answer', !other.lines.some(l => l.id === 'dr-rGone'), JSON.stringify(other.lines));
     }
 
     console.log(`\n[${page}: a save's answer held while a box had focus]`);
@@ -508,6 +522,15 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
       assert('deleting its row takes it off the order here too', !po.lines.includes(daily) && po.lines.includes(raised));
       ctx._detachLinkedRows(id => id === 'r2');
       assert('a raised line is detached as before', raised.po_row_id === null && raised.qty === '5');
+      // A row deleted on its own (the Daily Tracking ✕) takes a delivery typed
+      // on the order with it, and the save says it was deleted.
+      const typed = { id: 'L9', qty: '4', unit_cost: '2', po_row_id: 'r9' };
+      po.lines.push(typed);
+      ctx._detachLinkedRows(id => id === 'r9', { withDeliveries: true });
+      assert('a row deleted on its own takes the delivery typed on the order with it',
+        !po.lines.includes(typed), JSON.stringify(po.lines));
+      assert('  recorded as deleted, so the save does not get it back from the stored order',
+        vm.runInContext("Boolean(_poDeletedLines.po3 && _poDeletedLines.po3.has('L9'))", ctx));
     }
   }
 

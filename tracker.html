@@ -4041,6 +4041,8 @@ async function _walReplay() {
     let replayed = 0, expired = 0;
     for (const id of ids) {
       const entry = _walRead()[id];
+      // A write of a row deleted since is not replayed: it would put the row back.
+      if (entry && entry.rowId != null && _deletedRowIds.has(String(entry.rowId))) { _walRemove(id); continue; }
       if (!entry || (now - (entry._ts || 0)) > _WAL_MAX_AGE_MS) {
         _walRemove(id);
         expired++;
@@ -4192,11 +4194,12 @@ function drPost(projectId, row) {
     console.warn('[daily-rows] refusing to POST payroll-injected row', row && row.id);
     return;
   }
+  if (_deletedRowIds.has(String(row.id))) return;   // deleted here since — see drDelete
   _aggCacheRowCount = -1; _projSubAggCacheRowCount = -1;  // bust count-keyed agg caches on row-set change
   const walId = 'post_' + row.id;
   _walAdd(walId, { method: 'POST', projectId, row, rowId: row.id });
   _drSaveStart();
-  _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}`, {
+  _drTrackWrite(row.id, _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ projectId, row })
@@ -4213,7 +4216,7 @@ function drPost(projectId, row) {
   }).catch(err => {
     console.warn('[daily-rows] POST error:', err.message);
     _drSaveFail('Row not saved — offline?');
-  });
+  }));
   saveProjectIndex();
 }
 
@@ -4250,6 +4253,29 @@ async function drPostBulk(projectId, allRows) {
 const _drSaveTimers = {};
 // Pending map: rowId → latest row object (so beforeunload can flush them)
 const _drSavePending = {};
+// Each row's write still in flight (drPost, _drPutNow), so a DELETE of the row
+// goes after it — see drDelete.
+const _drRowWrites = {};
+function _drTrackWrite(rowId, p) {
+  const id = String(rowId);
+  const all = Promise.all([_drRowWrites[id], p]).then(() => {}, () => {});
+  _drRowWrites[id] = all;
+  all.then(() => { if (_drRowWrites[id] === all) delete _drRowWrites[id]; });
+  return p;
+}
+/**
+ * A row the server deleted for this page: a purchase-order save that put back
+ * the row purchasing raised for a delivery over the one minted here from a
+ * stale copy. This page's copy goes, with any write of it still owed — kept,
+ * it stayed in Daily Tracking, and an edit there put it back on the job.
+ */
+function _drForgetRow(rowId) {
+  const id = String(rowId);
+  _deletedRowIds.add(id);
+  clearTimeout(_drSaveTimers[id]); delete _drSaveTimers[id]; delete _drSavePending[id];
+  _walRemove('put_' + id); _walRemove('post_' + id);
+  _drDropRowLocally(id);
+}
 
 /** Debounced PUT — coalesces rapid keystrokes into one DB write per row. */
 function drPutDebounced(rowId, row) {
@@ -4271,6 +4297,7 @@ function drPutNow(rowId, row) {
 }
 
 function _drPutNow(rowId, row) {
+  if (_deletedRowIds.has(String(rowId))) return;   // deleted here since — see drDelete
   // An in-place row value edit (quantity, loads→quantity, rate, hours, …) does
   // not change the daily-row count, so the row-count-keyed aggregate caches
   // would otherwise serve stale running-quantity / cost totals. Invalidate both
@@ -4280,7 +4307,7 @@ function _drPutNow(rowId, row) {
   const walId = 'put_' + rowId;
   _walAdd(walId, { method: 'PUT', rowId, row, projectId: row._projectId || null });
   _drSaveStart();
-  _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(rowId)}`, {
+  _drTrackWrite(rowId, _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(rowId)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${fctToken}` },
     body: JSON.stringify({ row, projectId: row._projectId || null })
@@ -4306,7 +4333,7 @@ function _drPutNow(rowId, row) {
   }).catch(err => {
     console.warn('[daily-rows] PUT error:', err.message);
     _drSaveFail('Update failed — offline?');
-  });
+  }));
   saveProjectIndex();
 }
 
@@ -4364,14 +4391,28 @@ window.addEventListener('online', () => {
   _walReplay();
 });
 
-/** Delete one row by its JS id. */
+/**
+ * Delete one row by its JS id.
+ *
+ * A write of the row still owed or in flight — the PUT sent as its cell lost
+ * focus a moment before the ✕, one _fetchRetry resends after a 5xx, one the
+ * write-ahead log replays once back online — reached the server after the
+ * DELETE and, the PUT being an upsert, put the row back: on the job and, as it
+ * named an order, on the order as a "from Daily Tracking" delivery that had
+ * just been deleted. So writes owed are dropped, the DELETE waits for one in
+ * flight, and no later write of the row is sent (_deletedRowIds).
+ */
 function drDelete(rowId) {
+  const id = String(rowId);
+  _deletedRowIds.add(id);
+  clearTimeout(_drSaveTimers[id]); delete _drSaveTimers[id]; delete _drSavePending[id];
+  _walRemove('put_' + id); _walRemove('post_' + id);
   _aggCacheRowCount = -1; _projSubAggCacheRowCount = -1;  // bust count-keyed agg caches on row-set change
   _drSaveStart();
-  _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(rowId)}`, {
+  Promise.resolve(_drRowWrites[id]).then(() => _fetchRetry(`${API_BASE}/daily-rows?division=${DIVISION}&id=${encodeURIComponent(rowId)}`, {
     method: 'DELETE',
     headers: { 'Authorization': `Bearer ${fctToken}` }
-  }).then(r => {
+  })).then(r => {
     if (!r.ok) { console.warn('[daily-rows] DELETE failed:', r.status); _drSaveFail('Delete failed'); }
     else { _drSaveOk(); _drAdoptPO(r); }
   }).catch(err => { console.warn('[daily-rows] DELETE error:', err.message); _drSaveFail('Delete failed'); });
@@ -7172,6 +7213,12 @@ function _poOwnLink(line) {
   const want = _poLinkChanges.get(String(line.id));
   return String(line.po_row_id == null ? '' : line.po_row_id) === want ? want : undefined;
 }
+// Job rows this page deleted, or was told the server deleted (_drForgetRow).
+// No write of one is sent again (drDelete), and no delivery recorded from one is
+// shown again: an answer from just before the delete — a save whose derivation
+// read the rows a moment before the DELETE landed — still carried it, and the
+// deleted row's "from Daily Tracking" delivery came back on screen.
+const _deletedRowIds = new Set();
 /** A save landed: the links it carried are the server's to keep or replace now. */
 function _poForgetSentLinks(links) {
   links.forEach(lines => lines.forEach((rowId, lineId) => {
@@ -17412,7 +17459,8 @@ function _poAdoptServerOrders(orders) {
         return merged;
       });
     const owned = new Set(raised.filter(l => l.po_row_id != null && l.po_row_id !== '').map(l => String(l.po_row_id)));
-    const daily = srvLines.filter(l => _poLineFromDaily(l) && !(l.po_row_id != null && owned.has(String(l.po_row_id))))
+    const daily = srvLines.filter(l => _poLineFromDaily(l) && !(l.po_row_id != null
+        && (owned.has(String(l.po_row_id)) || _deletedRowIds.has(String(l.po_row_id)))))
       .map(l => localById.has(String(l.id)) ? _poMergeLine(local.id, localById.get(String(l.id)), l)
                                             : JSON.parse(JSON.stringify(l)));
     const next = raised.concat(daily);
@@ -17505,6 +17553,14 @@ function _poAdoptSaved(orders, sentLinks, at) {
       // the server's: it keeps the one this save sent, or puts back the one
       // purchasing raised for the delivery (and retires the row minted here).
       if (_poOwnLink(l) !== undefined) merged.po_row_id = l.po_row_id;
+      // The server put another row (or none) in place of the one this save
+      // carried — the row purchasing raised for the delivery, over one minted
+      // here from a stale copy, which it deletes. This page's copy of that row
+      // goes too: kept, it stayed in Daily Tracking, deleting it there did
+      // nothing, and an edit of it put it back on the job.
+      const sentRow = sent.get(lid);
+      if (sentRow != null && sentRow !== '' && !_poLineFromDaily(s) && String(l.po_row_id || '') === String(sentRow)
+          && String(merged.po_row_id || '') !== String(sentRow) && typeof _drForgetRow === 'function') _drForgetRow(sentRow);
       out.push(merged);
     });
     srvById.forEach((s, lid) => {
@@ -17516,7 +17572,8 @@ function _poAdoptSaved(orders, sentLinks, at) {
     // _poAdoptServerOrders shows it).
     const owned = new Set(out.filter(l => l && !_poLineFromDaily(l) && l.po_row_id != null && l.po_row_id !== '')
       .map(l => String(l.po_row_id)));
-    local.lines = out.filter(l => !(l && _poLineFromDaily(l) && l.po_row_id != null && owned.has(String(l.po_row_id))));
+    local.lines = out.filter(l => !(l && _poLineFromDaily(l) && l.po_row_id != null
+      && (owned.has(String(l.po_row_id)) || _deletedRowIds.has(String(l.po_row_id)))));
     _migratePOs([local]);
     if (JSON.stringify(local) !== before) {
       n++;
@@ -18515,7 +18572,7 @@ function deleteTR(id) {
 // reports. `pred` receives the id as a STRING — daily-row ids come back from the
 // DB as strings after a reload while the owner blobs still carry the original
 // numeric id, so both sides must be compared as strings.
-function _detachLinkedRows(pred) {
+function _detachLinkedRows(pred, opts) {
   const hit = id => id != null && pred(String(id));
   let nTr = 0, nInv = 0, nPo = 0;
   if (Array.isArray(truckingEntries)) {
@@ -18528,9 +18585,21 @@ function _detachLinkedRows(pred) {
     purchaseOrders.forEach(po => {
       if (!Array.isArray(po.lines)) return;
       // A delivery recorded FROM the row is that row — it goes with it rather
-      // than staying on the order as material the job no longer has.
-      const keep = po.lines.filter(ln => !(hit(ln.po_row_id) && _poLineFromDaily(ln)));
-      if (keep.length !== po.lines.length) { nPo += po.lines.length - keep.length; po.lines = keep; }
+      // than staying on the order as material the job no longer has. So does
+      // one typed on the order, when its row was deleted on its own
+      // (opts.withDeliveries): left on the order unlinked, it still counted in
+      // the order's total while the job no longer paid for it, looked like
+      // every other delivery, and the next edit of it — even its receiver —
+      // put its row back. A bulk removal (a sub code) lets go of the link only.
+      const drop = ln => hit(ln.po_row_id) && (_poLineFromDaily(ln) || Boolean(opts && opts.withDeliveries));
+      const keep = po.lines.filter(ln => !drop(ln));
+      if (keep.length !== po.lines.length) {
+        po.lines.forEach(ln => {
+          if (!drop(ln) || _poLineFromDaily(ln) || ln.id == null) return;
+          (_poDeletedLines[po.id] || (_poDeletedLines[po.id] = new Set())).add(String(ln.id));
+        });
+        nPo += po.lines.length - keep.length; po.lines = keep;
+      }
       po.lines.forEach(ln => { if (hit(ln.po_row_id)) { ln.po_row_id = null; _poNoteLinkChange(ln.id, null); nPo++; } });
     });
   }
@@ -32422,6 +32491,12 @@ document.addEventListener('click', e => {
     '<span>Are you sure?</span>' +
     `<button class="dc-yes">${yesLabel}</button>` +
     '<button class="dc-no">No</button>';
+  // A row that is a delivery on a purchase order takes the delivery with it.
+  const _rowPO = row && typeof _poLinksByRow === 'function' ? _poLinksByRow().get(String(row.id)) : null;
+  if (_rowPO && _rowPO.po) {
+    popover.querySelector('span').textContent =
+      'Are you sure? This also removes the delivery from ' + (_rowPO.po.po_number || 'its purchase order') + '.';
+  }
 
   // Position relative to button, flip up if too close to bottom/right edge
   document.body.appendChild(popover);
@@ -32460,10 +32535,14 @@ document.addEventListener('click', e => {
       const deletedRow = at >= 0 ? p.dailyRows[at] : null;
       if (deletedRow) {
         p.dailyRows.splice(at, 1);
-        drDelete(deletedRow.id);
+        // After any purchase-order save still out, as deletePOLine does: that
+        // save writes the rows of the deliveries it carries, and one landing
+        // after the DELETE put the row back.
+        _poRowDelete(deletedRow.id);
         // If a trucking entry owned this daily row, detach it so later field
-        // syncs don't silently no-op and the entry re-counts in reports.
-        _detachLinkedRows(id => id === String(deletedRow.id));
+        // syncs don't silently no-op and the entry re-counts in reports. A
+        // delivery on a purchase order goes with its row.
+        _detachLinkedRows(id => id === String(deletedRow.id), { withDeliveries: true });
       }
       renderDailyTable(projId);
     } else if (tab === 'po') {
