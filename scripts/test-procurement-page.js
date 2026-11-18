@@ -76,10 +76,43 @@ console.log('\n[tracker.html — wiring]');
   const conf = requireFn(SRC, '_procEnsureConfigured');
   for (const k of ['division', 'apiBase', 'getToken', 'getUserName', 'perm', 'getProjects', 'getProject', 'getBidLines',
                    'getPurchaseOrders', 'isPOListLoaded', 'codeKey', 'getSuppliers', 'addSupplier', 'createPurchaseOrder',
-                   'openPurchaseOrder', 'showSaveError', 'today', 'storage']) {
+                   'openPurchaseOrder', 'showSaveError', 'today', 'storage',
+                   // each line's attached documents, and the cost-code folder per section
+                   'attachmentCount', 'refreshAttachmentCounts', 'openAttachments', 'costCodeDocCount', 'openCostCodeFolder']) {
     assert(`  configure() is handed ${k}`, new RegExp(`\\n    ${k}[:,]`).test(conf));
   }
   assert('  as turf', /division:\s+PROC_DIVISION,/.test(conf) && /const PROC_DIVISION = 'turf';/.test(SRC));
+  assert('  the attachment hooks go through the page\'s documents helpers, never procurement.js to documents.js',
+    /\n    openAttachments: line => openProcurementDocs\(line\),/.test(conf)
+      && /\n    refreshAttachmentCounts: pid => _procDocCounts\(pid\),/.test(conf)
+      && /\n    openCostCodeFolder: \(\{ projectId, costCode \} = \{\}\) => openProcurementCostCodeFolder\(projectId, costCode\),/.test(conf)
+      && !/FCTDocuments/.test(fs.readFileSync(MODULE_PATH, 'utf8').replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, '')));
+
+  const openDocs = requireFn(SRC, 'openProcurementDocs');
+  assert('the paperclip opener waits for the deferred documents.js the way the PO paperclip does, then configures and opens',
+    /if \(!window\.FCTDocuments\) \{ setTimeout\(\(\) => openProcurementDocs\(line\), 150\); return; \}\n  _docsEnsureConfigured\(\);\n  FCTDocuments\.openProcurementAttach\(line\);/.test(openDocs),
+    openDocs);
+  const docCounts = requireFn(SRC, '_procDocCounts');
+  assert('the counts wait for it too, but bounded (they run unprompted on every read of the sheet)',
+    /if \(ticks\+\+ > 40\) \{ resolve\(null\); return; \}/.test(docCounts) && /setTimeout\(go, 150\)/.test(docCounts)
+      && /_docsEnsureConfigured\(\);\s*Promise\.all\(\[FCTDocuments\.refreshProcurementCounts\(projId\), FCTDocuments\.refreshCostCodeCounts\(projId, \{ fresh: true \}\)\]\)/.test(docCounts),
+    docCounts);
+  // The section chip opens the bid page's folder dialog, read fresh: the
+  // server re-files a line's files when its code changes, which the copy
+  // documents.js holds never sees.
+  const openCc = requireFn(SRC, 'openProcurementCostCodeFolder');
+  assert('the section folder chip waits for documents.js, then opens the cost code\'s folder read fresh, labelled from the master list',
+    /if \(!window\.FCTDocuments\) \{ setTimeout\(\(\) => openProcurementCostCodeFolder\(projId, costCode\), 150\); return; \}\n  _docsEnsureConfigured\(\);/.test(openCc)
+      && /FCTDocuments\.openCostCodeFolder\(\{ projectId: projId, costCode, label: costCodeLabel\(costCode, ''\), fresh: true \}\)/.test(openCc),
+    openCc);
+  assert('  while the bid page\'s own chip keeps the cached copy (its codes only move when this browser moves them)',
+    !/\bfresh:/.test(requireFn(SRC, 'openBidGroupDocs')) && !/\bfresh:/.test(requireFn(SRC, '_loadBidDocCounts')));
+  const docsConf = requireFn(SRC, '_docsEnsureConfigured');
+  assert('documents.js is told who the server records as the uploader (the login name)',
+    /\n    getUserName: \(\) => \(fctUser && fctUser\.username\) \|\| '',/.test(docsConf));
+  assert('  and a document changed while the Procurement tab is open redraws its paperclips',
+    /onChange: \(\) => \{[\s\S]*?if \(activeTab === 'procurement'\) _procDocCountsChanged\(\);[\s\S]*?_bidDocCountsStale\(\);/.test(docsConf)
+      && /_procRerender\(\);[\s\S]*FCTProcurement\.refreshAttachmentCounts\(\);/.test(requireFn(SRC, '_procDocCountsChanged')));
 
   // The bid page's button. Between Import Procore Estimate and + Add Item —
   // XLSX → Email is pinned by test-bid-xlsx, and the Procore/Copy wiring lines
@@ -396,6 +429,8 @@ const JOB = {
     b.w.close();
   }
 
+  await runRealDocumentsChecks();
+
   console.log(`\n${failed === 0 ? '✓' : '✗'} ${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);
 })().catch(err => { console.error(err); process.exit(1); });
@@ -448,6 +483,84 @@ async function runAdminChecks(b, cfg) {
 
   assert('the page exposes fctAddSupplier and fctCreatePurchaseOrder on window',
     typeof w.fctAddSupplier === 'function' && typeof w.fctCreatePurchaseOrder === 'function' && typeof w.openPurchaseOrder === 'function');
+
+  // ── Attached documents ──
+  console.log('\n[attached documents — the page\'s side]');
+  {
+    // This boot fetches no <script src>, so documents.js has not run: the
+    // hooks are first called without it, as on a slow load. A stand-in with
+    // documents.js's calls then arrives, and records what the page asks.
+    const seen = [];
+    let docsCfg = null;
+    let failCounts = false;
+    const fake = {
+      configure(c) { docsCfg = { ...(docsCfg || {}), ...c }; },
+      procurementCount: (pid, id) => (pid === 'j1' && id === 'r1' ? 2 : 0),
+      costCodeCount: (pid, code) => (pid === 'j1' && code === 'Stormwater' ? 5 : 0),
+      refreshProcurementCounts: pid => { seen.push(['proc', pid]); return failCounts ? Promise.reject(new Error('down')) : Promise.resolve({ r1: 2 }); },
+      refreshCostCodeCounts: (pid, opts) => { seen.push(['cc', pid, opts]); return Promise.resolve({ Stormwater: 5 }); },
+      openProcurementAttach: line => { seen.push(['attach', line]); },
+      openCostCodeFolder: o => { seen.push(['folder', o]); },
+    };
+    assert('before documents.js has run, every count is 0', cfg.attachmentCount('j1', 'r1') === 0 && cfg.costCodeDocCount('j1', 'Stormwater') === 0);
+    const line = { id: 'r1', project_id: 'j1', cost_code: 'Stormwater', sub_code: 'Geofabric', label: 'Stormwater / Geofabric' };
+    cfg.openAttachments(line);
+    const counting = cfg.refreshAttachmentCounts('j1');
+    await settle(200);
+    assert('a paperclip clicked before documents.js has run waits for it, rather than doing nothing', seen.length === 0 && !w.eval('_docsConfigured'));
+    w.FCTDocuments = fake;
+    await settle(200);
+    const attached = seen.filter(s => s[0] === 'attach');
+    assert('  and once it has, opens that line\'s documents — the line as the sheet described it',
+      attached.length === 1 && JSON.stringify(attached[0][1]) === JSON.stringify(line), JSON.stringify(seen));
+    assert('  after handing documents.js the page\'s configuration', !!docsCfg && docsCfg.division === 'turf' && w.eval('_docsConfigured') === true);
+    const counted = await counting;
+    assert('counts asked for before then wait for it too, and read both: the lines and the cost codes, for that job',
+      seen.some(s => s[0] === 'proc' && s[1] === 'j1') && seen.some(s => s[0] === 'cc' && s[1] === 'j1')
+        && JSON.stringify(counted) === JSON.stringify([{ r1: 2 }, { Stormwater: 5 }]), JSON.stringify(counted));
+    const ccAt = seen.length;
+    await cfg.refreshAttachmentCounts('j1');
+    const ccAsked = seen.slice(ccAt).filter(s => s[0] === 'cc');
+    assert('  the cost codes read fresh, even for the job documents.js already holds',
+      ccAsked.length === 1 && ccAsked[0][1] === 'j1' && ccAsked[0][2] && ccAsked[0][2].fresh === true, JSON.stringify(ccAsked));
+    assert('the sheet reads documents.js\'s counts, per line and per cost code',
+      cfg.attachmentCount('j1', 'r1') === 2 && cfg.attachmentCount('j1', 'r9') === 0
+        && cfg.costCodeDocCount('j1', 'Stormwater') === 5 && cfg.costCodeDocCount('j1', 'General') === 0);
+    failCounts = true;
+    assert('a count read that fails resolves (null) rather than rejecting', (await cfg.refreshAttachmentCounts('j1')) === null);
+    failCounts = false;
+    const asksBefore = seen.length;
+    assert('  and a line with no job asks nothing', (await cfg.refreshAttachmentCounts('')) === null && seen.length === asksBefore);
+
+    w.eval("lists.cost_codes = [{ value: 'Stormwater', description: 'Storm Drainage' }]");
+    cfg.openCostCodeFolder({ projectId: 'j1', costCode: 'Stormwater' });
+    await settle(20);
+    const folder = seen.filter(s => s[0] === 'folder').pop();
+    assert('a section\'s folder chip opens that cost code\'s folder on the job, labelled from the master list (as the bid page\'s chip is)',
+      folder && JSON.stringify(folder[1]) === JSON.stringify({ projectId: 'j1', costCode: 'Stormwater', label: 'Storm Drainage', fresh: true }), JSON.stringify(folder));
+
+    assert('documents.js is told the login name the server records as the uploader, not the display name',
+      typeof docsCfg.getUserName === 'function' && docsCfg.getUserName() === USERS.admin.username);
+
+    // A document attached, detached or deleted: documents.js says so through onChange.
+    const P = w.FCTProcurement;
+    const origRerender = P.rerender, origRecount = P.refreshAttachmentCounts;
+    let rerenders = 0, recounts = 0;
+    P.rerender = () => { rerenders++; };
+    P.refreshAttachmentCounts = () => { recounts++; return Promise.resolve(true); };
+    const wasTab = w.eval('activeTab');
+    w.eval("activeTab = 'procurement'");
+    docsCfg.onChange();
+    assert('a document changed while the Procurement tab is open redraws the sheet from the new counts', rerenders === 1);
+    assert('  and counts the sheet\'s job again as a whole', recounts === 1);
+    w.eval("activeTab = 'info'");
+    docsCfg.onChange();
+    assert('  but neither while another tab is open', rerenders === 1 && recounts === 1);
+    P.rerender = origRerender;
+    P.refreshAttachmentCounts = origRecount;
+    w.eval(`activeTab = ${JSON.stringify(wasTab)}`);
+    assert('procurement.js offers the page that recount', typeof origRecount === 'function');
+  }
 
   // ── Purchase orders ──
   console.log('\n[Create PO from selected rows]');
@@ -718,4 +831,115 @@ async function runAdminChecks(b, cfg) {
       && w.eval("lists.suppliers.map(s => s.name).join('|')") === 'Bolt Bros', w.eval("lists.suppliers.map(s => s.name).join('|')"));
     routes.shift();
   }
+}
+
+/**
+ * The Procurement sheet and the real documents.js together, in the booted
+ * page, against a stubbed server. The checks above stand a recorder in for
+ * documents.js; this is the one place the two modules meet as they ship.
+ *
+ * What it pins: once documents.js holds the sheet's job (a paperclip was
+ * opened), the poll still moves the section folder chips. documents.js used
+ * to count a job it held from its own copy, which nothing but this browser's
+ * own uploads ever changed — so a colleague's file, or a line's files the
+ * server re-filed under its new code, never reached the chip, while the
+ * paperclip beside it (always asked fresh) moved on.
+ */
+async function runRealDocumentsChecks() {
+  console.log('\n[the section folder chip keeps up with the server — real documents.js]');
+  const b = boot(USERS.admin);
+  await settle();
+  const { w, routes, calls } = b;
+  const doc = w.document;
+  const FOLDER = '\u{1F4C1}', CLIP = '\u{1F4CE}';
+
+  const ROWS = [
+    { id: 'r1', project_id: 'j1', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric',
+      version: 1, created_at: '2026-10-01T00:00:00Z', updated_at: '2026-10-01T00:00:00Z' },
+    { id: 'r2', project_id: 'j1', source: 'bid', bid_item_id: 'b3', cost_code: 'General', sub_code: 'Mobilization',
+      version: 1, created_at: '2026-10-01T00:00:01Z', updated_at: '2026-10-01T00:00:01Z' },
+  ];
+  const FOLDERS = [
+    { id: 'f-safety', parent_id: null, name: 'Safety', kind: 'fixed', slug: 'safety', cost_code: null, sort_order: 1 },
+    { id: 'f-gen', parent_id: null, name: 'General', kind: 'cost_code', slug: 'cc-General', cost_code: 'General', sort_order: 8 },
+    { id: 'f-storm', parent_id: null, name: 'Stormwater', kind: 'cost_code', slug: 'cc-Stormwater', cost_code: 'Stormwater', sort_order: 9 },
+  ];
+  const file = (id, filename, folderIds, rowIds) => ({
+    id, project_id: 'j1', filename, content_type: 'application/pdf', size_bytes: 1024, note: '', uploaded_by: 'lou',
+    uploaded_at: '2026-10-02T00:00:00Z', folder_ids: folderIds, po_ids: [], procurement_ids: rowIds,
+  });
+  const DOCS = [file('d1', 'geofabric-quote.pdf', ['f-safety', 'f-storm'], ['r1'])];
+  routes.unshift(c => {
+    const u = new URL(c.url, 'https://datawatch.app');
+    const qp = Object.fromEntries(u.searchParams);
+    if (u.pathname === '/api/procurement' && c.method === 'GET') {
+      return { body: { ok: true, items: ROWS.filter(r => r.project_id === qp.project_id), canEdit: true } };
+    }
+    if (u.pathname !== '/api/documents') return null;
+    if (c.method === 'PUT') return { body: { folders: FOLDERS } };
+    if (qp.procurementCounts) {
+      const counts = {};
+      for (const d of DOCS) for (const id of d.procurement_ids) counts[id] = (counts[id] || 0) + 1;
+      return { body: { counts } };
+    }
+    if (qp.procurementId) return { body: { documents: DOCS.filter(d => d.procurement_ids.includes(qp.procurementId)) } };
+    if (qp.poCounts) return { body: { counts: {} } };
+    return { body: { folders: FOLDERS, documents: DOCS, caps: { canUpload: true, canManage: true, canDelete: true } } };
+  });
+
+  // Both deferred scripts, as their <script defer> tags would run them.
+  w.eval(fs.readFileSync(root('documents.js'), 'utf8'));
+  loadModule(w);
+  w.eval(`projectsList.push(${JSON.stringify(JOB)})`);
+  doc.querySelector('.tab-btn[data-tab="procurement"]').click();
+  await settle(250);
+  w.FCTProcurement._test.selectProject('j1');
+  await settle(400);
+
+  const chip = code => doc.querySelector(`#procurement-root [data-grpdocs="${code}"]`);
+  const clip = id => doc.querySelector(`#procurement-root [data-act="files"][data-row="${id}"]`);
+  assert('the sheet draws the job, with a folder chip on each cost-code section',
+    !!chip('Stormwater') && !!chip('General') && !!clip('r1'), doc.getElementById('procurement-root').textContent.slice(0, 200));
+  assert('  counted from the server: the Stormwater section and its line each have the one file',
+    chip('Stormwater').textContent === FOLDER + '1' && clip('r1').textContent === CLIP + '1',
+    `${chip('Stormwater').textContent} / ${clip('r1').textContent}`);
+
+  // A paperclip opened: documents.js now holds the job.
+  clip('r1').click();
+  await settle(300);
+  const dialogs = () => [...doc.body.children].filter(el => el.querySelector && el.querySelector('[data-body]'));
+  const dlg = dialogs().pop();
+  assert('the paperclip opens the line\'s documents', !!dlg && /geofabric-quote\.pdf/.test(dlg.textContent));
+  dialogs().forEach(el => el.remove());
+
+  // On the server meanwhile: a colleague attaches a second file to the line,
+  // and the line r2's file is re-filed from General into Stormwater (the
+  // server's move when a line is re-coded).
+  DOCS.push(file('d2', 'cut-sheet.pdf', ['f-safety', 'f-storm'], ['r1']));
+  DOCS.push(file('d3', 'mob-plan.pdf', ['f-safety', 'f-storm'], []));
+  const before = calls.length;
+  await w.FCTProcurement.refresh();          // the page's poll
+  await settle(300);
+  const asked = calls.slice(before).map(c => new URL(c.url, 'https://datawatch.app'))
+    .filter(u => u.pathname === '/api/documents').map(u => Object.fromEntries(u.searchParams));
+  assert('the poll reads the job\'s documents again although documents.js already holds it',
+    asked.some(qp => qp.projectId === 'j1' && !qp.procurementCounts && !qp.procurementId), JSON.stringify(asked));
+  assert('  and seeds nothing on the way (a poll is a read)',
+    !calls.slice(before).some(c => c.method === 'PUT'), calls.slice(before).map(c => `${c.method} ${c.url}`).join(' | '));
+  assert('the paperclip moves with the colleague\'s file', clip('r1').textContent === CLIP + '2', clip('r1').textContent);
+  assert('  and so does the section\'s folder chip, which used to stay on the copy documents.js held',
+    chip('Stormwater').textContent === FOLDER + '3', chip('Stormwater').textContent);
+
+  // The chip opens the folder read fresh: everything the chip counts is listed.
+  DOCS.push(file('d4', 'late-ticket.pdf', ['f-storm'], []));
+  chip('Stormwater').click();
+  await settle(400);
+  const folderDlg = dialogs().pop();
+  assert('the chip opens the cost code\'s folder, read again on the way, listing the file filed a moment ago',
+    !!folderDlg && ['geofabric-quote.pdf', 'cut-sheet.pdf', 'mob-plan.pdf', 'late-ticket.pdf'].every(n => folderDlg.textContent.includes(n))
+      && /4 documents filed under this cost code/.test(folderDlg.textContent), folderDlg && folderDlg.textContent.slice(0, 300));
+  await settle(300);
+  assert('  and the chip catches up with what the dialog shows', chip('Stormwater').textContent === FOLDER + '4', chip('Stormwater').textContent);
+  assert('nothing on the page failed', b.errors.length === 0, b.errors[0]);
+  b.w.close();
 }

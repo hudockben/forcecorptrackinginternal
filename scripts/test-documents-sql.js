@@ -10,8 +10,9 @@
  * order scripts/run-schema.js uses.
  *
  * DESTRUCTIVE: truncates project_folders, project_documents, document_links
- * and document_audit_log. Refuses to run against a database whose name does
- * not look like a test database.
+ * and document_audit_log, and inserts (then removes) procurement_items rows
+ * with ids starting 'dpr-' and app_data job blobs for 'proj-proc-*'. Refuses
+ * to run against a database whose name does not look like a test database.
  *
  * Drives the real handler against a real PostgreSQL, so what is asserted is
  * what the database actually does:
@@ -20,6 +21,9 @@
  *     same job at once (the unique index is the referee)
  *   - a document filed in a cost-code folder and attached to a PO is ONE row
  *     reachable from both, which is the whole premise of document_links
+ *   - a document attached to a Procurement line is filed in the line's
+ *     cost-code folder too (made if missing, found ignoring case and spaces),
+ *     with per-job counts and the same scoping and permission rules
  *   - unfiling never strands a document with no folder
  *   - division and company scoping, against the real WHERE clauses
  *   - the permission ladder: level1 view, level2 upload, level3 manage,
@@ -127,6 +131,15 @@ async function seed() {
   await client.query(`TRUNCATE project_folders, project_documents, document_links, document_audit_log RESTART IDENTITY CASCADE`);
   await client.query(`INSERT INTO companies (code, name) VALUES ('FCT','Force Corp') ON CONFLICT (code) DO NOTHING`);
   await client.query(`INSERT INTO companies (code, name) VALUES ('OTH','Rival Co')  ON CONFLICT (code) DO NOTHING`);
+}
+
+// The procurement lines and job blobs the attachment checks insert. They live
+// outside the four truncated tables, so they are removed by hand — before the
+// checks (a crashed earlier run) and after them.
+async function cleanProcurement() {
+  await client.query(`DELETE FROM procurement_items WHERE id LIKE 'dpr-%'`);
+  await client.query(`DELETE FROM app_data WHERE key LIKE 'FCT:fct_project_proj-proc-%'`);
+  await client.query(`DELETE FROM app_data WHERE key = 'FCT:fct_purchase_orders:turf' AND value::text LIKE '%po-proc-carve%'`);
 }
 
 // Register a document the way the browser does: mint an id, PUT the bytes to
@@ -761,6 +774,499 @@ async function upload(folderId, filename, auth, extra = {}) {
 
   }
 
+  // ── Procurement line attachments ────────────────────────────────────────
+  // A file attached to a line on the Procurement sheet is one document with a
+  // 'procurement' link to the line, filed in the folder the person picked AND
+  // in the folder for the line's cost code — so each cost-code folder compiles
+  // every attachment of its section. Braced so these locals stay local.
+  {
+    console.log('\nProcurement line attachments');
+    const PJ  = 'proj-proc-1';
+    const PJ2 = 'proj-proc-2';
+    const PJ3 = 'proj-proc-3';
+    await cleanProcurement();
+    // upload() files into PROJ by default; these checks work on their own jobs.
+    const att = (folderId, filename, auth, extra = {}) => upload(folderId, filename, auth, { projectId: PJ, ...extra });
+
+    const procRow = (id, o = {}) => client.query(
+      `INSERT INTO procurement_items (id, company_code, division, project_id, source, bid_item_id, cost_code, sub_code, deleted_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [id, o.company || 'FCT', o.division || 'turf', o.projectId || PJ, o.bidItemId ? 'bid' : 'manual',
+       o.bidItemId || null, o.costCode === undefined ? '' : o.costCode, o.subCode || '', o.deletedAt || null]);
+    const docRow = async id => (await call('GET', { division: 'turf', projectId: PJ }, null, PM))
+      .body.documents.find(d => d.id === id);
+    const countsFor = async (pid, auth = PM, division = 'turf') =>
+      (await call('GET', { division, procurementCounts: '1', projectId: pid }, null, auth)).body.counts;
+    const docsStored = async id =>
+      (await client.query(`SELECT COUNT(*)::int AS n FROM project_documents WHERE id = $1`, [id])).rows[0].n;
+    const ccFolders = async (pid, code) => (await client.query(
+      `SELECT * FROM project_folders WHERE company_code = 'FCT' AND division = 'turf' AND project_id = $1
+         AND kind = 'cost_code' AND lower(btrim(cost_code)) = lower(btrim($2))`, [pid, code])).rows;
+
+    // The job's tree, seeded the way the Documents tab seeds it from the bid.
+    const seeded = await call('PUT', { division: 'turf', projectId: PJ }, {
+      costCodes: [{ code: '420', label: 'Paving' }, { code: 'Stormwater', label: '' }],
+    }, PM);
+    const tree = seeded.body.folders;
+    const fSafety = tree.find(f => f.slug === 'safety');
+    const fPhotos = tree.find(f => f.slug === 'photos');
+    const fPaving = tree.find(f => f.cost_code === '420');
+    const fStorm  = tree.find(f => f.cost_code === 'Stormwater');
+    assert('the procurement job has its cost-code folders seeded', Boolean(fSafety && fPaving && fStorm),
+      tree.map(f => f.name).join(' | '));
+
+    // The job's stored bid: b1 is code 420, b3 is on the bid with no code.
+    await client.query(
+      `INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [`FCT:fct_project_${PJ}`, JSON.stringify({ id: PJ, bidItems: [
+        { id: 'b1', cost_code: '420', sub_code: 'Base', quantity: 10, unit: 'TN' },
+        { id: 'b3', sub_code: 'Uncoded line', quantity: 1, unit: 'LS' },
+      ] })]);
+
+    await procRow('dpr-1', { costCode: '420', subCode: 'Base' });
+    await procRow('dpr-bid', { bidItemId: 'b1', costCode: 'OLD-CODE', subCode: 'Base' });
+    await procRow('dpr-case', { costCode: '  STORMWATER ' });
+    await procRow('dpr-none', { costCode: '' });
+    await procRow('dpr-blankbid', { bidItemId: 'b3', costCode: 'Stormwater' });
+    await procRow('dpr-new', { costCode: '510' });
+    await procRow('dpr-del', { costCode: '420', deletedAt: new Date() });
+    await procRow('dpr-other', { projectId: PJ2, costCode: '420' });
+    await procRow('dpr-j2', { projectId: PJ2, costCode: '420' });
+    await procRow('dpr-pav', { division: 'paving', costCode: '420' });
+    await procRow('dpr-rival', { company: 'OTH', costCode: '420' });
+    await procRow('dpr-620a', { projectId: PJ3, costCode: '620' });
+    await procRow('dpr-620b', { projectId: PJ3, costCode: '620' });
+
+    // ── Attached at upload ──
+    const up1 = await att(fSafety.id, 'geofabric-quote.pdf', FOREMAN, { procurementId: 'dpr-1' });
+    assert('a foreman attaches a file to a procurement line (201)', up1.statusCode === 201, JSON.stringify(up1.body));
+    const d1 = up1.body.document;
+    assert('the answer carries the line and both folders',
+      d1 && JSON.stringify(d1.procurement_ids) === '["dpr-1"]'
+        && d1.folder_ids.length === 2 && d1.folder_ids.includes(fSafety.id) && d1.folder_ids.includes(fPaving.id),
+      JSON.stringify(d1));
+    assert('and names the cost-code folder it was compiled into', up1.body.costCodeFolderId === fPaving.id,
+      JSON.stringify(up1.body.costCodeFolderId));
+    const l1 = await docRow(d1.id);
+    assert('the job listing files it in the picked folder', l1 && l1.folder_ids.includes(fSafety.id), JSON.stringify(l1));
+    assert('AND in the line\'s cost-code folder', l1 && l1.folder_ids.includes(fPaving.id), JSON.stringify(l1));
+    assert('and lists the procurement link', l1 && JSON.stringify(l1.procurement_ids) === '["dpr-1"]', JSON.stringify(l1));
+    assert('stored once however many places it shows', await docsStored(d1.id) === 1);
+    const procLink = await client.query(
+      `SELECT company_code, created_by FROM document_links WHERE document_id = $1 AND link_type = 'procurement' AND target_id = 'dpr-1'`, [d1.id]);
+    assert('the procurement link is the company\'s, and says who made it',
+      procLink.rows.length === 1 && procLink.rows[0].company_code === 'FCT' && procLink.rows[0].created_by === 'foreman',
+      JSON.stringify(procLink.rows));
+    const upAudit = (await client.query(
+      `SELECT detail FROM document_audit_log WHERE action = 'UPLOAD' AND document_id = $1`, [d1.id])).rows[0];
+    assert('the upload audit names the line and the cost-code folder',
+      upAudit && upAudit.detail.procurement_id === 'dpr-1' && upAudit.detail.cost_code_folder_id === fPaving.id,
+      JSON.stringify(upAudit));
+
+    const plain = await att(fSafety.id, 'plain.pdf', PM);
+    assert('an upload with no line has no procurement links and no cost-code folder',
+      plain.statusCode === 201 && plain.body.document.procurement_ids.length === 0
+        && plain.body.costCodeFolderId === null && plain.body.document.folder_ids.length === 1, JSON.stringify(plain.body));
+
+    // Picking the cost-code folder itself files it there once.
+    const up2 = await att(fPaving.id, 'delivery-ticket.pdf', PM, { procurementId: 'dpr-1' });
+    assert('picking the cost-code folder itself files it there once',
+      up2.statusCode === 201 && JSON.stringify(up2.body.document.folder_ids) === JSON.stringify([fPaving.id])
+        && up2.body.costCodeFolderId === fPaving.id, JSON.stringify(up2.body));
+    const dupLinks = (await client.query(
+      `SELECT COUNT(*)::int AS n FROM document_links WHERE document_id = $1 AND link_type = 'folder'`, [up2.body.document.id])).rows[0].n;
+    assert('with one folder link, not two', dupLinks === 1, String(dupLinks));
+
+    // ── Listing and counting ──
+    const byLine = await call('GET', { division: 'turf', procurementId: 'dpr-1', projectId: PJ }, null, PM);
+    assert('GET ?procurementId lists the line\'s documents, newest first',
+      byLine.statusCode === 200 && byLine.body.documents.map(d => d.id).join(',') === [up2.body.document.id, d1.id].join(','),
+      JSON.stringify(byLine.body));
+    assert('each with its folder, PO and procurement ids',
+      byLine.body.documents.every(d => Array.isArray(d.folder_ids) && Array.isArray(d.po_ids) && d.procurement_ids.includes('dpr-1')));
+    const byLineAnyJob = await call('GET', { division: 'turf', procurementId: 'dpr-1' }, null, PM);
+    assert('without a projectId it still finds them', byLineAnyJob.body.documents.length === 2, JSON.stringify(byLineAnyJob.body));
+    const byLineOtherJob = await call('GET', { division: 'turf', procurementId: 'dpr-1', projectId: PJ2 }, null, PM);
+    assert('scoped to another job it finds nothing', byLineOtherJob.body.documents.length === 0, JSON.stringify(byLineOtherJob.body));
+    const viewerList = await call('GET', { division: 'turf', procurementId: 'dpr-1', projectId: PJ }, null, VIEWER);
+    assert('a view-only user can list a line\'s documents', viewerList.statusCode === 200 && viewerList.body.documents.length === 2,
+      JSON.stringify(viewerList.body));
+    const badList = await call('GET', { division: 'turf', procurementId: 'not a row!' }, null, PM);
+    assert('a malformed line id is refused (400)', badList.statusCode === 400, JSON.stringify(badList.body));
+
+    let c = await countsFor(PJ);
+    assert('GET ?procurementCounts gives each line its count', c['dpr-1'] === 2, JSON.stringify(c));
+    const viewerCounts = await call('GET', { division: 'turf', procurementCounts: '1', projectId: PJ }, null, VIEWER);
+    assert('and a view-only user can read them too', viewerCounts.statusCode === 200 && viewerCounts.body.counts['dpr-1'] === 2,
+      JSON.stringify(viewerCounts.body));
+
+    // Another job of the same company keeps its own counts.
+    const seeded2 = await call('PUT', { division: 'turf', projectId: PJ2 }, { costCodes: [{ code: '420', label: 'Paving' }] }, PM);
+    const j2Safety = seeded2.body.folders.find(f => f.slug === 'safety');
+    const j2Paving = seeded2.body.folders.find(f => f.cost_code === '420');
+    const upJ2 = await att(j2Safety.id, 'j2.pdf', PM, { projectId: PJ2, procurementId: 'dpr-j2' });
+    assert('a line on another job files into THAT job\'s cost-code folder',
+      upJ2.statusCode === 201 && upJ2.body.costCodeFolderId === j2Paving.id && j2Paving.id !== fPaving.id,
+      JSON.stringify(upJ2.body));
+    c = await countsFor(PJ);
+    const c2 = await countsFor(PJ2);
+    assert('counts are per job', !('dpr-j2' in c) && c2['dpr-j2'] === 1 && !('dpr-1' in c2),
+      `PJ=${JSON.stringify(c)} PJ2=${JSON.stringify(c2)}`);
+
+    // Other company and other division see none of it.
+    const rivalList = await call('GET', { division: 'turf', procurementId: 'dpr-1', projectId: PJ }, null, OTHERCO);
+    const rivalCounts = await countsFor(PJ, OTHERCO);
+    assert('another company sees no attachments and no counts',
+      rivalList.statusCode === 200 && rivalList.body.documents.length === 0 && Object.keys(rivalCounts).length === 0,
+      JSON.stringify({ list: rivalList.body, counts: rivalCounts }));
+    const pavList = await call('GET', { division: 'paving', procurementId: 'dpr-1', projectId: PJ }, null, PAVER);
+    const pavCounts = await countsFor(PJ, PAVER, 'paving');
+    assert('another division sees none either',
+      pavList.statusCode === 200 && pavList.body.documents.length === 0 && Object.keys(pavCounts).length === 0,
+      JSON.stringify({ list: pavList.body, counts: pavCounts }));
+
+    // ── Refused attachments: nothing is written ──
+    const refused = async (label, folderId, extra, status, auth = PM) => {
+      const r = await att(folderId, 'refused.pdf', auth, extra);
+      const id = `doc-${seq}`;
+      assert(label, r.statusCode === status && (await docsStored(id)) === 0, `${r.statusCode} ${JSON.stringify(r.body)}`);
+      return r;
+    };
+    await refused('a malformed procurementId is refused (400), nothing registered', fSafety.id, { procurementId: 'bad id!' }, 400);
+    await refused('a 65-character procurementId is refused (400)', fSafety.id, { procurementId: 'x'.repeat(65) }, 400);
+    const nf = await refused('a line that does not exist → 404, nothing registered', fSafety.id, { procurementId: 'dpr-nope' }, 404);
+    assert('the 404 says which thing was missing, and why',
+      nf.body.error === 'Procurement line not found' && typeof nf.body.detail === 'string' && nf.body.detail.length > 0,
+      JSON.stringify(nf.body));
+    await refused('a line on another job → 404', fSafety.id, { procurementId: 'dpr-other' }, 404);
+    await refused('a line deleted from the sheet → 404', fSafety.id, { procurementId: 'dpr-del' }, 404);
+    await refused('a line of another division → 404', fSafety.id, { procurementId: 'dpr-pav' }, 404);
+    await refused('a line of another company → 404', fSafety.id, { procurementId: 'dpr-rival' }, 404);
+    await refused('a view-only user cannot attach (403)', fSafety.id, { procurementId: 'dpr-1' }, 403, VIEWER);
+    const general = (await call('PUT', { division: 'turf' }, {}, PM)).body.folders;
+    const office  = general.find(f => f.slug === 'office');
+    const gen = await refused('a General / Non-Job upload cannot attach to a line (404)', office.id,
+      { projectId: null, procurementId: 'dpr-1' }, 404);
+    assert('and says lines belong to a job', /job/i.test(gen.body.detail || ''), JSON.stringify(gen.body));
+
+    // Another company attaching to our line by id, through its own tree.
+    const rivalTree = (await call('PUT', { division: 'turf', projectId: PJ }, { costCodes: [] }, OTHERCO)).body.folders;
+    const rivalSafety = rivalTree.find(f => f.slug === 'safety');
+    STORE.set(`OTH/turf/${PJ}/doc-rival-proc/x.pdf`, 10);
+    const rivalUp = await call('POST', { division: 'turf', projectId: PJ }, {
+      documentId: 'doc-rival-proc', filename: 'x.pdf', storageKey: `OTH/turf/${PJ}/doc-rival-proc/x.pdf`,
+      folderId: rivalSafety.id, sizeBytes: 10, procurementId: 'dpr-1',
+    }, OTHERCO);
+    assert('another company cannot attach to our line (404), nothing registered',
+      rivalUp.statusCode === 404 && (await docsStored('doc-rival-proc')) === 0, JSON.stringify(rivalUp.body));
+
+    // Central purchasing reaches a division only for one purchase order's
+    // paperwork. Attaching to a job's procurement line is not part of that.
+    const BUYER = { companyCode: 'FCT', userId: 7, username: 'buyer', role: 'level1', divisionRoles: { purchase_orders: 'level3' } };
+    // The division's PO list is one shared row; whatever it held is put back.
+    const poBlobWas = (await client.query(`SELECT value FROM app_data WHERE key = 'FCT:fct_purchase_orders:turf'`)).rows[0];
+    await client.query(
+      `INSERT INTO app_data (key, value) VALUES ('FCT:fct_purchase_orders:turf', $1::jsonb)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [JSON.stringify([{ id: 'po-proc-carve', po_number: 'PO-77', project_id: PJ }])]);
+    const poRootPJ = tree.find(f => f.slug === 'purchase-orders');
+    STORE.set(`FCT/turf/${PJ}/doc-carve/receipt.pdf`, 10);
+    const carveBody = { documentId: 'doc-carve', filename: 'receipt.pdf', storageKey: `FCT/turf/${PJ}/doc-carve/receipt.pdf`,
+      folderId: poRootPJ.id, sizeBytes: 10, poId: 'po-proc-carve' };
+    const carve = await call('POST', { division: 'turf', poId: 'po-proc-carve' }, { ...carveBody, procurementId: 'dpr-1' }, BUYER);
+    assert('the purchasing carve-out cannot attach to a procurement line (403)',
+      carve.statusCode === 403 && (await docsStored('doc-carve')) === 0, JSON.stringify(carve.body));
+    const carveOk = await call('POST', { division: 'turf', poId: 'po-proc-carve' }, carveBody, BUYER);
+    assert('while the same receipt without a line still files under its order (201)', carveOk.statusCode === 201,
+      JSON.stringify(carveOk.body));
+    const carveGet = await call('GET', { division: 'turf', procurementId: 'dpr-1', projectId: PJ }, null, BUYER);
+    assert('and the carve-out cannot list a line\'s attachments (403)', carveGet.statusCode === 403, JSON.stringify(carveGet.body));
+    const carveCounts = await call('GET', { division: 'turf', procurementCounts: '1', projectId: PJ }, null, BUYER);
+    assert('nor read the sheet\'s counts (403)', carveCounts.statusCode === 403, JSON.stringify(carveCounts.body));
+    if (poBlobWas) {
+      await client.query(`UPDATE app_data SET value = $1::jsonb WHERE key = 'FCT:fct_purchase_orders:turf'`,
+        [JSON.stringify(poBlobWas.value)]);
+    } else {
+      await client.query(`DELETE FROM app_data WHERE key = 'FCT:fct_purchase_orders:turf'`);
+    }
+
+    // ── Which cost code a line files under ──
+    const upBid = await att(fSafety.id, 'bid-line.pdf', PM, { procurementId: 'dpr-bid' });
+    assert('a line tied to a bid line files under the bid line\'s code, not its stale stored copy',
+      upBid.statusCode === 201 && upBid.body.costCodeFolderId === fPaving.id
+        && upBid.body.document.folder_ids.includes(fPaving.id), JSON.stringify(upBid.body));
+    assert('and no folder is made for the stale code', (await ccFolders(PJ, 'OLD-CODE')).length === 0);
+
+    const stormBefore = (await ccFolders(PJ, 'Stormwater')).length;
+    const upCase = await att(fSafety.id, 'case.pdf', PM, { procurementId: 'dpr-case' });
+    assert('"  STORMWATER " finds the seeded "Stormwater" folder (case and spaces ignored)',
+      upCase.statusCode === 201 && upCase.body.costCodeFolderId === fStorm.id, JSON.stringify(upCase.body));
+    assert('rather than making a second one', (await ccFolders(PJ, 'Stormwater')).length === stormBefore && stormBefore === 1);
+
+    const upNone = await att(fPhotos.id, 'uncoded.pdf', PM, { procurementId: 'dpr-none' });
+    assert('a line with no cost code files only in the folder picked',
+      upNone.statusCode === 201 && upNone.body.costCodeFolderId === null
+        && JSON.stringify(upNone.body.document.folder_ids) === JSON.stringify([fPhotos.id])
+        && JSON.stringify(upNone.body.document.procurement_ids) === '["dpr-none"]', JSON.stringify(upNone.body));
+    const upBlank = await att(fPhotos.id, 'blank-bid.pdf', PM, { procurementId: 'dpr-blankbid' });
+    assert('a bid line with no code counts as no code, even when the stored copy has one',
+      upBlank.statusCode === 201 && upBlank.body.costCodeFolderId === null
+        && JSON.stringify(upBlank.body.document.folder_ids) === JSON.stringify([fPhotos.id]), JSON.stringify(upBlank.body));
+
+    // A code nobody has opened the Documents tab for yet: its folder is made.
+    assert('no 510 folder before', (await ccFolders(PJ, '510')).length === 0);
+    const upNew = await att(fSafety.id, 'curb.pdf', PM, { procurementId: 'dpr-new' });
+    const made510 = await ccFolders(PJ, '510');
+    assert('a code with no folder gets one, and the file is filed in it',
+      upNew.statusCode === 201 && made510.length === 1 && upNew.body.costCodeFolderId === made510[0].id
+        && upNew.body.document.folder_ids.includes(made510[0].id), JSON.stringify({ body: upNew.body, made510 }));
+    const f510 = made510[0];
+    assert('made the way the seed makes one: top level, kind cost_code, slug cc-510, named with the code',
+      f510 && f510.parent_id === null && f510.kind === 'cost_code' && f510.slug === 'cc-510'
+        && f510.cost_code === '510' && f510.name === '510' && f510.created_by === 'pm', JSON.stringify(f510));
+    const mkAudit = (await client.query(
+      `SELECT detail FROM document_audit_log WHERE action = 'FOLDER_CREATE' AND folder_id = $1`, [f510.id])).rows;
+    assert('and its creation is in the audit trail', mkAudit.length === 1 && mkAudit[0].detail.via === 'procurement_cost_code',
+      JSON.stringify(mkAudit));
+    const upNew2 = await att(fPhotos.id, 'curb-2.pdf', PM, { procurementId: 'dpr-new' });
+    assert('a second file for the same code reuses that folder',
+      upNew2.body.costCodeFolderId === f510.id && (await ccFolders(PJ, '510')).length === 1, JSON.stringify(upNew2.body));
+    // The next time the Documents tab opens, the seed finds it by its code.
+    const reseed = await call('PUT', { division: 'turf', projectId: PJ }, {
+      costCodes: [{ code: '420', label: 'Paving' }, { code: 'Stormwater', label: '' }, { code: '510', label: 'Curb' }],
+    }, PM);
+    const after510 = reseed.body.folders.filter(f => f.cost_code === '510');
+    assert('the next seed relabels that SAME folder instead of making a second',
+      reseed.statusCode === 200 && reseed.body.created === 0 && after510.length === 1
+        && after510[0].id === f510.id && after510[0].name === '510 · Curb', JSON.stringify(after510));
+    assert('and sorts it among the job\'s other cost codes',
+      after510[0].sort_order > fPaving.sort_order && after510[0].sort_order < 800, String(after510[0].sort_order));
+    const stillFiled = await docRow(upNew.body.document.id);
+    assert('with the file still in it', stillFiled.folder_ids.includes(f510.id), JSON.stringify(stillFiled));
+
+    // A folder somebody made by hand already has the code's name.
+    const seeded3 = await call('PUT', { division: 'turf', projectId: PJ3 }, { costCodes: [] }, PM);
+    const j3Safety = seeded3.body.folders.find(f => f.slug === 'safety');
+    const handMade = await call('POST', { division: 'turf', projectId: PJ3, folder: '1' }, { name: '620' }, PM);
+    assert('a hand-made folder named "620" exists at the top of the job', handMade.statusCode === 201, JSON.stringify(handMade.body));
+    const up620 = await att(j3Safety.id, 'pipe.pdf', PM, { projectId: PJ3, procurementId: 'dpr-620a' });
+    const cc620 = await ccFolders(PJ3, '620');
+    assert('the line still gets a real cost-code folder, under a suffixed name',
+      up620.statusCode === 201 && cc620.length === 1 && cc620[0].name === '620 (2)' && cc620[0].kind === 'cost_code'
+        && up620.body.costCodeFolderId === cc620[0].id, JSON.stringify({ body: up620.body, cc620 }));
+    assert('and the file is NOT put in the hand-made folder',
+      !up620.body.document.folder_ids.includes(handMade.body.folder.id), JSON.stringify(up620.body.document.folder_ids));
+    const up620b = await att(j3Safety.id, 'pipe-2.pdf', PM, { projectId: PJ3, procurementId: 'dpr-620b' });
+    assert('another line with that code finds the same folder (no "620 (3)")',
+      up620b.body.costCodeFolderId === cc620[0].id && (await ccFolders(PJ3, '620')).length === 1, JSON.stringify(up620b.body));
+
+    // ── Attaching and detaching after the fact ──
+    const loose = await att(fPhotos.id, 'site-photo.jpg', FOREMAN);
+    const looseId = loose.body.document.id;
+    const viewerAdd = await call('PATCH', { division: 'turf', id: looseId }, { addProcurementId: 'dpr-1' }, VIEWER);
+    assert('a view-only user cannot attach an existing file (403)', viewerAdd.statusCode === 403, JSON.stringify(viewerAdd.body));
+    const pmsDoc = plain.body.document.id;
+    const foremanOther = await call('PATCH', { division: 'turf', id: pmsDoc }, { addProcurementId: 'dpr-1' }, FOREMAN);
+    assert('a level2 cannot attach someone else\'s file (403)', foremanOther.statusCode === 403, JSON.stringify(foremanOther.body));
+    for (const [id, status, what] of [
+      ['bad id!', 400, 'a malformed line id (400)'],
+      ['dpr-nope', 404, 'a line that does not exist (404)'],
+      ['dpr-other', 404, 'a line on another job (404)'],
+      ['dpr-del', 404, 'a deleted line (404)'],
+      ['dpr-pav', 404, 'a line of another division (404)'],
+    ]) {
+      const r = await call('PATCH', { division: 'turf', id: looseId }, { addProcurementId: id }, FOREMAN);
+      assert(`attaching after the fact refuses ${what}`, r.statusCode === status, JSON.stringify(r.body));
+    }
+    const genDoc = await att(office.id, 'general.pdf', PM, { projectId: null });
+    const genAdd = await call('PATCH', { division: 'turf', id: genDoc.body.document.id }, { addProcurementId: 'dpr-1' }, PM);
+    assert('a General / Non-Job file cannot be attached to a job\'s line (404)', genAdd.statusCode === 404, JSON.stringify(genAdd.body));
+    const stillLoose = await docRow(looseId);
+    assert('and none of those refusals linked anything',
+      stillLoose.procurement_ids.length === 0 && JSON.stringify(stillLoose.folder_ids) === JSON.stringify([fPhotos.id]),
+      JSON.stringify(stillLoose));
+
+    const added = await call('PATCH', { division: 'turf', id: looseId }, { addProcurementId: 'dpr-1' }, FOREMAN);
+    assert('a level2 attaches its own file to a line after the fact',
+      added.statusCode === 200 && added.body.document.procurement_ids.includes('dpr-1'), JSON.stringify(added.body));
+    assert('which files it in the line\'s cost-code folder too',
+      added.body.document.folder_ids.includes(fPaving.id) && added.body.document.folder_ids.includes(fPhotos.id),
+      JSON.stringify(added.body.document.folder_ids));
+    c = await countsFor(PJ);
+    assert('and the line\'s count follows', c['dpr-1'] === 3, JSON.stringify(c));
+    const pmAdd = await call('PATCH', { division: 'turf', id: looseId }, { addProcurementId: 'dpr-new' }, PM);
+    assert('a level3 may attach anyone\'s file, to a second line',
+      pmAdd.statusCode === 200 && pmAdd.body.document.procurement_ids.length === 2
+        && pmAdd.body.document.folder_ids.includes(f510.id), JSON.stringify(pmAdd.body));
+
+    const removed = await call('PATCH', { division: 'turf', id: looseId }, { removeProcurementId: 'dpr-1' }, FOREMAN);
+    assert('detaching takes the line off', removed.statusCode === 200
+      && JSON.stringify(removed.body.document.procurement_ids) === '["dpr-new"]', JSON.stringify(removed.body));
+    assert('but leaves the file in the cost-code folder it was put in (as a PO detach does)',
+      removed.body.document.folder_ids.includes(fPaving.id), JSON.stringify(removed.body.document.folder_ids));
+    const looseRow = await client.query(`SELECT deleted_at FROM project_documents WHERE id = $1`, [looseId]);
+    assert('and never deletes the file', looseRow.rows[0].deleted_at === null);
+    c = await countsFor(PJ);
+    assert('the count drops back', c['dpr-1'] === 2 && c['dpr-new'] === 3, JSON.stringify(c));
+
+    const trail = (await client.query(
+      `SELECT action, detail FROM document_audit_log WHERE document_id = $1 ORDER BY id`, [looseId])).rows;
+    const has = (action, test) => trail.some(r => r.action === action && r.detail && test(r.detail));
+    assert('the trail has the LINK to the line',
+      has('LINK', d => d.link_type === 'procurement' && d.target_id === 'dpr-1'), JSON.stringify(trail));
+    assert('the LINK to the cost-code folder it brought with it',
+      has('LINK', d => d.link_type === 'folder' && d.target_id === fPaving.id && d.via === 'procurement_cost_code'
+        && d.procurement_id === 'dpr-1'), JSON.stringify(trail));
+    assert('and the UNLINK from the line',
+      has('UNLINK', d => d.link_type === 'procurement' && d.target_id === 'dpr-1'), JSON.stringify(trail));
+
+    // ── Deleted files and other link types never count ──
+    await call('DELETE', { division: 'turf', id: up2.body.document.id }, null, ADMIN);
+    c = await countsFor(PJ);
+    assert('a deleted file stops counting against its line', c['dpr-1'] === 1, JSON.stringify(c));
+    const afterDel = await call('GET', { division: 'turf', procurementId: 'dpr-1', projectId: PJ }, null, PM);
+    assert('and leaves the line\'s list', afterDel.body.documents.length === 1 && afterDel.body.documents[0].id === d1.id,
+      JSON.stringify(afterDel.body.documents.map(d => d.id)));
+    const trashRow = (await call('GET', { division: 'turf', trash: '1' }, null, ADMIN)).body.documents
+      .find(d => d.id === up2.body.document.id);
+    assert('the trash view still shows which line it was on', trashRow && trashRow.procurement_ids.includes('dpr-1'),
+      JSON.stringify(trashRow));
+
+    // A PO whose id happens to read like a line's, and a folder link: neither is a procurement attachment.
+    const poOnly = await att(fSafety.id, 'po-only.pdf', PM, { poId: 'dpr-po-lookalike' });
+    await call('PATCH', { division: 'turf', id: poOnly.body.document.id }, { addPoId: 'dpr-new' }, PM);
+    c = await countsFor(PJ);
+    assert('a PO link never counts as a procurement attachment',
+      !('dpr-po-lookalike' in c) && c['dpr-new'] === 3, JSON.stringify(c));
+    const poLook = await call('GET', { division: 'turf', procurementId: 'dpr-po-lookalike', projectId: PJ }, null, PM);
+    assert('nor lists under a line of that id', poLook.body.documents.length === 0, JSON.stringify(poLook.body));
+    assert('no count is keyed by a folder id', !Object.keys(c).some(k => tree.some(f => f.id === k)), JSON.stringify(c));
+    const poCountsNow = (await call('GET', { division: 'turf', poCounts: '1' }, null, PM)).body.counts;
+    assert('and the PO counts never include procurement links',
+      !('dpr-1' in poCountsNow) && poCountsNow['dpr-new'] === 1, JSON.stringify(poCountsNow));
+    const byPoLine = (await call('GET', { division: 'turf', poId: 'dpr-po-lookalike' }, null, PM)).body.documents;
+    assert('PO-scoped reads carry procurement_ids too', byPoLine.length === 1 && Array.isArray(byPoLine[0].procurement_ids),
+      JSON.stringify(byPoLine));
+
+    // ── A code that reads the same on screen finds the same folder ──
+    // The bid's code was pasted out of Excel with a non-breaking space after
+    // it, so the seed made its folder with that space. A row added from the
+    // sheet's section stores the code trimmed (the browser and the API both
+    // trim, and a JS trim strips that space). Postgres btrim() does not, so
+    // attaching to that row used to make a second "Stormwater" folder beside
+    // the seeded one, and the section's files were split between the two.
+    // The same for a dash typed one way on the bid and another on the sheet.
+    const PJ4 = 'proj-proc-4';
+    const NBSP_CODE = 'Stormwater ';
+    const DASH_CODE = 'Walkway – Wearing';
+    const seeded4 = await call('PUT', { division: 'turf', projectId: PJ4 }, {
+      costCodes: [{ code: NBSP_CODE, label: '' }, { code: DASH_CODE, label: '' }],
+    }, PM);
+    const tree4 = seeded4.body.folders || [];
+    const j4Safety = tree4.find(f => f.slug === 'safety');
+    const fNbsp = tree4.find(f => f.cost_code === NBSP_CODE);
+    const fDash = tree4.find(f => f.cost_code === DASH_CODE);
+    assert('the job seeds a folder for each code exactly as the bid spells it',
+      Boolean(j4Safety && fNbsp && fDash), tree4.map(f => JSON.stringify(f.cost_code)).join(' | '));
+    // An older case variant, sorted ahead of everything: a match on letter
+    // case alone would take it, and an exact match (spaces aside) must not.
+    await client.query(
+      `INSERT INTO project_folders (id, company_code, division, project_id, name, kind, slug, cost_code, sort_order)
+       VALUES ('dpr-f-upper', 'FCT', 'turf', $1, 'STORMWATER (old)', 'cost_code', 'cc-STORMWATER', 'STORMWATER', 0)`, [PJ4]);
+    await client.query(
+      `INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [`FCT:fct_project_${PJ4}`, JSON.stringify({ id: PJ4, bidItems: [
+        { id: 'nb1', cost_code: NBSP_CODE, sub_code: 'Geofabric', quantity: 10, unit: 'SY' },
+      ] })]);
+    await procRow('dpr-nb-tied', { projectId: PJ4, bidItemId: 'nb1', costCode: 'Stormwater', subCode: 'Geofabric' });
+    await procRow('dpr-nb-add', { projectId: PJ4, costCode: 'Stormwater' });
+    await procRow('dpr-dash', { projectId: PJ4, costCode: 'walkway - wearing' });
+    const folders4 = async () => Number((await client.query(
+      `SELECT count(*) FROM project_folders WHERE company_code = 'FCT' AND project_id = $1`, [PJ4])).rows[0].count);
+    const n4 = await folders4();
+
+    const upAdd = await att(j4Safety.id, 'section-row.pdf', PM, { projectId: PJ4, procurementId: 'dpr-nb-add' });
+    assert('a row added from the section (stored "Stormwater") files in the folder the bid seeded with a non-breaking space',
+      upAdd.statusCode === 201 && upAdd.body.costCodeFolderId === fNbsp.id
+        && upAdd.body.document.folder_ids.includes(fNbsp.id), JSON.stringify(upAdd.body));
+    assert('…not in the case variant sorted ahead of it',
+      !upAdd.body.document.folder_ids.includes('dpr-f-upper'), JSON.stringify(upAdd.body.document.folder_ids));
+    assert('…and no second Stormwater folder is made', await folders4() === n4, `${n4} -> ${await folders4()}`);
+    const upTied = await att(j4Safety.id, 'tied-row.pdf', PM, { projectId: PJ4, procurementId: 'dpr-nb-tied' });
+    assert('the row tied to that bid line files in the same folder',
+      upTied.statusCode === 201 && upTied.body.costCodeFolderId === fNbsp.id, JSON.stringify(upTied.body));
+    const upDash = await att(j4Safety.id, 'dash-row.pdf', PM, { projectId: PJ4, procurementId: 'dpr-dash' });
+    assert('a hyphen typed where the bid has an en dash, in another case, finds the bid\'s folder',
+      upDash.statusCode === 201 && upDash.body.costCodeFolderId === fDash.id && await folders4() === n4,
+      JSON.stringify(upDash.body));
+
+    // ── Restored after its line was re-coded ──
+    // While a file sits in the bin its line can be re-coded, and the re-file
+    // that follows a re-code moves only live files. The restore has to put it
+    // under the line's code as it is now, or the line's paperclip counts it in
+    // a section whose folder never holds it.
+    const procDocs = require(path.resolve(__dirname, '..', 'api', 'lib', 'procurement-docs.js'));
+    await procRow('dpr-rc', { costCode: 'Stormwater' });
+    const upRc = await att(fSafety.id, 'geofabric-restore.pdf', PM, { procurementId: 'dpr-rc' });
+    const rcId = upRc.body.document.id;
+    assert('a file attached to a Stormwater line is in the Stormwater folder',
+      upRc.statusCode === 201 && upRc.body.costCodeFolderId === fStorm.id, JSON.stringify(upRc.body));
+    await call('DELETE', { division: 'turf', id: rcId }, null, ADMIN);
+    await client.query(`UPDATE procurement_items SET cost_code = 'Storm Drainage' WHERE id = 'dpr-rc'`);
+    await procDocs.refileProcurementDocs(makeSql(client), {
+      companyCode: 'FCT', division: 'turf', username: 'pm',
+      changes: [{ rowId: 'dpr-rc', projectId: PJ, fromCode: 'Stormwater', toCode: 'Storm Drainage' }],
+    });
+    assert('the re-code leaves the file in the bin where it was, with no folder made for it',
+      (await ccFolders(PJ, 'Storm Drainage')).length === 0);
+    const rcTrailBefore = (await client.query(
+      `SELECT count(*)::int AS n FROM document_audit_log WHERE document_id = $1`, [rcId])).rows[0].n;
+    const restoredRc = await call('PATCH', { division: 'turf', id: rcId }, { restore: true }, ADMIN);
+    const sdF = await ccFolders(PJ, 'Storm Drainage');
+    assert('restoring it (200) files it under the line\'s cost code now, in a folder made for it',
+      restoredRc.statusCode === 200 && sdF.length === 1 && restoredRc.body.document
+        && restoredRc.body.document.folder_ids.includes(sdF[0].id), JSON.stringify({ body: restoredRc.body, sdF }));
+    assert('…keeping every folder it was already in',
+      restoredRc.body.document.folder_ids.includes(fSafety.id) && restoredRc.body.document.folder_ids.includes(fStorm.id),
+      JSON.stringify(restoredRc.body.document.folder_ids));
+    assert('…still attached to the line, which counts it again',
+      JSON.stringify(restoredRc.body.document.procurement_ids) === '["dpr-rc"]' && (await countsFor(PJ))['dpr-rc'] === 1);
+    const rcTrail = (await client.query(
+      `SELECT action, actor, folder_id, detail FROM document_audit_log WHERE document_id = $1 ORDER BY id`, [rcId])).rows.slice(rcTrailBefore);
+    assert('…the restore and the new filing are both in the trail, naming the line',
+      rcTrail.length === 2 && rcTrail[0].action === 'RESTORE' && rcTrail[1].action === 'LINK'
+        && rcTrail[1].actor === 'admin' && rcTrail[1].folder_id === (sdF[0] && sdF[0].id)
+        && rcTrail[1].detail.link_type === 'folder' && rcTrail[1].detail.via === 'procurement_cost_code'
+        && rcTrail[1].detail.procurement_id === 'dpr-rc', JSON.stringify(rcTrail));
+
+    // Restored with nothing changed: no filing, and nothing more in the trail.
+    await call('DELETE', { division: 'turf', id: rcId }, null, ADMIN);
+    const sameBefore = (await client.query(
+      `SELECT count(*)::int AS n FROM document_audit_log WHERE document_id = $1`, [rcId])).rows[0].n;
+    const restoredSame = await call('PATCH', { division: 'turf', id: rcId }, { restore: true }, ADMIN);
+    const sameTrail = (await client.query(
+      `SELECT action FROM document_audit_log WHERE document_id = $1 ORDER BY id`, [rcId])).rows.slice(sameBefore);
+    assert('a file restored under the code it already sits in is filed nowhere new',
+      restoredSame.statusCode === 200 && sameTrail.length === 1 && sameTrail[0].action === 'RESTORE'
+        && restoredSame.body.document.folder_ids.length === 3, JSON.stringify({ sameTrail, f: restoredSame.body.document }));
+
+    // A line deleted from the sheet while the file was in the bin puts it in
+    // no section: the restore does not file it under that line's code.
+    await procRow('dpr-rc-gone', { costCode: 'Stormwater' });
+    const upGone = await att(fSafety.id, 'gone-line.pdf', PM, { procurementId: 'dpr-rc-gone' });
+    await call('DELETE', { division: 'turf', id: upGone.body.document.id }, null, ADMIN);
+    await client.query(`UPDATE procurement_items SET cost_code = 'Gone Code', deleted_at = NOW() WHERE id = 'dpr-rc-gone'`);
+    const restoredGone = await call('PATCH', { division: 'turf', id: upGone.body.document.id }, { restore: true }, ADMIN);
+    assert('a file whose line was deleted meanwhile is restored where it was, with no folder made for that line',
+      restoredGone.statusCode === 200 && (await ccFolders(PJ, 'Gone Code')).length === 0
+        && JSON.stringify([...restoredGone.body.document.folder_ids].sort()) === JSON.stringify([fSafety.id, fStorm.id].sort()),
+      JSON.stringify(restoredGone.body.document));
+
+    await cleanProcurement();
+  }
+
   // ── Audit trail ─────────────────────────────────────────────────────────
   console.log('\nAudit trail');
   const log = await client.query(`SELECT action, actor, document_id FROM document_audit_log ORDER BY id`);
@@ -776,6 +1282,7 @@ async function upload(folderId, filename, auth, extra = {}) {
   process.exit(failed ? 1 : 0);
 })().catch(async err => {
   console.error('\nTest run failed:', err);
+  try { await cleanProcurement(); } catch {}
   try { await client.end(); } catch {}
   process.exit(1);
 });

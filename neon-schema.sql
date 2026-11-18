@@ -1893,10 +1893,20 @@ CREATE INDEX IF NOT EXISTS idx_pd_live    ON project_documents(company_code, div
 CREATE INDEX IF NOT EXISTS idx_pd_purge   ON project_documents(purge_after) WHERE purge_after IS NOT NULL;
 
 -- Where a document appears. Several rows per document — one per folder it is
--- filed in, one per purchase order it is attached to. This is what lets a
--- delivery ticket sit in a cost-code folder AND under its PO without storing
--- the file twice, and what will let an invoice hang off a PO line later
--- without a migration.
+-- filed in, one per purchase order it is attached to, one per Procurement
+-- line it is attached to. This is what lets a delivery ticket sit in a
+-- cost-code folder AND under its PO without storing the file twice, and what
+-- will let an invoice hang off a PO line later without a migration.
+--   link_type 'folder'      target_id is a project_folders id
+--   link_type 'po'          target_id is a purchase order id
+--   link_type 'procurement' target_id is a procurement_items id (a line on a
+--                           job's Procurement sheet). A file attached to a
+--                           line is also filed in that line's cost-code folder,
+--                           so the folder gathers every attachment of its
+--                           section (api/lib/procurement-docs.js).
+-- target_id has no foreign key, for any type: a deleted Procurement line is a
+-- soft delete, and its files keep the link so restoring the line brings them
+-- back with it.
 CREATE TABLE IF NOT EXISTS document_links (
     id           BIGSERIAL   PRIMARY KEY,
     document_id  TEXT        NOT NULL REFERENCES project_documents(id) ON DELETE CASCADE,
@@ -1907,9 +1917,12 @@ CREATE TABLE IF NOT EXISTS document_links (
     created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- Widening the list is safe on a live database: every existing row already
+-- passes the wider check. Narrowing it again would fail on any database that
+-- holds a 'procurement' link.
 ALTER TABLE document_links DROP CONSTRAINT IF EXISTS document_links_type_chk;
 ALTER TABLE document_links ADD  CONSTRAINT document_links_type_chk
-  CHECK (link_type IN ('folder','po'));
+  CHECK (link_type IN ('folder','po','procurement'));
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dl_unique ON document_links(document_id, link_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_dl_target ON document_links(link_type, target_id);

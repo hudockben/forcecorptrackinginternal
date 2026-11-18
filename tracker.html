@@ -16735,10 +16735,16 @@ function _docsEnsureConfigured() {
       canManage: perm.canDeleteProject,
       canDelete: perm.isAdmin,
     },
-    // Attaching or deleting changes the paperclip counts the PO tab draws, and
-    // the folder counts on an open bid's green cost-code bars.
+    // Who the server stamps as a document's uploader: the login name
+    // (api/documents.js records the token's username), not the display name
+    // — documents.js compares the two to offer Detach on one's own uploads.
+    getUserName: () => (fctUser && fctUser.username) || '',
+    // Attaching or deleting changes the paperclip counts the PO tab draws, the
+    // folder counts on an open bid's green cost-code bars, and the paperclips
+    // and section folder chips on the Procurement sheet.
     onChange: () => {
       if (activeTab === 'po') renderPOTab();
+      if (activeTab === 'procurement') _procDocCountsChanged();
       _bidDocCountsStale();
     },
   });
@@ -16760,6 +16766,80 @@ function openPODocs(poId) {
 }
 
 /**
+ * The paperclip on a line of the Procurement sheet. procurement.js describes
+ * the line — { id, project_id, cost_code, sub_code, label }, its codes the
+ * live ones the sheet shows — and this opens its attached documents, with an
+ * upload that files the file on the job, on the line, and (the server does
+ * this part) in the line's cost-code folder, all in one action. Retries while
+ * the deferred documents.js has not run yet, as the PO paperclip above does.
+ */
+function openProcurementDocs(line) {
+  if (!line || !line.id) return;
+  if (!window.FCTDocuments) { setTimeout(() => openProcurementDocs(line), 150); return; }
+  _docsEnsureConfigured();
+  FCTDocuments.openProcurementAttach(line);
+}
+
+/**
+ * Read one job's Procurement attachment counts again — per line for the
+ * paperclips, per cost code for the section folder chips — into the cache
+ * documents.js keeps, for the sheet to draw from. procurement.js asks after
+ * every read of a job's rows. Resolves once both are in (each resolves null
+ * rather than rejecting when its read fails); never rejects.
+ *
+ * documents.js is deferred, so this waits for it — bounded, unlike the
+ * paperclip's retry above: it runs unprompted on every read of the sheet, and
+ * a retry chain on a page where documents.js failed to load would never stop.
+ */
+function _procDocCounts(projId) {
+  if (!projId) return Promise.resolve(null);
+  return new Promise(resolve => {
+    let ticks = 0;
+    const go = () => {
+      if (!window.FCTDocuments) {
+        if (ticks++ > 40) { resolve(null); return; }      // ~6 seconds
+        setTimeout(go, 150);
+        return;
+      }
+      // The cost-code counts are read fresh even when documents.js is
+      // already sitting on this job: the server moves a line's files between
+      // cost-code folders when the line is re-coded, and a colleague's
+      // attachment lands in one, and neither reaches the copy documents.js
+      // holds. Counted from that copy, a section's folder chip stayed on the
+      // old number poll after poll while the paperclips beside it moved on.
+      //
+      // Guarded as a whole: a documents.js from before procurement counts
+      // existed (a cached copy) would throw here, inside a timer where nobody
+      // could catch it, and the sheet would wait on this for good.
+      try {
+        _docsEnsureConfigured();
+        Promise.all([FCTDocuments.refreshProcurementCounts(projId), FCTDocuments.refreshCostCodeCounts(projId, { fresh: true })])
+          .then(resolve, err => { console.warn('[procurement] attachment counts', err); resolve(null); });
+      } catch (err) {
+        console.warn('[procurement] attachment counts', err);
+        resolve(null);
+      }
+    };
+    go();
+  });
+}
+
+/**
+ * A document was attached, detached or deleted while the Procurement tab is
+ * open. documents.js has already counted again what it changed before saying
+ * so, so the sheet is redrawn from those counts at once; then the sheet's own
+ * job is counted again as a whole, since opening a paperclip or a folder can
+ * load the job afresh (someone else's attachments since the last poll) and
+ * only the line or job that was changed has been recounted.
+ */
+function _procDocCountsChanged() {
+  _procRerender();
+  if (window.FCTProcurement && _procConfigured && typeof FCTProcurement.refreshAttachmentCounts === 'function') {
+    FCTProcurement.refreshAttachmentCounts();
+  }
+}
+
+/**
  * The folder chip on the bid page's green cost-code bar. Opens that cost
  * code's document folder in a dialog over the bid table — deliberately not a
  * jump to the Documents tab, because the point of the chip is reaching a
@@ -16776,6 +16856,23 @@ function openBidGroupDocs(projId, costCode) {
   if (!window.FCTDocuments) { setTimeout(() => openBidGroupDocs(projId, costCode), 150); return; }
   _docsEnsureConfigured();
   FCTDocuments.openCostCodeFolder({ projectId: projId, costCode, label: costCodeLabel(costCode, '') });
+}
+
+/**
+ * The folder chip on a cost-code section of the Procurement sheet (and the
+ * sheet's way into a cost code's folder generally). The same dialog the bid
+ * page's green bar opens, but read fresh: documents.js loads the job again
+ * even when it already holds it. The server re-files a line's attachments
+ * when the line's cost code changes, and files a colleague's attachment, and
+ * the copy in hand has neither — trusting it listed "Nothing filed here yet"
+ * for a folder the chip beside it counted files in. One read per click.
+ */
+function openProcurementCostCodeFolder(projId, costCode) {
+  if (!projId || !costCode) return;
+  // documents.js is deferred; a click landing before it parses retries.
+  if (!window.FCTDocuments) { setTimeout(() => openProcurementCostCodeFolder(projId, costCode), 150); return; }
+  _docsEnsureConfigured();
+  return FCTDocuments.openCostCodeFolder({ projectId: projId, costCode, label: costCodeLabel(costCode, ''), fresh: true });
 }
 
 // Job whose cost-code document counts are in hand, so opening the same bid
@@ -19281,8 +19378,9 @@ function _invBreakdownHTML(year, selectedMonths) {
    the other division pages the way documents.js is. This end tells it how to
    read turf: the jobs and their bid lines, the purchase orders, the supplier
    list, who may edit. It also owns the few things only this page can do:
-   raise a purchase order, add a supplier to the lists blob, and open an
-   order on the Purchase Orders tab.
+   raise a purchase order, add a supplier to the lists blob, open an order on
+   the Purchase Orders tab, and open a line's attached documents or a cost
+   code's document folder (documents.js, which procurement.js never calls).
 ═══════════════════════════════════════════ */
 const PROC_DIVISION = 'turf';   // division these rows belong to
 let _procConfigured     = false;
@@ -19443,6 +19541,16 @@ function _procEnsureConfigured() {
     isSupplierListed: name => procSupplierListed(name),
     createPurchaseOrder: seed => fctCreatePurchaseOrder(seed),
     openPurchaseOrder:   poId => openPurchaseOrder(poId),
+    // Each line's attached documents, and the cost-code folder each section
+    // of the sheet compiles them into. The files live in the Document Vault
+    // (documents.js); the sheet only reads its counts and asks for it to open.
+    // Counts are 0 until documents.js has run and counted them.
+    attachmentCount: (pid, id) => (window.FCTDocuments ? FCTDocuments.procurementCount(pid, id) : 0),
+    refreshAttachmentCounts: pid => _procDocCounts(pid),
+    openAttachments: line => openProcurementDocs(line),
+    costCodeDocCount: (pid, code) => (window.FCTDocuments ? FCTDocuments.costCodeCount(pid, code) : 0),
+    // The same folder the bid page's green cost-code bar opens, read fresh.
+    openCostCodeFolder: ({ projectId, costCode } = {}) => openProcurementCostCodeFolder(projectId, costCode),
     // Every message procurement.js sends says itself whether anything was
     // kept, so the banner does not add "Your edits are kept locally" — wrong
     // for a row deleted elsewhere or a supplier that was not added.

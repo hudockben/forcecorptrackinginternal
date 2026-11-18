@@ -40,6 +40,11 @@
 // — and would otherwise move rows back onto the lines just replaced. A job
 // with no blob at all (nothing to check against) is not refused.
 //
+// Files attached to a line live in the Job Document Vault (api/documents.js),
+// filed in the folder for the line's cost code as well as the one picked. A
+// write here that changes a line's code moves its files to the new code's
+// folder (refileAfter below); that never changes the answer to the write.
+//
 // Who: every non-sales user with the division reads; admin, level3 and level2
 // write; level1 gets 403 read_only on every write; sales is refused outright
 // (the tab carries cost codes, and a sales login is kept away from job costs —
@@ -56,6 +61,9 @@ const { neon } = require('@neondatabase/serverless');
 const { requireDivision, levelFor, isSalesIn } = require('./lib/auth');
 const { normalizeNumeric } = require('./lib/numeric');
 const { cleanStr, isPlainObject } = require('./lib/custom-report-runs');
+// Called through the module (procDocs.x, never a destructured copy) so the
+// tests can stand a failing re-file in for the real one.
+const procDocs = require('./lib/procurement-docs');
 
 const DIVISIONS             = ['turf', 'paving', 'kiewit'];
 const EDIT_LEVELS           = ['admin', 'level3', 'level2'];
@@ -308,8 +316,10 @@ const fail = (res, status, error, message, extra) =>
   res.status(status).json({ ok: false, error, ...(message ? { message } : {}), ...(extra || {}) });
 
 // Where each division keeps a job's blob, the bid (bidItems) included — the
-// keys api/bid-items.js and the pages write.
-const PROJECT_KEY_PREFIX = { turf: 'fct_project_', paving: 'fct_paving_project_', kiewit: 'fct_kiewit_project_' };
+// keys api/bid-items.js and the pages write. The map lives in
+// api/lib/procurement-docs.js, which reads a line's live cost code from the
+// same blob to file its attachments, so the two can never disagree on a key.
+const { PROJECT_KEY_PREFIX } = procDocs;
 const bidKeyPrefix = (company, division) => `${company}:${PROJECT_KEY_PREFIX[division]}`;
 // No closing stop: the page puts it inside a sentence of its own.
 const STALE_BID = 'that bid line is no longer on the job\'s bid — the bid was changed somewhere else since this page read it; '
@@ -402,6 +412,70 @@ function constraintAnswer(res, err) {
     return fail(res, 400, 'invalid', msg);
   }
   return null;
+}
+
+// ── A line's attachments follow its cost code ───────────────────────────
+// A file attached to a procurement line is filed in the Job Document Vault
+// twice over: in the folder the person picked, and in the folder for the
+// line's cost code, which is how a cost-code folder compiles every
+// attachment of its section (api/lib/procurement-docs.js). A write that
+// changes the line's code — a hand-added line re-coded by picking another
+// Sub Code, the page bringing a stale stored code into line with a renamed
+// bid line, a deleted line restored onto a new bid line — moves its files to
+// the new code's folder. Only writes that carry cost_code or bid_item_id pay
+// for this, and of those only lines with something attached pay more than
+// one read.
+const touchesCode = f => has(f, 'cost_code') || has(f, 'bid_item_id');
+
+/**
+ * The stored codes of the given rows that have files attached, read just
+ * before a write that may change them, or null. Never throws: a failed read
+ * means the files stay where they are, not that the save is refused.
+ */
+async function codesBefore(sql, { company, division }, ids) {
+  try {
+    return await procDocs.snapshotStoredCodes(sql, { companyCode: company, division, rowIds: ids });
+  } catch (err) {
+    console.warn(`[procurement] reading codes before a re-file failed: ${err.message}`);
+    return null;
+  }
+}
+
+/**
+ * After the write: every row whose live code now differs from the code it
+ * stored before (ignoring case and the spaces around it) has its files moved
+ * from the old code's folder to the new one's. The comparison is old STORED
+ * code against new LIVE code because the stored copy is what lags: a bid line
+ * renamed on the bid page changes the live code straight away, and the save
+ * that brings the copy up to date is the moment the files can follow.
+ *
+ * Never throws and never changes the answer to the write that triggered it —
+ * that write has landed whatever happens here.
+ */
+async function refileAfter(sql, { company, division, who }, payload, before, rows) {
+  try {
+    if (!before || !before.size || !Array.isArray(rows) || !rows.length) return;
+    const written = rows.filter(r => r && before.has(r.id));
+    if (!written.length) return;
+    const live = await procDocs.liveCostCodes(sql, { companyCode: company, division, rowIds: written.map(r => r.id) });
+    const changes = [];
+    for (const r of written) {
+      const now = live.get(r.id);
+      if (!now) continue;
+      const fromCode = before.get(r.id);
+      if (procDocs.codeKey(fromCode) === procDocs.codeKey(now.code)) continue;
+      changes.push({ rowId: r.id, projectId: r.project_id, fromCode, toCode: now.rawCode });
+    }
+    if (!changes.length) return;
+    await procDocs.refileProcurementDocs(sql, {
+      companyCode: company, division, changes,
+      // The document trail records people the way api/documents.js does.
+      username: (payload && payload.username) || who || null,
+      userId: (payload && payload.userId) || null,
+    });
+  } catch (err) {
+    console.warn(`[procurement] re-filing attachments after a code change failed: ${err.message}`);
+  }
 }
 
 module.exports = async (req, res) => {
@@ -566,6 +640,9 @@ module.exports = async (req, res) => {
       // primary-key clash is answered the same way rather than as an error.
       // created_at is clock_timestamp() so the rows keep the bid's order.
       const rl = id => relink.get(id) || {};
+      // Only a re-tied restore can change a row's code; a plain restore and a
+      // new line cannot have moved any file.
+      const codesWas = relink.size ? await codesBefore(sql, scope, [...relink.keys()]) : null;
       let out = [];
       if (restore.value.length || lines.length) {
         try {
@@ -626,6 +703,7 @@ module.exports = async (req, res) => {
       // The RETURNING order of each half: the inserted rows in send order.
       const restored = out.filter(r => r.send_kind === 'restored');
       const created  = out.filter(r => r.send_kind === 'created');
+      await refileAfter(sql, scope, payload, codesWas, restored);
 
       return res.json({
         ok: true,
@@ -704,6 +782,7 @@ module.exports = async (req, res) => {
         return fail(res, 400, 'mixed_projects', 'A bulk edit works on the rows of one job at a time.');
       }
       if (!projects.length) return fail(res, 404, 'not_found', 'None of those rows exist any more.');
+      const codesWas = touchesCode(f.value) ? await codesBefore(sql, scope, ids.value) : null;
       let rows;
       try {
         rows = await updateRows(sql, scope, ids.value, f.value, projects[0]);
@@ -714,6 +793,7 @@ module.exports = async (req, res) => {
       if (!rows.length && await staleBid(sql, scope, ids.value, f.value)) {
         return fail(res, 409, 'stale_bid', STALE_BID, { field: 'bid_item_id' });
       }
+      await refileAfter(sql, scope, payload, codesWas, rows);
       const got = new Set(rows.map(r => r.id));
       return res.json({ ok: true, items: rows.map(shape), missing: ids.value.filter(id => !got.has(id)) });
     }
@@ -725,6 +805,7 @@ module.exports = async (req, res) => {
       if (id.error) return fail(res, 400, q.id === undefined ? 'id_required' : 'invalid', id.error, { field: 'id' });
       const f = readFields(b.fields);
       if (f.error) return fail(res, 400, f.code || 'invalid', f.error, f.field ? { field: f.field } : undefined);
+      const codesWas = touchesCode(f.value) ? await codesBefore(sql, scope, [id.value]) : null;
       let rows;
       try {
         rows = await updateRows(sql, scope, [id.value], f.value, null);
@@ -736,6 +817,7 @@ module.exports = async (req, res) => {
         if (await staleBid(sql, scope, [id.value], f.value)) return fail(res, 409, 'stale_bid', STALE_BID, { field: 'bid_item_id' });
         return fail(res, 404, 'not_found', 'That row does not exist any more.');
       }
+      await refileAfter(sql, scope, payload, codesWas, rows);
       return res.json({ ok: true, item: shape(rows[0]) });
     }
 

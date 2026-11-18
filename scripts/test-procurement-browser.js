@@ -7,7 +7,10 @@
  *      (skips cleanly when playwright is not installed: npm i --no-save playwright)
  *      PW_CHROMIUM=/path/to/chrome picks the browser binary.
  *      PROC_SHOTS=/some/dir also saves screenshots of the tab, the Send
- *      checklist and the Suppliers tab there (for looking at, not asserted).
+ *      checklist and the Suppliers tab there (for looking at, not asserted),
+ *      and, at twice the pixels, the sheet with a line's paperclip and its
+ *      section's folder chip counting a file (shot-sheet.png) and the line's
+ *      attachments dialog (shot-dialog.png).
  *
  * scripts/test-procurement-frontend.js drives procurement.js in jsdom against
  * a stub page, and scripts/test-procurement-page.js reads tracker.html's
@@ -19,7 +22,10 @@
  * the network answered by an in-memory stand-in for the two Procurement APIs
  * that follows the contract (api/procurement.js, api/supplier-contacts.js) —
  * so a save really round-trips: what the page PATCHes is what the next GET
- * returns.
+ * returns. The Document Vault behind each line's paperclip (api/documents.js,
+ * api/document-upload-url.js and the storage bucket) is stood in for the same
+ * way, so an attachment uploaded from a line is what its count, its section's
+ * cost-code folder and the next person to open it all see.
  *
  * The job is turf's own kind: Penn Cambria, job 26119, whose bid has a
  * Stormwater cost code with Geofabric and a perforated drain as sub codes (in
@@ -36,6 +42,9 @@ catch { console.log('playwright not installed — skipping browser checks'); pro
 const path = require('path');
 const http = require('http');
 const fs   = require('fs');
+// The server's cost-code normalising, so the fake Vault below files a line's
+// attachment into the folder the real one would.
+const { codeKey } = require('../api/lib/procurement-docs');
 const ROOT = path.resolve(__dirname, '..');
 const CHROME = process.env.PW_CHROMIUM || '/opt/pw-browsers/chromium';
 const SHOTS = process.env.PROC_SHOTS || '';
@@ -109,6 +118,11 @@ function makeWorld() {
     posAt: '2026-11-01T00:00:00.000Z',
     log: [],                  // every call to the two Procurement APIs, and the list / PO writes
     seq: 0,
+    // The Document Vault behind the paperclips (documentsApi below). Logged
+    // apart from `log`, which several checks read as "what the sheet wrote".
+    docs: { folders: [], documents: [], links: [] },
+    docLog: [],               // every call to /api/documents, /api/document-upload-url, /api/document-download
+    stored: [],               // the bytes PUT to storage: { path, bytes }
   };
 }
 
@@ -275,9 +289,166 @@ function contactsApi(W, role, method, q, body) {
   return [405, { ok: false, error: 'method_not_allowed' }];
 }
 
+// ── api/documents.js and api/document-upload-url.js, in memory ───────────────
+// What the Procurement sheet's paperclips and cost-code folder chips lean on,
+// following the contract (SPEC: procurement-line attachments): an upload
+// registered with a procurementId is filed in the folder picked, linked to the
+// line ('procurement'), and filed in the folder for the line's LIVE cost code
+// as well — the folder made on the spot when the bid never seeded one. Only
+// what documents.js asks of it on these pages is modelled; anything else is
+// answered 400 so a new call shows up as a failure rather than passing quietly.
+const DOC_FIXED = [['contract-change-orders', 'Contract'], ['change-orders', 'Change Orders'],
+  ['permits-insurance', 'Permits & Insurance'], ['submittals', 'Submittals'], ['safety', 'Safety'],
+  ['photos', 'Photos'], ['repairs', 'Repairs'], ['closeout', 'Closeout'], ['purchase-orders', 'Purchase Orders']];
+const PROCUREMENT_ID = /^[A-Za-z0-9_-]{1,64}$/;
+// api/lib/auth.js capabilities(): level1 and sales read, level2 uploads (and
+// tidies its own), level3 manages, admin deletes.
+const docCaps = role => ({
+  level: role,
+  canUpload: EDIT.includes(role),
+  canManage: role === 'admin' || role === 'level3',
+  canDelete: role === 'admin',
+});
+// A line's live cost code (api/lib/procurement-docs.js liveCostCodes): its bid
+// line's while that line is on the job's stored bid, else its own copy. Trimmed.
+function liveCostCode(row) {
+  const bid = ((PROJECTS[row.project_id] || {}).bidItems || []).find(b => b.id === row.bid_item_id);
+  return String(bid ? (bid.cost_code == null ? '' : bid.cost_code) : (row.cost_code || '')).trim();
+}
+
+function documentsApi(W, role, username, method, q, body) {
+  const D = W.docs;
+  const caps = docCaps(role);
+  if (role === 'sales' || role === 'no_access') return [403, { error: 'You do not have access to this division' }];
+  const pid = q.projectId ? String(q.projectId) : null;
+  const stamp = () => new Date(Date.UTC(2026, 10, 3) + (++W.seq) * 1000).toISOString();
+  const linked = (d, type) => [...new Set(D.links.filter(l => l.document_id === d.id && l.link_type === type).map(l => l.target_id))];
+  const out = d => ({ ...d, folder_ids: linked(d, 'folder'), po_ids: linked(d, 'po'), procurement_ids: linked(d, 'procurement') });
+  const live = d => !d.deleted_at;
+  const newestFirst = (a, b) => String(b.uploaded_at).localeCompare(String(a.uploaded_at));
+  const link = (document_id, link_type, target_id) => {
+    if (!D.links.some(l => l.document_id === document_id && l.link_type === link_type && l.target_id === target_id)) {
+      D.links.push({ document_id, link_type, target_id });
+    }
+  };
+  const addFolder = (projectId, slug, name, kind, costCode) => {
+    const f = { id: `fold${++W.seq}`, project_id: projectId, parent_id: null, name, kind, slug,
+      cost_code: costCode == null ? null : costCode, sort_order: kind === 'cost_code' ? 800 : D.folders.length, archived: false };
+    D.folders.push(f);
+    return f;
+  };
+  const folderOut = f => ({ id: f.id, parent_id: f.parent_id, name: f.name, kind: f.kind, slug: f.slug,
+    cost_code: f.cost_code, sort_order: f.sort_order, archived: f.archived });
+  // findCostCodeFolder: exact (trimmed), then the same code as it reads on
+  // screen (the server's own codeKey: case, dashes, quotes, any spaces), then
+  // the slug.
+  const costCodeFolder = (projectId, code) => {
+    const want = String(code).trim(), key = codeKey(want);
+    const mine = D.folders.filter(f => f.project_id === projectId);
+    const cc = mine.filter(f => f.kind === 'cost_code' && f.cost_code != null);
+    return cc.find(f => String(f.cost_code).trim() === want)
+      || cc.find(f => codeKey(f.cost_code) === key)
+      || mine.find(f => f.slug === `cc-${code}`) || null;
+  };
+  const liveLine = (id, projectId) => W.rows.find(r => r.id === id && !r.deleted_at && r.project_id === projectId) || null;
+
+  if (method === 'GET') {
+    if (q.poCounts) {
+      const counts = {};
+      for (const d of D.documents.filter(live)) for (const id of linked(d, 'po')) counts[id] = (counts[id] || 0) + 1;
+      return [200, { counts }];
+    }
+    if (q.procurementCounts) {
+      const counts = {};
+      for (const d of D.documents.filter(live)) {
+        if ((d.project_id || '') !== (pid || '')) continue;
+        for (const id of linked(d, 'procurement')) counts[id] = (counts[id] || 0) + 1;
+      }
+      return [200, { counts }];
+    }
+    if (q.procurementId) {
+      if (!PROCUREMENT_ID.test(q.procurementId)) return [400, { error: 'procurementId must be 1 to 64 letters, digits, - or _' }];
+      return [200, { documents: D.documents
+        .filter(d => live(d) && (!pid || (d.project_id || '') === pid) && linked(d, 'procurement').includes(q.procurementId))
+        .sort(newestFirst).map(out) }];
+    }
+    if (q.poId) return [200, { documents: D.documents.filter(d => live(d) && linked(d, 'po').includes(q.poId)).sort(newestFirst).map(out) }];
+    if (q.trash) return [200, { documents: [] }];
+    return [200, {
+      folders: D.folders.filter(f => (f.project_id || null) === pid).map(folderOut),
+      documents: D.documents.filter(d => live(d) && (d.project_id || null) === pid).sort(newestFirst).map(out),
+      caps,
+    }];
+  }
+
+  // The seed: the fixed folders, Purchase Orders, and one folder per cost code
+  // on the job's bid, slug cc-<code>, named "code · label" or the bare code.
+  if (method === 'PUT') {
+    if (!caps.canUpload) return [403, { error: 'You do not have permission to change folders' }];
+    const created = [];
+    if (pid) {
+      for (const [slug, name] of DOC_FIXED) {
+        if (!D.folders.some(f => f.project_id === pid && f.slug === slug)) created.push(addFolder(pid, slug, name, 'fixed'));
+      }
+      for (const c of (body && body.costCodes) || []) {
+        if (!c || !c.code) continue;
+        const code = String(c.code);
+        if (D.folders.some(f => f.project_id === pid && (f.slug === `cc-${code}` || f.cost_code === code))) continue;
+        created.push(addFolder(pid, `cc-${code}`, c.label ? `${code} · ${c.label}` : code, 'cost_code', code));
+      }
+    }
+    return [200, { folders: D.folders.filter(f => (f.project_id || null) === pid).map(folderOut),
+      created: created.map(f => ({ id: f.id, name: f.name, kind: f.kind })), reordered: [], relabelled: [], collisions: [] }];
+  }
+
+  // Register a file the browser just put in storage.
+  if (method === 'POST' && !q.folder) {
+    if (!caps.canUpload) return [403, { error: 'You do not have permission to upload' }];
+    const b = body || {};
+    if (!b.documentId || !b.filename || !b.storageKey) return [400, { error: 'documentId, filename and storageKey are required' }];
+    if (!W.stored.some(s => s.key === b.storageKey)) return [400, { error: 'That file never reached storage' }];
+    const folder = D.folders.find(f => f.id === b.folderId && (f.project_id || null) === pid);
+    if (!folder) return [404, { error: 'Folder not found' }];
+    const procurementId = b.procurementId == null || b.procurementId === '' ? null : String(b.procurementId);
+    if (procurementId !== null && !PROCUREMENT_ID.test(procurementId)) return [400, { error: 'procurementId must be 1 to 64 letters, digits, - or _' }];
+    const line = procurementId ? liveLine(procurementId, pid) : null;
+    if (procurementId && !line) return [404, { error: 'Procurement line not found', detail: 'That line is not on this job’s Procurement sheet any more.' }];
+    const d = { id: b.documentId, project_id: pid, filename: b.filename, content_type: 'application/pdf',
+      size_bytes: Number(b.sizeBytes) || 0, note: b.note || null, uploaded_by: username, uploaded_at: stamp(), deleted_at: null };
+    D.documents.push(d);
+    link(d.id, 'folder', folder.id);
+    if (b.poId) link(d.id, 'po', String(b.poId));
+    let costCodeFolderId = null;
+    if (line) {
+      link(d.id, 'procurement', procurementId);
+      const code = liveCostCode(line);
+      if (code) {
+        const cc = costCodeFolder(pid, code) || addFolder(pid, `cc-${code}`, code, 'cost_code', code);
+        link(d.id, 'folder', cc.id);
+        costCodeFolderId = cc.id;
+      }
+    }
+    return [201, { document: out(d), costCodeFolderId }];
+  }
+
+  // Link edits. Detaching from a line takes the 'procurement' link only: the
+  // file stays in every folder it is filed in, the cost code's included.
+  if (method === 'PATCH') {
+    const d = D.documents.find(x => x.id === q.id);
+    if (!d) return [404, { error: 'Document not found' }];
+    if (!caps.canManage && !(caps.canUpload && d.uploaded_by === username)) return [403, { error: 'You can only change your own uploads' }];
+    const b = body || {};
+    const known = ['removeProcurementId'];
+    if (!Object.keys(b).length || Object.keys(b).some(k => !known.includes(k))) return [400, { error: 'not modelled here', body: b }];
+    D.links = D.links.filter(l => !(l.document_id === d.id && l.link_type === 'procurement' && l.target_id === String(b.removeProcurementId)));
+    return [200, { document: out(d) }];
+  }
+  return [400, { error: 'not modelled here' }];
+}
+
 // ── One signed-in browser page ───────────────────────────────────────────────
-async function openPage(browser, W, role, { viewport = { width: 1474, height: 900 }, storage = {} } = {}) {
-  const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, acceptDownloads: true });
+async function openPage(browser, W, role, { viewport = { width: 1474, height: 900 }, storage = {}, scale = 1 } = {}) {
+  const ctx = await browser.newContext({ viewport, deviceScaleFactor: scale, acceptDownloads: true });
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
@@ -375,8 +546,39 @@ async function openPage(browser, W, role, { viewport = { width: 1474, height: 90
       return send(200, { value: pr || null });
     }
     if (p.startsWith('/api/data/')) return send(200, { value: null });
+    // The Document Vault: the paperclips' lists and counts, the cost-code
+    // folders, and an upload's ticket and registration.
+    if (p === '/api/documents') {
+      W.docLog.push({ api: 'documents', method: m, q, body, role });
+      const [status, b] = documentsApi(W, role, user.username, m, q, body || {});
+      return send(status, b);
+    }
+    if (p === '/api/document-upload-url') {
+      W.docLog.push({ api: 'document-upload-url', method: m, q, body, role });
+      if (m === 'DELETE') return send(200, { ok: true });
+      if (m !== 'POST' || !docCaps(role).canUpload) return send(403, { error: 'You do not have permission to upload' });
+      const documentId = `doc${++W.seq}`;
+      const filename = String((body && body.filename) || 'file');
+      const storageKey = `FCT/turf/${(body && body.projectId) || 'general'}/${documentId}/${filename}`;
+      return send(200, { documentId, storageKey, uploadUrl: `${await BASE}/upload/${encodeURIComponent(storageKey)}`,
+        contentType: /\.pdf$/i.test(filename) ? 'application/pdf' : 'application/octet-stream', maxBytes: 50 * 1024 * 1024, expiresIn: 900 });
+    }
+    if (p === '/api/document-download') {
+      W.docLog.push({ api: 'document-download', method: m, q, body, role });
+      return send(200, { url: `${await BASE}/_files/${encodeURIComponent(q.id || '')}` });
+    }
     return send(200, {});
   });
+  // The storage bucket the presigned URL above points at, and the file a
+  // download opens in its own tab — on the context, so that tab is answered too.
+  await ctx.route('**/upload/**', async route => {
+    const req = route.request();
+    if (req.method() === 'PUT') {
+      W.stored.push({ key: decodeURIComponent(new URL(req.url()).pathname.slice('/upload/'.length)), bytes: (req.postDataBuffer() || Buffer.alloc(0)).length });
+    }
+    return route.fulfill({ status: 200, body: '' });
+  });
+  await ctx.route('**/_files/**', route => route.fulfill({ status: 200, contentType: 'text/plain', body: 'file' }));
 
   await page.goto((await BASE) + '/tracker.html');
   await page.waitForFunction(() => typeof projectsList !== 'undefined' && projectsList.length === 2
@@ -1198,6 +1400,9 @@ async function roundFourFixes(browser) {
       ok('…the Quote # typed in the same edit is saved', h1.quote_number === 'Couplers', h1.quote_number);
       const shown = { sub: await cell(page, 'H1', 'codes').inputValue(), cost: (await rowTr(page, 'H1').locator('.c-cost_code').textContent()).trim() };
       ok('…and the cells are back to what was saved, as the message says', shown.sub === '' && shown.cost === '', shown);
+      const qu = { q: await cell(page, 'H1', 'quantity').inputValue(), u: await cell(page, 'H1', 'unit').inputValue() };
+      ok('…the Quantity and Unit that pick filled in too, saved and shown', h1.quantity == null && h1.unit === '' && qu.q === '' && qu.u === '',
+        { saved: [h1.quantity, h1.unit], qu });
       const banner = (await page.evaluate(() => window.__banner)).filter(Boolean).pop() || '';
       ok('…the message names the pick once ("Cost / Sub Code was not saved")', /Cost \/ Sub Code was not saved/.test(banner) && !/Sub Code, Cost Code/.test(banner), banner);
       // The refusal itself is the browser's logged 409, and expected.
@@ -1236,6 +1441,8 @@ async function roundFourFixes(browser) {
       const h2 = W.rows.find(r => r.id === 'H2');
       ok('a live line picked while a refused (stale_bid) pick was out is saved with all of its codes, the shared Cost Code included',
         h2.bid_item_id === 'b1' && h2.cost_code === 'Stormwater' && h2.sub_code === 'Geofabric', [h2.bid_item_id, h2.cost_code, h2.sub_code, patchesFor(W, 'H2').map(l => l.body.fields)]);
+      ok('…with its own Quantity and Unit (12,500 SF), not the refused drain line\'s 950 LF',
+        Number(h2.quantity) === 12500 && h2.unit === 'SF', [h2.quantity, h2.unit, patchesFor(W, 'H2').map(l => l.body.fields)]);
       const other = errors.filter(e => !/status of 409 \(Conflict\).*\/api\/procurement/.test(e));
       ok('no page errors', other.length === 0, other.join(' | '));
     } finally {
@@ -1597,6 +1804,30 @@ async function sectionAdd(browser) {
   it = await addVia('Stormwater', 'enter');
   ok('Enter on a section\'s + Add Row adds a row there, without folding', it && it.cost_code === 'Stormwater' && (await sections())[it.id] === 'Stormwater'
     && await folded() === 0);
+  // Its Sub Code picked: Quantity and Unit come over from the bid line, the
+  // change order included (901 + 49), as Add to Procurement gives them.
+  await cbPick(page, cell(page, it.id, 'codes'), 'Perim', 'Perimeter');
+  await clickAway(page);
+  {
+    const id = it.id;
+    await until(() => W.rows.some(r => r.id === id && r.bid_item_id === 'b2' && Number(r.quantity) === 950), 4000);
+    const r = W.rows.find(x => x.id === id);
+    const qu = { q: (await cell(page, id, 'quantity').inputValue()).replace(/,/g, ''), u: await cell(page, id, 'unit').inputValue() };
+    ok('picking its Sub Code brings the bid line\'s Quantity and Unit (950 LF, change order included), saved and shown',
+      r.bid_item_id === 'b2' && Number(r.quantity) === 950 && r.unit === 'LF' && qu.q === '950' && qu.u === 'LF', { saved: [r.bid_item_id, r.quantity, r.unit], qu });
+    // Quantity emptied, then the same Sub Code picked again: it comes back.
+    await cell(page, id, 'quantity').click();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Delete');
+    await clickAway(page);
+    await until(() => W.rows.some(x => x.id === id && x.quantity == null), 4000);
+    await cbPick(page, cell(page, id, 'codes'), 'Perim', 'Perimeter');
+    await clickAway(page);
+    await until(() => W.rows.some(x => x.id === id && Number(x.quantity) === 950), 4000);
+    const r2 = W.rows.find(x => x.id === id);
+    ok('…and with Quantity emptied, picking the same Sub Code again fills it back in', Number(r2.quantity) === 950 && r2.unit === 'LF'
+      && (await cell(page, id, 'quantity').inputValue()).replace(/,/g, '') === '950', [r2.quantity, r2.unit]);
+  }
 
   // "No cost code" gives a blank row, as the toolbar's + Add Row does.
   it = await addVia('No cost code');
@@ -1748,6 +1979,196 @@ async function printPdf(browser) {
   await real.ctx.close();
 }
 
+// ── Attachments: the paperclip on a line, and the cost-code folder that
+// compiles every line's files for its section ────────────────────────────────
+// The whole path, with documents.js, tracker.html and procurement.js all real:
+// the paperclip opens the line's documents (documents.js), an upload from it is
+// registered with the line, the server files it under the line's cost code as
+// well, and the sheet's paperclip and the section's folder chip both count it.
+// Then a view-only user, and a detach.
+async function attachments(browser) {
+  console.log('\nattachments on a line, compiled in its cost-code folder');
+  const W = makeWorld();
+  const t = i => new Date(Date.UTC(2026, 9, 2) + i * 1000).toISOString();
+  W.rows.push(
+    // Sent from the bid: tied to the Geofabric line, so its cost code is the
+    // bid's Stormwater.
+    { ...BLANK_ROW, id: 'F1', project_id: 'p1', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', unit: 'SF',
+      vendor: 'LB Water', description: 'geofabric', created_at: t(1), updated_at: t(1) },
+    { ...BLANK_ROW, id: 'F2', project_id: 'p1', source: 'bid', bid_item_id: 'b3', cost_code: 'Mobilization', sub_code: 'Mobilization', unit: 'LS',
+      description: 'mobilization', created_at: t(2), updated_at: t(2) },
+  );
+  const storage = { fct_proc_project_turf: 'p1' };
+  // Twice the pixels when screenshots are wanted, so they read on a laptop.
+  const A = await openPage(browser, W, 'admin', { storage, scale: SHOTS ? 2 : 1 });
+  const page = A.page;
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 2));
+  await page.click('#procurement-root [data-group="cost"]');
+  await sleep(150);
+
+  const clip = (pg, id) => rowTr(pg, id).locator('td.c-status button.fctproc-clip[data-act="files"]');
+  const clipState = (pg, id) => clip(pg, id).evaluate(b => ({ text: b.textContent.trim(), has: b.classList.contains('has'), title: b.title }));
+  const chip = (pg, code) => pg.locator(`#procurement-root tr.fctproc-grp [data-grpdocs="${code}"]`);
+  const chipText = async (pg, code) => (await chip(pg, code).textContent()).trim();
+  // documents.js's dialogs: the box holding the body that holds `inner`.
+  const dialog = (pg, inner) => pg.locator(`div:has(> [data-body] ${inner})`).last();
+  const CLIP = '\u{1F4CE}', FOLDER = '\u{1F4C1}';
+
+  const heads = await page.$$eval('#procurement-root thead th', ths => ths.map(th => ({ text: th.textContent.trim(), title: th.title })));
+  const poAt = heads.findIndex(h => /^PO #/.test(h.text));
+  ok('no paperclip column: PO # is followed by Sub-Contractor Agreement as before',
+    poAt >= 0 && !!heads[poAt + 1] && /^Sub-Contractor Agreement/.test(heads[poAt + 1].text)
+      && !heads.some(h => h.text === CLIP || h.title === 'Attached documents'), heads.map(h => h.text));
+  // The paperclip rides in the Status cell, beside the pill, inside the
+  // cell's own width (Status is pinned at the left at a fixed width).
+  const fit = await rowTr(page, 'F1').locator('td.c-status').evaluate(td => {
+    const c = td.getBoundingClientRect(), b = td.querySelector('.fctproc-clip').getBoundingClientRect();
+    const p = td.querySelector('.fctproc-pill');
+    return { inside: b.left >= c.left - 0.5 && b.right <= c.right + 0.5 && b.top >= c.top - 0.5 && b.bottom <= c.bottom + 0.5,
+      afterPill: p.nextElementSibling === td.querySelector('.fctproc-clip'), w: c.width, sw: td.scrollWidth, cw: td.clientWidth };
+  });
+  ok('each line\'s paperclip sits in its Status cell after the pill, wholly inside the cell',
+    fit.inside && fit.afterPill && fit.sw <= fit.cw + 1, fit);
+  // Scrolled all the way right, the paperclip is still on screen and clickable.
+  await page.locator('#fctproc-wrap').evaluate(w => { w.scrollLeft = w.scrollWidth; });
+  await sleep(80);
+  const vis = await clip(page, 'F1').evaluate(b => {
+    const r = b.getBoundingClientRect(), wrap = document.querySelector('#fctproc-wrap').getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return { onScreen: r.left >= wrap.left && r.right <= wrap.right, topmost: hit === b || b.contains(hit),
+      scrolled: document.querySelector('#fctproc-wrap').scrollLeft };
+  });
+  ok('…and stays in reach with the sheet scrolled all the way right (Status is pinned)',
+    vis.scrolled > 0 && vis.onScreen && vis.topmost, vis);
+  await page.locator('#fctproc-wrap').evaluate(w => { w.scrollLeft = 0; });
+  await sleep(80);
+  ok('the sheet read the job\'s attachment counts along with its rows',
+    await until(() => W.docLog.some(l => l.method === 'GET' && l.q.procurementCounts === '1' && l.q.projectId === 'p1')));
+  let s = await clipState(page, 'F1');
+  ok('a line with nothing attached has an empty, muted paperclip that offers to attach',
+    s.text === CLIP && !s.has && s.title === 'Attach a document', s);
+  ok('each cost-code section has a folder chip, with no number while its folder is empty',
+    await chip(page, 'Stormwater').count() === 1 && await chip(page, 'Mobilization').count() === 1
+      && await chipText(page, 'Stormwater') === FOLDER, await chipText(page, 'Stormwater'));
+
+  // The paperclip: the line's documents. None yet.
+  await clip(page, 'F1').click();
+  await page.waitForSelector('[data-proc-filing]', { timeout: 5000 });
+  let box = dialog(page, '[data-proc-filing]');
+  ok('the paperclip opens the line\'s documents, named by its codes',
+    (await box.locator('span').first().textContent()).trim() === 'Stormwater / Geofabric', await box.locator('span').first().textContent());
+  ok('…asked for by line and job', W.docLog.some(l => l.method === 'GET' && l.q.procurementId === 'F1' && l.q.projectId === 'p1'));
+  ok('…with nothing attached yet', /0 attached documents/.test(await box.textContent()) && /Nothing attached yet/.test(await box.textContent()));
+  ok('…saying where an attachment is filed', /also filed in the Stormwater cost-code folder/.test(await box.locator('[data-proc-filing]').textContent()));
+  ok('…with Attach a document and Open Stormwater folder', await box.locator('[data-attach-new]').count() === 1
+    && /Open Stormwater folder/.test(await box.locator('[data-open-folder]').textContent()));
+  const ccFolder = W.docs.folders.find(f => f.project_id === 'p1' && f.kind === 'cost_code' && f.cost_code === 'Stormwater');
+  ok('opening it seeded the job\'s folders from its bid, a Stormwater folder among them',
+    !!ccFolder && W.docs.folders.some(f => f.project_id === 'p1' && f.cost_code === 'Mobilization'), W.docs.folders.map(f => f.name));
+
+  await box.locator('[data-attach-new]').click();
+  await page.waitForSelector('#fctdoc-proc', { timeout: 5000 });
+  ok('Attach a document opens the upload with the Stormwater folder picked',
+    await page.inputValue('#fctdoc-folder') === (ccFolder && ccFolder.id), await page.inputValue('#fctdoc-folder'));
+  ok('…the line fixed in it', (await page.textContent('#fctdoc-proc')).replace(/\s+/g, ' ').trim() === 'Procurement line: Stormwater / Geofabric',
+    await page.textContent('#fctdoc-proc'));
+  ok('…saying the file is filed under the cost code whichever folder is picked',
+    /Filed under cost code Stormwater as well, whichever folder you pick/.test(await page.textContent('[data-proc-hint]')));
+  ok('…in place of the line\'s dialog', await page.locator('[data-proc-filing]').count() === 0);
+  await page.setInputFiles('#fctdoc-files', { name: 'geofabric-quote.pdf', mimeType: 'application/pdf', buffer: Buffer.from('%PDF-1.4 quote') });
+  await page.click('#fctdoc-go');
+  const reg = await until(() => W.docLog.find(l => l.api === 'documents' && l.method === 'POST'));
+  ok('Upload registers the file on the job, with the line and the folder picked',
+    !!reg && reg.body.procurementId === 'F1' && reg.body.folderId === (ccFolder && ccFolder.id) && reg.q.projectId === 'p1', reg && { q: reg.q, body: reg.body });
+  ok('…after its bytes went straight to storage', W.stored.length === 1 && !!reg && W.stored[0].key === reg.body.storageKey && W.stored[0].bytes === 14, W.stored);
+  ok('the upload dialog closes', await until(() => page.locator('#fctdoc-proc').count().then(n => n === 0)));
+  ok('the line\'s paperclip now shows 1, in green',
+    await until(async () => { const c = await clipState(page, 'F1'); return c.text === `${CLIP}1` && c.has && c.title === '1 attached document'; }),
+    await clipState(page, 'F1'));
+  s = await clipState(page, 'F2');
+  ok('…and the other line\'s is still empty', s.text === CLIP && !s.has, s);
+  ok('the Stormwater section\'s folder chip counts the file',
+    await until(async () => await chipText(page, 'Stormwater') === `${FOLDER}1` && await chip(page, 'Stormwater').evaluate(b => b.classList.contains('has'))),
+    await chipText(page, 'Stormwater'));
+  ok('…and the Mobilization one does not', await chipText(page, 'Mobilization') === FOLDER);
+  const doc = W.docs.documents[0];
+  const linksOf = type => W.docs.links.filter(l => doc && l.document_id === doc.id && l.link_type === type).map(l => l.target_id);
+  ok('the file is stored once: on the line, and in the Stormwater folder',
+    W.docs.documents.length === 1 && eq(linksOf('procurement'), ['F1']) && eq(linksOf('folder'), [ccFolder && ccFolder.id]), W.docs.links);
+  await shot(page, 'shot-sheet.png');
+
+  // The chip: the section's whole cost-code folder — without folding it.
+  await chip(page, 'Stormwater').click();
+  await page.waitForSelector('[data-ccdl]', { timeout: 5000 });
+  box = dialog(page, '[data-ccdl]');
+  ok('the chip opens the Stormwater folder, listing the file',
+    (await box.locator('span').first().textContent()).trim() === 'Stormwater'
+      && /1 document filed under this cost code/.test(await box.textContent()) && (await box.textContent()).includes('geofabric-quote.pdf'));
+  ok('…and the section stays open under it',
+    await rowTr(page, 'F1').count() === 1
+      && (await page.$eval('#procurement-root tr.fctproc-grp:has([data-grpdocs="Stormwater"]) .tw', e => e.textContent)) === '▼');
+  await box.locator('[data-cancel]').click();
+
+  // Back on the paperclip: the file is listed, with Download and Detach.
+  await clip(page, 'F1').click();
+  await page.waitForSelector('[data-proc-doc]', { timeout: 5000 });
+  box = dialog(page, '[data-proc-filing]');
+  ok('the paperclip lists the file now, with Download and (for an admin) Detach',
+    /1 attached document\b/.test(await box.textContent()) && (await box.locator('[data-proc-doc]').textContent()).includes('geofabric-quote.pdf')
+      && await box.locator('[data-pdl]').count() === 1 && await box.locator('[data-detach]').count() === 1);
+  await shot(page, 'shot-dialog.png');
+  await box.locator('[data-cancel]').click();
+  ok('no page errors (admin, attaching)', A.errors.length === 0, A.errors.join(' | '));
+
+  // A view-only user: sees the paperclips and can open and download, but is
+  // offered no upload and no detach.
+  const V = await openPage(browser, W, 'level1', { storage });
+  await V.page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => V.page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 2));
+  ok('level1 sees the paperclip, with its count',
+    await until(async () => (await clipState(V.page, 'F1')).text === `${CLIP}1`), await clipState(V.page, 'F1'));
+  ok('…and an empty one says there is nothing attached, rather than offering to attach',
+    (await clipState(V.page, 'F2')).title === 'No documents attached');
+  ok('…and the section\'s folder chip with its count', await until(async () => await chipText(V.page, 'Stormwater') === `${FOLDER}1`));
+  await clip(V.page, 'F1').click();
+  await V.page.waitForSelector('[data-proc-doc]', { timeout: 5000 });
+  const vbox = dialog(V.page, '[data-proc-filing]');
+  ok('the dialog lists the file, with a Download button',
+    (await vbox.locator('[data-proc-doc]').textContent()).includes('geofabric-quote.pdf') && await vbox.locator('[data-pdl]').count() === 1);
+  ok('…but no Attach a document and no Detach', await vbox.locator('[data-attach-new]').count() === 0 && await vbox.locator('[data-detach]').count() === 0);
+  ok('…and the cost-code folder is still there to look in', await vbox.locator('[data-open-folder]').count() === 1);
+  const [tab] = await Promise.all([V.ctx.waitForEvent('page'), vbox.locator('[data-pdl]').click()]);
+  ok('Download fetches that file', await until(() => W.docLog.some(l => l.api === 'document-download' && l.role === 'level1' && l.q.id === doc.id)));
+  await tab.close();
+  ok('level1 uploaded, registered and detached nothing',
+    !W.docLog.some(l => l.role === 'level1' && (l.method === 'POST' || l.method === 'PATCH')), W.docLog.filter(l => l.role === 'level1').map(l => l.method));
+  // Opening a job's documents asks for its folder tree to be seeded, and the
+  // server refuses a view-only user that (documents.js expects the 403 and
+  // carries on). Chrome logs any 4xx as a console error; that one is allowed.
+  const vErrors = V.errors.filter(e => !/status of 403 \(Forbidden\).*\/api\/documents\?division=turf&projectId=p1\)/.test(e));
+  ok('no page errors (level1)', vErrors.length === 0, vErrors.join(' | '));
+  await V.ctx.close();
+
+  // Detach: off the line, still in the Vault and in the Stormwater folder.
+  await clip(page, 'F1').click();
+  await page.waitForSelector('[data-detach]', { timeout: 5000 });
+  box = dialog(page, '[data-proc-filing]');
+  await box.locator('[data-detach]').click();
+  ok('Detach asks first, saying the file is not deleted', await until(() => A.dialogs.some(d => /Detach geofabric-quote\.pdf/.test(d) && /not deleted/.test(d))), A.dialogs);
+  ok('…then takes the file off that line, and does nothing else',
+    await until(() => W.docLog.some(l => l.method === 'PATCH' && l.q.id === doc.id && eq(l.body, { removeProcurementId: 'F1' })))
+      && W.docLog.filter(l => l.method === 'PATCH').length === 1);
+  ok('the dialog redraws with nothing attached', await until(async () => /0 attached documents/.test(await dialog(page, '[data-proc-filing]').textContent())));
+  ok('the line\'s paperclip is empty again',
+    await until(async () => { const c = await clipState(page, 'F1'); return c.text === CLIP && !c.has; }), await clipState(page, 'F1'));
+  ok('the file is still in the Vault, in the Stormwater folder, and its chip still counts it',
+    !doc.deleted_at && eq(linksOf('folder'), [ccFolder && ccFolder.id]) && eq(linksOf('procurement'), []) && await chipText(page, 'Stormwater') === `${FOLDER}1`);
+  await dialog(page, '[data-proc-filing]').locator('[data-cancel]').click();
+  ok('no page errors (admin, detaching)', A.errors.length === 0, A.errors.join(' | '));
+  await A.ctx.close();
+}
+
 (async () => {
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
@@ -1763,6 +2184,7 @@ async function printPdf(browser) {
     await sectionSelect(browser);
     await sectionAdd(browser);
     await printPdf(browser);
+    await attachments(browser);
   } finally {
     await browser.close();
     server.close();
