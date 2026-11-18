@@ -28,6 +28,9 @@
  *  - each row write's answer held back, reaching the page after the answer to
  *    a save that landed later
  *
+ * and then the row is deleted in Daily Tracking, which takes the delivery off
+ * the order with it.
+ *
  * Either way: one job row for the one delivery, carrying what was typed; the
  * order holds that delivery, linked to it, and no Daily Tracking copy of it;
  * the screen shows what was typed; nothing throws.
@@ -189,7 +192,8 @@ async function run(browser, cfg, rowAnswerDelay) {
       if (m === 'DELETE') {
         const id = u.searchParams.get('id');
         rows.delete(id);
-        const po = syncRows([], [id]);
+        // As syncRowsToOrders: the deleted id is one of the rows decided.
+        const po = syncRows([id], [id]);
         return json({ ok: true, ...(po ? { po } : {}) });
       }
     }
@@ -301,6 +305,32 @@ async function run(browser, cfg, rowAnswerDelay) {
       after.length === 1 && after[0].qty === '22' && String(after[0].po_row_id) === String(row.id), JSON.stringify(after));
   } else {
     ok('the row is in Daily Tracking to edit', false, 'not found');
+  }
+
+  // ── Deleting that row in Daily Tracking takes the delivery off the order ──
+  // Left there unlinked, it still counted in the order's total while the job
+  // no longer paid for it, and looked like every other delivery.
+  const i2 = await page.evaluate(id => getProj('p1').dailyRows.findIndex(r => String(r.id) === id), String(row.id));
+  const trash = page.locator(`.del-btn[data-tab="daily"][data-proj="p1"][data-i="${i2}"]`);
+  if (await trash.count() === 1) {
+    await trash.click();
+    await sleep(150);
+    const ask = await page.locator('.del-confirm span').innerText().catch(() => '');
+    ok('the delete asks, saying the delivery leaves PO-0003 too', /removes the delivery from PO-0003/.test(ask), ask);
+    await page.click('.del-confirm .dc-yes');
+    await sleep(1200 + 3 * rowAnswerDelay);
+    const gone = await page.evaluate(() => JSON.parse(JSON.stringify(purchaseOrders.find(p => p.id === 'po3').lines)));
+    ok('the delivery leaves the order on screen', gone.length === 0, JSON.stringify(gone));
+    ok('  and as stored', (blob.find(p => p.id === 'po3') || { lines: [1] }).lines.length === 0,
+      JSON.stringify((blob.find(p => p.id === 'po3') || {}).lines));
+    ok('  and its row is gone from the job', !rows.has(String(row.id)), JSON.stringify([...rows.keys()]));
+    await page.reload();
+    await page.waitForFunction(() => typeof purchaseOrders !== 'undefined' && purchaseOrders.length === 1, null, { timeout: 20000 });
+    await sleep(800);
+    const reloaded = await page.evaluate(() => JSON.parse(JSON.stringify(purchaseOrders.find(p => p.id === 'po3').lines)));
+    ok('  and stays gone after a reload', reloaded.length === 0, JSON.stringify(reloaded));
+  } else {
+    ok('the row\'s delete button is in Daily Tracking', false, 'not found');
   }
 
   ok('no page errors', errors.length === 0, errors.join(' | '));
