@@ -376,6 +376,30 @@ const JOB_B = {
   assert('it says so instead',
     /No document folder for cost code 999/.test(window.document.body.lastElementChild.textContent),
     window.document.body.lastElementChild.textContent);
+  // 999 is not one of the job's bid codes, so nothing seeds a folder for it:
+  // it gets one when the first file is attached to a line carrying it. That
+  // is the normal state of such a code, not a fault — and the old message
+  // sent people looking for a folder-name clash that did not exist.
+  const offBid = window.document.body.lastElementChild;
+  assert('…as a notice rather than an error, since a code off the bid has no folder until something is filed under it',
+    offBid.getAttribute('data-fctdoc-toast') === 'info'
+      && /nothing has been filed under it/.test(offBid.textContent)
+      && /made when the first file is attached/.test(offBid.textContent)
+      && !/another folder may already be using its name/.test(offBid.textContent), offBid.textContent);
+
+  // A code that IS on the bid is seeded on the way in, so missing its folder
+  // after that means the seed did not work just now — an error, and not the
+  // name clash the old message blamed (the seed now suffixes a clashing name
+  // with " (2)" rather than skipping the folder).
+  FD.configure({ getCostCodes: () => [{ code: '420', label: 'Paving' }, { code: '777', label: 'Fencing' }] });
+  await FD.openCostCodeFolder({ projectId: 'A', costCode: '777' });
+  const onBid = window.document.body.lastElementChild;
+  assert('a bid code whose folder could not be set up is reported as an error',
+    onBid.getAttribute('data-fctdoc-toast') === 'error' && !onBid.querySelector('[data-cancel]')
+      && /No document folder for cost code 777 on this job/.test(onBid.textContent)
+      && /could not be set up just now/.test(onBid.textContent)
+      && !/another folder may already be using its name/.test(onBid.textContent), onBid.textContent);
+  FD.configure({ getCostCodes: () => [{ code: '420', label: 'Paving' }] });
 
   await FD.openCostCodeFolder({ projectId: 'A', costCode: '   ' });
   assert('a blank cost code is refused with a reason',

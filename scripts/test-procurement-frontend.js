@@ -786,9 +786,13 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     env.$$('tr.fctproc-grp').map(t => t.textContent.replace(/\s+/g, ' ')));
   assert('rows in bid order (bid row, then its material, orphan last)', eq(env.$$('tr.fctproc-row').map(t => t.dataset.row), ['r1', 'r2', 'r3', 'r4']));
   const headers = env.$$('.fctproc-table th').map(th => th.textContent.replace('▼', '').trim());
-  assert('columns in the agreed order', eq(headers, ['', 'Status', 'PO #', 'Sub-Contractor Agreement', 'Date Needed', 'Lead Time (days)',
+  // The paperclip (attached documents) sits right after PO #, as on the
+  // Purchase Orders tab. It is the sheet's column only: the exports below
+  // keep their own, unchanged list.
+  assert('columns in the agreed order', eq(headers, ['', 'Status', 'PO #', '\u{1F4CE}', 'Sub-Contractor Agreement', 'Date Needed', 'Lead Time (days)',
     'Order By', 'Date Ordered', 'Date Delivered', 'Quantity', 'Unit', 'Cost Code', 'Sub Code', 'Description', 'Vendor', 'Quote #',
     'Contact', 'Email', '']), headers);
+  assert('  the paperclip column says what it is', (env.$$('.fctproc-table th')[3] || {}).title === 'Attached documents');
   assert('select + Status columns are pinned left', env.$('th.c-sel').classList.contains('stk') && env.$$('.fctproc-table th')[1].classList.contains('stk'));
   assert('a checkbox per row and a select-all', env.$$('[data-sel]').length === 4 && !!env.$('#fctproc-selall'));
   assert('Send to Procurement and + Add Row for editors', !!env.$('[data-act="send"]') && !!env.$('[data-act="add"]'));
@@ -2590,6 +2594,450 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     const ev = new e.w.Event('beforeunload', { cancelable: true });
     e.w.dispatchEvent(ev);
     assert('the browser is asked to confirm leaving', ev.defaultPrevented);
+  }
+
+  // ── Attached documents ────────────────────────────────────────────────
+  // The page's document hooks, as tracker.html hands them over: counts read
+  // out of a cache the page keeps, a refresh that settles once that cache is
+  // fresh, and the two openers. Every call is recorded. `hold` keeps the next
+  // refresh out until release(); `next` / `nextCc` are what it brings back.
+  // The opener notes, at the moment it is called, how many saves had gone and
+  // what the server held for the line — so a test can tell what came first.
+  const CLIP = '\u{1F4CE}', FOLDER = '\u{1F4C1}';
+  function withDocs(e, { counts = {}, cc = {} } = {}) {
+    const d = {
+      counts: { ...counts }, cc: { ...cc }, asks: [], opened: [], folders: [], countArgs: [], ccArgs: [],
+      next: null, nextCc: null, fail: false, hold: false, release: null,
+    };
+    const settle = () => {
+      if (d.fail) throw new Error('the documents could not be read');
+      if (d.next) { d.counts = d.next; d.next = null; }
+      if (d.nextCc) { d.cc = d.nextCc; d.nextCc = null; }
+    };
+    e.P.configure({
+      attachmentCount: (pid, id) => { d.countArgs.push([pid, id]); return pid === 'p1' ? d.counts[id] || 0 : 0; },
+      costCodeDocCount: (pid, code) => { d.ccArgs.push([pid, code]); return pid === 'p1' ? d.cc[code] || 0 : 0; },
+      refreshAttachmentCounts: pid => {
+        d.asks.push(pid);
+        if (!d.hold) return Promise.resolve().then(settle);
+        return new Promise(res => { d.release = () => { d.release = null; res(); }; }).then(settle);
+      },
+      openAttachments: line => {
+        const saved = e.db.rows.find(r => r.id === (line && line.id));
+        d.opened.push({ line, patches: e.patches().filter(c => c.q.id === (line && line.id)).length, saved: saved ? { ...saved } : null });
+      },
+      openCostCodeFolder: o => { d.folders.push(o); },
+    });
+    return d;
+  }
+  const drawn = async e => { e.P.renderTab(e.root); await tick(); await tick(); await tick(); await sleep(30); };
+
+  console.log('\n[the paperclip on each line]');
+  {
+    const AROWS = [
+      row({ id: 'a1', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' }),
+      row({ id: 'a2', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', created_at: '2026-03-01T10:00:01Z' }),
+      row({ id: 'a3', created_at: '2026-03-01T10:00:02Z' }),
+    ];
+    const e = makeEnv({ rows: AROWS });
+    const d = withDocs(e, { counts: { a1: 2, a2: 1 } });
+    await drawn(e);
+    const clip = id => e.$(`tr[data-row="${id}"] td.c-files button`);
+    assert('every line has a paperclip, in the column right after PO #', ['a1', 'a2', 'a3'].every(id => !!clip(id))
+      && e.$('tr[data-row="a1"]').children[3] === e.$('tr[data-row="a1"] td.c-files')
+      && e.$('tr[data-row="a1"]').children[2].classList.contains('c-po'));
+    assert('  a plain button the sheet answers (data-act="files", the row\'s id)',
+      clip('a1').tagName === 'BUTTON' && clip('a1').type === 'button' && clip('a1').dataset.act === 'files' && clip('a1').dataset.row === 'a1');
+    assert('  with its count beside it, green, and the count in its tooltip',
+      clip('a1').textContent === CLIP + '2' && clip('a1').classList.contains('has') && clip('a1').title === '2 attached documents',
+      [clip('a1').textContent, clip('a1').className, clip('a1').title]);
+    assert('  one document said in the singular', clip('a2').textContent === CLIP + '1' && clip('a2').title === '1 attached document');
+    assert('  none: no number, muted, and an editor is offered to attach one',
+      clip('a3').textContent === CLIP && !clip('a3').classList.contains('has') && clip('a3').title === 'Attach a document');
+    assert('  its label is read out the same as its tooltip', clip('a1').getAttribute('aria-label') === '2 attached documents');
+    assert('  counted by job and line', d.countArgs.some(([p, id]) => p === 'p1' && id === 'a1') && d.countArgs.every(([p]) => p === 'p1'));
+    const css = (e.$('#fctproc-styles') || {}).textContent || '';
+    assert('the stylesheet draws a count green and none muted',
+      /\.fctproc-clip \{[^}]*color: var\(--muted/.test(css) && /\.fctproc-clip\.has \{[^}]*color: var\(--green/.test(css));
+
+    const m = e.P._test.exportMatrix(e.P._test.state().rows, C());
+    assert('the Excel / CSV columns are the ones they were: no paperclip, no count', m.header.length === 18
+      && m.header[1] === 'PO #' && m.header[2] === 'Sub-Contractor Agreement' && !m.header.some(h => /\u{1F4CE}|attach|document/iu.test(h)), m.header);
+    const printed = e.P._test.buildPrintHtml(C(), { printedAt: new Date(2026, 10, 17) });
+    assert('  and the print view', !/\u{1F4CE}|&#128206;|fctproc-clip|Attached documents/u.test(printed));
+
+    const v = makeEnv({ perm: { canView: true, canEdit: false }, rows: AROWS });
+    const dv = withDocs(v, { counts: { a1: 3 } });
+    await drawn(v);
+    const vclip = id => v.$(`tr[data-row="${id}"] td.c-files button`);
+    assert('a viewer has the paperclips too (it is not an editor\'s column)', !!vclip('a1') && !!vclip('a3')
+      && v.$$('.fctproc-table th').some(th => th.textContent.trim() === CLIP) && v.$$('[data-pr]').length === 0);
+    assert('  with the count', vclip('a1').textContent === CLIP + '3' && vclip('a1').title === '3 attached documents');
+    assert('  and, with nothing attached, says so rather than offering to attach', vclip('a3').title === 'No documents attached');
+    vclip('a1').click();
+    await sleep(20);
+    assert('  clicking it opens the line\'s documents (a viewer may list and download them)',
+      dv.opened.length === 1 && dv.opened[0].line.id === 'a1' && dv.opened[0].line.project_id === 'p1', dv.opened);
+    assert('  and saves nothing', v.patches().length === 0);
+
+    e.P.configure({ hiddenColumns: ['files'] });
+    e.P.rerender();
+    assert('a page that hides the column (hiddenColumns) has no paperclips', !e.$('td.c-files') && !e.$('[data-act="files"]')
+      && !e.$$('.fctproc-table th').some(th => th.textContent.trim() === CLIP));
+    e.P.configure({ hiddenColumns: [] });
+    e.P.rerender();
+    assert('  and they are back once it stops', !!clip('a1'));
+  }
+
+  console.log('\n[a page with no document hooks]');
+  {
+    const e = makeEnv({ rows: [row({ id: 'n1', cost_code: 'Stormwater' })] });
+    await drawn(e);
+    const cell = () => e.$('tr[data-row="n1"] td.c-files');
+    assert('the column is there, its cell empty, and nothing failed', !!cell() && cell().innerHTML === '' && !e.$('[data-act="files"]')
+      && e.$$('tr.fctproc-row').length === 1);
+    assert('  no folder chip on the sections', !!e.$('tr.fctproc-grp') && !e.$('[data-grpdocs]'));
+    await e.P.refresh();
+    assert('  a refresh asks nothing of the page and still works', e.$$('tr.fctproc-row').length === 1
+      && (await e.P.refreshAttachmentCounts()) === false);
+    e.P.configure({ attachmentCount: () => 4 });
+    e.P.rerender();
+    assert('a count with nothing to open the documents draws no button that would do nothing', cell().innerHTML === '');
+    e.P.configure({ openAttachments: () => {}, attachmentCount: () => { throw new Error('not loaded'); } });
+    e.P.rerender();
+    assert('a count that throws reads as none, and the row still draws', cell().textContent === CLIP && e.$$('tr.fctproc-row').length === 1);
+    e.P.configure({ attachmentCount: () => 'lots' });
+    e.P.rerender();
+    assert('  so does one that is not a number', cell().textContent === CLIP);
+    e.P.configure({ attachmentCount: () => -2 });
+    e.P.rerender();
+    assert('  or a negative one', cell().textContent === CLIP);
+    e.P.configure({ openCostCodeFolder: () => {}, costCodeDocCount: () => { throw new Error('not loaded'); } });
+    e.P.rerender();
+    assert('a folder count that throws: the chip, with no number', !!e.$('[data-grpdocs]') && e.$('[data-grpdocs]').textContent === FOLDER);
+    e.P.configure({ openAttachments: () => { throw new Error('dialog broke'); } });
+    e.$('[data-act="files"]').click();
+    await sleep(20);
+    assert('an opener that throws is logged, not left to break the sheet', e.warns.some(w => /could not open the attachments/.test(w))
+      && e.$$('tr.fctproc-row').length === 1);
+  }
+
+  console.log('\n[the paperclip saves a Sub Code just picked, first]');
+  {
+    const e = makeEnv({ rows: [
+      row({ id: 'm1' }),
+      row({ id: 'm2', created_at: '2026-03-01T10:00:01Z' }),
+      row({ id: 'm3', cost_code: '  Stormwater  ', created_at: '2026-03-01T10:00:02Z' }),
+      // A bid row whose line was renamed on the bid since: the line's codes are the live ones.
+      row({ id: 'm4', source: 'bid', bid_item_id: 'b3', cost_code: 'Erosion (old)', sub_code: 'Silt sock', created_at: '2026-03-01T10:00:03Z' }),
+      row({ id: 'm5', description: 'Type M inlet grate', created_at: '2026-03-01T10:00:04Z' }),
+      row({ id: 'm6', created_at: '2026-03-01T10:00:05Z' }),
+    ] });
+    const d = withDocs(e);
+    await drawn(e);
+    const clip = id => e.$(`tr[data-row="${id}"] [data-act="files"]`);
+
+    const box = e.field('m1', 'codes');
+    box.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    e.pick(box, 'Stormwater / Geofabric', 'b1');
+    const sentFor = id => e.patches().filter(c => c.q.id === id).length;
+    assert('a Sub Code picked is waiting for the quiet spell', e.P._test.pending().pend.has('m1') && sentFor('m1') === 0);
+    clip('m1').click();
+    await sleep(60);
+    assert('clicking the paperclip sends it at once, and opens the documents only once it is saved',
+      d.opened.length === 1 && d.opened[0].patches === 1 && d.opened[0].saved.bid_item_id === 'b1' && d.opened[0].saved.cost_code === 'Stormwater',
+      d.opened[0]);
+    assert('  the line handed over: its id, job, live codes and what to call it',
+      eq(d.opened[0].line, { id: 'm1', project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Geofabric', label: 'Stormwater / Geofabric' }), d.opened[0].line);
+
+    // Pressing the paperclip is what leaves the Sub Code box, and the page's
+    // combobox commits 120 ms after that: the click comes first.
+    const box2 = e.field('m2', 'codes');
+    box2.focus();
+    box2.value = 'Stormwater / Elbows';
+    box2.dataset.cbValue = 'b6';
+    e.fire(box2, 'input');
+    const clip2 = clip('m2');
+    clip2.focus();
+    assert('leaving the box marks it as about to commit', box2.dataset.pcommit === '1');
+    clip2.click();
+    clip2.click();
+    await sleep(70);
+    assert('  while it is still committing, nothing is opened', d.opened.length === 1 && sentFor('m2') === 0);
+    e.fire(box2, 'change');               // the combobox's commit, as tracker's cbCommitInput sends it
+    await sleep(150);
+    assert('  once it has committed, the pick is saved, and only then are the documents opened — once, for two clicks',
+      d.opened.length === 2 && d.opened[1].saved.bid_item_id === 'b6' && d.opened[1].patches === 1
+      && d.opened[1].line.cost_code === 'Stormwater' && d.opened[1].line.sub_code === 'Elbows', d.opened.slice(1));
+
+    clip('m3').click();
+    await sleep(20);
+    assert('the cost code is handed over trimmed', d.opened[2] && d.opened[2].line.cost_code === 'Stormwater' && d.opened[2].line.label === 'Stormwater', d.opened[2]);
+    clip('m4').click();
+    await sleep(20);
+    assert('a row on a bid line renamed since: the line\'s codes as the sheet shows them, not the stored copy',
+      d.opened[3] && d.opened[3].line.cost_code === 'E&S' && d.opened[3].line.sub_code === 'Silt Sock 12inch'
+      && d.opened[3].line.label === 'E&S / Silt Sock 12inch', d.opened[3]);
+    clip('m5').click();
+    await sleep(20);
+    assert('a line with no codes is called by its Description', d.opened[4] && d.opened[4].line.label === 'Type M inlet grate'
+      && d.opened[4].line.cost_code === '' && d.opened[4].line.sub_code === '', d.opened[4]);
+    e.P.configure({ hiddenColumns: ['description'] });
+    e.P.rerender();
+    clip('m5').click();
+    await sleep(20);
+    assert('  but not when the page hides that column: then just "Procurement line"', d.opened[5] && d.opened[5].line.label === 'Procurement line', d.opened[5]);
+    e.P.configure({ hiddenColumns: [] });
+    e.P.rerender();
+
+    // A save that fails: the message says so, and the documents open anyway.
+    e.db.failPatch = 1;
+    const box6 = e.field('m6', 'codes');
+    box6.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    e.pick(box6, 'E&S / Silt Sock 12inch', 'b3');
+    const errorsBefore = e.errors.length;
+    clip('m6').click();
+    await sleep(60);
+    assert('a pick whose save fails: said, and the documents still open (the file follows the code once it is saved)',
+      d.opened.length === 7 && e.errors.length > errorsBefore && e.P._test.pending().failed.has('m6'), d.opened.length);
+    e.db.failPatch = 0;
+  }
+
+  console.log('\n[a line re-coded: the counts are read again at once]');
+  {
+    // The server moves a line's files to its new cost code's folder before it
+    // answers the save (api/procurement.js). The section chips are counted
+    // again as soon as the save lands, rather than up to a poll later — but
+    // only when the line has something attached to move.
+    const e = makeEnv({ rows: [
+      row({ id: 'q1', cost_code: 'Stormwater' }),
+      row({ id: 'q2', cost_code: 'Stormwater', created_at: '2026-03-01T10:00:01Z' }),
+      row({ id: 'q3', cost_code: 'E&S', created_at: '2026-03-01T10:00:02Z' }),
+    ] });
+    const d = withDocs(e, { counts: { q1: 1 }, cc: { Stormwater: 1 } });
+    await drawn(e);
+    const read = d.asks.length;
+    assert('reading the rows asked once', read === 1, d.asks);
+    const settleSaves = async () => { await e.P._test.flushAll(); await tick(); await tick(); await sleep(10); };
+
+    const box2 = e.field('q2', 'codes');
+    box2.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    e.pick(box2, 'E&S / Silt Sock 12inch', 'b3');
+    await settleSaves();
+    assert('a Sub Code picked on a line with nothing attached is saved, and asks for no counts',
+      e.patches().filter(c => c.q.id === 'q2').length === 1 && d.asks.length === read, d.asks);
+
+    d.nextCc = { Stormwater: 0, 'E&S': 1 };
+    const box1 = e.field('q1', 'codes');
+    box1.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    e.pick(box1, 'E&S / Silt Sock 12inch', 'b3');
+    const sentAt = e.calls.length;
+    await settleSaves();
+    assert('a Sub Code picked on a line with a file attached asks for the counts as soon as the save lands',
+      d.asks.length === read + 1 && d.asks[d.asks.length - 1] === 'p1'
+        && e.calls.slice(sentAt - 1).some(c => c.method === 'PATCH' && c.q.id === 'q1'), d.asks);
+    const esChip = e.$('[data-grpdocs="E&S"]');
+    assert('…and the section chip the file moved to shows it', esChip && esChip.textContent === FOLDER + '1',
+      esChip && esChip.textContent);
+
+    const v = e.field('q1', 'vendor');
+    v.focus(); v.value = 'Acme Supply'; e.fire(v, 'input'); e.fire(v, 'change'); v.blur();
+    await settleSaves();
+    assert('a save of another cell on that line asks for nothing',
+      e.patches().some(c => c.q.id === 'q1' && 'vendor' in c.body.fields) && d.asks.length === read + 1, d.asks);
+  }
+
+  console.log('\n[re-links and restores move files: the counts are read again]');
+  {
+    const OLD = [
+      { id: 'o1', cost_code: 'Stormwater', sub_code: 'Geofabric', unit: 'SF', quantity: 8110, index: 0 },
+      { id: 'o3', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', unit: 'LF', quantity: 1200, index: 1 },
+    ];
+    const RROWS = () => [
+      row({ id: 'g1', source: 'bid', bid_item_id: 'o1', cost_code: 'Stormwater', sub_code: 'Geofabric', created_at: '2026-03-01T00:00:01Z' }),
+      row({ id: 'g3', source: 'bid', bid_item_id: 'o3', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', created_at: '2026-03-01T00:00:03Z',
+        deleted_at: '2026-03-02T00:00:00Z' }),
+    ];
+    // The re-link the tab runs as it loads, on a job whose bid was replaced.
+    // Only rows whose cost AND sub code match a new line re-link, so the new
+    // lines carry the old codes; the bid page renames them afterwards.
+    const SAME = OLD.map(l => ({ ...l, id: 'N' + l.id }));
+    const a = makeEnv({ rows: RROWS(), bidLines: SAME });
+    const da = withDocs(a, { counts: { g1: 2 } });
+    a.P.renderTab(a.root);
+    await sleep(60);
+    assert('a re-link of a line with files attached asks for the counts again, after the PATCH',
+      a.patches().some(p => p.q.id === 'g1') && da.asks.length === 2 && da.asks.every(p => p === 'p1'), da.asks);
+    const n = makeEnv({ rows: RROWS(), bidLines: SAME });
+    const dn = withDocs(n, { counts: {} });
+    n.P.renderTab(n.root);
+    await sleep(60);
+    assert('…and of lines with nothing attached, asks nothing more than the read of the rows',
+      n.patches().some(p => p.q.id === 'g1') && dn.asks.length === 1, dn.asks);
+
+    // A deleted line ticked in Add to Procurement comes back on its line's
+    // replacement. The sheet cannot tell from here whether the server's
+    // copy of that line moved the code (the bid page may have renamed it
+    // since), so a line with files attached is counted again either way.
+    const s = makeEnv({ rows: RROWS(), bidLines: SAME });
+    const ds = withDocs(s, { counts: { g3: 1 } });
+    s.P.renderTab(s.root);
+    await sleep(40);
+    const asked = ds.asks.length;
+    await s.P.openSendModal('p1');
+    const silt = s.$$('.fctproc-modal .fctproc-send-line').find(l => l.querySelector('.sub').textContent === 'Silt Sock 12inch');
+    silt.querySelector('input').checked = true;
+    s.fire(silt.querySelector('input'), 'change');
+    s.$('.fctproc-modal [data-send="go"]').click();
+    await sleep(60);
+    const sent = s.calls.filter(c => c.q.action === 'send').pop();
+    assert('a line with a file attached, restored onto a new bid line, asks for the counts again',
+      sent && eq(sent.body.restore_ids, [{ id: 'g3', bid_item_id: 'No3', cost_code: 'E&S', sub_code: 'Silt Sock 12inch' }])
+        && ds.asks.length === asked + 1, { asks: ds.asks, sent: sent && sent.body });
+  }
+
+  console.log('\n[a cost-code section\'s folder chip]');
+  {
+    const e = makeEnv({ rows: [
+      row({ id: 'g1', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', vendor: 'Acme Supply' }),
+      row({ id: 'g2', source: 'bid', bid_item_id: 'b3', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', vendor: 'LB Water', created_at: '2026-03-01T10:00:01Z' }),
+      row({ id: 'g3', description: 'odd part', created_at: '2026-03-01T10:00:02Z' }),
+    ] });
+    const d = withDocs(e, { cc: { Stormwater: 3 } });
+    await drawn(e);
+    const head = key => e.$(`tr.fctproc-grp[data-grp="${key}"]`);
+    const chip = key => e.$(`tr.fctproc-grp[data-grp="${key}"] [data-grpdocs]`);
+    const st = e.P._test.state();
+    assert('a cost-code section has a folder chip, with what its folder holds',
+      !!chip('c:stormwater') && chip('c:stormwater').textContent === FOLDER + '3' && chip('c:stormwater').classList.contains('has')
+      && chip('c:stormwater').dataset.grpdocs === 'Stormwater' && /^3 documents filed under cost code Stormwater/.test(chip('c:stormwater').title),
+      chip('c:stormwater') && [chip('c:stormwater').textContent, chip('c:stormwater').title]);
+    assert('  an empty folder: the chip, with no number', chip('c:e&s') && chip('c:e&s').textContent === FOLDER
+      && !chip('c:e&s').classList.contains('has') && chip('c:e&s').title === 'Open the document folder for cost code E&S');
+    assert('"No cost code" has none: no folder is made for a blank code', !!head('c:') && !chip('c:'));
+    assert('  counted for this job, by the section\'s code', d.ccArgs.some(([p, c]) => p === 'p1' && c === 'Stormwater'));
+    chip('c:stormwater').click();
+    assert('clicking it opens that cost code\'s folder on this job', eq(d.folders, [{ projectId: 'p1', costCode: 'Stormwater' }]), d.folders);
+    assert('  and does not fold the section', st.collapsed.size === 0 && !!e.$('tr[data-row="g1"]'));
+
+    const k = chip('c:stormwater');
+    assert('it is a real button, reached with Tab', k.tagName === 'BUTTON' && k.type === 'button');
+    k.focus();
+    for (const key of ['Enter', ' ']) {
+      k.dispatchEvent(new e.w.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+      k.dispatchEvent(new e.w.KeyboardEvent('keyup', { key, bubbles: true, cancelable: true }));
+      k.click();                          // what Enter / Space on a button do
+    }
+    assert('  Enter and Space on it open the folder and fold nothing', d.folders.length === 3 && st.collapsed.size === 0
+      && !!e.$('tr[data-row="g1"]') && e.w.document.activeElement === k);
+    d.cc.Stormwater = 4;
+    e.P.rerender();
+    assert('  its count follows the page\'s, and the focus stays on it', e.w.document.activeElement === k && k.isConnected
+      && k.textContent === FOLDER + '4' && /^4 documents/.test(k.title));
+    e.$('[data-chip="all"]').click();      // a whole-table redraw
+    assert('  …through a whole-table redraw too', e.w.document.activeElement && e.w.document.activeElement.dataset.grpdocs === 'Stormwater');
+    head('c:stormwater').querySelector('.tw').click();
+    assert('the header itself still folds the section', st.collapsed.has('c:stormwater') && !e.$('tr[data-row="g1"]'));
+    head('c:stormwater').querySelector('.tw').click();
+
+    e.$('[data-group="vendor"]').click();
+    assert('a vendor section has no folder chip (it mixes cost codes)', e.$$('tr.fctproc-grp').length === 3 && !e.$('[data-grpdocs]'));
+    e.$('[data-group="none"]').click();
+    assert('  nor is there one with no grouping', !e.$('tr.fctproc-grp') && !e.$('[data-grpdocs]'));
+    e.$('[data-group="cost"]').click();
+
+    const v = makeEnv({ perm: { canView: true, canEdit: false }, rows: [row({ id: 'g1', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' })] });
+    const dv = withDocs(v, { cc: { Stormwater: 2 } });
+    await drawn(v);
+    const vk = v.$('[data-grpdocs="Stormwater"]');
+    assert('a viewer has the chip too', !!vk && vk.textContent === FOLDER + '2' && !v.$('[data-grpadd]'));
+    vk.click();
+    assert('  and it opens the folder', eq(dv.folders, [{ projectId: 'p1', costCode: 'Stormwater' }]) && v.P._test.state().collapsed.size === 0);
+  }
+
+  console.log('\n[the counts are read with the rows, and redrawn where they changed]');
+  {
+    const e = makeEnv({ rows: [
+      row({ id: 'k1', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' }),
+      row({ id: 'k2', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', created_at: '2026-03-01T10:00:01Z' }),
+      row({ id: 'k3', created_at: '2026-03-01T10:00:02Z' }),
+    ] });
+    const d = withDocs(e, { counts: { k1: 1 }, cc: { Stormwater: 1 } });
+    d.hold = true;
+    await drawn(e);
+    const clip = id => e.$(`tr[data-row="${id}"] [data-act="files"]`);
+    const tr = id => e.$(`tr[data-row="${id}"]`);
+    const chip = () => e.$('[data-grpdocs="Stormwater"]');
+    assert('reading the job\'s rows asks the page for its counts', eq(d.asks, ['p1']), d.asks);
+    assert('  the sheet is drawn meanwhile from the counts in hand', clip('k1').textContent === CLIP + '1' && clip('k2').textContent === CLIP);
+    const before = { k1: tr('k1'), k2: tr('k2'), k3: tr('k3'), chip: chip() };
+    d.next = { k1: 1, k2: 2 };
+    d.nextCc = { Stormwater: 3 };
+    d.release();
+    await tick(); await tick();
+    assert('once they are in, the paperclip whose count moved shows it, green', clip('k2').textContent === CLIP + '2'
+      && clip('k2').classList.contains('has') && clip('k2').title === '2 attached documents');
+    assert('  that row alone is redrawn; the rest are left as they were', tr('k1') === before.k1 && tr('k3') === before.k3 && tr('k2') !== before.k2);
+    assert('  and the section\'s folder chip shows the new count, in place', chip() === before.chip && chip().textContent === FOLDER + '3'
+      && chip().classList.contains('has'));
+
+    d.hold = false;
+    const still = { k1: tr('k1'), k2: tr('k2'), k3: tr('k3'), chip: chip() };
+    await e.P.refresh();
+    await tick(); await tick();
+    assert('every poll of the rows asks again', eq(d.asks, ['p1', 'p1']), d.asks);
+    assert('  counts that did not move redraw nothing', tr('k1') === still.k1 && tr('k2') === still.k2 && tr('k3') === still.k3
+      && chip() === still.chip);
+
+    d.counts = { k1: 1, k2: 2, k3: 5 };
+    d.cc = { Stormwater: 4 };
+    e.P.rerender();
+    assert('a rerender (the page\'s counts moved after a document was attached) draws the new counts',
+      clip('k3').textContent === CLIP + '5' && chip().textContent === FOLDER + '4');
+
+    // A count that lands while a cell of the same row is being typed in.
+    const qty = e.field('k2', 'quantity');
+    qty.focus();
+    qty.value = '12';
+    e.fire(qty, 'input');
+    d.next = { k1: 1, k2: 7, k3: 5 };
+    const ok = await e.P.refreshAttachmentCounts();
+    assert('the page can ask for the counts again itself', ok === true && d.asks.length === 3);
+    assert('  a row being typed in gets its new count, and keeps the box being typed in', clip('k2').textContent === CLIP + '7'
+      && e.field('k2', 'quantity') === qty && e.w.document.activeElement === qty && qty.value === '12');
+    qty.blur();
+    await e.P._test.flushAll();
+
+    // Held while a press in the sheet is down, so the paperclip under the
+    // pointer is not replaced before the click lands on it.
+    d.next = { k1: 9, k2: 7, k3: 5 };
+    clip('k1').dispatchEvent(new e.w.MouseEvent('mousedown', { bubbles: true, button: 0 }));
+    const pressed = clip('k1');
+    await e.P.refreshAttachmentCounts();
+    assert('a count that lands while the mouse is down on the sheet waits', clip('k1') === pressed && pressed.textContent === CLIP + '1');
+    e.w.document.dispatchEvent(new e.w.MouseEvent('mouseup', { bubbles: true, button: 0 }));
+    await sleep(5);
+    assert('  and is drawn once the button is up', clip('k1').textContent === CLIP + '9');
+
+    d.fail = true;
+    const failedRead = await e.P.refreshAttachmentCounts();
+    assert('a count that could not be read leaves the numbers drawn, with a warning', failedRead === false
+      && clip('k1').textContent === CLIP + '9' && e.warns.some(w => /could not read the attachment counts/.test(w)));
+    d.fail = false;
+
+    // Another job opened before the counts came back: they are not drawn
+    // over it, and its own read asks for its own.
+    d.hold = true;
+    const askedP1 = e.P.refreshAttachmentCounts();
+    await tick();
+    const releaseP1 = d.release;
+    d.hold = false;
+    e.P._test.selectProject('p2');
+    await tick(); await tick(); await tick();
+    if (releaseP1) releaseP1();
+    assert('a count that comes back for a job no longer open is dropped', typeof releaseP1 === 'function' && (await askedP1) === false);
+    await tick(); await tick();
+    assert('  and the job opened asks for its own', d.asks[d.asks.length - 1] === 'p2', d.asks);
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

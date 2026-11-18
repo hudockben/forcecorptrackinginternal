@@ -19,6 +19,8 @@ const {
   hasDivisionAccess,
   divisionForKey,
 } = require('./lib/auth');
+// A renamed cost code moves the files attached to its Procurement rows (step 5).
+const procDocs = require('./lib/procurement-docs');
 
 const STATUS_VALUES = new Set(['Active', 'Complete', 'On Hold', 'At Risk']);
 
@@ -237,26 +239,82 @@ module.exports = async (req, res) => {
     //    nothing ties to it — a request naming another job there would
     //    rewrite that job's rows while its own bid stayed as it was.
     //    Non-fatal, like the mirror: the bid edit has landed either way.
+    //
+    //    A row's attached files are filed in the Job Document Vault under its
+    //    cost code as well as where they were put (api/lib/procurement-docs.js),
+    //    so a cost code renamed here moves them to the new code's folder. The
+    //    statement hands back, for each row it changed, the code it stored
+    //    before and whether anything is attached, so that costs nothing extra
+    //    unless a row with files really changed code. This is the one place
+    //    that can do it: once the copy is rewritten here, the Procurement tab
+    //    sees nothing to bring up to date and never writes the code itself.
+    let changed = [];
+    const keyProjectId = projectKey.replace(/^fct_(?:paving_|kiewit_)?project_/, '');
+    // As Procurement stores text: one line, trimmed.
+    const oneLine = v => String(v || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
+    const cc = oneLine(item.cost_code), sc = oneLine(item.sub_code);
     try {
-      const keyProjectId = projectKey.replace(/^fct_(?:paving_|kiewit_)?project_/, '');
-      // As Procurement stores text: one line, trimmed.
-      const oneLine = v => String(v || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
-      const cc = oneLine(item.cost_code), sc = oneLine(item.sub_code);
-      await sql`
-        UPDATE procurement_items
-           SET cost_code  = CASE WHEN ${cc}::text <> '' THEN ${cc}::text ELSE cost_code END,
-               sub_code   = CASE WHEN ${sc}::text <> '' THEN ${sc}::text ELSE sub_code  END,
-               version    = version + 1,
+      changed = await sql`
+        WITH was AS (
+          SELECT id, cost_code
+            FROM procurement_items
+           WHERE company_code = ${companyCode} AND division = ${division}
+             AND project_id = ${keyProjectId} AND bid_item_id = ${item.id}
+             AND ((${cc}::text <> '' AND cost_code <> ${cc}::text) OR (${sc}::text <> '' AND sub_code <> ${sc}::text))
+        )
+        UPDATE procurement_items p
+           SET cost_code  = CASE WHEN ${cc}::text <> '' THEN ${cc}::text ELSE p.cost_code END,
+               sub_code   = CASE WHEN ${sc}::text <> '' THEN ${sc}::text ELSE p.sub_code  END,
+               version    = p.version + 1,
                updated_at = NOW()
-         WHERE company_code = ${companyCode} AND division = ${division}
-           AND project_id = ${keyProjectId} AND bid_item_id = ${item.id}
-           AND ((${cc}::text <> '' AND cost_code <> ${cc}::text) OR (${sc}::text <> '' AND sub_code <> ${sc}::text))
+          FROM was
+         WHERE p.id = was.id
+           -- The same test again on the row being written, not only the
+           -- snapshot above, so a row re-tied or re-coded by a save that
+           -- landed in between is judged as it is now.
+           AND p.bid_item_id = ${item.id}
+           AND ((${cc}::text <> '' AND p.cost_code <> ${cc}::text) OR (${sc}::text <> '' AND p.sub_code <> ${sc}::text))
+        RETURNING p.id, p.project_id, was.cost_code AS was_code,
+                  EXISTS (SELECT 1 FROM document_links l
+                           WHERE l.company_code = p.company_code AND l.link_type = 'procurement'
+                             AND l.target_id = p.id) AS has_files
       `;
     } catch (procErr) {
       console.warn(
         `[bid-items] procurement code copy failed for company=${companyCode} ` +
         `project=${projectKey} bidItem=${item.id}: ${procErr.message}`
       );
+    }
+
+    // 5. The files of the rows just renamed follow the new cost code: from the
+    //    code a row stored before to its live code now — the bid line's, read
+    //    from the blob written in step 1 — compared ignoring case and the
+    //    spaces around it, the same rule api/procurement.js re-files by. A
+    //    sub code rename, or a row with nothing attached, stops here.
+    //    refileProcurementDocs never throws; the guard is for the read.
+    const withFiles = (Array.isArray(changed) ? changed : [])
+      .filter(r => r && r.has_files && procDocs.codeKey(r.was_code) !== procDocs.codeKey(cc));
+    if (withFiles.length) {
+      try {
+        const live = await procDocs.liveCostCodes(sql, { companyCode, division, rowIds: withFiles.map(r => r.id) });
+        const changes = [];
+        for (const r of withFiles) {
+          const now = live.get(r.id);
+          if (!now || procDocs.codeKey(r.was_code) === procDocs.codeKey(now.code)) continue;
+          changes.push({ rowId: r.id, projectId: r.project_id, fromCode: r.was_code == null ? '' : String(r.was_code), toCode: now.rawCode });
+        }
+        if (changes.length) {
+          await procDocs.refileProcurementDocs(sql, {
+            companyCode, division, changes,
+            username: payload.username || null, userId: payload.userId || null,
+          });
+        }
+      } catch (refileErr) {
+        console.warn(
+          `[bid-items] re-filing attachments after a cost code rename failed for company=${companyCode} ` +
+          `project=${projectKey} bidItem=${item.id}: ${refileErr.message}`
+        );
+      }
     }
 
     return res.json({ ok: true });

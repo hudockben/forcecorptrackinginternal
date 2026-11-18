@@ -989,6 +989,951 @@ console.log('\n[documents.js upload sequence]');
     window.fetch = savedFetch;
   }
 
+  // ── 6. Procurement line attachments, driven in jsdom ─────────────────────
+  // Every line of the Procurement sheet carries a paperclip. A file attached
+  // there is ONE document in the Vault with three kinds of link: the folder
+  // the user picked, the line itself, and the folder of the line's cost code —
+  // which is how a cost code's folder compiles every attachment for its
+  // section of the sheet. The server does the cost-code filing; what this
+  // module owns is listing a line's files, offering the right folder first,
+  // carrying the line id into the upload, detaching, and keeping the
+  // paperclip counts honest. All of it is driven against an in-memory API
+  // that answers the routes the way api/documents.js does.
+  {
+    console.log('\n[procurement line attachments]');
+
+    const lastModal = () => [...window.document.body.children]
+      .filter(el => el.querySelector && el.querySelector('[data-body]')).pop() || null;
+    const modals = () => [...window.document.body.children]
+      .filter(el => el.querySelector && el.querySelector('[data-body]'));
+    const closeAll = () => modals().forEach(el => el.remove());
+    const settle = async () => { for (let i = 0; i < 40; i++) await new Promise(r => setTimeout(r, 0)); };
+    const bodyText = () => window.document.body.textContent;
+
+    // Job p7 is the job on the sheet. Its cost-code folders came from the bid:
+    // Stormwater, and Mobilization twice — once as the bid seeded it and once
+    // as an older lower-case folder listed FIRST, so a lookup that skipped the
+    // exact match and went straight to a case-insensitive one would pick the
+    // wrong folder. p8 is another job, there only to prove per-job isolation.
+    const PTREE = {
+      p1: [{ id: 'f-p1', parent_id: null, name: 'Safety', kind: 'fixed', slug: 'safety', sort_order: 1 }],
+      p7: [
+        { id: 'f-mob-old', parent_id: null, name: 'mobilization (old)', kind: 'cost_code',
+          slug: 'cc-mobilization', cost_code: 'mobilization', sort_order: 8 },
+        { id: 'f-storm',   parent_id: null, name: 'Stormwater · Storm Sewer', kind: 'cost_code',
+          slug: 'cc-Stormwater', cost_code: 'Stormwater', sort_order: 9 },
+        { id: 'f-mob',     parent_id: null, name: 'Mobilization', kind: 'cost_code',
+          slug: 'cc-Mobilization', cost_code: 'Mobilization', sort_order: 10 },
+        { id: 'f-photos',  parent_id: null, name: 'Photos', kind: 'fixed', slug: 'photos', sort_order: 5 },
+        { id: 'f-po7',     parent_id: null, name: 'Purchase Orders', kind: 'fixed', slug: 'purchase-orders', sort_order: 7 },
+      ],
+      p8: [
+        { id: 'g-earth',  parent_id: null, name: 'Earthwork', kind: 'cost_code', slug: 'cc-Earthwork', cost_code: 'Earthwork', sort_order: 9 },
+        { id: 'g-earth2', parent_id: null, name: 'EARTHWORK', kind: 'cost_code', slug: 'cc-EARTHWORK', cost_code: 'EARTHWORK', sort_order: 10 },
+      ],
+    };
+    // The live cost code of each procurement row, the way the server resolves it.
+    const LINE_CODE = { 'pr-1': 'Stormwater', 'pr-2': 'stormwater', 'pr-3': '', 'pr-4': 'Paving', 'pr-5': 'Mobilization' };
+    const doc = o => ({ content_type: 'application/pdf', size_bytes: 2048, note: '', uploaded_by: 'ben',
+      uploaded_at: '2026-10-01T00:00:00Z', po_ids: [], procurement_ids: [], deleted_at: null, ...o });
+    const PDOCS = [
+      doc({ id: 'pd1', project_id: 'p7', filename: 'geofabric-quote.pdf', note: 'quote rev B',
+            folder_ids: ['f-storm'], procurement_ids: ['pr-1'] }),
+      doc({ id: 'pd2', project_id: 'p7', filename: 'cut-sheet.pdf', uploaded_by: 'sam',
+            uploaded_at: '2026-10-02T00:00:00Z', folder_ids: ['f-photos', 'f-storm'], procurement_ids: ['pr-1'] }),
+      doc({ id: 'pd3', project_id: 'p7', filename: 'site.jpg', content_type: 'image/jpeg', folder_ids: ['f-photos'] }),
+      doc({ id: 'pd4', project_id: 'p7', filename: 'both.pdf', folder_ids: ['f-photos'],
+            po_ids: ['po-1'], procurement_ids: ['pr-1', 'pr-5'] }),
+      doc({ id: 'pd8', project_id: 'p8', filename: 'cut.pdf', folder_ids: ['g-earth'], procurement_ids: ['pr-81'] }),
+    ];
+    const TRASH = [];
+    let pcaps = { canUpload: true, canManage: true, canDelete: true };
+    let upSeq = 0;
+    let holdLoad = null, releaseLoad = null;        // stall the next listing GET for this job
+    let holdCounts = null, releaseCounts = null;    // stall the next counts GET for this job
+    let failCounts = false, failPatch = false, failList = false;
+    const pcalls = [];
+
+    const countsFor = pid => {
+      const counts = {};
+      for (const d of PDOCS) {
+        if ((d.project_id || '') !== (pid || '')) continue;
+        for (const id of d.procurement_ids) counts[id] = (counts[id] || 0) + 1;
+      }
+      return counts;
+    };
+    const ccFolderFor = (pid, code) => {
+      const list = PTREE[pid] || [];
+      return list.find(f => f.kind === 'cost_code' && (f.cost_code || '').trim() === code.trim())
+        || list.find(f => f.kind === 'cost_code' && (f.cost_code || '').trim().toLowerCase() === code.trim().toLowerCase())
+        || null;
+    };
+
+    window.fetch = async (url, init = {}) => {
+      const u = new URL(String(url), 'http://localhost');
+      const method = init.method || 'GET';
+      const body = typeof init.body === 'string' ? JSON.parse(init.body) : null;
+      const qp = Object.fromEntries(u.searchParams);
+      pcalls.push({ url: String(url), path: u.pathname, method, q: qp, body });
+      // A copy, the way a real response body is parsed fresh: handing back the
+      // fixture arrays themselves let a later "server" change reach into
+      // what the page was already holding.
+      const json = (data, status = 200) => {
+        const copy = JSON.parse(JSON.stringify(data));
+        return { ok: status < 400, status, json: async () => copy };
+      };
+
+      if (String(url).startsWith('https://storage.example')) return json({});
+      if (u.pathname === '/api/document-upload-url') {
+        const id = `doc-up-${++upSeq}`;
+        return json({ documentId: id, storageKey: `FCT/turf/${body && body.projectId}/${id}/x.pdf`,
+          uploadUrl: 'https://storage.example/put?sig=1', contentType: 'application/pdf' });
+      }
+      if (u.pathname !== '/api/documents') return json({});
+
+      if (method === 'PUT') return json({});
+      if (method === 'GET' && qp.procurementCounts) {
+        if (failCounts) throw new TypeError('Failed to fetch');
+        // The answer reflects the moment the request was made, not the moment
+        // it returns — that gap is exactly what makes a slow one stale.
+        const snapshot = countsFor(qp.projectId);
+        if (holdCounts && holdCounts === qp.projectId) {
+          holdCounts = null;
+          await new Promise(r => { releaseCounts = r; });
+        }
+        return json({ counts: snapshot });
+      }
+      if (method === 'GET' && qp.procurementId) {
+        if (failList) return json({ error: 'Database error', detail: 'list down' }, 500);
+        return json({ documents: PDOCS.filter(d => d.project_id === qp.projectId
+          && d.procurement_ids.includes(qp.procurementId)) });
+      }
+      if (method === 'GET' && qp.poCounts) return json({ counts: {} });
+      if (method === 'GET' && qp.trash) return json({ documents: TRASH });
+      if (method === 'GET') {
+        if (holdLoad && holdLoad === qp.projectId) {
+          holdLoad = null;
+          await new Promise(r => { releaseLoad = r; });
+        }
+        return json({ folders: PTREE[qp.projectId] || [],
+          documents: PDOCS.filter(d => (d.project_id || '') === (qp.projectId || '')), caps: pcaps });
+      }
+      if (method === 'POST') {
+        const d = doc({ id: body.documentId, project_id: qp.projectId || null, filename: body.filename,
+          size_bytes: body.sizeBytes, note: body.note || '', folder_ids: [body.folderId],
+          po_ids: body.poId ? [body.poId] : [], procurement_ids: body.procurementId ? [body.procurementId] : [] });
+        // What the server does with a line: file the document under the
+        // line's cost code too, whatever folder was picked.
+        let ccId = null;
+        if (body.procurementId && LINE_CODE[body.procurementId]) {
+          const f = ccFolderFor(qp.projectId, LINE_CODE[body.procurementId]);
+          if (f) { ccId = f.id; if (!d.folder_ids.includes(f.id)) d.folder_ids.push(f.id); }
+        }
+        PDOCS.push(d);
+        return json({ document: d, costCodeFolderId: ccId }, 201);
+      }
+      if (method === 'PATCH') {
+        if (failPatch) return json({ error: 'Database error', detail: 'boom' }, 500);
+        const at = PDOCS.findIndex(d => d.id === qp.id);
+        if (body.restore) {
+          const t = TRASH.findIndex(d => d.id === qp.id);
+          if (t >= 0) PDOCS.push(TRASH.splice(t, 1)[0]);
+          return json({ document: PDOCS[PDOCS.length - 1] });
+        }
+        if (at < 0) return json({ error: 'Document not found' }, 404);
+        const d = PDOCS[at];
+        if (body.removeProcurementId) d.procurement_ids = d.procurement_ids.filter(x => x !== body.removeProcurementId);
+        if (body.addPoId) d.po_ids.push(body.addPoId);
+        if (body.removePoId) d.po_ids = d.po_ids.filter(x => x !== body.removePoId);
+        return json({ document: d });
+      }
+      if (method === 'DELETE') {
+        const at = PDOCS.findIndex(d => d.id === qp.id);
+        if (at >= 0) TRASH.push(PDOCS.splice(at, 1)[0]);
+        return json({ ok: true });
+      }
+      return json({});
+    };
+
+    let changes = 0;
+    FD.configure({
+      division: 'turf',
+      getProjectId: () => 'p1',
+      getProjectName: id => `Job ${id}`,
+      getCostCodes: () => [],
+      getPurchaseOrders: () => [{ id: 'po-1', po_number: 'PO-0137', supplier: 'Cleveland Quarry', project_id: 'p7' }],
+      perm: { canUpload: true, canManage: true, canDelete: true },
+      getUserName: undefined,
+      onChange: () => { changes++; pcalls.push({ marker: 'onChange' }); },
+    });
+    const mount = window.document.getElementById('mount');
+    await FD.renderTab(mount);                     // the Documents tab sits on p1
+
+    assert('the procurement entry points are on the public surface',
+      typeof FD.openProcurementAttach === 'function'
+      && typeof FD.refreshProcurementCounts === 'function'
+      && typeof FD.procurementCount === 'function');
+
+    // ── Counts ────────────────────────────────────────────────────────────
+    pcalls.length = 0;
+    const c7 = await FD.refreshProcurementCounts('p7');
+    assert('refreshProcurementCounts resolves to that job\'s { rowId: n } map',
+      JSON.stringify(c7) === JSON.stringify({ 'pr-1': 3, 'pr-5': 1 }), JSON.stringify(c7));
+    assert('in one GET for that job, carrying the division',
+      pcalls.length === 1 && pcalls[0].method === 'GET' && pcalls[0].q.procurementCounts === '1'
+        && pcalls[0].q.projectId === 'p7' && pcalls[0].q.division === 'turf',
+      pcalls.map(c => `${c.method} ${c.url}`).join(' | '));
+    assert('procurementCount reads a line\'s number', FD.procurementCount('p7', 'pr-1') === 3,
+      String(FD.procurementCount('p7', 'pr-1')));
+    assert('a line with nothing attached reads 0', FD.procurementCount('p7', 'pr-3') === 0);
+    assert('a job never counted reads 0 rather than throwing', FD.procurementCount('p99', 'pr-1') === 0);
+    assert('a row id that names a property of every object still reads 0',
+      FD.procurementCount('p7', '__proto__') === 0 && FD.procurementCount('p7', 'constructor') === 0);
+
+    // Counting must not move the Documents browser onto the job it counted:
+    // the sheet asks about whatever job it shows, which is rarely the tab's.
+    assert('counting a job neither seeds nor loads it',
+      !pcalls.some(c => c.method === 'PUT' || (c.method === 'GET' && !c.q.procurementCounts)));
+    mount.innerHTML = '';
+    await FD.renderTab(mount);
+    assert('and the Documents tab is still on its own job', /Safety/.test(mount.innerHTML)
+      && !/Stormwater/.test(mount.innerHTML), mount.innerHTML.slice(0, 200));
+
+    await FD.refreshProcurementCounts('p8');
+    assert('counts are cached per job', FD.procurementCount('p8', 'pr-81') === 1
+      && FD.procurementCount('p7', 'pr-1') === 3 && FD.procurementCount('p8', 'pr-1') === 0);
+
+    pcalls.length = 0;
+    const general = await FD.refreshProcurementCounts(null);
+    assert('the General area has no procurement lines, and costs no request',
+      general && Object.keys(general).length === 0 && pcalls.length === 0, JSON.stringify(general));
+
+    // A failure is not a count of zero: the host would cache "counted" off it
+    // and draw an empty paperclip on every line with files.
+    failCounts = true;
+    let rejected = false;
+    const failedCounts = await FD.refreshProcurementCounts('p7').catch(() => { rejected = true; });
+    failCounts = false;
+    assert('a failed count fetch never rejects', !rejected);
+    assert('it resolves null rather than an empty map', failedCounts === null, JSON.stringify(failedCounts));
+    assert('and the last good counts are kept', FD.procurementCount('p7', 'pr-1') === 3);
+
+    // A slow count that lands after a fresher one must not undo it. The slow
+    // request saw pr-1 with three files; one is attached while it is out; the
+    // fresh count sees four and lands first.
+    holdCounts = 'p7';
+    const slow = FD.refreshProcurementCounts('p7');
+    await settle();
+    PDOCS.push(doc({ id: 'pd5', project_id: 'p7', filename: 'extra.pdf', folder_ids: ['f-storm'], procurement_ids: ['pr-1'] }));
+    await FD.refreshProcurementCounts('p7');
+    assert('the fresher count lands', FD.procurementCount('p7', 'pr-1') === 4, String(FD.procurementCount('p7', 'pr-1')));
+    releaseCounts();
+    const slowAnswer = await slow;
+    assert('a slow count cannot overwrite a fresher one for the same job',
+      FD.procurementCount('p7', 'pr-1') === 4, String(FD.procurementCount('p7', 'pr-1')));
+    assert('and the slow caller is handed the fresh numbers, not its stale ones',
+      slowAnswer && slowAnswer['pr-1'] === 4, JSON.stringify(slowAnswer));
+
+    // …but a refresh of ANOTHER job is no reason to throw an answer away: the
+    // sheet and the Documents tab can each be counting a different job.
+    PDOCS.splice(PDOCS.findIndex(d => d.id === 'pd5'), 1);
+    holdCounts = 'p7';
+    const slow7 = FD.refreshProcurementCounts('p7');
+    await settle();
+    await FD.refreshProcurementCounts('p8');
+    releaseCounts();
+    await slow7;
+    assert('a count for one job still lands after another job was counted',
+      FD.procurementCount('p7', 'pr-1') === 3, String(FD.procurementCount('p7', 'pr-1')));
+
+    // ── costCodeCount's case-insensitive fallback ─────────────────────────
+    await FD.refreshCostCodeCounts('p7');
+    await FD.refreshCostCodeCounts('p8');
+    assert('costCodeCount still answers the exact code',
+      FD.costCodeCount('p7', 'Stormwater') === 2, String(FD.costCodeCount('p7', 'Stormwater')));
+    assert('and a code that differs only in case finds the same folder',
+      FD.costCodeCount('p7', 'stormwater') === 2 && FD.costCodeCount('p7', ' STORMWATER ') === 2,
+      `${FD.costCodeCount('p7', 'stormwater')} / ${FD.costCodeCount('p7', ' STORMWATER ')}`);
+    assert('an exact match wins over a case variant, even an empty one',
+      FD.costCodeCount('p8', 'EARTHWORK') === 0 && FD.costCodeCount('p8', 'Earthwork') === 1,
+      `${FD.costCodeCount('p8', 'EARTHWORK')} / ${FD.costCodeCount('p8', 'Earthwork')}`);
+    assert('an unknown code is still 0', FD.costCodeCount('p7', 'Paving') === 0 && FD.costCodeCount('p7', '') === 0);
+
+    // ── The register body ─────────────────────────────────────────────────
+    const pdf = name => new window.File(['%PDF'], name, { type: 'application/pdf' });
+    pcalls.length = 0;
+    await FD._uploadOne(pdf('quote.pdf'), { folderId: 'f-photos', procurementId: 'pr-1', projectId: 'p7' });
+    const reg7 = pcalls.find(c => c.method === 'POST' && c.path === '/api/documents');
+    assert('an upload from a line carries the line id into the registration',
+      reg7 && reg7.body.procurementId === 'pr-1', reg7 && JSON.stringify(reg7.body));
+    assert('alongside the folder that was picked, under the line\'s job',
+      reg7 && reg7.body.folderId === 'f-photos' && reg7.q.projectId === 'p7', reg7 && reg7.url);
+    pcalls.length = 0;
+    await FD._uploadOne(pdf('ticket.pdf'), { folderId: 'f-po7', poId: 'po-1', projectId: 'p7' });
+    const regPo = pcalls.find(c => c.method === 'POST' && c.path === '/api/documents');
+    assert('every other upload\'s body is untouched — no procurementId key at all',
+      regPo && !('procurementId' in regPo.body) && regPo.body.poId === 'po-1', regPo && JSON.stringify(regPo.body));
+    // Drop the two test uploads so the fixtures below read as written.
+    for (let i = PDOCS.length - 1; i >= 0; i--) if (/^doc-up-/.test(PDOCS[i].id)) PDOCS.splice(i, 1);
+
+    // ── The paperclip dialog ──────────────────────────────────────────────
+    const LINE = { id: 'pr-1', project_id: 'p7', cost_code: 'Stormwater', sub_code: 'Geofabric',
+                   label: 'Stormwater / Geofabric' };
+
+    closeAll();
+    pcalls.length = 0;
+    changes = 0;
+    await FD.openProcurementAttach(LINE);
+    const loadIdx = pcalls.findIndex(c => c.method === 'GET' && c.q.projectId === 'p7'
+      && !c.q.procurementId && !c.q.procurementCounts);
+    const listIdx = pcalls.findIndex(c => c.method === 'GET' && c.q.procurementId);
+    assert('opening a line on another job loads that job first',
+      loadIdx >= 0 && pcalls.some(c => c.method === 'PUT' && c.q.projectId === 'p7'),
+      pcalls.map(c => `${c.method || c.marker} ${c.url || ''}`).join(' | '));
+    assert('then lists the line\'s files by procurementId, scoped to the job and the division',
+      listIdx > loadIdx && pcalls[listIdx].q.procurementId === 'pr-1'
+        && pcalls[listIdx].q.projectId === 'p7' && pcalls[listIdx].q.division === 'turf',
+      listIdx >= 0 ? pcalls[listIdx].url : 'no list request');
+    assert('and nudges the host to redraw, since a load ran', changes === 1, String(changes));
+
+    let dlg = lastModal();
+    assert('a wide dialog opens', Boolean(dlg) && /min\(60rem/.test(dlg.innerHTML));
+    const titleOf = el => (el ? el.querySelector('span').textContent : '(no dialog open)');
+    assert('titled with the line, without repeating a cost code the label already carries',
+      titleOf(dlg) === 'Stormwater / Geofabric', titleOf(dlg));
+    assert('it says how many files are attached', /3 attached documents/.test(dlg.textContent), dlg.textContent.slice(0, 200));
+    assert('and lists each of them', ['geofabric-quote.pdf', 'cut-sheet.pdf', 'both.pdf']
+      .every(n => dlg.textContent.includes(n)) && !dlg.textContent.includes('site.jpg'), dlg.textContent);
+    const row1 = dlg.querySelector('[data-proc-doc="pd1"]');
+    assert('each row carries size, uploader, date and note',
+      row1 && /2 KB/.test(row1.textContent) && /ben/.test(row1.textContent)
+        && /2026/.test(row1.textContent) && /quote rev B/.test(row1.textContent), row1 && row1.textContent);
+    assert('and a download button', dlg.querySelectorAll('[data-pdl]').length === 3);
+    assert('it says the files are compiled under the cost code too',
+      /also filed in the Stormwater cost-code folder/.test(dlg.textContent), dlg.textContent);
+    assert('the footer offers Close, the cost code\'s folder, and an attach',
+      Boolean(dlg.querySelector('[data-cancel]'))
+        && dlg.querySelector('[data-open-folder]') && /Open Stormwater folder/.test(dlg.querySelector('[data-open-folder]').textContent)
+        && dlg.querySelector('[data-attach-new]') && /Attach a document/.test(dlg.querySelector('[data-attach-new]').textContent));
+    assert('a manager may detach any of them', dlg.querySelectorAll('[data-detach]').length === 3);
+    const detachTip = dlg.querySelector('[data-detach]').title;
+    assert('and the Detach button says the file is not deleted', /not deleted/.test(detachTip), detachTip);
+
+    pcalls.length = 0;
+    dlg.querySelector('[data-pdl="pd2"]').click();
+    await settle();
+    assert('Download fetches that file\'s signed link',
+      pcalls.some(c => c.path === '/api/document-download' && c.q.id === 'pd2'),
+      pcalls.map(c => c.url).join(' | '));
+
+    // Already on the job: no second load, and a matching count is no reason
+    // to bother the host.
+    closeAll();
+    pcalls.length = 0;
+    changes = 0;
+    await FD.openProcurementAttach(LINE);
+    assert('reopening on the same job does not reload it',
+      !pcalls.some(c => c.method === 'PUT' || (c.method === 'GET' && !c.q.procurementId)),
+      pcalls.map(c => `${c.method} ${c.url}`).join(' | '));
+    assert('and with the paperclip already right, the host is not nudged', changes === 0, String(changes));
+
+    // The list is the freshest count there is. Someone attached a file since
+    // the sheet last counted — the paperclip the user clicked has to catch up.
+    closeAll();
+    PDOCS.push(doc({ id: 'pd6', project_id: 'p7', filename: 'late.pdf', folder_ids: ['f-storm'], procurement_ids: ['pr-1'] }));
+    changes = 0;
+    await FD.openProcurementAttach(LINE);
+    assert('a stale paperclip count is corrected from the list',
+      FD.procurementCount('p7', 'pr-1') === 4, String(FD.procurementCount('p7', 'pr-1')));
+    assert('and the host is told to redraw it', changes === 1, String(changes));
+    PDOCS.splice(PDOCS.findIndex(d => d.id === 'pd6'), 1);
+    await FD.refreshProcurementCounts('p7');
+
+    closeAll();
+    await FD.openProcurementAttach({ ...LINE, label: 'Geofabric roll' });
+    assert('a label without the code gets the code in the title',
+      titleOf(lastModal()) === 'Geofabric roll · cost code Stormwater', titleOf(lastModal()));
+
+    // ── Attach: the upload dialog ─────────────────────────────────────────
+    closeAll();
+    await FD.openProcurementAttach(LINE);
+    lastModal().querySelector('[data-attach-new]').click();
+    await settle();
+    let up = lastModal();
+    assert('Attach opens the upload dialog', /Upload documents/.test(titleOf(up)), titleOf(up));
+    assert('with the folder defaulted to the line\'s cost-code folder',
+      up.querySelector('#fctdoc-folder').value === 'f-storm', up.querySelector('#fctdoc-folder').value);
+    assert('the line is shown, locked, by name',
+      up.querySelector('#fctdoc-proc') && /^Procurement line: Stormwater \/ Geofabric$/
+        .test(up.querySelector('#fctdoc-proc').textContent.trim().replace(/\s+/g, ' ')),
+      up.querySelector('#fctdoc-proc') && up.querySelector('#fctdoc-proc').textContent);
+    assert('and it is not a control that can be changed',
+      !up.querySelector('#fctdoc-proc').matches('input,select,textarea')
+        && !up.querySelector('#fctdoc-proc input,#fctdoc-proc select'));
+    assert('the hint says the cost code gets it whatever folder is picked',
+      /Filed under cost code Stormwater as well, whichever folder you pick\./.test(up.textContent), up.textContent);
+    assert('the PO link stays optional and open, with no PO hint',
+      !up.querySelector('#fctdoc-po').disabled && !/filed under the purchase order/i.test(up.textContent));
+
+    // Pick another folder: the register carries the choice AND the line, and
+    // the server files the cost-code copy on its own.
+    up.querySelector('#fctdoc-folder').value = 'f-photos';
+    const fInp = up.querySelector('#fctdoc-files');
+    Object.defineProperty(fInp, 'files', { value: [pdf('invoice.pdf')], configurable: true });
+    fInp.dispatchEvent(new window.Event('change', { bubbles: true }));
+    pcalls.length = 0;
+    changes = 0;
+    up.querySelector('#fctdoc-go').click();
+    await settle();
+    const reg = pcalls.find(c => c.method === 'POST' && c.path === '/api/documents');
+    assert('the upload registers the line id', reg && reg.body.procurementId === 'pr-1', reg && JSON.stringify(reg.body));
+    assert('and the folder the user chose', reg && reg.body.folderId === 'f-photos', reg && JSON.stringify(reg.body));
+    assert('under the line\'s job', reg && reg.q.projectId === 'p7'
+      && pcalls.find(c => c.path === '/api/document-upload-url').body.projectId === 'p7');
+    assert('the dialog closes on success', !window.document.body.contains(up));
+    const countsIdx = pcalls.findIndex(c => c.method === 'GET' && c.q.procurementCounts && c.q.projectId === 'p7');
+    const changeIdx = pcalls.findIndex(c => c.marker === 'onChange');
+    assert('the line counts are refreshed after the upload',
+      countsIdx > pcalls.indexOf(reg), pcalls.map(c => `${c.method || c.marker} ${c.url || ''}`).join(' | '));
+    assert('before the host is told to redraw', changeIdx > countsIdx && changes === 1, `${countsIdx} / ${changeIdx} / ${changes}`);
+    assert('so the paperclip reads one more', FD.procurementCount('p7', 'pr-1') === 4, String(FD.procurementCount('p7', 'pr-1')));
+    assert('and the cost-code folder compiled it too, though another folder was picked',
+      FD.costCodeCount('p7', 'Stormwater') === 3, String(FD.costCodeCount('p7', 'Stormwater')));
+
+    // The line's code typed in another case still opens on the right folder.
+    closeAll();
+    await FD.openProcurementAttach({ id: 'pr-2', project_id: 'p7', cost_code: 'stormwater', label: 'Storm Inlets' });
+    lastModal().querySelector('[data-attach-new]').click();
+    await settle();
+    assert('a code in another case still defaults to its cost-code folder',
+      lastModal().querySelector('#fctdoc-folder').value === 'f-storm', lastModal().querySelector('#fctdoc-folder').value);
+
+    // An exact match beats an older folder that differs only in case, even
+    // though that one is listed first.
+    closeAll();
+    await FD.openProcurementAttach({ id: 'pr-5', project_id: 'p7', cost_code: 'Mobilization', label: 'Mobilization / Trailer' });
+    lastModal().querySelector('[data-attach-new]').click();
+    await settle();
+    assert('an exact cost-code folder wins over a case variant',
+      lastModal().querySelector('#fctdoc-folder').value === 'f-mob', lastModal().querySelector('#fctdoc-folder').value);
+
+    // A code that has no folder on this job yet: the server will create it on
+    // the first attach, but there is nothing to preselect, so the user picks.
+    closeAll();
+    await FD.openProcurementAttach({ id: 'pr-4', project_id: 'p7', cost_code: 'Paving', label: 'Paving / Base' });
+    lastModal().querySelector('[data-attach-new]').click();
+    await settle();
+    assert('a code with no folder yet opens on "pick a folder"',
+      lastModal().querySelector('#fctdoc-folder').value === '', lastModal().querySelector('#fctdoc-folder').value);
+    assert('and still says the cost code will get the file',
+      /Filed under cost code Paving as well/.test(lastModal().textContent));
+
+    // ── A line with no cost code ──────────────────────────────────────────
+    closeAll();
+    await FD.openProcurementAttach({ id: 'pr-3', project_id: 'p7', cost_code: '', label: 'Misc supplies' });
+    dlg = lastModal();
+    assert('a line with no cost code is titled with its label alone', titleOf(dlg) === 'Misc supplies', titleOf(dlg));
+    assert('offers no cost-code folder to open', !dlg.querySelector('[data-open-folder]'));
+    assert('says nothing attached yet', /Nothing attached yet/.test(dlg.textContent) && /0 attached documents/.test(dlg.textContent));
+    assert('and explains where its files will be filed',
+      /no cost code yet, so files attached here are filed only in the folder picked/.test(dlg.textContent), dlg.textContent);
+    dlg.querySelector('[data-attach-new]').click();
+    await settle();
+    up = lastModal();
+    assert('its upload opens with no folder chosen', up.querySelector('#fctdoc-folder').value === '');
+    assert('and says the file goes only where it is put',
+      /This line has no cost code yet, so the file is filed only in the folder you pick\./.test(up.textContent), up.textContent);
+    const nInp = up.querySelector('#fctdoc-files');
+    Object.defineProperty(nInp, 'files', { value: [pdf('misc.pdf')], configurable: true });
+    nInp.dispatchEvent(new window.Event('change', { bubbles: true }));
+    pcalls.length = 0;
+    up.querySelector('#fctdoc-go').click();
+    await settle();
+    assert('and refuses to upload until a folder is picked',
+      /Pick a folder/.test(up.querySelector('#fctdoc-err').textContent)
+        && !pcalls.some(c => c.path === '/api/document-upload-url' || (c.method === 'POST' && c.path === '/api/documents')),
+      up.querySelector('#fctdoc-err').textContent);
+    up.querySelector('#fctdoc-folder').value = 'f-photos';
+    up.querySelector('#fctdoc-go').click();
+    await settle();
+    const regN = pcalls.find(c => c.method === 'POST' && c.path === '/api/documents');
+    assert('once one is, it uploads to it, still tied to the line',
+      regN && regN.body.folderId === 'f-photos' && regN.body.procurementId === 'pr-3', regN && JSON.stringify(regN.body));
+
+    // ── Open <code> folder ────────────────────────────────────────────────
+    closeAll();
+    await FD.openProcurementAttach(LINE);
+    lastModal().querySelector('[data-open-folder]').click();
+    await settle();
+    dlg = lastModal();
+    assert('Open folder opens the cost code\'s folder dialog', titleOf(dlg) === 'Stormwater · Storm Sewer', titleOf(dlg));
+    assert('which lists everything compiled under that cost code',
+      /geofabric-quote\.pdf/.test(dlg.textContent) && /cut-sheet\.pdf/.test(dlg.textContent)
+        && /invoice\.pdf/.test(dlg.textContent) && /filed under this cost code/.test(dlg.textContent), dlg.textContent);
+    assert('and the line\'s own dialog got out of the way', modals().length === 1, String(modals().length));
+    closeAll();
+    await FD.openProcurementAttach({ id: 'pr-2', project_id: 'p7', cost_code: 'stormwater', label: 'Storm Inlets' });
+    lastModal().querySelector('[data-open-folder]').click();
+    await settle();
+    assert('a code typed in another case still opens its folder',
+      titleOf(lastModal()) === 'Stormwater · Storm Sewer', titleOf(lastModal()));
+
+    // ── Detach ────────────────────────────────────────────────────────────
+    closeAll();
+    await FD.openProcurementAttach(LINE);
+    dlg = lastModal();
+    let asked = null;
+    const realConfirm = window.confirm;
+    window.confirm = msg => { asked = msg; return false; };
+    pcalls.length = 0;
+    dlg.querySelector('[data-detach="pd2"]').click();
+    await settle();
+    assert('Detach asks first, and says the file is not deleted',
+      /cut-sheet\.pdf/.test(asked) && /not deleted/.test(asked), asked);
+    assert('saying no changes nothing', !pcalls.some(c => c.method === 'PATCH'));
+
+    failPatch = true;
+    window.confirm = () => true;
+    dlg.querySelector('[data-detach="pd2"]').click();
+    await settle();
+    failPatch = false;
+    assert('a refused detach says why', /Database error/.test(bodyText()));
+    assert('leaves the file listed with its button live again',
+      dlg.querySelector('[data-detach="pd2"]') && !dlg.querySelector('[data-detach="pd2"]').disabled
+        && dlg.querySelector('[data-detach="pd2"]').textContent === 'Detach');
+
+    pcalls.length = 0;
+    changes = 0;
+    dlg.querySelector('[data-detach="pd2"]').click();
+    await settle();
+    const patch = pcalls.find(c => c.method === 'PATCH');
+    assert('Detach PATCHes the document with removeProcurementId and nothing else',
+      patch && patch.q.id === 'pd2' && patch.q.division === 'turf'
+        && JSON.stringify(patch.body) === JSON.stringify({ removeProcurementId: 'pr-1' }),
+      patch && `${patch.url} ${JSON.stringify(patch.body)}`);
+    assert('it never deletes the file', !pcalls.some(c => c.method === 'DELETE')
+      && PDOCS.some(d => d.id === 'pd2'));
+    const dCounts = pcalls.findIndex(c => c.method === 'GET' && c.q.procurementCounts && c.q.projectId === 'p7');
+    const dChange = pcalls.findIndex(c => c.marker === 'onChange');
+    assert('then reloads the job and refreshes the line counts before telling the host',
+      pcalls.some(c => c.method === 'GET' && c.q.projectId === 'p7' && !c.q.procurementId && !c.q.procurementCounts)
+        && dCounts > pcalls.indexOf(patch) && dChange > dCounts && changes === 1,
+      pcalls.map(c => `${c.method || c.marker} ${c.url || ''}`).join(' | '));
+    assert('the same dialog redraws in place without the file',
+      window.document.body.contains(dlg) && !dlg.querySelector('[data-proc-doc="pd2"]')
+        && /3 attached documents/.test(dlg.textContent), dlg.textContent.slice(0, 200));
+    assert('the paperclip reads one fewer', FD.procurementCount('p7', 'pr-1') === 3, String(FD.procurementCount('p7', 'pr-1')));
+    assert('the cost-code folder keeps the file', FD.costCodeCount('p7', 'Stormwater') === 3,
+      String(FD.costCodeCount('p7', 'Stormwater')));
+    assert('and the toast says the file is still in the Vault', /Detached\. The file is still in the Vault/.test(bodyText()));
+
+    // The detach landed but the list could not be fetched again afterwards.
+    // The dialog must not keep offering Detach on a file that is no longer
+    // attached, and the host must still hear about it.
+    failList = true;
+    changes = 0;
+    dlg.querySelector('[data-detach="pd4"]').click();
+    await settle();
+    failList = false;
+    assert('a detach whose refresh fails still drops the file from the dialog',
+      !dlg.querySelector('[data-proc-doc="pd4"]') && /2 attached documents/.test(dlg.textContent),
+      dlg.textContent.slice(0, 200));
+    assert('says the list could not be refreshed', /Detached, but the list could not be refreshed/.test(bodyText()));
+    assert('and still tells the host, with the paperclip one lower',
+      changes === 1 && FD.procurementCount('p7', 'pr-1') === 2,
+      `${changes} / ${FD.procurementCount('p7', 'pr-1')}`);
+    // Put pd4 back on the line for the cases below.
+    PDOCS.find(d => d.id === 'pd4').procurement_ids = ['pr-1', 'pr-5'];
+    await FD.refreshProcurementCounts('p7');
+
+    // ── Who may detach ────────────────────────────────────────────────────
+    // The server's rule: a manager may edit any document's links, an uploader
+    // only their own. The button follows it, so no one gets a button that 403s.
+    const reopenAs = async (capsNow, getUserName) => {
+      closeAll();
+      pcaps = capsNow;
+      FD.configure({ getUserName });
+      await FD.renderTab(mount);                 // off the job, so the next open reloads caps
+      await FD.openProcurementAttach(LINE);
+      return lastModal();
+    };
+    PDOCS.push(doc({ id: 'pd7', project_id: 'p7', filename: 'sams.pdf', uploaded_by: 'sam',
+      folder_ids: ['f-storm'], procurement_ids: ['pr-1'] }));
+    dlg = await reopenAs({ canUpload: true, canManage: false, canDelete: false }, () => 'ben');
+    assert('an uploader may detach their own files',
+      Boolean(dlg.querySelector('[data-detach="pd1"]')) && Boolean(dlg.querySelector('[data-detach="pd4"]')),
+      [...dlg.querySelectorAll('[data-detach]')].map(b => b.dataset.detach).join(','));
+    assert('but not one someone else uploaded',
+      Boolean(dlg.querySelector('[data-proc-doc="pd7"]')) && !dlg.querySelector('[data-detach="pd7"]'),
+      [...dlg.querySelectorAll('[data-detach]')].map(b => b.dataset.detach).join(','));
+    dlg = await reopenAs({ canUpload: true, canManage: false, canDelete: false }, undefined);
+    assert('with no way to tell who is signed in, a non-manager gets no Detach at all',
+      dlg.querySelectorAll('[data-detach]').length === 0 && Boolean(dlg.querySelector('[data-attach-new]')));
+    dlg = await reopenAs({ canUpload: true, canManage: false, canDelete: false }, () => { throw new Error('no user'); });
+    assert('a host getter that throws costs the button, not the dialog',
+      Boolean(dlg) && dlg.querySelectorAll('[data-detach]').length === 0 && dlg.querySelectorAll('[data-pdl]').length > 0);
+    dlg = await reopenAs({ canUpload: false, canManage: false, canDelete: false }, () => 'ben');
+    assert('a viewer still sees the list and can download',
+      dlg.querySelectorAll('[data-proc-doc]').length > 0 && dlg.querySelectorAll('[data-pdl]').length > 0);
+    assert('but is offered no attach and no detach, even on their own name',
+      !dlg.querySelector('[data-attach-new]') && dlg.querySelectorAll('[data-detach]').length === 0);
+    assert('and can still open the cost code\'s folder to read it', Boolean(dlg.querySelector('[data-open-folder]')));
+    dlg = await reopenAs({ canUpload: true, canManage: true, canDelete: true }, undefined);
+    assert('a manager gets Detach on everyone\'s files',
+      dlg.querySelectorAll('[data-detach]').length === dlg.querySelectorAll('[data-proc-doc]').length);
+    PDOCS.splice(PDOCS.findIndex(d => d.id === 'pd7'), 1);
+
+    // ── Races ─────────────────────────────────────────────────────────────
+    // Something else loaded while the line's job was loading: the module state
+    // now belongs to that, and building the dialog from it would offer the
+    // wrong job's folders to file this line's document in.
+    closeAll();
+    await FD.renderTab(mount);                     // back on p1
+    holdLoad = 'p7';
+    pcalls.length = 0;
+    const racing = FD.openProcurementAttach(LINE);
+    await settle();
+    await FD.renderTab(mount);                     // p1 loads while p7 is stalled
+    releaseLoad();
+    await racing;
+    assert('a line whose load lost a race opens no dialog', modals().length === 0, String(modals().length));
+    assert('and says to try the paperclip again',
+      /Something else loaded while that was opening\. Try the paperclip again\./.test(bodyText()));
+    assert('without listing anything for the line', !pcalls.some(c => c.q && c.q.procurementId));
+
+    // Two clicks on a slow connection open one dialog — and without the
+    // one-at-a-time guard the first click's load lost the race to the
+    // second's and toasted an error over a dialog that opened fine.
+    closeAll();
+    const raceToasts = () => [...window.document.body.children]
+      .filter(el => !el.querySelector('[data-body]') && /Something else loaded/.test(el.textContent)).length;
+    const toastsBefore = raceToasts();
+    await Promise.all([FD.openProcurementAttach(LINE), FD.openProcurementAttach(LINE)]);
+    assert('a double click opens one dialog, not two', modals().length === 1, String(modals().length));
+    assert('and raises no error toast', raceToasts() === toastsBefore, `${toastsBefore} -> ${raceToasts()}`);
+
+    closeAll();
+    const before = modals().length;
+    await FD.openProcurementAttach({ id: '', project_id: 'p7', cost_code: 'Stormwater', label: 'Unsaved' });
+    await FD.openProcurementAttach({ id: 'pr-9', project_id: null, cost_code: '', label: 'Nowhere' });
+    assert('a line with no id or no job opens nothing', modals().length === before);
+
+    // ── The Vault side: chips and preview ─────────────────────────────────
+    FD.configure({ getProjectId: () => 'p7' });
+    await FD.renderTab(mount);
+    mount.querySelector('[data-folder="f-photos"]').click();
+    const vrow = id => mount.querySelector(`[data-doc="${id}"]`);
+    const chip = id => vrow(id) && vrow(id).querySelector('[data-proc-chip]');
+    assert('a file detached from its only line carries no chip', vrow('pd2') && !chip('pd2'),
+      vrow('pd2') && vrow('pd2').innerHTML);
+    assert('a file on two says two', chip('pd4') && chip('pd4').title === 'Attached to 2 procurement lines'
+      && /2/.test(chip('pd4').textContent), chip('pd4') && chip('pd4').outerHTML);
+    assert('a file on none carries no chip', vrow('pd3') && !chip('pd3'));
+    assert('the procurement chip is not the PO paperclip',
+      vrow('pd4').querySelector('[title="Attached to 1 purchase order"]')
+        && !/&#128206;|\u{1F4CE}/u.test(chip('pd4').textContent), vrow('pd4').innerHTML);
+
+    vrow('pd4').querySelector('[data-open="pd4"]').click();
+    await settle();
+    let pv = lastModal();
+    assert('the preview says how many procurement lines the file is on',
+      /On 2 procurement lines/.test(pv.textContent), pv.textContent.slice(0, 400));
+    closeAll();
+    vrow('pd3').querySelector('[data-open="pd3"]').click();
+    await settle();
+    pv = lastModal();
+    assert('and says nothing for a file on none', !/procurement line/.test(pv.textContent));
+    closeAll();
+    mount.querySelector('[data-folder="f-storm"]').click();
+    assert('a file on one procurement line carries a chip saying so',
+      chip('pd1') && chip('pd1').title === 'Attached to 1 procurement line' && /1/.test(chip('pd1').textContent),
+      vrow('pd1') && vrow('pd1').innerHTML);
+    vrow('pd1').querySelector('[data-open="pd1"]').click();
+    await settle();
+    assert('one line reads in the singular', /On 1 procurement line(?!s)/.test(lastModal().textContent),
+      lastModal().textContent.slice(0, 400));
+    closeAll();
+
+    // ── Every other document change refreshes the line counts too ─────────
+    const countsRefreshed = pid => pcalls.some(c => c.method === 'GET' && c.q.procurementCounts && c.q.projectId === pid);
+
+    pcalls.length = 0;
+    mount.querySelector('[data-folder="f-photos"]').click();
+    mount.querySelector('[data-attach="pd3"]').click();
+    let lk = lastModal();
+    lk.querySelector('#fctdoc-linkpo').value = 'po-1';
+    lk.querySelector('#fctdoc-dolink').click();
+    await settle();
+    assert('linking a file to a PO refreshes the line counts', countsRefreshed('p7'),
+      pcalls.map(c => `${c.method || c.marker} ${c.url || ''}`).join(' | '));
+
+    pcalls.length = 0;
+    mount.querySelector('[data-folder="f-photos"]').click();
+    mount.querySelector('[data-attach="pd3"]').click();
+    lk = lastModal();
+    lk.querySelector('[data-unlink="po-1"]').click();
+    await settle();
+    assert('so does unlinking it', countsRefreshed('p7'));
+
+    pcalls.length = 0;
+    changes = 0;
+    mount.querySelector('[data-folder="f-storm"]').click();
+    mount.querySelector('[data-delete="pd1"]').click();
+    lastModal().querySelector('[data-yes]').click();
+    await settle();
+    assert('deleting a file refreshes the line counts', countsRefreshed('p7'));
+    assert('so the deleted file stops counting on its line',
+      FD.procurementCount('p7', 'pr-1') === 2, String(FD.procurementCount('p7', 'pr-1')));
+    const delCounts = pcalls.findIndex(c => c.method === 'GET' && c.q.procurementCounts);
+    assert('before the host is told to redraw',
+      pcalls.findIndex(c => c.marker === 'onChange') > delCounts && changes === 1);
+
+    // The bin lists every job's files, so a restore is recounted on the file's
+    // own job — not on whichever job the Documents tab happens to be showing.
+    FD.configure({ getProjectId: () => 'p1' });
+    await FD.renderTab(mount);
+    pcalls.length = 0;
+    mount.querySelector('#fctdoc-trash').click();
+    await settle();
+    lastModal().querySelector('[data-restore="pd1"]').click();
+    await settle();
+    assert('restoring a file recounts the lines on its own job',
+      countsRefreshed('p7'), pcalls.map(c => `${c.method || c.marker} ${c.url || ''}`).join(' | '));
+    assert('so it counts on its line again', FD.procurementCount('p7', 'pr-1') === 3,
+      String(FD.procurementCount('p7', 'pr-1')));
+    closeAll();
+
+    // ── The PO paperclip is exactly what it was ───────────────────────────
+    await FD.openAttach({ id: 'po-1', po_number: 'PO-0137', project_id: 'p7' });
+    lastModal().querySelector('[data-attach-new]').click();
+    await settle();
+    up = lastModal();
+    assert('the PO upload dialog shows no procurement line and no cost-code hint',
+      !up.querySelector('#fctdoc-proc') && !up.querySelector('[data-proc-hint]')
+        && up.querySelector('#fctdoc-po').disabled && up.querySelector('#fctdoc-po').value === 'po-1');
+    assert('and still opens on the Purchase Orders folder', up.querySelector('#fctdoc-folder').value === 'f-po7',
+      up.querySelector('#fctdoc-folder').value);
+    const poInp = up.querySelector('#fctdoc-files');
+    Object.defineProperty(poInp, 'files', { value: [pdf('po-ticket.pdf')], configurable: true });
+    poInp.dispatchEvent(new window.Event('change', { bubbles: true }));
+    pcalls.length = 0;
+    up.querySelector('#fctdoc-go').click();
+    await settle();
+    const regPo2 = pcalls.find(c => c.method === 'POST' && c.path === '/api/documents');
+    assert('and its upload carries the PO and no procurement line',
+      regPo2 && regPo2.body.poId === 'po-1' && !('procurementId' in regPo2.body), regPo2 && JSON.stringify(regPo2.body));
+    closeAll();
+
+    // ── What the server moves on its own reaches the chips and the folder ──
+    // A line re-coded (a Sub Code picked, the bid's code renamed) has its
+    // files moved between cost-code folders by the server, and a colleague's
+    // attachment lands in one. Neither reaches the copy of the job this
+    // browser holds, so counting or listing from that copy left the section
+    // chip and its folder on the old answer for as long as the browser sat on
+    // the job.
+    const toasts = kind => [...window.document.body.children]
+      .filter(el => el.getAttribute && el.getAttribute('data-fctdoc-toast') === kind);
+    const errorsBefore = () => toasts('error').length;
+    const reads = () => pcalls.filter(c => c.method === 'GET' && c.q && c.q.projectId === 'p7'
+      && !c.q.procurementId && !c.q.procurementCounts);
+    await FD.openProcurementAttach(LINE);          // the browser holds p7
+    closeAll();
+    const stormWas = FD.costCodeCount('p7', 'Stormwater');
+    const mobWas = FD.costCodeCount('p7', 'Mobilization');
+    // pd2 (on pr-1) re-filed from Stormwater to Mobilization; a colleague's
+    // file attached to pr-5 lands in Mobilization.
+    const pd2 = PDOCS.find(d => d.id === 'pd2');
+    pd2.folder_ids = pd2.folder_ids.map(id => (id === 'f-storm' ? 'f-mob' : id));
+    PDOCS.push(doc({ id: 'pd9', project_id: 'p7', filename: 'colleague.pdf', uploaded_by: 'sam',
+      folder_ids: ['f-mob'], procurement_ids: ['pr-5'] }));
+
+    pcalls.length = 0;
+    await FD.refreshCostCodeCounts('p7');
+    assert('a plain count of the job in hand is still free (the bid page\'s chips)',
+      pcalls.length === 0 && FD.costCodeCount('p7', 'Stormwater') === stormWas, pcalls.map(c => c.url).join(' | '));
+    pcalls.length = 0;
+    const freshCounts = await FD.refreshCostCodeCounts('p7', { fresh: true });
+    assert('a fresh count asks the server even for the job in hand: one listing GET, nothing seeded',
+      reads().length === 1 && !pcalls.some(c => c.method === 'PUT'), pcalls.map(c => `${c.method} ${c.url}`).join(' | '));
+    assert('…and the chips follow the files the server moved',
+      FD.costCodeCount('p7', 'Stormwater') === stormWas - 1 && FD.costCodeCount('p7', 'Mobilization') === mobWas + 2
+        && freshCounts && freshCounts.Mobilization === mobWas + 2,
+      `${stormWas}->${FD.costCodeCount('p7', 'Stormwater')} / ${mobWas}->${FD.costCodeCount('p7', 'Mobilization')}`);
+    pcalls.length = 0;
+    const openedMob = await FD.openCostCodeFolder({ projectId: 'p7', costCode: 'Mobilization' });
+    dlg = lastModal();
+    assert('the folder dialog lists what the chip now counts, from that same answer (no second read)',
+      openedMob === true && pcalls.length === 0 && /colleague\.pdf/.test(dlg.textContent) && /cut-sheet\.pdf/.test(dlg.textContent)
+        && new RegExp(`${mobWas + 2} documents filed under this cost code`).test(dlg.textContent), dlg.textContent.slice(0, 300));
+    closeAll();
+
+    // The sheet's own folder chip opens fresh: the job is read again even
+    // though it is the one in hand, so a re-file since the last count shows.
+    PDOCS.find(d => d.id === 'pd9').folder_ids = ['f-storm'];
+    pcalls.length = 0;
+    await FD.openCostCodeFolder({ projectId: 'p7', costCode: 'Stormwater', fresh: true });
+    dlg = lastModal();
+    assert('a fresh folder open reads the job again and lists the file filed there since',
+      reads().length === 1 && /colleague\.pdf/.test(dlg.textContent), dlg.textContent.slice(0, 300));
+    assert('…and the chip count is moved with it', FD.costCodeCount('p7', 'Stormwater') === stormWas,
+      String(FD.costCodeCount('p7', 'Stormwater')));
+    closeAll();
+
+    // The line dialog's "Open <code> folder" reads the job again too. pd2 is
+    // known to the copy in hand, so opening the line costs no reload; only
+    // the click does.
+    pd2.folder_ids = pd2.folder_ids.map(id => (id === 'f-mob' ? 'f-storm' : id));
+    await FD.openProcurementAttach({ id: 'pr-5', project_id: 'p7', cost_code: 'Mobilization', label: 'Mobilization / Trailer' });
+    pd2.folder_ids = pd2.folder_ids.map(id => (id === 'f-storm' ? 'f-mob' : id));
+    const lineDlg = lastModal();
+    pcalls.length = 0;
+    lineDlg.querySelector('[data-open-folder]').click();
+    await settle();
+    dlg = lastModal();
+    assert('"Open Mobilization folder" reads the job, then lists a file the server re-filed into it',
+      reads().length === 1 && dlg !== lineDlg && /cut-sheet\.pdf/.test(dlg.textContent)
+        && !window.document.body.contains(lineDlg), dlg.textContent.slice(0, 300));
+    closeAll();
+
+    // A line holding a file the copy in hand has never seen reads the job
+    // again before offering a folder picker built from that copy.
+    PDOCS.push(doc({ id: 'pd10', project_id: 'p7', filename: 'new-from-sam.pdf', uploaded_by: 'sam',
+      folder_ids: ['f-storm'], procurement_ids: ['pr-1'] }));
+    pcalls.length = 0;
+    changes = 0;
+    await FD.openProcurementAttach(LINE);
+    const listAt = pcalls.findIndex(c => c.method === 'GET' && c.q.procurementId);
+    const reloadAt = pcalls.findIndex((c, i) => i > listAt && c.method === 'GET' && c.q.projectId === 'p7'
+      && !c.q.procurementId && !c.q.procurementCounts);
+    assert('a line listing a file the job in hand lacks reads the job again, after the list',
+      listAt >= 0 && reloadAt > listAt, pcalls.map(c => `${c.method || c.marker} ${c.url || ''}`).join(' | '));
+    assert('…and tells the host once', changes === 1, String(changes));
+    closeAll();
+    pcalls.length = 0;
+    await FD.openProcurementAttach(LINE);
+    assert('with nothing new on the line, opening it again reads nothing more than its list',
+      reads().length === 0 && !pcalls.some(c => c.method === 'PUT'), pcalls.map(c => c.url).join(' | '));
+    closeAll();
+    for (const id of ['pd9', 'pd10']) PDOCS.splice(PDOCS.findIndex(d => d.id === id), 1);
+    pd2.folder_ids = pd2.folder_ids.map(id => (id === 'f-mob' ? 'f-storm' : id));
+
+    // A fresh count whose answer lands after a load of another job leaves
+    // that job on screen: the module state is the newer load's.
+    await FD.openProcurementAttach(LINE);
+    closeAll();
+    holdLoad = 'p7';
+    const slowFresh = FD.refreshCostCodeCounts('p7', { fresh: true });
+    await settle();
+    await FD.renderTab(mount);                       // the Documents tab loads p1 meanwhile
+    releaseLoad();
+    await slowFresh;
+    mount.querySelector('[data-folder="f-p1"]').click();   // redraw from the module state
+    assert('a fresh count landing late never puts its job\'s folders under another job',
+      /Safety/.test(mount.innerHTML) && !/Stormwater/.test(mount.innerHTML), mount.innerHTML.slice(0, 300));
+
+    // ── A section code with no folder yet ─────────────────────────────────
+    // A line keeps a code that is not on the job's bid ("Paving" here: the
+    // bid seeds no codes in this fixture). The server makes its folder when
+    // the first file is attached; until then there is nothing to open, and
+    // that is not a fault.
+    await FD.openProcurementAttach({ id: 'pr-4', project_id: 'p7', cost_code: 'Paving', label: 'Paving / Base' });
+    const paveDlg = lastModal();
+    const errs = errorsBefore();
+    pcalls.length = 0;
+    paveDlg.querySelector('[data-open-folder]').click();
+    await settle();
+    assert('"Open Paving folder" with no folder yet keeps the line dialog up, and opens nothing over it',
+      lastModal() === paveDlg && modals().length === 1, String(modals().length));
+    assert('…after reading the job again, in case the folder was made since', reads().length === 1);
+    assert('…saying in the dialog that nothing is filed under the code yet, and how its folder comes to be',
+      /Nothing is filed under cost code Paving yet/.test(paveDlg.textContent)
+        && /made when the first file is attached to a line with this code/.test(paveDlg.textContent), paveDlg.textContent);
+    assert('…with no error, and no button left that leads nowhere',
+      errorsBefore() === errs && !paveDlg.querySelector('[data-open-folder]') && Boolean(paveDlg.querySelector('[data-attach-new]')));
+    closeAll();
+    const infoBefore = toasts('info').length;
+    const missing = await FD.openCostCodeFolder({ projectId: 'p7', costCode: 'Paving', fresh: true });
+    const lastInfo = toasts('info').pop();
+    assert('the section chip for that code says the same as a notice, not an error',
+      missing === 'missing' && modals().length === 0 && errorsBefore() === errs && toasts('info').length === infoBefore + 1
+        && /No document folder for cost code Paving yet/.test(lastInfo.textContent)
+        && /nothing has been filed under it/.test(lastInfo.textContent), lastInfo && lastInfo.textContent);
+
+    // Once a colleague attaches a file, the server has made the folder: the
+    // same button now opens it.
+    PTREE.p7.push({ id: 'f-pave', parent_id: null, name: 'Paving', kind: 'cost_code', slug: 'cc-Paving',
+      cost_code: 'Paving', sort_order: 800 });
+    PDOCS.push(doc({ id: 'pd11', project_id: 'p7', filename: 'base-ticket.pdf', folder_ids: ['f-photos', 'f-pave'],
+      procurement_ids: ['pr-4'] }));
+    await FD.openProcurementAttach({ id: 'pr-4', project_id: 'p7', cost_code: 'Paving', label: 'Paving / Base' });
+    lastModal().querySelector('[data-open-folder]').click();
+    await settle();
+    dlg = lastModal();
+    assert('once the folder exists, the same button opens it',
+      titleOf(dlg) === 'Paving' && /base-ticket\.pdf/.test(dlg.textContent) && modals().length === 1, titleOf(dlg));
+    closeAll();
+    PTREE.p7.pop();
+    PDOCS.splice(PDOCS.findIndex(d => d.id === 'pd11'), 1);
+
+    // ── Codes that read the same are the same code ────────────────────────
+    // p9: the bid carried Stormwater twice, once pasted with a non-breaking
+    // space after it, so the job has a folder for each spelling. Both are
+    // Stormwater to anyone reading the job; the chip counts each file once
+    // across them, and the dialog lists what the chip counts. And a dash
+    // typed one way on the sheet finds the folder the bid spelled the other.
+    PTREE.p9 = [
+      { id: 'h-sw-nb', parent_id: null, name: 'Stormwater · Storm Sewer', kind: 'cost_code', slug: 'cc-Stormwater ',
+        cost_code: 'Stormwater ', sort_order: 9 },
+      { id: 'h-sw', parent_id: null, name: 'Stormwater', kind: 'cost_code', slug: 'cc-Stormwater', cost_code: 'Stormwater',
+        sort_order: 800 },
+      { id: 'h-walk', parent_id: null, name: 'Walkway – Wearing', kind: 'cost_code', slug: 'cc-Walkway – Wearing',
+        cost_code: 'Walkway – Wearing', sort_order: 10 },
+    ];
+    PDOCS.push(
+      doc({ id: 'pe1', project_id: 'p9', filename: 'seeded-only.pdf', folder_ids: ['h-sw-nb'] }),
+      doc({ id: 'pe2', project_id: 'p9', filename: 'second-only.pdf', folder_ids: ['h-sw'] }),
+      doc({ id: 'pe3', project_id: 'p9', filename: 'in-both.pdf', folder_ids: ['h-sw-nb', 'h-sw'] }),
+      doc({ id: 'pe4', project_id: 'p9', filename: 'walkway.pdf', folder_ids: ['h-walk'] }));
+    await FD.refreshCostCodeCounts('p9');
+    assert('two folders whose codes trim alike count as one cost code, each file once',
+      FD.costCodeCount('p9', 'Stormwater') === 3, String(FD.costCodeCount('p9', 'Stormwater')));
+    assert('a hyphen typed where the bid has an en dash, in another case, finds that code\'s count',
+      FD.costCodeCount('p9', 'walkway - wearing') === 1, String(FD.costCodeCount('p9', 'walkway - wearing')));
+    await FD.openCostCodeFolder({ projectId: 'p9', costCode: 'Stormwater' });
+    dlg = lastModal();
+    assert('the folder dialog lists all three under the first folder\'s name',
+      titleOf(dlg) === 'Stormwater · Storm Sewer' && /3 documents filed under this cost code/.test(dlg.textContent)
+        && ['seeded-only.pdf', 'second-only.pdf', 'in-both.pdf'].every(n => dlg.textContent.includes(n))
+        && !/ in Stormwater/.test(dlg.textContent), dlg.textContent.slice(0, 400));
+    closeAll();
+    await FD.openProcurementAttach({ id: 'pr-91', project_id: 'p9', cost_code: 'walkway - wearing', label: 'Walkway' });
+    lastModal().querySelector('[data-attach-new]').click();
+    await settle();
+    assert('and the upload from that line opens on the bid\'s folder for it',
+      lastModal().querySelector('#fctdoc-folder').value === 'h-walk', lastModal().querySelector('#fctdoc-folder').value);
+    closeAll();
+    for (const id of ['pe1', 'pe2', 'pe3', 'pe4']) PDOCS.splice(PDOCS.findIndex(d => d.id === id), 1);
+    delete PTREE.p9;
+
+    // The three copies of the normalising agree, character for character:
+    // the sheet's sections (tracker.html), the server's filing
+    // (api/lib/procurement-docs.js) and the chips (documents.js).
+    {
+      const { fnSource } = require('./lib/fn-source');
+      const trackerKey = vm.runInNewContext(`(${fnSource(read('tracker.html'), '_codeKey')})`);
+      const serverKey = require(path.resolve(__dirname, '..', 'api', 'lib', 'procurement-docs.js')).codeKey;
+      const samples = ['Stormwater', ' stormwater ', 'Walkway – Wearing ', 'walkway - wearing', 'Walk​way—Wearing',
+        '“A” ‘b’', '"a" \'b\'', 'E&S  Control', '', null, undefined, 420, '  ', '﻿420­'];
+      const odd = samples.filter(s => !(FD._codeKey(s) === trackerKey(s) && serverKey(s) === trackerKey(s)));
+      assert('documents.js, the server and tracker.html normalise every sample code the same way',
+        odd.length === 0, odd.map(s => `${JSON.stringify(s)}: ${JSON.stringify([FD._codeKey(s), serverKey(s), trackerKey(s)])}`).join(' | '));
+    }
+
+    window.confirm = realConfirm;
+    FD.configure({ getProjectId: () => 'p1', getUserName: undefined, onChange: undefined,
+                   getPurchaseOrders: () => [] });
+  }
+
   // ── 3. The Documents job picker, driven in jsdom ─────────────────────────
   // The picker is the app's shared combobox now, not a <select>, so "can you
   // find a job by typing part of its name, or its job number" is only
