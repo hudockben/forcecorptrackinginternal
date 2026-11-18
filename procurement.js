@@ -1381,10 +1381,19 @@
       .fctproc-act.add:hover { color: var(--green,#22c55e); border-color: var(--green,#22c55e); }
       .fctproc-act.del:hover, .fctproc-act.danger { color:#f87171; border-color: rgba(239,68,68,0.6); }
       /* The paperclip, beside the Status pill: muted with nothing attached,
-         green with a count, the way the Purchase Orders tab draws its own. */
-      .fctproc-clip { background:none; border:1px solid var(--border,#2a2a3a); border-radius:3px; color: var(--muted,#9ca3af);
-        font-size:0.66rem; line-height:1.25; padding:0.04rem 0.22rem; margin-left:0.2rem; vertical-align: middle;
-        cursor:pointer; white-space:nowrap; font-variant-numeric: tabular-nums; }
+         green with a count, the way the Purchase Orders tab draws its own.
+         One fixed width whatever the count — the count is a badge on its
+         corner, not text beside it — so it fits beside the widest pill
+         ("Not Ordered") in the 7.2rem pinned column, and a line's height
+         never changes with how many files it has. */
+      .fctproc-clip { position:relative; display:inline-block; box-sizing:border-box; width:1.15rem; height:1.05rem;
+        background:none; border:1px solid var(--border,#2a2a3a); border-radius:3px; color: var(--muted,#9ca3af);
+        font-size:0.62rem; line-height:1; padding:0; margin-left:0.15rem; vertical-align: middle; text-align:center;
+        cursor:pointer; white-space:nowrap; }
+      .fctproc-clip .n { position:absolute; right:-0.24rem; bottom:-0.14rem; box-sizing:border-box; min-width:0.7rem; height:0.7rem;
+        padding:0 0.12rem; border-radius:999px; background: var(--green,#22c55e); color:#052e16; font-size:0.5rem; font-weight:700;
+        line-height:0.7rem; text-align:center; font-variant-numeric: tabular-nums; pointer-events:none; }
+      .fctproc-table td.c-status .fctproc-pill { padding-left:0.4rem; padding-right:0.4rem; }
       .fctproc-clip:hover, .fctproc-clip:focus-visible { color: var(--text,#e0e0e0); border-color: var(--muted,#666); }
       .fctproc-clip.has { color: var(--green,#22c55e); border-color: rgba(34,197,94,0.45); }
       .fctproc-clip.has:hover, .fctproc-clip.has:focus-visible { border-color: var(--green,#22c55e); }
@@ -2838,8 +2847,11 @@
     if (typeof cfg.openAttachments !== 'function') return '';
     const n = attachmentCount(r.project_id || ctx.projectId, r.id);
     const tip = n ? `${n} attached document${n === 1 ? '' : 's'}` : edit ? 'Attach a document' : 'No documents attached';
+    // The badge stops at 99+ so the button never grows; the tooltip and the
+    // label read out the real number.
+    const badge = n ? `<span class="n">${n > 99 ? '99+' : n}</span>` : '';
     return `<button type="button" class="fctproc-clip${n ? ' has' : ''}" data-act="files" data-row="${esc(r.id)}"
-      title="${esc(tip)}" aria-label="${esc(tip)}">&#128206;${n || ''}</button>`;
+      title="${esc(tip)}" aria-label="${esc(tip)}">&#128206;${badge}</button>`;
   }
 
   function poCellHtml(r, ep, edit, td) {

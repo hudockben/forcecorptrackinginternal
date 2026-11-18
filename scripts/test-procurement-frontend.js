@@ -2660,6 +2660,15 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       clip('a3').textContent === CLIP && !clip('a3').classList.contains('has') && clip('a3').title === 'Attach a document');
     assert('  its label is read out the same as its tooltip', clip('a1').getAttribute('aria-label') === '2 attached documents');
     assert('  counted by job and line', d.countArgs.some(([p, id]) => p === 'p1' && id === 'a1') && d.countArgs.every(([p]) => p === 'p1'));
+    assert('  the count is a badge on the button (it never widens it), none when nothing is attached',
+      !!clip('a1').querySelector('span.n') && clip('a1').querySelector('span.n').textContent === '2' && !clip('a3').querySelector('.n'));
+    d.counts.a2 = 120;
+    e.P.rerender();
+    assert('  a count past 99 reads 99+ on the badge, the real number in the tooltip and label',
+      clip('a2').querySelector('.n').textContent === '99+' && clip('a2').title === '120 attached documents'
+      && clip('a2').getAttribute('aria-label') === '120 attached documents');
+    d.counts.a2 = 1;
+    e.P.rerender();
     const css = (e.$('#fctproc-styles') || {}).textContent || '';
     assert('the stylesheet draws a count green and none muted',
       /\.fctproc-clip \{[^}]*color: var\(--muted/.test(css) && /\.fctproc-clip\.has \{[^}]*color: var\(--green/.test(css));
