@@ -2373,6 +2373,9 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       row({ id: 'q2', unit: 'TON' }),                      // a unit of the PM's own
       row({ id: 'q3', quantity: 75 }),                     // a quantity typed first
       row({ id: 'q4', cost_code: 'Stormwater' }),          // + Add Row on a section
+      // Coded before picks filled Quantity and Unit: its line picked again.
+      row({ id: 'q5', bid_item_id: 'b3', cost_code: 'E&S', sub_code: 'Silt Sock 12inch' }),
+      row({ id: 'q6', bid_item_id: 'b3', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', quantity: 300, unit: 'LF' }),
     ] });
     e.P.renderTab(e.root);
     await tick(); await tick(); await tick();
@@ -2419,6 +2422,14 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     e.pick(box, '', null);
     await e.P._test.flushAll(); await sleep(20);
     assert('emptying the Sub Code keeps Quantity and Unit', saved('q4').bid_item_id == null && saved('q4').quantity === 8110 && saved('q4').unit === 'SF', saved('q4'));
+
+    await pickLine('q5', 'E&S / Silt Sock 12inch', 'b3');
+    assert('a row already on a line, with Quantity and Unit blank: picking that line again fills them, and only them',
+      eq(last('q5') && last('q5').body.fields, { unit: 'LF', quantity: 1200 }), last('q5') && last('q5').body);
+    const n6 = e.patches().filter(p => p.q.id === 'q6').length;
+    await pickLine('q6', 'E&S / Silt Sock 12inch', 'b3');
+    assert('…and with them filled in, picking it again saves nothing', e.patches().filter(p => p.q.id === 'q6').length === n6
+      && saved('q6').quantity === 300, saved('q6'));
   }
 
   console.log('\n[every column filters]');

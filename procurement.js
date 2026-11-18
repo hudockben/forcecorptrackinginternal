@@ -3204,9 +3204,16 @@
       return;
     }
     if (field === 'codes') {
-      if (v && v === String(row.bid_item_id || '')) return;
       const ctx = makeCtx();
       const line = v ? (ctx.bidLines || []).find(l => String(l.id) === v) : null;
+      if (v && v === String(row.bid_item_id || '')) {
+        // The line it already has, picked again: nothing to re-code, but a
+        // row coded before picks brought Quantity and Unit over (or with
+        // them emptied since) takes the blank ones now.
+        const fill = line ? fillFromLine(row, line, ctx) : {};
+        if (Object.keys(fill).length) setFields(rowId, fill);
+        return;
+      }
       if (line) {
         const fill = fillFromLine(row, line, ctx);
         if (Object.keys(fill).length) lineFill.set(rowId, { bid_item_id: String(line.id), fields: fill });

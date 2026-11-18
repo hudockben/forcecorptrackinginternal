@@ -1613,6 +1613,18 @@ async function sectionAdd(browser) {
     const qu = { q: (await cell(page, id, 'quantity').inputValue()).replace(/,/g, ''), u: await cell(page, id, 'unit').inputValue() };
     ok('picking its Sub Code brings the bid line\'s Quantity and Unit (950 LF, change order included), saved and shown',
       r.bid_item_id === 'b2' && Number(r.quantity) === 950 && r.unit === 'LF' && qu.q === '950' && qu.u === 'LF', { saved: [r.bid_item_id, r.quantity, r.unit], qu });
+    // Quantity emptied, then the same Sub Code picked again: it comes back.
+    await cell(page, id, 'quantity').click();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Delete');
+    await clickAway(page);
+    await until(() => W.rows.some(x => x.id === id && x.quantity == null), 4000);
+    await cbPick(page, cell(page, id, 'codes'), 'Perim', 'Perimeter');
+    await clickAway(page);
+    await until(() => W.rows.some(x => x.id === id && Number(x.quantity) === 950), 4000);
+    const r2 = W.rows.find(x => x.id === id);
+    ok('…and with Quantity emptied, picking the same Sub Code again fills it back in', Number(r2.quantity) === 950 && r2.unit === 'LF'
+      && (await cell(page, id, 'quantity').inputValue()).replace(/,/g, '') === '950', [r2.quantity, r2.unit]);
   }
 
   // "No cost code" gives a blank row, as the toolbar's + Add Row does.
