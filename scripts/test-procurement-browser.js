@@ -2021,15 +2021,41 @@ async function attachments(browser) {
     poAt >= 0 && !!heads[poAt + 1] && /^Sub-Contractor Agreement/.test(heads[poAt + 1].text)
       && !heads.some(h => h.text === CLIP || h.title === 'Attached documents'), heads.map(h => h.text));
   // The paperclip rides in the Status cell, beside the pill, inside the
-  // cell's own width (Status is pinned at the left at a fixed width).
-  const fit = await rowTr(page, 'F1').locator('td.c-status').evaluate(td => {
-    const c = td.getBoundingClientRect(), b = td.querySelector('.fctproc-clip').getBoundingClientRect();
-    const p = td.querySelector('.fctproc-pill');
-    return { inside: b.left >= c.left - 0.5 && b.right <= c.right + 0.5 && b.top >= c.top - 0.5 && b.bottom <= c.bottom + 0.5,
-      afterPill: p.nextElementSibling === td.querySelector('.fctproc-clip'), w: c.width, sw: td.scrollWidth, cw: td.clientWidth };
+  // cell's own width (Status is pinned at the left at a fixed width) — and
+  // on the pill's line, so it never makes a line taller. Measured on every
+  // line: F1 is 'Ordered', F2 the wider 'Not Ordered'.
+  const fits = () => page.$$eval('#procurement-root tr.fctproc-row', trs => trs.map(tr => {
+    const td = tr.querySelector('td.c-status'), cl = td.querySelector('.fctproc-clip'), p = td.querySelector('.fctproc-pill');
+    const c = td.getBoundingClientRect(), b = cl.getBoundingClientRect(), pr = p.getBoundingClientRect();
+    const n = cl.querySelector('.n'), nr = n && n.getBoundingClientRect();
+    return { row: tr.dataset.row, pill: p.textContent, h: Math.round(tr.getBoundingClientRect().height * 10) / 10,
+      inside: b.left >= c.left - 0.5 && b.right <= c.right + 0.5 && b.top >= c.top - 0.5 && b.bottom <= c.bottom + 0.5,
+      sameLine: Math.abs((b.top + b.bottom) / 2 - (pr.top + pr.bottom) / 2) < 3,
+      afterPill: p.nextElementSibling === cl, sw: td.scrollWidth, cw: td.clientWidth, clipW: Math.round(b.width * 10) / 10,
+      badge: n ? { text: n.textContent, inCell: nr.left >= c.left && nr.right <= c.right && nr.top >= c.top && nr.bottom <= c.bottom,
+        overPill: nr.left < pr.right && nr.right > pr.left && nr.top < pr.bottom && nr.bottom > pr.top } : null };
+  }));
+  const fit0 = await fits();
+  ok('each line\'s paperclip sits in its Status cell after the pill, on the pill\'s line, wholly inside the cell',
+    fit0.length === 2 && fit0.some(f => f.pill === 'Not Ordered')
+      && fit0.every(f => f.inside && f.sameLine && f.afterPill && f.sw <= f.cw + 1), fit0);
+  // Counts of every width: the button stays one size (the count is a badge on
+  // its corner, 99+ at most), so no line gets taller and nothing spills.
+  await page.evaluate(() => { FCTProcurement.configure({ attachmentCount: (pid, id) => (id === 'F1' ? 12 : 120) }); FCTProcurement.rerender(); });
+  await sleep(120);
+  const fitN = await fits();
+  ok('…with a 2- and a 3-digit count too: same line, same height, the same button width, the badge in the cell',
+    fitN.length === 2 && fitN.every(f => {
+      const was = fit0.find(x => x.row === f.row);
+      return f.inside && f.sameLine && f.sw <= f.cw + 1 && was && f.h === was.h && f.clipW === was.clipW
+        && f.badge && f.badge.inCell && !f.badge.overPill;
+    }) && fitN.find(f => f.row === 'F1').badge.text === '12' && fitN.find(f => f.row === 'F2').badge.text === '99+', { fit0, fitN });
+  ok('…the real number is still in the tooltip', await clip(page, 'F2').getAttribute('title') === '120 attached documents');
+  await page.evaluate(() => {
+    FCTProcurement.configure({ attachmentCount: (pid, id) => (window.FCTDocuments ? FCTDocuments.procurementCount(pid, id) : 0) });
+    FCTProcurement.rerender();
   });
-  ok('each line\'s paperclip sits in its Status cell after the pill, wholly inside the cell',
-    fit.inside && fit.afterPill && fit.sw <= fit.cw + 1, fit);
+  await sleep(120);
   // Scrolled all the way right, the paperclip is still on screen and clickable.
   await page.locator('#fctproc-wrap').evaluate(w => { w.scrollLeft = w.scrollWidth; });
   await sleep(80);
