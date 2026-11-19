@@ -1035,7 +1035,7 @@ console.log('\n[documents.js upload sequence]');
     // The live cost code of each procurement row, the way the server resolves it.
     const LINE_CODE = { 'pr-1': 'Stormwater', 'pr-2': 'stormwater', 'pr-3': '', 'pr-4': 'Paving', 'pr-5': 'Mobilization' };
     const doc = o => ({ content_type: 'application/pdf', size_bytes: 2048, note: '', uploaded_by: 'ben',
-      uploaded_at: '2026-10-01T00:00:00Z', po_ids: [], procurement_ids: [], deleted_at: null, ...o });
+      uploaded_at: '2026-10-01T00:00:00Z', po_ids: [], procurement_ids: [], po_line_ids: [], deleted_at: null, ...o });
     const PDOCS = [
       doc({ id: 'pd1', project_id: 'p7', filename: 'geofabric-quote.pdf', note: 'quote rev B',
             folder_ids: ['f-storm'], procurement_ids: ['pr-1'] }),
@@ -1057,14 +1057,38 @@ console.log('\n[documents.js upload sequence]');
     // the listing shows moves. `noVersion` plays a server that sends none.
     let noVersion = false;
     const versionOf = pid => {
-      const s = JSON.stringify([PTREE[pid] || [], PDOCS.filter(d => (d.project_id || '') === (pid || ''))
-        .map(d => [d.id, d.filename, d.note, d.folder_ids, d.po_ids, d.procurement_ids])]);
+      const s = JSON.stringify([PTREE[pid || ''] || [], PDOCS.filter(d => (d.project_id || '') === (pid || ''))
+        .map(d => [d.id, d.filename, d.note, d.folder_ids, d.po_ids, d.procurement_ids, d.po_line_ids])]);
       let h = 0;
       for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0;
       return 'v' + (h >>> 0).toString(16);
     };
     const { countByCostCode: serverCountByCostCode } = require(path.join(__dirname, '..', 'api', 'lib', 'cost-code-counts.js'));
     const pcalls = [];
+
+    // The division's purchase orders as the server's blob holds them — what a
+    // delivery-line attach is checked against (api/lib/po-sync.js). Empty
+    // until the delivery-line block below fills it.
+    const PO_BLOB = [];
+    let failLineCounts = false, failLineList = false, lineCountsListing = false;
+    let holdLineCounts = null, releaseLineCounts = null;  // '*' = the division-wide count, else a poId
+    // { poId: { lineId: n } } over the live documents, the way the server's
+    // ?poLineCounts=1 counts its po_line links ("<poId>:<lineId>").
+    // Null-prototype maps, so an id like "__proto__" is counted as a key.
+    const lineCountsFor = onlyPo => {
+      const counts = Object.create(null);
+      for (const d of PDOCS) {
+        for (const t of d.po_line_ids || []) {
+          const at = t.indexOf(':');
+          const poId = t.slice(0, at), lineId = t.slice(at + 1);
+          if (onlyPo && poId !== onlyPo) continue;
+          const forPo = counts[poId] || (counts[poId] = Object.create(null));
+          forPo[lineId] = (forPo[lineId] || 0) + 1;
+        }
+      }
+      return counts;
+    };
+    const newestFirst = (a, b) => String(b.uploaded_at || '').localeCompare(String(a.uploaded_at || ''));
 
     const countsFor = pid => {
       const counts = {};
@@ -1120,7 +1144,7 @@ console.log('\n[documents.js upload sequence]');
       // below hands out. `oldServer` plays a server from before the endpoint,
       // which ignores the parameter and answers with the listing.
       if (method === 'GET' && qp.costCodeCounts && !oldServer) {
-        const snapshot = serverCountByCostCode(PTREE[qp.projectId] || [],
+        const snapshot = serverCountByCostCode(PTREE[qp.projectId || ''] || [],
           PDOCS.filter(d => (d.project_id || '') === (qp.projectId || '')));
         const ver = versionOf(qp.projectId);
         if (holdCc && holdCc === qp.projectId) {
@@ -1128,6 +1152,28 @@ console.log('\n[documents.js upload sequence]');
           await new Promise(r => { releaseCc = r; });
         }
         return json({ counts: snapshot, ...(noVersion ? {} : { version: ver }) });
+      }
+      // The delivery-line GETs, which the server answers ABOVE its ?poId
+      // branch — both carry poId.
+      if (method === 'GET' && qp.poLineCounts) {
+        if (failLineCounts) throw new TypeError('Failed to fetch');
+        const snapshot = lineCountsFor(qp.poId || null);
+        if (holdLineCounts && holdLineCounts === (qp.poId || '*')) {
+          holdLineCounts = null;
+          await new Promise(r => { releaseLineCounts = r; });
+        }
+        // A server from before the endpoint answers with the General listing.
+        if (lineCountsListing) return json({ folders: [], documents: [], caps: pcaps });
+        return json({ counts: snapshot });
+      }
+      if (method === 'GET' && qp.poLineId) {
+        if (failLineList) return json({ error: 'Database error', detail: 'list down' }, 500);
+        if (!qp.poId) return json({ error: 'poLineId needs its poId' }, 400);
+        const target = `${qp.poId}:${qp.poLineId}`;
+        return json({ documents: PDOCS.filter(d => (d.po_line_ids || []).includes(target)).sort(newestFirst) });
+      }
+      if (method === 'GET' && qp.poId) {
+        return json({ documents: PDOCS.filter(d => (d.po_ids || []).includes(qp.poId)).sort(newestFirst) });
       }
       if (method === 'GET' && qp.procurementId) {
         if (failList) return json({ error: 'Database error', detail: 'list down' }, 500);
@@ -1141,14 +1187,40 @@ console.log('\n[documents.js upload sequence]');
           holdLoad = null;
           await new Promise(r => { releaseLoad = r; });
         }
-        return json({ folders: PTREE[qp.projectId] || [],
+        return json({ folders: PTREE[qp.projectId || ''] || [],
           documents: PDOCS.filter(d => (d.project_id || '') === (qp.projectId || '')), caps: pcaps,
           ...(noVersion ? {} : { version: versionOf(qp.projectId) }) });
       }
       if (method === 'POST') {
+        // A delivery line is checked against the order in the blob before
+        // anything is written, with the server's answers.
+        let poRow = null;
+        if (body.poLineId != null && body.poLineId !== '') {
+          if (!body.poId) return json({ error: 'poLineId needs its poId' }, 400);
+          poRow = PO_BLOB.find(p => p.id === body.poId);
+          if (!poRow) return json({ error: 'Purchase order not found' }, 404);
+          if (!(poRow.lines || []).some(l => l.id === body.poLineId)) {
+            return json({ error: 'Delivery line not found', detail: 'That delivery is not on the order yet — it may not have been saved. Wait a moment and try again.' }, 404);
+          }
+          if ((poRow.project_id || null) !== (qp.projectId || null)) return json({ error: 'That delivery belongs to another job' }, 400);
+        }
         const d = doc({ id: body.documentId, project_id: qp.projectId || null, filename: body.filename,
           size_bytes: body.sizeBytes, note: body.note || '', folder_ids: [body.folderId],
-          po_ids: body.poId ? [body.poId] : [], procurement_ids: body.procurementId ? [body.procurementId] : [] });
+          po_ids: body.poId ? [body.poId] : [], procurement_ids: body.procurementId ? [body.procurementId] : [],
+          po_line_ids: poRow ? [`${body.poId}:${body.poLineId}`] : [] });
+        // A delivery's file is filed in the order's own folder, when the
+        // scope has one, and on a job in the cost-code folder of the
+        // delivery's code (its own, else the order's).
+        if (poRow) {
+          const scope = PTREE[qp.projectId || ''] || [];
+          const sub = scope.find(f => f.slug === `po-${body.poId}`);
+          if (sub && !d.folder_ids.includes(sub.id)) d.folder_ids.push(sub.id);
+          const line = poRow.lines.find(l => l.id === body.poLineId);
+          const code = typeof line.cost_code === 'string' && line.cost_code.trim() ? line.cost_code.trim()
+            : String(poRow.cost_code || '').trim();
+          const cc = poRow.project_id && code ? ccFolderFor(qp.projectId, code) : null;
+          if (cc && !d.folder_ids.includes(cc.id)) d.folder_ids.push(cc.id);
+        }
         // What the server does with a line: file the document under the
         // line's cost code too, whatever folder was picked.
         let ccId = null;
@@ -1170,8 +1242,19 @@ console.log('\n[documents.js upload sequence]');
         if (at < 0) return json({ error: 'Document not found' }, 404);
         const d = PDOCS[at];
         if (body.removeProcurementId) d.procurement_ids = d.procurement_ids.filter(x => x !== body.removeProcurementId);
+        if (body.removePoLineId !== undefined) {
+          if (!/^[A-Za-z0-9_.-]{1,128}:[A-Za-z0-9_.-]{1,128}$/.test(String(body.removePoLineId))) {
+            return json({ error: 'removePoLineId must be "<poId>:<lineId>"' }, 400);
+          }
+          d.po_line_ids = (d.po_line_ids || []).filter(x => x !== body.removePoLineId);
+        }
         if (body.addPoId) d.po_ids.push(body.addPoId);
-        if (body.removePoId) d.po_ids = d.po_ids.filter(x => x !== body.removePoId);
+        if (body.removePoId) {
+          d.po_ids = d.po_ids.filter(x => x !== body.removePoId);
+          // Off the order is off its deliveries: the server drops every
+          // "<poId>:<lineId>" link of that order with it.
+          d.po_line_ids = (d.po_line_ids || []).filter(x => String(x).split(':')[0] !== body.removePoId);
+        }
         return json({ document: d });
       }
       if (method === 'DELETE') {
@@ -1763,7 +1846,8 @@ console.log('\n[documents.js upload sequence]');
     const errorsBefore = () => toasts('error').length;
     // Reads of the job's whole listing, and of its cost-code counts alone.
     const reads = () => pcalls.filter(c => c.method === 'GET' && c.q && c.q.projectId === 'p7'
-      && !c.q.procurementId && !c.q.procurementCounts && !c.q.costCodeCounts);
+      && !c.q.procurementId && !c.q.procurementCounts && !c.q.costCodeCounts
+      && !c.q.poLineCounts && !c.q.poLineId && !c.q.poId && !c.q.poCounts);
     const ccReads = () => pcalls.filter(c => c.method === 'GET' && c.q && c.q.projectId === 'p7' && c.q.costCodeCounts);
     await FD.openProcurementAttach(LINE);          // the browser holds p7
     closeAll();
@@ -2150,6 +2234,878 @@ console.log('\n[documents.js upload sequence]');
         JSON.stringify(server.countByCostCode(...named[0])) === JSON.stringify({ 420: 2, Stormwater: 1 })
           && server.countByCostCode(...named[1]).Stormwater === 2 && server.countByCostCode(...named[1]).Walk === undefined,
         JSON.stringify([server.countByCostCode(...named[0]), server.countByCostCode(...named[1])]));
+    }
+
+    // ── 7. Purchase-order delivery lines ──────────────────────────────────
+    // A paperclip in every delivery row of the PO tab. A file attached there
+    // is ONE document: listed on the delivery (a po_line link,
+    // "<poId>:<lineId>"), on its order (the 'po' link the order's paperclip
+    // lists), filed in the order's own folder and — on a job — in the
+    // cost-code folder of the delivery's code. The server checks and files;
+    // this module owns the line counts, the delivery's dialog, carrying the
+    // delivery into the upload, and detaching. Same in-memory API as above,
+    // taught the delivery routes the way api/documents.js answers them.
+    {
+      console.log('\n[purchase-order delivery lines]');
+
+      const had = new Set(PDOCS.map(d => d.id));
+      PTREE.p5 = [
+        { id: 'f5-po', parent_id: null, name: 'Purchase Orders', kind: 'fixed', slug: 'purchase-orders', sort_order: 7 },
+        { id: 'f5-po42', parent_id: 'f5-po', name: 'PO PO-0420', kind: 'fixed', slug: 'po-po-42', sort_order: 500 },
+        { id: 'f5-photos', parent_id: null, name: 'Photos', kind: 'fixed', slug: 'photos', sort_order: 5 },
+        { id: 'f5-420', parent_id: null, name: '420 · Paving', kind: 'cost_code', slug: 'cc-420', cost_code: '420', sort_order: 9 },
+        { id: 'f5-storm', parent_id: null, name: 'Stormwater', kind: 'cost_code', slug: 'cc-Stormwater',
+          cost_code: 'Stormwater', sort_order: 10 },
+      ];
+      // The General / Non-Job area, where an order with no job files.
+      PTREE[''] = [
+        { id: 'g0-unassigned', parent_id: null, name: 'Unassigned POs', kind: 'fixed', slug: 'unassigned-pos', sort_order: 1 },
+        { id: 'g0-misc', parent_id: null, name: 'Misc', kind: 'fixed', slug: 'misc', sort_order: 2 },
+      ];
+      // Raised deliveries carry the order's codes; a Daily Tracking one
+      // (dr-<rowId>) carries its row's, which is what the server files by.
+      const PO42 = { id: 'po-42', po_number: 'PO-0420', project_id: 'p5', cost_code: '420', supplier: 'Keystone Asphalt',
+        lines: [
+          { id: 'ln-a', invoice_num: 'INV-881', date: '2026-10-03' },
+          { id: 'ln-b', invoice_num: '', date: '2026-10-05' },
+          { id: 'ln-e', invoice_num: '  ', date: '' },
+          { id: 'dr-row1', invoice_num: 'T-77', date: '2026-10-06', source: 'daily', cost_code: 'Stormwater' },
+        ] };
+      const PO43 = { id: 'po-43', po_number: 'PO-0430', project_id: 'p5', cost_code: '', supplier: 'Cleveland Quarry',
+        lines: [{ id: 'ln-c', invoice_num: 'INV-9', date: '2026-10-07' }] };
+      const POGEN = { id: 'po-gen', po_number: 'PO-0500', project_id: null, cost_code: '610', supplier: 'No Job Supply',
+        lines: [{ id: 'ln-g', invoice_num: 'G-1', date: '2026-10-08' }] };
+      PO_BLOB.push(PO42, PO43, POGEN);
+      const lineOf = (po, id) => po.lines.find(l => l.id === id);
+      const LN_A = lineOf(PO42, 'ln-a');
+      PDOCS.push(
+        doc({ id: 'ld1', project_id: 'p5', filename: 'inv-881.pdf', note: 'signed by foreman', uploaded_by: 'ben',
+              uploaded_at: '2026-10-03T00:00:00Z', folder_ids: ['f5-po42', 'f5-420'], po_ids: ['po-42'], po_line_ids: ['po-42:ln-a'] }),
+        doc({ id: 'ld2', project_id: 'p5', filename: 'ticket-photo.jpg', content_type: 'image/jpeg', uploaded_by: 'sam',
+              uploaded_at: '2026-10-04T00:00:00Z', folder_ids: ['f5-photos', 'f5-po42', 'f5-420'], po_ids: ['po-42'],
+              po_line_ids: ['po-42:ln-a'] }),
+        doc({ id: 'ld3', project_id: 'p5', filename: 't-77.pdf', folder_ids: ['f5-po42', 'f5-storm'], po_ids: ['po-42'],
+              po_line_ids: ['po-42:dr-row1'] }),
+        doc({ id: 'ld4', project_id: 'p5', filename: 'po-0420-signed.pdf', folder_ids: ['f5-po42'], po_ids: ['po-42'] }),
+        doc({ id: 'ld5', project_id: 'p5', filename: 'inv-9.pdf', folder_ids: ['f5-po'], po_ids: ['po-43'], po_line_ids: ['po-43:ln-c'] }),
+        // A Daily Tracking delivery that has since moved to another order:
+        // its file stays with this one.
+        doc({ id: 'ld6', project_id: 'p5', filename: 'moved-on.pdf', folder_ids: ['f5-po42'], po_ids: ['po-42'],
+              po_line_ids: ['po-42:dr-gone'] }),
+        doc({ id: 'ld8', project_id: 'p8', filename: 'elsewhere.pdf', folder_ids: ['g-earth'], po_ids: ['po-99'],
+              po_line_ids: ['po-99:ln-z'] }));
+
+      let settleCalls = 0, settleAnswer = true, settleHold = null;
+      const hostPOs = [PO42, PO43, POGEN].map(p => ({ id: p.id, po_number: p.po_number, supplier: p.supplier, project_id: p.project_id }));
+      FD.configure({
+        getProjectId: () => 'p1',
+        // What the PO tabs hand over: no lines, the way they do today.
+        getPurchaseOrders: () => hostPOs,
+        settlePurchaseOrders: async () => {
+          settleCalls++;
+          pcalls.push({ marker: 'settle' });
+          if (settleHold) await settleHold;
+          if (settleAnswer instanceof Error) throw settleAnswer;
+          return settleAnswer;
+        },
+        getUserName: () => 'ben',
+      });
+      pcaps = { canUpload: true, canManage: true, canDelete: true };
+      closeAll();
+      await FD.renderTab(mount);                       // the Documents tab sits on p1
+      const requests = () => pcalls.filter(c => c.method);
+      const callLog = () => pcalls.map(c => `${c.method || c.marker} ${c.url || ''}`).join(' | ');
+
+      // ── Counts ──────────────────────────────────────────────────────────
+      assert('the delivery-line entry points are on the public surface',
+        typeof FD.openPOLineAttach === 'function' && typeof FD.refreshPoLineCounts === 'function'
+          && typeof FD.poLineCount === 'function');
+      assert('a delivery never counted reads 0', FD.poLineCount('po-42', 'ln-a') === 0);
+
+      pcalls.length = 0;
+      const all = await FD.refreshPoLineCounts();
+      assert('refreshPoLineCounts() counts the whole division in one GET: no job, no order, the division carried',
+        pcalls.length === 1 && pcalls[0].method === 'GET' && pcalls[0].q.poLineCounts === '1' && pcalls[0].q.division === 'turf'
+          && !('poId' in pcalls[0].q) && !('projectId' in pcalls[0].q), callLog());
+      assert('it resolves to every order\'s { lineId: n }',
+        all && all['po-42'] && all['po-42']['ln-a'] === 2 && all['po-42']['dr-row1'] === 1 && all['po-43']['ln-c'] === 1
+          && all['po-99']['ln-z'] === 1, JSON.stringify(all));
+      assert('poLineCount reads each delivery\'s number, per order, on every job',
+        FD.poLineCount('po-42', 'ln-a') === 2 && FD.poLineCount('po-42', 'dr-row1') === 1
+          && FD.poLineCount('po-43', 'ln-c') === 1 && FD.poLineCount('po-99', 'ln-z') === 1,
+        [FD.poLineCount('po-42', 'ln-a'), FD.poLineCount('po-42', 'dr-row1'), FD.poLineCount('po-43', 'ln-c')].join(','));
+      assert('a delivery with nothing attached reads 0, and so does a line id on an order it is not on',
+        FD.poLineCount('po-42', 'ln-b') === 0 && FD.poLineCount('po-43', 'ln-a') === 0 && FD.poLineCount('po-nope', 'ln-a') === 0);
+      assert('ids that name a property of every object read 0 rather than throwing',
+        FD.poLineCount('po-42', '__proto__') === 0 && FD.poLineCount('__proto__', 'ln-a') === 0
+          && FD.poLineCount('constructor', 'x') === 0 && FD.poLineCount('po-42', 'constructor') === 0
+          && FD.poLineCount(null, undefined) === 0);
+      assert('counting neither seeds nor loads a job',
+        !pcalls.some(c => c.method === 'PUT' || (c.method === 'GET' && !c.q.poLineCounts)));
+
+      PDOCS.push(doc({ id: 'ld9', project_id: 'p5', filename: 'late.pdf', uploaded_at: '2026-10-05T00:00:00Z',
+        folder_ids: ['f5-po42'], po_ids: ['po-42'], po_line_ids: ['po-42:ln-b'] }));
+      pcalls.length = 0;
+      const one42 = await FD.refreshPoLineCounts('po-42');
+      assert('refreshPoLineCounts(poId) asks for that order alone',
+        pcalls.length === 1 && pcalls[0].q.poLineCounts === '1' && pcalls[0].q.poId === 'po-42' && pcalls[0].q.division === 'turf',
+        callLog());
+      assert('…and resolves to its { lineId: n }', one42 && one42['ln-a'] === 2 && one42['ln-b'] === 1 && !one42['po-42'],
+        JSON.stringify(one42));
+      assert('that order\'s counts move and every other order\'s stay',
+        FD.poLineCount('po-42', 'ln-b') === 1 && FD.poLineCount('po-43', 'ln-c') === 1 && FD.poLineCount('po-99', 'ln-z') === 1);
+
+      const ld5 = PDOCS.find(d => d.id === 'ld5');
+      ld5.po_line_ids = [];
+      const none43 = await FD.refreshPoLineCounts('po-43');
+      assert('an order whose deliveries have nothing attached counts to an empty map, and each reads 0',
+        none43 && Object.keys(none43).length === 0 && FD.poLineCount('po-43', 'ln-c') === 0
+          && FD.poLineCount('po-42', 'ln-a') === 2, JSON.stringify(none43));
+      ld5.po_line_ids = ['po-43:ln-c'];
+      const ld8 = PDOCS.find(d => d.id === 'ld8');
+      ld8.po_line_ids = [];
+      await FD.refreshPoLineCounts();
+      assert('a division-wide count clears an order that is missing from it, and fills the rest',
+        FD.poLineCount('po-99', 'ln-z') === 0 && FD.poLineCount('po-43', 'ln-c') === 1);
+      ld8.po_line_ids = ['po-99:ln-z'];
+      await FD.refreshPoLineCounts();
+
+      // A failure is not a count of zero: the PO tab would draw an empty
+      // paperclip on every delivery with files.
+      failLineCounts = true;
+      let lineRejected = false;
+      const failedAll = await FD.refreshPoLineCounts().catch(() => { lineRejected = true; });
+      const failedOne = await FD.refreshPoLineCounts('po-42').catch(() => { lineRejected = true; });
+      failLineCounts = false;
+      assert('a failed delivery-line count never rejects', !lineRejected);
+      assert('it resolves null, division-wide or for one order', failedAll === null && failedOne === null,
+        `${JSON.stringify(failedAll)} / ${JSON.stringify(failedOne)}`);
+      assert('and the last good counts are kept', FD.poLineCount('po-42', 'ln-a') === 2 && FD.poLineCount('po-99', 'ln-z') === 1);
+      lineCountsListing = true;
+      const listingAnswer = await FD.refreshPoLineCounts();
+      lineCountsListing = false;
+      assert('an answer with no counts in it (a server from before the endpoint) is a failure too, not "nothing attached"',
+        listingAnswer === null && FD.poLineCount('po-42', 'ln-a') === 2 && FD.poLineCount('po-43', 'ln-c') === 1);
+
+      // A slow division-wide count must not undo a fresher count of one
+      // order — but it is still the newest word on every other order.
+      PDOCS.push(doc({ id: 'ld10', project_id: 'p5', filename: 'inv-9-page2.pdf', folder_ids: ['f5-po'], po_ids: ['po-43'],
+        po_line_ids: ['po-43:ln-c'] }));
+      holdLineCounts = '*';
+      const slowAll = FD.refreshPoLineCounts();         // sees po-43 ln-c 2, po-42 ln-a 2
+      await settle();
+      PDOCS.push(doc({ id: 'ld11', project_id: 'p5', filename: 'extra.pdf', folder_ids: ['f5-po42'], po_ids: ['po-42'],
+        po_line_ids: ['po-42:ln-a'] }));
+      await FD.refreshPoLineCounts('po-42');
+      assert('the fresher count of one order lands', FD.poLineCount('po-42', 'ln-a') === 3, String(FD.poLineCount('po-42', 'ln-a')));
+      releaseLineCounts();
+      const slowAllAnswer = await slowAll;
+      assert('a slow division-wide count cannot overwrite a fresher count of one order',
+        FD.poLineCount('po-42', 'ln-a') === 3, String(FD.poLineCount('po-42', 'ln-a')));
+      assert('…but still lands on the orders nothing fresher has counted', FD.poLineCount('po-43', 'ln-c') === 2,
+        String(FD.poLineCount('po-43', 'ln-c')));
+      assert('…and its caller is handed the merged map',
+        slowAllAnswer && slowAllAnswer['po-42']['ln-a'] === 3 && slowAllAnswer['po-43']['ln-c'] === 2, JSON.stringify(slowAllAnswer));
+
+      // A slow count of one order is dropped once a later division-wide
+      // count has landed.
+      holdLineCounts = 'po-42';
+      const slow42 = FD.refreshPoLineCounts('po-42');   // sees ln-a 3
+      await settle();
+      PDOCS.splice(PDOCS.findIndex(d => d.id === 'ld11'), 1);
+      await FD.refreshPoLineCounts();
+      releaseLineCounts();
+      const slow42Answer = await slow42;
+      assert('a slow count of one order cannot overwrite a later division-wide count',
+        FD.poLineCount('po-42', 'ln-a') === 2, String(FD.poLineCount('po-42', 'ln-a')));
+      assert('…and its caller is handed the fresh numbers', slow42Answer && slow42Answer['ln-a'] === 2, JSON.stringify(slow42Answer));
+
+      // Two division-wide counts: the older one landing last changes nothing.
+      holdLineCounts = '*';
+      const slowAll2 = FD.refreshPoLineCounts();        // sees po-43 ln-c 2
+      await settle();
+      PDOCS.splice(PDOCS.findIndex(d => d.id === 'ld10'), 1);
+      await FD.refreshPoLineCounts();
+      releaseLineCounts();
+      await slowAll2;
+      assert('an older division-wide count landing after a newer one changes nothing',
+        FD.poLineCount('po-43', 'ln-c') === 1, String(FD.poLineCount('po-43', 'ln-c')));
+
+      // …and a count of ANOTHER order is no reason to throw an answer away.
+      PDOCS.push(doc({ id: 'ld11', project_id: 'p5', filename: 'extra.pdf', folder_ids: ['f5-po42'], po_ids: ['po-42'],
+        po_line_ids: ['po-42:ln-a'] }));
+      holdLineCounts = 'po-42';
+      const slow42b = FD.refreshPoLineCounts('po-42');
+      await settle();
+      await FD.refreshPoLineCounts('po-43');
+      releaseLineCounts();
+      await slow42b;
+      assert('a count of one order still lands after another order was counted',
+        FD.poLineCount('po-42', 'ln-a') === 3, String(FD.poLineCount('po-42', 'ln-a')));
+      PDOCS.splice(PDOCS.findIndex(d => d.id === 'ld11'), 1);
+
+      // Order and line ids are [A-Za-z0-9_.-], so "__proto__" is a legal one.
+      PDOCS.push(doc({ id: 'ld12', project_id: 'p5', filename: 'odd.pdf', folder_ids: ['f5-po'], po_ids: ['__proto__'],
+        po_line_ids: ['__proto__:constructor'] }));
+      await FD.refreshPoLineCounts();
+      assert('an order or delivery id that names a property of every object is counted like any other, disturbing nothing',
+        FD.poLineCount('__proto__', 'constructor') === 1 && FD.poLineCount('po-42', 'ln-a') === 2
+          && FD.poLineCount('po-43', 'toString') === 0 && FD.poLineCount('po-43', 'ln-c') === 1,
+        [FD.poLineCount('__proto__', 'constructor'), FD.poLineCount('po-42', 'ln-a')].join(','));
+      PDOCS.splice(PDOCS.findIndex(d => d.id === 'ld12'), 1);
+      await FD.refreshPoLineCounts();
+      assert('…and drops out again like any other', FD.poLineCount('__proto__', 'constructor') === 0);
+
+      // ── The delivery's dialog ───────────────────────────────────────────
+      closeAll();
+      pcalls.length = 0;
+      changes = 0;
+      settleCalls = 0;
+      await FD.openPOLineAttach({ po: PO42, line: LN_A });
+      assert('opening a delivery never waits on the host\'s purchase-order saves: reading needs nothing saved',
+        settleCalls === 0 && !pcalls.some(c => c.marker === 'settle'), callLog());
+      const lLoad = pcalls.findIndex(c => c.method === 'GET' && c.q.projectId === 'p5' && !c.q.poLineId);
+      const lList = pcalls.findIndex(c => c.method === 'GET' && c.q.poLineId);
+      assert('then loads the order\'s job (it is not the one the Documents tab is on)',
+        lLoad > 0 && pcalls.some(c => c.method === 'PUT' && c.q.projectId === 'p5'), callLog());
+      assert('then lists the delivery\'s files by poLineId and poId, in the division',
+        lList > lLoad && pcalls[lList].q.poLineId === 'ln-a' && pcalls[lList].q.poId === 'po-42'
+          && pcalls[lList].q.division === 'turf', lList >= 0 ? pcalls[lList].url : 'no list request');
+      assert('and nudges the host to redraw, since a load ran', changes === 1, String(changes));
+
+      dlg = lastModal();
+      assert('a wide dialog opens, titled with the order and the delivery\'s invoice / ticket number',
+        Boolean(dlg) && /min\(60rem/.test(dlg.innerHTML) && titleOf(dlg) === 'PO PO-0420 · INV-881', titleOf(dlg));
+      assert('it says how many files are attached', /2 attached documents/.test(dlg.textContent), dlg.textContent.slice(0, 200));
+      const lineRows = () => [...lastModal().querySelectorAll('[data-line-doc]')].map(el => el.dataset.lineDoc);
+      assert('and lists this delivery\'s files, newest first — not the order\'s other paperwork, nor another delivery\'s',
+        lineRows().join(',') === 'ld2,ld1', lineRows().join(','));
+      const lrow1 = dlg.querySelector('[data-line-doc="ld1"]');
+      assert('each row carries size, uploader, date and note',
+        lrow1 && /2 KB/.test(lrow1.textContent) && /ben/.test(lrow1.textContent) && /2026/.test(lrow1.textContent)
+          && /signed by foreman/.test(lrow1.textContent), lrow1 && lrow1.textContent);
+      assert('and a download button', dlg.querySelectorAll('[data-ldl]').length === 2);
+      assert('it says the files are on the order too, in its folder and the delivery\'s cost-code folder',
+        /also listed on PO PO-0420 and filed in its folder, and in the 420 cost-code folder\./
+          .test(dlg.querySelector('[data-line-filing]').textContent), dlg.querySelector('[data-line-filing]').textContent);
+      assert('the footer offers Close and an attach',
+        Boolean(dlg.querySelector('[data-cancel]')) && /Attach a document/.test(dlg.querySelector('[data-attach-new]').textContent));
+      assert('a manager may detach either file', dlg.querySelectorAll('[data-detach]').length === 2);
+      assert('and the Detach button says the file is not deleted, and stays on the order',
+        /not deleted/.test(dlg.querySelector('[data-detach]').title) && /stays on the order/.test(dlg.querySelector('[data-detach]').title));
+      pcalls.length = 0;
+      dlg.querySelector('[data-ldl="ld2"]').click();
+      await settle();
+      assert('Download fetches that file\'s signed link',
+        pcalls.some(c => c.path === '/api/document-download' && c.q.id === 'ld2'), callLog());
+
+      // Already on the job: no second load, and a matching count is no
+      // reason to bother the host. The settle runs on every open.
+      closeAll();
+      pcalls.length = 0;
+      changes = 0;
+      await FD.openPOLineAttach({ po: PO42, line: LN_A });
+      assert('reopening on the same job reads only the delivery\'s list',
+        requests().length === 1 && requests()[0].q.poLineId === 'ln-a', callLog());
+      assert('…with the paperclip already right, the host is not nudged', changes === 0, String(changes));
+      assert('…and still never settles', settleCalls === 0, String(settleCalls));
+
+      // A colleague attached a file since: the list is the freshest count
+      // there is, and the copy of the job in hand has never seen the file.
+      closeAll();
+      PDOCS.push(doc({ id: 'ld13', project_id: 'p5', filename: 'colleague-ticket.pdf', uploaded_by: 'sam',
+        uploaded_at: '2026-10-09T00:00:00Z', folder_ids: ['f5-po42', 'f5-420'], po_ids: ['po-42'], po_line_ids: ['po-42:ln-a'] }));
+      pcalls.length = 0;
+      changes = 0;
+      await FD.openPOLineAttach({ po: PO42, line: LN_A });
+      const cList = pcalls.findIndex(c => c.method === 'GET' && c.q.poLineId);
+      const cReload = pcalls.findIndex((c, i) => i > cList && c.method === 'GET' && c.q.projectId === 'p5' && !c.q.poLineId);
+      assert('a delivery listing a file the job in hand lacks reads the job again, after the list',
+        cList >= 0 && cReload > cList, callLog());
+      assert('the paperclip count is corrected from the list', FD.poLineCount('po-42', 'ln-a') === 3,
+        String(FD.poLineCount('po-42', 'ln-a')));
+      assert('…and the host is told once', changes === 1, String(changes));
+      assert('the dialog lists the colleague\'s file first', lineRows()[0] === 'ld13', lineRows().join(','));
+      closeAll();
+      pcalls.length = 0;
+      await FD.openPOLineAttach({ po: PO42, line: LN_A });
+      assert('with nothing new on the delivery, opening it again reads nothing more than its list',
+        requests().length === 1 && requests()[0].q.poLineId === 'ln-a', callLog());
+      closeAll();
+      PDOCS.splice(PDOCS.findIndex(d => d.id === 'ld13'), 1);
+      await FD.refreshPoLineCounts();
+
+      // What the dialog calls the delivery.
+      const dayOf = (y, m, d) => new Date(y, m - 1, d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+      await FD.openPOLineAttach({ po: PO42, line: lineOf(PO42, 'ln-b') });
+      assert('a delivery with no invoice / ticket number is called by its date, read as a calendar day',
+        titleOf(lastModal()) === `PO PO-0420 · ${dayOf(2026, 10, 5)}`, titleOf(lastModal()));
+      closeAll();
+      await FD.openPOLineAttach({ po: PO42, line: lineOf(PO42, 'ln-e') });
+      assert('one with neither is a "Delivery"', titleOf(lastModal()) === 'PO PO-0420 · Delivery', titleOf(lastModal()));
+      closeAll();
+      await FD.openPOLineAttach({ po: PO42, line: LN_A, label: 'Ticket 881 (Oct 3)' });
+      assert('a label from the host wins', titleOf(lastModal()) === 'PO PO-0420 · Ticket 881 (Oct 3)', titleOf(lastModal()));
+      closeAll();
+      await FD.openPOLineAttach({ po: { ...PO42, po_number: '' }, line: LN_A });
+      assert('an order with no number yet is named by its id', titleOf(lastModal()) === 'PO po-42 · INV-881', titleOf(lastModal()));
+      closeAll();
+      await FD.openPOLineAttach({ po: PO42, line: { ...LN_A, invoice_num: '<img src=x onerror="window.__pwned=1">' } });
+      assert('a delivery\'s name is text, never markup',
+        !lastModal().querySelector('img') && titleOf(lastModal()).includes('<img src=x') && !window.__pwned, lastModal().innerHTML.slice(0, 300));
+      closeAll();
+
+      // The cost code the dialog promises is the one the server files by.
+      await FD.openPOLineAttach({ po: PO42, line: lineOf(PO42, 'dr-row1') });
+      dlg = lastModal();
+      assert('a Daily Tracking delivery is filed by its own row\'s code, not the order\'s',
+        /and in the Stormwater cost-code folder\./.test(dlg.querySelector('[data-line-filing]').textContent)
+          && !/the 420 cost-code/.test(dlg.querySelector('[data-line-filing]').textContent) && lineRows().join(',') === 'ld3',
+        dlg.querySelector('[data-line-filing]').textContent);
+      closeAll();
+      await FD.openPOLineAttach({ po: PO43, line: lineOf(PO43, 'ln-c') });
+      dlg = lastModal();
+      assert('an order with no cost code promises only its own folder',
+        /also listed on PO PO-0430 and filed in its folder\.$/.test(dlg.querySelector('[data-line-filing]').textContent.trim())
+          && !/cost-code/.test(dlg.querySelector('[data-line-filing]').textContent),
+        dlg.querySelector('[data-line-filing]').textContent);
+      dlg.querySelector('[data-attach-new]').click();
+      await settle();
+      assert('…and before the order has a folder of its own, its upload opens on the Purchase Orders root',
+        lastModal().querySelector('#fctdoc-folder').value === 'f5-po', lastModal().querySelector('#fctdoc-folder').value);
+      closeAll();
+
+      // ── Attach: the upload dialog ───────────────────────────────────────
+      await FD.openPOLineAttach({ po: PO42, line: LN_A });
+      lastModal().querySelector('[data-attach-new]').click();
+      await settle();
+      up = lastModal();
+      assert('Attach opens the upload dialog', /Upload documents/.test(titleOf(up)), titleOf(up));
+      assert('with the folder defaulted to the order\'s own folder',
+        up.querySelector('#fctdoc-folder').value === 'f5-po42', up.querySelector('#fctdoc-folder').value);
+      assert('the order is pinned: locked, selected, no filter box',
+        up.querySelector('#fctdoc-po').disabled && up.querySelector('#fctdoc-po').value === 'po-42'
+          && !up.querySelector('[data-po-filter="fctdoc-po"]'));
+      const readout = up.querySelector('#fctdoc-poline');
+      assert('the delivery is shown, locked, by name',
+        readout && readout.textContent.trim().replace(/\s+/g, ' ') === 'Delivery: INV-881'
+          && readout.dataset.poLine === 'po-42:ln-a', readout && readout.outerHTML);
+      assert('and it is not a control that can be changed',
+        !readout.matches('input,select,textarea') && !readout.querySelector('input,select,textarea'));
+      assert('the hint says where else the file goes, whichever folder is picked',
+        /Also listed on the order and filed under its folder and the 420 cost-code folder, whichever folder you pick\./
+          .test(up.querySelector('[data-po-line-hint]').textContent), up.querySelector('[data-po-line-hint]').textContent);
+      assert('in place of the order\'s own hint, and with no procurement line',
+        !/Filed under the purchase order as well/.test(up.textContent) && !up.querySelector('#fctdoc-proc'));
+
+      up.querySelector('#fctdoc-folder').value = 'f5-photos';
+      const lInp = up.querySelector('#fctdoc-files');
+      Object.defineProperty(lInp, 'files', { value: [pdf('inv-881-page2.pdf')], configurable: true });
+      lInp.dispatchEvent(new window.Event('change', { bubbles: true }));
+      pcalls.length = 0;
+      changes = 0;
+      up.querySelector('#fctdoc-go').click();
+      await settle();
+      const reg5 = pcalls.find(c => c.method === 'POST' && c.path === '/api/documents');
+      assert('the upload registers the delivery with its order',
+        reg5 && reg5.body.poLineId === 'ln-a' && reg5.body.poId === 'po-42' && reg5.body.poNumber === 'PO-0420',
+        reg5 && JSON.stringify(reg5.body));
+      assert('…the folder the user chose, under the order\'s job',
+        reg5 && reg5.body.folderId === 'f5-photos' && reg5.q.projectId === 'p5'
+          && pcalls.find(c => c.path === '/api/document-upload-url').body.projectId === 'p5', reg5 && reg5.url);
+      assert('…and nothing else: the body is exactly the register fields plus poLineId',
+        reg5 && JSON.stringify(Object.keys(reg5.body).sort())
+          === JSON.stringify(['documentId', 'filename', 'folderId', 'note', 'poId', 'poLineId', 'poNumber', 'sizeBytes', 'storageKey']),
+        reg5 && JSON.stringify(Object.keys(reg5.body)));
+      assert('the dialog closes on success', !window.document.body.contains(up));
+      const lcIdx = pcalls.findIndex((c, i) => i > pcalls.indexOf(reg5) && c.method === 'GET' && c.q.poLineCounts);
+      const pcIdx = pcalls.findIndex((c, i) => i > pcalls.indexOf(reg5) && c.method === 'GET' && c.q.poCounts);
+      const chIdx = pcalls.findIndex(c => c.marker === 'onChange');
+      assert('the delivery-line counts are refreshed after the upload, division-wide, and the order\'s too',
+        lcIdx > 0 && !('poId' in pcalls[lcIdx].q) && pcIdx > 0, callLog());
+      assert('before the host is told to redraw', chIdx > lcIdx && chIdx > pcIdx && changes === 1, `${lcIdx} / ${pcIdx} / ${chIdx} / ${changes}`);
+      assert('so the delivery\'s paperclip reads one more', FD.poLineCount('po-42', 'ln-a') === 3,
+        String(FD.poLineCount('po-42', 'ln-a')));
+      assert('and the 420 cost-code folder compiled it too, though Photos was picked',
+        FD.costCodeCount('p5', '420') === 3, String(FD.costCodeCount('p5', '420')));
+      const landed = PDOCS.find(d => d.id === reg5.body.documentId);
+      assert('one stored file: on the delivery, on the order, in the picked folder, the order\'s folder and the cost code\'s',
+        landed && JSON.stringify(landed.po_line_ids) === '["po-42:ln-a"]' && JSON.stringify(landed.po_ids) === '["po-42"]'
+          && JSON.stringify(landed.folder_ids) === '["f5-photos","f5-po42","f5-420"]', landed && JSON.stringify(landed));
+
+      // Every other upload's body is what it was: no poLineId key at all.
+      pcalls.length = 0;
+      await FD._uploadOne(pdf('plain.pdf'), { folderId: 'f5-po42', poId: 'po-42', poNumber: 'PO-0420', projectId: 'p5' });
+      const regPlain = pcalls.find(c => c.method === 'POST' && c.path === '/api/documents');
+      assert('an upload with no delivery carries no poLineId key',
+        regPlain && !('poLineId' in regPlain.body) && !('procurementId' in regPlain.body) && regPlain.body.poId === 'po-42',
+        regPlain && JSON.stringify(regPlain.body));
+      PDOCS.splice(PDOCS.findIndex(d => d.id === regPlain.body.documentId), 1);
+
+      // The host's list of orders is not what the delivery's order travels
+      // by: an order missing from it still goes up with the file, by number.
+      closeAll();
+      FD.configure({ getPurchaseOrders: () => [] });
+      await FD.openPOLineAttach({ po: PO42, line: LN_A });
+      lastModal().querySelector('[data-attach-new]').click();
+      await settle();
+      up = lastModal();
+      assert('an order the host did not list is still shown, pinned, in the upload',
+        up.querySelector('#fctdoc-po').value === 'po-42' && up.querySelector('#fctdoc-po').disabled
+          && /PO-0420/.test(up.querySelector('#fctdoc-po').selectedOptions[0].textContent),
+        up.querySelector('#fctdoc-po').outerHTML);
+      const mInp = up.querySelector('#fctdoc-files');
+      Object.defineProperty(mInp, 'files', { value: [pdf('unlisted.pdf')], configurable: true });
+      mInp.dispatchEvent(new window.Event('change', { bubbles: true }));
+      pcalls.length = 0;
+      up.querySelector('#fctdoc-go').click();
+      await settle();
+      const regUnlisted = pcalls.find(c => c.method === 'POST' && c.path === '/api/documents');
+      assert('…and registers with it and its number all the same',
+        regUnlisted && regUnlisted.body.poId === 'po-42' && regUnlisted.body.poNumber === 'PO-0420' && regUnlisted.body.poLineId === 'ln-a',
+        regUnlisted && JSON.stringify(regUnlisted.body));
+      PDOCS.splice(PDOCS.findIndex(d => d.id === regUnlisted.body.documentId), 1);
+      FD.configure({ getPurchaseOrders: () => hostPOs });
+      await FD.refreshPoLineCounts();
+
+      // A delivery the server has not stored (its order's save never landed):
+      // the server refuses, and the dialog says why and stays up.
+      closeAll();
+      await FD.openPOLineAttach({ po: PO42, line: { id: 'ln-new', invoice_num: 'INV-NEW' } });
+      assert('a delivery with nothing attached says so', /Nothing attached yet/.test(lastModal().textContent)
+        && /0 attached documents/.test(lastModal().textContent));
+      lastModal().querySelector('[data-attach-new]').click();
+      await settle();
+      up = lastModal();
+      const nInp2 = up.querySelector('#fctdoc-files');
+      Object.defineProperty(nInp2, 'files', { value: [pdf('orphan.pdf')], configurable: true });
+      nInp2.dispatchEvent(new window.Event('change', { bubbles: true }));
+      const docsBefore = PDOCS.length;
+      up.querySelector('#fctdoc-go').click();
+      await settle();
+      assert('a delivery the server does not have is refused, and the dialog stays up saying why',
+        window.document.body.contains(up)
+          && /Delivery line not found — That delivery is not on the order yet/.test(up.querySelector('#fctdoc-err').textContent)
+          && PDOCS.length === docsBefore, up.querySelector('#fctdoc-err').textContent);
+      assert('…and the bytes it left in storage are cleaned up',
+        pcalls.some(c => c.method === 'DELETE' && c.path === '/api/document-upload-url'), callLog());
+      closeAll();
+
+      // ── An order with no job: the General area ──────────────────────────
+      pcalls.length = 0;
+      await FD.openPOLineAttach({ po: POGEN, line: lineOf(POGEN, 'ln-g') });
+      dlg = lastModal();
+      assert('a delivery on an order with no job loads the General area, not a job',
+        pcalls.some(c => c.method === 'GET' && !c.q.projectId && !c.q.poLineId && !c.q.poLineCounts)
+          && !pcalls.some(c => c.q && c.q.projectId), callLog());
+      assert('…and promises no cost-code folder, there being none outside a job',
+        /also listed on PO PO-0500 and filed in its folder\./.test(dlg.querySelector('[data-line-filing]').textContent)
+          && !/610/.test(dlg.textContent), dlg.querySelector('[data-line-filing]').textContent);
+      dlg.querySelector('[data-attach-new]').click();
+      await settle();
+      up = lastModal();
+      assert('its upload opens on the Unassigned POs folder',
+        up.querySelector('#fctdoc-folder').value === 'g0-unassigned', up.querySelector('#fctdoc-folder').value);
+      assert('…saying the file is on the order and in its folder, and nothing about a cost code',
+        /Also listed on the order and filed under its folder, whichever folder you pick\./
+          .test(up.querySelector('[data-po-line-hint]').textContent), up.querySelector('[data-po-line-hint]').textContent);
+      const gInp = up.querySelector('#fctdoc-files');
+      Object.defineProperty(gInp, 'files', { value: [pdf('g-1.pdf')], configurable: true });
+      gInp.dispatchEvent(new window.Event('change', { bubbles: true }));
+      pcalls.length = 0;
+      up.querySelector('#fctdoc-go').click();
+      await settle();
+      const regG = pcalls.find(c => c.method === 'POST' && c.path === '/api/documents');
+      assert('…and registers in the General area, with the delivery and its order',
+        regG && !regG.q.projectId && regG.body.poId === 'po-gen' && regG.body.poLineId === 'ln-g' && regG.body.folderId === 'g0-unassigned',
+        regG && `${regG.url} ${JSON.stringify(regG.body)}`);
+      assert('the delivery\'s paperclip counts it', FD.poLineCount('po-gen', 'ln-g') === 1, String(FD.poLineCount('po-gen', 'ln-g')));
+      closeAll();
+
+      // ── Detach ──────────────────────────────────────────────────────────
+      await FD.openPOLineAttach({ po: PO42, line: LN_A });
+      dlg = lastModal();
+      let lAsked = null;
+      window.confirm = msg => { lAsked = msg; return false; };
+      pcalls.length = 0;
+      dlg.querySelector('[data-detach="ld2"]').click();
+      await settle();
+      assert('Detach asks first, naming the file and the delivery, and says the file stays on the order',
+        /ticket-photo\.jpg/.test(lAsked) && /INV-881/.test(lAsked) && /not deleted/.test(lAsked) && /stays on PO PO-0420/.test(lAsked), lAsked);
+      assert('saying no changes nothing', !pcalls.some(c => c.method === 'PATCH'));
+
+      failPatch = true;
+      window.confirm = () => true;
+      dlg.querySelector('[data-detach="ld2"]').click();
+      await settle();
+      failPatch = false;
+      assert('a refused detach says why', /Database error/.test(bodyText()));
+      assert('…and leaves the file listed with its button live again',
+        dlg.querySelector('[data-detach="ld2"]') && !dlg.querySelector('[data-detach="ld2"]').disabled
+          && dlg.querySelector('[data-detach="ld2"]').textContent === 'Detach');
+
+      const countWas = FD.poLineCount('po-42', 'ln-a');
+      pcalls.length = 0;
+      changes = 0;
+      dlg.querySelector('[data-detach="ld2"]').click();
+      await settle();
+      const lPatch = pcalls.find(c => c.method === 'PATCH');
+      assert('Detach PATCHes the document with removePoLineId "<poId>:<lineId>" and nothing else',
+        lPatch && lPatch.q.id === 'ld2' && lPatch.q.division === 'turf'
+          && JSON.stringify(lPatch.body) === JSON.stringify({ removePoLineId: 'po-42:ln-a' }),
+        lPatch && `${lPatch.url} ${JSON.stringify(lPatch.body)}`);
+      const ld2 = PDOCS.find(d => d.id === 'ld2');
+      assert('it never deletes the file, which stays on the order and in all its folders',
+        !pcalls.some(c => c.method === 'DELETE') && ld2 && JSON.stringify(ld2.po_ids) === '["po-42"]'
+          && ld2.folder_ids.length === 3 && ld2.po_line_ids.length === 0, ld2 && JSON.stringify(ld2));
+      const dLc = pcalls.findIndex(c => c.method === 'GET' && c.q.poLineCounts);
+      const dCh = pcalls.findIndex(c => c.marker === 'onChange');
+      assert('then reloads the job and recounts the order\'s deliveries before telling the host',
+        pcalls.some(c => c.method === 'GET' && c.q.projectId === 'p5' && !c.q.poLineId)
+          && dLc > pcalls.indexOf(lPatch) && pcalls[dLc].q.poId === 'po-42' && dCh > dLc && changes === 1, callLog());
+      assert('the same dialog redraws in place without the file',
+        window.document.body.contains(dlg) && !dlg.querySelector('[data-line-doc="ld2"]')
+          && new RegExp(`${countWas - 1} attached document`).test(dlg.textContent), dlg.textContent.slice(0, 200));
+      assert('the delivery\'s paperclip reads one fewer', FD.poLineCount('po-42', 'ln-a') === countWas - 1,
+        `${countWas} -> ${FD.poLineCount('po-42', 'ln-a')}`);
+      assert('and the toast says the file is still on the order', /Detached\. The file is still on the order/.test(bodyText()));
+
+      // The detach landed but the list could not be fetched again.
+      failLineList = true;
+      changes = 0;
+      dlg.querySelector('[data-detach="ld1"]').click();
+      await settle();
+      failLineList = false;
+      assert('a detach whose refresh fails still drops the file from the dialog',
+        !dlg.querySelector('[data-line-doc="ld1"]') && new RegExp(`${countWas - 2} attached document`).test(dlg.textContent),
+        dlg.textContent.slice(0, 200));
+      assert('says the list could not be refreshed', /Detached, but the list could not be refreshed/.test(bodyText()));
+      assert('and still tells the host, with the paperclip one lower',
+        changes === 1 && FD.poLineCount('po-42', 'ln-a') === countWas - 2, `${changes} / ${FD.poLineCount('po-42', 'ln-a')}`);
+      closeAll();
+      PDOCS.find(d => d.id === 'ld1').po_line_ids = ['po-42:ln-a'];
+      ld2.po_line_ids = ['po-42:ln-a'];
+      await FD.refreshPoLineCounts();
+
+      // ── Who may detach, and a viewer ────────────────────────────────────
+      const reopenLineAs = async (capsNow, getUserName) => {
+        closeAll();
+        pcaps = capsNow;
+        FD.configure({ getUserName });
+        await FD.renderTab(mount);                 // off the job, so the next open reloads caps
+        await FD.openPOLineAttach({ po: PO42, line: LN_A });
+        return lastModal();
+      };
+      const detachable = d => [...d.querySelectorAll('[data-detach]')].map(b => b.dataset.detach).sort().join(',');
+      dlg = await reopenLineAs({ canUpload: true, canManage: false, canDelete: false }, () => 'ben');
+      assert('an uploader may detach their own files, and not someone else\'s',
+        Boolean(dlg.querySelector('[data-line-doc="ld2"]')) && !dlg.querySelector('[data-detach="ld2"]')
+          && Boolean(dlg.querySelector('[data-detach="ld1"]')), detachable(dlg));
+      dlg = await reopenLineAs({ canUpload: true, canManage: false, canDelete: false }, undefined);
+      assert('with no way to tell who is signed in, a non-manager gets no Detach at all, but can still attach',
+        dlg.querySelectorAll('[data-detach]').length === 0 && Boolean(dlg.querySelector('[data-attach-new]')));
+      dlg = await reopenLineAs({ canUpload: true, canManage: false, canDelete: false }, () => { throw new Error('no user'); });
+      assert('a host getter that throws costs the button, not the dialog',
+        Boolean(dlg) && dlg.querySelectorAll('[data-detach]').length === 0 && dlg.querySelectorAll('[data-ldl]').length > 0);
+      dlg = await reopenLineAs({ canUpload: false, canManage: false, canDelete: false }, () => 'ben');
+      assert('a viewer still sees the delivery\'s files and can download them',
+        dlg.querySelectorAll('[data-line-doc]').length > 0 && dlg.querySelectorAll('[data-ldl]').length > 0);
+      assert('but is offered no attach and no detach, even on their own name',
+        !dlg.querySelector('[data-attach-new]') && dlg.querySelectorAll('[data-detach]').length === 0);
+      dlg = await reopenLineAs({ canUpload: true, canManage: true, canDelete: true }, undefined);
+      assert('a manager gets Detach on everyone\'s files',
+        dlg.querySelectorAll('[data-detach]').length === dlg.querySelectorAll('[data-line-doc]').length
+          && dlg.querySelectorAll('[data-detach]').length > 1);
+      FD.configure({ getUserName: () => 'ben' });
+      closeAll();
+
+      // ── Off the order is off its deliveries ─────────────────────────────
+      // The Vault's "Link to PO" dialog can take a file off an order. A
+      // delivery's file comes off that order's deliveries with it (the server
+      // does both, api/documents.js removePoId): the dialog says so before,
+      // the toast after, and the delivery's paperclip is recounted.
+      closeAll();
+      FD.configure({ getProjectId: () => 'p5' });
+      await FD.renderTab(mount);
+      await FD.refreshPoLineCounts();
+      const ld3 = PDOCS.find(d => d.id === 'ld3');
+      assert('fixture: t-77.pdf is on PO-0420 and on its delivery dr-row1',
+        FD.poLineCount('po-42', 'dr-row1') === 1 && JSON.stringify(ld3.po_ids) === '["po-42"]', JSON.stringify(ld3));
+      const openPo42 = () => {
+        if (!mount.querySelector('[data-folder="f5-po42"]')) mount.querySelector('[data-folder="f5-po"]').click();   // opens the branch
+        mount.querySelector('[data-folder="f5-po42"]').click();
+      };
+      openPo42();
+      mount.querySelector('[data-attach="ld4"]').click();
+      assert('an order-only file\'s Link-to-PO dialog mentions no delivery',
+        Boolean(lastModal().querySelector('[data-unlink="po-42"]')) && !lastModal().querySelector('[data-unlink-deliveries]'),
+        lastModal().textContent.slice(0, 300));
+      closeAll();
+      openPo42();
+      mount.querySelector('[data-attach="ld3"]').click();
+      const lk3 = lastModal();
+      const offNote = lk3.querySelector('[data-unlink-deliveries="po-42"]');
+      assert('a delivery file\'s Link-to-PO dialog says it is on one of the order\'s deliveries, and comes off it too',
+        offNote && /Also on one of its deliveries\. Removing it takes it off that delivery too\./.test(offNote.textContent),
+        offNote ? offNote.textContent : lk3.textContent.slice(0, 300));
+      pcalls.length = 0;
+      changes = 0;
+      lk3.querySelector('[data-unlink="po-42"]').click();
+      await settle();
+      const unl = pcalls.find(c => c.method === 'PATCH');
+      assert('Remove sends removePoId and nothing else',
+        unl && unl.q.id === 'ld3' && JSON.stringify(unl.body) === JSON.stringify({ removePoId: 'po-42' }),
+        unl && `${unl.url} ${JSON.stringify(unl.body)}`);
+      const unLc = pcalls.findIndex(c => c.method === 'GET' && c.q.poLineCounts);
+      const unCh = pcalls.findIndex(c => c.marker === 'onChange');
+      assert('the delivery counts are refreshed before the host is told',
+        unLc > pcalls.indexOf(unl) && unCh > unLc && changes === 1, callLog());
+      assert('so the delivery\'s paperclip drops the file along with the order\'s',
+        FD.poLineCount('po-42', 'dr-row1') === 0 && ld3.po_line_ids.length === 0 && ld3.po_ids.length === 0,
+        `${FD.poLineCount('po-42', 'dr-row1')} ${JSON.stringify(ld3)}`);
+      assert('and the toast says it came off the delivery too',
+        /Unlinked from the order and its delivery\. The file is still in its folder\./.test(bodyText()));
+      ld3.po_ids = ['po-42'];
+      ld3.po_line_ids = ['po-42:dr-row1'];
+      closeAll();
+      FD.configure({ getProjectId: () => 'p1' });
+      await FD.renderTab(mount);
+      await FD.refreshPoLineCounts();
+
+      // ── The settle hook, and a host without one ─────────────────────────
+      // The host's settle guards the ATTACH — the server attaches only to a
+      // delivery it has stored — and nothing else. Its answer covers the
+      // whole page: a save that failed on another order (it waits minutes
+      // for the poll's retry) must not lock every delivery's files away.
+      const lineToasts = () => [...window.document.body.children]
+        .filter(el => el.getAttribute && el.getAttribute('data-fctdoc-toast') === 'error' && /not saved yet/.test(el.textContent)).length;
+      const isUpload = el => Boolean(el && /Upload documents/.test(titleOf(el)));
+      const onLnA = PDOCS.filter(d => (d.po_line_ids || []).includes('po-42:ln-a')).length;
+      settleAnswer = false;
+      pcalls.length = 0;
+      settleCalls = 0;
+      const notSavedBefore = lineToasts();
+      await FD.openPOLineAttach({ po: PO42, line: LN_A });
+      dlg = lastModal();
+      assert('with a purchase-order save owed or failed, the delivery\'s dialog still opens and lists its files',
+        modals().length === 1 && /INV-881/.test(titleOf(dlg)) && onLnA >= 2 && dlg.querySelectorAll('[data-line-doc]').length === onLnA
+          && requests().some(c => c.method === 'GET' && c.q.poLineId === 'ln-a') && settleCalls === 0, callLog());
+      pcalls.length = 0;
+      dlg.querySelector('[data-ldl="ld1"]').click();
+      await settle();
+      assert('…and its files still download', pcalls.some(c => c.path === '/api/document-download' && c.q.id === 'ld1'), callLog());
+      pcalls.length = 0;
+      dlg.querySelector('[data-attach-new]').click();
+      await settle();
+      assert('but Attach asks the host first, and on false opens no upload and sends nothing',
+        settleCalls === 1 && modals().length === 1 && lastModal() === dlg && !isUpload(lastModal()) && requests().length === 0,
+        `${settleCalls} / ${modals().length} / ${callLog()}`);
+      assert('…saying the page\'s purchase-order changes are not saved yet', lineToasts() === notSavedBefore + 1
+        && /Purchase-order changes on this page are not saved yet/.test(bodyText()));
+      assert('…and leaves the dialog up, its list and its Attach button live',
+        window.document.body.contains(dlg) && dlg.querySelectorAll('[data-line-doc]').length === onLnA
+          && !dlg.querySelector('[data-attach-new]').disabled && /Attach a document/.test(dlg.querySelector('[data-attach-new]').textContent));
+      settleAnswer = true;
+      dlg.querySelector('[data-attach-new]').click();
+      await settle();
+      assert('once the saves have landed, the same button opens the upload', settleCalls === 2 && isUpload(lastModal()),
+        titleOf(lastModal()));
+      closeAll();
+
+      settleAnswer = new Error('host bug');
+      await FD.openPOLineAttach({ po: PO42, line: LN_A });
+      lastModal().querySelector('[data-attach-new]').click();
+      await settle();
+      settleAnswer = true;
+      assert('a settle hook that throws is not an answer: the upload opens, and the server\'s own check stands',
+        modals().length === 1 && isUpload(lastModal()), titleOf(lastModal()));
+      closeAll();
+
+      settleAnswer = undefined;
+      await FD.openPOLineAttach({ po: PO42, line: LN_A });
+      lastModal().querySelector('[data-attach-new]').click();
+      await settle();
+      settleAnswer = true;
+      assert('a settle that resolves with nothing in particular lets the upload open', modals().length === 1 && isUpload(lastModal()));
+      closeAll();
+
+      // The settle is awaited: nothing goes to the server while it is out,
+      // and the button says why it is not doing anything yet.
+      let releaseSettle;
+      settleHold = new Promise(r => { releaseSettle = r; });
+      await FD.openPOLineAttach({ po: PO42, line: LN_A });
+      dlg = lastModal();
+      const attachBtn = dlg.querySelector('[data-attach-new]');
+      pcalls.length = 0;
+      settleCalls = 0;
+      attachBtn.click();
+      await settle();
+      assert('while the host is still saving, Attach reads "Saving…", is disabled, and nothing is asked or opened',
+        attachBtn.disabled && /Saving/.test(attachBtn.textContent) && requests().length === 0
+          && modals().length === 1 && lastModal() === dlg, `${attachBtn.disabled} ${attachBtn.textContent} ${callLog()}`);
+      // A second click meanwhile lands on a disabled button: no second wait.
+      attachBtn.click();
+      await settle();
+      settleHold = null;
+      releaseSettle();
+      await settle();
+      assert('once it is done the upload opens — once, however many clicks',
+        settleCalls === 1 && modals().length === 1 && isUpload(lastModal()), `${settleCalls} / ${modals().length}`);
+      closeAll();
+
+      // Closed while the host was still saving: the user has moved on.
+      settleHold = new Promise(r => { releaseSettle = r; });
+      await FD.openPOLineAttach({ po: PO42, line: LN_A });
+      lastModal().querySelector('[data-attach-new]').click();
+      await settle();
+      lastModal().querySelector('[data-cancel]').click();
+      settleHold = null;
+      releaseSettle();
+      await settle();
+      assert('a dialog closed while its Attach waited opens no upload afterwards', modals().length === 0, String(modals().length));
+
+      const raceErrs = () => [...window.document.body.children]
+        .filter(el => !el.querySelector('[data-body]') && /Something else loaded/.test(el.textContent)).length;
+      const raceBefore = raceErrs();
+      settleCalls = 0;
+      await Promise.all([FD.openPOLineAttach({ po: PO42, line: LN_A }), FD.openPOLineAttach({ po: PO42, line: LN_A })]);
+      assert('a double click opens one dialog, waits on nothing, and raises no error toast',
+        modals().length === 1 && settleCalls === 0 && raceErrs() === raceBefore, `${modals().length} / ${settleCalls}`);
+      closeAll();
+
+      FD.configure({ settlePurchaseOrders: undefined, onChange: undefined });
+      let threw = null;
+      try {
+        await FD.openPOLineAttach({ po: PO42, line: LN_A });
+        lastModal().querySelector('[data-detach="ld1"]').click();
+        await settle();
+      } catch (err) { threw = err; }
+      assert('a host with no settle hook and no onChange still opens the dialog and detaches',
+        !threw && modals().length === 1 && !lastModal().querySelector('[data-line-doc="ld1"]'), threw && threw.message);
+      closeAll();
+      PDOCS.find(d => d.id === 'ld1').po_line_ids = ['po-42:ln-a'];
+      FD.configure({ onChange: () => { changes++; pcalls.push({ marker: 'onChange' }); },
+        settlePurchaseOrders: async () => { settleCalls++; pcalls.push({ marker: 'settle' }); return true; } });
+      await FD.refreshPoLineCounts();
+
+      settleCalls = 0;
+      const before7 = modals().length;
+      await FD.openPOLineAttach({ po: { id: '' }, line: LN_A });
+      await FD.openPOLineAttach({ po: PO42, line: { id: '  ' } });
+      await FD.openPOLineAttach({});
+      await FD.openPOLineAttach();
+      assert('a delivery or an order with no id opens nothing, and does not wait on the host for it',
+        modals().length === before7 && settleCalls === 0);
+
+      // Something else loaded while the order's job was loading: building
+      // the dialog would offer that job's folders to file this delivery's
+      // document in.
+      closeAll();
+      await FD.renderTab(mount);                     // back on p1
+      holdLoad = 'p5';
+      pcalls.length = 0;
+      const racingLine = FD.openPOLineAttach({ po: PO42, line: LN_A });
+      await settle();
+      await FD.renderTab(mount);                     // p1 loads while p5 is stalled
+      releaseLoad();
+      await racingLine;
+      assert('a delivery whose load lost a race opens no dialog', modals().length === 0, String(modals().length));
+      assert('…says to try the paperclip again',
+        /Something else loaded while that was opening\. Try the paperclip again\./.test(bodyText()));
+      assert('…without listing anything for the delivery', !pcalls.some(c => c.q && c.q.poLineId));
+
+      // ── Every other document change recounts the deliveries ─────────────
+      const lineCounted = () => pcalls.findIndex(c => c.method === 'GET' && c.q && c.q.poLineCounts);
+      const changedAt = () => pcalls.findIndex(c => c.marker === 'onChange');
+      FD.configure({ getProjectId: () => 'p5' });
+      await FD.renderTab(mount);
+      pcalls.length = 0;
+      changes = 0;
+      mount.querySelector('[data-folder="f5-po"]').click();       // opens the branch
+      mount.querySelector('[data-folder="f5-po42"]').click();
+      mount.querySelector('[data-delete="ld3"]').click();
+      lastModal().querySelector('[data-yes]').click();
+      await settle();
+      assert('deleting a file recounts the deliveries, before the host is told',
+        lineCounted() >= 0 && changedAt() > lineCounted() && changes === 1, callLog());
+      assert('…so a deleted file stops counting on its delivery', FD.poLineCount('po-42', 'dr-row1') === 0,
+        String(FD.poLineCount('po-42', 'dr-row1')));
+      pcalls.length = 0;
+      changes = 0;
+      mount.querySelector('#fctdoc-trash').click();
+      await settle();
+      lastModal().querySelector('[data-restore="ld3"]').click();
+      await settle();
+      assert('restoring it recounts them, before the host is told',
+        lineCounted() >= 0 && changedAt() > lineCounted() && changes === 1, callLog());
+      assert('…so it counts on its delivery again', FD.poLineCount('po-42', 'dr-row1') === 1,
+        String(FD.poLineCount('po-42', 'dr-row1')));
+      closeAll();
+      pcalls.length = 0;
+      mount.querySelector('[data-folder="f5-po42"]').click();
+      mount.querySelector('[data-attach="ld4"]').click();
+      lastModal().querySelector('#fctdoc-linkpo').value = 'po-43';
+      lastModal().querySelector('#fctdoc-dolink').click();
+      await settle();
+      assert('linking a file to an order recounts the deliveries', lineCounted() >= 0 && changedAt() > lineCounted(), callLog());
+      pcalls.length = 0;
+      mount.querySelector('[data-folder="f5-po42"]').click();
+      mount.querySelector('[data-attach="ld4"]').click();
+      lastModal().querySelector('[data-unlink="po-43"]').click();
+      await settle();
+      assert('so does unlinking it', lineCounted() >= 0 && changedAt() > lineCounted(), callLog());
+      closeAll();
+
+      // ── The order's own paperclip ───────────────────────────────────────
+      // A delivery's file is on the order too, so the order's dialog lists it
+      // — tagged with the delivery it hangs off when the host hands over the
+      // order's lines, and left as it was when it does not.
+      await FD.openAttach({ id: 'po-42', po_number: 'PO-0420', project_id: 'p5', lines: PO42.lines });
+      dlg = lastModal();
+      const aRow = id => { const b = dlg.querySelector(`[data-adl="${id}"]`); return b ? b.parentElement : null; };
+      const tagOf = id => { const r = aRow(id); const t = r && r.querySelector('[data-adelivery]'); return t ? t.textContent : null; };
+      assert('the order\'s paperclip lists its deliveries\' files with its own',
+        ['ld1', 'ld2', 'ld3', 'ld4', 'ld6', 'ld9'].every(id => aRow(id)), dlg.textContent.slice(0, 300));
+      assert('each tagged with the delivery it hangs off',
+        tagOf('ld1') === 'delivery INV-881' && tagOf('ld3') === 'delivery T-77' && tagOf('ld9') === `delivery ${dayOf(2026, 10, 5)}`,
+        [tagOf('ld1'), tagOf('ld3'), tagOf('ld9')].join(' | '));
+      assert('the order\'s own paperwork carries no tag', tagOf('ld4') === null, String(tagOf('ld4')));
+      assert('a file whose delivery has left the order stays listed, and says so',
+        tagOf('ld6') === 'a delivery no longer on this order', String(tagOf('ld6')));
+      closeAll();
+      await FD.openAttach({ id: 'po-42', po_number: 'PO-0420', project_id: 'p5' });
+      dlg = lastModal();
+      assert('without the order\'s lines it still says a file is on a delivery',
+        tagOf('ld1') === 'on a delivery' && tagOf('ld4') === null, `${tagOf('ld1')} / ${tagOf('ld4')}`);
+      dlg.querySelector('[data-attach-new]').click();
+      await settle();
+      up = lastModal();
+      assert('and the order\'s upload is exactly what it was: no delivery, the order\'s hint',
+        !up.querySelector('#fctdoc-poline') && !up.querySelector('[data-po-line-hint]')
+          && /Filed under the purchase order as well/.test(up.textContent)
+          && up.querySelector('#fctdoc-po').disabled && up.querySelector('#fctdoc-po').value === 'po-42'
+          && up.querySelector('#fctdoc-folder').value === 'f5-po42', up.textContent.slice(0, 300));
+      const oInp = up.querySelector('#fctdoc-files');
+      Object.defineProperty(oInp, 'files', { value: [pdf('order-only.pdf')], configurable: true });
+      oInp.dispatchEvent(new window.Event('change', { bubbles: true }));
+      pcalls.length = 0;
+      up.querySelector('#fctdoc-go').click();
+      await settle();
+      const regOrder = pcalls.find(c => c.method === 'POST' && c.path === '/api/documents');
+      assert('…and its upload carries the order and no delivery',
+        regOrder && regOrder.body.poId === 'po-42' && !('poLineId' in regOrder.body) && !('procurementId' in regOrder.body),
+        regOrder && JSON.stringify(regOrder.body));
+      closeAll();
+
+      // Put the fixtures back the way the rest of this file found them.
+      for (let i = PDOCS.length - 1; i >= 0; i--) if (!had.has(PDOCS[i].id)) PDOCS.splice(i, 1);
+      TRASH.length = 0;
+      delete PTREE.p5;
+      delete PTREE[''];
+      PO_BLOB.length = 0;
+      pcaps = { canUpload: true, canManage: true, canDelete: true };
+      FD.configure({ settlePurchaseOrders: undefined });
+      await FD.refreshPoLineCounts();
     }
 
     window.confirm = realConfirm;

@@ -360,6 +360,25 @@ function documentsApi(W, role, username, method, q, body) {
       for (const d of D.documents.filter(live)) for (const id of linked(d, 'po')) counts[id] = (counts[id] || 0) + 1;
       return [200, { counts }];
     }
+    // The PO tab's delivery paperclips, which documents.js recounts after
+    // every change it makes: { poId: { lineId: n } } over the 'po_line' links
+    // ("<poId>:<lineId>"), division-wide or for one order. Nothing on these
+    // pages attaches to a delivery, so it answers with nothing attached —
+    // rather than the General area's listing, which documents.js would take
+    // for a server from before the endpoint.
+    if (q.poLineCounts) {
+      const counts = {};
+      for (const d of D.documents.filter(live)) {
+        for (const t of linked(d, 'po_line')) {
+          const at = t.indexOf(':');
+          const poId = t.slice(0, at), lineId = t.slice(at + 1);
+          if (at <= 0 || (q.poId && poId !== q.poId)) continue;
+          const forPo = counts[poId] || (counts[poId] = {});
+          forPo[lineId] = (forPo[lineId] || 0) + 1;
+        }
+      }
+      return [200, { counts }];
+    }
     if (q.procurementCounts) {
       const counts = {};
       for (const d of D.documents.filter(live)) {

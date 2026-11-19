@@ -11,8 +11,10 @@
  *
  * DESTRUCTIVE: truncates project_folders, project_documents, document_links
  * and document_audit_log, and inserts (then removes) procurement_items rows
- * with ids starting 'dpr-' and app_data job blobs for 'proj-proc-*'. Refuses
- * to run against a database whose name does not look like a test database.
+ * with ids starting 'dpr-' and app_data job blobs for 'proj-proc-*'. Seeds the
+ * FCT turf and paving and the OTH turf purchase-order lists, and puts back
+ * whatever they held. Refuses to run against a database whose name does not
+ * look like a test database.
  *
  * Drives the real handler against a real PostgreSQL, so what is asserted is
  * what the database actually does:
@@ -24,6 +26,9 @@
  *   - a document attached to a Procurement line is filed in the line's
  *     cost-code folder too (made if missing, found ignoring case and spaces),
  *     with per-job counts and the same scoping and permission rules
+ *   - a document attached to a purchase order's delivery line is on the line,
+ *     on the order, in the order's PO subfolder and in the cost-code folder of
+ *     the line's code (else the order's), checked against the seeded PO list
  *   - unfiling never strands a document with no folder
  *   - division and company scoping, against the real WHERE clauses
  *   - the permission ladder: level1 view, level2 upload, level3 manage,
@@ -140,6 +145,27 @@ async function cleanProcurement() {
   await client.query(`DELETE FROM procurement_items WHERE id LIKE 'dpr-%'`);
   await client.query(`DELETE FROM app_data WHERE key LIKE 'FCT:fct_project_proj-proc-%'`);
   await client.query(`DELETE FROM app_data WHERE key = 'FCT:fct_purchase_orders:turf' AND value::text LIKE '%po-proc-carve%'`);
+}
+
+// The PO lists the delivery-line checks seed. Each is one shared app_data row,
+// so whatever it held is saved first and put back afterwards (or removed, when
+// there was none) — after a crash too.
+const PO_BLOB_KEYS = ['FCT:fct_purchase_orders:turf', 'FCT:fct_purchase_orders:paving', 'OTH:fct_purchase_orders:turf'];
+let savedPoBlobs = null;
+async function savePoBlobs() {
+  savedPoBlobs = new Map();
+  for (const key of PO_BLOB_KEYS) {
+    const row = (await client.query(`SELECT value FROM app_data WHERE key = $1`, [key])).rows[0];
+    savedPoBlobs.set(key, row ? row.value : undefined);
+  }
+}
+async function restorePoBlobs() {
+  if (!savedPoBlobs) return;
+  for (const [key, value] of savedPoBlobs) {
+    if (value === undefined) await client.query(`DELETE FROM app_data WHERE key = $1`, [key]);
+    else await client.query(`UPDATE app_data SET value = $1::jsonb WHERE key = $2`, [JSON.stringify(value), key]);
+  }
+  savedPoBlobs = null;
 }
 
 // Register a document the way the browser does: mint an id, PUT the bytes to
@@ -1267,6 +1293,485 @@ async function upload(folderId, filename, auth, extra = {}) {
     await cleanProcurement();
   }
 
+  // ── Purchase-order delivery-line attachments ────────────────────────────
+  // A file attached to one delivery line of an order is one document with a
+  // 'po_line' link ("<poId>:<lineId>"), the order's own 'po' link (so the
+  // order's paperclip lists it and its PO subfolder holds it), and a folder
+  // link to the cost-code folder of the line's code, else the order's. The
+  // line is checked against the division's PO list, the source of truth.
+  // Braced so these locals stay local.
+  {
+    console.log('\nPurchase-order delivery-line attachments');
+    const PJ  = 'proj-pol-1';
+    const PJ2 = 'proj-pol-2';
+    const UUID_LINE = 'dr-6f1c2a8e-1b2c-4d3e-9f00-aabbccddeeff';
+    // The PO lists are shared rows; whatever they held is put back afterwards.
+    await savePoBlobs();
+    const setBlob = (key, list) => client.query(
+      `INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`, [key, JSON.stringify(list)]);
+    const PO1 = {
+      id: 'pol-po-1', po_number: 'PO-501', project_id: PJ, cost_code: '420', sub_code: 'Base', lines: [
+        { id: 'L1', invoice_num: 'INV-1', date: '2026-11-02', qty: '10', unit_cost: '40' },
+        // A Daily Tracking delivery carries its row's code, which differs from the order header's.
+        { id: 'dr-row1', source: 'daily', cost_code: 'Stormwater', sub_code: 'Geo', po_row_id: 'row1', invoice_num: '' },
+        // A blank line code falls back to the order's.
+        { id: 'dr-row2', source: 'daily', cost_code: '   ', sub_code: '', po_row_id: 'row2' },
+        // A code no folder has been seeded for yet.
+        { id: 'dr-row3', source: 'daily', cost_code: '515', sub_code: '', po_row_id: 'row3' },
+      ],
+    };
+    const PO2 = { id: 'pol-po-2', po_number: 'PO-502', project_id: PJ, cost_code: '420',
+      lines: [{ id: 'L2' }, { id: UUID_LINE, source: 'daily', cost_code: '', po_row_id: '6f1c2a8e-1b2c-4d3e-9f00-aabbccddeeff' }] };
+    const POGEN = { id: 'pol-po-gen', po_number: 'PO-503', project_id: null, cost_code: '420', lines: [{ id: 'G1' }] };
+    const PONOCODE = { id: 'pol-po-nocode', po_number: 'PO-504', project_id: PJ, cost_code: '', lines: [{ id: 'N1' }] };
+    const POJ2 = { id: 'pol-po-j2', po_number: 'PO-505', project_id: PJ2, cost_code: '420', lines: [{ id: 'J1' }] };
+    await setBlob('FCT:fct_purchase_orders:turf', [PO1, PO2, POGEN, PONOCODE, POJ2]);
+    await setBlob('FCT:fct_purchase_orders:paving', [{ id: 'pol-po-pav', po_number: 'PV-1', project_id: PJ, cost_code: '420', lines: [{ id: 'P1' }] }]);
+    // The same order and line ids in another company.
+    await setBlob('OTH:fct_purchase_orders:turf', [{ id: 'pol-po-1', po_number: 'R-1', project_id: PJ, cost_code: '420', lines: [{ id: 'L1' }] }]);
+
+    // A register in any company and division, the way the browser does it.
+    let polSeq = 0;
+    // keyProjectId: the job the storage key was minted for, when the query
+    // names none (the carve-out files into the ORDER's job, whatever it says).
+    const reg = async (auth, { division = 'turf', projectId = PJ, keyProjectId, folderId, query = {}, ...extra }) => {
+      const documentId = `doc-pol-${++polSeq}`;
+      const keyJob = keyProjectId !== undefined ? keyProjectId : projectId;
+      const storageKey = `${auth.companyCode}/${division}/${keyJob || 'general'}/${documentId}/delivery-${polSeq}.pdf`;
+      STORE.set(storageKey, 2048);
+      const r = await call('POST', { division, ...(projectId ? { projectId } : {}), ...query },
+        { documentId, filename: `delivery-${polSeq}.pdf`, storageKey, folderId, sizeBytes: 2048, ...extra }, auth);
+      r.documentId = documentId;
+      return r;
+    };
+    const docsStored = async id =>
+      (await client.query(`SELECT COUNT(*)::int AS n FROM project_documents WHERE id = $1`, [id])).rows[0].n;
+    const linksOf = async id => (await client.query(
+      `SELECT link_type, target_id FROM document_links WHERE document_id = $1 ORDER BY link_type, target_id`, [id])).rows;
+    const lineCounts = async (auth = PM, query = {}, division = 'turf') =>
+      call('GET', { division, poLineCounts: '1', ...query }, null, auth);
+    const lineList = async (poId, lineId, auth = PM, division = 'turf') =>
+      call('GET', { division, ...(poId !== undefined ? { poId } : {}), ...(lineId !== undefined ? { poLineId: lineId } : {}) }, null, auth);
+
+    // The pair's helpers (api/lib/po-line-docs.js).
+    const pl = require(path.resolve(__dirname, '..', 'api', 'lib', 'po-line-docs.js'));
+    assert('a line target is "<poId>:<lineId>", and parses back',
+      pl.poLineTarget('pol-po-1', 'dr-row1') === 'pol-po-1:dr-row1'
+        && JSON.stringify(pl.parsePoLineTarget('pol-po-1:dr-row1')) === JSON.stringify({ poId: 'pol-po-1', lineId: 'dr-row1' }));
+    assert('either part malformed, missing or carrying a colon is no target',
+      pl.poLineTarget('pol-po-1', '') === null && pl.poLineTarget('', 'L1') === null && pl.poLineTarget('a:b', 'L1') === null
+        && pl.parsePoLineTarget('L1') === null && pl.parsePoLineTarget('a:b:c') === null && pl.parsePoLineTarget(':L1') === null
+        && pl.parsePoLineTarget(42) === null && pl.isPoLinePart('x'.repeat(128)) && !pl.isPoLinePart('x'.repeat(129))
+        && pl.isPoLinePart('lz4k1q.9-x_Y') && !pl.isPoLinePart('a b'));
+    assert('findLine finds by id on the order, and nothing elsewhere',
+      pl.findLine({ lines: [null, { id: 7 }, { id: 'L1' }] }, 'L1').id === 'L1' && pl.findLine({ lines: [{ id: 7 }] }, '7').id === 7
+        && pl.findLine({ lines: [{ id: 'L1' }] }, 'L2') === null && pl.findLine({}, 'L1') === null && pl.findLine(null, 'L1') === null);
+    assert('lineCostCode: the line\'s own code, else the order\'s, else none',
+      pl.lineCostCode({ cost_code: '420' }, { cost_code: 'Stormwater' }) === 'Stormwater'
+        && pl.lineCostCode({ cost_code: '420' }, { cost_code: '  ' }) === '420'
+        && pl.lineCostCode({ cost_code: '420' }, {}) === '420'
+        && pl.lineCostCode({ cost_code: '' }, { cost_code: '' }) === null
+        && pl.lineCostCode({}, null) === null);
+
+    // Schema: the link type is admitted, and a wrong one still is not.
+    const chk = (await client.query(
+      `SELECT pg_get_constraintdef(oid) AS def FROM pg_constraint WHERE conname = 'document_links_type_chk'`)).rows[0];
+    assert('the schema admits the \'po_line\' link type', chk && /'po_line'/.test(chk.def), JSON.stringify(chk));
+    let badType = null;
+    try {
+      await client.query(`INSERT INTO document_links (document_id, company_code, link_type, target_id)
+        VALUES ('doc-1', 'FCT', 'po_lines', 'x')`);
+    } catch (err) { badType = err; }
+    assert('…and still refuses a type it does not list', Boolean(badType) && /document_links_type_chk/.test(badType.message),
+      badType && badType.message);
+
+    // The job's tree, seeded the way the Documents tab seeds it from the bid.
+    const tree = (await call('PUT', { division: 'turf', projectId: PJ }, {
+      costCodes: [{ code: '420', label: 'Paving' }, { code: 'Stormwater', label: '' }],
+    }, PM)).body.folders;
+    const fPoRoot = tree.find(f => f.slug === 'purchase-orders');
+    const fSafety = tree.find(f => f.slug === 'safety');
+    const fPaving = tree.find(f => f.cost_code === '420');
+    const fStorm  = tree.find(f => f.cost_code === 'Stormwater');
+    assert('fixture: the job has its PO root and cost-code folders', Boolean(fPoRoot && fSafety && fPaving && fStorm),
+      tree.map(f => f.name).join(' | '));
+
+    // ── Attached at upload ──
+    const up1 = await reg(FOREMAN, { folderId: fPoRoot.id, poId: 'pol-po-1', poNumber: 'PO-501', poLineId: 'L1' });
+    assert('a foreman attaches a file to a delivery line (201)', up1.statusCode === 201, JSON.stringify(up1.body));
+    const d1 = up1.body.document || {};
+    assert('the answer carries the line as "<poId>:<lineId>", and the order',
+      JSON.stringify(d1.po_line_ids) === '["pol-po-1:L1"]' && JSON.stringify(d1.po_ids) === '["pol-po-1"]', JSON.stringify(d1));
+    assert('and the order\'s cost-code folder (420), named at the top level too',
+      up1.body.costCodeFolderId === fPaving.id && d1.folder_ids.includes(fPaving.id) && d1.folder_ids.includes(fPoRoot.id)
+        && new Set(d1.folder_ids).size === d1.folder_ids.length, JSON.stringify(up1.body));
+    const tree2 = (await call('GET', { division: 'turf', projectId: PJ }, null, PM)).body;
+    const fPoSub = tree2.folders.find(f => f.slug === 'po-pol-po-1');
+    assert('the order gets its own PO subfolder under Purchase Orders', fPoSub && fPoSub.parent_id === fPoRoot.id
+      && fPoSub.name === 'PO PO-501', JSON.stringify(fPoSub));
+    const links1 = await linksOf(up1.documentId);
+    const has = (rows, t, id) => rows.some(r => r.link_type === t && r.target_id === id);
+    assert('stored links: the po_line, the order\'s po link, the picked folder, the PO subfolder and the 420 folder',
+      has(links1, 'po_line', 'pol-po-1:L1') && has(links1, 'po', 'pol-po-1') && has(links1, 'folder', fPoRoot.id)
+        && has(links1, 'folder', fPoSub && fPoSub.id) && has(links1, 'folder', fPaving.id) && links1.length === 5,
+      JSON.stringify(links1));
+    assert('stored once however many places it shows', await docsStored(up1.documentId) === 1);
+    const listed1 = tree2.documents.find(d => d.id === up1.documentId);
+    assert('the job listing carries po_line_ids', listed1 && JSON.stringify(listed1.po_line_ids) === '["pol-po-1:L1"]',
+      JSON.stringify(listed1));
+    const lineLink = (await client.query(
+      `SELECT company_code, created_by FROM document_links WHERE document_id = $1 AND link_type = 'po_line'`, [up1.documentId])).rows;
+    assert('the line link is the company\'s, and says who made it',
+      lineLink.length === 1 && lineLink[0].company_code === 'FCT' && lineLink[0].created_by === 'foreman', JSON.stringify(lineLink));
+    const upAudit = (await client.query(
+      `SELECT detail FROM document_audit_log WHERE action = 'UPLOAD' AND document_id = $1`, [up1.documentId])).rows[0];
+    assert('the upload audit names the order, the line and the cost-code folder',
+      upAudit && upAudit.detail.po_id === 'pol-po-1' && upAudit.detail.po_line_id === 'pol-po-1:L1'
+        && upAudit.detail.cost_code_folder_id === fPaving.id, JSON.stringify(upAudit));
+
+    const upDr = await reg(PM, { folderId: fPoSub.id, poId: 'pol-po-1', poLineId: 'dr-row1' });
+    assert('a Daily Tracking delivery files under ITS row\'s code (Stormwater), not the order\'s 420',
+      upDr.statusCode === 201 && upDr.body.costCodeFolderId === fStorm.id && upDr.body.document.folder_ids.includes(fStorm.id)
+        && !upDr.body.document.folder_ids.includes(fPaving.id), JSON.stringify(upDr.body));
+    assert('picking the PO subfolder files it there once',
+      upDr.body.document.folder_ids.filter(f => f === fPoSub.id).length === 1
+        && (await linksOf(upDr.documentId)).filter(r => r.link_type === 'folder').length === 2, JSON.stringify(await linksOf(upDr.documentId)));
+    const upBlank = await reg(PM, { folderId: fPoSub.id, poId: 'pol-po-1', poLineId: 'dr-row2' });
+    assert('a line whose own code is blank files under the order\'s code',
+      upBlank.statusCode === 201 && upBlank.body.costCodeFolderId === fPaving.id, JSON.stringify(upBlank.body));
+    const noFolder515 = (await client.query(
+      `SELECT count(*)::int AS n FROM project_folders WHERE project_id = $1 AND cost_code = '515'`, [PJ])).rows[0].n;
+    const up515 = await reg(PM, { folderId: fPoSub.id, poId: 'pol-po-1', poLineId: 'dr-row3' });
+    const f515 = (await client.query(
+      `SELECT * FROM project_folders WHERE project_id = $1 AND cost_code = '515'`, [PJ])).rows;
+    assert('a code with no folder yet gets one, made the way the seed makes one, and the file is in it',
+      noFolder515 === 0 && up515.statusCode === 201 && f515.length === 1 && f515[0].kind === 'cost_code'
+        && f515[0].slug === 'cc-515' && f515[0].parent_id === null && up515.body.costCodeFolderId === f515[0].id,
+      JSON.stringify({ body: up515.body, f515 }));
+    const upNoCode = await reg(PM, { folderId: fPoRoot.id, poId: 'pol-po-nocode', poLineId: 'N1' });
+    assert('an order and line with no code at all file only in the picked folder and the PO subfolder',
+      upNoCode.statusCode === 201 && upNoCode.body.costCodeFolderId === null
+        && JSON.stringify(upNoCode.body.document.po_line_ids) === '["pol-po-nocode:N1"]'
+        && (await linksOf(upNoCode.documentId)).filter(r => r.link_type === 'folder').length === 2,
+      JSON.stringify({ body: upNoCode.body, links: await linksOf(upNoCode.documentId) }));
+    const upUuid = await reg(PM, { folderId: fPoRoot.id, poId: 'pol-po-2', poLineId: UUID_LINE });
+    const po2Sub = (await call('GET', { division: 'turf', projectId: PJ }, null, PM)).body.folders.find(f => f.slug === 'po-pol-po-2');
+    assert('with no poNumber sent, the order\'s PO subfolder is named from the order itself',
+      po2Sub && po2Sub.name === 'PO PO-502', JSON.stringify(po2Sub));
+    assert('a Daily Tracking line id with a UUID row id is a valid line', upUuid.statusCode === 201
+      && JSON.stringify(upUuid.body.document.po_line_ids) === JSON.stringify([`pol-po-2:${UUID_LINE}`]), JSON.stringify(upUuid.body));
+    const upL2 = await reg(PM, { folderId: fPoRoot.id, poId: 'pol-po-2', poLineId: 'L2' });
+    assert('a line on a second order of the job (201)', upL2.statusCode === 201, JSON.stringify(upL2.body));
+
+    // An order on no job: filed in the General area, under Unassigned POs, never in a cost-code folder.
+    const general = (await call('PUT', { division: 'turf' }, {}, PM)).body.folders;
+    const fUnassigned = general.find(f => f.slug === 'unassigned-pos');
+    const upGen = await reg(PM, { projectId: null, folderId: fUnassigned.id, poId: 'pol-po-gen', poLineId: 'G1' });
+    const genSub = (await call('GET', { division: 'turf' }, null, PM)).body.folders.find(f => f.slug === 'po-pol-po-gen');
+    assert('a General-area order\'s line: 201, no cost-code folder, its PO subfolder under Unassigned POs',
+      upGen.statusCode === 201 && upGen.body.costCodeFolderId === null && genSub && genSub.parent_id === fUnassigned.id
+        && has(await linksOf(upGen.documentId), 'folder', genSub.id)
+        && has(await linksOf(upGen.documentId), 'po_line', 'pol-po-gen:G1'), JSON.stringify({ body: upGen.body, genSub }));
+
+    // ── Refused: nothing is written ──
+    const refused = async (label, opts, status, auth = PM) => {
+      const r = await reg(auth, opts);
+      assert(label, r.statusCode === status && (await docsStored(r.documentId)) === 0
+        && (await linksOf(r.documentId)).length === 0, `${r.statusCode} ${JSON.stringify(r.body)}`);
+      return r;
+    };
+    const nfPo = await refused('an order that is not in the division\'s list → 404, nothing registered',
+      { folderId: fPoRoot.id, poId: 'pol-po-nope', poLineId: 'L1' }, 404);
+    assert('the 404 says the order was missing', nfPo.body.error === 'Purchase order not found', JSON.stringify(nfPo.body));
+    const nfLine = await refused('a line that is not on the order → 404, nothing registered',
+      { folderId: fPoRoot.id, poId: 'pol-po-1', poLineId: 'L9' }, 404);
+    assert('the 404 says the delivery was missing, and why',
+      nfLine.body.error === 'Delivery line not found' && /not on the order yet/.test(nfLine.body.detail || ''), JSON.stringify(nfLine.body));
+    await refused('a line of ANOTHER order of the job → 404', { folderId: fPoRoot.id, poId: 'pol-po-2', poLineId: 'L1' }, 404);
+    await refused('poLineId without poId → 400', { folderId: fPoRoot.id, poLineId: 'L1' }, 400);
+    await refused('a malformed line id → 400', { folderId: fPoRoot.id, poId: 'pol-po-1', poLineId: 'bad id!' }, 400);
+    await refused('a line id with a colon → 400', { folderId: fPoRoot.id, poId: 'pol-po-1', poLineId: 'L1:x' }, 400);
+    await refused('a 129-character line id → 400', { folderId: fPoRoot.id, poId: 'pol-po-1', poLineId: 'x'.repeat(129) }, 400);
+    await refused('a malformed order id alongside a line → 400', { folderId: fPoRoot.id, poId: 'pol po 1', poLineId: 'L1' }, 400);
+    const otherJob = await refused('a file in the General area cannot hang off a job\'s delivery (400)',
+      { projectId: null, folderId: fUnassigned.id, poId: 'pol-po-1', poLineId: 'L1' }, 400);
+    assert('…and says the delivery belongs to another job', otherJob.body.error === 'That delivery belongs to another job',
+      JSON.stringify(otherJob.body));
+    const tj2 = (await call('PUT', { division: 'turf', projectId: PJ2 }, { costCodes: [] }, PM)).body.folders;
+    await refused('nor can a file on another job (400)',
+      { projectId: PJ2, folderId: tj2.find(f => f.slug === 'purchase-orders').id, poId: 'pol-po-1', poLineId: 'L1' }, 400);
+    await refused('a view-only user cannot attach (403)', { folderId: fPoRoot.id, poId: 'pol-po-1', poLineId: 'L1' }, 403, VIEWER);
+    const pavTree = (await call('PUT', { division: 'paving', projectId: PJ }, { costCodes: [] }, PAVER)).body.folders;
+    const pavRoot = pavTree.find(f => f.slug === 'purchase-orders');
+    await refused('a turf order\'s line, named from paving → 404 (another division\'s list)',
+      { division: 'paving', folderId: pavRoot.id, poId: 'pol-po-1', poLineId: 'L1' }, 404, PAVER);
+    const pavUp = await reg(PAVER, { division: 'paving', folderId: pavRoot.id, poId: 'pol-po-pav', poLineId: 'P1' });
+    assert('paving attaches to its own order\'s line (201)', pavUp.statusCode === 201, JSON.stringify(pavUp.body));
+    const rivalTree = (await call('PUT', { division: 'turf', projectId: PJ }, { costCodes: [] }, OTHERCO)).body.folders;
+    const rivalUp = await reg(OTHERCO, { folderId: rivalTree.find(f => f.slug === 'purchase-orders').id, poId: 'pol-po-1', poLineId: 'L1' });
+    assert('another company attaches to ITS order of the same ids (201)', rivalUp.statusCode === 201, JSON.stringify(rivalUp.body));
+    await refused('another company cannot reach a line only OUR order has → 404',
+      { folderId: rivalTree.find(f => f.slug === 'purchase-orders').id, poId: 'pol-po-2', poLineId: 'L2' }, 404, OTHERCO);
+    const plainPo = await reg(PM, { folderId: fPoRoot.id, poId: 'pol-po-1' });
+    assert('a plain order attachment is unchanged: 201, no line link', plainPo.statusCode === 201
+      && JSON.stringify(plainPo.body.document.po_line_ids) === '[]'
+      && !(await linksOf(plainPo.documentId)).some(r => r.link_type === 'po_line'), JSON.stringify(plainPo.body));
+    const unchecked = await reg(PM, { folderId: fPoRoot.id, poId: 'po-not-in-any-list' });
+    assert('and a plain order id is still not checked against the list (201)', unchecked.statusCode === 201,
+      JSON.stringify(unchecked.body));
+
+    // ── Counting ──
+    let c = await lineCounts();
+    assert('?poLineCounts gives every order\'s lines their counts, division-wide',
+      c.statusCode === 200 && c.body.counts['pol-po-1'] && c.body.counts['pol-po-1'].L1 === 1
+        && c.body.counts['pol-po-1']['dr-row1'] === 1 && c.body.counts['pol-po-1']['dr-row2'] === 1
+        && c.body.counts['pol-po-1']['dr-row3'] === 1 && c.body.counts['pol-po-2'].L2 === 1
+        && c.body.counts['pol-po-2'][UUID_LINE] === 1 && c.body.counts['pol-po-gen'].G1 === 1
+        && c.body.counts['pol-po-nocode'].N1 === 1, JSON.stringify(c.body));
+    assert('a plain order attachment never counts against a line',
+      !('po-not-in-any-list' in c.body.counts) && Object.keys(c.body.counts['pol-po-1']).length === 4, JSON.stringify(c.body));
+    const one = await lineCounts(PM, { poId: 'pol-po-1' });
+    assert('…and with &poId, that one order only',
+      one.statusCode === 200 && JSON.stringify(Object.keys(one.body.counts)) === '["pol-po-1"]'
+        && JSON.stringify(one.body.counts['pol-po-1']) === JSON.stringify(c.body.counts['pol-po-1']), JSON.stringify(one.body));
+    // An order whose id STARTS like pol-po-1's, and one an underscore wildcard
+    // would match: neither may leak into pol-po-1's per-order answer.
+    const lookalike = await reg(PM, { folderId: fPoRoot.id, poId: 'pol-po-1x' });
+    await client.query(`INSERT INTO document_links (document_id, company_code, link_type, target_id)
+      VALUES ($1, 'FCT', 'po_line', 'pol-po-1x:L1'), ($1, 'FCT', 'po_line', 'pol_po_1:L1')`, [lookalike.documentId]);
+    const near = await lineCounts(PM, { poId: 'pol-po-1' });
+    assert('an order id that merely starts like another, or matches it as a pattern, is a different order',
+      lookalike.statusCode === 201 && JSON.stringify(Object.keys(near.body.counts)) === '["pol-po-1"]'
+        && JSON.stringify(near.body.counts['pol-po-1']) === JSON.stringify(c.body.counts['pol-po-1']), JSON.stringify(near.body));
+    const wild = await lineCounts(PM, { poId: 'pol_po_1' });
+    assert('…and each counts on its own', JSON.stringify(wild.body.counts) === JSON.stringify({ pol_po_1: { L1: 1 } }),
+      JSON.stringify(wild.body));
+    await client.query(`DELETE FROM document_links WHERE document_id = $1 AND link_type = 'po_line'`, [lookalike.documentId]);
+    const badCountPo = await lineCounts(PM, { poId: 'bad po!' });
+    assert('a malformed &poId is refused (400)', badCountPo.statusCode === 400, JSON.stringify(badCountPo.body));
+    const viewerCounts = await lineCounts(VIEWER);
+    assert('a view-only user reads the counts', viewerCounts.statusCode === 200
+      && JSON.stringify(viewerCounts.body.counts) === JSON.stringify(c.body.counts), JSON.stringify(viewerCounts.body));
+    let pc = (await call('GET', { division: 'turf', poCounts: '1' }, null, PM)).body.counts;
+    assert('the order\'s own paperclip counts its line attachments too (4 lines + 1 plain = 5)',
+      pc['pol-po-1'] === 5 && pc['pol-po-2'] === 2, JSON.stringify(pc));
+    const rivalCounts = await lineCounts(OTHERCO);
+    assert('another company counts only its own line attachments',
+      rivalCounts.statusCode === 200 && JSON.stringify(rivalCounts.body.counts) === JSON.stringify({ 'pol-po-1': { L1: 1 } }),
+      JSON.stringify(rivalCounts.body));
+    const pavCounts = await lineCounts(PAVER, {}, 'paving');
+    assert('another division counts only its own',
+      pavCounts.statusCode === 200 && JSON.stringify(pavCounts.body.counts) === JSON.stringify({ 'pol-po-pav': { P1: 1 } }),
+      JSON.stringify(pavCounts.body));
+    assert('and ours never include theirs', c.body.counts['pol-po-1'].L1 === 1 && !('pol-po-pav' in c.body.counts));
+
+    // ── Listing one line ──
+    const up1b = await reg(PM, { folderId: fPoSub.id, poId: 'pol-po-1', poLineId: 'L1' });
+    const l1 = await lineList('pol-po-1', 'L1');
+    assert('?poLineId&poId lists the line\'s documents, newest first',
+      l1.statusCode === 200 && l1.body.documents.map(d => d.id).join(',') === [up1b.documentId, up1.documentId].join(','),
+      JSON.stringify(l1.body));
+    assert('each carrying the line, the order and its folders',
+      l1.body.documents.every(d => d.po_line_ids.includes('pol-po-1:L1') && d.po_ids.includes('pol-po-1')
+        && Array.isArray(d.folder_ids) && Array.isArray(d.procurement_ids)), JSON.stringify(l1.body));
+    const viewerList = await lineList('pol-po-1', 'L1', VIEWER);
+    assert('a view-only user can list a line\'s documents', viewerList.statusCode === 200 && viewerList.body.documents.length === 2,
+      JSON.stringify(viewerList.body));
+    const crossOrder = await lineList('pol-po-2', 'L1');
+    assert('the same line id under another order lists nothing', crossOrder.statusCode === 200 && crossOrder.body.documents.length === 0,
+      JSON.stringify(crossOrder.body));
+    const noPo = await lineList(undefined, 'L1');
+    assert('a line with no order is refused (400)', noPo.statusCode === 400, JSON.stringify(noPo.body));
+    const badLine = await lineList('pol-po-1', 'bad line!');
+    assert('a malformed line id is refused (400)', badLine.statusCode === 400, JSON.stringify(badLine.body));
+    const rivalList = await lineList('pol-po-1', 'L1', OTHERCO);
+    assert('another company lists only its own',
+      rivalList.statusCode === 200 && rivalList.body.documents.map(d => d.id).join() === rivalUp.documentId, JSON.stringify(rivalList.body));
+    const pavList = await lineList('pol-po-1', 'L1', PAVER, 'paving');
+    assert('another division lists none of ours', pavList.statusCode === 200 && pavList.body.documents.length === 0,
+      JSON.stringify(pavList.body));
+    const byOrder = (await call('GET', { division: 'turf', poId: 'pol-po-1' }, null, PM)).body.documents;
+    assert('the order\'s paperclip lists every line attachment, with its po_line_ids',
+      [up1, up1b, upDr, upBlank, up515].every(u => byOrder.some(d => d.id === u.documentId))
+        && byOrder.find(d => d.id === up1.documentId).po_line_ids.includes('pol-po-1:L1'), JSON.stringify(byOrder.map(d => d.id)));
+
+    // ── Detaching ──
+    const viewerDetach = await call('PATCH', { division: 'turf', id: up1.documentId }, { removePoLineId: 'pol-po-1:L1' }, VIEWER);
+    assert('a view-only user cannot detach (403)', viewerDetach.statusCode === 403, JSON.stringify(viewerDetach.body));
+    const foremanOther = await call('PATCH', { division: 'turf', id: up1b.documentId }, { removePoLineId: 'pol-po-1:L1' }, FOREMAN);
+    assert('a level2 cannot detach someone else\'s file (403)', foremanOther.statusCode === 403, JSON.stringify(foremanOther.body));
+    for (const bad of ['L1', 'pol-po-1:', ':L1', 'pol-po-1:L1:x', 'pol po:L1']) {
+      const r = await call('PATCH', { division: 'turf', id: up1.documentId }, { removePoLineId: bad, filename: 'renamed.pdf' }, FOREMAN);
+      assert(`detaching refuses "${bad}" (400) and writes nothing`, r.statusCode === 400
+        && (await client.query(`SELECT filename FROM project_documents WHERE id = $1`, [up1.documentId])).rows[0].filename !== 'renamed.pdf',
+        JSON.stringify(r.body));
+    }
+    const detached = await call('PATCH', { division: 'turf', id: up1.documentId }, { removePoLineId: 'pol-po-1:L1' }, FOREMAN);
+    assert('a level2 detaches its own file from the line',
+      detached.statusCode === 200 && JSON.stringify(detached.body.document.po_line_ids) === '[]', JSON.stringify(detached.body));
+    assert('…which stays on the order, in the PO subfolder and in the cost-code folder',
+      JSON.stringify(detached.body.document.po_ids) === '["pol-po-1"]' && detached.body.document.folder_ids.includes(fPoSub.id)
+        && detached.body.document.folder_ids.includes(fPaving.id) && detached.body.document.folder_ids.includes(fPoRoot.id),
+      JSON.stringify(detached.body.document));
+    assert('…and is never deleted', (await client.query(
+      `SELECT deleted_at FROM project_documents WHERE id = $1`, [up1.documentId])).rows[0].deleted_at === null);
+    c = await lineCounts();
+    pc = (await call('GET', { division: 'turf', poCounts: '1' }, null, PM)).body.counts;
+    assert('the line\'s count drops; the order\'s does not', c.body.counts['pol-po-1'].L1 === 1 && pc['pol-po-1'] === 6,
+      JSON.stringify({ lines: c.body.counts['pol-po-1'], orders: pc['pol-po-1'] }));
+    assert('the order\'s paperclip still lists it',
+      (await call('GET', { division: 'turf', poId: 'pol-po-1' }, null, PM)).body.documents.some(d => d.id === up1.documentId));
+    assert('and the line\'s list no longer does',
+      (await lineList('pol-po-1', 'L1')).body.documents.map(d => d.id).join() === up1b.documentId);
+    const trail = (await client.query(
+      `SELECT action, detail FROM document_audit_log WHERE document_id = $1 ORDER BY id`, [up1.documentId])).rows;
+    assert('the trail has the UNLINK from the line',
+      trail.some(r => r.action === 'UNLINK' && r.detail && r.detail.link_type === 'po_line' && r.detail.target_id === 'pol-po-1:L1'),
+      JSON.stringify(trail));
+    const pmDetach = await call('PATCH', { division: 'turf', id: upDr.documentId }, { removePoLineId: 'pol-po-1:dr-row1' }, PM);
+    assert('a level3 may detach anyone\'s file', pmDetach.statusCode === 200
+      && pmDetach.body.document.po_line_ids.length === 0 && pmDetach.body.document.folder_ids.includes(fStorm.id), JSON.stringify(pmDetach.body));
+
+    // ── Deleted files never count ──
+    await call('DELETE', { division: 'turf', id: upBlank.documentId }, null, ADMIN);
+    c = await lineCounts();
+    assert('a deleted file stops counting against its line', !('dr-row2' in c.body.counts['pol-po-1']), JSON.stringify(c.body.counts));
+    assert('and leaves the line\'s list', (await lineList('pol-po-1', 'dr-row2')).body.documents.length === 0);
+    const trashRow = (await call('GET', { division: 'turf', trash: '1' }, null, ADMIN)).body.documents
+      .find(d => d.id === upBlank.documentId);
+    assert('the trash view still shows which delivery it was on',
+      trashRow && JSON.stringify(trashRow.po_line_ids) === '["pol-po-1:dr-row2"]', JSON.stringify(trashRow));
+    const restored = await call('PATCH', { division: 'turf', id: upBlank.documentId }, { restore: true }, ADMIN);
+    assert('restoring it puts it back on the line', restored.statusCode === 200
+      && JSON.stringify(restored.body.document.po_line_ids) === '["pol-po-1:dr-row2"]'
+      && (await lineCounts()).body.counts['pol-po-1']['dr-row2'] === 1, JSON.stringify(restored.body));
+
+    // ── A line deleted from the order touches no documents ──
+    await setBlob('FCT:fct_purchase_orders:turf', [{ ...PO1, lines: PO1.lines.filter(l => l.id !== 'dr-row3') }, PO2, POGEN, PONOCODE, POJ2]);
+    assert('the line\'s files keep their link once the delivery leaves the order',
+      (await lineList('pol-po-1', 'dr-row3')).body.documents.map(d => d.id).join() === up515.documentId
+        && (await lineCounts()).body.counts['pol-po-1']['dr-row3'] === 1);
+    await refused('but nothing new can be attached to it (404)', { folderId: fPoSub.id, poId: 'pol-po-1', poLineId: 'dr-row3' }, 404);
+    await setBlob('FCT:fct_purchase_orders:turf', [PO1, PO2, POGEN, PONOCODE, POJ2]);
+    assert('and a delivery that comes back finds its files', (await lineList('pol-po-1', 'dr-row3')).body.documents.length === 1);
+
+    // ── Central purchasing's carve-out, bound to one order ──
+    const BUYER = { companyCode: 'FCT', userId: 9, username: 'buyer-pol', role: 'level1', divisionRoles: { purchase_orders: 'level3' } };
+    const carve = await reg(BUYER, { projectId: null, keyProjectId: PJ, query: { poId: 'pol-po-1' }, folderId: fPoSub.id, poId: 'pol-po-1', poLineId: 'L1' });
+    assert('the carve-out attaches a receipt to a line of ITS order (201)', carve.statusCode === 201, JSON.stringify(carve.body));
+    assert('…filed in the order\'s job, under the order, the line and the cost-code folder',
+      carve.body.document && carve.body.document.project_id === PJ
+        && JSON.stringify(carve.body.document.po_line_ids) === '["pol-po-1:L1"]' && carve.body.costCodeFolderId === fPaving.id
+        && has(await linksOf(carve.documentId), 'po', 'pol-po-1'), JSON.stringify(carve.body));
+    await refused('the carve-out cannot attach to a line its order does not have (404)',
+      { projectId: null, keyProjectId: PJ, query: { poId: 'pol-po-1' }, folderId: fPoSub.id, poId: 'pol-po-1', poLineId: 'L2' }, 404, BUYER);
+    await refused('nor to another order\'s line (403)',
+      { projectId: null, keyProjectId: PJ, query: { poId: 'pol-po-1' }, folderId: fPoSub.id, poId: 'pol-po-2', poLineId: 'L2' }, 403, BUYER);
+    await refused('nor name an order the division does not have (403)',
+      { projectId: null, keyProjectId: PJ, query: { poId: 'pol-po-nope' }, folderId: fPoSub.id, poId: 'pol-po-nope', poLineId: 'L1' }, 403, BUYER);
+    await refused('nor file a line\'s receipt outside purchase-order folders (403)',
+      { projectId: null, keyProjectId: PJ, query: { poId: 'pol-po-1' }, folderId: fSafety.id, poId: 'pol-po-1', poLineId: 'L1' }, 403, BUYER);
+    const carveCounts = await lineCounts(BUYER, { poId: 'pol-po-1' });
+    assert('the carve-out reads its order\'s line counts, and only those',
+      carveCounts.statusCode === 200 && JSON.stringify(Object.keys(carveCounts.body.counts)) === '["pol-po-1"]'
+        && carveCounts.body.counts['pol-po-1'].L1 === 2, JSON.stringify(carveCounts.body));
+    const carveAll = await lineCounts(BUYER);
+    assert('but not the division\'s (403)', carveAll.statusCode === 403, JSON.stringify(carveAll.body));
+    const carveList = await lineList('pol-po-1', 'L1', BUYER);
+    assert('the carve-out lists its order\'s line', carveList.statusCode === 200
+      && carveList.body.documents.some(d => d.id === carve.documentId), JSON.stringify(carveList.body));
+    const carveNoPo = await call('GET', { division: 'turf', poLineId: 'L1' }, null, BUYER);
+    assert('but nothing without naming the order (403)', carveNoPo.statusCode === 403, JSON.stringify(carveNoPo.body));
+    const carveDetach = await call('PATCH', { division: 'turf', id: carve.documentId, poId: 'pol-po-1' },
+      { removePoLineId: 'pol-po-1:L1' }, BUYER);
+    assert('and cannot detach anything (403)', carveDetach.statusCode === 403
+      && has(await linksOf(carve.documentId), 'po_line', 'pol-po-1:L1'), JSON.stringify(carveDetach.body));
+
+    // ── Off the order is off its deliveries ──
+    // The Vault's "Link to PO" dialog takes a file off an order (removePoId).
+    // A delivery's file is on its order too, so that takes it off the order's
+    // deliveries as well: a delivery must never list a file its order no
+    // longer holds — purchasing download through the order's link, and were
+    // shown a file they could not open.
+    const unPo = await reg(FOREMAN, { folderId: fPoSub.id, poId: 'pol-po-1', poLineId: 'L1' });
+    // The same file on another order's delivery, and on two orders whose ids
+    // merely look like pol-po-1's (a prefix, and a LIKE wildcard): all stay.
+    await client.query(`INSERT INTO document_links (document_id, company_code, link_type, target_id)
+      VALUES ($1, 'FCT', 'po', 'pol-po-2'), ($1, 'FCT', 'po_line', 'pol-po-2:L2'),
+             ($1, 'FCT', 'po_line', 'pol-po-1x:L1'), ($1, 'FCT', 'po_line', 'pol_po_1:L1')`, [unPo.documentId]);
+    const unBefore = (await lineCounts(PM, { poId: 'pol-po-1' })).body.counts['pol-po-1'].L1;
+    const unlinked = await call('PATCH', { division: 'turf', id: unPo.documentId }, { removePoId: 'pol-po-1' }, FOREMAN);
+    const ud = (unlinked.body && unlinked.body.document) || { po_ids: [], po_line_ids: [], folder_ids: [] };
+    assert('removing a delivery file\'s order link takes it off that order\'s deliveries too (200)',
+      unlinked.statusCode === 200 && !ud.po_ids.includes('pol-po-1') && !ud.po_line_ids.includes('pol-po-1:L1'),
+      JSON.stringify(unlinked.body));
+    assert('…and off nothing else: another order and its delivery, and look-alike order ids, keep theirs',
+      JSON.stringify(ud.po_ids) === '["pol-po-2"]'
+        && JSON.stringify([...ud.po_line_ids].sort()) === JSON.stringify(['pol-po-1x:L1', 'pol-po-2:L2', 'pol_po_1:L1']),
+      JSON.stringify(ud));
+    assert('…and it stays in every folder it was filed in',
+      ud.folder_ids.includes(fPoSub.id) && ud.folder_ids.includes(fPaving.id), JSON.stringify(ud.folder_ids));
+    const unLinks = await linksOf(unPo.documentId);
+    assert('stored: no po_line link to pol-po-1 is left behind',
+      !unLinks.some(r => r.link_type === 'po_line' && r.target_id.split(':')[0] === 'pol-po-1')
+        && !has(unLinks, 'po', 'pol-po-1'), JSON.stringify(unLinks));
+    const unAfter = await lineCounts(PM, { poId: 'pol-po-1' });
+    assert('the delivery\'s paperclip stops counting it',
+      unAfter.body.counts['pol-po-1'].L1 === unBefore - 1, JSON.stringify({ before: unBefore, after: unAfter.body }));
+    assert('…and its list stops listing it',
+      !(await lineList('pol-po-1', 'L1')).body.documents.some(d => d.id === unPo.documentId));
+    assert('…as does the order\'s, as before',
+      !(await call('GET', { division: 'turf', poId: 'pol-po-1' }, null, PM)).body.documents.some(d => d.id === unPo.documentId));
+    const carveUn = await lineList('pol-po-1', 'L1', BUYER);
+    assert('so purchasing are never listed a delivery file they cannot open',
+      carveUn.statusCode === 200 && !carveUn.body.documents.some(d => d.id === unPo.documentId), JSON.stringify(carveUn.body));
+    const unTrail = (await client.query(
+      `SELECT action, detail FROM document_audit_log WHERE document_id = $1 AND action = 'UNLINK' ORDER BY id`,
+      [unPo.documentId])).rows;
+    assert('the trail records the order AND each delivery it came off, and nothing else',
+      unTrail.some(r => r.detail.link_type === 'po' && r.detail.target_id === 'pol-po-1')
+        && unTrail.some(r => r.detail.link_type === 'po_line' && r.detail.target_id === 'pol-po-1:L1' && r.detail.via === 'removePoId')
+        && unTrail.length === 2, JSON.stringify(unTrail));
+    await client.query(`DELETE FROM document_links WHERE document_id = $1 AND link_type IN ('po', 'po_line')`, [unPo.documentId]);
+
+    // ── On the order exactly when on the delivery ──
+    // A register cut off part-way (a platform timeout, a dropped connection)
+    // must not leave a delivery's file on the order alone: "is it on the
+    // order?" is how a purchasing phone decides that an attach it never heard
+    // back from went through. Fail whichever statement writes the line link.
+    const realQuery = client.query;
+    client.query = function (text, values) {
+      if (typeof text === 'string' && /INSERT INTO document_links/.test(text) && /'po_line'/.test(text)) {
+        return Promise.reject(new Error('Connection terminated unexpectedly'));
+      }
+      return realQuery.apply(this, arguments);
+    };
+    const origErr = console.error;
+    let cut;
+    try {
+      console.error = () => {};
+      cut = await reg(PM, { folderId: fPoSub.id, poId: 'pol-po-1', poLineId: 'dr-row1' });
+    } finally {
+      client.query = realQuery;
+      console.error = origErr;
+    }
+    const cutOnOrder = (await call('GET', { division: 'turf', poId: 'pol-po-1' }, null, PM)).body.documents
+      .some(d => d.id === cut.documentId);
+    const cutOnLine = (await lineList('pol-po-1', 'dr-row1')).body.documents.some(d => d.id === cut.documentId);
+    assert('a register cut off at the delivery\'s link fails (500)…', cut.statusCode === 500, JSON.stringify(cut.body));
+    assert('…and leaves the file on the order exactly when it is on the delivery',
+      cutOnOrder === cutOnLine, JSON.stringify({ cutOnOrder, cutOnLine, links: await linksOf(cut.documentId) }));
+    await client.query(`DELETE FROM document_links WHERE document_id = $1`, [cut.documentId]);
+    await client.query(`DELETE FROM project_documents WHERE id = $1`, [cut.documentId]);
+
+    await restorePoBlobs();
+    const back = (await client.query(
+      `SELECT key FROM app_data WHERE key IN ('FCT:fct_purchase_orders:turf','FCT:fct_purchase_orders:paving','OTH:fct_purchase_orders:turf')
+         AND value::text LIKE '%pol-po-%'`)).rows;
+    assert('the PO lists are put back as they were', back.length === 0, JSON.stringify(back));
+  }
+
   // ── The folder chips' counts, counts only ──────────────────────────────
   // GET ?costCodeCounts=1 answers what the browser used to count from the
   // job's whole listing (documents.js countByCostCode), without the listing.
@@ -1422,6 +1927,7 @@ async function upload(folderId, filename, auth, extra = {}) {
 })().catch(async err => {
   console.error('\nTest run failed:', err);
   try { await cleanProcurement(); } catch {}
+  try { await restorePoBlobs(); } catch {}
   try { await client.end(); } catch {}
   process.exit(1);
 });

@@ -173,6 +173,19 @@
     .icon-btn:hover { border-color: var(--green); }
     .icon-btn.has { color: var(--ok); }
 
+    /* A delivery's paperclip, on the line of its Invoice / Ticket # box —
+       where its tickets and invoices go. Muted until something is attached. */
+    .line-inv { display: flex; align-items: center; gap: 0.2rem; }
+    .line-inv input { flex: 1 1 auto; min-width: 0; }
+    .line-clip {
+      flex: none; background: none; border: 1px solid transparent; border-radius: 4px;
+      cursor: pointer; padding: 0.1rem 0.25rem; font-size: 0.7rem; line-height: 1.2;
+      color: var(--muted); opacity: 0.55; white-space: nowrap; font-family: inherit;
+    }
+    .line-clip:hover, .line-clip:focus-visible { border-color: var(--green); opacity: 1; }
+    .line-clip.has { color: var(--ok); opacity: 1; }
+    @media (pointer: coarse) { .line-clip { min-width: 36px; min-height: 36px; } }
+
     .empty { padding: 1.75rem; text-align: center; color: var(--muted); font-size: 0.85rem; }
 
     /* ── Typeahead combobox ──
@@ -896,6 +909,12 @@ let catalog       = { divisions: [], vendors: [], employees: [], truncated: [] }
 let sourceDivs    = [];        // [{ division, label, projects: [...] }]
 let purchaseOrders = [];       // every order across every list, each tagged _division
 let docCounts     = {};        // poId → attached document count
+// poId → { lineId → n }: documents attached to each delivery, for the paperclip
+// beside its Invoice / Ticket #. Counted an order at a time — see
+// loadLineDocCounts. Null-prototype maps, both levels: order and line ids are
+// free text, and "__proto__" written into a plain object re-parents it instead
+// of storing a count.
+const lineDocCounts = Object.create(null);
 // Lists that came back this load. A list that FAILED is not an empty list, and
 // treating it as one numbers new orders from PO-0001 straight into a division
 // that already has a PO-0001.
@@ -1133,6 +1152,101 @@ async function loadDocCounts() {
     }
   }));
   docCounts = counts;
+}
+
+/*
+ * The delivery paperclips' counts, one ORDER at a time — when its deliveries
+ * are opened, which is the only time this page draws them — rather than one
+ * request per division at load like loadDocCounts above.
+ *
+ * Per division is not available to most people here. The purchasing carve-out
+ * reaches a division's paperwork one named order at a time, and for delivery
+ * counts the server holds it to exactly that order (api/documents.js
+ * ?poLineCounts): asked for a whole division, a purchasing user with no role
+ * there is refused. Asking per order answers the same way for every role, and
+ * an order opened again is counted again, so a ticket a colleague attached in
+ * a division tab shows up without a reload.
+ *
+ * Every request, and every count this page writes from first-hand knowledge
+ * (a list it just fetched, a file it just filed), takes the next ticket. An
+ * order's answer is dropped when a LATER answer for the same order has
+ * already landed. A first-hand count covers one delivery, so it overrules an
+ * order's answer that left before it for that delivery alone: a slow count
+ * cannot undo the attach that just counted itself, and the order's other
+ * deliveries still take their numbers from it. (Dropping the whole answer
+ * left them all on an empty paperclip until the order was opened again.)
+ */
+let _lineCountTicket = 0;
+const _lineCountLanded = Object.create(null);   // poId → ticket of the order's counts in hand
+const _lineFirstHand = Object.create(null);     // poId → { lineId → ticket of a first-hand count }
+
+function lineDocCount(poId, lineId) {
+  const forPo = lineDocCounts[poId];
+  return (forPo && forPo[lineId]) || 0;
+}
+
+/** Set one delivery's count from something this page knows first-hand. */
+function setLineDocCount(poId, lineId, n) {
+  (_lineFirstHand[poId] || (_lineFirstHand[poId] = Object.create(null)))[lineId] = ++_lineCountTicket;
+  const forPo = lineDocCounts[poId] || (lineDocCounts[poId] = Object.create(null));
+  if (n > 0) forPo[lineId] = n;
+  else delete forPo[lineId];
+}
+
+/** A file just filed against an order — and against one of its deliveries,
+ *  when it went to one. Both paperclips show it: a delivery's file is on the
+ *  order's paperclip as well. */
+function countAttached(po, lineId) {
+  docCounts[po.id] = (docCounts[po.id] || 0) + 1;
+  if (lineId) setLineDocCount(po.id, lineId, lineDocCount(po.id, lineId) + 1);
+}
+
+/**
+ * Count the documents on each delivery of one order, and redraw its delivery
+ * paperclips where they stand. Never rejects: a count that cannot be had keeps
+ * the last good one — a dropped request must not blank every paperclip — and
+ * so does an answer with no counts in it (a server from before the endpoint
+ * answers this with the order's listing). Resolves whether the counts landed.
+ */
+async function loadLineDocCounts(po) {
+  // An order not yet stored in this list has nothing filed against it here,
+  // and the carve-out refuses to name an order the server does not have.
+  if (_savedDivision[po.id] !== po._division) return false;
+  const ticket = ++_lineCountTicket;
+  let data;
+  try {
+    data = await api('GET', '/documents?division=' + encodeURIComponent(po._division) +
+                            '&poLineCounts=1&poId=' + encodeURIComponent(po.id));
+  } catch (err) {
+    console.warn('[po] delivery attachment counts for ' + (po.po_number || po.id) + ':', err.message);
+    return false;
+  }
+  const got = data && data.counts;
+  if (!got || typeof got !== 'object' || Array.isArray(got)) return false;
+  if ((_lineCountLanded[po.id] || 0) > ticket) return false;
+  _lineCountLanded[po.id] = ticket;
+  const raw = Object.prototype.hasOwnProperty.call(got, po.id) ? got[po.id] : null;
+  const counts = Object.create(null);
+  if (raw && typeof raw === 'object') {
+    Object.keys(raw).forEach(lineId => {
+      const n = Number(raw[lineId]);
+      if (Number.isFinite(n) && n > 0) counts[lineId] = n;
+    });
+  }
+  // A delivery counted first-hand after this request went out keeps that
+  // count; this answer is older than it for that delivery, and only for it.
+  const firstHand = _lineFirstHand[po.id];
+  if (firstHand) {
+    Object.keys(firstHand).forEach(lineId => {
+      if (firstHand[lineId] <= ticket) return;
+      const kept = lineDocCount(po.id, lineId);
+      if (kept > 0) counts[lineId] = kept;
+      else delete counts[lineId];
+    });
+  }
+  lineDocCounts[po.id] = counts;
+  paintLineClips(po);
+  return true;
 }
 
 /* ═══════════════════════════════════════════
@@ -1492,6 +1606,26 @@ async function _savePOWrite(po) {
   }
 }
 
+/**
+ * Have the order stored as it is on screen — every delivery on it — before a
+ * file is filed against one of its deliveries.
+ *
+ * The server files a delivery's paperwork only against a delivery it has on
+ * the stored order, and a delivery added a moment ago may not be there yet:
+ * its save waits out a 500 ms debounce, or failed and is queued for the poll's
+ * retry. Under the purchasing carve-out an order it has never stored cannot
+ * even be listed. A save in flight is waited out; one that is owed is sent now.
+ * Nothing is sent when nothing is owed. Rejects when the save fails.
+ */
+async function settleOrderSave(po) {
+  if (_saveChain[po.id]) await _saveChain[po.id];   // never rejects
+  if (_saveTimers[po.id] || _unsaved.has(po.id) || _savedDivision[po.id] !== po._division) {
+    clearTimeout(_saveTimers[po.id]);
+    delete _saveTimers[po.id];
+    await _savePONow(po);
+  }
+}
+
 /** Flush anything still debounced before the tab goes away. */
 window.addEventListener('beforeunload', () => {
   // Debounced saves AND ones that failed. A failed save has no timer, so
@@ -1687,7 +1821,15 @@ async function deletePO(poId) {
 }
 
 function toggleLines(poId) {
-  if (expanded.has(poId)) expanded.delete(poId); else expanded.add(poId);
+  if (expanded.has(poId)) {
+    expanded.delete(poId);
+  } else {
+    expanded.add(poId);
+    // Its deliveries are drawn now, each with a paperclip: count them, fresh.
+    // The answer redraws the paperclips in place when it lands.
+    const po = purchaseOrders.find(p => p.id === poId);
+    if (po) loadLineDocCounts(po);
+  }
   render();
 }
 
@@ -2412,7 +2554,9 @@ function lineRowsHTML(po, surface) {
       (capsFor(po._division).canEdit ? '' : 'disabled ') + (extra || '') +
       ' oninput="setLineField(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\',\'' + field + '\', this.value)">';
     return '<tr>' +
-      '<td style="min-width:120px">' + inp('invoice_num','text', l.invoice_num, 'placeholder="Invoice / Ticket #"') + dailyLineTagHTML(l) + '</td>' +
+      '<td style="min-width:150px"><div class="line-inv">' +
+        inp('invoice_num','text', l.invoice_num, 'placeholder="Invoice / Ticket #"') + lineClipHTML(po, l) + '</div>' +
+        dailyLineTagHTML(l) + '</td>' +
       '<td style="min-width:118px">' + inp('date','date', l.date) + '</td>' +
       '<td style="min-width:74px">'  + inp('qty','number', l.qty, 'step="any" placeholder="0"') + '</td>' +
       '<td style="min-width:92px">'  + inp('unit_cost','number', l.unit_cost, 'step="any" placeholder="0.00"') +
@@ -2436,6 +2580,68 @@ function lineRowsHTML(po, surface) {
           : capsFor(po._division).canEdit ? '<button class="del-btn" onclick="deleteLine(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\')" title="Remove delivery">&#10005;</button>' : '') +
       '</td></tr>';
   }).join('');
+}
+
+/**
+ * A delivery's paperclip: its tickets and invoices, on the delivery itself.
+ * Opens the attachments sheet narrowed to that delivery. Drawn for every role
+ * — reading is for everyone; the sheet offers attaching only to those who can.
+ * Found again by its data attributes (not an id: the same delivery is drawn in
+ * the table and in the phone card) so a count can be redrawn in place.
+ */
+function lineClipHTML(po, l) {
+  if (l.id == null || l.id === '') return '';
+  const n = lineDocCount(po.id, l.id);
+  const label = lineClipLabel(po, n);
+  return '<button type="button" class="line-clip' + (n ? ' has' : '') + '"' +
+    ' data-clip-po="' + esc(po.id) + '" data-clip-line="' + esc(l.id) + '"' +
+    ' onclick="openDocs(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\')"' +
+    ' title="' + esc(label) + '" aria-label="' + esc(label) + '">&#128206;' + (n || '') + '</button>';
+}
+
+function lineClipLabel(po, n) {
+  if (n) return n + ' attached to this delivery';
+  return capsFor(po._division).canEdit ? 'Attach a ticket or invoice to this delivery' : 'Nothing attached to this delivery';
+}
+
+/** Redraw one order's delivery paperclips where they stand, on both surfaces.
+ *  Never a re-render: that would take the cursor out of a delivery's box. */
+function paintLineClips(po) {
+  document.querySelectorAll('.line-clip').forEach(btn => {
+    if (btn.dataset.clipPo !== po.id) return;
+    const n = lineDocCount(po.id, btn.dataset.clipLine);
+    const label = lineClipLabel(po, n);
+    btn.classList.toggle('has', n > 0);
+    btn.textContent = '\u{1F4CE}' + (n || '');
+    btn.title = label;
+    btn.setAttribute('aria-label', label);
+  });
+}
+
+/** `lineId` while that delivery is still on the order, else undefined. A file
+ *  meant for a delivery that has left the order since — a Daily Tracking
+ *  delivery whose row now names another order, or one removed — still belongs
+ *  on the order, which is where everything for it falls back to. */
+function liveLineId(po, lineId) {
+  return lineId != null && (po.lines || []).some(l => l && l.id === lineId) ? lineId : undefined;
+}
+
+/** What a delivery is called on its sheet: its invoice / ticket #, else its date. */
+function lineLabel(l) {
+  const inv = String((l && l.invoice_num) || '').trim();
+  return inv || String((l && l.date) || '').trim() || 'Delivery';
+}
+
+/**
+ * The cost-code folder a delivery's files are filed in as well: the line's own
+ * code (a Daily Tracking delivery carries its row's), else the order's. Only an
+ * order on a job has cost-code folders. Mirrors lineCostCode in
+ * api/lib/po-line-docs.js; here it only says where the file went.
+ */
+function lineCostCodeFor(po, l) {
+  if (!po.project_id) return '';
+  const own = l && typeof l.cost_code === 'string' ? l.cost_code.trim() : '';
+  return own || String(po.cost_code == null ? '' : po.cost_code).trim();
 }
 
 /**
@@ -3013,28 +3219,37 @@ async function prepareAttachment(file) {
 }
 
 /**
- * Is this document on the order's paperclip? true or false when the listing
- * came back, null when it could not be had — which is not the same as "no".
+ * Is this document on the order's paperclip — and, for a file sent to one of
+ * its deliveries (`lineId`), on that delivery too? true or false when the
+ * listing came back, null when it could not be had — which is not the same
+ * as "no". A delivery's file on the order alone is not filed where it was
+ * sent: its delivery would never list it.
  */
-async function isOnOrder(po, documentId) {
+async function isOnOrder(po, documentId, lineId) {
   try {
     const res = await api('GET', '/documents?division=' + encodeURIComponent(po._division) +
                           '&poId=' + encodeURIComponent(po.id), undefined, { timeoutMs: ATTACH_API_TIMEOUT_MS });
-    return ((res && res.documents) || []).some(d => d.id === documentId);
+    const target = lineId ? po.id + ':' + lineId : null;
+    return ((res && res.documents) || []).some(d => d.id === documentId &&
+      (!target || (Array.isArray(d.po_line_ids) && d.po_line_ids.includes(target))));
   } catch {
     return null;
   }
 }
 
 /**
- * Attaches whose registration may or may not have landed: order + file → the
- * { ticket, folderId } it was sent with. The next attempt at the same file on
- * the same order checks the paperclip first, and if it is not there, registers
- * THAT ticket again rather than uploading a second copy — otherwise "Try
- * again" after a long dead zone filed the receipt twice.
+ * Attaches whose registration may or may not have landed: order (and the
+ * delivery, for a file sent to one) + file → the { ticket, folderId } it was
+ * sent with. The next attempt at the same file for the same place checks the
+ * paperclip first, and if it is not there, registers THAT ticket again rather
+ * than uploading a second copy — otherwise "Try again" after a long dead zone
+ * filed the receipt twice. The delivery is part of the key because a file on
+ * one delivery is not on another (isOnOrder checks the delivery it was sent
+ * to, as well as the order).
  */
 const _unconfirmedAttach = new Map();
-const unconfirmedKey = (po, blob, filename) => po.id + '\n' + filename + '\n' + blob.size;
+const unconfirmedKey = (po, blob, filename, lineId) =>
+  po.id + '\n' + (lineId || '') + '\n' + filename + '\n' + blob.size;
 
 /**
  * File a photo against an order, in the order's OWN division.
@@ -3044,19 +3259,38 @@ const unconfirmedKey = (po, blob, filename) => po.id + '\n' + filename + '\n' + 
  * is the three-step dance every division page uses — ticket, bytes straight to
  * storage, then register — with the relay fallback for a bucket that has no
  * CORS rule, since a phone on LTE is exactly where that bites.
+ *
+ * `opts.note` is the document's note. `opts.lineId` names one of the order's
+ * deliveries the file is for: it is then filed against that delivery as well
+ * (poLineId, in the register body only — every other leg is the order's), and
+ * the server puts it on the order's paperclip, in the order's folder and in the
+ * cost-code folder of the delivery's code. The server checks the delivery is
+ * on the order it has STORED, so the order's save is settled first.
  */
-async function attachToPO(po, blob, filename, note) {
+async function attachToPO(po, blob, filename, opts) {
+  const { note, lineId } = opts || {};
   const division = po._division;
   const poQ = '&poId=' + encodeURIComponent(po.id);
   const projQ = po.project_id ? '&projectId=' + encodeURIComponent(po.project_id) : '';
   const timed = { timeoutMs: ATTACH_API_TIMEOUT_MS };
-  const key = unconfirmedKey(po, blob, filename);
-  const filing = { filename, sizeBytes: blob.size, note, key };
+  const key = unconfirmedKey(po, blob, filename, lineId);
+  const filing = { filename, sizeBytes: blob.size, note, key, lineId };
+
+  // A delivery added a moment ago may not be stored yet. Nothing is sent
+  // before it is: the register would be refused with the bytes already up.
+  if (lineId) {
+    try {
+      await settleOrderSave(po);
+    } catch (err) {
+      throw new Error('This delivery is not saved yet, so nothing can be filed against it (' + err.message +
+                      '). Try again in a moment.');
+    }
+  }
 
   // 0. An earlier try at this same file may already be filed — or still landing.
   const held = _unconfirmedAttach.get(key);
   if (held) {
-    const filed = await isOnOrder(po, held.ticket.documentId);
+    const filed = await isOnOrder(po, held.ticket.documentId, lineId);
     if (filed === null) {
       const still = new Error('Still cannot reach the server to check whether the last try was filed. ' +
                               'Nothing was sent — try again in a moment.');
@@ -3065,7 +3299,7 @@ async function attachToPO(po, blob, filename, note) {
     }
     _unconfirmedAttach.delete(key);
     if (filed) {
-      docCounts[po.id] = (docCounts[po.id] || 0) + 1;
+      countAttached(po, lineId);
       return;
     }
     // Not on the order — or not YET: the first register may still be running
@@ -3075,7 +3309,7 @@ async function attachToPO(po, blob, filename, note) {
     // not a second copy.
     try {
       await registerTicket(po, held, Object.assign({ resumed: true, cleanup: false }, filing));
-      docCounts[po.id] = (docCounts[po.id] || 0) + 1;
+      countAttached(po, lineId);
       return;
     } catch (err) {
       if (err.unconfirmed) throw err;
@@ -3176,7 +3410,7 @@ async function attachToPO(po, blob, filename, note) {
     for (const stale of staleKeys) await dropStoredBytes(po, stale);
   }
 
-  docCounts[po.id] = (docCounts[po.id] || 0) + 1;
+  countAttached(po, lineId);
 }
 
 /**
@@ -3194,7 +3428,7 @@ async function attachToPO(po, blob, filename, note) {
  * file a second copy. Otherwise it throws the server's refusal, after clearing
  * away the stored bytes when `cleanup` says they are this call's to clear.
  */
-async function registerTicket(po, held, { filename, sizeBytes, note, key, resumed, cleanup }) {
+async function registerTicket(po, held, { filename, sizeBytes, note, key, resumed, cleanup, lineId }) {
   const division = po._division;
   const poQ = '&poId=' + encodeURIComponent(po.id);
   const projQ = po.project_id ? '&projectId=' + encodeURIComponent(po.project_id) : '';
@@ -3218,6 +3452,8 @@ async function registerTicket(po, held, { filename, sizeBytes, note, key, resume
         poId:       po.id,
         poNumber:   po.po_number,
         note:       note || undefined,
+        // Left out altogether for a file on the order itself.
+        poLineId:   lineId || undefined,
       }, { timeoutMs: ATTACH_API_TIMEOUT_MS });
       return;
     } catch (err) {
@@ -3230,7 +3466,7 @@ async function registerTicket(po, held, { filename, sizeBytes, note, key, resume
       // id was minted for this one ticket, so only an attempt of ours holds it.
       const sentBefore = attempt > 0 || resumed;
       if (isTransient(err) || (sentBefore && err.status === 409)) {
-        const seen = await isOnOrder(po, ticket.documentId);
+        const seen = await isOnOrder(po, ticket.documentId, lineId);
         if (seen === true) return;
         unsure = seen === null;
       }
@@ -3726,7 +3962,9 @@ async function commitScan() {
   let attachError = null;
   let attachUnsure = false;   // the connection dropped mid-filing: it may be there
   try {
-    await attachToPO(po, shotBlob, shotName, 'Scanned receipt');
+    // On the delivery this scan just recorded, as well as on the order: the
+    // receipt is that delivery's paperwork.
+    await attachToPO(po, shotBlob, shotName, { note: 'Scanned receipt', lineId: line.id });
   } catch (err) {
     attachError = err.message;
     attachUnsure = Boolean(err.unconfirmed);
@@ -3743,6 +3981,7 @@ async function commitScan() {
     // the half that failed again.
     render();
     _attachRetry = { poId: po.id, blob: shotBlob, filename: shotName };
+    _attachRetry.lineId = line.id;   // ...and the delivery it is for, so the retry files it there too
     renderScanSheet(
       '<h2>Saved ' + esc(po.po_number) + (attachUnsure ? ' — the photo may not have attached' : ' — the photo did not attach') + '</h2>' +
       '<div class="sub">' + (attachUnsure
@@ -3811,7 +4050,8 @@ async function retryAttach() {
   const btn = document.querySelector('#scan-sheet .btn-green');
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Attaching…'; }
   try {
-    await attachToPO(po, _attachRetry.blob, _attachRetry.filename, 'Scanned receipt');
+    await attachToPO(po, _attachRetry.blob, _attachRetry.filename,
+                     { note: 'Scanned receipt', lineId: liveLineId(po, _attachRetry.lineId) });
     _attachRetry = null;
     closeScan();
     render();
@@ -3840,50 +4080,121 @@ function closeDocs() {
   unlockBodyScroll();
 }
 
-async function openDocs(poId) {
+// Which opening of the sheet is current. A listing that comes back after the
+// sheet was opened again — another order, another delivery, or the same one
+// re-listed after an attach — is dropped rather than drawn over the newer one.
+let _docsSheetSeq = 0;
+
+/**
+ * The attachments sheet: an order's, or — given `lineId` — one delivery's.
+ *
+ * A delivery's sheet lists the files attached to that delivery and attaches
+ * new ones to it; each is on the order's own sheet too. One sheet for both, so
+ * there is still exactly one sheet on top of the page.
+ */
+async function openDocs(poId, lineId) {
   const po = purchaseOrders.find(p => p.id === poId);
   if (!po) return;
+  if (lineId != null && !liveLineId(po, lineId)) {
+    toast('That delivery is no longer on ' + (po.po_number || 'this order') + ' — showing the order’s attachments.', 'err');
+    lineId = undefined;
+  }
+  const line = lineId == null ? null : (po.lines || []).find(l => l && l.id === lineId);
+  const seq = ++_docsSheetSeq;
+  const heading = '<h2>' + esc(po.po_number) + (line ? ' &middot; ' + esc(lineLabel(line)) : '') + ' — attachments</h2>';
   const sheet = document.getElementById('docs-sheet');
-  sheet.innerHTML = '<h2>' + esc(po.po_number) + ' — attachments</h2>' +
-    '<div class="scan-status"><span class="spinner"></span>Loading…</div>';
+  sheet.innerHTML = heading + '<div class="scan-status"><span class="spinner"></span>Loading…</div>';
   document.getElementById('docs-backdrop').classList.add('open');
   lockBodyScroll();
 
   let docs = [];
   let loadError = null;
   try {
-    const res = await api('GET', '/documents?division=' + encodeURIComponent(po._division) +
-                          '&poId=' + encodeURIComponent(po.id));
-    docs = (res && res.documents) || [];
-    docCounts[po.id] = docs.length;
+    if (line) {
+      // An order the server has never stored cannot be listed under the
+      // purchasing carve-out, and its deliveries are not there to list.
+      try {
+        await settleOrderSave(po);
+      } catch (err) {
+        throw new Error('This delivery is not saved yet (' + err.message + ') — it is retried on its own.');
+      }
+      const res = await api('GET', '/documents?division=' + encodeURIComponent(po._division) +
+                            '&poLineId=' + encodeURIComponent(line.id) + '&poId=' + encodeURIComponent(po.id));
+      docs = (res && res.documents) || [];
+      // The freshest count there is for this delivery — its paperclip may be
+      // drawing one from before a colleague attached something.
+      setLineDocCount(po.id, line.id, docs.length);
+      paintLineClips(po);
+    } else {
+      const res = await api('GET', '/documents?division=' + encodeURIComponent(po._division) +
+                            '&poId=' + encodeURIComponent(po.id));
+      docs = (res && res.documents) || [];
+      docCounts[po.id] = docs.length;
+    }
   } catch (err) {
     loadError = err.message;
   }
+  if (seq !== _docsSheetSeq) return;
 
   const list = docs.length
     ? docs.map(d =>
         '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;padding:0.45rem 0;border-bottom:1px solid var(--border)">' +
           '<div style="min-width:0"><div style="font-size:0.84rem;word-break:break-all">' + esc(d.filename) + '</div>' +
           '<div style="font-size:0.7rem;color:var(--muted)">' + esc(d.uploaded_by || '') +
-            (d.uploaded_at ? ' · ' + esc(new Date(d.uploaded_at).toLocaleDateString('en-US')) : '') + '</div></div>' +
+            (d.uploaded_at ? ' · ' + esc(new Date(d.uploaded_at).toLocaleDateString('en-US')) : '') +
+            (line ? '' : esc(deliveryTagOf(po, d))) + '</div></div>' +
           '<button class="btn" onclick="openDoc(\'' + jsAttr(po._division) + '\',\'' + jsAttr(d.id) + '\',\'' + jsAttr(po.id) + '\')">Open</button>' +
         '</div>').join('')
     : '<div style="color:var(--muted);font-size:0.82rem;padding:0.5rem 0">Nothing attached yet.</div>';
 
   sheet.innerHTML =
-    '<h2>' + esc(po.po_number) + ' — attachments</h2>' +
+    heading +
+    (line ? '<div class="sub">' + lineDocsSubHTML(po, line) + '</div>' :
     '<div class="sub">Filed under ' + esc(divLabel(po._division)) +
       (po.project_id ? ', on ' + esc((projectFor(po._division, po.project_id) || {}).name || po.project_id) : ', with no job') +
       (po._division === GENERAL || hasJobs(po._division)
         ? ' — so it is on the paperclip in that division’s own tab too.'
         : ' — ' + esc(divLabel(po._division)) + ' has no Purchase Orders tab of its own, so it is kept with the order here.') +
-      '</div>' +
-    docsRetryHTML(po) +
+      '</div>') +
+    docsRetryHTML(po, lineId) +
     (loadError ? '<div class="scan-status err">' + esc(loadError) + '</div>' : list) +
     '<div class="sheet-actions">' +
+      (line ? '<button class="btn" onclick="openDocs(\'' + jsAttr(po.id) + '\')">All of ' + esc(po.po_number) + '</button>' : '') +
       '<button class="btn" onclick="closeDocs()">Close</button>' +
-      (capsFor(po._division).canEdit ? '<button class="btn btn-green" id="doc-add" onclick="addAttachment(\'' + jsAttr(po.id) + '\')">+ Add photo or file</button>' : '') +
+      (capsFor(po._division).canEdit
+        ? '<button class="btn btn-green" id="doc-add" onclick="addAttachment(\'' + jsAttr(po.id) + '\'' +
+            (line ? ',\'' + jsAttr(line.id) + '\'' : '') + ')">+ Add photo or file</button>'
+        : '') +
     '</div>';
+}
+
+/** Where a delivery's files are filed, said on its sheet. Only a division with
+ *  jobs has a tab that draws the delivery's paperclip too. */
+function lineDocsSubHTML(po, line) {
+  const code = lineCostCodeFor(po, line);
+  return 'Tickets and invoices for this delivery, filed under ' + esc(divLabel(po._division)) +
+    (po.project_id ? ', on ' + esc((projectFor(po._division, po.project_id) || {}).name || po.project_id) : ', with no job') +
+    '. Each one is on the order’s paperclip and in its folder too' +
+    (code ? ', and in the ' + esc(code) + ' cost-code folder' : '') +
+    (hasJobs(po._division) ? ' — and on this delivery in that division’s own tab.' : '.');
+}
+
+/**
+ * On the order's sheet, which delivery a file hangs off, if any: " · delivery
+ * INV-123". A file stays with the order it was attached under, so its delivery
+ * may have left the order since — a Daily Tracking delivery whose row now names
+ * another order, or one that was removed.
+ */
+function deliveryTagOf(po, d) {
+  const prefix = po.id + ':';
+  const names = (Array.isArray(d.po_line_ids) ? d.po_line_ids : [])
+    .map(String)
+    .filter(t => t.indexOf(prefix) === 0)
+    .map(t => {
+      const l = (po.lines || []).find(x => x && String(x.id) === t.slice(prefix.length));
+      return l ? 'delivery ' + lineLabel(l) : 'a delivery no longer on this order';
+    });
+  return names.length ? ' · ' + names.join(', ') : '';
 }
 
 async function openDoc(division, docId, poId) {
@@ -3900,7 +4211,8 @@ async function openDoc(division, docId, poId) {
   }
 }
 
-async function addAttachment(poId) {
+/** Attach a picked file to an order — or, given `lineId`, to one of its deliveries. */
+async function addAttachment(poId, lineId) {
   const po = purchaseOrders.find(p => p.id === poId);
   if (!po) return;
   const file = await pickImage('attach-capture');
@@ -3911,9 +4223,9 @@ async function addAttachment(poId) {
   let prepared = null;
   try {
     prepared = await prepareAttachment(file);
-    await attachToPO(po, prepared.blob, prepared.filename);
+    await attachToPO(po, prepared.blob, prepared.filename, { lineId });
     toast('Attached.');
-    await openDocs(poId);
+    await openDocs(poId, lineId);
     render();
   } catch (err) {
     if (btn) { btn.disabled = false; btn.textContent = '+ Add photo or file'; }
@@ -3922,17 +4234,19 @@ async function addAttachment(poId) {
     // Keep the file, the way the scan sheet keeps its photo. One taken with
     // the picker's camera is in no gallery to pick a second time, and only the
     // SAME file can be checked against an attach that may already have landed.
-    _docsRetry = { poId, blob: prepared.blob, filename: prepared.filename, unsure: Boolean(err.unconfirmed) };
-    await openDocs(poId);
+    _docsRetry = { poId, lineId, blob: prepared.blob, filename: prepared.filename, unsure: Boolean(err.unconfirmed) };
+    await openDocs(poId, lineId);
   }
 }
 
-/** The file a paperclip attach could not finish, offered again on its order's sheet. */
+/** The file a paperclip attach could not finish, offered again on the sheet it
+ *  was attached from: its order's, or its delivery's. */
 let _docsRetry = null;
 let _docsRetryBusy = false;
 
-function docsRetryHTML(po) {
+function docsRetryHTML(po, lineId) {
   if (!_docsRetry || _docsRetry.poId !== po.id) return '';
+  if ((liveLineId(po, _docsRetry.lineId) || null) !== (lineId || null)) return '';
   return '<div class="scan-status err">' +
       esc(_docsRetry.filename) + (_docsRetry.unsure
         ? ' may not have attached — the connection dropped while it was being filed. Trying again checks first.'
@@ -3952,7 +4266,7 @@ async function retryDocsAttach(poId) {
   const btn = document.getElementById('doc-retry');
   if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>Attaching…'; }
   try {
-    await attachToPO(po, held.blob, held.filename);
+    await attachToPO(po, held.blob, held.filename, { lineId: liveLineId(po, held.lineId) });
     if (_docsRetry === held) _docsRetry = null;
     toast('Attached.');
   } catch (err) {
@@ -3961,14 +4275,16 @@ async function retryDocsAttach(poId) {
   } finally {
     _docsRetryBusy = false;
   }
-  await openDocs(poId);
+  await openDocs(poId, liveLineId(po, held.lineId));
   render();
 }
 
 function dropDocsRetry(poId) {
   if (_docsRetryBusy) return;
-  if (_docsRetry && _docsRetry.poId === poId) _docsRetry = null;
-  openDocs(poId);
+  const held = _docsRetry && _docsRetry.poId === poId ? _docsRetry : null;
+  if (held) _docsRetry = null;
+  const po = purchaseOrders.find(p => p.id === poId);
+  openDocs(poId, held && po ? liveLineId(po, held.lineId) : undefined);
 }
 
 /* Close a sheet by clicking its backdrop, the way the other pages' modals do.

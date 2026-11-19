@@ -1821,11 +1821,12 @@ console.log('\n[a keystroke while a delete is in flight]');
     run2('refusal') === 'That order is being deleted', JSON.stringify(run2('refusal')));
   assert('and that row is gone as well',
     run2('purchaseOrders.length') === 0);
-  // Every direct caller has to handle that rejection. There are four, and each
-  // is either awaited inside a try, or has a .catch on it.
+  // Every direct caller has to handle that rejection. There are five, and each
+  // is either awaited (inside a try, or by settleOrderSave, whose callers
+  // catch it), or has a .catch on it.
   const direct = PAGE.split('\n').filter(l => /_savePONow\(/.test(l) && !/function _savePONow/.test(l));
   assert('every direct _savePONow call handles a rejection',
-    direct.length === 4 && direct.every(l => /\.catch\(|await _savePONow/.test(l)),
+    direct.length === 5 && direct.every(l => /\.catch\(|await _savePONow/.test(l)),
     JSON.stringify(direct.map(l => l.trim())));
 
   // ...and when the DELETE FAILS the order is still there, so what was typed
@@ -3194,6 +3195,284 @@ console.log('\n[a delivery\'s figures are kept key by key, and the tabs write no
       assert(`${f}:   and the cost row that delivery raised follows it on screen`,
         q('proj.dailyRows.find(r => r.id === "r1").units_purchased') === '14',
         QJ('proj.dailyRows.find(r => r.id === "r1")'));
+    }
+  }
+}
+
+// ── A paperclip on every delivery of an order (the division tabs) ──────────
+// A delivery ticket or invoice is attached to the delivery it came with: the
+// clip sits in the line's Invoice / Ticket # cell, counts from documents.js,
+// and opens documents.js's delivery dialog. The pieces that matter are run
+// here — the markup with a crafted id, the click, the in-place repaint that
+// must not take the cursor out of a box, the wait for the tab's own saves —
+// and the rest (the dialog, the attach, the counts cache) is documents.js's,
+// pinned by scripts/test-documents-frontend.js.
+console.log('\n[the division tabs: a paperclip on every delivery]');
+{
+  const CLIP = '\u{1F4CE}';
+  const TAB_FNS = ['esc', 'escT', 'openPODocs', 'openPOLineDocs', '_poDocsTip', '_poLineDocCount', '_poLineDocsTip',
+                   '_poLineClipHTML', '_poDocClipsRepaint', '_poLineCountsRefresh'];
+  // Quotes, an apostrophe, markup: whatever the full-list PUT let through.
+  const PO_ID   = 'p"1 <b>x</b>';
+  const LINE_ID = "l'1\"><img src=x onerror=\"window.__pwned=1\">";
+
+  for (const f of ['tracker.html', 'paving.html', 'kiewit-pinetree.html']) {
+    const src = read(f);
+    const rp = requireFn(src, 'renderPOTab', f);
+
+    // ── Where it is drawn ──
+    const invLine = rp.split('\n').find(l => l.includes("inp('invoice_num'")) || '';
+    const at = s => invLine.indexOf(s);
+    assert(`${f}: the paperclip sits in the Invoice / Ticket # cell, after the box and the "from Daily Tracking" tag`,
+      at("inp('invoice_num'") >= 0 && at("inp('invoice_num'") < at('from Daily Tracking')
+        && at('from Daily Tracking') < at('${_poLineClipHTML(po, line)}')
+        && /\$\{_poLineClipHTML\(po, line\)\}<\/div><\/td>$/.test(invLine.trim()), invLine.slice(-200));
+    assert(`${f}:   once, on every line, whoever is looking (no role decides it)`,
+      (rp.match(/_poLineClipHTML\(/g) || []).length === 1 && !/perm\.\w+ \? [^:]*_poLineClipHTML/.test(rp));
+    const subHead = sliceSource(rp, '<thead><tr style="font-size:0.63rem', '</tr></thead>', `${f} deliveries header`, 'Employee');
+    assert(`${f}:   and adds no column to the deliveries table`, (subHead.match(/<th /g) || []).length === 9,
+      String((subHead.match(/<th /g) || []).length));
+    assert(`${f}: the delivery counts are asked for with the order counts, division-wide, when the tab first draws`,
+      /_poDocCountsLoaded = true;\s*\n\s*_docsEnsureConfigured\(\);\s*\n\s*FCTDocuments\.refreshPoCounts\(\)\.then\(\(\) => _poDocClipsRepaint\(\)\);\s*\n\s*_poLineCountsRefresh\(\);/.test(rp));
+    assert(`${f}:   and land as a repaint in place, never a redraw of the tab`,
+      !/refreshPo(?:Line)?Counts\(\)\.then\([^;]*renderPOTab/.test(rp));
+
+    // ── documents.js is told how to wait for the saves, and who is uploading ──
+    {
+      const dctx = vm.createContext({ console, Promise });
+      vm.runInContext(`
+        var cfgSeen = null, repaints = 0, renders = 0, bidStale = 0, procChanged = 0, settles = 0;
+        var _docsConfigured = false, activeTab = 'po', docsProjectId = null, DIVISION = 'x';
+        var perm = { canEdit: true, canDeleteProject: false, isAdmin: false };
+        var fctUser = { username: 'jdoe', name: 'Jane Doe' };
+        var purchaseOrders = [];
+        var window = { FCTDocuments: { configure(c) { cfgSeen = c; } } };
+        var FCTDocuments = window.FCTDocuments;
+        function getProj() { return null; }
+        function docsCostCodesFor() { return []; }
+        function renderPOTab() { renders++; }
+        function _poDocClipsRepaint() { repaints++; }
+        function _bidDocCountsStale() { bidStale++; }
+        function _procDocCountsChanged() { procChanged++; }
+        function _poSettleSaves() { settles++; return Promise.resolve(true); }
+      ` + requireFn(src, '_docsEnsureConfigured', f) + '\n_docsEnsureConfigured();', dctx);
+      const cfg = dctx.cfgSeen || {};
+      assert(`${f}: documents.js is told the login name the server records as the uploader (Detach on one's own files)`,
+        typeof cfg.getUserName === 'function' && cfg.getUserName() === 'jdoe');
+      const settled = typeof cfg.settlePurchaseOrders === 'function' ? await cfg.settlePurchaseOrders() : undefined;
+      assert(`${f}:   and waits for the tab's saves of the orders before attaching to a delivery`,
+        settled === true && dctx.settles === 1, String(settled));
+      cfg.onChange();
+      assert(`${f}: a document attached or detached repaints the paperclips in place, without redrawing the tab`,
+        dctx.repaints === 1 && dctx.renders === 0 && dctx.bidStale === 1,
+        JSON.stringify({ repaints: dctx.repaints, renders: dctx.renders, bidStale: dctx.bidStale }));
+    }
+
+    // ── The markup, drawn and clicked ──
+    const mkTab = ({ canEdit = true } = {}) => {
+      const dom = new JSDOM('<!doctype html><body><div id="po-root"></div></body>',
+        { runScripts: 'dangerously', url: 'http://localhost/' });
+      const w = dom.window;
+      w.eval(TAB_FNS.map(n => requireFn(src, n, f)).join('\n'));
+      w.eval(`var perm = { canEdit: ${canEdit} }; var purchaseOrders = []; var _docsEnsured = 0;
+              function _docsEnsureConfigured() { _docsEnsured++; }`);
+      w.__calls = [];
+      w.__lineCounts = {};
+      w.__poCounts = {};
+      w.FCTDocuments = {
+        poCount: id => w.__poCounts[id] || 0,
+        poLineCount: (p, l) => (w.__lineCounts[p] && w.__lineCounts[p][l]) || 0,
+        openPOLineAttach: a => { w.__calls.push(['line', JSON.parse(JSON.stringify(a))]); },
+        openAttach: a => { w.__calls.push(['order', JSON.parse(JSON.stringify(a))]); },
+      };
+      return w;
+    };
+    const order = () => ({ id: PO_ID, po_number: 'PO-0007', supplier: 'Acme', project_id: 'job1', cost_code: '420', sub_code: '01',
+      lines: [
+        { id: LINE_ID, invoice_num: ' INV-7 ', date: '2026-11-02', qty: '3', cost_code: '', sub_code: '' },
+        { id: 'dr-row1', invoice_num: '', date: '2026-11-03', cost_code: 'Stormwater', sub_code: '0420', source: 'daily' },
+      ] });
+    {
+      const w = mkTab();
+      const po = order();
+      w.purchaseOrders = [po];
+      const root = w.document.getElementById('po-root');
+      const draw = () => {
+        root.innerHTML = `<table><tbody><tr><td>${w._poLineClipHTML(po, po.lines[0])}</td><td>${w._poLineClipHTML(po, po.lines[1])}</td></tr></tbody></table>`;
+        return root.querySelectorAll('button.po-line-clip');
+      };
+      let clips = draw();
+      assert(`${f}: a crafted delivery id stays inside the clip's attributes`,
+        clips.length === 2 && !root.querySelector('img') && !w.__pwned, root.innerHTML.slice(0, 300));
+      assert(`${f}:   and comes back from them exactly`,
+        clips[0].dataset.lineDocsPo === PO_ID && clips[0].dataset.lineDocsLine === LINE_ID,
+        JSON.stringify(clips[0].dataset));
+      assert(`${f}: the ids reach the opener through dataset, never the handler string`,
+        clips[0].getAttribute('onclick') === 'openPOLineDocs(this.dataset.lineDocsPo, this.dataset.lineDocsLine)',
+        clips[0].getAttribute('onclick'));
+      assert(`${f}: the clip is a plain button with attributes of its own — not a line field, not a delete`,
+        clips[0].type === 'button' && ['data-po-id', 'data-line-id', 'data-line-field', 'data-po-field', 'data-tab', 'data-po-docs']
+          .every(a => !clips[0].hasAttribute(a)) && !clips[0].classList.contains('del-btn'),
+        clips[0].outerHTML.slice(0, 300));
+      assert(`${f}: nothing attached: a muted clip offering the attach`,
+        clips[0].textContent === CLIP && !clips[0].classList.contains('has-docs')
+          && clips[0].title === 'Attach a delivery ticket or invoice' && clips[0].getAttribute('aria-label') === clips[0].title,
+        clips[0].outerHTML);
+      w.__lineCounts = { [PO_ID]: { [LINE_ID]: 3, 'dr-row1': 1 } };
+      clips = draw();
+      assert(`${f}: a count from documents.js: the clip lit, with the number`,
+        clips[0].textContent === CLIP + '3' && clips[0].classList.contains('has-docs')
+          && clips[0].title === '3 documents attached to this delivery' && clips[0].getAttribute('aria-label') === clips[0].title,
+        clips[0].outerHTML);
+      assert(`${f}:   counted per delivery`, clips[1].textContent === CLIP + '1' && clips[1].title === '1 document attached to this delivery');
+
+      clips[0].click();
+      const [kind, a] = w.__calls.pop() || [];
+      assert(`${f}: a click opens documents.js's delivery dialog for that order and that delivery`,
+        kind === 'line' && a.po.id === PO_ID && a.line.id === LINE_ID && w._docsEnsured >= 1, JSON.stringify([kind, a]));
+      assert(`${f}:   with the order's job and code (where the file is filed) and the invoice # as its name`,
+        a && a.po.project_id === 'job1' && a.po.cost_code === '420' && a.po.po_number === 'PO-0007' && a.label === 'INV-7',
+        JSON.stringify(a));
+      clips[1].click();
+      const [, b] = w.__calls.pop() || [];
+      assert(`${f}: a Daily Tracking delivery is handed over with its row's own code, unnamed when it has no invoice #`,
+        b && b.line.id === 'dr-row1' && b.line.cost_code === 'Stormwater' && b.line.source === 'daily' && b.label === '',
+        JSON.stringify(b));
+
+      assert(`${f}: a delivery no longer on the order opens nothing`,
+        (w.openPOLineDocs(PO_ID, 'gone'), w.openPOLineDocs('nope', LINE_ID), w.__calls.length === 0));
+
+      // The deferred script has not run yet: wait for it, as the order's clip does.
+      const FD = w.FCTDocuments;
+      const timers = [];
+      const realTimeout = w.setTimeout;
+      w.setTimeout = (fn, ms) => { timers.push([fn, ms]); return 0; };
+      w.FCTDocuments = undefined;
+      clips[0].click();
+      assert(`${f}: before documents.js has loaded, the click waits for it`,
+        timers.length === 1 && timers[0][1] === 150 && w.__calls.length === 0);
+      w.FCTDocuments = FD;
+      timers[0][0]();
+      assert(`${f}:   and opens the delivery once it has`,
+        w.__calls.length === 1 && w.__calls[0][0] === 'line' && w.__calls[0][1].line.id === LINE_ID);
+      w.setTimeout = realTimeout;
+      w.__calls.length = 0;
+
+      // A documents.js from before delivery attachments.
+      delete FD.openPOLineAttach;
+      clips[0].click();
+      const [okind, o] = w.__calls.pop() || [];
+      assert(`${f}: a documents.js without delivery attachments opens the order's paperclip instead`,
+        okind === 'order' && o.id === PO_ID, JSON.stringify([okind, o]));
+      assert(`${f}: the order's paperclip is handed its deliveries, so a delivery's file is listed under its name`,
+        o && Array.isArray(o.lines) && o.lines.length === 2 && o.lines[0].id === LINE_ID && o.lines[0].invoice_num === ' INV-7 '
+          && Object.keys(o.lines[0]).sort().join() === 'date,id,invoice_num', JSON.stringify(o && o.lines));
+      delete FD.poLineCount;
+      clips = draw();
+      assert(`${f}:   and its clips draw unlit rather than throw`, clips.length === 2 && clips[0].textContent === CLIP);
+      w.FCTDocuments = undefined;
+      clips = draw();
+      assert(`${f}:   as they do before documents.js has loaded at all`, clips.length === 2 && clips[0].textContent === CLIP);
+    }
+    {
+      const w = mkTab({ canEdit: false });
+      const po = order();
+      const root = w.document.getElementById('po-root');
+      root.innerHTML = w._poLineClipHTML(po, po.lines[0]);
+      const clip = root.querySelector('button.po-line-clip');
+      assert(`${f}: a viewer gets the clip too (to open and download), not offered an attach`,
+        clip && clip.title === 'No documents attached to this delivery', clip && clip.title);
+    }
+
+    // ── Counts landing: repainted in place ──
+    {
+      const w = mkTab();
+      const po = order();
+      w.purchaseOrders = [po];
+      const root = w.document.getElementById('po-root');
+      root.innerHTML = `<button data-po-docs="${w.esc(PO_ID)}" style="color:var(--muted)">${CLIP}</button>
+        <table><tbody><tr>
+          <td><div><div><input id="inv" data-po-id="x" data-line-id="y" data-line-field="invoice_num"></div>${w._poLineClipHTML(po, po.lines[0])}</div></td>
+          <td>${w._poLineClipHTML(po, po.lines[1])}</td>
+        </tr></tbody></table>`;
+      const inv = root.querySelector('#inv');
+      inv.focus();
+      inv.value = 'INV-12';
+      const before = [...root.querySelectorAll('button')];
+      w.__lineCounts = { [PO_ID]: { [LINE_ID]: 2 } };
+      w.__poCounts = { [PO_ID]: 4 };
+      w._poDocClipsRepaint();
+      const after = [...root.querySelectorAll('button')];
+      const [orderClip, lineClip, dailyClip] = after;
+      assert(`${f}: counts landing repaint the clips in place — the same buttons, the cursor left where it was`,
+        after.length === 3 && after.every((b, i) => b === before[i]) && w.document.activeElement === inv
+          && inv.value === 'INV-12' && root.querySelector('#inv') === inv);
+      assert(`${f}:   the delivery's clip lit with its count`,
+        lineClip.textContent === CLIP + '2' && lineClip.classList.contains('has-docs')
+          && lineClip.title === '2 documents attached to this delivery' && lineClip.getAttribute('aria-label') === lineClip.title,
+        lineClip.outerHTML);
+      assert(`${f}:   another delivery of the same order left at nothing`,
+        dailyClip.textContent === CLIP && !dailyClip.classList.contains('has-docs'));
+      assert(`${f}:   and the order's own paperclip too, drawn as the tab draws it`,
+        orderClip.textContent === CLIP + '4' && orderClip.title === '4 attached documents' && orderClip.style.color === 'var(--green)',
+        orderClip.outerHTML);
+      w.__lineCounts = {};
+      w.__poCounts = {};
+      w._poDocClipsRepaint();
+      assert(`${f}: a count that drops to nothing unlights them again`,
+        lineClip.textContent === CLIP && !lineClip.classList.contains('has-docs') && lineClip.title === 'Attach a delivery ticket or invoice'
+          && orderClip.textContent === CLIP && orderClip.title === 'Attach a document' && orderClip.style.color === 'var(--muted)');
+      w.FCTDocuments = undefined;
+      let threw = null;
+      try { w._poDocClipsRepaint(); } catch (err) { threw = err; }
+      assert(`${f}: a repaint before documents.js has loaded does nothing`, threw === null && lineClip.textContent === CLIP);
+
+      // The division-wide count: one request, then the repaint — whatever it answers.
+      let repaints = 0;
+      w._poDocClipsRepaint = () => { repaints++; };
+      w.FCTDocuments = { poCount: () => 0 };
+      let r = await w._poLineCountsRefresh();
+      assert(`${f}: a documents.js without delivery counts is asked nothing`, r === null && repaints === 0);
+      const asks = [];
+      w.FCTDocuments.refreshPoLineCounts = (...args) => { asks.push(args); return Promise.resolve({ [PO_ID]: { [LINE_ID]: 1 } }); };
+      r = await w._poLineCountsRefresh();
+      assert(`${f}: the delivery counts are asked for division-wide (no order named), then repainted`,
+        asks.length === 1 && asks[0].length === 0 && repaints === 1 && r && r[PO_ID][LINE_ID] === 1, JSON.stringify(asks));
+      w.FCTDocuments.refreshPoLineCounts = () => Promise.reject(new Error('offline'));
+      r = await w._poLineCountsRefresh();
+      assert(`${f}:   a failed count never rejects`, r === null && repaints === 2);
+      w.FCTDocuments.refreshPoLineCounts = () => { throw new Error('host bug'); };
+      r = await w._poLineCountsRefresh();
+      assert(`${f}:   nor does one that throws outright`, r === null && repaints === 3);
+    }
+
+    // ── Waiting for the tab's saves before an attach ──
+    {
+      const sctx = vm.createContext({ Promise });
+      vm.runInContext(`
+        var _poSaving = false, _poSaveAgain = false, _poSaveFailed = false, ticks = 0, lastMs = 0, onTick = null;
+        function setTimeout(fn, ms) { ticks++; lastMs = ms; if (onTick) onTick(ticks); Promise.resolve().then(fn); }
+      ` + 'async ' + requireFn(src, '_poSettleSaves', f), sctx);
+      const run = async (state, onTick) => {
+        Object.assign(sctx, { _poSaving: false, _poSaveAgain: false, _poSaveFailed: false, ticks: 0, onTick: onTick || null }, state);
+        return { ok: await sctx._poSettleSaves(), ticks: sctx.ticks };
+      };
+      let r = await run({});
+      assert(`${f}: nothing out: settled at once`, r.ok === true && r.ticks === 0, JSON.stringify(r));
+      r = await run({ _poSaving: true }, n => { if (n === 3) sctx._poSaving = false; });
+      assert(`${f}: a save out: settled once it lands`, r.ok === true && r.ticks === 3, JSON.stringify(r));
+      r = await run({ _poSaving: true, _poSaveAgain: true }, n => {
+        if (n === 2) sctx._poSaveAgain = false;      // the follow-up save starts…
+        if (n === 4) sctx._poSaving = false;         // …and lands
+      });
+      assert(`${f}:   and the follow-up queued behind it too`, r.ok === true && r.ticks === 4, JSON.stringify(r));
+      r = await run({ _poSaving: true }, n => { if (n === 1) { sctx._poSaving = false; sctx._poSaveFailed = true; } });
+      assert(`${f}: a save that failed: not settled (the delivery may not be stored)`, r.ok === false, JSON.stringify(r));
+      r = await run({ _poSaveFailed: true });
+      assert(`${f}:   nor while an earlier failed save waits for its retry`, r.ok === false && r.ticks === 0, JSON.stringify(r));
+      r = await run({ _poSaving: true });
+      assert(`${f}: a save that never answers is waited for 15 s, no longer`,
+        r.ok === false && r.ticks === 150 && sctx.lastMs * r.ticks === 15000, JSON.stringify(r));
     }
   }
 }

@@ -16,12 +16,16 @@
  *     getPurchaseOrders: () => [{ id, po_number, supplier, project_id }],
  *     perm:              { canUpload, canManage, canDelete },
  *     getUserName:       () => 'ben',   // optional — who the server records as uploaded_by
+ *     settlePurchaseOrders: () => Promise<boolean>, // optional — resolves once
+ *                        // no PO save is in flight or owed; false = one is
+ *                        // still owed (the delivery may not be stored yet)
  *   });
  *
  * then calls FCTDocuments.renderTab(mountEl) when the tab opens,
- * FCTDocuments.openAttach(po) from a PO row, and
- * FCTDocuments.openProcurementAttach(line) from the paperclip on a line of the
- * Procurement sheet.
+ * FCTDocuments.openAttach(po) from a PO row,
+ * FCTDocuments.openPOLineAttach({ po, line, label }) from the paperclip on a
+ * delivery line of a PO, and FCTDocuments.openProcurementAttach(line) from the
+ * paperclip on a line of the Procurement sheet.
  *
  * File bytes go straight from the browser to object storage with a presigned
  * URL — see api/lib/storage.js for why they cannot go through the API.
@@ -101,6 +105,29 @@
   // different job at once).
   let procTicket = 0;
   const procLanded = {};
+
+  // How many documents hang off each delivery line of a purchase order:
+  //   poLineCounts['<po id>']['<line id>'] = 2
+  // What the paperclip in each delivery row of the PO tab draws its number
+  // from. Keyed by order first, because that is how the server keys a line
+  // link ("<poId>:<lineId>"): a Daily Tracking delivery that moves to another
+  // order keeps its line id, and its files stay with the order they were
+  // attached under — the line on the new order starts at nothing.
+  //
+  // Null-prototype maps, all three: order and line ids are free-form enough
+  // ([A-Za-z0-9_.-]) that "__proto__" is a legal one, and on a plain object
+  // writing that key re-parents the map instead of storing a count.
+  let poLineCounts = Object.create(null);
+  // Stale-answer guard, the procurement one (procTicket/procLanded) with one
+  // more scope: a count request is either division-wide (every order the PO
+  // tab draws) or for one order. Every request takes the next ticket. An
+  // answer for an order is dropped only when a LATER request covering that
+  // order — its own, or a division-wide one — has already landed, so a slow
+  // division-wide count cannot undo the fresher count an upload just fetched
+  // for one order, and a per-order count never throws away the others.
+  let poLineTicket = 0;
+  const poLineLanded = Object.create(null);   // poId → ticket of the answer in hand
+  let poLineLandedAll = 0;                    // ticket of the last division-wide answer
 
   // Bumped by every load(). A response whose generation is stale — because the
   // job picker moved on, or because openAttach() started a load for a PO on
@@ -496,6 +523,117 @@
     }
     procCounts[key] = counts;
     return counts;
+  }
+
+  // ── Purchase-order delivery lines ───────────────────────────────────
+  // A line attachment is linked to its line as "<poId>:<lineId>" (link type
+  // po_line on the server). The order id never holds a colon — the server
+  // refuses one — so the first colon is the split.
+  function parsePoLineTarget(t) {
+    const s = String(t == null ? '' : t);
+    const at = s.indexOf(':');
+    if (at <= 0 || at === s.length - 1) return null;
+    return { poId: s.slice(0, at), lineId: s.slice(at + 1) };
+  }
+
+  // A delivery date ("2026-10-03") as it reads on screen. Read as a calendar
+  // day where the browser is: new Date('2026-10-03') is midnight UTC, which is
+  // still the day before anywhere west of Greenwich.
+  function fmtDay(s) {
+    const str = String(s == null ? '' : s).trim();
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(str);
+    if (!m) return str;
+    const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+    if (isNaN(d)) return str;
+    return d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+  }
+
+  // What a delivery is called: its invoice / ticket number, else its date,
+  // else '' (the caller says "Delivery").
+  function deliveryName(line) {
+    if (!line) return '';
+    const inv = String(line.invoice_num == null ? '' : line.invoice_num).trim();
+    return inv || fmtDay(line.date);
+  }
+
+  // { lineId: n } from whatever the server sent for one order: positive
+  // finite numbers only, in a null-prototype map (see poLineCounts).
+  function cleanLineCounts(raw) {
+    const out = Object.create(null);
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+    for (const lineId of Object.keys(raw)) {
+      const v = Number(raw[lineId]);
+      if (Number.isFinite(v) && v > 0) out[lineId] = v;
+    }
+    return out;
+  }
+
+  // The newest answer in hand for `poId`: its own, or a division-wide one.
+  function poLineLandedFor(poId) {
+    return Math.max(own(poLineLanded, poId) || 0, poLineLandedAll);
+  }
+
+  /**
+   * Fill in how many documents are attached to each delivery line:
+   * refreshPoLineCounts() for every order in the division — one small GET,
+   * what the PO tab asks for, since it draws every order's lines — and
+   * refreshPoLineCounts(poId) for one order. The answer lands only in
+   * poLineCounts; asking never loads a job.
+   *
+   * Resolves to the whole { poId: { lineId: n } } map for a division-wide
+   * count, and to that order's { lineId: n } for one order.
+   *
+   * Never rejects, and resolves null on a failure rather than an empty map,
+   * keeping the last good counts — the same contract as
+   * refreshProcurementCounts: a host that read "{}" as "counted, nothing
+   * attached" would blank every delivery's paperclip over one dropped
+   * request. An answer with no counts in it at all (a server from before
+   * the endpoint answers with the General area's listing) is a failure too.
+   */
+  async function refreshPoLineCounts(poId) {
+    const one = poId == null ? '' : String(poId).trim();
+    const ticket = ++poLineTicket;
+    let data;
+    try {
+      data = await api('GET', `/documents${q(one ? { poLineCounts: 1, poId: one } : { poLineCounts: 1 })}`);
+    } catch (err) {
+      console.warn('[documents] delivery-line counts refresh failed, keeping the last good set:', err.message);
+      return null;
+    }
+    const got = data && data.counts;
+    if (!got || typeof got !== 'object' || Array.isArray(got)) {
+      console.warn('[documents] delivery-line counts came back without counts, keeping the last good set');
+      return null;
+    }
+
+    if (one) {
+      // A request covering this order that went out after ours has already
+      // answered; its numbers include whatever happened in between.
+      if (poLineLandedFor(one) > ticket) return own(poLineCounts, one) || Object.create(null);
+      poLineLanded[one] = ticket;
+      const counts = cleanLineCounts(own(got, one));
+      if (Object.keys(counts).length) poLineCounts[one] = counts;
+      else delete poLineCounts[one];
+      return counts;
+    }
+
+    // Division-wide: an order missing from the answer has nothing attached
+    // to any of its lines — unless a later count of that order has already
+    // landed, in which case its numbers stand.
+    const next = Object.create(null);
+    const ids = new Set([...Object.keys(poLineCounts), ...Object.keys(got)]);
+    for (const id of ids) {
+      if (poLineLandedFor(id) > ticket) {
+        const kept = own(poLineCounts, id);
+        if (kept) next[id] = kept;
+        continue;
+      }
+      const counts = cleanLineCounts(own(got, id));
+      if (Object.keys(counts).length) next[id] = counts;
+    }
+    poLineCounts = next;
+    poLineLandedAll = Math.max(poLineLandedAll, ticket);
+    return poLineCounts;
   }
 
   // ── Folder tree ─────────────────────────────────────────────────────
@@ -1191,10 +1329,18 @@
    * a document vault turns into a junk drawer. The PO field is optional and is
    * what makes the link work from this side as well as from the PO tab.
    */
-  function openUpload({ folderId, files = [], poId = null, lockPo = false, projectId, procurement = null }) {
+  function openUpload({ folderId, files = [], poId = null, lockPo = false, projectId, procurement = null, poLine = null }) {
     // Default to the tab's selection, but let callers override: openAttach()
     // works against the PO's own job, which is not always the one on screen.
     if (projectId === undefined) projectId = cfg.getProjectId();
+    // `poLine` is the purchase-order delivery this upload is attached to,
+    // { poId, lineId, label, poNumber, costCode } — fixed, like the order it
+    // sits on, because the paperclip it came from belongs to that one
+    // delivery. The server lists the file on the line AND on the order, files
+    // it in the order's own folder, and — on a job — in the cost-code folder
+    // of the delivery's code, whatever folder is picked here.
+    if (poLine && !poId) poId = poLine.poId;
+    const lineCode = poLine ? String(poLine.costCode == null ? '' : poLine.costCode).trim() : '';
     // `procurement` is the Procurement sheet line this upload is attached to,
     // { id, label, costCode } — fixed, like a pinned PO, because the paperclip
     // it came from belongs to that one line. A file attached to a line is
@@ -1213,6 +1359,18 @@
       : procCode
         ? `<div data-proc-hint style="${S.muted};margin-top:0.25rem">Filed under cost code ${esc(procCode)} as well, whichever folder you pick.</div>`
         : `<div data-proc-hint style="${S.muted};margin-top:0.25rem">This line has no cost code yet, so the file is filed only in the folder you pick.</div>`;
+    const deliveryLine = poLine ? `
+        <div id="fctdoc-poline" data-po-line="${esc(`${poLine.poId}:${poLine.lineId}`)}"
+             title="Fixed: this upload is attached to the delivery it was opened from"
+             style="${S.input};width:100%;box-sizing:border-box;opacity:0.85;cursor:default">
+          Delivery: <strong>${esc(poLine.label || 'Delivery')}</strong>
+        </div>` : '';
+    // Said in place of the order's own hint, which this one includes.
+    const poHint = !poId ? ''
+      : !poLine
+        ? `<div style="${S.muted};margin-top:0.25rem">Filed under the purchase order as well, whichever folder you pick.</div>`
+        : `<div data-po-line-hint style="${S.muted};margin-top:0.25rem">Also listed on the order and filed under its folder${
+            lineCode ? ` and the ${esc(lineCode)} cost-code folder` : ''}, whichever folder you pick.</div>`;
     const m = modal('Upload documents', `
       <div style="display:flex;flex-direction:column;gap:0.85rem">
         <div>
@@ -1221,10 +1379,11 @@
           <div id="fctdoc-filelist" style="${S.muted};margin-top:0.35rem"></div>
         </div>
         ${procLine}
+        ${deliveryLine}
         <div>
           <label style="display:block;${S.muted};margin-bottom:0.25rem">Folder <span style="color:var(--red,#ef4444)">*</span></label>
           ${folderPickerHTML('fctdoc-folder', folderId, '— pick a folder —')}
-          ${poId ? `<div style="${S.muted};margin-top:0.25rem">Filed under the purchase order as well, whichever folder you pick.</div>` : ''}
+          ${poHint}
           ${procHint}
         </div>
         <div>
@@ -1245,6 +1404,20 @@
 
     wireFolderFilter(m.body, 'fctdoc-folder', '— pick a folder —');
     wirePoFilter(m.body, 'fctdoc-po', projectId);
+
+    // The locked picker lists only what the host listed. A delivery's order
+    // goes up with the file either way (from the closure, below), so show it
+    // rather than a "— none —" that contradicts the hint under the folder.
+    if (poLine) {
+      const sel = m.body.querySelector('#fctdoc-po');
+      if (sel && sel.value !== String(poLine.poId)) {
+        const opt = document.createElement('option');
+        opt.value = String(poLine.poId);
+        opt.textContent = poLine.poNumber || String(poLine.poId);
+        sel.appendChild(opt);
+        sel.value = String(poLine.poId);
+      }
+    }
 
     const fileInput = m.body.querySelector('#fctdoc-files');
     const fileList  = m.body.querySelector('#fctdoc-filelist');
@@ -1292,7 +1465,10 @@
       }
 
       const chosenFolder = m.body.querySelector('#fctdoc-folder').value;
-      const chosenPo     = m.body.querySelector('#fctdoc-po').value || null;
+      // A delivery's order comes from the closure, like the procurement line:
+      // the picker can only show an order the host listed, and a line link
+      // sent without its order is refused outright.
+      const chosenPo     = poLine ? poLine.poId : (m.body.querySelector('#fctdoc-po').value || null);
       const note         = m.body.querySelector('#fctdoc-note').value.trim();
 
       if (!picked.length)   { fail('Pick at least one file.'); return; }
@@ -1309,11 +1485,15 @@
         progress.textContent = `Uploading ${done + failed + 1} of ${picked.length}: ${file.name}`;
         try {
           const chosenPoRow = (cfg.getPurchaseOrders() || []).find(p => p.id === chosenPo);
+          let poNumber = chosenPoRow && chosenPoRow.po_number;
+          // An order the host did not list still names its folder properly.
+          if (poLine && !poNumber && poLine.poNumber) poNumber = poLine.poNumber;
           await uploadOne(file, {
             folderId: chosenFolder, poId: chosenPo,
-            poNumber: chosenPoRow && chosenPoRow.po_number,
+            poNumber,
             note, projectId,
             procurementId: procurement ? procurement.id : undefined,
+            poLineId: poLine ? poLine.lineId : undefined,
           });
           done++;
         } catch (err) {
@@ -1365,6 +1545,7 @@
         await load(projectId, { force: true });
         await refreshPoCounts();
         await refreshProcurementCounts(projectId);
+        await refreshPoLineCounts();
         if (cfg.onChange) cfg.onChange();
         render();
       } catch (err) {
@@ -1436,7 +1617,7 @@
     return btoa(binary);
   }
 
-  async function uploadOne(file, { folderId, poId, poNumber, note, projectId, procurementId }) {
+  async function uploadOne(file, { folderId, poId, poNumber, note, projectId, procurementId, poLineId }) {
     const prepared = await maybeDownscale(file);
 
     // 1. Ticket. Nothing is written until step 3, so an abandoned ticket costs
@@ -1487,6 +1668,12 @@
         // the line's cost code as well; left undefined, JSON drops the key and
         // every other upload's body is exactly what it was.
         procurementId,
+        // The purchase-order delivery this file is attached to, when it came
+        // from one — always with its order in poId. The server checks the
+        // delivery is on that order, links both, and files the document in
+        // the order's folder and its cost-code folder. Undefined drops the
+        // key, the same as procurementId.
+        poLineId,
       });
     } catch (err) {
       try {
@@ -1654,6 +1841,12 @@
   }
 
   // ── Link an existing document to a PO ───────────────────────────────
+  // How many of order `poId`'s deliveries the document is on. A line link is
+  // "<poId>:<lineId>", and neither part can hold a colon.
+  function deliveriesOn(doc, poId) {
+    return ((doc && doc.po_line_ids) || []).filter(t => String(t).split(':')[0] === String(poId)).length;
+  }
+
   function openLinkToPo(id) {
     const doc = documents.find(d => d.id === id);
     if (!doc) return;
@@ -1672,8 +1865,12 @@
             ${doc.po_ids.map(poId => {
               const po = (cfg.getPurchaseOrders() || []).find(p => p.id === poId);
               const label = po ? poLabel(po) : poId;
+              // A file on one of the order's deliveries comes off them with
+              // the order (the server takes both): say so where it is decided.
+              const n = deliveriesOn(doc, poId);
               return `<div style="display:flex;align-items:center;gap:0.5rem;font-size:0.8rem;padding:0.2rem 0">
-                        <span style="flex:1 1 auto">${esc(label)}</span>
+                        <span style="flex:1 1 auto">${esc(label)}${n ? `
+                          <span data-unlink-deliveries="${esc(poId)}" style="${S.muted};display:block">Also on ${n === 1 ? 'one of its deliveries' : `${n} of its deliveries`}. Removing it takes it off ${n === 1 ? 'that delivery' : 'those'} too.</span>` : ''}</span>
                         <button data-unlink="${esc(poId)}" style="${S.btn}">Remove</button>
                       </div>`;
             }).join('')}
@@ -1703,6 +1900,7 @@
         await load(projectId, { force: true });
         await refreshPoCounts();
         await refreshProcurementCounts(projectId);
+        await refreshPoLineCounts();
         if (cfg.onChange) cfg.onChange();
         render();
         toast('Linked.');
@@ -1711,15 +1909,19 @@
 
     m.body.querySelectorAll('[data-unlink]').forEach(btn => {
       btn.addEventListener('click', async () => {
+        const offDeliveries = deliveriesOn(doc, btn.dataset.unlink);
         try {
           await api('PATCH', `/documents${q({ id })}`, { removePoId: btn.dataset.unlink });
           m.close();
           await load(projectId, { force: true });
           await refreshPoCounts();
           await refreshProcurementCounts(projectId);
+          await refreshPoLineCounts();
           if (cfg.onChange) cfg.onChange();
           render();
-          toast('Unlinked. The file is still in its folder.');
+          toast(offDeliveries
+            ? `Unlinked from the order and ${offDeliveries === 1 ? 'its delivery' : `${offDeliveries} of its deliveries`}. The file is still in its folder.`
+            : 'Unlinked. The file is still in its folder.');
         } catch (err) { toast(err.message, 'error'); }
       });
     });
@@ -1758,6 +1960,8 @@
         // A deleted file stops counting on every procurement line it was on —
         // and those lines are on the file's own job.
         await refreshProcurementCounts(jobOf(doc, cfg.getProjectId()));
+        // …and on every delivery it hangs off, on whatever order.
+        await refreshPoLineCounts();
         if (cfg.onChange) cfg.onChange();
         render();
         toast('Deleted. Recoverable for 30 days.');
@@ -1823,6 +2027,7 @@
           await load(cfg.getProjectId(), { force: true });
           await refreshPoCounts();
           await refreshProcurementCounts(restoredJob);
+          await refreshPoLineCounts();
           if (cfg.onChange) cfg.onChange();
           render();
           toast('Restored.');
@@ -2052,6 +2257,30 @@
       attached = (await api('GET', `/documents${q({ poId: po.id })}`)).documents || [];
     } catch (err) { toast(err.message, 'error'); return; }
 
+    // A file attached to one of the order's deliveries is on the order too
+    // (the server links both), so it is listed here like any other — tagged
+    // with the delivery it hangs off, named from po.lines when the host
+    // passes them. A delivery no longer on the order (a Daily Tracking one
+    // moved to another order, a line deleted) keeps its files here.
+    const lineIdsOn = d => (d.po_line_ids || [])
+      .map(parsePoLineTarget)
+      .filter(t => t && t.poId === String(po.id))
+      .map(t => t.lineId);
+    const deliveryTag = d => {
+      const ids = lineIdsOn(d);
+      if (!ids.length) return '';
+      if (!Array.isArray(po.lines)) {
+        return ` · <span data-adelivery>on ${ids.length === 1 ? 'a delivery' : `${ids.length} deliveries`}</span>`;
+      }
+      const names = ids.map(id => {
+        const l = po.lines.find(x => x && String(x.id) === id);
+        if (!l) return 'a delivery no longer on this order';
+        const name = deliveryName(l);
+        return name ? `delivery ${name}` : 'a delivery';
+      });
+      return ` · <span data-adelivery>${names.map(esc).join(', ')}</span>`;
+    };
+
     const title = `PO ${po.po_number || po.id}${po.supplier ? ` — ${po.supplier}` : ''}`;
     const m = modal(title, `
       <div style="display:flex;flex-direction:column;gap:0.85rem">
@@ -2062,7 +2291,7 @@
               <span>${iconFor(d)}</span>
               <div style="flex:1 1 auto;min-width:0">
                 <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.filename)}</div>
-                <div style="${S.muted}">${fmtBytes(d.size_bytes)} · ${esc(d.uploaded_by || 'unknown')} · ${fmtDate(d.uploaded_at)}${d.note ? ` · ${esc(d.note)}` : ''}</div>
+                <div style="${S.muted}">${fmtBytes(d.size_bytes)} · ${esc(d.uploaded_by || 'unknown')} · ${fmtDate(d.uploaded_at)}${d.note ? ` · ${esc(d.note)}` : ''}${deliveryTag(d)}</div>
               </div>
               <button data-adl="${esc(d.id)}" style="${S.btn}">&#11015;</button>
             </div>`).join('')
@@ -2364,6 +2593,252 @@
     draw(attached);
   }
 
+  // ── Purchase-order delivery side ────────────────────────────────────
+  // The list a delivery's dialog just fetched is the freshest count there is
+  // for it — the paperclip the user clicked may be drawing a number from
+  // before a colleague attached a file. Correct it, and report whether it
+  // moved, so the caller knows whether the host has something to redraw.
+  function notePoLineCount(poId, lineId, n) {
+    const forPo = own(poLineCounts, poId);
+    if (((forPo && own(forPo, lineId)) || 0) === n) return false;
+    if (n > 0) {
+      (forPo || (poLineCounts[poId] = Object.create(null)))[lineId] = n;
+    } else if (forPo) {
+      delete forPo[lineId];
+      if (!Object.keys(forPo).length) delete poLineCounts[poId];
+    }
+    return true;
+  }
+
+  // One paperclip opening at a time, as on the Procurement sheet: two clicks
+  // on a slow connection started two loads, and the loser toasted an error
+  // over a dialog that opened fine.
+  let poLineOpening = false;
+
+  /**
+   * The paperclip on a delivery line of a purchase order. Lists what is
+   * attached to that delivery and offers an upload that, in one action,
+   * attaches the file to the delivery AND to its order — so it is on the
+   * order's own paperclip too, and filed in the order's folder — and, on a
+   * job, files it in the cost-code folder of the delivery's code, where the
+   * delivery tickets and invoices compile next to the Procurement paperwork.
+   * One stored file, however many places it is listed.
+   *
+   * `po` is the order as the host holds it ({ id, po_number, project_id,
+   * cost_code, … }), `line` the delivery ({ id, invoice_num, date, cost_code,
+   * … }), and `label` what the dialog calls the delivery — by default its
+   * invoice / ticket number, else its date.
+   *
+   * Files stay with the order they were attached under. A Daily Tracking
+   * delivery that later moves to another order (its row's PO # changed)
+   * leaves its files on the old order, still listed on that order's
+   * paperclip and in its folders; on the new order it starts at nothing.
+   * Deleting a delivery or an order touches no documents either.
+   */
+  async function openPOLineAttach(opts) {
+    if (poLineOpening) return;
+    poLineOpening = true;
+    try { return await _openPOLineAttach(opts || {}); }
+    finally { poLineOpening = false; }
+  }
+
+  async function _openPOLineAttach({ po, line, label }) {
+    po = po || {};
+    line = line || {};
+    const poId   = String(po.id == null ? '' : po.id).trim();
+    const lineId = String(line.id == null ? '' : line.id).trim();
+    if (!poId || !lineId) {
+      toast('That delivery has not been saved yet, so nothing can be attached to it.', 'error');
+      return;
+    }
+
+    const projectId = po.project_id || null;
+    const poNumber  = String(po.po_number == null ? '' : po.po_number).trim();
+    const poName    = poNumber || poId;
+    const name      = String(label == null ? '' : label).trim() || deliveryName(line) || 'Delivery';
+    // The cost code the server files this delivery's files under: the
+    // delivery's own when it carries one (a Daily Tracking delivery carries
+    // its row's), else the order's — and only on a job, since the General
+    // area has no cost-code folders.
+    const lineCode  = typeof line.cost_code === 'string' ? line.cost_code.trim() : '';
+    const code      = !projectId ? '' : (lineCode || String(po.cost_code == null ? '' : po.cost_code).trim());
+
+    // The upload dialog's folder picker is built from whatever is loaded, and
+    // the PO tab routinely shows orders on jobs the Documents tab is not
+    // sitting on — so load the order's job (or the General area) first, under
+    // the generation guard every other dialog uses.
+    let scope = await loadScope(projectId, 'Try the paperclip again.');
+    if (!scope) return;
+
+    const listAttached = async () =>
+      (await api('GET', `/documents${q({ poLineId: lineId, poId })}`)).documents || [];
+
+    let attached;
+    try { attached = await listAttached(); }
+    catch (err) { toast(err.message, 'error'); return; }
+
+    // The delivery holds a file the copy of the job in hand has never seen —
+    // a colleague attached it since this browser loaded the job, and with it
+    // the server may have made the order's own folder or a cost-code folder
+    // the copy lacks. Nothing on the PO tab marks the copy behind, so this is
+    // the only notice there is. Read the job again before offering a folder
+    // picker built from it; a failed read keeps the copy, and the list above
+    // is right regardless.
+    if (scope === 'already') {
+      const known = new Set(documents.map(d => d.id));
+      if (attached.some(d => !known.has(d.id))) {
+        let ok = null;
+        try { ok = await load(projectId, { force: true }); }
+        catch (err) { console.warn('[documents] reading the job again failed:', err.message); }
+        if (ok === false) {
+          toast('Something else loaded while that was opening. Try the paperclip again.', 'error');
+          return;
+        }
+        if (ok) scope = 'loaded';
+      }
+    }
+
+    // A load ran (the bid page's and the sheet's chips count off it), or the
+    // paperclip was drawing a stale number: either way the host has
+    // something to redraw.
+    const countMoved = notePoLineCount(poId, lineId, attached.length);
+    if ((scope === 'loaded' || countMoved) && cfg.onChange) cfg.onChange();
+
+    const m = modal(`PO ${poName} · ${name}`, '', { wide: true });
+
+    // Detach is the server's rule, mirrored so nobody is offered a button
+    // that only answers 403: a manager may detach anything, an uploader only
+    // what they uploaded themselves.
+    let me = '';
+    try { me = typeof cfg.getUserName === 'function' ? String(cfg.getUserName() || '') : ''; }
+    catch { me = ''; }
+    const mayDetach = d => Boolean(caps.canManage
+      || (caps.canUpload && me !== '' && d.uploaded_by === me));
+
+    // Drawn into the dialog's body, so a detach redraws the list in place.
+    function draw(docs) {
+      m.body.innerHTML = `
+        <div style="display:flex;flex-direction:column;gap:0.85rem">
+          <div>
+            <div style="${S.muted};margin-bottom:0.35rem">${docs.length} attached document${docs.length === 1 ? '' : 's'}</div>
+            <div data-line-filing style="${S.muted};margin-bottom:0.5rem">Files attached here are also listed on PO ${esc(poName)} and filed in its folder${
+              code ? `, and in the ${esc(code)} cost-code folder` : ''}.</div>
+            ${docs.length ? docs.map(d => `
+              <div data-line-doc="${esc(d.id)}" style="display:flex;align-items:center;gap:0.6rem;padding:0.4rem 0;border-bottom:1px solid var(--border,#2a2a3a);font-size:0.82rem">
+                <span>${iconFor(d)}</span>
+                <div style="flex:1 1 auto;min-width:0">
+                  <div style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(d.filename)}</div>
+                  <div style="${S.muted}">${fmtBytes(d.size_bytes)} · ${esc(d.uploaded_by || 'unknown')} · ${fmtDate(d.uploaded_at)}${d.note ? ` · ${esc(d.note)}` : ''}</div>
+                </div>
+                <button data-ldl="${esc(d.id)}" style="${S.btn}" title="Download">&#11015;</button>
+                ${mayDetach(d) ? `<button data-detach="${esc(d.id)}" style="${S.btn}"
+                        title="Take this file off this delivery. The file is not deleted: it stays on the order and in every folder it is filed in.">Detach</button>` : ''}
+              </div>`).join('')
+              : `<div style="${S.muted};padding:0.75rem 0">Nothing attached yet.</div>`}
+          </div>
+          <div style="display:flex;justify-content:flex-end;gap:0.5rem;flex-wrap:wrap">
+            <button data-cancel style="${S.btn}">Close</button>
+            ${caps.canUpload ? `<button data-attach-new style="${S.green}">&#11014; Attach a document</button>` : ''}
+          </div>
+        </div>`;
+
+      m.body.querySelector('[data-cancel]').addEventListener('click', m.close);
+      m.body.querySelectorAll('[data-ldl]').forEach(b =>
+        b.addEventListener('click', () => downloadDoc(b.dataset.ldl)));
+
+      m.body.querySelector('[data-attach-new]')?.addEventListener('click', async ev => {
+        // A delivery has its id the moment it is added, but the server knows
+        // it only once the order's save lands — and refuses to attach to a
+        // delivery it has never seen. So the ATTACH waits for the host's
+        // saves; opening the dialog never does. Reading and downloading what
+        // is already attached needs nothing saved, and a save that failed
+        // elsewhere on the page (it waits minutes for its retry) must not
+        // lock every delivery's files away. The host answers for the whole
+        // page, not this delivery, and false means a save is still owed or
+        // failed. A hook that throws is a host fault, not an answer: carry
+        // on, and the server's own check stands behind the attach.
+        const btn = ev && ev.currentTarget;
+        if (typeof cfg.settlePurchaseOrders === 'function') {
+          const was = btn ? btn.innerHTML : '';
+          if (btn) { btn.disabled = true; btn.textContent = 'Saving\u2026'; }
+          let settled;
+          try { settled = await cfg.settlePurchaseOrders(); }
+          catch (err) { console.warn('[documents] settling the purchase orders failed:', err && err.message); }
+          if (btn) { btn.disabled = false; btn.innerHTML = was; }
+          // Closed while it waited: the user has moved on.
+          if (!document.body.contains(m.el)) return;
+          if (settled === false) {
+            toast('Purchase-order changes on this page are not saved yet, so nothing can be attached to this delivery. '
+              + 'Wait a moment and try again.', 'error');
+            return;
+          }
+        }
+        m.close();
+        // Nothing should have moved the browser off this job while the dialog
+        // was up, but the folder picker is built from whatever is loaded.
+        if (!(await loadScope(projectId, 'Try the paperclip again.'))) return;
+        // The order and the delivery are fixed; the folder is still the
+        // user's call, opened on the order's own folder — the server files it
+        // there anyway — or the Purchase Orders root before it has one.
+        openUpload({
+          folderId: defaultFolderForPo(poId, projectId) || null,
+          poId, lockPo: true, projectId,
+          poLine: { poId, lineId, label: name, poNumber: poNumber || undefined, costCode: code },
+        });
+      });
+
+      m.body.querySelectorAll('[data-detach]').forEach(btn => {
+        btn.addEventListener('click', async () => {
+          const d = docs.find(x => x.id === btn.dataset.detach);
+          if (!d) return;
+          let ok = false;
+          try {
+            ok = window.confirm(`Detach ${d.filename} from this delivery (${name})?\n\n`
+              + `The file is not deleted. It stays on PO ${poName}, in every folder it is filed in.`);
+          } catch { ok = false; }
+          if (!ok) return;
+
+          btn.disabled = true;
+          btn.textContent = 'Detaching…';
+          try {
+            // The delivery's link only: the order keeps the file, and so does
+            // every folder it is in.
+            await api('PATCH', `/documents${q({ id: d.id })}`, { removePoLineId: `${poId}:${lineId}` });
+          } catch (err) {
+            btn.disabled = false;
+            btn.textContent = 'Detach';
+            toast(err.message, 'error');
+            return;
+          }
+
+          // Committed; only the refresh can fail from here. The counts are
+          // refreshed before onChange, which is how the host redraws the
+          // paperclip that is about to read one fewer.
+          let fresh = null, stale = null;
+          try {
+            await load(projectId, { force: true });
+            await refreshPoLineCounts(poId);
+            fresh = await listAttached();
+          } catch (err) { stale = err; }
+          // Failing a fresh list, the best answer left is the one on screen
+          // minus the file just detached — never a Detach button on a file
+          // that is no longer attached, nor a paperclip one too high.
+          const shown = fresh || docs.filter(x => x.id !== d.id);
+          notePoLineCount(poId, lineId, shown.length);
+          try {
+            if (cfg.onChange) cfg.onChange();
+            render();
+          } catch (err) { stale = stale || err; }
+          if (stale) toast(`Detached, but the list could not be refreshed: ${stale.message}`, 'error');
+          else toast('Detached. The file is still on the order, in every folder it was filed in.');
+          if (document.body.contains(m.el)) draw(shown);
+        });
+      });
+    }
+
+    draw(attached);
+  }
+
   // ── Public API ──────────────────────────────────────────────────────
   window.FCTDocuments = {
     configure(opts) {
@@ -2419,6 +2894,14 @@
     procurementCount(projectId, rowId) {
       const forJob = own(procCounts, projectId || '');
       return (forJob && own(forJob, String(rowId == null ? '' : rowId))) || 0;
+    },
+
+    openPOLineAttach,
+    refreshPoLineCounts,
+    /** Documents attached to one delivery line of one order, 0 until counted. */
+    poLineCount(poId, lineId) {
+      const forPo = own(poLineCounts, String(poId == null ? '' : poId));
+      return (forPo && own(forPo, String(lineId == null ? '' : lineId))) || 0;
     },
 
     // exercised by scripts/test-documents-frontend.js — the upload sequence is
