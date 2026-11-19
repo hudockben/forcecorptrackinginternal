@@ -3064,6 +3064,246 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('  and the job opened asks for its own', d.asks[d.asks.length - 1] === 'p2', d.asks);
   }
 
+  // ── A site: several jobs on one sheet ─────────────────────────────────
+  // The Hempfield fields: each its own job (own bid, rows, POs, costs), the
+  // same Site typed on each, bought for at one time. The two live fields'
+  // bids were copied from one another, so they carry the SAME line ids and
+  // codes — a row must only ever be matched against its own job's.
+  console.log('\n[site — several jobs on one sheet]');
+  {
+    const SP = [
+      { id: 'h1', 'project-name': 'Hempfield Baseball', 'job-number': '26057', status: 'In Progress', site: 'Hempfield' },
+      { id: 'h2', 'project-name': 'Hempfield Softball', 'job-number': '26058', status: 'Awarded', site: ' hempfield ' },
+      { id: 'h3', 'project-name': 'Hempfield Founders Park', 'job-number': '26090', status: 'Complete', site: 'Hempfield' },
+      { id: 'p1', 'project-name': 'Penn Cambria Field', 'job-number': '2614', status: 'In Progress' },
+    ];
+    const SL = {
+      h1: [{ id: 'L1', cost_code: 'Storm Water', sub_code: 'Geofabric', unit: 'SF', quantity: 8000, index: 0 },
+           { id: 'L2', cost_code: 'Storm Water', sub_code: '15" Elbows', unit: 'EA', quantity: 3, index: 1 }],
+      h2: [{ id: 'L1', cost_code: 'Storm Water', sub_code: 'Geofabric', unit: 'SF', quantity: 5000, index: 0 },
+           { id: 'L2', cost_code: 'Storm Water', sub_code: '15" Elbows', unit: 'EA', quantity: 2, index: 1 }],
+      h3: [{ id: 'L1', cost_code: 'Storm Water', sub_code: 'Geofabric', unit: 'SF', quantity: 100, index: 0 }],
+      p1: LINES,
+    };
+    const SPOS = [
+      // Baseball's Geofabric is on an order; Softball's is not.
+      { id: 'hpo1', po_number: 'PO-2601', project_id: 'h1', cost_code: 'Storm Water', sub_code: 'Geofabric', supplier: 'LB Water', date_created: '2026-03-01', status: 'pending' },
+    ];
+    const SR = [
+      row({ id: 'a1', project_id: 'h1', source: 'bid', bid_item_id: 'L1', cost_code: 'Storm Water', sub_code: 'Geofabric', quantity: 8000, unit: 'SF',
+        bid_qty_at_send: 8000, bid_unit_at_send: 'SF', vendor: 'LB Water', quote_number: '224818', created_at: '2026-03-01T00:00:00Z' }),
+      row({ id: 'a2', project_id: 'h1', source: 'bid', bid_item_id: 'L2', cost_code: 'Storm Water', sub_code: '15" Elbows', quantity: 3, unit: 'EA',
+        bid_qty_at_send: 3, bid_unit_at_send: 'EA', vendor: 'LB Water', quote_number: '224818', created_at: '2026-03-01T00:00:01Z' }),
+      row({ id: 'b1', project_id: 'h2', source: 'bid', bid_item_id: 'L1', cost_code: 'Storm Water', sub_code: 'Geofabric', quantity: 5000, unit: 'SF',
+        bid_qty_at_send: 5000, bid_unit_at_send: 'SF', vendor: 'LB Water', quote_number: '224818', created_at: '2026-03-01T00:00:02Z' }),
+      row({ id: 'b2', project_id: 'h2', source: 'bid', bid_item_id: 'L2', cost_code: 'Storm Water', sub_code: '15" Elbows', quantity: 2, unit: 'EA',
+        bid_qty_at_send: 2, bid_unit_at_send: 'EA', vendor: 'LB Water', quote_number: '224818', created_at: '2026-03-01T00:00:03Z' }),
+      row({ id: 'c1', project_id: 'h3', source: 'bid', bid_item_id: 'L1', cost_code: 'Storm Water', sub_code: 'Geofabric', quantity: 100, unit: 'SF',
+        bid_qty_at_send: 100, bid_unit_at_send: 'SF', created_at: '2026-03-01T00:00:04Z' }),
+    ];
+    const e = makeEnv({ rows: SR, purchaseOrders: SPOS.map(p => ({ ...p })), storage: { fct_proc_project_turf: 'p1' } });
+    e.P.configure({ getProjects: () => SP, getProject: id => SP.find(p => p.id === id) || null, getBidLines: id => SL[id] || [] });
+    const T2 = e.P._test;
+
+    // The picker.
+    const opts = e.P.cbOptions('proc_projects');
+    const siteOpt = opts.find(o => o.value === 'site:hempfield');
+    assert('the picker offers the site, beside its jobs', !!siteOpt && siteOpt.label === 'Hempfield — all 2 jobs'
+      && opts.some(o => o.value === 'h1') && opts.some(o => o.value === 'h2'), opts);
+    assert('  a Site typed with other spacing or case is the same site', siteOpt && /#26057, #26058/.test(siteOpt.meta), siteOpt);
+    assert('  the finished field is left off, as it is off the picker', siteOpt && !/26090/.test(siteOpt.meta));
+    assert('  typing a job number finds the site too', e.P.cbFilter('proc_projects', '26058', opts).some(o => o.value === 'site:hempfield'));
+    assert('a job with no Site gets no site entry', !opts.some(o => o.value.startsWith('site:') && o.value !== 'site:hempfield'));
+
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const pickerEl = e.$('#fctproc-proj');
+    e.pick(pickerEl, siteOpt.label, siteOpt.value);
+    await sleep(20);
+    const gets = e.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement' && !c.q.include_deleted).map(c => c.q.project_id);
+    assert('opening the site reads each of its jobs', gets.includes('h1') && gets.includes('h2') && !gets.includes('h3'), gets);
+    assert('  and is remembered', e.store.fct_proc_project_turf === 'site:hempfield');
+    assert('the head names the site and its jobs', /Hempfield/.test(e.$('.fctproc-head').textContent)
+      && /Hempfield Baseball\s*#26057/.test(e.$('.fctproc-head').textContent) && /Hempfield Softball\s*#26058/.test(e.$('.fctproc-head').textContent),
+      e.$('.fctproc-head').textContent.replace(/\s+/g, ' '));
+    const sheaders = e.$$('.fctproc-table th').map(th => th.textContent.replace('▼', '').trim());
+    assert('a Job column, after Status', sheaders[1] === 'Status' && sheaders[2] === 'Job', sheaders);
+    assert('every row of both jobs, job by job', eq(e.$$('tr.fctproc-row').map(t => t.dataset.row), ['a1', 'a2', 'b1', 'b2']));
+    const bands = e.$$('tr.fctproc-jobband');
+    assert('a band per job, in order, each over its own cost-code section', bands.length === 2
+      && /Hempfield Baseball/.test(bands[0].textContent) && /Job #26057/.test(bands[0].textContent)
+      && /Hempfield Softball/.test(bands[1].textContent)
+      && bands[0].nextElementSibling.classList.contains('fctproc-grp') && /Storm Water/.test(bands[0].nextElementSibling.textContent)
+      && bands[1].nextElementSibling.classList.contains('fctproc-grp') && /Storm Water/.test(bands[1].nextElementSibling.textContent),
+      e.$$('tr.fctproc-grp').map(t => t.textContent.replace(/\s+/g, ' ')));
+    assert('  each band counts its own job', /2 rows · 1 not ordered/.test(bands[0].textContent) && /2 rows · 2 not ordered/.test(bands[1].textContent),
+      bands.map(b => b.textContent.replace(/\s+/g, ' ')));
+    assert('the Job cell names the row\'s job', /Hempfield Softball/.test(e.$('tr[data-row="b1"] .c-job').textContent));
+    // Each row against its own job's bid and POs.
+    assert('a row matches its own job\'s PO (Baseball\'s Geofabric is ordered)', e.$('tr[data-row="a1"] .fctproc-pill').textContent === 'Ordered'
+      && e.field('a1', 'po').value === 'PO-2601');
+    assert('  and never a sister job\'s (Softball\'s Geofabric is not)', e.$('tr[data-row="b1"] .fctproc-pill').textContent === 'Not Ordered'
+      && e.field('b1', 'po').value === '');
+    assert('the bid lines are each job\'s own, though the ids are the same (no false "bid changed")',
+      !e.$('tr[data-row="a1"] .fctproc-bidchg') && !e.$('tr[data-row="b1"] .fctproc-bidchg'));
+    const sctx = T2.makeCtx();
+    assert('  the row\'s codes come from its own bid', T2.liveCodes(T2.state().rows.find(r => r.id === 'b1'), sctx).line === SL.h2[0]
+      && T2.liveCodes(T2.state().rows.find(r => r.id === 'a1'), sctx).line === SL.h1[0]);
+
+    // Adding rows goes to a job.
+    const posts = () => e.calls.filter(c => c.method === 'POST' && c.path === '/api/procurement' && !c.q.action);
+    bands[1].querySelector('[data-grpadd]').click();
+    await sleep(20);
+    assert('a band\'s + Add Row adds to that job', posts().length === 1 && posts()[0].body.item.project_id === 'h2', posts().map(p => p.body));
+    e.$('[data-act="add"]').click();
+    await sleep(10);
+    const which = e.$$('.fctproc-modal [data-choice]');
+    assert('the head\'s + Add Row asks which job', which.length === 3 && /Hempfield Baseball \(#26057\)/.test(which[0].textContent)
+      && /Hempfield Softball/.test(which[1].textContent) && /Cancel/.test(which[2].textContent));
+    which[0].click();
+    await sleep(20);
+    assert('  and adds to the one picked', posts().length === 2 && posts()[1].body.item.project_id === 'h1');
+    const grpBaseball = e.$$('tr.fctproc-grp:not(.fctproc-jobband)').find(t => t.previousElementSibling && t.previousElementSibling.dataset.jobband === 'h1');
+    assert('a cost-code section\'s + Add Row adds under its code, on its job', !!grpBaseball);
+    grpBaseball.querySelector('[data-grpadd]').click();
+    await sleep(20);
+    assert('  (Storm Water, Hempfield Baseball)', posts().length === 3 && posts()[2].body.item.project_id === 'h1'
+      && posts()[2].body.item.cost_code === 'Storm Water', posts()[2] && posts()[2].body);
+    // Tidy the hand-added rows away, so the rest of the section reads the four.
+    const added = posts().map(p => p.body.item.id);
+    e.db.rows = e.db.rows.filter(r => !added.includes(r.id));
+    // (The new row's Quantity has focus, and a refresh never reads mid-edit.)
+    if (e.w.document.activeElement && e.w.document.activeElement.blur) e.w.document.activeElement.blur();
+    await e.P.refresh();
+    await sleep(10);
+    assert('(the four rows again)', e.$$('tr.fctproc-row').length === 4);
+
+    // Folding a job folds its sections; its box ticks its rows.
+    e.$('tr.fctproc-jobband[data-jobband="h1"]').click();
+    assert('folding a job band hides its sections', !e.$('tr[data-row="a1"]') && !!e.$('tr[data-row="b1"]')
+      && e.$$('tr.fctproc-jobband').length === 2);
+    e.$('tr.fctproc-jobband[data-jobband="h1"]').click();
+    const jbox = e.$('tr.fctproc-jobband[data-jobband="h2"] .fctproc-grpsel');
+    jbox.checked = true;
+    e.fire(jbox, 'change');
+    assert('a band\'s box ticks every row of that job', e.P._test.state().selected.size === 2
+      && e.P._test.state().selected.has('b1') && e.P._test.state().selected.has('b2'));
+
+    // Bulk edit across jobs: one edit per job, each pinned to its own.
+    const sel2 = id => { const b = e.$(`[data-sel="${id}"]`); b.checked = true; e.fire(b, 'change'); };
+    sel2('a2');
+    e.$('#fctproc-bulk-field').value = 'quote_number';
+    e.fire(e.$('#fctproc-bulk-field'), 'change');
+    e.$('#fctproc-bulk-val').value = 'Q-777';
+    e.$('[data-act="bulk-apply"]').click();
+    await sleep(40);
+    const bulks = e.patches().filter(p => p.q.action === 'bulk');
+    assert('a bulk edit across two jobs is one edit per job, each pinned to its job', bulks.length === 2
+      && bulks.some(b => b.body.project_id === 'h1' && eq(b.body.ids, ['a2']))
+      && bulks.some(b => b.body.project_id === 'h2' && eq(b.body.ids.slice().sort(), ['b1', 'b2'])), bulks.map(b => b.body));
+    assert('  and lands on every row', ['a2', 'b1', 'b2'].every(id => e.db.rows.find(r => r.id === id).quote_number === 'Q-777'));
+    const clearBtn = e.$('[data-act="bulk-clear"]');
+    if (clearBtn) clearBtn.click();
+
+    // Set PO in the bulk bar: a PO is one job's.
+    sel2('a1');
+    e.$('#fctproc-bulk-field').value = 'po';
+    e.fire(e.$('#fctproc-bulk-field'), 'change');
+    const poOpts = () => [...e.$('#fctproc-bulk-val').options].map(o => o.value);
+    assert('Set PO on one job\'s rows offers that job\'s orders', poOpts().includes('hpo1'), poOpts());
+    sel2('b1');
+    assert('  across two jobs, only Auto and No PO', eq(poOpts(), ['__auto__', '__none__']), poOpts());
+    e.$('#fctproc-bulk-field').value = 'vendor';
+    e.fire(e.$('#fctproc-bulk-field'), 'change');
+    e.$('[data-act="bulk-clear"]').click();
+
+    // Create PO from selected: one per job, so each field carries its cost.
+    sel2('a2'); sel2('b1'); sel2('b2');
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(30);
+    let ch = e.$$('.fctproc-modal [data-choice]');
+    assert('rows on two jobs -> asked, saying each job gets its own PO', ch.length === 3
+      && /are on <b>2<\/b> jobs/.test(e.$('.fctproc-modal [data-body]').innerHTML)
+      && /Each job gets its own PO to LB Water/.test(e.$('.fctproc-modal [data-body]').textContent)
+      && /One PO per job and sub code/.test(ch[0].textContent) && /One PO per job, each coded/.test(ch[1].textContent),
+      e.$('.fctproc-modal') && e.$('.fctproc-modal').textContent.replace(/\s+/g, ' '));
+    ch[1].click();
+    await sleep(80);
+    const sseeds = e.created.filter(c => c[0] === 'po').map(c => c[1]);
+    assert('"one per job" makes one PO on each job', sseeds.length === 2 && sseeds[0].project_id === 'h1' && sseeds[1].project_id === 'h2'
+      && sseeds.every(s => s.supplier === 'LB Water' && s.notes === 'Quote Q-777'), sseeds);
+    const links = e.patches().filter(p => p.q.action === 'bulk').slice(-2);
+    assert('  and each job\'s rows are linked to its own PO', links.length === 2
+      && links.some(l => l.body.project_id === 'h1' && eq(l.body.ids, ['a2']) && l.body.fields.po_id === 'npo1')
+      && links.some(l => l.body.project_id === 'h2' && eq(l.body.ids.slice().sort(), ['b1', 'b2']) && l.body.fields.po_id === 'npo2'),
+      links.map(l => l.body));
+    assert('  said in the toast', e.$$('.fctproc-toast').some(t => /Created 2 POs, each on its own job/.test(t.textContent)));
+
+    // Grouped by vendor: one LB Water section across the site, Job column says whose.
+    e.$('[data-group="vendor"]').click();
+    // (a1 kept quote 224818; the bulk edit above put the other three on Q-777.)
+    const vq = e.$$('tr.fctproc-grp').find(t => /Q-777/.test(t.textContent));
+    const under = [];
+    for (let n = vq && vq.nextElementSibling; n && !n.classList.contains('fctproc-grp'); n = n.nextElementSibling) under.push(n.dataset.row);
+    assert('grouped by vendor: no job bands, and one supplier / quote section spans the jobs', !e.$('tr.fctproc-jobband')
+      && !!vq && /3 rows/.test(vq.textContent) && eq(under, ['a2', 'b1', 'b2'])
+      && /Hempfield Baseball/.test(e.$('tr[data-row="a2"] .c-job').textContent) && /Hempfield Softball/.test(e.$('tr[data-row="b1"] .c-job').textContent),
+      e.$$('tr.fctproc-grp').map(t => t.textContent.replace(/\s+/g, ' ')));
+    e.$('[data-group="cost"]').click();
+
+    // Filter and search by job.
+    e.$('#fctproc-search').value = 'softball';
+    e.fire(e.$('#fctproc-search'), 'input');
+    await sleep(5);
+    assert('the search finds a job by name', eq(e.$$('tr.fctproc-row').map(t => t.dataset.row), ['b1', 'b2']), e.$$('tr.fctproc-row').map(t => t.dataset.row));
+    e.$('[data-act="clear"]').click();
+
+    // Exports carry the job.
+    const csv = T2.buildCsv(e.P._test.state().rows.slice().sort((a, b) => a.id.localeCompare(b.id)), T2.makeCtx()).replace(/^﻿/, '').split('\r\n');
+    assert('the CSV starts with a Job column', /^"Job","Status","PO #"/.test(csv[0]) && /^"Hempfield Baseball"/.test(csv[1]) && /^"Hempfield Softball"/.test(csv[3]), csv.slice(0, 4));
+    const single = T2.buildCsv(e.P._test.state().rows.slice(0, 1), T2.makeCtx('h1')).replace(/^﻿/, '').split('\r\n');
+    assert('  a job\'s own sheet has none', /^"Status"/.test(single[0]));
+    e.$('[data-act="csv"]').click();
+    assert('the file is named for the site', e.lastDownload === 'Procurement - Hempfield (site) - 2026-03-10.csv', e.lastDownload);
+    const html = T2.buildPrintHtml(T2.makeCtx(), { printedAt: new Date('2026-03-10T12:00:00Z') });
+    assert('the print view heads each job\'s sections with the job', /<tr class="job"><td colspan="\d+"><b>Hempfield Baseball<\/b>/.test(html)
+      && /<tr class="job"><td colspan="\d+"><b>Hempfield Softball<\/b>/.test(html) && /Procurement — Hempfield \(site\)/.test(html)
+      && /Jobs: Hempfield Baseball \(#26057\) · Hempfield Softball \(#26058\)/.test(html));
+
+    // Add to Procurement is one job's bid.
+    e.$('tr.fctproc-jobband[data-jobband="h2"] [data-grpsend]').click();
+    await sleep(30);
+    assert('a band\'s Add to Procurement opens that job\'s checklist', /Add to Procurement — Hempfield Softball/.test(e.$('.fctproc-modal').textContent));
+    e.$('.fctproc-modal [data-send="cancel"]').click();
+    await sleep(5);
+    e.$('[data-act="send"]').click();
+    await sleep(10);
+    const sendWhich = e.$$('.fctproc-modal [data-choice]');
+    assert('the head\'s Add to Procurement asks which job first', sendWhich.length === 3 && /Bring in the bid lines of which job/.test(e.$('.fctproc-modal').textContent));
+    sendWhich[2].click();
+    await sleep(5);
+
+    // Show all jobs takes in the finished field.
+    const before = e.calls.length;
+    const all = e.$('#fctproc-showall');
+    all.checked = true;
+    e.fire(all, 'change');
+    await sleep(30);
+    const newGets = e.calls.slice(before).filter(c => c.method === 'GET' && c.path === '/api/procurement' && !c.q.include_deleted).map(c => c.q.project_id);
+    assert('ticking Show all jobs reads the site again with its finished field', newGets.includes('h3') && e.$$('tr.fctproc-jobband').length === 3
+      && !!e.$('tr[data-row="c1"]'), newGets);
+    all.checked = false;
+    e.fire(all, 'change');
+    await sleep(30);
+    assert('  and unticking lets it go again', !e.$('tr[data-row="c1"]') && e.$$('tr.fctproc-jobband').length === 2);
+
+    // Back to a job: its own sheet, as before.
+    e.P._test.selectProject('p1');
+    await sleep(20);
+    const pheaders = e.$$('.fctproc-table th').map(th => th.textContent.replace('▼', '').trim());
+    assert('opening a job again: no Job column, no bands', !pheaders.includes('Job') && !e.$('tr.fctproc-jobband'));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => {
