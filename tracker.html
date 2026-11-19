@@ -1189,6 +1189,19 @@
     }
     .del-btn:hover { color: var(--red); }
 
+    /* The paperclip on a delivery line of a purchase order (PO tab, beside the
+       Invoice / Ticket # box): muted with nothing attached, the division's
+       colour with a count, as the order's own paperclip is drawn. Its count is
+       repainted in place (_poDocClipsRepaint), never by redrawing the tab —
+       that would take the cursor out of a delivery being typed in. */
+    .po-line-clip {
+      flex: 0 0 auto; background: none; border: 1px solid var(--border); border-radius: 4px;
+      color: var(--muted); cursor: pointer; font-size: 0.7rem; line-height: 1.2;
+      padding: 0.1rem 0.35rem; white-space: nowrap;
+    }
+    .po-line-clip:hover, .po-line-clip:focus-visible { color: var(--text); border-color: var(--muted); }
+    .po-line-clip.has-docs { color: var(--green); }
+
     /* Cost code group rows */
     .cost-group-hdr { background: #161c16; cursor: pointer; user-select: none; }
     .cost-group-hdr:hover { background: #1c231c; }
@@ -16832,11 +16845,15 @@ function _docsEnsureConfigured() {
     // (api/documents.js records the token's username), not the display name
     // — documents.js compares the two to offer Detach on one's own uploads.
     getUserName: () => (fctUser && fctUser.username) || '',
-    // Attaching or deleting changes the paperclip counts the PO tab draws, the
-    // folder counts on an open bid's green cost-code bars, and the paperclips
-    // and section folder chips on the Procurement sheet.
+    // Before attaching to a delivery of a PO, wait for this tab's saves of
+    // the orders: the server attaches only to a delivery it has stored.
+    settlePurchaseOrders: () => _poSettleSaves(),
+    // Attaching or deleting changes the paperclip counts the PO tab draws
+    // (repainted in place, see _poDocClipsRepaint), the folder counts on an
+    // open bid's green cost-code bars, and the paperclips and section folder
+    // chips on the Procurement sheet.
     onChange: () => {
-      if (activeTab === 'po') renderPOTab();
+      _poDocClipsRepaint();
       if (activeTab === 'procurement') _procDocCountsChanged();
       _bidDocCountsStale();
     },
@@ -16855,7 +16872,129 @@ function openPODocs(poId) {
   _docsEnsureConfigured();
   FCTDocuments.openAttach({
     id: po.id, po_number: po.po_number, supplier: po.supplier, project_id: po.project_id,
+    // Its deliveries, so a file attached to one is listed with that delivery's name.
+    lines: (po.lines || []).map(l => ({ id: l.id, invoice_num: l.invoice_num, date: l.date })),
   });
+}
+
+/**
+ * The paperclip on a delivery line of a PO, in its Invoice / Ticket # cell.
+ * Lists what is attached to that delivery, and offers an upload that attaches
+ * the file to the delivery AND its order in one action — so it is on the
+ * order's paperclip too, filed in the order's folder and, on a job, in the
+ * cost-code folder of the delivery's code. Files stay with the order they were
+ * attached under: a Daily Tracking delivery moved to another order leaves them
+ * on the old one, and deleting a delivery or an order touches no documents.
+ *
+ * The ids come from the clip's own data attributes. Retries while the deferred
+ * documents.js has not run yet, as the order's paperclip does; a documents.js
+ * from before delivery attachments opens the order's paperclip instead.
+ */
+function openPOLineDocs(poId, lineId) {
+  const po = purchaseOrders.find(p => String(p.id) === String(poId));
+  const line = po && (po.lines || []).find(l => l && String(l.id) === String(lineId));
+  if (!line) return;
+  if (!window.FCTDocuments) { setTimeout(() => openPOLineDocs(poId, lineId), 150); return; }
+  _docsEnsureConfigured();
+  if (typeof FCTDocuments.openPOLineAttach !== 'function') { openPODocs(po.id); return; }
+  FCTDocuments.openPOLineAttach({
+    po: {
+      id: po.id, po_number: po.po_number, supplier: po.supplier, project_id: po.project_id,
+      cost_code: po.cost_code, sub_code: po.sub_code,
+    },
+    // A Daily Tracking delivery carries its row's codes; the server files
+    // under the delivery's own cost code when it has one, else the order's.
+    line: {
+      id: line.id, invoice_num: line.invoice_num, date: line.date,
+      cost_code: line.cost_code, sub_code: line.sub_code, source: line.source,
+    },
+    // The dialog's name for it: the invoice / ticket #, else documents.js
+    // names it by its date.
+    label: String(line.invoice_num == null ? '' : line.invoice_num).trim(),
+  });
+}
+
+/**
+ * Resolves once no save of the purchase orders is out or queued: true when
+ * the list here is stored, false when a save is still owed (one that failed
+ * and waits for its retry, or one still out after 15 s). documents.js waits
+ * on it before attaching to a delivery — a delivery has its id the moment it
+ * is added, but the server attaches only to one it has stored. Starts no save
+ * of its own; the poll and a returning connection retry a failed one.
+ */
+async function _poSettleSaves() {
+  for (let i = 0; (_poSaving || _poSaveAgain) && i < 150; i++) await new Promise(r => setTimeout(r, 100));
+  return !(_poSaving || _poSaveAgain || _poSaveFailed);
+}
+
+/** An order paperclip's tooltip, the same from the draw and the repaint. */
+function _poDocsTip(n) {
+  return n ? `${n} attached document${n === 1 ? '' : 's'}` : 'Attach a document';
+}
+
+/** Documents on one delivery of one order: 0 until counted, and from a documents.js without them. */
+function _poLineDocCount(poId, lineId) {
+  return (window.FCTDocuments && typeof FCTDocuments.poLineCount === 'function')
+    ? (Number(FCTDocuments.poLineCount(poId, lineId)) || 0) : 0;
+}
+
+/** A delivery paperclip's tooltip. Only those who may upload are offered an attach. */
+function _poLineDocsTip(n) {
+  if (n) return `${n} document${n === 1 ? '' : 's'} attached to this delivery`;
+  return perm.canEdit ? 'Attach a delivery ticket or invoice' : 'No documents attached to this delivery';
+}
+
+/**
+ * The paperclip on a delivery line. Drawn for every role — a viewer may open
+ * and download; documents.js offers the upload only to those who may. The ids
+ * travel in data attributes of its own (not data-po-id / data-line-id, which
+ * the tab's input handler routes line edits on) and reach the opener through
+ * dataset, never interpolated into the handler.
+ */
+function _poLineClipHTML(po, line) {
+  const n = _poLineDocCount(po.id, line.id);
+  const tip = _poLineDocsTip(n);
+  return `<button type="button" class="po-line-clip${n ? ' has-docs' : ''}" data-line-docs-po="${esc(po.id)}" data-line-docs-line="${esc(line.id)}"
+              onclick="openPOLineDocs(this.dataset.lineDocsPo, this.dataset.lineDocsLine)" title="${esc(tip)}" aria-label="${esc(tip)}">&#128206;${n || ''}</button>`;
+}
+
+/**
+ * Repaint the PO tab's paperclips, the orders' and the deliveries', from the
+ * counts documents.js holds — in place: count, colour, tooltip. Never a
+ * redraw of the tab, which would take the cursor out of a delivery being
+ * typed in just because a count landed.
+ */
+function _poDocClipsRepaint() {
+  const root = document.getElementById('po-root');
+  if (!root || !window.FCTDocuments) return;
+  root.querySelectorAll('button[data-po-docs]').forEach(btn => {
+    const n = Number(FCTDocuments.poCount(btn.dataset.poDocs)) || 0;
+    btn.textContent = '\u{1F4CE}' + (n || '');
+    btn.title = _poDocsTip(n);
+    btn.style.color = n ? 'var(--green)' : 'var(--muted)';
+  });
+  root.querySelectorAll('button.po-line-clip').forEach(btn => {
+    const n = _poLineDocCount(btn.dataset.lineDocsPo, btn.dataset.lineDocsLine);
+    const tip = _poLineDocsTip(n);
+    btn.textContent = '\u{1F4CE}' + (n || '');
+    btn.classList.toggle('has-docs', n > 0);
+    btn.title = tip;
+    btn.setAttribute('aria-label', tip);
+  });
+}
+
+/**
+ * Count the documents on every delivery of every order in the division — one
+ * request, since the tab draws every order's lines, collapsed ones included —
+ * then repaint the paperclips in place. Never rejects; a documents.js from
+ * before delivery attachments asks nothing.
+ */
+function _poLineCountsRefresh() {
+  if (!window.FCTDocuments || typeof FCTDocuments.refreshPoLineCounts !== 'function') return Promise.resolve(null);
+  return Promise.resolve()
+    .then(() => FCTDocuments.refreshPoLineCounts())
+    .catch(() => null)
+    .then(counts => { _poDocClipsRepaint(); return counts; });
 }
 
 /**
@@ -18103,14 +18242,16 @@ function renderPOTab() {
   const root = document.getElementById('po-root');
   if (!root) return;
 
-  // Attached-document counts feed the paperclip badges. Fetched once, then
-  // kept current by documents.js, which calls back through onChange whenever
-  // an attachment is added or removed. The flag is set before the request so
-  // the re-render below cannot loop.
+  // Attached-document counts feed the paperclip badges — the orders' and,
+  // division-wide in one request, every delivery's. Fetched once, then kept
+  // current by documents.js, which counts again after every change it makes
+  // and calls back through onChange. They land as an in-place repaint, never
+  // a redraw, so a count arriving cannot take the cursor out of a box.
   if (window.FCTDocuments && !_poDocCountsLoaded) {
     _poDocCountsLoaded = true;
     _docsEnsureConfigured();
-    FCTDocuments.refreshPoCounts().then(() => { if (activeTab === 'po') renderPOTab(); });
+    FCTDocuments.refreshPoCounts().then(() => _poDocClipsRepaint());
+    _poLineCountsRefresh();
   }
 
   const searchWasFocused = document.activeElement?.classList?.contains('po-global-search');
@@ -18202,7 +18343,7 @@ function renderPOTab() {
 
         // Badge showing delivery count
         const badge = lCount > 0
-          ? `<span style="background:rgba(96,165,250,0.18);color:#93c5fd;border-radius:10px;padding:0.1rem 0.5rem;font-size:0.68rem;font-weight:700;margin-left:0.4rem">${lCount} delivery${lCount!==1?'s':''}</span>`
+          ? `<span style="background:rgba(96,165,250,0.18);color:#93c5fd;border-radius:10px;padding:0.1rem 0.5rem;font-size:0.68rem;font-weight:700;margin-left:0.4rem">${lCount} ${lCount!==1?'deliveries':'delivery'}</span>`
           : `<span style="color:var(--muted);font-size:0.68rem;margin-left:0.4rem">no deliveries</span>`;
 
         // ── PO header row ──────────────────────────────────────────────
@@ -18223,7 +18364,7 @@ function renderPOTab() {
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${esc(po.id)}">${tot.total > 0 ? '$'+fmt(tot.total) : '—'}</td>
           <td style="padding:0.35rem 0.6rem;min-width:140px;color:${statusColor}" onclick="event.stopPropagation()">${selOpts('status',statusOpts,po.status,po.id,null)}${createdMeta}${statusMeta}</td>
           <td style="padding:0.25rem 0.4rem;text-align:center" onclick="event.stopPropagation()">
-            <button data-po-docs="${esc(po.id)}" onclick="openPODocs(this.dataset.poDocs)" title="${docCount ? `${docCount} attached document${docCount === 1 ? '' : 's'}` : 'Attach a document'}"
+            <button data-po-docs="${esc(po.id)}" onclick="openPODocs(this.dataset.poDocs)" title="${_poDocsTip(docCount)}"
               style="background:none;border:1px solid var(--border);border-radius:4px;cursor:pointer;padding:0.15rem 0.4rem;
                      font-size:0.72rem;white-space:nowrap;color:${docCount ? 'var(--green)' : 'var(--muted)'}">&#128206;${docCount || ''}</button>
           </td>
@@ -18234,7 +18375,7 @@ function renderPOTab() {
         const lineRows = (po.lines||[]).map(line => {
           const lineAmt = _lineAmt(line), lineTax = _lineTax(line), lineTot = lineAmt + lineTax;
           return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
-            <td style="padding:0.3rem 0.5rem;min-width:120px">${inp('invoice_num','text',line.invoice_num,po.id,line.id,'placeholder="Invoice / Ticket #"')}${_poLineFromDaily(line) ? `<div title="Entered on Daily Tracking. Edits here update that job row; change or clear the row's PO # to take it off this order." style="font-size:0.6rem;color:var(--muted);white-space:nowrap">from Daily Tracking${(line.cost_code || line.sub_code) ? ' &middot; ' + escT([line.cost_code, line.sub_code].filter(Boolean).join(' / ')) : ''}</div>` : ''}</td>
+            <td style="padding:0.3rem 0.5rem;min-width:120px"><div style="display:flex;align-items:flex-start;gap:0.35rem"><div style="flex:1 1 auto;min-width:0">${inp('invoice_num','text',line.invoice_num,po.id,line.id,'placeholder="Invoice / Ticket #"')}${_poLineFromDaily(line) ? `<div title="Entered on Daily Tracking. Edits here update that job row; change or clear the row's PO # to take it off this order." style="font-size:0.6rem;color:var(--muted);white-space:nowrap">from Daily Tracking${(line.cost_code || line.sub_code) ? ' &middot; ' + escT([line.cost_code, line.sub_code].filter(Boolean).join(' / ')) : ''}</div>` : ''}</div>${_poLineClipHTML(po, line)}</div></td>
             <td style="padding:0.3rem 0.5rem;min-width:115px">${inp('date','date',line.date,po.id,line.id)}</td>
             <td style="padding:0.3rem 0.5rem;min-width:70px">${inp('qty','number',line.qty,po.id,line.id,'step="any" placeholder="0"')}</td>
             <td style="padding:0.3rem 0.5rem;min-width:90px">${inp('unit_cost','number',line.unit_cost,po.id,line.id,'step="any" placeholder="0.00"')}

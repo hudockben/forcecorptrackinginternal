@@ -6,6 +6,11 @@
  * GET    /api/documents?division=turf               — the division-level General / Non-Job area
  * GET    /api/documents?division=turf&poId=X        — documents attached to one purchase order
  * GET    /api/documents?division=turf&poCounts=1    — { counts: { poId: n } } for the paperclip badges
+ * GET    /api/documents?division=turf&poLineCounts=1[&poId=P]
+ *                                                    — { counts: { poId: { lineId: n } } } for the delivery-line
+ *                                                      paperclips, division-wide or for one order
+ * GET    /api/documents?division=turf&poLineId=L&poId=P
+ *                                                    — documents attached to one delivery line of one order
  * GET    /api/documents?division=turf&procurementId=X[&projectId=Y]
  *                                                    — documents attached to one Procurement line
  * GET    /api/documents?division=turf&procurementCounts=1&projectId=Y
@@ -36,8 +41,9 @@ const {
   canAccessPODivision,
   poCapabilities,
 } = require('./lib/auth');
-const { resolvePODocScope } = require('./lib/po-sync');
+const { resolvePODocScope, findPOInDivision } = require('./lib/po-sync');
 const procDocs            = require('./lib/procurement-docs');
+const poLineDocs          = require('./lib/po-line-docs');
 const { costCodeCounts, scopeVersion } = require('./lib/cost-code-counts');
 const storage             = require('./lib/storage');
 const crypto              = require('crypto');
@@ -138,6 +144,8 @@ function documentOut(r) {
     folder_ids: Array.isArray(r.folder_ids) ? r.folder_ids : [],
     po_ids: Array.isArray(r.po_ids) ? r.po_ids : [],
     procurement_ids: Array.isArray(r.procurement_ids) ? r.procurement_ids : [],
+    // "<poId>:<lineId>" per delivery line it is attached to (api/lib/po-line-docs.js).
+    po_line_ids: Array.isArray(r.po_line_ids) ? r.po_line_ids : [],
   };
 }
 
@@ -345,6 +353,49 @@ async function refileOnRestore(sql, { companyCode, division, projectId, document
   }
 }
 
+// What attaching to a purchase order's delivery line answers when the line or
+// its order is not where the request says (api/lib/po-line-docs.js).
+const PO_NOT_FOUND       = 'Purchase order not found';
+const PO_LINE_NOT_FOUND  = 'Delivery line not found';
+const PO_LINE_NOT_FOUND_DETAIL =
+  'That delivery is not on the order yet — it may not have been saved. Wait a moment and try again.';
+const PO_LINE_OTHER_JOB  = 'That delivery belongs to another job';
+const PO_LINE_ID_SHAPE   = 'poLineId and poId must each be 1 to 128 letters, digits, ., - or _';
+
+/**
+ * File a document attached to a delivery line in the cost-code folder of the
+ * line's code (else its order's) too, so the section's folder compiles the
+ * delivery tickets and invoices next to its Procurement paperwork. Only for an
+ * order on a job: the General area has no cost-code folders.
+ *
+ * Returns { folderId, linked } (linked: this call made the link), or null.
+ * Never throws: the file is already filed where it was put and under its
+ * order, and losing the upload over the extra folder would be worse. Not
+ * re-filed when the order's or the line's code changes later (v1).
+ */
+async function fileLineUnderCostCode(sql, { companyCode, division, projectId, documentId, po, line, payload }) {
+  try {
+    if (!projectId) return null;
+    const code = poLineDocs.lineCostCode(po, line);
+    if (!code) return null;
+    const folderId = await procDocs.ensureCostCodeFolder(sql, {
+      companyCode, division, projectId, code,
+      username: payload.username, userId: payload.userId,
+    });
+    if (!folderId) return null;
+    const made = await sql`
+      INSERT INTO document_links (document_id, company_code, link_type, target_id, created_by)
+      VALUES (${documentId}, ${companyCode}, 'folder', ${folderId}, ${payload.username || null})
+      ON CONFLICT DO NOTHING
+      RETURNING id
+    `;
+    return { folderId, linked: made.length > 0 };
+  } catch (err) {
+    console.warn(`[documents] cost-code folder for delivery line ${line && line.id} failed: ${err.message}`);
+    return null;
+  }
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
@@ -426,6 +477,11 @@ module.exports = async (req, res) => {
     if (isRegister && req.body && req.body.procurementId != null && req.body.procurementId !== '') {
       return res.status(403).json({ error: 'Attaching to a Procurement line needs a role in this division' });
     }
+    // A delivery line of THIS order (body.poLineId) is a different matter: it
+    // is the order's own paperwork. The register checks the line against
+    // poScope.po.lines, and the pair it links is always this order's; the
+    // line GETs answer for this order only.
+
     // The folder generator takes a caller-supplied cost-code list and both
     // creates folders from it and RELABELS existing ones. Seeding the standard
     // tree is all the carve-out needs; naming folders in a division it has no
@@ -452,6 +508,81 @@ module.exports = async (req, res) => {
         return res.json({ counts });
       }
 
+      // The delivery-line paperclips: live documents per line, as
+      // { poId: { lineId: n } }. Division-wide by default, because a division
+      // tab draws every order's lines at once; one order with &poId=P. These
+      // two line branches sit ABOVE the ?poId listing: every carve-out request
+      // carries poId, and that branch would answer them all otherwise.
+      // The carve-out may read its own order's lines and nothing else.
+      if (req.query.poLineCounts) {
+        const onePo = req.query.poId ? String(req.query.poId) : null;
+        if (poScope && onePo !== poScope.poId) {
+          return res.status(403).json({ error: 'You do not have access to this division' });
+        }
+        if (onePo !== null && !poLineDocs.isPoLinePart(onePo)) {
+          return res.status(400).json({ error: PO_LINE_ID_SHAPE });
+        }
+        const rows = await sql`
+          SELECT l.target_id, COUNT(DISTINCT d.id)::int AS n
+          FROM   document_links l
+          JOIN   project_documents d ON d.id = l.document_id
+          WHERE  l.company_code = ${companyCode}
+            AND  l.link_type    = 'po_line'
+            AND  d.company_code = ${companyCode}
+            AND  d.division     = ${division}
+            AND  d.deleted_at IS NULL
+            AND  (${onePo}::text IS NULL OR split_part(l.target_id, ':', 1) = ${onePo}::text)
+          GROUP BY l.target_id
+        `;
+        // Ids are caller-minted text ('__proto__' passes the shape check), so
+        // the maps have no prototype for one to land on.
+        const counts = Object.create(null);
+        for (const r of rows) {
+          const t = poLineDocs.parsePoLineTarget(r.target_id);
+          if (!t) continue;
+          if (!counts[t.poId]) counts[t.poId] = Object.create(null);
+          counts[t.poId][t.lineId] = r.n;
+        }
+        return res.json({ counts });
+      }
+
+      // The documents attached to one delivery line of one order, newest
+      // first. Not job-scoped, like the order's own listing. Viewers may read
+      // them; the carve-out only for its own order.
+      if (req.query.poLineId) {
+        const lineId = String(req.query.poLineId);
+        const onePo  = req.query.poId ? String(req.query.poId) : null;
+        if (poScope && onePo !== poScope.poId) {
+          return res.status(403).json({ error: 'You do not have access to this division' });
+        }
+        const target = onePo === null ? null : poLineDocs.poLineTarget(onePo, lineId);
+        if (!target) return res.status(400).json({ error: PO_LINE_ID_SHAPE });
+        const rows = await sql`
+          SELECT
+          d.id, d.project_id, d.filename, d.content_type, d.size_bytes, d.note,
+          d.uploaded_by, d.uploaded_at, d.deleted_at,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'folder'), '[]'::jsonb) AS folder_ids,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po_line'), '[]'::jsonb) AS po_line_ids
+          FROM   project_documents d
+          LEFT   JOIN document_links l ON l.document_id = d.id
+          WHERE  d.company_code = ${companyCode}
+            AND  d.division     = ${division}
+            AND  d.deleted_at IS NULL
+            AND  EXISTS (
+                   SELECT 1 FROM document_links pl
+                   WHERE pl.document_id  = d.id
+                     AND pl.company_code = ${companyCode}
+                     AND pl.link_type    = 'po_line'
+                     AND pl.target_id    = ${target}
+                 )
+          GROUP BY d.id
+          ORDER BY d.uploaded_at DESC
+        `;
+        return res.json({ documents: rows.map(documentOut) });
+      }
+
       if (req.query.poId) {
         const rows = await sql`
           SELECT
@@ -459,7 +590,8 @@ module.exports = async (req, res) => {
           d.uploaded_by, d.uploaded_at, d.deleted_at,
           COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'folder'), '[]'::jsonb) AS folder_ids,
           COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids,
-          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po_line'), '[]'::jsonb) AS po_line_ids
           FROM   project_documents d
           LEFT   JOIN document_links l ON l.document_id = d.id
           WHERE  d.company_code = ${companyCode}
@@ -516,7 +648,7 @@ module.exports = async (req, res) => {
 
       // The documents attached to one Procurement line, newest first. Viewers
       // can list and download them like any other document; the carve-out
-      // never reaches here (its GETs are poId and poCounts only).
+      // never reaches here (its GETs carry poId, answered above).
       if (req.query.procurementId) {
         if (poScope) return res.status(403).json({ error: 'You do not have access to this division' });
         const procurementId = String(req.query.procurementId);
@@ -529,7 +661,8 @@ module.exports = async (req, res) => {
           d.uploaded_by, d.uploaded_at, d.deleted_at,
           COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'folder'), '[]'::jsonb) AS folder_ids,
           COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids,
-          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po_line'), '[]'::jsonb) AS po_line_ids
           FROM   project_documents d
           LEFT   JOIN document_links l ON l.document_id = d.id
           WHERE  d.company_code = ${companyCode}
@@ -563,7 +696,8 @@ module.exports = async (req, res) => {
           d.uploaded_by, d.uploaded_at, d.deleted_at,
           COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'folder'), '[]'::jsonb) AS folder_ids,
           COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids,
-          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po_line'), '[]'::jsonb) AS po_line_ids
           FROM   project_documents d
           LEFT   JOIN document_links l ON l.document_id = d.id
           WHERE  d.company_code = ${companyCode}
@@ -594,7 +728,8 @@ module.exports = async (req, res) => {
           d.uploaded_by, d.uploaded_at, d.deleted_at,
           COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'folder'), '[]'::jsonb) AS folder_ids,
           COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids,
-          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po_line'), '[]'::jsonb) AS po_line_ids
         FROM   project_documents d
         LEFT   JOIN document_links l ON l.document_id = d.id
         WHERE  d.company_code = ${companyCode}
@@ -902,6 +1037,18 @@ module.exports = async (req, res) => {
       if (procurementId !== null && !procDocs.isProcurementId(procurementId)) {
         return res.status(400).json({ error: 'procurementId must be 1 to 64 letters, digits, - or _' });
       }
+      // Attached from one delivery line of the order in poId, when it came
+      // from one. A line means nothing without its order (the link is the
+      // pair), so it needs poId, and both have to be the pair's shape. A plain
+      // poId on its own stays as it always was: unchecked.
+      const poLineId = (body.poLineId === undefined || body.poLineId === null || body.poLineId === '')
+        ? null : String(body.poLineId);
+      if (poLineId !== null && !poId) {
+        return res.status(400).json({ error: 'poLineId needs the poId of its order' });
+      }
+      if (poLineId !== null && !poLineDocs.poLineTarget(poId, poLineId)) {
+        return res.status(400).json({ error: PO_LINE_ID_SHAPE });
+      }
 
       // The declared size is not evidence of anything. Both the ticket and this
       // registration take it from the caller, and the presigned PUT signs only
@@ -955,6 +1102,27 @@ module.exports = async (req, res) => {
         }
       }
 
+      // A delivery line has to be on its order, in this division's list, and
+      // the file has to be filed in the order's own job — checked before the
+      // document row exists, like a Procurement line. The order is read from
+      // the division's PO list (the source of truth; the normalized mirror is
+      // best effort). Under the carve-out it is the order the gate already
+      // resolved, which body.poId was held to above.
+      let poLineOrder = null;
+      let poLine = null;
+      if (poLineId) {
+        poLineOrder = poScope ? poScope.po : await findPOInDivision(sql, companyCode, division, poId);
+        if (!poLineOrder) return res.status(404).json({ error: PO_NOT_FOUND });
+        poLine = poLineDocs.findLine(poLineOrder, poLineId);
+        if (!poLine) {
+          return res.status(404).json({ error: PO_LINE_NOT_FOUND, detail: PO_LINE_NOT_FOUND_DETAIL });
+        }
+        const orderJob = poLineOrder.project_id ? String(poLineOrder.project_id) : null;
+        if (orderJob !== (projectId || null)) {
+          return res.status(400).json({ error: PO_LINE_OTHER_JOB });
+        }
+      }
+
       try {
         await sql`
           INSERT INTO project_documents
@@ -975,19 +1143,39 @@ module.exports = async (req, res) => {
         VALUES (${id}, ${companyCode}, 'folder', ${folderId}, ${payload.username || null})
         ON CONFLICT DO NOTHING
       `;
+      // A delivery's file goes on the delivery and on its order in ONE
+      // statement, so it is on the order exactly when it is on the delivery.
+      // Written as two, a register cut off between them (a platform timeout,
+      // a dropped connection) left the file on the order alone — and
+      // "is it on the order?" is how a purchasing phone decides an attach it
+      // never heard back from went through, so it reported a delivery's
+      // ticket filed that its delivery never listed.
+      const poLineTargetId = poLineId ? poLineDocs.poLineTarget(poId, poLineId) : null;
       if (poId) {
-        await sql`
-          INSERT INTO document_links (document_id, company_code, link_type, target_id, created_by)
-          VALUES (${id}, ${companyCode}, 'po', ${poId}, ${payload.username || null})
-          ON CONFLICT DO NOTHING
-        `;
+        if (poLineTargetId) {
+          await sql`
+            INSERT INTO document_links (document_id, company_code, link_type, target_id, created_by)
+            VALUES (${id}, ${companyCode}, 'po',      ${poId},           ${payload.username || null}),
+                   (${id}, ${companyCode}, 'po_line', ${poLineTargetId}, ${payload.username || null})
+            ON CONFLICT DO NOTHING
+          `;
+        } else {
+          await sql`
+            INSERT INTO document_links (document_id, company_code, link_type, target_id, created_by)
+            VALUES (${id}, ${companyCode}, 'po', ${poId}, ${payload.username || null})
+            ON CONFLICT DO NOTHING
+          `;
+        }
         // ...and into that PO's own subfolder, which is the "own folder but
         // duplicated at the job level" behaviour the design calls for.
         const poFolderId = await ensurePoFolder(sql, {
           companyCode, division, projectId, poId,
           // Same ceiling a hand-made folder name gets. It is caller input and
           // becomes a folder name; nothing else bounded it.
-          poNumber: body.poNumber ? String(body.poNumber).slice(0, 60) : undefined,
+          poNumber: body.poNumber ? String(body.poNumber).slice(0, 60)
+            // A delivery's order is already in hand: name the folder from it
+            // when the caller sent no number.
+            : (poLineOrder && poLineOrder.po_number ? String(poLineOrder.po_number).slice(0, 60) : undefined),
           username: payload.username,
         });
         if (poFolderId) {
@@ -1004,6 +1192,7 @@ module.exports = async (req, res) => {
       // whichever folder that was, so the cost-code folder compiles every
       // attachment of its section.
       let costCodeFolderId = null;
+      const extraFolderIds = [];   // a second cost-code folder, when a line of each kind named one
       if (procurementId) {
         await sql`
           INSERT INTO document_links (document_id, company_code, link_type, target_id, created_by)
@@ -1016,12 +1205,23 @@ module.exports = async (req, res) => {
         costCodeFolderId = filed ? filed.folderId : null;
       }
 
+      // Attached to a delivery line: the links to the line and its order are
+      // in (above, together), so is the PO subfolder; the file is filed in
+      // the cost-code folder of the line's code as well.
+      if (poLineTargetId) {
+        const filed = await fileLineUnderCostCode(sql, {
+          companyCode, division, projectId, documentId: id, po: poLineOrder, line: poLine, payload,
+        });
+        if (filed && !costCodeFolderId) costCodeFolderId = filed.folderId;
+        else if (filed) extraFolderIds.push(filed.folderId);
+      }
+
       await audit(sql, {
         companyCode, division, projectId, documentId: id, folderId,
         action: 'UPLOAD', payload,
         detail: {
           filename, size_bytes: trueSize, declared_bytes: sizeBytes, po_id: poId,
-          procurement_id: procurementId, cost_code_folder_id: costCodeFolderId,
+          procurement_id: procurementId, po_line_id: poLineTargetId, cost_code_folder_id: costCodeFolderId,
         },
       });
 
@@ -1030,9 +1230,10 @@ module.exports = async (req, res) => {
           id, project_id: projectId, filename, content_type: contentType,
           size_bytes: trueSize, note: body.note || null,
           uploaded_by: payload.username || null, uploaded_at: new Date().toISOString(),
-          folder_ids: costCodeFolderId && costCodeFolderId !== folderId ? [folderId, costCodeFolderId] : [folderId],
+          folder_ids: [...new Set([folderId, costCodeFolderId, ...extraFolderIds].filter(Boolean))],
           po_ids: poId ? [poId] : [],
           procurement_ids: procurementId ? [procurementId] : [],
+          po_line_ids: poLineTargetId ? [poLineTargetId] : [],
         },
         // The cost-code folder the file was compiled into, so the page can
         // say where else it went (null: the line has no cost code yet).
@@ -1058,6 +1259,13 @@ module.exports = async (req, res) => {
       const isOwn = doc.uploaded_by && doc.uploaded_by === payload.username;
       if (!caps.canManage && !(caps.canUpload && isOwn)) {
         return res.status(403).json({ error: 'You can only change your own uploads' });
+      }
+
+      // Detaching from a delivery line names the line by its link's own
+      // target, "<poId>:<lineId>". Checked before anything below is written,
+      // so a malformed one changes nothing at all.
+      if (body.removePoLineId && !poLineDocs.parsePoLineTarget(String(body.removePoLineId))) {
+        return res.status(400).json({ error: 'removePoLineId must be "<poId>:<lineId>"' });
       }
 
       if (body.filename !== undefined) {
@@ -1150,7 +1358,16 @@ module.exports = async (req, res) => {
 
       // Link changes. addFolderId / addPoId / addProcurementId file the
       // document somewhere new; the remove* ones only unfile it — destroying a
-      // file is DELETE.
+      // file is DELETE. removePoLineId takes the file off one delivery line
+      // and nothing else: it stays on the order (its 'po' link), in the PO
+      // subfolder and in the cost-code folder, as removePoId and
+      // removeProcurementId leave theirs. removePoId takes it off the order
+      // AND off every delivery of that order: a delivery's file is on its
+      // order too, and one left on a delivery after its order let go of it
+      // was still counted and listed there while the order's paperclip had
+      // dropped it — and purchasing, who download through the order's link,
+      // got "Document not found" for a file the delivery listed. There is no
+      // addPoLineId (v1): a file reaches a line only by being uploaded from it.
       const links = [
         ['addFolderId',         'folder',      true],
         ['addPoId',             'po',          true],
@@ -1158,6 +1375,7 @@ module.exports = async (req, res) => {
         ['removeFolderId',      'folder',      false],
         ['removePoId',          'po',          false],
         ['removeProcurementId', 'procurement', false],
+        ['removePoLineId',      'po_line',     false],
       ];
       for (const [field, linkType, adding] of links) {
         if (!body[field]) continue;
@@ -1257,6 +1475,28 @@ module.exports = async (req, res) => {
           action: adding ? 'LINK' : 'UNLINK', payload,
           detail: { link_type: linkType, target_id: targetId },
         });
+
+        // Off the order, off its deliveries. A line link is "<poId>:<lineId>"
+        // and neither part can hold a colon, so the part before it IS the
+        // order — an exact match, where a LIKE prefix would read the '_' an
+        // id may carry as a wildcard. Folders are left alone, as above.
+        if (!adding && linkType === 'po') {
+          const gone = await sql`
+            DELETE FROM document_links
+            WHERE document_id  = ${id}
+              AND company_code = ${companyCode}
+              AND link_type    = 'po_line'
+              AND split_part(target_id, ':', 1) = ${targetId}
+            RETURNING target_id
+          `;
+          for (const g of gone) {
+            await audit(sql, {
+              companyCode, division, projectId: doc.project_id, documentId: id,
+              action: 'UNLINK', payload,
+              detail: { link_type: 'po_line', target_id: g.target_id, via: 'removePoId' },
+            });
+          }
+        }
       }
 
       const back = await sql`
@@ -1265,7 +1505,8 @@ module.exports = async (req, res) => {
           d.uploaded_by, d.uploaded_at, d.deleted_at,
           COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'folder'), '[]'::jsonb) AS folder_ids,
           COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po'),     '[]'::jsonb) AS po_ids,
-          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'procurement'), '[]'::jsonb) AS procurement_ids,
+          COALESCE(jsonb_agg(DISTINCT l.target_id) FILTER (WHERE l.link_type = 'po_line'), '[]'::jsonb) AS po_line_ids
         FROM   project_documents d
         LEFT   JOIN document_links l ON l.document_id = d.id
         WHERE  d.id = ${id}

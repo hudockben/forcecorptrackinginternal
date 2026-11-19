@@ -153,6 +153,27 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
     });
     assert('no page still writes orders from a row edit',
       PAGES.every(p => !/_syncDailyRowToPO|_reconcileDailyPOLinks|_dailyRowToPO|PO_ROW_SYNC_FIELDS/.test(read(p))));
+
+    // The paperclip on each delivery (scripts/test-po-page.js runs it): one
+    // copy of it, pasted into all three.
+    ['openPODocs', 'openPOLineDocs', '_poSettleSaves', '_poDocsTip', '_poLineDocCount', '_poLineDocsTip',
+     '_poLineClipHTML', '_poDocClipsRepaint', '_poLineCountsRefresh'].forEach(fn => {
+      const srcs = PAGES.map(p => requireFn(read(p), fn, p));
+      assert(`the delivery paperclip's ${fn} is the same in all three`, srcs.every(s => s === srcs[0]));
+    });
+    const rows = PAGES.map(p => sliceSource(read(p), '        const lineRows = (po.lines||[]).map(line => {', '        const totRow =',
+      `the delivery rows in ${p}`, '${_poLineClipHTML(po, line)}'));
+    assert('the delivery rows are drawn the same in all three, paperclip included', rows.every(s => s === rows[0]));
+    const css = PAGES.map(p => sliceSource(read(p), '    .po-line-clip {', '\n\n', `the paperclip's style in ${p}`, '.po-line-clip.has-docs'));
+    assert('  and styled the same', css.every(s => s === css[0]));
+    PAGES.forEach(p => {
+      const conf = requireFn(read(p), '_docsEnsureConfigured', p);
+      assert(`${p}: documents.js is told the uploader's login name and how to wait for the order saves`,
+        /\n    getUserName: \(\) => \(fctUser && fctUser\.username\) \|\| '',/.test(conf)
+          && /\n    settlePurchaseOrders: \(\) => _poSettleSaves\(\),/.test(conf), conf);
+      assert(`${p}:   and a document changed repaints the paperclips rather than redrawing the tab`,
+        /onChange: \(\) => \{\n      _poDocClipsRepaint\(\);/.test(conf) && !/renderPOTab/.test(conf), conf);
+    });
   }
 
   console.log('\n[the pages read the orders back from the server, and never delete the field\'s rows]');
@@ -182,6 +203,8 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
       /\$\{_poLineFromDaily\(line\) \? `<td[^`]*&#128274;<\/td>`\s*\n\s*: perm\.canEdit \?/.test(requireFn(src, 'renderPOTab', page)));
     assert(`${page}: and tags it with the row's codes`,
       /from Daily Tracking\$\{\(line\.cost_code \|\| line\.sub_code\)/.test(requireFn(src, 'renderPOTab', page)));
+    assert(`${page}: a Daily Tracking delivery gets the paperclip too, after its tag in the Invoice / Ticket # cell`,
+      /from Daily Tracking[^\n`]*<\/div>` : ''\}<\/div>\$\{_poLineClipHTML\(po, line\)\}<\/div><\/td>\n/.test(requireFn(src, 'renderPOTab', page)));
     assert(`${page}: the notice of numbers with no order is drawn`, /\$\{_poDailyOrphansHTML\(\)\}/.test(requireFn(src, 'renderPOTab', page)));
     const fill = sliceSource(src, '  targets.forEach(({ i, tr }) => {', '\n  });', `${page} fill-drag`, 'drPutNow');
     assert(`${page}: a fill-drag cannot overwrite a PO # an order set`,

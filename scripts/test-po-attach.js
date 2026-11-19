@@ -104,7 +104,7 @@ async function drive(clock, promise) {
  * Error (no answer at all), 'hang' (never answers), or for an XHR a
  * { progress: { every, steps, thenHang } } upload that moves in steps.
  */
-function sandbox(route, { downscale } = {}) {
+function sandbox(route, { downscale, settle } = {}) {
   const dom = new JSDOM('<!doctype html><html><body></body></html>');
   const clock = makeClock();
   const calls = [];
@@ -198,10 +198,23 @@ function sandbox(route, { downscale } = {}) {
     let loggedOut = false;
     function logout() { loggedOut = true; }
     const docCounts = {};
+    const lineDocCounts = Object.create(null);
+    let _lineCountTicket = 0;
+    const _lineCountLanded = Object.create(null);
+    const _lineFirstHand = Object.create(null);
     async function downscaleImage(file, maxEdge) { return __downscale(file, maxEdge); }
+    // The order's save, settled before a file is filed against one of its
+    // deliveries. Records how many requests had gone out when it was asked.
+    const settled = [];
+    async function settleOrderSave(po) { settled.push({ po: po.id, after: __calls.length }); return __settle(po); }
   `, ctx);
   ctx.__downscale = downscale || (async () => ({ blob: new dom.window.Blob(['small-jpeg'], { type: 'image/jpeg' }) }));
+  ctx.__settle = settle || (async () => {});
+  ctx.__calls = calls;
   evalSlice('async ' + requireFn(PAGE, 'api', 'purchase-orders.html'), ctx, 'api()');
+  // The paperclip counts an attach updates, the page's own.
+  ['lineDocCount', 'setLineDocCount', 'countAttached']
+    .forEach(n => evalSlice(requireFn(PAGE, n, 'purchase-orders.html'), ctx, n));
   const region = sliceSource(PAGE, '/* ── Getting a file through on a jobsite connection',
     '/* ═══', 'the attach region', ['async function prepareAttachment', 'async function attachToPO']);
   evalSlice(region, ctx, 'the attach region');
@@ -253,14 +266,15 @@ const SMALL = "new Blob(['x'.repeat(2000)], { type: 'image/jpeg' })";
 const MB1   = "new Blob([new Uint8Array(1024 * 1024)], { type: 'application/pdf' })";
 const BIG   = "new Blob([new Uint8Array(3 * 1024 * 1024 + 1)], { type: 'application/pdf' })";
 
-async function attach(s, blobExpr = SMALL) {
+async function attach(s, blobExpr = SMALL, optsExpr) {
   try {
-    await s.drive(`attachToPO(${PO}, ${blobExpr}, 'receipt.jpg')`);
+    await s.drive(`attachToPO(${PO}, ${blobExpr}, 'receipt.jpg'${optsExpr ? ', ' + optsExpr : ''})`);
     return null;
   } catch (err) {
     return err;
   }
 }
+const registers = calls => calls.filter(c => c.method === 'POST' && c.url.startsWith('/api/documents?'));
 
 (async () => {
 
@@ -653,6 +667,157 @@ console.log('\n[a long dead zone while filing]');
   assert('  and its bytes are kept for the retry', count(s.calls, 'DELETE /api/document-upload-url') === 0);
 }
 
+console.log('\n[a file for one delivery]');
+{
+  const s = sandbox(server());
+  const err = await attach(s, SMALL, "{ lineId: 'L1' }");
+  assert('a file attached from a delivery lands', !err, err && err.message);
+  assert('  in the same four requests, in the same order',
+    JSON.stringify(legs(s.calls)) === JSON.stringify([
+      'PUT /api/documents', 'POST /api/document-upload-url', 'PUT STORAGE', 'POST /api/documents']),
+    JSON.stringify(legs(s.calls)));
+  assert('  every one of them naming the order, which is what the purchasing carve-out reads',
+    s.calls.filter(c => !c.url.startsWith('https://')).every(c => /[?&]poId=po1(&|$)/.test(c.url)),
+    JSON.stringify(s.calls.map(c => c.url)));
+  const settled = s.run('JSON.stringify(settled)');
+  assert('  after the order\'s save was settled, before anything was sent',
+    settled === JSON.stringify([{ po: 'po1', after: 0 }]), settled);
+  const reg = JSON.parse(registers(s.calls)[0].body);
+  assert('  the register names the delivery, beside its order', reg.poLineId === 'L1' && reg.poId === 'po1', JSON.stringify(reg));
+  const ticket = JSON.parse(s.calls.find(c => c.method === 'POST' && c.url.startsWith('/api/document-upload-url?')).body);
+  const seed = s.calls.find(c => c.method === 'PUT' && c.url.startsWith('/api/documents?'));
+  assert('  and nothing else does — the other legs are the order\'s, as they always were',
+    !('poLineId' in ticket) && seed.body === '{}' && !/poLineId/.test(seed.url), JSON.stringify(ticket));
+  assert('it counts on the order\'s paperclip', s.run('docCounts.po1') === 1);
+  assert('  and on the delivery\'s', s.run("lineDocCount('po1', 'L1')") === 1 && s.run("lineDocCount('po1', 'L2')") === 0);
+}
+{
+  const s = sandbox(server());
+  const err = await attach(s);
+  const reg = JSON.parse(registers(s.calls)[0].body);
+  assert('a file attached to the order itself sends no delivery at all', !err && !('poLineId' in reg), JSON.stringify(reg));
+  assert('  settles nothing first', s.run('settled.length') === 0);
+  assert('  and counts on no delivery', s.run('Object.keys(lineDocCounts).length') === 0);
+}
+{
+  const s = sandbox(server());
+  const err = await attach(s, SMALL, "{ note: 'Scanned receipt', lineId: 'L1' }");
+  const reg = JSON.parse(registers(s.calls)[0].body);
+  assert('a note travels with a delivery\'s file', !err && reg.note === 'Scanned receipt' && reg.poLineId === 'L1',
+    JSON.stringify(reg));
+}
+{
+  const s = sandbox(server(), { settle: async () => { throw new TypeError('Failed to fetch'); } });
+  const err = await attach(s, SMALL, "{ lineId: 'L1' }");
+  assert('a delivery whose order cannot be saved is said so, in words',
+    err && /not saved yet/.test(err.message) && /Failed to fetch/.test(err.message), err && err.message);
+  assert('  having sent nothing — no ticket minted, no bytes up to be thrown away', s.calls.length === 0,
+    JSON.stringify(legs(s.calls)));
+  assert('  and counted nothing', s.run('docCounts.po1') === undefined && s.run("lineDocCount('po1', 'L1')") === 0);
+}
+{
+  const s = sandbox(server({ register: () => ({ status: 404, json: {
+    error: 'Delivery line not found',
+    detail: 'That delivery is not on the order yet — it may not have been saved. Wait a moment and try again.',
+  } }) }));
+  const err = await attach(s, SMALL, "{ lineId: 'L1' }");
+  assert('a delivery the server does not have on the order is reported in its words',
+    err && /not on the order yet/.test(err.message) && !err.unconfirmed, err && err.message);
+  assert('  without asking again', registers(s.calls).length === 1);
+  const del = s.calls.find(c => c.method === 'DELETE');
+  assert('  with the stored bytes cleaned up, for this order', del && /poId=po1/.test(del.url), del && del.url);
+  assert('  and nothing counted on either paperclip',
+    s.run('docCounts.po1') === undefined && s.run("lineDocCount('po1', 'L1')") === 0);
+}
+{
+  // The server lists a delivery's file on its order with the delivery's link
+  // ("<poId>:<lineId>") — it writes both links in one statement.
+  const s = sandbox(server({ register: () => netDown(),
+    list: () => ({ json: { documents: [{ id: 'd1', po_ids: ['po1'], po_line_ids: ['po1:L1'] }] } }) }));
+  const err = await attach(s, SMALL, "{ lineId: 'L1' }");
+  assert('a delivery\'s file that landed without a reply is found on the order, and is a success',
+    !err && registers(s.calls).length === 1, err ? err.message : JSON.stringify(legs(s.calls)));
+  assert('  counted once on the delivery', s.run("lineDocCount('po1', 'L1')") === 1);
+}
+{
+  // Half a register: the file reached the order but not the delivery it was
+  // sent to (a function cut off between the two links, on a server that
+  // wrote them apart). "On the order" is not "filed where it was sent" — the
+  // delivery would never list it, and its count would fall back to 0 on the
+  // next refresh. Neither the retry's 409 nor the check may call it done.
+  const s = sandbox(server({
+    register: (c, n) => (n === 1 ? { status: 500, json: { error: 'Database error' } }
+                                 : { status: 409, json: { error: 'That document is already registered' } }),
+    list: () => ({ json: { documents: [{ id: 'd1', po_ids: ['po1'], po_line_ids: [] }] } }),
+  }));
+  const err = await attach(s, SMALL, "{ lineId: 'L1' }");
+  assert('a delivery\'s file found on the order but not on its delivery is not reported as attached to it',
+    Boolean(err) && !/^Could not confirm/.test(err.message), err ? err.message : 'no error');
+  assert('  and counts on neither paperclip',
+    s.run("lineDocCount('po1', 'L1')") === 0 && s.run('docCounts.po1') === undefined,
+    `${s.run("lineDocCount('po1', 'L1')")} / ${s.run('docCounts.po1')}`);
+}
+{
+  // The same listing is a success for a file sent to the order itself.
+  const s = sandbox(server({ register: () => netDown(),
+    list: () => ({ json: { documents: [{ id: 'd1', po_ids: ['po1'], po_line_ids: [] }] } }) }));
+  const err = await attach(s, SMALL);
+  assert('an order\'s own file found on its paperclip is a success, delivery or none',
+    !err && registers(s.calls).length === 1 && s.run('docCounts.po1') === 1, err ? err.message : JSON.stringify(legs(s.calls)));
+}
+{
+  // The dead zone again, for a delivery: the retry re-registers the same
+  // upload, still for that delivery.
+  let offline = false;
+  const s = sandbox((call, calls) => {
+    if (offline) return netDown();
+    return server({ register: (c, n) => (n === 1 ? ((offline = true), netDown()) : null) })(call, calls);
+  });
+  s.run(`var heldBlob = ${SMALL};`);
+  try { await s.drive(`attachToPO(${PO}, heldBlob, 'receipt.jpg', { lineId: 'L1' })`); } catch (e) { /* unsure */ }
+  offline = false;
+  const back = s.calls.length;
+  let err = null;
+  try { await s.drive(`attachToPO(${PO}, heldBlob, 'receipt.jpg', { lineId: 'L1' })`); } catch (e) { err = e; }
+  const after = registers(s.calls.slice(back)).map(c => JSON.parse(c.body));
+  assert('a delivery\'s file held over a dead zone is registered again for that delivery',
+    !err && after.length === 1 && after[0].documentId === 'd1' && after[0].poLineId === 'L1',
+    err ? err.message : JSON.stringify(after));
+  assert('  counted once on it', s.run("lineDocCount('po1', 'L1')") === 1 && s.run('docCounts.po1') === 1);
+}
+{
+  // A held, unsure file for one delivery is not "already filed" for ANOTHER
+  // delivery: being on the order is what the check finds, and that says
+  // nothing about the second delivery.
+  let offline = false;
+  const filed = new Set();
+  const s = sandbox((call, calls) => {
+    if (offline) return netDown();
+    return server({
+      ticket: (c, n) => ({ json: {
+        documentId: 'd' + n, storageKey: 'FCT/paving/p1/d' + n + '/receipt.jpg',
+        uploadUrl: STORAGE_URL, contentType: 'image/jpeg', expiresIn: 900,
+      } }),
+      register: (c, n) => {
+        filed.add(JSON.parse(c.body).documentId);
+        return n === 1 ? ((offline = true), netDown()) : null;
+      },
+      list: () => ({ json: { documents: [...filed].map(id => ({ id })) } }),
+    })(call, calls);
+  });
+  s.run(`var heldBlob = ${SMALL};`);
+  try { await s.drive(`attachToPO(${PO}, heldBlob, 'receipt.jpg', { lineId: 'L1' })`); } catch (e) { /* unsure */ }
+  offline = false;
+  const back = s.calls.length;
+  let err = null;
+  try { await s.drive(`attachToPO(${PO}, heldBlob, 'receipt.jpg', { lineId: 'L2' })`); } catch (e) { err = e; }
+  const after = registers(s.calls.slice(back)).map(c => JSON.parse(c.body));
+  assert('the same file sent to another delivery is filed for that one, not taken as done',
+    !err && after.length === 1 && after[0].poLineId === 'L2' && after[0].documentId === 'd2',
+    err ? err.message : JSON.stringify(after));
+  assert('  and counted on it, not on the first', s.run("lineDocCount('po1', 'L2')") === 1 && s.run("lineDocCount('po1', 'L1')") === 0);
+}
+
 console.log('\n[what api() reports]');
 {
   const s = sandbox(() => 'hang');
@@ -739,19 +904,442 @@ console.log('\n[the picker offers what the server takes]');
   assert('an extension supplied from a type is one the server takes, for that type', !bad.length, JSON.stringify(bad));
 }
 
+/**
+ * The delivery paperclips and their sheet, run in a jsdom document with the
+ * page's own functions. `answer(url)` answers each api() GET: an object, an
+ * Error to throw, or a promise to hold it back.
+ */
+function pageSandbox({ answer, canEdit = true, settle, orders, body = '' } = {}) {
+  const dom = new JSDOM('<!doctype html><html><body>' +
+    '<div id="docs-backdrop"><div class="sheet" id="docs-sheet"></div></div>' + body + '</body></html>');
+  const gets = [];
+  const toasts = [];
+  const ctx = vm.createContext({
+    console: { log() {}, warn() {}, error() {} },
+    document: dom.window.document,
+    JSON, Promise, Math, Error, Number, String, Object, Array, Map, Set, Boolean, Date, encodeURIComponent,
+    __answer: answer || (() => ({})),
+    __settle: settle || (async () => {}),
+  });
+  vm.runInContext(`
+    const GENERAL = 'purchase_orders';
+    let purchaseOrders = ${JSON.stringify(orders || [])};
+    // Where the server has each order: all of them stored, where they are.
+    const _savedDivision = Object.fromEntries(purchaseOrders.map(po => [po.id, po._division]));
+    const docCounts = {};
+    const lineDocCounts = Object.create(null);
+    let _lineCountTicket = 0;
+    const _lineCountLanded = Object.create(null);
+    const _lineFirstHand = Object.create(null);
+    let _docsSheetSeq = 0;
+    let _docsRetry = null;
+    const gets = [], toasts = [], settled = [];
+    let locks = 0;
+    async function api(method, path) { gets.push(method + ' ' + path); return __answer(path); }
+    async function settleOrderSave(po) { settled.push({ po: po.id, after: gets.length }); return __settle(po); }
+    function lockBodyScroll() { locks++; }
+    function toast(msg, kind) { toasts.push(msg); }
+    function capsFor() { return { canEdit: ${canEdit ? 'true' : 'false'} }; }
+    function divLabel(d) { return d === 'paving' ? 'Paving' : d; }
+    function hasJobs(d) { return ['turf', 'paving', 'kiewit'].includes(d); }
+    function projectFor(d, id) { return id === 'p1' ? { id: 'p1', name: 'Route 30' } : null; }
+  `, ctx);
+  ['esc', 'jsAttr', 'lineDocCount', 'setLineDocCount', 'countAttached', 'loadLineDocCounts',
+   'lineClipHTML', 'lineClipLabel', 'paintLineClips', 'liveLineId', 'lineLabel', 'lineCostCodeFor',
+   'openDocs', 'lineDocsSubHTML', 'deliveryTagOf', 'docsRetryHTML']
+    .forEach(n => evalSlice((/^(loadLineDocCounts|openDocs)$/.test(n) ? 'async ' : '') +
+      requireFn(PAGE, n, 'purchase-orders.html'), ctx, n));
+  const run = e => vm.runInContext(e, ctx);
+  return { dom, doc: dom.window.document, run, gets: () => run('gets'), ctx };
+}
+const settleAll = () => new Promise(r => setTimeout(r, 0));
+const hold = () => { let release; const p = new Promise(r => { release = r; }); return { p, release }; };
+
+const ORDERS = [
+  { id: 'po1', po_number: 'PO-0042', _division: 'paving', project_id: 'p1', cost_code: '420', lines: [
+    { id: 'L1', invoice_num: 'INV-77', date: '2026-11-02' },
+    { id: 'dr-row1', source: 'daily', invoice_num: '', date: '2026-11-03', cost_code: 'Stormwater', sub_code: '01' },
+    { id: 'L3', invoice_num: '', date: '' },
+  ] },
+  { id: 'po2', po_number: 'PO-0007', _division: 'quarry', project_id: '', cost_code: '', lines: [{ id: 'Q1', invoice_num: 'T-9' }] },
+];
+
+console.log('\n[a paperclip on every delivery]');
+{
+  const s = pageSandbox({ orders: ORDERS });
+  const one = html => new JSDOM('<!doctype html><body>' + html).window.document.querySelector('button');
+  const b = one(s.run("lineClipHTML(purchaseOrders[0], purchaseOrders[0].lines[0])"));
+  assert('a delivery with nothing attached shows a muted paperclip',
+    b && b.classList.contains('line-clip') && !b.classList.contains('has') && b.textContent === '\u{1F4CE}', b && b.outerHTML);
+  assert('  that offers attaching, to someone who can', /^Attach a ticket or invoice/.test(b.title) && b.getAttribute('aria-label') === b.title);
+  assert('  and opens the attachments sheet for that delivery', b.getAttribute('onclick') === "openDocs('po1','L1')", b.getAttribute('onclick'));
+  assert('  found again by its own attributes, not the order paperclip\'s or a delivery box\'s',
+    b.dataset.clipPo === 'po1' && b.dataset.clipLine === 'L1' && !b.hasAttribute('data-po-id') && !b.hasAttribute('id'));
+  s.run("setLineDocCount('po1', 'L1', 3)");
+  const g = one(s.run("lineClipHTML(purchaseOrders[0], purchaseOrders[0].lines[0])"));
+  assert('with files attached it is green and says how many', g.classList.contains('has') && g.textContent === '\u{1F4CE}3' &&
+    g.title === '3 attached to this delivery', g.outerHTML);
+  const v = pageSandbox({ orders: ORDERS, canEdit: false });
+  const vb = one(v.run("lineClipHTML(purchaseOrders[0], purchaseOrders[0].lines[0])"));
+  assert('a viewer sees it too, worded for reading', vb && vb.title === 'Nothing attached to this delivery', vb && vb.title);
+
+  // Ids are free text the full-list PUT never checks.
+  const hostile = { id: "x');alert(1);('", _division: 'paving' };
+  const line = { id: '"><img src=x onerror=alert(1)>' };
+  const h = new JSDOM('<!doctype html><body>' + s.run(`lineClipHTML(${JSON.stringify(hostile)}, ${JSON.stringify(line)})`)).window.document;
+  const hb = h.querySelector('button');
+  assert('a hostile order or delivery id stays inside its attribute',
+    h.querySelectorAll('img').length === 0 && h.querySelectorAll('button').length === 1 &&
+    hb.dataset.clipPo === hostile.id && hb.dataset.clipLine === line.id, h.body.innerHTML);
+  assert('  and inside its handler', /^openDocs\('(?:[^'\\]|\\.)*','(?:[^'\\]|\\.)*'\)$/.test(hb.getAttribute('onclick')),
+    hb.getAttribute('onclick'));
+
+  const rows = requireFn(PAGE, 'lineRowsHTML', 'purchase-orders.html');
+  assert('the delivery rows draw it in the Invoice / Ticket # cell, beside the box — no new column',
+    /inp\('invoice_num','text', l\.invoice_num, 'placeholder="Invoice \/ Ticket #"'\) \+ lineClipHTML\(po, l\) \+ '<\/div>' \+\s*\n\s*dailyLineTagHTML\(l\)/.test(rows), rows);
+  assert('  on both surfaces, through the one row builder', (PAGE.match(/lineClipHTML\(/g) || []).length === 2);
+  assert('  and not in the lock / ✕ cell', !/isDailyLine\(l\)\s*\n\s*\?[\s\S]{0,500}lineClipHTML/.test(rows));
+  const head = (PAGE.match(/'<thead><tr><th>Invoice \/ Ticket #<\/th>[\s\S]*?<\/tr><\/thead>'/) || [''])[0];
+  assert('  so the deliveries table keeps its nine columns', (head.match(/<th[ >]/g) || []).length === 9, head);
+}
+
+console.log('\n[counting each delivery\'s files]');
+{
+  const surfaces = ['tbl', 'card'].map(() =>
+    '<button class="line-clip" data-clip-po="po1" data-clip-line="L1"></button>' +
+    '<button class="line-clip" data-clip-po="po1" data-clip-line="dr-row1"></button>' +
+    '<button class="line-clip" data-clip-po="po2" data-clip-line="L1"></button>').join('');
+  let reply = () => ({ counts: { po1: { L1: 2, 'dr-row1': 1 }, po9: { X: 5 } } });
+  const s = pageSandbox({ orders: ORDERS, body: surfaces, answer: path => reply(path) });
+  const clips = [...s.doc.querySelectorAll('.line-clip')];
+  const ok = await s.run('loadLineDocCounts(purchaseOrders[0])');
+  assert('an order\'s deliveries are counted in one request, naming that order',
+    ok === true && JSON.stringify(s.gets()) === JSON.stringify(['GET /documents?division=paving&poLineCounts=1&poId=po1']),
+    JSON.stringify(s.gets()));
+  assert('  and taken', s.run("lineDocCount('po1', 'L1')") === 2 && s.run("lineDocCount('po1', 'dr-row1')") === 1);
+  assert('  only for that order — another order in the answer is not', s.run("'po9' in lineDocCounts") === false);
+  const now = [...s.doc.querySelectorAll('.line-clip')];
+  assert('the paperclips are redrawn where they stand, not re-rendered',
+    now.length === clips.length && now.every((b, i) => b === clips[i]));
+  assert('  on the table and on the phone card alike',
+    now.filter(b => b.dataset.clipPo === 'po1' && b.dataset.clipLine === 'L1')
+      .every(b => b.textContent === '\u{1F4CE}2' && b.classList.contains('has') && b.title === '2 attached to this delivery'),
+    now.map(b => b.outerHTML).join(' '));
+  assert('  leaving another order\'s delivery with the same line id alone',
+    now.filter(b => b.dataset.clipPo === 'po2').every(b => b.textContent === '' && !b.classList.contains('has')));
+
+  reply = () => { throw new Error('HTTP 502'); };
+  assert('a count that fails keeps the last good one',
+    await s.run('loadLineDocCounts(purchaseOrders[0])') === false && s.run("lineDocCount('po1', 'L1')") === 2);
+  reply = () => ({ documents: [] });
+  assert('  and so does an answer with no counts in it — a server from before the count answers with the order\'s list',
+    await s.run('loadLineDocCounts(purchaseOrders[0])') === false && s.run("lineDocCount('po1', 'L1')") === 2);
+
+  // A slow count overtaken by an attach this page just counted.
+  const late = hold();
+  reply = () => late.p;
+  const slow = s.run('loadLineDocCounts(purchaseOrders[0])');
+  await settleAll();
+  s.run("countAttached(purchaseOrders[0], 'L1')");
+  late.release({ counts: { po1: { L1: 2, 'dr-row1': 4 } } });
+  const slowTook = await slow;
+  assert('a count that left before an attach does not undo it', s.run("lineDocCount('po1', 'L1')") === 3,
+    s.run("lineDocCount('po1', 'L1')"));
+  assert('  but is still taken for the order\'s other deliveries, and painted',
+    slowTook === true && s.run("lineDocCount('po1', 'dr-row1')") === 4
+      && [...s.doc.querySelectorAll('.line-clip')].filter(b => b.dataset.clipPo === 'po1' && b.dataset.clipLine === 'dr-row1')
+        .every(b => b.textContent === '\u{1F4CE}4' && b.classList.contains('has')),
+    `${slowTook} / ${s.run("lineDocCount('po1', 'dr-row1')")}`);
+  assert('  and the attach counted on the order\'s paperclip too', s.run('docCounts.po1') === 1);
+  reply = () => ({ counts: { po1: { L1: 1 } } });
+  assert('but a count asked for afterwards stands — a file detached in a division tab',
+    await s.run('loadLineDocCounts(purchaseOrders[0])') === true && s.run("lineDocCount('po1', 'L1')") === 1 &&
+    s.run("lineDocCount('po1', 'dr-row1')") === 0);
+  reply = () => ({ counts: { po1: { L1: 0, L3: 'x', 'dr-row1': -1 } } });
+  await s.run('loadLineDocCounts(purchaseOrders[0])');
+  assert('nothing but a positive count is kept', s.run("JSON.stringify(Object.keys(lineDocCounts.po1))") === '[]');
+
+  const asked = s.gets().length;
+  s.run("purchaseOrders.push({ id: 'po-new', _division: 'paving', lines: [{ id: 'n1' }] })");
+  assert('an order not yet stored is not counted — nothing is filed against it, and the carve-out would refuse it',
+    await s.run("loadLineDocCounts(purchaseOrders[purchaseOrders.length - 1])") === false && s.gets().length === asked);
+  s.run("_savedDivision.po1 = 'turf'");
+  assert('  nor is one whose move to another list has not been saved',
+    await s.run('loadLineDocCounts(purchaseOrders[0])') === false && s.gets().length === asked);
+  s.run("_savedDivision.po1 = 'paving'");
+
+  s.run("setLineDocCount('__proto__', '__proto__', 2)");
+  assert('an id named like a prototype key is just an id',
+    s.run("lineDocCount('__proto__', '__proto__')") === 2 && s.run("lineDocCount('po1', 'constructor')") === 0 &&
+    s.run("lineDocCount('constructor', 'L1')") === 0 &&
+    s.run("Object.getPrototypeOf(lineDocCounts) === null && Object.getPrototypeOf(lineDocCounts['__proto__']) === null"));
+}
+
+{
+  // A delivery's sheet opened while its order's count is still out (slow LTE,
+  // a cold function), and its listing lands first. That one delivery's count
+  // is first-hand and newer; the order's answer is still every OTHER
+  // delivery's count. Dropping the whole answer left them all on an empty
+  // paperclip — "Attach a ticket or invoice" over tickets that are there —
+  // until the order was collapsed and opened again.
+  const surfaces = ['tbl', 'card'].map(() => ['L1', 'dr-row1', 'L3'].map(l =>
+    `<button class="line-clip" data-clip-po="po1" data-clip-line="${l}"></button>`).join('')).join('');
+  const late = hold();
+  const s = pageSandbox({
+    orders: ORDERS, body: surfaces,
+    answer: path => (/poLineCounts=1/.test(path) ? late.p
+      : /poLineId=L1/.test(path) ? { documents: [{ id: 'dA', filename: 'inv-77.pdf', po_ids: ['po1'], po_line_ids: ['po1:L1'] }] }
+      : { documents: [] }),
+  });
+  const slow = s.run('loadLineDocCounts(purchaseOrders[0])');
+  await settleAll();
+  await s.run("openDocs('po1', 'L1')");
+  assert('fixture: the delivery\'s sheet counted it first-hand', s.run("lineDocCount('po1', 'L1')") === 1);
+  late.release({ counts: { po1: { L1: 5, 'dr-row1': 2, L3: 1 } } });
+  const took = await slow;
+  const clip = l => [...s.doc.querySelectorAll('.line-clip')].filter(b => b.dataset.clipLine === l);
+  assert('an order\'s count that left before one delivery\'s sheet still counts the order\'s other deliveries',
+    took === true && s.run("lineDocCount('po1', 'dr-row1')") === 2 && s.run("lineDocCount('po1', 'L3')") === 1,
+    `${took} / ${s.run("JSON.stringify(lineDocCounts.po1)")}`);
+  assert('  keeping the sheet\'s own, newer count for its delivery', s.run("lineDocCount('po1', 'L1')") === 1,
+    String(s.run("lineDocCount('po1', 'L1')")));
+  assert('  and paints every one of them, on both surfaces',
+    clip('dr-row1').length === 2 && clip('dr-row1').every(b => b.textContent === '\u{1F4CE}2' && b.classList.contains('has'))
+      && clip('L3').every(b => b.textContent === '\u{1F4CE}1') && clip('L1').every(b => b.textContent === '\u{1F4CE}1'),
+    clip('dr-row1').concat(clip('L3'), clip('L1')).map(b => b.outerHTML).join(' '));
+
+  // An order-wide answer asked for after it is newer than both, and wins outright.
+  const later = hold();
+  const s2 = pageSandbox({ orders: ORDERS, answer: path => (/poLineCounts=1/.test(path) ? later.p : { documents: [] }) });
+  s2.run("setLineDocCount('po1', 'L1', 4)");
+  const fresh = s2.run('loadLineDocCounts(purchaseOrders[0])');
+  later.release({ counts: { po1: { 'dr-row1': 1 } } });
+  assert('a count asked for after a delivery was counted first-hand is taken for that delivery too',
+    await fresh === true && s2.run("lineDocCount('po1', 'L1')") === 0 && s2.run("lineDocCount('po1', 'dr-row1')") === 1,
+    s2.run("JSON.stringify(lineDocCounts.po1)"));
+
+  // Two order-wide counts out at once: the later one, landing first, still wins.
+  const first = hold(), second = hold();
+  let n = 0;
+  const s3 = pageSandbox({ orders: ORDERS, answer: path => (/poLineCounts=1/.test(path) ? (++n === 1 ? first.p : second.p) : {}) });
+  const a = s3.run('loadLineDocCounts(purchaseOrders[0])');
+  const b = s3.run('loadLineDocCounts(purchaseOrders[0])');
+  await settleAll();
+  second.release({ counts: { po1: { L1: 2 } } });
+  await b;
+  first.release({ counts: { po1: { L1: 9, L3: 9 } } });
+  assert('an order\'s older count never overwrites a newer count of the same order',
+    await a === false && s3.run("lineDocCount('po1', 'L1')") === 2 && s3.run("lineDocCount('po1', 'L3')") === 0,
+    s3.run("JSON.stringify(lineDocCounts.po1)"));
+}
+
+console.log('\n[a delivery\'s sheet]');
+{
+  const filesFor = { L1: [{ id: 'd9', filename: 'ticket.pdf', uploaded_by: 'sam', po_line_ids: ['po1:L1'] }] };
+  const s = pageSandbox({
+    orders: ORDERS,
+    body: '<button class="line-clip" data-clip-po="po1" data-clip-line="L1"></button>',
+    answer: path => {
+      const m = path.match(/poLineId=([^&]+)/);
+      if (m) return { documents: filesFor[decodeURIComponent(m[1])] || [] };
+      return { documents: [
+        { id: 'd9', filename: 'ticket.pdf', po_line_ids: ['po1:L1'] },
+        { id: 'd8', filename: 'old.pdf', po_line_ids: ['po1:dr-gone'] },
+        { id: 'd7', filename: 'quote.pdf', po_line_ids: [] },
+        { id: 'd6', filename: 'other.pdf', po_line_ids: ['po11:L1'] },
+      ] };
+    },
+  });
+  await s.run("openDocs('po1', 'L1')");
+  const sheet = s.doc.getElementById('docs-sheet');
+  assert('it lists that delivery\'s files, through the order — what the carve-out is granted for',
+    JSON.stringify(s.gets()) === JSON.stringify(['GET /documents?division=paving&poLineId=L1&poId=po1']),
+    JSON.stringify(s.gets()));
+  assert('  after settling the order\'s save', s.run('JSON.stringify(settled)') === JSON.stringify([{ po: 'po1', after: 0 }]));
+  assert('  on the one sheet, locked the one way', s.run('locks') >= 1 && s.doc.getElementById('docs-backdrop') !== null);
+  assert('  titled with the order and the delivery', sheet.querySelector('h2').textContent === 'PO-0042 · INV-77 — attachments',
+    sheet.querySelector('h2').textContent);
+  const open = sheet.querySelector('button[onclick^="openDoc("]');
+  assert('  each file opened through its order', open && open.getAttribute('onclick') === "openDoc('paving','d9','po1')",
+    open && open.getAttribute('onclick'));
+  assert('  saying where else it is filed — the order, and the cost-code folder of the order\'s code',
+    /on the order’s paperclip/.test(sheet.textContent) && /in the 420 cost-code folder/.test(sheet.textContent), sheet.textContent);
+  const add = s.doc.getElementById('doc-add');
+  assert('  attaching from it attaches to the delivery', add && add.getAttribute('onclick') === "addAttachment('po1','L1')",
+    add && add.getAttribute('onclick'));
+  const all = [...sheet.querySelectorAll('button')].find(b => /^All of/.test(b.textContent));
+  assert('  with a way to the whole order\'s sheet', all && all.getAttribute('onclick') === "openDocs('po1')");
+  assert('the list it fetched is the delivery\'s count', s.run("lineDocCount('po1', 'L1')") === 1);
+  const clip = s.doc.querySelector('.line-clip');
+  assert('  drawn on its paperclip in place', clip.textContent === '\u{1F4CE}1' && clip.classList.contains('has'));
+
+  await s.run("openDocs('po1', 'dr-row1')");
+  assert('a Daily Tracking delivery is filed under ITS row\'s code, and titled by its date',
+    /in the Stormwater cost-code folder/.test(sheet.textContent) && /PO-0042 · 2026-11-03/.test(sheet.querySelector('h2').textContent),
+    sheet.textContent);
+  assert('  and listing nothing sets its count to nothing', s.run("lineDocCount('po1', 'dr-row1')") === 0 &&
+    /Nothing attached yet/.test(sheet.textContent));
+  await s.run("openDocs('po1', 'L3')");
+  assert('a delivery with no ticket # and no date is just "Delivery"', /PO-0042 · Delivery/.test(sheet.querySelector('h2').textContent));
+  await s.run("openDocs('po2', 'Q1')");
+  assert('an order with no job has no cost-code folder to name', !/cost-code folder/.test(sheet.textContent) && /with no job/.test(sheet.textContent),
+    sheet.textContent);
+
+  await s.run("openDocs('po1')");
+  const text = sheet.textContent;
+  assert('the order\'s own sheet still lists through the order', s.gets()[s.gets().length - 1] === 'GET /documents?division=paving&poId=po1');
+  // The line under each file's name.
+  const meta = name => {
+    const f = [...sheet.querySelectorAll('div')].find(d => !d.children.length && d.textContent === name);
+    return f && f.nextElementSibling ? f.nextElementSibling.textContent : null;
+  };
+  assert('  and says which delivery a file hangs off', meta('ticket.pdf') === ' · delivery INV-77', meta('ticket.pdf'));
+  assert('  or that its delivery has left the order', meta('old.pdf') === ' · a delivery no longer on this order', meta('old.pdf'));
+  assert('  and nothing for a file on no delivery, or on another order\'s',
+    meta('quote.pdf') === '' && meta('other.pdf') === '', JSON.stringify([meta('quote.pdf'), meta('other.pdf')]));
+  assert('  attaching from it attaches to the order', s.doc.getElementById('doc-add').getAttribute('onclick') === "addAttachment('po1')");
+  assert('  and it has no way "back" to an order it already is', !/All of/.test(text));
+  assert('the order\'s count is the list it fetched, as before', s.run('docCounts.po1') === 4);
+
+  const before = s.gets().length;
+  await s.run("openDocs('po1', 'nope')");
+  assert('a delivery no longer on the order says so, and shows the order\'s sheet — its files are the order\'s',
+    /no longer on PO-0042/.test(s.run('toasts[toasts.length - 1]')) &&
+    JSON.stringify(s.gets().slice(before)) === JSON.stringify(['GET /documents?division=paving&poId=po1']) &&
+    sheet.querySelector('h2').textContent === 'PO-0042 — attachments', JSON.stringify(s.gets().slice(before)));
+}
+{
+  const s = pageSandbox({ orders: ORDERS, canEdit: false, answer: () => ({ documents: [] }) });
+  await s.run("openDocs('po1', 'L1')");
+  assert('a viewer can read a delivery\'s sheet but is offered no attach', !s.doc.getElementById('doc-add') &&
+    s.gets().length === 1);
+}
+{
+  const s = pageSandbox({ orders: ORDERS, settle: async () => { throw new TypeError('Failed to fetch'); } });
+  await s.run("openDocs('po1', 'L1')");
+  const sheet = s.doc.getElementById('docs-sheet');
+  assert('a delivery whose order cannot be saved says so, and asks for nothing it cannot have',
+    /not saved yet/.test(sheet.textContent) && s.gets().length === 0, sheet.textContent);
+  assert('  still offering the attach, which settles again first', Boolean(s.doc.getElementById('doc-add')));
+}
+{
+  const first = hold();
+  const s = pageSandbox({ orders: ORDERS, answer: path => (/poLineId=L1/.test(path) ? first.p : { documents: [] }) });
+  const a = s.run("openDocs('po1', 'L1')");
+  await settleAll();
+  await s.run("openDocs('po1', 'L3')");
+  first.release({ documents: [{ id: 'd1', filename: 'late.pdf' }] });
+  await a;
+  const sheet = s.doc.getElementById('docs-sheet');
+  assert('a listing overtaken by another opening is not drawn over it',
+    /PO-0042 · Delivery/.test(sheet.querySelector('h2').textContent) && !/late\.pdf/.test(sheet.textContent), sheet.textContent);
+}
+{
+  const s = pageSandbox({ orders: ORDERS, answer: () => ({ documents: [] }) });
+  s.run("_docsRetry = { poId: 'po1', lineId: 'L1', filename: 'held.jpg', unsure: true }");
+  await s.run("openDocs('po1', 'L1')");
+  const onLine = s.doc.getElementById('docs-sheet').textContent;
+  await s.run("openDocs('po1')");
+  const onOrder = s.doc.getElementById('docs-sheet').textContent;
+  await s.run("openDocs('po1', 'L3')");
+  const onOther = s.doc.getElementById('docs-sheet').textContent;
+  assert('a file that did not attach to a delivery is offered again on that delivery\'s sheet',
+    /held\.jpg may not have attached/.test(onLine), onLine);
+  assert('  and not on the order\'s, or another delivery\'s', !/held\.jpg/.test(onOrder) && !/held\.jpg/.test(onOther));
+  s.run("_docsRetry = { poId: 'po1', lineId: 'gone', filename: 'orphan.jpg', unsure: false }");
+  await s.run("openDocs('po1')");
+  assert('one held for a delivery that has since left the order is offered on the order\'s sheet',
+    /orphan\.jpg did not attach/.test(s.doc.getElementById('docs-sheet').textContent));
+  const clip = new JSDOM('<!doctype html><body>' + s.run("lineClipHTML(purchaseOrders[0], { invoice_num: 'x' })")).window.document;
+  assert('a delivery with no id has no paperclip to attach to', !clip.querySelector('button'));
+}
+
+console.log('\n[the order is stored before a delivery gets a file]');
+{
+  const ctx = vm.createContext({ Promise, Error });
+  vm.runInContext(`
+    const _saveChain = {}, _saveTimers = {}, _savedDivision = {};
+    const _unsaved = new Set();
+    const saves = [], cleared = [];
+    let failNext = false;
+    function clearTimeout(id) { cleared.push(id); }
+    async function _savePONow(po) {
+      saves.push(po.id);
+      if (failNext) { failNext = false; _unsaved.add(po.id); throw new Error('Failed to fetch'); }
+      _savedDivision[po.id] = po._division;
+      _unsaved.delete(po.id);
+    }
+  `, ctx);
+  evalSlice('async ' + requireFn(PAGE, 'settleOrderSave', 'purchase-orders.html'), ctx, 'settleOrderSave');
+  const run = e => vm.runInContext(e, ctx);
+  const po = "({ id: 'po1', _division: 'paving' })";
+  run("_savedDivision.po1 = 'paving'");
+  await run(`settleOrderSave(${po})`);
+  assert('an order with nothing owed is not saved again', run('saves.length') === 0);
+  run('_saveTimers.po1 = 41');
+  await run(`settleOrderSave(${po})`);
+  assert('a delivery still in its save\'s debounce is saved now',
+    run('saves.length') === 1 && run('JSON.stringify(cleared)') === '[41]' && run("'po1' in _saveTimers") === false);
+  run("_unsaved.add('po1')");
+  await run(`settleOrderSave(${po})`);
+  assert('so is one whose save failed and is waiting for the retry', run('saves.length') === 2);
+  await run(`settleOrderSave({ id: 'po2', _division: 'turf' })`);
+  assert('and one never stored in its list — a new order, or one being moved', run("saves[saves.length - 1]") === 'po2');
+  let landed = false;
+  run('var inflight = null');
+  ctx.__mark = () => { landed = true; };
+  run("_saveChain.po1 = new Promise(r => { inflight = () => { __mark(); r(); }; })");
+  const waiting = run(`settleOrderSave(${po})`);
+  await settleAll();
+  const savesBefore = run('saves.length');
+  run('inflight()');
+  await waiting;
+  assert('a save in flight is waited out, and nothing more sent when it lands',
+    landed && run('saves.length') === savesBefore);
+  run("_saveChain.po1 = Promise.resolve(); _unsaved.add('po1'); failNext = true");
+  let err = null;
+  try { await run(`settleOrderSave(${po})`); } catch (e) { err = e; }
+  assert('a save that fails fails the settle, so nothing is filed against a delivery the server lacks',
+    err && /Failed to fetch/.test(err.message));
+}
+
+console.log('\n[opening an order counts its deliveries]');
+{
+  const ctx = vm.createContext({});
+  vm.runInContext(`
+    const purchaseOrders = [{ id: 'po1', _division: 'paving', lines: [] }];
+    const expanded = new Set();
+    const counted = [];
+    let renders = 0;
+    function loadLineDocCounts(po) { counted.push(po.id); }
+    function render() { renders++; }
+  `, ctx);
+  vm.runInContext(requireFn(PAGE, 'toggleLines', 'purchase-orders.html'), ctx);
+  const run = e => vm.runInContext(e, ctx);
+  run("toggleLines('po1')");
+  assert('opening an order\'s deliveries counts their files', run('JSON.stringify(counted)') === '["po1"]' && run('renders') === 1);
+  run("toggleLines('po1')");
+  assert('  and closing them asks nothing', run('counted.length') === 1 && run('renders') === 2);
+  run("toggleLines('po1')");
+  assert('  opening again counts again, so a colleague\'s attachment shows', run('counted.length') === 2);
+  assert('the counts are asked per order, never division-wide — the carve-out answers no other way',
+    /'&poLineCounts=1&poId=' \+ encodeURIComponent\(po\.id\)/.test(requireFn(PAGE, 'loadLineDocCounts', 'purchase-orders.html')) &&
+    !/poLineCounts/.test(requireFn(PAGE, 'loadDocCounts', 'purchase-orders.html')));
+}
+
 console.log('\n[the callers use all of it]');
 {
   const add = requireFn(PAGE, 'addAttachment', 'purchase-orders.html');
-  assert('the paperclip sheet prepares the file before attaching it',
-    /prepared = await prepareAttachment\(file\);\s*\n\s*await attachToPO\(po, prepared\.blob, prepared\.filename\);/.test(add), add);
+  assert('the paperclip sheet prepares the file before attaching it — to the delivery, from a delivery\'s sheet',
+    /prepared = await prepareAttachment\(file\);\s*\n\s*await attachToPO\(po, prepared\.blob, prepared\.filename, \{ lineId \}\);/.test(add), add);
   assert('and no longer lets a photo that will not decode end the attach', !/downscaleImage/.test(add));
-  assert('a file it could not attach is kept, with whether it may have landed',
-    /_docsRetry = \{ poId, blob: prepared\.blob, filename: prepared\.filename, unsure: Boolean\(err\.unconfirmed\) \};/.test(add), add);
+  assert('a file it could not attach is kept, with where it was going and whether it may have landed',
+    /_docsRetry = \{ poId, lineId, blob: prepared\.blob, filename: prepared\.filename, unsure: Boolean\(err\.unconfirmed\) \};/.test(add), add);
   const open = requireFn(PAGE, 'openDocs', 'purchase-orders.html');
-  assert('  and offered again on that order\'s sheet', /docsRetryHTML\(po\)/.test(open));
+  assert('  and offered again on the sheet it came from', /docsRetryHTML\(po, lineId\)/.test(open));
   const again = requireFn(PAGE, 'retryDocsAttach', 'purchase-orders.html');
-  assert('  sending the SAME file, so the check-first applies',
-    /await attachToPO\(po, held\.blob, held\.filename\);/.test(again), again);
+  assert('  sending the SAME file to the same place, so the check-first applies',
+    /await attachToPO\(po, held\.blob, held\.filename, \{ lineId: liveLineId\(po, held\.lineId\) \}\);/.test(again), again);
   const html = requireFn(PAGE, 'docsRetryHTML', 'purchase-orders.html');
   assert('  with its order id escaped into the handlers',
     (html.match(/jsAttr\(po\.id\)/g) || []).length === 2 && !/\(\\'' \+ po\.id/.test(html), html);
@@ -759,9 +1347,14 @@ console.log('\n[the callers use all of it]');
   const commit = requireFn(PAGE, 'commitScan', 'purchase-orders.html');
   assert('the scan sheet says "may not have attached" when that is the truth',
     /attachUnsure = Boolean\(err\.unconfirmed\)/.test(commit) && /the photo may not have attached/.test(commit));
+  assert('a scanned receipt is filed on the delivery the scan just recorded',
+    /attachToPO\(po, shotBlob, shotName, \{ note: 'Scanned receipt', lineId: line\.id \}\)/.test(commit), commit);
+  assert('  and a photo kept for the retry remembers that delivery', /_attachRetry\.lineId = line\.id;/.test(commit));
   const retry = requireFn(PAGE, 'retryAttach', 'purchase-orders.html');
   assert('and its retry sends the same photo, so the check-first applies',
-    /attachToPO\(po, _attachRetry\.blob, _attachRetry\.filename/.test(retry));
+    /attachToPO\(po, _attachRetry\.blob, _attachRetry\.filename,/.test(retry), retry);
+  assert('  to that delivery while it is still on the order, else to the order alone',
+    /\{ note: 'Scanned receipt', lineId: liveLineId\(po, _attachRetry\.lineId\) \}/.test(retry), retry);
 }
 
 finished = true;

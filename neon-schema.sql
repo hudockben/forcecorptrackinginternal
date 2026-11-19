@@ -1904,9 +1904,19 @@ CREATE INDEX IF NOT EXISTS idx_pd_purge   ON project_documents(purge_after) WHER
 --                           line is also filed in that line's cost-code folder,
 --                           so the folder gathers every attachment of its
 --                           section (api/lib/procurement-docs.js).
+--   link_type 'po_line'     target_id is "<poId>:<lineId>", one delivery line
+--                           of one purchase order (a line id alone is not
+--                           unique across orders, and a Daily Tracking line
+--                           can move to another order). A file attached to a
+--                           delivery ALSO carries a 'po' link to its order, so
+--                           the order's paperclip lists it and its PO
+--                           subfolder holds it, and is filed in the cost-code
+--                           folder of the line's code (else the order's), when
+--                           the order has a job (api/lib/po-line-docs.js).
+--                           Files stay with the order they were attached under.
 -- target_id has no foreign key, for any type: a deleted Procurement line is a
 -- soft delete, and its files keep the link so restoring the line brings them
--- back with it.
+-- back with it. A deleted order or delivery line touches no document either.
 CREATE TABLE IF NOT EXISTS document_links (
     id           BIGSERIAL   PRIMARY KEY,
     document_id  TEXT        NOT NULL REFERENCES project_documents(id) ON DELETE CASCADE,
@@ -1919,10 +1929,10 @@ CREATE TABLE IF NOT EXISTS document_links (
 
 -- Widening the list is safe on a live database: every existing row already
 -- passes the wider check. Narrowing it again would fail on any database that
--- holds a 'procurement' link.
+-- holds a 'procurement' or 'po_line' link.
 ALTER TABLE document_links DROP CONSTRAINT IF EXISTS document_links_type_chk;
 ALTER TABLE document_links ADD  CONSTRAINT document_links_type_chk
-  CHECK (link_type IN ('folder','po','procurement'));
+  CHECK (link_type IN ('folder','po','procurement','po_line'));
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_dl_unique ON document_links(document_id, link_type, target_id);
 CREATE INDEX IF NOT EXISTS idx_dl_target ON document_links(link_type, target_id);
