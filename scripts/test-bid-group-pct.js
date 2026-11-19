@@ -341,6 +341,8 @@ for (const file of FILES) {
   assert('  …placed just ahead of Projected Profit so bid and projected margin sit side by side',
     footer.indexOf("fmet('Bid Margin'") > -1 &&
     footer.indexOf("fmet('Bid Margin'") < footer.indexOf("fmet('Projected Profit'"));
+  assert('  …with markup on cost (spread over the bid budget) in its hover text',
+    /Markup on cost is \$\{\(bidMarginAmt \/ totalBid \* 100\)\.toFixed\(1\)\}%/.test(footer));
   // Bid margin is for the screen only — the printed/emailed PDF and the XLSX
   // export are sent outside, so it stays off both.
   assert('  …and stays off the PDF / emailed report',

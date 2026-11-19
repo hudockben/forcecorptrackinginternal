@@ -14820,6 +14820,7 @@ function renderBidFooter(projId, opts = {}) {
       const bidMarginTip = bidMargin === null
         ? 'Needs both a contract value and a bid budget.'
         : `Contract less bid budget, over the contract — the margin the job was bid at.`
+          + ` Markup on cost is ${(bidMarginAmt / totalBid * 100).toFixed(1)}% (the same spread over the bid budget).`
           + (marginShift === null ? ''
             : ` Projected margin is ${(profit / contractVal * 100).toFixed(1)}%, `
               + (Math.abs(marginShift) < 0.05 ? 'right on the bid.'
