@@ -335,6 +335,18 @@ for (const file of FILES) {
     footer.indexOf("fmet('Projected Profit'") < footer.indexOf("fmet('Project Complete'"));
   assert('  …with the cost-code count and an explanation on hover',
     /cost codes<\/span>/.test(footer) && /title="\$\{esc\(gpctTip\)\}"/.test(footer));
+  assert('the summary bar shows Bid Margin: contract less bid budget, over the contract',
+    /bidMarginAmt = \(contractVal && totalBid\) \? contractVal - totalBid : null/.test(footer) &&
+    /bidMargin\s+= bidMarginAmt === null \? null : bidMarginAmt \/ contractVal \* 100/.test(footer));
+  assert('  …placed just ahead of Projected Profit so bid and projected margin sit side by side',
+    footer.indexOf("fmet('Bid Margin'") > -1 &&
+    footer.indexOf("fmet('Bid Margin'") < footer.indexOf("fmet('Projected Profit'"));
+  // Bid margin is for the screen only — the printed/emailed PDF and the XLSX
+  // export are sent outside, so it stays off both.
+  assert('  …and stays off the PDF / emailed report',
+    !/Bid Margin|bidMargin/.test(pdf));
+  assert('  …and off the XLSX export',
+    !/Bid Margin|bidMargin/.test(fs.readFileSync(path.resolve(__dirname, '..', 'bid-xlsx.js'), 'utf8')));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
