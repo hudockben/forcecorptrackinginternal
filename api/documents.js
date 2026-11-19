@@ -10,6 +10,8 @@
  *                                                    — documents attached to one Procurement line
  * GET    /api/documents?division=turf&procurementCounts=1&projectId=Y
  *                                                    — { counts: { rowId: n } } for one job's Procurement sheet
+ * GET    /api/documents?division=turf&costCodeCounts=1&projectId=Y
+ *                                                    — { counts: { code: n } } for one job's cost-code folder chips
  * GET    /api/documents?division=turf&trash=1       — soft-deleted documents inside the 30-day window
  * PUT    /api/documents?division=turf&projectId=X   — ensure the generated folder tree exists
  * POST   /api/documents?division=turf               — register a file the browser just uploaded
@@ -36,6 +38,7 @@ const {
 } = require('./lib/auth');
 const { resolvePODocScope } = require('./lib/po-sync');
 const procDocs            = require('./lib/procurement-docs');
+const { costCodeCounts, scopeVersion } = require('./lib/cost-code-counts');
 const storage             = require('./lib/storage');
 const crypto              = require('crypto');
 
@@ -496,6 +499,21 @@ module.exports = async (req, res) => {
         return res.json({ counts });
       }
 
+      // The folder chips' counts: documents under each cost code's folder, for
+      // ONE job — exactly what the browser used to count from the job's whole
+      // listing (api/lib/cost-code-counts.js), without sending the listing.
+      // The Procurement sheet asks on every poll; the bid page when it opens a
+      // job the browser is not sitting on. Readable by anyone who may read
+      // the job's listing; not by the purchase-order carve-out.
+      // `version` fingerprints the whole listing (scopeVersion), so a poll can
+      // tell the browser's copy of the job is behind even when no count moved.
+      if (req.query.costCodeCounts) {
+        if (poScope) return res.status(403).json({ error: 'You do not have access to this division' });
+        const scope = { companyCode, division, projectId };
+        const [counts, version] = await Promise.all([costCodeCounts(sql, scope), scopeVersion(sql, scope)]);
+        return res.json({ counts, version });
+      }
+
       // The documents attached to one Procurement line, newest first. Viewers
       // can list and download them like any other document; the carve-out
       // never reaches here (its GETs are poId and poCounts only).
@@ -558,6 +576,10 @@ module.exports = async (req, res) => {
         return res.json({ documents: rows.map(documentOut) });
       }
 
+      // The listing's fingerprint (scopeVersion). Read first, so it can only
+      // be older than what is listed below, never newer.
+      const version = await scopeVersion(sql, { companyCode, division, projectId });
+
       const folders = await sql`
         SELECT * FROM project_folders
         WHERE  company_code = ${companyCode}
@@ -587,6 +609,7 @@ module.exports = async (req, res) => {
         folders:   folders.map(folderOut),
         documents: documents.map(documentOut),
         caps,
+        version,
       });
     }
 

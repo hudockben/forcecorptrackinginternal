@@ -261,10 +261,15 @@ const JOB_B = {
   window.localStorage.setItem('fct_token', 'test-token');
 
   const seen = [];
+  // The server's own folder-chip count, for GET ?costCodeCounts=1.
+  const { countByCostCode: serverCountByCostCode } = require(path.join(__dirname, '..', 'api', 'lib', 'cost-code-counts.js'));
   window.fetch = async (url, init = {}) => {
     const u = String(url);
     seen.push(`${init.method || 'GET'} ${u}`);
     const body = u.includes('projectId=B') ? JOB_B : JOB_A;
+    if ((init.method || 'GET') === 'GET' && /[?&]costCodeCounts=1/.test(u)) {
+      return { ok: true, status: 200, json: async () => ({ counts: serverCountByCostCode(body.folders, body.documents) }) };
+    }
     return { ok: true, status: 200, json: async () => (init.method === 'PUT' ? {} : body) };
   };
 
@@ -308,8 +313,12 @@ const JOB_B = {
 
   // The property this whole design exists for: the bid page asks about a job
   // the Documents tab is not sitting on, and asking must not move the tab.
+  const beforeB = seen.length;
   await FD.refreshCostCodeCounts('B');
   assert('counting another job fetches it', seen.some(s => s.includes('projectId=B')), seen.join(' | '));
+  assert('…as counts only: one GET ?costCodeCounts=1, never the job\'s listing',
+    seen.slice(beforeB).length === 1 && /^GET .*[?&]costCodeCounts=1/.test(seen[beforeB]) && seen[beforeB].includes('projectId=B'),
+    seen.slice(beforeB).join(' | '));
   assert('…and reports its counts', FD.costCodeCount('B', '530') === 1,
     String(FD.costCodeCount('B', '530')));
   assert('…without disturbing the job already counted',
