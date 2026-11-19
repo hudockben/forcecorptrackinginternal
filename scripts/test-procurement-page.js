@@ -884,8 +884,11 @@ async function runRealDocumentsChecks() {
     }
     if (qp.procurementId) return { body: { documents: DOCS.filter(d => d.procurement_ids.includes(qp.procurementId)) } };
     if (qp.poCounts) return { body: { counts: {} } };
+    // The folder chips' counts, counted the way the server does.
+    if (qp.costCodeCounts) return { body: { counts: serverCountByCostCode(FOLDERS, DOCS) } };
     return { body: { folders: FOLDERS, documents: DOCS, caps: { canUpload: true, canManage: true, canDelete: true } } };
   });
+  const { countByCostCode: serverCountByCostCode } = require(root('api/lib/cost-code-counts.js'));
 
   // Both deferred scripts, as their <script defer> tags would run them.
   w.eval(fs.readFileSync(root('documents.js'), 'utf8'));
@@ -922,8 +925,10 @@ async function runRealDocumentsChecks() {
   await settle(300);
   const asked = calls.slice(before).map(c => new URL(c.url, 'https://datawatch.app'))
     .filter(u => u.pathname === '/api/documents').map(u => Object.fromEntries(u.searchParams));
-  assert('the poll reads the job\'s documents again although documents.js already holds it',
-    asked.some(qp => qp.projectId === 'j1' && !qp.procurementCounts && !qp.procurementId), JSON.stringify(asked));
+  assert('the poll asks the server for the job\'s cost-code counts although documents.js already holds the job',
+    asked.some(qp => qp.projectId === 'j1' && qp.costCodeCounts === '1'), JSON.stringify(asked));
+  assert('  counts only: the poll never reads the job\'s whole listing',
+    asked.length > 0 && asked.every(qp => qp.costCodeCounts === '1' || qp.procurementCounts === '1'), JSON.stringify(asked));
   assert('  and seeds nothing on the way (a poll is a read)',
     !calls.slice(before).some(c => c.method === 'PUT'), calls.slice(before).map(c => `${c.method} ${c.url}`).join(' | '));
   assert('the paperclip moves with the colleague\'s file', clip('r1').textContent === CLIP + '2', clip('r1').textContent);

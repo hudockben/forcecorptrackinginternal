@@ -16946,6 +16946,9 @@ function _procDocCounts(projId) {
       // attachment lands in one, and neither reaches the copy documents.js
       // holds. Counted from that copy, a section's folder chip stayed on the
       // old number poll after poll while the paperclips beside it moved on.
+      // Both reads are counts only (?procurementCounts / ?costCodeCounts),
+      // never the job's whole listing, so a poll stays small on a job with
+      // hundreds of files.
       //
       // Guarded as a whole: a documents.js from before procurement counts
       // existed (a cached copy) would throw here, inside a timer where nobody
