@@ -2651,6 +2651,19 @@ console.log('\n[a save says which of the order\'s fields it changed]');
     await settle();
     assert(`${f}: a delivery the server dropped goes; one added since the save stays`,
       J('purchaseOrders[0].lines.map(l => l.id)') === '["L1","NEW"]', J('purchaseOrders[0].lines'));
+
+    // ── Rows the server deleted for a save ──
+    // Only the ones it says it removed leave this page: a row it kept (one
+    // that failed its delete's checks) is still on the job.
+    t(`var forgotten = []; function _drForgetRow(id) { forgotten.push(String(id)); }
+       purchaseOrders[0].lines[0].qty = '15'; _poNoteLineEdit('a', 'L1', 'qty'); savePurchaseOrders();
+       reply(6, { ok: true, updatedAt: 'V5', orders: [], removedRowIds: ['rStale'] })`);
+    await settle();
+    assert(`${f}: a row the server says it deleted for a save leaves this page`, J('forgotten') === '["rStale"]', J('forgotten'));
+    t(`purchaseOrders[0].lines[0].qty = '16'; _poNoteLineEdit('a', 'L1', 'qty'); savePurchaseOrders();
+       reply(7, { ok: true, updatedAt: 'V6', orders: [] })`);
+    await settle();
+    assert(`${f}:   and no other`, J('forgotten') === '["rStale"]', J('forgotten'));
   }
 }
 

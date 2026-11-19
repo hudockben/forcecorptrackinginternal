@@ -378,6 +378,70 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
       assert('  nor by a save\'s answer', !other.lines.some(l => l.id === 'dr-rGone'), JSON.stringify(other.lines));
     }
 
+    console.log(`\n[${page}: deleting a row]`);
+    {
+      // The page's own row-write functions, against a stub network.
+      const dctx = vm.createContext({ console, Promise, setTimeout, clearTimeout, String, Array, Set, Object, Boolean, JSON, encodeURIComponent });
+      vm.runInContext(`
+        const API_BASE = '/api', DIVISION = 'turf', fctToken = 't';
+        let _aggCacheRowCount = 0, _projSubAggCacheRowCount = 0, _poSaving = false;
+        const _deletedRowIds = new Set(), _drRowWrites = {}, _drSaveTimers = {}, _drSavePending = {};
+        const _drDeletesOwed = new Set(), _poAfterSave = [];
+        const _DR_WRITE_WAIT_MS = 60;
+        const calls = [], walGone = [], dropped = [];
+        function _fetchRetry(url, opts) { calls.push(opts.method + ' ' + url); return Promise.resolve({ ok: true, status: 200 }); }
+        function _walRemove(id) { walGone.push(id); }
+        function _drSaveStart() {} function _drSaveOk() {} function _drSaveFail() {} function _drAdoptPO() {}
+        function saveProjectIndex() {}
+        function _drDropRowLocally(id) { dropped.push(id); }
+      `, dctx);
+      ['_drTrackWrite', '_drWaitForWrites', '_drMarkDeleted', '_drForgetRow', 'drDelete', 'drDeleteBySubCode', '_poRowDelete']
+        .forEach(n => vm.runInContext(requireFn(src, n, page), dctx));
+      const d = e => vm.runInContext(e, dctx);
+      const wait = ms => new Promise(r => setTimeout(r, ms));
+
+      // A write of the row that never answers (a dead connection).
+      d(`_drTrackWrite('r1', new Promise(() => {})); drDelete('r1');`);
+      await wait(10);
+      assert('a DELETE waits for a write of its row still out', !d(`calls.some(c => /id=r1$/.test(c))`)
+        && d(`_drDeletesOwed.has('r1')`));
+      await wait(120);
+      assert('  but not for ever: one that never answers is given up on and the DELETE goes',
+        d(`calls.some(c => c === 'DELETE /api/daily-rows?division=turf&id=r1')`) && !d(`_drDeletesOwed.has('r1')`),
+        d(`JSON.stringify(calls)`));
+
+      // A write that lands a moment later: the DELETE follows it.
+      d(`_drTrackWrite('r2', new Promise(ok => setTimeout(() => { calls.push('PUT r2 landed'); ok(); }, 20))); drDelete('r2');`);
+      await wait(50);
+      assert('  one that lands goes first', d(`calls.indexOf('PUT r2 landed') >= 0
+        && calls.indexOf('PUT r2 landed') < calls.indexOf('DELETE /api/daily-rows?division=turf&id=r2')`), d(`JSON.stringify(calls)`));
+
+      // A write owed: an edit's debounce, and the write-ahead log.
+      d(`_drSavePending.r3 = {}; _drSaveTimers.r3 = setTimeout(() => calls.push('owed PUT r3'), 20); drDelete('r3');`);
+      await wait(50);
+      assert('a write of the row still owed is dropped, debounce and write-ahead log alike',
+        !d(`calls.includes('owed PUT r3')`) && d(`walGone.includes('put_r3') && walGone.includes('post_r3')`)
+        && d(`!('r3' in _drSavePending) && _deletedRowIds.has('r3')`));
+
+      // Behind a purchase-order save still out: only the DELETE waits.
+      d(`_poSaving = true; _poRowDelete('r4');`);
+      assert('a row deleted while an order save is out is marked at once, its DELETE held for the save',
+        d(`_deletedRowIds.has('r4') && _poAfterSave.includes('r4') && !calls.some(c => /id=r4$/.test(c))`));
+      d(`_poSaving = false;`);
+
+      // A sub code removed: its rows are marked and their writes waited for.
+      d(`_drTrackWrite('r5', new Promise(() => {})); drDeleteBySubCode('SC', ['r5']);`);
+      assert('a bulk delete marks the rows it takes', d(`_deletedRowIds.has('r5')`));
+      await wait(10);
+      assert('  and waits for their writes', !d(`calls.some(c => /subCode=SC$/.test(c))`));
+      await wait(120);
+      assert('  for as long as a single delete does', d(`calls.some(c => /subCode=SC$/.test(c))`), d(`JSON.stringify(calls)`));
+
+      d(`_drForgetRow('r6')`);
+      assert('a row the server says it deleted leaves this page, its writes refused',
+        d(`dropped.includes('r6') && _deletedRowIds.has('r6')`));
+    }
+
     console.log(`\n[${page}: a save's answer held while a box had focus]`);
     {
       const { ctx } = sandbox(src, page);
@@ -526,7 +590,10 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
       // on the order with it, and the save says it was deleted.
       const typed = { id: 'L9', qty: '4', unit_cost: '2', po_row_id: 'r9' };
       po.lines.push(typed);
+      state.projectRenders.length = 0;
       ctx._detachLinkedRows(id => id === 'r9', { withDeliveries: true });
+      assert('the job\'s own purchase-order panel is drawn again', state.projectRenders.includes('job1'),
+        JSON.stringify(state.projectRenders));
       assert('a row deleted on its own takes the delivery typed on the order with it',
         !po.lines.includes(typed), JSON.stringify(po.lines));
       assert('  recorded as deleted, so the save does not get it back from the stored order',
