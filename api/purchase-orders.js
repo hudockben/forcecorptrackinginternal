@@ -794,13 +794,18 @@ module.exports = async (req, res) => {
       // _syncPOs' orphan sweep makes.
       const dropRows = supersededRows.filter(r =>
         r && r.rowId && r.projectId && !/^ts\d+-/.test(r.rowId));
+      // The rows this actually removed, for the tab to drop its own copies of
+      // (removedRowIds). Only those: a row that failed the checks below is
+      // still on the job, and a tab that dropped it on the strength of the
+      // link alone hid a row the job was still charged for.
+      let removedRowIds = [];
       if (dropRows.length) {
         try {
           // Every column is checked, not just the id: the division this request
           // was authorised for, the ORDER's own project and PO number, a
           // material row, and no timesheet behind it. A row that fails any of
           // them is not this order's duplicate, whatever the request called it.
-          await sql`
+          const removed = await sql`
             DELETE FROM daily_tracking d
             USING  unnest(${dropRows.map(r => r.rowId)}::text[],
                           ${dropRows.map(r => r.projectId)}::text[],
@@ -812,8 +817,10 @@ module.exports = async (req, res) => {
               AND  COALESCE(d.po_num, '') = t.po_num
               AND  d.field_type   = 'Material'
               AND  d.timesheet_entry_id IS NULL
+            RETURNING d.row_id
           `;
-          console.warn(`[purchase-orders] removed up to ${dropRows.length} duplicate cost row(s) a stale copy minted for ${blobKey}`);
+          removedRowIds = (Array.isArray(removed) ? removed : []).map(r => String(r.row_id));
+          console.warn(`[purchase-orders] removed ${removedRowIds.length} of ${dropRows.length} duplicate cost row(s) a stale copy minted for ${blobKey}`);
         } catch (err) {
           console.error('[purchase-orders] could not remove duplicate cost rows:', err.message);
         }
@@ -857,6 +864,7 @@ module.exports = async (req, res) => {
         // tab sent: its copy is behind, and it re-reads the list.
         derived,
         ...(orders ? { orders } : {}),
+        ...(removedRowIds.length ? { removedRowIds } : {}),
       });
     }
 
