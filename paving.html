@@ -10079,6 +10079,22 @@ function renderBidFooter(projId, opts = {}) {
       const profitPct   = (profit !== null && contractVal) ? ` (${(profit / contractVal * 100).toFixed(1)}%)` : '';
       const profitDisp  = profitTxt + (profitPct ? `<span style="font-size:0.72em;font-weight:400;opacity:0.85">${profitPct}</span>` : '');
       const projCol     = !totalBid ? 'var(--text)' : totalProj > totalBid ? 'var(--red)' : 'var(--green)';
+      // Bid margin — what the job was priced to make: contract less bid budget,
+      // over the contract. Sits beside Projected Profit, whose percent is the
+      // margin the job is tracking to, so fade or gain reads side by side.
+      const bidMarginAmt = (contractVal && totalBid) ? contractVal - totalBid : null;
+      const bidMargin    = bidMarginAmt === null ? null : bidMarginAmt / contractVal * 100;
+      const bidMarginCol = bidMargin === null ? 'var(--muted)' : bidMargin >= 0 ? 'var(--green)' : 'var(--red)';
+      const marginShift  = (bidMargin !== null && profit !== null) ? profit / contractVal * 100 - bidMargin : null;
+      const bidMarginTip = bidMargin === null
+        ? 'Needs both a contract value and a bid budget.'
+        : `Contract less bid budget, over the contract — the margin the job was bid at.`
+          + (marginShift === null ? ''
+            : ` Projected margin is ${(profit / contractVal * 100).toFixed(1)}%, `
+              + (Math.abs(marginShift) < 0.05 ? 'right on the bid.'
+                : `${Math.abs(marginShift).toFixed(1)} pts ${marginShift > 0 ? 'above' : 'below'} bid.`));
+      const bidMarginDisp = bidMargin === null ? '—'
+        : `<span title="${esc(bidMarginTip)}">${bidMargin.toFixed(1)}%<span style="font-size:0.72em;font-weight:400;opacity:0.85"> · ${bidMarginAmt >= 0 ? '$'+fmt(bidMarginAmt) : '-$'+fmt(Math.abs(bidMarginAmt))}</span></span>`;
       // Progress, not money — the same roll-up the green cost-code rows show,
       // one level up. Sits behind the divider with Projected Profit because it
       // answers the other half of "where does this job stand".
@@ -10114,6 +10130,7 @@ function renderBidFooter(projId, opts = {}) {
            ${fmet('Actual Cost', totalActual ? '$'+fmt(totalActual) : '—', 'var(--yellow)')}
            ${fmet('Projected Cost', (totalBid || totalProj) ? '$'+fmt(totalProj) : '—', projCol)}
            <div style="width:1px;height:30px;background:var(--border);align-self:center"></div>
+           ${fmet('Bid Margin', bidMarginDisp, bidMarginCol)}
            ${fmet('Projected Profit', profitDisp, profitCol)}
            ${fmet('Project Complete', `<span title="${esc(gpctTip)}">${gpctDisp}</span>`, gpctCol)}
          </div>`;

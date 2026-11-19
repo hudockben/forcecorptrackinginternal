@@ -335,6 +335,12 @@ for (const file of FILES) {
     footer.indexOf("fmet('Projected Profit'") < footer.indexOf("fmet('Project Complete'"));
   assert('  …with the cost-code count and an explanation on hover',
     /cost codes<\/span>/.test(footer) && /title="\$\{esc\(gpctTip\)\}"/.test(footer));
+  assert('the summary bar shows Bid Margin: contract less bid budget, over the contract',
+    /bidMarginAmt = \(contractVal && totalBid\) \? contractVal - totalBid : null/.test(footer) &&
+    /bidMargin\s+= bidMarginAmt === null \? null : bidMarginAmt \/ contractVal \* 100/.test(footer));
+  assert('  …placed just ahead of Projected Profit so bid and projected margin sit side by side',
+    footer.indexOf("fmet('Bid Margin'") > -1 &&
+    footer.indexOf("fmet('Bid Margin'") < footer.indexOf("fmet('Projected Profit'"));
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);
