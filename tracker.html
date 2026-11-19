@@ -16548,6 +16548,10 @@ function projectCardHTML(p) {
         <div class="info-field"><label>City / State</label>
           <input type="text" value="${esc(p['city-state']||'')}" placeholder="City, ST"
             oninput="updateProjectField('${p.id}','city-state',this.value)"></div>
+        <div class="info-field"><label title="Jobs on one site (several fields tracked as separate jobs) with the same Site name open together on the Procurement tab, so their materials are bought at once while each job keeps its own rows and POs">Site</label>
+          <input type="text" value="${esc(p['site']||'')}" placeholder="e.g. Hempfield" maxlength="80"
+            title="Jobs with the same Site name open together on the Procurement tab"
+            oninput="updateProjectField('${p.id}','site',this.value)"></div>
         <div class="info-field"><label>Start Date</label>
           <input type="date" value="${esc(p['start-date']||'')}"
             onchange="updateProjectField('${p.id}','start-date',this.value)"></div>

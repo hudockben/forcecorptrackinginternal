@@ -230,21 +230,47 @@
 
   // ── Derived values (pure; exported through _test) ───────────────────
   // ctx = { purchaseOrders, bidLines, codeKey, today, projectId, poLoaded }.
+  // A site's sheet (several jobs at once) also has bidLinesByProject: each
+  // job's own bid lines, by job id. Then a row is only ever matched against
+  // its OWN job's bid — two jobs' bids can carry the same line ids (a bid
+  // copied from a sister field) and always carry the same codes — and
+  // bidLines is every job's lines together, for what only asks "is there a
+  // bid at all".
   // Lookups are indexed once per ctx object; build a fresh ctx when the lists
   // behind it change (the page does, once per render).
   const _ctxIndex = new WeakMap();
   function ctxIndex(ctx) {
     let m = _ctxIndex.get(ctx);
     if (!m) {
-      m = { lineById: new Map(), poById: new Map() };
+      m = { lineById: new Map(), poById: new Map(), lineByJob: null, costKeysByJob: new Map() };
       (ctx.bidLines || []).forEach(l => { if (l && l.id != null) m.lineById.set(String(l.id), l); });
       (ctx.purchaseOrders || []).forEach(p => { if (p && p.id != null) m.poById.set(String(p.id), p); });
+      if (ctx.bidLinesByProject) {
+        m.lineByJob = new Map();
+        ctx.bidLinesByProject.forEach((lines, pid) => {
+          const byId = new Map();
+          (lines || []).forEach(l => { if (l && l.id != null) byId.set(String(l.id), l); });
+          m.lineByJob.set(String(pid), byId);
+        });
+      }
       _ctxIndex.set(ctx, m);
     }
     return m;
   }
-  const lineFor = (row, ctx) => (row && row.bid_item_id != null
-    ? ctxIndex(ctx).lineById.get(String(row.bid_item_id)) || null : null);
+  function lineFor(row, ctx) {
+    if (!row || row.bid_item_id == null) return null;
+    const m = ctxIndex(ctx);
+    if (m.lineByJob) {
+      const job = m.lineByJob.get(String(row.project_id || ''));
+      return (job && job.get(String(row.bid_item_id))) || null;
+    }
+    return m.lineById.get(String(row.bid_item_id)) || null;
+  }
+  // The bid lines a row is coded against: its own job's.
+  function linesFor(row, ctx) {
+    if (ctx.bidLinesByProject) return ctx.bidLinesByProject.get(String((row && row.project_id) || '')) || [];
+    return ctx.bidLines || [];
+  }
 
   /** The codes a row shows: its bid line's current ones, else its stored copy. */
   function liveCodes(row, ctx) {
@@ -260,17 +286,22 @@
       // …except one given a cost code alone (+ Add Row on a section): it
       // follows no line, so a rename of that code on the bid leaves it
       // behind. Said once no line on the bid has the code.
-      costGone: !notOnBid && !!cost.trim() && costOffBid(cost, ctx),
+      costGone: !notOnBid && !!cost.trim() && costOffBid(cost, ctx, row),
     };
   }
   // Whether no line on the job's bid has this cost code. A job with no bid
   // lines in hand (none yet, or not read yet) says nothing.
-  function costOffBid(cost, ctx) {
-    const lines = ctx.bidLines || [];
+  function costOffBid(cost, ctx, row) {
+    const lines = linesFor(row, ctx);
     if (!lines.length) return false;
     const m = ctxIndex(ctx), k = keyFn(ctx);
-    if (!m.costKeys) m.costKeys = new Set(lines.filter(Boolean).map(l => ck(k, l.cost_code)).filter(Boolean));
-    return !m.costKeys.has(ck(k, cost));
+    const job = ctx.bidLinesByProject ? String((row && row.project_id) || '') : '';
+    let keys = m.costKeysByJob.get(job);
+    if (!keys) {
+      keys = new Set(lines.filter(Boolean).map(l => ck(k, l.cost_code)).filter(Boolean));
+      m.costKeysByJob.set(job, keys);
+    }
+    return !keys.has(ck(k, cost));
   }
 
   // Blank on either side matches: a row with no vendor yet takes any PO, and a
@@ -596,17 +627,31 @@
   /**
    * Bid order: by the bid line's position, the row sent from the bid ahead of
    * the materials added under it, then oldest first. Rows whose line is not
-   * on the bid (or never was) go last.
+   * on the bid (or never was) go last. On a site's sheet each job's rows come
+   * together, the jobs in the order the site lists them, each in its own
+   * bid's order.
    */
   function sortRows(rows, ctx) {
-    const pos = new Map();
-    (ctx.bidLines || []).forEach((l, i) => { if (l && l.id != null) pos.set(String(l.id), lineOrder(l, i)); });
+    const pos = new Map(), jobAt = new Map();
+    const byJob = ctx.bidLinesByProject;
+    const lineKey = (pid, id) => (byJob ? `${pid}\u0000${id}` : String(id));
+    if (byJob) {
+      [...byJob.keys()].forEach((pid, i) => jobAt.set(String(pid), i));
+      byJob.forEach((lines, pid) => (lines || []).forEach((l, i) => {
+        if (l && l.id != null) pos.set(lineKey(String(pid), String(l.id)), lineOrder(l, i));
+      }));
+    } else {
+      (ctx.bidLines || []).forEach((l, i) => { if (l && l.id != null) pos.set(String(l.id), lineOrder(l, i)); });
+    }
+    const job = r => (byJob ? (jobAt.has(String(r.project_id)) ? jobAt.get(String(r.project_id)) : Infinity) : 0);
     const at = r => {
-      const p = r.bid_item_id != null ? pos.get(String(r.bid_item_id)) : undefined;
+      const p = r.bid_item_id != null ? pos.get(lineKey(String(r.project_id || ''), String(r.bid_item_id))) : undefined;
       return p === undefined ? Infinity : p;
     };
     const time = r => Date.parse(r.created_at) || 0;
     return (rows || []).slice().sort((a, b) => {
+      const ja = job(a), jb = job(b);
+      if (ja !== jb) return ja < jb ? -1 : 1;
       const pa = at(a), pb = at(b);
       if (pa !== pb) return pa < pb ? -1 : 1;
       const sa = a.source === 'bid' ? 0 : 1, sb = b.source === 'bid' ? 0 : 1;
@@ -643,11 +688,14 @@
       case 'quantity': return fmtQty(row.quantity);
       case 'cost_code': return liveCodes(row, ctx).cost_code;
       case 'sub_code': return liveCodes(row, ctx).sub_code;
+      // The job a row is on, named — only on a site's sheet, where there is
+      // more than one.
+      case 'job': return ctx && ctx.jobLabels ? ctx.jobLabels.get(String(row.project_id || '')) || '' : '';
       default: return str(row[field]);
     }
   }
 
-  const SEARCH_FIELDS = ['status', 'po', 'sca_status', 'date_needed', 'order_by', 'date_ordered', 'date_delivered',
+  const SEARCH_FIELDS = ['job', 'status', 'po', 'sca_status', 'date_needed', 'order_by', 'date_ordered', 'date_delivered',
     'quantity', 'unit', 'cost_code', 'sub_code', 'description', 'vendor', 'quote_number', 'contact', 'email'];
 
   /**
@@ -721,6 +769,9 @@
   // ── Export (CSV + hand-written XLSX) ────────────────────────────────
   // The table's columns minus the checkbox and the row buttons, as shown.
   const EXPORT_COLS = [
+    // Which job the row is on — a site's sheet only, where the file holds
+    // several. First, so the file sorts and filters by job straight away.
+    { label: 'Job', width: 24, site: true, get: (r, c) => ({ t: 's', v: fieldValue(r, 'job', c) }) },
     { label: 'Status', width: 13, get: (r, c) => ({ t: 's', v: statusOf(r, c) }) },
     { label: 'PO #', width: 12, get: (r, c) => ({ t: 's', v: poText(effectivePO(r, c)) }) },
     { label: 'Sub-Contractor Agreement', width: 14, get: r => ({ t: 's', v: r.sca_status || 'Pending' }) },
@@ -756,10 +807,11 @@
     return notes.join('; ');
   }
 
-  // The file's columns: the sheet's, less any the page hides.
-  const exportCols = () => EXPORT_COLS.filter(c => !c.key || !colHidden(c.key));
+  // The file's columns: the sheet's, less any the page hides (and Job, but
+  // on a site's sheet).
+  const exportCols = ctx => EXPORT_COLS.filter(c => (!c.key || !colHidden(c.key)) && (!c.site || !!(ctx && ctx.site)));
   function exportMatrix(rows, ctx) {
-    const cols = exportCols();
+    const cols = exportCols(ctx);
     return {
       header: cols.map(c => c.label),
       widths: cols.map(c => c.width),
@@ -964,7 +1016,7 @@
 
   function exportName(ext) {
     const p = project(st.projectId) || {};
-    const name = str(p['project-name']) || str(p['job-number']) || 'Job';
+    const name = siteMode() ? `${siteLabel(st.projectId)} (site)` : str(p['project-name']) || str(p['job-number']) || 'Job';
     const safe = name.replace(/[\\/:*?"<>|\u0000-\u001F]+/g, '-').trim();
     return `Procurement - ${safe} - ${today()}.${ext}`;
   }
@@ -972,11 +1024,13 @@
   // ── Page state ──────────────────────────────────────────────────────
   const st = {
     mountEl: null,
+    // What is open: a job's id, or a site's key ('site:<name>' — every job
+    // with that Site on one sheet; see Sites below).
     projectId: null,
     rows: [],
     loadState: 'none',        // 'none' | 'loading' | 'ok' | 'error'
     loadError: '',
-    loadedFor: null,
+    loadedFor: null,          // viewSig() of what the rows in hand were read for
     serverCanEdit: null,      // what the API said (null until it has)
     showAll: false,
     search: '',
@@ -1028,6 +1082,81 @@
   function projLabel(p) {
     return str(p && p['project-name']).trim() || (p && p['job-number'] ? 'Job #' + p['job-number'] : '') || str(p && p.id);
   }
+
+  // ── Sites ───────────────────────────────────────────────────────────
+  // A site is the jobs that share a Site name on the job page (p.site): the
+  // Hempfield fields, say — each its own job, with its own bid, rows, POs and
+  // costs, but bought for at one time. The picker offers the site beside its
+  // jobs, keyed 'site:<name in lower case>', and opening it puts every one of
+  // its jobs on one sheet. Each row stays on its own job: it is read, saved,
+  // attached to and ordered against that job exactly as on the job's own
+  // sheet, and the sheet keeps the jobs apart (a band per job under the
+  // cost-code grouping, a Job column in every grouping).
+  //
+  // A site holds the jobs the picker would list — the live ones, or every
+  // one with "Show all jobs" ticked — so a finished field drops off its
+  // site's sheet the way it drops off the picker.
+  const SITE = 'site:';
+  const JOB = 'j:';                  // a job band's group key, + the job id
+  const isSiteKey = k => typeof k === 'string' && k.startsWith(SITE);
+  const siteName = p => str(p && p.site).replace(/\s+/g, ' ').trim();
+  const isLive = p => LIVE_STATUSES.has(lc(p && p.status));
+  function siteJobs(key, { all = st.showAll } = {}) {
+    if (!isSiteKey(key)) return [];
+    const want = key.slice(SITE.length);
+    return projects().filter(p => lc(siteName(p)) === want && (all || isLive(p)))
+      .sort((a, b) => projLabel(a).localeCompare(projLabel(b)) || String(a.id).localeCompare(String(b.id)));
+  }
+  /** The site's name as typed on its jobs (the first job's spelling). */
+  function siteLabel(key) {
+    const p = siteJobs(key, { all: true })[0];
+    return p ? siteName(p) : String(key || '').slice(SITE.length);
+  }
+  const siteOptLabel = (name, n) => `${name} — all ${n} job${n === 1 ? '' : 's'}`;
+  /** The jobs a key opens: the job itself, or the site's jobs. */
+  function openIds(key = st.projectId) {
+    if (!key) return [];
+    return isSiteKey(key) ? siteJobs(key).map(p => String(p.id)) : [String(key)];
+  }
+  const siteMode = () => isSiteKey(st.projectId);
+  const isOpenJob = pid => !!pid && openIds().includes(String(pid));
+  /**
+   * What a key opens, as one string. A site whose jobs change under it (a
+   * field marked complete, the Site typed on another job, Show all jobs
+   * ticked) is a different sheet, read again; a job is just its id.
+   */
+  const viewSig = (key = st.projectId) => (isSiteKey(key) ? `${key}|${openIds(key).join(',')}` : key || null);
+  /** Whether a key still names something: a job on the list, or a site one has. */
+  function keyExists(key) {
+    if (!key) return false;
+    return isSiteKey(key) ? siteJobs(key, { all: true }).length > 0 : !!project(key);
+  }
+  /** What the picker shows for a key. */
+  function openLabel(key = st.projectId) {
+    if (!key) return '';
+    if (isSiteKey(key)) return siteOptLabel(siteLabel(key), openIds(key).length);
+    const p = project(key);
+    return p ? projLabel(p) : '';
+  }
+  /** A job's name, as the sheet shows it (its Job column, its band). */
+  function jobName(pid) {
+    const p = project(pid);
+    return p ? projLabel(p) : 'Job';
+  }
+  /**
+   * The job a site-wide action is for: the open job, or on a site's sheet,
+   * the one picked (null when the PM cancels). A site of one job asks nothing.
+   */
+  function pickJob(title, question) {
+    if (!siteMode()) return Promise.resolve(st.projectId);
+    const ids = openIds();
+    if (ids.length <= 1) return Promise.resolve(ids[0] || null);
+    return choose(title, `<p style="margin:0;line-height:1.5">${esc(question)}</p>`,
+      ids.map(pid => {
+        const p = project(pid) || {};
+        return { value: pid, label: projLabel(p) + (p['job-number'] ? ` (#${p['job-number']})` : '') };
+      }).concat([{ value: null, label: 'Cancel' }]));
+  }
   function suppliers() {
     try { return (cfg.getSuppliers() || []).map(s => (typeof s === 'string' ? s : s && s.name)).filter(Boolean); } catch { return []; }
   }
@@ -1052,10 +1181,26 @@
   const costCodeDocCount = (projectId, code) => docCount(cfg.costCodeDocCount, projectId, code);
 
   function makeCtx(projectId) {
-    const pid = projectId === undefined ? st.projectId : projectId;
+    const key = projectId === undefined ? st.projectId : projectId;
+    const site = isSiteKey(key);
+    const pid = site ? null : key;
     let purchaseOrders = [], bidLines = [], poLoaded = true;
+    let bidLinesByProject = null, jobLabels = null;
     try { purchaseOrders = cfg.getPurchaseOrders() || []; } catch { /* none */ }
-    try { bidLines = pid ? (cfg.getBidLines(pid) || []) : []; } catch { /* none */ }
+    if (site) {
+      // Each job's own bid, and its name for the Job column.
+      bidLinesByProject = new Map();
+      jobLabels = new Map();
+      openIds(key).forEach(id => {
+        let lines = [];
+        try { lines = cfg.getBidLines(id) || []; } catch { /* none */ }
+        bidLinesByProject.set(id, lines);
+        jobLabels.set(id, jobName(id));
+      });
+      bidLines = [].concat(...bidLinesByProject.values());
+    } else {
+      try { bidLines = pid ? (cfg.getBidLines(pid) || []) : []; } catch { /* none */ }
+    }
     try { poLoaded = typeof cfg.isPOListLoaded === 'function' ? !!cfg.isPOListLoaded() : true; } catch { poLoaded = false; }
     // Not loaded because the read FAILED (and is being retried), rather than
     // still on its way — said differently on screen.
@@ -1065,7 +1210,9 @@
       purchaseOrders, bidLines, poLoaded, poFailed,
       codeKey: typeof cfg.codeKey === 'function' ? cfg.codeKey : defaultCodeKey,
       today: today(),
+      // The open job; null on a site's sheet, where every row names its own.
       projectId: pid,
+      site, bidLinesByProject, jobLabels,
       // Empty when the page's lists have not loaded: then nothing is marked
       // "not on the supplier list".
       supplierKeys: new Set(suppliers().map(lc)),
@@ -1414,6 +1561,12 @@
       tr.fctproc-grp .fctproc-grpdocs:hover, tr.fctproc-grp .fctproc-grpdocs:focus-visible { color: var(--green,#22c55e); border-color: var(--green,#22c55e); }
       tr.fctproc-grp .gm { color:#6f9a6f; font-weight:400; font-size:0.72rem; }
       tr.fctproc-grp .gm b { color:#9ccc9c; font-weight:600; }
+      /* A site's job band: a heavier bar than the cost-code sections under it. */
+      tr.fctproc-jobband > td { background:#0f2a1a; color:#e6f4ea; font-size:0.86rem; font-weight:700; padding:0.45rem 0.6rem;
+        border-top:3px solid var(--green,#22c55e); }
+      tr.fctproc-jobband:hover > td { background:#133420; }
+      tr.fctproc-jobband .gm { color:#8fbf9a; }
+      .fctproc-sitejobs .n { color: var(--muted,#888); font-variant-numeric: tabular-nums; }
       .fctproc-nomatch td { text-align:center; color: var(--muted,#888); padding:2rem 1rem !important; height:auto; }
       .fctproc-save { margin-left:auto; }
       .fctproc-save.idle { opacity:0; }
@@ -1450,10 +1603,21 @@
   }
 
   function projectOptions() {
-    return projects()
-      .filter(p => st.showAll || p.id === st.projectId || LIVE_STATUSES.has(lc(p.status)))
-      .map(p => ({ value: p.id, label: projLabel(p), meta: p['job-number'] ? 'Job #' + p['job-number'] : '' }))
-      .sort((a, b) => a.label.localeCompare(b.label));
+    const jobs = projects()
+      .filter(p => st.showAll || p.id === st.projectId || isLive(p))
+      .map(p => ({ value: p.id, label: projLabel(p), meta: p['job-number'] ? 'Job #' + p['job-number'] : '' }));
+    // Each site with two or more jobs listed gets an entry of its own that
+    // opens them all (the one open stays listed whatever it holds now). Its
+    // job numbers ride in the meta, so typing one finds the site too.
+    const keys = new Set(projects().map(p => siteName(p)).filter(Boolean).map(n => SITE + lc(n)));
+    const sites = [...keys].map(key => ({ key, jobs: siteJobs(key) }))
+      .filter(x => x.jobs.length >= 2 || x.key === st.projectId)
+      .map(({ key, jobs: list }) => {
+        const nums = list.map(p => str(p['job-number']).trim()).filter(Boolean);
+        return { value: key, label: siteOptLabel(siteLabel(key), list.length),
+          meta: 'Site' + (nums.length ? ' · Job #' + nums.join(', #') : '') };
+      });
+    return jobs.concat(sites).sort((a, b) => a.label.localeCompare(b.label));
   }
 
   function poOptions(row) {
@@ -1606,7 +1770,7 @@
       ccFresh();
       const data = await api('POST', '/supplier-contacts' + q({ action: 'rename' }), { from: str(from), to: str(to) });
       try { await contacts.load(true); } catch (e) { console.warn('[procurement] contacts reload after rename failed', e); }
-      if (st.projectId && st.loadState === 'ok' && st.loadedFor === st.projectId) await load(st.projectId, { quiet: true });
+      if (st.projectId && st.loadState === 'ok' && st.loadedFor === viewSig()) await load(st.projectId, { quiet: true });
       return {
         moved: data.moved || 0, merged: data.merged || 0, rows: data.rows || 0,
         pos: data.pos || 0, po_ids: Array.isArray(data.po_ids) ? data.po_ids.map(String) : [],
@@ -1762,7 +1926,7 @@
     if (r.deleted_at) { dropRow(r.id); return null; }
     touched.set(r.id, ++touchSeq);
     server.set(r.id, { ...r });
-    if (st.projectId && r.project_id && r.project_id !== st.projectId) return null;
+    if (st.projectId && r.project_id && !isOpenJob(r.project_id)) return null;
     const local = rowById(r.id);
     if (!local) { const copy = { ...r }; st.rows.push(copy); return copy; }
     const keep = { ...(fly.get(r.id) || {}), ...(pend.get(r.id) || {}) };
@@ -1828,7 +1992,7 @@
       if (data.item) adoptServerRow(data.item);
       refreshRow(rowId);
       updateCounts();
-      if (touchesCode(p)) recountAfterRecode((data.item && data.item.project_id) || st.projectId, [rowId]);
+      if (touchesCode(p)) recountAfterRecode((data.item && data.item.project_id) || (rowById(rowId) || {}).project_id || st.projectId, [rowId]);
     } catch (err) {
       if (fly.get(rowId) === p) fly.delete(rowId);
       if (err.status === 404) {
@@ -1998,6 +2162,9 @@
   async function load(projectId, { quiet = false } = {}) {
     if (!projectId) return;
     const gen = ++loadGen;
+    // A site is its jobs' rows, each job read as on its own sheet — the API
+    // knows nothing of sites — and is one answer: all of them, or a failure.
+    const sig = viewSig(projectId), jobIds = openIds(projectId);
     if (!quiet) {
       st.loadState = 'loading';
       st.loadError = '';
@@ -2005,7 +2172,16 @@
     }
     const mark = touchSeq;
     try {
-      const data = await api('GET', '/procurement' + q({ project_id: projectId }));
+      let data;
+      if (isSiteKey(projectId)) {
+        const all = await Promise.all(jobIds.map(pid => api('GET', '/procurement' + q({ project_id: pid }))));
+        data = { items: [].concat(...all.map(d => d.items || [])) };
+        // Read-only on any one of them is read-only here: a row's cells do
+        // not change kind from one job's band to the next.
+        if (all.length && all.every(d => typeof d.canEdit === 'boolean')) data.canEdit = all.every(d => d.canEdit);
+      } else {
+        data = await api('GET', '/procurement' + q({ project_id: projectId }));
+      }
       if (gen !== loadGen || projectId !== st.projectId) return;
       if (typeof data.canEdit === 'boolean') st.serverCanEdit = data.canEdit;
       const before = signature();
@@ -2020,9 +2196,9 @@
       // sent or restored): the answer is older than those, not news of them.
       st.rows.filter(r => !ids.has(r.id) && !pend.has(r.id) && !fly.has(r.id) && !since(touched, r.id)).forEach(r => dropRow(r.id));
       items.forEach(adoptServerRow);
-      const wasOk = st.loadState === 'ok' && st.loadedFor === projectId;
+      const wasOk = st.loadState === 'ok' && st.loadedFor === sig;
       st.loadState = 'ok';
-      st.loadedFor = projectId;
+      st.loadedFor = sig;
       if (!wasOk || !quiet) renderBody();
       else if (signature() !== before) {
         // The answer can land after the PM has started typing (the poll only
@@ -2035,17 +2211,17 @@
         // A redraw still owed from an answer that landed mid-edit.
         redrawWhenFree();
       }
-      autoRelink(projectId);
+      if (isSiteKey(projectId)) autoRelinkAll(jobIds); else autoRelink(projectId);
       // The paperclip and folder counts are read with the rows — on the first
       // read and on every poll — since a file a colleague attached changes no
       // row, and so would never show here otherwise.
-      refreshDocCounts(projectId);
+      jobIds.forEach(refreshDocCounts);
     } catch (err) {
       if (gen !== loadGen) return;
       // A failed poll leaves what is on screen alone. A failed first read is
       // shown as a failure — never as an empty job, which would invite
       // someone to start re-entering rows that are really there.
-      if (quiet && st.loadState === 'ok' && st.loadedFor === projectId) {
+      if (quiet && st.loadState === 'ok' && st.loadedFor === sig) {
         console.warn('[procurement] refresh failed', err);
         return;
       }
@@ -2075,7 +2251,7 @@
    * a re-code of lines with nothing attached asks for nothing.
    */
   function recountAfterRecode(projectId, rowIds) {
-    if (!projectId || !(rowIds || []).some(id => attachmentCount(projectId, id) > 0)) return;
+    if (!projectId || isSiteKey(projectId) || !(rowIds || []).some(id => attachmentCount(projectId, id) > 0)) return;
     refreshDocCounts(projectId);
   }
 
@@ -2089,7 +2265,7 @@
       .then(() => cfg.refreshAttachmentCounts(projectId))
       .then(() => {
         // Another job was opened meanwhile: its own read asks for its counts.
-        if (projectId !== st.projectId) return false;
+        if (!isOpenJob(projectId)) return false;
         paintDocCounts();
         return true;
       }, err => {
@@ -2109,7 +2285,7 @@
    */
   let docCountsOwed = false;
   function paintDocCounts() {
-    if (!isMounted() || st.loadState !== 'ok' || st.loadedFor !== st.projectId) return;
+    if (!isMounted() || st.loadState !== 'ok' || st.loadedFor !== viewSig()) return;
     const wrap = st.mountEl.querySelector('#fctproc-wrap');
     if (!wrap) return;
     if (pressedAt && Date.now() - pressedAt < 5000) { docCountsOwed = true; return; }
@@ -2184,8 +2360,11 @@
   function layoutOf(rows, ctx, groups) {
     if (!st.rows.length || !rows.length) return '';     // a note, not a table
     if (!groups) groups = groupRows(rows, ctx);
-    return `${st.rows.length}/${rows.length}/${st.grouping}\n` + groups.map(g => (st.grouping === 'none' ? '' : `G:${g.key}|${g.label}|${g.meta}\n`)
-      + (st.grouping === 'none' || !st.collapsed.has(g.key) ? g.rows.map(r => r.id).join('\n') : '')).join('\n');
+    // A site's job bands, and which are folded (a folded job hides its sections).
+    const bands = jobBands(ctx) ? 'J:' + openIds().map(pid => pid + (st.collapsed.has(JOB + pid) ? '-' : '+')).join(',') + '\n' : '';
+    const shut = g => !!(g.pid && st.collapsed.has(JOB + g.pid));
+    return `${st.rows.length}/${rows.length}/${st.grouping}\n` + bands + groups.map(g => (st.grouping === 'none' ? '' : `G:${g.key}|${g.label}|${g.meta}\n`)
+      + (st.grouping === 'none' || (!shut(g) && !st.collapsed.has(g.key)) ? g.rows.map(r => r.id).join('\n') : '')).join('\n');
   }
   function redrawWhenFree() {
     if (!redrawDeferred || !isMounted()) return;
@@ -2246,16 +2425,16 @@
     const el = st.mountEl;
     if (!el) return;
     injectStyles();
-    const p = project(st.projectId);
-    const label = p ? projLabel(p) : '';
+    const known = keyExists(st.projectId);
+    const label = known ? openLabel() : '';
     el.innerHTML = `
       <div class="fctproc">
         <div class="fctproc-top">
           <span class="fctproc-title">Procurement</span>
           <span class="fctproc-lbl">Job</span>
-          ${cbCell('proc_projects', label, 'Search jobs…',
-            `id="fctproc-proj" data-cb-value="${esc(p ? p.id : '')}" aria-label="Job"`, false)}
-          <label class="fctproc-check" title="List every job, not only Awarded / In Progress / Substantially Complete">
+          ${cbCell('proc_projects', label, 'Search jobs or sites…',
+            `id="fctproc-proj" data-cb-value="${esc(known ? st.projectId : '')}" aria-label="Job or site"`, false)}
+          <label class="fctproc-check" title="List every job, not only Awarded / In Progress / Substantially Complete (a site's sheet takes in its other jobs too)">
             <input type="checkbox" id="fctproc-showall" ${st.showAll ? 'checked' : ''}> Show all jobs
           </label>
           <span id="fctproc-save" class="save-indicator fctproc-save idle"><span class="si-dot"></span><span class="si-text"></span></span>
@@ -2273,24 +2452,42 @@
     if (!st.projectId) {
       body.innerHTML = `<div class="fctproc-empty">
         Pick a job above to see what has to be bought for it.<br>
-        <span style="font-size:0.78rem">Only live jobs are listed — tick <b>Show all jobs</b> for the rest.</span></div>`;
+        <span style="font-size:0.78rem">Only live jobs are listed — tick <b>Show all jobs</b> for the rest.
+        Jobs on one site (the same <b>Site</b> on the job page) can also be opened together.</span></div>`;
       return;
     }
-    const p = project(st.projectId);
-    if (!p) {
-      // An empty list is the page still loading its jobs, not a deleted job.
-      body.innerHTML = projects().length
-        ? '<div class="fctproc-empty">That job is no longer on the job list. Pick another one above.</div>'
-        : '<div class="fctproc-empty">Loading the job list…</div>';
-      return;
+    let name;
+    if (siteMode()) {
+      // An empty list is the page still loading its jobs, not a deleted site.
+      if (!projects().length) { body.innerHTML = '<div class="fctproc-empty">Loading the job list…</div>'; return; }
+      if (!keyExists(st.projectId)) {
+        body.innerHTML = '<div class="fctproc-empty">No job has that Site any more. Pick a job or another site above.</div>';
+        return;
+      }
+      name = siteLabel(st.projectId);
+      if (!openIds().length) {
+        body.innerHTML = `<div class="fctproc-empty">None of the jobs on ${esc(name)} is live (Awarded, In Progress or Substantially Complete).<br>
+          <span style="font-size:0.78rem">Tick <b>Show all jobs</b> to see the rest of the site.</span></div>`;
+        return;
+      }
+    } else {
+      const p = project(st.projectId);
+      if (!p) {
+        // An empty list is the page still loading its jobs, not a deleted job.
+        body.innerHTML = projects().length
+          ? '<div class="fctproc-empty">That job is no longer on the job list. Pick another one above.</div>'
+          : '<div class="fctproc-empty">Loading the job list…</div>';
+        return;
+      }
+      name = projLabel(p);
     }
-    if (st.loadState === 'loading' && st.loadedFor !== st.projectId) {
-      body.innerHTML = `<div class="fctproc-empty">Loading procurement for ${esc(projLabel(p))}…</div>`;
+    if (st.loadState === 'loading' && st.loadedFor !== viewSig()) {
+      body.innerHTML = `<div class="fctproc-empty">Loading procurement for ${esc(name)}…</div>`;
       return;
     }
     if (st.loadState === 'error') {
       body.innerHTML = `<div class="fctproc-err">
-        Could not load the procurement rows for ${esc(projLabel(p))}: ${esc(st.loadError)}
+        Could not load the procurement rows for ${esc(name)}: ${esc(st.loadError)}
         <div style="margin-top:0.7rem"><button type="button" class="btn btn-ghost fctproc-b" data-act="retry">Try again</button></div></div>`;
       return;
     }
@@ -2330,13 +2527,22 @@
     const p = project(st.projectId) || {};
     const ctx = makeCtx();
     const edit = canEdit();
+    const site = siteMode();
+    // A site names its jobs: each keeps its own rows, bid and POs.
+    const title = site
+      ? `<span class="fctproc-job">${esc(siteLabel(st.projectId))}</span>
+         <span class="fctproc-jobno fctproc-sitejobs" title="Each job keeps its own rows, bid, POs and costs">Site · ${openIds().map(pid => {
+           const j = project(pid) || {};
+           return esc(projLabel(j)) + (j['job-number'] ? ` <span class="n">#${esc(j['job-number'])}</span>` : '');
+         }).join(' · ')}</span>`
+      : `<span class="fctproc-job">${esc(str(p['project-name']) || 'Untitled job')}</span>
+      ${p['job-number'] ? `<span class="fctproc-jobno">Job #${esc(p['job-number'])}</span>` : ''}`;
     head.innerHTML = `
-      <span class="fctproc-job">${esc(str(p['project-name']) || 'Untitled job')}</span>
-      ${p['job-number'] ? `<span class="fctproc-jobno">Job #${esc(p['job-number'])}</span>` : ''}
+      ${title}
       <span class="fctproc-counts" id="fctproc-counts">${countsHtml(ctx)}</span>
       <span class="fctproc-cluster fctproc-right">
-      ${edit ? `<button type="button" class="btn btn-ghost fctproc-b" data-act="send" title="Pick bid lines to add to this sheet as rows">&#10148; Add to Procurement</button>
-                <button type="button" class="btn btn-green fctproc-b" data-act="add">+ Add Row</button>` : ''}
+      ${edit ? `<button type="button" class="btn btn-ghost fctproc-b" data-act="send" title="${site ? 'Pick a job, then its bid lines to add to this sheet as rows' : 'Pick bid lines to add to this sheet as rows'}">&#10148; Add to Procurement</button>
+                <button type="button" class="btn btn-green fctproc-b" data-act="add"${site ? ' title="Pick the job, then add a row to it"' : ''}>+ Add Row</button>` : ''}
       <button type="button" class="btn btn-ghost fctproc-b" data-act="xlsx" title="The rows shown, as an Excel workbook">&#11015; Excel</button>
       <button type="button" class="btn btn-ghost fctproc-b" data-act="csv" title="The rows shown, as CSV">&#11015; CSV</button>
       <button type="button" class="btn btn-ghost fctproc-b" data-act="pdf" title="The rows shown, to print or save as a PDF">&#11015; PDF</button>
@@ -2436,6 +2642,8 @@
   const COLS = [
     { key: 'sel', label: '', w: 2, edit: true, stick: true },
     { key: 'status', label: 'Status', w: 7.2, filter: 'status', stick: true },
+    // The job a row is on — only on a site's sheet (site: true).
+    { key: 'job', label: 'Job', w: 9.5, filter: 'job', site: true },
     { key: 'po', label: 'PO #', w: 9, filter: 'po' },
     { key: 'sca_status', label: 'Sub-Contractor Agreement', w: 6.9, filter: 'sca_status' },
     // Every column filters, as every column of the old sheet did — a blank
@@ -2457,7 +2665,10 @@
     { key: 'email', label: 'Email', w: 11, filter: 'email' },
     { key: 'actions', label: '', w: 6.2, edit: true },
   ];
-  const colsFor = edit => COLS.filter(c => (!c.edit || edit) && !colHidden(c.key));
+  const colsFor = edit => COLS.filter(c => (!c.edit || edit) && !colHidden(c.key) && (!c.site || siteMode()));
+  // Whether the table is split into a band per job: a site's sheet grouped
+  // by cost code (grouped by vendor, or not at all, the Job column says it).
+  const jobBands = ctx => !!(ctx && ctx.site) && st.grouping === 'cost';
 
   function visibleRows(ctx) {
     const sorted = sortRows(st.rows, ctx);
@@ -2494,9 +2705,13 @@
       });
       return groups;
     }
+    // On a site's sheet a section is one job's cost code (pid): the rows come
+    // sorted job by job, so each job's sections come together, under its band.
     rows.forEach(r => {
       const code = liveCodes(r, ctx).cost_code;
-      add('c:' + ck(k, code), () => ({ label: code.trim() || 'No cost code', meta: '', code: code.trim() }), r);
+      const pid = ctx.site ? String(r.project_id || '') : null;
+      add('c:' + (pid != null ? pid + '|' : '') + ck(k, code),
+        () => ({ label: code.trim() || 'No cost code', meta: '', code: code.trim(), pid }), r);
     });
     return groups;
   }
@@ -2527,18 +2742,31 @@
     let body = '';
     if (!st.rows.length) {
       const hasBid = (ctx.bidLines || []).length > 0;
-      body = `<tr class="fctproc-nomatch"><td colspan="${cols.length}">No procurement rows for this job yet.${!edit ? ''
+      body = `<tr class="fctproc-nomatch"><td colspan="${cols.length}">No procurement rows for ${ctx.site ? 'these jobs' : 'this job'} yet.${!edit ? ''
         : hasBid ? ' Use <b>Add to Procurement</b> to bring in the bid lines, or <b>+ Add Row</b> for a material by hand.'
         : ' This job has no bid lines yet — add them on the bid page (or import a Procore estimate) to send them here, or use <b>+ Add Row</b> for a material by hand.'}</td></tr>`;
     } else if (!rows.length) {
       body = `<tr class="fctproc-nomatch"><td colspan="${cols.length}">No rows match the filters.
         <button type="button" class="fctproc-link" data-act="clear">Clear filters</button></td></tr>`;
     } else {
-      body = groups.map(g => {
+      const section = g => {
         const head = st.grouping === 'none' ? '' : groupHeaderHtml(g, cols.length, ctx);
         const open = st.grouping === 'none' || !st.collapsed.has(g.key);
         return head + (open ? g.rows.map(r => { const h = rowHtml(r, ctx, edit, cols); drawn.set(r.id, h); return h; }).join('') : '');
-      }).join('');
+      };
+      if (jobBands(ctx)) {
+        // A band per job, its sections under it. A job with nothing on the
+        // sheet yet still gets its band — the band's buttons are how its bid
+        // is brought in — but one whose rows the filters hide all of does not.
+        body = openIds().map(pid => {
+          const mine = groups.filter(g => g.pid === pid);
+          const shown = [].concat(...mine.map(g => g.rows));
+          if (!shown.length && st.rows.some(r => r.project_id === pid)) return '';
+          return jobBandHtml(pid, shown, cols.length, ctx) + (st.collapsed.has(JOB + pid) ? '' : mine.map(section).join(''));
+        }).join('');
+      } else {
+        body = groups.map(section).join('');
+      }
     }
 
     // Rebuilding the table replaces the box being typed in; put focus, caret
@@ -2567,6 +2795,32 @@
       + (late ? ` · <span style="color:#f87171">${late} late</span>` : '');
   }
 
+  /**
+   * A job's band on a site's sheet: its name and number, a box that ticks
+   * every row of the job, its own "Add to Procurement" (that job's bid) and
+   * "+ Add Row", and its counts. Folding it folds the job.
+   */
+  function jobBandHtml(pid, rows, span, ctx) {
+    const key = JOB + pid;
+    const p = project(pid) || {};
+    const name = projLabel(p) || jobName(pid);
+    const open = !st.collapsed.has(key);
+    const edit = canEdit();
+    const n = rows.filter(r => st.selected.has(r.id)).length;
+    const box = edit && rows.length
+      ? `<input type="checkbox" class="fctproc-grpsel" data-grpsel="${esc(key)}"${n && n === rows.length ? ' checked' : ''}
+          title="Select every row on this job" aria-label="Select every row on ${esc(name)}">` : '';
+    const btns = edit
+      ? `<button type="button" class="fctproc-grpadd" data-grpsend="${esc(pid)}" title="${esc(`Pick bid lines of ${name} to add as rows`)}"
+          aria-label="${esc(`Add ${name}'s bid lines to Procurement`)}">&#10148; Add to Procurement</button>
+         <button type="button" class="fctproc-grpadd" data-grpadd="${esc(key)}" title="${esc(`Add a row to ${name}`)}"
+          aria-label="${esc(`Add a row to ${name}`)}">+ Add Row</button>` : '';
+    return `<tr class="fctproc-grp fctproc-jobband" data-grp="${esc(key)}" data-jobband="${esc(pid)}" title="${open ? 'Fold' : 'Unfold'} this job"><td colspan="${span}">
+      <span class="gl">${box}<span class="tw">${open ? '&#9660;' : '&#9654;'}</span><span class="jn">${esc(name)}</span>${p['job-number'] ? `<span class="gm">Job #${esc(p['job-number'])}</span>` : ''}${btns}
+      <span class="gm gc">${jobCountsHtml(rows, ctx)}</span></span></td></tr>`;
+  }
+  const jobCountsHtml = (rows, ctx) => (rows.length ? groupCountsHtml(rows, ctx) : 'No rows yet');
+
   function groupHeaderHtml(g, span, ctx) {
     const open = !st.collapsed.has(g.key);
     // An editor's box ticks every row in the section (folded ones too), for
@@ -2580,9 +2834,9 @@
     // of the quote / contact / counts: after a long vendor header it sat past
     // the sheet's right edge on a narrow screen, where the sticky label never
     // scrolls it into view.
-    const into = st.grouping === 'vendor'
+    const into = (st.grouping === 'vendor'
       ? (g.vendor ? `for ${g.vendor}${g.quote ? `, quote # ${g.quote}` : ''}` : 'with no vendor yet')
-      : (g.code ? `under ${g.code}` : 'with no cost code');
+      : (g.code ? `under ${g.code}` : 'with no cost code')) + (g.pid ? ` on ${jobName(g.pid)}` : '');
     const addBtn = canEdit()
       ? `<button type="button" class="fctproc-grpadd" data-grpadd="${esc(g.key)}" title="${esc(`Add a row ${into}`)}"
           aria-label="${esc(`Add a row ${into}`)}">+ Add Row</button>` : '';
@@ -2605,9 +2859,11 @@
    */
   function grpDocsHtml(g, ctx) {
     if (st.grouping !== 'cost' || !g.code || typeof cfg.openCostCodeFolder !== 'function') return '';
-    const n = costCodeDocCount(ctx.projectId, g.code);
+    // A site's section is one job's cost code, and its folder that job's.
+    const pid = g.pid || ctx.projectId;
+    const n = costCodeDocCount(pid, g.code);
     const tip = grpDocsTip(g.code, n);
-    return `<button type="button" class="fctproc-grpdocs${n ? ' has' : ''}" data-grpdocs="${esc(g.code)}" data-n="${n}"
+    return `<button type="button" class="fctproc-grpdocs${n ? ' has' : ''}" data-grpdocs="${esc(g.code)}"${g.pid ? ` data-pid="${esc(g.pid)}"` : ''} data-n="${n}"
       title="${esc(tip)}" aria-label="${esc(tip)}">&#128193;${n || ''}</button>`;
   }
   const grpDocsTip = (code, n) => (n
@@ -2622,10 +2878,10 @@
   function updateGroupDocs(ctx) {
     const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
     if (!wrap) return;
-    const pid = ctx ? ctx.projectId : st.projectId;
+    const open = ctx ? ctx.projectId : st.projectId;
     wrap.querySelectorAll('tr.fctproc-grp [data-grpdocs]').forEach(b => {
       const code = b.dataset.grpdocs;
-      const n = costCodeDocCount(pid, code);
+      const n = costCodeDocCount(b.dataset.pid || open, code);
       if (b.dataset.n === String(n)) return;
       b.dataset.n = String(n);
       b.classList.toggle('has', n > 0);
@@ -2651,9 +2907,17 @@
     // the grouping gives it.
     const folded = heads.some(tr => st.collapsed.has(tr.dataset.grp))
       ? new Map(groupRows(visibleRows(ctx), ctx).map(g => [g.key, g.rows])) : new Map();
+    let vis = null;
     heads.forEach(tr => {
       const span = tr.querySelector('.gc');
       if (!span) return;
+      // A job band counts every row of its job shown, in all its sections.
+      if (tr.dataset.jobband != null) {
+        if (!vis) vis = visibleRows(ctx);
+        const html = jobCountsHtml(vis.filter(r => r.project_id === tr.dataset.jobband), ctx);
+        if (span.innerHTML !== html) span.innerHTML = html;
+        return;
+      }
       let rows = [];
       if (st.collapsed.has(tr.dataset.grp)) rows = folded.get(tr.dataset.grp) || [];
       else {
@@ -2674,7 +2938,7 @@
       act: a.tagName === 'BUTTON' && a.dataset.act && a.dataset.row ? [a.dataset.act, a.dataset.row] : null,
       // A section's folder chip, reached with Tab: the redraw after its
       // folder changed (a file attached from it) puts the focus back on it.
-      grpdocs: a.tagName === 'BUTTON' && a.dataset.grpdocs != null ? a.dataset.grpdocs : null };
+      grpdocs: a.tagName === 'BUTTON' && a.dataset.grpdocs != null ? [a.dataset.grpdocs, a.dataset.pid || ''] : null };
     try { f.start = a.selectionStart; f.end = a.selectionEnd; } catch { /* not a text box */ }
     return f;
   }
@@ -2683,7 +2947,7 @@
     let el = null;
     if (f.pr && f.pf) el = scope.querySelector(`[data-pr="${cssEsc(f.pr)}"][data-pf="${cssEsc(f.pf)}"]`);
     else if (f.act) el = scope.querySelector(`button[data-act="${cssEsc(f.act[0])}"][data-row="${cssEsc(f.act[1])}"]`);
-    else if (f.grpdocs != null) el = scope.querySelector(`button[data-grpdocs="${cssEsc(f.grpdocs)}"]`);
+    else if (f.grpdocs != null) el = scope.querySelector(`button[data-grpdocs="${cssEsc(f.grpdocs[0])}"]${f.grpdocs[1] ? `[data-pid="${cssEsc(f.grpdocs[1])}"]` : ''}`);
     else if (f.id) el = scope.querySelector('#' + cssEsc(f.id));
     // Focusing a combobox opens its menu and selects its text — not what a
     // background redraw should do to someone. Those are left unfocused.
@@ -2705,6 +2969,8 @@
     const boxes = st.mountEl.querySelectorAll('[data-grpsel]');
     if (!boxes.length) return;
     const byKey = new Map((groups || groupRows(vis, ctx || makeCtx())).map(g => [g.key, g.rows]));
+    // …and each job band's, ticked when every row of the job shown is.
+    if (siteMode()) openIds().forEach(pid => byKey.set(JOB + pid, vis.filter(r => r.project_id === pid)));
     boxes.forEach(b => {
       const in_ = byKey.get(b.dataset.grpsel) || [];
       const k = in_.filter(r => st.selected.has(r.id)).length;
@@ -2751,6 +3017,11 @@
           return td(red ? 'flag-red' : amber ? 'flag-amber' : '',
             `<span class="fctproc-pill ${cls}"${tip}>${esc(status)}</span>${clipHtml(r, ctx, edit)}${flags.length ? `<span class="fctproc-flags">${flags.map(f =>
               `<span class="fctproc-flag ${f.level}" title="${esc(f.title)}">${esc(f.short || f.label)}</span>`).join('')}</span>` : ''}`);
+        }
+        case 'job': {
+          const p = project(r.project_id) || {};
+          const name = fieldValue(r, 'job', ctx);
+          return td('', `<span class="fctproc-txt wrap2" title="${esc(name + (p['job-number'] ? ` — Job #${p['job-number']}` : ''))}">${esc(name)}</span>`);
         }
         case 'po': return poCellHtml(r, ep, edit, td);
         case 'sca_status':
@@ -2952,8 +3223,18 @@
       case 'sca_status': return `<select id="fctproc-bulk-val">${SCA_VALUES.map(v => `<option>${esc(v)}</option>`).join('')}</select>`;
       case 'date_needed': case 'date_ordered': case 'date_delivered': return `<input type="date" id="fctproc-bulk-val" aria-label="Date" min="${DATE_MIN}" max="${DATE_MAX}">`;
       case 'lead_time_days': return '<input type="number" id="fctproc-bulk-val" min="0" max="3650" step="1" style="width:5rem" aria-label="Days">';
-      case 'po': return `<select id="fctproc-bulk-val">${poOptions(null).map(o =>
+      case 'po': {
+        // A PO is one job's. On a site's sheet the ticked rows' job's orders
+        // are offered when they are all on one job; across jobs, only Auto
+        // and No PO (Create PO from selected raises one per job).
+        let forRow = null;
+        if (siteMode()) {
+          const jobs = [...new Set([...st.selected].map(rowById).filter(Boolean).map(r => r.project_id))];
+          forRow = jobs.length === 1 ? { project_id: jobs[0] } : { project_id: '' };
+        }
+        return `<select id="fctproc-bulk-val">${poOptions(forRow).map(o =>
         `<option value="${esc(o.value)}">${esc(o.label)}${o.value.startsWith('__') ? '' : ' — ' + esc(o.meta)}</option>`).join('')}</select>`;
+      }
       default: return `<input type="text" id="fctproc-bulk-val" maxlength="${MAX_LEN.quote_number}" placeholder="Quote #">`;
     }
   }
@@ -3167,7 +3448,13 @@
     if (el.id === 'fctproc-proj') { if (!cbUntouched(el)) pickProject(el); return; }
     if (el.id === 'fctproc-bulk-vendor') { cbUntouched(el); return; }
     if (el.id === 'fctproc-bulk-contact' && isCb(el)) { if (!cbUntouched(el)) pickBulkContact(el); return; }
-    if (el.id === 'fctproc-showall') { st.showAll = el.checked; storeSet('showall', el.checked ? '1' : ''); return; }
+    if (el.id === 'fctproc-showall') {
+      st.showAll = el.checked;
+      storeSet('showall', el.checked ? '1' : '');
+      // A site's sheet takes in (or lets go of) its jobs that are not live.
+      if (siteMode() && st.loadedFor && st.loadedFor !== viewSig()) reloadSite();
+      return;
+    }
     if (el.id === 'fctproc-bulk-field') { st.bulkField = el.value; const vb = st.mountEl.querySelector('#fctproc-bulk-valbox'); if (vb) { vb.innerHTML = bulkValueHtml(); vb.dataset.field = st.bulkField; } return; }
     if (el.id === 'fctproc-selall') {
       const vis = visibleRows(makeCtx());
@@ -3179,9 +3466,7 @@
     }
     if (el.dataset.grpsel != null) {
       // A section's rows as shown: the filters and search apply, a fold does not.
-      const ctx = makeCtx();
-      const g = groupRows(visibleRows(ctx), ctx).find(x => x.key === el.dataset.grpsel);
-      (g ? g.rows : []).forEach(r => { if (el.checked) st.selected.add(r.id); else st.selected.delete(r.id); });
+      sectionRows(el.dataset.grpsel, makeCtx()).forEach(r => { if (el.checked) st.selected.add(r.id); else st.selected.delete(r.id); });
       paintSelection();
       syncSelectAll();
       renderBulk();
@@ -3401,7 +3686,8 @@
       return;
     }
     if (field === 'codes') {
-      const ctx = makeCtx();
+      // The row's own job's bid lines (on a site's sheet, not the site's).
+      const ctx = siteMode() && row.project_id ? makeCtx(row.project_id) : makeCtx();
       const line = v ? (ctx.bidLines || []).find(l => String(l.id) === v) : null;
       if (v && v === String(row.bid_item_id || '')) {
         // The line it already has, picked again: nothing to re-code, but a
@@ -3421,7 +3707,7 @@
         // Anything else typed matches no bid line: the codes are the bid's
         // (section 1), so the cell goes back to what it was (refreshRow
         // after the commit) — and says why, rather than just undoing it.
-        const n = (makeCtx().bidLines || []).length;
+        const n = (ctx.bidLines || []).length;
         // (Description is only offered when the page shows it.)
         const desc = !colHidden('description');
         toast(n ? `Sub Code: "${typed.slice(0, 60)}" is not a line on this job's bid — pick one from the list.${desc ? ' A material that is not on the bid can go in Description.' : ''}`
@@ -3466,9 +3752,9 @@
     if (!picked && typed) {
       // Text matching no job puts the current one back rather than quietly
       // emptying the tab. Only an emptied box means "no job".
-      const cur = project(st.projectId);
-      input.value = cur ? projLabel(cur) : '';
-      input.dataset.cbValue = cur ? cur.id : '';
+      const known = keyExists(st.projectId);
+      input.value = known ? openLabel() : '';
+      input.dataset.cbValue = known ? st.projectId : '';
       return;
     }
     if (picked) { input.value = picked.label; input.dataset.cbValue = picked.value; }
@@ -3566,11 +3852,14 @@
     // Nor does its + Add Row, which adds a row in it.
     const ga = e.target.closest('[data-grpadd]');
     if (ga) { addToSection(ga.dataset.grpadd); return; }
+    // Nor a job band's Add to Procurement, which opens that job's checklist.
+    const gs = e.target.closest('[data-grpsend]');
+    if (gs) { openSendModal(gs.dataset.grpsend); return; }
     // Nor its folder chip, which opens the section's cost-code folder. Enter
     // or Space on the chip arrives here as a click on it too, so the
     // keyboard opens the folder and never folds the section either.
     const gd = e.target.closest('[data-grpdocs]');
-    if (gd) { openSectionFolder(gd.dataset.grpdocs); return; }
+    if (gd) { openSectionFolder(gd.dataset.grpdocs, gd.dataset.pid); return; }
     const gh = e.target.closest('tr.fctproc-grp');
     if (gh) {
       const k = gh.dataset.grp;
@@ -3583,7 +3872,7 @@
     const rowId = b.dataset.row;
     switch (b.dataset.act) {
       case 'retry': load(st.projectId); break;
-      case 'send': openSendModal(st.projectId); break;
+      case 'send': openSendModal(); break;
       case 'add': addRow({}); break;
       case 'material': addMaterial(rowId); break;
       case 'del': st.confirmDel = rowId; refreshRow(rowId); break;
@@ -3630,9 +3919,15 @@
   }
 
   // ── Row actions ─────────────────────────────────────────────────────
-  async function addRow(seed) {
+  /**
+   * Add a hand-made row. `pid` is the job it goes on: the open job when not
+   * given — and on a site's sheet, the job the PM picks.
+   */
+  async function addRow(seed, pid) {
     if (!canEdit() || st.loadState !== 'ok' || !st.projectId) return null;
-    const item = { id: uid(), project_id: st.projectId, ...seed };
+    const job = pid || (siteMode() ? await pickJob('Add a row', 'Which job is the row for? Each job keeps its own rows and costs.') : st.projectId);
+    if (!job || !isOpenJob(job) || st.loadState !== 'ok') return null;
+    const item = { id: uid(), project_id: job, ...seed };
     setSave('saving');
     try {
       let data;
@@ -3649,7 +3944,7 @@
           if (err2.code !== 'duplicate') throw err2;
           data = { item: { ...item, source: 'manual', version: 1, created_at: new Date().toISOString() } };
           // The row as the server has it comes with the next read.
-          setTimeout(() => { if (st.projectId === item.project_id) load(item.project_id, { quiet: true }); }, 0);
+          setTimeout(() => { if (isOpenJob(item.project_id)) load(st.projectId, { quiet: true }); }, 0);
         }
       }
       const row = adoptServerRow(data.item || item);
@@ -3694,18 +3989,44 @@
   }
   function addToSection(key) {
     if (!canEdit() || st.loadState !== 'ok') return null;
+    // A job band's: a blank row on that job.
+    if (String(key).startsWith(JOB)) {
+      const pid = String(key).slice(JOB.length);
+      if (st.collapsed.delete(key)) renderTable();
+      return addRow({}, pid);
+    }
     const ctx = makeCtx();
     const g = groupRows(visibleRows(ctx), ctx).find(x => x.key === key);
     if (!g) return null;
     // A folded section opens, so the row is seen going in.
     if (st.collapsed.delete(key)) renderTable();
-    return addRow(sectionSeed(g));
+    // The section's job: its own (a site's cost-code section is one job's),
+    // else the one job all its rows are on, else the PM picks (a vendor
+    // section that spans the site's jobs).
+    let pid = g.pid || null;
+    if (!pid && ctx.site) {
+      const jobs = [...new Set(g.rows.map(r => r.project_id))];
+      if (jobs.length === 1) pid = jobs[0];
+    }
+    return addRow(sectionSeed(g), pid || undefined);
+  }
+  // The rows a section's box ticks: the section's as shown, or a job band's
+  // (every row of the job shown, whatever section it is in).
+  function sectionRows(key, ctx) {
+    const vis = visibleRows(ctx);
+    if (String(key).startsWith(JOB)) {
+      const pid = String(key).slice(JOB.length);
+      return vis.filter(r => r.project_id === pid);
+    }
+    const g = groupRows(vis, ctx).find(x => x.key === key);
+    return g ? g.rows : [];
   }
   function addMaterial(parentId) {
     const p = rowById(parentId);
     if (!p) return null;
     const codes = liveCodes(p, makeCtx());
-    return addRow({ bid_item_id: p.bid_item_id || null, cost_code: codes.cost_code, sub_code: codes.sub_code, unit: p.unit || '' });
+    return addRow({ bid_item_id: p.bid_item_id || null, cost_code: codes.cost_code, sub_code: codes.sub_code, unit: p.unit || '' },
+      p.project_id || undefined);
   }
 
   // ── Attachments ─────────────────────────────────────────────────────
@@ -3791,12 +4112,13 @@
     }
   }
 
-  /** A cost-code section's folder chip: that cost code's folder on this job. */
-  function openSectionFolder(code) {
+  /** A cost-code section's folder chip: that cost code's folder on its job. */
+  function openSectionFolder(code, pid) {
     const costCode = String(code == null ? '' : code).trim();
-    if (typeof cfg.openCostCodeFolder !== 'function' || !st.projectId || !costCode) return;
+    const projectId = pid || (siteMode() ? null : st.projectId);
+    if (typeof cfg.openCostCodeFolder !== 'function' || !projectId || !isOpenJob(projectId) || !costCode) return;
     try {
-      const p = cfg.openCostCodeFolder({ projectId: st.projectId, costCode });
+      const p = cfg.openCostCodeFolder({ projectId, costCode });
       if (p && typeof p.then === 'function') p.then(null, err => console.warn('[procurement] could not open the cost-code folder', err));
     } catch (err) {
       console.warn('[procurement] could not open the cost-code folder', err);
@@ -3879,12 +4201,32 @@
     });
     setSave('saving');
     // project_id pins the edit to the open job on the server too, so a
-    // selection can never reach a row that has moved to another one.
-    const body = { ids, fields };
-    if (st.projectId) body.project_id = st.projectId;
-    const data = await api('PATCH', '/procurement' + q({ action: 'bulk' }), body);
-    (data.items || []).forEach(adoptServerRow);
-    (data.missing || []).forEach(dropRow);
+    // selection can never reach a row that has moved to another one. On a
+    // site's sheet the rows are on several jobs: one edit per job, each
+    // pinned to its own.
+    const batches = [];
+    if (siteMode()) {
+      const byJob = new Map();
+      ids.forEach(id => {
+        const r = rowById(id);
+        if (!r || !r.project_id) return;
+        if (!byJob.has(r.project_id)) byJob.set(r.project_id, []);
+        byJob.get(r.project_id).push(id);
+      });
+      byJob.forEach((list, pid) => batches.push({ ids: list, fields, project_id: pid }));
+    } else {
+      const body = { ids, fields };
+      if (st.projectId) body.project_id = st.projectId;
+      batches.push(body);
+    }
+    const data = { items: [], missing: [] };
+    for (const body of batches) {
+      const d = await api('PATCH', '/procurement' + q({ action: 'bulk' }), body);
+      (d.items || []).forEach(adoptServerRow);
+      (d.missing || []).forEach(dropRow);
+      data.items.push(...(d.items || []));
+      data.missing.push(...(d.missing || []));
+    }
     settleSave();
     if (st.saveState === 'saving') setSave('saved');
     return data;
@@ -4021,7 +4363,7 @@
       return;
     }
     if (!ctx.poLoaded) { explain(ctx.poFailed ? 'The purchase orders could not be read from the server, so no PO can be raised from here yet. The page tries again every minute.' : 'The purchase orders are still loading — try again in a moment.'); return; }
-    if (rows.some(r => r.project_id && r.project_id !== st.projectId)) { explain('Every selected row has to be on the job that is open.'); return; }
+    if (rows.some(r => !isOpenJob(r.project_id))) { explain('Every selected row has to be on a job that is open.'); return; }
 
     // A row already on a PO — linked, or matched automatically — is material
     // that is already ordered: a second PO for it is a duplicate order, and
@@ -4063,15 +4405,39 @@
     }
     const vendor = vendors[0] || '';
     const k = keyFn(ctx);
+    // A PO is one job's: it books its cost to that job. Rows from several
+    // jobs of a site (one supplier, one quote, bought at one time) make one
+    // PO per job, so each field carries its own cost.
+    const jobs = [...new Set(rows.map(r => String(r.project_id || st.projectId)))];
     const byCode = new Map();
     rows.forEach(r => {
       const c = liveCodes(r, ctx);
-      const key = ck(k, c.cost_code) + '||' + ck(k, c.sub_code);
-      if (!byCode.has(key)) byCode.set(key, { cost_code: c.cost_code, sub_code: c.sub_code, rows: [] });
+      const pid = String(r.project_id || st.projectId);
+      const key = pid + '##' + ck(k, c.cost_code) + '||' + ck(k, c.sub_code);
+      if (!byCode.has(key)) byCode.set(key, { project_id: pid, cost_code: c.cost_code, sub_code: c.sub_code, rows: [] });
       byCode.get(key).rows.push(r);
     });
     let plan = [...byCode.values()];
-    if (plan.length > 1) {
+    if (jobs.length > 1) {
+      // Asked every time: this raises an order on each job.
+      const n = (k2, one, many) => `${k2} ${k2 === 1 ? one : many}`;
+      const names = jobs.map(pid => `<b>${esc(jobName(pid))}</b> (${n(rows.filter(r => String(r.project_id) === pid).length, 'row', 'rows')})`);
+      const perJob = jobs.map(pid => {
+        const mine = plan.filter(g => g.project_id === pid);
+        const top = mine.slice().sort((a, b) => b.rows.length - a.rows.length)[0];
+        return { project_id: pid, cost_code: top.cost_code, sub_code: top.sub_code, rows: [].concat(...mine.map(g => g.rows)) };
+      });
+      const opts = plan.length > jobs.length
+        ? [{ value: 'per', cls: 'btn-green', label: `One PO per job and sub code (recommended — a PO books its cost to one sub code) — ${plan.length} POs` },
+           { value: 'one', label: `One PO per job, each coded to that job's main sub code — ${jobs.length} POs` }]
+        : [{ value: 'per', cls: 'btn-green', label: `Create ${jobs.length} POs, one per job` }];
+      opts.push({ value: null, label: 'Cancel' });
+      const pick = await choose('Create purchase orders',
+        `<p style="margin:0 0 0.45rem;line-height:1.5">The ${rows.length} selected rows are on <b>${jobs.length}</b> jobs: ${names.join(', ')}.</p>`
+        + `<p style="margin:0;line-height:1.5">Each job gets its own PO${vendor ? ` to ${esc(vendor)}` : ''}, so each job's cost stays on that job.</p>`, opts);
+      if (!pick) return;
+      if (pick === 'one') plan = perJob;
+    } else if (plan.length > 1) {
       const top = plan.slice().sort((a, b) => b.rows.length - a.rows.length)[0];
       const name = [top.cost_code, top.sub_code].filter(Boolean).join(' / ') || 'no code';
       const pick = await choose('Create purchase order',
@@ -4081,13 +4447,13 @@
           { value: null, label: 'Cancel' },
         ]);
       if (!pick) return;
-      if (pick === 'one') plan = [{ cost_code: top.cost_code, sub_code: top.sub_code, rows }];
+      if (pick === 'one') plan = [{ project_id: top.project_id, cost_code: top.cost_code, sub_code: top.sub_code, rows }];
     }
     const made = [];
     for (const g of plan) {
       const quotes = [...new Set(g.rows.map(r => r.quote_number.trim()).filter(Boolean))];
       const seed = {
-        project_id: st.projectId,
+        project_id: g.project_id,
         cost_code: g.cost_code,
         sub_code: g.sub_code,
         supplier: vendor,
@@ -4116,7 +4482,7 @@
       renderTable();
       updateCounts();
       toast(made.length === 1 ? `Created ${str(made[0].po_number) || 'the PO'} and linked ${rows.length} row${rows.length === 1 ? '' : 's'}`
-        : `Created ${made.length} POs (${made.map(p => str(p.po_number)).join(', ')})`);
+        : `Created ${made.length} POs${jobs.length > 1 ? `, each on its own job` : ''} (${made.map(p => str(p.po_number)).join(', ')})`);
     }
   }
 
@@ -4167,12 +4533,18 @@
   function buildPrintHtml(ctx, { printedAt = new Date() } = {}) {
     const rows = visibleRows(ctx);
     const groups = st.grouping === 'none' ? [{ key: '', label: '', meta: '', rows }] : groupRows(rows, ctx);
-    // What a section's header already says is not repeated on every row.
-    const drop = st.grouping === 'cost' ? ['Cost Code'] : st.grouping === 'vendor' ? ['Vendor', 'Quote #'] : [];
-    const cols = exportCols().filter(c => !drop.includes(c.label));
+    // What a section's header already says is not repeated on every row
+    // (on a site's sheet by cost code, the job's heading says the job).
+    const drop = st.grouping === 'cost' ? ['Cost Code', 'Job'] : st.grouping === 'vendor' ? ['Vendor', 'Quote #'] : [];
+    const cols = exportCols(ctx).filter(c => !drop.includes(c.label));
     const p = project(st.projectId) || {};
-    const name = str(p['project-name']) || 'Job';
-    const job = str(p['job-number']);
+    const site = !!ctx.site;
+    const name = site ? siteLabel(st.projectId) : str(p['project-name']) || 'Job';
+    const job = site ? '' : str(p['job-number']);
+    const siteJobsLine = site ? openIds().map(pid => {
+      const j = project(pid) || {};
+      return projLabel(j) + (j['job-number'] ? ` (#${j['job-number']})` : '');
+    }).join(' · ') : '';
     const NUM = new Set(['Quantity', 'Lead Time (days)']);
     const DATE = new Set(['Date Needed', 'Order By', 'Date Ordered', 'Date Delivered']);
     const WRAP = new Set(['Sub Code', 'Description', 'Cost Code', 'Vendor', 'Contact', 'Email', 'Notes']);
@@ -4195,7 +4567,17 @@
       const late = list.filter(r => flagsOf(r, ctx).some(f => f.level === 'red')).length;
       return `${list.length} row${list.length === 1 ? '' : 's'}${notOrdered ? ` · ${notOrdered} not ordered` : ''}${late ? ` · ${late} late` : ''}`;
     };
-    const body = rows.length ? groups.map(g => (g.label
+    // A site's sheet by cost code: a heading per job ahead of its sections.
+    let lastJob = null;
+    const jobHead = g => {
+      if (!site || st.grouping !== 'cost' || g.pid === lastJob) return '';
+      lastJob = g.pid;
+      const mine = rows.filter(r => r.project_id === g.pid);
+      const j = project(g.pid) || {};
+      return `<tr class="job"><td colspan="${cols.length}"><b>${esc(jobName(g.pid))}</b>${j['job-number'] ? ` <span class="gm">· Job #${esc(j['job-number'])}</span>` : ''}`
+        + ` <span class="gm">· ${esc(plainCounts(mine))}</span></td></tr>`;
+    };
+    const body = rows.length ? groups.map(g => jobHead(g) + (g.label
       ? `<tr class="grp"><td colspan="${cols.length}"><b>${esc(g.label)}</b>`
         + `${g.meta ? ` <span class="gm">· ${String(g.meta).replace(/<(?!\/?b>)[^>]*>/g, '')}</span>` : ''}`
         + ` <span class="gm">· ${esc(plainCounts(g.rows))}</span></td></tr>` : '')
@@ -4206,7 +4588,7 @@
     const late = rows.filter(r => flagsOf(r, ctx).some(f => f.level === 'red')).length;
     const shown = rows.length === st.rows.length ? `${rows.length} row${rows.length === 1 ? '' : 's'}`
       : `${rows.length} of ${st.rows.length} rows (filtered)`;
-    const title = `Procurement — ${name}${job ? ` — Job #${job}` : ''}`;
+    const title = `Procurement — ${name}${job ? ` — Job #${job}` : ''}${site ? ' (site)' : ''}`;
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${esc(title)}</title>
   <style>
     @page { size: landscape; margin: 0.4in; }
@@ -4233,12 +4615,16 @@
     tr.grp td { background:#e8f5e9; color:#14532d; font-size:8pt; padding:4px 5px; border-top:1px solid #9ccc9c; }
     tr.grp .gm { color:#4b5563; font-weight:400; }
     tr.grp { break-after: avoid; page-break-after: avoid; }
+    tr.job td { background:#14532d; color:#fff; font-size:9pt; padding:5px 6px; }
+    tr.job .gm { color:#d1fae5; font-weight:400; }
+    tr.job { break-after: avoid; page-break-after: avoid; }
     td.none { text-align:center; padding:2rem; color:#666; }
     tr { page-break-inside: avoid; }
     thead { display: table-header-group; }
     p.note { font-size:7pt; color:#555; margin:0.4rem 0 0; }
   </style></head><body>
   <h1>${esc(title)}</h1>
+  ${site ? `<p class="sub">Jobs: ${esc(siteJobsLine)} — each job keeps its own rows, POs and costs</p>` : ''}
   <p class="sub">${esc(shown)} · printed ${esc(printedAt.toLocaleString())}</p>
   <div class="sum"><span>Not Ordered ${n['Not Ordered']}</span><span class="ord">Ordered ${n.Ordered}</span><span class="del">Delivered ${n.Delivered}</span>${late ? `<span class="late">Late ${late}</span>` : ''}</div>
   <table><thead><tr>${cols.map(c => `<th>${esc(c.label)}</th>`).join('')}</tr></thead><tbody>${body}</tbody></table>
@@ -4317,8 +4703,14 @@
   };
 
   async function openSendModal(projectId) {
+    // On a site's sheet, the checklist is one job's bid: which, the PM says.
+    if (!projectId && siteMode()) {
+      const picked = await pickJob('Add to Procurement', 'Bring in the bid lines of which job? Each job keeps its own rows.');
+      if (!picked) return null;
+      projectId = picked;
+    }
     const pid = projectId || st.projectId;
-    if (!pid) { toast('Pick a job first.', 'error'); return null; }
+    if (!pid || isSiteKey(pid)) { toast('Pick a job first.', 'error'); return null; }
     if (!(cfg.perm && cfg.perm.canEdit)) { toast('You have view-only access to Procurement.', 'error'); return null; }
     const p = project(pid);
     const jobName = p ? projLabel(p) : 'this job';
@@ -4456,7 +4848,7 @@
     foot.querySelector('[data-send="cancel"]').addEventListener('click', () => m.close());
 
     // The sheet behind, brought to what the server holds.
-    const reloadSheet = () => { if (pid === st.projectId && isMounted() && st.loadState === 'ok') load(pid, { quiet: true }); };
+    const reloadSheet = () => { if (isOpenJob(pid) && isMounted() && st.loadState === 'ok') load(st.projectId, { quiet: true }); };
 
     let sending = false;
     go.addEventListener('click', async () => {
@@ -4486,8 +4878,9 @@
         m.close();
         const created = data.created || [], restored = data.restored || [];
         // Land the user on the job they just sent: the tab state switches to
-        // it, and the page (listening for the event) switches to the tab.
-        if (pid === st.projectId) {
+        // it, and the page (listening for the event) switches to the tab. A
+        // site's sheet the job is on stays open.
+        if (isOpenJob(pid)) {
           created.concat(restored).forEach(adoptServerRow);
           if (isMounted()) { renderTable(); updateCounts(); }
           // A line brought back on its bid line's replacement can come back
@@ -4598,7 +4991,7 @@
         const item = normRow(data.item) || { ...before, bid_item_id: rl.bid_item_id, cost_code: rl.cost_code, sub_code: rl.sub_code };
         if (rl.sync) synced.add(item);
         done.push(item);
-        if (pid === st.projectId) adoptServerRow(item);
+        if (isOpenJob(pid)) adoptServerRow(item);
       } catch (err) {
         // The line is not on the bid the server holds NOW: the bid moved
         // since it was checked (a colleague's Replace all landing in between).
@@ -4613,12 +5006,12 @@
         console.warn('[procurement] re-link failed for', rl.id, err);
       }
     }
-    if (done.length && pid === st.projectId && isMounted()) {
+    if (done.length && isOpenJob(pid) && isMounted()) {
       if (cellInUse()) redrawAround(); else { renderTable(); updateCounts(); }
     }
     // Every one of these PATCHes carries the line's codes: its files may
     // have moved to another cost code's folder.
-    if (done.length && pid === st.projectId) recountAfterRecode(pid, done.map(d => d.id));
+    if (done.length && isOpenJob(pid)) recountAfterRecode(pid, done.map(d => d.id));
     // The code syncs are housekeeping; what is reported is what moved.
     const moved = done.filter(d => !synced.has(d));
     moved.stale = stale;
@@ -4642,21 +5035,23 @@
    * off the full list (include_deleted) before anything is sent.
    */
   function autoRelink(pid) {
-    if (relinking || !canEdit() || pid !== st.projectId || st.loadState !== 'ok') return relinking;
+    if (relinking || !canEdit() || !isOpenJob(pid) || st.loadState !== 'ok') return relinking;
     const ctx = makeCtx(pid);
     if (!ctx.bidLines.length) return null;
     const untried = p => !relinkTried.has(tryKey(p));
     const plans = (lines, rows, k) => relinkPlan(lines, rows, k).concat(codeSyncPlan(lines, rows, k));
-    const looks = plans(ctx.bidLines, st.rows, ctx.codeKey).filter(untried);
+    // Only this job's rows: on a site's sheet the others' are matched against
+    // their own bids, never this one.
+    const looks = plans(ctx.bidLines, st.rows.filter(r => r.project_id === pid), ctx.codeKey).filter(untried);
     if (!looks.length) return null;
     relinking = (async () => {
       const bid = await bidAgreed(pid);
       // Not agreed (or not known): nothing is marked tried, so the next load
       // looks again — by then the page has caught up.
-      if (!bid.lines || pid !== st.projectId) return;
+      if (!bid.lines || !isOpenJob(pid)) return;
       let all;
       try { all = await readAllRows(pid); } catch (err) { console.warn('[procurement] re-link check failed', err); return; }
-      if (pid !== st.projectId) return;
+      if (!isOpenJob(pid)) return;
       const now = makeCtx(pid);
       // The bid moved while the rows were read — on this page, or on the
       // server (a colleague's Replace all landing while the read was out):
@@ -4664,7 +5059,7 @@
       // server checks each line once more as it is written (stale_bid).
       if (!sameBid(bid.lines, now.bidLines, now.codeKey)) return;
       const again = await bidAgreed(pid);
-      if (!again.lines || pid !== st.projectId || !sameBid(again.lines, bid.lines, now.codeKey)) return;
+      if (!again.lines || !isOpenJob(pid) || !sameBid(again.lines, bid.lines, now.codeKey)) return;
       const plan = plans(now.bidLines, all, now.codeKey).filter(untried);
       const done = await applyRelinks(plan, all, pid);
       // Looked at, whatever the full list says: one the deleted rows rule out
@@ -4675,12 +5070,30 @@
         return;
       }
       looks.forEach(p => relinkTried.add(tryKey(p)));
-      if (done.length && pid === st.projectId && isMounted()) {
+      if (done.length && isOpenJob(pid) && isMounted()) {
         toast(`Re-linked ${done.length} row${done.length === 1 ? '' : 's'} to the current bid line${done.length === 1 ? '' : 's'} `
           + `with the same cost and sub code (${relinkWords(done)}) — the bid's lines were replaced.`);
       }
     })().finally(() => { relinking = null; });
     return relinking;
+  }
+  // A site's jobs, one after the other: one re-link pass runs at a time.
+  async function autoRelinkAll(ids) {
+    for (const pid of ids) {
+      try { await autoRelink(pid); } catch (err) { console.warn('[procurement] re-link failed', err); }
+    }
+  }
+  /**
+   * A site's sheet whose jobs changed under it (Show all jobs ticked, a field
+   * marked complete, the Site typed on another job): read again as the sheet
+   * it now is. Typed edits go first; ticks on rows no longer there go.
+   */
+  function reloadSite() {
+    flushAll();
+    st.forceShow.clear();
+    st.confirmDel = null;
+    st.bulkConfirmDel = false;
+    load(st.projectId);
   }
 
   // Point the tab at a job without drawing anything yet — the page is about
@@ -4714,13 +5127,13 @@
         el.innerHTML = '<div class="fctproc"><div class="fctproc-empty">You do not have access to Procurement.</div></div>';
         return;
       }
-      if (st.projectId && !project(st.projectId) && projects().length) {
+      if (st.projectId && !keyExists(st.projectId) && projects().length) {
         st.projectId = null;
         storeSet('project', null);
       }
       // The contact pickers read from the shared cache.
       contacts.load().catch(err => console.warn('[procurement] contacts did not load', err));
-      const cached = st.projectId && st.loadedFor === st.projectId && st.loadState === 'ok';
+      const cached = st.projectId && st.loadedFor === viewSig() && st.loadState === 'ok';
       if (st.projectId && !cached) st.loadState = 'loading';
       renderShell();
       if (st.projectId) load(st.projectId, { quiet: cached });
@@ -4746,14 +5159,19 @@
       // The job list moved under us: a rename shows in the picker, and a job
       // deleted elsewhere gets the "no longer on the list" note, not a table.
       const picker = st.mountEl.querySelector('#fctproc-proj');
-      const p = project(st.projectId);
-      if (picker && picker !== a && p) { picker.value = projLabel(p); picker.dataset.cbValue = p.id; }
-      if (st.projectId && !p) { renderBody(); return; }
+      const known = keyExists(st.projectId);
+      if (picker && picker !== a && known) { picker.value = openLabel(); picker.dataset.cbValue = st.projectId; }
+      if (st.projectId && !known) { renderBody(); return; }
+      // A site whose jobs changed (a field finished, a Site typed on another
+      // job) is read again as the sheet it now is.
+      if (siteMode() && st.loadState === 'ok' && st.loadedFor !== viewSig()) { reloadSite(); return; }
       // The bid changed under the open job (a line renamed, a Replace all):
       // rows re-link and their stored codes follow now, not at the next read.
       // autoRelink checks the bid with the server first, and does nothing
       // when there is nothing to do.
-      if (st.projectId && st.loadState === 'ok' && st.loadedFor === st.projectId) autoRelink(st.projectId);
+      if (st.projectId && st.loadState === 'ok' && st.loadedFor === viewSig()) {
+        if (siteMode()) autoRelinkAll(openIds()); else autoRelink(st.projectId);
+      }
       if (cellInUse()) {
         // Someone is in a cell: redraw every row around it, not the table.
         redrawAround();
@@ -4791,7 +5209,8 @@
         && (a.dataset.pr || (a.closest && a.closest('#fctproc-bulk')));
       if (editing) return;
       if (pend.size) await flushAll();
-      await load(st.projectId, { quiet: st.loadState === 'ok' });
+      // A site whose jobs changed since is a new sheet, read as one.
+      await load(st.projectId, { quiet: st.loadState === 'ok' && st.loadedFor === viewSig() });
     },
 
     /**
@@ -4802,8 +5221,11 @@
      * the counts were read and drawn, false otherwise; never rejects.
      */
     refreshAttachmentCounts() {
-      if (!st.projectId || st.loadedFor !== st.projectId) return Promise.resolve(false);
-      return refreshDocCounts(st.projectId);
+      if (!st.projectId || st.loadedFor !== viewSig()) return Promise.resolve(false);
+      // Every job of a site's sheet: true once all of them were read and drawn.
+      const ids = openIds();
+      if (ids.length === 1) return refreshDocCounts(ids[0]);
+      return Promise.all(ids.map(refreshDocCounts)).then(r => r.length > 0 && r.every(Boolean));
     },
 
     openSendModal,
@@ -4816,7 +5238,7 @@
       effectivePO, effectiveDateOrdered, orderBy, statusOf, flagsOf, liveCodes, bidChange,
       sendPlan, relinkPlan, codeSyncPlan, sameBid, sortRows, applyFilters, csvEscape, addDays,
       chipMatch, fieldValue, vendorCompatible, normRow, ymdOf, fmtDate, fmtQty, esc, uid, looksLikePhone,
-      exportMatrix, buildCsv, xlsxParts, buildXlsx, buildPrintHtml, defaultCodeKey,
+      exportMatrix, buildCsv, xlsxParts, buildXlsx, buildPrintHtml, defaultCodeKey, makeCtx, openIds, viewSig,
       state: () => st,
       pending: () => ({ pend: new Map(pend), fly: new Map(fly), failed: new Set(failed) }),
       flushAll,

@@ -609,8 +609,8 @@ async function openPage(browser, W, role, { viewport = { width: 1474, height: 90
   await ctx.route('**/_files/**', route => route.fulfill({ status: 200, contentType: 'text/plain', body: 'file' }));
 
   await page.goto((await BASE) + '/tracker.html');
-  await page.waitForFunction(() => typeof projectsList !== 'undefined' && projectsList.length === 2
-    && !!window.FCTProcurement && typeof _listsLoaded !== 'undefined' && _listsLoaded && _poLoadOk, null, { timeout: 20000 });
+  await page.waitForFunction(n => typeof projectsList !== 'undefined' && projectsList.length === n
+    && !!window.FCTProcurement && typeof _listsLoaded !== 'undefined' && _listsLoaded && _poLoadOk, Object.keys(PROJECTS).length, { timeout: 20000 });
   await sleep(300);
   return { page, ctx, errors, dialogs };
 }
@@ -2237,6 +2237,98 @@ async function attachments(browser) {
   await A.ctx.close();
 }
 
+// ── A site: the Hempfield fields on one sheet ────────────────────────────────
+// Two jobs (own bid, rows, POs and costs) with the same Site on the job page,
+// bought for at one time. Their bids were copied from one another, so they
+// carry the same line ids and codes; each row is matched only to its own.
+async function siteSheet(browser) {
+  console.log('\na site: several jobs on one sheet');
+  const t = i => new Date(Date.UTC(2026, 9, 6) + i * 1000).toISOString();
+  const SW = 'Storm Water Construction';
+  const bid = q => [
+    { id: 's1', cost_code: SW, sub_code: 'Drain Geo Fabric', unit: 'SF', quantity: String(q[0]) },
+    { id: 's2', cost_code: SW, sub_code: 'Perimeter Collector Drain 15"', unit: 'LF', quantity: String(q[1]) },
+    { id: 's3', cost_code: SW, sub_code: '15" Elbows', unit: 'EA', quantity: String(q[2]) },
+    { id: 's4', cost_code: 'Infill', sub_code: 'Sand Infill', unit: 'TON', quantity: String(q[3]) },
+  ];
+  PROJECTS.h1 = { id: 'h1', 'project-name': 'Hempfield Baseball', 'job-number': '26057', status: 'In Progress', site: 'Hempfield', bidItems: bid([8108.64, 900.96, 3, 210]) };
+  PROJECTS.h2 = { id: 'h2', 'project-name': 'Hempfield Softball', 'job-number': '26058', status: 'Awarded', site: 'Hempfield', bidItems: bid([5120, 610, 2, 140]) };
+  try {
+    const W = makeWorld();
+    let n = 0;
+    for (const [pid, need] of [['h1', plusDays(9)], ['h2', plusDays(30)]]) {
+      for (const b of PROJECTS[pid].bidItems) {
+        n++;
+        W.rows.push({ ...BLANK_ROW, id: `${pid}r${b.id}`, project_id: pid, source: 'bid', bid_item_id: b.id, cost_code: b.cost_code, sub_code: b.sub_code,
+          quantity: Number(b.quantity), unit: b.unit, bid_qty_at_send: Number(b.quantity), bid_unit_at_send: b.unit, date_needed: need, lead_time_days: 7,
+          vendor: b.cost_code === SW ? 'LB Water' : 'New Enterprise', quote_number: b.cost_code === SW ? '224818' : '1000509092',
+          contact: b.cost_code === SW ? 'Dana Reyes' : '', created_at: t(n), updated_at: t(n) });
+      }
+    }
+    // Baseball's geofabric is already on an order; Softball's is not.
+    W.pos.push({ id: 'hpo1', po_number: 'PO-0011', title: 'Drain Geo Fabric', supplier: 'LB Water', status: 'pending',
+      date_created: plusDays(-2), project_id: 'h1', cost_code: SW, sub_code: 'Drain Geo Fabric', notes: '', lines: [] });
+    const { page, ctx, errors } = await openPage(browser, W, 'admin', { viewport: { width: 1600, height: 900 }, scale: SHOTS ? 2 : 1,
+      storage: { fct_proc_group_turf: 'cost' } });
+
+    ok('the job page has a Site box, filled with the job\'s site', await page.evaluate(() => {
+      const box = document.createElement('div');
+      box.innerHTML = projectCardHTML(getProj('h1'));
+      const input = [...box.querySelectorAll('.info-field')].find(f => /^Site$/.test(f.querySelector('label').textContent.trim()));
+      return !!input && input.querySelector('input').value === 'Hempfield';
+    }));
+
+    await page.click('.tab-btn[data-tab="procurement"]');
+    await page.waitForSelector('#fctproc-proj');
+    await cbPick(page, page.locator('#fctproc-proj'), 'hempfield', 'Hempfield — all 2 jobs');
+    await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(c => c === 8));
+    await sleep(300);
+    const gets = W.log.filter(l => l.api === 'procurement' && l.method === 'GET' && !l.q.include_deleted).map(l => l.q.project_id);
+    ok('picking the site reads both jobs', gets.includes('h1') && gets.includes('h2'), gets);
+    ok('…a band per job, Baseball then Softball', eq(await page.locator('#fctproc-wrap tr.fctproc-jobband .jn').allTextContents(),
+      ['Hempfield Baseball', 'Hempfield Softball']));
+    ok('…each job\'s rows under its own band, with a Job column',
+      await page.evaluate(() => {
+        let job = '';
+        const out = [];
+        document.querySelectorAll('#fctproc-wrap tbody tr').forEach(tr => {
+          if (tr.dataset.jobband) job = tr.dataset.jobband;
+          else if (tr.dataset.row) out.push(job === tr.dataset.row.slice(0, 2) && /Hempfield/.test(tr.querySelector('.c-job').textContent));
+        });
+        return out.length === 8 && out.every(Boolean);
+      }));
+    ok('…each row on its own job\'s PO: Baseball\'s geofabric ordered, Softball\'s not',
+      (await rowTr(page, 'h1rs1').locator('.c-status .fctproc-pill').textContent()) === 'Ordered'
+      && (await rowTr(page, 'h2rs1').locator('.c-status .fctproc-pill').textContent()) === 'Not Ordered');
+    ok('…and no false "bid changed" from the sister job\'s bid', await page.locator('#fctproc-wrap .fctproc-bidchg').count() === 0);
+    await page.mouse.move(5, 5);
+    await shot(page, 'shot-site-sheet.png');
+
+    // The LB Water lines of both fields still on no order: one PO per job.
+    await page.locator('[data-group="vendor"]').click();
+    await sleep(200);
+    for (const id of ['h1rs2', 'h1rs3', 'h2rs1', 'h2rs2', 'h2rs3']) await rowTr(page, id).locator('[data-sel]').check();
+    await page.click('[data-act="bulk-po"]');
+    await page.waitForSelector('.fctproc-modal [data-choice]');
+    ok('Create PO across the two jobs says each job gets its own', /each job's cost stays on that job/.test(await page.textContent('.fctproc-modal')));
+    await shot(page, 'shot-site-po.png');
+    await page.locator('.fctproc-modal [data-choice]', { hasText: 'One PO per job, each coded' }).click();
+    await until(() => W.pos.filter(p => /^h/.test(p.project_id)).length === 3, 5000);
+    const made = W.pos.filter(p => p.id !== 'hpo1' && /^h/.test(p.project_id));
+    ok('…one new PO on each job, to LB Water', made.length === 2 && eq(made.map(p => p.project_id).sort(), ['h1', 'h2'])
+      && made.every(p => p.supplier === 'LB Water'), made.map(p => [p.project_id, p.supplier, p.sub_code]));
+    await until(() => W.rows.filter(r => ['h2rs1', 'h2rs2', 'h2rs3'].includes(r.id)).every(r => r.po_id === made.find(p => p.project_id === 'h2').id), 4000);
+    ok('…and each job\'s rows are linked to their own job\'s PO',
+      W.rows.filter(r => ['h1rs2', 'h1rs3'].includes(r.id)).every(r => r.po_id === made.find(p => p.project_id === 'h1').id)
+      && W.rows.filter(r => ['h2rs1', 'h2rs2', 'h2rs3'].includes(r.id)).every(r => r.po_id === made.find(p => p.project_id === 'h2').id));
+    ok('no page errors', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  } finally {
+    delete PROJECTS.h1;
+    delete PROJECTS.h2;
+  }
+}
+
 (async () => {
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
@@ -2253,6 +2345,7 @@ async function attachments(browser) {
     await sectionAdd(browser);
     await printPdf(browser);
     await attachments(browser);
+    await siteSheet(browser);
   } finally {
     await browser.close();
     server.close();
