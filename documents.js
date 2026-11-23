@@ -88,6 +88,11 @@
   // bumping that one here would make in-flight load() responses think they had
   // lost a race they were never in.
   let ccGeneration = 0;
+  // …per job: the newest generation handed out for each. A site's sheet asks
+  // for all its jobs' counts at once, and one counter for every job threw
+  // away every answer but the last-asked job's — the others' folder chips
+  // never showed a count, on any poll.
+  const ccLatest = {};
 
   // How many documents hang off each line of the Procurement sheet, per job:
   //   procCounts['<project id>']['<procurement row id>'] = 2
@@ -364,7 +369,7 @@
     // for free. Doing it anywhere else meant a file attached from a cost-code
     // bar left the chip beside it still reading the old number.
     ccCounts[projectId || ''] = countByCostCode(folders, documents);
-    ccGeneration++;
+    ccLatest[projectId || ''] = ++ccGeneration;
     return true;
   }
 
@@ -441,7 +446,7 @@
       ccCounts[key] = countByCostCode(folders, documents);
       return ccCounts[key];
     }
-    const generation = ++ccGeneration;
+    const generation = ccLatest[key] = ++ccGeneration;
     const scopeGeneration = loadGeneration;
     let data;
     try {
@@ -457,7 +462,7 @@
     // A load(), or a later count fetch, landed while this was in flight. Its
     // numbers describe the job as it is now; ours describe it as it was before
     // whatever that was — writing them back would undo an upload's count.
-    if (generation !== ccGeneration) return ccCounts[key] || null;
+    if (generation !== ccLatest[key]) return ccCounts[key] || null;
     const got = data && data.counts;
     const counts = got && typeof got === 'object' && !Array.isArray(got)
       ? { ...got }

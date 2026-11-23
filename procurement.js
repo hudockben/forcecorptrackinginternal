@@ -256,9 +256,10 @@
   function ctxIndex(ctx) {
     let m = _ctxIndex.get(ctx);
     if (!m) {
-      m = { lineById: new Map(), poById: new Map(), lineByJob: null, costKeysByJob: new Map() };
+      m = { lineById: new Map(), poById: new Map(), lineByJob: null, costKeysByJob: new Map(), linkedPO: new Set() };
       (ctx.bidLines || []).forEach(l => { if (l && l.id != null) m.lineById.set(String(l.id), l); });
       (ctx.purchaseOrders || []).forEach(p => { if (p && p.id != null) m.poById.set(String(p.id), p); });
+      (ctx.rows || []).forEach(r => { if (r && r.po_id && !r.deleted_at) m.linkedPO.add(String(r.po_id)); });
       if (ctx.bidLinesByProject) {
         m.lineByJob = new Map();
         ctx.bidLinesByProject.forEach((lines, pid) => {
@@ -381,7 +382,14 @@
     if (!codes.line && !sc) return out('none');
     if (!ctx.poLoaded) return out('loading');
     const pid = row.project_id || ctx.projectId;
+    // An order a row of the sheet is linked to is that row's — raised for it
+    // (Create PO from selected), or picked for it. It is not matched to
+    // the other rows under the same codes as well: the materials "+ Material"
+    // splits a bid line into read Ordered, with no Late flag, on the PO
+    // raised for the stone or the chambers beside them.
+    const linked = ctxIndex(ctx).linkedPO;
     const cands = (ctx.purchaseOrders || []).filter(po => po
+      && !linked.has(String(po.id))
       && String(po.project_id || '') === String(pid || '')
       && ck(k, po.cost_code) === cc && ck(k, po.sub_code) === sc
       && vendorCompatible(row.vendor, po.supplier));
@@ -931,8 +939,13 @@
 
   const xesc = s => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-    // XML 1.0 cannot carry these, and Excel refuses the whole file over one.
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+    // XML 1.0 cannot carry these, and Excel refuses the whole file over one
+    // (LibreOffice drops every row after it): the control characters, the
+    // two non-characters U+FFFE / U+FFFF (a paste out of a badly read PDF),
+    // and half a surrogate pair.
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+    .replace(/[\uD800-\uDFFF]/g, (c, i, all) => (c <= '\uDBFF'
+      ? /[\uDC00-\uDFFF]/.test(all[i + 1] || '') : /[\uD800-\uDBFF]/.test(all[i - 1] || '')) ? c : '');
 
   function colName(n) {
     let s = '';
@@ -1273,6 +1286,8 @@
       // The open job; null on a site's sheet, where every row names its own.
       projectId: pid,
       site, bidLinesByProject, jobLabels,
+      // The sheet's rows: an order a row is linked to is that row's (effectivePO).
+      rows: st.rows,
       // Empty when the page's lists have not loaded: then nothing is marked
       // "not on the supplier list".
       supplierKeys: new Set(suppliers().map(lc)),
@@ -2923,11 +2938,15 @@
         ? new Map(items.filter(r => !since(touched, r.id)).map(r => [r.id, server.get(r.id) ? { ...server.get(r.id) } : null])) : null;
       items.forEach(adoptServerRow);
       if (known) noteOthersChanges(items.filter(r => known.has(r.id)), known);
+      askForNewPOs();
       const wasOk = st.loadState === 'ok' && st.loadedFor === sig;
       st.loadState = 'ok';
       st.loadedFor = sig;
+      // Past midnight since the sheet was drawn: Due soon is Late now, and
+      // the counts with it, though nobody changed a thing.
+      const newDay = !!st.drawnDay && st.drawnDay !== today();
       if (!wasOk || !quiet) renderBody();
-      else if (signature() !== before) {
+      else if (signature() !== before || newDay) {
         // The answer can land after the PM has started typing (the poll only
         // checks as it starts): then the rows are redrawn around the cell in
         // use, never the table under it — see redrawAround.
@@ -3161,6 +3180,21 @@
     // their orders until the page's next poll. The host redraws the sheet
     // when the list it holds changes.
     if (next) refreshPOs();
+  }
+  // A row linked to an order this page's list does not have — one a
+  // colleague has just raised: the list is read again now, rather than the
+  // row shown as on a removed PO (Not Ordered, Late) until the page's next
+  // minute poll. Asked once for each set of such orders, so one that really
+  // was removed is not read for again on every poll.
+  let poAskedFor = '';
+  function askForNewPOs() {
+    const ctx = makeCtx();
+    if (!ctx.poLoaded) return;
+    const idx = ctxIndex(ctx);
+    const unknown = [...new Set(st.rows.filter(r => r.po_id && !idx.poById.has(String(r.po_id))).map(r => String(r.po_id)))].sort().join(',');
+    if (!unknown || unknown === poAskedFor) return;
+    poAskedFor = unknown;
+    refreshPOs();
   }
   function refreshPOs() {
     if (typeof cfg.refreshPurchaseOrders !== 'function') return Promise.resolve(false);
@@ -3518,6 +3552,8 @@
     if (!wrap) return;
     redrawDeferred = false;
     const ctx = makeCtx();
+    // The day the Late / Due soon flags were worked out for (load).
+    st.drawnDay = ctx.today;
     const edit = canEdit();
     const cols = colsFor(edit);
     const rows = visibleRows(ctx);
@@ -4184,11 +4220,17 @@
       </div>`;
     document.body.appendChild(dd);
     const list = dd.querySelector('#fctproc-ff-list');
+    // With something typed in Search, the list is its matches, as in Excel:
+    // (Select All) ticks them, and Apply keeps only the ones ticked among
+    // them — the rest, hidden, count as unticked. Ticked but hidden, they
+    // made Apply see every box ticked and drop the filter altogether.
+    const searching = () => !!dd.querySelector('#fctproc-ff-search').value.trim();
+    const shown = cb => !searching() || cb.closest('.dff-item').style.display !== 'none';
     dd.addEventListener('change', e => {
-      if (e.target.id === 'fctproc-ff-all') list.querySelectorAll('.fctproc-ff-val').forEach(cb => { cb.checked = e.target.checked; });
+      if (e.target.id === 'fctproc-ff-all') list.querySelectorAll('.fctproc-ff-val').forEach(cb => { if (shown(cb)) cb.checked = e.target.checked; });
       else if (e.target.classList.contains('fctproc-ff-val')) {
         const all = list.querySelector('#fctproc-ff-all');
-        if (all) all.checked = [...list.querySelectorAll('.fctproc-ff-val')].every(c => c.checked);
+        if (all) all.checked = [...list.querySelectorAll('.fctproc-ff-val')].filter(shown).every(c => c.checked);
       }
     });
     dd.querySelector('#fctproc-ff-search').addEventListener('input', e => {
@@ -4203,7 +4245,7 @@
       if (b.dataset.ff === 'clear') delete st.filters[ffField];
       else {
         const boxes = [...list.querySelectorAll('.fctproc-ff-val')];
-        const ticked = boxes.filter(c => c.checked).map(c => c.value);
+        const ticked = boxes.filter(c => c.checked && shown(c)).map(c => c.value);
         if (ticked.length === boxes.length) delete st.filters[ffField];
         else st.filters[ffField] = new Set(ticked);
       }
@@ -4275,6 +4317,19 @@
     el.addEventListener('click', onClick);
     el.addEventListener('focusout', onFocusOut);
     el.addEventListener('keydown', onKeyDown);
+    // The wheel over a number box that has the focus steps its value — and
+    // the step is saved — rather than scrolling the sheet. The box is let go
+    // of first: the sheet scrolls, and the value stays as it was.
+    el.addEventListener('wheel', e => {
+      const t = e.target;
+      if (t && t.tagName === 'INPUT' && t.type === 'number' && t === document.activeElement) t.blur();
+    }, { passive: true });
+    // Where the table is scrolled to, for when its tab is shown again
+    // (hidden, the box forgets it).
+    el.addEventListener('scroll', e => {
+      const t = e.target;
+      if (t && t.id === 'fctproc-wrap' && (t.scrollTop || t.scrollLeft || t.offsetParent)) st.wrapScroll = { top: t.scrollTop, left: t.scrollLeft };
+    }, true);
     // What a combobox held, and whether anything was chosen in it (see
     // cbUntouched). On the way down, before the combobox's own handlers.
     el.addEventListener('focusin', onCbFocusIn, true);
@@ -4534,10 +4589,15 @@
     const prev = lineFor(row, ctx);
     const unit = lineUnit(line), u = normUnit(row.unit);
     if (u && u !== normUnit(unit) && !(prev && u === normUnit(lineUnit(prev)))) return {};
+    const q = numOrNull(row.quantity), qty = numOrNull(line.quantity);
+    const qtyOfPick = q == null || (prev && sameNum(q, numOrNull(prev.quantity)));
+    // …and the other way round: a quantity the PM typed is counted in the
+    // unit beside it, so that unit stays with it — re-coded to a line bought
+    // by the SY, 400 SF of fabric must not become 400 SY.
+    if (!qtyOfPick && u && u !== normUnit(unit)) return {};
     const out = {};
     if (str(row.unit) !== unit) out.unit = unit;
-    const q = numOrNull(row.quantity), qty = numOrNull(line.quantity);
-    if ((q == null || (prev && sameNum(q, numOrNull(prev.quantity)))) && !sameNum(q, qty)) out.quantity = qty;
+    if (qtyOfPick && !sameNum(q, qty)) out.quantity = qty;
     return out;
   }
   // The Quantity / Unit a Sub Code pick filled, by row id:
@@ -4757,7 +4817,12 @@
     }, 0);
   }
 
+  // When a key was last pressed in the sheet: a cell typed in within the
+  // last few seconds is mid-entry, and the poll waits (refresh).
+  let lastKeyAt = 0;
+  const TYPING_MS = 4000;
   function onKeyDown(e) {
+    lastKeyAt = Date.now();
     const el = e.target;
     if (el.id === 'fctproc-search' && e.key === 'Escape' && st.search) {
       e.preventDefault();
@@ -4767,15 +4832,26 @@
       updateCounts();
       return;
     }
-    // Enter moves down a row in the same column, as in the sheet it replaces.
-    if (e.key !== 'Enter' || e.defaultPrevented || el.classList.contains('cb-input') || el.tagName === 'SELECT') return;
+    // Enter moves down a row in the same column, as in the sheet it replaces;
+    // so do the down and up arrows, as in the page's daily table. Left to
+    // the browser, an arrow steps the box's value instead — Quantity 400 to
+    // 399, Date Needed back a year, Sub Agmt to the next choice — and each
+    // step is saved, with nothing to say so. (A picker's arrows move through
+    // its list, as before.)
+    const enter = e.key === 'Enter', arrow = e.key === 'ArrowDown' || e.key === 'ArrowUp';
+    if ((!enter && !arrow) || e.defaultPrevented || el.classList.contains('cb-input') || el.tagName === 'TEXTAREA') return;
+    if (enter && el.tagName === 'SELECT') return;
+    if (arrow && (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey)) return;
+    if (!/^(INPUT|SELECT)$/.test(el.tagName) || el.type === 'checkbox') return;
     const rowId = el.dataset && el.dataset.pr, field = el.dataset && el.dataset.pf;
     if (!rowId || !field) return;
     e.preventDefault();
-    let tr = el.closest('tr') && el.closest('tr').nextElementSibling;
-    while (tr && !tr.querySelector(`[data-pf="${cssEsc(field)}"]`)) tr = tr.nextElementSibling;
+    const up = e.key === 'ArrowUp';
+    const step = t => (up ? t.previousElementSibling : t.nextElementSibling);
+    let tr = el.closest('tr') && step(el.closest('tr'));
+    while (tr && !tr.querySelector(`[data-pf="${cssEsc(field)}"]`)) tr = step(tr);
     const next = tr && tr.querySelector(`[data-pf="${cssEsc(field)}"]`);
-    if (next) { next.focus(); try { next.select(); } catch { /* dates */ } } else el.blur();
+    if (next) { next.focus(); try { next.select(); } catch { /* dates */ } } else if (enter) el.blur();
   }
 
   function onClick(e) {
@@ -5041,12 +5117,16 @@
         const m = str(r.description).trim();
         if (!m) return;
         ix.named++;
-        ix.here.add(`${r.project_id}\u0000${ck(k, liveCodes(r, ctx).sub_code)}\u0000${ck(k, m)}`);
+        // By line — cost code and sub code: one sub code under two cost codes
+        // is two lines with lists of their own (Geofabric under Stormwater
+        // and under Base).
+        const c = liveCodes(r, ctx);
+        ix.here.add(`${r.project_id}\u0000${ck(k, c.cost_code)}\u0000${ck(k, c.sub_code)}\u0000${ck(k, m)}`);
       });
       _pastIndex.set(ctx, ix);
     }
     return (ix.bySub.get(sk) || []).some(e => (!cc || !ck(k, e.cost_code) || ck(k, e.cost_code) === cc)
-      && !ix.here.has(`${row.project_id}\u0000${sk}\u0000${ck(k, e.material)}`));
+      && !ix.here.has(`${row.project_id}\u0000${cc}\u0000${sk}\u0000${ck(k, e.material)}`));
   }
 
   /**
@@ -5061,9 +5141,16 @@
     const ctx = siteMode() && p.project_id ? makeCtx(p.project_id) : makeCtx();
     const k = keyFn(ctx);
     const codes = liveCodes(p, ctx);
-    const sk = ck(k, codes.sub_code);
+    const sk = ck(k, codes.sub_code), cc = ck(k, codes.cost_code);
     const pid = p.project_id || st.projectId;
-    const lineRows = st.rows.filter(r => r.project_id === pid && ck(k, liveCodes(r, ctx).sub_code) === sk);
+    // The rows under this line — its cost code and sub code: the same sub
+    // code under another cost code is another line, whose materials are not
+    // "already here" on this one.
+    const lineRows = st.rows.filter(r => {
+      if (r.project_id !== pid) return false;
+      const c = liveCodes(r, ctx);
+      return ck(k, c.sub_code) === sk && ck(k, c.cost_code) === cc;
+    });
     const have = new Set(lineRows.map(r => ck(k, materialOf(r, ctx))).filter(Boolean));
     const own = p.bid_item_id ? st.rows.find(r => r.project_id === pid && r.source === 'bid' && String(r.bid_item_id) === String(p.bid_item_id)) : null;
     // Read as the dialog is used, not once: a colleague (or the PM, in the
@@ -6270,6 +6357,12 @@
           const box = foot.querySelector('#fctproc-send-err');
           box.textContent = text;
           box.style.color = good ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)';
+        } else {
+          // Closed while it read "Adding…": said on the page instead, or the
+          // PM goes on believing the lines went in.
+          const n = picked.length;
+          showError(`Procurement: adding ${n} line${n === 1 ? '' : 's'} to ${jobName} may not have gone through (${err.message}). `
+            + 'Open Add to Procurement again to check — lines that did go in show there as "already added".');
         }
       }
     });
@@ -6311,11 +6404,19 @@
     let stale = false;
     for (const rl of plan) {
       relinkTried.add(tryKey(rl));
+      const before = (rows || []).find(r => r.id === rl.id) || {};
+      // Only while the row is still as read: a colleague who re-picked its
+      // Sub Code while this pass ran keeps their pick (the conflict is
+      // passed over quietly — the row has been seen to).
+      const was = k => (before[k] == null ? null : before[k]);
+      const expect = before.id
+        ? (rl.sync ? { cost_code: was('cost_code'), sub_code: was('sub_code') }
+          : { bid_item_id: before.bid_item_id == null ? null : String(before.bid_item_id), cost_code: was('cost_code'), sub_code: was('sub_code') })
+        : undefined;
       try {
         const data = await api('PATCH', '/procurement' + q({ id: rl.id }),
           { fields: rl.sync ? { cost_code: rl.cost_code, sub_code: rl.sub_code }
-            : { bid_item_id: rl.bid_item_id, cost_code: rl.cost_code, sub_code: rl.sub_code } });
-        const before = (rows || []).find(r => r.id === rl.id) || {};
+            : { bid_item_id: rl.bid_item_id, cost_code: rl.cost_code, sub_code: rl.sub_code }, expect });
         const item = normRow(data.item) || { ...before, bid_item_id: rl.bid_item_id, cost_code: rl.cost_code, sub_code: rl.sub_code };
         if (rl.sync) synced.add(item);
         done.push(item);
@@ -6330,6 +6431,10 @@
           relinkTried.delete(tryKey(rl));
           stale = true;
           break;
+        }
+        if (err.status === 409 && err.code === 'conflict') {
+          if (err.data && err.data.item && isOpenJob(pid)) adoptServerRow(err.data.item);
+          continue;
         }
         console.warn('[procurement] re-link failed for', rl.id, err);
       }
@@ -6447,6 +6552,7 @@
     /** Draw the whole tab (job picker + table) into `el`. */
     renderTab(el) {
       if (!el) return;
+      const again = st.mountEl === el && el.isConnected;
       st.mountEl = el;
       wire(el);
       loadPrefs();
@@ -6462,7 +6568,25 @@
       // The contact pickers read from the shared cache.
       contacts.load().catch(err => console.warn('[procurement] contacts did not load', err));
       const cached = st.projectId && st.loadedFor === viewSig() && st.loadState === 'ok';
+      // Already drawn here, for this job: the tab clicked again, or the page
+      // finishing its start-up behind a sheet in use. Redrawn in place —
+      // around a cell being typed in, at the same scroll — not rebuilt,
+      // which threw the box in use away (a half-typed vendor saved, the
+      // rest of the typing lost) and put the PM back at the top of the sheet.
+      const wrap = again && cached && el.querySelector('#fctproc-wrap');
+      if (wrap) {
+        window.FCTProcurement.rerender();
+        const now = el.querySelector('#fctproc-wrap');
+        // Hidden with its tab, the box forgot where it was scrolled to.
+        if (now && st.wrapScroll && !now.scrollTop && !now.scrollLeft) {
+          now.scrollTop = st.wrapScroll.top;
+          now.scrollLeft = st.wrapScroll.left;
+        }
+        load(st.projectId, { quiet: true });
+        return;
+      }
       if (st.projectId && !cached) st.loadState = 'loading';
+      st.wrapScroll = null;
       renderShell();
       if (st.projectId) load(st.projectId, { quiet: cached });
     },
@@ -6529,12 +6653,25 @@
       } else renderBody();
     },
 
-    /** Re-read the open job's rows (the page's poll). Skipped mid-edit. */
+    /**
+     * Re-read the open job's rows (the page's poll). Skipped while a cell is
+     * being typed in — a key in the last few seconds, or a picker about to
+     * commit — and while the bulk bar is: not merely while one has the
+     * focus. Enter moves the caret down a row and leaves it there, a ticked
+     * box keeps it, the search box keeps it while the PM reads; a sheet that
+     * never refreshed then showed a colleague's order as still to be placed
+     * for as long as that lasted. What comes back is drawn around the cell
+     * in use (load → redrawAround), and a box that kept its old value is
+     * drawn afresh once it is left.
+     */
     async refresh() {
       if (!isMounted() || !st.projectId || st.loadState === 'loading') return;
       const a = document.activeElement;
-      const editing = a && st.mountEl.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)
-        && (a.dataset.pr || (a.closest && a.closest('#fctproc-bulk')));
+      const box = a && st.mountEl.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox';
+      const wrap = st.mountEl.querySelector('#fctproc-wrap');
+      const editing = (box && a.dataset.pr && Date.now() - lastKeyAt < TYPING_MS)
+        || (box && a.closest && a.closest('#fctproc-bulk'))
+        || (wrap && wrap.querySelector('[data-pcommit]'));
       if (editing) return;
       if (pend.size) await flushAll();
       // A site whose jobs changed since is a new sheet, read as one.

@@ -14916,7 +14916,8 @@ function removeBidGroup(projId, costCode) {
 
 function updateBidGroupCode(projId, oldCode, newCode) {
   const p = getProj(projId); if (!p) return;
-  (p.bidItems || []).forEach(b => { if (b.cost_code === oldCode) b.cost_code = newCode; });
+  const renamed = [];
+  (p.bidItems || []).forEach(b => { if (b.cost_code === oldCode) { b.cost_code = newCode; renamed.push(b.id); } });
   // The section's measured quantity is keyed by its cost code, so it follows
   // the rename. Renaming onto a code that already has one merges the two
   // sections, and the one being merged into keeps its own.
@@ -14926,6 +14927,13 @@ function updateBidGroupCode(projId, oldCode, newCode) {
     delete ms[oldCode];
   }
   saveProject(projId);
+  // Each renamed line also goes through the per-line save, which copies its
+  // new cost code onto the job's Procurement rows on the server — deleted
+  // ones too — and moves their attached files to the new code's folder.
+  // The whole-job save above does neither: the rows followed only once
+  // someone opened the job's Procurement sheet, and a re-import before then
+  // left them "not on bid" for good and offered every line again as new.
+  if (oldCode !== newCode) renamed.forEach(id => patchBidItem(projId, id));
   renderBidTable(projId);
 }
 
@@ -33424,11 +33432,13 @@ const _bootReady = (async () => {
   // The open job's Procurement rows, re-read so other people's edits arrive.
   // Only while the tab is on screen: a hidden table has nothing to redraw,
   // and each job's rows are read when it is opened anyway. procurement.js
-  // keeps the caret and scroll, and itself skips a cell being typed in.
+  // keeps the caret and scroll, and itself skips a cell being typed in —
+  // but not one that merely has the focus (a ticked row box, the search box,
+  // a cell Enter moved the caret into): _isEditing() here held the sheet
+  // still for as long as any of those kept it.
   async function _pollProcurement() {
     if (_AUTO_REPORT || _fctPollsSuspended()) return;
     if (activeTab !== 'procurement' || !window.FCTProcurement || !_procConfigured) return;
-    if (_isEditing()) return;
     await FCTProcurement.refresh();
   }
   // Several people work one sheet, so it is read again every 15 seconds while
