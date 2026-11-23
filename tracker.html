@@ -5114,14 +5114,20 @@ function _cbPositionFixed(input, menu) {
   const vw = document.documentElement.clientWidth || window.innerWidth;
   const over = r.left + menu.offsetWidth - (vw - 8);
   if (over > 0) menu.style.left = Math.max(8, r.left - over) + 'px';
+  // A box with others under it in the same cell (Procurement's Vendor over
+  // its Quote #, Contact over its Email — marked data-cb-anchor) opens its
+  // menu below the whole cell: dropped from the box itself, the menu lay
+  // over the box beneath, and a click meant for that box picked an option.
+  const anchor = input.closest('[data-cb-anchor]');
+  const a = anchor ? anchor.getBoundingClientRect() : r;
   const menuH = Math.min(menu.scrollHeight || 220, 220);
-  const below = window.innerHeight - r.bottom;
+  const below = window.innerHeight - a.bottom;
   if (below < menuH + 8 && r.top > below) {
     menu.style.top = 'auto';
     menu.style.bottom = (window.innerHeight - r.top + 2) + 'px';
   } else {
     menu.style.bottom = 'auto';
-    menu.style.top = (r.bottom + 2) + 'px';
+    menu.style.top = (a.bottom + 2) + 'px';
   }
 }
 function _cbRepositionFixedMenus() {

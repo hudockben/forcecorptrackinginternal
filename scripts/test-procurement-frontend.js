@@ -3818,7 +3818,10 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     const cell = () => e.$('tr[data-row="s1"] td.c-status');
     const sel = e.field('s1', 'sca_status');
     assert('the agreement is a picker of the four values, said in full in its menu', eq([...sel.options].map(o => [o.value, o.textContent]),
-      [['Pending', 'Agreement pending'], ['Needed', 'Agreement needed'], ['Not Needed', 'Agreement not needed'], ['Executed', 'Agreement executed']]));
+      [['Pending', 'Pending'], ['Needed', 'Needed'], ['Not Needed', 'Not needed'], ['Executed', 'Executed']]));
+    assert('…and searching the words its tag shows finds the row', T.applyFilters([row({ id: 'g', sca_status: 'Needed' })], { search: 'agmt needed' }, C()).length === 1
+      && T.applyFilters([row({ id: 'g', sca_status: 'Not Needed' })], { search: 'no agmt' }, C()).length === 1
+      && T.applyFilters([row({ id: 'g', sca_status: 'Pending' })], { search: 'agmt needed' }, C()).length === 0);
     assert('…laid over its tag, which is what shows', sel.closest('.fctproc-scawrap').querySelector('.fctproc-scatag').getAttribute('aria-hidden') === 'true'
       && sel.getAttribute('aria-label') === 'Sub-Contractor Agreement' && !cell().classList.contains('flag-amber'));
     sel.focus();

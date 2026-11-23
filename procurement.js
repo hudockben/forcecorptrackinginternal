@@ -65,8 +65,9 @@
   // pill — short, since the Status column is narrow; the tooltip, filters,
   // exports and print say it in full.
   const SCA_SHORT = { Pending: 'Agmt pending', Needed: 'Agmt needed', 'Not Needed': 'No agmt', Executed: 'Agmt \u2713' };
-  // …and in its picker's menu, which has the room to say it in full.
-  const SCA_OPTION = { Pending: 'Agreement pending', Needed: 'Agreement needed', 'Not Needed': 'Agreement not needed', Executed: 'Agreement executed' };
+  // …and in its picker's menu (labelled "Sub-Contractor Agreement"), each
+  // starting with its own word, so a typed letter picks it.
+  const SCA_OPTION = { Pending: 'Pending', Needed: 'Needed', 'Not Needed': 'Not needed', Executed: 'Executed' };
   // The bid's own unit list (tracker.html UNIT_OPTS). Free text is still
   // allowed in the Unit cell — a supplier sells by the roll, the bag, the
   // stick — this is only what the menu offers.
@@ -779,6 +780,8 @@
       if (words.length) {
         const hay = SEARCH_FIELDS.filter(f => !colHidden(f)).map(f => fieldValue(row, f, ctx))
           .concat(flagsOf(row, ctx).map(f => f.label), [row.date_needed, row.date_ordered, row.date_delivered])
+          // The agreement as its tag in the Status cell reads ("Agmt needed").
+          .concat(colHidden('sca_status') ? [] : [SCA_SHORT[row.sca_status] || ''])
           .join(' ').toLowerCase();
         if (!words.every(w => hay.includes(w))) return false;
       }
@@ -1544,7 +1547,7 @@
       .fctproc-stack > .fctproc-part + .fctproc-part .fctproc-in,
       .fctproc-stack > .fctproc-part + .fctproc-part .cb-input,
       .fctproc-stack > .fctproc-part + .fctproc-part .fctproc-txt { font-size:0.74rem; }
-      .fctproc-stack .fctproc-in, .fctproc-stack .cb-input { padding-top:0.06rem; padding-bottom:0.06rem; }
+      .fctproc-stack .fctproc-in, .fctproc-stack .cb-input { padding:0.06rem 0.25rem; }
       .fctproc-table th .fctproc-stack { row-gap:0.2rem; }
       /* A long sub code or vendor ends in an ellipsis like the plain-text
          cells beside it, instead of being cut off mid-letter. */
@@ -3415,7 +3418,11 @@
             : `<span class="fctproc-txt" title="${esc(tip || r.vendor)}">${esc(r.vendor)}</span>`;
           const quote = edit ? textIn('quote_number', 'Quote #', ' aria-label="Quote #"')
             : `<span class="fctproc-txt" title="${esc(r.quote_number ? `Quote # ${r.quote_number}` : '')}">${esc(r.quote_number)}</span>`;
-          return td('', `<div class="fctproc-stack">${part('vendor', vendor, off ? ' vendor-off' : '')}${part('quote_number', quote)}</div>`);
+          // data-cb-anchor: the Vendor (and, below, Contact) menu opens under
+          // the whole cell, not over the box beneath it — a click meant for
+          // Quote # or Email would otherwise pick an option (tracker.html
+          // _cbPositionFixed).
+          return td('', `<div class="fctproc-stack" data-cb-anchor>${part('vendor', vendor, off ? ' vendor-off' : '')}${part('quote_number', quote)}</div>`);
         }
         case 'contact_email': {
           // Contact over Email (a phone number is allowed there, as in the
@@ -3424,7 +3431,7 @@
             ? cbCell('proc_contacts:' + r.id, r.contact, 'Contact', `${at('contact')} maxlength="${MAX_LEN.contact}" aria-label="Contact"`)
             : txt(r.contact);
           const email = edit ? textIn('email', 'Email', ' aria-label="Email"') : txt(r.email);
-          return td('', `<div class="fctproc-stack">${part('contact', contact)}${part('email', email)}</div>`);
+          return td('', `<div class="fctproc-stack" data-cb-anchor>${part('contact', contact)}${part('email', email)}</div>`);
         }
         case 'actions':
           if (st.confirmDel === r.id) {
