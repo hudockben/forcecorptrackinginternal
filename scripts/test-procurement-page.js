@@ -162,7 +162,12 @@ console.log('\n[tracker.html — wiring]');
     /if \(activeTab === 'procurement'\) renderProcurementTab\(\);/.test(bootBody));
 
   const pollAll = requireFn(SRC, '_pollAll');
-  assert('the minute poll includes Procurement', /_pollProcurement\(\),/.test(pollAll));
+  assert('Procurement is not in the minute poll: it has its own, every 15 seconds', !/_pollProcurement\(\)/.test(pollAll)
+    && /const PROC_POLL_MS = 15_000;/.test(SRC) && /setInterval\(_pollProcurementSoon, PROC_POLL_MS\);/.test(SRC));
+  const pollSoon = requireFn(SRC, '_pollProcurementSoon');
+  assert('  one read at a time, none while the window is hidden', /if \(_procPollBusy \|\| document\.visibilityState === 'hidden'\) return;/.test(pollSoon)
+    && /try \{ await _pollProcurement\(\); \} finally \{ _procPollBusy = false; \}/.test(pollSoon));
+  assert('  and read at once on coming back to the window', /_pollHomeFeeds\(\);\s*_pollProcurementSoon\(\);/.test(SRC));
   const pollProc = requireFn(SRC, '_pollProcurement');
   assert('  which refreshes only the open tab, and never mid-edit, on a hidden page or for the robot',
     /if \(_AUTO_REPORT \|\| _fctPollsSuspended\(\)\) return;/.test(pollProc)

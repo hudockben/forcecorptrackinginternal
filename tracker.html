@@ -33431,6 +33431,19 @@ const _bootReady = (async () => {
     if (_isEditing()) return;
     await FCTProcurement.refresh();
   }
+  // Several people work one sheet, so it is read again every 15 seconds while
+  // it is on screen (the rest of the page polls every minute): a colleague's
+  // change shows — marked, see procurement.js — before anyone types over it.
+  // A save also says when a cell was changed since it was seen (a conflict),
+  // so this only narrows that window. One read at a time, and none while
+  // the window is hidden.
+  const PROC_POLL_MS = 15_000;
+  let _procPollBusy = false;
+  async function _pollProcurementSoon() {
+    if (_procPollBusy || document.visibilityState === 'hidden') return;
+    _procPollBusy = true;
+    try { await _pollProcurement(); } finally { _procPollBusy = false; }
+  }
 
   // Board and deadlines live on the home tab; refresh them more frequently
   async function _pollHomeFeeds() {
@@ -33459,7 +33472,6 @@ const _bootReady = (async () => {
         _pollCrm(),
         _pollSoe(),
         _pollProjects(),
-        _pollProcurement(),
       ]);
     } finally {
       _pollCycleBusy = false;
@@ -33472,6 +33484,7 @@ const _bootReady = (async () => {
   if (!_AUTO_REPORT) {
     setInterval(_pollAll,      POLL_MS);
     setInterval(_pollHomeFeeds, BOARD_MS);
+    setInterval(_pollProcurementSoon, PROC_POLL_MS);
   }
 
   // Coming back to a tab that stood down should not wait out a full interval.
@@ -33479,6 +33492,7 @@ const _bootReady = (async () => {
     if (document.visibilityState !== 'visible' || _fctSessionOver()) return;
     _pollAll();
     _pollHomeFeeds();
+    _pollProcurementSoon();
   });
 })();
 

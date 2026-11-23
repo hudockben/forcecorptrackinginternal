@@ -199,7 +199,18 @@ function procurementApi(W, role, method, q, body) {
     return [200, { ok: true, items: JSON.parse(JSON.stringify(items)), canEdit }];
   }
   if (!canEdit) return [403, { ok: false, error: 'read_only', message: 'View only.' }];
-  const touch = r => { r.version++; r.updated_at = stamp(); return r; };
+  // Who the server stamps on a save: the token's name (openPage's user).
+  const touch = r => { r.version++; r.updated_at = stamp(); r.updated_by = role === 'admin' ? 'Ada' : role; return r; };
+  // A PATCH's `expect`, compared as api/procurement.js compares it: by value,
+  // read as a save would read it ("" for a blank date or number is null,
+  // text trimmed).
+  const sameAsSeen = (a, b) => {
+    const n = v => (v === undefined || v === '' ? null : typeof v === 'string' ? v.trim() : v);
+    const x = n(a), y = n(b);
+    if (x === null || y === null) return x === y;
+    if (typeof x === 'number' || typeof y === 'number') return Number(x) === Number(y);
+    return x === y;
+  };
   const out = r => JSON.parse(JSON.stringify(r));
   const badField = f => Object.keys(f || {}).find(k => !ALLOWED.includes(k));
   if (method === 'POST' && q.action === 'send') {
@@ -275,6 +286,11 @@ function procurementApi(W, role, method, q, body) {
     const bad = badField(body.fields);
     if (bad) return [400, { ok: false, error: 'field_not_allowed', field: bad }];
     if (!Object.keys(body.fields || {}).length) return [400, { ok: false, error: 'no_fields' }];
+    const stale = Object.keys(body.expect || {}).filter(k => !sameAsSeen(r[k], body.expect[k])).sort();
+    if (stale.length) {
+      return [409, { ok: false, error: 'conflict', message: `${r.updated_by || 'someone else'} changed this since you started editing it`,
+        fields: stale, item: out(r), changed_by: r.updated_by || null, changed_at: r.updated_at }];
+    }
     if (body.fields.bid_item_id && !onStoredBid(r.project_id, body.fields.bid_item_id)) return STALE;
     pick(r, body.fields);
     return [200, { ok: true, item: out(touch(r)) }];
@@ -1819,6 +1835,68 @@ async function copyList(browser) {
   await ctx.close();
 }
 
+// ── Two people on one job: what the other changed, and the same cell ─────
+async function twoPeople(browser) {
+  console.log('\ntwo people on one job: their changes marked on a refresh, the same cell never written over unseen');
+  const t = i => new Date(Date.UTC(2026, 9, 6) + i * 1000).toISOString();
+  const W = makeWorld();
+  W.pos = [];
+  const base = { ...BLANK_ROW, project_id: 'p1', source: 'bid', cost_code: 'Stormwater', created_at: t(1), updated_at: t(1), created_by: 'level2', updated_by: 'level2' };
+  W.rows.push({ ...base, id: 'T1', bid_item_id: 'b2', sub_code: DRAIN, quantity: 950, unit: 'LF', vendor: 'LB Water', quote_number: 'Q-1', date_needed: '2026-11-20' });
+  W.rows.push({ ...base, id: 'T2', bid_item_id: 'b1', sub_code: 'Geofabric', quantity: 8110, unit: 'SF', vendor: 'LB Water', quote_number: 'Q-2' });
+  const storage = { fct_proc_project_turf: 'p1' };
+  const { page, ctx, errors } = await openPage(browser, W, 'level2', { viewport: { width: 1474, height: 900 }, storage, scale: SHOTS ? 2 : 1 });
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 2));
+
+  // Dana, on her own sheet: renames T1's material, moves its vendor and its
+  // date needed, and adds a row.
+  const dana = (id, f) => { const r = W.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_at = new Date().toISOString(); r.updated_by = 'Dana Reyes'; };
+  dana('T1', { description: '15" Perforated SLCPP', vendor: 'New Enterprise', date_needed: '2026-11-24' });
+  W.rows.push({ ...base, id: 'T3', source: 'manual', bid_item_id: 'b2', sub_code: DRAIN, description: '15" TEE w/ gasket', quantity: 2, unit: 'EA',
+    created_by: 'Dana Reyes', updated_by: 'Dana Reyes', created_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+  await page.evaluate(() => FCTProcurement.refresh());
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 3));
+  const t1 = rowTr(page, 'T1');
+  const marked = sel => t1.locator(sel).evaluate(el => [el.classList.contains('fctproc-chg'), el.getAttribute('title') || '']);
+  const [mat, ven, need, quote] = [await marked('td.c-description'), await marked('.fctproc-part.c-vendor'), await marked('td.c-date_needed'), await marked('.fctproc-part.c-quote_number')];
+  ok('a refresh marks the three cells Dana changed, each saying who and when', mat[0] && ven[0] && need[0]
+    && [mat, ven, need].every(m => /^Changed by Dana Reyes at \d{1,2}:\d{2}/.test(m[1])), [mat, ven, need]);
+  ok('…and leaves the ones she did not', !quote[0] && await rowTr(page, 'T2').locator('.fctproc-chg').count() === 0);
+  ok('…the values on the sheet are hers', await page.inputValue('[data-pr="T1"][data-pf="description"]') === '15" Perforated SLCPP'
+    && await page.inputValue('[data-pr="T1"][data-pf="vendor"]') === 'New Enterprise');
+  ok('the row she added is marked as a whole, "Added by Dana Reyes"', await rowTr(page, 'T3').evaluate(tr => tr.classList.contains('fctproc-new') && /^Added by Dana Reyes/.test(tr.title)));
+  const tint = await t1.locator('td.c-description').evaluate(td => getComputedStyle(td).backgroundColor);
+  ok('…a marked cell is tinted, so it is seen without hovering', /rgba?\(/.test(tint) && tint !== 'rgba(0, 0, 0, 0)', tint);
+  await shot(page, 'proc-changed-by-others.png');
+
+  // The same cell: Dana changes T2's Quote # while this person types theirs.
+  dana('T2', { quote_number: 'Q-DANA' });
+  const qBox = page.locator('[data-pr="T2"][data-pf="quote_number"]');
+  await qBox.click();
+  await qBox.fill('Q-MINE');
+  await page.keyboard.press('Tab');
+  await page.waitForSelector('.fctproc-modal [data-conflict="mine"]', { timeout: 5000 });
+  const patch = W.log.filter(l => l.api === 'procurement' && l.method === 'PATCH' && l.q.id === 'T2').pop();
+  ok('the save says what was in the cell when typing began', patch && eq(patch.body, { fields: { quote_number: 'Q-MINE' }, expect: { quote_number: 'Q-2' } }), patch && patch.body);
+  ok('…Dana\'s is not written over', W.rows.find(r => r.id === 'T2').quote_number === 'Q-DANA');
+  const dlg = (await page.textContent('.fctproc-modal')).replace(/\s+/g, ' ');
+  ok('the dialog shows hers beside yours, and who changed it', /Changed by someone else/i.test(dlg) && /Dana Reyes/.test(dlg)
+    && eq(await page.$$eval('.fctproc-conflict tbody td', tds => tds.map(td => td.textContent.trim())), ['Quote #', 'Q-DANA', 'Q-MINE']), dlg);
+  ok('…the sheet behind it shows hers, marked', await qBox.inputValue() === 'Q-DANA'
+    && await rowTr(page, 'T2').locator('.fctproc-part.c-quote_number').evaluate(el => el.classList.contains('fctproc-chg')));
+  await shot(page, 'proc-conflict-dialog.png');
+  await page.click('.fctproc-modal [data-conflict="mine"]');
+  await until(() => W.rows.find(r => r.id === 'T2').quote_number === 'Q-MINE', 4000);
+  const again = W.log.filter(l => l.api === 'procurement' && l.method === 'PATCH' && l.q.id === 'T2').pop();
+  ok('"Keep mine" saves yours, knowing it replaces hers', eq(again.body, { fields: { quote_number: 'Q-MINE' }, expect: { quote_number: 'Q-DANA' } })
+    && await qBox.inputValue() === 'Q-MINE' && await page.locator('.fctproc-modal').count() === 0, again && again.body);
+  // The browser logs the one 409 it was answered (the conflict) itself.
+  const other = errors.filter(e => !/status of 409 \(Conflict\).*\/api\/procurement\?division=turf&id=T2\)/.test(e));
+  ok('no page errors (but the browser\'s own note of the one 409)', other.length === 0 && errors.length === 1, errors.join(' | '));
+  await ctx.close();
+}
+
 // ── The sheet on a 1920-wide screen: no sideways scrolling ───────────────
 async function fitsWide(browser) {
   console.log('\nthe whole sheet on a 1920-wide screen, and the agreement picked in the Status cell');
@@ -2608,6 +2686,7 @@ async function siteSheet(browser) {
     await roundThreeSaveFixes(browser);
     await roundFourFixes(browser);
     await copyList(browser);
+    await twoPeople(browser);
     await fitsWide(browser);
     await sectionSelect(browser);
     await sectionAdd(browser);

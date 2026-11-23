@@ -45,7 +45,10 @@
 //            A restore_ids entry is a row id, or { id, bid_item_id, cost_code,
 //            sub_code } for a row deleted before a Procore "Replace all" gave
 //            its bid line a new id: it comes back tied to the new line.
-// PATCH  ?division=…&id=X       { fields:{ …only the cells that changed } }  → { ok, item }
+// PATCH  ?division=…&id=X       { fields:{ …only the cells that changed }, expect?:{ …what the person saw in them } }
+//          → { ok, item }  | 409 { error:'conflict', fields:[…], item, changed_by, changed_at }
+//            when a cell in `expect` no longer holds that value (someone else
+//            changed it meanwhile): nothing is written.
 // PATCH  ?division=…&action=bulk { ids:[…], fields:{…} }  → { ok, items:[…], missing:[…] }
 // DELETE ?division=…&id=X | &ids=a,b,c | &project_id=X    → { ok, deleted:n }
 //
@@ -453,13 +456,22 @@ const STALE_BID = 'that bid line is no longer on the job\'s bid — the bid was 
  * A change that ties the rows to a bid line (bid_item_id) only lands while
  * that line is on the job's stored bid; otherwise no row comes back, and the
  * caller tells that apart from a missing row (staleBid below).
+ *
+ * `expect`, when given ({ column: value }), is what the person saw in those
+ * cells when they started changing them: the write lands only while every
+ * one still holds it — compared in this same statement, under the row lock,
+ * as the row's own JSON (numbers by value, dates as 'YYYY-MM-DD', NULL as
+ * null). Otherwise no row comes back and the caller answers "conflict"
+ * (conflictFields below): someone else changed the cell meanwhile, and
+ * writing over it unseen is what this is here to stop.
  */
-function updateRows(sql, { company, division, who }, ids, f, projectId) {
+function updateRows(sql, { company, division, who }, ids, f, projectId, expect = null) {
   const s = k => has(f, k);
   const v = k => (has(f, k) ? f[k] : null);
   // The bid line the rows are being tied to, when they are: checked below.
   const toLine = v('bid_item_id');
   const keyPrefix = bidKeyPrefix(company, division);
+  const expectJson = expect && Object.keys(expect).length ? JSON.stringify(expect) : null;
   return sql`
     UPDATE procurement_items SET
       description      = CASE WHEN ${s('description')}::boolean      THEN ${v('description')}::text      ELSE description      END,
@@ -496,7 +508,50 @@ function updateRows(sql, { company, division, who }, ids, f, projectId) {
            CROSS JOIN LATERAL jsonb_array_elements(
              CASE WHEN jsonb_typeof(a.value->'bidItems') = 'array' THEN a.value->'bidItems' ELSE '[]'::jsonb END) e
            WHERE a.key = ${keyPrefix}::text || procurement_items.project_id AND e->>'id' = ${toLine}::text))
+      -- Each cell still holds what the person saw in it (see above).
+      AND (${expectJson}::jsonb IS NULL OR NOT EXISTS (
+        SELECT 1 FROM jsonb_each(${expectJson}::jsonb) x
+         WHERE (to_jsonb(procurement_items) -> x.key) IS DISTINCT FROM x.value))
     RETURNING *`;
+}
+
+/**
+ * After a write with `expect` matched nothing: the live row as it is now, and
+ * which of the expected cells no longer hold what the person saw — compared
+ * the way the write compared them. Null when the row is gone.
+ */
+async function conflictFields(sql, { company, division }, id, expect) {
+  const rows = await sql`
+    SELECT p.*, COALESCE((
+      SELECT array_agg(x.key ORDER BY x.key) FROM jsonb_each(${JSON.stringify(expect)}::jsonb) x
+       WHERE (to_jsonb(p) -> x.key) IS DISTINCT FROM x.value), '{}') AS conflict_fields
+      FROM procurement_items p
+     WHERE p.company_code = ${company} AND p.division = ${division} AND p.deleted_at IS NULL AND p.id = ${id}`;
+  if (!rows[0]) return null;
+  return { row: rows[0], fields: rows[0].conflict_fields || [] };
+}
+
+/**
+ * The `expect` of a PATCH: { column: value } for columns a PATCH may change,
+ * each value a plain JSON value (what the server last gave the page for that
+ * cell, or what the page itself sent for it a moment ago). Each is read as a
+ * save of it would be — "" for a date is NULL, " Acme " is "Acme" — so a
+ * value the page sent and the server stored tidied up still matches; one no
+ * save would take is compared as it came, and so never matches. Absent or
+ * empty is "no check".
+ */
+function readExpect(raw) {
+  if (raw === undefined || raw === null) return { value: null };
+  if (!isPlainObject(raw)) return { error: 'expect must be an object' };
+  const out = {};
+  for (const [k, v] of Object.entries(raw)) {
+    if (!has(FIELDS, k)) return { error: `${k} cannot be checked here`, field: k };
+    if (v !== null && !['string', 'number', 'boolean'].includes(typeof v)) return { error: `expect.${k} must be a plain value`, field: k };
+    if (typeof v === 'number' && !Number.isFinite(v)) return { error: `expect.${k} must be a plain value`, field: k };
+    const read = readValue(FIELDS[k], v);
+    out[k] = read.error ? v : read.value;
+  }
+  return { value: Object.keys(out).length ? out : null };
 }
 
 /**
@@ -1034,13 +1089,35 @@ module.exports = async (req, res) => {
       if (id.error) return fail(res, 400, q.id === undefined ? 'id_required' : 'invalid', id.error, { field: 'id' });
       const f = readFields(b.fields);
       if (f.error) return fail(res, 400, f.code || 'invalid', f.error, f.field ? { field: f.field } : undefined);
+      const ex = readExpect(b.expect);
+      if (ex.error) return fail(res, 400, 'invalid', ex.error, ex.field ? { field: ex.field } : undefined);
       const codesWas = touchesCode(f.value) ? await codesBefore(sql, scope, [id.value]) : null;
       let rows;
-      try {
-        rows = await updateRows(sql, scope, [id.value], f.value, null);
-      } catch (err) {
-        if (constraintAnswer(res, err)) return;
-        throw err;
+      const write = async () => {
+        try {
+          return await updateRows(sql, scope, [id.value], f.value, null, ex.value);
+        } catch (err) {
+          if (constraintAnswer(res, err)) return null;
+          throw err;
+        }
+      };
+      if (!(rows = await write())) return;
+      if (!rows[0] && ex.value) {
+        // Someone else changed a cell this person was changing, since they
+        // saw it: nothing is written, and the page is told who, what and when
+        // so the person can keep theirs or take the other.
+        const c = await conflictFields(sql, scope, id.value, ex.value);
+        if (!c) return fail(res, 404, 'not_found', 'That row does not exist any more.');
+        if (c.fields.length) {
+          const who2 = c.row.updated_by || 'someone else';
+          return fail(res, 409, 'conflict', `${who2} changed this since you started editing it`, {
+            fields: c.fields, item: shape(c.row), changed_by: c.row.updated_by ?? null, changed_at: iso(c.row.updated_at),
+          });
+        }
+        // Every cell holds what was seen again — changed and changed back
+        // between the write and this look — so it was something else (a bid
+        // line no longer on the bid), or a moment's race: one more go.
+        if (!(await staleBid(sql, scope, [id.value], f.value)) && !(rows = await write())) return;
       }
       if (!rows[0]) {
         if (await staleBid(sql, scope, [id.value], f.value)) return fail(res, 409, 'stale_bid', STALE_BID, { field: 'bid_item_id' });

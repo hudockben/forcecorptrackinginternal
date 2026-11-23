@@ -155,9 +155,18 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
         if (bad) return json(400, { ok: false, error: 'invalid', message: `${bad} is not allowed`, field: bad });
         const r = db.rows.find(x => x.id === c.q.id && live(x));
         if (!r) return json(404, { ok: false, error: 'not_found' });
+        // A cell that no longer holds what the person saw (api/procurement.js
+        // expect): nothing is written, and the row as it is goes back.
+        const same = (a, b) => (typeof a === 'number' || typeof b === 'number' ? Number(a) === Number(b) && a != null && b != null : (a == null ? null : a) === (b == null ? null : b));
+        const moved = Object.keys(c.body.expect || {}).filter(k => !same(r[k], c.body.expect[k])).sort();
+        if (moved.length) {
+          return json(409, { ok: false, error: 'conflict', message: `${r.updated_by || 'someone else'} changed this since you started editing it`,
+            fields: moved, item: { ...r }, changed_by: r.updated_by || null, changed_at: r.updated_at || null });
+        }
         Object.assign(r, c.body.fields);
         r.version++;
         r.updated_at = new Date().toISOString();
+        r.updated_by = 'Pat PM';
         return json(200, { ok: true, item: { ...r } });
       }
       if (c.method === 'POST' && c.q.action === 'add') {
@@ -928,7 +937,8 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   await sleep(750);
   let ps = env.patches();
   assert('after 600 ms of quiet: one PATCH for the row', ps.length === 1 && ps[0].q.id === 'r1' && ps[0].q.division === 'turf', ps.map(p => p.q));
-  assert('carrying only the two changed fields', ps[0] && eq(ps[0].body, { fields: { email: 'orders@acme.test', quote_number: 'Q-55' } }), ps[0] && ps[0].body);
+  assert('carrying only the two changed fields, with what was in them when the editing began (both blank)',
+    ps[0] && eq(ps[0].body, { fields: { email: 'orders@acme.test', quote_number: 'Q-55' }, expect: { email: '', quote_number: '' } }), ps[0] && ps[0].body);
   assert('the save indicator says Saved', /Saved/.test(env.$('#fctproc-save').textContent));
   assert('the box being typed in was not redrawn (focus kept)', env.w.document.activeElement === d && d.isConnected);
   d.value = 'orders@acme.test';
@@ -3858,6 +3868,148 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('…and Vendor over Quote #, Contact over Email, as text', e.$('tr[data-row="w1"] .c-vendor').textContent.trim() === 'LB Water'
       && e.$('tr[data-row="w1"] .c-quote_number').textContent.trim() === 'Q-1' && e.$('tr[data-row="w1"] .c-contact').textContent.trim() === 'Dana'
       && e.$('tr[data-row="w1"] .c-email').textContent.trim() === 'dana@lbwater.test');
+  }
+
+  // ── Two people on one sheet ─────────────────────────────────────────────
+  console.log('\n[two people on one sheet: a cell changed elsewhere is never written over unseen]');
+  {
+    const colleague = (e, id, fields) => {
+      const r = e.db.rows.find(x => x.id === id);
+      Object.assign(r, fields);
+      r.version++;
+      r.updated_at = '2026-03-10T14:14:00Z';
+      r.updated_by = 'Dana Reyes';
+    };
+    const e = makeEnv({ rows: [
+      row({ id: 'c1', source: 'bid', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', quote_number: 'Q-1', vendor: 'LB Water' }),
+      row({ id: 'c2', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', quote_number: 'Q-2', vendor: 'LB Water', date_needed: '2026-04-01' }),
+    ] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    // Dana changes c1's Quote # on her sheet; this one has not refreshed.
+    colleague(e, 'c1', { quote_number: 'Q-DANA' });
+    const q = e.field('c1', 'quote_number');
+    q.focus(); q.value = 'Q-MINE'; e.fire(q, 'input');
+    const em = e.field('c1', 'email');
+    em.focus(); em.value = 'orders@lbwater.test'; e.fire(em, 'input');
+    em.blur(); e.fire(em, 'change');
+    await sleep(80);
+    const first = e.patches()[0];
+    assert('the save carries what was in each cell when the editing began', first && eq(first.body.expect, { quote_number: 'Q-1', email: '' }), first && first.body);
+    assert('Dana changed that Quote # meanwhile: nothing is written over hers', e.db.rows[0].quote_number === 'Q-DANA');
+    const dlg = e.$('.fctproc-modal');
+    assert('…and the dialog says who, what, when, and shows hers beside yours', !!dlg && /Changed by someone else/i.test(dlg.textContent)
+      && /Dana Reyes changed Elbows/.test(dlg.textContent.replace(/\s+/g, ' '))
+      && eq([...dlg.querySelectorAll('.fctproc-conflict tbody tr')].map(tr => [...tr.children].map(td => td.textContent)), [['Quote #', 'Q-DANA', 'Q-MINE']]),
+      dlg && dlg.textContent.replace(/\s+/g, ' '));
+    assert('…the sheet shows hers, marked as changed by her', e.field('c1', 'quote_number').value === 'Q-DANA'
+      && e.$('tr[data-row="c1"] .c-quote_number').classList.contains('fctproc-chg') && /^Changed by Dana Reyes/.test(e.$('tr[data-row="c1"] .c-quote_number').title));
+    assert('the other cell of the same save went in on its own, at once', e.db.rows[0].email === 'orders@lbwater.test'
+      && eq(e.patches()[1].body, { fields: { email: 'orders@lbwater.test' }, expect: { email: '' } }), e.patches().map(p => p.body));
+    e.$('.fctproc-modal [data-conflict="mine"]').click();
+    await sleep(60);
+    const keep = e.patches().pop();
+    assert('"Keep mine" writes yours over hers — knowingly: the save now expects hers', eq(keep.body, { fields: { quote_number: 'Q-MINE' }, expect: { quote_number: 'Q-DANA' } })
+      && e.db.rows[0].quote_number === 'Q-MINE' && e.field('c1', 'quote_number').value === 'Q-MINE' && !e.$('.fctproc-modal'), keep && keep.body);
+    assert('…and the cell is no longer marked as hers', !e.$('tr[data-row="c1"] .c-quote_number').classList.contains('fctproc-chg'));
+
+    // Again on c2, and this time hers is kept.
+    colleague(e, 'c2', { date_needed: '2026-04-15' });
+    const dn = e.field('c2', 'date_needed');
+    dn.focus(); dn.value = '2026-04-20'; e.fire(dn, 'change'); dn.blur();
+    await sleep(700);
+    assert('a date changed on both sheets: asked again', !!e.$('.fctproc-modal') && /04\/15\/2026/.test(e.$('.fctproc-conflict').textContent) && /04\/20\/2026/.test(e.$('.fctproc-conflict').textContent));
+    const before = e.patches().length;
+    e.$('.fctproc-modal [data-conflict="theirs"]').click();
+    await sleep(700);
+    assert('"Keep Dana\'s": nothing is sent, and her date stays on both', e.patches().length === before && e.db.rows[1].date_needed === '2026-04-15'
+      && e.field('c2', 'date_needed').value === '2026-04-15' && !e.$('.fctproc-modal'));
+    // Closing the dialog keeps hers too.
+    colleague(e, 'c2', { quote_number: 'Q-D2' });
+    const q2 = e.field('c2', 'quote_number');
+    q2.focus(); q2.value = 'Q-ME2'; e.fire(q2, 'input'); q2.blur(); e.fire(q2, 'change');
+    await sleep(80);
+    const n2 = e.patches().length;
+    e.$('.fctproc-modal [data-close]').click();
+    await sleep(700);
+    assert('closing the dialog without a pick keeps hers: nothing written over it', e.patches().length === n2 && e.db.rows[1].quote_number === 'Q-D2' && e.field('c2', 'quote_number').value === 'Q-D2');
+    assert('nothing went wrong on the way', !e.errors.length, e.errors);
+  }
+  {
+    // A picker is saved when it is left: what it showed when it took focus is
+    // what it "saw" — not a colleague's value that reached the page meanwhile.
+    const e = makeEnv({ rows: [row({ id: 'p1r', source: 'bid', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', vendor: 'LB Water' })] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const qn = e.field('p1r', 'quote_number');
+    qn.focus(); qn.value = 'Q-7'; e.fire(qn, 'input');
+    const r = e.db.rows[0];
+    r.vendor = 'Beta Corp'; r.version++; r.updated_by = 'Dana Reyes'; r.updated_at = '2026-03-10T15:00:00Z';
+    const v = e.field('p1r', 'vendor');
+    v.focus();
+    await sleep(750);       // the Quote # save is answered, carrying Dana's vendor
+    assert('the Quote # went in, and its answer brought Dana\'s vendor to the page, behind the picker in use', e.db.rows[0].quote_number === 'Q-7'
+      && e.P._test.state().rows[0].vendor === 'Beta Corp' && v.value === 'LB Water');
+    e.pick(v, 'Acme Supply', 'Acme Supply');
+    v.blur();
+    await sleep(100);
+    const vp = e.patches().filter(p => 'vendor' in p.body.fields).pop();
+    assert('picking a vendor in it expects the one it showed (LB Water), so Dana\'s is not written over unseen', vp && vp.body.expect.vendor === 'LB Water'
+      && e.db.rows[0].vendor === 'Beta Corp' && !!e.$('.fctproc-modal'), vp && vp.body);
+  }
+  {
+    // What other people change shows on the sheet when it refreshes.
+    const e = makeEnv({ rows: [
+      row({ id: 'h1', source: 'bid', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', date_needed: '2026-04-01', vendor: 'LB Water' }),
+      row({ id: 'h2', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', quantity: 8110, unit: 'SF' }),
+    ] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const r1 = e.db.rows[0];
+    Object.assign(r1, { description: '15" Elbow 45°', date_delivered: '2026-03-09', vendor: 'Beta Corp' });
+    r1.version++; r1.updated_by = 'Dana Reyes'; r1.updated_at = '2026-03-10T14:14:00Z';
+    e.db.rows.push(row({ id: 'h3', source: 'manual', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', description: 'Gasket lube',
+      created_by: 'Dana Reyes', updated_by: 'Dana Reyes', created_at: '2026-03-10T14:15:00Z', updated_at: '2026-03-10T14:15:00Z' }));
+    await e.P.refresh();
+    await sleep(20);
+    const tr1 = e.$('tr[data-row="h1"]');
+    assert('a refresh marks each cell Dana changed — a column of its own or a part of one — with who and when',
+      tr1.querySelector('td.c-description').classList.contains('fctproc-chg') && /^Changed by Dana Reyes at /.test(tr1.querySelector('td.c-description').title)
+      && tr1.querySelector('.c-date_delivered').classList.contains('fctproc-chg') && tr1.querySelector('.c-vendor').classList.contains('fctproc-chg'));
+    assert('…and only those: what she did not change is not marked', !tr1.querySelector('td.c-date_needed').classList.contains('fctproc-chg')
+      && !tr1.querySelector('.c-quote_number').classList.contains('fctproc-chg') && !e.$('tr[data-row="h2"] .fctproc-chg'));
+    assert('a row she added is marked as a whole, "Added by Dana Reyes"', e.$('tr[data-row="h3"]').classList.contains('fctproc-new')
+      && /^Added by Dana Reyes/.test(e.$('tr[data-row="h3"]').title));
+    // Your own saves are not "changed by someone else".
+    const qn = e.field('h2', 'quote_number');
+    qn.focus(); qn.value = 'Q-OWN'; e.fire(qn, 'input'); qn.blur(); e.fire(qn, 'change');
+    await sleep(80);
+    await e.P.refresh();
+    await sleep(20);
+    assert('a cell this page saved itself is not marked when the refresh brings it back', !e.$('tr[data-row="h2"] .c-quote_number').classList.contains('fctproc-chg'));
+    const r2 = e.db.rows[1];
+    r2.unit = 'SY'; r2.version++; r2.updated_by = 'Pat PM';
+    await e.P.refresh();
+    await sleep(20);
+    assert('nor one changed under your own name (another window of yours)', !e.$('tr[data-row="h2"] td.c-unit').classList.contains('fctproc-chg'));
+    // Changing a marked cell takes the mark off it.
+    const dsel = e.field('h1', 'description');
+    dsel.focus(); e.pick(dsel, 'Elbow 15" 90°', '__typed__'); dsel.blur();
+    await sleep(30);
+    assert('changing a marked cell yourself takes its mark off', !e.$('tr[data-row="h1"] td.c-description').classList.contains('fctproc-chg')
+      && e.$('tr[data-row="h1"] .c-vendor').classList.contains('fctproc-chg'));
+    // The marks fade after a while.
+    e.P._test.setRecentMs(150);
+    const r1b = e.db.rows[0];
+    r1b.lead_time_days = 9; r1b.version++; r1b.updated_by = 'Dana Reyes';
+    await sleep(700);
+    await e.P.refresh();
+    await sleep(20);
+    assert('a fresh change is marked…', e.$('tr[data-row="h1"] .c-lead_time_days').classList.contains('fctproc-chg'));
+    await sleep(500);
+    assert('…and the row\'s marks fade on their own after their while', !e.$('tr[data-row="h1"] .fctproc-chg') && !e.$('tr[data-row="h1"] td.fctproc-chg'));
+    assert('…each row on its own clock: the row Dana added earlier is still marked', e.$('tr[data-row="h3"]').classList.contains('fctproc-new'));
+    e.P._test.setRecentMs(2 * 60 * 1000);
   }
 
   console.log('\n[+ Material copy: one at a time, all or nothing, the own row decided late]');
