@@ -1538,10 +1538,11 @@
       .fctproc-scawrap:hover .fctproc-scatag { border-color: rgba(156,163,175,0.6); }
       .fctproc-scawrap:focus-within .fctproc-scatag { border-color:#2563eb; box-shadow: 0 0 0 1px #2563eb33; }
       .fctproc-scawrap select.fctproc-scasel { position:absolute; inset:0; width:100%; height:100%; min-width:0; opacity:0; padding:0; cursor:pointer; }
-      /* The empty boxes of a row say what they are when the row is pointed
-         at or the box is in use — on every row at once they were a form's
-         worth of grey words. The headers say which line is which. */
-      tr.fctproc-row:not(:hover) .fctproc-stack input:not(:focus)::placeholder { color: transparent; }
+      /* The empty boxes of a stacked cell (Vendor, Quote #, Contact, Email)
+         always say what they are, so they read as boxes to fill in without
+         being pointed at — faintly, in the empty dates' grey, well under the
+         values that are set. */
+      .fctproc-stack input::placeholder { color: rgba(156,163,175,0.5); opacity:1; }
       /* Two fields over each other in one cell (Vendor over Quote #,
          Contact over Email): the second one a little smaller. */
       .fctproc-stack { display:grid; grid-template-columns: minmax(0,1fr); row-gap:0.06rem; }
