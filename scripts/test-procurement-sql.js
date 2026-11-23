@@ -1194,6 +1194,106 @@ function schemaStatements() {
   }
 
   // ─────────────────────────────────────────────────────────────────────
+  console.log('\nA bid line\'s material list on other jobs (GET action=breakdowns), copied in one go (POST action=add)');
+  {
+    const ins = (id, o) => q(`INSERT INTO procurement_items (id, company_code, division, project_id, source, bid_item_id, cost_code, sub_code, description, quantity, unit, vendor, created_at, updated_at, deleted_at)
+      VALUES ($1, $2, 'kiewit', $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $12, $13)`,
+      [id, o.co || CO, o.job, o.source || 'manual', o.bid || null, o.cost || 'Stormwater', o.sub || 'Detention System', o.desc || '', o.qty ?? null, o.unit || '', o.vendor || '', o.at, o.deleted || null]);
+    // Field A: the detention system as five materials (one of them twice).
+    await ins('bdA1', { job: 'bA', source: 'bid', bid: 'la', desc: 'Geofabric (Collector)', qty: 1040, unit: 'SF', vendor: 'LB Water', at: '2026-10-01T10:00:00Z' });
+    await ins('bdA2', { job: 'bA', bid: 'la', desc: 'Flat Drain', qty: 1055, unit: 'LF', vendor: 'LB Water', at: '2026-10-01T10:01:00Z' });
+    await ins('bdA3', { job: 'bA', bid: 'la', sub: 'detention  system', desc: '15" TEE watertight w/ gasket', qty: 2, unit: 'EA', vendor: 'LB Water', at: '2026-10-01T10:02:00Z' });
+    await ins('bdA4', { job: 'bA', bid: 'la', desc: 'flat drain', qty: 20, unit: 'LF', at: '2026-10-01T10:03:00Z' });
+    await ins('bdA5', { job: 'bA', bid: 'la', desc: 'Detention System', at: '2026-10-01T10:04:00Z' });
+    await ins('bdA6', { job: 'bA', bid: 'la', desc: 'Old hatch', at: '2026-10-01T10:05:00Z', deleted: '2026-10-02T00:00:00Z' });
+    await ins('bdA7', { job: 'bA', bid: 'la', desc: '', at: '2026-10-01T10:06:00Z' });
+    // Field B, more recently: two materials. Another sub code on it is not asked for.
+    await ins('bdB1', { job: 'bB', desc: 'Perforated 15" SLCPP', qty: 400, unit: 'LF', vendor: 'LB Water', at: '2026-11-05T10:00:00Z' });
+    await ins('bdB2', { job: 'bB', sub: '  Detention System ', desc: 'Aluminum AO Hatch', qty: 1, unit: 'EA', at: '2026-11-05T10:01:00Z' });
+    await ins('bdB3', { job: 'bB', sub: 'Geofabric', desc: 'Mirafi 140N', at: '2026-11-05T10:02:00Z' });
+    // Another company's job is never offered.
+    await ins('bdX1', { co: CO2, job: 'bX', desc: 'Rival pipe', at: '2026-11-09T10:00:00Z' });
+    // Their names must also not leak into this one through another division.
+
+    let r = await get(KIEW, { action: 'breakdowns', sub_code: 'DETENTION SYSTEM' }, 'kiewit');
+    const bd = r.body.breakdowns || [];
+    assert('a level2 reads a sub code\'s lists, job by job, the most recent job first', r.statusCode === 200 && r.body.ok && eq(bd.map(b => b.project_id), ['bB', 'bA']), show(r));
+    assert('…each job\'s named rows in the order they were added — the same name twice is one line, the sub code itself, blanks and deleted rows none',
+      eq(bd[1].items.map(i => i.material), ['Geofabric (Collector)', 'Flat Drain', '15" TEE watertight w/ gasket']), JSON.stringify(bd[1].items.map(i => i.material)));
+    assert('…matched as the sheet compares codes (case, spacing), and no other sub code', eq(bd[0].items.map(i => i.material), ['Perforated 15" SLCPP', 'Aluminum AO Hatch']),
+      JSON.stringify(bd[0].items));
+    assert('…each with where it came from, its quantity (a number), unit and vendor',
+      eq(bd[1].items[0], { id: 'bdA1', source: 'bid', material: 'Geofabric (Collector)', cost_code: 'Stormwater', sub_code: 'Detention System', quantity: 1040, unit: 'SF', vendor: 'LB Water' })
+      && bd[0].last_used === '2026-11-05T10:01:00.000Z', JSON.stringify(bd[1].items[0]) + ' ' + bd[0].last_used);
+    r = await get(KIEW, { action: 'breakdowns', sub_code: 'Detention System', exclude_project: 'bB' }, 'kiewit');
+    assert('the asking job is left out', r.statusCode === 200 && eq(r.body.breakdowns.map(b => b.project_id), ['bA']), show(r));
+    // The same sub code under another cost code is another bid line.
+    await ins('bdS1', { job: 'bS', cost: 'Sanitary', desc: 'Sanitary tank liner', at: '2026-11-20T10:00:00Z' });
+    r = await get(KIEW, { action: 'breakdowns', sub_code: 'Detention System' }, 'kiewit');
+    const withS = r.body.breakdowns.map(b => b.project_id);
+    r = await get(KIEW, { action: 'breakdowns', sub_code: 'Detention System', cost_code: ' stormwater ' }, 'kiewit');
+    assert('with the line\'s cost code, only lists under that cost code (compared as the sheet does)', withS.includes('bS')
+      && eq(r.body.breakdowns.map(b => b.project_id), ['bB', 'bA']), JSON.stringify([withS, r.body.breakdowns.map(b => b.project_id)]));
+    r = await get(RIVAL, { action: 'breakdowns', sub_code: 'Detention System' }, 'paving');
+    assert('another company sees none of it (its own rows are another division here)', r.statusCode === 200 && eq(r.body.breakdowns, []), show(r));
+    r = await get(L1, { action: 'breakdowns', sub_code: 'Detention System' });
+    assert('a level1 may read lists (the rows are already theirs to read)', r.statusCode === 200 && r.body.canEdit === false, show(r));
+    r = await get(SALES, { action: 'breakdowns', sub_code: 'Detention System' });
+    assert('a sales login may not', r.statusCode === 403, show(r));
+    r = await get(KIEW, { action: 'breakdowns', sub_code: '  ' }, 'kiewit');
+    assert('no sub code is a 400', r.statusCode === 400 && r.body.field === 'sub_code', show(r));
+
+    // ── POST action=add ──
+    const PIDK = 'bC';
+    await q(`INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [`${CO}:fct_kiewit_project_${PIDK}`, JSON.stringify({ id: PIDK, bidItems: [{ id: 'lc', cost_code: 'Stormwater', sub_code: 'Detention System', quantity: 1, unit: 'LS' }] })]);
+    const addq = (user, body, division = 'kiewit') => call('POST', { division, action: 'add' }, body, user);
+    const items = [
+      { id: uid('ad'), bid_item_id: 'lc', cost_code: 'Stormwater', sub_code: 'Detention System', description: 'Flat Drain', unit: 'LF', vendor: 'LB Water', quantity: null },
+      { id: uid('ad'), bid_item_id: 'lc', cost_code: 'Stormwater', sub_code: 'Detention System', description: '15" TEE watertight w/ gasket', unit: 'EA', vendor: 'LB Water', quantity: '2' },
+      { id: uid('ad'), bid_item_id: 'lc', cost_code: 'Stormwater', sub_code: 'Detention System', description: 'Aluminum AO Hatch', unit: 'EA', vendor: '', source: 'bid', sca_status: 'Executed', po_id: 'sneaky' },
+    ];
+    r = await addq(KIEW, { project_id: PIDK, items });
+    assert('a level2 adds several materials in one request (201), in the order sent', r.statusCode === 201 && r.body.ok
+      && eq(r.body.created.map(x => x.id), items.map(i => i.id)) && eq(r.body.existing, []) && r.body.skipped === 0, show(r));
+    const made = await q('SELECT * FROM procurement_items WHERE id = ANY($1::text[]) ORDER BY created_at', [items.map(i => i.id)]);
+    assert('…each a hand-added row of the job, tied to the line, with its name, unit, vendor and quantity (read as a number)',
+      made.length === 3 && made.every(m => m.source === 'manual' && m.project_id === PIDK && m.division === 'kiewit' && m.company_code === CO && m.bid_item_id === 'lc')
+      && eq(made.map(m => [m.description, m.unit, m.vendor, m.quantity === null ? null : Number(m.quantity)]),
+        [['Flat Drain', 'LF', 'LB Water', null], ['15" TEE watertight w/ gasket', 'EA', 'LB Water', 2], ['Aluminum AO Hatch', 'EA', '', null]]), JSON.stringify(made.map(m => [m.description, m.quantity, m.source])));
+    assert('…keeping the list\'s order (created_at), and none of the cells a copy may not carry (source, agreement, PO)',
+      made.map(m => m.id).join() === items.map(i => i.id).join() && made.every(m => m.sca_status === 'Pending' && m.po_id === null && m.created_by === 'p_kiewit'));
+    r = await addq(KIEW, { project_id: PIDK, items });
+    assert('sent again (an answer lost): nothing new, the rows come back as existing (200)', r.statusCode === 200 && eq(r.body.created, [])
+      && eq(r.body.existing.map(x => x.id), items.map(i => i.id)) && (await q('SELECT count(*)::int AS n FROM procurement_items WHERE project_id = $1', [PIDK]))[0].n === 3, show(r));
+    r = await addq(KIEW, { project_id: 'bOther', items: [items[0]] });
+    assert('…an id that is another job\'s row is neither added nor shown', r.statusCode === 200 && eq(r.body.created, []) && eq(r.body.existing, []) && r.body.skipped === 1, show(r));
+    r = await addq(KIEW, { project_id: PIDK, items: [{ ...items[0], id: uid('ad'), bid_item_id: 'gone-line' }] });
+    assert('a row tied to a line not on the stored bid: 409 stale_bid, nothing added', r.statusCode === 409 && r.body.error === 'stale_bid'
+      && (await q('SELECT count(*)::int AS n FROM procurement_items WHERE project_id = $1', [PIDK]))[0].n === 3, show(r));
+    const before = (await q('SELECT count(*)::int AS n FROM procurement_items WHERE project_id = $1', [PIDK]))[0].n;
+    r = await addq(KIEW, { project_id: PIDK, items: [{ ...items[0], id: uid('ad') }, { ...items[0], id: uid('ad'), quantity: '12 ft' }] });
+    assert('one bad value refuses the whole list (400, naming the row and the field), nothing added', r.statusCode === 400 && r.body.field === 'quantity' && r.body.index === 1
+      && (await q('SELECT count(*)::int AS n FROM procurement_items WHERE project_id = $1', [PIDK]))[0].n === before, show(r));
+    const dupId = uid('ad');
+    r = await addq(KIEW, { project_id: PIDK, items: [{ ...items[0], id: dupId }, { ...items[1], id: dupId }] });
+    assert('an id twice in one list is a 400', r.statusCode === 400 && /used twice/.test(r.body.message || ''), show(r));
+    r = await addq(KIEW, { project_id: PIDK, items: [] });
+    assert('an empty list is a 400', r.statusCode === 400 && r.body.field === 'items', show(r));
+    r = await addq(KIEW, { project_id: PIDK, items: [{ ...items[0], id: 'bad id!' }] });
+    assert('an id of the wrong shape is a 400', r.statusCode === 400 && r.body.field === 'id', show(r));
+    r = await call('POST', { division: 'turf', action: 'add' }, { project_id: PIDK, items: [{ ...items[0], id: uid('ad'), bid_item_id: null }] }, L1);
+    assert('a level1 may not add (403 read_only)', r.statusCode === 403 && r.body.error === 'read_only', show(r));
+    r = await call('POST', { division: 'turf', action: 'add' }, { project_id: PIDK, items: [{ ...items[0], id: uid('ad'), bid_item_id: null }] }, SALES);
+    assert('nor a sales login (403)', r.statusCode === 403, show(r));
+    r = await call('POST', { division: 'paving', action: 'add' }, { project_id: PIDK, items: [{ ...items[0], id: uid('ad'), bid_item_id: null }] }, RIVAL);
+    const rivalRows = await q('SELECT company_code, division FROM procurement_items WHERE company_code = $1 AND project_id = $2', [CO2, PIDK]);
+    assert('another company\'s rows go in under its own company (scoped by the login)', r.statusCode === 201 && rivalRows.length === 1 && rivalRows[0].division === 'paving', show(r));
+    r = await addq(KIEW, { project_id: 'bNoBlob', items: [{ ...items[0], id: uid('ad'), bid_item_id: 'anything' }] });
+    assert('a job with no stored bid at all is not refused (nothing to check against), as everywhere', r.statusCode === 201, show(r));
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
   console.log('\nWhen the database fails');
   {
     DB.fail = true;

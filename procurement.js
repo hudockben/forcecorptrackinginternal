@@ -1542,8 +1542,44 @@
         border-radius:3px; border:1px solid var(--border,#2a2a3a); color: var(--muted,#9ca3af); white-space:nowrap; line-height:1.4; flex:none; }
       .fctproc-tag.amber { color:#fbbf24; border-color: rgba(234,179,8,0.45); }
       .fctproc-tag.red { color:#f87171; border-color: rgba(239,68,68,0.45); }
-      .fctproc-codes { display:flex; align-items:center; gap:0.3rem; min-width:0; }
+      /* Cost Code / Sub Code in one cell: the cost code muted, a separator,
+         the sub code plain. The sub code (the bid line) always shows, on two
+         lines if it must; the cost code takes what is left, cut short with
+         its tooltip only when there is no room. */
+      .fctproc-codes { display:flex; align-items:center; gap:0.1rem; min-width:0; }
+      /* Read-only: "Stormwater / Geofabric" on one line when it fits; else the
+         sub code goes to the next line whole (as the PO view's text wraps),
+         and a "not on bid" tag after it, never pushed out of the cell. */
+      .fctproc-codes:not(.edit) { flex-wrap: wrap; align-content:center; column-gap:0.1rem; row-gap:0.05rem; }
       .fctproc-codes .fctproc-txt { flex: 1 1 auto; min-width:0; }
+      .fctproc-codes .fctproc-cc { flex: 0 1 auto; min-width:2rem; max-width:100%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding-left:0.15rem; }
+      .fctproc-codes .fctproc-sc { flex: 0 1 auto; max-width:100%; min-width:0; white-space: normal; overflow-wrap:anywhere; line-height:1.25;
+        display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient: vertical; overflow:hidden; padding:0 0.15rem; }
+      .fctproc-codes .fctproc-tag { flex: none; }
+      .fctproc-cc { color: var(--muted,#9ca3af); font-size:0.74rem; }
+      .fctproc-sep { flex: none; color:#4b7a4b; font-weight:600; padding:0 0.12rem; white-space:pre; }
+      .fctproc-codes.edit .fctproc-scpick { flex: 1 1 0; min-width:5.5rem; }
+      /* A header of several fields: each named, each with its filter. */
+      .fctproc-table th .fctproc-hp { white-space:nowrap; }
+      .fctproc-table th .fctproc-inl { display:flex; flex-wrap:wrap; align-items:baseline; gap:0 0.15rem; }
+      .fctproc-table th .fctproc-sep { color: var(--muted,#9ca3af); }
+      /* The ordering dates, 2 × 2 in their cell and in their header alike:
+         Lead Time → Order By over Ordered · Delivered. */
+      .fctproc-grid2 { display:grid; grid-template-columns: minmax(0,1fr) minmax(0,1fr); column-gap:0.3rem; row-gap:0.1rem; align-items:center; }
+      .fctproc-table th .fctproc-grid2 { row-gap:0.2rem; align-items:end; }
+      .fctproc-part { min-width:0; position:relative; display:flex; align-items:center; }
+      .fctproc-part .fctproc-in { font-size:0.74rem; padding-top:0.06rem; padding-bottom:0.06rem; }
+      .fctproc-part.c-lead_time_days .fctproc-in { width:3.1rem; flex: 0 0 auto; }
+      .fctproc-u { color: var(--muted,#9ca3af); font-size:0.66rem; margin-left:0.15rem; }
+      .fctproc-part.c-order_by::before { content:'\\2192'; color: var(--muted,#6b7280); font-size:0.72rem; margin-right:0.2rem; }
+      .fctproc-part.c-order_by .fctproc-txt { font-size:0.74rem; padding:0; }
+      /* An empty date says which one it is, faintly (the cell has no labels). */
+      .fctproc-part.c-date_ordered:has(> input.empty:not(:focus):not(:hover))::after,
+      .fctproc-part.c-date_delivered:has(> input.empty:not(:focus):not(:hover))::after {
+        position:absolute; left:0.3rem; top:50%; transform: translateY(-50%); pointer-events:none;
+        font-size:0.66rem; letter-spacing:0.03em; color: var(--muted,#9ca3af); opacity:0.85; }
+      .fctproc-part.c-date_ordered:has(> input.empty:not(:focus):not(:hover))::after { content:'ordered'; }
+      .fctproc-part.c-date_delivered:has(> input.empty:not(:focus):not(:hover))::after { content:'delivered'; }
       .fctproc-qty { display:flex; flex-direction:column; gap:0.1rem; padding:0.1rem 0; }
       .fctproc-bidchg { display:flex; flex-direction:column; align-items:flex-end; gap:0.12rem; font-size:0.62rem; color:#fbbf24; line-height:1.25; text-align:right; }
       .fctproc-bidchg > span:first-child { white-space: normal; }
@@ -1615,6 +1651,20 @@
       .fctproc-send-line .sub { flex: 1 1 auto; min-width:0; overflow:hidden; text-overflow: ellipsis; white-space:nowrap; }
       .fctproc-send-line .qty { color: var(--muted,#9ca3af); font-variant-numeric: tabular-nums; white-space:nowrap; }
       .fctproc-send-line.added { opacity:0.5; cursor:default; }
+      .fctproc-tag[hidden] { display:none; }
+      /* "+ Material" on a line with a list to copy, and that list's dialog. */
+      /* On the button's corner, so "+ Material" is no wider for it. */
+      .fctproc-act.add.past { position:relative; }
+      .fctproc-pastdot { position:absolute; top:-0.2rem; right:-0.2rem; width:0.42rem; height:0.42rem; border-radius:50%;
+        background: var(--green,#22c55e); box-shadow: 0 0 0 2px var(--surface,#111118); pointer-events:none; }
+      .fctproc-copyjobs { display:flex; flex-direction:column; gap:0.3rem; margin:0 0 0.7rem; }
+      .fctproc-copyjob { display:flex; align-items:center; gap:0.5rem; padding:0.35rem 0.6rem; border:1px solid var(--border,#2a2a3a);
+        border-radius:5px; cursor:pointer; }
+      .fctproc-copyjob.single { cursor:default; margin-bottom:0.7rem; }
+      .fctproc-copyjob.on { border-color: var(--green,#22c55e); background: rgba(34,197,94,0.06); }
+      .fctproc-copyjob input { accent-color: var(--green,#22c55e); }
+      .fctproc-copyjob .n { font-weight:600; }
+      .fctproc-copyjob .gm { color: var(--muted,#9ca3af); font-size:0.74rem; margin-left:auto; }
       .fctproc-send-line.added .sub { text-decoration: none; }
       .fctproc-choice { display:block; width:100%; text-align:left; margin-bottom:0.45rem; padding:0.55rem 0.75rem !important; white-space: normal; }
     `;
@@ -1711,6 +1761,10 @@
             unit: str(m.unit), vendor: str(m.vendor), jobs: Math.max(0, intOrNull(m.jobs) || 0),
             last_used: str(m.last_used),
           }));
+        // The rows were drawn before the library came (it is read after
+        // them): each "+ Material" with a list to copy takes its dot now —
+        // around any cell in use, and only the rows that change.
+        if (isMounted() && st.loadState === 'ok' && canEdit()) redrawAround();
         return lib.list;
       })
       .catch(err => {
@@ -2806,10 +2860,17 @@
     // Date Needed is exactly the row the late flags can never catch, and
     // "(blank)" in its filter is how it is found.
     { key: 'date_needed', label: 'Date Needed', w: 7.7, filter: 'date_needed' },
-    { key: 'lead_time_days', label: 'Lead Time (days)', w: 4.6, num: true, filter: 'lead_time_days' },
-    { key: 'order_by', label: 'Order By', w: 6.4, title: 'Date Needed minus Lead Time', filter: 'order_by' },
-    { key: 'date_ordered', label: 'Date Ordered', w: 7.7, filter: 'date_ordered' },
-    { key: 'date_delivered', label: 'Date Delivered', w: 7.7, filter: 'date_delivered' },
+    // Lead Time, Order By, Date Ordered and Date Delivered share one column,
+    // two to a line — the plan (lead time → the day the order has to go in)
+    // over what happened (ordered, delivered) — rather than four columns of
+    // the sheet's width. Each keeps its own filter, in a header laid out the
+    // same 2 × 2. (`parts` — see headerHtml.)
+    { key: 'ordering', label: 'Lead Time · Order By · Ordered · Delivered', w: 14.6, grid: true, parts: [
+      { label: 'Lead Time', filter: 'lead_time_days', title: 'Days the supplier needs from order to delivery' },
+      { label: 'Order By', filter: 'order_by', title: 'Date Needed minus Lead Time' },
+      { label: 'Ordered', filter: 'date_ordered', title: 'Date Ordered' },
+      { label: 'Delivered', filter: 'date_delivered', title: 'Date Delivered' },
+    ] },
     { key: 'quantity', label: 'Quantity', w: 7.4, num: true, filter: 'quantity' },
     { key: 'unit', label: 'Unit', w: 4.8, filter: 'unit' },
     // What is bought, in this job's words (stored as `description`), beside
@@ -2817,8 +2878,12 @@
     // the order of the buy-out sheets it replaces.
     { key: 'description', label: 'Material', w: 18, filter: 'description',
       title: 'What is bought, named as this job\'s plans and suppliers name it. Blank shows the bid\'s Sub Code. The cost still books to the Cost Code / Sub Code beside it.' },
-    { key: 'cost_code', label: 'Cost Code', w: 10.5, filter: 'cost_code' },
-    { key: 'sub_code', label: 'Sub Code', w: 11.5, filter: 'sub_code', title: 'The bid line this material\'s cost books to' },
+    // Cost Code and Sub Code in one column, "Stormwater / Geofabric" as the
+    // purchase orders show them: the bid line the material books to.
+    { key: 'codes', label: 'Cost Code / Sub Code', w: 14, sep: '/', parts: [
+      { label: 'Cost Code', filter: 'cost_code' },
+      { label: 'Sub Code', filter: 'sub_code', title: 'The bid line this material\'s cost books to' },
+    ] },
     { key: 'vendor', label: 'Vendor', w: 10.5, filter: 'vendor' },
     { key: 'quote_number', label: 'Quote #', w: 7, filter: 'quote_number' },
     { key: 'contact', label: 'Contact', w: 9, filter: 'contact' },
@@ -2882,9 +2947,17 @@
       const stick = c.stick ? ` stk${c.key === 'status' ? ' stk-edge' : ''}" style="left:${left}rem` : '';
       if (c.stick) left += c.w;
       if (c.key === 'sel') return `<th class="c-sel${stick}"><input type="checkbox" id="fctproc-selall" title="Select every row shown" aria-label="Select every row shown"></th>`;
-      const active = c.filter && st.filters[c.filter] ? ' active' : '';
-      const fb = c.filter ? ` <button type="button" class="cfb fctproc-fb${active}" data-pff="${c.filter}" title="Filter ${esc(c.label)}">&#9660;</button>` : '';
-      return `<th class="${c.num ? 'num' : ''}${stick}"${c.title ? ` title="${esc(c.title)}"` : ''}>${esc(c.label)}${fb}</th>`;
+      const fb = (filter, label) => (filter ? ` <button type="button" class="cfb fctproc-fb${st.filters[filter] ? ' active' : ''}" data-pff="${filter}" title="Filter ${esc(label)}">&#9660;</button>` : '');
+      // A column of several fields (Cost Code / Sub Code, the ordering
+      // dates): each field named, with its own filter, laid out the way its
+      // cells are — side by side with a separator, or 2 × 2.
+      if (c.parts) {
+        const part = p => `<span class="fctproc-hp"${p.title ? ` title="${esc(p.title)}"` : ''}>${esc(p.label)}${fb(p.filter, p.label)}</span>`;
+        const inner = c.grid ? c.parts.map(part).join('')
+          : c.parts.map(part).join(`<span class="fctproc-sep" aria-hidden="true">${esc(c.sep || '')}</span>`);
+        return `<th class="c-${c.key}${stick}" data-label="${esc(c.label)}"><div class="${c.grid ? 'fctproc-grid2' : 'fctproc-inl'}">${inner}</div></th>`;
+      }
+      return `<th class="${c.num ? 'num' : ''}${stick}" data-label="${esc(c.label)}"${c.title ? ` title="${esc(c.title)}"` : ''}>${esc(c.label)}${fb(c.filter, c.label)}</th>`;
     }).join('') + '</tr>';
   }
 
@@ -3190,24 +3263,33 @@
                 `<option value="${esc(v)}"${v === r.sca_status ? ' selected' : ''}>${esc(v)}</option>`).join('')}</select>`)
             : td('', txt(r.sca_status, r.sca_status === 'Needed' ? 'fctproc-amber' : r.sca_status === 'Executed' ? 'fctproc-ok' : 'fctproc-dim'));
         case 'date_needed':
-        case 'date_delivered':
           return td('', edit ? dateIn(c.key, r[c.key]) : txt(fmtDate(r[c.key])));
-        case 'lead_time_days':
-          return td('', edit
-            ? `<input type="number" class="fctproc-in" ${at('lead_time_days')} min="0" max="3650" step="1" value="${r.lead_time_days == null ? '' : r.lead_time_days}" title="Days the supplier needs from order to delivery">`
-            : txt(r.lead_time_days == null ? '' : String(r.lead_time_days), 'num'));
-        case 'order_by': {
+        case 'ordering': {
+          // Four fields, 2 × 2, each in a part of its own (class c-<field>):
+          // refreshRow redraws the parts around the one being typed in, so
+          // Order By follows Lead Time key by key. Each box says what it is,
+          // since the cell has no room for labels.
+          const part = (f, inner, cls = '') => `<div class="fctproc-part c-${f}${cls}">${inner}</div>`;
+          const lead = edit
+            ? `<input type="number" class="fctproc-in" ${at('lead_time_days')} min="0" max="3650" step="1" value="${r.lead_time_days == null ? '' : r.lead_time_days}" title="Lead Time (days): what the supplier needs from order to delivery" aria-label="Lead Time (days)" placeholder="—">`
+            : txt(r.lead_time_days == null ? '' : String(r.lead_time_days), 'num');
           const ob = orderBy(r);
-          return td('', ob ? `<span class="fctproc-txt fctproc-calc" title="Date Needed minus ${r.lead_time_days} day${r.lead_time_days === 1 ? '' : 's'} lead time">${fmtDate(ob)}</span>`
-            : `<span class="fctproc-txt fctproc-dim" title="Fill in Date Needed and Lead Time">—</span>`);
-        }
-        case 'date_ordered': {
+          const obHtml = ob ? `<span class="fctproc-txt fctproc-calc" title="Order By: Date Needed minus ${r.lead_time_days} day${r.lead_time_days === 1 ? '' : 's'} lead time">${fmtDate(ob)}</span>`
+            : `<span class="fctproc-txt fctproc-dim" title="Order By: fill in Date Needed and Lead Time">—</span>`;
           const own = ymdOf(r.date_ordered);
           const eff = effectiveDateOrdered(r, ctx);
           const derived = !own && eff;
-          const why = derived ? `The date ${str(ep.po && ep.po.po_number) || 'its PO'} was raised${edit ? ' — pick a date to set your own' : ''}` : '';
-          if (edit) return td('', dateIn('date_ordered', own || eff, derived ? ` data-derived="1" title="${esc(why)}"` : '').replace('class="fctproc-in', `class="fctproc-in${derived ? ' derived' : ''}`));
-          return td('', derived ? `<span class="fctproc-txt fctproc-calc" title="${esc(why)}">${fmtDate(eff)}</span>` : txt(fmtDate(own)));
+          const why = derived ? `Date Ordered: the date ${str(ep.po && ep.po.po_number) || 'its PO'} was raised${edit ? ' — pick a date to set your own' : ''}` : 'Date Ordered';
+          const ordered = edit
+            ? dateIn('date_ordered', own || eff, ` title="${esc(why)}" aria-label="Date Ordered"${derived ? ' data-derived="1"' : ''}`).replace('class="fctproc-in', `class="fctproc-in${derived ? ' derived' : ''}`)
+            : derived ? `<span class="fctproc-txt fctproc-calc" title="${esc(why)}">${fmtDate(eff)}</span>` : `<span class="fctproc-txt" title="Date Ordered">${esc(fmtDate(own))}</span>`;
+          const delivered = edit ? dateIn('date_delivered', r.date_delivered, ' title="Date Delivered" aria-label="Date Delivered"')
+            : `<span class="fctproc-txt" title="Date Delivered">${esc(fmtDate(r.date_delivered))}</span>`;
+          // "d" for days beside a lead time — and beside the box to type one
+          // in — but not beside nothing on a view-only sheet.
+          const days = edit || r.lead_time_days != null ? '<span class="fctproc-u" aria-hidden="true">d</span>' : '';
+          return td('', `<div class="fctproc-grid2">${part('lead_time_days', lead + days)}${part('order_by', obHtml)}`
+            + `${part('date_ordered', ordered)}${part('date_delivered', delivered)}</div>`);
         }
         case 'quantity': {
           const bc = bidChange(r, ctx);
@@ -3221,17 +3303,25 @@
         }
         case 'unit':
           return td('', edit ? cbCell('proc_units', r.unit, '', `${at('unit')} maxlength="${MAX_LEN.unit}"`) : txt(r.unit));
-        case 'cost_code': {
+        case 'codes': {
+          // "Stormwater / Geofabric", as the purchase orders show a code: the
+          // cost code muted, the sub code (the bid line) plain. A hand-added
+          // row picks its line in the sub code's place.
           const badge = codes.notOnBid ? '<span class="fctproc-tag amber" title="The bid line this row was tied to is no longer on the bid">not on bid</span>'
             : codes.costGone ? '<span class="fctproc-tag amber" title="No line on the bid has this cost code any more (renamed or removed on the bid). Pick the row\'s Sub Code from the bid to put it under a current code.">not on bid</span>' : '';
-          return td('', `<div class="fctproc-codes">${txt(codes.cost_code, codes.cost_code ? '' : 'fctproc-dim')}${badge}</div>`);
-        }
-        case 'sub_code':
+          const cc = codes.cost_code.trim(), sc = codes.sub_code.trim();
+          const both = [cc, sc].filter(Boolean).join(' / ');
+          const ccHtml = cc ? `<span class="fctproc-cc c-cost_code" title="${esc(`Cost Code: ${cc}`)}">${esc(cc)}</span>` : '';
           if (edit && r.source !== 'bid') {
-            return td('', cbCell('proc_codes:' + (r.project_id || st.projectId), codes.sub_code, 'Pick bid line…',
-              `${at('codes')} data-cb-value="${esc(r.bid_item_id || '')}" title="${esc([codes.cost_code, codes.sub_code].filter(Boolean).join(' / '))}"`));
+            const pick = cbCell('proc_codes:' + (r.project_id || st.projectId), codes.sub_code, 'Pick bid line…',
+              `${at('codes')} data-cb-value="${esc(r.bid_item_id || '')}" title="${esc(both || 'Pick the bid line this material books to')}" aria-label="Sub Code"`);
+            return td('', `<div class="fctproc-codes edit">${ccHtml}${cc ? '<span class="fctproc-sep" aria-hidden="true"> / </span>' : ''}<span class="fctproc-scpick c-sub_code">${pick}</span>${badge}</div>`);
           }
-          return td('', txt(codes.sub_code, 'wrap2'));
+          // The sub code — the bid line — always shows (on two lines if it
+          // must); a long cost code gives way to it, cut short with its tooltip.
+          return td('', `<div class="fctproc-codes" title="${esc(both)}">${ccHtml}${cc && sc ? '<span class="fctproc-sep" aria-hidden="true"> / </span>' : ''}`
+            + `${sc || !cc ? `<span class="fctproc-sc c-sub_code">${esc(sc)}</span>` : ''}${badge}</div>`);
+        }
         case 'description': {
           // Blank reads as the bid's Sub Code (materialOf), shown greyed — a
           // placeholder while editing — so a bid row needs no typing unless
@@ -3272,9 +3362,16 @@
               <button type="button" class="fctproc-act danger" data-act="del-yes" data-row="${id}">Yes</button>
               <button type="button" class="fctproc-act" data-act="del-no" data-row="${id}">No</button></div>`);
           }
-          return td('', `<div class="fctproc-acts">
-            <button type="button" class="fctproc-act add" data-act="material" data-row="${id}" title="Add another material under this ${r.bid_item_id ? 'bid line' : 'row'}">+ Material</button>
+          {
+            // A line bought as named materials on another job says so: its
+            // "+ Material" offers that list to copy.
+            const past = edit && hasPastList(r, ctx);
+            const tip = past ? 'Add materials under this bid line — copy the list it was bought as on another job, or add a blank row'
+              : `Add another material under this ${r.bid_item_id ? 'bid line' : 'row'}`;
+            return td('', `<div class="fctproc-acts">
+            <button type="button" class="fctproc-act add${past ? ' past' : ''}" data-act="material" data-row="${id}" title="${esc(tip)}">+ Material${past ? '<span class="fctproc-pastdot" aria-hidden="true"></span>' : ''}</button>
             <button type="button" class="fctproc-act del" data-act="del" data-row="${id}" title="Delete this row" aria-label="Delete row">&#10005;</button></div>`);
+          }
         default: return td('', '');
       }
     }).join('');
@@ -3366,7 +3463,15 @@
       host = tr;
       tr.className = fresh.className;
       const next = Array.from(fresh.children);
-      Array.from(tr.children).forEach((td, i) => { if (next[i] && !busy(td)) td.replaceWith(next[i]); });
+      Array.from(tr.children).forEach((td, i) => {
+        if (!next[i]) return;
+        if (!busy(td)) { td.replaceWith(next[i]); return; }
+        // A cell of several fields (the ordering dates): the parts around
+        // the one in use are redrawn — Order By follows Lead Time as it is
+        // typed — and the one in use is left as it is.
+        const mine = td.querySelectorAll('.fctproc-part'), theirs = next[i].querySelectorAll('.fctproc-part');
+        if (mine.length && mine.length === theirs.length) mine.forEach((p, j) => { if (!busy(p)) p.replaceWith(theirs[j]); });
+      });
     }
     drawnHtml.set(host, html);
     if (btn && !host.contains(document.activeElement)) {
@@ -4225,12 +4330,307 @@
     const g = groupRows(vis, ctx).find(x => x.key === key);
     return g ? g.rows : [];
   }
-  function addMaterial(parentId) {
+  /**
+   * "+ Material": another material under the row's bid line. When that line
+   * was bought as named materials on another job (the library says so), the
+   * PM is offered that job's list to copy — a detention system's seventeen
+   * parts in one go — or a blank row as before.
+   */
+  // One copy at a time: from the click that reads the lists, through the
+  // dialog, to the add's answer. A double click, or "+ Material" again while
+  // an add is still out (the dialog closed with Escape meanwhile), would
+  // otherwise open a second dialog and add the list twice.
+  let copying = null;
+  async function addMaterial(parentId) {
     const p = rowById(parentId);
     if (!p) return null;
-    const codes = liveCodes(p, makeCtx());
-    return addRow({ bid_item_id: p.bid_item_id || null, cost_code: codes.cost_code, sub_code: codes.sub_code, unit: p.unit || '' },
+    const ctx = siteMode() && p.project_id ? makeCtx(p.project_id) : makeCtx();
+    const codes = liveCodes(p, ctx);
+    const blank = () => addRow({ bid_item_id: p.bid_item_id || null, cost_code: codes.cost_code, sub_code: codes.sub_code, unit: p.unit || '' },
       p.project_id || undefined);
+    if (!canEdit() || !hasPastList(p, ctx)) return blank();
+    if (copying) {
+      if (copying.adding) toast('Still adding the materials from the other job — a moment.');
+      return null;
+    }
+    const token = copying = { open: false, adding: false };
+    const done = () => { if (copying === token && !token.open && !token.adding) copying = null; };
+    let lists = null;
+    try {
+      const data = await api('GET', '/procurement' + q({ action: 'breakdowns', sub_code: codes.sub_code, cost_code: codes.cost_code,
+        exclude_project: p.project_id || st.projectId }));
+      lists = (Array.isArray(data.breakdowns) ? data.breakdowns : []).filter(b => b && Array.isArray(b.items) && b.items.length);
+    } catch (err) {
+      // The lists are a help: without them "+ Material" still adds a row.
+      console.warn('[procurement] could not read the material lists of other jobs', err);
+    }
+    if (!rowById(parentId) || !isMounted()) { copying = copying === token ? null : copying; return null; }
+    if (!lists || !lists.length) { copying = copying === token ? null : copying; return blank(); }
+    token.open = true;
+    const m = openCopyList(rowById(parentId), lists, blank, token);
+    m.onClose = () => { token.open = false; done(); };
+    return m;
+  }
+
+  /**
+   * Whether "+ Material" on a row has a list to offer: its bid line is on
+   * the bid, and the library has a name bought under the line's sub code
+   * (and cost code) that this job does not have yet — so some other job
+   * bought it. Once everything is here, nothing is offered. Indexed once per
+   * ctx (a render draws every row's "+ Material").
+   */
+  const _pastIndex = new WeakMap();
+  function hasPastList(row, ctx) {
+    if (colHidden('description') || !row) return false;
+    const codes = liveCodes(row, ctx);
+    // A row whose line is gone has no line to copy a list under.
+    if (!codes.line) return false;
+    const k = keyFn(ctx);
+    const sk = ck(k, codes.sub_code), cc = ck(k, codes.cost_code);
+    if (!sk) return false;
+    let ix = _pastIndex.get(ctx);
+    if (!ix || ix.list !== lib.list || ix.rows !== st.rows.length || ix.named !== st.rows.reduce((n, r) => n + (str(r.description).trim() ? 1 : 0), 0)) {
+      ix = { list: lib.list, rows: st.rows.length, named: 0, bySub: new Map(), here: new Set() };
+      lib.list.forEach(e => {
+        const s = ck(k, e.sub_code);
+        if (!s || !(e.jobs > 0)) return;
+        if (!ix.bySub.has(s)) ix.bySub.set(s, []);
+        ix.bySub.get(s).push(e);
+      });
+      st.rows.forEach(r => {
+        const m = str(r.description).trim();
+        if (!m) return;
+        ix.named++;
+        ix.here.add(`${r.project_id}\u0000${ck(k, liveCodes(r, ctx).sub_code)}\u0000${ck(k, m)}`);
+      });
+      _pastIndex.set(ctx, ix);
+    }
+    return (ix.bySub.get(sk) || []).some(e => (!cc || !ck(k, e.cost_code) || ck(k, e.cost_code) === cc)
+      && !ix.here.has(`${row.project_id}\u0000${sk}\u0000${ck(k, e.material)}`));
+  }
+
+  /**
+   * The copy dialog: the jobs this line was bought on, most recent first,
+   * and the materials of the one picked, each ticked unless this job has it
+   * already. Added with their names, units and vendors — quantities only
+   * when asked, since they are the other job's. The line's own row (sent
+   * from the bid), when it has no name yet, takes the name the other job's
+   * own row had rather than standing beside it as a placeholder.
+   */
+  function openCopyList(p, lists, blank, token = null) {
+    const ctx = siteMode() && p.project_id ? makeCtx(p.project_id) : makeCtx();
+    const k = keyFn(ctx);
+    const codes = liveCodes(p, ctx);
+    const sk = ck(k, codes.sub_code);
+    const pid = p.project_id || st.projectId;
+    const lineRows = st.rows.filter(r => r.project_id === pid && ck(k, liveCodes(r, ctx).sub_code) === sk);
+    const have = new Set(lineRows.map(r => ck(k, materialOf(r, ctx))).filter(Boolean));
+    const own = p.bid_item_id ? st.rows.find(r => r.project_id === pid && r.source === 'bid' && String(r.bid_item_id) === String(p.bid_item_id)) : null;
+    // Read as the dialog is used, not once: a colleague (or the PM, in the
+    // sheet behind) can name that row while it is open.
+    const ownFree = () => { const r = own && rowById(own.id); return !!r && !r.deleted_at && !str(r.description).trim(); };
+    const name = [codes.cost_code.trim(), codes.sub_code.trim()].filter(Boolean).join(' / ');
+    let pick = 0, copyQty = false;
+    const ticks = lists.map(l => l.items.map(it => !have.has(ck(k, it.material))));
+    // A row id per material, kept for the dialog's life: Add tried again
+    // after an answer that never came sends the same ids, so a material
+    // that went in the first time goes in once.
+    const ids = lists.map(l => l.items.map(() => uid()));
+    const jobOf = l => {
+      const j = project(l.project_id);
+      return j ? projLabel(j) + (j['job-number'] ? ` · Job #${j['job-number']}` : '') : 'An earlier job';
+    };
+    const when = iso => { const d = ymdOf(iso); return d ? fmtDate(d) : ''; };
+    const foot = `<span data-copy="count" style="margin-right:auto;color:var(--muted,#9ca3af)"></span>
+      <button type="button" class="btn btn-ghost fctproc-b" data-copy="blank">Just a blank row</button>
+      <button type="button" class="btn btn-ghost fctproc-b" data-copy="cancel">Cancel</button>
+      <button type="button" class="btn btn-green fctproc-b" data-copy="go">Add</button>`;
+    const m = modal(`Add materials — ${name}`, '', { wide: true, footHTML: foot });
+    const go = m.foot.querySelector('[data-copy="go"]');
+    // Which ticked item names this line's own row: the other job's own row,
+    // else the first ticked — only while this line's own row has no name.
+    const namer = () => {
+      if (!ownFree()) return -1;
+      const items = lists[pick].items;
+      const ticked = items.map((it, i) => (ticks[pick][i] ? i : -1)).filter(i => i >= 0);
+      const bidOne = ticked.find(i => items[i].source === 'bid');
+      return bidOne != null ? bidOne : ticked.length ? ticked[0] : -1;
+    };
+    const sync = () => {
+      const n = ticks[pick].filter(Boolean).length;
+      const named = namer() >= 0 ? 1 : 0;
+      const adds = n - named;
+      m.foot.querySelector('[data-copy="count"]').textContent = n
+        ? `${adds} new row${adds === 1 ? '' : 's'}${named ? ` · names this line's own row` : ''}` : 'Nothing ticked';
+      go.textContent = n ? `Add ${n} material${n === 1 ? '' : 's'}` : 'Add';
+      go.disabled = !n;
+      m.body.querySelectorAll('[data-ci]').forEach(el => {
+        const i = +el.dataset.ci;
+        el.querySelector('.own').hidden = namer() !== i;
+      });
+    };
+    const draw = () => {
+      const l = lists[pick];
+      m.body.innerHTML = `
+        <p style="margin:0 0 0.7rem;line-height:1.5;color:var(--muted,#9ca3af)">
+          On ${lists.length === 1 ? 'another job' : `${lists.length} other jobs`} this bid line was bought as these materials.
+          Tick what this job needs: each is added under <b>${esc(name)}</b> — the cost still books to that line — with its unit and vendor.</p>
+        ${lists.length > 1 ? `<div class="fctproc-copyjobs" role="radiogroup" aria-label="Copy from which job">${lists.map((x, i) => `
+          <label class="fctproc-copyjob${i === pick ? ' on' : ''}"><input type="radio" name="fctproc-copyjob" data-cj="${i}"${i === pick ? ' checked' : ''}>
+            <span class="n">${esc(jobOf(x))}</span><span class="gm">${x.items.length} material${x.items.length === 1 ? '' : 's'}${when(x.last_used) ? ` · ${esc(when(x.last_used))}` : ''}</span></label>`).join('')}</div>`
+          : `<div class="fctproc-copyjob on single"><span class="n">${esc(jobOf(l))}</span><span class="gm">${l.items.length} material${l.items.length === 1 ? '' : 's'}${when(l.last_used) ? ` · ${esc(when(l.last_used))}` : ''}</span></div>`}
+        <div class="fctproc-send-grp"><div class="fctproc-send-h"><span>Materials</span><span class="fctproc-spacer"></span>
+          <button type="button" class="fctproc-link" data-copy="all">All</button><button type="button" class="fctproc-link" data-copy="none">None</button></div>
+          ${l.items.map((it, i) => {
+            const dup = have.has(ck(k, it.material));
+            const meta = [it.quantity == null ? '' : fmtQty(it.quantity), normUnit(it.unit)].filter(Boolean).join(' ');
+            return `<label class="fctproc-send-line" data-ci="${i}">
+              <input type="checkbox" data-cx="${i}"${ticks[pick][i] ? ' checked' : ''}>
+              <span class="sub" title="${esc(it.material)}">${esc(it.material)}</span>
+              <span class="qty">${esc([meta, it.vendor].filter(Boolean).join(' · '))}</span>
+              ${dup ? '<span class="fctproc-tag" title="A row of this job under this line already has this name">already here</span>' : ''}
+              <span class="fctproc-tag own" hidden title="This line's own row (sent from the bid) has no name yet: it takes this one (and its unit, in place of the bid's whole-line quantity) rather than a new row being added">names the line's own row</span></label>`;
+          }).join('')}
+        </div>
+        <label class="fctproc-check" style="margin-top:0.7rem"><input type="checkbox" data-copy="qty"${copyQty ? ' checked' : ''}>
+          Copy the quantities too — they are that job's: check them against this job's plans</label>`;
+      sync();
+    };
+    draw();
+    m.body.addEventListener('change', e => {
+      const t = e.target;
+      if (t.dataset.cj != null) { pick = +t.dataset.cj; draw(); return; }
+      if (t.dataset.cx != null) { ticks[pick][+t.dataset.cx] = t.checked; sync(); return; }
+      if (t.dataset.copy === 'qty') copyQty = t.checked;
+    });
+    m.body.addEventListener('click', e => {
+      const b = e.target.closest('[data-copy="all"],[data-copy="none"]');
+      if (!b) return;
+      ticks[pick] = ticks[pick].map(() => b.dataset.copy === 'all');
+      m.body.querySelectorAll('[data-cx]').forEach(cb => { cb.checked = ticks[pick][+cb.dataset.cx]; });
+      sync();
+    });
+    let busy = false;
+    m.foot.addEventListener('click', async e => {
+      const b = e.target.closest('[data-copy]');
+      if (!b || busy) return;
+      if (b.dataset.copy === 'cancel') { m.close(); return; }
+      if (b.dataset.copy === 'blank') { m.close(); blank(); return; }
+      if (b.dataset.copy !== 'go') return;
+      busy = true;
+      if (token) token.adding = true;
+      go.disabled = true;
+      go.textContent = 'Adding…';
+      let done = false;
+      try {
+        done = await copyMaterials(p, lists[pick], ticks[pick], { copyQty, nameOwn: namer(), ownId: own ? own.id : null, ids: ids[pick] });
+      } finally {
+        busy = false;
+        if (token) {
+          token.adding = false;
+          if (!token.open && copying === token) copying = null;
+        }
+      }
+      if (done) m.close();
+      else if (m.el.isConnected) sync();
+    });
+    return m;
+  }
+
+  /**
+   * Put the ticked materials of one job's list on this row's line: the
+   * line's own row named (when `nameOwn` says which), the rest added in one
+   * request (POST action=add). Each takes this job's codes for the line, the
+   * other job's name, unit and vendor, and its quantity only when asked. A
+   * retry after an answer lost on the way back sends the same ids, so a row
+   * goes in once. True when it went in.
+   */
+  async function copyMaterials(p, list, ticked, { copyQty = false, nameOwn = -1, ownId = null, ids = null } = {}) {
+    const ctx = siteMode() && p.project_id ? makeCtx(p.project_id) : makeCtx();
+    const codes = liveCodes(p, ctx);
+    const pid = p.project_id || st.projectId;
+    const vendorOf = it => canonicalSupplier(str(it.vendor)).slice(0, MAX_LEN.vendor);
+    const picked = list.items.map((it, i) => ({ it, i })).filter(x => ticked[x.i]);
+    if (!picked.length) return false;
+    const ownFree = () => { const r = ownId && rowById(ownId); return !!r && !r.deleted_at && !str(r.description).trim(); };
+    // Decided now, on the row as it is now: named since the dialog opened,
+    // the material that would have named it is added as a row of its own.
+    let naming = nameOwn >= 0 && ticked[nameOwn] && ownFree() ? nameOwn : -1;
+    const itemOf = (it, i) => ({
+      id: (ids && ids[i]) || uid(),
+      // The line is on the bid (hasPastList); a row coded off a line that has
+      // gone since would be refused as stale, so it carries no line instead.
+      bid_item_id: codes.line ? String(codes.line.id) : null,
+      cost_code: codes.cost_code,
+      sub_code: codes.sub_code,
+      description: it.material.slice(0, MAX_LEN.description),
+      unit: str(it.unit).slice(0, MAX_LEN.unit),
+      vendor: vendorOf(it),
+      quantity: copyQty && it.quantity != null ? it.quantity : null,
+    });
+    const from = (() => { const j = project(list.project_id); return j ? projLabel(j) : 'the other job'; })();
+    const post = async items => {
+      const send = () => api('POST', '/procurement' + q({ action: 'add' }), { project_id: pid, items });
+      let data;
+      try { data = await send(); } catch (err) { if (!err.network) throw err; data = await send(); }
+      return (data.created || []).concat(data.existing || []).map(adoptServerRow).filter(Boolean);
+    };
+    let rows = [];
+    const items = picked.filter(x => x.i !== naming).map(x => itemOf(x.it, x.i));
+    // The new rows first: the line's own row is only renamed once they are
+    // in, so a refused or failed add leaves it as it was.
+    if (items.length) {
+      setSave('saving');
+      try {
+        rows = await post(items);
+      } catch (err) {
+        setSave('error');
+        showError(err.network
+          ? `Procurement: the materials may not have been added (${err.message}). They show here once the server answers — check before adding them again.`
+          : `Procurement: the materials could not be added (${err.message}).`);
+        return false;
+      }
+    }
+    let named = false;
+    if (naming >= 0 && ownFree()) {
+      const it = list.items[naming];
+      const r = rowById(ownId);
+      const f = { description: it.material.slice(0, MAX_LEN.description) };
+      const unit = str(it.unit).trim().slice(0, MAX_LEN.unit);
+      // The row's Quantity / Unit as the bid sent them (1 LS of detention
+      // system) measure the whole line, not the one material the row now
+      // names — so they make way for the material's (its unit, and its
+      // quantity when asked). A quantity the PM typed is theirs and stays,
+      // with its unit, whatever was asked.
+      const asSent = r.source === 'bid' && r.quantity != null && sameNum(r.quantity, r.bid_qty_at_send)
+        && normUnit(r.unit) === normUnit(r.bid_unit_at_send == null ? '' : r.bid_unit_at_send);
+      const free = r.quantity == null || asSent;
+      if (copyQty && it.quantity != null && free) { f.quantity = it.quantity; if (unit) f.unit = unit; }
+      else if (unit && normUnit(unit) !== normUnit(r.unit)) {
+        if (!r.unit.trim() || r.quantity == null) f.unit = unit;
+        else if (asSent) { f.unit = unit; f.quantity = null; }
+      }
+      if (!r.vendor.trim() && it.vendor && !['linked', 'auto', 'multiple', 'loading'].includes(effectivePO(r, ctx).kind)) f.vendor = vendorOf(it);
+      setFields(ownId, f);
+      flushRow(ownId);
+      named = true;
+    } else if (naming >= 0) {
+      // Named by someone else while the rows went in: that material is a row too.
+      try { rows = rows.concat(await post([itemOf(list.items[naming], naming)])); } catch (err) {
+        showError(`Procurement: "${list.items[naming].material}" could not be added (${err.message}).`);
+      }
+      naming = -1;
+    }
+    rows.forEach(r => st.forceShow.add(r.id));
+    if (rows.length) setSave('saved');
+    renderTable();
+    updateCounts();
+    const n = rows.length + (named ? 1 : 0);
+    toast(`Added ${n} material${n === 1 ? '' : 's'} from ${from}${named ? ' (one names this line\'s own row)' : ''}${copyQty ? '' : ' — fill in this job\'s quantities'}`);
+    // Fewer back than sent: an id already taken elsewhere. The sheet is read
+    // again rather than guessed at.
+    if (rows.length < items.length) setTimeout(() => { if (isOpenJob(pid)) load(st.projectId, { quiet: true }); }, 0);
+    return true;
   }
 
   // ── Attachments ─────────────────────────────────────────────────────
@@ -5453,7 +5853,7 @@
       sendPlan, relinkPlan, codeSyncPlan, sameBid, sortRows, applyFilters, csvEscape, addDays,
       chipMatch, fieldValue, vendorCompatible, normRow, ymdOf, fmtDate, fmtQty, esc, uid, looksLikePhone,
       exportMatrix, buildCsv, xlsxParts, buildXlsx, buildPrintHtml, defaultCodeKey, makeCtx, openIds, viewSig,
-      materialOf, materialOptions, loadLibrary, poTitle, lineLabel,
+      materialOf, materialOptions, loadLibrary, poTitle, lineLabel, hasPastList, addMaterial,
       library: () => lib,
       state: () => st,
       pending: () => ({ pend: new Map(pend), fly: new Map(fly), failed: new Set(failed) }),
