@@ -1838,8 +1838,13 @@ async function fitsWide(browser) {
   await sleep(300);
   const fit = await page.evaluate(() => { const w = document.querySelector('#fctproc-wrap'); return { client: w.clientWidth, scroll: w.scrollWidth }; });
   ok('at 1920 wide the whole sheet shows: no sideways scrolling', fit.scroll <= fit.client, fit);
-  const lines = () => page.$$eval('#procurement-root tr.fctproc-row', trs => trs.map(tr => new Set([...tr.querySelectorAll('td.c-status .fctproc-pill, td.c-status .fctproc-scatag, td.c-status .fctproc-flag')]
-    .map(x => Math.round(x.getBoundingClientRect().top))).size));
+  // Lines of the cell, by where each piece's middle falls: pieces of one
+  // line can sit a pixel apart (a pill and a flag are not the same height).
+  const lines = () => page.$$eval('#procurement-root tr.fctproc-row', trs => trs.map(tr => {
+    const mids = [...tr.querySelectorAll('td.c-status .fctproc-pill, td.c-status .fctproc-scatag, td.c-status .fctproc-flag')]
+      .map(x => { const r = x.getBoundingClientRect(); return (r.top + r.bottom) / 2; }).sort((a, b) => a - b);
+    return mids.reduce((n, m, i) => n + (i && m - mids[i - 1] > 6 ? 1 : 0), mids.length ? 1 : 0);
+  }));
   ok('every Status cell is two lines at most: the pill, then the agreement and its flags', (await lines()).every(n => n <= 2), await lines());
   ok('the agreement reads short, coloured by its state', eq(await page.$$eval('#procurement-root td.c-status .fctproc-scatag', t => t.map(x => x.textContent)),
     ['Agmt pending', 'Agmt needed', 'Agmt \u2713']));
@@ -1858,6 +1863,43 @@ async function fitsWide(browser) {
     const em = td.querySelector('[data-pf="email"]');
     return em.title === 'dana.reyes@lbwater.example.com' && td.querySelector('.c-contact').getBoundingClientRect().bottom <= td.querySelector('.c-email').getBoundingClientRect().top + 1;
   }));
+
+  // From the top line of a stacked cell to the line under it, with the
+  // mouse: the top box's menu opens under the whole cell, so the click lands
+  // in the box beneath — it does not pick a menu option (which saved another
+  // vendor over the row's, cleared its contact, or added a supplier).
+  const clickBelow = async (rowId, top, under) => {
+    const box = await page.locator(`#procurement-root [data-pr="${rowId}"][data-pf="${under}"]`).boundingBox();
+    await page.locator(`#procurement-root [data-pr="${rowId}"][data-pf="${top}"]`).click();
+    await page.waitForSelector('.cb-menu:not([hidden])');
+    const menu = await page.locator('.cb-menu:not([hidden])').boundingBox();
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await sleep(400);
+    return { menuTop: menu.y, underBottom: box.y + box.height, focus: await page.evaluate(() => document.activeElement && document.activeElement.dataset.pf) };
+  };
+  const before = { ...W.rows.find(x => x.id === 'Z1') };
+  let c = await clickBelow('Z1', 'vendor', 'quote_number');
+  ok('Vendor\'s menu opens under the whole cell, clear of the Quote # box', c.menuTop >= c.underBottom, c);
+  ok('…so clicking Quote # with the Vendor menu open lands in Quote #, and the vendor stays as it was', c.focus === 'quote_number'
+    && await cell(page, 'Z1', 'vendor').inputValue() === 'LB Water', c);
+  c = await clickBelow('Z1', 'contact', 'email');
+  ok('the same for Contact over Email: the click lands in Email', c.menuTop >= c.underBottom && c.focus === 'email', c);
+  await clickAway(page);
+  await sleep(800);
+  const after = W.rows.find(x => x.id === 'Z1');
+  ok('…and nothing was saved over the row: vendor, contact and email as they were', after.vendor === before.vendor
+    && after.contact === before.contact && after.email === before.email, [after.vendor, after.contact, after.email]);
+  const listPuts = () => W.log.filter(l => l.api === 'data/fct_lists' && l.method === 'PUT').length;
+  const puts = listPuts();
+  const qBox = await page.locator('#procurement-root [data-pr="Z3"][data-pf="quote_number"]').boundingBox();
+  await cell(page, 'Z3', 'vendor').click();
+  await cell(page, 'Z3', 'vendor').fill('Acme Pipe');
+  await page.waitForSelector('.cb-menu:not([hidden]) .cb-opt');
+  await page.mouse.click(qBox.x + qBox.width / 2, qBox.y + qBox.height / 2);
+  await sleep(600);
+  ok('a new vendor typed, then Quote # clicked: the supplier list is left alone (no "+ Add" picked by accident)',
+    listPuts() === puts && await page.evaluate(() => !lists.suppliers.some(s => s.name === 'Acme Pipe'))
+    && await page.evaluate(() => document.activeElement && document.activeElement.dataset.pf) === 'quote_number');
   ok('no page errors', errors.length === 0, errors.join(' | '));
   await ctx.close();
 }

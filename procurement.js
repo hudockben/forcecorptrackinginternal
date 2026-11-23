@@ -65,8 +65,9 @@
   // pill — short, since the Status column is narrow; the tooltip, filters,
   // exports and print say it in full.
   const SCA_SHORT = { Pending: 'Agmt pending', Needed: 'Agmt needed', 'Not Needed': 'No agmt', Executed: 'Agmt \u2713' };
-  // …and in its picker's menu, which has the room to say it in full.
-  const SCA_OPTION = { Pending: 'Agreement pending', Needed: 'Agreement needed', 'Not Needed': 'Agreement not needed', Executed: 'Agreement executed' };
+  // …and in its picker's menu (labelled "Sub-Contractor Agreement"), each
+  // starting with its own word, so a typed letter picks it.
+  const SCA_OPTION = { Pending: 'Pending', Needed: 'Needed', 'Not Needed': 'Not needed', Executed: 'Executed' };
   // The bid's own unit list (tracker.html UNIT_OPTS). Free text is still
   // allowed in the Unit cell — a supplier sells by the roll, the bag, the
   // stick — this is only what the menu offers.
@@ -779,6 +780,8 @@
       if (words.length) {
         const hay = SEARCH_FIELDS.filter(f => !colHidden(f)).map(f => fieldValue(row, f, ctx))
           .concat(flagsOf(row, ctx).map(f => f.label), [row.date_needed, row.date_ordered, row.date_delivered])
+          // The agreement as its tag in the Status cell reads ("Agmt needed").
+          .concat(colHidden('sca_status') ? [] : [SCA_SHORT[row.sca_status] || ''])
           .join(' ').toLowerCase();
         if (!words.every(w => hay.includes(w))) return false;
       }
@@ -1522,15 +1525,17 @@
       .fctproc-statusbox > .c-flags:empty { display:none; }
       .fctproc-statusbox .fctproc-flags { margin-left:0; }
       .fctproc-statusbox .fctproc-flag { letter-spacing:0.01em; padding-left:0.22rem; padding-right:0.22rem; }
-      .fctproc-scatag { display:inline-block; white-space:nowrap; font-size:0.6rem; font-weight:600; line-height:1.25; letter-spacing:0;
-        padding:0.02rem 0.25rem; border:1px solid var(--border,#2a2a3a); border-radius:3px; color: var(--muted,#9ca3af); }
-      .fctproc-scatag.sca-Pending { opacity:0.6; border-color: transparent; padding-left:0.1rem; }
-      .fctproc-scatag.sca-Needed { color:#fbbf24; border-color: rgba(234,179,8,0.55); }
-      .fctproc-scatag.sca-Executed { color: var(--green,#22c55e); border-color: rgba(34,197,94,0.45); }
-      .fctproc-scatag.sca-Not-Needed { opacity:0.6; border-style:dashed; }
+      /* A pill like the Status pill above it, in the same greys for "pending",
+         amber when an agreement is needed, green once executed. */
+      .fctproc-scatag { display:inline-block; white-space:nowrap; font-size:0.62rem; font-weight:600; line-height:1.3; letter-spacing:0;
+        padding:0.05rem 0.3rem; border:1px solid rgba(156,163,175,0.28); border-radius:999px;
+        background: rgba(156,163,175,0.10); color:#9ca3af; }
+      .fctproc-scatag.sca-Needed { background: rgba(234,179,8,0.14); color:#fbbf24; border-color: rgba(234,179,8,0.45); }
+      .fctproc-scatag.sca-Executed { background: rgba(34,197,94,0.14); color: var(--green,#22c55e); border-color: rgba(34,197,94,0.4); }
+      .fctproc-scatag.sca-Not-Needed { background: transparent; border-style:dashed; }
       .fctproc-scawrap { position:relative; display:inline-flex; max-width:100%; cursor:pointer; }
-      .fctproc-scawrap:hover .fctproc-scatag { border-color: var(--muted,#666); opacity:1; }
-      .fctproc-scawrap:focus-within .fctproc-scatag { border-color:#2563eb; opacity:1; box-shadow: 0 0 0 1px #2563eb33; }
+      .fctproc-scawrap:hover .fctproc-scatag { border-color: rgba(156,163,175,0.6); }
+      .fctproc-scawrap:focus-within .fctproc-scatag { border-color:#2563eb; box-shadow: 0 0 0 1px #2563eb33; }
       .fctproc-scawrap select.fctproc-scasel { position:absolute; inset:0; width:100%; height:100%; min-width:0; opacity:0; padding:0; cursor:pointer; }
       /* The empty boxes of a row say what they are when the row is pointed
          at or the box is in use — on every row at once they were a form's
@@ -1542,7 +1547,7 @@
       .fctproc-stack > .fctproc-part + .fctproc-part .fctproc-in,
       .fctproc-stack > .fctproc-part + .fctproc-part .cb-input,
       .fctproc-stack > .fctproc-part + .fctproc-part .fctproc-txt { font-size:0.74rem; }
-      .fctproc-stack .fctproc-in, .fctproc-stack .cb-input { padding-top:0.06rem; padding-bottom:0.06rem; }
+      .fctproc-stack .fctproc-in, .fctproc-stack .cb-input { padding:0.06rem 0.25rem; }
       .fctproc-table th .fctproc-stack { row-gap:0.2rem; }
       /* A long sub code or vendor ends in an ellipsis like the plain-text
          cells beside it, instead of being cut off mid-letter. */
@@ -2889,7 +2894,7 @@
     { key: 'sel', label: '', w: 2, edit: true, stick: true },
     // Status, with the Sub-Contractor Agreement as a tag under the pill
     // rather than a column of its own; each keeps its filter.
-    { key: 'status', label: 'Status', w: 9.2, stick: true, sep: '·', parts: [
+    { key: 'status', label: 'Status', w: 9.7, stick: true, sep: '·', parts: [
       { label: 'Status', filter: 'status' },
       { label: 'Sub Agmt', filter: 'sca_status', title: 'Sub-Contractor Agreement' },
     ] },
@@ -3413,7 +3418,11 @@
             : `<span class="fctproc-txt" title="${esc(tip || r.vendor)}">${esc(r.vendor)}</span>`;
           const quote = edit ? textIn('quote_number', 'Quote #', ' aria-label="Quote #"')
             : `<span class="fctproc-txt" title="${esc(r.quote_number ? `Quote # ${r.quote_number}` : '')}">${esc(r.quote_number)}</span>`;
-          return td('', `<div class="fctproc-stack">${part('vendor', vendor, off ? ' vendor-off' : '')}${part('quote_number', quote)}</div>`);
+          // data-cb-anchor: the Vendor (and, below, Contact) menu opens under
+          // the whole cell, not over the box beneath it — a click meant for
+          // Quote # or Email would otherwise pick an option (tracker.html
+          // _cbPositionFixed).
+          return td('', `<div class="fctproc-stack" data-cb-anchor>${part('vendor', vendor, off ? ' vendor-off' : '')}${part('quote_number', quote)}</div>`);
         }
         case 'contact_email': {
           // Contact over Email (a phone number is allowed there, as in the
@@ -3422,7 +3431,7 @@
             ? cbCell('proc_contacts:' + r.id, r.contact, 'Contact', `${at('contact')} maxlength="${MAX_LEN.contact}" aria-label="Contact"`)
             : txt(r.contact);
           const email = edit ? textIn('email', 'Email', ' aria-label="Email"') : txt(r.email);
-          return td('', `<div class="fctproc-stack">${part('contact', contact)}${part('email', email)}</div>`);
+          return td('', `<div class="fctproc-stack" data-cb-anchor>${part('contact', contact)}${part('email', email)}</div>`);
         }
         case 'actions':
           if (st.confirmDel === r.id) {
