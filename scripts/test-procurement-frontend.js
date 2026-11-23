@@ -823,9 +823,27 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   const headers = env.$$('.fctproc-table th').map(th => th.dataset.label || '');
   // The paperclip (attached documents) rides in the Status cell, so it adds
   // no column: the sheet is exactly as wide as it was before attachments.
-  assert('columns in the agreed order — the ordering dates in one column, the codes in another', eq(headers, ['', 'Status', 'PO #', 'Sub-Contractor Agreement', 'Date Needed',
-    'Lead Time · Order By · Ordered · Delivered', 'Quantity', 'Unit', 'Material', 'Cost Code / Sub Code', 'Vendor', 'Quote #',
-    'Contact', 'Email', '']), headers);
+  assert('columns in the agreed order — fields that belong together sharing a column', eq(headers, ['', 'Status', 'PO #', 'Date Needed',
+    'Lead Time · Order By · Ordered · Delivered', 'Quantity', 'Unit', 'Material', 'Cost Code / Sub Code', 'Vendor / Quote #', 'Contact / Email', '']), headers);
+  {
+    const fbs = th => [...th.querySelectorAll('[data-pff]')].map(b => b.dataset.pff);
+    const sh = env.$('th.c-status'), vh = env.$('th.c-supplier'), kh = env.$('th.c-contact_email');
+    assert('  Status keeps its filter and adds the Sub-Contractor Agreement\'s, still pinned left', eq(fbs(sh), ['status', 'sca_status'])
+      && sh.classList.contains('stk') && /Sub-Contractor Agreement/.test(sh.querySelector('[data-pff="sca_status"]').closest('.fctproc-hp').title));
+    assert('  Vendor over Quote #, and Contact over Email, each with its filter', eq(fbs(vh), ['vendor', 'quote_number']) && eq(fbs(kh), ['contact', 'email'])
+      && !!vh.querySelector('.fctproc-stack') && !!kh.querySelector('.fctproc-stack'));
+    const sup = env.$('tr[data-row="r1"] td.c-supplier'), con = env.$('tr[data-row="r1"] td.c-contact_email');
+    assert('  a row\'s Vendor sits over its Quote #, its Contact over its Email — the same boxes as before',
+      sup.querySelector('.fctproc-stack > .c-vendor [data-pf="vendor"]') === env.field('r1', 'vendor')
+      && sup.querySelector('.fctproc-stack > .c-quote_number [data-pf="quote_number"]') === env.field('r1', 'quote_number')
+      && con.querySelector('.fctproc-stack > .c-contact [data-pf="contact"]') === env.field('r1', 'contact')
+      && con.querySelector('.fctproc-stack > .c-email [data-pf="email"]') === env.field('r1', 'email')
+      && env.field('r1', 'quote_number').placeholder === 'Quote #' && env.field('r1', 'email').getAttribute('aria-label') === 'Email');
+    const stc = env.$('tr[data-row="r1"] td.c-status');
+    assert('  the Status cell: the pill, then the agreement tag (a picker under it), then the flags', !!stc.querySelector('.fctproc-statusbox > .c-pill .fctproc-pill')
+      && stc.querySelector('.fctproc-statusbox > .c-sca_status [data-pf="sca_status"]') === env.field('r1', 'sca_status')
+      && stc.querySelector('.c-sca_status .fctproc-scatag').textContent === 'Agmt pending' && !!stc.querySelector('.fctproc-statusbox > .c-flags'));
+  }
   {
     const oh = env.$('th.c-ordering'), ch = env.$('th.c-codes');
     const fbs = th => [...th.querySelectorAll('[data-pff]')].map(b => b.dataset.pff);
@@ -865,8 +883,11 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   assert("derived Date Ordered shows the PO's date, muted", env.field('r1', 'date_ordered').value === '2026-03-01' && env.field('r1', 'date_ordered').classList.contains('derived'));
   assert('not ordered + needed yesterday -> Late (red edge)', /Late/.test(tr2.querySelector('.c-status').textContent) && tr2.querySelector('.c-status').classList.contains('flag-red'));
   // Shown short so the Status column stays narrow; the whole wording is its tooltip, and the export's.
-  assert('SCA Needed -> amber "Sub agmt open"', /Sub agmt open/.test(tr3.querySelector('.c-status').textContent) && tr3.querySelector('.c-status').classList.contains('flag-amber'));
-  assert('  with the whole wording as its tooltip', /sub-contractor agreement is needed/.test((tr3.querySelector('.c-status .fctproc-flag') || {}).title || ''));
+  assert('SCA Needed -> the Status cell\'s agreement tag reads "Agmt needed", amber, and the cell has an amber edge',
+    tr3.querySelector('.c-status .fctproc-scatag').textContent === 'Agmt needed' && tr3.querySelector('.c-status .fctproc-scatag').classList.contains('sca-Needed')
+    && tr3.querySelector('.c-status').classList.contains('flag-amber'));
+  assert('  …said once: no "Sub agmt open" flag beside it, and the whole wording as its tooltip',
+    !/Sub agmt open/.test(tr3.querySelector('.c-status .c-flags').textContent) && tr3.querySelector('.c-status .fctproc-scawrap').title === 'Sub-Contractor Agreement: Needed');
   assert('bid changed badge with its two actions', /bid 901 → 950 LF/.test(tr2.querySelector('.c-quantity').textContent)
     && !!tr2.querySelector('[data-act="use-bid"]') && !!tr2.querySelector('[data-act="dismiss-bid"]'));
   assert('a bid row whose line is gone is badged "not on bid"', /not on bid/.test(tr4.querySelector('.c-codes').textContent));
@@ -2550,9 +2571,9 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     e.P.configure({ hiddenColumns: ['description'] });
     e.P.renderTab(e.root);
     await tick(); await tick(); await tick();
-    const heads = e.$$('#fctproc-wrap thead th').map(t => t.textContent.trim());
-    assert('no Material column or cells on the sheet; the rest are there', !heads.some(h => /^Material/.test(h)) && !e.field('h1', 'description')
-      && heads.some(h => /^Quote #/.test(h)) && !!e.field('h1', 'quote_number') && e.$$('tr.fctproc-row').length === 2, heads);
+    const heads = e.$$('#fctproc-wrap thead th').map(t => t.dataset.label || '');
+    assert('no Material column or cells on the sheet; the rest are there', !heads.includes('Material') && !e.field('h1', 'description')
+      && heads.includes('Vendor / Quote #') && !!e.field('h1', 'quote_number') && e.$$('tr.fctproc-row').length === 2, heads);
     assert('…and the table is that column narrower', parseFloat(e.$('.fctproc-table').style.width) > 0
       && !e.$$('#fctproc-wrap col').some(c => c.style.width === '18rem'), e.$('.fctproc-table').style.width);
     const search = e.$('#fctproc-search');
@@ -2778,13 +2799,13 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     await drawn(f);
     const fcell = f.$('tr[data-row="f1"] td.c-status');
     const fclip = fcell && fcell.querySelector('.fctproc-clip');
-    assert('a line with a status flag keeps its paperclip, between the pill and the flags',
-      !!fclip && !!fcell.querySelector('.fctproc-flags') && fcell.classList.contains('flag-amber')
+    assert('a line with a status flag keeps its paperclip, beside the pill, ahead of the agreement and the flags',
+      !!fclip && fcell.classList.contains('flag-amber')
       && fcell.querySelector('.fctproc-pill').nextElementSibling === fclip
-      && fclip.nextElementSibling === fcell.querySelector('.fctproc-flags')
+      && fclip.closest('.fctproc-part').nextElementSibling === fcell.querySelector('.c-sca_status')
       && fclip.textContent === CLIP + '1', fcell && fcell.innerHTML);
-    assert('  the flag and the Status filter read the status alone, not the paperclip',
-      /Sub agmt open/.test(fcell.textContent) && f.P._test.fieldValue(f.P._test.state().rows[0], 'status', C()) === 'Not Ordered');
+    assert('  the agreement tag and the Status filter read the status alone, not the paperclip',
+      /Agmt needed/.test(fcell.querySelector('.fctproc-scatag').textContent) && f.P._test.fieldValue(f.P._test.state().rows[0], 'status', C()) === 'Not Ordered');
     fclip.click();
     await sleep(20);
     assert('  and it opens that line\'s documents', df.opened.length === 1 && df.opened[0].line.id === 'f1');
@@ -3205,7 +3226,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('the head names the site and its jobs', /Hempfield/.test(e.$('.fctproc-head').textContent)
       && /Hempfield Baseball\s*#26057/.test(e.$('.fctproc-head').textContent) && /Hempfield Softball\s*#26058/.test(e.$('.fctproc-head').textContent),
       e.$('.fctproc-head').textContent.replace(/\s+/g, ' '));
-    const sheaders = e.$$('.fctproc-table th').map(th => th.textContent.replace('▼', '').trim());
+    const sheaders = e.$$('.fctproc-table th').map(th => th.dataset.label || '');
     assert('a Job column, after Status', sheaders[1] === 'Status' && sheaders[2] === 'Job', sheaders);
     assert('every row of both jobs, job by job', eq(e.$$('tr.fctproc-row').map(t => t.dataset.row), ['a1', 'a2', 'b1', 'b2']));
     const bands = e.$$('tr.fctproc-jobband');
@@ -3785,6 +3806,55 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('a viewer has no "+ Material" to copy with', !e.$('tr[data-row="v1"] [data-act="material"]') && !e.$('.fctproc-pastdot'));
     const lead = e.$('tr[data-row="v1"] td.c-ordering .c-lead_time_days');
     assert('…and a blank Lead Time reads as nothing, not a lone "d"', lead.textContent.trim() === '' && !lead.querySelector('.fctproc-u'), lead.innerHTML);
+  }
+
+  console.log('\n[the Sub-Contractor Agreement in the Status cell; Vendor / Quote # and Contact / Email stacked]');
+  {
+    const e = makeEnv({ rows: [
+      row({ id: 's1', source: 'bid', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', date_needed: '2026-05-20', vendor: 'Not A Listed Co', quote_number: 'Q-9' }),
+    ] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const cell = () => e.$('tr[data-row="s1"] td.c-status');
+    const sel = e.field('s1', 'sca_status');
+    assert('the agreement is a picker of the four values, said in full in its menu', eq([...sel.options].map(o => [o.value, o.textContent]),
+      [['Pending', 'Agreement pending'], ['Needed', 'Agreement needed'], ['Not Needed', 'Agreement not needed'], ['Executed', 'Agreement executed']]));
+    assert('…laid over its tag, which is what shows', sel.closest('.fctproc-scawrap').querySelector('.fctproc-scatag').getAttribute('aria-hidden') === 'true'
+      && sel.getAttribute('aria-label') === 'Sub-Contractor Agreement' && !cell().classList.contains('flag-amber'));
+    sel.focus();
+    sel.value = 'Needed';
+    e.fire(sel, 'change');
+    assert('picking "Needed": the tag says so and turns amber at once, while the picker keeps focus',
+      e.w.document.activeElement === sel && sel.isConnected && cell().querySelector('.fctproc-scatag').textContent === 'Agmt needed'
+      && cell().querySelector('.fctproc-scatag').classList.contains('sca-Needed') && sel.closest('.fctproc-scawrap').title === 'Sub-Contractor Agreement: Needed');
+    assert('…and the cell around it takes its amber edge without waiting for the picker to be left', cell().classList.contains('flag-amber'));
+    await sleep(700);
+    sel.blur();
+    assert('…saved as the full value', e.db.rows[0].sca_status === 'Needed' && e.patches().pop().body.fields.sca_status === 'Needed');
+    assert('a vendor off the supplier list is marked on its own line, not the Quote # beneath it',
+      !!e.$('tr[data-row="s1"] td.c-supplier .c-vendor.vendor-off') && !e.$('tr[data-row="s1"] td.c-supplier').classList.contains('vendor-off')
+      && !e.$('tr[data-row="s1"] td.c-supplier .c-quote_number').classList.contains('vendor-off'));
+    // Typing in one line of a stacked cell: the other line is redrawn around it.
+    const q = e.field('s1', 'quote_number');
+    q.focus();
+    e.P._test.state().rows[0].vendor = 'LB Water';
+    e.P.rerender();
+    assert('while Quote # is typed in, a vendor changed elsewhere shows over it — the box in use left as it is',
+      e.field('s1', 'quote_number') === q && e.w.document.activeElement === q && e.field('s1', 'vendor').value === 'LB Water'
+      && !e.$('tr[data-row="s1"] .vendor-off'));
+    q.blur();
+  }
+  {
+    const e = makeEnv({ perm: { canView: true, canEdit: false }, serverCanEdit: false, rows: [
+      row({ id: 'w1', sca_status: 'Executed', vendor: 'LB Water', quote_number: 'Q-1', contact: 'Dana', email: 'dana@lbwater.test' })] });
+    e.P.renderTab(e.root);
+    await tick(); await tick(); await tick();
+    const tag = e.$('tr[data-row="w1"] td.c-status .fctproc-scatag');
+    assert('a viewer sees the agreement as a tag (executed: a tick), with its full wording as the tooltip, and nothing to pick', !!tag && tag.textContent === 'Agmt \u2713'
+      && tag.title === 'Sub-Contractor Agreement: Executed' && !e.field('w1', 'sca_status'));
+    assert('…and Vendor over Quote #, Contact over Email, as text', e.$('tr[data-row="w1"] .c-vendor').textContent.trim() === 'LB Water'
+      && e.$('tr[data-row="w1"] .c-quote_number').textContent.trim() === 'Q-1' && e.$('tr[data-row="w1"] .c-contact').textContent.trim() === 'Dana'
+      && e.$('tr[data-row="w1"] .c-email').textContent.trim() === 'dana@lbwater.test');
   }
 
   console.log('\n[+ Material copy: one at a time, all or nothing, the own row decided late]');

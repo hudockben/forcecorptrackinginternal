@@ -1819,6 +1819,49 @@ async function copyList(browser) {
   await ctx.close();
 }
 
+// ── The sheet on a 1920-wide screen: no sideways scrolling ───────────────
+async function fitsWide(browser) {
+  console.log('\nthe whole sheet on a 1920-wide screen, and the agreement picked in the Status cell');
+  const t = i => new Date(Date.UTC(2026, 9, 7) + i * 1000).toISOString();
+  const W = makeWorld();
+  W.pos = [];
+  const r = (id, i, f) => ({ ...BLANK_ROW, id, project_id: 'p1', created_at: t(i), updated_at: t(i), ...f });
+  W.rows.push(
+    r('Z1', 1, { source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: '8 oz nonwoven geotextile (bottom and sides)',
+      quantity: 12500, unit: 'SF', date_needed: plusDays(5), vendor: 'LB Water', quote_number: 'QT#2244287', contact: 'Dana Reyes', email: 'dana.reyes@lbwater.example.com' }),
+    r('Z2', 2, { source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: DRAIN, quantity: 950, unit: 'LF', date_needed: plusDays(-2), lead_time_days: 10, sca_status: 'Needed' }),
+    r('Z3', 3, { bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: DRAIN, description: 'Flat Drain', quantity: 1055, unit: 'LF', date_needed: plusDays(9), sca_status: 'Executed' }),
+  );
+  const { page, ctx, errors } = await openPage(browser, W, 'level2', { viewport: { width: 1920, height: 1000 }, storage: { fct_proc_project_turf: 'p1' } });
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 3));
+  await sleep(300);
+  const fit = await page.evaluate(() => { const w = document.querySelector('#fctproc-wrap'); return { client: w.clientWidth, scroll: w.scrollWidth }; });
+  ok('at 1920 wide the whole sheet shows: no sideways scrolling', fit.scroll <= fit.client, fit);
+  const lines = () => page.$$eval('#procurement-root tr.fctproc-row', trs => trs.map(tr => new Set([...tr.querySelectorAll('td.c-status .fctproc-pill, td.c-status .fctproc-scatag, td.c-status .fctproc-flag')]
+    .map(x => Math.round(x.getBoundingClientRect().top))).size));
+  ok('every Status cell is two lines at most: the pill, then the agreement and its flags', (await lines()).every(n => n <= 2), await lines());
+  ok('the agreement reads short, coloured by its state', eq(await page.$$eval('#procurement-root td.c-status .fctproc-scatag', t => t.map(x => x.textContent)),
+    ['Agmt pending', 'Agmt needed', 'Agmt \u2713']));
+  // Picked through the real (unseen) select over the tag.
+  await page.locator('#procurement-root [data-pr="Z1"][data-pf="sca_status"]').selectOption('Needed');
+  await until(() => W.rows.find(x => x.id === 'Z1').sca_status === 'Needed', 4000);
+  ok('picking it saves the full value, and the tag and the cell\'s edge follow', W.rows.find(x => x.id === 'Z1').sca_status === 'Needed'
+    && (await page.textContent('#procurement-root tr[data-row="Z1"] td.c-status .fctproc-scatag')) === 'Agmt needed'
+    && await page.locator('#procurement-root tr[data-row="Z1"] td.c-status').evaluate(td => td.classList.contains('flag-amber') || td.classList.contains('flag-red')));
+  const tagBox = await page.locator('#procurement-root tr[data-row="Z1"] .fctproc-scawrap').evaluate(w => {
+    const s = w.querySelector('select').getBoundingClientRect(), g = w.querySelector('.fctproc-scatag').getBoundingClientRect();
+    return Math.abs(s.width - g.width) < 1 && Math.abs(s.height - g.height) < 1 && getComputedStyle(w.querySelector('select')).opacity === '0';
+  });
+  ok('…the select lying exactly over the tag, unseen', tagBox);
+  ok('Vendor over Quote #, Contact over Email, each in full or cut with its tooltip', await page.$eval('#procurement-root tr[data-row="Z1"] td.c-contact_email', td => {
+    const em = td.querySelector('[data-pf="email"]');
+    return em.title === 'dana.reyes@lbwater.example.com' && td.querySelector('.c-contact').getBoundingClientRect().bottom <= td.querySelector('.c-email').getBoundingClientRect().top + 1;
+  }));
+  ok('no page errors', errors.length === 0, errors.join(' | '));
+  await ctx.close();
+}
+
 // ── The section checkbox on each group header ─────────────────────────────
 async function sectionSelect(browser) {
   console.log('\nthe section checkbox: tick a whole section, then delete or bulk-edit it');
@@ -2226,8 +2269,8 @@ async function attachments(browser) {
 
   const heads = await page.$$eval('#procurement-root thead th', ths => ths.map(th => ({ text: th.textContent.trim(), title: th.title })));
   const poAt = heads.findIndex(h => /^PO #/.test(h.text));
-  ok('no paperclip column: PO # is followed by Sub-Contractor Agreement as before',
-    poAt >= 0 && !!heads[poAt + 1] && /^Sub-Contractor Agreement/.test(heads[poAt + 1].text)
+  ok('no paperclip column: Status is followed by PO #, then Date Needed, as before',
+    poAt === 2 && /^Status/.test(heads[1].text) && !!heads[poAt + 1] && /^Date Needed/.test(heads[poAt + 1].text)
       && !heads.some(h => h.text === CLIP || h.title === 'Attached documents'), heads.map(h => h.text));
   // The paperclip rides in the Status cell, beside the pill, inside the
   // cell's own width (Status is pinned at the left at a fixed width) — and
@@ -2523,6 +2566,7 @@ async function siteSheet(browser) {
     await roundThreeSaveFixes(browser);
     await roundFourFixes(browser);
     await copyList(browser);
+    await fitsWide(browser);
     await sectionSelect(browser);
     await sectionAdd(browser);
     await printPdf(browser);

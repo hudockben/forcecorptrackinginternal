@@ -61,6 +61,12 @@
   const SAVE_DELAY = 600;           // ms of quiet before a row's edits are sent
   const DUE_SOON_DAYS = 14;
   const SCA_VALUES = ['Pending', 'Needed', 'Not Needed', 'Executed'];
+  // How the Sub-Contractor Agreement reads in its tag under a row's Status
+  // pill — short, since the Status column is narrow; the tooltip, filters,
+  // exports and print say it in full.
+  const SCA_SHORT = { Pending: 'Agmt pending', Needed: 'Agmt needed', 'Not Needed': 'No agmt', Executed: 'Agmt \u2713' };
+  // …and in its picker's menu, which has the room to say it in full.
+  const SCA_OPTION = { Pending: 'Agreement pending', Needed: 'Agreement needed', 'Not Needed': 'Agreement not needed', Executed: 'Agreement executed' };
   // The bid's own unit list (tracker.html UNIT_OPTS). Free text is still
   // allowed in the Unit cell — a supplier sells by the roll, the bag, the
   // stick — this is only what the menu offers.
@@ -1509,6 +1515,35 @@
       select.fctproc-in.sca-Needed { color:#fbbf24; }
       select.fctproc-in.sca-Executed { color: var(--green,#22c55e); }
       select.fctproc-in.sca-Not-Needed { color: var(--muted,#9ca3af); }
+      /* Status: the pill (and paperclip) on the first line; the Sub-Contractor
+         Agreement tag and the flags on the second. */
+      .fctproc-statusbox { display:flex; flex-wrap:wrap; align-items:center; gap:0.12rem 0.2rem; min-width:0; }
+      .fctproc-statusbox > .c-pill { flex: 1 0 100%; display:flex; align-items:center; gap:0.15rem; min-width:0; }
+      .fctproc-statusbox > .c-flags:empty { display:none; }
+      .fctproc-statusbox .fctproc-flags { margin-left:0; }
+      .fctproc-statusbox .fctproc-flag { letter-spacing:0.01em; padding-left:0.22rem; padding-right:0.22rem; }
+      .fctproc-scatag { display:inline-block; white-space:nowrap; font-size:0.6rem; font-weight:600; line-height:1.25; letter-spacing:0;
+        padding:0.02rem 0.25rem; border:1px solid var(--border,#2a2a3a); border-radius:3px; color: var(--muted,#9ca3af); }
+      .fctproc-scatag.sca-Pending { opacity:0.6; border-color: transparent; padding-left:0.1rem; }
+      .fctproc-scatag.sca-Needed { color:#fbbf24; border-color: rgba(234,179,8,0.55); }
+      .fctproc-scatag.sca-Executed { color: var(--green,#22c55e); border-color: rgba(34,197,94,0.45); }
+      .fctproc-scatag.sca-Not-Needed { opacity:0.6; border-style:dashed; }
+      .fctproc-scawrap { position:relative; display:inline-flex; max-width:100%; cursor:pointer; }
+      .fctproc-scawrap:hover .fctproc-scatag { border-color: var(--muted,#666); opacity:1; }
+      .fctproc-scawrap:focus-within .fctproc-scatag { border-color:#2563eb; opacity:1; box-shadow: 0 0 0 1px #2563eb33; }
+      .fctproc-scawrap select.fctproc-scasel { position:absolute; inset:0; width:100%; height:100%; min-width:0; opacity:0; padding:0; cursor:pointer; }
+      /* The empty boxes of a row say what they are when the row is pointed
+         at or the box is in use — on every row at once they were a form's
+         worth of grey words. The headers say which line is which. */
+      tr.fctproc-row:not(:hover) .fctproc-stack input:not(:focus)::placeholder { color: transparent; }
+      /* Two fields over each other in one cell (Vendor over Quote #,
+         Contact over Email): the second one a little smaller. */
+      .fctproc-stack { display:grid; grid-template-columns: minmax(0,1fr); row-gap:0.06rem; }
+      .fctproc-stack > .fctproc-part + .fctproc-part .fctproc-in,
+      .fctproc-stack > .fctproc-part + .fctproc-part .cb-input,
+      .fctproc-stack > .fctproc-part + .fctproc-part .fctproc-txt { font-size:0.74rem; }
+      .fctproc-stack .fctproc-in, .fctproc-stack .cb-input { padding-top:0.06rem; padding-bottom:0.06rem; }
+      .fctproc-table th .fctproc-stack { row-gap:0.2rem; }
       /* A long sub code or vendor ends in an ellipsis like the plain-text
          cells beside it, instead of being cut off mid-letter. */
       .fctproc-table .cb-input, .fctproc-table input.fctproc-in[type=text] { text-overflow: ellipsis; }
@@ -1520,7 +1555,7 @@
       td.po-multi .cb-input::placeholder, td.po-multi .fctproc-txt { color:#fbbf24; opacity:1; font-style: italic; }
       td.po-removed .cb-input::placeholder, td.po-removed .fctproc-txt { color:#f87171; opacity:1; font-style: italic; }
       td.po-nopo .cb-input, td.po-nopo .fctproc-txt { color: var(--muted,#9ca3af); }
-      td.vendor-off .cb-input, td.vendor-off .fctproc-txt { color:#fbbf24; text-decoration: underline dotted rgba(234,179,8,0.7); text-underline-offset: 3px; }
+      .vendor-off .cb-input, .vendor-off .fctproc-txt { color:#fbbf24; text-decoration: underline dotted rgba(234,179,8,0.7); text-underline-offset: 3px; }
       .fctproc-open { background:none; border:1px solid var(--border,#2a2a3a); color: var(--blue,#60a5fa); border-radius:3px;
         font-size:0.68rem; line-height:1; padding:0.15rem 0.25rem; cursor:pointer; flex:none; }
       .fctproc-open:hover { background: rgba(96,165,250,0.12); }
@@ -1573,13 +1608,14 @@
       .fctproc-u { color: var(--muted,#9ca3af); font-size:0.66rem; margin-left:0.15rem; }
       .fctproc-part.c-order_by::before { content:'\\2192'; color: var(--muted,#6b7280); font-size:0.72rem; margin-right:0.2rem; }
       .fctproc-part.c-order_by .fctproc-txt { font-size:0.74rem; padding:0; }
-      /* An empty date says which one it is, faintly (the cell has no labels). */
-      .fctproc-part.c-date_ordered:has(> input.empty:not(:focus):not(:hover))::after,
-      .fctproc-part.c-date_delivered:has(> input.empty:not(:focus):not(:hover))::after {
+      /* An empty date says which one it is, faintly, on the row pointed at
+         (the cell has no room for labels; the header says which is which). */
+      tr.fctproc-row:hover .fctproc-part.c-date_ordered:has(> input.empty:not(:focus):not(:hover))::after,
+      tr.fctproc-row:hover .fctproc-part.c-date_delivered:has(> input.empty:not(:focus):not(:hover))::after {
         position:absolute; left:0.3rem; top:50%; transform: translateY(-50%); pointer-events:none;
         font-size:0.66rem; letter-spacing:0.03em; color: var(--muted,#9ca3af); opacity:0.85; }
-      .fctproc-part.c-date_ordered:has(> input.empty:not(:focus):not(:hover))::after { content:'ordered'; }
-      .fctproc-part.c-date_delivered:has(> input.empty:not(:focus):not(:hover))::after { content:'delivered'; }
+      tr.fctproc-row:hover .fctproc-part.c-date_ordered:has(> input.empty:not(:focus):not(:hover))::after { content:'ordered'; }
+      tr.fctproc-row:hover .fctproc-part.c-date_delivered:has(> input.empty:not(:focus):not(:hover))::after { content:'delivered'; }
       .fctproc-qty { display:flex; flex-direction:column; gap:0.1rem; padding:0.1rem 0; }
       .fctproc-bidchg { display:flex; flex-direction:column; align-items:flex-end; gap:0.12rem; font-size:0.62rem; color:#fbbf24; line-height:1.25; text-align:right; }
       .fctproc-bidchg > span:first-child { white-space: normal; }
@@ -2851,11 +2887,15 @@
   // of the old sheet were.
   const COLS = [
     { key: 'sel', label: '', w: 2, edit: true, stick: true },
-    { key: 'status', label: 'Status', w: 7.2, filter: 'status', stick: true },
+    // Status, with the Sub-Contractor Agreement as a tag under the pill
+    // rather than a column of its own; each keeps its filter.
+    { key: 'status', label: 'Status', w: 9.2, stick: true, sep: '·', parts: [
+      { label: 'Status', filter: 'status' },
+      { label: 'Sub Agmt', filter: 'sca_status', title: 'Sub-Contractor Agreement' },
+    ] },
     // The job a row is on — only on a site's sheet (site: true).
     { key: 'job', label: 'Job', w: 9.5, filter: 'job', site: true },
     { key: 'po', label: 'PO #', w: 9, filter: 'po' },
-    { key: 'sca_status', label: 'Sub-Contractor Agreement', w: 6.9, filter: 'sca_status' },
     // Every column filters, as every column of the old sheet did — a blank
     // Date Needed is exactly the row the late flags can never catch, and
     // "(blank)" in its filter is how it is found.
@@ -2884,10 +2924,16 @@
       { label: 'Cost Code', filter: 'cost_code' },
       { label: 'Sub Code', filter: 'sub_code', title: 'The bid line this material\'s cost books to' },
     ] },
-    { key: 'vendor', label: 'Vendor', w: 10.5, filter: 'vendor' },
-    { key: 'quote_number', label: 'Quote #', w: 7, filter: 'quote_number' },
-    { key: 'contact', label: 'Contact', w: 9, filter: 'contact' },
-    { key: 'email', label: 'Email', w: 11, filter: 'email' },
+    // Who it comes from: Vendor over its Quote #, and Contact over Email —
+    // two to a column, each with its own filter.
+    { key: 'supplier', label: 'Vendor / Quote #', w: 11, stack: true, parts: [
+      { label: 'Vendor', filter: 'vendor' },
+      { label: 'Quote #', filter: 'quote_number' },
+    ] },
+    { key: 'contact_email', label: 'Contact / Email', w: 12, stack: true, parts: [
+      { label: 'Contact', filter: 'contact' },
+      { label: 'Email', filter: 'email' },
+    ] },
     { key: 'actions', label: '', w: 6.2, edit: true },
   ];
   const colsFor = edit => COLS.filter(c => (!c.edit || edit) && !colHidden(c.key) && (!c.site || siteMode()));
@@ -2953,9 +2999,9 @@
       // cells are — side by side with a separator, or 2 × 2.
       if (c.parts) {
         const part = p => `<span class="fctproc-hp"${p.title ? ` title="${esc(p.title)}"` : ''}>${esc(p.label)}${fb(p.filter, p.label)}</span>`;
-        const inner = c.grid ? c.parts.map(part).join('')
+        const inner = c.grid || c.stack ? c.parts.map(part).join('')
           : c.parts.map(part).join(`<span class="fctproc-sep" aria-hidden="true">${esc(c.sep || '')}</span>`);
-        return `<th class="c-${c.key}${stick}" data-label="${esc(c.label)}"><div class="${c.grid ? 'fctproc-grid2' : 'fctproc-inl'}">${inner}</div></th>`;
+        return `<th class="c-${c.key}${stick}" data-label="${esc(c.label)}"><div class="${c.grid ? 'fctproc-grid2' : c.stack ? 'fctproc-stack' : 'fctproc-inl'}">${inner}</div></th>`;
       }
       return `<th class="${c.num ? 'num' : ''}${stick}" data-label="${esc(c.label)}"${c.title ? ` title="${esc(c.title)}"` : ''}>${esc(c.label)}${fb(c.filter, c.label)}</th>`;
     }).join('') + '</tr>';
@@ -3231,8 +3277,11 @@
     const red = flags.some(f => f.level === 'red'), amber = !red && flags.some(f => f.level === 'amber');
     const txt = (v, cls) => `<span class="fctproc-txt${cls ? ' ' + cls : ''}" title="${esc(v)}">${esc(v)}</span>`;
     const dateIn = (f, v, extra = '') => `<input type="date" class="fctproc-in${ymdOf(v) ? '' : ' empty'}" ${at(f)} value="${esc(ymdOf(v))}" min="${DATE_MIN}" max="${DATE_MAX}"${extra}>`;
-    const textIn = (f, ph) => `<input type="text" class="fctproc-in" ${at(f)} value="${esc(r[f])}" maxlength="${MAX_LEN[f] || 200}"
-      placeholder="${esc(ph || '')}" title="${esc(r[f])}" autocomplete="off" spellcheck="false">`;
+    const textIn = (f, ph, extra = '') => `<input type="text" class="fctproc-in" ${at(f)} value="${esc(r[f])}" maxlength="${MAX_LEN[f] || 200}"
+      placeholder="${esc(ph || '')}" title="${esc(r[f])}" autocomplete="off" spellcheck="false"${extra}>`;
+    // One field of a cell that holds several (class c-<field>): refreshRow
+    // redraws the parts around the one being typed in.
+    const part = (f, inner, cls = '') => `<div class="fctproc-part c-${f}${cls}">${inner}</div>`;
     let left = 0;
     const cells = cols.map(c => {
       const stick = c.stick ? ` stk${c.key === 'status' ? ' stk-edge' : ''}" style="left:${left}rem` : '';
@@ -3247,9 +3296,26 @@
           // The line's paperclip rides in its Status cell rather than a column
           // of its own: Status is pinned to the left, so the paperclip is in
           // reach however far the sheet is scrolled, and the sheet is no wider.
-          return td(red ? 'flag-red' : amber ? 'flag-amber' : '',
-            `<span class="fctproc-pill ${cls}"${tip}>${esc(status)}</span>${clipHtml(r, ctx, edit)}${flags.length ? `<span class="fctproc-flags">${flags.map(f =>
-              `<span class="fctproc-flag ${f.level}" title="${esc(f.title)}">${esc(f.short || f.label)}</span>`).join('')}</span>` : ''}`);
+          // Under the pill: the Sub-Contractor Agreement — a tag that is its
+          // own picker — then the flags. "Sub agmt open" is not repeated
+          // there: the tag reads "Agmt needed", in amber, itself.
+          const shown = flags.filter(f => f.key !== 'sca_open');
+          const scaCls = `sca-${esc(r.sca_status.replace(/\s+/g, '-'))}`;
+          const scaTip = `Sub-Contractor Agreement: ${r.sca_status}`;
+          // An editor's tag is a picker: the select lies over it, unseen, so
+          // the tag is only as wide as what it says (a select is as wide as
+          // its longest option, which pushed the flags to a third line).
+          const tag = `<span class="fctproc-scatag ${scaCls}"${edit ? ' aria-hidden="true"' : ` title="${esc(scaTip)}"`}>${esc(SCA_SHORT[r.sca_status] || r.sca_status)}</span>`;
+          const sca = edit
+            ? `<span class="fctproc-scawrap" title="${esc(scaTip)}">${tag}<select class="fctproc-in fctproc-scasel ${scaCls}" ${at('sca_status')} aria-label="Sub-Contractor Agreement">${SCA_VALUES.map(v =>
+                `<option value="${esc(v)}"${v === r.sca_status ? ' selected' : ''}>${esc(SCA_OPTION[v])}</option>`).join('')}</select></span>`
+            : tag;
+          return td(red ? 'flag-red' : amber ? 'flag-amber' : '', `<div class="fctproc-statusbox">`
+            + part('pill', `<span class="fctproc-pill ${cls}"${tip}>${esc(status)}</span>${clipHtml(r, ctx, edit)}`)
+            + part('sca_status', sca)
+            + part('flags', shown.length ? `<span class="fctproc-flags">${shown.map(f =>
+              `<span class="fctproc-flag ${f.level}" title="${esc(f.title)}">${esc(f.short || f.label)}</span>`).join('')}</span>` : '')
+            + '</div>');
         }
         case 'job': {
           const p = project(r.project_id) || {};
@@ -3257,11 +3323,6 @@
           return td('', `<span class="fctproc-txt wrap2" title="${esc(name + (p['job-number'] ? ` — Job #${p['job-number']}` : ''))}">${esc(name)}</span>`);
         }
         case 'po': return poCellHtml(r, ep, edit, td);
-        case 'sca_status':
-          return edit
-            ? td('', `<select class="fctproc-in sca-${esc(r.sca_status.replace(/\s+/g, '-'))}" ${at('sca_status')}>${SCA_VALUES.map(v =>
-                `<option value="${esc(v)}"${v === r.sca_status ? ' selected' : ''}>${esc(v)}</option>`).join('')}</select>`)
-            : td('', txt(r.sca_status, r.sca_status === 'Needed' ? 'fctproc-amber' : r.sca_status === 'Executed' ? 'fctproc-ok' : 'fctproc-dim'));
         case 'date_needed':
           return td('', edit ? dateIn(c.key, r[c.key]) : txt(fmtDate(r[c.key])));
         case 'ordering': {
@@ -3340,22 +3401,29 @@
           }
           return td('', txt(own, 'wrap2'));
         }
-        case 'vendor': {
-          // Typed but never picked or added: allowed (the PM may not want it on
-          // the list yet), but marked, since contacts typed on the row are
-          // not remembered under it until it is on the list.
+        case 'supplier': {
+          // Vendor over its Quote #. A vendor typed but never picked or added
+          // is allowed (the PM may not want it on the list yet), but marked,
+          // since contacts typed on the row are not remembered under it until
+          // it is on the list.
           const off = !!(r.vendor.trim() && ctx.supplierKeys && ctx.supplierKeys.size && !ctx.supplierKeys.has(lc(r.vendor)));
           const tip = off ? `"${r.vendor.trim()}" is not on the supplier list. Pick "+ Add" in the Vendor menu to add it — until then, contacts typed on this row are not remembered.` : '';
-          return td(off ? 'vendor-off' : '', edit
-            ? cbCell('proc_vendors', r.vendor, '', `${at('vendor')} maxlength="${MAX_LEN.vendor}"${off ? ` title="${esc(tip)}"` : ''}`)
-            : `<span class="fctproc-txt" title="${esc(tip || r.vendor)}">${esc(r.vendor)}</span>`);
+          const vendor = edit
+            ? cbCell('proc_vendors', r.vendor, 'Vendor', `${at('vendor')} maxlength="${MAX_LEN.vendor}" aria-label="Vendor"${off ? ` title="${esc(tip)}"` : ''}`)
+            : `<span class="fctproc-txt" title="${esc(tip || r.vendor)}">${esc(r.vendor)}</span>`;
+          const quote = edit ? textIn('quote_number', 'Quote #', ' aria-label="Quote #"')
+            : `<span class="fctproc-txt" title="${esc(r.quote_number ? `Quote # ${r.quote_number}` : '')}">${esc(r.quote_number)}</span>`;
+          return td('', `<div class="fctproc-stack">${part('vendor', vendor, off ? ' vendor-off' : '')}${part('quote_number', quote)}</div>`);
         }
-        case 'quote_number':
-          return td('', edit ? textIn('quote_number') : txt(r.quote_number));
-        case 'contact':
-          return td('', edit ? cbCell('proc_contacts:' + r.id, r.contact, '', `${at('contact')} maxlength="${MAX_LEN.contact}"`) : txt(r.contact));
-        case 'email':
-          return td('', edit ? textIn('email') : txt(r.email));
+        case 'contact_email': {
+          // Contact over Email (a phone number is allowed there, as in the
+          // sheets this replaces).
+          const contact = edit
+            ? cbCell('proc_contacts:' + r.id, r.contact, 'Contact', `${at('contact')} maxlength="${MAX_LEN.contact}" aria-label="Contact"`)
+            : txt(r.contact);
+          const email = edit ? textIn('email', 'Email', ' aria-label="Email"') : txt(r.email);
+          return td('', `<div class="fctproc-stack">${part('contact', contact)}${part('email', email)}</div>`);
+        }
         case 'actions':
           if (st.confirmDel === r.id) {
             return td('', `<div class="fctproc-acts"><span style="color:#f87171;font-size:0.68rem">Delete?</span>
@@ -3470,7 +3538,12 @@
         // the one in use are redrawn — Order By follows Lead Time as it is
         // typed — and the one in use is left as it is.
         const mine = td.querySelectorAll('.fctproc-part'), theirs = next[i].querySelectorAll('.fctproc-part');
-        if (mine.length && mine.length === theirs.length) mine.forEach((p, j) => { if (!busy(p)) p.replaceWith(theirs[j]); });
+        if (mine.length && mine.length === theirs.length) {
+          mine.forEach((p, j) => { if (!busy(p)) p.replaceWith(theirs[j]); });
+          // …and the cell's own marks follow (Status's red / amber edge, as
+          // its Sub-Contractor Agreement tag is being picked).
+          td.className = next[i].className;
+        }
       });
     }
     drawnHtml.set(host, html);
@@ -3788,7 +3861,13 @@
       updateCounts();
     } else if (el.tagName === 'SELECT') {
       setField(rowId, field, el.value);
-      el.className = `fctproc-in sca-${el.value.replace(/\s+/g, '-')}`;
+      // The tag's colour and tooltip follow the pick at once; the rest of
+      // the Status cell (its edge, the flags) is redrawn around it.
+      const scaCls = `sca-${el.value.replace(/\s+/g, '-')}`;
+      el.className = `fctproc-in fctproc-scasel ${scaCls}`;
+      const wrap = el.closest('.fctproc-scawrap'), shownTag = wrap && wrap.querySelector('.fctproc-scatag');
+      if (wrap) wrap.title = `Sub-Contractor Agreement: ${el.value}`;
+      if (shownTag) { shownTag.className = `fctproc-scatag ${scaCls}`; shownTag.textContent = SCA_SHORT[el.value] || el.value; }
       refreshRow(rowId);
       updateCounts();
     } else if (el.type === 'number') {
