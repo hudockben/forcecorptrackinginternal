@@ -594,6 +594,136 @@ function schemaStatements() {
   }
 
   // ─────────────────────────────────────────────────────────────────────
+  console.log('\nTwo people, one cell: a save says what it saw (expect), and lands only while that is still there');
+  {
+    const xp = (user, id, fields, expect) => call('PATCH', { division: 'turf', id }, { fields, expect }, user);
+    const id = uid('x');
+    let r = await create(L2, { id, project_id: 'job-1', description: 'Infill', quantity: 950, unit: 'LF', vendor: 'Acme Supply',
+      date_needed: '2026-12-01', lead_time_days: 14 });
+    assert('(a row to work on)', r.statusCode === 201, show(r));
+    const v0 = r.body.item.version;
+
+    r = await xp(L2, id, { vendor: 'Beta Corp' }, { vendor: 'Acme Supply' });
+    assert('the cell still holds what was seen: the save lands', r.statusCode === 200 && r.body.item.vendor === 'Beta Corp' && r.body.item.version === v0 + 1, show(r));
+
+    r = await xp(L3, id, { vendor: 'Gamma Inc' }, { vendor: 'Acme Supply' });
+    assert('someone else changed it since it was seen → 409 conflict, naming the cell, who and when, with the row as it is',
+      r.statusCode === 409 && r.body.error === 'conflict' && eq(r.body.fields, ['vendor']) && r.body.item && r.body.item.vendor === 'Beta Corp'
+        && r.body.changed_by === 'p_l2' && typeof r.body.changed_at === 'string'
+        && /changed since you started editing it \(last by p_l2\)/.test(r.body.message), show(r));
+    let now = await rowOf(id);
+    assert('…and nothing at all is written: not the cell, not the version', now.vendor === 'Beta Corp' && now.version === v0 + 1, JSON.stringify(now));
+
+    r = await xp(L3, id, { vendor: 'Gamma Inc', quote_number: 'Q-9' }, { vendor: 'Acme Supply', quote_number: '' });
+    assert('one stale cell holds back the whole save — and only it is named', r.statusCode === 409 && eq(r.body.fields, ['vendor'])
+      && (await rowOf(id)).quote_number === '', show(r));
+
+    const vBefore = (await rowOf(id)).version;
+    r = await xp(L3, id, { quote_number: 'Q-9' }, { quote_number: '' });
+    assert('a different cell of the same row, seen as it is, is not held back by the other change', r.statusCode === 200 && r.body.item.quote_number === 'Q-9'
+      && r.body.item.vendor === 'Beta Corp', show(r));
+    assert('…and its answer says who saved the row last before it, and the version it was (so the page can name the vendor change it brings)',
+      r.body.was && r.body.was.updated_by === 'p_l2' && r.body.was.version === vBefore && typeof r.body.was.updated_at === 'string'
+        && r.body.item.version === vBefore + 1, JSON.stringify(r.body.was));
+
+    r = await xp(L3, id, { vendor: 'Gamma Inc' }, { vendor: 'Beta Corp' });
+    assert('"Keep mine": the save expects the other person\'s value, and lands', r.statusCode === 200 && r.body.item.vendor === 'Gamma Inc', show(r));
+    r = await xp(L2, id, { vendor: 'Gamma Inc' }, { vendor: 'Beta Corp' });
+    assert('a cell that already holds what is being saved is no conflict, whatever was expected (two people set the same value; a save sent again after its answer was lost)',
+      r.statusCode === 200 && r.body.item.vendor === 'Gamma Inc', show(r));
+    r = await xp(L2, id, { vendor: ' Gamma Inc ', quote_number: 'Q-9' }, { vendor: 'Acme Supply', quote_number: 'Q-9' });
+    assert('…compared as stored (" Gamma Inc " is "Gamma Inc")', r.statusCode === 200, show(r));
+    r = await xp(L2, id, { vendor: 'Gamma Inc', quote_number: 'Q-10' }, { vendor: 'Acme Supply', quote_number: 'Q-1' });
+    assert('…but a cell beside it that is stale still is → 409 naming only that one', r.statusCode === 409 && eq(r.body.fields, ['quote_number']), show(r));
+    r = await xp(L2, id, { date_needed: '2026-12-01' }, { date_needed: '2020-01-01' });
+    assert('…a date already holding the one being saved', r.statusCode === 200, show(r));
+    r = await xp(L2, id, { quantity: 950.0 }, { quantity: 1 });
+    assert('…a number by value', r.statusCode === 200, show(r));
+
+    // Each kind of cell compared by value, as the page holds it.
+    r = await xp(L2, id, { quantity: 1000 }, { quantity: 950 });
+    assert('a number: 950 matches the stored 950', r.statusCode === 200 && r.body.item.quantity === 1000, show(r));
+    r = await xp(L2, id, { quantity: 1100 }, { quantity: 950 });
+    assert('…and not the 1000 stored since → 409', r.statusCode === 409 && eq(r.body.fields, ['quantity']) && r.body.item.quantity === 1000, show(r));
+    r = await xp(L2, id, { quantity: 12.5 }, { quantity: 1000.0 });
+    assert('…by value, not by spelling (1000.0 is 1000)', r.statusCode === 200 && r.body.item.quantity === 12.5, show(r));
+    r = await xp(L2, id, { quantity: 13 }, { quantity: '12.50' });
+    assert('…and a number sent as text, the way a save would read it', r.statusCode === 200 && r.body.item.quantity === 13, show(r));
+    r = await xp(L2, id, { date_needed: '2026-12-15' }, { date_needed: '2026-12-01' });
+    assert('a date as YYYY-MM-DD', r.statusCode === 200 && r.body.item.date_needed === '2026-12-15', show(r));
+    r = await xp(L2, id, { date_needed: '2027-01-01' }, { date_needed: '2026-12-01' });
+    assert('…a different date → 409', r.statusCode === 409 && eq(r.body.fields, ['date_needed']) && r.body.item.date_needed === '2026-12-15', show(r));
+    r = await xp(L2, id, { date_needed: '' }, { date_needed: '2026-12-15' });
+    assert('(a date cleared)', r.statusCode === 200 && r.body.item.date_needed === null, show(r));
+    r = await xp(L2, id, { date_needed: '2027-02-01' }, { date_needed: null });
+    assert('a blank cell: null matches it', r.statusCode === 200, show(r));
+    r = await xp(L2, id, { date_needed: '' }, { date_needed: '2027-02-01' });
+    r = await xp(L2, id, { date_needed: '2027-03-01' }, { date_needed: '' });
+    assert('…and so does "" — what the page sent to clear it, a moment ago', r.statusCode === 200 && r.body.item.date_needed === '2027-03-01', show(r));
+    r = await xp(L2, id, { date_needed: '2027-04-01' }, { date_needed: null });
+    assert('…but a blank does not match a date someone has put in since → 409', r.statusCode === 409 && eq(r.body.fields, ['date_needed']), show(r));
+    r = await xp(L2, id, { vendor: 'Delta' }, { vendor: '  Gamma Inc ' });
+    assert('text as a save would store it: " Gamma Inc " (sent; stored trimmed) matches', r.statusCode === 200 && r.body.item.vendor === 'Delta', show(r));
+    r = await xp(L2, id, { lead_time_days: 21 }, { lead_time_days: 14 });
+    assert('whole days', r.statusCode === 200 && r.body.item.lead_time_days === 21, show(r));
+    r = await xp(L2, id, { po_auto: false }, { po_auto: true });
+    assert('true / false', r.statusCode === 200 && r.body.item.po_auto === false, show(r));
+    r = await xp(L2, id, { po_auto: true }, { po_auto: true });
+    assert('…a different one → 409', r.statusCode === 409 && eq(r.body.fields, ['po_auto']), show(r));
+    r = await xp(L2, id, { po_id: 'po-9', po_auto: false }, { po_id: null, po_auto: false });
+    assert('no PO is null', r.statusCode === 200 && r.body.item.po_id === 'po-9', show(r));
+    r = await xp(L2, id, { sca_status: 'Executed' }, { sca_status: 'Pending' });
+    assert('the Sub-Contractor Agreement', r.statusCode === 200 && r.body.item.sca_status === 'Executed', show(r));
+    r = await xp(L2, id, { bid_item_id: null, cost_code: '', sub_code: '' }, { bid_item_id: null, cost_code: '', sub_code: '' });
+    assert('a codes pick: line, cost code and sub code together', r.statusCode === 200, show(r));
+
+    // What `expect` may hold.
+    for (const [ex, what] of [[{ version: 3 }, 'a column no save may change (version)'], [{ updated_by: 'x' }, 'updated_by'],
+      [{ vendor: { a: 1 } }, 'an object for a value'], [{ vendor: ['x'] }, 'a list for a value'], ['vendor', 'a string for the whole of it']]) {
+      r = await xp(L2, id, { quote_number: 'never' }, ex);
+      assert(`expect with ${what} → 400, and nothing written`, r.statusCode === 400 && r.body.error === 'invalid', show(r));
+    }
+    assert('…nothing at all', (await rowOf(id)).quote_number === 'Q-9');
+    r = await xp(L2, id, { quote_number: 'Q-10' }, {});
+    assert('an empty expect is no check', r.statusCode === 200 && r.body.item.quote_number === 'Q-10', show(r));
+    r = await xp(L2, id, { quote_number: 'Q-11' }, null);
+    assert('…and so is null (and none at all: every save above it)', r.statusCode === 200 && r.body.item.quote_number === 'Q-11', show(r));
+    r = await xp(L2, id, { quote_number: 'Q-12' }, { quote_number: 'Q-11', vendor: 'not what is there' });
+    assert('a cell expected but not being changed is checked too', r.statusCode === 409 && eq(r.body.fields, ['vendor']), show(r));
+    r = await xp(L2, id, { quote_number: 'Q-12' }, { quote_number: 'Q-1', vendor: 'nope' });
+    assert('…two stale cells are both named, in order', r.statusCode === 409 && eq(r.body.fields, ['quote_number', 'vendor']), show(r));
+
+    // The other reasons a save can match nothing still answer as before.
+    await del(L2, { id: uid('none') }).catch(() => {});
+    r = await xp(L2, 'no-such-row', { vendor: 'X' }, { vendor: '' });
+    assert('a row that does not exist, with expect → 404 (not a conflict)', r.statusCode === 404 && r.body.error === 'not_found', show(r));
+    const gone = uid('x');
+    await create(L2, { id: gone, project_id: 'job-1', vendor: 'Acme Supply' });
+    await del(L2, { id: gone });
+    r = await xp(L2, gone, { vendor: 'X' }, { vendor: 'Acme Supply' });
+    assert('…nor does a deleted one', r.statusCode === 404 && r.body.error === 'not_found', show(r));
+    const XPID = 'prtest-expectjob';
+    await q(`INSERT INTO app_data (key, value, updated_at) VALUES ($1, $2::jsonb, NOW())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`,
+      [`${CO}:fct_project_${XPID}`, JSON.stringify({ id: XPID, bidItems: [{ id: 'xb1', cost_code: 'Stormwater', sub_code: 'Geofabric' }] })]);
+    const onBid = (await create(L2, { id: uid('x'), project_id: XPID, vendor: 'Acme Supply' })).body.item;
+    r = await xp(L2, onBid.id, { bid_item_id: 'b-not-on-the-bid', cost_code: 'X', sub_code: 'Y' }, { bid_item_id: null });
+    assert('a bid line that is not on the bid, the cells as seen → 409 stale_bid, as without expect', r.statusCode === 409 && r.body.error === 'stale_bid'
+      && (await rowOf(onBid.id)).bid_item_id === null, show(r));
+    r = await xp(L2, onBid.id, { bid_item_id: 'xb1', cost_code: 'Stormwater', sub_code: 'Geofabric' }, { bid_item_id: null });
+    assert('…and one that is, lands', r.statusCode === 200 && r.body.item.bid_item_id === 'xb1', show(r));
+
+    // Seven people, one cell, at once: one wins, the others are told.
+    const base = (await rowOf(id)).vendor;
+    const race = await Promise.all(['A', 'B', 'C', 'D', 'E', 'F', 'G'].map((n, i) => xp([L2, L3, ADMIN][i % 3], id, { vendor: 'Race ' + n }, { vendor: base })));
+    const won = race.filter(x => x.statusCode === 200), told = race.filter(x => x.statusCode === 409);
+    assert('seven saves of one cell, all from the same value, at once: exactly one lands, six are told', won.length === 1 && told.length === 6,
+      race.map(x => x.statusCode).join(','));
+    assert('…and each of the six is shown the one that landed', told.every(x => x.body.item.vendor === won[0].body.item.vendor
+      && eq(x.body.fields, ['vendor'])), told.map(show).join(' | '));
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
   console.log('\nBulk edit');
   {
     const j1 = (await get(L2, { project_id: 'job-1' })).body.items;
@@ -809,6 +939,11 @@ function schemaStatements() {
     assert('…and nothing else of theirs changes', m1.description === 'Couplers' && r1.bid_item_id === 'rb1');
     const o = await rowOf(OTHER.id);
     assert('…another job\'s row with the same line id is untouched', o.sub_code === 'Perf Drain 15"' && o.version === vO);
+    r = await putLine(ADMIN, PID, { id: 'rb1', cost_code: 'Stormwater', sub_code: 'Perimeter Drain 15 in Perf', quantity: 901, unit: 'LF' });
+    assert('the rows record who renamed the line (the Procurement sheet shows "Changed by" them, not the row\'s last editor)',
+      r.statusCode === 200 && (await rowOf(R1.id)).updated_by === 'p_admin' && (await rowOf(M1.id)).updated_by === 'p_admin', show(r));
+    await putLine(L2, PID, { id: 'rb1', cost_code: 'Stormwater', sub_code: 'Perimeter Drain 15in Perf', quantity: 901, unit: 'LF' });
+    assert('…and the next rename its renamer', (await rowOf(R1.id)).updated_by === 'p_l2');
     r = await putLine(L2, PID, { id: 'rb2', cost_code: 'Erosion Control', sub_code: 'Silt Sock 12in', quantity: 1200, unit: 'LF' });
     const r2 = await rowOf(R2.id);
     assert('a deleted row follows its line too (Send can offer it back on the new line)', r2.cost_code === 'Erosion Control'
