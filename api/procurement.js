@@ -6,9 +6,11 @@
 // needed on site, how long the supplier takes, which vendor and quote, which
 // PO, and whether it has been ordered and delivered. That used to be an Excel
 // sheet per job; this is it as rows (procurement_items, neon-schema.sql
-// PROCUREMENT). Cost Code and Sub Code are the bid's own codes — in a turf
-// bid the sub code IS the material — and Description is free text beside
-// them, because bid lines carry none.
+// PROCUREMENT). Cost Code and Sub Code are the bid's own codes — what the
+// cost books to — and Description is the Material on the sheet: what is
+// bought, in the job's own words ("20/40 Mesh rubber crumb infill" under the
+// bid's "Infill Crumb Rubber"), blank meaning "the sub code's name". One bid
+// line can be bought as many materials, each its own row.
 //
 // A row comes from one of two places. Send to Procurement (action=send) turns
 // bid lines into rows with source 'bid'; "+ Add Row" and "+ Material" add
@@ -18,6 +20,22 @@
 //          → { ok, items:[…], canEdit }   live rows, or every row with its
 //            deleted_at when include_deleted=1 (Send to Procurement needs the
 //            deleted ones to offer "removed earlier"). Ordered created_at, id.
+// GET    ?division=…&action=materials
+//          → { ok, materials:[{ material, sub_code, cost_code, unit, vendor,
+//            jobs, last_used }], canEdit }   every Material (description)
+//            named on the division's live rows, once per sub code it was
+//            bought under — the Material picker's suggestions on the next job
+//            (materialLibrary below). Same readers as the rows.
+// GET    ?division=…&action=breakdowns&sub_code=…[&cost_code=…][&exclude_project=X]
+//          → { ok, breakdowns:[{ project_id, last_used, items:[{ id, source,
+//            material, cost_code, sub_code, quantity, unit, vendor }] }] }
+//            what one sub code was bought as on each job (most recent first)
+//            — the list "+ Material" offers to copy (materialBreakdowns).
+// POST   ?division=…&action=add  { project_id, items:[{ id, bid_item_id, cost_code,
+//            sub_code, description, quantity, unit, vendor }] }
+//          → 201 { ok, created:[…], existing:[…], skipped:n }   several manual
+//            rows in one statement; an id already on the job is `existing`
+//            (a retry), and a bid line not on the stored bid is 409 stale_bid.
 // POST   ?division=…            { item:{ id, project_id, …fields } }
 //          → 201 { ok, item }  | 409 { error:'duplicate' } when the id exists.
 //            Always a manual row, whatever `source` the body claims.
@@ -309,6 +327,102 @@ function shape(r) {
   };
 }
 
+// ── The material library ─────────────────────────────────────────────────
+// The rows read for it (the most recently written first) and the most names
+// sent back. A division's whole history is a few thousand named rows; past
+// this the oldest names drop off first.
+const MATERIALS_SCAN = 20000;
+const MATERIALS_MAX  = 1500;
+
+/**
+ * Every Material named on the division's live rows, once per sub code it
+ * was bought under: "Infill Crumb Rubber" → "20/40 Mesh rubber crumb infill",
+ * by the LBS, from Willig Tire, on 3 jobs. The page offers these in the
+ * Material picker, the row's own sub code's first, so a name one job worked
+ * out is there for the next without anyone keeping a list.
+ *
+ * `rows` must come newest first: the spelling, unit and vendor kept for a
+ * name are its most recent ones (a vendor or unit left blank is skipped for
+ * an older one that has it). Names and codes compare the way the sheet
+ * compares codes (procDocs.codeKey: case, spacing, dashes, quotes). A name
+ * that is just its sub code again says nothing and is left out. Sorted by
+ * the number of jobs, then most recently used.
+ */
+function materialLibrary(rows) {
+  const k = procDocs.codeKey;
+  const byKey = new Map();
+  for (const r of rows || []) {
+    const material = oneLine(r.description || '');
+    if (!material) continue;
+    const sub = oneLine(r.sub_code || '');
+    if (k(material) === k(sub)) continue;
+    const key = k(sub) + '\u0000' + k(material);
+    let e = byKey.get(key);
+    if (!e) {
+      e = { material, sub_code: sub, cost_code: oneLine(r.cost_code || ''), unit: '', vendor: '', jobs: new Set(), last_used: iso(r.updated_at) };
+      byKey.set(key, e);
+    }
+    if (!e.unit) e.unit = oneLine(r.unit || '');
+    if (!e.vendor) e.vendor = oneLine(r.vendor || '');
+    e.jobs.add(String(r.project_id));
+  }
+  return [...byKey.values()]
+    .map(e => ({ ...e, jobs: e.jobs.size }))
+    .sort((a, b) => b.jobs - a.jobs || String(b.last_used || '').localeCompare(String(a.last_used || '')) || a.material.localeCompare(b.material))
+    .slice(0, MATERIALS_MAX);
+}
+
+// ── A bid line's material list on other jobs ─────────────────────────────
+// The jobs offered, and the materials of each, at most: a line is a few
+// dozen parts at the very most; past this the list is a paste gone wrong.
+const BREAKDOWN_JOBS  = 8;
+const BREAKDOWN_ITEMS = 100;
+
+/**
+ * What one sub code was bought as, job by job: on Hempfield Baseball the
+ * bid's "Detention System" was Geofabric (Collector), Perimeter Collector
+ * Drain 12" Perf, #57 Aggregate… — the list "+ Material" offers to copy onto
+ * the same line of another job. Each job's named rows under the code (held
+ * to the sheet's comparison, procDocs.codeKey), in the order they were
+ * added; a name that is just the sub code again is no material of its own.
+ * With a cost code, only rows under that cost code too (the same sub code
+ * under another cost code is another bid line). Jobs most recently worked
+ * on first. `rows` come ordered by job, then age.
+ */
+function materialBreakdowns(rows, subCode, costCode) {
+  const k = procDocs.codeKey;
+  const want = k(subCode);
+  const cost = k(costCode || '');
+  const byJob = new Map();
+  for (const r of rows || []) {
+    if (k(r.sub_code || '') !== want) continue;
+    if (cost && k(r.cost_code || '') !== cost) continue;
+    const material = oneLine(r.description || '');
+    if (!material || k(material) === want) continue;
+    let j = byJob.get(r.project_id);
+    if (!j) { j = { project_id: r.project_id, last_used: null, items: [], seen: new Set() }; byJob.set(r.project_id, j); }
+    const used = iso(r.updated_at);
+    if (!j.last_used || String(used) > String(j.last_used)) j.last_used = used;
+    // The same name twice on one job (a delivery split in two) is one line
+    // of its list.
+    if (j.seen.has(k(material)) || j.items.length >= BREAKDOWN_ITEMS) continue;
+    j.seen.add(k(material));
+    j.items.push({
+      id: r.id, source: r.source === 'bid' ? 'bid' : 'manual', material,
+      cost_code: oneLine(r.cost_code || ''), sub_code: oneLine(r.sub_code || ''),
+      quantity: num(r.quantity), unit: oneLine(r.unit || ''), vendor: oneLine(r.vendor || ''),
+    });
+  }
+  return [...byJob.values()]
+    .map(({ seen, ...j }) => j)
+    .sort((a, b) => String(b.last_used || '').localeCompare(String(a.last_used || '')) || String(a.project_id).localeCompare(String(b.project_id)))
+    .slice(0, BREAKDOWN_JOBS);
+}
+
+// The cells a copied material may carry (POST action=add). The rest of a
+// row — dates, PO, agreement — is this job's own and starts blank.
+const ADD_FIELDS = ['bid_item_id', 'cost_code', 'sub_code', 'description', 'quantity', 'unit', 'vendor'];
+
 const isUniqueViolation = err => Boolean(err) && (err.code === '23505' || /duplicate key value/i.test(err.message || ''));
 const isCheckViolation  = err => Boolean(err) && (err.code === '23514' || /violates check constraint/i.test(err.message || ''));
 
@@ -505,6 +619,48 @@ module.exports = async (req, res) => {
   const sql      = neon(process.env.DATABASE_URL);
 
   try {
+    // ── GET action=materials — the names bought under each sub code ──────
+    if (req.method === 'GET' && action === 'materials') {
+      const rows = await sql`
+        SELECT project_id, cost_code, sub_code, description, unit, vendor, updated_at
+          FROM procurement_items
+         WHERE company_code = ${company} AND division = ${division} AND deleted_at IS NULL
+           AND btrim(description) <> ''
+         ORDER BY updated_at DESC, id
+         LIMIT ${MATERIALS_SCAN}`;
+      return res.json({ ok: true, materials: materialLibrary(rows), canEdit });
+    }
+    // ── GET action=breakdowns — what one sub code was bought as, job by job
+    if (req.method === 'GET' && action === 'breakdowns') {
+      const sub = readText(q.sub_code, 200, 'sub_code');
+      if (sub.error) return fail(res, 400, 'invalid', sub.error, { field: 'sub_code' });
+      if (!procDocs.codeKey(sub.value)) return fail(res, 400, 'invalid', 'sub_code is required', { field: 'sub_code' });
+      let exclude = null;
+      if (q.exclude_project !== undefined && q.exclude_project !== '') {
+        const ex = readProjectId(q.exclude_project);
+        if (ex.error) return fail(res, 400, 'invalid', ex.error, { field: 'exclude_project' });
+        exclude = ex.value;
+      }
+      // The line's cost code, when given: one sub code can sit under two
+      // cost codes (Geofabric under Stormwater and under Base), and those
+      // are two bid lines with lists of their own.
+      const cost = readText(q.cost_code, 200, 'cost_code');
+      if (cost.error) return fail(res, 400, 'invalid', cost.error, { field: 'cost_code' });
+      // Narrowed in SQL by the code's letters and digits, then held to the
+      // sheet's own comparison (procDocs.codeKey) here.
+      const rows = await sql`
+        SELECT id, project_id, source, cost_code, sub_code, description, quantity, unit, vendor, created_at, updated_at
+          FROM procurement_items
+         WHERE company_code = ${company} AND division = ${division} AND deleted_at IS NULL
+           AND btrim(description) <> ''
+           AND lower(regexp_replace(sub_code, '[^[:alnum:]]+', '', 'g')) = lower(regexp_replace(${sub.value}::text, '[^[:alnum:]]+', '', 'g'))
+           AND (${exclude}::text IS NULL OR project_id <> ${exclude}::text)
+         ORDER BY project_id, created_at, id
+         LIMIT ${MATERIALS_SCAN}`;
+      return res.json({ ok: true, breakdowns: materialBreakdowns(rows, sub.value, cost.value), canEdit });
+    }
+    if (req.method === 'GET' && action) return fail(res, 400, 'invalid', `Unknown action "${action.slice(0, 40)}"`);
+
     // ── GET — one job's rows ─────────────────────────────────────────────
     if (req.method === 'GET') {
       const pid = readProjectId(q.project_id);
@@ -710,6 +866,79 @@ module.exports = async (req, res) => {
         created:  created.map(shape),
         restored: restored.map(shape),
         skipped:  rawItems.length - created.length,
+      });
+    }
+
+    // ── POST action=add — several materials added by hand at once ───────
+    // "+ Material" copying a line's material list from another job: every
+    // material a row of its own (source 'manual'), in one statement, so the
+    // list goes in whole or not at all. Retried with the same ids (an answer
+    // lost on the way back), each row goes in once: an id already on this
+    // job comes back under `existing`, not as an error.
+    if (req.method === 'POST' && action === 'add') {
+      const pid = readProjectId(b.project_id);
+      if (pid.error) return fail(res, 400, pid.code || 'invalid', pid.error, { field: 'project_id' });
+      if (!Array.isArray(b.items) || !b.items.length) return fail(res, 400, 'invalid', 'items must be a list of rows', { field: 'items' });
+      if (b.items.length > MAX_BATCH) return fail(res, 400, 'too_many', `Too many rows to add at once (max ${MAX_BATCH})`);
+      const rows = [];
+      const ids = new Set();
+      for (let i = 0; i < b.items.length; i++) {
+        const it = b.items[i];
+        const at = `Row ${i + 1}: `;
+        if (!isPlainObject(it)) return fail(res, 400, 'invalid', `${at}must be an object`, { index: i });
+        const id = readRowId(it.id);
+        if (id.error) return fail(res, 400, 'invalid', at + id.error, { index: i, field: 'id' });
+        if (ids.has(id.value)) return fail(res, 400, 'invalid', `${at}id ${id.value} is used twice`, { index: i, field: 'id' });
+        ids.add(id.value);
+        const row = { id: id.value };
+        for (const k of ADD_FIELDS) {
+          const r = readValue(FIELDS[k], has(it, k) ? it[k] : null);
+          if (r.error) return fail(res, 400, 'invalid', at + r.error, { index: i, field: k });
+          row[k] = r.value;
+        }
+        rows.push(row);
+      }
+      // A row tied to a bid line is tied only to a line on the job's bid as
+      // stored now, as everywhere else (see the note at the top).
+      const lines = [...new Set(rows.map(r => r.bid_item_id).filter(Boolean))];
+      if (lines.length) {
+        const blob = await sql`SELECT value->'bidItems' AS items FROM app_data WHERE key = ${bidKeyPrefix(company, division) + pid.value}`;
+        if (blob.length) {
+          const items = Array.isArray(blob[0].items) ? blob[0].items : [];
+          const onBid = new Set(items.filter(e => e && e.id != null).map(e => String(e.id)));
+          const off = lines.filter(id => !onBid.has(String(id)));
+          if (off.length) return fail(res, 409, 'stale_bid', `Not added: ${STALE_BID}.`, { lines: off, field: 'bid_item_id' });
+        }
+      }
+      const col = k => rows.map(r => r[k]);
+      // created_at is clock_timestamp() so the rows keep the list's order.
+      const created = await sql`
+        INSERT INTO procurement_items
+          (id, company_code, division, project_id, source, bid_item_id, cost_code, sub_code, description,
+           quantity, unit, vendor, created_at, created_by, updated_at, updated_by)
+        SELECT t.id, ${company}, ${division}, ${pid.value}, 'manual', t.bid_item_id, t.cost_code, t.sub_code, t.description,
+               t.quantity, t.unit, t.vendor, clock_timestamp(), ${who}, clock_timestamp(), ${who}
+          FROM unnest(${col('id')}::text[], ${col('bid_item_id')}::text[], ${col('cost_code')}::text[], ${col('sub_code')}::text[],
+                      ${col('description')}::text[], ${col('quantity')}::numeric[], ${col('unit')}::text[], ${col('vendor')}::text[])
+               WITH ORDINALITY AS t(id, bid_item_id, cost_code, sub_code, description, quantity, unit, vendor, ord)
+         ORDER BY t.ord
+        ON CONFLICT (id) DO NOTHING
+        RETURNING *`;
+      const made = new Set(created.map(r => r.id));
+      const rest = [...ids].filter(id => !made.has(id));
+      // The ids that were there already: this job's own rows come back (the
+      // first try landed); anything else is not this request's to show.
+      const existing = rest.length ? await sql`
+        SELECT * FROM procurement_items
+         WHERE company_code = ${company} AND division = ${division} AND project_id = ${pid.value}
+           AND id = ANY(${rest}::text[]) AND deleted_at IS NULL` : [];
+      const order = new Map([...ids].map((id, i) => [id, i]));
+      const byOrder = (a, c) => order.get(a.id) - order.get(c.id);
+      return res.status(created.length ? 201 : 200).json({
+        ok: true,
+        created: created.slice().sort(byOrder).map(shape),
+        existing: existing.slice().sort(byOrder).map(shape),
+        skipped: rest.length - existing.length,
       });
     }
 

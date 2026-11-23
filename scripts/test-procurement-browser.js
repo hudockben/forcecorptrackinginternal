@@ -153,6 +153,45 @@ function procurementApi(W, role, method, q, body) {
   const stamp = () => new Date(Date.UTC(2026, 10, 1) + (++W.seq) * 1000).toISOString();
   const live = r => !r.deleted_at;
   const pick = (r, f) => { for (const [k, v] of Object.entries(f)) r[k] = ['quantity', 'bid_qty_at_send'].includes(k) ? numOrNull(v) : v; };
+  if (method === 'GET' && q.action === 'materials') {
+    // The material library as api/procurement.js materialLibrary builds it:
+    // every live named row, once per sub code + name, by jobs — plus the
+    // names W.otherJobs stands in for (jobs this test never opens).
+    const by = new Map();
+    const k = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const add = (r, pid) => {
+      const name = String(r.description || '').trim();
+      if (!name || k(name) === k(r.sub_code)) return;
+      const key = k(r.sub_code) + '\u0000' + k(name);
+      const e = by.get(key) || { material: name, sub_code: r.sub_code || '', cost_code: r.cost_code || '', unit: r.unit || '', vendor: r.vendor || '', jobs: new Set(), last_used: r.updated_at || '' };
+      e.jobs.add(pid);
+      by.set(key, e);
+    };
+    W.rows.filter(live).forEach(r => add(r, r.project_id));
+    (W.otherJobs || []).forEach(r => add(r, r.project_id));
+    const materials = [...by.values()].map(e => ({ ...e, jobs: e.jobs.size })).sort((a, b) => b.jobs - a.jobs);
+    return [200, { ok: true, materials, canEdit }];
+  }
+  if (method === 'GET' && q.action === 'breakdowns') {
+    // What one sub code was bought as, job by job (api/procurement.js
+    // materialBreakdowns): named rows only, in the order they were added,
+    // the asking job left out.
+    const k = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const want = k(q.sub_code);
+    if (!want) return [400, { ok: false, error: 'invalid' }];
+    const jobs = new Map();
+    W.rows.filter(live).concat(W.otherJobs || []).forEach(r => {
+      const name = String(r.description || '').trim();
+      if (r.project_id === q.exclude_project || k(r.sub_code) !== want || !name || k(name) === want) return;
+      const j = jobs.get(r.project_id) || { project_id: r.project_id, last_used: r.updated_at || '2026-11-01T00:00:00.000Z', items: [] };
+      if (!j.items.some(x => k(x.material) === k(name))) {
+        j.items.push({ id: r.id || `${r.project_id}-${j.items.length}`, source: r.source === 'bid' ? 'bid' : 'manual', material: name,
+          cost_code: r.cost_code || '', sub_code: r.sub_code || '', quantity: r.quantity == null ? null : Number(r.quantity), unit: r.unit || '', vendor: r.vendor || '' });
+      }
+      jobs.set(r.project_id, j);
+    });
+    return [200, { ok: true, breakdowns: [...jobs.values()], canEdit }];
+  }
   if (method === 'GET') {
     if (!q.project_id) return [400, { ok: false, error: 'project_id_required' }];
     const items = W.rows.filter(r => r.project_id === q.project_id && (q.include_deleted === '1' || live(r)))
@@ -189,6 +228,23 @@ function procurementApi(W, role, method, q, body) {
       created.push(out(r));
     }
     return [200, { ok: true, created, restored, skipped: (body.items || []).length - created.length }];
+  }
+  if (method === 'POST' && q.action === 'add') {
+    // Several hand-added rows at once (a material list copied): in order,
+    // each id once — a retry's ids already here come back as `existing`.
+    if (!body.project_id || !Array.isArray(body.items) || !body.items.length) return [400, { ok: false, error: 'invalid' }];
+    if (body.items.some(it => it.bid_item_id && !onStoredBid(body.project_id, it.bid_item_id))) return STALE;
+    const created = [], existing = [];
+    for (const it of body.items) {
+      const was = W.rows.find(r => r.id === it.id);
+      if (was) { if (was.project_id === body.project_id && !was.deleted_at) existing.push(out(was)); continue; }
+      const t = stamp();
+      const r = { ...BLANK_ROW, id: it.id, project_id: body.project_id, source: 'manual', created_at: t, updated_at: t };
+      pick(r, Object.fromEntries(['bid_item_id', 'cost_code', 'sub_code', 'description', 'quantity', 'unit', 'vendor'].map(k => [k, k in it ? it[k] : (k === 'quantity' || k === 'bid_item_id' ? null : '')])));
+      W.rows.push(r);
+      created.push(out(r));
+    }
+    return [created.length ? 201 : 200, { ok: true, created, existing, skipped: body.items.length - created.length - existing.length }];
   }
   if (method === 'POST') {
     const it = body.item || {};
@@ -654,6 +710,12 @@ async function shot(page, name) {
 // ── Admin: the whole flow ────────────────────────────────────────────────────
 async function asAdmin(browser, W) {
   console.log('\nadmin');
+  // What the drain was bought as on two other jobs (the material library).
+  W.otherJobs = [
+    { project_id: 'p8', cost_code: 'Stormwater', sub_code: DRAIN, description: 'Perforated 15" SLCPP', unit: 'LF', vendor: 'LB Water' },
+    { project_id: 'p9', cost_code: 'Stormwater', sub_code: DRAIN, description: 'Perforated 15" SLCPP', unit: 'LF', vendor: 'LB Water' },
+    { project_id: 'p9', cost_code: 'Stormwater', sub_code: DRAIN, description: '15" TEE watertight w/ gasket', unit: 'EA', vendor: 'LB Water' },
+  ];
   const { page, ctx, errors } = await openPage(browser, W, 'admin');
 
   // Send to Procurement from the bid page before the tab has ever been drawn:
@@ -676,6 +738,7 @@ async function asAdmin(browser, W) {
   await cbPick(page, page.locator('#fctproc-proj'), 'penn', 'Penn Cambria');
   await until(() => page.locator('#procurement-root .fctproc-job').count());
   ok('picking the job reads its rows', W.log.some(l => l.api === 'procurement' && l.method === 'GET' && l.q.project_id === 'p1' && l.q.division === 'turf'));
+  ok('…and then the material library, once', await until(() => W.log.filter(l => l.api === 'procurement' && l.method === 'GET' && l.q.action === 'materials').length === 1));
   ok('…shows its name and Job #', (await page.textContent('#procurement-root .fctproc-head')).includes('Penn Cambria')
     && (await page.textContent('#procurement-root .fctproc-head')).includes('Job #26119'));
   ok('…and, with no rows yet, says how to bring them in', /No procurement rows for this job yet/.test(await page.textContent('#fctproc-wrap')));
@@ -743,8 +806,24 @@ async function asAdmin(browser, W) {
   ok('the PATCHes carry only Date Needed and Lead Time', eq(fieldsSent(W, drain), { date_needed: needed, lead_time_days: 10 }), patchesFor(W, drain).map(l => l.body));
   ok('…as field-level PATCHes of the row', patchesFor(W, drain).every(l => l.q.division === 'turf' && l.body.fields && !('id' in l.body.fields)));
   ok('…which the server kept', W.rows.find(r => r.id === drain).date_needed === needed && W.rows.find(r => r.id === drain).lead_time_days === 10);
-  ok('Order By = Date Needed − Lead Time', (await rowTr(page, drain).locator('td.c-order_by').textContent()).trim() === us(plusDays(10)),
-    await rowTr(page, drain).locator('td.c-order_by').textContent());
+  ok('Order By = Date Needed − Lead Time', (await rowTr(page, drain).locator('.c-order_by').textContent()).trim() === us(plusDays(10)),
+    await rowTr(page, drain).locator('.c-order_by').textContent());
+  {
+    // The parts' boxes: two to a line, the plan over what happened. Measured
+    // in one go on the row as it is drawn now (the save just made redraws it,
+    // and a row replaced under a measurement measures as nothing).
+    const measure = () => page.evaluate(id => {
+      const td = document.querySelector(`#procurement-root tr.fctproc-row[data-row="${id}"] td.c-ordering`);
+      if (!td) return null;
+      const at = f => { const r = td.querySelector('.c-' + f).getBoundingClientRect(); return { top: Math.round(r.top), left: Math.round(r.left), w: Math.round(r.width) }; };
+      return { lead: at('lead_time_days'), ob: at('order_by'), ord: at('date_ordered'), del: at('date_delivered') };
+    }, drain);
+    const laidOut = g => !!g && Math.abs(g.lead.top - g.ob.top) < 3 && Math.abs(g.ord.top - g.del.top) < 3
+      && g.ord.top > g.lead.top + 8 && g.ob.left > g.lead.left + 20 && g.del.left > g.ord.left + 20 && Math.abs(g.lead.left - g.ord.left) < 3;
+    await until(async () => laidOut(await measure()), 3000);
+    const g = await measure();
+    ok('…shown beside Lead Time, over Date Ordered and Date Delivered, all in one cell', laidOut(g), g);
+  }
   ok('…and the row is flagged Due soon', (await rowTr(page, drain).locator('td.c-status').textContent()).includes('Due soon'));
   ok('…with an amber edge', await rowTr(page, drain).locator('td.c-status').evaluate(e => e.classList.contains('flag-amber')));
   ok('the saved indicator settles', await until(() => page.evaluate(() => /Saved|^$/.test(document.querySelector('#fctproc-save .si-text').textContent))));
@@ -780,19 +859,69 @@ async function asAdmin(browser, W) {
     return f.vendor === 'Ferguson Waterworks' && f.contact === 'Dana Reyes' && f.email === 'dana@ferguson.test'; })(), fieldsSent(W, drain));
   ok('only one contact was made of it', W.contacts.length === 1);
 
-  // "+ Material" under the drain, then pick the saved contact on that row.
+  // "+ Material" under the drain: it was bought as named materials on two
+  // other jobs, so the copy dialog offers their lists — a blank row here.
+  ok('the drain\'s "+ Material" carries the dot: its line has lists on other jobs', await rowTr(page, drain).locator('[data-act="material"] .fctproc-pastdot').count() === 1
+    && await rowTr(page, geo).locator('[data-act="material"] .fctproc-pastdot').count() === 0);
   await rowTr(page, drain).locator('[data-act="material"]').click();
+  await page.waitForSelector('.fctproc-modal [data-cx]');
+  const bdGet = W.log.find(l => l.api === 'procurement' && l.method === 'GET' && l.q.action === 'breakdowns');
+  ok('…which reads those lists for the drain\'s sub code, this job left out', bdGet && bdGet.q.sub_code === DRAIN && bdGet.q.exclude_project === 'p1', bdGet && bdGet.q);
+  ok('…and shows them: two jobs to pick from, the first one\'s material ticked', await page.locator('.fctproc-modal [data-cj]').count() === 2
+    && eq(await page.$$eval('.fctproc-modal [data-ci] .sub', s => s.map(x => x.textContent)), ['Perforated 15" SLCPP'])
+    && await page.locator('.fctproc-modal [data-cx="0"]').isChecked());
+  await page.locator('.fctproc-modal [data-cj="1"]').check();
+  ok('…picking the other job shows its two', eq(await page.$$eval('.fctproc-modal [data-ci] .sub', s => s.map(x => x.textContent)), ['Perforated 15" SLCPP', '15" TEE watertight w/ gasket']));
+  await page.click('.fctproc-modal [data-copy="blank"]');
   const matPost = await until(() => W.log.find(l => l.api === 'procurement' && l.method === 'POST' && !l.q.action));
+  ok('"Just a blank row" closes it', await page.locator('.fctproc-modal').count() === 0);
   ok('+ Material POSTs a manual row under the same bid line', matPost && matPost.body.item.bid_item_id === 'b2'
     && matPost.body.item.sub_code === DRAIN && matPost.body.item.unit === 'LF' && matPost.body.item.project_id === 'p1', matPost && matPost.body);
   const mat = matPost.body.item.id;
   await until(() => rowTr(page, mat).count());
   ok('…drawn right under it', eq(await page.$$eval('#procurement-root tr.fctproc-row', t => t.map(r => r.dataset.row)), [geo, drain, mat]));
-  ok('…with Quantity focused to type in (Description is hidden on this page)', await page.evaluate(id => document.activeElement && document.activeElement.dataset.pr === id
-    && document.activeElement.dataset.pf === 'quantity', mat));
-  ok('…and no Description column on the sheet', await page.locator('#procurement-root [data-pf="description"]').count() === 0
-    && !(await page.$$eval('#procurement-root thead th', t => t.map(x => x.textContent.trim()))).some(h => /^Description/.test(h)));
-  await page.keyboard.type('24');
+  ok('…with Material focused to name it', await page.evaluate(id => document.activeElement && document.activeElement.dataset.pr === id
+    && document.activeElement.dataset.pf === 'description', mat));
+  ok('…blank, showing the bid\'s Sub Code', await cell(page, mat, 'description').inputValue() === ''
+    && await cell(page, mat, 'description').getAttribute('placeholder') === DRAIN);
+  const names = await page.$$eval('.cb-menu:not([hidden]) .cb-opt', o => o.map(x => [x.querySelector('.cb-opt-name').textContent.trim(), x.querySelector('.cb-opt-meta').textContent.trim()]));
+  ok('…its picker open on what the drain was bought as on other jobs, most used first', eq(names, [
+    ['Perforated 15" SLCPP', 'LF · LB Water · 2 jobs'], ['15" TEE watertight w/ gasket', 'EA · LB Water · 1 job']]), names);
+  ok('the sheet has a Material column between Unit and Cost Code / Sub Code', await page.evaluate(() => {
+    const h = [...document.querySelectorAll('#procurement-root thead th')].map(x => x.dataset.label);
+    return h.indexOf('Material') === h.indexOf('Unit') + 1 && h.indexOf('Cost Code / Sub Code') === h.indexOf('Material') + 1;
+  }));
+  ok('…the bid row\'s codes read "Stormwater / <drain>" in one cell', (await rowTr(page, drain).locator('td.c-codes').textContent()).replace(/\s+/g, ' ').trim() === `Stormwater / ${DRAIN}`);
+  ok('…the drain\'s own row reads as its Sub Code until it is named', await cell(page, drain, 'description').inputValue() === ''
+    && await cell(page, drain, 'description').getAttribute('placeholder') === DRAIN);
+  await page.locator('.cb-menu:not([hidden]) .cb-opt', { hasText: 'Perforated 15" SLCPP' }).click();
+  await clickAway(page);
+  await until(() => fieldsSent(W, mat).description === 'Perforated 15" SLCPP');
+  ok('picking one names the row and fills its blank vendor (the unit is already LF)', eq(fieldsSent(W, mat), { description: 'Perforated 15" SLCPP', vendor: 'LB Water' }),
+    patchesFor(W, mat).map(l => l.body));
+  ok('…and the cell shows it', await cell(page, mat, 'description').inputValue() === 'Perforated 15" SLCPP');
+  // The bid row itself, named in this job's words — typed, and kept as typed
+  // although it starts like a suggestion.
+  const drainMat = cell(page, drain, 'description');
+  await drainMat.click();
+  await drainMat.fill('Perforated 15');
+  ok('typing offers what was typed first, then the names it matches', eq(await page.$$eval('.cb-menu:not([hidden]) .cb-opt', o => o.map(x => x.querySelector('.cb-opt-name').textContent.trim())),
+    ['Perforated 15', 'Perforated 15" SLCPP']));
+  await drainMat.press('Enter');
+  await clickAway(page);
+  await until(() => fieldsSent(W, drain).description === 'Perforated 15');
+  ok('Enter keeps what was typed (a suggestion is never swapped in unasked)', W.rows.find(r => r.id === drain).description === 'Perforated 15'
+    && await cell(page, drain, 'description').inputValue() === 'Perforated 15');
+  await drainMat.click();
+  await drainMat.fill('Perimeter collector drain, 15" perforated SLCPP');
+  await drainMat.press('Tab');
+  await clickAway(page);
+  await until(() => W.rows.find(r => r.id === drain).description === 'Perimeter collector drain, 15" perforated SLCPP');
+  ok('…and so does Tab', await cell(page, drain, 'description').inputValue() === 'Perimeter collector drain, 15" perforated SLCPP');
+  ok('naming the bid row leaves its codes and vendor alone', W.rows.find(r => r.id === drain).sub_code === DRAIN
+    && W.rows.find(r => r.id === drain).vendor === 'Ferguson Waterworks');
+  await cell(page, mat, 'quantity').click();
+  await cell(page, mat, 'quantity').fill('24');
   await cbPick(page, cell(page, mat, 'vendor'), 'ferg', 'Ferguson Waterworks');
   ok('the new supplier is offered on the next row', await cell(page, mat, 'vendor').inputValue() === 'Ferguson Waterworks');
   await cell(page, mat, 'contact').click();
@@ -804,7 +933,7 @@ async function asAdmin(browser, W) {
   ok('…and Email', await cell(page, mat, 'email').inputValue() === 'dana@ferguson.test');
   await clickAway(page);
   await until(() => fieldsSent(W, mat).email);
-  ok('…saved with the quantity and vendor', eq(fieldsSent(W, mat), { quantity: 24, vendor: 'Ferguson Waterworks',
+  ok('…saved with its Material, quantity and vendor', eq(fieldsSent(W, mat), { description: 'Perforated 15" SLCPP', vendor: 'Ferguson Waterworks', quantity: 24,
     contact: 'Dana Reyes', email: 'dana@ferguson.test' }), fieldsSent(W, mat));
   ok('…and no second contact was made', W.contacts.length === 1 && W.log.filter(l => l.api === 'supplier-contacts' && l.method === 'POST').length === 1);
 
@@ -874,9 +1003,11 @@ async function asAdmin(browser, W) {
   const [cv] = await Promise.all([page.waitForEvent('download'), page.click('[data-act="csv"]')]);
   ok('CSV downloads as "Procurement - <job> - <date>.csv"', cv.suggestedFilename() === `Procurement - Penn Cambria - ${TODAY}.csv`, cv.suggestedFilename());
   const csv = fs.readFileSync(await cv.path(), 'utf8').replace(/^﻿/, '').trim().split(/\r?\n/);
-  ok('…the columns in the sheet\'s order (no Description, hidden on this page), then the Notes (flags and badges)', csv[0] === ['Status', 'PO #', 'Sub-Contractor Agreement', 'Date Needed', 'Lead Time (days)', 'Order By',
-    'Date Ordered', 'Date Delivered', 'Quantity', 'Unit', 'Cost Code', 'Sub Code', 'Vendor', 'Quote #', 'Contact', 'Email', 'Notes']
+  ok('…the columns in the sheet\'s order, Material among them, then the Notes (flags and badges)', csv[0] === ['Status', 'PO #', 'Sub-Contractor Agreement', 'Date Needed', 'Lead Time (days)', 'Order By',
+    'Date Ordered', 'Date Delivered', 'Quantity', 'Unit', 'Material', 'Cost Code', 'Sub Code', 'Vendor', 'Quote #', 'Contact', 'Email', 'Notes']
     .map(h => `"${h}"`).join(','), csv[0]);
+  ok('…Material holding each row\'s name, a blank one as its Sub Code', csv[1].includes('"SF","Geofabric","Stormwater","Geofabric"')
+    && csv[2].includes('"LF","Perimeter collector drain, 15"" perforated SLCPP","Stormwater"') && csv[3].includes('"LF","Perforated 15"" SLCPP","Stormwater"'), csv.slice(1));
   ok('…one line per row, in screen order', csv.length === 4 && csv[1].includes('"PO-0007"') && csv[2].includes('"Dana Reyes"') && csv[3].includes('"Ferguson Waterworks"') && csv[3].includes('"24"'), csv);
 
   // Send again: what is already there is greyed.
@@ -1426,7 +1557,7 @@ async function roundFourFixes(browser) {
       ok('…no save carries the codes without their line, and the line is not sent again', ps.every(l => !('sub_code' in l.body.fields) || 'bid_item_id' in l.body.fields)
         && ps.filter(l => 'bid_item_id' in l.body.fields).length === 1, ps.map(l => l.body.fields));
       ok('…the Quote # typed in the same edit is saved', h1.quote_number === 'Couplers', h1.quote_number);
-      const shown = { sub: await cell(page, 'H1', 'codes').inputValue(), cost: (await rowTr(page, 'H1').locator('.c-cost_code').textContent()).trim() };
+      const shown = { sub: await cell(page, 'H1', 'codes').inputValue(), cost: await rowTr(page, 'H1').locator('td.c-codes').evaluate(td => (td.querySelector('.fctproc-cc') || { textContent: '' }).textContent.trim()) };
       ok('…and the cells are back to what was saved, as the message says', shown.sub === '' && shown.cost === '', shown);
       const qu = { q: await cell(page, 'H1', 'quantity').inputValue(), u: await cell(page, 'H1', 'unit').inputValue() };
       ok('…the Quantity and Unit that pick filled in too, saved and shown', h1.quantity == null && h1.unit === '' && qu.q === '' && qu.u === '',
@@ -1641,6 +1772,96 @@ async function roundFourFixes(browser) {
   }
 }
 
+// ── "+ Material": copy the list a bid line was bought as on another job ──
+async function copyList(browser) {
+  console.log('\n+ Material: copy a line\'s material list from another job, in the real page');
+  const t = i => new Date(Date.UTC(2026, 9, 6) + i * 1000).toISOString();
+  const W = makeWorld();
+  W.pos = [];
+  // On this job the drain is still the one row the bid sent: 950 LF as sent.
+  W.rows.push({ ...BLANK_ROW, id: 'C1', project_id: 'p1', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: DRAIN,
+    quantity: 950, unit: 'LF', bid_qty_at_send: 950, bid_unit_at_send: 'LF', created_at: t(1), updated_at: t(1) });
+  // On another job it was bought as three materials, its own row the first.
+  W.otherJobs = [
+    { id: 'o1', project_id: 'p9', source: 'bid', cost_code: 'Stormwater', sub_code: DRAIN, description: 'Geotextile sock wrap', quantity: 300, unit: 'SY', vendor: 'LB Water' },
+    { id: 'o2', project_id: 'p9', cost_code: 'Stormwater', sub_code: DRAIN, description: 'Perforated 15" SLCPP', quantity: 900, unit: 'LF', vendor: 'LB Water' },
+    { id: 'o3', project_id: 'p9', cost_code: 'Stormwater', sub_code: DRAIN, description: '15" TEE watertight w/ gasket', quantity: 2, unit: 'EA', vendor: 'New Enterprise' },
+  ];
+  const storage = { fct_proc_project_turf: 'p1' };
+  const { page, ctx, errors } = await openPage(browser, W, 'level2', { viewport: { width: 1474, height: 900 }, storage });
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 1));
+  const dot = () => rowTr(page, 'C1').locator('[data-act="material"] .fctproc-pastdot').count();
+  await until(async () => (await dot()) === 1);
+  ok('the dot comes with the library, read after the rows', await dot() === 1);
+  await rowTr(page, 'C1').locator('[data-act="material"]').click();
+  await page.waitForSelector('.fctproc-modal [data-cx]');
+  ok('the dialog lists the other job\'s three, all ticked, the first naming this line\'s own row', eq(await page.$$eval('.fctproc-modal [data-ci]', ls => ls.map(l =>
+    [l.querySelector('.sub').textContent, l.querySelector('input').checked, !l.querySelector('.own').hidden])),
+    [['Geotextile sock wrap', true, true], ['Perforated 15" SLCPP', true, false], ['15" TEE watertight w/ gasket', true, false]])
+    && (await page.textContent('.fctproc-modal [data-copy="count"]')).trim() === '2 new rows · names this line\'s own row');
+  await page.click('.fctproc-modal [data-copy="go"]');
+  await until(() => W.rows.length === 3, 4000);
+  const add = W.log.find(l => l.api === 'procurement' && l.method === 'POST' && l.q.action === 'add');
+  ok('Add sends the two new rows in one request, tied to this job\'s line, without the other job\'s quantities',
+    add && eq(add.body.items.map(i => [i.bid_item_id, i.sub_code, i.description, i.unit, i.vendor, i.quantity]),
+      [['b2', DRAIN, 'Perforated 15" SLCPP', 'LF', 'LB Water', null], ['b2', DRAIN, '15" TEE watertight w/ gasket', 'EA', 'New Enterprise', null]]), add && add.body);
+  await until(() => !!W.rows.find(r => r.id === 'C1' && r.description), 4000);
+  const c1 = W.rows.find(r => r.id === 'C1');
+  ok('…and this line\'s own row takes the first name and its unit, the bid\'s 950 LF making way (SY is another unit)',
+    c1.description === 'Geotextile sock wrap' && c1.unit === 'SY' && c1.quantity == null && c1.vendor === 'LB Water', [c1.description, c1.unit, c1.quantity, c1.vendor]);
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 3));
+  ok('…the three are on the sheet together, the line\'s own row first', eq(await page.$$eval('#procurement-root tr.fctproc-row', t => t.map(r => r.dataset.row)).then(ids => ids[0]), 'C1')
+    && eq(await page.$$eval('#procurement-root [data-pf="description"]', b => b.map(x => x.value)), ['Geotextile sock wrap', 'Perforated 15" SLCPP', '15" TEE watertight w/ gasket']));
+  ok('the dialog is gone, and the PM is told', await page.locator('.fctproc-modal').count() === 0
+    && /Added 3 materials from the other job \(one names this line's own row\) — fill in this job's quantities/.test(await page.textContent('body')));
+  ok('no page errors', errors.length === 0, errors.join(' | '));
+  await ctx.close();
+}
+
+// ── The sheet on a 1920-wide screen: no sideways scrolling ───────────────
+async function fitsWide(browser) {
+  console.log('\nthe whole sheet on a 1920-wide screen, and the agreement picked in the Status cell');
+  const t = i => new Date(Date.UTC(2026, 9, 7) + i * 1000).toISOString();
+  const W = makeWorld();
+  W.pos = [];
+  const r = (id, i, f) => ({ ...BLANK_ROW, id, project_id: 'p1', created_at: t(i), updated_at: t(i), ...f });
+  W.rows.push(
+    r('Z1', 1, { source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: '8 oz nonwoven geotextile (bottom and sides)',
+      quantity: 12500, unit: 'SF', date_needed: plusDays(5), vendor: 'LB Water', quote_number: 'QT#2244287', contact: 'Dana Reyes', email: 'dana.reyes@lbwater.example.com' }),
+    r('Z2', 2, { source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: DRAIN, quantity: 950, unit: 'LF', date_needed: plusDays(-2), lead_time_days: 10, sca_status: 'Needed' }),
+    r('Z3', 3, { bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: DRAIN, description: 'Flat Drain', quantity: 1055, unit: 'LF', date_needed: plusDays(9), sca_status: 'Executed' }),
+  );
+  const { page, ctx, errors } = await openPage(browser, W, 'level2', { viewport: { width: 1920, height: 1000 }, storage: { fct_proc_project_turf: 'p1' } });
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 3));
+  await sleep(300);
+  const fit = await page.evaluate(() => { const w = document.querySelector('#fctproc-wrap'); return { client: w.clientWidth, scroll: w.scrollWidth }; });
+  ok('at 1920 wide the whole sheet shows: no sideways scrolling', fit.scroll <= fit.client, fit);
+  const lines = () => page.$$eval('#procurement-root tr.fctproc-row', trs => trs.map(tr => new Set([...tr.querySelectorAll('td.c-status .fctproc-pill, td.c-status .fctproc-scatag, td.c-status .fctproc-flag')]
+    .map(x => Math.round(x.getBoundingClientRect().top))).size));
+  ok('every Status cell is two lines at most: the pill, then the agreement and its flags', (await lines()).every(n => n <= 2), await lines());
+  ok('the agreement reads short, coloured by its state', eq(await page.$$eval('#procurement-root td.c-status .fctproc-scatag', t => t.map(x => x.textContent)),
+    ['Agmt pending', 'Agmt needed', 'Agmt \u2713']));
+  // Picked through the real (unseen) select over the tag.
+  await page.locator('#procurement-root [data-pr="Z1"][data-pf="sca_status"]').selectOption('Needed');
+  await until(() => W.rows.find(x => x.id === 'Z1').sca_status === 'Needed', 4000);
+  ok('picking it saves the full value, and the tag and the cell\'s edge follow', W.rows.find(x => x.id === 'Z1').sca_status === 'Needed'
+    && (await page.textContent('#procurement-root tr[data-row="Z1"] td.c-status .fctproc-scatag')) === 'Agmt needed'
+    && await page.locator('#procurement-root tr[data-row="Z1"] td.c-status').evaluate(td => td.classList.contains('flag-amber') || td.classList.contains('flag-red')));
+  const tagBox = await page.locator('#procurement-root tr[data-row="Z1"] .fctproc-scawrap').evaluate(w => {
+    const s = w.querySelector('select').getBoundingClientRect(), g = w.querySelector('.fctproc-scatag').getBoundingClientRect();
+    return Math.abs(s.width - g.width) < 1 && Math.abs(s.height - g.height) < 1 && getComputedStyle(w.querySelector('select')).opacity === '0';
+  });
+  ok('…the select lying exactly over the tag, unseen', tagBox);
+  ok('Vendor over Quote #, Contact over Email, each in full or cut with its tooltip', await page.$eval('#procurement-root tr[data-row="Z1"] td.c-contact_email', td => {
+    const em = td.querySelector('[data-pf="email"]');
+    return em.title === 'dana.reyes@lbwater.example.com' && td.querySelector('.c-contact').getBoundingClientRect().bottom <= td.querySelector('.c-email').getBoundingClientRect().top + 1;
+  }));
+  ok('no page errors', errors.length === 0, errors.join(' | '));
+  await ctx.close();
+}
+
 // ── The section checkbox on each group header ─────────────────────────────
 async function sectionSelect(browser) {
   console.log('\nthe section checkbox: tick a whole section, then delete or bulk-edit it');
@@ -1810,10 +2031,12 @@ async function sectionAdd(browser) {
   ok('…the row is drawn in that section, after its rows', it && sec[it.id] === 'Stormwater'
     && await page.evaluate(id => { const tr = document.querySelector(`#fctproc-wrap tr[data-row="${id}"]`); const n = tr.nextElementSibling; return !n || n.classList.contains('fctproc-grp'); }, it.id), sec);
   ok('…the click does not fold the section', await folded() === 0);
-  ok('…and Quantity has focus, ready to type (Description is hidden)', await page.evaluate(id => { const a = document.activeElement; return !!a && a.dataset.pr === id && a.dataset.pf === 'quantity'; }, it.id));
+  ok('…and Material has focus, to name it', await page.evaluate(id => { const a = document.activeElement; return !!a && a.dataset.pr === id && a.dataset.pf === 'description'; }, it.id));
   ok('…its Cost Code reads Stormwater, and Sub Code offers the bid lines', /Stormwater/.test(await rowTr(page, it.id).locator('.fctproc-codes').textContent())
     && await rowTr(page, it.id).locator('[data-pf="codes"]').count() === 1);
-  await page.keyboard.type('12');
+  await page.keyboard.press('Escape');
+  await cell(page, it.id, 'quantity').click();
+  await cell(page, it.id, 'quantity').fill('12');
   await clickAway(page);
   await until(() => W.rows.some(r => r.id === it.id && r.quantity === 12), 4000);
   ok('typing a quantity saves it on the new row', W.rows.some(r => r.id === it.id && r.quantity === 12 && r.cost_code === 'Stormwater'),
@@ -1966,7 +2189,8 @@ async function printPdf(browser) {
   ok('every row is on it, with its values', /Geofabric/.test(html) && /1,234,567,890/.test(html) && /12\/12\/2026/.test(html) && /Q-77/.test(html));
   ok('a worked-out date (Order By) prints in italics, with a note saying so', /class="one calc">11\/21\/2026/.test(html) && /Dates in italics are worked out/.test(html));
   ok('text from the rows is escaped', /&lt;img src=x/.test(html) && !/<img src=x/.test(html));
-  ok('no Description column (hidden on this page), and none of its text', !heads(html).includes('Description') && !/geofabric pins|mob trailer/.test(html), heads(html).join('|'));
+  ok('a Material column with each row\'s name, ahead of the codes', heads(html).indexOf('Material') === heads(html).indexOf('Unit') + 1
+    && heads(html).indexOf('Sub Code') === heads(html).indexOf('Material') + 1 && /geofabric pins/.test(html) && /mob trailer/.test(html), heads(html).join('|'));
 
   await page.click('[data-group="vendor"]');
   await sleep(200);
@@ -2045,8 +2269,8 @@ async function attachments(browser) {
 
   const heads = await page.$$eval('#procurement-root thead th', ths => ths.map(th => ({ text: th.textContent.trim(), title: th.title })));
   const poAt = heads.findIndex(h => /^PO #/.test(h.text));
-  ok('no paperclip column: PO # is followed by Sub-Contractor Agreement as before',
-    poAt >= 0 && !!heads[poAt + 1] && /^Sub-Contractor Agreement/.test(heads[poAt + 1].text)
+  ok('no paperclip column: Status is followed by PO #, then Date Needed, as before',
+    poAt === 2 && /^Status/.test(heads[1].text) && !!heads[poAt + 1] && /^Date Needed/.test(heads[poAt + 1].text)
       && !heads.some(h => h.text === CLIP || h.title === 'Attached documents'), heads.map(h => h.text));
   // The paperclip rides in the Status cell, beside the pill, inside the
   // cell's own width (Status is pinned at the left at a fixed width) — and
@@ -2341,6 +2565,8 @@ async function siteSheet(browser) {
     await roundThreeFixes(browser);
     await roundThreeSaveFixes(browser);
     await roundFourFixes(browser);
+    await copyList(browser);
+    await fitsWide(browser);
     await sectionSelect(browser);
     await sectionAdd(browser);
     await printPdf(browser);
