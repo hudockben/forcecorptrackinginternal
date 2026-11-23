@@ -3137,6 +3137,16 @@
     if (typingInSheet()) redrawAround();
     else { renderTable(); updateCounts(); }
   }
+  // A picker left a moment ago commits 120 ms after it was left (marked
+  // data-pcommit), and a table rebuilt under it loses that commit. An action
+  // answered sooner waits for it — a few hundred ms at most — so the table
+  // is redrawn whole as before (the new row drawn, and focused), not held
+  // back until the PM next leaves a cell.
+  async function pickersSettled(ms = 600) {
+    const until = Date.now() + ms;
+    const busy = () => { const w = st.mountEl && st.mountEl.querySelector('#fctproc-wrap'); return !!(w && w.querySelector('[data-pcommit]')); };
+    while (busy() && Date.now() < until) await new Promise(res => setTimeout(res, 40));
+  }
   function redrawWhenFree() {
     if (!redrawDeferred || !isMounted()) return;
     // A press in the sheet (on a group header, a filter button) blurs the
@@ -4791,7 +4801,13 @@
       // The page's combobox commits 120 ms after blur. Mark it so nothing
       // redraws it out from under that commit, then tidy the row once it has.
       el.dataset.pcommit = '1';
-      setTimeout(() => { if (el.isConnected) { delete el.dataset.pcommit; refreshRow(rowId); } }, 220);
+      setTimeout(() => {
+        if (!el.isConnected) return;
+        delete el.dataset.pcommit;
+        refreshRow(rowId);
+        // A redraw held back for this commit (an action answered meanwhile).
+        if (redrawDeferred) setTimeout(redrawWhenFree, 0);
+      }, 220);
     }
     // Leaving the row sends its edits now rather than after the quiet spell,
     // and remembers the contact typed on it under its vendor.
@@ -4971,6 +4987,7 @@
       const row = adoptServerRow(data.item || item);
       if (row) st.forceShow.add(row.id);
       actionSaved();
+      await pickersSettled();
       // Typed in since the click (the answer was slow): that box keeps the
       // focus, and the keys — the new row is drawn once it is left.
       const a = document.activeElement;
@@ -5351,6 +5368,7 @@
     }
     rows.forEach(r => st.forceShow.add(r.id));
     if (rows.length) actionSaved();
+    await pickersSettled();
     redrawSheet();
     const n = rows.length + (named ? 1 : 0);
     toast(`Added ${n} material${n === 1 ? '' : 's'} from ${from}${named ? ' (one names this line\'s own row)' : ''}${copyQty ? '' : ' — fill in this job\'s quantities'}`);
@@ -5483,6 +5501,7 @@
       st.bulkConfirmDel = false;
       actionSaved();
       renderBulk();
+      await pickersSettled();
       redrawSheet();
       if (list.length > 1) toast(`Deleted ${list.length} rows`);
     } catch (err) {
@@ -5653,6 +5672,7 @@
       // Contact + Email set on purpose: remembered under each row's vendor.
       if ('contact' in fields) ids.forEach(id => contactTouched.add(id));
       ids.forEach(id => rememberContact(rowById(id)));
+      await pickersSettled();
       redrawSheet();
       toast(`Updated ${ids.length} row${ids.length === 1 ? '' : 's'}`
         + (cleared ? ` — Contact and Email cleared on ${cleared}, whose contact was the previous vendor's` : ''));
@@ -5867,6 +5887,7 @@
     if (made.length) {
       st.selected.clear();
       renderBulk();
+      await pickersSettled();
       redrawSheet();
       const linked = rows.length - leftOff.reduce((a, x) => a + x.n, 0);
       toast(made.length === 1 ? `Created ${str(made[0].po_number) || 'the PO'} and linked ${linked} row${linked === 1 ? '' : 's'}`
@@ -6655,8 +6676,8 @@
 
     /**
      * Re-read the open job's rows (the page's poll). Skipped while a cell is
-     * being typed in — a key in the last few seconds, or a picker about to
-     * commit — and while the bulk bar is: not merely while one has the
+     * being typed in — a key in the last few seconds — and while the bulk
+     * bar is: not merely while one has the
      * focus. Enter moves the caret down a row and leaves it there, a ticked
      * box keeps it, the search box keeps it while the PM reads; a sheet that
      * never refreshed then showed a colleague's order as still to be placed
@@ -6668,10 +6689,8 @@
       if (!isMounted() || !st.projectId || st.loadState === 'loading') return;
       const a = document.activeElement;
       const box = a && st.mountEl.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox';
-      const wrap = st.mountEl.querySelector('#fctproc-wrap');
       const editing = (box && a.dataset.pr && Date.now() - lastKeyAt < TYPING_MS)
-        || (box && a.closest && a.closest('#fctproc-bulk'))
-        || (wrap && wrap.querySelector('[data-pcommit]'));
+        || (box && a.closest && a.closest('#fctproc-bulk'));
       if (editing) return;
       if (pend.size) await flushAll();
       // A site whose jobs changed since is a new sheet, read as one.

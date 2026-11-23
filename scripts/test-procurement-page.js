@@ -169,10 +169,11 @@ console.log('\n[tracker.html — wiring]');
     && /try \{ await _pollProcurement\(\); \} finally \{ _procPollBusy = false; \}/.test(pollSoon));
   assert('  and read at once on coming back to the window', /_pollHomeFeeds\(\);\s*_pollProcurementSoon\(\);/.test(SRC));
   const pollProc = requireFn(SRC, '_pollProcurement');
-  assert('  which refreshes only the open tab, and never mid-edit, on a hidden page or for the robot',
+  assert('  which refreshes only the open tab, never on a hidden page or for the robot — and leaves "mid-edit" to the sheet,'
+    + ' which waits only for a cell being typed in, not one that merely has the focus',
     /if \(_AUTO_REPORT \|\| _fctPollsSuspended\(\)\) return;/.test(pollProc)
       && /if \(activeTab !== 'procurement' \|\| !window\.FCTProcurement \|\| !_procConfigured\) return;/.test(pollProc)
-      && /if \(_isEditing\(\)\) return;/.test(pollProc)
+      && !/_isEditing\(\)/.test(pollProc)
       && /await FCTProcurement\.refresh\(\);/.test(pollProc));
   const pollPO = requireFn(SRC, '_pollPurchaseOrders');
   assert('a new order list redraws it (after the editing bail-out, which the Procurement tab — copies only — is not held by)',

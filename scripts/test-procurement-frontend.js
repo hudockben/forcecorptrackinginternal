@@ -1125,7 +1125,8 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   assert('"No" puts the buttons back', !!env.$(`tr[data-row="${newId}"] [data-act="material"]`));
   env.$(`tr[data-row="${newId}"] [data-act="del"]`).click();
   env.$(`tr[data-row="${newId}"] [data-act="del-yes"]`).click();
-  await sleep(30);
+  // (Material, left a moment ago, commits first — 120 ms after it is left.)
+  await sleep(300);
   const del = env.calls.filter(c => c.method === 'DELETE').pop();
   assert('"Yes" deletes that one row', del && del.q.id === newId && !env.$(`tr[data-row="${newId}"]`), del && del.q);
   env.$('[data-act="add"]').click();
@@ -1226,8 +1227,8 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   assert('…and the rows are linked to its id', eq(link.body.ids, ['r2', 'r3']) && /^npo/.test(link.body.fields.po_id), link.body);
   assert('selection clears after', !env.$('#fctproc-bulk').textContent.trim());
   // Rows on two sub codes -> asked.
-  env.P._test.state().rows.find(r => r.id === 'r1').vendor = '';
-  env.P._test.state().rows.find(r => r.id === 'r4').vendor = '';
+  // (In the stub's store too: Create PO reads the rows again before it decides.)
+  ['r1', 'r4'].forEach(id => { env.P._test.state().rows.find(r => r.id === id).vendor = ''; env.db.rows.find(r => r.id === id).vendor = ''; });
   env.P.rerender();
   sel('r1'); sel('r4');
   env.$('[data-act="bulk-po"]').click();
@@ -1314,10 +1315,22 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
 
   // ── refresh / rerender ────────────────────────────────────────────────
   console.log('\n[refresh]');
-  const getsBefore = env.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement').length;
+  const procGets = () => env.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement').length;
+  const getsBefore = procGets();
   env.field('r1', 'quote_number').focus();
+  env.field('r1', 'quote_number').dispatchEvent(new env.w.KeyboardEvent('keydown', { key: 'a', bubbles: true }));
   await env.P.refresh();
-  assert('refresh skips while a cell is being edited', env.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement').length === getsBefore);
+  assert('refresh skips while a cell is being typed in (a key just now)', procGets() === getsBefore);
+  // A cell merely holding the caret (Enter moved it there; the PM is
+  // reading) does not hold the sheet still: the rows are read.
+  const realNow = env.w.Date.now;
+  const later = Date.now() + 5000;
+  env.w.Date.now = () => later;
+  const realDateNow = Date.now;
+  Date.now = () => later;
+  try { await env.P.refresh(); } finally { env.w.Date.now = realNow; Date.now = realDateNow; }
+  assert('…but not while the caret only sits in one: the rows are read again, around it', procGets() === getsBefore + 1
+    && env.w.document.activeElement === env.field('r1', 'quote_number'));
   env.field('r1', 'quote_number').blur();
   env.db.rows.find(r => r.id === 'r2').vendor = 'Changed Elsewhere';
   env.db.rows.find(r => r.id === 'r2').version = 99;
@@ -1531,7 +1544,8 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     && x.field('k2', 'po').placeholder === '2 POs match — pick');
   assert('…without touching the box being typed in', x.w.document.activeElement === typing && typing.isConnected && typing.value === 'geo fabric');
   typing.blur();
-  await sleep(30);
+  // (The picker commits 120 ms after it is left; the sheet's refresh waits for that.)
+  await sleep(260);
 
   // Enter moves down a column, like the sheet.
   const q1 = x.field('k2', 'quote_number');  // k2 (b1) sorts above k1 (b2)
@@ -1715,7 +1729,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     await tick();
     e.$(`tr[data-row="${added.id}"] [data-act="del"]`).click();
     e.$(`tr[data-row="${added.id}"] [data-act="del-yes"]`).click();
-    await sleep(20);
+    await sleep(300);
     release();
     await poll3;
     await sleep(10);
@@ -3729,7 +3743,9 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     const qty = e.$('.fctproc-modal [data-copy="qty"]');
     qty.checked = true; e.fire(qty, 'change');
     e.$('.fctproc-modal [data-copy="go"]').click();
-    await sleep(50);
+    // (A picker left a moment ago is still committing — 120 ms after it is
+    // left; the new rows are drawn once it has, not under it.)
+    await sleep(300);
     const add = e.calls.find(c => c.method === 'POST' && c.q.action === 'add');
     assert('Add sends the new rows in one request: this job\'s codes, the names, units, vendors (as the supplier list spells them) and, asked, quantities',
       add && add.body.project_id === 'p1' && eq(add.body.items.map(i => [i.bid_item_id, i.cost_code, i.sub_code, i.description, i.unit, i.vendor, i.quantity]), [
