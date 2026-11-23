@@ -1504,10 +1504,11 @@
       .fctproc-in[type=date]::-webkit-calendar-picker-indicator { opacity:0.45; cursor:pointer; margin-left:0.1rem; }
       .fctproc-in[type=date]:hover::-webkit-calendar-picker-indicator,
       .fctproc-in[type=date]:focus::-webkit-calendar-picker-indicator { opacity:0.9; }
-      /* An empty date reads as an empty cell, not "mm/dd/yyyy", until it is
-         pointed at — a column of placeholders drowns the dates that are set. */
-      .fctproc-in[type=date].empty:not(:hover):not(:focus) { color: transparent; }
-      .fctproc-in[type=date].empty:not(:hover):not(:focus)::-webkit-calendar-picker-indicator { opacity:0.18; }
+      /* An empty date shows its "mm/dd/yyyy" faintly, so it reads as a box to
+         fill in without being pointed at — but well under the dates that
+         are set. */
+      .fctproc-in[type=date].empty:not(:hover):not(:focus) { color: rgba(156,163,175,0.5); }
+      .fctproc-in[type=date].empty:not(:hover):not(:focus)::-webkit-calendar-picker-indicator { opacity:0.35; }
       .fctproc-in[type=number] { text-align:right; font-variant-numeric: tabular-nums; -moz-appearance: textfield; appearance: textfield; }
       .fctproc-in[type=number]::-webkit-inner-spin-button,
       .fctproc-in[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
@@ -1613,14 +1614,21 @@
       .fctproc-u { color: var(--muted,#9ca3af); font-size:0.66rem; margin-left:0.15rem; }
       .fctproc-part.c-order_by::before { content:'\\2192'; color: var(--muted,#6b7280); font-size:0.72rem; margin-right:0.2rem; }
       .fctproc-part.c-order_by .fctproc-txt { font-size:0.74rem; padding:0; }
-      /* An empty date says which one it is, faintly, on the row pointed at
-         (the cell has no room for labels; the header says which is which). */
-      tr.fctproc-row:hover .fctproc-part.c-date_ordered:has(> input.empty:not(:focus):not(:hover))::after,
-      tr.fctproc-row:hover .fctproc-part.c-date_delivered:has(> input.empty:not(:focus):not(:hover))::after {
-        position:absolute; left:0.3rem; top:50%; transform: translateY(-50%); pointer-events:none;
-        font-size:0.66rem; letter-spacing:0.03em; color: var(--muted,#9ca3af); opacity:0.85; }
-      tr.fctproc-row:hover .fctproc-part.c-date_ordered:has(> input.empty:not(:focus):not(:hover))::after { content:'ordered'; }
-      tr.fctproc-row:hover .fctproc-part.c-date_delivered:has(> input.empty:not(:focus):not(:hover))::after { content:'delivered'; }
+      /* In the ordering cell, an empty date says which one it is — "ordered",
+         "delivered" — in place of the two identical "mm/dd/yyyy" (the cell
+         has no room for labels). Always shown, so the boxes read as boxes to
+         fill in; the date format comes back when one is pointed at. */
+      /* (A browser without :has() keeps the "mm/dd/yyyy" rather than a blank.) */
+      @supports selector(:has(a)) {
+        .fctproc-part.c-date_ordered > input.empty:not(:hover):not(:focus),
+        .fctproc-part.c-date_delivered > input.empty:not(:hover):not(:focus) { color: transparent; }
+        .fctproc-part.c-date_ordered:has(> input.empty:not(:focus):not(:hover))::after,
+        .fctproc-part.c-date_delivered:has(> input.empty:not(:focus):not(:hover))::after {
+          position:absolute; left:0.3rem; top:50%; transform: translateY(-50%); pointer-events:none;
+          font-size:0.66rem; letter-spacing:0.03em; color: var(--muted,#9ca3af); opacity:0.85; }
+        .fctproc-part.c-date_ordered:has(> input.empty:not(:focus):not(:hover))::after { content:'ordered'; }
+        .fctproc-part.c-date_delivered:has(> input.empty:not(:focus):not(:hover))::after { content:'delivered'; }
+      }
       .fctproc-qty { display:flex; flex-direction:column; gap:0.1rem; padding:0.1rem 0; }
       .fctproc-bidchg { display:flex; flex-direction:column; align-items:flex-end; gap:0.12rem; font-size:0.62rem; color:#fbbf24; line-height:1.25; text-align:right; }
       .fctproc-bidchg > span:first-child { white-space: normal; }
