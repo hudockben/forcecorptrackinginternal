@@ -153,6 +153,25 @@ function procurementApi(W, role, method, q, body) {
   const stamp = () => new Date(Date.UTC(2026, 10, 1) + (++W.seq) * 1000).toISOString();
   const live = r => !r.deleted_at;
   const pick = (r, f) => { for (const [k, v] of Object.entries(f)) r[k] = ['quantity', 'bid_qty_at_send'].includes(k) ? numOrNull(v) : v; };
+  if (method === 'GET' && q.action === 'materials') {
+    // The material library as api/procurement.js materialLibrary builds it:
+    // every live named row, once per sub code + name, by jobs — plus the
+    // names W.otherJobs stands in for (jobs this test never opens).
+    const by = new Map();
+    const k = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    const add = (r, pid) => {
+      const name = String(r.description || '').trim();
+      if (!name || k(name) === k(r.sub_code)) return;
+      const key = k(r.sub_code) + '\u0000' + k(name);
+      const e = by.get(key) || { material: name, sub_code: r.sub_code || '', cost_code: r.cost_code || '', unit: r.unit || '', vendor: r.vendor || '', jobs: new Set(), last_used: r.updated_at || '' };
+      e.jobs.add(pid);
+      by.set(key, e);
+    };
+    W.rows.filter(live).forEach(r => add(r, r.project_id));
+    (W.otherJobs || []).forEach(r => add(r, r.project_id));
+    const materials = [...by.values()].map(e => ({ ...e, jobs: e.jobs.size })).sort((a, b) => b.jobs - a.jobs);
+    return [200, { ok: true, materials, canEdit }];
+  }
   if (method === 'GET') {
     if (!q.project_id) return [400, { ok: false, error: 'project_id_required' }];
     const items = W.rows.filter(r => r.project_id === q.project_id && (q.include_deleted === '1' || live(r)))
@@ -654,6 +673,12 @@ async function shot(page, name) {
 // ── Admin: the whole flow ────────────────────────────────────────────────────
 async function asAdmin(browser, W) {
   console.log('\nadmin');
+  // What the drain was bought as on two other jobs (the material library).
+  W.otherJobs = [
+    { project_id: 'p8', cost_code: 'Stormwater', sub_code: DRAIN, description: 'Perforated 15" SLCPP', unit: 'LF', vendor: 'LB Water' },
+    { project_id: 'p9', cost_code: 'Stormwater', sub_code: DRAIN, description: 'Perforated 15" SLCPP', unit: 'LF', vendor: 'LB Water' },
+    { project_id: 'p9', cost_code: 'Stormwater', sub_code: DRAIN, description: '15" TEE watertight w/ gasket', unit: 'EA', vendor: 'LB Water' },
+  ];
   const { page, ctx, errors } = await openPage(browser, W, 'admin');
 
   // Send to Procurement from the bid page before the tab has ever been drawn:
@@ -676,6 +701,7 @@ async function asAdmin(browser, W) {
   await cbPick(page, page.locator('#fctproc-proj'), 'penn', 'Penn Cambria');
   await until(() => page.locator('#procurement-root .fctproc-job').count());
   ok('picking the job reads its rows', W.log.some(l => l.api === 'procurement' && l.method === 'GET' && l.q.project_id === 'p1' && l.q.division === 'turf'));
+  ok('…and then the material library, once', await until(() => W.log.filter(l => l.api === 'procurement' && l.method === 'GET' && l.q.action === 'materials').length === 1));
   ok('…shows its name and Job #', (await page.textContent('#procurement-root .fctproc-head')).includes('Penn Cambria')
     && (await page.textContent('#procurement-root .fctproc-head')).includes('Job #26119'));
   ok('…and, with no rows yet, says how to bring them in', /No procurement rows for this job yet/.test(await page.textContent('#fctproc-wrap')));
@@ -788,11 +814,47 @@ async function asAdmin(browser, W) {
   const mat = matPost.body.item.id;
   await until(() => rowTr(page, mat).count());
   ok('…drawn right under it', eq(await page.$$eval('#procurement-root tr.fctproc-row', t => t.map(r => r.dataset.row)), [geo, drain, mat]));
-  ok('…with Quantity focused to type in (Description is hidden on this page)', await page.evaluate(id => document.activeElement && document.activeElement.dataset.pr === id
-    && document.activeElement.dataset.pf === 'quantity', mat));
-  ok('…and no Description column on the sheet', await page.locator('#procurement-root [data-pf="description"]').count() === 0
-    && !(await page.$$eval('#procurement-root thead th', t => t.map(x => x.textContent.trim()))).some(h => /^Description/.test(h)));
-  await page.keyboard.type('24');
+  ok('…with Material focused to name it', await page.evaluate(id => document.activeElement && document.activeElement.dataset.pr === id
+    && document.activeElement.dataset.pf === 'description', mat));
+  ok('…blank, showing the bid\'s Sub Code', await cell(page, mat, 'description').inputValue() === ''
+    && await cell(page, mat, 'description').getAttribute('placeholder') === DRAIN);
+  const names = await page.$$eval('.cb-menu:not([hidden]) .cb-opt', o => o.map(x => [x.querySelector('.cb-opt-name').textContent.trim(), x.querySelector('.cb-opt-meta').textContent.trim()]));
+  ok('…its picker open on what the drain was bought as on other jobs, most used first', eq(names, [
+    ['Perforated 15" SLCPP', 'LF · LB Water · 2 jobs'], ['15" TEE watertight w/ gasket', 'EA · LB Water · 1 job']]), names);
+  ok('the sheet has a Material column between Unit and Cost Code', await page.evaluate(() => {
+    const h = [...document.querySelectorAll('#procurement-root thead th')].map(x => x.textContent.replace('\u25BC', '').trim());
+    return h.indexOf('Material') === h.indexOf('Unit') + 1 && h.indexOf('Cost Code') === h.indexOf('Material') + 1;
+  }));
+  ok('…the drain\'s own row reads as its Sub Code until it is named', await cell(page, drain, 'description').inputValue() === ''
+    && await cell(page, drain, 'description').getAttribute('placeholder') === DRAIN);
+  await page.locator('.cb-menu:not([hidden]) .cb-opt', { hasText: 'Perforated 15" SLCPP' }).click();
+  await clickAway(page);
+  await until(() => fieldsSent(W, mat).description === 'Perforated 15" SLCPP');
+  ok('picking one names the row and fills its blank vendor (the unit is already LF)', eq(fieldsSent(W, mat), { description: 'Perforated 15" SLCPP', vendor: 'LB Water' }),
+    patchesFor(W, mat).map(l => l.body));
+  ok('…and the cell shows it', await cell(page, mat, 'description').inputValue() === 'Perforated 15" SLCPP');
+  // The bid row itself, named in this job's words — typed, and kept as typed
+  // although it starts like a suggestion.
+  const drainMat = cell(page, drain, 'description');
+  await drainMat.click();
+  await drainMat.fill('Perforated 15');
+  ok('typing offers what was typed first, then the names it matches', eq(await page.$$eval('.cb-menu:not([hidden]) .cb-opt', o => o.map(x => x.querySelector('.cb-opt-name').textContent.trim())),
+    ['Perforated 15', 'Perforated 15" SLCPP']));
+  await drainMat.press('Enter');
+  await clickAway(page);
+  await until(() => fieldsSent(W, drain).description === 'Perforated 15');
+  ok('Enter keeps what was typed (a suggestion is never swapped in unasked)', W.rows.find(r => r.id === drain).description === 'Perforated 15'
+    && await cell(page, drain, 'description').inputValue() === 'Perforated 15');
+  await drainMat.click();
+  await drainMat.fill('Perimeter collector drain, 15" perforated SLCPP');
+  await drainMat.press('Tab');
+  await clickAway(page);
+  await until(() => W.rows.find(r => r.id === drain).description === 'Perimeter collector drain, 15" perforated SLCPP');
+  ok('…and so does Tab', await cell(page, drain, 'description').inputValue() === 'Perimeter collector drain, 15" perforated SLCPP');
+  ok('naming the bid row leaves its codes and vendor alone', W.rows.find(r => r.id === drain).sub_code === DRAIN
+    && W.rows.find(r => r.id === drain).vendor === 'Ferguson Waterworks');
+  await cell(page, mat, 'quantity').click();
+  await cell(page, mat, 'quantity').fill('24');
   await cbPick(page, cell(page, mat, 'vendor'), 'ferg', 'Ferguson Waterworks');
   ok('the new supplier is offered on the next row', await cell(page, mat, 'vendor').inputValue() === 'Ferguson Waterworks');
   await cell(page, mat, 'contact').click();
@@ -804,7 +866,7 @@ async function asAdmin(browser, W) {
   ok('…and Email', await cell(page, mat, 'email').inputValue() === 'dana@ferguson.test');
   await clickAway(page);
   await until(() => fieldsSent(W, mat).email);
-  ok('…saved with the quantity and vendor', eq(fieldsSent(W, mat), { quantity: 24, vendor: 'Ferguson Waterworks',
+  ok('…saved with its Material, quantity and vendor', eq(fieldsSent(W, mat), { description: 'Perforated 15" SLCPP', vendor: 'Ferguson Waterworks', quantity: 24,
     contact: 'Dana Reyes', email: 'dana@ferguson.test' }), fieldsSent(W, mat));
   ok('…and no second contact was made', W.contacts.length === 1 && W.log.filter(l => l.api === 'supplier-contacts' && l.method === 'POST').length === 1);
 
@@ -874,9 +936,11 @@ async function asAdmin(browser, W) {
   const [cv] = await Promise.all([page.waitForEvent('download'), page.click('[data-act="csv"]')]);
   ok('CSV downloads as "Procurement - <job> - <date>.csv"', cv.suggestedFilename() === `Procurement - Penn Cambria - ${TODAY}.csv`, cv.suggestedFilename());
   const csv = fs.readFileSync(await cv.path(), 'utf8').replace(/^﻿/, '').trim().split(/\r?\n/);
-  ok('…the columns in the sheet\'s order (no Description, hidden on this page), then the Notes (flags and badges)', csv[0] === ['Status', 'PO #', 'Sub-Contractor Agreement', 'Date Needed', 'Lead Time (days)', 'Order By',
-    'Date Ordered', 'Date Delivered', 'Quantity', 'Unit', 'Cost Code', 'Sub Code', 'Vendor', 'Quote #', 'Contact', 'Email', 'Notes']
+  ok('…the columns in the sheet\'s order, Material among them, then the Notes (flags and badges)', csv[0] === ['Status', 'PO #', 'Sub-Contractor Agreement', 'Date Needed', 'Lead Time (days)', 'Order By',
+    'Date Ordered', 'Date Delivered', 'Quantity', 'Unit', 'Material', 'Cost Code', 'Sub Code', 'Vendor', 'Quote #', 'Contact', 'Email', 'Notes']
     .map(h => `"${h}"`).join(','), csv[0]);
+  ok('…Material holding each row\'s name, a blank one as its Sub Code', csv[1].includes('"SF","Geofabric","Stormwater","Geofabric"')
+    && csv[2].includes('"LF","Perimeter collector drain, 15"" perforated SLCPP","Stormwater"') && csv[3].includes('"LF","Perforated 15"" SLCPP","Stormwater"'), csv.slice(1));
   ok('…one line per row, in screen order', csv.length === 4 && csv[1].includes('"PO-0007"') && csv[2].includes('"Dana Reyes"') && csv[3].includes('"Ferguson Waterworks"') && csv[3].includes('"24"'), csv);
 
   // Send again: what is already there is greyed.
@@ -1810,10 +1874,12 @@ async function sectionAdd(browser) {
   ok('…the row is drawn in that section, after its rows', it && sec[it.id] === 'Stormwater'
     && await page.evaluate(id => { const tr = document.querySelector(`#fctproc-wrap tr[data-row="${id}"]`); const n = tr.nextElementSibling; return !n || n.classList.contains('fctproc-grp'); }, it.id), sec);
   ok('…the click does not fold the section', await folded() === 0);
-  ok('…and Quantity has focus, ready to type (Description is hidden)', await page.evaluate(id => { const a = document.activeElement; return !!a && a.dataset.pr === id && a.dataset.pf === 'quantity'; }, it.id));
+  ok('…and Material has focus, to name it', await page.evaluate(id => { const a = document.activeElement; return !!a && a.dataset.pr === id && a.dataset.pf === 'description'; }, it.id));
   ok('…its Cost Code reads Stormwater, and Sub Code offers the bid lines', /Stormwater/.test(await rowTr(page, it.id).locator('.fctproc-codes').textContent())
     && await rowTr(page, it.id).locator('[data-pf="codes"]').count() === 1);
-  await page.keyboard.type('12');
+  await page.keyboard.press('Escape');
+  await cell(page, it.id, 'quantity').click();
+  await cell(page, it.id, 'quantity').fill('12');
   await clickAway(page);
   await until(() => W.rows.some(r => r.id === it.id && r.quantity === 12), 4000);
   ok('typing a quantity saves it on the new row', W.rows.some(r => r.id === it.id && r.quantity === 12 && r.cost_code === 'Stormwater'),
@@ -1966,7 +2032,8 @@ async function printPdf(browser) {
   ok('every row is on it, with its values', /Geofabric/.test(html) && /1,234,567,890/.test(html) && /12\/12\/2026/.test(html) && /Q-77/.test(html));
   ok('a worked-out date (Order By) prints in italics, with a note saying so', /class="one calc">11\/21\/2026/.test(html) && /Dates in italics are worked out/.test(html));
   ok('text from the rows is escaped', /&lt;img src=x/.test(html) && !/<img src=x/.test(html));
-  ok('no Description column (hidden on this page), and none of its text', !heads(html).includes('Description') && !/geofabric pins|mob trailer/.test(html), heads(html).join('|'));
+  ok('a Material column with each row\'s name, ahead of the codes', heads(html).indexOf('Material') === heads(html).indexOf('Unit') + 1
+    && heads(html).indexOf('Sub Code') === heads(html).indexOf('Material') + 1 && /geofabric pins/.test(html) && /mob trailer/.test(html), heads(html).join('|'));
 
   await page.click('[data-group="vendor"]');
   await sleep(200);

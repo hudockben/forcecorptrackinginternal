@@ -120,6 +120,12 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   const live = r => !r.deleted_at;
   env.handle = (c) => {
     if (c.path === '/api/procurement') {
+      if (c.method === 'GET' && c.q.action === 'materials') {
+        // The material library (api/procurement.js materialLibrary), as set
+        // on the env by the test that needs it.
+        if (db.failMaterials) return json(503, { ok: false, error: 'db_unavailable', message: 'The database is busy' });
+        return json(200, { ok: true, materials: db.materials || [], canEdit: serverCanEdit });
+      }
       if (c.method === 'GET') {
         if (db.failGet) return json(503, { ok: false, error: 'db_unavailable', message: 'The database is busy' });
         const items = db.rows.filter(r => r.project_id === c.q.project_id && (c.q.include_deleted ? true : live(r)));
@@ -789,7 +795,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   // The paperclip (attached documents) rides in the Status cell, so it adds
   // no column: the sheet is exactly as wide as it was before attachments.
   assert('columns in the agreed order', eq(headers, ['', 'Status', 'PO #', 'Sub-Contractor Agreement', 'Date Needed', 'Lead Time (days)',
-    'Order By', 'Date Ordered', 'Date Delivered', 'Quantity', 'Unit', 'Cost Code', 'Sub Code', 'Description', 'Vendor', 'Quote #',
+    'Order By', 'Date Ordered', 'Date Delivered', 'Quantity', 'Unit', 'Material', 'Cost Code', 'Sub Code', 'Vendor', 'Quote #',
     'Contact', 'Email', '']), headers);
   assert('  no paperclip column', !env.$$('.fctproc-table th').some(th => /\u{1F4CE}/u.test(th.textContent) || th.title === 'Attached documents')
     && !env.$('td.c-files'));
@@ -833,13 +839,14 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
 
   // ── Saving ────────────────────────────────────────────────────────────
   console.log('\n[saving]');
-  let d = env.field('r1', 'description');
+  // Email is a plain text box: saved as typed, after a quiet spell.
+  let d = env.field('r1', 'email');
   d.focus();
-  d.value = 'Mirafi 140N';
+  d.value = 'orders@acme';
   env.fire(d, 'input');
   await sleep(200);
   assert('nothing is sent while typing', env.patches().length === 0);
-  d.value = 'Mirafi 140N, 15 ft rolls';
+  d.value = 'orders@acme.test';
   env.fire(d, 'input');
   const q2 = env.field('r1', 'quote_number');
   q2.value = 'Q-55';
@@ -847,20 +854,36 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   await sleep(750);
   let ps = env.patches();
   assert('after 600 ms of quiet: one PATCH for the row', ps.length === 1 && ps[0].q.id === 'r1' && ps[0].q.division === 'turf', ps.map(p => p.q));
-  assert('carrying only the two changed fields', ps[0] && eq(ps[0].body, { fields: { description: 'Mirafi 140N, 15 ft rolls', quote_number: 'Q-55' } }), ps[0] && ps[0].body);
+  assert('carrying only the two changed fields', ps[0] && eq(ps[0].body, { fields: { email: 'orders@acme.test', quote_number: 'Q-55' } }), ps[0] && ps[0].body);
   assert('the save indicator says Saved', /Saved/.test(env.$('#fctproc-save').textContent));
   assert('the box being typed in was not redrawn (focus kept)', env.w.document.activeElement === d && d.isConnected);
-  d.value = 'Mirafi 140N, 15 ft rolls';
+  d.value = 'orders@acme.test';
   env.fire(d, 'input');
   await sleep(700);
   assert('an unchanged value is never sent', env.patches().length === 1);
   d.value = 'temp';
   env.fire(d, 'input');
-  d.value = 'Mirafi 140N, 15 ft rolls';
+  d.value = 'orders@acme.test';
   env.fire(d, 'input');
   await sleep(700);
   assert('typing and undoing within the quiet spell sends nothing', env.patches().length === 1);
   d.blur();
+
+  // Material is the page's combobox: named when it commits (Enter, Tab, a
+  // pick or leaving the box), not on every key.
+  const mat = env.field('r1', 'description');
+  assert('Material is a proc_materials picker, blank showing the bid\'s Sub Code', mat.classList.contains('cb-input')
+    && env.cbCalls.some(c => c.listKey === 'proc_materials:r1') && mat.value === '' && mat.placeholder === 'Geofabric', [mat.value, mat.placeholder]);
+  mat.focus();
+  mat.value = 'Mirafi 140N, 15 ft';
+  env.fire(mat, 'input');
+  await sleep(700);
+  assert('…typing in it sends nothing yet', env.patches().length === 1);
+  env.pick(mat, 'Mirafi 140N, 15 ft rolls', '__typed__');
+  mat.blur();
+  await sleep(700);
+  ps = env.patches();
+  assert('…its commit saves the name as typed, alone', ps.length === 2 && eq(ps[1].body.fields, { description: 'Mirafi 140N, 15 ft rolls' }), ps.map(p => p.body));
 
   // A failed save keeps the value and is retried with the next edit.
   env.db.failPatch = 1;
@@ -872,14 +895,14 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   assert('a failed save calls cfg.showSaveError', env.errors.length === 1 && /could not be saved/.test(env.errors[0]), env.errors);
   assert('the indicator says Not saved', /Not saved/.test(env.$('#fctproc-save').textContent));
   assert('the typed value is kept on screen', env.field('r2', 'quote_number').value === 'QT-FAIL');
-  const desc2 = env.field('r2', 'description');
-  desc2.value = 'Perf pipe';
+  const desc2 = env.field('r2', 'email');
+  desc2.value = 'perf@pipe.test';
   env.fire(desc2, 'input');
   env.fire(desc2, 'change');
   await sleep(50);
   ps = env.patches();
   const retry = ps[ps.length - 1];
-  assert('the next edit retries the failed field with it', retry.q.id === 'r2' && eq(retry.body.fields, { quote_number: 'QT-FAIL', description: 'Perf pipe' }), retry.body);
+  assert('the next edit retries the failed field with it', retry.q.id === 'r2' && eq(retry.body.fields, { quote_number: 'QT-FAIL', email: 'perf@pipe.test' }), retry.body);
   assert('and the server now has both', env.db.rows.find(r => r.id === 'r2').quote_number === 'QT-FAIL');
 
   // Dates and selects redraw the derived cells.
@@ -998,7 +1021,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   const newId = post.body.item.id;
   const order = env.$$('tr.fctproc-row').map(t => t.dataset.row);
   assert('the new row sits in its bid line\'s block', order.indexOf(newId) === order.indexOf('r1') + 1, order);
-  assert('and its Description has focus', env.w.document.activeElement === env.field(newId, 'description'));
+  assert('and its Material has focus, to name it', env.w.document.activeElement === env.field(newId, 'description'));
   env.field(newId, 'description').blur();
   env.$(`tr[data-row="${newId}"] [data-act="del"]`).click();
   assert('✕ asks first, inline', /Delete\?/.test(env.$(`tr[data-row="${newId}"] .c-actions`).textContent));
@@ -1129,7 +1152,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   await sleep(80);
   const seeds = env.created.filter(c => c[0] === 'po').map(c => c[1]);
   assert('"one per sub code" makes one PO per code', seeds.length === 3 && seeds[1].sub_code !== seeds[2].sub_code, seeds.slice(1));
-  assert('a single-row PO is titled by its description', seeds[1].title === 'Mirafi 140N, 15 ft rolls' && seeds[1].sub_code === 'Geofabric', seeds[1]);
+  assert('a single-row PO is titled by its Material', seeds[1].title === 'Mirafi 140N, 15 ft rolls' && seeds[1].sub_code === 'Geofabric', seeds[1]);
   assert('…or, with none, by its sub code', seeds[2].title === 'Old line' && seeds[2].supplier === '' && seeds[2].notes === '', seeds[2]);
 
   // Bulk delete
@@ -1146,8 +1169,9 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     date_needed: '2026-03-20', lead_time_days: 10, description: 'Geo "fabric"' })];
   const m = T.exportMatrix(XR, C());
   assert('export columns = the table\'s, minus checkbox and buttons, then the Notes the table shows beside them', eq(m.header, ['Status', 'PO #', 'Sub-Contractor Agreement', 'Date Needed',
-    'Lead Time (days)', 'Order By', 'Date Ordered', 'Date Delivered', 'Quantity', 'Unit', 'Cost Code', 'Sub Code', 'Description', 'Vendor',
+    'Lead Time (days)', 'Order By', 'Date Ordered', 'Date Delivered', 'Quantity', 'Unit', 'Material', 'Cost Code', 'Sub Code', 'Vendor',
     'Quote #', 'Contact', 'Email', 'Notes']), m.header);
+  assert('…Material is the row\'s own name', m.rows[0][10].v === 'Geo "fabric"', m.rows[0][10]);
   {
     const NR = [
       row({ id: 'n1', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', bid_qty_at_send: 901, bid_unit_at_send: 'LF',
@@ -1157,7 +1181,9 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       row({ id: 'n4', source: 'manual', description: 'nothing to say' }),
     ];
     const nm = T.exportMatrix(NR, C());
-    const notes = nm.rows.map(r => r[17].v), status = nm.rows.map(r => r[0].v), cc = nm.rows.map(r => r[10].v), qty = nm.rows.map(r => r[8]);
+    const notes = nm.rows.map(r => r[17].v), status = nm.rows.map(r => r[0].v), cc = nm.rows.map(r => r[11].v), qty = nm.rows.map(r => r[8]);
+    assert('…or, with none, its Sub Code (the bid line\'s current one, else the stored copy): a coded row\'s Material is never blank',
+      eq(nm.rows.map(r => r[10].v), ['15" Perf drain', 'Inlet Type M', 'Geofabric', 'nothing to say']), nm.rows.map(r => r[10].v));
     assert('Notes carries the Status flags and the "bid changed" badge', notes[0] === 'Late; Sub agreement open; Bid changed: bid 901 → 950 LF', notes[0]);
     assert('…"Not on bid" and "Due soon"', notes[1] === 'Due soon; Not on bid', notes[1]);
     assert('…"Late delivery" for an ordered row needed yesterday', notes[2] === 'Late delivery', notes[2]);
@@ -1193,10 +1219,10 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   // ── refresh / rerender ────────────────────────────────────────────────
   console.log('\n[refresh]');
   const getsBefore = env.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement').length;
-  env.field('r1', 'description').focus();
+  env.field('r1', 'quote_number').focus();
   await env.P.refresh();
   assert('refresh skips while a cell is being edited', env.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement').length === getsBefore);
-  env.field('r1', 'description').blur();
+  env.field('r1', 'quote_number').blur();
   env.db.rows.find(r => r.id === 'r2').vendor = 'Changed Elsewhere';
   env.db.rows.find(r => r.id === 'r2').version = 99;
   const wrap = env.$('#fctproc-wrap');
@@ -1373,13 +1399,13 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   const h = makeEnv({ rows: EROWS });
   h.P.renderTab(h.root);
   await tick(); await tick(); await tick();
-  const hd = h.field('r1', 'description');
+  const hd = h.field('r1', 'quote_number');
   hd.value = 'typed then closed';
   h.fire(hd, 'input');
   h.w.dispatchEvent(new h.w.Event('pagehide'));
   await tick();
   const kp = h.patches().pop();
-  assert('pagehide sends the unsaved edit at once, with keepalive', kp && kp.keepalive && kp.body.fields.description === 'typed then closed', kp);
+  assert('pagehide sends the unsaved edit at once, with keepalive', kp && kp.keepalive && kp.body.fields.quote_number === 'typed then closed', kp);
   await sleep(700);
   assert('…and not a second time when the timer would have fired', h.patches().length === 1);
 
@@ -1512,8 +1538,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     e.P.renderTab(e.root);
     await tick(); await tick(); await tick();
     const d = e.field('v1', 'description');
-    d.value = 'Bad!';
-    e.fire(d, 'input');
+    e.pick(d, 'Bad!', '__typed__');
     const qn = e.field('v1', 'quote_number');
     qn.value = 'Q-1001';
     e.fire(qn, 'input');
@@ -1523,7 +1548,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('the refused PATCH carried both cells', ps[0] && eq(ps[0].body.fields, { description: 'Bad!', quote_number: 'Q-1001' }), ps.map(p => p.body));
     assert('…the refused cell is dropped and the rest is sent again at once', ps.length === 2 && eq(ps[1].body.fields, { quote_number: 'Q-1001' }), ps.map(p => p.body));
     assert('…so the other cell is saved', e.db.rows[0].quote_number === 'Q-1001' && e.db.rows[0].description === 'Geofabric');
-    assert('…the message names the cell and the value that was refused', e.errors.some(m => /Description "Bad!" was not saved — description is not allowed/.test(m)
+    assert('…the message names the cell and the value that was refused', e.errors.some(m => /Material "Bad!" was not saved — description is not allowed/.test(m)
       && /the rest of the row's changes go on without it/.test(m)), e.errors);
     assert('…and the cell is back to what is saved', e.field('v1', 'description').value === 'Geofabric' && e.P._test.state().rows[0].description === 'Geofabric');
     const c2 = e.field('v1', 'contact');
@@ -2466,17 +2491,17 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('…and picking one fills Email too', e.$('#fctproc-bulk-email').value === 'mhanlon@lbwater.com');
   }
 
-  console.log('\n[a column the page hides (turf hides Description for now)]');
+  console.log('\n[a column the page hides (Material, for a page that wants the bid\'s names alone)]');
   {
     const e = makeEnv({ rows: [row({ id: 'h1', description: 'secret glue', quote_number: 'Q-1' }), row({ id: 'h2', description: 'other thing', quote_number: 'Q-2' })] });
     e.P.configure({ hiddenColumns: ['description'] });
     e.P.renderTab(e.root);
     await tick(); await tick(); await tick();
     const heads = e.$$('#fctproc-wrap thead th').map(t => t.textContent.trim());
-    assert('no Description column or cells on the sheet; the rest are there', !heads.some(h => /^Description/.test(h)) && !e.field('h1', 'description')
+    assert('no Material column or cells on the sheet; the rest are there', !heads.some(h => /^Material/.test(h)) && !e.field('h1', 'description')
       && heads.some(h => /^Quote #/.test(h)) && !!e.field('h1', 'quote_number') && e.$$('tr.fctproc-row').length === 2, heads);
     assert('…and the table is that column narrower', parseFloat(e.$('.fctproc-table').style.width) > 0
-      && !e.$$('#fctproc-wrap col').some(c => c.style.width === '15rem'), e.$('.fctproc-table').style.width);
+      && !e.$$('#fctproc-wrap col').some(c => c.style.width === '18rem'), e.$('.fctproc-table').style.width);
     const search = e.$('#fctproc-search');
     search.value = 'secret'; e.fire(search, 'input');
     await sleep(350);
@@ -2491,16 +2516,16 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('a filter left on it narrows nothing', e.$$('tr.fctproc-row').length === 2);
     e.P._test.state().filters = {};
     const m = e.P._test.exportMatrix(e.P._test.state().rows, C());
-    assert('the Excel / CSV columns leave it out', !m.header.includes('Description') && m.header.includes('Quote #') && m.header.length === 17
+    assert('the Excel / CSV columns leave it out', !m.header.includes('Material') && m.header.includes('Quote #') && m.header.length === 17
       && m.rows.every(r => r.length === 17) && !m.rows.some(r => r.some(c => c.v === 'secret glue')), m.header);
-    assert('…so does the CSV text', !/secret glue|Description/.test(e.P._test.buildCsv(e.P._test.state().rows, C())));
+    assert('…so does the CSV text', !/secret glue|Material/.test(e.P._test.buildCsv(e.P._test.state().rows, C())));
     const html = e.P._test.buildPrintHtml(C(), { printedAt: new Date(2026, 10, 17) });
-    assert('…and the print view', !/<th>Description<\/th>/.test(html) && !/secret glue/.test(html) && /Q-1/.test(html));
+    assert('…and the print view', !/<th>Material<\/th>/.test(html) && !/secret glue/.test(html) && /Q-1/.test(html));
     e.$('[data-act="add"]').click();
     await sleep(40);
     const added = e.P._test.state().rows.find(r => r.id !== 'h1' && r.id !== 'h2');
-    assert('+ Add Row puts the cursor in Quantity, Description being hidden', !!added && e.w.document.activeElement === e.field(added.id, 'quantity'));
-    assert('…and what is stored in Description is kept', e.db.rows.find(r => r.id === 'h1').description === 'secret glue'
+    assert('+ Add Row puts the cursor in Quantity, Material being hidden', !!added && e.w.document.activeElement === e.field(added.id, 'quantity'));
+    assert('…and what is stored in it is kept', e.db.rows.find(r => r.id === 'h1').description === 'secret glue'
       && e.P._test.state().rows.find(r => r.id === 'h1').description === 'secret glue');
     e.P.configure({ hiddenColumns: [] });
     e.P.rerender();
@@ -2534,7 +2559,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       tag('s3') && tag('s3').title);
   }
 
-  console.log('\n[Create PO titles, and messages, with Description hidden]');
+  console.log('\n[Create PO titles, and messages, with Material hidden]');
   {
     const e = makeEnv({ rows: [
       row({ id: 't1', vendor: 'LB Water', description: 'hidden text' }),
@@ -2554,18 +2579,18 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       return (e.created.filter(x => x[0] === 'po').pop() || [])[1];
     };
     let seed = await create('t1');
-    assert('a hand-added row with no code: the PO is titled after the vendor, never blank, and not from the hidden Description',
+    assert('a hand-added row with no code: the PO is titled after the vendor, never blank, and not from the hidden Material',
       seed && seed.title === 'LB Water materials', seed);
     seed = await create('t2');
     assert('…with a cost code alone: titled with the cost code', seed && seed.title === 'Stormwater', seed);
     seed = await create('t3');
-    assert('…on a bid line: titled with its Sub Code, not the hidden Description', seed && seed.title === 'Elbows', seed);
+    assert('…on a bid line: titled with its Sub Code, not the hidden Material', seed && seed.title === 'Elbows', seed);
     const codes = e.field('t1', 'codes');
     codes.focus(); e.pick(codes, 'Inlet couplers 15in', null); codes.blur();
     await sleep(20);
     const said = e.$$('.fctproc-toast').map(t => t.textContent).join(' | ');
-    assert('a Sub Code typed that is not on the bid: the message says to pick one, and no longer points at the hidden Description',
-      /is not a line on this job's bid — pick one from the list\./.test(said) && !/Description/.test(said), said);
+    assert('a Sub Code typed that is not on the bid: the message says to pick one, and does not point at the hidden Material',
+      /is not a line on this job's bid — pick one from the list\./.test(said) && !/Material|Description/.test(said), said);
   }
   {
     const e = makeEnv({ rows: [row({ id: 't4', vendor: 'LB Water', description: 'Couplers' })] });
@@ -2575,11 +2600,12 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     e.$('[data-act="bulk-po"]').click();
     await sleep(40);
     const seed = (e.created.filter(x => x[0] === 'po').pop() || [])[1];
-    assert('with Description shown, one row\'s PO is still titled from its Description', seed && seed.title === 'Couplers', seed);
+    assert('with Material shown, one row\'s PO is titled from its Material', seed && seed.title === 'Couplers', seed);
     const codes = e.field('t4', 'codes');
     codes.focus(); e.pick(codes, 'Inlet couplers 15in', null); codes.blur();
     await sleep(20);
-    assert('…and the message still offers Description', e.$$('.fctproc-toast').some(t => /can go in Description/.test(t.textContent)));
+    assert('…and the message says the job\'s own name goes in Material', e.$$('.fctproc-toast').some(t => /own name for the material goes in Material/.test(t.textContent)),
+      e.$$('.fctproc-toast').map(t => t.textContent));
   }
 
   console.log('\n[leaving with a change that could not be saved]');
@@ -2589,7 +2615,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     await tick(); await tick(); await tick();
     e.db.failPatch = 5;
     const d = e.field('x1', 'description');
-    d.focus(); d.value = 'Type M inlet'; e.fire(d, 'input'); e.fire(d, 'change');
+    d.focus(); e.pick(d, 'Type M inlet', '__typed__');
     await sleep(20);
     const ev = new e.w.Event('beforeunload', { cancelable: true });
     e.w.dispatchEvent(ev);
@@ -2804,7 +2830,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       && d.opened[3].line.label === 'E&S / Silt Sock 12inch', d.opened[3]);
     clip('m5').click();
     await sleep(20);
-    assert('a line with no codes is called by its Description', d.opened[4] && d.opened[4].line.label === 'Type M inlet grate'
+    assert('a line with no codes is called by its Material', d.opened[4] && d.opened[4].line.label === 'Type M inlet grate'
       && d.opened[4].line.cost_code === '' && d.opened[4].line.sub_code === '', d.opened[4]);
     e.P.configure({ hiddenColumns: ['description'] });
     e.P.rerender();
@@ -3302,6 +3328,179 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     await sleep(20);
     const pheaders = e.$$('.fctproc-table th').map(th => th.textContent.replace('▼', '').trim());
     assert('opening a job again: no Job column, no bands', !pheaders.includes('Job') && !e.$('tr.fctproc-jobband'));
+  }
+
+  // ── Material: the job's name for what is bought ─────────────────────────
+  // The bid stays in the estimate's words ("Infill Crumb Rubber", "12\"
+  // Concrete Curb") — what cost is tracked by. The sheet names what this job
+  // actually buys ("20/40 Mesh rubber crumb infill"), and one bid line can be
+  // bought as many materials. Material is that name; blank reads as the
+  // row's Sub Code.
+  console.log('\n[Material: the job\'s own name for what is bought, beside the codes it books to]');
+  {
+    assert('a row with a Material of its own is called by it (trimmed)',
+      T.materialOf(row({ source: 'bid', bid_item_id: 'b1', description: '  8 oz nonwoven geotextile ' }), C()) === '8 oz nonwoven geotextile');
+    assert('…a blank one reads as its bid line\'s CURRENT Sub Code, not the stored copy',
+      T.materialOf(row({ source: 'bid', bid_item_id: 'b2', sub_code: 'Perf drain (old name)' }), C()) === '15" Perf drain');
+    assert('…the stored copy once the line is gone from the bid', T.materialOf(row({ source: 'bid', bid_item_id: 'gone', sub_code: 'Inlet Type M' }), C()) === 'Inlet Type M');
+    assert('…and blank on a row with neither', T.materialOf(row({}), C()) === '');
+    assert('the Material filter and search read it as shown', T.fieldValue(row({ source: 'bid', bid_item_id: 'b1' }), 'description', C()) === 'Geofabric'
+      && T.applyFilters([row({ id: 'm', source: 'bid', bid_item_id: 'b6', description: '15" TEE watertight w/ gasket' })], { search: 'tee gasket' }, C()).length === 1
+      && T.applyFilters([row({ id: 'm', source: 'bid', bid_item_id: 'b6' })], { search: 'elbows' }, C()).length === 1);
+    const two = (a, b) => ({ rows: [row({ id: 'a', description: a }), row({ id: 'b', description: b })], cost_code: 'Stormwater', sub_code: 'Geofabric' });
+    assert('a PO for several rows that are all one Material is titled by it', T.poTitle(two('Mirafi 140N', 'mirafi 140n'), 'Acme Supply') === 'Mirafi 140N');
+    assert('…several different ones, by the vendor as before', T.poTitle(two('Mirafi 140N', 'Staples'), 'Acme Supply') === 'Acme Supply materials'
+      && T.poTitle(two('Mirafi 140N', ''), 'Acme Supply') === 'Acme Supply materials');
+    assert('a line\'s documents are called by its Material, with the codes it books to',
+      T.lineLabel(row({ description: '15" TEE watertight w/ gasket' }), { cost_code: 'Stormwater', sub_code: 'Elbows' }) === '15" TEE watertight w/ gasket — Stormwater / Elbows');
+    assert('…and by the codes alone when it has none (or it is the Sub Code again)',
+      T.lineLabel(row({}), { cost_code: 'Stormwater', sub_code: 'Elbows' }) === 'Stormwater / Elbows'
+      && T.lineLabel(row({ description: 'elbows' }), { cost_code: 'Stormwater', sub_code: 'Elbows' }) === 'Stormwater / Elbows');
+  }
+  {
+    // Names bought on earlier jobs (api/procurement.js materialLibrary).
+    const LIB = [
+      { material: '15" Elbow 45°', sub_code: 'Elbows', cost_code: 'Stormwater', unit: 'EA', vendor: 'LB Water', jobs: 2, last_used: '2026-02-01T00:00:00Z' },
+      { material: '15" TEE watertight w/ gasket', sub_code: 'ELBOWS ', cost_code: 'stormwater', unit: 'EA', vendor: 'LB Water', jobs: 1, last_used: '2026-02-20T00:00:00Z' },
+      { material: 'Perforated 15" SLCPP', sub_code: '15" Perf drain', cost_code: 'Stormwater', unit: 'LF', vendor: 'LB Water', jobs: 5, last_used: '2026-01-05T00:00:00Z' },
+      { material: '8 oz nonwoven geotextile', sub_code: 'Geofabric', cost_code: 'Stormwater', unit: 'SY', vendor: 'Acme Supply', jobs: 4, last_used: '2026-01-04T00:00:00Z' },
+      { material: '12" Filtration sock', sub_code: 'Silt Sock 12inch', cost_code: 'E&S', unit: 'LF', vendor: 'Frank Roberts', jobs: 6, last_used: '2025-12-01T00:00:00Z' },
+    ];
+    const e = makeEnv({ rows: [
+      // A bid line, and the materials "+ Material" broke it into (each copies
+      // the bid row's unit, with no quantity yet).
+      row({ id: 'e1', source: 'bid', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', quantity: 12, unit: 'EA', bid_qty_at_send: 12, bid_unit_at_send: 'EA' }),
+      row({ id: 'e2', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', unit: 'EA', created_at: '2026-03-02T00:00:00Z' }),
+      // On PO-0001 (matched by its codes) and with no vendor of its own.
+      row({ id: 'g1', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', quantity: 8110, unit: 'SF', bid_qty_at_send: 8110, bid_unit_at_send: 'SF' }),
+      // + Add Row: nothing yet.
+      row({ id: 'n1', created_at: '2026-03-03T00:00:00Z' }),
+      // + Add Row on the Stormwater section: a cost code alone.
+      row({ id: 'c1', cost_code: 'Stormwater', created_at: '2026-03-04T00:00:00Z' }),
+      // Coded to a line the bid no longer has, whose sub code nothing was bought under.
+      row({ id: 'o1', bid_item_id: 'gone', cost_code: 'Stormwater', sub_code: 'Inlet Type M', created_at: '2026-03-05T00:00:00Z' }),
+    ] });
+    e.db.materials = LIB;
+    e.P.renderTab(e.root);
+    await sleep(30);
+    const gets = e.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement');
+    assert('the library is read once, after the rows', gets.length === 2 && gets[0].q.project_id === 'p1' && gets[1].q.action === 'materials'
+      && gets[1].q.division === 'turf' && !gets[1].q.project_id, gets.map(g => g.q));
+    assert('…and kept', e.P._test.library().list.length === 5);
+    await e.P.refresh();
+    await sleep(10);
+    assert('a poll does not read it again (it is read every few minutes at most)', e.calls.filter(c => c.q.action === 'materials').length === 1);
+
+    const heads = e.$$('.fctproc-table th');
+    const th = label => heads.find(h => h.textContent.replace('▼', '').trim() === label);
+    assert('Material sits between Unit and the codes, and says what blank means', !!th('Material') && heads.indexOf(th('Material')) === heads.indexOf(th('Unit')) + 1
+      && heads.indexOf(th('Cost Code')) === heads.indexOf(th('Material')) + 1 && /Blank shows the bid's Sub Code/.test(th('Material').title));
+    assert('Sub Code says it is what the cost books to', /books to/.test(th('Sub Code').title));
+    assert('a blank Material shows the bid\'s Sub Code as its placeholder', e.field('e1', 'description').placeholder === 'Elbows'
+      && /Same as the bid's Sub Code \(Elbows\)/.test(e.field('e1', 'description').title));
+    assert('…and a row with no codes asks what it is', e.field('n1', 'description').placeholder === 'What is it?');
+
+    const labels = opts => opts.map(o => o.label);
+    let opts = e.P.cbOptions('proc_materials:e2');
+    assert('the picker opens on the names used under the row\'s Sub Code (most jobs first) — not its neighbours\' materials',
+      eq(labels(opts), ['15" Elbow 45°', '15" TEE watertight w/ gasket']), labels(opts));
+    assert('…each with what it was bought by and from, and how often',
+      opts[0].meta === 'EA · LB Water · 2 jobs' && opts[1].meta === 'EA · LB Water · 1 job', opts.map(o => o.meta));
+    const c1opts = e.P.cbOptions('proc_materials:c1');
+    assert('a row with a cost code alone is offered its cost code\'s names, saying which sub code each was under',
+      eq(labels(c1opts), ['Perforated 15" SLCPP', '8 oz nonwoven geotextile', '15" Elbow 45°', '15" TEE watertight w/ gasket'])
+      && c1opts[0].meta === 'under 15" Perf drain · LF · LB Water · 5 jobs', c1opts.map(o => [o.label, o.meta]));
+    assert('…and so is a row whose sub code nothing was bought under yet', eq(labels(e.P.cbOptions('proc_materials:o1')), labels(c1opts)));
+    const n1opts = e.P.cbOptions('proc_materials:n1');
+    assert('a row with no codes yet is offered the names used most, anywhere', n1opts.length === 5 && n1opts[0].label === '12" Filtration sock'
+      && n1opts[0].meta === 'under E&S / Silt Sock 12inch · LF · Frank Roberts · 6 jobs', n1opts.map(o => [o.label, o.meta]));
+
+    let f = e.P.cbFilter('proc_materials:e2', 'sock', opts);
+    assert('typing searches every name, what was typed first (Enter must not swap it for a suggestion)',
+      f[0].value === '__typed__' && f[0].label === 'sock' && eq(labels(f.slice(1)), ['12" Filtration sock']), f.map(o => [o.value, o.label]));
+    f = e.P.cbFilter('proc_materials:e2', '  15" elbow 45° ', opts);
+    assert('…unless it is one of them word for word: then that one, to pick', f.length === 1 && f[0].label === '15" Elbow 45°' && f[0].value.startsWith('__lib__:'), f);
+    f = e.P.cbFilter('proc_materials:e2', 'lb water', opts);
+    assert('…the vendor and unit beside a name are searched too', f.length >= 4 && f.slice(1).every(o => /LB Water/.test(o.meta)), labels(f));
+    assert('…and an emptied box shows the row\'s list again', e.P.cbFilter('proc_materials:e2', '', opts) === opts);
+
+    // Picking a name brings its unit and vendor into cells still blank.
+    const pickName = async (id, label) => {
+      const o = e.P.cbFilter('proc_materials:' + id, label, e.P.cbOptions('proc_materials:' + id)).find(x => x.label === label);
+      const el = e.field(id, 'description');
+      el.focus();
+      e.pick(el, o.label, o.value);
+      el.blur();
+      await sleep(700);
+      return e.patches().filter(p => p.q.id === id).pop();
+    };
+    let p = await pickName('e2', 'Perforated 15" SLCPP');
+    assert('a "+ Material" row: the name, its unit over the one copied from the bid row (no quantity yet), and its vendor',
+      p && eq(p.body.fields, { description: 'Perforated 15" SLCPP', unit: 'LF', vendor: 'LB Water' }), p && p.body);
+    p = await pickName('e1', '15" TEE watertight w/ gasket');
+    assert('a row with a quantity keeps its unit (the number is counted in it); the blank vendor is filled',
+      p && eq(p.body.fields, { description: '15" TEE watertight w/ gasket', vendor: 'LB Water' }), p && p.body);
+    p = await pickName('g1', '8 oz nonwoven geotextile');
+    assert('a row already on a PO takes the name only: its order\'s supplier is its vendor',
+      p && eq(p.body.fields, { description: '8 oz nonwoven geotextile' }) && e.db.rows.find(r => r.id === 'g1').vendor === '', p && p.body);
+    assert('…and the cell shows the name', e.field('g1', 'description').value === '8 oz nonwoven geotextile');
+
+    // A name typed here is offered on the next row at once, before any read.
+    const el = e.field('e2', 'description');
+    el.focus();
+    e.pick(el, 'Flat drain 12in', '__typed__');
+    el.blur();
+    await sleep(700);
+    opts = e.P.cbOptions('proc_materials:e1');
+    const here = opts.find(o => o.label === 'Flat drain 12in');
+    assert('a name typed on this sheet is offered under its Sub Code straight away', !!here, opts.map(o => [o.label, o.meta]));
+    assert('…after the rest, as one this job already has', here && here.meta === 'LF · LB Water · already on this job' && opts[opts.length - 1] === here,
+      opts.map(o => [o.label, o.meta]));
+    assert('…a row\'s own picked name is no new entry (it is the library\'s)', opts.filter(o => o.label === '15" TEE watertight w/ gasket').length === 1);
+    // Emptied, the row reads as its Sub Code again. (The commit redrew the
+    // row, so its box is a new one.)
+    const el2 = e.field('e2', 'description');
+    assert('the committed name is in the redrawn box', el2 !== el && el2.value === 'Flat drain 12in');
+    el2.focus();
+    e.pick(el2, '', null);
+    el2.blur();
+    await sleep(700);
+    assert('emptying Material saves it blank, and the row reads as the bid again', e.db.rows.find(r => r.id === 'e2').description === ''
+      && e.field('e2', 'description').value === '' && e.field('e2', 'description').placeholder === 'Elbows');
+
+    const m = e.P._test.exportMatrix(e.P._test.state().rows, e.P._test.makeCtx());
+    const mi = m.header.indexOf('Material');
+    assert('the Excel / CSV Material column: the job\'s names, a blank one as its Sub Code',
+      eq(m.rows.map(r => r[mi].v).sort(), ['', '', '15" TEE watertight w/ gasket', '8 oz nonwoven geotextile', 'Elbows', 'Inlet Type M'].sort()), m.rows.map(r => r[mi].v));
+    const html = e.P._test.buildPrintHtml(e.P._test.makeCtx());
+    assert('…and the print view has it, ahead of the codes', /<th>Unit<\/th><th>Material<\/th><th>Sub Code<\/th>/.test(html) && /8 oz nonwoven geotextile/.test(html),
+      (html.match(/<thead>.*?<\/thead>/s) || [''])[0]);
+    assert('nothing went wrong on the way', !e.errors.length, e.errors);
+  }
+  {
+    // A library that cannot be read is no failure: the cell takes typing.
+    const e = makeEnv({ rows: [row({ id: 'w1', source: 'bid', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', unit: 'EA', quantity: 12 })] });
+    e.db.failMaterials = true;
+    e.P.renderTab(e.root);
+    await sleep(30);
+    assert('a library read that fails is only a warning', !e.errors.length && e.warns.some(w => /material library/.test(w)) && !!e.field('w1', 'description'), e.warns);
+    const f = e.P.cbFilter('proc_materials:w1', '15" TEE', e.P.cbOptions('proc_materials:w1'));
+    assert('…and the picker still takes what is typed', f.length === 1 && f[0].value === '__typed__');
+    assert('…tried again on the next load', e.P._test.library().at === 0);
+  }
+  {
+    const e = makeEnv({ perm: { canView: true, canEdit: false }, serverCanEdit: false, rows: [
+      row({ id: 'v1', source: 'bid', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows' }),
+      row({ id: 'v2', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: '8 oz nonwoven geotextile' }),
+    ] });
+    e.db.materials = [{ material: 'x', sub_code: 'Elbows', cost_code: 'Stormwater', unit: '', vendor: '', jobs: 1 }];
+    e.P.renderTab(e.root);
+    await sleep(30);
+    const cell = id => e.$(`tr[data-row="${id}"] td.c-description`);
+    assert('a viewer sees a blank Material as the Sub Code, greyed', cell('v1').textContent.trim() === 'Elbows' && !!cell('v1').querySelector('.fctproc-frombid')
+      && /Same as the bid's Sub Code/.test(cell('v1').querySelector('.fctproc-frombid').title));
+    assert('…and a named one as it is', cell('v2').textContent.trim() === '8 oz nonwoven geotextile' && !cell('v2').querySelector('.fctproc-frombid'));
+    assert('…with no picker, and no library read (a viewer names nothing)', !e.field('v1', 'description') && !e.calls.some(c => c.q.action === 'materials'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

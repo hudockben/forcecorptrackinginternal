@@ -102,6 +102,7 @@ function assert(label, cond, detail) {
   else      { failed++; console.error(`  ✗ ${label}${detail !== undefined ? '  — ' + String(detail).slice(0, 400) : ''}`); }
 }
 const show = r => `${r.statusCode} ${JSON.stringify(r.body)}`;
+const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 const q = (text, values = []) => pool.query(text, values).then(r => r.rows);
 
 function fakeRes() {
@@ -1130,6 +1131,66 @@ function schemaStatements() {
     assert('…no folder half made', (await ccFolder('Brand New Code')).length === 0);
     assert('the real helpers are back in place', procDocs.refileProcurementDocs === real.refile
       && procDocs.liveCostCodes === real.live && procDocs.snapshotStoredCodes === real.snap);
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
+  console.log('\nThe material library (GET action=materials): the names bought under each sub code, across jobs');
+  {
+    // Kiewit, which nothing above wrote to, so the list is exactly these.
+    const ins = (id, o) => q(`INSERT INTO procurement_items (id, company_code, division, project_id, cost_code, sub_code, description, unit, vendor, updated_at, deleted_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [id, o.co || CO, o.division || 'kiewit', o.job, o.cost || '', o.sub || '', o.desc || '', o.unit || '', o.vendor || '', o.at, o.deleted || null]);
+    await ins(uid('m'), { job: 'kA', cost: 'Turf Installation', sub: 'Infill Crumb Rubber', desc: '20/40 Mesh rubber crumb infill', unit: 'LBS', vendor: 'Willig Tire', at: '2026-10-01T12:00:00Z' });
+    // The newest spelling of a name is the one kept; a blank unit or vendor
+    // takes the most recent one that has it.
+    await ins(uid('m'), { job: 'kB', cost: 'turf installation', sub: 'infill crumb rubber', desc: '20/40 mesh rubber crumb infill', at: '2026-11-01T12:00:00Z' });
+    await ins(uid('m'), { job: 'kB', cost: 'Turf Installation', sub: 'Infill Crumb Rubber', desc: '20/40 Mesh rubber crumb infill', unit: 'TON', at: '2026-09-01T12:00:00Z' });
+    await ins(uid('m'), { job: 'kC', cost: 'Base Construction', sub: '12" Concrete Curb', desc: '12"x12" Concrete Curb', unit: 'LF', vendor: 'Three Rivers Concrete', at: '2026-08-01T12:00:00Z' });
+    // The same name under another sub code is another entry.
+    await ins(uid('m'), { job: 'kC', cost: 'Sports Equipment', sub: 'Ball Catcher Foundations/Install', desc: '12"x12" Concrete Curb', unit: 'LF', at: '2026-06-01T12:00:00Z' });
+    await ins(uid('m'), { job: 'kD', desc: 'Dumpster Rental', unit: 'EA', vendor: 'Dumpster Dudes', at: '2026-07-01T12:00:00Z' });
+    // Not names: the sub code again, blank, blanks, and a deleted row.
+    await ins(uid('m'), { job: 'kC', cost: 'Stormwater', sub: 'Geofabric', desc: 'GEOFABRIC ', at: '2026-11-02T12:00:00Z' });
+    await ins(uid('m'), { job: 'kC', cost: 'Stormwater', sub: 'Geofabric', desc: '', at: '2026-11-02T12:00:00Z' });
+    await ins(uid('m'), { job: 'kC', cost: 'Stormwater', sub: 'Geofabric', desc: '   ', at: '2026-11-02T12:00:00Z' });
+    await ins(uid('m'), { job: 'kD', cost: 'Stormwater', sub: 'Geofabric', desc: 'Skipped fabric', at: '2026-11-02T12:00:00Z', deleted: '2026-11-03T12:00:00Z' });
+    // Another division's and another company's names stay theirs.
+    await ins(uid('m'), { division: 'turf', job: 'kE', sub: 'Infill Crumb Rubber', desc: 'Turf-division name', at: '2026-11-02T12:00:00Z' });
+    await ins(uid('m'), { co: CO2, division: 'paving', job: 'kF', sub: 'Infill Crumb Rubber', desc: 'Rival company name', at: '2026-11-02T12:00:00Z' });
+
+    let r = await get(KIEW, { action: 'materials' }, 'kiewit');
+    assert('a level2 reads the division\'s library (no job needed)', r.statusCode === 200 && r.body.ok && r.body.canEdit === true && Array.isArray(r.body.materials), show(r));
+    assert('…which has the row added by hand on job k-1 above, too', r.body.materials.some(m => m.material === 'Kiewit stone' && m.jobs === 1 && m.sub_code === ''));
+    // From here on, just the rows of this section.
+    r.body.materials = r.body.materials.filter(m => m.material !== 'Kiewit stone');
+    const names = r.body.materials.map(m => m.material);
+    assert('one entry per sub code + name (compared as the sheet compares codes), most jobs first, then most recent',
+      eq(names, ['20/40 mesh rubber crumb infill', '12"x12" Concrete Curb', 'Dumpster Rental', '12"x12" Concrete Curb']), JSON.stringify(names));
+    const infill = r.body.materials[0];
+    assert('…counting the jobs it was bought on, not the rows', infill.jobs === 2 && infill.last_used === '2026-11-01T12:00:00.000Z', JSON.stringify(infill));
+    assert('…with its newest spelling, and the newest unit and vendor that are not blank',
+      infill.sub_code === 'infill crumb rubber' && infill.cost_code === 'turf installation' && infill.unit === 'LBS' && infill.vendor === 'Willig Tire', JSON.stringify(infill));
+    assert('…the same name under another sub code is its own entry',
+      r.body.materials[3].sub_code === 'Ball Catcher Foundations/Install' && r.body.materials[1].sub_code === '12" Concrete Curb' && r.body.materials[1].vendor === 'Three Rivers Concrete');
+    assert('…a name with no codes is kept (a dumpster is bought too)', r.body.materials[2].sub_code === '' && r.body.materials[2].unit === 'EA');
+    assert('…and the shape is exactly what the page reads', r.body.materials.every(m => eq(Object.keys(m).sort(), ['cost_code', 'jobs', 'last_used', 'material', 'sub_code', 'unit', 'vendor'])));
+    assert('the Sub Code again, blank, blanks and deleted rows are no names', !names.some(n => /geofabric|skipped/i.test(n) || !n.trim()));
+    assert('another division\'s and another company\'s names are not in it', !names.includes('Turf-division name') && !names.includes('Rival company name'));
+    r = await get(RIVAL, { action: 'materials' }, 'paving');
+    assert('…and the other company reads only its own', r.statusCode === 200 && eq(r.body.materials.map(m => m.material), ['Rival company name']), show(r));
+    r = await get(L1, { action: 'materials' });
+    assert('a level1 may read it too (what the rows already show), canEdit false', r.statusCode === 200 && r.body.canEdit === false
+      && r.body.materials.some(m => m.material === 'Turf-division name'), show(r));
+    r = await get(SALES, { action: 'materials' });
+    assert('a sales login is refused (403), as for the rows', r.statusCode === 403 && r.body.error === 'no_access', show(r));
+    r = await get(ADMIN, { action: 'bogus' });
+    assert('an unknown read action is a 400, not a job\'s rows', r.statusCode === 400 && /Unknown action/.test(r.body.message || ''), show(r));
+    DB.log = [];
+    await get(KIEW, { action: 'materials' }, 'kiewit');
+    const stmt = DB.log.find(s => /procurement_items/.test(s)) || '';
+    DB.log = null;
+    assert('one read, scoped by company and division, live named rows only, capped',
+      /company_code = \?/.test(stmt) && /division = \?/.test(stmt) && /deleted_at IS NULL/.test(stmt) && /btrim\(description\) <> ''/.test(stmt) && /LIMIT \?/.test(stmt), stmt);
   }
 
   // ─────────────────────────────────────────────────────────────────────

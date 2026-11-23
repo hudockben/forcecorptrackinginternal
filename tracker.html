@@ -19839,9 +19839,11 @@ function _procEnsureConfigured() {
     getToken:     () => fctToken,
     getUserName:  () => (fctUser ? (fctUser.name || fctUser.username || '') : ''),
     perm:         { canView: _procCanSee(), canEdit: _procCanEdit() },
-    // Description is hidden for now: the bid's Sub Code already names each
-    // material. What is stored in it is kept; drop this line to show it again.
-    hiddenColumns: ['description'],
+    // Every column shows. Material (stored as `description`) is what the
+    // job buys in its own words, beside the bid codes the cost books to; a
+    // row with no name of its own reads as its Sub Code. A page that wants
+    // the bid's names alone can still list the description key here.
+    hiddenColumns: [],
     getProjects:  () => projectsList,
     getProject:   id => getProj(id),
     getBidLines:  procBidLines,

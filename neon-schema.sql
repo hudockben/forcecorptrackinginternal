@@ -2775,9 +2775,13 @@ CREATE INDEX IF NOT EXISTS idx_ts_vacation
 -- sheet.
 --
 -- procurement_items: one row per material line on one job. Cost Code and Sub
--- Code are the bid's own codes (in a turf bid the sub code IS the material,
--- e.g. cost code "Stormwater", sub code "Geofabric"), and description is free
--- text beside them because bid lines carry none.
+-- Code are the bid's own codes — what the cost books to (cost code
+-- "Stormwater", sub code "Geofabric") — and description is the sheet's
+-- Material: what is bought, in the job's own words ("20/40 Mesh rubber crumb
+-- infill" under the bid's "Infill Crumb Rubber"). Blank reads as the sub
+-- code's name. One bid line can be bought as many materials, each a row.
+-- api/procurement.js action=materials gathers the names across jobs, by sub
+-- code, for the Material picker.
 --   source 'bid'    the row was sent from a bid line by Send to Procurement.
 --                   bid_item_id is that line, and bid_qty_at_send and
 --                   bid_unit_at_send what the bid said when it was sent (or

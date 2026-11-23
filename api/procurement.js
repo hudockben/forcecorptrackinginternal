@@ -6,9 +6,11 @@
 // needed on site, how long the supplier takes, which vendor and quote, which
 // PO, and whether it has been ordered and delivered. That used to be an Excel
 // sheet per job; this is it as rows (procurement_items, neon-schema.sql
-// PROCUREMENT). Cost Code and Sub Code are the bid's own codes — in a turf
-// bid the sub code IS the material — and Description is free text beside
-// them, because bid lines carry none.
+// PROCUREMENT). Cost Code and Sub Code are the bid's own codes — what the
+// cost books to — and Description is the Material on the sheet: what is
+// bought, in the job's own words ("20/40 Mesh rubber crumb infill" under the
+// bid's "Infill Crumb Rubber"), blank meaning "the sub code's name". One bid
+// line can be bought as many materials, each its own row.
 //
 // A row comes from one of two places. Send to Procurement (action=send) turns
 // bid lines into rows with source 'bid'; "+ Add Row" and "+ Material" add
@@ -18,6 +20,12 @@
 //          → { ok, items:[…], canEdit }   live rows, or every row with its
 //            deleted_at when include_deleted=1 (Send to Procurement needs the
 //            deleted ones to offer "removed earlier"). Ordered created_at, id.
+// GET    ?division=…&action=materials
+//          → { ok, materials:[{ material, sub_code, cost_code, unit, vendor,
+//            jobs, last_used }], canEdit }   every Material (description)
+//            named on the division's live rows, once per sub code it was
+//            bought under — the Material picker's suggestions on the next job
+//            (materialLibrary below). Same readers as the rows.
 // POST   ?division=…            { item:{ id, project_id, …fields } }
 //          → 201 { ok, item }  | 409 { error:'duplicate' } when the id exists.
 //            Always a manual row, whatever `source` the body claims.
@@ -309,6 +317,51 @@ function shape(r) {
   };
 }
 
+// ── The material library ─────────────────────────────────────────────────
+// The rows read for it (the most recently written first) and the most names
+// sent back. A division's whole history is a few thousand named rows; past
+// this the oldest names drop off first.
+const MATERIALS_SCAN = 20000;
+const MATERIALS_MAX  = 1500;
+
+/**
+ * Every Material named on the division's live rows, once per sub code it
+ * was bought under: "Infill Crumb Rubber" → "20/40 Mesh rubber crumb infill",
+ * by the LBS, from Willig Tire, on 3 jobs. The page offers these in the
+ * Material picker, the row's own sub code's first, so a name one job worked
+ * out is there for the next without anyone keeping a list.
+ *
+ * `rows` must come newest first: the spelling, unit and vendor kept for a
+ * name are its most recent ones (a vendor or unit left blank is skipped for
+ * an older one that has it). Names and codes compare the way the sheet
+ * compares codes (procDocs.codeKey: case, spacing, dashes, quotes). A name
+ * that is just its sub code again says nothing and is left out. Sorted by
+ * the number of jobs, then most recently used.
+ */
+function materialLibrary(rows) {
+  const k = procDocs.codeKey;
+  const byKey = new Map();
+  for (const r of rows || []) {
+    const material = oneLine(r.description || '');
+    if (!material) continue;
+    const sub = oneLine(r.sub_code || '');
+    if (k(material) === k(sub)) continue;
+    const key = k(sub) + '\u0000' + k(material);
+    let e = byKey.get(key);
+    if (!e) {
+      e = { material, sub_code: sub, cost_code: oneLine(r.cost_code || ''), unit: '', vendor: '', jobs: new Set(), last_used: iso(r.updated_at) };
+      byKey.set(key, e);
+    }
+    if (!e.unit) e.unit = oneLine(r.unit || '');
+    if (!e.vendor) e.vendor = oneLine(r.vendor || '');
+    e.jobs.add(String(r.project_id));
+  }
+  return [...byKey.values()]
+    .map(e => ({ ...e, jobs: e.jobs.size }))
+    .sort((a, b) => b.jobs - a.jobs || String(b.last_used || '').localeCompare(String(a.last_used || '')) || a.material.localeCompare(b.material))
+    .slice(0, MATERIALS_MAX);
+}
+
 const isUniqueViolation = err => Boolean(err) && (err.code === '23505' || /duplicate key value/i.test(err.message || ''));
 const isCheckViolation  = err => Boolean(err) && (err.code === '23514' || /violates check constraint/i.test(err.message || ''));
 
@@ -505,6 +558,19 @@ module.exports = async (req, res) => {
   const sql      = neon(process.env.DATABASE_URL);
 
   try {
+    // ── GET action=materials — the names bought under each sub code ──────
+    if (req.method === 'GET' && action === 'materials') {
+      const rows = await sql`
+        SELECT project_id, cost_code, sub_code, description, unit, vendor, updated_at
+          FROM procurement_items
+         WHERE company_code = ${company} AND division = ${division} AND deleted_at IS NULL
+           AND btrim(description) <> ''
+         ORDER BY updated_at DESC, id
+         LIMIT ${MATERIALS_SCAN}`;
+      return res.json({ ok: true, materials: materialLibrary(rows), canEdit });
+    }
+    if (req.method === 'GET' && action) return fail(res, 400, 'invalid', `Unknown action "${action.slice(0, 40)}"`);
+
     // ── GET — one job's rows ─────────────────────────────────────────────
     if (req.method === 'GET') {
       const pid = readProjectId(q.project_id);

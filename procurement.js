@@ -39,6 +39,13 @@
  *   - Cost Code / Sub Code are the bid's own. A row sent from the bid keeps
  *     the bid line's id and shows that line's CURRENT codes; the stored copy
  *     is only what it falls back to when the line is gone ("not on bid").
+ *   - Material (stored as `description`) is what is bought, in the job's
+ *     own words, beside those codes: the bid stays simple ("Infill Crumb
+ *     Rubber") while the sheet says what this job buys ("20/40 Mesh rubber
+ *     crumb infill"), and one bid line can be bought as many materials
+ *     ("+ Material"). Blank reads as the Sub Code. Its picker offers the
+ *     names used under the same sub code on earlier jobs (the material
+ *     library, GET action=materials).
  *   - The PO # is never stored. A row stores the PO's id (or nothing, which
  *     means "match automatically") and the number is read live off the page's
  *     purchase-order list, because PO numbers are renumbered, moved and
@@ -289,6 +296,23 @@
       costGone: !notOnBid && !!cost.trim() && costOffBid(cost, ctx, row),
     };
   }
+  /**
+   * What a row buys, named the way Procurement names it. The bid's codes are
+   * the estimate's language ("Infill Crumb Rubber", "12\" Concrete Curb") and
+   * are what cost is tracked by; the job's plans and its suppliers name the
+   * same thing in more detail ("20/40 Mesh rubber crumb infill", "12\"x12\"
+   * Concrete Curb"), and one bid line is often bought as many materials (a
+   * detention system: pipe, fittings, stone, fabric, hatch…). So a row keeps
+   * its own Material (stored as `description`) beside the codes it books to,
+   * and a row that has none is called by its Sub Code — a bid row reads as
+   * the bid until somebody names it differently, and typing nothing is "same
+   * as the bid". Never the codes themselves: those stay the bid's.
+   */
+  function materialOf(row, ctx) {
+    const own = str(row && row.description).trim();
+    return own || liveCodes(row, ctx).sub_code.trim();
+  }
+
   // Whether no line on the job's bid has this cost code. A job with no bid
   // lines in hand (none yet, or not read yet) says nothing.
   function costOffBid(cost, ctx, row) {
@@ -688,6 +712,8 @@
       case 'quantity': return fmtQty(row.quantity);
       case 'cost_code': return liveCodes(row, ctx).cost_code;
       case 'sub_code': return liveCodes(row, ctx).sub_code;
+      // The Material as the sheet shows it: the row's own, else its Sub Code.
+      case 'description': return materialOf(row, ctx);
       // The job a row is on, named — only on a site's sheet, where there is
       // more than one.
       case 'job': return ctx && ctx.jobLabels ? ctx.jobLabels.get(String(row.project_id || '')) || '' : '';
@@ -782,9 +808,12 @@
     { label: 'Date Delivered', width: 12, get: r => ({ t: 'd', v: ymdOf(r.date_delivered) }) },
     { label: 'Quantity', width: 10, get: r => ({ t: 'n', v: r.quantity }) },
     { label: 'Unit', width: 7, get: r => ({ t: 's', v: r.unit }) },
+    // What is bought, as the sheet shows it (a row with no name of its own
+    // is its Sub Code) — the file goes to suppliers and the field, who order
+    // by the material, not by our codes.
+    { key: 'description', label: 'Material', width: 34, get: (r, c) => ({ t: 's', v: materialOf(r, c) }) },
     { label: 'Cost Code', width: 24, get: (r, c) => ({ t: 's', v: liveCodes(r, c).cost_code }) },
     { label: 'Sub Code', width: 26, get: (r, c) => ({ t: 's', v: liveCodes(r, c).sub_code }) },
-    { key: 'description', label: 'Description', width: 34, get: r => ({ t: 's', v: r.description }) },
     { label: 'Vendor', width: 22, get: r => ({ t: 's', v: r.vendor }) },
     { label: 'Quote #', width: 14, get: r => ({ t: 's', v: r.quote_number }) },
     { label: 'Contact', width: 18, get: r => ({ t: 's', v: r.contact }) },
@@ -1456,6 +1485,8 @@
       .fctproc-amber { color:#fbbf24; }
       .fctproc-ok { color: var(--green,#22c55e); }
       .fctproc-calc { color: var(--muted,#9ca3af); font-style: italic; }
+      /* A Material with no name of its own: the bid's Sub Code, greyed. */
+      .fctproc-frombid { color: var(--muted,#9ca3af); font-style: italic; }
       .fctproc-in { width:100%; box-sizing:border-box; background:transparent; border:1px solid transparent; border-radius:3px;
         color: var(--text,#e0e0e0); font: inherit; font-size:0.8rem; padding:0.14rem 0.25rem; outline:none; min-width:0; }
       .fctproc-in:hover { border-color: var(--border,#2a2a3a); }
@@ -1652,9 +1683,119 @@
     }));
   }
 
+  // ── Material library ────────────────────────────────────────────────
+  /**
+   * The names materials have been bought under on this division's jobs, by
+   * the sub code they booked to: "Infill Crumb Rubber" was bought as "20/40
+   * Mesh rubber crumb infill" from Willig Tire, by the LBS, on 3 jobs. Read
+   * from the server (GET action=materials — every job's rows, aggregated)
+   * once when the sheet loads and again after a while, and topped up from
+   * the rows on this sheet, so a name typed a moment ago is offered on the
+   * next row before any read. Nothing here is stored: it is the rows.
+   */
+  const LIB_STALE_MS = 5 * 60 * 1000;
+  const MAT_SUGGEST_MAX = 40;
+  const lib = { division: null, list: [], at: 0, loading: null };
+  function loadLibrary({ force = false } = {}) {
+    if (lib.division !== cfg.division) { lib.division = cfg.division; lib.list = []; lib.at = 0; lib.loading = null; }
+    if (lib.loading || (!force && lib.at && Date.now() - lib.at < LIB_STALE_MS)) return lib.loading || Promise.resolve(lib.list);
+    const division = cfg.division;
+    lib.at = Date.now();
+    lib.loading = api('GET', '/procurement' + q({ action: 'materials' }))
+      .then(data => {
+        if (lib.division !== division) return lib.list;
+        lib.list = (Array.isArray(data && data.materials) ? data.materials : [])
+          .filter(m => m && typeof m.material === 'string' && m.material.trim())
+          .map(m => ({
+            material: m.material.trim(), sub_code: str(m.sub_code), cost_code: str(m.cost_code),
+            unit: str(m.unit), vendor: str(m.vendor), jobs: Math.max(0, intOrNull(m.jobs) || 0),
+            last_used: str(m.last_used),
+          }));
+        return lib.list;
+      })
+      .catch(err => {
+        // Suggestions are a help, not the sheet: a failed read is tried again
+        // on a later load, and the Material cell takes typing meanwhile.
+        console.warn('[procurement] could not read the material library', err);
+        lib.at = 0;
+        return lib.list;
+      })
+      .finally(() => { if (lib.division === division) lib.loading = null; });
+    return lib.loading;
+  }
+  const libKey = (k, sub, mat) => ck(k, sub) + '\u0000' + ck(k, mat);
+  const libValue = (k, e) => '__lib__:' + encodeURIComponent(ck(k, e.sub_code)) + '|' + encodeURIComponent(ck(k, e.material));
+  /** The server's list, with this sheet's own named rows added. */
+  function libraryEntries(ctx) {
+    const k = keyFn(ctx);
+    const out = new Map();
+    lib.list.forEach(e => { const key = libKey(k, e.sub_code, e.material); if (!out.has(key)) out.set(key, e); });
+    st.rows.forEach(r => {
+      const mat = str(r.description).trim();
+      if (!mat) return;
+      const c = liveCodes(r, ctx);
+      // A name that is just the Sub Code again says nothing the bid does not.
+      if (ck(k, mat) === ck(k, c.sub_code)) return;
+      const key = libKey(k, c.sub_code, mat);
+      if (out.has(key)) return;
+      out.set(key, { material: mat, sub_code: c.sub_code, cost_code: c.cost_code, unit: str(r.unit), vendor: str(r.vendor), jobs: 0, here: true });
+    });
+    return [...out.values()];
+  }
+  /**
+   * The Material picker's list for a row, as it opens: the names used under
+   * its Sub Code (that is the "Infill Crumb Rubber was 20/40 Mesh" memory) —
+   * or, when that sub code has none, or the row has a cost code alone, the
+   * names used under its Cost Code; a row with no codes yet, the names used
+   * most anywhere. Most-used first, and a name another row of this job
+   * already has after the rest, saying so (the next "+ Material" of a
+   * detention system is one of the parts not bought yet). `all` lists every
+   * name, nearest first — what typing searches.
+   */
+  function materialOptions(row, { all = false } = {}) {
+    if (!row) return [];
+    const ctx = siteMode() && row.project_id ? makeCtx(row.project_id) : makeCtx();
+    const k = keyFn(ctx);
+    const codes = liveCodes(row, ctx);
+    const sk = ck(k, codes.sub_code), cc = ck(k, codes.cost_code);
+    const rankOf = e => (sk && ck(k, e.sub_code) === sk ? 0 : cc && ck(k, e.cost_code) === cc ? 1 : 2);
+    // The names this job's other rows already carry, by their own codes.
+    const taken = new Set();
+    st.rows.forEach(r => {
+      if (r.id === row.id || String(r.project_id || '') !== String(row.project_id || '') || !str(r.description).trim()) return;
+      taken.add(libKey(k, liveCodes(r, ctx).sub_code, str(r.description).trim()));
+    });
+    const ranked = libraryEntries(ctx).map(e => ({ e, rank: rankOf(e), taken: taken.has(libKey(k, e.sub_code, e.material)) }));
+    let pool = ranked;
+    if (!all) {
+      pool = ranked.filter(x => x.rank === 0);
+      if (!pool.length && cc) pool = ranked.filter(x => x.rank === 1);
+      // A row with no codes yet (+ Add Row) has nothing to be near.
+      if (!pool.length && !sk && !cc) pool = ranked;
+    }
+    pool.sort((a, b) => a.rank - b.rank || a.taken - b.taken || (b.e.jobs || 0) - (a.e.jobs || 0)
+      || str(b.e.last_used).localeCompare(str(a.e.last_used)) || a.e.material.localeCompare(b.e.material));
+    return pool.map(({ e, rank, taken: on }) => {
+      const where = rank === 0 ? '' : [rank === 2 ? e.cost_code : '', e.sub_code].map(s => str(s).trim()).filter(Boolean).join(' / ');
+      const used = on ? 'already on this job' : e.here ? 'this sheet' : e.jobs > 1 ? `${e.jobs} jobs` : e.jobs === 1 ? '1 job' : '';
+      return {
+        value: libValue(k, e), label: e.material, rank,
+        meta: [where ? `under ${where}` : '', normUnit(e.unit), str(e.vendor).trim(), used].filter(Boolean).join(' · '),
+      };
+    });
+  }
+  /** The library entry a picked option stands for, or null. */
+  function libraryEntry(row, value) {
+    if (!row || !String(value || '').startsWith('__lib__:')) return null;
+    const ctx = siteMode() && row.project_id ? makeCtx(row.project_id) : makeCtx();
+    const k = keyFn(ctx);
+    return libraryEntries(ctx).find(e => libValue(k, e) === value) || null;
+  }
+
   function cbOptions(listKey) {
     const key = String(listKey || '');
     if (key === 'proc_projects') return projectOptions();
+    if (key.startsWith('proc_materials:')) return materialOptions(rowById(key.slice(15))).slice(0, MAT_SUGGEST_MAX);
     if (key === 'proc_vendors') return suppliers().slice().sort((a, b) => a.localeCompare(b));
     if (key === 'proc_units') return UNITS.slice();
     if (key.startsWith('proc_contacts:')) {
@@ -1685,6 +1826,17 @@
         out.push({ value: '__new__:' + name, label: `+ Add "${name}" as new supplier`, meta: 'new', metaCls: 'new' });
       }
       return out;
+    }
+    if (key.startsWith('proc_materials:')) {
+      if (!ql) return opts;
+      // Typing searches every name used on the division's jobs, the row's own
+      // sub code's first. What was typed comes first unless it is one of them
+      // word for word: Material is free text, and Enter or Tab takes the top
+      // line — it must not swap "Flat Drain" for "Flat Drain 12in" unasked.
+      const hits = materialOptions(rowById(key.slice(15)), { all: true })
+        .filter(o => withMeta(o).includes(ql)).slice(0, MAT_SUGGEST_MAX);
+      if (hits.some(o => optLabel(o).trim().toLowerCase() === ql)) return hits;
+      return [{ value: '__typed__', label: typed.slice(0, MAX_LEN.description), meta: 'as typed', metaCls: 'new' }].concat(hits);
     }
     if (!ql) return opts;
     if (key === 'proc_projects' || key.startsWith('proc_contacts:') || key.startsWith('proc_codes:') || key.startsWith('proc_pos:')) {
@@ -2022,7 +2174,7 @@
 
   // What a refused value is called in the message about it.
   const FIELD_LABEL = {
-    description: 'Description', quantity: 'Quantity', unit: 'Unit', sca_status: 'Sub-Contractor Agreement',
+    description: 'Material', quantity: 'Quantity', unit: 'Unit', sca_status: 'Sub-Contractor Agreement',
     date_needed: 'Date Needed', lead_time_days: 'Lead Time (days)', date_ordered: 'Date Ordered',
     date_delivered: 'Date Delivered', vendor: 'Vendor', quote_number: 'Quote #', contact: 'Contact', email: 'Email',
     po_id: 'PO #', po_auto: 'PO #', cost_code: 'Cost Code', sub_code: 'Sub Code', bid_item_id: 'Cost / Sub Code',
@@ -2216,6 +2368,10 @@
       // read and on every poll — since a file a colleague attached changes no
       // row, and so would never show here otherwise.
       jobIds.forEach(refreshDocCounts);
+      // The Material picker's names from earlier jobs, for someone who can
+      // type one — read after the rows (never ahead of them), and only every
+      // few minutes; every load in between is a no-op.
+      if (canEdit() && !colHidden('description')) loadLibrary();
     } catch (err) {
       if (gen !== loadGen) return;
       // A failed poll leaves what is on screen alone. A failed first read is
@@ -2656,9 +2812,13 @@
     { key: 'date_delivered', label: 'Date Delivered', w: 7.7, filter: 'date_delivered' },
     { key: 'quantity', label: 'Quantity', w: 7.4, num: true, filter: 'quantity' },
     { key: 'unit', label: 'Unit', w: 4.8, filter: 'unit' },
+    // What is bought, in this job's words (stored as `description`), beside
+    // the bid codes its cost books to. Quantity | Unit | Material | codes is
+    // the order of the buy-out sheets it replaces.
+    { key: 'description', label: 'Material', w: 18, filter: 'description',
+      title: 'What is bought, named as this job\'s plans and suppliers name it. Blank shows the bid\'s Sub Code. The cost still books to the Cost Code / Sub Code beside it.' },
     { key: 'cost_code', label: 'Cost Code', w: 10.5, filter: 'cost_code' },
-    { key: 'sub_code', label: 'Sub Code', w: 11.5, filter: 'sub_code' },
-    { key: 'description', label: 'Description', w: 15, filter: 'description' },
+    { key: 'sub_code', label: 'Sub Code', w: 11.5, filter: 'sub_code', title: 'The bid line this material\'s cost books to' },
     { key: 'vendor', label: 'Vendor', w: 10.5, filter: 'vendor' },
     { key: 'quote_number', label: 'Quote #', w: 7, filter: 'quote_number' },
     { key: 'contact', label: 'Contact', w: 9, filter: 'contact' },
@@ -3072,8 +3232,24 @@
               `${at('codes')} data-cb-value="${esc(r.bid_item_id || '')}" title="${esc([codes.cost_code, codes.sub_code].filter(Boolean).join(' / '))}"`));
           }
           return td('', txt(codes.sub_code, 'wrap2'));
-        case 'description':
-          return td('', edit ? textIn('description', r.source === 'bid' ? '' : 'What is it?') : txt(r.description, 'wrap'));
+        case 'description': {
+          // Blank reads as the bid's Sub Code (materialOf), shown greyed — a
+          // placeholder while editing — so a bid row needs no typing unless
+          // this job names the material differently. The picker offers the
+          // names used under the same sub code on earlier jobs.
+          const own = str(r.description);
+          const bid = codes.sub_code.trim();
+          if (edit) {
+            const tip = own.trim() ? (bid ? `${own.trim()} — books to ${[codes.cost_code.trim(), bid].filter(Boolean).join(' / ')}` : own.trim())
+              : bid ? `Same as the bid's Sub Code (${bid}). Type or pick this job's name for it — the cost still books to ${bid}.` : 'What is being bought';
+            return td('', cbCell('proc_materials:' + r.id, own, bid || 'What is it?',
+              `${at('description')} maxlength="${MAX_LEN.description}" title="${esc(tip)}"`));
+          }
+          if (!own.trim() && bid) {
+            return td('', `<span class="fctproc-txt wrap2 fctproc-frombid" title="${esc(`Same as the bid's Sub Code (${bid})`)}">${esc(bid)}</span>`);
+          }
+          return td('', txt(own, 'wrap2'));
+        }
         case 'vendor': {
           // Typed but never picked or added: allowed (the PM may not want it on
           // the list yet), but marked, since contacts typed on the row are
@@ -3680,6 +3856,33 @@
       }
       return;
     }
+    if (field === 'description') {
+      // A name from the library brings what it was bought by and from, into
+      // cells that are still blank — never over what the PM has put there,
+      // and the vendor not onto a row that is already on an order (the
+      // order's supplier is the vendor). A Unit with no Quantity beside it
+      // counts as blank: it is the one "+ Material" copied from the bid row
+      // above (1 LS of detention system), not anybody's measurement, and the
+      // pipe under it is bought by the LF. Anything else is the name as
+      // typed; emptied, the row goes back to reading as its Sub Code.
+      const entry = libraryEntry(row, v);
+      const name = (entry ? entry.material : typed).slice(0, MAX_LEN.description);
+      input.value = name;
+      const fields = {};
+      if (name !== row.description) fields.description = name;
+      if (entry) {
+        const unit = str(entry.unit).trim().slice(0, MAX_LEN.unit);
+        const free = !row.unit.trim() || numOrNull(row.quantity) == null;
+        if (unit && free && normUnit(unit) !== normUnit(row.unit)) fields.unit = UNITS.find(x => x.toLowerCase() === unit.toLowerCase()) || unit;
+        const vendor = str(entry.vendor).trim();
+        const kind = vendor && !row.vendor.trim() ? effectivePO(row, makeCtx()).kind : '';
+        if (vendor && !row.vendor.trim() && !['linked', 'auto', 'multiple', 'loading'].includes(kind)) {
+          fields.vendor = canonicalSupplier(vendor).slice(0, MAX_LEN.vendor);
+        }
+      }
+      if (Object.keys(fields).length) { setFields(rowId, fields); updateCounts(); }
+      return;
+    }
     if (field === 'unit') {
       const u = UNITS.find(x => x.toLowerCase() === typed.toLowerCase()) || typed.slice(0, MAX_LEN.unit);
       setField(rowId, 'unit', u);
@@ -3708,10 +3911,10 @@
         // (section 1), so the cell goes back to what it was (refreshRow
         // after the commit) — and says why, rather than just undoing it.
         const n = (ctx.bidLines || []).length;
-        // (Description is only offered when the page shows it.)
+        // (Material is only offered when the page shows it.)
         const desc = !colHidden('description');
-        toast(n ? `Sub Code: "${typed.slice(0, 60)}" is not a line on this job's bid — pick one from the list.${desc ? ' A material that is not on the bid can go in Description.' : ''}`
-          : `Sub Code: this job has no bid lines yet, so there is no cost / sub code to pick. Add the bid items on the bid page first${desc ? '; the material can go in Description meanwhile' : ''}.`, 'error');
+        toast(n ? `Sub Code: "${typed.slice(0, 60)}" is not a line on this job's bid — pick one from the list.${desc ? ' Sub Code is the bid line the cost books to; this job\'s own name for the material goes in Material.' : ''}`
+          : `Sub Code: this job has no bid lines yet, so there is no cost / sub code to pick. Add the bid items on the bid page first${desc ? '; the material\'s name can go in Material meanwhile' : ''}.`, 'error');
       }
       updateCounts();
       return;
@@ -3952,8 +4155,9 @@
       setSave('saved');
       renderTable();
       updateCounts();
-      // Description to type in — or, with it hidden, Quantity (the Sub Code
-      // picker is left for a click: focused, it would open its menu).
+      // Material to name — its picker opens on the names used under the
+      // row's Sub Code before, which is what "+ Material" is for — or, with
+      // it hidden, Quantity (the Sub Code picker is left for a click).
       if (row) focusField(row.id, colHidden('description') ? 'quantity' : 'description');
       return row;
     } catch (err) {
@@ -4038,8 +4242,11 @@
    */
   function lineLabel(r, codes) {
     const named = [codes.cost_code.trim(), codes.sub_code.trim()].filter(Boolean).join(' / ');
-    if (named) return named;
     const desc = colHidden('description') ? '' : str(r.description).trim();
+    // A line with a Material of its own is called by it, with the codes it
+    // books to: the seventeen lines of one detention system share their codes.
+    if (named && desc && lc(desc) !== lc(codes.sub_code)) return `${desc} — ${named}`;
+    if (named) return named;
     return desc || 'Procurement line';
   }
 
@@ -4329,16 +4536,21 @@
     }
   }
   /**
-   * A PO's title, from the rows it is raised for: one row's Description (when
-   * the page shows it — a hidden one is text the PM can neither see nor
-   * correct), else its Sub Code, else its Cost Code; several rows, the
-   * vendor's materials. Never blank: a hand-added row with no code made a PO
-   * with no title.
+   * A PO's title, from the rows it is raised for — what it buys, by the name
+   * the sheet shows: one row's Material (when the page shows that column — a
+   * hidden one is text the PM can neither see nor correct), else its Sub
+   * Code, else its Cost Code; several rows that all carry one Material, that
+   * name; any other several, the vendor's materials. Never blank: a
+   * hand-added row with no code made a PO with no title.
    */
   function poTitle(g, vendor) {
     const one = g.rows.length === 1 ? g.rows[0] : null;
-    const desc = one && !colHidden('description') ? str(one.description).trim() : '';
+    const own = r => (colHidden('description') ? '' : str(r.description).trim());
+    const desc = one ? own(one) : '';
     if (one && (desc || g.sub_code || g.cost_code)) return desc || g.sub_code || g.cost_code;
+    // Several rows that are all one named material (a delivery split in two).
+    const names = g.rows.map(own);
+    if (names.length > 1 && names[0] && names.every(n => lc(n) === lc(names[0]))) return names[0];
     return vendor ? `${vendor} materials` : (g.sub_code || g.cost_code || 'Materials');
   }
   async function createPOFromSelectedNow() {
@@ -4547,7 +4759,7 @@
     }).join(' · ') : '';
     const NUM = new Set(['Quantity', 'Lead Time (days)']);
     const DATE = new Set(['Date Needed', 'Order By', 'Date Ordered', 'Date Delivered']);
-    const WRAP = new Set(['Sub Code', 'Description', 'Cost Code', 'Vendor', 'Contact', 'Email', 'Notes']);
+    const WRAP = new Set(['Sub Code', 'Material', 'Cost Code', 'Vendor', 'Contact', 'Email', 'Notes']);
     // Short values that read wrong broken across lines (PO-/0007, Not/Ordered).
     const ONE_LINE = new Set(['Status', 'PO #', 'Sub-Contractor Agreement', 'Unit', 'Quote #']);
     let derived = false;
@@ -4800,7 +5012,9 @@
         <p style="margin:0 0 0.7rem;line-height:1.5;color:var(--muted,#9ca3af)">
           Tick the bid lines to track — nothing starts ticked (a section's <b>All</b> ticks every line in it).
           Each one becomes a row with the bid's cost code, sub code, quantity and unit.
-          Adding again later only adds lines; it never changes rows already there.</p>
+          Adding again later only adds lines; it never changes rows already there.
+          ${colHidden('description') ? '' : `On the sheet, <b>Material</b> names what this job actually buys (it reads as the sub code until you do),
+          and <b>+ Material</b> breaks a line into the several things bought for it — the cost still books to the line.`}</p>
         ${relinked.length ? `<p style="margin:0 0 0.7rem;color:var(--green,#22c55e)">Re-linked ${relinked.length} row${relinked.length === 1 ? '' : 's'}
           to the current bid line${relinked.length === 1 ? '' : 's'} with the same cost and sub code (${esc(relinkWords(relinked))}).</p>` : ''}
         ${bid.why === 'unread' ? `<p style="margin:0 0 0.7rem;color:#fbbf24">The bid could not be checked against the server just now,
@@ -5239,6 +5453,8 @@
       sendPlan, relinkPlan, codeSyncPlan, sameBid, sortRows, applyFilters, csvEscape, addDays,
       chipMatch, fieldValue, vendorCompatible, normRow, ymdOf, fmtDate, fmtQty, esc, uid, looksLikePhone,
       exportMatrix, buildCsv, xlsxParts, buildXlsx, buildPrintHtml, defaultCodeKey, makeCtx, openIds, viewSig,
+      materialOf, materialOptions, loadLibrary, poTitle, lineLabel,
+      library: () => lib,
       state: () => st,
       pending: () => ({ pend: new Map(pend), fly: new Map(fly), failed: new Set(failed) }),
       flushAll,
