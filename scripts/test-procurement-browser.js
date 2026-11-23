@@ -2704,6 +2704,72 @@ async function siteSheet(browser) {
   }
 }
 
+// The bug sweep's fixes that only a real browser shows: the wheel and the
+// arrow keys over the grid's number, date and choice boxes, and the sheet
+// keeping its place when its tab is shown again.
+async function sweepInputs(browser) {
+  console.log('\nThe wheel, the arrow keys, and the sheet\'s place on coming back to it');
+  const t = i => new Date(Date.UTC(2026, 9, 6) + i * 1000).toISOString();
+  const W = makeWorld();
+  W.rows.length = 0;
+  for (let i = 0; i < 60; i++) {
+    const id = 'K' + String(i).padStart(2, '0');
+    W.rows.push({ ...BLANK_ROW, id, project_id: 'p1', created_at: t(i), updated_at: t(i), description: 'Item ' + i, quantity: 400 + i,
+      date_needed: plusDays(30), lead_time_days: 10, sca_status: 'Pending' });
+  }
+  const storage = { fct_proc_project_turf: 'p1', fct_proc_group_turf: 'none' };
+  const { page, ctx, errors } = await openPage(browser, W, 'level2', { viewport: { width: 1474, height: 700 }, storage });
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 60));
+  await sleep(300);
+  const order = await page.$$eval('#fctproc-wrap tr.fctproc-row', trs => trs.map(tr => tr.dataset.row));
+  const [r0, r1] = order;
+  const before = W.log.filter(l => l.method === 'PATCH').length;
+
+  // ↓ in Quantity: the next row, not 399.
+  await cell(page, r0, 'quantity').click();
+  await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('ArrowDown');
+  const at = await page.evaluate(() => { const a = document.activeElement; return a && [a.dataset.pr, a.dataset.pf]; });
+  ok('↓↓ in Quantity moves two rows down the column — the value is not stepped', eq(at, [order[2], 'quantity'])
+    && (await cell(page, r0, 'quantity').inputValue()).replace(/,/g, '') === '400', at);
+  await page.keyboard.press('ArrowUp');
+  ok('↑ moves back up', eq(await page.evaluate(() => { const a = document.activeElement; return a && [a.dataset.pr, a.dataset.pf]; }), [r1, 'quantity']));
+
+  // ↓ in Date Needed: the next row, not a year back.
+  const dn0 = await cell(page, r0, 'date_needed').inputValue();
+  await cell(page, r0, 'date_needed').click();
+  await page.keyboard.press('ArrowDown');
+  ok('↓ in a date moves down the column — the date is not stepped', await cell(page, r0, 'date_needed').inputValue() === dn0
+    && await page.evaluate(() => document.activeElement && document.activeElement.dataset.pf) === 'date_needed');
+
+  // The wheel over a focused Quantity scrolls the sheet.
+  await clickAway(page);
+  await cell(page, r1, 'quantity').click();
+  const box = await cell(page, r1, 'quantity').boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  const top0 = await page.$eval('#fctproc-wrap', w => w.scrollTop);
+  for (let i = 0; i < 4; i++) { await page.mouse.wheel(0, 120); await sleep(60); }
+  await sleep(300);
+  const top1 = await page.$eval('#fctproc-wrap', w => w.scrollTop);
+  ok('the wheel over a focused Quantity scrolls the sheet, and leaves the quantity as it was',
+    top1 > top0 && (await cell(page, r1, 'quantity').inputValue()).replace(/,/g, '') === '401', { top0, top1, q: await cell(page, r1, 'quantity').inputValue() });
+  await sleep(800);
+  ok('…and none of it saved anything', W.log.filter(l => l.method === 'PATCH').length === before, W.log.filter(l => l.method === 'PATCH').slice(before).map(l => l.body));
+
+  // The tab left and come back to: the same place in the sheet.
+  await page.$eval('#fctproc-wrap', w => { w.scrollTop = 900; });
+  await sleep(200);
+  await page.click('.tab-btn[data-tab="po"]');
+  await sleep(300);
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await sleep(400);
+  const back = await page.$eval('#fctproc-wrap', w => w.scrollTop);
+  ok('the sheet comes back where it was left, not at the top', Math.abs(back - 900) < 5, back);
+  ok('no page errors', errors.length === 0, errors.join(' | '));
+  await ctx.close();
+}
+
 (async () => {
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
@@ -2724,6 +2790,7 @@ async function siteSheet(browser) {
     await printPdf(browser);
     await attachments(browser);
     await siteSheet(browser);
+    await sweepInputs(browser);
   } finally {
     await browser.close();
     server.close();

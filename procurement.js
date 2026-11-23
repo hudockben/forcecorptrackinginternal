@@ -2457,6 +2457,9 @@
       showError('Procurement: a change could not be saved (it was changed elsewhere meanwhile). It stays on screen and is sent again on your next edit.');
       return;
     }
+    // An answer — the server is there: whatever an earlier failure left
+    // waiting on this row goes again at once, with the rest of this save.
+    failed.delete(rowId);
     FIELD_GROUPS.forEach(g => { if (g.some(k => fields.includes(k))) fields = [...new Set(fields.concat(g.filter(k => k in p)))]; });
     // The Quantity / Unit a Sub Code pick filled in are part of that pick (as
     // refuseFields has it): asked about with it, not saved without it.

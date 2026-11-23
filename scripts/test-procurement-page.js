@@ -161,6 +161,25 @@ console.log('\n[tracker.html — wiring]');
   assert('boot redraws the tab when it is the open one',
     /if \(activeTab === 'procurement'\) renderProcurementTab\(\);/.test(bootBody));
 
+  {
+    // A section's cost code renamed on the bid page: each renamed line also
+    // goes through the per-line save, which copies the new code onto the
+    // job's Procurement rows on the server (deleted ones too) and moves their
+    // files — the whole-job save does neither.
+    const fn = requireFn(SRC, 'updateBidGroupCode');
+    const proj = { id: 'j1', bidItems: [{ id: 'a', cost_code: 'Stormwater' }, { id: 'b', cost_code: 'Stormwater' }, { id: 'c', cost_code: 'Base' }] };
+    const did = [];
+    const run = new Function('getProj', 'saveProject', 'patchBidItem', 'renderBidTable', `${fn}; return updateBidGroupCode;`)(
+      () => proj, id => did.push(['save', id]), (pid, id) => did.push(['line', pid, id]), () => {});
+    run('j1', 'Stormwater', 'Storm Drainage');
+    assert('a section renamed on the bid page sends each renamed line through the per-line save (Procurement rows follow on the server)',
+      JSON.stringify(did) === JSON.stringify([['save', 'j1'], ['line', 'j1', 'a'], ['line', 'j1', 'b']])
+        && proj.bidItems.map(b => b.cost_code).join() === 'Storm Drainage,Storm Drainage,Base', JSON.stringify(did));
+    did.length = 0;
+    run('j1', 'Base', 'Base');
+    assert('  (a "rename" to the same code sends no line saves)', JSON.stringify(did) === JSON.stringify([['save', 'j1']]), JSON.stringify(did));
+  }
+
   const pollAll = requireFn(SRC, '_pollAll');
   assert('Procurement is not in the minute poll: it has its own, every 15 seconds', !/_pollProcurement\(\)/.test(pollAll)
     && /const PROC_POLL_MS = 15_000;/.test(SRC) && /setInterval\(_pollProcurementSoon, PROC_POLL_MS\);/.test(SRC));
