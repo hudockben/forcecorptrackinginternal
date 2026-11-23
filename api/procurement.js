@@ -50,6 +50,9 @@
 //            when a cell in `expect` no longer holds that value (someone else
 //            changed it meanwhile): nothing is written.
 // PATCH  ?division=…&action=bulk { ids:[…], fields:{…} }  → { ok, items:[…], missing:[…] }
+//          …with expect:{…} (one set of cells every row must still hold, as on a
+//          single PATCH): a live row that no longer does is not written, and is
+//          in conflicts:[…] as it is now, apart from missing.
 // DELETE ?division=…&id=X | &ids=a,b,c | &project_id=X    → { ok, deleted:n }
 //
 // A row is tied to a bid line (bid_item_id) only while that line is on the
@@ -1066,6 +1069,8 @@ module.exports = async (req, res) => {
       if (!ids.value.length) return fail(res, 400, 'invalid', 'Pick at least one row', { field: 'ids' });
       const f = readFields(b.fields);
       if (f.error) return fail(res, 400, f.code || 'invalid', f.error, f.field ? { field: f.field } : undefined);
+      const ex = readExpect(b.expect);
+      if (ex.error) return fail(res, 400, 'invalid', ex.error, ex.field ? { field: ex.field } : undefined);
       let pinned = null;
       if (b.project_id !== undefined && b.project_id !== null) {
         const p = readProjectId(b.project_id);
@@ -1087,7 +1092,7 @@ module.exports = async (req, res) => {
       const codesWas = touchesCode(f.value) ? await codesBefore(sql, scope, ids.value) : null;
       let rows;
       try {
-        rows = await updateRows(sql, scope, ids.value, f.value, projects[0]);
+        rows = await updateRows(sql, scope, ids.value, f.value, projects[0], ex.value);
       } catch (err) {
         if (constraintAnswer(res, err)) return;
         throw err;
@@ -1097,7 +1102,16 @@ module.exports = async (req, res) => {
       }
       await refileAfter(sql, scope, payload, codesWas, rows);
       const got = new Set(rows.map(r => r.id));
-      return res.json({ ok: true, items: rows.map(shape), missing: ids.value.filter(id => !got.has(id)) });
+      const notWritten = ids.value.filter(id => !got.has(id));
+      if (!ex.value) return res.json({ ok: true, items: rows.map(shape), missing: notWritten });
+      // With expect, a row left out is either gone or changed by someone
+      // else since the page read it: told apart, the second as it is now.
+      const live = notWritten.length ? await sql`
+        SELECT * FROM procurement_items
+         WHERE company_code = ${company} AND division = ${division} AND deleted_at IS NULL
+           AND id = ANY(${notWritten}::text[])` : [];
+      const liveIds = new Set(live.map(r => r.id));
+      return res.json({ ok: true, items: rows.map(shape), missing: notWritten.filter(id => !liveIds.has(id)), conflicts: live.map(shape) });
     }
 
     // ── PATCH — the cells of one row that changed ────────────────────────

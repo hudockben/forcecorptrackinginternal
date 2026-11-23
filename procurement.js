@@ -1111,10 +1111,15 @@
   // Cells other people changed, as polls brought them in: row id ->
   // { fields: Map(field -> { by, at }), added: { by, at } | null, until }.
   const recent = new Map();
-  let RECENT_MS = 2 * 60 * 1000;
+  let RECENT_MS = 2 * 60 * 1000;   // (a test shortens it: _test.setRecentMs)
   // Cells a conflict is waiting on the person for: "rowId\0field" → the
   // queued conflict (see onConflict, setField).
-  const held = new Map();          // (a test shortens it: _test.setRecentMs)
+  const held = new Map();
+  // What this page sent for a row and never heard back about (the
+  // connection dropped): the server may well have written it. A later save
+  // of the same cell finding that value there is no conflict with anyone —
+  // it is this page's own save, landed (onConflict).
+  const unanswered = new Map();    // row id -> { field: value }
 
   // ── Host helpers ────────────────────────────────────────────────────
   function canEdit() {
@@ -2177,10 +2182,14 @@
     const old = row.vendor.trim();
     const was = old && lc(old) !== lc(name) ? savedContactOf(old, row) : null;
     if (was) {
+      notePick(rowId, { vendor: name, contact: '', email: '' });
       setFields(rowId, { vendor: name, contact: '', email: '' });
       contactTouched.delete(row.id);
       toast(`Contact and Email cleared: ${was.name || was.email || 'that contact'} is a contact of ${old}, not of ${name || 'the new vendor'}.`);
-    } else setField(rowId, 'vendor', name);
+    } else {
+      notePick(rowId, { vendor: name });
+      setField(rowId, 'vendor', name);
+    }
     return true;
   }
 
@@ -2221,8 +2230,11 @@
     server.set(r.id, { ...r });
     if (st.projectId && r.project_id && !isOpenJob(r.project_id)) return null;
     const local = rowById(r.id);
-    if (!local) { const copy = { ...r }; st.rows.push(copy); return copy; }
     const keep = { ...(fly.get(r.id) || {}), ...(pend.get(r.id) || {}) };
+    // New to the sheet (the job opened again after a save failed): it shows
+    // the edits still queued for it, as a row already on the sheet does —
+    // not the saved value, with the queued one sent over it later unseen.
+    if (!local) { const copy = { ...r, ...keep }; st.rows.push(copy); return copy; }
     for (const k of Object.keys(r)) if (!(k in keep)) local[k] = r[k];
     return local;
   }
@@ -2341,10 +2353,19 @@
     fly.set(rowId, p);
     flyBases.set(rowId, ex);
     setSave('saving');
+    // Deleted here while this was out (✕ → Yes on a slow connection): its
+    // answer is news of a row that is gone, not one to put back.
+    const sentSeq = touchSeq;
+    const droppedSince = () => (gone.get(rowId) || 0) > sentSeq && !rowById(rowId);
     try {
       const data = await api('PATCH', '/procurement' + q({ id: rowId }), { fields: p, expect: ex }, { keepalive });
       if (fly.get(rowId) === p) { fly.delete(rowId); flyBases.delete(rowId); }
       failed.delete(rowId);
+      unanswered.delete(rowId);
+      // The picks this save carried in full are saved: nothing left to ask about.
+      const picks = (pickFill.get(rowId) || []).filter(g => !Object.keys(g).every(k => k in p && sameVal(p[k], g[k])));
+      if (picks.length) pickFill.set(rowId, picks); else pickFill.delete(rowId);
+      if (droppedSince()) { settleSave(); return; }
       const prev = server.get(rowId) ? { ...server.get(rowId) } : null;
       if (data.item) adoptServerRow(data.item);
       if (prev && data.item) noteChangesInAnswer(rowId, p, prev, data.item, data.was);
@@ -2361,7 +2382,10 @@
         Object.keys(nb).forEach(k => { if (!(k in (pend.get(rowId) || {}))) delete nb[k]; });
         if (Object.keys(nb).length) bases.set(rowId, nb); else bases.delete(rowId);
       };
-      if (err.status === 409 && err.code === 'conflict' && !keepalive) {
+      if (droppedSince()) {
+        // Deleted here meanwhile (a 404 now, most likely): what this page
+        // wanted happened; nothing to say, nothing to keep.
+      } else if (err.status === 409 && err.code === 'conflict' && !keepalive) {
         // Someone else changed a cell of this save since the person saw it:
         // nothing was written. The rest goes again at once; for those cells
         // the person is asked.
@@ -2370,8 +2394,7 @@
         // Deleted by someone else while it was being edited: there is nothing
         // left to save into.
         dropRow(rowId);
-        renderTable();
-        updateCounts();
+        redrawSheet();
         showError('A row you were editing was deleted by someone else, so that change could not be saved.');
       } else if (err.status === 400 || err.code === 'stale_bid') {
         // Refused for good — a value the server will never take, or a bid
@@ -2384,6 +2407,8 @@
         pend.set(rowId, { ...p, ...(pend.get(rowId) || {}) });
         rebase(Object.keys(p));
         failed.add(rowId);
+        // No answer at all: it may have been written (see onConflict).
+        if (err.network) unanswered.set(rowId, { ...(unanswered.get(rowId) || {}), ...p });
         // Said here rather than left to the page's banner, which cannot tell
         // this failure (value kept, sent again) from the others (nothing kept).
         showError(`Procurement: a change could not be saved (${err.message}). It stays on screen and is sent again on your next edit.`);
@@ -2425,6 +2450,13 @@
       fields = [...new Set(fields.concat(Object.keys(fill.fields).filter(k => k in p && sameVal(p[k], fill.fields[k]))))];
     }
     lineFill.delete(rowId);
+    // So are the cells any other pick set with a changed one (notePick).
+    (pickFill.get(rowId) || []).forEach(g => {
+      const keys = Object.keys(g).filter(k => k in p && sameVal(p[k], g[k]));
+      if (keys.some(k => fields.includes(k))) fields = [...new Set(fields.concat(keys))];
+    });
+    pickFill.delete(rowId);
+    FIELD_GROUPS.forEach(g => { if (g.some(k => fields.includes(k))) fields = [...new Set(fields.concat(g.filter(k => k in p)))]; });
     const item = normRow(data.item) || {};
     const newer = pend.get(rowId) || {};
     // Yours: the newest value typed in each changed cell (one typed while
@@ -2435,13 +2467,27 @@
     // conflict — two people set the same date — and nothing to ask about.
     const groupOf = k => (FIELD_GROUPS.find(g => g.includes(k)) || [k]).filter(x => fields.includes(x));
     const same = fields.filter(k => groupOf(k).every(x => sameVal(item[x], mine[x])));
-    fields = fields.filter(k => !same.includes(k));
+    // A cell holding what this page itself sent and never heard back about
+    // (the connection dropped) was changed by this page's own save, landed
+    // after all — not by anyone to ask about. What was typed in it since
+    // goes on, expecting that value.
+    const lost = unanswered.get(rowId) || {};
+    unanswered.delete(rowId);
+    const own = fields.filter(k => !same.includes(k) && groupOf(k).every(x => x in lost && sameVal(item[x], lost[x])));
+    fields = fields.filter(k => !same.includes(k) && !own.includes(k));
     same.forEach(k => delete mine[k]);
+    const resend = {};
+    own.forEach(k => { resend[k] = mine[k]; delete mine[k]; });
     const again = {};
-    Object.keys(p).forEach(k => { if (!fields.includes(k) && !same.includes(k)) again[k] = p[k]; });
-    const next = { ...again, ...newer };
+    Object.keys(p).forEach(k => { if (!fields.includes(k) && !same.includes(k) && !own.includes(k)) again[k] = p[k]; });
+    const next = { ...again, ...resend, ...newer };
     if (Object.keys(next).length) pend.set(rowId, next); else pend.delete(rowId);
     rebase(Object.keys(again));
+    if (own.length) {
+      const nb = bases.get(rowId) || {};
+      own.forEach(k => { nb[k] = item[k]; });
+      bases.set(rowId, nb);
+    }
     // The row as it is now: theirs in the changed cells, marked as theirs —
     // and so is any other cell of the row someone else changed meanwhile.
     const prev = server.get(rowId) ? { ...server.get(rowId) } : null;
@@ -2517,7 +2563,10 @@
     const name = materialOf(row, siteMode() && row.project_id ? makeCtx(row.project_id) : makeCtx()) || 'This row';
     // Who saved the row last: who changed these cells, unless someone else
     // saved another cell of it after them — so it is not put as more.
-    const last = c.by ? ` (last saved by <b>${esc(c.by)}</b>${clock(c.at) ? ` at ${esc(clock(c.at))}` : ''})` : '';
+    // Saved under this person's own name: from another window or device of
+    // theirs — not "someone else", which would have them doubt their own value.
+    const self = !!c.by && isMe(c.by);
+    const last = c.by ? ` (last saved by <b>${self ? 'you' : esc(c.by)}</b>${clock(c.at) ? ` at ${esc(clock(c.at))}` : ''}${self ? ', in another window' : ''})` : '';
     const linesHtml = () => conflictLines(c).map(([what, t, y]) =>
       `<tr><td>${esc(what)}</td><td class="theirs">${esc(t)}</td><td class="mine">${esc(y)}</td></tr>`).join('');
     const body = `<p style="margin:0 0 0.7rem;line-height:1.5">
@@ -2526,7 +2575,7 @@
       <table class="fctproc-conflict"><thead><tr><th></th><th>Saved now</th><th>Yours</th></tr></thead><tbody>${linesHtml()}</tbody></table>`;
     const foot = `<button type="button" class="btn btn-ghost fctproc-b" data-conflict="theirs">Keep saved</button>
       <button type="button" class="btn btn-green fctproc-b" data-conflict="mine">Keep mine</button>`;
-    const m = modal('Changed by someone else', body, { footHTML: foot });
+    const m = modal(self ? 'Changed in another window' : 'Changed by someone else', body, { footHTML: foot });
     // A picker left above commits a moment later: "Yours" follows.
     const tbody = m.body.querySelector('.fctproc-conflict tbody');
     c.redraw = () => { if (tbody) tbody.innerHTML = linesHtml(); };
@@ -2554,8 +2603,11 @@
         kept = true;
         release(c);
         if (rowById(c.rowId)) {
-          // Written over theirs knowingly: what was "seen" is now theirs.
-          Object.keys(c.mine).forEach(k => seenAtFocus.delete(c.rowId + '\u0000' + k));
+          // Written over theirs knowingly: what was "seen" is now theirs — the
+          // value this dialog showed, not whatever a refresh brought in behind
+          // it since. A third person's save meanwhile is asked about in turn,
+          // not written over unseen.
+          Object.keys(c.mine).forEach(k => seenAtFocus.set(c.rowId + '\u0000' + k, { v: c.theirs[k], at: Date.now() }));
           setFields(c.rowId, c.mine);
           refreshRow(c.rowId);
           flushRow(c.rowId);
@@ -2786,17 +2838,39 @@
     else if (failed.size) setSave('error');
     else if (st.saveState === 'saving') setSave('saved');
   }
+  // An action of its own done (a row added, rows deleted or copied in):
+  // "Saved" — unless an earlier edit is still out, or failed and is kept to
+  // be sent again, which "Saved" would hide.
+  function actionSaved() {
+    if (fly.size) setSave('saving');
+    else if (failed.size) setSave('error');
+    else setSave('saved');
+  }
 
+  // A picker in the sheet holding something typed or picked in it that it
+  // has not committed yet — it commits when it is left, and a page reloaded
+  // or closed from the keyboard is never "left" first.
+  function uncommittedCombo() {
+    const a = document.activeElement;
+    if (!isCb(a) || !a.dataset.pr || !a.dataset.pf || !st.mountEl || !st.mountEl.contains(a)) return null;
+    const s = cbSession.get(a);
+    return s && s.chosen && (a.value !== s.value || (a.dataset.cbValue || '') !== s.cbValue) ? a : null;
+  }
   // A save started as the page goes away (closed, reloaded, switched to
-  // another browser tab) has to be sent now and survive the unload.
-  window.addEventListener('pagehide', () => { flushAll({ keepalive: true }); });
+  // another browser tab) has to be sent now and survive the unload — with
+  // what is typed in a picker, committed first, as leaving the box would.
+  window.addEventListener('pagehide', () => {
+    const c = uncommittedCombo();
+    if (c) { delete c.dataset.pcommit; commitCombo(c.dataset.pr, c.dataset.pf, c); }
+    flushAll({ keepalive: true });
+  });
   // …but a save that has already failed (the server or the connection is
   // down) will fail again as the page closes, and one still out may never be
   // answered. The banner promised those edits are kept and sent again, so
   // leaving now asks first — the browser's own "Leave site?" — the way the
   // page already does for unsent Daily rows.
   window.addEventListener('beforeunload', e => {
-    if (!failed.size && !fly.size && !pend.size) return;
+    if (!failed.size && !fly.size && !pend.size && !uncommittedCombo()) return;
     e.preventDefault();
     e.returnValue = '';
   });
@@ -3022,6 +3096,27 @@
     const shut = g => !!(g.pid && st.collapsed.has(JOB + g.pid));
     return `${st.rows.length}/${rows.length}/${st.grouping}\n` + bands + groups.map(g => (st.grouping === 'none' ? '' : `G:${g.key}|${g.label}|${g.meta}\n`)
       + (st.grouping === 'none' || (!shut(g) && !st.collapsed.has(g.key)) ? g.rows.map(r => r.id).join('\n') : '')).join('\n');
+  }
+  // Whether a box in the table is being typed in (a checkbox is not), or a
+  // combobox just left is about to commit.
+  function typingInSheet() {
+    const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
+    if (!wrap) return false;
+    const a = document.activeElement;
+    return !!((a && wrap.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox')
+      || wrap.querySelector('[data-pcommit]'));
+  }
+  /**
+   * The table drawn again once an action of the PM's own is answered (a row
+   * added or deleted, a bulk edit, a PO raised). The answer can come after
+   * they have gone on to type in another cell: the table is then redrawn
+   * around that cell, as a poll's answer is (redrawAround) — rebuilt under
+   * it, a date box restarts at its month and the rest of the date is saved
+   * wrong, a picker loses the word being typed.
+   */
+  function redrawSheet() {
+    if (typingInSheet()) redrawAround();
+    else { renderTable(); updateCounts(); }
   }
   function redrawWhenFree() {
     if (!redrawDeferred || !isMounted()) return;
@@ -4448,6 +4543,21 @@
   // The Quantity / Unit a Sub Code pick filled, by row id:
   // { bid_item_id, fields }. A pick the server refuses takes them with it.
   const lineFill = new Map();
+  // The cells other picks set together, by row id: { field: value } per
+  // pick, newest last — a Vendor that cleared the old vendor's Contact and
+  // Email, a Material from the library with its Unit and Vendor, "Use bid
+  // qty" with the Unit and the bid figures it takes, a copied material
+  // naming the line's own row. When one of them conflicts, the others are
+  // asked about with it (onConflict): saved on their own, "Keep saved"
+  // would leave them beside someone else's value — a row with that
+  // vendor and no contact, nobody having chosen it.
+  const pickFill = new Map();
+  function notePick(rowId, fields) {
+    const keys = Object.keys(fields);
+    const list = (pickFill.get(rowId) || []).filter(g => !Object.keys(g).some(k => keys.includes(k)));
+    if (keys.length > 1) list.push({ ...fields });
+    if (list.length) pickFill.set(rowId, list); else pickFill.delete(rowId);
+  }
 
   function commitCombo(rowId, field, input) {
     const row = rowById(rowId);
@@ -4501,6 +4611,7 @@
           fields.vendor = canonicalSupplier(vendor).slice(0, MAX_LEN.vendor);
         }
       }
+      if ('description' in fields) notePick(rowId, fields);
       if (Object.keys(fields).length) { setFields(rowId, fields); updateCounts(); }
       return;
     }
@@ -4627,7 +4738,17 @@
     setTimeout(() => {
       const a = document.activeElement;
       const tr = st.mountEl && st.mountEl.querySelector(`tr[data-row="${cssEsc(rowId)}"]`);
-      if (tr && a && tr.contains(a)) return;
+      if (tr && a && tr.contains(a)) {
+        // Still in the row. The box just left is drawn again all the same: a
+        // refresh that landed while it had the focus left it showing what it
+        // showed (refreshRow keeps the box in use) — coming back to it, the
+        // PM would edit that stale value, and the save would expect the new
+        // one and go over a colleague's change without a word. The box now
+        // in use is kept as it is; so is a row button's focus.
+        const kept = (/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox') || (a.tagName === 'BUTTON' && a.dataset.act);
+        if (kept && !el.classList.contains('cb-input') && el.isConnected) refreshRow(rowId);
+        return;
+      }
       flushRow(rowId);
       rememberContact(rowById(rowId));
       if (!el.classList.contains('cb-input')) refreshRow(rowId);
@@ -4773,13 +4894,16 @@
       }
       const row = adoptServerRow(data.item || item);
       if (row) st.forceShow.add(row.id);
-      setSave('saved');
-      renderTable();
-      updateCounts();
+      actionSaved();
+      // Typed in since the click (the answer was slow): that box keeps the
+      // focus, and the keys — the new row is drawn once it is left.
+      const a = document.activeElement;
+      const free = !a || a === document.body || !/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) || a.type === 'checkbox';
+      redrawSheet();
       // Material to name — its picker opens on the names used under the
       // row's Sub Code before, which is what "+ Material" is for — or, with
       // it hidden, Quantity (the Sub Code picker is left for a click).
-      if (row) focusField(row.id, colHidden('description') ? 'quantity' : 'description');
+      if (row && free) focusField(row.id, colHidden('description') ? 'quantity' : 'description');
       return row;
     } catch (err) {
       setSave('error');
@@ -5127,6 +5251,7 @@
         else if (asSent) { f.unit = unit; f.quantity = null; }
       }
       if (!r.vendor.trim() && it.vendor && !['linked', 'auto', 'multiple', 'loading'].includes(effectivePO(r, ctx).kind)) f.vendor = vendorOf(it);
+      notePick(ownId, f);
       setFields(ownId, f);
       flushRow(ownId);
       named = true;
@@ -5138,9 +5263,8 @@
       naming = -1;
     }
     rows.forEach(r => st.forceShow.add(r.id));
-    if (rows.length) setSave('saved');
-    renderTable();
-    updateCounts();
+    if (rows.length) actionSaved();
+    redrawSheet();
     const n = rows.length + (named ? 1 : 0);
     toast(`Added ${n} material${n === 1 ? '' : 's'} from ${from}${named ? ' (one names this line\'s own row)' : ''}${copyQty ? '' : ' — fill in this job\'s quantities'}`);
     // Fewer back than sent: an id already taken elsewhere. The sheet is read
@@ -5248,25 +5372,40 @@
     }
   }
 
+  // Ids per DELETE: they go in the address, which the host refuses past
+  // 14 KB — some 570 of them — before the API ever sees it.
+  const DELETE_CHUNK = 200;
   async function deleteRows(ids) {
     const list = ids.filter(id => rowById(id));
     if (!list.length || !canEdit()) return;
     setSave('saving');
+    const done = [];
     try {
-      const params = list.length === 1 ? { id: list[0] } : { ids: list.join(',') };
-      await api('DELETE', '/procurement' + q(params));
-      list.forEach(dropRow);
+      for (let i = 0; i < list.length; i += DELETE_CHUNK) {
+        const part = list.slice(i, i + DELETE_CHUNK);
+        const params = part.length === 1 ? { id: part[0] } : { ids: part.join(',') };
+        try {
+          await api('DELETE', '/procurement' + q(params));
+        } catch (err) {
+          // Not there to delete: someone else deleted it first, which is
+          // what was wanted — not "could not delete", with the row left on.
+          if (err.status !== 404) throw err;
+        }
+        part.forEach(id => { dropRow(id); done.push(id); });
+      }
       st.bulkConfirmDel = false;
-      setSave('saved');
+      actionSaved();
       renderBulk();
-      renderTable();
-      updateCounts();
+      redrawSheet();
       if (list.length > 1) toast(`Deleted ${list.length} rows`);
     } catch (err) {
       setSave('error');
       st.confirmDel = null;
-      list.forEach(refreshRow);
-      showError(`Procurement: could not delete (${err.message}).`);
+      if (done.length) { renderBulk(); redrawSheet(); }
+      list.filter(id => !done.includes(id)).forEach(refreshRow);
+      showError(done.length
+        ? `Procurement: ${done.length} of the ${list.length} rows were deleted; the others could not be (${err.message}).`
+        : `Procurement: could not delete (${err.message}).`);
     }
   }
 
@@ -5277,6 +5416,7 @@
     if (!bc) { refreshRow(rowId); return; }
     const fields = { bid_qty_at_send: bc.toQty, bid_unit_at_send: str(bc.line.unit) };
     if (takeQty) { fields.quantity = bc.toQty; fields.unit = str(bc.line.unit); }
+    notePick(rowId, fields);
     setFields(rowId, fields);
     flushRow(rowId);
     refreshRow(rowId);
@@ -5314,7 +5454,14 @@
     }
   }
 
-  async function bulkPatch(ids, fields) {
+  /**
+   * One change to many rows. With `expect`, a row is written only while its
+   * cells still hold that (as one cell's save is): a row someone else changed
+   * meanwhile comes back in `conflicts`, as it is now, unwritten. A failure
+   * partway through a site's per-job batches is thrown with `changed`, the
+   * number of rows the batches before it did change.
+   */
+  async function bulkPatch(ids, fields, expect = null) {
     // Edits already typed into these rows land first; then the bulk value
     // wins over any of them for the fields it sets.
     await flushAll();
@@ -5342,15 +5489,26 @@
       if (st.projectId) body.project_id = st.projectId;
       batches.push(body);
     }
-    const data = { items: [], missing: [] };
+    if (expect) batches.forEach(body => { body.expect = expect; });
+    const data = { items: [], missing: [], conflicts: [] };
     for (const body of batches) {
-      const d = await api('PATCH', '/procurement' + q({ action: 'bulk' }), body);
+      let d;
+      try {
+        d = await api('PATCH', '/procurement' + q({ action: 'bulk' }), body);
+      } catch (err) {
+        err.changed = data.items.length;
+        settleSave();
+        throw err;
+      }
       (d.items || []).forEach(adoptServerRow);
+      (d.conflicts || []).forEach(adoptServerRow);
       // Set here, now: no longer "changed by someone else".
-      body.ids.forEach(id => Object.keys(body.fields).forEach(k => forgetRecent(id, k)));
+      const out = new Set((d.conflicts || []).map(r => String(r.id)));
+      body.ids.filter(id => !out.has(id)).forEach(id => Object.keys(body.fields).forEach(k => forgetRecent(id, k)));
       (d.missing || []).forEach(dropRow);
       data.items.push(...(d.items || []));
       data.missing.push(...(d.missing || []));
+      data.conflicts.push(...(d.conflicts || []));
     }
     settleSave();
     if (st.saveState === 'saving') setSave('saved');
@@ -5397,22 +5555,30 @@
         groups = [[ids.filter(id => !clear.includes(id)), fields], [clear, { ...fields, contact: '', email: '' }]].filter(g => g[0].length);
       }
     }
+    let changed = 0;
     try {
       let cleared = 0;
       for (const [gIds, gFields] of groups) {
-        await bulkPatch(gIds, gFields);
+        const d = await bulkPatch(gIds, gFields);
+        changed += (d.items || []).length;
         if ('contact' in gFields && !('contact' in fields)) { cleared += gIds.length; gIds.forEach(id => contactTouched.delete(id)); }
       }
       // Contact + Email set on purpose: remembered under each row's vendor.
       if ('contact' in fields) ids.forEach(id => contactTouched.add(id));
       ids.forEach(id => rememberContact(rowById(id)));
-      renderTable();
-      updateCounts();
+      redrawSheet();
       toast(`Updated ${ids.length} row${ids.length === 1 ? '' : 's'}`
         + (cleared ? ` — Contact and Email cleared on ${cleared}, whose contact was the previous vendor's` : ''));
     } catch (err) {
       setSave('error');
-      showError(`Procurement: the bulk change could not be saved (${err.message}).`);
+      // Sent in parts (one per job of a site; a vendor change whose rows'
+      // contacts are cleared apart): the parts that went in are on the
+      // sheet now and said so — not "could not be saved" over rows that were.
+      changed += err.changed || 0;
+      if (changed) redrawSheet();
+      showError(changed
+        ? `Procurement: the bulk change was saved on ${changed} of the ${ids.length} rows; the rest could not be saved (${err.message}).`
+        : `Procurement: the bulk change could not be saved (${err.message}).`);
     }
   }
 
@@ -5479,6 +5645,10 @@
     // second order for rows already on one, without asking. A read that
     // fails leaves the list in hand.
     await refreshPOs();
+    // …and so is whether a row is linked to one: a colleague's link of these
+    // rows reaches this page only with its next read of them (the poll is up
+    // to 15 s behind, and the PM ticking rows has been in the sheet all along).
+    if (st.loadState === 'ok' && st.loadedFor === viewSig()) await load(st.projectId, { quiet: true });
     const ctx = makeCtx();
     let rows = sortRows([...st.selected].map(rowById).filter(Boolean), ctx);
     if (!rows.length) return;
@@ -5579,7 +5749,7 @@
       if (!pick) return;
       if (pick === 'one') plan = [{ project_id: top.project_id, cost_code: top.cost_code, sub_code: top.sub_code, rows }];
     }
-    const made = [];
+    const made = [], leftOff = [];
     for (const g of plan) {
       const quotes = [...new Set(g.rows.map(r => r.quote_number.trim()).filter(Boolean))];
       const seed = {
@@ -5598,8 +5768,9 @@
         break;
       }
       try {
-        await bulkPatch(g.rows.map(r => r.id), { po_id: String(po.id), po_auto: true });
+        const refused = await linkToPO(g.rows, po);
         made.push(po);
+        if (refused.length) leftOff.push({ po, n: refused.length });
       } catch (err) {
         setSave('error');
         showError(`Procurement: ${str(po.po_number) || 'the PO'} was created but the rows could not be linked to it (${err.message}).`);
@@ -5609,11 +5780,36 @@
     if (made.length) {
       st.selected.clear();
       renderBulk();
-      renderTable();
-      updateCounts();
-      toast(made.length === 1 ? `Created ${str(made[0].po_number) || 'the PO'} and linked ${rows.length} row${rows.length === 1 ? '' : 's'}`
+      redrawSheet();
+      const linked = rows.length - leftOff.reduce((a, x) => a + x.n, 0);
+      toast(made.length === 1 ? `Created ${str(made[0].po_number) || 'the PO'} and linked ${linked} row${linked === 1 ? '' : 's'}`
         : `Created ${made.length} POs${jobs.length > 1 ? `, each on its own job` : ''} (${made.map(p => str(p.po_number)).join(', ')})`);
     }
+    leftOff.forEach(({ po, n }) => showError(`Procurement: ${n} of the rows for ${str(po.po_number) || 'the new PO'} `
+      + `${n === 1 ? 'was' : 'were'} put on an order by someone else while it was being raised, so ${n === 1 ? 'it was' : 'they were'} left on that one `
+      + `and not linked to ${str(po.po_number) || 'the new PO'}. Check ${str(po.po_number) || 'it'} — it may now be for material that is already ordered.`));
+  }
+  /**
+   * Link rows to a PO just raised for them — each only while its PO # cell
+   * still holds what this page decided on. A row a colleague put on an
+   * order in the meantime is left on theirs, not moved off it unseen; the
+   * ids of those come back.
+   */
+  async function linkToPO(rows, po) {
+    const groups = new Map();
+    rows.forEach(r => {
+      const s0 = server.get(r.id) || r;
+      const expect = { po_id: s0.po_id == null || s0.po_id === '' ? null : String(s0.po_id), po_auto: s0.po_auto !== false };
+      const key = JSON.stringify(expect);
+      if (!groups.has(key)) groups.set(key, { expect, ids: [] });
+      groups.get(key).ids.push(r.id);
+    });
+    const refused = [];
+    for (const { expect, ids } of groups.values()) {
+      const d = await bulkPatch(ids, { po_id: String(po.id), po_auto: true }, expect);
+      refused.push(...(d.conflicts || []).map(x => String(x.id)));
+    }
+    return refused;
   }
 
   // ── Export ──────────────────────────────────────────────────────────
