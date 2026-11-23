@@ -253,6 +253,9 @@ module.exports = async (req, res) => {
     // As Procurement stores text: one line, trimmed.
     const oneLine = v => String(v || '').replace(/[\u0000-\u001f\u007f]+/g, ' ').trim();
     const cc = oneLine(item.cost_code), sc = oneLine(item.sub_code);
+    // Whoever renamed the line changed these rows: the Procurement sheet says
+    // so ("Changed by …") rather than naming the row's last editor.
+    const who = String(payload.name || payload.username || '').slice(0, 120) || null;
     try {
       changed = await sql`
         WITH was AS (
@@ -266,7 +269,8 @@ module.exports = async (req, res) => {
            SET cost_code  = CASE WHEN ${cc}::text <> '' THEN ${cc}::text ELSE p.cost_code END,
                sub_code   = CASE WHEN ${sc}::text <> '' THEN ${sc}::text ELSE p.sub_code  END,
                version    = p.version + 1,
-               updated_at = NOW()
+               updated_at = NOW(),
+               updated_by = ${who}
           FROM was
          WHERE p.id = was.id
            -- The same test again on the row being written, not only the

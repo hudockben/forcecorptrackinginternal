@@ -609,7 +609,8 @@ function schemaStatements() {
     r = await xp(L3, id, { vendor: 'Gamma Inc' }, { vendor: 'Acme Supply' });
     assert('someone else changed it since it was seen → 409 conflict, naming the cell, who and when, with the row as it is',
       r.statusCode === 409 && r.body.error === 'conflict' && eq(r.body.fields, ['vendor']) && r.body.item && r.body.item.vendor === 'Beta Corp'
-        && r.body.changed_by === 'p_l2' && typeof r.body.changed_at === 'string' && /p_l2 changed this/.test(r.body.message), show(r));
+        && r.body.changed_by === 'p_l2' && typeof r.body.changed_at === 'string'
+        && /changed since you started editing it \(last by p_l2\)/.test(r.body.message), show(r));
     let now = await rowOf(id);
     assert('…and nothing at all is written: not the cell, not the version', now.vendor === 'Beta Corp' && now.version === v0 + 1, JSON.stringify(now));
 
@@ -617,12 +618,27 @@ function schemaStatements() {
     assert('one stale cell holds back the whole save — and only it is named', r.statusCode === 409 && eq(r.body.fields, ['vendor'])
       && (await rowOf(id)).quote_number === '', show(r));
 
+    const vBefore = (await rowOf(id)).version;
     r = await xp(L3, id, { quote_number: 'Q-9' }, { quote_number: '' });
     assert('a different cell of the same row, seen as it is, is not held back by the other change', r.statusCode === 200 && r.body.item.quote_number === 'Q-9'
       && r.body.item.vendor === 'Beta Corp', show(r));
+    assert('…and its answer says who saved the row last before it, and the version it was (so the page can name the vendor change it brings)',
+      r.body.was && r.body.was.updated_by === 'p_l2' && r.body.was.version === vBefore && typeof r.body.was.updated_at === 'string'
+        && r.body.item.version === vBefore + 1, JSON.stringify(r.body.was));
 
     r = await xp(L3, id, { vendor: 'Gamma Inc' }, { vendor: 'Beta Corp' });
     assert('"Keep mine": the save expects the other person\'s value, and lands', r.statusCode === 200 && r.body.item.vendor === 'Gamma Inc', show(r));
+    r = await xp(L2, id, { vendor: 'Gamma Inc' }, { vendor: 'Beta Corp' });
+    assert('a cell that already holds what is being saved is no conflict, whatever was expected (two people set the same value; a save sent again after its answer was lost)',
+      r.statusCode === 200 && r.body.item.vendor === 'Gamma Inc', show(r));
+    r = await xp(L2, id, { vendor: ' Gamma Inc ', quote_number: 'Q-9' }, { vendor: 'Acme Supply', quote_number: 'Q-9' });
+    assert('…compared as stored (" Gamma Inc " is "Gamma Inc")', r.statusCode === 200, show(r));
+    r = await xp(L2, id, { vendor: 'Gamma Inc', quote_number: 'Q-10' }, { vendor: 'Acme Supply', quote_number: 'Q-1' });
+    assert('…but a cell beside it that is stale still is → 409 naming only that one', r.statusCode === 409 && eq(r.body.fields, ['quote_number']), show(r));
+    r = await xp(L2, id, { date_needed: '2026-12-01' }, { date_needed: '2020-01-01' });
+    assert('…a date already holding the one being saved', r.statusCode === 200, show(r));
+    r = await xp(L2, id, { quantity: 950.0 }, { quantity: 1 });
+    assert('…a number by value', r.statusCode === 200, show(r));
 
     // Each kind of cell compared by value, as the page holds it.
     r = await xp(L2, id, { quantity: 1000 }, { quantity: 950 });
@@ -923,6 +939,11 @@ function schemaStatements() {
     assert('…and nothing else of theirs changes', m1.description === 'Couplers' && r1.bid_item_id === 'rb1');
     const o = await rowOf(OTHER.id);
     assert('…another job\'s row with the same line id is untouched', o.sub_code === 'Perf Drain 15"' && o.version === vO);
+    r = await putLine(ADMIN, PID, { id: 'rb1', cost_code: 'Stormwater', sub_code: 'Perimeter Drain 15 in Perf', quantity: 901, unit: 'LF' });
+    assert('the rows record who renamed the line (the Procurement sheet shows "Changed by" them, not the row\'s last editor)',
+      r.statusCode === 200 && (await rowOf(R1.id)).updated_by === 'p_admin' && (await rowOf(M1.id)).updated_by === 'p_admin', show(r));
+    await putLine(L2, PID, { id: 'rb1', cost_code: 'Stormwater', sub_code: 'Perimeter Drain 15in Perf', quantity: 901, unit: 'LF' });
+    assert('…and the next rename its renamer', (await rowOf(R1.id)).updated_by === 'p_l2');
     r = await putLine(L2, PID, { id: 'rb2', cost_code: 'Erosion Control', sub_code: 'Silt Sock 12in', quantity: 1200, unit: 'LF' });
     const r2 = await rowOf(R2.id);
     assert('a deleted row follows its line too (Send can offer it back on the new line)', r2.cost_code === 'Erosion Control'

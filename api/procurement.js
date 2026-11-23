@@ -472,7 +472,21 @@ function updateRows(sql, { company, division, who }, ids, f, projectId, expect =
   const toLine = v('bid_item_id');
   const keyPrefix = bidKeyPrefix(company, division);
   const expectJson = expect && Object.keys(expect).length ? JSON.stringify(expect) : null;
+  // The values being written, as stored: a cell that already holds what this
+  // save puts in it is not in conflict, whatever was expected there (two
+  // people setting the same date; a save that landed and is sent again
+  // because its answer was lost).
+  const writing = expectJson ? JSON.stringify(f) : null;
   return sql`
+    -- Each row as it is just before this write — locked first, so it is the
+    -- version written over — for who saved it last (the answer's "was").
+    WITH was AS (
+      SELECT id, version AS was_version, updated_by AS was_updated_by, updated_at AS was_updated_at
+        FROM procurement_items
+       WHERE company_code = ${company} AND division = ${division} AND deleted_at IS NULL
+         AND id = ANY(${ids}::text[])
+         FOR UPDATE
+    )
     UPDATE procurement_items SET
       description      = CASE WHEN ${s('description')}::boolean      THEN ${v('description')}::text      ELSE description      END,
       quantity         = CASE WHEN ${s('quantity')}::boolean         THEN ${v('quantity')}::numeric      ELSE quantity         END,
@@ -496,8 +510,10 @@ function updateRows(sql, { company, division, who }, ids, f, projectId, expect =
       version    = version + 1,
       updated_at = NOW(),
       updated_by = ${who}
-    WHERE company_code = ${company} AND division = ${division} AND deleted_at IS NULL
-      AND id = ANY(${ids}::text[])
+    FROM was
+    WHERE procurement_items.id = was.id
+      AND company_code = ${company} AND division = ${division} AND deleted_at IS NULL
+      AND procurement_items.id = ANY(${ids}::text[])
       AND (${projectId}::text IS NULL OR project_id = ${projectId}::text)
       -- A bid line is taken only while it is on the job's bid as stored now,
       -- read in this same statement (see the note at the top).
@@ -511,8 +527,9 @@ function updateRows(sql, { company, division, who }, ids, f, projectId, expect =
       -- Each cell still holds what the person saw in it (see above).
       AND (${expectJson}::jsonb IS NULL OR NOT EXISTS (
         SELECT 1 FROM jsonb_each(${expectJson}::jsonb) x
-         WHERE (to_jsonb(procurement_items) -> x.key) IS DISTINCT FROM x.value))
-    RETURNING *`;
+         WHERE (to_jsonb(procurement_items) -> x.key) IS DISTINCT FROM x.value
+           AND (to_jsonb(procurement_items) -> x.key) IS DISTINCT FROM (${writing}::jsonb -> x.key)))
+    RETURNING procurement_items.*, was.was_version, was.was_updated_by, was.was_updated_at`;
 }
 
 /**
@@ -520,11 +537,12 @@ function updateRows(sql, { company, division, who }, ids, f, projectId, expect =
  * which of the expected cells no longer hold what the person saw — compared
  * the way the write compared them. Null when the row is gone.
  */
-async function conflictFields(sql, { company, division }, id, expect) {
+async function conflictFields(sql, { company, division }, id, expect, f) {
   const rows = await sql`
     SELECT p.*, COALESCE((
       SELECT array_agg(x.key ORDER BY x.key) FROM jsonb_each(${JSON.stringify(expect)}::jsonb) x
-       WHERE (to_jsonb(p) -> x.key) IS DISTINCT FROM x.value), '{}') AS conflict_fields
+       WHERE (to_jsonb(p) -> x.key) IS DISTINCT FROM x.value
+         AND (to_jsonb(p) -> x.key) IS DISTINCT FROM (${JSON.stringify(f)}::jsonb -> x.key)), '{}') AS conflict_fields
       FROM procurement_items p
      WHERE p.company_code = ${company} AND p.division = ${division} AND p.deleted_at IS NULL AND p.id = ${id}`;
   if (!rows[0]) return null;
@@ -1106,11 +1124,13 @@ module.exports = async (req, res) => {
         // Someone else changed a cell this person was changing, since they
         // saw it: nothing is written, and the page is told who, what and when
         // so the person can keep theirs or take the other.
-        const c = await conflictFields(sql, scope, id.value, ex.value);
+        const c = await conflictFields(sql, scope, id.value, ex.value, f.value);
         if (!c) return fail(res, 404, 'not_found', 'That row does not exist any more.');
         if (c.fields.length) {
-          const who2 = c.row.updated_by || 'someone else';
-          return fail(res, 409, 'conflict', `${who2} changed this since you started editing it`, {
+          // Who saved the row last — which is who changed these cells unless
+          // someone else saved another cell of it after them.
+          const who2 = c.row.updated_by ? ` (last by ${c.row.updated_by})` : '';
+          return fail(res, 409, 'conflict', `This was changed since you started editing it${who2}`, {
             fields: c.fields, item: shape(c.row), changed_by: c.row.updated_by ?? null, changed_at: iso(c.row.updated_at),
           });
         }
@@ -1124,7 +1144,14 @@ module.exports = async (req, res) => {
         return fail(res, 404, 'not_found', 'That row does not exist any more.');
       }
       await refileAfter(sql, scope, payload, codesWas, rows);
-      return res.json({ ok: true, item: shape(rows[0]) });
+      // `was`: the row's version and last saver just before this write, so
+      // the page can tell — and name — a change someone else made to the
+      // row's other cells since it last had it.
+      const w = rows[0];
+      return res.json({ ok: true, item: shape(w), was: {
+        version: w.was_version == null ? null : Number(w.was_version),
+        updated_by: w.was_updated_by ?? null, updated_at: iso(w.was_updated_at),
+      } });
     }
 
     // ── DELETE — out of the sheet (soft) ─────────────────────────────────

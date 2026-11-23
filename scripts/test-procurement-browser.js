@@ -286,14 +286,16 @@ function procurementApi(W, role, method, q, body) {
     const bad = badField(body.fields);
     if (bad) return [400, { ok: false, error: 'field_not_allowed', field: bad }];
     if (!Object.keys(body.fields || {}).length) return [400, { ok: false, error: 'no_fields' }];
-    const stale = Object.keys(body.expect || {}).filter(k => !sameAsSeen(r[k], body.expect[k])).sort();
+    const stale = Object.keys(body.expect || {}).filter(k => !sameAsSeen(r[k], body.expect[k])
+      && !(k in body.fields && sameAsSeen(r[k], body.fields[k]))).sort();
     if (stale.length) {
-      return [409, { ok: false, error: 'conflict', message: `${r.updated_by || 'someone else'} changed this since you started editing it`,
+      return [409, { ok: false, error: 'conflict', message: `This was changed since you started editing it (last by ${r.updated_by || 'someone else'})`,
         fields: stale, item: out(r), changed_by: r.updated_by || null, changed_at: r.updated_at }];
     }
     if (body.fields.bid_item_id && !onStoredBid(r.project_id, body.fields.bid_item_id)) return STALE;
+    const was = { version: r.version, updated_by: r.updated_by || null, updated_at: r.updated_at || null };
     pick(r, body.fields);
-    return [200, { ok: true, item: out(touch(r)) }];
+    return [200, { ok: true, item: out(touch(r)), was }];
   }
   if (method === 'DELETE') {
     let hit;
@@ -1893,7 +1895,7 @@ async function twoPeople(browser) {
   ok('the save says what was in the cell when typing began', patch && eq(patch.body, { fields: { quote_number: 'Q-MINE' }, expect: { quote_number: 'Q-2' } }), patch && patch.body);
   ok('…Dana\'s is not written over', W.rows.find(r => r.id === 'T2').quote_number === 'Q-DANA');
   const dlg = (await page.textContent('.fctproc-modal')).replace(/\s+/g, ' ');
-  ok('the dialog shows hers beside yours, and who changed it', /Changed by someone else/i.test(dlg) && /Dana Reyes/.test(dlg)
+  ok('the dialog shows what is saved beside yours, and who saved it last', /Changed by someone else/i.test(dlg) && /last saved by Dana Reyes/.test(dlg)
     && eq(await page.$$eval('.fctproc-conflict tbody td', tds => tds.map(td => td.textContent.trim())), ['Quote #', 'Q-DANA', 'Q-MINE']), dlg);
   ok('…the sheet behind it shows hers, marked', await qBox.inputValue() === 'Q-DANA'
     && await rowTr(page, 'T2').locator('.fctproc-part.c-quote_number').evaluate(el => el.classList.contains('fctproc-chg')));
@@ -1903,9 +1905,26 @@ async function twoPeople(browser) {
   const again = W.log.filter(l => l.api === 'procurement' && l.method === 'PATCH' && l.q.id === 'T2').pop();
   ok('"Keep mine" saves yours, knowing it replaces hers', eq(again.body, { fields: { quote_number: 'Q-MINE' }, expect: { quote_number: 'Q-DANA' } })
     && await qBox.inputValue() === 'Q-MINE' && await page.locator('.fctproc-modal').count() === 0, again && again.body);
-  // The browser logs the one 409 it was answered (the conflict) itself.
-  const other = errors.filter(e => !/status of 409 \(Conflict\).*\/api\/procurement\?division=turf&id=T2\)/.test(e));
-  ok('no page errors (but the browser\'s own note of the one 409)', other.length === 0 && errors.length === 1, errors.join(' | '));
+
+  // Still in the box when the conflict comes back — the save went on a pause
+  // in the typing, not on leaving the box. Leaving it (the dialog takes the
+  // focus) and "Keep saved" must not put the typed text over hers.
+  dana('T1', { quote_number: 'Q-DANA1' });
+  const q1 = page.locator('[data-pr="T1"][data-pf="quote_number"]');
+  await q1.click();
+  await q1.fill('Q-TYPED');
+  await page.waitForSelector('.fctproc-modal [data-conflict="theirs"]', { timeout: 5000 });
+  ok('a conflict found by a save made mid-typing: the box shows what is saved, the dialog what you typed',
+    await q1.inputValue() === 'Q-DANA1' && eq(await page.$$eval('.fctproc-conflict tbody td', tds => tds.map(td => td.textContent.trim())), ['Quote #', 'Q-DANA1', 'Q-TYPED']));
+  await page.click('.fctproc-modal [data-conflict="theirs"]');
+  await page.waitForTimeout(900);
+  const t1Patches = W.log.filter(l => l.api === 'procurement' && l.method === 'PATCH' && l.q.id === 'T1');
+  ok('"Keep saved": hers stays — the typed text is not saved over it on the way out of the box',
+    W.rows.find(r => r.id === 'T1').quote_number === 'Q-DANA1' && await q1.inputValue() === 'Q-DANA1'
+      && t1Patches.every(l => l.body.fields.quote_number !== 'Q-TYPED' || eq(l.body.expect, { quote_number: 'Q-1' })), t1Patches.map(l => l.body));
+  // The browser logs each 409 it was answered (the conflicts) itself.
+  const other = errors.filter(e => !/status of 409 \(Conflict\).*\/api\/procurement\?division=turf&id=T[12]\)/.test(e));
+  ok('no page errors (but the browser\'s own notes of the two 409s)', other.length === 0 && errors.length === 2, errors.join(' | '));
   await ctx.close();
 }
 
