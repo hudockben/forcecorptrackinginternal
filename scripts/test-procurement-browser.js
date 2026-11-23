@@ -1866,8 +1866,17 @@ async function twoPeople(browser) {
   ok('…the values on the sheet are hers', await page.inputValue('[data-pr="T1"][data-pf="description"]') === '15" Perforated SLCPP'
     && await page.inputValue('[data-pr="T1"][data-pf="vendor"]') === 'New Enterprise');
   ok('the row she added is marked as a whole, "Added by Dana Reyes"', await rowTr(page, 'T3').evaluate(tr => tr.classList.contains('fctproc-new') && /^Added by Dana Reyes/.test(tr.title)));
-  const tint = await t1.locator('td.c-description').evaluate(td => getComputedStyle(td).backgroundColor);
-  ok('…a marked cell is tinted, so it is seen without hovering', /rgba?\(/.test(tint) && tint !== 'rgba(0, 0, 0, 0)', tint);
+  const tint = await t1.locator('td.c-description').evaluate(td => getComputedStyle(td).backgroundImage);
+  ok('…a marked cell is tinted, so it is seen without hovering', /linear-gradient\(rgba\(59, 130, 246/.test(tint), tint);
+  // The pinned columns of a marked row stay solid: the cells scrolled under
+  // them do not show through.
+  const pinned = await rowTr(page, 'T3').locator('td.stk').evaluateAll(tds => tds.map(td => getComputedStyle(td).backgroundColor));
+  ok('the pinned cells of the added row are still solid (the tint is laid over them)', pinned.length >= 2
+    && pinned.every(c => /^rgb\(/.test(c)), pinned);
+  await rowTr(page, 'T3').locator('[data-sel]').check();
+  const selBg = await rowTr(page, 'T3').locator('td.c-unit').evaluate(td => getComputedStyle(td).backgroundColor);
+  ok('…and selecting it still shows it selected under the tint', selBg === 'rgb(20, 28, 48)', selBg);
+  await rowTr(page, 'T3').locator('[data-sel]').uncheck();
   await shot(page, 'proc-changed-by-others.png');
 
   // The same cell: Dana changes T2's Quote # while this person types theirs.
@@ -1877,6 +1886,9 @@ async function twoPeople(browser) {
   await qBox.fill('Q-MINE');
   await page.keyboard.press('Tab');
   await page.waitForSelector('.fctproc-modal [data-conflict="mine"]', { timeout: 5000 });
+  ok('the dialog takes the focus — the dialog, not one of its buttons — so typing no longer goes into the sheet behind it',
+    await page.evaluate(() => document.activeElement && document.activeElement.getAttribute('role') === 'dialog'));
+  ok('…and the picker menu the Tab had opened behind it is closed', await page.locator('#procurement-root .cb-menu:not([hidden])').count() === 0);
   const patch = W.log.filter(l => l.api === 'procurement' && l.method === 'PATCH' && l.q.id === 'T2').pop();
   ok('the save says what was in the cell when typing began', patch && eq(patch.body, { fields: { quote_number: 'Q-MINE' }, expect: { quote_number: 'Q-2' } }), patch && patch.body);
   ok('…Dana\'s is not written over', W.rows.find(r => r.id === 'T2').quote_number === 'Q-DANA');

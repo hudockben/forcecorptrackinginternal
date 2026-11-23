@@ -1493,10 +1493,13 @@
       .fctproc-table tr.fctproc-row.sel > td { background: #141c30; }
       /* Changed by someone else lately (a couple of minutes): a blue edge and
          tint on the cell — or the part of a cell — with who and when as its
-         tooltip; a row someone else added, a tint across it. */
-      .fctproc-table tr.fctproc-row > td.fctproc-chg { background: rgba(59,130,246,0.13); box-shadow: inset 3px 0 0 #3b82f6; }
+         tooltip; a row someone else added, a tint across it. A cell's tint is
+         laid over its own background rather than replacing it: the pinned
+         columns stay solid (nothing scrolls through them), and a selected or
+         hovered row still shows as one. */
+      .fctproc-table tr.fctproc-row > td.fctproc-chg { background-image: linear-gradient(rgba(59,130,246,0.13), rgba(59,130,246,0.13)); box-shadow: inset 3px 0 0 #3b82f6; }
       .fctproc-part.fctproc-chg { background: rgba(59,130,246,0.16); box-shadow: inset 2px 0 0 #3b82f6; border-radius:3px; }
-      .fctproc-table tr.fctproc-row.fctproc-new > td { background: rgba(59,130,246,0.07); }
+      .fctproc-table tr.fctproc-row.fctproc-new > td { background-image: linear-gradient(rgba(59,130,246,0.07), rgba(59,130,246,0.07)); }
       .fctproc-table tr.fctproc-row.fctproc-new > td.c-sel { box-shadow: inset 3px 0 0 #3b82f6; }
       /* The conflict dialog's table: theirs beside yours. */
       .fctproc-conflict { width:100%; border-collapse:collapse; font-size:0.8rem; }
@@ -2456,6 +2459,22 @@
     const foot = `<button type="button" class="btn btn-ghost fctproc-b" data-conflict="theirs">Keep ${esc(c.by ? c.by + "'s" : 'theirs')}</button>
       <button type="button" class="btn btn-green fctproc-b" data-conflict="mine">Keep mine</button>`;
     const m = modal('Changed by someone else', body, { footHTML: foot });
+    // It comes up on its own, a moment after a save, likely while the person
+    // is typing in the next cell: focus moves to it — to the dialog, not a
+    // button, so a keystroke meant for the sheet picks nothing — and keys no
+    // longer go into the sheet behind it (an open picker's menu closes).
+    const box = m.el.querySelector('[role="dialog"]');
+    // The page's pickers close their menus on a click or key elsewhere, not
+    // when focus is moved for them.
+    (st.mountEl || document).querySelectorAll('.cb-menu:not([hidden])').forEach(menu => {
+      const input = menu.previousElementSibling;
+      if (input && typeof window.cbClose === 'function') window.cbClose(input); else menu.hidden = true;
+    });
+    if (box) {
+      box.tabIndex = -1;
+      box.style.outline = 'none';
+      try { box.focus({ preventScroll: true }); } catch { box.focus(); }
+    }
     let done = false;
     // Closed without a pick: theirs stays — nothing is written over it.
     m.onClose = () => { conflictOpen = false; setTimeout(showNextConflict, 0); };
