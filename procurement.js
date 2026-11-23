@@ -1522,15 +1522,17 @@
       .fctproc-statusbox > .c-flags:empty { display:none; }
       .fctproc-statusbox .fctproc-flags { margin-left:0; }
       .fctproc-statusbox .fctproc-flag { letter-spacing:0.01em; padding-left:0.22rem; padding-right:0.22rem; }
-      .fctproc-scatag { display:inline-block; white-space:nowrap; font-size:0.6rem; font-weight:600; line-height:1.25; letter-spacing:0;
-        padding:0.02rem 0.25rem; border:1px solid var(--border,#2a2a3a); border-radius:3px; color: var(--muted,#9ca3af); }
-      .fctproc-scatag.sca-Pending { opacity:0.6; border-color: transparent; padding-left:0.1rem; }
-      .fctproc-scatag.sca-Needed { color:#fbbf24; border-color: rgba(234,179,8,0.55); }
-      .fctproc-scatag.sca-Executed { color: var(--green,#22c55e); border-color: rgba(34,197,94,0.45); }
-      .fctproc-scatag.sca-Not-Needed { opacity:0.6; border-style:dashed; }
+      /* A pill like the Status pill above it, in the same greys for "pending",
+         amber when an agreement is needed, green once executed. */
+      .fctproc-scatag { display:inline-block; white-space:nowrap; font-size:0.62rem; font-weight:600; line-height:1.3; letter-spacing:0;
+        padding:0.05rem 0.3rem; border:1px solid rgba(156,163,175,0.28); border-radius:999px;
+        background: rgba(156,163,175,0.10); color:#9ca3af; }
+      .fctproc-scatag.sca-Needed { background: rgba(234,179,8,0.14); color:#fbbf24; border-color: rgba(234,179,8,0.45); }
+      .fctproc-scatag.sca-Executed { background: rgba(34,197,94,0.14); color: var(--green,#22c55e); border-color: rgba(34,197,94,0.4); }
+      .fctproc-scatag.sca-Not-Needed { background: transparent; border-style:dashed; }
       .fctproc-scawrap { position:relative; display:inline-flex; max-width:100%; cursor:pointer; }
-      .fctproc-scawrap:hover .fctproc-scatag { border-color: var(--muted,#666); opacity:1; }
-      .fctproc-scawrap:focus-within .fctproc-scatag { border-color:#2563eb; opacity:1; box-shadow: 0 0 0 1px #2563eb33; }
+      .fctproc-scawrap:hover .fctproc-scatag { border-color: rgba(156,163,175,0.6); }
+      .fctproc-scawrap:focus-within .fctproc-scatag { border-color:#2563eb; box-shadow: 0 0 0 1px #2563eb33; }
       .fctproc-scawrap select.fctproc-scasel { position:absolute; inset:0; width:100%; height:100%; min-width:0; opacity:0; padding:0; cursor:pointer; }
       /* The empty boxes of a row say what they are when the row is pointed
          at or the box is in use — on every row at once they were a form's
@@ -2889,7 +2891,7 @@
     { key: 'sel', label: '', w: 2, edit: true, stick: true },
     // Status, with the Sub-Contractor Agreement as a tag under the pill
     // rather than a column of its own; each keeps its filter.
-    { key: 'status', label: 'Status', w: 9.2, stick: true, sep: '·', parts: [
+    { key: 'status', label: 'Status', w: 9.7, stick: true, sep: '·', parts: [
       { label: 'Status', filter: 'status' },
       { label: 'Sub Agmt', filter: 'sca_status', title: 'Sub-Contractor Agreement' },
     ] },

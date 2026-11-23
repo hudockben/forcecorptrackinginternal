@@ -1838,8 +1838,13 @@ async function fitsWide(browser) {
   await sleep(300);
   const fit = await page.evaluate(() => { const w = document.querySelector('#fctproc-wrap'); return { client: w.clientWidth, scroll: w.scrollWidth }; });
   ok('at 1920 wide the whole sheet shows: no sideways scrolling', fit.scroll <= fit.client, fit);
-  const lines = () => page.$$eval('#procurement-root tr.fctproc-row', trs => trs.map(tr => new Set([...tr.querySelectorAll('td.c-status .fctproc-pill, td.c-status .fctproc-scatag, td.c-status .fctproc-flag')]
-    .map(x => Math.round(x.getBoundingClientRect().top))).size));
+  // Lines of the cell, by where each piece's middle falls: pieces of one
+  // line can sit a pixel apart (a pill and a flag are not the same height).
+  const lines = () => page.$$eval('#procurement-root tr.fctproc-row', trs => trs.map(tr => {
+    const mids = [...tr.querySelectorAll('td.c-status .fctproc-pill, td.c-status .fctproc-scatag, td.c-status .fctproc-flag')]
+      .map(x => { const r = x.getBoundingClientRect(); return (r.top + r.bottom) / 2; }).sort((a, b) => a - b);
+    return mids.reduce((n, m, i) => n + (i && m - mids[i - 1] > 6 ? 1 : 0), mids.length ? 1 : 0);
+  }));
   ok('every Status cell is two lines at most: the pill, then the agreement and its flags', (await lines()).every(n => n <= 2), await lines());
   ok('the agreement reads short, coloured by its state', eq(await page.$$eval('#procurement-root td.c-status .fctproc-scatag', t => t.map(x => x.textContent)),
     ['Agmt pending', 'Agmt needed', 'Agmt \u2713']));
