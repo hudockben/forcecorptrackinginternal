@@ -111,9 +111,11 @@ function server(page, store, answer) {
 /**
  * Boot `page.file` signed in as `user`, the browser's storage holding
  * `storage` (what an earlier sign-in left), every request answered by
- * `route`. Every call is recorded.
+ * `route`. Every call is recorded. `{ autoReport: true }` opens it as the
+ * scheduled-report robot does (?autoreport=1, auto-report.js loaded first);
+ * `{ storageQuota }` sets how much the browser's storage holds.
  */
-function boot(page, user, storage, route) {
+function boot(page, user, storage, route, opts = {}) {
   const calls = [];
   const errors = [];
   const vc = new VirtualConsole();
@@ -124,9 +126,11 @@ function boot(page, user, storage, route) {
   const EMPTY = { ok: true, value: null, user: null, employees: [], jobs: [], entries: [], rows: [], groups: [] };
   const dom = new JSDOM(fs.readFileSync(root(page.file), 'utf8'), {
     runScripts: 'dangerously',
-    url: 'https://datawatch.app/' + page.file,
+    url: 'https://datawatch.app/' + page.file + (opts.autoReport ? '?autoreport=1' : ''),
     virtualConsole: vc,
+    ...(opts.storageQuota ? { storageQuota: opts.storageQuota } : {}),
     beforeParse(w) {
+      if (opts.autoReport) w.eval(fs.readFileSync(root('auto-report.js'), 'utf8'));
       Object.entries(storage || {}).forEach(([k, v]) => w.localStorage.setItem(k, v));
       w.localStorage.setItem('fct_token', 'tok-' + user.username);
       w.localStorage.setItem('fct_user', JSON.stringify(user));
@@ -401,6 +405,211 @@ const indexWrites = (b, page) => b.writes(new RegExp(`^/api/data/${page.pre}proj
     await poll();
     await poll();
     assert(`${page.file}:   and once one has worked, an unchanged index reloads nothing`, world.loads === 3 && world.ids.length === 2, world.loads);
+  }
+
+  // ── 5. Daily Entry while the job read is failing ─────────────────────────
+  // The daily rows are their own table, saved row by row (drPostBulk). The
+  // job record does not change when a foreman submits the day, so the refusal
+  // of a job save from the cached copy must not tell him it was not saved.
+  const TODAY = '2026-11-24';
+  const dayRows = () => [{ id: 'r-am', _projectId: 'p1', date: TODAY, employee: 'Joe', labor_hours: 8, cost_code: 'Stormwater', sub_code: 'Geofabric', quantity: '0' }];
+  const withDayRows = (c, u) => (u.pathname === '/api/daily-rows' && c.method === 'GET' ? { status: 200, body: { rows: dayRows(), hasMore: false } } : null);
+  for (const page of PAGES) {
+    console.log(`\n[${page.file}: a foreman submits the day while the job read is failing]`);
+    const idxPath = `/api/data/${page.pre}projects_index`;
+    const S = companyStore(page, xJobs(), { [`${page.pre}lists`]: { employees: [{ name: 'Joe', job_class: 'Laborer', non_prevailing_rate: 30 }], cost_codes: [], field_types: ['Turf'] } });
+    const d1 = boot(page, XAVIER, {}, server(page, S, withDayRows));
+    await settle();
+    const cache = d1.kept();
+    d1.w.close();
+    let idxFails = 3;
+    const d = boot(page, XAVIER, cache, server(page, S, (c, u) => (u.pathname === idxPath && c.method === 'GET' && idxFails-- > 0 ? { status: 500, body: {} } : withDayRows(c, u))));
+    await settle();
+    assert('the jobs have not loaded', d.w.eval('_projectsLoaded') === false);
+    const doc = d.w.document;
+    d.w.eval('renderMobileEntryForm()');
+    doc.getElementById('mob-project').value = 'p1';
+    doc.getElementById('mob-date').value = TODAY;
+    d.w.eval("renderMobTodayEntries('p1')");
+    const listed = (doc.getElementById('mob-today-entries') || {}).textContent || '';
+    assert('the day\'s entries are read for the cached jobs all the same', d.w.eval("getProj('p1').dailyRows.length") === 1, d.w.eval("getProj('p1').dailyRows.length"));
+    assert('  and Daily Entry lists them, not "No entries for this date yet."', /Entries for this date/.test(listed) && !/No entries/.test(listed), listed.trim().slice(0, 80));
+    assert('  reading them writes nothing', jobBlobs(d, page).length === 0 && indexWrites(d, page).length === 0, jobBlobs(d, page).concat(indexWrites(d, page)).map(c => c.url));
+    doc.querySelector('.mob-emp-cb').checked = true;
+    doc.querySelector('.mob-hrs-inp').value = '8';
+    await d.w.eval('submitMobileEntry()');
+    await settle(800);
+    const posts = d.writes(/^\/api\/daily-rows$/).filter(c => c.method === 'POST');
+    assert('the submitted row is saved', posts.length === 1 && posts[0].body.projectId === 'p1' && posts[0].body.rows[0].employee === 'Joe', posts.map(c => JSON.stringify(c.body).slice(0, 120)));
+    assert('  and the foreman is not told it was not saved', d.banner() === '', d.banner());
+    assert('  the form says the row was added', /1 row added/.test(doc.body.textContent));
+    assert('  and the cached job is not saved over the server\'s', jobBlobs(d, page).length === 0 && indexWrites(d, page).length === 0, jobBlobs(d, page).concat(indexWrites(d, page)).map(c => c.url));
+    d.w.close();
+  }
+
+  // ── 6. Deleting a job while the job read is failing ──────────────────────
+  for (const page of PAGES) {
+    console.log(`\n[${page.file}: a job is deleted while the job read is failing]`);
+    const idxPath = `/api/data/${page.pre}projects_index`;
+    const S = companyStore(page, xJobs());
+    const d1 = boot(page, XAVIER, {}, server(page, S));
+    await settle();
+    const cache = d1.kept();
+    d1.w.close();
+    let idxFails = 1;
+    const d = boot(page, XAVIER, cache, server(page, S, (c, u) => (u.pathname === idxPath && c.method === 'GET' && idxFails-- > 0 ? { status: 500, body: {} } : null)));
+    await settle(300);
+    assert('the jobs have not loaded', d.w.eval('_projectsLoaded') === false);
+    const before = d.calls.length;
+    d.w.eval("deleteProject('p2')");
+    await settle(200);
+    const sent = d.calls.slice(before).filter(c => c.method !== 'GET');
+    assert('the delete is refused: no dialog to confirm it', !d.w.document.getElementById('dp-input'));
+    assert('  and none of its deletes is sent (rows, record, files, Procurement rows)', sent.length === 0, sent.map(c => c.method + ' ' + c.url));
+    assert('  the PM is told it was not done', /have not loaded from the server/.test(d.banner()), d.banner());
+    assert('  the job stays, on the server and on the page', S[`${page.pre}project_p2`] && S[`${page.pre}projects_index`].ids.includes('p2') && d.ids().includes('p2'));
+    // Once the jobs have loaded, the delete goes through, index and all.
+    await settle(2400);
+    assert('the jobs load on the retry', d.w.eval('_projectsLoaded') === true);
+    d.w.eval("deleteProject('p2')");
+    const inp = d.w.document.getElementById('dp-input');
+    if (inp) { inp.value = 'Franklin Field'; inp.dispatchEvent(new d.w.Event('input')); d.w.document.getElementById('dp-confirm').click(); }
+    await settle(300);
+    assert('  then a delete takes the job off the index', !!inp && S[`${page.pre}project_p2`] == null && JSON.stringify(S[`${page.pre}projects_index`].ids) === '["p1"]', S[`${page.pre}projects_index`]);
+    d.w.close();
+  }
+
+  // ── 7. A crew tablet the company's foremen share ─────────────────────────
+  for (const page of PAGES) {
+    console.log(`\n[${page.file}: a foreman's owed daily rows, then another foreman of the company on the tablet]`);
+    const S = companyStore(page, xJobs());
+    const ALICE = Object.assign({}, XAVIER, { userId: 3, username: 'alice', name: 'Alice' });
+    let offline = true;
+    const x = boot(page, XAVIER, {}, server(page, S, (c, u) => (u.pathname === '/api/daily-rows' && c.method !== 'GET' && offline ? 'network' : null)));
+    await settle();
+    x.w.eval(`drPost('p1', { id: 'rowX', date: '${TODAY}', employee: 'Joe', labor_hours: 8, quantity: '0' })`);
+    await settle(500);
+    x.w.eval('logout()');
+    await settle(100);
+    const afterX = x.kept();
+    x.w.close();
+    offline = false;
+    // Logs kept per user, as this page did for a while before release.
+    const now = Date.now();
+    afterX[`fct_dr_wal_${page.division}@XCO/bob`] = JSON.stringify({ post_rowB: { method: 'POST', projectId: 'p1', rowId: 'rowB', row: { id: 'rowB', date: TODAY, employee: 'Bob', labor_hours: 4 }, _ts: now } });
+    afterX[`fct_dr_wal_${page.division}@YCO/yuri`] = JSON.stringify({ post_rowY: { method: 'POST', projectId: 'y1', rowId: 'rowY', row: { id: 'rowY' }, _ts: now } });
+    // Another company's user first: none of it is theirs to send.
+    const Y = companyStore(page, { y1: { id: 'y1', 'project-name': 'Y Field', bidItems: [] } });
+    const y = boot(page, YURI, afterX, server(page, Y));
+    await settle(800);
+    const ySent = y.writes(/^\/api\/daily-rows$/).map(c => JSON.stringify(c.body));
+    assert('another company\'s user sends none of company X\'s owed rows', !ySent.some(b => /rowX|rowB/.test(b)), ySent);
+    assert('  only the one left in a per-user log of their own company', ySent.filter(b => b.includes('rowY')).length === 1, ySent);
+    y.w.eval('logout()');
+    await settle(100);
+    const afterY = y.kept();
+    y.w.close();
+    const a = boot(page, ALICE, afterY, server(page, S));
+    await settle(800);
+    const aSent = a.writes(/^\/api\/daily-rows$/).map(c => JSON.stringify(c.body));
+    assert('the next foreman of the company sends the row the first still owed', aSent.filter(b => b.includes('rowX')).length === 1, aSent);
+    assert('  and the rows in a log kept per user of the same company', aSent.filter(b => b.includes('rowB')).length === 1, aSent);
+    assert('  and none of another company\'s', !aSent.some(b => b.includes('rowY')), aSent);
+    assert('  the per-user log taken over is gone from the browser', a.w.localStorage.getItem(`fct_dr_wal_${page.division}@XCO/bob`) === null);
+    a.w.close();
+  }
+
+  // ── 8. The scheduled-report robot, its job read failing ──────────────────
+  {
+    console.log('\n[the report robot, when its read of the job index fails]');
+    const runs = PAGES.map(page => {
+      const idxPath = `/api/data/${page.pre}projects_index`;
+      const S = companyStore(page, xJobs());
+      let once = 1;
+      const flaky = boot(page, XAVIER, {}, server(page, S, (c, u) => (u.pathname === idxPath && c.method === 'GET' && once-- > 0 ? { status: 500, body: {} } : null)), { autoReport: true });
+      const down = boot(page, XAVIER, {}, server(page, S, (c, u) => (u.pathname === idxPath && c.method === 'GET' ? { status: 500, body: {} } : null)), { autoReport: true });
+      return { page, flaky, down };
+    });
+    for (const { page, flaky, down } of runs) {
+      // plan() waits for the page to be ready, as the runner's does.
+      const ready = await flaky.w.dwAutoReport.plan({ type: flaky.w.dwAutoReport.types()[0], projectId: '*' }).then(() => 'ready', e => e.message);
+      assert(`${page.file}: one failed read is tried again, and the robot has the jobs`, ready === 'ready' && JSON.stringify(flaky.ids()) === '["p1","p2"]', [ready, flaky.ids()]);
+      const failed = await down.w.dwAutoReport.plan({ type: down.w.dwAutoReport.types()[0], projectId: '*' }).then(r => 'resolved ' + JSON.stringify(r), e => e.message);
+      assert(`${page.file}:   a read that keeps failing fails the run, rather than report no jobs`, /could not be read/.test(failed), failed);
+      flaky.w.close(); down.w.close();
+    }
+  }
+
+  // ── 9. A bid line edited while the job read is failing ───────────────────
+  for (const page of PAGES) {
+    console.log(`\n[${page.file}: a bid line a colleague deleted is edited from the cached copy]`);
+    const idxPath = `/api/data/${page.pre}projects_index`;
+    const S = companyStore(page, xJobs());
+    const d1 = boot(page, XAVIER, {}, server(page, S));
+    await settle();
+    const cache = d1.kept();
+    d1.w.close();
+    S[`${page.pre}project_p1`].bidItems = S[`${page.pre}project_p1`].bidItems.filter(b => b.id !== 'b3');
+    let idxFails = 1;
+    // /api/bid-items as the server does it: replace the line, or add it when missing.
+    const d = boot(page, XAVIER, cache, server(page, S, (c, u) => {
+      if (u.pathname === idxPath && c.method === 'GET' && idxFails-- > 0) return { status: 500, body: {} };
+      if (u.pathname === '/api/bid-items' && c.method === 'PUT') {
+        const blob = S[u.searchParams.get('projectKey')];
+        const i = blob.bidItems.findIndex(b => b.id === c.body.bidItem.id);
+        if (i >= 0) blob.bidItems[i] = c.body.bidItem; else blob.bidItems.push(c.body.bidItem);
+        return { status: 200, body: { ok: true } };
+      }
+      return null;
+    }));
+    await settle(300);
+    assert('the jobs have not loaded', d.w.eval('_projectsLoaded') === false);
+    d.w.eval("updateBidItem('p1', 'b3', 'quantity', '2')");
+    await settle(900);
+    assert('the line edit is not sent', d.writes(/^\/api\/bid-items$/).length === 0, d.writes(/^\/api\/bid-items$/).map(c => c.url));
+    assert('  so the deleted line is not put back on the bid', JSON.stringify(S[`${page.pre}project_p1`].bidItems.map(b => b.id)) === '["b1","b2"]', S[`${page.pre}project_p1`].bidItems.map(b => b.id));
+    assert('  and the PM is told it was not saved', /have not loaded from the server/.test(d.banner()), d.banner());
+    await settle(1600);
+    assert('the jobs load on the retry', d.w.eval('_projectsLoaded') === true);
+    d.w.eval("updateBidItem('p1', 'b1', 'quantity', '13000')");
+    await settle(900);
+    const puts = d.writes(/^\/api\/bid-items$/);
+    assert('  then a line edit is saved as usual', puts.length === 1 && S[`${page.pre}project_p1`].bidItems.find(b => b.id === 'b1').quantity === '13000', puts.map(c => c.url));
+    d.w.close();
+  }
+
+  // ── 10. A shared browser whose storage the per-user copies have filled ───
+  // Each user's job-list copy stays on the browser. Once storage was full the
+  // inventory save threw on its local copy, before its PUT: the edit never
+  // reached the server.
+  for (const page of PAGES) {
+    console.log(`\n[${page.file}: storage filled by other people's job-list copies]`);
+    const S = companyStore(page, xJobs(), { [`${page.pre}inventory`]: [] });
+    const QUOTA = 400000;
+    const others = {
+      [`${page.pre}projects@XCO/ada`]: JSON.stringify([{ id: 'p1', notes: 'a'.repeat(150000) }]),
+      [`${page.pre}projects@YCO/yuri`]: JSON.stringify([{ id: 'y1', notes: 'y'.repeat(150000) }]),
+      [`fct_dr_wal_${page.division}@YCO`]: JSON.stringify({ post_rowY: { method: 'POST', projectId: 'y1', rowId: 'rowY', row: { id: 'rowY' }, _ts: Date.now() } }),
+    };
+    const d = boot(page, XAVIER, others, server(page, S), { storageQuota: QUOTA });
+    await settle();
+    // Whatever room is left, filled with something that is not a job-list copy.
+    const fill = d.w.eval(`(() => { let n = 0; try { for (;;) { localStorage.setItem('zz_fill#' + n, 'f'.repeat(1024)); n++; } } catch {} return n; })()`);
+    const mine = d.w.eval('PROJECTS_KEY');
+    const mineBefore = d.w.localStorage.getItem(mine);
+    const before = d.calls.length;
+    // Loaded (paving and kiewit read the inventory when its tab opens).
+    const threw = d.w.eval(`(() => { _inventoryLoaded = true; inventoryEntries = Array.from({ length: 40 }, (_, i) => ({ id: 'inv' + i, inv_number: 'INV-' + i, material: 'Turf roll ' + i, notes: 'z'.repeat(200) }));
+      try { saveInventoryEntries(); return null; } catch (e) { return e.name; } })()`);
+    await settle(200);
+    const puts = d.calls.slice(before).filter(c => c.method === 'PUT' && new URL(c.url, 'https://datawatch.app').pathname === `/api/data/${page.pre}inventory`);
+    assert('with storage full, an inventory save is still sent to the server', threw === null && puts.length === 1 && puts[0].body.value.length === 40, { threw, puts: puts.length, fill });
+    assert('  the other people\'s job-list copies make room for its copy', d.w.localStorage.getItem(`${page.pre}projects@XCO/ada`) === null && d.w.localStorage.getItem(`${page.pre}projects@YCO/yuri`) === null
+      && JSON.parse(d.w.localStorage.getItem(`${page.pre}inventory@XCO/xavier`) || '[]').length === 40);
+    assert('  this user\'s own job-list copy is kept', d.w.localStorage.getItem(mine) === mineBefore && !!mineBefore);
+    assert('  and nothing else goes: not another company\'s owed daily rows, not other keys',
+      !!d.w.localStorage.getItem(`fct_dr_wal_${page.division}@YCO`) && d.w.localStorage.getItem('zz_fill#0') !== null && d.w.localStorage.getItem('zz_fill#' + (fill - 1)) !== null);
+    d.w.close();
   }
 
   console.log(`\n${failed === 0 ? '✓' : '✗'} ${passed} passed, ${failed} failed`);
