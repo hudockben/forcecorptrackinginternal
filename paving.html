@@ -8481,7 +8481,9 @@ function _syncINVRowField(entry, field) {
     r.material_cost   = String((parseFloat(entry.bags_produced) || 0) * (parseFloat(entry.unit_cost) || 0));
   }
   drPutNow(entry.inv_row_id, r);
-  saveProject(entry.project_id);
+  // Only the row changed (sent above), not the job record: before the jobs
+  // have loaded saveProject is refused, and its banner said nothing was saved.
+  if (_projectsLoaded) saveProject(entry.project_id);
 }
 
 function togglePin(projId) {
@@ -8607,6 +8609,10 @@ function deleteProject(id) {
 }
 
 function deleteDailyRowsBySubCode(costCode, subCode) {
+  // Not from this browser's copy of the jobs (see deleteProject): the rows'
+  // DELETE went, the bid lines' half was refused with saveProject, and the
+  // banner said nothing had been saved.
+  if (!_projectsLoaded) { _unloadedSaveRefused('jobs'); return; }
   // costCode is ignored — always operate cross-code by sub code name only
   let dailyCount = 0, dailyProjCount = 0;
   projectsList.forEach(p => {
@@ -17632,7 +17638,8 @@ async function submitMobileEntry() {
   if (newRows.length === 0) { alert('Nothing to submit.'); return; }
 
   // Persist last project
-  localStorage.setItem('mob_last_proj', projId);
+  // Never in the way of the save below: with storage full it threw first.
+  try { localStorage.setItem('mob_last_proj', projId); } catch { _fctSetMakingRoom('mob_last_proj', projId); }
 
   // Save state for Repeat Last Entry
   _mobLastEntry = { projId, fieldType, codeBlocks, checkedEmps, equipBlocks,

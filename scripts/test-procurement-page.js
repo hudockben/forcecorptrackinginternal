@@ -169,18 +169,18 @@ console.log('\n[tracker.html — wiring]');
     // whole-job save does neither. After it, not beside it: a page closed at
     // once must not spend the browser's keepalive allowance on the lines
     // ahead of the whole-job save.
-    const fns = ['updateBidGroupCode', 'saveProject', '_putProjectThenRenamedLines'].map(n => requireFn(SRC, n)).join('\n');
+    const fns = ['updateBidGroupCode', 'saveProject', '_putProjectThenRenamedLines', '_bidSaveOut'].map(n => requireFn(SRC, n)).join('\n');
     assert('the lines waiting for it are kept per job (_bidRenamedLines)', /const _bidRenamedLines = \{\};/.test(SRC));
     const proj = { id: 'j1', bidItems: [{ id: 'a', cost_code: 'Stormwater' }, { id: 'b', cost_code: 'Stormwater' }, { id: 'c', cost_code: 'Base' }] };
     const did = [];
     let landed = true;
     const timers = [];
     const mk = new Function('getProj', 'apiPut', 'patchBidItem', 'renderBidTable', 'saveProjectIndex', '_projBlob', 'localStorage',
-      'projectsList', 'PROJECTS_KEY', '_saveProjTimers', 'setTimeout', 'clearTimeout', '_bidRenamedLines', '_projectsLoaded', '_unloadedSaveRefused',
+      'projectsList', 'PROJECTS_KEY', '_saveProjTimers', 'setTimeout', 'clearTimeout', '_bidRenamedLines', '_projectsLoaded', '_unloadedSaveRefused', '_bidSavesOut',
       `${fns}; return { updateBidGroupCode, saveProject, _putProjectThenRenamedLines };`);
     const page = mk(() => proj, (key, v, opts) => { did.push(['put', key, !!(opts && opts.keepalive)]); return { then: f => f(landed) }; },
       (pid, id) => did.push(['line', pid, id]), () => {}, () => {}, x => x, { setItem() {} }, [proj], 'k', {},
-      fn => { timers.push(fn); return timers.length; }, () => {}, {}, true, () => did.push(['refused']));
+      fn => { timers.push(fn); return timers.length; }, () => {}, {}, true, () => did.push(['refused']), {});
     page.updateBidGroupCode('j1', 'Stormwater', 'Storm Drainage');
     assert('  the rename itself sends no line saves yet', JSON.stringify(did) === '[]' && proj.bidItems.map(b => b.cost_code).join() === 'Storm Drainage,Storm Drainage,Base', JSON.stringify(did));
     timers.splice(0).forEach(f => f());
@@ -514,7 +514,7 @@ const JOB = {
  */
 async function runRenameFlushChecks() {
   console.log('\n[a section renamed, then Send to Procurement]');
-  const fns = ['updateBidGroupCode', 'saveProject', '_putProjectThenRenamedLines', 'patchBidItem'].map(n => requireFn(SRC, n)).join('\n')
+  const fns = ['updateBidGroupCode', 'saveProject', '_putProjectThenRenamedLines', 'patchBidItem', '_bidSaveOut'].map(n => requireFn(SRC, n)).join('\n')
     + '\nasync ' + requireFn(SRC, '_procFlushProjectSaves').replace(/^async /, '');
   const proj = { id: 'j1', bidItems: [{ id: 'a', cost_code: 'Stormwater' }, { id: 'b', cost_code: 'Stormwater' }, { id: 'c', cost_code: 'Base' }] };
   const did = [];
@@ -523,15 +523,15 @@ async function runRenameFlushChecks() {
   let tid = 0;
   const mk = new Function('getProj', 'apiPut', '_doBidItemPut', 'renderBidTable', 'saveProjectIndex', '_projBlob', 'localStorage',
     'projectsList', 'PROJECTS_KEY', '_saveProjTimers', '_biSaveTimers', '_biSavePending', 'setTimeout', 'clearTimeout', '_bidRenamedLines',
-    '_projectsLoaded', '_unloadedSaveRefused',
-    `${fns}; return { updateBidGroupCode, _procFlushProjectSaves, get waiting() { return _bidRenamedLines; } };`);
+    '_projectsLoaded', '_unloadedSaveRefused', '_bidSavesOut',
+    `${fns}; return { updateBidGroupCode, saveProject, _procFlushProjectSaves, _bidSaveOut, get waiting() { return _bidRenamedLines; } };`);
   // Each save lands a tick after it is sent, and says when it has.
   const later = (what, ok) => new Promise(res => setTimeout(() => { did.push(['landed', what]); res(ok); }, 5));
   const page = mk(() => proj,
     (key, v) => { did.push(['put', key]); return later(key, landed); },
-    (pid, id) => { did.push(['line', pid, id]); return later('line ' + id); },
+    (pid, id) => { did.push(['line', pid, id]); return page._bidSaveOut(pid, later('line ' + id)); },
     () => {}, () => {}, x => x, { setItem() {} }, [proj], 'k', {}, {}, {},
-    fn => { timers.set(++tid, fn); return tid; }, id => { timers.delete(id); }, {}, true, () => did.push(['refused']));
+    fn => { timers.set(++tid, fn); return tid; }, id => { timers.delete(id); }, {}, true, () => did.push(['refused']), {});
   page.updateBidGroupCode('j1', 'Stormwater', 'Storm Drainage');
   await page._procFlushProjectSaves('j1');
   assert('rename then Send to Procurement: the whole-job save goes first, then each renamed line through the per-line save',
@@ -548,6 +548,34 @@ async function runRenameFlushChecks() {
   await page._procFlushProjectSaves('j1');
   assert('  a whole-job save that failed sends no line saves; they wait for the next one that lands',
     !did.some(d => d[0] === 'line') && page.waiting.j1 && [...page.waiting.j1].join() === 'a,b', JSON.stringify([did, page.waiting.j1 && [...page.waiting.j1]]));
+  // The rename's save already out of its debounce when the bid is read back
+  // (the Procurement tab opened a moment after): that read waits for it, and
+  // for the renamed lines it sends once it has landed. Before, nothing was
+  // left to flush, the read went at once and saw the old codes.
+  did.length = 0;
+  landed = true;
+  page.updateBidGroupCode('j1', 'Stormwater', 'Drainage');
+  [...timers].forEach(([id, fn]) => { timers.delete(id); fn(); });
+  const outFirst = did.map(d => d.join(' '));
+  await page._procFlushProjectSaves('j1');
+  assert('a rename whose whole-job save is already out: the bid read waits for it to land, and for the renamed lines it then sends',
+    JSON.stringify(outFirst) === '["put fct_project_j1"]' && did.filter(d => d[0] === 'landed').map(d => d[1]).join() === 'fct_project_j1,line a,line b'
+      && !page.waiting.j1 && timers.size === 0, JSON.stringify(did));
+  // Two reads of the bid at once (the sheet's re-link and Add to
+  // Procurement), the rename's whole-job save out: when it lands, the first
+  // read sends the renamed lines' saves — and the second waits for them too,
+  // rather than reading the bid back before they have landed.
+  did.length = 0;
+  page.updateBidGroupCode('j1', 'Drainage', 'Storm');
+  [...timers].forEach(([id, fn]) => { timers.delete(id); fn(); });
+  const landedNow = () => did.filter(d => d[0] === 'landed').map(d => d[1]).join();
+  let first = null, second = null;
+  await Promise.all([
+    page._procFlushProjectSaves('j1').then(() => { first = landedNow(); }),
+    page._procFlushProjectSaves('j1').then(() => { second = landedNow(); }),
+  ]);
+  assert('two reads of the bid at once with the rename\'s save out: neither goes before the renamed lines\' saves have landed',
+    first === 'fct_project_j1,line a,line b' && second === first && did.filter(d => d[0] === 'line').length === 2, { first, second, did: JSON.stringify(did) });
 }
 
 async function runAdminChecks(b, cfg) {

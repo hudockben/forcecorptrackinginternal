@@ -256,7 +256,7 @@
   function ctxIndex(ctx) {
     let m = _ctxIndex.get(ctx);
     if (!m) {
-      m = { lineById: new Map(), poById: new Map(), poByJob: new Map(), poByCode: new Map(), lineByJob: null, costKeysByJob: new Map(), linkedPO: new Set(), takers: null, won: null };
+      m = { lineById: new Map(), poById: new Map(), poByJob: new Map(), poByCode: new Map(), lineByJob: null, costKeysByJob: new Map(), linkedPO: new Set() };
       (ctx.bidLines || []).forEach(l => { if (l && l.id != null) m.lineById.set(String(l.id), l); });
       // The orders by job (and, once a row of the job asks, by codes —
       // posUnder), so each row looks up the few under its own codes: read
@@ -447,48 +447,6 @@
       m.poByCode.set(job, byCode);
     }
     return byCode.get(cc + '\u0000' + sc) || [];
-  }
-  /**
-   * For each order, the rows of the sheet that would be matched to it by
-   * their codes (no link, not "No PO"). Worked out once per ctx.
-   */
-  function autoTakers(ctx) {
-    const m = ctxIndex(ctx);
-    if (m.takers) return m.takers;
-    const takers = new Map();
-    (ctx.rows || []).forEach(r => {
-      if (!r || r.deleted_at || r.po_id || r.po_auto === false) return;
-      const codes = autoCodes(r, ctx);
-      if (!codes) return;
-      codeMatches(r, ctx, codes).forEach(po => {
-        if (!takers.has(po)) takers.set(po, []);
-        takers.get(po).push(r);
-      });
-    });
-    // How many orders each row ends up with (effectivePO): a row with
-    // several reads 'multiple', on none of them.
-    const won = new Map();
-    takers.forEach((rows, po) => {
-      const win = rows.length === 1 ? { row: rows[0] } : autoTaker(po, rows);
-      if (win) won.set(win.row.id, (won.get(win.row.id) || 0) + 1);
-    });
-    m.takers = takers;
-    m.won = won;
-    return takers;
-  }
-  /**
-   * Which of several rows an order is for: the one whose vendor is its
-   * supplier, else the bid line's own row (sent from the bid — the order a PM
-   * raises for a line on the Purchase Orders tab is for that), else none —
-   * they read as not ordered, and the PM picks it on the right one.
-   */
-  function autoTaker(po, rows) {
-    const sup = lc(po.supplier);
-    const named = sup ? rows.filter(r => lc(r.vendor) === sup) : [];
-    if (named.length === 1) return { row: named[0], by: 'vendor' };
-    const own = rows.filter(r => r.source === 'bid');
-    if (own.length === 1) return { row: own[0], by: 'bid' };
-    return null;
   }
 
   /** The row's own Date Ordered, else the date its PO was raised, else ''. */
@@ -1934,9 +1892,7 @@
     const e = row ? effectivePO({ ...row, po_id: null, po_auto: true }, ctx) : { kind: 'none', candidates: [] };
     const autoMeta = !ctx.poLoaded ? 'POs still loading'
       : e.kind === 'auto' ? `matches ${str(e.po.po_number) || 'a PO'}`
-      : e.kind === 'multiple' ? `${e.candidates.length} POs match`
-      : e.candidates.length ? `${e.candidates.map(p => str(p.po_number) || '(no number)').join(', ')} also fit${e.candidates.length === 1 ? 's' : ''} other rows — pick it below`
-      : 'no PO matches yet';
+      : e.kind === 'multiple' ? `${e.candidates.length} POs match` : 'no PO matches yet';
     const opts = [
       { value: '__auto__', label: 'Auto', meta: autoMeta },
       { value: '__none__', label: 'No PO', meta: 'not bought on a PO' },
@@ -2633,7 +2589,7 @@
       if (data.item && data.item.po_id) askForNewPOs();
       if (prev && data.item) noteChangesInAnswer(rowId, p, prev, data.item, data.was);
       refreshRow(rowId);
-      if (movesPO(p)) repaintRows();
+      if (touchesPO(p) || linkMoved(prev, server.get(rowId))) repaintRows();
       updateCounts();
       if (touchesCode(p)) recountAfterRecode((data.item && data.item.project_id) || (rowById(rowId) || {}).project_id || st.projectId, [rowId]);
     } catch (err) {
@@ -2796,7 +2752,7 @@
     const moved = fields.filter(k => data.fields.includes(k));
     if (moved.length || others.length) markRecent(rowId, moved.concat(others), data.changed_by, data.changed_at);
     refreshRow(rowId);
-    if (movesPO(p)) repaintRows();
+    if (touchesPO(p) || linkMoved(prev, server.get(rowId))) repaintRows();
     updateCounts();
     if (!fields.length) return;
     const c = { rowId, fields, mine, theirs: item, by: str(data.changed_by), at: data.changed_at || null, redraw: null };
@@ -3206,7 +3162,9 @@
   function settleSave() {
     if (fly.size) setSave('saving');
     else if (failed.size) setSave('error');
-    else if (held.size) setSave('held');
+    // A value refused outright (refuseFields: 'error', not in failed) keeps
+    // its "Not saved" through a conflict waiting, and after it is answered.
+    else if (held.size) { if (st.saveState !== 'error') setSave('held'); }
     else if (st.saveState === 'saving') setSave('saved');
     else if (st.saveState === 'held') setSave('idle');
   }
@@ -4575,19 +4533,10 @@
     const id = esc(r.id);
     const num = ep.po ? str(ep.po.po_number) || '(no number)' : '';
     const cls = ep.kind === 'multiple' ? 'po-multi' : (ep.kind === 'removed' || ep.kind === 'moved') ? 'po-removed' : ep.kind === 'nopo' ? 'po-nopo' : '';
-    // Fits other rows under these codes too, and given to this one: said, so
-    // the PM knows the rows beside it are not on it.
-    const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
-    const autoTip = !ep.others ? 'Matched automatically: the only PO on this job with this cost code, sub code and vendor'
-      : `Matched automatically: the PO on this job with this cost code, sub code and vendor. It is this row's, not the ${n(ep.others, 'other row', 'other rows')} `
-        + `under these codes: ${ep.by === 'vendor' ? 'its supplier is this row\'s vendor' : 'this is the bid line\'s own row'}`;
-    const autoTag = ep.kind === 'auto' ? `<span class="fctproc-tag" title="${esc(autoTip)}">auto</span>` : '';
+    const autoTag = ep.kind === 'auto'
+      ? '<span class="fctproc-tag" title="Matched automatically: the only PO on this job with this cost code, sub code and vendor">auto</span>' : '';
     const open = ep.po ? `<button type="button" class="fctproc-open" data-act="open-po" data-po="${esc(ep.po.id)}" title="Open ${esc(num)} on the Purchase Orders tab">&#8599;</button>` : '';
     let multiTitle = ep.kind === 'multiple' ? ep.candidates.map(p => str(p.po_number)).join(', ') : '';
-    // An order that fits this row and others beside it, none of them more
-    // than the rest: no row is on it until the PM picks it on the right one.
-    const fits = ep.kind === 'none' && ep.candidates.length ? ep.candidates.map(p => str(p.po_number) || '(no number)') : null;
-    if (fits) multiTitle = `${fits.join(', ')} ${fits.length === 1 ? 'fits' : 'fit'} this row and others under the same codes, so no row is on ${fits.length === 1 ? 'it' : 'them'} yet. Pick ${fits.length === 1 ? 'it' : 'one'} here if this row is what ${fits.length === 1 ? 'it was' : 'they were'} raised for.`;
     if (ep.kind === 'moved') {
       // Linked here, then re-pointed to another job on the Purchase Orders
       // tab: it is not this job's order any more, so the row is not ordered.
@@ -4600,7 +4549,6 @@
     }
     const value = ep.kind === 'linked' || ep.kind === 'auto' ? num : ep.kind === 'nopo' ? 'No PO' : '';
     const placeholder = ep.kind === 'multiple' ? `${ep.candidates.length} POs match — pick`
-      : fits ? `${fits.length === 1 ? fits[0] : `${fits.length} POs`} fit${fits.length === 1 ? 's' : ''} several rows — pick`
       : ep.kind === 'removed' ? 'PO removed' : ep.kind === 'moved' ? `${num} is on another job` : ep.kind === 'loading' ? '…' : '—';
     const cbv = r.po_id ? r.po_id : r.po_auto === false ? '__none__' : '__auto__';
     return td(cls, `<div class="fctproc-po">${cbCell('proc_pos:' + r.id, value, placeholder,
@@ -4952,8 +4900,13 @@
    * box left behind (a redraw, the window switched back).
    */
   function clearPinned(e) {
-    const t = e.target, wrap = t && t.closest && t.closest('#fctproc-wrap');
-    if (!wrap || !e.relatedTarget || t.closest('.stk, .gl')) return;
+    if (e.relatedTarget) clearOfPinned(e.target);
+  }
+  // A box in the sheet scrolled out from under the pinned columns; one in them
+  // (or in a section's sticky label) never moves, and is left alone.
+  function clearOfPinned(t) {
+    const wrap = t && t.closest && t.closest('#fctproc-wrap');
+    if (!wrap || t.closest('.stk, .gl')) return;
     const edge = Math.max(0, ...[...wrap.querySelectorAll('thead th.stk')].map(th => th.getBoundingClientRect().right));
     const over = edge - t.getBoundingClientRect().left;
     if (edge && over > 0) wrap.scrollLeft -= over;
@@ -5292,7 +5245,7 @@
       if (v.startsWith('__new__:')) { addVendor(rowId, v.slice(8).trim(), input); return; }
       const name = canonicalSupplier(typed).slice(0, MAX_LEN.vendor);
       input.value = name;
-      if (changeVendor(rowId, name)) { repaintRows(); updateCounts(); }
+      if (changeVendor(rowId, name)) updateCounts();
       return;
     }
     if (field === 'contact') {
@@ -5335,7 +5288,7 @@
         }
       }
       if ('description' in fields) notePick(rowId, fields);
-      if (Object.keys(fields).length) { setFields(rowId, fields); if ('vendor' in fields) repaintRows(); updateCounts(); }
+      if (Object.keys(fields).length) { const was = lineNow(rowId); setFields(rowId, fields); repaintLines(rowId, was); updateCounts(); }
       return;
     }
     if (field === 'unit') {
@@ -5344,6 +5297,7 @@
       return;
     }
     if (field === 'codes') {
+      const was = lineNow(rowId);
       // The row's own job's bid lines (on a site's sheet, not the site's).
       const ctx = siteMode() && row.project_id ? makeCtx(row.project_id) : makeCtx();
       const line = v ? (ctx.bidLines || []).find(l => String(l.id) === v) : null;
@@ -5390,7 +5344,7 @@
         toast(n ? `Sub Code: "${typed.slice(0, 60)}" is not a line on this job's bid — pick one from the list.${desc ? ' Sub Code is the bid line the cost books to; this job\'s own name for the material goes in Material.' : ''}`
           : `Sub Code: this job has no bid lines yet, so there is no cost / sub code to pick. Add the bid items on the bid page first${desc ? '; the material\'s name can go in Material meanwhile' : ''}.`, 'error');
       }
-      repaintRows();
+      repaintLines(rowId, was);
       updateCounts();
       return;
     }
@@ -5404,8 +5358,7 @@
   }
   // Every row drawn again where its drawing changed (and a cell in use kept):
   // an order linked to one row is no longer matched to the rows beside it
-  // (effectivePO), so one row's PO # changes their status too — and so can
-  // its Vendor or codes, which decide who an unlinked order goes to (autoTaker).
+  // (effectivePO), so one row's PO # changes their status too.
   function repaintRows() {
     const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
     if (!wrap) return;
@@ -5413,12 +5366,33 @@
     [...wrap.querySelectorAll('tr.fctproc-row')].forEach(tr => refreshRow(tr.dataset.row, null, ctx, true));
   }
   const touchesPO = f => Boolean(f) && (Object.prototype.hasOwnProperty.call(f, 'po_id') || Object.prototype.hasOwnProperty.call(f, 'po_auto'));
-  const movesPO = f => touchesPO(f) || (Boolean(f) && ['vendor', 'cost_code', 'sub_code', 'bid_item_id'].some(k => Object.prototype.hasOwnProperty.call(f, k)));
+  // A row's "+ Material" offers the names its bid line does not have yet
+  // (hasPastList), so one row's Material or Sub Code changes it on the other
+  // rows of the line it left and of the line it joined: those are drawn
+  // again too, where their drawing changed — not the whole sheet.
+  const lineOf = (r, ctx, k) => { const c = liveCodes(r, ctx); return `${r.project_id}\u0000${ck(k, c.cost_code)}\u0000${ck(k, c.sub_code)}`; };
+  function lineNow(rowId) {
+    const r = rowById(rowId);
+    if (!r) return null;
+    const ctx = makeCtx();
+    return lineOf(r, ctx, keyFn(ctx));
+  }
+  function repaintLines(rowId, was) {
+    const row = rowById(rowId);
+    if (!row) return;
+    const ctx = makeCtx(), k = keyFn(ctx);
+    const lines = new Set([was, lineOf(row, ctx, k)].filter(Boolean));
+    st.rows.forEach(r => { if (r.id !== rowId && lines.has(lineOf(r, ctx, k))) refreshRow(r.id, null, ctx, true); });
+  }
+  // The row as the server answered it, against the copy held before: a save
+  // of the Quote # can bring a colleague's PO # with it, and a link takes
+  // that order off the rows beside it.
+  const linkMoved = (was, now) => Boolean(was && now) && ['po_id', 'po_auto'].some(k => !sameVal(was[k], now[k]));
 
   async function addVendor(rowId, name, input) {
     if (!name) return;
     if (input) input.value = name;
-    if (changeVendor(rowId, name)) { repaintRows(); updateCounts(); }
+    if (changeVendor(rowId, name)) updateCounts();
     if (typeof cfg.addSupplier !== 'function') return;
     try {
       const canon = String((await cfg.addSupplier(name)) || name).trim();
@@ -5681,6 +5655,10 @@
     const el = st.mountEl && st.mountEl.querySelector(`[data-pr="${cssEsc(rowId)}"][data-pf="${cssEsc(field)}"]`);
     if (!el) return;
     try { el.scrollIntoView({ block: 'nearest' }); } catch { /* jsdom */ }
+    // Clear of the pinned columns too: the button pressed (a section's
+    // + Add Row) may have gone with the redraw, and focus then comes from
+    // nowhere, which clearPinned leaves alone.
+    clearOfPinned(el);
     try { el.focus({ preventScroll: true }); } catch { el.focus(); }
   }
 
@@ -6592,12 +6570,8 @@
     const decided = new Map(rows.map(r => [r.id, { po_id: r.po_id == null || r.po_id === '' ? null : String(r.po_id), po_auto: r.po_auto !== false }]));
     const onPO = rows.filter(r => ['linked', 'auto'].includes(eps.get(r.id).kind));
     const multi = rows.filter(r => eps.get(r.id).kind === 'multiple');
-    // On no order, but under the codes of one that fits these rows and
-    // others beside them, none more than the rest (effectivePO): it may be
-    // the order for them already.
-    const fits = rows.filter(r => eps.get(r.id).kind === 'none' && eps.get(r.id).candidates.length);
-    if (onPO.length || multi.length || fits.length) {
-      const free = rows.filter(r => !onPO.includes(r) && !multi.includes(r) && !fits.includes(r));
+    if (onPO.length || multi.length) {
+      const free = rows.filter(r => !onPO.includes(r) && !multi.includes(r));
       const nums = [...new Set(onPO.map(r => str(eps.get(r.id).po.po_number) || '(no number)'))];
       const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
       const said = [];
@@ -6607,11 +6581,6 @@
       }
       if (multi.length) {
         said.push(`<b>${multi.length}</b> ${multi.length === 1 ? 'matches' : 'match'} several existing POs — pick the right one in the PO # column instead.`);
-      }
-      if (fits.length) {
-        const fitNums = [...new Set([].concat(...fits.map(r => eps.get(r.id).candidates.map(p => str(p.po_number) || '(no number)'))))];
-        said.push(`<b>${fits.length}</b> ${fits.length === 1 ? 'is' : 'are'} under the codes of <b>${fitNums.slice(0, 4).map(esc).join(', ')}</b>${fitNums.length > 4 ? ` and ${fitNums.length - 4} more` : ''}, `
-          + `which ${fitNums.length === 1 ? 'fits' : 'fit'} other rows too — if ${fits.length === 1 ? 'it is' : 'they are'} on ${fitNums.length === 1 ? 'it' : 'one'}, pick it in the PO # column instead.`);
       }
       const opts = [];
       if (free.length) opts.push({ value: 'free', cls: 'btn-green', label: `Only the ${n(free.length, 'row', 'rows')} with no PO` });

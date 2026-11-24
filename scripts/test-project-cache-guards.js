@@ -612,6 +612,140 @@ const indexWrites = (b, page) => b.writes(new RegExp(`^/api/data/${page.pre}proj
     d.w.close();
   }
 
+  // ── 11. A sub code's data deleted while the job read is failing ──────────
+  // The day's rows are read for the cached jobs (see 5), so the Cost tab's
+  // "Delete all data for this sub code" found them, and its confirm sent the
+  // DELETE of every row of that sub code: gone from the server for good. Its
+  // bid-line half was refused with saveProject, and the banner said nothing
+  // had been saved.
+  for (const page of PAGES) {
+    console.log(`\n[${page.file}: a sub code's data is deleted while the job read is failing]`);
+    const idxPath = `/api/data/${page.pre}projects_index`;
+    const S = companyStore(page, xJobs());
+    let rows = [
+      { id: 'r1', _projectId: 'p1', date: TODAY, employee: 'Joe', labor_hours: 8, cost_code: 'Stormwater', sub_code: 'Geofabric', quantity: '4000' },
+      { id: 'r2', _projectId: 'p1', date: TODAY, employee: 'Ann', labor_hours: 8, cost_code: 'Stormwater', sub_code: 'Geofabric', quantity: '3500' },
+    ];
+    // /api/daily-rows as the server does it: a DELETE by sub code takes every row of it.
+    const rowsApi = (c, u) => {
+      if (u.pathname !== '/api/daily-rows') return null;
+      if (c.method === 'GET') return { status: 200, body: { rows, hasMore: false } };
+      if (c.method === 'DELETE' && u.searchParams.get('subCode')) { rows = rows.filter(r => r.sub_code !== u.searchParams.get('subCode')); return { status: 200, body: { ok: true } }; }
+      return null;
+    };
+    const d1 = boot(page, XAVIER, {}, server(page, S, rowsApi));
+    await settle();
+    const cache = d1.kept();
+    d1.w.close();
+    let idxFails = 1;
+    const d = boot(page, XAVIER, cache, server(page, S, (c, u) => (u.pathname === idxPath && c.method === 'GET' && idxFails-- > 0 ? { status: 500, body: {} } : rowsApi(c, u))));
+    await settle();
+    assert('the jobs have not loaded', d.w.eval('_projectsLoaded') === false);
+    assert('  the sub code\'s rows are read for the cached jobs', d.w.eval("getProj('p1').dailyRows.map(r => r.id).join()") === 'r1,r2', d.w.eval("getProj('p1').dailyRows.map(r => r.id).join()"));
+    // The PM clicks the sub code's delete on the Cost tab, and confirms it the
+    // way the dialog asks: by typing the sub code.
+    const deleteSubCode = () => {
+      d.w.eval("deleteDailyRowsBySubCode('', 'Geofabric')");
+      const inp = d.w.document.getElementById('dsc-input');
+      if (inp) { inp.value = 'Geofabric'; inp.dispatchEvent(new d.w.Event('input')); d.w.document.getElementById('dsc-confirm').click(); }
+      return !!inp;
+    };
+    let before = d.calls.length;
+    const asked = deleteSubCode();
+    await settle(300);
+    const sent = d.calls.slice(before).filter(c => c.method !== 'GET');
+    assert('the delete is refused: no dialog to confirm it', !asked);
+    assert('  and nothing is sent: not the rows\' DELETE, not the bid line\'s save', sent.length === 0, sent.map(c => c.method + ' ' + c.url));
+    assert('  the rows stay on the server', rows.map(r => r.id).join() === 'r1,r2', rows.map(r => r.id));
+    assert('  the PM is told it was not done', /have not loaded from the server/.test(d.banner()), d.banner());
+    // Once the jobs have loaded, it deletes both halves, as it always did.
+    await settle(2400);
+    assert('the jobs load on the retry', d.w.eval('_projectsLoaded') === true);
+    before = d.calls.length;
+    const askedNow = deleteSubCode();
+    await settle(900);
+    const dels = d.calls.slice(before).filter(c => c.method === 'DELETE' && new URL(c.url, 'https://datawatch.app').pathname === '/api/daily-rows');
+    assert('  then the delete is confirmed, and the sub code\'s rows are taken off the server', askedNow && dels.length === 1 && rows.length === 0,
+      { askedNow, dels: dels.map(c => c.url), rows: rows.map(r => r.id) });
+    assert('  and its bid line off the job', S[`${page.pre}project_p1`].bidItems.map(b => b.id).join() === 'b2,b3', S[`${page.pre}project_p1`].bidItems.map(b => b.id));
+    d.w.close();
+  }
+
+  // ── 12. An inventory entry edited while the job read is failing ──────────
+  // An entry linked to a job copies an edit onto its daily row, which is read
+  // with the cached jobs (see 5): the row's PUT and the inventory's both go.
+  // It also saved the job, which is refused before the jobs have loaded, and
+  // the banner told the PM the edit was not saved and to make it again.
+  for (const page of PAGES) {
+    console.log(`\n[${page.file}: an inventory entry linked to a job is edited while the job read is failing]`);
+    const idxPath = `/api/data/${page.pre}projects_index`;
+    const INV = [{ id: 'i1', inv_number: 'INV-0001', project_id: 'p1', inv_row_id: 'r-inv', date: TODAY, employee: 'Joe', hours: '4', rate: '30', material: 'Rubber' }];
+    const S = companyStore(page, xJobs(), { [`${page.pre}inventory`]: INV });
+    const invRow = [{ id: 'r-inv', _projectId: 'p1', date: TODAY, employee: 'Joe', labor_hours: 4, rate: 30, material: 'Rubber', quantity: '0' }];
+    const withInvRow = (c, u) => (u.pathname === '/api/daily-rows' && c.method === 'GET' ? { status: 200, body: { rows: invRow, hasMore: false } } : null);
+    const d1 = boot(page, XAVIER, {}, server(page, S, withInvRow));
+    await settle();
+    const cache = d1.kept();
+    d1.w.close();
+    let idxFails = 3;
+    const d = boot(page, XAVIER, cache, server(page, S, (c, u) => (u.pathname === idxPath && c.method === 'GET' && idxFails-- > 0 ? { status: 500, body: {} } : withInvRow(c, u))));
+    await settle();
+    // The inventory read fine (paving and kiewit read it when its tab opens).
+    d.w.eval(`_inventoryLoaded = true; inventoryEntries = ${JSON.stringify(INV)};`);
+    assert('the jobs have not loaded', d.w.eval('_projectsLoaded') === false);
+    assert('  the entry\'s daily row is read for the cached jobs', d.w.eval("getProj('p1').dailyRows.some(r => r.id === 'r-inv')") === true);
+    const before = d.calls.length;
+    // The PM changes its hours from 4 to 6, as the Inventory tab's input handler does.
+    d.w.eval("(() => { const e = inventoryEntries.find(x => x.id === 'i1'); e.hours = '6'; _syncINVRowField(e, 'hours'); saveInventoryEntries(); })()");
+    await settle(300);
+    const sent = d.calls.slice(before).filter(c => c.method !== 'GET');
+    const at = c => new URL(c.url, 'https://datawatch.app');
+    const rowPuts = sent.filter(c => c.method === 'PUT' && at(c).pathname === '/api/daily-rows' && at(c).searchParams.get('id') === 'r-inv');
+    const invPuts = sent.filter(c => c.method === 'PUT' && at(c).pathname === `/api/data/${page.pre}inventory`);
+    assert('the edit is sent to its daily row', rowPuts.length === 1 && String(rowPuts[0].body.row.labor_hours) === '6', sent.map(c => c.method + ' ' + c.url));
+    assert('  and the inventory is saved with it', invPuts.length === 1 && invPuts[0].body.value[0].hours === '6', sent.map(c => c.method + ' ' + c.url));
+    assert('  and the PM is not told it was not saved', d.banner() === '', d.banner());
+    assert('  the cached job is not saved over the server\'s', jobBlobs(d, page).length === 0 && indexWrites(d, page).length === 0, jobBlobs(d, page).concat(indexWrites(d, page)).map(c => c.url));
+    d.w.close();
+  }
+
+  // ── 13. Daily Entry on a browser whose storage is full ───────────────────
+  // Submitting the day keeps the job picked for next time, before the rows
+  // are posted. With storage full (see 10) that write threw, and the
+  // foreman's day was never posted at all.
+  for (const page of PAGES) {
+    console.log(`\n[${page.file}: a foreman submits the day on a browser whose storage is full]`);
+    const S = companyStore(page, xJobs(), { [`${page.pre}lists`]: { employees: [{ name: 'Joe', job_class: 'Laborer', non_prevailing_rate: 30 }], cost_codes: [], field_types: ['Turf'] } });
+    const others = { [`${page.pre}projects@XCO/ada`]: JSON.stringify([{ id: 'p1', notes: 'a'.repeat(150000) }]) };
+    const d = boot(page, XAVIER, others, server(page, S), { storageQuota: 400000 });
+    await settle();
+    // Whatever room is left, filled to the last character with something that is not a job-list copy.
+    const fill = d.w.eval(`(() => { let n = 0; for (let sz = 4096; sz >= 1; sz = Math.floor(sz / 2)) { try { for (;;) { localStorage.setItem('zz' + n, 'f'.repeat(sz)); n++; } } catch {} } return n; })()`);
+    const full = d.w.eval(`(() => { try { localStorage.setItem('mob_last_proj', 'p1'); } catch { return true; } localStorage.removeItem('mob_last_proj'); return false; })()`);
+    assert('storage is full: not even the job picked fits', full === true, { fill });
+    const mine = d.w.eval('PROJECTS_KEY');
+    const mineBefore = d.w.localStorage.getItem(mine);
+    const doc = d.w.document;
+    d.w.eval('renderMobileEntryForm()');
+    doc.getElementById('mob-project').value = 'p1';
+    doc.getElementById('mob-date').value = TODAY;
+    d.w.eval("renderMobTodayEntries('p1')");
+    doc.querySelector('.mob-emp-cb').checked = true;
+    doc.querySelector('.mob-hrs-inp').value = '8';
+    const before = d.calls.length;
+    const threw = await d.w.eval('submitMobileEntry()').then(() => null, e => e.name + ': ' + e.message);
+    await settle(800);
+    const posts = d.calls.slice(before).filter(c => c.method === 'POST' && new URL(c.url, 'https://datawatch.app').pathname === '/api/daily-rows');
+    assert('the day is posted all the same', threw === null && posts.length === 1 && posts[0].body.projectId === 'p1' && posts[0].body.rows[0].employee === 'Joe',
+      { threw, posts: posts.map(c => JSON.stringify(c.body).slice(0, 120)) });
+    assert('  the form says the row was added', /1 row added/.test(doc.body.textContent));
+    assert('  the other people\'s job-list copies make room for the job picked', d.w.localStorage.getItem(`${page.pre}projects@XCO/ada`) === null && d.w.localStorage.getItem('mob_last_proj') === 'p1',
+      d.w.localStorage.getItem('mob_last_proj'));
+    assert('  this user\'s own job-list copy is kept, and nothing else goes',
+      d.w.localStorage.getItem(mine) === mineBefore && !!mineBefore && d.w.localStorage.getItem('zz0') !== null && d.w.localStorage.getItem('zz' + (fill - 1)) !== null);
+    d.w.close();
+  }
+
   console.log(`\n${failed === 0 ? '✓' : '✗'} ${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);
 })().catch(err => { console.error(err); process.exit(1); });

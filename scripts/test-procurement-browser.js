@@ -3497,6 +3497,105 @@ async function siteOrderedMaterials(browser) {
   }
 }
 
+// The fourth review's fixes only a real browser shows: a section's
+// "+ Add Row" with the sheet scrolled right puts the new row's Material box
+// clear of the pinned columns, and a bid rename whose save is already out when
+// the Procurement tab is shown is waited for before the order list is read.
+async function reviewFour(browser) {
+  console.log('\n[review 4] A section\'s + Add Row under the pinned columns; a rename\'s save already out');
+  const t = i => new Date(Date.UTC(2026, 9, 6) + i * 1000).toISOString();
+  {
+    const W = makeWorld();
+    for (let i = 0; i < 6; i++) W.rows.push({ ...BLANK_ROW, id: 'K' + i, project_id: 'p1', created_at: t(i), updated_at: t(i),
+      description: 'Item ' + i, quantity: 10 + i, vendor: 'LB Water', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' });
+    const { page, ctx, errors } = await openPage(browser, W, 'level2', { viewport: { width: 1024, height: 800 },
+      storage: { fct_proc_project_turf: 'p1', fct_proc_group_turf: 'cost' } });
+    try {
+      await page.click('.tab-btn[data-tab="procurement"]');
+      await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(c => c === 6));
+      await sleep(300);
+      await page.$eval('#fctproc-wrap', w => { w.scrollLeft = w.scrollWidth; });
+      await sleep(200);
+      const posts = () => W.log.filter(l => l.api === 'procurement' && l.method === 'POST' && !l.q.action).length;
+      // The section's own button: its sticky label is always on screen, and
+      // the redraw takes the button away, so the new box gets focus from nowhere.
+      await page.locator('#fctproc-wrap tr.fctproc-grp [data-grpadd]').first().click();
+      await until(() => posts() === 1, 4000);
+      await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(c => c === 7), 4000);
+      await sleep(600);
+      const at = await page.evaluate(() => {
+        const a = document.activeElement, wrap = document.querySelector('#fctproc-wrap');
+        const edge = Math.max(0, ...[...wrap.querySelectorAll('thead th.stk')].map(th => th.getBoundingClientRect().right));
+        const r = a.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + 6, r.top + r.height / 2);
+        return { pf: a.dataset && a.dataset.pf, left: Math.round(r.left), edge: Math.round(edge), seen: !!hit && (hit === a || a.contains(hit)) };
+      });
+      ok('a section\'s + Add Row with the sheet scrolled right (1024 px): the new row\'s Material box has the caret, clear of the pinned columns',
+        at.pf === 'description' && at.left >= at.edge - 1 && at.seen, at);
+      ok('no page errors', errors.length === 0, errors.join(' | '));
+    } finally {
+      await ctx.close();
+    }
+  }
+  {
+    // The rename committed on the bid page, the Procurement tab clicked 700 ms
+    // later: the host's 600 ms debounce has already sent the bid-items PUT,
+    // which the server takes 1.2 s to answer (renaming the order as it does).
+    const W = makeWorld();
+    W.rows.length = 0;
+    W.rows.push({ ...BLANK_ROW, id: 'D1', project_id: 'p1', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: DRAIN, vendor: 'New Enterprise',
+      date_needed: plusDays(3), lead_time_days: 10, created_at: t(3), updated_at: t(3) });
+    W.pos.push({ id: 'po20', po_number: 'PO-0020', title: 'Drain', supplier: 'New Enterprise', status: 'pending', date_created: plusDays(-2),
+      project_id: 'p1', cost_code: 'Stormwater', sub_code: DRAIN, notes: '', lines: [] });
+    const saved = PROJECTS.p1.bidItems;
+    const NEW = 'Perimeter Drain 15in Perf';
+    const { page, ctx, errors } = await openPage(browser, W, 'level2', { storage: { fct_proc_project_turf: 'p1', fct_proc_group_turf: 'none' } });
+    const reads = [];
+    let putAt = 0, clickAt = 0;
+    await page.route('**/api/purchase-orders**', route => {
+      if (route.request().method() === 'GET') reads.push(W.pos.find(x => x.id === 'po20').sub_code);
+      return route.fallback();
+    });
+    await page.route('**/api/bid-items**', async route => {
+      let body = null;
+      try { body = JSON.parse(route.request().postData() || 'null'); } catch { body = null; }
+      if (route.request().method() !== 'PUT' || !body || !body.bidItem) return route.fallback();
+      putAt = Date.now();
+      await sleep(1200);
+      PROJECTS.p1.bidItems = PROJECTS.p1.bidItems.map(b => (b.id === body.bidItem.id ? { ...b, ...body.bidItem } : b));
+      const d1 = W.rows.find(r => r.id === 'D1');
+      if (d1.sub_code !== body.bidItem.sub_code) Object.assign(d1, { sub_code: body.bidItem.sub_code, version: d1.version + 1, updated_at: t(50) });
+      W.pos.find(x => x.id === 'po20').sub_code = body.bidItem.sub_code;
+      W.posAt = new Date(Date.parse(W.posAt) + 1000).toISOString();
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+    });
+    try {
+      await page.click('.tab-btn[data-tab="procurement"]');
+      await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(c => c === 1));
+      await sleep(500);
+      await page.click('.tab-btn[data-tab="po"]');
+      await sleep(300);
+      const n0 = reads.length;
+      await page.evaluate(sub => updateBidItem('p1', 'b2', 'sub_code', sub), NEW);
+      await sleep(700);
+      clickAt = Date.now();
+      await page.click('.tab-btn[data-tab="procurement"]');
+      await sleep(4000);
+      const tr = rowTr(page, 'D1');
+      const d1 = { pill: await tr.locator('.fctproc-pill').textContent(), po: await cell(page, 'D1', 'po').inputValue(), late: /Late/.test(await tr.textContent()) };
+      ok('(the bid save was already out when the tab was clicked)', putAt > 0 && putAt < clickAt, [putAt, clickAt]);
+      ok('a rename whose save is already out when the Procurement tab is shown: the row reads Ordered on PO-0020 within seconds, not Not Ordered and Late',
+        d1.pill === 'Ordered' && d1.po === 'PO-0020' && !d1.late, d1);
+      ok('…every read of the order list after the rename saw the renamed order (none went before the server had it)',
+        reads.length > n0 && reads.slice(n0).every(x => x === NEW), reads.slice(n0));
+      ok('no page errors', errors.length === 0, errors.join(' | '));
+    } finally {
+      PROJECTS.p1.bidItems = saved;
+      await ctx.close();
+    }
+  }
+}
+
 (async () => {
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
@@ -3525,6 +3624,7 @@ async function siteOrderedMaterials(browser) {
     await reviewThreeUI(browser);
     await reviewThreePO(browser);
     await siteOrderedMaterials(browser);
+    await reviewFour(browser);
   } finally {
     await browser.close();
     server.close();

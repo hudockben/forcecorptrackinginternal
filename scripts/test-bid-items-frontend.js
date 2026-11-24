@@ -195,6 +195,10 @@ function evalBidItemBlock(ctx, file, projectKeyVar, indexKey) {
   const endMarker = src.indexOf('\n// Save the ordered list of project IDs', start);
   if (endMarker < 0) throw new Error('Could not locate end-of-block marker in ' + file);
   const block = src.slice(start, endMarker);
+  // tracker.html keeps the bid saves that are out (Procurement's read of the
+  // bid waits for them); that helper sits just above this block.
+  const helper = src.match(/\nfunction _bidSaveOut\([\s\S]+?\n\}\n/);
+  if (helper) vm.runInContext('var _bidSavesOut = {};' + helper[0], ctx);
   vm.runInContext(block, ctx);
 }
 

@@ -1129,6 +1129,8 @@ function planDom(page, src, role) {
     'var setTimeout = fn => { window.__timers.push(fn); return window.__timers.length; }; var clearTimeout = () => {};',
     requireFn(src, 'fmt', page.file), requireFn(src, 'qfmt', page.file),
     requireFn(src, 'updateBidItem', page.file), requireFn(src, 'patchBidItem', page.file), requireFn(src, '_doBidItemPut', page.file),
+    // tracker.html keeps the bid saves that are out (for Procurement's read).
+    'var _bidSavesOut = {};', fnSource(src, '_bidSaveOut') || '',
     sliceThrough(src, '/* The "Plan / Day" box on a bid row', "document.addEventListener('change', _bidPlanRateOnChange);", 'the Plan / Day helpers'),
   ].join('\n'));
   const flush = () => { const due = w.__timers.splice(0); due.forEach(fn => fn()); };
