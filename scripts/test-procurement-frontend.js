@@ -4870,12 +4870,11 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     ] });
     e.P.renderTab(e.root);
     await sleep(40);
-    assert('(the line\'s own row reads Ordered on PO-0001 by its codes; the staples added under it do not)',
-      e.$('tr[data-row="sA"] .fctproc-pill').textContent === 'Ordered' && e.$('tr[data-row="sB"] .fctproc-pill').textContent === 'Not Ordered');
-    e.pick(e.field('sB', 'po'), 'PO-0001', 'po1');
+    assert('(both read Ordered on PO-0001 by their codes)', ['sA', 'sB'].every(id => e.$(`tr[data-row="${id}"] .fctproc-pill`).textContent === 'Ordered'));
+    e.pick(e.field('sA', 'po'), 'PO-0001', 'po1');
     await sleep(20);
-    assert('the staples linked to it: the line\'s own row is redrawn at once as not on it', e.$('tr[data-row="sB"] .fctproc-pill').textContent === 'Ordered'
-      && e.$('tr[data-row="sA"] .fctproc-pill').textContent === 'Not Ordered', ['sA', 'sB'].map(id => e.$(`tr[data-row="${id}"] .fctproc-pill`).textContent));
+    assert('one of them linked to it: the other is redrawn at once as not on it', e.$('tr[data-row="sA"] .fctproc-pill').textContent === 'Ordered'
+      && e.$('tr[data-row="sB"] .fctproc-pill').textContent === 'Not Ordered', ['sA', 'sB'].map(id => e.$(`tr[data-row="${id}"] .fctproc-pill`).textContent));
 
     // A link re-pointed to another job takes nothing from this job's rows.
     const PM = { id: 'pm', po_number: 'PO-0500', project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Geofabric', supplier: 'Acme Supply', date_created: '2026-03-09' };
@@ -5810,64 +5809,47 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     const modalText = e => (e.$('.fctproc-modal') ? e.$('.fctproc-modal').textContent.replace(/\s+/g, ' ') : '');
     const autoTag = (e, id) => !![...e.$$(`tr[data-row="${id}"] td.c-po .fctproc-tag`)].find(t => t.textContent === 'auto');
 
-    // ── An order raised on the Purchase Orders tab, for one of a bid line's materials ──
+    // ── An order raised on the Purchase Orders tab for a bid line bought as several materials ──
+    // Every row of the job under its codes, with a vendor it can take, is on
+    // it — the line's own row and each material added under it — with its
+    // date. (Given to one row alone, the rest of the line read Not Ordered
+    // with no Date Ordered, and a site's sheet lost most of its Ordered rows.)
     const P7 = { id: 'p7', po_number: 'PO-0007', project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Geofabric', supplier: 'LB Water', date_created: '2026-03-01' };
     const geoBid = (o = {}) => row({ id: 'gb', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', vendor: 'LB Water', ...o });
     // Needed in 2 days, a 10-day lead time: its Order By was eight days ago.
     const staples = (o = {}) => row({ id: 'gs', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: 'Fabric staples',
       date_needed: '2026-03-12', lead_time_days: 10, created_at: '2026-03-05T10:00:00Z', ...o });
-    let cx = C({ purchaseOrders: [P7], rows: [geoBid(), staples()] });
-    assert('an unlinked PO the line\'s own row and a "+ Material" row would both take: the line\'s own row (its vendor is the supplier) reads Ordered on it',
-      T.effectivePO(geoBid(), cx).kind === 'auto' && T.effectivePO(geoBid(), cx).po.id === 'p7' && T.statusOf(geoBid(), cx) === 'Ordered');
-    assert('…the material added under it reads Not Ordered, and Late (its Order By has passed)', T.effectivePO(staples(), cx).kind === 'none'
-      && T.statusOf(staples(), cx) === 'Not Ordered' && T.flagsOf(staples(), cx).some(f => f.key === 'late') && T.effectiveDateOrdered(staples(), cx) === '',
-      [T.effectivePO(staples(), cx).kind, T.flagsOf(staples(), cx).map(f => f.key)]);
-    cx = C({ purchaseOrders: [P7], rows: [geoBid({ vendor: '' }), staples({ vendor: 'LB Water' })] });
-    assert('the one row whose vendor is the PO\'s supplier takes it, though it is not the line\'s own row',
-      T.effectivePO(staples({ vendor: 'LB Water' }), cx).kind === 'auto' && T.effectivePO(geoBid({ vendor: '' }), cx).kind === 'none');
-    cx = C({ purchaseOrders: [P7], rows: [geoBid({ vendor: '' }), staples()] });
-    assert('no row names the supplier: the line\'s own row takes it', T.effectivePO(geoBid({ vendor: '' }), cx).kind === 'auto' && T.effectivePO(staples(), cx).kind === 'none');
-    cx = C({ purchaseOrders: [P7], rows: [geoBid({ vendor: 'LB Water' }), staples({ vendor: 'LB Water' })] });
-    assert('both name the supplier: the line\'s own row takes it', T.effectivePO(geoBid(), cx).kind === 'auto' && T.effectivePO(staples({ vendor: 'LB Water' }), cx).kind === 'none');
-    const pins = row({ id: 'gp', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: 'Pins', created_at: '2026-03-06T10:00:00Z' });
-    cx = C({ purchaseOrders: [P7], rows: [geoBid({ po_auto: false }), staples(), pins] });
-    const amb = T.effectivePO(staples(), cx);
-    assert('two added materials and nothing to tell them apart: neither is on it (the PM picks), and the PO is named for the pick',
-      amb.kind === 'none' && T.effectivePO(pins, cx).kind === 'none' && T.statusOf(pins, cx) === 'Not Ordered' && amb.candidates.length === 1 && amb.candidates[0].id === 'p7', amb);
-    cx = C({ purchaseOrders: [P7], rows: [staples()] });
-    assert('a PO only one row would take is still that row\'s, as before', T.effectivePO(staples(), cx).kind === 'auto');
-    assert('…and so with no rows in hand at all', T.effectivePO(staples(), C({ purchaseOrders: [P7] })).kind === 'auto');
-    cx = C({ purchaseOrders: [P7], rows: [geoBid({ po_id: 'po3' }), staples()] });
-    assert('the line\'s own row on another PO is no taker: the added material is alone with it', T.effectivePO(staples(), cx).kind === 'auto');
-    // The PO # picker's "Auto" for a row on another order: what it would match if set back to Auto.
-    cx = C({ purchaseOrders: [P7], rows: [geoBid(), staples({ po_id: 'po3' })] });
-    assert('a row linked elsewhere, asked what Auto would match: not the order its line\'s own row has',
-      T.effectivePO({ ...staples(), po_id: null, po_auto: true }, cx).kind === 'none');
+    const pins = row({ id: 'gp', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: 'Pins', vendor: 'LB Water', created_at: '2026-03-06T10:00:00Z' });
+    let cx = C({ purchaseOrders: [P7], rows: [geoBid(), staples(), pins] });
+    assert('an unlinked PO for a bid line: the line\'s own row reads Ordered on it, "auto", with its date',
+      T.effectivePO(geoBid(), cx).kind === 'auto' && T.effectivePO(geoBid(), cx).po.id === 'p7' && T.statusOf(geoBid(), cx) === 'Ordered'
+        && T.effectiveDateOrdered(geoBid(), cx) === '2026-03-01');
+    assert('…and so does every material added under it: Ordered on PO-0007, Date Ordered from it, no Late flag',
+      [staples(), pins].every(r => T.effectivePO(r, cx).kind === 'auto' && T.effectivePO(r, cx).po.id === 'p7' && T.statusOf(r, cx) === 'Ordered'
+        && T.effectiveDateOrdered(r, cx) === '2026-03-01' && !T.flagsOf(r, cx).some(f => f.key === 'late')),
+      [staples(), pins].map(r => [T.effectivePO(r, cx).kind, T.statusOf(r, cx), T.effectiveDateOrdered(r, cx), T.flagsOf(r, cx).map(f => f.key)]));
+    cx = C({ purchaseOrders: [P7], rows: [geoBid(), staples({ vendor: 'Acme Supply' })] });
+    assert('a material bought from another supplier is not on it: Not Ordered, Late', T.effectivePO(staples({ vendor: 'Acme Supply' }), cx).kind === 'none'
+      && T.statusOf(staples({ vendor: 'Acme Supply' }), cx) === 'Not Ordered' && T.flagsOf(staples({ vendor: 'Acme Supply' }), cx).some(f => f.key === 'late'));
+    cx = C({ purchaseOrders: [P7], rows: [geoBid({ po_id: 'p7' }), staples()] });
+    assert('a PO linked to one row of the line is that row\'s alone: the rest are not on it', T.effectivePO(geoBid({ po_id: 'p7' }), cx).kind === 'linked'
+      && T.effectivePO(staples(), cx).kind === 'none');
+    cx = C({ purchaseOrders: [P7, { ...P7, id: 'p8', po_number: 'PO-0008' }], rows: [geoBid(), staples()] });
+    assert('two unlinked POs under the line\'s codes: each row reads "2 POs match", to be picked',
+      T.effectivePO(geoBid(), cx).kind === 'multiple' && T.effectivePO(staples(), cx).kind === 'multiple');
 
     // On the page: Status, the header counts, the PO cell, Create PO.
     let e = makeEnv({ rows: [geoBid(), staples()], purchaseOrders: [{ ...P7 }] });
     e.P.renderTab(e.root);
     await sleep(40);
-    assert('the sheet: the line\'s own row Ordered on PO-0007 "auto", the staples Late and not on it',
-      autoTag(e, 'gb') && !autoTag(e, 'gs') && /Late/.test(e.$('tr[data-row="gs"]').textContent) && e.field('gs', 'po').value === '',
-      e.$('tr[data-row="gs"]').textContent.replace(/\s+/g, ' '));
-    assert('…and the header counts it Not Ordered and Late', /Not Ordered\s*1/.test(counts(e)) && /Late\s*1/.test(counts(e)), counts(e));
+    assert('the sheet: both rows Ordered on PO-0007 "auto", the staples with its date and not Late',
+      autoTag(e, 'gb') && autoTag(e, 'gs') && !/Late/.test(e.$('tr[data-row="gs"]').textContent) && e.field('gs', 'po').value === 'PO-0007'
+        && /03\/01\/2026|2026-03-01/.test(e.$('tr[data-row="gs"]').innerHTML), e.$('tr[data-row="gs"]').textContent.replace(/\s+/g, ' '));
+    assert('…and the header counts both Ordered, none Late', /(^|[^t] )Ordered\s*2/.test(counts(e)) && !/Late\s*[1-9]/.test(counts(e)), counts(e));
     tickRow(e, 'gs');
     e.$('[data-act="bulk-po"]').click();
     await sleep(80);
-    assert('Create PO for the staples: not told they are "already on PO-0007" — a PO is raised for them', !/already on/.test(modalText(e))
-      && e.created.filter(c => c[0] === 'po').length === 1 && e.db.rows.find(r => r.id === 'gs').po_id, modalText(e));
-    e = makeEnv({ rows: [geoBid({ po_auto: false }), staples(), pins], purchaseOrders: [{ ...P7 }] });
-    e.P.renderTab(e.root);
-    await sleep(40);
-    assert('two added materials PO-0007 could be for: each PO # box says so, to be picked', /PO-0007/.test(e.field('gs', 'po').placeholder)
-      && /pick/.test(e.field('gs', 'po').placeholder) && !autoTag(e, 'gs') && !autoTag(e, 'gp'), e.field('gs', 'po').placeholder);
-    assert('…and its picker\'s "Auto" says the PO fits other rows too, with PO-0007 listed to pick', /PO-0007 also fits other rows/.test(e.P.cbOptions('proc_pos:gs')[0].meta)
-      && e.P.cbOptions('proc_pos:gs').some(o => o.label === 'PO-0007'), e.P.cbOptions('proc_pos:gs'));
-    tickRow(e, 'gs');
-    e.$('[data-act="bulk-po"]').click();
-    await sleep(80);
-    assert('…and Create PO for one of them asks first (PO-0007 may be its order), raising nothing yet', /PO-0007/.test(modalText(e))
+    assert('Create PO for the staples: told they are already on PO-0007, and no second PO raised', /already on/.test(modalText(e)) && /PO-0007/.test(modalText(e))
       && !e.created.some(c => c[0] === 'po'), modalText(e));
     const cancel = e.$$('.fctproc-modal [data-choice]').pop();
     if (cancel) cancel.click();
@@ -6336,86 +6318,43 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     // ── Two orders raised for one bid line, both from the supplier both rows name ──
     let cx = C({ purchaseOrders: [P7, P8], rows: [geoBid(), staples({ vendor: 'LB Water' })] });
     const gbE = T.effectivePO(geoBid(), cx), gsE = T.effectivePO(staples({ vendor: 'LB Water' }), cx);
-    assert('two POs the line\'s own row wins both of: it reads "2 POs match", on neither', gbE.kind === 'multiple' && eq(gbE.candidates.map(p => p.id), ['p7', 'p8']), gbE);
-    assert('…so they stay open to the material beside it: on none, with both named for the pick',
-      gsE.kind === 'none' && eq(gsE.candidates.map(p => p.id), ['p7', 'p8']), [gsE.kind, gsE.candidates.map(p => p.id)]);
-    cx = C({ purchaseOrders: [P7, { ...P8, supplier: 'Acme Supply' }], rows: [geoBid({ vendor: '' }), staples({ vendor: 'Acme Supply' })] });
-    assert('each row winning one PO of its own still reads "auto" on it',
-      T.effectivePO(geoBid({ vendor: '' }), cx).kind === 'auto' && T.effectivePO(geoBid({ vendor: '' }), cx).po.id === 'p7'
+    assert('two POs under a bid line\'s codes: the line\'s own row and the material beside it each read "2 POs match", both named for the pick',
+      gbE.kind === 'multiple' && gsE.kind === 'multiple' && eq(gbE.candidates.map(p => p.id), ['p7', 'p8']) && eq(gsE.candidates.map(p => p.id), ['p7', 'p8']),
+      [gbE.kind, gsE.kind]);
+    cx = C({ purchaseOrders: [P7, { ...P8, supplier: 'Acme Supply' }], rows: [geoBid(), staples({ vendor: 'Acme Supply' })] });
+    assert('each row with a PO from its own supplier reads "auto" on that one',
+      T.effectivePO(geoBid(), cx).kind === 'auto' && T.effectivePO(geoBid(), cx).po.id === 'p7'
       && T.effectivePO(staples({ vendor: 'Acme Supply' }), cx).kind === 'auto' && T.effectivePO(staples({ vendor: 'Acme Supply' }), cx).po.id === 'p8');
     let e = makeEnv({ rows: [geoBid(), staples({ vendor: 'LB Water' })], purchaseOrders: [{ ...P7 }, { ...P8 }] });
     e.P.renderTab(e.root);
     await sleep(40);
-    assert('on the sheet the staples\' PO # box says both POs fit several rows, to be picked', /2 POs fit several rows — pick/.test(e.field('gs', 'po').placeholder),
+    assert('on the sheet the staples\' PO # box says 2 POs match, to be picked', /2 POs match — pick/.test(e.field('gs', 'po').placeholder),
       e.field('gs', 'po').placeholder);
     tickRow(e, 'gs');
     e.$('[data-act="bulk-po"]').click();
     await sleep(80);
-    assert('…and Create PO for the staples asks first (PO-0007 or PO-0008 may be theirs), raising nothing yet',
-      /PO-0007/.test(modalText(e)) && /PO-0008/.test(modalText(e)) && !e.created.some(c => c[0] === 'po'), [modalText(e), e.created]);
+    assert('…and Create PO for the staples says they match several existing POs, raising nothing',
+      /several existing POs/.test(modalText(e)) && !e.created.some(c => c[0] === 'po'), [modalText(e), e.created]);
     const cancel = e.$$('.fctproc-modal [data-choice]').pop();
     if (cancel) cancel.click();
     await sleep(20);
 
-    // ── The PM's own Vendor, Material or Sub Code pick moving an unlinked PO to another row ──
-    e = makeEnv({ rows: [geoBid({ vendor: '' }), staples({ date_needed: null, lead_time_days: null })], purchaseOrders: [{ ...P7 }] });
+    // ── The PM's own Vendor pick: the row edited leaves the order, or comes onto it ──
+    e = makeEnv({ rows: [geoBid(), staples({ vendor: 'LB Water' })], purchaseOrders: [{ ...P7 }] });
     e.P.renderTab(e.root);
     await sleep(40);
-    assert('(before: the line\'s own row is on PO-0007 "auto", the staples not)', autoTag(e, 'gb') && !late(e, 'gb') && !autoTag(e, 'gs'));
-    let v = e.field('gs', 'vendor');
+    assert('(before: both rows on PO-0007 "auto")', autoTag(e, 'gb') && autoTag(e, 'gs'), [drawn(e, 'gb'), drawn(e, 'gs')]);
+    const v = e.field('gs', 'vendor');
     v.focus();
+    e.pick(v, 'Acme Supply', 'Acme Supply');
+    await sleep(20);
+    assert('the staples given another supplier leave PO-0007 (Not Ordered, Late); the line\'s own row stays on it',
+      !autoTag(e, 'gs') && late(e, 'gs') && autoTag(e, 'gb') && !late(e, 'gb'), [drawn(e, 'gb'), drawn(e, 'gs')]);
     e.pick(v, 'LB Water', 'LB Water');
     await sleep(20);
-    assert('the staples given Vendor LB Water take PO-0007, and the line\'s own row beside them is redrawn Not Ordered and Late at once',
-      autoTag(e, 'gs') && !autoTag(e, 'gb') && late(e, 'gb'), [drawn(e, 'gb'), drawn(e, 'gs')]);
-    e.pick(v, 'Acme Supply', 'Acme Supply');
-    await sleep(20);
-    assert('…and their Vendor changed away again: the line\'s own row is redrawn on PO-0007', autoTag(e, 'gb') && !late(e, 'gb') && !autoTag(e, 'gs'),
-      [drawn(e, 'gb'), drawn(e, 'gs')]);
+    assert('…and back to LB Water: on PO-0007 again', autoTag(e, 'gs') && !late(e, 'gs') && autoTag(e, 'gb'), [drawn(e, 'gb'), drawn(e, 'gs')]);
     v.blur();
     await sleep(900);
-    // A Material from the library that fills in the Vendor.
-    e = makeEnv({ rows: [geoBid({ vendor: '' }), staples({ description: '', date_needed: null, lead_time_days: null })], purchaseOrders: [{ ...P7 }] });
-    e.db.materials = [{ material: 'Fabric staples 6in', sub_code: 'Geofabric', cost_code: 'Stormwater', unit: 'EA', vendor: 'LB Water', jobs: 3 }];
-    e.P.renderTab(e.root);
-    await sleep(60);
-    const lib = e.P.cbOptions('proc_materials:gs')[0];
-    const m = e.field('gs', 'description');
-    m.focus();
-    e.pick(m, lib.label, lib.value);
-    await sleep(20);
-    assert('a library Material whose usual vendor is LB Water fills the staples\' Vendor: the line\'s own row is redrawn off PO-0007, Late',
-      e.P._test.state().rows.find(r => r.id === 'gs').vendor === 'LB Water' && autoTag(e, 'gs') && !autoTag(e, 'gb') && late(e, 'gb'), [drawn(e, 'gb'), drawn(e, 'gs')]);
-    m.blur();
-    await sleep(900);
-    // A Sub Code pick moving an LB Water row of another line onto this one.
-    e = makeEnv({ rows: [geoBid({ vendor: '' }), row({ id: 'gx', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', description: 'Fabric staples', vendor: 'LB Water' })],
-      purchaseOrders: [{ ...P7 }] });
-    e.P.renderTab(e.root);
-    await sleep(40);
-    const c = e.field('gx', 'codes');
-    c.focus();
-    e.pick(c, 'Stormwater / Geofabric', 'b1');
-    await sleep(20);
-    assert('a Sub Code pick moving an LB Water row onto the Geofabric line: the line\'s own row is redrawn off PO-0007, Late',
-      autoTag(e, 'gx') && !autoTag(e, 'gb') && late(e, 'gb'), [drawn(e, 'gb'), drawn(e, 'gx')]);
-    c.blur();
-    await sleep(900);
-    // A Vendor save refused: a colleague had set LB Water. Theirs is what the
-    // row holds now, and it takes PO-0007 from the line's own row.
-    e = makeEnv({ rows: [geoBid({ vendor: '' }), staples({ date_needed: null, lead_time_days: null })], purchaseOrders: [{ ...P7 }] });
-    e.P.renderTab(e.root);
-    await sleep(40);
-    Object.assign(e.db.rows.find(r => r.id === 'gs'), { vendor: 'LB Water', version: 2, updated_by: 'Dana Reyes' });
-    v = e.field('gs', 'vendor');
-    v.focus();
-    e.pick(v, 'Acme Supply', 'Acme Supply');
-    v.blur();
-    await sleep(900);
-    assert('(a Vendor save refused: a colleague had set LB Water, which the row holds now)', !!e.$('.fctproc-modal')
-      && e.P._test.state().rows.find(r => r.id === 'gs').vendor === 'LB Water', [modalText(e), e.P._test.state().rows.find(r => r.id === 'gs').vendor]);
-    assert('…so the staples take PO-0007, and the line\'s own row is redrawn off it, Late', autoTag(e, 'gs') && !autoTag(e, 'gb') && late(e, 'gb'),
-      [drawn(e, 'gb'), drawn(e, 'gs')]);
 
     // ── A line renamed on this page's bid, the tab shown at once: the order list read only once the bid's save has landed ──
     // The host as tracker.html is: the bid's save waits out a 600 ms debounce,

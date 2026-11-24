@@ -389,34 +389,16 @@
     const codes = autoCodes(row, ctx);
     if (!codes) return out('none');
     if (!ctx.poLoaded) return out('loading');
+    // Every row of the job under the order's codes, with a vendor it can
+    // take, is on it: a bid line bought as several materials (pipe,
+    // couplers, fabric, staples) under one PO reads Ordered on every one of
+    // them, with that PO's date. Giving the order to one row alone left the
+    // rest of the line Not Ordered with no Date Ordered — a site's sheet
+    // lost most of its Ordered rows and dates.
     const cands = codeMatches(row, ctx, codes);
-    if (!cands.length) return out('none');
-    // An order more rows than this one would be matched to is given to the
-    // one it is most clearly for (autoTaker), and to none of them when that
-    // cannot be told: a material added under a bid line ("+ Material", the
-    // copy list) read Ordered, with no Late flag, on the order raised on the
-    // Purchase Orders tab for the line's own material beside it.
-    const takers = autoTakers(ctx), won = ctxIndex(ctx).won;
-    const mine = [], open = [];
-    let others = 0, by = '';
-    cands.forEach(po => {
-      const t = takers.get(po) || [];
-      const here = t.some(r => r.id === row.id);
-      // A row not taking orders as the sheet has it (its PO # being set
-      // back to Auto, say) is weighed with the rows that do.
-      const all = here ? t.map(r => (r.id === row.id ? row : r)) : t.concat(row);
-      if (all.length === 1) { mine.push(po); return; }
-      const win = autoTaker(po, all);
-      if (win && win.row.id === row.id) { mine.push(po); others = Math.max(others, all.length - 1); by = win.by; }
-      // Given to a row that wins several, so reads 'multiple' and is on none
-      // of them: still open to this one, to be picked.
-      else if (!win || won.get(win.row.id) > 1) open.push(po);
-    });
-    if (mine.length === 1) return out('auto', mine[0], mine, others ? { others, by } : null);
-    if (mine.length > 1) return out('multiple', null, mine);
-    // On no order. `candidates` names those it could be on that no row is
-    // given: the PM picks, in the PO # column.
-    return out('none', null, open);
+    if (cands.length === 1) return out('auto', cands[0], cands);
+    if (cands.length > 1) return out('multiple', null, cands);
+    return out('none');
   }
 
   /**

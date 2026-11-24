@@ -1716,8 +1716,7 @@ async function roundFourFixes(browser) {
     await page.keyboard.type('y', { delay: 20 });
     raisePO('p1', { supplier: 'LB Water', cost_code: 'Mobilization', sub_code: 'Mobilization' });
     await reread();
-    ok('an order for the Mobilization line shows on its rows mid-edit (it fits both materials there, so each PO # box names it to be picked)',
-      await until(() => cell(page, 'F3', 'po').evaluate(el => el.value + ' ' + el.placeholder).then(v => /PO-80\d+ fits several rows/.test(v))));
+    ok('an order for the Mobilization line shows on its rows mid-edit', await until(() => cell(page, 'F3', 'po').inputValue().then(v => /PO-80/.test(v))));
     await clickAway(page);
     ok('…and the typing goes on and is saved', await until(() => W.rows.find(r => r.id === 'F2').quote_number === 'staples xy'), W.rows.find(r => r.id === 'F2').quote_number);
     await sleep(400);
@@ -2923,10 +2922,11 @@ async function sweepTwoPO(browser) {
     // An order raised on the Purchase Orders tab for the Geofabric line.
     ok('the Geofabric line\'s own row reads Ordered on PO-0007 "auto"', await pill('G1') === 'Ordered' && await auto('G1') === 1
       && await cell(page, 'G1', 'po').inputValue() === 'PO-0007');
-    ok('…the fabric staples added under it read Not Ordered and Late, and are not on it', await pill('G2') === 'Not Ordered'
-      && /Late/.test(await rowTr(page, 'G2').textContent()) && await auto('G2') === 0 && await cell(page, 'G2', 'po').inputValue() === '',
-      await rowTr(page, 'G2').textContent());
-    ok('…and the header counts them so', /Not Ordered\s*1/.test(await counts()) && /Late\s*1/.test(await counts()), await counts());
+    ok('…and so are the fabric staples added under it: Ordered on PO-0007, with its date, not Late', await pill('G2') === 'Ordered'
+      && !/Late/.test(await rowTr(page, 'G2').textContent()) && await auto('G2') === 1 && await cell(page, 'G2', 'po').inputValue() === 'PO-0007'
+      && !!(await cell(page, 'G2', 'date_ordered').inputValue()) && await cell(page, 'G2', 'date_ordered').inputValue() === await cell(page, 'G1', 'date_ordered').inputValue(),
+      [await rowTr(page, 'G2').textContent(), await cell(page, 'G2', 'date_ordered').inputValue()]);
+    ok('…and the header counts both Ordered, none Late', /(^|[^t] )Ordered\s*2/.test(await counts()) && !/Late\s*[1-9]/.test(await counts()), await counts());
 
     // The drain line renamed on the bid page: the bid line and the rows' stored
     // codes move, and the server carries the rename to the order under the old codes.
@@ -3432,6 +3432,70 @@ async function reviewThreePO(browser) {
   }
 }
 
+// A site's sheet ("Hempfield — all 4 jobs") where each field bought a bid
+// line as several materials under one PO raised on the Purchase Orders tab:
+// every one of them reads Ordered on its job's PO, with that PO's date. For a
+// while the order went to one row of the line alone, and the site's sheet
+// showed most of its materials Not Ordered, with no Date Ordered.
+async function siteOrderedMaterials(browser) {
+  console.log('\n[a site of four jobs: every material under a PO\'d bid line reads Ordered, with its date]');
+  const t = i => new Date(Date.UTC(2026, 9, 6) + i * 1000).toISOString();
+  const SW = 'Storm Water Construction', DR = 'Perimeter Collector Drain 15"';
+  const bid = [
+    { id: 's1', cost_code: SW, sub_code: 'Drain Geo Fabric', unit: 'SF', quantity: '8108' },
+    { id: 's2', cost_code: SW, sub_code: DR, unit: 'LF', quantity: '900' },
+  ];
+  const jobs = [['h1', 'Hempfield Baseball'], ['h2', 'Hempfield Softball'], ['h3', 'Hempfield Football'], ['h4', 'Hempfield Track']];
+  jobs.forEach(([id, name], i) => { PROJECTS[id] = { id, 'project-name': name, 'job-number': String(26057 + i), status: 'In Progress', site: 'Hempfield', bidItems: bid }; });
+  try {
+    const W = makeWorld();
+    let n = 0;
+    for (const [pid] of jobs) {
+      for (const b of bid) {
+        n++;
+        W.rows.push({ ...BLANK_ROW, id: `${pid}${b.id}`, project_id: pid, source: 'bid', bid_item_id: b.id, cost_code: b.cost_code, sub_code: b.sub_code,
+          quantity: Number(b.quantity), unit: b.unit, date_needed: plusDays(10 + n), lead_time_days: 7, vendor: 'LB Water', created_at: t(n), updated_at: t(n) });
+      }
+      // The drain line bought as pipe and couplers as well, added under it.
+      for (const [k, what] of [['p', '15" SLCPP pipe'], ['c', '15" couplers']]) {
+        n++;
+        W.rows.push({ ...BLANK_ROW, id: `${pid}${k}`, project_id: pid, source: 'manual', bid_item_id: 's2', cost_code: SW, sub_code: DR, description: what,
+          quantity: 10, unit: 'EA', date_needed: plusDays(3), lead_time_days: 7, vendor: 'LB Water', created_at: t(n), updated_at: t(n) });
+      }
+      // Each field's drain PO, raised on the Purchase Orders tab (linked to no row).
+      W.pos.push({ id: `po-${pid}`, po_number: `PO-00${40 + n}`, title: 'Drain', supplier: 'LB Water', status: 'pending', date_created: plusDays(-4),
+        project_id: pid, cost_code: SW, sub_code: DR, notes: '', lines: [] });
+    }
+    const { page, ctx, errors } = await openPage(browser, W, 'admin', { viewport: { width: 1700, height: 900 }, storage: { fct_proc_group_turf: 'cost' } });
+    await page.click('.tab-btn[data-tab="procurement"]');
+    await page.waitForSelector('#fctproc-proj');
+    await cbPick(page, page.locator('#fctproc-proj'), 'hempfield', 'Hempfield — all 4 jobs');
+    await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(c => c === 16), 8000);
+    await sleep(500);
+    const says = id => rowTr(page, id).evaluate(tr => ({
+      pill: tr.querySelector('.c-status .fctproc-pill').textContent,
+      po: tr.querySelector('td.c-po input').value,
+      ordered: (tr.querySelector('[data-pf="date_ordered"]') || {}).value || '',
+      late: /Late/.test(tr.textContent),
+    }));
+    const drain = [];
+    for (const [pid] of jobs) for (const id of [`${pid}s2`, `${pid}p`, `${pid}c`]) drain.push([id, await says(id)]);
+    const po = pid => W.pos.find(x => x.id === `po-${pid}`).po_number;
+    ok('on the site\'s sheet every drain row of each field — the line\'s own and the pipe and couplers added under it — reads Ordered on its field\'s PO',
+      drain.every(([id, d]) => d.pill === 'Ordered' && d.po === po(id.slice(0, 2))), drain);
+    ok('…each with that PO\'s date as its Date Ordered, and none Late', drain.every(([, d]) => d.ordered === plusDays(-4) && !d.late), drain);
+    const fabric = [];
+    for (const [pid] of jobs) fabric.push(await says(`${pid}s1`));
+    ok('…while the geofabric, which has no PO, reads Not Ordered on every field', fabric.every(d => d.pill === 'Not Ordered' && !d.po && !d.ordered), fabric);
+    ok('…and the header counts 12 Ordered', /(^|[^t] )Ordered\s*12/.test((await page.textContent('#fctproc-counts')).replace(/\s+/g, ' ')),
+      (await page.textContent('#fctproc-counts')).replace(/\s+/g, ' '));
+    ok('no page errors', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  } finally {
+    jobs.forEach(([id]) => { delete PROJECTS[id]; });
+  }
+}
+
 (async () => {
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
@@ -3459,6 +3523,7 @@ async function reviewThreePO(browser) {
     await sweepTwoPO(browser);
     await reviewThreeUI(browser);
     await reviewThreePO(browser);
+    await siteOrderedMaterials(browser);
   } finally {
     await browser.close();
     server.close();
