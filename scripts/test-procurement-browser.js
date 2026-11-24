@@ -2926,7 +2926,8 @@ async function sweepTwoPO(browser) {
       && !/Late/.test(await rowTr(page, 'G2').textContent()) && await auto('G2') === 1 && await cell(page, 'G2', 'po').inputValue() === 'PO-0007'
       && !!(await cell(page, 'G2', 'date_ordered').inputValue()) && await cell(page, 'G2', 'date_ordered').inputValue() === await cell(page, 'G1', 'date_ordered').inputValue(),
       [await rowTr(page, 'G2').textContent(), await cell(page, 'G2', 'date_ordered').inputValue()]);
-    ok('…and the header counts both Ordered, none Late', /(^|[^t] )Ordered\s*2/.test(await counts()) && !/Late\s*[1-9]/.test(await counts()), await counts());
+    ok('…and the header counts every row Ordered (the drain on PO-0020 too), none Late',
+      /Not Ordered\s*0/.test(await counts()) && /(^|[^t] )Ordered\s*3/.test(await counts()) && !/Late\s*[1-9]/.test(await counts()), await counts());
 
     // The drain line renamed on the bid page: the bid line and the rows' stored
     // codes move, and the server carries the rename to the order under the old codes.
