@@ -2888,6 +2888,91 @@ async function sweep2Host(browser) {
   }
 }
 
+// ── Second bug sweep: the save path ──────────────────────────────────────────
+async function sweepTwoSave(browser) {
+  console.log('\nsweep 2: Escape in a Sub Code picker saves nothing; a conflict waits for the box being typed in');
+  const t = i => new Date(Date.UTC(2026, 9, 6) + i * 1000).toISOString();
+  const W = makeWorld();
+  W.pos = [];
+  // A bid row for the drain; two "+ Material" rows under bid lines (same
+  // line, its unit, no Quantity); a row added on the Stormwater section
+  // (a cost code alone); and two rows for the conflict.
+  const base = { ...BLANK_ROW, project_id: 'p1', source: 'manual', cost_code: 'Stormwater' };
+  W.rows.push({ ...base, id: 'B2', source: 'bid', bid_item_id: 'b2', sub_code: DRAIN, quantity: 950, unit: 'LF', bid_qty_at_send: 950, bid_unit_at_send: 'LF', created_at: t(1), updated_at: t(1) });
+  W.rows.push({ ...base, id: 'M1', bid_item_id: 'b2', sub_code: DRAIN, unit: 'LF', description: '15" TEE', created_at: t(2), updated_at: t(2) });
+  W.rows.push({ ...base, id: 'M2', bid_item_id: 'b1', sub_code: 'Geofabric', unit: 'SF', description: 'Fabric pins', created_at: t(3), updated_at: t(3) });
+  W.rows.push({ ...base, id: 'S1', quantity: 40, unit: 'EA', description: 'Inlet grate', created_at: t(4), updated_at: t(4) });
+  W.rows.push({ ...base, id: 'C1', bid_item_id: 'b1', sub_code: 'Geofabric', description: 'Fabric', quote_number: 'Q-1', created_at: t(5), updated_at: t(5) });
+  W.rows.push({ ...base, id: 'C2', bid_item_id: 'b1', sub_code: 'Geofabric', description: 'Staples', created_at: t(6), updated_at: t(6) });
+  const { page, ctx, errors } = await openPage(browser, W, 'level2', { viewport: { width: 1920, height: 1000 }, storage: { fct_proc_project_turf: 'p1' } });
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 6));
+  await sleep(400);
+  const row = id => W.rows.find(r => r.id === id);
+  const sent = () => W.log.filter(l => l.api === 'procurement' && l.method === 'PATCH').map(l => [l.q.id, l.body.fields]);
+
+  // Escape, and arrows then a click away, in Sub Code pickers.
+  const n0 = sent().length;
+  await cell(page, 'M1', 'codes').click();
+  await sleep(150);
+  await page.keyboard.press('ArrowDown'); await sleep(80);
+  await page.keyboard.press('ArrowDown'); await sleep(80);
+  await page.keyboard.press('Escape');
+  await sleep(600);
+  await cell(page, 'M2', 'codes').click();
+  await sleep(150);
+  await page.keyboard.press('ArrowDown'); await sleep(80);
+  await clickAway(page);
+  await sleep(600);
+  await cell(page, 'S1', 'codes').click();
+  await sleep(150);
+  await page.keyboard.type('geo', { delay: 40 });
+  await sleep(100);
+  await page.keyboard.press('Escape');
+  await sleep(600);
+  await cell(page, 'S1', 'codes').click();
+  await sleep(150);
+  await page.keyboard.type('geo', { delay: 40 });
+  for (let i = 0; i < 3; i++) await page.keyboard.press('Backspace');
+  await clickAway(page);
+  await sleep(600);
+  ok('a + Material row\'s Sub Code: arrows then Escape save nothing — not the bid line\'s whole 950 LF', row('M1').quantity == null
+    && await cell(page, 'M1', 'quantity').inputValue() === '', row('M1'));
+  ok('…arrows then a click away save nothing either (not 12,500 SF of pins)', row('M2').quantity == null, row('M2'));
+  ok('a row with a cost code alone: typing then Escape in its Sub Code, or typing and rubbing it out, keeps its cost code',
+    row('S1').cost_code === 'Stormwater' && /Stormwater/.test(await rowTr(page, 'S1').textContent()), row('S1'));
+  ok('…not one save was sent for any of it', sent().length === n0, sent().slice(n0));
+  await cbPick(page, cell(page, 'M1', 'codes'), 'Perim', 'Perimeter');
+  await until(() => row('M1').quantity === 950, 3000);
+  ok('the row\'s own line picked from the list still fills its blank Quantity', row('M1').quantity === 950, row('M1'));
+
+  // A conflict answered while the PM types a supplier in another row.
+  const dana = (id, f) => { const r = row(id); Object.assign(r, f); r.version++; r.updated_at = new Date().toISOString(); r.updated_by = 'Dana Reyes'; };
+  dana('C1', { quote_number: 'Q-DANA' });
+  let release;
+  W.procPatchHold = new Promise(r => { release = r; });
+  await cell(page, 'C1', 'quote_number').fill('Q-77');
+  await cell(page, 'C2', 'vendor').click();             // leaving C1 sends its save, answered slowly
+  await page.keyboard.type('New', { delay: 60 });
+  release();
+  await sleep(500);
+  ok('the conflict comes back while the PM is typing a supplier in another row: no dialog yet, and the box keeps the focus and the text',
+    await page.locator('.fctproc-modal').count() === 0
+    && await page.evaluate(() => document.activeElement && document.activeElement.dataset.pr === 'C2' && document.activeElement.value === 'New'));
+  ok('…nothing half-typed was saved', row('C2').vendor === '' && !sent().some(([id]) => id === 'C2'), sent().filter(([id]) => id === 'C2'));
+  await page.keyboard.type(' Ent', { delay: 60 });
+  await page.locator('.cb-menu:not([hidden]) .cb-opt', { hasText: 'New Enterprise' }).first().click({ timeout: 3000 }).catch(() => {});
+  await page.waitForSelector('.fctproc-modal [data-conflict="theirs"]', { timeout: 3000 }).catch(() => {});
+  await until(() => row('C2').vendor, 2000);
+  ok('…the supplier picked is saved whole ("New Enterprise", not "New")', row('C2').vendor === 'New Enterprise', row('C2').vendor);
+  ok('…and the dialog shows once the box is left', eq(await page.$$eval('.fctproc-conflict tbody td', tds => tds.map(td => td.textContent.trim())), ['Quote #', 'Q-DANA', 'Q-77']));
+  await page.click('.fctproc-modal [data-conflict="theirs"]');
+  // The browser logs the 409 it was answered (the conflict) itself.
+  const other = errors.filter(e => !/status of 409 \(Conflict\).*\/api\/procurement\?division=turf&id=C1\)/.test(e));
+  ok('no page errors (but the browser\'s own note of the 409)', other.length === 0 && errors.length === 1, errors.join(' | '));
+  await ctx.close();
+}
+
 (async () => {
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
@@ -2910,6 +2995,7 @@ async function sweep2Host(browser) {
     await siteSheet(browser);
     await sweepInputs(browser);
     await sweep2Host(browser);
+    await sweepTwoSave(browser);
   } finally {
     await browser.close();
     server.close();

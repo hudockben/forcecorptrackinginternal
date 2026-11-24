@@ -1437,7 +1437,16 @@
       </div>`;
     document.body.appendChild(back);
     let onClose = null;
-    function onEsc(e) { if (e.key === 'Escape') close(); }
+    function onEsc(e) {
+      if (e.key !== 'Escape') return;
+      // Only the dialog on top: one opened over another (a conflict over the
+      // checklist being ticked, Create PO's question) closes alone, and the
+      // one under it — with what was ticked or typed in it — stays.
+      const open = document.querySelectorAll('.fctproc-modal');
+      if (open[open.length - 1] !== back) return;
+      e.stopImmediatePropagation();
+      close();
+    }
     const close = () => {
       document.removeEventListener('keydown', onEsc);
       back.remove();
@@ -2329,7 +2338,15 @@
     const base = baseOf(row.id, field);
     const p = pend.get(row.id) || {};
     const b = bases.get(row.id) || {};
-    if (sameVal(base, value)) { delete p[field]; delete b[field]; }
+    // Typed back to the saved value, a cell is nothing to send — unless its
+    // last save failed or went unanswered: that one may have been written
+    // all the same (only its answer lost), and with nothing here left to
+    // send, the wrong value would stay on the server, come back on the next
+    // refresh under the PM's own name, and the row say "Not saved" for good.
+    // Sent expecting what was seen, it is written where nothing landed, and
+    // put back over the PM's own value where it did (onConflict, own).
+    const unsure = field in (unanswered.get(row.id) || {}) || (failed.has(row.id) && field in p);
+    if (sameVal(base, value) && !unsure) { delete p[field]; delete b[field]; }
     else {
       // The first change to a cell records what the person saw in it; later
       // keystrokes in the same cell keep that.
@@ -2346,6 +2363,10 @@
       pend.delete(row.id);
       clearTimeout(timers.get(row.id));
       timers.delete(row.id);
+      // Nothing of the row left to send, and none of it out: a failure
+      // earlier on it is nothing to report any more ("Not saved", the
+      // browser's "Leave site?").
+      if (!fly.has(row.id) && failed.delete(row.id)) settleSave();
     }
     return true;
   }
@@ -2415,13 +2436,17 @@
     timers.set(rowId, setTimeout(() => { flushRow(rowId); }, ms));
   }
 
-  async function flushRow(rowId, { keepalive = false } = {}) {
+  async function flushRow(rowId, { keepalive = false, unloading = false } = {}) {
     clearTimeout(timers.get(rowId));
     timers.delete(rowId);
     // One request per row at a time, so answers cannot arrive out of order;
     // whatever was edited meanwhile goes when this one is answered. The page
-    // closing is the exception — there is no "afterwards" then.
-    if (fly.has(rowId) && !keepalive) return;
+    // closing is the exception — there is no "afterwards" then. Switched
+    // away from (another app, another browser tab) is not: the page is still
+    // there when the answer comes, and two saves of one row out at once can
+    // be answered either way round — the older one failing last put its
+    // value back over the newer one, to be sent over it later.
+    if (fly.has(rowId) && !unloading) return;
     const p = pend.get(rowId);
     if (!p || !Object.keys(p).length) { pend.delete(rowId); bases.delete(rowId); return; }
     pend.delete(rowId);
@@ -2450,6 +2475,8 @@
       noteOwnVersion(data.item);
       const prev = server.get(rowId) ? { ...server.get(rowId) } : null;
       if (data.item) adoptServerRow(data.item);
+      // The answer can link the row to an order a colleague has just raised.
+      if (data.item && data.item.po_id) askForNewPOs();
       if (prev && data.item) noteChangesInAnswer(rowId, p, prev, data.item, data.was);
       refreshRow(rowId);
       if (touchesPO(p)) repaintRows();
@@ -2468,7 +2495,7 @@
       if (droppedSince()) {
         // Deleted here meanwhile (a 404 now, most likely): what this page
         // wanted happened; nothing to say, nothing to keep.
-      } else if (err.status === 409 && err.code === 'conflict' && !keepalive) {
+      } else if (err.status === 409 && err.code === 'conflict' && !unloading) {
         // Someone else changed a cell of this save since the person saw it:
         // nothing was written. The rest goes again at once; for those cells
         // the person is asked.
@@ -2487,18 +2514,37 @@
         rebase(Object.keys(p));
       } else {
         // Keep the user's values and try again on the next edit or refresh.
-        pend.set(rowId, { ...p, ...(pend.get(rowId) || {}) });
-        rebase(Object.keys(p));
-        failed.add(rowId);
-        // No answer at all: it may have been written (see onConflict).
-        if (err.network) unanswered.set(rowId, { ...(unanswered.get(rowId) || {}), ...p });
-        // Said here rather than left to the page's banner, which cannot tell
-        // this failure (value kept, sent again) from the others (nothing kept).
-        showError(`Procurement: a change could not be saved (${err.message}). It stays on screen and is sent again on your next edit.`);
+        const kept = putBack(rowId, p, rebase);
+        if (kept.length) {
+          failed.add(rowId);
+          // No answer at all: it may have been written (see onConflict).
+          if (err.network) unanswered.set(rowId, { ...(unanswered.get(rowId) || {}), ...onlyKeys(p, kept) });
+          // Said here rather than left to the page's banner, which cannot tell
+          // this failure (value kept, sent again) from the others (nothing kept).
+          showError(`Procurement: a change could not be saved (${err.message}). It stays on screen and is sent again on your next edit.`);
+        }
       }
     }
-    if (pend.has(rowId) && !failed.has(rowId)) flushRow(rowId);
+    // What was edited meanwhile goes now — made to outlive the page if it
+    // has gone to the background, as the save made on the way there was.
+    if (pend.has(rowId) && !failed.has(rowId)) flushRow(rowId, { keepalive: document.visibilityState === 'hidden' });
     settleSave();
+  }
+  const onlyKeys = (o, keys) => Object.fromEntries(keys.map(k => [k, o[k]]));
+  /**
+   * A failed save's cells, put back to be sent again: all but those a later
+   * save of the row still out carries (one sent as the page was closing,
+   * with what was typed since). Its value is the newer: put back over it,
+   * the older would be the one sent next, written over the newer one. Says
+   * which cells were put back.
+   */
+  function putBack(rowId, p, rebase) {
+    const later = fly.get(rowId) || {};
+    const kept = Object.keys(p).filter(k => !(k in later));
+    const next = { ...onlyKeys(p, kept), ...(pend.get(rowId) || {}) };
+    if (Object.keys(next).length) pend.set(rowId, next);
+    rebase(kept);
+    return kept;
   }
 
   // ── Someone else changed it meanwhile ──────────────────────────────
@@ -2519,10 +2565,10 @@
     let fields = (Array.isArray(data.fields) ? data.fields : []).filter(k => k in p);
     if (!fields.length || !data.item) {
       // Not one this page can show: kept, and sent again on the next edit.
-      pend.set(rowId, { ...p, ...(pend.get(rowId) || {}) });
-      rebase(Object.keys(p));
-      failed.add(rowId);
-      showError('Procurement: a change could not be saved (it was changed elsewhere meanwhile). It stays on screen and is sent again on your next edit.');
+      if (putBack(rowId, p, rebase).length) {
+        failed.add(rowId);
+        showError('Procurement: a change could not be saved (it was changed elsewhere meanwhile). It stays on screen and is sent again on your next edit.');
+      }
       return;
     }
     // An answer — the server is there: whatever an earlier failure left
@@ -2565,7 +2611,9 @@
     const resend = {};
     own.forEach(k => { resend[k] = mine[k]; delete mine[k]; });
     const again = {};
-    Object.keys(p).forEach(k => { if (!fields.includes(k) && !same.includes(k) && !own.includes(k)) again[k] = p[k]; });
+    // …but not a cell a later save of the row still out carries (putBack).
+    const later = fly.get(rowId) || {};
+    Object.keys(p).forEach(k => { if (!fields.includes(k) && !same.includes(k) && !own.includes(k) && !(k in later)) again[k] = p[k]; });
     const next = { ...again, ...resend, ...newer };
     if (Object.keys(next).length) pend.set(rowId, next); else pend.delete(rowId);
     // The picks whose cells still go out (a pick made while this save was
@@ -2581,21 +2629,59 @@
     }
     // The row as it is now: theirs in the changed cells, marked as theirs —
     // and so is any other cell of the row someone else changed meanwhile.
+    // Only the cells the server says moved: not those asked about only
+    // because they were picked with one (the Contact and Email a Vendor
+    // pick cleared), which nobody else touched.
     const prev = server.get(rowId) ? { ...server.get(rowId) } : null;
     adoptServerRow(data.item);
+    // A colleague's new order this page's list does not have yet: read for.
+    const poRead = askForNewPOs();
     const busy = { ...(fly.get(rowId) || {}), ...next };
     const others = prev && !isMe(data.changed_by)
       ? WATCH_FIELDS.filter(k => !fields.includes(k) && !(k in p) && !(k in busy) && !sameVal(prev[k], item[k])) : [];
-    if (fields.length || others.length) markRecent(rowId, fields.concat(others), data.changed_by, data.changed_at);
+    const moved = fields.filter(k => data.fields.includes(k));
+    if (moved.length || others.length) markRecent(rowId, moved.concat(others), data.changed_by, data.changed_at);
     refreshRow(rowId);
     if (touchesPO(p)) repaintRows();
     updateCounts();
     if (!fields.length) return;
     const c = { rowId, fields, mine, theirs: item, by: str(data.changed_by), at: data.changed_at || null, redraw: null };
+    // The dialog names that order once the list is in (until then it is
+    // "a PO this page has not loaded yet", not one "no longer listed").
+    if (poRead) poRead.then(() => { if (c.redraw) c.redraw(); });
     // Held until the person picks: see setField.
     fields.forEach(k => held.set(rowId + '\u0000' + k, c));
     conflictQueue.push(c);
     showNextConflict();
+  }
+  // Whether `a` is a cell's box the PM has typed in since it took the focus,
+  // other than the conflict's own cells. One only just taken (Tab moved the
+  // caret there) has nothing in it to save, and is left for the dialog.
+  function typingElsewhere(a, c) {
+    if (!a || a !== boxFocusEl || !boxTyped || !a.dataset || !a.dataset.pr || !inCellBox(a)) return false;
+    return !(a.dataset.pr === c.rowId && (FOCUS_FIELDS[a.dataset.pf] || [a.dataset.pf]).some(f => c.fields.includes(f)));
+  }
+  // The box the next conflict's dialog waits for the PM to leave.
+  let conflictWaitFor = null, conflictWaitTimer = null;
+  function holdConflictFor(box) {
+    conflictWaitFor = box;
+    clearTimeout(conflictWaitTimer);
+    // A box taken out of the page while in use fires no focusout: looked at
+    // again now and then, so the dialog is never owed for good.
+    conflictWaitTimer = setTimeout(() => conflictBoxLeft(box), 2000);
+  }
+  // A box left (onFocusOut): the dialog held for it shows once its commit
+  // has run — a picker commits 120 ms after it is left.
+  function conflictBoxLeft(box) {
+    if (!box || box !== conflictWaitFor) return;
+    setTimeout(() => {
+      if (box !== conflictWaitFor) return;
+      // Still the box in use: the window lost the focus, not the box.
+      if (box.isConnected && document.activeElement === box) { holdConflictFor(box); return; }
+      conflictWaitFor = null;
+      clearTimeout(conflictWaitTimer);
+      showNextConflict();
+    }, isCb(box) ? 250 : 0);
   }
   // The cells a conflict holds, let go.
   function release(c) {
@@ -2615,7 +2701,14 @@
     const in_ = keys => keys.some(k => c.fields.includes(k));
     const codes = o => [str(o.cost_code).trim(), str(o.sub_code).trim()].filter(Boolean).join(' / ') || '(blank)';
     const po = o => {
-      if (o.po_id) { const x = (makeCtx().purchaseOrders || []).find(y => String(y.id) === String(o.po_id)); return x ? str(x.po_number) || '(no number)' : 'a PO no longer listed'; }
+      if (o.po_id) {
+        const ctx = makeCtx(), x = (ctx.purchaseOrders || []).find(y => String(y.id) === String(o.po_id));
+        if (x) return str(x.po_number) || '(no number)';
+        // Not in the list while it is still being read for (a colleague's
+        // new order): "no longer listed" would read as deleted, and invite
+        // "Keep mine" — taking the row off a live order.
+        return !ctx.poLoaded || poAsking ? 'a PO this page has not loaded yet' : 'a PO no longer listed';
+      }
       return o.po_auto === false ? 'No PO' : 'Auto';
     };
     const lines = [];
@@ -2627,12 +2720,19 @@
   }
   function showNextConflict() {
     if (conflictOpen) return;
-    const c = conflictQueue.shift();
+    const c = conflictQueue[0];
     if (!c) return;
+    const a = document.activeElement;
+    // A box being typed in that is not one of these cells: left for the
+    // dialog, it would save what it holds so far (20000 typed, 200 saved;
+    // "New Enterprise", "New"), and the rest of the keys would go to the
+    // dialog. So the dialog waits until the PM leaves it, its own commit
+    // made — as the refresh waits (pollOwed). Its cells stay held meanwhile.
+    if (rowById(c.rowId) && typingElsewhere(a, c)) { holdConflictFor(a); return; }
+    conflictQueue.shift();
     // The box the person is in is left first: what it holds is committed —
     // into "Yours" if it is one of these cells (held, see setField) — before
     // the dialog shows it, and keys stop going into the sheet behind it.
-    const a = document.activeElement;
     if (a && a !== document.body && st.mountEl && st.mountEl.contains(a) && typeof a.blur === 'function') a.blur();
     // The page's pickers close their menus on a click or key elsewhere, not
     // when focus is moved for them.
@@ -2959,7 +3059,7 @@
   window.addEventListener('pagehide', () => {
     const c = uncommittedCombo();
     if (c) { delete c.dataset.pcommit; commitCombo(c.dataset.pr, c.dataset.pf, c); }
-    flushAll({ keepalive: true });
+    flushAll({ keepalive: true, unloading: true });
   });
   // …but a save that has already failed (the server or the connection is
   // down) will fail again as the page closes, and one still out may never be
@@ -2971,6 +3071,9 @@
     e.preventDefault();
     e.returnValue = '';
   });
+  // Gone to the background: sent now, and made to outlive the page should
+  // the browser close it there — each row whose save is not already out (a
+  // row's save still out sends the rest when it is answered).
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') flushAll({ keepalive: true });
   });
@@ -3335,14 +3438,19 @@
   // minute poll. Asked once for each set of such orders, so one that really
   // was removed is not read for again on every poll.
   let poAskedFor = '';
+  // That read while it is out (a promise), for what waits on it: the
+  // conflict dialog names such an order once the list has it.
+  let poAsking = null;
   function askForNewPOs() {
     const ctx = makeCtx();
-    if (!ctx.poLoaded) return;
+    if (!ctx.poLoaded) return null;
     const idx = ctxIndex(ctx);
     const unknown = [...new Set(st.rows.filter(r => r.po_id && !idx.poById.has(String(r.po_id))).map(r => String(r.po_id)))].sort().join(',');
-    if (!unknown || unknown === poAskedFor) return;
+    if (!unknown) return null;
+    if (unknown === poAskedFor) return poAsking;
     poAskedFor = unknown;
-    refreshPOs();
+    const read = poAsking = refreshPOs().finally(() => { if (poAsking === read) poAsking = null; });
+    return read;
   }
   function refreshPOs() {
     if (typeof cfg.refreshPurchaseOrders !== 'function') return Promise.resolve(false);
@@ -4732,6 +4840,17 @@
     const el = e.target;
     if (!isCb(el)) return;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { cbChosen(el, true); return; }
+    if (e.key === 'Escape') {
+      // Escape puts the box back as it was and leaves it (the page's
+      // combobox), and leaving commits what it holds 120 ms later: a commit
+      // of nothing chosen, whatever was typed or arrowed through first.
+      // Counted as chosen, a Sub Code box put back to its own line filled
+      // in the line's whole quantity, and one put back to blank cleared the
+      // row's cost code.
+      const s = cbSession.get(el);
+      if (s) { s.chosen = false; s.nav = false; s.cleared = false; }
+      return;
+    }
     if (e.key === 'Tab' || e.key === 'Enter') {
       // Seen before the combobox swaps in its highlighted option.
       const s = cbSession.get(el);
@@ -4874,11 +4993,19 @@
       // The row's own job's bid lines (on a site's sheet, not the site's).
       const ctx = siteMode() && row.project_id ? makeCtx(row.project_id) : makeCtx();
       const line = v ? (ctx.bidLines || []).find(l => String(l.id) === v) : null;
+      // What the box showed as it took the focus.
+      const s = cbSession.get(input);
       if (v && v === String(row.bid_item_id || '')) {
         // The line it already has, picked again: nothing to re-code, but a
         // row coded before picks brought Quantity and Unit over (or with
-        // them emptied since) takes the blank ones now.
-        const fill = line ? fillFromLine(row, line, ctx) : {};
+        // them emptied since) takes the blank ones now. Picked — from the
+        // list, or its name typed — not merely still in the box: arrowed
+        // through and clicked away from, the box commits the line it held,
+        // and that filled the line's whole quantity into a "+ Material" row
+        // nobody had picked anything in.
+        const picked = input.dataset.cbPicked === '1' || !s || input.value !== s.value;
+        const fill = picked && line ? fillFromLine(row, line, ctx) : {};
+        if (Object.keys(fill).length > 1) notePick(rowId, fill);
         if (Object.keys(fill).length) setFields(rowId, fill);
         return;
       }
@@ -4886,9 +5013,20 @@
         const fill = fillFromLine(row, line, ctx);
         if (Object.keys(fill).length) lineFill.set(rowId, { bid_item_id: String(line.id), fields: fill });
         else lineFill.delete(rowId);
-        setFields(rowId, { bid_item_id: String(line.id), cost_code: str(line.cost_code), sub_code: str(line.sub_code), ...fill });
-      } else if (!typed) setFields(rowId, { bid_item_id: null, cost_code: '', sub_code: '' });
-      else {
+        const codes = { bid_item_id: String(line.id), cost_code: str(line.cost_code), sub_code: str(line.sub_code) };
+        // One pick, both ways: a colleague's change to the Quantity or Unit
+        // it fills is asked about with the line, as one to the line is with
+        // them (onConflict). Re-coded on its own, 400 SF of fabric someone
+        // had just counted became 400 LF of drain.
+        notePick(rowId, { ...codes, ...fill });
+        setFields(rowId, { ...codes, ...fill });
+      } else if (!typed) {
+        // Emptied: the row's codes go. Not from a box that was blank to
+        // begin with — a row given a cost code alone shows an empty Sub
+        // Code, and something typed there and rubbed out again is no
+        // clearing of a cost code the box never showed.
+        if (!s || str(s.value).trim()) setFields(rowId, { bid_item_id: null, cost_code: '', sub_code: '' });
+      } else {
         // Anything else typed matches no bid line: the codes are the bid's
         // (section 1), so the cell goes back to what it was (refreshRow
         // after the commit) — and says why, rather than just undoing it.
@@ -4958,6 +5096,7 @@
 
   function onFocusOut(e) {
     const el = e.target;
+    conflictBoxLeft(el);
     // The row's own buttons count too: Tab out of Email lands on "+ Material",
     // and the click elsewhere that follows is the moment the row is left.
     const tr0 = el.closest && el.closest('tr.fctproc-row');

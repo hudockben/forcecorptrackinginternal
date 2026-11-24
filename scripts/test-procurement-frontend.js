@@ -5147,6 +5147,333 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('…and is read once it is up', gets() === g0 + 1);
   }
 
+  console.log('\n[sweep 2: save]');
+  {
+    const dana = (e, id, f, by = 'Dana Reyes') => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = by; r.updated_at = new Date().toISOString(); };
+    const grid = e => e.$$('.fctproc-conflict tbody tr').map(tr => [...tr.children].map(td => td.textContent));
+    const dlgText = e => (e.$('.fctproc-modal') ? e.$('.fctproc-modal').textContent.replace(/\s+/g, ' ') : '(no dialog)');
+    const indicator = e => e.$('#fctproc-save').textContent.trim();
+    const leaveAsks = e => { const ev = new e.w.Event('beforeunload', { cancelable: true }); e.w.dispatchEvent(ev); return ev.defaultPrevented; };
+    // The page going to the background (another app, another browser tab) and back.
+    const setHidden = (e, hidden) => {
+      Object.defineProperty(e.w.document, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') });
+      e.w.document.dispatchEvent(new e.w.Event('visibilitychange'));
+    };
+    // Each row PATCH waits at a gate the test opens: 'ok', 'fail' (no answer,
+    // nothing written) or 'lost' (written, the answer lost on the way back).
+    // Once `auto` is set, the rest go straight through.
+    const gate = e => {
+      const orig = e.w.fetch, gates = [];
+      e.w.fetch = async (url, init = {}) => {
+        if (init.method !== 'PATCH' || /action=/.test(String(url)) || gates.auto) return orig(url, init);
+        const g = { body: JSON.parse(init.body), keepalive: !!init.keepalive };
+        const mode = await new Promise(r => { g.open = r; gates.push(g); });
+        if (mode === 'fail') throw new e.w.TypeError('Failed to fetch');
+        if (mode === 'lost') { await orig(url, init); throw new e.w.TypeError('Failed to fetch'); }
+        return orig(url, init);
+      };
+      return gates;
+    };
+
+    // Switched to another app while a row's save is out, after typing on in
+    // the same cell: the newer value waits for that save's answer, rather
+    // than going beside it — so a failure of the older one cannot put the
+    // older value back over it.
+    for (const mode of ['fail', 'lost']) {
+      const e = makeEnv({ rows: [row({ id: 'k1', quote_number: 'Q-1' })] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      const gates = gate(e);
+      const q = e.field('k1', 'quote_number');
+      q.focus(); q.value = 'Q-77'; e.fire(q, 'input'); e.fire(q, 'change');
+      await tick();
+      q.value = 'Q-7712'; e.fire(q, 'input');
+      setHidden(e, true);
+      await tick();
+      if (mode === 'fail') {
+        assert('switched to another app while a row\'s save is still out: no second save of that row goes out beside it', gates.length === 1,
+          gates.map(g => g.body));
+      }
+      gates[0].open(mode);
+      await sleep(20);
+      setHidden(e, false);
+      gates.auto = true;
+      gates.slice(1).forEach(g => g.open('ok'));
+      q.blur();
+      await sleep(40);
+      await e.P.refresh();
+      await sleep(60);
+      assert(`…that save ${mode === 'fail' ? 'failed' : 'was written but its answer was lost'}: the last value typed (Q-7712) is saved and shown, with no dialog`,
+        e.db.rows[0].quote_number === 'Q-7712' && e.field('k1', 'quote_number').value === 'Q-7712' && !e.$('.fctproc-modal'),
+        { db: e.db.rows[0].quote_number, box: e.field('k1', 'quote_number').value, dialog: dlgText(e) });
+    }
+    {
+      // The page really closing: what was typed since has to go now, beside
+      // the save still out — and that older save's failure must not put its
+      // value back to be sent over the newer one afterwards.
+      const e = makeEnv({ rows: [row({ id: 'k2', quote_number: 'Q-1' })] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      const gates = gate(e);
+      const q = e.field('k2', 'quote_number');
+      q.focus(); q.value = 'Q-77'; e.fire(q, 'input'); e.fire(q, 'change');
+      await tick();
+      q.value = 'Q-7712'; e.fire(q, 'input');
+      e.w.dispatchEvent(new e.w.Event('pagehide'));
+      await tick();
+      assert('the page closing while a row\'s save is out: what was typed since goes at once too (there is no afterwards)',
+        gates.length === 2 && gates[1].keepalive && gates[1].body.fields.quote_number === 'Q-7712', gates.map(g => g.body));
+      gates[0].open('lost');
+      await sleep(20);
+      gates.auto = true;
+      gates[1].open('ok');
+      await sleep(40);
+      await e.P.refresh();
+      await sleep(60);
+      assert('…the first written with its answer lost, the second written: the older value is not sent again over the newer one, and nothing is asked',
+        e.db.rows[0].quote_number === 'Q-7712' && !e.$('.fctproc-modal') && !e.P._test.pending().pend.size && !/Not saved/.test(indicator(e)),
+        { db: e.db.rows[0].quote_number, pend: [...e.P._test.pending().pend], dialog: dlgText(e) });
+    }
+    {
+      // Switched away mid-edit, a colleague having changed that cell: the
+      // save made on the way out is asked about like any other.
+      const e = makeEnv({ rows: [row({ id: 'k3', quote_number: 'Q-1' })] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      dana(e, 'k3', { quote_number: 'Q-DANA' });
+      const q = e.field('k3', 'quote_number');
+      q.focus(); q.value = 'Q-MINE'; e.fire(q, 'input');
+      setHidden(e, true);
+      await sleep(40);
+      const sent = e.patches().pop();
+      assert('switched to another app mid-edit: the edit is sent at once, made to outlive the page (keepalive)',
+        sent && sent.keepalive && sent.body.fields.quote_number === 'Q-MINE', sent && sent.body);
+      assert('…a colleague had changed that cell: the dialog asks which to keep, not "could not be saved … sent again"',
+        !!e.$('.fctproc-modal') && eq(grid(e), [['Quote #', 'Q-DANA', 'Q-MINE']]) && !e.errors.length, { dialog: dlgText(e), errors: e.errors });
+      setHidden(e, false);
+    }
+
+    // A failed save, and the cell typed back to the value saved before it.
+    for (const landed of [false, true]) {
+      const e = makeEnv({ rows: [row({ id: 'v1', quote_number: 'Q-1' })] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      const orig = e.handle;
+      e.handle = c => {
+        if (c.method === 'PATCH' && !c.q.action) return landed ? { ...orig(c), lost: true } : { status: 0, body: {}, lost: true };
+        return orig(c);
+      };
+      const q = e.field('v1', 'quote_number');
+      q.focus(); q.value = 'Q-WRONG'; e.fire(q, 'input'); e.fire(q, 'change');
+      await sleep(30);
+      e.handle = orig;
+      assert(`(the save of Q-WRONG ${landed ? 'was written, its answer lost' : 'never reached the server'}: "Not saved")`, /Not saved/.test(indicator(e)));
+      q.value = 'Q-1'; e.fire(q, 'input'); e.fire(q, 'change'); q.blur();
+      await sleep(700);
+      await e.P.refresh();
+      await sleep(40);
+      assert(`…the PM types Q-1 back: Q-1 is what is saved and shown${landed ? ' (the Q-WRONG that landed is put back)' : ''}`,
+        e.db.rows[0].quote_number === 'Q-1' && e.field('v1', 'quote_number').value === 'Q-1',
+        { db: e.db.rows[0].quote_number, box: e.field('v1', 'quote_number').value });
+      assert('…the indicator stops saying "Not saved", and leaving the page does not ask "Leave site?"',
+        !/Not saved/.test(indicator(e)) && !leaveAsks(e) && !e.$('.fctproc-modal'), { indicator: indicator(e), dialog: dlgText(e) });
+    }
+
+    // A Sub Code pick whose filled Quantity or Unit a colleague changed.
+    {
+      const e = makeEnv({ rows: [
+        row({ id: 'f1', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', quantity: 8110, unit: 'SF' }),
+        row({ id: 'f2', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', quantity: 8110, unit: 'SF' }),
+      ] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      for (const [id, theirs, what] of [['f1', { quantity: 400 }, 'Quantity (her 400 SF of fabric)'], ['f2', { unit: 'SY' }, 'Unit (SY)']]) {
+        const r = e.db.rows.find(x => x.id === id);
+        dana(e, id, theirs);
+        const box = e.field(id, 'codes');
+        box.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+        e.pick(box, 'Stormwater / 15" Perf drain', 'b2');
+        await e.P._test.flushAll();
+        await sleep(30);
+        const sent = e.patches().filter(x => x.q.id === id);
+        assert(`(the re-code to the drain line goes with the 950 LF it fills in — ${id})`, sent[0] && sent[0].body.fields.bid_item_id === 'b2'
+          && sent[0].body.fields.quantity === 950 && sent[0].body.fields.unit === 'LF', sent[0] && sent[0].body);
+        assert(`a colleague changed only the ${what}: the re-code is not saved without its fill — nothing more goes out`,
+          sent.length === 1 && r.bid_item_id === 'b1' && r.sub_code === 'Geofabric', sent.map(x => x.body));
+        assert('…the dialog asks about the Sub Code, Quantity and Unit together', eq(grid(e).map(l => l[0]).sort(), ['Cost / Sub Code', 'Quantity', 'Unit']), grid(e));
+        e.$('.fctproc-modal [data-conflict="theirs"]').click();
+        await sleep(700);
+        assert('…"Keep saved": the row is as she left it, on the fabric line — not 400 LF (or 950 SY) of drain',
+          r.bid_item_id === 'b1' && r.quantity === (theirs.quantity || 8110) && r.unit === (theirs.unit || 'SF') && sent.length === e.patches().filter(x => x.q.id === id).length,
+          { r: [r.bid_item_id, r.quantity, r.unit] });
+      }
+    }
+
+    // The cells a conflict asks about with a changed one, but nobody changed.
+    {
+      const e = makeEnv({ rows: [row({ id: 'w1', vendor: 'Acme Supply', contact: 'Dana', email: 'dana@acme.test' })],
+        contacts: [{ id: 'c1', supplier_name: 'Acme Supply', name: 'Dana', email: 'dana@acme.test', phone: '' }] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      dana(e, 'w1', { vendor: 'Beta Corp' });
+      e.pick(e.field('w1', 'vendor'), 'LB Water');
+      await sleep(700);
+      assert('(a Vendor pick that cleared Contact / Email, refused: the three are asked about together)',
+        eq(grid(e).map(l => l[0]), ['Vendor', 'Contact', 'Email']), dlgText(e));
+      const part = f => e.$(`tr[data-row="w1"] .c-${f}`);
+      assert('only the Vendor she changed is marked "Changed by Dana Reyes"…', part('vendor').classList.contains('fctproc-chg') && /^Changed by Dana Reyes/.test(part('vendor').title));
+      assert('…not the Contact and Email she never touched', !part('contact').classList.contains('fctproc-chg') && !part('email').classList.contains('fctproc-chg')
+        && !/Changed by/.test(part('contact').title + part('email').title), [part('contact').title, part('email').title]);
+      e.$('.fctproc-modal [data-conflict="theirs"]').click();
+      await sleep(30);
+      assert('…and after "Keep saved" neither is', !e.field('w1', 'contact').closest('.fctproc-chg') && !part('contact').classList.contains('fctproc-chg')
+        && !part('email').classList.contains('fctproc-chg') && part('vendor').classList.contains('fctproc-chg'));
+    }
+
+    // A colleague's new PO, met in a conflict before this page's list has it.
+    {
+      const pos = POS.map(p => ({ ...p }));
+      const e = makeEnv({ rows: [row({ id: 'n1', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' }),
+        row({ id: 'n2', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain' })], purchaseOrders: pos });
+      let reads = 0, release = null;
+      const newPO = (id, n) => ({ id, po_number: n, project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Geofabric', supplier: 'Beta Corp', date_created: TODAY, status: 'pending' });
+      e.P.configure({ refreshPurchaseOrders: () => { reads++; return new Promise(r => { release = () => { pos.push(newPO('npo12', 'PO-0012'), newPO('npo13', 'PO-0013')); r(true); }; }); } });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      dana(e, 'n1', { po_id: 'npo12' });
+      e.pick(e.field('n1', 'po'), 'PO-0001', 'po1');
+      await sleep(700);
+      assert('a PO conflict with a colleague\'s new order: the page reads its order list again', reads === 1, reads);
+      assert('…and until it has, the dialog calls hers "a PO this page has not loaded yet" — not "no longer listed", which reads as deleted',
+        eq(grid(e), [['PO #', 'a PO this page has not loaded yet', 'PO-0001']]), grid(e));
+      if (release) release();
+      await sleep(20);
+      assert('…once the list is in, the open dialog shows her order by its number', eq(grid(e), [['PO #', 'PO-0012', 'PO-0001']]), grid(e));
+      e.$('.fctproc-modal [data-conflict="theirs"]').click();
+      await sleep(30);
+      // A save's own answer bringing a link to an order not in the list.
+      dana(e, 'n2', { po_id: 'npo14' });
+      const q = e.field('n2', 'quote_number');
+      q.focus(); q.value = 'Q-5'; e.fire(q, 'input'); e.fire(q, 'change'); q.blur();
+      await sleep(40);
+      assert('a save whose answer links the row to an order this page has not loaded: the order list is read again', reads === 2 && e.db.rows[1].quote_number === 'Q-5', reads);
+    }
+
+    // A conflict answered while the PM is typing in another row's box.
+    {
+      const e = makeEnv({ rows: [row({ id: 't1', quote_number: 'Q-1' }), row({ id: 't2', quantity: 5 })] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      dana(e, 't1', { quote_number: 'Q-DANA' });
+      let release;
+      e.patchHold = new Promise(r => { release = r; });
+      const q = e.field('t1', 'quote_number');
+      q.focus(); q.value = 'Q-77'; e.fire(q, 'input'); e.fire(q, 'change');
+      const qty = e.field('t2', 'quantity');
+      qty.focus();
+      qty.dispatchEvent(new e.w.KeyboardEvent('keydown', { key: '2', bubbles: true }));
+      qty.value = '200'; e.fire(qty, 'input');
+      release();
+      await sleep(30);
+      assert('a conflict answered while the PM types in another row\'s box: no dialog yet — the box keeps the focus and what is typed in it',
+        !e.$('.fctproc-modal') && e.w.document.activeElement === qty && qty.value === '200', dlgText(e));
+      assert('…nothing half-typed is saved, and the conflicted cell is held (shows hers, nothing sent over it)',
+        !e.patches().some(p => p.q.id === 't2') && e.P._test.held().has('t1\u0000quote_number') && e.field('t1', 'quote_number').value === 'Q-DANA'
+        && e.db.rows[0].quote_number === 'Q-DANA', e.patches().map(p => [p.q.id, p.body]));
+      qty.value = '20000'; e.fire(qty, 'input'); e.fire(qty, 'change'); qty.blur();
+      await sleep(40);
+      assert('leaving the box saves the whole number typed (20000, not 200)…', e.db.rows[1].quantity === 20000
+        && eq(e.patches().filter(p => p.q.id === 't2').map(p => p.body.fields), [{ quantity: 20000 }]), e.patches().filter(p => p.q.id === 't2').map(p => p.body));
+      assert('…and then the dialog shows', !!e.$('.fctproc-modal') && eq(grid(e), [['Quote #', 'Q-DANA', 'Q-77']]), dlgText(e));
+    }
+
+    // Escape with one dialog opened over another.
+    {
+      const e = makeEnv({ rows: [row({ id: 'x1', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', quantity: 8110, unit: 'SF' })] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      dana(e, 'x1', { quantity: 9000 });
+      let release;
+      e.patchHold = new Promise(r => { release = r; });
+      const q = e.field('x1', 'quantity');
+      q.focus(); q.value = '8200'; e.fire(q, 'input'); e.fire(q, 'change'); q.blur();
+      e.$('[data-act="send"]').click();
+      await sleep(80);
+      tickLines(e, ['15" Perf drain']);
+      release();
+      await sleep(60);
+      const open = () => e.$$('.fctproc-modal [role="dialog"]').map(d => d.getAttribute('aria-label'));
+      assert('(the conflict opened over the Add to Procurement checklist, one line ticked)', open().length === 2 && /^Changed by/.test(open()[1])
+        && e.$$('.fctproc-modal .fctproc-send-line input:checked').length === 1, open());
+      e.w.document.dispatchEvent(new e.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await sleep(30);
+      assert('one Escape closes only the dialog on top: the checklist under it stays, with its tick', open().length === 1 && /^Add to Procurement/.test(open()[0])
+        && e.$$('.fctproc-modal .fctproc-send-line input:checked').length === 1, open());
+      e.w.document.dispatchEvent(new e.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      await sleep(30);
+      assert('…a second Escape closes the checklist', open().length === 0, open());
+    }
+
+    // Escape, or the arrow keys and a click away, in a hand-added row's Sub
+    // Code picker (tracker's combobox: Escape puts the box back as it was and
+    // leaves it, and leaving commits what it holds).
+    {
+      const e = makeEnv({ rows: [
+        row({ id: 'm1', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', unit: 'LF', description: '15" TEE' }),
+        row({ id: 'm2', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', unit: 'SF', description: 'Fabric pins' }),
+        row({ id: 's1', cost_code: 'Stormwater', quantity: 40, unit: 'EA', description: 'Inlet grate' }),
+      ] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      const key = (el, k) => el.dispatchEvent(new e.w.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+      // What tracker's cbCommitInput delivers on leaving: the box as it is.
+      const commit = el => {
+        el._cbBypassFilter = true;
+        try { e.fire(el, 'input'); e.fire(el, 'change'); } finally { delete el._cbBypassFilter; }
+      };
+      const n0 = e.patches().length;
+      let box = e.field('m1', 'codes');
+      box.focus();
+      key(box, 'ArrowDown'); key(box, 'ArrowDown');
+      key(box, 'Escape');
+      box.blur(); commit(box);
+      await e.P._test.flushAll(); await sleep(30);
+      box = e.field('m2', 'codes');
+      box.focus();
+      key(box, 'ArrowDown');
+      box.blur(); commit(box);                       // a click elsewhere: the box still holds its own line
+      await e.P._test.flushAll(); await sleep(30);
+      box = e.field('s1', 'codes');
+      box.focus();
+      box.value = 'geo'; e.fire(box, 'input');
+      key(box, 'Escape');
+      box.value = ''; delete box.dataset.cbValue;     // put back as it was
+      box.blur(); commit(box);
+      await e.P._test.flushAll(); await sleep(30);
+      box = e.field('s1', 'codes');
+      box.focus();
+      box.value = 'geo'; e.fire(box, 'input');
+      box.value = ''; e.fire(box, 'input');           // typed, then rubbed out again
+      box.blur(); commit(box);
+      await e.P._test.flushAll(); await sleep(30);
+      const db = id => e.db.rows.find(r => r.id === id);
+      assert('arrows then Escape in a + Material row\'s Sub Code saves nothing — not the bid line\'s whole quantity',
+        db('m1').quantity == null && e.field('m1', 'quantity').value === '', db('m1'));
+      assert('arrows then a click away saves nothing either', db('m2').quantity == null, db('m2'));
+      assert('a row with a cost code alone: typing then Escape in its Sub Code keeps the cost code; so does rubbing out what was typed',
+        db('s1').cost_code === 'Stormwater' && e.$('tr[data-row="s1"] .c-cost_code') && /Stormwater/.test(e.$('tr[data-row="s1"]').textContent), db('s1'));
+      assert('…no save was sent for any of it', e.patches().length === n0, e.patches().slice(n0).map(p => [p.q.id, p.body]));
+      // A real pick of the same line still fills what is blank.
+      box = e.field('m1', 'codes');
+      box.focus();
+      key(box, 'ArrowDown');
+      box.value = 'Stormwater / 15" Perf drain'; box.dataset.cbValue = 'b2'; box.dataset.cbPicked = '1';
+      box.blur(); commit(box);
+      await e.P._test.flushAll(); await sleep(30);
+      assert('the row\'s own line picked from the list (Enter, Tab or a click on it) still fills a blank Quantity', db('m1').quantity === 950, db('m1'));
+    }
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => {
