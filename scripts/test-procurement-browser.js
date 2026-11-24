@@ -2771,6 +2771,26 @@ async function sweepInputs(browser) {
   const back = await page.$eval('#fctproc-wrap', w => w.scrollTop);
   ok('the sheet comes back where it was left, not at the top', Math.abs(back - 900) < 5, back);
 
+  // A colleague's new row comes in on a poll while the caret is in a
+  // Quantity box (a full redraw is owed); Enter to the next row's Quantity
+  // and a new number typed: the number replaces the old one (Enter selected
+  // it), not typed in front of it.
+  await page.$eval('#fctproc-wrap', w => { w.scrollTop = 0; });
+  await cell(page, r0, 'quantity').click();
+  await sleep(4300);                                  // no key for a while: the poll runs
+  W.rows.push({ ...BLANK_ROW, id: 'K99', project_id: 'p1', created_at: t(99), updated_at: t(99), description: 'Colleague item', updated_by: 'Dana Reyes' });
+  await page.evaluate(() => FCTProcurement.refresh());
+  await sleep(200);
+  await page.keyboard.press('Enter');
+  await sleep(100);
+  await page.keyboard.type('1200');
+  await clickAway(page);
+  await until(() => W.rows.find(r => r.id === r1 && Number(r.quantity) !== 401), 4000);
+  ok('a redraw owed (a colleague\'s row came in), Enter to the next Quantity and 1200 typed: 1200 is saved, not 1200401',
+    Number(W.rows.find(r => r.id === r1).quantity) === 1200, W.rows.find(r => r.id === r1).quantity);
+  await until(() => rowTr(page, 'K99').count(), 4000);
+  ok('…and the colleague\'s row is drawn once the PM is out of the box', await rowTr(page, 'K99').count() === 1);
+
   // A row's ✕ pressed the way a person does (the button held ~100 ms) with
   // the caret in a box of the same row: the click lands.
   const delBtn = rowTr(page, r0).locator('[data-act="del"]');

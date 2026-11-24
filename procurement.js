@@ -2259,6 +2259,7 @@
     // Moved to another line by someone else: a re-link this page tried for
     // it (and would otherwise never try again) may be the right one now.
     if (known && known.bid_item_id !== r.bid_item_id) forgetRelinks(r.id);
+    if (known) pinSeenInUse(r.id);
     if (r.deleted_at) { dropRow(r.id); return null; }
     touched.set(r.id, ++touchSeq);
     server.set(r.id, { ...r });
@@ -2271,6 +2272,30 @@
     if (!local) { const copy = { ...r, ...keep }; st.rows.push(copy); return copy; }
     for (const k of Object.keys(r)) if (!(k in keep)) local[k] = r[k];
     return local;
+  }
+
+  /**
+   * The box in use on a row a newer copy is about to change: refreshRow keeps
+   * it showing the value it was drawn with, so that value — not the new one —
+   * is what its next save "saw" (seenAtFocus). Without it, a box typed in,
+   * saved, and typed in again after a pause — the entry recorded at focus
+   * used up by the first change — expected the colleague's value a refresh
+   * had just brought in, and wrote over it with no dialog.
+   */
+  function pinSeenInUse(rowId) {
+    const a = document.activeElement;
+    if (!a || !a.dataset || a.dataset.pr !== rowId || !a.dataset.pf || !st.mountEl || !st.mountEl.contains(a)) return;
+    const p = pend.get(rowId) || {}, inFlight = fly.get(rowId) || {};
+    // The row as this page has it, before the copy is taken: what the box
+    // shows — the PM's own value just saved included.
+    const local = rowById(rowId);
+    (FOCUS_FIELDS[a.dataset.pf] || [a.dataset.pf]).forEach(f => {
+      if (f in p || f in inFlight) return;
+      const key = rowId + '\u0000' + f;
+      const had = seenAtFocus.get(key);
+      if (had && had.el === a) return;
+      seenAtFocus.set(key, { v: local && f in local ? local[f] : baseOf(rowId, f), at: Date.now(), el: a });
+    });
   }
 
   function dropRow(id) {
@@ -2328,15 +2353,17 @@
     return inFlight && field in inFlight ? inFlight[field] : (server.get(rowId) || {})[field];
   }
   // A cell's value when it took focus, if it took focus lately — or if its
-  // box has had the focus ever since, however long: a box in use is never
+  // box is still in the page, however long ago: a box in use is never
   // redrawn under the PM (refreshRow), so what it shows is still that value,
-  // whatever a refresh brought in meanwhile. Else `fallback`.
+  // whatever a refresh brought in meanwhile, and its entry is dropped 400 ms
+  // after the box is really left (onSeenFocusOut) — past the 120 ms a picker
+  // takes to commit after a click away. Else `fallback`.
   const SEEN_MS = 10 * 60 * 1000;
   function takeSeen(rowId, field, fallback) {
     const key = rowId + '\u0000' + field;
     const s = seenAtFocus.get(key);
     seenAtFocus.delete(key);
-    return s && (Date.now() - s.at < SEEN_MS || (s.el && s.el === document.activeElement)) ? s.v : fallback;
+    return s && (Date.now() - s.at < SEEN_MS || (s.el && s.el.isConnected)) ? s.v : fallback;
   }
   // The fields a box saves: most are their own; the Sub Code picker saves the
   // line and its codes, the PO picker the PO and its auto flag.
@@ -2346,7 +2373,10 @@
     const rowId = t && t.dataset && t.dataset.pr, pf = t && t.dataset && t.dataset.pf;
     if (!rowId || !pf || !rowById(rowId)) return;
     const pendNow = pend.get(rowId) || {};
-    boxFocusAt = Date.now();
+    // Only a box newly taken: the same one getting the focus back (the
+    // window switched away and back) may have been typed in already.
+    if (!(t === boxFocusEl && t.isConnected)) boxTyped = false;
+    boxFocusEl = t;
     (FOCUS_FIELDS[pf] || [pf]).forEach(f => {
       // A cell already being changed keeps the value recorded when that began.
       if (f in pendNow) return;
@@ -3129,10 +3159,20 @@
   let rerenderOwed = false;
   // When a mouse button went down in the sheet, until it comes up (0).
   let pressedAt = 0;
-  function onSheetMouseDown(e) { if (e.button === 0) pressedAt = Date.now(); }
+  // What the press went down on, while it is down; and the rows whose cell
+  // under it a redraw kept as it was (refreshRow), drawn whole after the click.
+  let pressedEl = null;
+  const pressKept = new Set();
+  function onSheetMouseDown(e) { if (e.button === 0) { pressedAt = Date.now(); pressedEl = e.target; } }
   function onDocMouseUp() {
     if (!pressedAt) return;
     pressedAt = 0;
+    pressedEl = null;
+    if (pressKept.size) {
+      const ids = [...pressKept];
+      pressKept.clear();
+      setTimeout(() => { if (!pressedAt) ids.forEach(id => refreshRow(id)); }, 0);
+    }
     // After the click the press was aimed at (it fires before this runs).
     if (rerenderOwed) setTimeout(() => {
       if (!rerenderOwed || pressedAt) return;       // drawn since, or pressed again
@@ -3213,21 +3253,27 @@
     renderTable();
     updateCounts();
   }
-  // When a box in the sheet last took the focus (onSeenFocusIn).
-  let boxFocusAt = 0;
+  // The box in the sheet that last took the focus (onSeenFocusIn), and
+  // whether anything has been typed in it since (a key or an input in it).
+  let boxFocusEl = null, boxTyped = false;
   /**
    * Whether what has the focus in the table can be drawn again under it: a
-   * box nothing has been typed in since it took the focus (Enter or Tab
-   * moved the caret there; the PM is reading), or a row's tick box.
-   * renderTable puts the focus back on its new copy. Not a picker, whose
-   * menu a redraw would close (restoreFocus leaves those unfocused).
+   * text box nothing has been typed in since it took the focus (Enter or
+   * Tab moved the caret there; the PM is reading), or a row's tick box.
+   * renderTable puts the focus back on its new copy, with its selection.
+   * Not a number or date box: a new copy loses the selection Enter made
+   * (the next digits go in front of the old value: 1200 typed over 950
+   * saved 1200950) or the date part clicked (the day typed went into the
+   * month). Not a choice list, whose open list it would close; not a
+   * picker, whose menu it would close (restoreFocus leaves those unfocused).
    */
   function idleInSheet() {
     const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
     const a = document.activeElement;
     if (!wrap || !a || !wrap.contains(a)) return false;
     if (a.type === 'checkbox') return !!(a.dataset.sel || a.dataset.grpsel != null || a.id === 'fctproc-selall');
-    return /^(INPUT|SELECT)$/.test(a.tagName) && !isCb(a) && !!a.dataset.pr && lastKeyAt <= boxFocusAt && !a.dataset.badDate;
+    return a.tagName === 'INPUT' && !/^(number|date)$/.test(a.type) && !isCb(a) && !!a.dataset.pr
+      && a === boxFocusEl && !boxTyped && !a.dataset.badDate;
   }
 
   function selectProject(id) {
@@ -3237,6 +3283,7 @@
     loadGen++;                          // drop any answer still coming for the old job
     st.projectId = next;
     storeSet('project', next);
+    st.wrapScroll = null;
     st.rows = [];
     st.loadedFor = null;
     st.serverCanEdit = null;
@@ -4168,7 +4215,12 @@
     // Tab out of Email lands on) stays on it when it is still there, or the
     // next Tab would start over from the top of the page.
     const btn = active && active.tagName === 'BUTTON' && tr.contains(active) && active.dataset.act ? active.dataset.act : null;
-    const busy = td => (typing && td.contains(active)) || (hold && td.contains(hold)) || td.querySelector('[data-pcommit]');
+    // …and the cell a mouse button is down on: replaced before it comes up,
+    // the click would never arrive (Safari, where the press does not move the
+    // focus; a save's answer landing mid-press).
+    const pressed = pressedAt && pressedEl && Date.now() - pressedAt < 5000 && tr.contains(pressedEl) ? pressedEl : null;
+    if (pressed) pressKept.add(rowId);
+    const busy = td => (typing && td.contains(active)) || (hold && td.contains(hold)) || (pressed && td.contains(pressed)) || td.querySelector('[data-pcommit]');
     let host = fresh;
     if (![...tr.children].some(busy)) tr.replaceWith(fresh);
     else {
@@ -4438,6 +4490,7 @@
   let searchTimer = null;
   function onInput(e) {
     const el = e.target;
+    if (el === boxFocusEl) boxTyped = true;      // a paste with the mouse, too
     if (el.id === 'fctproc-search') {
       st.search = el.value;
       st.forceShow.clear();
@@ -4923,6 +4976,10 @@
   const TYPING_MS = 4000;
   function onKeyDown(e) {
     lastKeyAt = Date.now();
+    // A key in the box in use (Enter or Tab moving on from it counts too: it
+    // is pressed in this box, before the next one takes the focus and starts
+    // afresh).
+    if (e.target === boxFocusEl) boxTyped = true;
     const el = e.target;
     if (el.id === 'fctproc-search' && e.key === 'Escape' && st.search) {
       e.preventDefault();

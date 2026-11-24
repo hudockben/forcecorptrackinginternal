@@ -7033,14 +7033,26 @@ function _putProjectThenRenamedLines(id, p, opts) {
   delete _bidRenamedLines[id];
   return apiPut('fct_project_' + id, _projBlob(p), opts).then(ok => {
     if (ok) lines.forEach(bi => patchBidItem(id, bi));
+    else if (lines.length) {
+      // Not saved: they wait for the next whole-job save that lands.
+      const waiting = _bidRenamedLines[id] || (_bidRenamedLines[id] = new Set());
+      lines.forEach(bi => waiting.add(bi));
+    }
     return ok;
   });
 }
+// A whole-job save the browser will refuse as a keepalive request (its
+// allowance is 64 KB for everything in flight).
+const _KEEPALIVE_MAX = 60000;
 
 // Flush any pending debounced project saves immediately (used on page unload /
 // tab hide / back navigation so date edits aren't lost inside the 600ms window).
 // Uses keepalive:true so the requests survive the navigation.
-function _flushPendingProjectSaves() {
+// `{ keepalive: false }` when the page is not going away (leaving the bid
+// view): the saves are ordinary requests then, which a whole-job save of any
+// size fits. Called with an event (beforeunload), or nothing: keepalive.
+function _flushPendingProjectSaves(opts) {
+  const keepalive = !(opts && opts.keepalive === false);
   // Flush per-bid-item PUTs first. Each payload is ~500 bytes so dozens
   // of in-flight requests can comfortably share the 64KB keepalive
   // budget, unlike a single full-blob PUT which can exceed it alone on
@@ -7051,7 +7063,7 @@ function _flushPendingProjectSaves() {
     clearTimeout(_biSaveTimers[biId]);
     delete _biSaveTimers[biId];
     delete _biSavePending[biId];
-    _doBidItemPut(projId, biId, true);
+    _doBidItemPut(projId, biId, keepalive);
   });
   // Flush any pending full-project saves (covers add/remove bid items,
   // project metadata changes, change orders, group renames).
@@ -7061,10 +7073,19 @@ function _flushPendingProjectSaves() {
     clearTimeout(_saveProjTimers[id]);
     delete _saveProjTimers[id];
     const p = getProj(id);
-    if (p) _putProjectThenRenamedLines(id, p, { keepalive: true });
+    if (!p) return;
+    // Too big to go as the page closes: the browser will refuse it. The
+    // lines a section rename changed go on their own then — each a small
+    // per-line save, which also copies the new code onto the job's
+    // Procurement rows — rather than waiting on a save that cannot land.
+    if (keepalive && _bidRenamedLines[id] && JSON.stringify({ value: _projBlob(p) }).length > _KEEPALIVE_MAX) {
+      [..._bidRenamedLines[id]].forEach(bi => _doBidItemPut(id, bi, true));
+      delete _bidRenamedLines[id];
+    }
+    _putProjectThenRenamedLines(id, p, { keepalive });
   });
   _lastProjIndexTs = Date.now();
-  apiPut('fct_projects_index', { ids: projectsList.map(p => p.id), _ts: _lastProjIndexTs }, { keepalive: true });
+  apiPut('fct_projects_index', { ids: projectsList.map(p => p.id), _ts: _lastProjIndexTs }, { keepalive });
 }
 window.addEventListener('beforeunload', _flushPendingProjectSaves);
 document.addEventListener('visibilitychange', () => {
@@ -29801,8 +29822,10 @@ function closeBidView() {
   _bidMatPopClose();   // its tag is leaving the screen with the table
   // Flush any in-flight debounced bid-item edits (start/target dates, qty,
   // unit cost) before the view closes — otherwise navigating back within
-  // the 600ms debounce window drops the save.
-  _flushPendingProjectSaves();
+  // the 600ms debounce window drops the save. The page stays open, so as
+  // ordinary requests: a big job's whole-job save does not fit the
+  // browser's keepalive allowance.
+  _flushPendingProjectSaves({ keepalive: false });
   document.getElementById('bid-fullscreen').style.display = 'none';
   document.getElementById('bid-filter-dd').style.display = 'none';
   bidFilters = {};

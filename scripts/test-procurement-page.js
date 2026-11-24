@@ -194,10 +194,20 @@ console.log('\n[tracker.html — wiring]');
     landed = true;
     page.updateBidGroupCode('j1', 'Base', 'Base');
     timers.splice(0).forEach(f => f());
-    assert('  a "rename" to the same code sends no line saves', JSON.stringify(did) === JSON.stringify([['put', 'fct_project_j1', false]]), JSON.stringify(did));
+    assert('  …they wait for the next whole-job save that lands, and go with it (a "rename" to the same code adds none of its own)',
+      JSON.stringify(did) === JSON.stringify([['put', 'fct_project_j1', false], ['line', 'j1', 'a'], ['line', 'j1', 'b']]), JSON.stringify(did));
+    did.length = 0;
+    page.updateBidGroupCode('j1', 'Base', 'Base');
+    timers.splice(0).forEach(f => f());
+    assert('  …and only once', JSON.stringify(did) === JSON.stringify([['put', 'fct_project_j1', false]]), JSON.stringify(did));
     const flush = requireFn(SRC, '_flushPendingProjectSaves');
-    assert('  and the flush on leaving sends the whole-job save through the same path, with keepalive',
-      /_putProjectThenRenamedLines\(id, p, \{ keepalive: true \}\)/.test(flush) && !/patchBidItem/.test(flush));
+    assert('  and the flush on leaving sends the whole-job save through the same path — keepalive as the page goes, ordinary requests on leaving the bid view',
+      /_putProjectThenRenamedLines\(id, p, \{ keepalive \}\)/.test(flush) && !/patchBidItem/.test(flush)
+        && /const keepalive = !\(opts && opts\.keepalive === false\);/.test(flush)
+        && /_flushPendingProjectSaves\(\{ keepalive: false \}\);/.test(requireFn(SRC, 'closeBidView')));
+    assert('  a whole-job save too big to go as the page closes: the renamed lines go on their own, as small keepalive saves',
+      /if \(keepalive && _bidRenamedLines\[id\] && JSON\.stringify\(\{ value: _projBlob\(p\) \}\)\.length > _KEEPALIVE_MAX\)/.test(flush)
+        && /_doBidItemPut\(id, bi, true\)/.test(flush));
     assert('apiPut answers true once a save has landed, false when it failed',
       /if \(r\.ok\) return true;/.test(requireFn(SRC, 'apiPut')) && (requireFn(SRC, 'apiPut').match(/return false;/g) || []).length === 3);
   }

@@ -4883,6 +4883,115 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
         && T.effectivePO(r1, C({ purchaseOrders: [PM], rows: [r1, r2], projectId: null })).kind === 'auto');
   }
 
+  console.log('\n[bug sweep: the second review of its fixes]');
+  {
+    const dana = (e, id, f, by = 'Dana Reyes') => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = by; r.updated_at = new Date().toISOString(); };
+    const shifted = async (e, ms, fn) => {
+      const realW = e.w.Date.now, real = Date.now, base = Date.now();
+      e.w.Date.now = () => real() + ms; Date.now = () => real() + ms;
+      try { return await fn(); } finally { e.w.Date.now = realW; Date.now = real; void base; }
+    };
+    // A full redraw owed: a colleague's new row came in on a poll while the
+    // PM's caret was in a cell.
+    const oweRedraw = async (e, newId) => {
+      e.db.rows.push(row({ id: newId, created_at: '2026-03-02T10:00:00Z', updated_by: 'Dana Reyes' }));
+      await shifted(e, 5000, () => e.P.refresh());
+    };
+
+    // Enter down a Quantity column with a redraw owed: the next box is not
+    // drawn again under the caret (its select-all would be lost).
+    let e = makeEnv({ rows: [row({ id: 'q1', quantity: 700, created_at: '2026-03-01T10:00:00Z' }), row({ id: 'q2', quantity: 950, created_at: '2026-03-01T10:00:01Z' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.field('q1', 'quantity').focus();
+    await oweRedraw(e, 'q9');
+    assert('(a colleague\'s row came in while the PM was in a cell: drawn later)', !e.$('tr[data-row="q9"]'));
+    e.field('q1', 'quantity').dispatchEvent(new e.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    const next = e.w.document.activeElement;
+    await sleep(30);
+    assert('Enter to the next row\'s Quantity with a redraw owed: that box is not rebuilt under the caret (Enter\'s select-all stays)',
+      next && next.dataset.pr === 'q2' && e.w.document.activeElement === next && next.isConnected);
+    e.field('q2', 'quote_number').focus();
+    await sleep(30);
+    assert('…the owed redraw is paid once the caret is in a text box nothing was typed in', !!e.$('tr[data-row="q9"]')
+      && e.w.document.activeElement.dataset.pr === 'q2' && e.w.document.activeElement.dataset.pf === 'quote_number');
+
+    // A box typed in, the window switched away and back, a redraw owed.
+    e = makeEnv({ rows: [row({ id: 't1', created_at: '2026-03-01T10:00:00Z' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    let qb = e.field('t1', 'quote_number');
+    qb.focus();
+    qb.dispatchEvent(new e.w.KeyboardEvent('keydown', { key: 'Q', bubbles: true }));
+    qb.value = 'Q-7'; e.fire(qb, 'input');
+    qb.dispatchEvent(new e.w.FocusEvent('focusout', { bubbles: true }));
+    qb.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    await oweRedraw(e, 't9');
+    await shifted(e, 5000, () => e.P.refresh());
+    assert('a box typed in keeps counting as typed in when the window comes back to it: not rebuilt by the owed redraw', e.w.document.activeElement === qb && qb.isConnected);
+    qb.blur();
+    await sleep(700);
+
+    // Typed in, saved, a pause, a colleague's change of that cell, typed in again.
+    e = makeEnv({ rows: [row({ id: 's1', quote_number: 'Q1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    qb = e.field('s1', 'quote_number');
+    qb.focus(); qb.value = 'Q1-7'; e.fire(qb, 'input');
+    await sleep(700);
+    assert('(the first save landed)', e.db.rows[0].quote_number === 'Q1-7');
+    dana(e, 's1', { quote_number: 'Q-DANA' });
+    await shifted(e, 5000, () => e.P.refresh());
+    assert('(the refresh kept the box as the PM left it)', qb.isConnected && qb.value === 'Q1-7');
+    qb.value = 'Q1-78'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(80);
+    assert('typed in again after a pause: the save expects what the box showed (the PM\'s own saved value), so the colleague\'s change is asked about',
+      e.db.rows[0].quote_number === 'Q-DANA' && !!e.$('.fctproc-modal') && eq(e.patches().pop().body.expect, { quote_number: 'Q1-7' }), e.patches().map(p => p.body));
+
+    // A picker in use for more than ten minutes, a colleague's change, a click away.
+    e = makeEnv({ rows: [row({ id: 'p1v', vendor: 'LB Water' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const vb = e.field('p1v', 'vendor');
+    vb.focus();
+    await shifted(e, 11 * 60 * 1000, async () => {
+      dana(e, 'p1v', { vendor: 'Beta Corp' });
+      await e.P.refresh();
+      e.field('p1v', 'quote_number').focus();       // clicked away; the picker commits a moment later
+      e.pick(vb, 'Acme Supply');
+      await sleep(700);                               // (still in the row: the save goes on the pause)
+    });
+    assert('a picker in use for over ten minutes, committed on a click away: it still expects what it showed — the colleague\'s vendor is asked about',
+      e.db.rows[0].vendor === 'Beta Corp' && !!e.$('.fctproc-modal'), [e.db.rows[0].vendor, e.patches().map(p => p.body)]);
+
+    // A row button pressed without the focus moving to it (Safari), the row redrawn meanwhile.
+    e = makeEnv({ rows: [row({ id: 'm1', quote_number: 'Q1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    qb = e.field('m1', 'quote_number');
+    qb.focus();
+    const xb = e.$('tr[data-row="m1"] [data-act="del"]');
+    xb.dispatchEvent(new e.w.MouseEvent('mousedown', { bubbles: true, button: 0 }));
+    qb.blur();                                        // the box loses the focus to the page, not the button
+    await sleep(20);
+    assert('a row button pressed without taking the focus, the row redrawn as the box is left: the pressed button is kept (its click arrives)', xb.isConnected);
+    e.w.document.dispatchEvent(new e.w.MouseEvent('mouseup', { bubbles: true, button: 0 }));
+    xb.click();
+    await sleep(20);
+    assert('…the click lands ("Delete?"), and the row is drawn whole after it', /Delete\?/.test(e.$('tr[data-row="m1"] .c-actions').textContent));
+
+    // Job A scrolled, B opened, A opened again: A starts at the top.
+    e = makeEnv({ rows: [row({ id: 'w1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.P._test.state().wrapScroll = { top: 900, left: 0, sig: e.P._test.viewSig() };
+    e.P._test.selectProject('p2');
+    await sleep(20);
+    e.P._test.selectProject('p1');
+    await sleep(20);
+    assert('another job opened: the place in the last one is forgotten (A → B → A starts A at the top)', e.P._test.state().wrapScroll == null);
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => {
