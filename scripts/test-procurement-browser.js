@@ -1716,7 +1716,8 @@ async function roundFourFixes(browser) {
     await page.keyboard.type('y', { delay: 20 });
     raisePO('p1', { supplier: 'LB Water', cost_code: 'Mobilization', sub_code: 'Mobilization' });
     await reread();
-    ok('an order for the Mobilization line shows on its rows mid-edit', await until(() => cell(page, 'F3', 'po').inputValue().then(v => /PO-80/.test(v))));
+    ok('an order for the Mobilization line shows on its rows mid-edit (it fits both materials there, so each PO # box names it to be picked)',
+      await until(() => cell(page, 'F3', 'po').evaluate(el => el.value + ' ' + el.placeholder).then(v => /PO-80\d+ fits several rows/.test(v))));
     await clickAway(page);
     ok('…and the typing goes on and is saved', await until(() => W.rows.find(r => r.id === 'F2').quote_number === 'staples xy'), W.rows.find(r => r.id === 'F2').quote_number);
     await sleep(400);
@@ -2888,6 +2889,83 @@ async function sweep2Host(browser) {
   }
 }
 
+// The second sweep's PO fixes in the real page: an order raised on the
+// Purchase Orders tab for a bid line is the line's own row's, not the
+// material added under it; a bid line renamed has the order list read again
+// at once; a level2 PM's contact list is read again when the tab is shown.
+async function sweepTwoPO(browser) {
+  console.log('\n[sweep 2: po] An order raised for a bid line, a line renamed, the contacts kept fresh');
+  const t = i => new Date(Date.UTC(2026, 9, 6) + i * 1000).toISOString();
+  const W = makeWorld();
+  W.rows.length = 0;
+  W.rows.push(
+    { ...BLANK_ROW, id: 'G1', project_id: 'p1', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', vendor: 'LB Water',
+      created_at: t(1), updated_at: t(1) },
+    // Added with "+ Material": needed in 3 days, a 10-day lead time.
+    { ...BLANK_ROW, id: 'G2', project_id: 'p1', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: 'Fabric staples',
+      date_needed: plusDays(3), lead_time_days: 10, created_at: t(2), updated_at: t(2) },
+    { ...BLANK_ROW, id: 'D1', project_id: 'p1', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: DRAIN, vendor: 'New Enterprise',
+      date_needed: plusDays(3), lead_time_days: 10, created_at: t(3), updated_at: t(3) },
+  );
+  W.pos.push({ id: 'po20', po_number: 'PO-0020', title: 'Drain', supplier: 'New Enterprise', status: 'pending', date_created: plusDays(-2),
+    project_id: 'p1', cost_code: 'Stormwater', sub_code: DRAIN, notes: '', lines: [] });
+  W.contacts.push({ id: 'k1', supplier_name: 'LB Water', name: 'Dave Kline', email: 'dave@lbwater.com', phone: '', updated_at: t(5) });
+  const saved = PROJECTS.p1.bidItems;
+  const { page, ctx, errors } = await openPage(browser, W, 'level2', { storage: { fct_proc_project_turf: 'p1', fct_proc_group_turf: 'none' } });
+  try {
+    await page.click('.tab-btn[data-tab="procurement"]');
+    await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 3));
+    await sleep(500);
+    const pill = id => rowTr(page, id).locator('.fctproc-pill').textContent();
+    const auto = id => rowTr(page, id).locator('td.c-po .fctproc-tag', { hasText: 'auto' }).count();
+    const counts = () => page.locator('#fctproc-counts').textContent().then(x => x.replace(/\s+/g, ' '));
+
+    // An order raised on the Purchase Orders tab for the Geofabric line.
+    ok('the Geofabric line\'s own row reads Ordered on PO-0007 "auto"', await pill('G1') === 'Ordered' && await auto('G1') === 1
+      && await cell(page, 'G1', 'po').inputValue() === 'PO-0007');
+    ok('…the fabric staples added under it read Not Ordered and Late, and are not on it', await pill('G2') === 'Not Ordered'
+      && /Late/.test(await rowTr(page, 'G2').textContent()) && await auto('G2') === 0 && await cell(page, 'G2', 'po').inputValue() === '',
+      await rowTr(page, 'G2').textContent());
+    ok('…and the header counts them so', /Not Ordered\s*1/.test(await counts()) && /Late\s*1/.test(await counts()), await counts());
+
+    // The drain line renamed on the bid page: the bid line and the rows' stored
+    // codes move, and the server carries the rename to the order under the old codes.
+    const NEW = 'Perimeter Drain 15in Perf';
+    PROJECTS.p1.bidItems = saved.map(b => (b.id === 'b2' ? { ...b, sub_code: NEW } : b));
+    await page.evaluate(sub => { const b = getProj('p1').bidItems.find(x => x.id === 'b2'); b.sub_code = sub; }, NEW);
+    const d1 = W.rows.find(r => r.id === 'D1');
+    Object.assign(d1, { sub_code: NEW, version: d1.version + 1, updated_at: t(40), updated_by: 'Estimator' });
+    W.pos.find(po => po.id === 'po20').sub_code = NEW;
+    W.posAt = new Date(Date.parse(W.posAt) + 1000).toISOString();
+    const gets0 = W.poGets || 0;
+    await page.evaluate(() => FCTProcurement.refresh());
+    await until(() => (W.poGets || 0) > gets0, 4000);
+    ok('a line renamed: the poll that brings the renamed rows reads the order list again at once (not a minute later)', (W.poGets || 0) === gets0 + 1, (W.poGets || 0) - gets0);
+    await until(async () => await pill('D1') === 'Ordered', 4000);
+    ok('…so the drain row is on PO-0020 again: Ordered, not Not Ordered and Late', await pill('D1') === 'Ordered'
+      && await cell(page, 'D1', 'po').inputValue() === 'PO-0020' && !/Late/.test(await rowTr(page, 'D1').textContent()), await rowTr(page, 'D1').textContent());
+
+    // The contact list, read again when the tab is shown (level2 has no Suppliers tab to do it).
+    const cGets = () => W.log.filter(l => l.api === 'supplier-contacts' && l.method === 'GET').length;
+    const c0 = cGets();
+    W.contacts[0].email = 'dkline@lbwater-new.com';
+    W.contacts.push({ id: 'k2', supplier_name: 'LB Water', name: 'Erin Shaw', email: 'erin@lbwater.com', phone: '', updated_at: t(9) });
+    await sleep(5200);
+    await page.click('.tab-btn[data-tab="po"]');
+    await sleep(300);
+    await page.click('.tab-btn[data-tab="procurement"]');
+    await until(() => cGets() > c0, 4000);
+    await sleep(300);
+    const offers = await page.evaluate(() => FCTProcurement.cbOptions('proc_contacts:G1').map(o => `${o.label} ${o.meta}`));
+    ok('the tab shown again reads the contacts again: the picker offers Erin, and Dave\'s corrected address', cGets() === c0 + 1
+      && eq(offers, ['Dave Kline dkline@lbwater-new.com', 'Erin Shaw erin@lbwater.com']), offers);
+    ok('no page errors', errors.length === 0, errors.join(' | '));
+  } finally {
+    PROJECTS.p1.bidItems = saved;
+    await ctx.close();
+  }
+}
+
 // The second bug sweep's fixes to the drawing of the sheet that only a real
 // browser shows: a colleague's text that looks like markup, a site's jobs
 // changing under real typing, a box Shift+Tab reaches under the pinned
@@ -3190,6 +3268,7 @@ async function sweepTwoSave(browser) {
     await sweep2Host(browser);
     await sweepTwoSave(browser);
     await sweepTwoRender(browser);
+    await sweepTwoPO(browser);
   } finally {
     await browser.close();
     server.close();
