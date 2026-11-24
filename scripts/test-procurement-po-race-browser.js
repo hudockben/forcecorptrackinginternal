@@ -181,7 +181,8 @@ async function openPage(browser, W) {
     localStorage.setItem('fct_user', JSON.stringify({ id: 7, username: 'procpo_admin', name: 'Ada', role: 'admin', companyCode: 'PROCPORACE',
       divisionRoles: { turf: 'admin', paving: 'admin', kiewit: 'admin' }, allowedDivisions: ['turf', 'paving', 'kiewit'] }));
     localStorage.setItem('fct_division', 'turf');
-    localStorage.setItem('fct_proc_project_turf', 'p1');
+    // Procurement's remembered job is kept per company and user.
+    localStorage.setItem('fct_proc_project_turf@PROCPORACE/procpo_admin', 'p1');
   });
   const LISTS = { equipment: [], employees: [{ name: 'Sam' }],
     suppliers: [{ name: 'Acme Supply' }, { name: 'LB Water' }, { name: 'Turf Co' }] };

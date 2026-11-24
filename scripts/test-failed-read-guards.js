@@ -80,7 +80,8 @@ function listsOf(SRC, p) {
       fns:   () => [extractFunction(SRC, 'loadCostRows'), extractFunction(SRC, 'saveCostRows')],
     },
     'inventory entries': {
-      key: `fct_${p}inventory`, localKey: `fct_${p}inventory`, tab: 'inventory', render: 'renderInventoryTab',
+      // This browser's copy is kept per company and user (_FCT_CACHE_SCOPE).
+      key: `fct_${p}inventory`, localKey: `fct_${p}inventory${SCOPE}`, tab: 'inventory', render: 'renderInventoryTab',
       list: 'inventoryEntries', loaded: '_inventoryLoaded',
       load: 'loadInventoryEntries', save: 'saveInventoryEntries', poll: '_pollInventory',
       state: () => extractBetween(SRC, '/* ── Inventory store ── */', '/* ═══'),
@@ -88,6 +89,9 @@ function listsOf(SRC, p) {
     },
   };
 }
+
+// Whose copies the page's localStorage keys name: company FCT, user ada.
+const SCOPE = '@FCT/ada';
 
 const OLD = [{ id: 'old-1' }, { id: 'old-2' }];                     // a stale local copy
 const REAL = [{ id: 'a' }, { id: 'b' }, { id: 'c' }];                // what the server holds
@@ -109,6 +113,7 @@ function page(SRC, L, { respond, local = null, editing = false, tab = L.tab }) {
     },
     API_BASE: '/api',
     fctToken: 'tok',
+    _FCT_CACHE_SCOPE: SCOPE,
     logout: () => { logouts++; },
     localStorage: {
       getItem: k => (k === L.localKey && local ? JSON.stringify(local) : null),
@@ -252,6 +257,7 @@ const fail503 = { status: 503, body: { error: 'Could not check your access just 
       _unloadedSaveRefused: () => { refused++; },
       apiPut: () => { puts++; },
       localStorage: { setItem() {} },
+      _FCT_CACHE_SCOPE: SCOPE,
       uid: () => 'u1', nextINVNumber: () => 'INV-0001', _localDateStr: () => '2026-09-28',
       renderInventoryTab: () => {}, getProj: () => null, drDelete: () => {}, renderDailyTable: () => {},
     };

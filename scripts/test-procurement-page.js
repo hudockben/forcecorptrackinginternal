@@ -176,11 +176,11 @@ console.log('\n[tracker.html — wiring]');
     let landed = true;
     const timers = [];
     const mk = new Function('getProj', 'apiPut', 'patchBidItem', 'renderBidTable', 'saveProjectIndex', '_projBlob', 'localStorage',
-      'projectsList', 'PROJECTS_KEY', '_saveProjTimers', 'setTimeout', 'clearTimeout', '_bidRenamedLines',
+      'projectsList', 'PROJECTS_KEY', '_saveProjTimers', 'setTimeout', 'clearTimeout', '_bidRenamedLines', '_projectsLoaded', '_unloadedSaveRefused',
       `${fns}; return { updateBidGroupCode, saveProject, _putProjectThenRenamedLines };`);
     const page = mk(() => proj, (key, v, opts) => { did.push(['put', key, !!(opts && opts.keepalive)]); return { then: f => f(landed) }; },
       (pid, id) => did.push(['line', pid, id]), () => {}, () => {}, x => x, { setItem() {} }, [proj], 'k', {},
-      fn => { timers.push(fn); return timers.length; }, () => {}, {});
+      fn => { timers.push(fn); return timers.length; }, () => {}, {}, true, () => did.push(['refused']));
     page.updateBidGroupCode('j1', 'Stormwater', 'Storm Drainage');
     assert('  the rename itself sends no line saves yet', JSON.stringify(did) === '[]' && proj.bidItems.map(b => b.cost_code).join() === 'Storm Drainage,Storm Drainage,Base', JSON.stringify(did));
     timers.splice(0).forEach(f => f());
@@ -453,7 +453,18 @@ const JOB = {
       assert('  codes compare the way the page compares them',
         cfg && cfg.codeKey('Storm–Water  ') === b.w.eval("_codeKey('storm-water')"));
       assert('  the PO list counts as loaded once it has been read', cfg && cfg.isPOListLoaded() === true);
-      assert('  a remembered job is kept per division', cfg && cfg.storage === b.w.localStorage);
+      // Per company and user too: kept for everyone on the browser, the next
+      // person to sign in — another company's — opened on this one's job.
+      const scoped = cfg && (() => {
+        cfg.storage.setItem('fct_proc_project_turf', 'jX');
+        const kept = b.w.localStorage.getItem('fct_proc_project_turf@FCT/' + USERS[level].username);
+        const shared = b.w.localStorage.getItem('fct_proc_project_turf');
+        const back = cfg.storage.getItem('fct_proc_project_turf');
+        cfg.storage.removeItem('fct_proc_project_turf');
+        return kept === 'jX' && shared === null && back === 'jX'
+          && b.w.localStorage.getItem('fct_proc_project_turf@FCT/' + USERS[level].username) === null;
+      })();
+      assert('  a remembered job is kept per division, and per company and user', scoped);
       assert('  proc_ pickers now come from the module',
         JSON.stringify(b.w.eval("cbOptionsFor('proc_units')")).includes('"LF"'));
       const filt = b.w.eval("cbFilterFor('proc_vendors', 'Brand New Co', cbOptionsFor('proc_vendors'))");
@@ -486,11 +497,58 @@ const JOB = {
     b.w.close();
   }
 
+  await runRenameFlushChecks();
   await runRealDocumentsChecks();
 
   console.log(`\n${failed === 0 ? '✓' : '✗'} ${passed} passed, ${failed} failed`);
   process.exit(failed === 0 ? 0 : 1);
 })().catch(err => { console.error(err); process.exit(1); });
+
+/**
+ * A section renamed, then the bid page's Send to Procurement at once: the
+ * checklist sends this page's pending bid saves first and reads the bid back
+ * (procFreshBidLines). The whole-job save went out on its own there, so the
+ * renamed lines never went through the per-line save — the job's Procurement
+ * rows (deleted ones too) kept the old code, and a later re-import offered
+ * every line of the section again as new.
+ */
+async function runRenameFlushChecks() {
+  console.log('\n[a section renamed, then Send to Procurement]');
+  const fns = ['updateBidGroupCode', 'saveProject', '_putProjectThenRenamedLines', 'patchBidItem'].map(n => requireFn(SRC, n)).join('\n')
+    + '\nasync ' + requireFn(SRC, '_procFlushProjectSaves').replace(/^async /, '');
+  const proj = { id: 'j1', bidItems: [{ id: 'a', cost_code: 'Stormwater' }, { id: 'b', cost_code: 'Stormwater' }, { id: 'c', cost_code: 'Base' }] };
+  const did = [];
+  let landed = true;
+  const timers = new Map();
+  let tid = 0;
+  const mk = new Function('getProj', 'apiPut', '_doBidItemPut', 'renderBidTable', 'saveProjectIndex', '_projBlob', 'localStorage',
+    'projectsList', 'PROJECTS_KEY', '_saveProjTimers', '_biSaveTimers', '_biSavePending', 'setTimeout', 'clearTimeout', '_bidRenamedLines',
+    '_projectsLoaded', '_unloadedSaveRefused',
+    `${fns}; return { updateBidGroupCode, _procFlushProjectSaves, get waiting() { return _bidRenamedLines; } };`);
+  // Each save lands a tick after it is sent, and says when it has.
+  const later = (what, ok) => new Promise(res => setTimeout(() => { did.push(['landed', what]); res(ok); }, 5));
+  const page = mk(() => proj,
+    (key, v) => { did.push(['put', key]); return later(key, landed); },
+    (pid, id) => { did.push(['line', pid, id]); return later('line ' + id); },
+    () => {}, () => {}, x => x, { setItem() {} }, [proj], 'k', {}, {}, {},
+    fn => { timers.set(++tid, fn); return tid; }, id => { timers.delete(id); }, {}, true, () => did.push(['refused']));
+  page.updateBidGroupCode('j1', 'Stormwater', 'Storm Drainage');
+  await page._procFlushProjectSaves('j1');
+  assert('rename then Send to Procurement: the whole-job save goes first, then each renamed line through the per-line save',
+    JSON.stringify(did.filter(d => d[0] !== 'landed')) === JSON.stringify([['put', 'fct_project_j1'], ['line', 'j1', 'a'], ['line', 'j1', 'b']]), JSON.stringify(did));
+  assert('  and the checklist waits for those line saves to land before it reads the bid back',
+    did.filter(d => d[0] === 'landed').map(d => d[1]).join() === 'fct_project_j1,line a,line b', JSON.stringify(did));
+  assert('  nothing is left waiting for a later save, and no debounced line save is left to go twice',
+    !page.waiting.j1 && timers.size === 0, JSON.stringify([page.waiting, timers.size]));
+  // A whole-job save that fails sends no line saves: they wait for the next
+  // whole-job save that lands, as they do from the bid page itself.
+  did.length = 0;
+  landed = false;
+  page.updateBidGroupCode('j1', 'Storm Drainage', 'Stormwater');
+  await page._procFlushProjectSaves('j1');
+  assert('  a whole-job save that failed sends no line saves; they wait for the next one that lands',
+    !did.some(d => d[0] === 'line') && page.waiting.j1 && [...page.waiting.j1].join() === 'a,b', JSON.stringify([did, page.waiting.j1 && [...page.waiting.j1]]));
+}
 
 async function runAdminChecks(b, cfg) {
   const { w, calls, routes } = b;
