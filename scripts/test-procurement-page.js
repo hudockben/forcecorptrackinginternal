@@ -205,9 +205,8 @@ console.log('\n[tracker.html — wiring]');
       /_putProjectThenRenamedLines\(id, p, \{ keepalive \}\)/.test(flush) && !/patchBidItem/.test(flush)
         && /const keepalive = !\(opts && opts\.keepalive === false\);/.test(flush)
         && /_flushPendingProjectSaves\(\{ keepalive: false \}\);/.test(requireFn(SRC, 'closeBidView')));
-    assert('  a whole-job save too big to go as the page closes: the renamed lines go on their own, as small keepalive saves',
-      /if \(keepalive && _bidRenamedLines\[id\] && JSON\.stringify\(\{ value: _projBlob\(p\) \}\)\.length > _KEEPALIVE_MAX\)/.test(flush)
-        && /_doBidItemPut\(id, bi, true\)/.test(flush));
+    assert('  the renamed lines never go ahead of the whole-job save as the page closes (their keepalive saves would crowd it out)',
+      !/_bidRenamedLines/.test(flush.replace(/_putProjectThenRenamedLines/g, '')) && !/_doBidItemPut\(id, bi/.test(flush));
     assert('apiPut answers true once a save has landed, false when it failed',
       /if \(r\.ok\) return true;/.test(requireFn(SRC, 'apiPut')) && (requireFn(SRC, 'apiPut').match(/return false;/g) || []).length === 3);
   }

@@ -1333,20 +1333,19 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   const procGets = () => env.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement').length;
   const getsBefore = procGets();
   env.field('r1', 'quote_number').focus();
-  env.field('r1', 'quote_number').dispatchEvent(new env.w.KeyboardEvent('keydown', { key: 'a', bubbles: true }));
   await env.P.refresh();
-  assert('refresh skips while a cell is being typed in (a key just now)', procGets() === getsBefore);
-  // A cell merely holding the caret (Enter moved it there; the PM is
-  // reading) does not hold the sheet still: the rows are read.
-  const realNow = env.w.Date.now;
-  const later = Date.now() + 5000;
-  env.w.Date.now = () => later;
-  const realDateNow = Date.now;
-  Date.now = () => later;
-  try { await env.P.refresh(); } finally { env.w.Date.now = realNow; Date.now = realDateNow; }
-  assert('…but not while the caret only sits in one: the rows are read again, around it', procGets() === getsBefore + 1
-    && env.w.document.activeElement === env.field('r1', 'quote_number'));
+  assert('refresh is held while the caret is in a cell (nothing is put under a box being edited)', procGets() === getsBefore);
   env.field('r1', 'quote_number').blur();
+  await sleep(20);
+  assert('…and read the moment the caret leaves the cells', procGets() === getsBefore + 1);
+  const selBox = env.$('[data-sel="r1"]');
+  selBox.focus();
+  await env.P.refresh();
+  assert('a ticked row box holding the focus does not hold the refresh', procGets() === getsBefore + 2 && env.w.document.activeElement === env.$('[data-sel="r1"]'));
+  env.$('#fctproc-search').focus();
+  await env.P.refresh();
+  assert('…nor does the search box', procGets() === getsBefore + 3);
+  env.$('#fctproc-search').blur();
   env.db.rows.find(r => r.id === 'r2').vendor = 'Changed Elsewhere';
   env.db.rows.find(r => r.id === 'r2').version = 99;
   const wrap = env.$('#fctproc-wrap');
@@ -4749,7 +4748,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     await sleep(450);
     dana(e, 'w1', { quote_number: 'Q-COLLEAGUE' });
     await later(e, 5000, () => e.P.refresh());
-    assert('(the refresh ran, and left the box in use as it was)', qb.isConnected && qb.value === 'Q1' && e.calls.filter(c => c.method === 'GET' && c.q.project_id === 'p1').length >= 2);
+    assert('(nothing was put under the box in use)', qb.isConnected && qb.value === 'Q1');
     qb.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));      // the window comes back
     qb.value = 'Q1-9'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
     await sleep(80);
@@ -4891,11 +4890,16 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       e.w.Date.now = () => real() + ms; Date.now = () => real() + ms;
       try { return await fn(); } finally { e.w.Date.now = realW; Date.now = real; void base; }
     };
-    // A full redraw owed: a colleague's new row came in on a poll while the
-    // PM's caret was in a cell.
-    const oweRedraw = async (e, newId) => {
-      e.db.rows.push(row({ id: newId, created_at: '2026-03-02T10:00:00Z', updated_by: 'Dana Reyes' }));
-      await shifted(e, 5000, () => e.P.refresh());
+    // A full redraw owed: the PM's own + Add Row, answered while the caret
+    // is in `box` (the new row is drawn once it may be).
+    const oweRedraw = async (e, box) => {
+      let rel;
+      e.postHold = new Promise(r => { rel = r; });
+      e.$('[data-act="add"]').click();
+      await sleep(20);
+      box.focus();
+      rel();
+      await sleep(80);
     };
 
     // Enter down a Quantity column with a redraw owed: the next box is not
@@ -4903,9 +4907,8 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     let e = makeEnv({ rows: [row({ id: 'q1', quantity: 700, created_at: '2026-03-01T10:00:00Z' }), row({ id: 'q2', quantity: 950, created_at: '2026-03-01T10:00:01Z' })] });
     e.P.renderTab(e.root);
     await sleep(40);
-    e.field('q1', 'quantity').focus();
-    await oweRedraw(e, 'q9');
-    assert('(a colleague\'s row came in while the PM was in a cell: drawn later)', !e.$('tr[data-row="q9"]'));
+    await oweRedraw(e, e.field('q1', 'quantity'));
+    assert('(the PM\'s own new row, answered while the caret was in a cell: drawn later)', e.$$('tr.fctproc-row').length === 2 && e.P._test.state().rows.length === 3);
     e.field('q1', 'quantity').dispatchEvent(new e.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
     const next = e.w.document.activeElement;
     await sleep(30);
@@ -4913,7 +4916,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       next && next.dataset.pr === 'q2' && e.w.document.activeElement === next && next.isConnected);
     e.field('q2', 'quote_number').focus();
     await sleep(30);
-    assert('…the owed redraw is paid once the caret is in a text box nothing was typed in', !!e.$('tr[data-row="q9"]')
+    assert('…the owed redraw is paid once the caret is in a text box nothing was typed in', e.$$('tr.fctproc-row').length === 3
       && e.w.document.activeElement.dataset.pr === 'q2' && e.w.document.activeElement.dataset.pf === 'quote_number');
 
     // A box typed in, the window switched away and back, a redraw owed.
@@ -4921,14 +4924,14 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     e.P.renderTab(e.root);
     await sleep(40);
     let qb = e.field('t1', 'quote_number');
-    qb.focus();
+    await oweRedraw(e, qb);
     qb.dispatchEvent(new e.w.KeyboardEvent('keydown', { key: 'Q', bubbles: true }));
     qb.value = 'Q-7'; e.fire(qb, 'input');
-    qb.dispatchEvent(new e.w.FocusEvent('focusout', { bubbles: true }));
-    qb.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
-    await oweRedraw(e, 't9');
-    await shifted(e, 5000, () => e.P.refresh());
-    assert('a box typed in keeps counting as typed in when the window comes back to it: not rebuilt by the owed redraw', e.w.document.activeElement === qb && qb.isConnected);
+    qb.dispatchEvent(new e.w.FocusEvent('focusout', { bubbles: true }));     // the window switched away…
+    qb.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));      // …and back: the owed redraw is tried
+    await sleep(30);
+    assert('a box typed in keeps counting as typed in when the window comes back to it: not rebuilt by the owed redraw',
+      e.w.document.activeElement === qb && qb.isConnected && qb.value === 'Q-7' && e.$$('tr.fctproc-row').length === 1);
     qb.blur();
     await sleep(700);
 
@@ -4990,6 +4993,103 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     e.P._test.selectProject('p1');
     await sleep(20);
     assert('another job opened: the place in the last one is forgotten (A → B → A starts A at the top)', e.P._test.state().wrapScroll == null);
+  }
+
+  console.log('\n[bug sweep: the third review — a poll answer landing just as a cell takes the caret]');
+  {
+    const dana = (e, id, f, by = 'Dana Reyes') => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = by; r.updated_at = new Date().toISOString(); };
+    // A poll whose GET went out with the caret elsewhere, answered just after
+    // the PM clicked into `box`: the box is kept as it is, over a newer value.
+    const raceInto = async (e, box) => {
+      let rel;
+      e.hold = new Promise(r => { rel = r; });
+      const poll = e.P.refresh();
+      await tick();
+      box.focus();
+      rel();
+      await poll;
+      await sleep(10);
+    };
+
+    // Kept stale, then left for the row's own tick box.
+    let e = makeEnv({ rows: [row({ id: 'k1', quote_number: 'Q-1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 'k1', { quote_number: 'Q-DANA' });
+    let qb = e.field('k1', 'quote_number');
+    await raceInto(e, qb);
+    assert('(a poll answer landing as the box took the caret: the box kept as it was, marked stale)', qb.isConnected && qb.value === 'Q-1' && qb.dataset.stale === '1');
+    e.$('[data-sel="k1"]').focus();
+    await sleep(10);
+    assert('left for the row\'s own tick box: the box is drawn afresh with what is saved now', e.field('k1', 'quote_number').value === 'Q-DANA'
+      && !e.field('k1', 'quote_number').dataset.stale);
+    qb = e.field('k1', 'quote_number');
+    qb.focus(); qb.value = 'Q-DANA-2'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(80);
+    assert('…so coming back, the PM edits the value that is there', e.db.rows[0].quote_number === 'Q-DANA-2' && !e.$('.fctproc-modal'));
+
+    // Kept stale, then left for a button in the same cell (Use bid qty beside Quantity).
+    e = makeEnv({ rows: [row({ id: 'u1', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', quantity: 901, unit: 'LF', bid_qty_at_send: 901, bid_unit_at_send: 'LF' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 'u1', { quantity: 1000 });
+    const qn = e.field('u1', 'quantity');
+    await raceInto(e, qn);
+    const ub = e.$('tr[data-row="u1"] [data-act="use-bid"]');
+    assert('(the Quantity box kept stale, with Use bid qty in the same cell)', qn.dataset.stale === '1' && !!ub && qn.closest('td').contains(ub));
+    ub.focus();
+    await sleep(10);
+    assert('left for a button in the same cell: the box alone is drawn afresh (the button stays, its click arrives)',
+      e.field('u1', 'quantity') !== qn && /^1,?000$/.test(e.field('u1', 'quantity').value) && ub.isConnected, e.field('u1', 'quantity').value);
+
+    // Kept stale and idle, a redraw owed: not rebuilt under the caret.
+    e = makeEnv({ rows: [row({ id: 'i1', quote_number: 'Q-100', created_at: '2026-03-01T10:00:00Z' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 'i1', { quote_number: 'Q-2291-REV' });
+    e.db.rows.push(row({ id: 'i2', created_at: '2026-03-02T10:00:00Z', created_by: 'Dana Reyes', updated_by: 'Dana Reyes' }));
+    qb = e.field('i1', 'quote_number');
+    await raceInto(e, qb);
+    assert('(a colleague\'s row and a change of this very cell came in as it took the caret: a redraw is owed)', !e.$('tr[data-row="i2"]') && qb.dataset.stale === '1');
+    qb.dispatchEvent(new e.w.FocusEvent('focusout', { bubbles: true }));
+    qb.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    await sleep(30);
+    assert('a stale box nothing was typed in is not rebuilt by the owed redraw (its old selection would cut into the new value)',
+      e.w.document.activeElement === qb && qb.isConnected && qb.value === 'Q-100');
+    qb.value = 'Q-101'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(80);
+    assert('…typed over: what the PM saw is expected, so the colleague\'s value is asked about', e.db.rows[0].quote_number === 'Q-2291-REV' && !!e.$('.fctproc-modal'),
+      e.patches().map(p => p.body));
+
+    // Idle, its row about to leave the table (the Not ordered chip): not redrawn away.
+    e = makeEnv({ rows: [row({ id: 'n1', quote_number: 'Q-1', created_at: '2026-03-01T10:00:00Z' }), row({ id: 'n2', created_at: '2026-03-01T10:00:01Z' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.$('[data-chip="not_ordered"]').click();
+    dana(e, 'n1', { date_ordered: '2026-03-09' });
+    qb = e.field('n1', 'quote_number');
+    await raceInto(e, qb);
+    qb.dispatchEvent(new e.w.FocusEvent('focusout', { bubbles: true }));
+    qb.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    await sleep(30);
+    assert('an idle box whose row the owed redraw would hide (now ordered, under "Not ordered"): kept, and the focus with it',
+      e.w.document.activeElement === qb && qb.isConnected);
+    qb.value = 'Q-77'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(80);
+    assert('…so what is typed is saved, not lost', e.db.rows[0].quote_number === 'Q-77');
+
+    // A row's tick box with the focus, the row redrawn by a refresh.
+    e = makeEnv({ rows: [row({ id: 't1', vendor: 'LB Water' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const tickBox = e.$('[data-sel="t1"]');
+    tickBox.checked = true; e.fire(tickBox, 'change');
+    tickBox.focus();
+    dana(e, 't1', { vendor: 'Beta Corp' });
+    await e.P.refresh();
+    await sleep(10);
+    assert('a row\'s tick box keeps the focus when a refresh redraws the row', e.w.document.activeElement === e.$('[data-sel="t1"]')
+      && e.field('t1', 'vendor').value === 'Beta Corp');
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

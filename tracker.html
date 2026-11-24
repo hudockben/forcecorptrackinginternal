@@ -7041,9 +7041,6 @@ function _putProjectThenRenamedLines(id, p, opts) {
     return ok;
   });
 }
-// A whole-job save the browser will refuse as a keepalive request (its
-// allowance is 64 KB for everything in flight).
-const _KEEPALIVE_MAX = 60000;
 
 // Flush any pending debounced project saves immediately (used on page unload /
 // tab hide / back navigation so date edits aren't lost inside the 600ms window).
@@ -7073,16 +7070,12 @@ function _flushPendingProjectSaves(opts) {
     clearTimeout(_saveProjTimers[id]);
     delete _saveProjTimers[id];
     const p = getProj(id);
-    if (!p) return;
-    // Too big to go as the page closes: the browser will refuse it. The
-    // lines a section rename changed go on their own then — each a small
-    // per-line save, which also copies the new code onto the job's
-    // Procurement rows — rather than waiting on a save that cannot land.
-    if (keepalive && _bidRenamedLines[id] && JSON.stringify({ value: _projBlob(p) }).length > _KEEPALIVE_MAX) {
-      [..._bidRenamedLines[id]].forEach(bi => _doBidItemPut(id, bi, true));
-      delete _bidRenamedLines[id];
-    }
-    _putProjectThenRenamedLines(id, p, { keepalive });
+    // The lines a section rename changed go only after this save has landed
+    // (_putProjectThenRenamedLines) — never ahead of it, where their keepalive
+    // saves would use up the browser's 64 KB allowance and get it refused.
+    // A save too big to go as the page closes is refused either way; the
+    // rename is then not half saved (codes moved, measured quantity not).
+    if (p) _putProjectThenRenamedLines(id, p, { keepalive });
   });
   _lastProjIndexTs = Date.now();
   apiPut('fct_projects_index', { ids: projectsList.map(p => p.id), _ts: _lastProjIndexTs }, { keepalive });
@@ -33482,10 +33475,10 @@ const _bootReady = (async () => {
   // The open job's Procurement rows, re-read so other people's edits arrive.
   // Only while the tab is on screen: a hidden table has nothing to redraw,
   // and each job's rows are read when it is opened anyway. procurement.js
-  // keeps the caret and scroll, and itself skips a cell being typed in —
-  // but not one that merely has the focus (a ticked row box, the search box,
-  // a cell Enter moved the caret into): _isEditing() here held the sheet
-  // still for as long as any of those kept it.
+  // keeps the caret and scroll, and itself holds the read while the caret is
+  // in one of its cells — reading it the moment the caret leaves them. Not
+  // _isEditing() here: that also held the sheet still for as long as a
+  // ticked row box, the search box or Show all jobs kept the focus.
   async function _pollProcurement() {
     if (_AUTO_REPORT || _fctPollsSuspended()) return;
     if (activeTab !== 'procurement' || !window.FCTProcurement || !_procConfigured) return;

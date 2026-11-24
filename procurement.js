@@ -2290,11 +2290,13 @@
     // shows — the PM's own value just saved included.
     const local = rowById(rowId);
     (FOCUS_FIELDS[a.dataset.pf] || [a.dataset.pf]).forEach(f => {
-      if (f in p || f in inFlight) return;
+      if (f in p) return;
       const key = rowId + '\u0000' + f;
       const had = seenAtFocus.get(key);
       if (had && had.el === a) return;
-      seenAtFocus.set(key, { v: local && f in local ? local[f] : baseOf(rowId, f), at: Date.now(), el: a });
+      // A save of it still out (its answer may come after this copy, and be
+      // passed over as older): the box shows that value.
+      seenAtFocus.set(key, { v: f in inFlight ? inFlight[f] : local && f in local ? local[f] : baseOf(rowId, f), at: Date.now(), el: a });
     });
   }
 
@@ -3271,9 +3273,24 @@
     const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
     const a = document.activeElement;
     if (!wrap || !a || !wrap.contains(a)) return false;
+    // The row it is on must still be in the table drawn — not filtered out
+    // by a chip or search, not in a folded section — or the focus is lost
+    // and what is typed next goes nowhere.
+    const onRow = a.dataset.pr || a.dataset.sel;
+    if (onRow && !drawnAfterRedraw(onRow)) return false;
     if (a.type === 'checkbox') return !!(a.dataset.sel || a.dataset.grpsel != null || a.id === 'fctproc-selall');
     return a.tagName === 'INPUT' && !/^(number|date)$/.test(a.type) && !isCb(a) && !!a.dataset.pr
-      && a === boxFocusEl && !boxTyped && !a.dataset.badDate;
+      && a === boxFocusEl && !boxTyped && !a.dataset.badDate && !a.dataset.stale;
+  }
+  function drawnAfterRedraw(rowId) {
+    const row = rowById(rowId);
+    if (!row) return false;
+    const ctx = makeCtx();
+    const vis = visibleRows(ctx);
+    if (!vis.includes(row)) return false;
+    if (st.grouping === 'none') return true;
+    const g = groupRows(vis, ctx).find(x => x.rows.includes(row));
+    return !!g && !st.collapsed.has(g.key) && !(g.pid && st.collapsed.has(JOB + g.pid));
   }
 
   function selectProject(id) {
@@ -3886,6 +3903,7 @@
       // A row's tick box, or a section's (ticked on the way to a bulk edit).
       sel: a.dataset.sel || null, grpsel: a.dataset.grpsel != null ? a.dataset.grpsel : null };
     try { f.start = a.selectionStart; f.end = a.selectionEnd; } catch { /* not a text box */ }
+    f.value = 'value' in a ? a.value : null;
     return f;
   }
   function restoreFocus(scope, f) {
@@ -3901,7 +3919,18 @@
     // background redraw should do to someone. Those are left unfocused.
     if (!el || el.classList.contains('cb-input')) return;
     try { el.focus({ preventScroll: true }); } catch { el.focus(); }
-    if (f.start != null) { try { el.setSelectionRange(f.start, f.end); } catch { /* dates, numbers */ } }
+    if (f.start != null) {
+      // On another value now: a range from the old one would cut into it (and
+      // what is typed next be spliced in) — the whole of it is selected if the
+      // whole was, else the caret goes to its end.
+      const same = f.value == null || el.value === f.value;
+      const whole = f.value != null && f.start === 0 && f.end === f.value.length && f.end > 0;
+      try {
+        if (same) el.setSelectionRange(f.start, f.end);
+        else if (whole) el.select();
+        else el.setSelectionRange(el.value.length, el.value.length);
+      } catch { /* dates, numbers */ }
+    }
   }
   const cssEsc = s => (window.CSS && CSS.escape ? CSS.escape(String(s)) : String(s).replace(/["\\]/g, '\\$&'));
 
@@ -4215,6 +4244,7 @@
     // Tab out of Email lands on) stays on it when it is still there, or the
     // next Tab would start over from the top of the page.
     const btn = active && active.tagName === 'BUTTON' && tr.contains(active) && active.dataset.act ? active.dataset.act : null;
+    const tick = active && active.type === 'checkbox' && tr.contains(active) && active.dataset.sel ? active.dataset.sel : null;
     // …and the cell a mouse button is down on: replaced before it comes up,
     // the click would never arrive (Safari, where the press does not move the
     // focus; a save's answer landing mid-press).
@@ -4241,6 +4271,13 @@
         // Sub-Contractor Agreement tag is being picked; "changed by someone
         // else", gone once the cell is changed here).
         marksFrom(td, next[i]);
+        // A box kept as it is although the fresh copy draws another value:
+        // marked stale — the idle redraw passes it by, and it is drawn afresh
+        // once it is left (freshenBox).
+        td.querySelectorAll('[data-pr][data-pf]').forEach(box => {
+          const twin = next[i].querySelector(`[data-pr="${cssEsc(box.dataset.pr)}"][data-pf="${cssEsc(box.dataset.pf)}"]`);
+          if (twin && drawnValue(twin) !== drawnValue(box)) box.dataset.stale = '1';
+        });
       });
     }
     drawnHtml.set(host, html);
@@ -4248,6 +4285,16 @@
       const again = host.querySelector(`button[data-act="${cssEsc(btn)}"]`);
       if (again) { try { again.focus({ preventScroll: true }); } catch { again.focus(); } }
     }
+    if (tick && !host.contains(document.activeElement)) {
+      const again = host.querySelector(`input[data-sel="${cssEsc(tick)}"]`);
+      if (again) { try { again.focus({ preventScroll: true }); } catch { again.focus(); } }
+    }
+  }
+
+  // The value a box was drawn with (not what has been typed in it since).
+  function drawnValue(el) {
+    if (el.tagName === 'SELECT') { const o = el.querySelector('option[selected]'); return o ? o.value : ''; }
+    return el.getAttribute('value') || '';
   }
 
   // ── Bulk bar ────────────────────────────────────────────────────────
@@ -4909,6 +4956,8 @@
       // Leaving the select-all box, a group header, a filter button: a
       // redraw held back while it had focus is due once focus is elsewhere.
       if (redrawDeferred) setTimeout(redrawWhenFree, 0);
+      // …and a refresh held while a bulk-bar box had it.
+      setTimeout(payOwedPoll, 0);
       return;
     }
     if (el.type === 'date' && el.dataset.badDate) {
@@ -4948,34 +4997,54 @@
       const a = document.activeElement;
       const tr = st.mountEl && st.mountEl.querySelector(`tr[data-row="${cssEsc(rowId)}"]`);
       if (tr && a && tr.contains(a)) {
-        // Still in the row. The box just left is drawn again all the same: a
-        // refresh that landed while it had the focus left it showing what it
-        // showed (refreshRow keeps the box in use) — coming back to it, the
-        // PM would edit that stale value, and the save would expect the new
-        // one and go over a colleague's change without a word. The box now
-        // in use is kept as it is; so is a row button's focus.
-        // A row button the press moved the focus to (✕, + Material, the
-        // paperclip) keeps its cell: replaced between the mouse going down
-        // and coming up, its click would never arrive.
-        const kept = (/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox') || (a.tagName === 'BUTTON' && a.dataset.act);
-        if (kept && !el.classList.contains('cb-input') && el.isConnected) refreshRow(rowId, a.tagName === 'BUTTON' ? a : null);
+        // Still in the row. A box an answer left showing an old value while
+        // it had the focus (refreshRow keeps the box in use; marked stale)
+        // is drawn afresh now — whatever took the focus: another box, the
+        // row's tick box, a button in the same cell. Coming back to it, the
+        // PM would edit that old value, and the save would expect the new
+        // one and go over a colleague's change without a word.
+        freshenBox(el);
         if (redrawDeferred) setTimeout(redrawWhenFree, 0);
+        payOwedPoll();
         return;
       }
       flushRow(rowId);
       rememberContact(rowById(rowId));
       if (!el.classList.contains('cb-input')) refreshRow(rowId);
+      freshenBox(el);
       // A redraw held back while this cell was in use (redrawAround).
       if (redrawDeferred) setTimeout(redrawWhenFree, el.classList.contains('cb-input') ? 250 : 0);
+      payOwedPoll();
     }, 0);
   }
+  // A box marked stale (refreshRow kept it, in use, over a newer value) and
+  // left: replaced by its fresh copy — only it, even when what took the focus
+  // is in the same cell (whose cell refreshRow keeps). Its record of what it
+  // showed goes with it. A picker is redrawn after its commit instead.
+  function freshenBox(el) {
+    if (!el || !el.dataset || !el.dataset.stale || !el.isConnected || el === document.activeElement || isCb(el)) return;
+    const rowId = el.dataset.pr, f = el.dataset.pf;
+    const row = rowById(rowId);
+    if (!row) return;
+    const tmp = document.createElement('tbody');
+    tmp.innerHTML = rowHtml(row, makeCtx(), canEdit(), colsFor(canEdit()));
+    const twin = tmp.querySelector(`[data-pr="${cssEsc(rowId)}"][data-pf="${cssEsc(f)}"]`);
+    if (twin) el.replaceWith(twin); else delete el.dataset.stale;
+    (FOCUS_FIELDS[f] || [f]).forEach(k => { const key = rowId + '\u0000' + k; const s0 = seenAtFocus.get(key); if (s0 && s0.el === el) seenAtFocus.delete(key); });
+  }
 
-  // When a key was last pressed in the sheet: a cell typed in within the
-  // last few seconds is mid-entry, and the poll waits (refresh).
-  let lastKeyAt = 0;
-  const TYPING_MS = 4000;
+  // A refresh held while the caret was in a cell, owed once it leaves them.
+  let pollOwed = false;
+  // Whether the caret is in a cell's box or a bulk-bar box (not a tick box).
+  function inCellBox(a = document.activeElement) {
+    if (!a || !st.mountEl || !st.mountEl.contains(a) || !/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) || a.type === 'checkbox') return false;
+    return !!(a.dataset.pr || (a.closest && a.closest('#fctproc-bulk')));
+  }
+  // Called once focus has settled after leaving a box: the refresh held for it.
+  function payOwedPoll() {
+    if (pollOwed && !inCellBox()) setTimeout(() => { if (pollOwed && !inCellBox()) window.FCTProcurement.refresh(); }, 0);
+  }
   function onKeyDown(e) {
-    lastKeyAt = Date.now();
     // A key in the box in use (Enter or Tab moving on from it counts too: it
     // is pressed in this box, before the next one takes the focus and starts
     // afresh).
@@ -6831,23 +6900,18 @@
     },
 
     /**
-     * Re-read the open job's rows (the page's poll). Skipped while a cell is
-     * being typed in — a key in the last few seconds — and while the bulk
-     * bar is: not merely while one has the
-     * focus. Enter moves the caret down a row and leaves it there, a ticked
-     * box keeps it, the search box keeps it while the PM reads; a sheet that
-     * never refreshed then showed a colleague's order as still to be placed
-     * for as long as that lasted. What comes back is drawn around the cell
-     * in use (load → redrawAround), and a box that kept its old value is
-     * drawn afresh once it is left.
+     * Re-read the open job's rows (the page's poll). Held while the caret is
+     * in one of the sheet's cells or the bulk bar's boxes — a colleague's
+     * value is never put under a box being edited — and read the moment it
+     * leaves them (pollOwed, onFocusOut): a sheet whose caret Enter had
+     * parked in a cell used to wait for some unrelated click. Not held by a
+     * ticked row box, the search box or Show all jobs, which held the sheet
+     * still for as long as they kept the focus.
      */
     async refresh() {
       if (!isMounted() || !st.projectId || st.loadState === 'loading') return;
-      const a = document.activeElement;
-      const box = a && st.mountEl.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox';
-      const editing = (box && a.dataset.pr && Date.now() - lastKeyAt < TYPING_MS)
-        || (box && a.closest && a.closest('#fctproc-bulk'));
-      if (editing) return;
+      if (inCellBox()) { pollOwed = true; return; }
+      pollOwed = false;
       if (pend.size) await flushAll();
       // A site whose jobs changed since is a new sheet, read as one.
       await load(st.projectId, { quiet: st.loadState === 'ok' && st.loadedFor === viewSig() });
