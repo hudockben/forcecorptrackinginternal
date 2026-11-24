@@ -161,6 +161,56 @@ console.log('\n[tracker.html — wiring]');
   assert('boot redraws the tab when it is the open one',
     /if \(activeTab === 'procurement'\) renderProcurementTab\(\);/.test(bootBody));
 
+  {
+    // A section's cost code renamed on the bid page: once the whole-job save
+    // carrying the rename has landed, each renamed line also goes through the
+    // per-line save, which copies the new code onto the job's Procurement
+    // rows on the server (deleted ones too) and moves their files — the
+    // whole-job save does neither. After it, not beside it: a page closed at
+    // once must not spend the browser's keepalive allowance on the lines
+    // ahead of the whole-job save.
+    const fns = ['updateBidGroupCode', 'saveProject', '_putProjectThenRenamedLines'].map(n => requireFn(SRC, n)).join('\n');
+    assert('the lines waiting for it are kept per job (_bidRenamedLines)', /const _bidRenamedLines = \{\};/.test(SRC));
+    const proj = { id: 'j1', bidItems: [{ id: 'a', cost_code: 'Stormwater' }, { id: 'b', cost_code: 'Stormwater' }, { id: 'c', cost_code: 'Base' }] };
+    const did = [];
+    let landed = true;
+    const timers = [];
+    const mk = new Function('getProj', 'apiPut', 'patchBidItem', 'renderBidTable', 'saveProjectIndex', '_projBlob', 'localStorage',
+      'projectsList', 'PROJECTS_KEY', '_saveProjTimers', 'setTimeout', 'clearTimeout', '_bidRenamedLines',
+      `${fns}; return { updateBidGroupCode, saveProject, _putProjectThenRenamedLines };`);
+    const page = mk(() => proj, (key, v, opts) => { did.push(['put', key, !!(opts && opts.keepalive)]); return { then: f => f(landed) }; },
+      (pid, id) => did.push(['line', pid, id]), () => {}, () => {}, x => x, { setItem() {} }, [proj], 'k', {},
+      fn => { timers.push(fn); return timers.length; }, () => {}, {});
+    page.updateBidGroupCode('j1', 'Stormwater', 'Storm Drainage');
+    assert('  the rename itself sends no line saves yet', JSON.stringify(did) === '[]' && proj.bidItems.map(b => b.cost_code).join() === 'Storm Drainage,Storm Drainage,Base', JSON.stringify(did));
+    timers.splice(0).forEach(f => f());
+    assert('  the whole-job save goes first, then each renamed line', JSON.stringify(did) === JSON.stringify([['put', 'fct_project_j1', false], ['line', 'j1', 'a'], ['line', 'j1', 'b']]), JSON.stringify(did));
+    did.length = 0;
+    landed = false;
+    page.updateBidGroupCode('j1', 'Storm Drainage', 'Stormwater');
+    timers.splice(0).forEach(f => f());
+    assert('  a whole-job save that failed sends no line saves (nothing to copy from)', JSON.stringify(did) === JSON.stringify([['put', 'fct_project_j1', false]]), JSON.stringify(did));
+    did.length = 0;
+    landed = true;
+    page.updateBidGroupCode('j1', 'Base', 'Base');
+    timers.splice(0).forEach(f => f());
+    assert('  …they wait for the next whole-job save that lands, and go with it (a "rename" to the same code adds none of its own)',
+      JSON.stringify(did) === JSON.stringify([['put', 'fct_project_j1', false], ['line', 'j1', 'a'], ['line', 'j1', 'b']]), JSON.stringify(did));
+    did.length = 0;
+    page.updateBidGroupCode('j1', 'Base', 'Base');
+    timers.splice(0).forEach(f => f());
+    assert('  …and only once', JSON.stringify(did) === JSON.stringify([['put', 'fct_project_j1', false]]), JSON.stringify(did));
+    const flush = requireFn(SRC, '_flushPendingProjectSaves');
+    assert('  and the flush on leaving sends the whole-job save through the same path — keepalive as the page goes, ordinary requests on leaving the bid view',
+      /_putProjectThenRenamedLines\(id, p, \{ keepalive \}\)/.test(flush) && !/patchBidItem/.test(flush)
+        && /const keepalive = !\(opts && opts\.keepalive === false\);/.test(flush)
+        && /_flushPendingProjectSaves\(\{ keepalive: false \}\);/.test(requireFn(SRC, 'closeBidView')));
+    assert('  the renamed lines never go ahead of the whole-job save as the page closes (their keepalive saves would crowd it out)',
+      !/_bidRenamedLines/.test(flush.replace(/_putProjectThenRenamedLines/g, '')) && !/_doBidItemPut\(id, bi/.test(flush));
+    assert('apiPut answers true once a save has landed, false when it failed',
+      /if \(r\.ok\) return true;/.test(requireFn(SRC, 'apiPut')) && (requireFn(SRC, 'apiPut').match(/return false;/g) || []).length === 3);
+  }
+
   const pollAll = requireFn(SRC, '_pollAll');
   assert('Procurement is not in the minute poll: it has its own, every 15 seconds', !/_pollProcurement\(\)/.test(pollAll)
     && /const PROC_POLL_MS = 15_000;/.test(SRC) && /setInterval\(_pollProcurementSoon, PROC_POLL_MS\);/.test(SRC));
@@ -169,10 +219,11 @@ console.log('\n[tracker.html — wiring]');
     && /try \{ await _pollProcurement\(\); \} finally \{ _procPollBusy = false; \}/.test(pollSoon));
   assert('  and read at once on coming back to the window', /_pollHomeFeeds\(\);\s*_pollProcurementSoon\(\);/.test(SRC));
   const pollProc = requireFn(SRC, '_pollProcurement');
-  assert('  which refreshes only the open tab, and never mid-edit, on a hidden page or for the robot',
+  assert('  which refreshes only the open tab, never on a hidden page or for the robot — and leaves "mid-edit" to the sheet,'
+    + ' which waits only for a cell being typed in, not one that merely has the focus',
     /if \(_AUTO_REPORT \|\| _fctPollsSuspended\(\)\) return;/.test(pollProc)
       && /if \(activeTab !== 'procurement' \|\| !window\.FCTProcurement \|\| !_procConfigured\) return;/.test(pollProc)
-      && /if \(_isEditing\(\)\) return;/.test(pollProc)
+      && !/_isEditing\(\)/.test(pollProc)
       && /await FCTProcurement\.refresh\(\);/.test(pollProc));
   const pollPO = requireFn(SRC, '_pollPurchaseOrders');
   assert('a new order list redraws it (after the editing bail-out, which the Procurement tab — copies only — is not held by)',

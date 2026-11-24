@@ -1429,6 +1429,33 @@ function schemaStatements() {
   }
 
   // ─────────────────────────────────────────────────────────────────────
+  console.log('\nA bulk edit with expect (Create PO links its rows only while each is as the page decided)');
+  {
+    const a = uid('ba'), b = uid('bb'), c = uid('bc');
+    for (const id of [a, b, c]) {
+      const r = await create(L2, { id, project_id: 'job-1', description: 'Stone ' + id.slice(-3), vendor: 'Acme Supply' });
+      assert(`(row ${id.slice(-3)})`, r.statusCode === 201, show(r));
+    }
+    // A colleague puts b on an order meanwhile; c is deleted.
+    let r = await patch(L3, b, { po_id: 'po-theirs', po_auto: true });
+    assert('(b linked to their order)', r.statusCode === 200, show(r));
+    r = await call('DELETE', { division: 'turf', id: c }, null, L3);
+    assert('(c deleted)', r.statusCode === 200, show(r));
+    r = await bulk(L2, [a, b, c], { po_id: 'po-mine', po_auto: true }, { project_id: 'job-1', expect: { po_id: null, po_auto: true } });
+    assert('rows still as expected are written; the one changed meanwhile is not, and comes back in conflicts as it is now',
+      r.statusCode === 200 && eq(r.body.items.map(x => x.id), [a]) && r.body.items[0].po_id === 'po-mine'
+        && eq(r.body.conflicts.map(x => [x.id, x.po_id]), [[b, 'po-theirs']]) && eq(r.body.missing, [c]), show(r));
+    assert('…in the database too: b is still on their order', (await rowOf(b)).po_id === 'po-theirs' && (await rowOf(a)).po_id === 'po-mine');
+    r = await bulk(L2, [a], { po_id: 'po-mine', po_auto: true }, { project_id: 'job-1', expect: { po_id: null, po_auto: true } });
+    assert('…a row already holding the value being written is no conflict (the same link sent again)', r.statusCode === 200
+      && eq(r.body.items.map(x => x.id), [a]) && eq(r.body.conflicts, []), show(r));
+    r = await bulk(L2, [a], { quote_number: 'Q-1' }, { project_id: 'job-1' });
+    assert('without expect, a bulk edit answers as before (no conflicts list)', r.statusCode === 200 && !('conflicts' in r.body)
+      && eq(r.body.items.map(x => x.quote_number), ['Q-1']), show(r));
+    r = await bulk(L2, [a], { quote_number: 'Q-2' }, { project_id: 'job-1', expect: { nope: 1 } });
+    assert('an expect naming no column is refused', r.statusCode === 400, show(r));
+  }
+
   console.log('\nWhen the database fails');
   {
     DB.fail = true;

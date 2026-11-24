@@ -142,12 +142,20 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       }
       if (!serverCanEdit) return json(403, { ok: false, error: 'read_only' });
       if (c.method === 'PATCH' && c.q.action === 'bulk') {
-        const items = [];
+        if (db.bulkOk != null) {
+          if (db.bulkOk <= 0) { db.bulkOk = null; return json(503, { ok: false, error: 'db_unavailable', message: 'The database is busy' }); }
+          db.bulkOk--;
+        }
+        const sameV = (a, b) => (typeof a === 'number' || typeof b === 'number' ? Number(a) === Number(b) && a != null && b != null : (a == null ? null : a) === (b == null ? null : b));
+        const items = [], conflicts = [];
         c.body.ids.forEach(id => {
           const r = db.rows.find(x => x.id === id && live(x));
-          if (r) { Object.assign(r, c.body.fields); r.version++; items.push({ ...r }); }
+          if (!r) return;
+          const ex = c.body.expect;
+          if (ex && Object.keys(ex).some(k => !sameV(r[k], ex[k]) && !(k in c.body.fields && sameV(r[k], c.body.fields[k])))) { conflicts.push({ ...r }); return; }
+          Object.assign(r, c.body.fields); r.version++; items.push({ ...r });
         });
-        return json(200, { ok: true, items, missing: [] });
+        return json(200, { ok: true, items, missing: [], ...(c.body.expect ? { conflicts } : {}) });
       }
       if (c.method === 'PATCH') {
         if (db.failPatch > 0) { db.failPatch--; return json(500, { ok: false, error: 'server_error', message: 'Something went wrong' }); }
@@ -194,6 +202,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
         return res;
       }
       if (c.method === 'POST' && c.q.action === 'send') {
+        if (db.failSend) return json(500, { ok: false, error: 'server_error', message: 'Something went wrong' });
         const created = [], restored = [];
         let skipped = 0;
         c.body.items.forEach(it => {
@@ -221,6 +230,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
         const ids = c.q.ids ? c.q.ids.split(',') : [c.q.id];
         let n = 0;
         ids.forEach(id => { const r = db.rows.find(x => x.id === id && live(x)); if (r) { r.deleted_at = '2026-03-10T00:00:00Z'; n++; } });
+        if (!c.q.ids && !n) return json(404, { ok: false, error: 'not_found', message: 'That row does not exist any more.' });
         return json(200, { ok: true, deleted: n });
       }
     }
@@ -262,8 +272,6 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     };
     env.calls.push(c);
     const res = env.handle(c);
-    // The request was acted on, and its answer never arrived.
-    if (res && res.lost) throw new w.TypeError('Failed to fetch');
     const text = JSON.stringify(res.body);
     // A row's PATCH answered only when the test lets it (set env.patchHold).
     if (env.patchHold && c.method === 'PATCH' && c.path === '/api/procurement' && !c.q.action) {
@@ -271,11 +279,18 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       env.patchHold = null;
       await h;
     }
+    if (env.postHold && c.method === 'POST' && c.path === '/api/procurement') {
+      const h = env.postHold;
+      env.postHold = null;
+      await h;
+    }
     if (env.hold && c.method === 'GET' && c.path === '/api/procurement' && !c.q.include_deleted) {
       const h = env.hold;
       env.hold = null;
       await h;
     }
+    // The request was acted on, and its answer never arrived.
+    if (res && res.lost) throw new w.TypeError('Failed to fetch');
     return { ok: res.status >= 200 && res.status < 300, status: res.status, json: async () => JSON.parse(text) };
   };
   // The page's combobox markup contract (tracker.html cbHtml).
@@ -1125,7 +1140,8 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   assert('"No" puts the buttons back', !!env.$(`tr[data-row="${newId}"] [data-act="material"]`));
   env.$(`tr[data-row="${newId}"] [data-act="del"]`).click();
   env.$(`tr[data-row="${newId}"] [data-act="del-yes"]`).click();
-  await sleep(30);
+  // (Material, left a moment ago, commits first — 120 ms after it is left.)
+  await sleep(300);
   const del = env.calls.filter(c => c.method === 'DELETE').pop();
   assert('"Yes" deletes that one row', del && del.q.id === newId && !env.$(`tr[data-row="${newId}"]`), del && del.q);
   env.$('[data-act="add"]').click();
@@ -1226,8 +1242,8 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   assert('…and the rows are linked to its id', eq(link.body.ids, ['r2', 'r3']) && /^npo/.test(link.body.fields.po_id), link.body);
   assert('selection clears after', !env.$('#fctproc-bulk').textContent.trim());
   // Rows on two sub codes -> asked.
-  env.P._test.state().rows.find(r => r.id === 'r1').vendor = '';
-  env.P._test.state().rows.find(r => r.id === 'r4').vendor = '';
+  // (In the stub's store too: Create PO reads the rows again before it decides.)
+  ['r1', 'r4'].forEach(id => { env.P._test.state().rows.find(r => r.id === id).vendor = ''; env.db.rows.find(r => r.id === id).vendor = ''; });
   env.P.rerender();
   sel('r1'); sel('r4');
   env.$('[data-act="bulk-po"]').click();
@@ -1314,11 +1330,22 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
 
   // ── refresh / rerender ────────────────────────────────────────────────
   console.log('\n[refresh]');
-  const getsBefore = env.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement').length;
+  const procGets = () => env.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement').length;
+  const getsBefore = procGets();
   env.field('r1', 'quote_number').focus();
   await env.P.refresh();
-  assert('refresh skips while a cell is being edited', env.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement').length === getsBefore);
+  assert('refresh is held while the caret is in a cell (nothing is put under a box being edited)', procGets() === getsBefore);
   env.field('r1', 'quote_number').blur();
+  await sleep(20);
+  assert('…and read the moment the caret leaves the cells', procGets() === getsBefore + 1);
+  const selBox = env.$('[data-sel="r1"]');
+  selBox.focus();
+  await env.P.refresh();
+  assert('a ticked row box holding the focus does not hold the refresh', procGets() === getsBefore + 2 && env.w.document.activeElement === env.$('[data-sel="r1"]'));
+  env.$('#fctproc-search').focus();
+  await env.P.refresh();
+  assert('…nor does the search box', procGets() === getsBefore + 3);
+  env.$('#fctproc-search').blur();
   env.db.rows.find(r => r.id === 'r2').vendor = 'Changed Elsewhere';
   env.db.rows.find(r => r.id === 'r2').version = 99;
   const wrap = env.$('#fctproc-wrap');
@@ -1531,7 +1558,8 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     && x.field('k2', 'po').placeholder === '2 POs match — pick');
   assert('…without touching the box being typed in', x.w.document.activeElement === typing && typing.isConnected && typing.value === 'geo fabric');
   typing.blur();
-  await sleep(30);
+  // (The picker commits 120 ms after it is left; the sheet's refresh waits for that.)
+  await sleep(260);
 
   // Enter moves down a column, like the sheet.
   const q1 = x.field('k2', 'quote_number');  // k2 (b1) sorts above k1 (b2)
@@ -1715,7 +1743,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     await tick();
     e.$(`tr[data-row="${added.id}"] [data-act="del"]`).click();
     e.$(`tr[data-row="${added.id}"] [data-act="del-yes"]`).click();
-    await sleep(20);
+    await sleep(300);
     release();
     await poll3;
     await sleep(10);
@@ -3729,7 +3757,9 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     const qty = e.$('.fctproc-modal [data-copy="qty"]');
     qty.checked = true; e.fire(qty, 'change');
     e.$('.fctproc-modal [data-copy="go"]').click();
-    await sleep(50);
+    // (A picker left a moment ago is still committing — 120 ms after it is
+    // left; the new rows are drawn once it has, not under it.)
+    await sleep(300);
     const add = e.calls.find(c => c.method === 'POST' && c.q.action === 'add');
     assert('Add sends the new rows in one request: this job\'s codes, the names, units, vendors (as the supplier list spells them) and, asked, quantities',
       add && add.body.project_id === 'p1' && eq(add.body.items.map(i => [i.bid_item_id, i.cost_code, i.sub_code, i.description, i.unit, i.vendor, i.quantity]), [
@@ -4266,6 +4296,855 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     const addq = e.calls.filter(c => c.q.action === 'add').pop();
     assert('"copy the quantities" leaves a quantity the PM typed on the own row as it is (the new rows take theirs)',
       ownq && eq(ownq.body.fields, { description: 'Elbow 15" 90°', vendor: 'LB Water' }) && addq.body.items[0].quantity === 1, [ownq && ownq.body, addq && addq.body.items]);
+  }
+
+  console.log('\n[bug sweep: the save path]');
+  {
+    const dana = (e, id, f, by = 'Dana Reyes') => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = by; r.updated_at = new Date().toISOString(); };
+    const rowsOf = e => e.$$('tr.fctproc-row').map(t => t.dataset.row);
+
+    // A Vendor pick that cleared the old vendor's contact, refused as a conflict.
+    let e = makeEnv({ rows: [row({ id: 'v1', vendor: 'Acme Supply', contact: 'Dana', email: 'dana@acme.test' })],
+      contacts: [{ id: 'c1', supplier_name: 'Acme Supply', name: 'Dana', email: 'dana@acme.test', phone: '' }] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 'v1', { vendor: 'Beta Corp' });
+    e.pick(e.field('v1', 'vendor'), 'LB Water');
+    await sleep(700);
+    let vp = e.patches().filter(p => p.q.id === 'v1');
+    assert('a Vendor pick that clears the old vendor\'s Contact / Email goes as one save', vp[0] && eq(vp[0].body.fields, { vendor: 'LB Water', contact: '', email: '' }), vp.map(p => p.body));
+    assert('…refused (the vendor was changed elsewhere): Contact and Email are not saved without it', vp.length === 1
+      && e.db.rows[0].contact === 'Dana' && e.db.rows[0].email === 'dana@acme.test', vp.map(p => p.body));
+    assert('…they are asked about with it', eq([...e.$$('.fctproc-conflict tbody tr')].map(tr => tr.children[0].textContent), ['Vendor', 'Contact', 'Email']),
+      e.$('.fctproc-modal') && e.$('.fctproc-modal').textContent.replace(/\s+/g, ' '));
+    e.$('.fctproc-modal [data-conflict="theirs"]').click();
+    await sleep(700);
+    assert('"Keep saved": their vendor, and the contact with it, as they were', e.db.rows[0].vendor === 'Beta Corp' && e.db.rows[0].contact === 'Dana'
+      && e.db.rows[0].email === 'dana@acme.test' && e.patches().length === 1 && e.field('v1', 'contact').value === 'Dana');
+
+    // A Material from the library brings its Unit and Vendor: asked about with it.
+    e = makeEnv({ rows: [row({ id: 'm1', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', unit: 'LS' })] });
+    e.db.materials = [{ material: 'Perforated 15" SLCPP', sub_code: '15" Perf drain', cost_code: 'Stormwater', unit: 'LF', vendor: 'LB Water', jobs: 5 }];
+    e.P.renderTab(e.root);
+    await sleep(60);
+    dana(e, 'm1', { description: 'Perf pipe (Dana)' });
+    const opt = e.P.cbOptions('proc_materials:m1').find(o => o.label === 'Perforated 15" SLCPP');
+    e.pick(e.field('m1', 'description'), opt.label, opt.value);
+    await sleep(700);
+    vp = e.patches().filter(p => p.q.id === 'm1');
+    assert('a library Material refused as a conflict: its Unit and Vendor are not saved on their own',
+      vp.length === 1 && eq(vp[0].body.fields, { description: 'Perforated 15" SLCPP', unit: 'LF', vendor: 'LB Water' })
+      && e.db.rows[0].unit === 'LS' && e.db.rows[0].vendor === '', vp.map(p => p.body));
+    assert('…the dialog asks about the three together', eq([...e.$$('.fctproc-conflict tbody tr')].map(tr => tr.children[0].textContent), ['Material', 'Unit', 'Vendor']),
+      e.$('.fctproc-modal') && e.$('.fctproc-modal').textContent.replace(/\s+/g, ' '));
+    e.$('.fctproc-modal [data-conflict="mine"]').click();
+    await sleep(700);
+    assert('…and "Keep mine" saves all three', e.db.rows[0].description === 'Perforated 15" SLCPP' && e.db.rows[0].unit === 'LF' && e.db.rows[0].vendor === 'LB Water');
+
+    // A save whose answer was lost, and the same cell changed again while it
+    // was out (typed in two bursts over a dropping connection).
+    e = makeEnv({ rows: [row({ id: 'l1', quote_number: 'Q-OLD' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.db.losePatch = 1;
+    let releaseLost;
+    e.patchHold = new Promise(r => { releaseLost = r; });
+    let qb = e.field('l1', 'quote_number');
+    qb.focus(); qb.value = 'Q-1'; e.fire(qb, 'input');
+    await sleep(700);                                   // the save goes on a pause in the typing
+    qb.value = 'Q-2'; e.fire(qb, 'input');
+    releaseLost();
+    await sleep(30);
+    assert('(the first save landed; its answer was lost)', e.db.rows[0].quote_number === 'Q-1' && e.errors.some(m => /could not be saved/.test(m)));
+    qb.blur(); e.fire(qb, 'change');
+    await sleep(700);
+    const lp = e.patches();
+    assert('changed again: no "changed by someone else" about the page\'s own save — it is sent on, expecting what landed',
+      !e.$('.fctproc-modal') && e.db.rows[0].quote_number === 'Q-2' && eq(lp[lp.length - 1].body, { fields: { quote_number: 'Q-2' }, expect: { quote_number: 'Q-1' } }),
+      lp.map(p => p.body));
+
+    // A row deleted here while its save is out.
+    e = makeEnv({ rows: [row({ id: 'g1', quote_number: 'A' }), row({ id: 'g2' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    let release;
+    e.patchHold = new Promise(r => { release = r; });
+    qb = e.field('g1', 'quote_number');
+    qb.focus(); qb.value = 'B'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(30);
+    e.$('tr[data-row="g1"] [data-act="del"]').click();
+    e.$('tr[data-row="g1"] [data-act="del-yes"]').click();
+    await sleep(60);
+    release();
+    await sleep(60);
+    e.P.rerender();
+    assert('a row deleted while its save was out is not brought back by the save\'s answer', !e.$('tr[data-row="g1"]')
+      && !e.P._test.state().rows.some(r => r.id === 'g1') && !e.errors.some(m => /deleted by someone else/.test(m)), rowsOf(e));
+
+    // Deleting a row someone else deleted first.
+    e = makeEnv({ rows: [row({ id: 'd1' }), row({ id: 'd2' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.db.rows[0].deleted_at = '2026-03-10T00:00:00Z';
+    e.$('tr[data-row="d1"] [data-act="del"]').click();
+    e.$('tr[data-row="d1"] [data-act="del-yes"]').click();
+    await sleep(80);
+    assert('deleting a row someone else deleted first: it goes, with no "could not delete" and no "Not saved"', !e.$('tr[data-row="d1"]')
+      && !e.errors.length && !/Not saved/.test(e.$('#fctproc-save').textContent), [e.errors, e.$('#fctproc-save').textContent]);
+
+    // A failed save, another job opened and this one again.
+    e = makeEnv({ rows: [row({ id: 'j1', quote_number: 'Q-1' }), row({ id: 'j2', project_id: 'p2' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.db.failPatch = 9;
+    qb = e.field('j1', 'quote_number');
+    qb.focus(); qb.value = 'Q-2'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(80);
+    e.P._test.selectProject('p2');
+    await sleep(40);
+    e.P._test.selectProject('p1');
+    await sleep(60);
+    assert('a failed edit, the job opened again: the cell shows the edit still waiting to go, not the saved value',
+      e.field('j1', 'quote_number').value === 'Q-2' && e.P._test.pending().pend.has('j1'), e.field('j1', 'quote_number').value);
+    assert('(the indicator says "Not saved")', /Not saved/.test(e.$('#fctproc-save').textContent));
+    e.$('[data-act="add"]').click();
+    await sleep(400);
+    assert('+ Add Row meanwhile: the indicator still says "Not saved", not "Saved"', /Not saved/.test(e.$('#fctproc-save').textContent)
+      && e.P._test.state().rows.length === 2, e.$('#fctproc-save').textContent);
+
+    // "Keep mine", and a third person's save while the dialog was open.
+    e = makeEnv({ rows: [row({ id: 't1', date_needed: '2027-01-10' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 't1', { date_needed: '2027-01-15' });
+    const dn = e.field('t1', 'date_needed');
+    dn.focus(); dn.value = '2027-01-20'; e.fire(dn, 'change'); dn.blur();
+    await sleep(700);
+    assert('(the dialog: saved 01/15, yours 01/20)', !!e.$('.fctproc-modal') && /01\/15\/2027/.test(e.$('.fctproc-conflict').textContent));
+    dana(e, 't1', { date_needed: '2027-01-25' }, 'Cal Ortiz');
+    await e.P.refresh();
+    e.$('.fctproc-modal [data-conflict="mine"]').click();
+    await sleep(700);
+    assert('"Keep mine" after a third person saved meanwhile: theirs is not written over unseen — asked again, with it',
+      e.db.rows[0].date_needed === '2027-01-25' && !!e.$('.fctproc-modal') && /01\/25\/2027/.test(e.$('.fctproc-conflict').textContent)
+      && /Cal Ortiz/.test(e.$('.fctproc-modal').textContent), e.$('.fctproc-modal') && e.$('.fctproc-modal').textContent.replace(/\s+/g, ' '));
+
+    // A box left stale by a refresh, and the PM moving within the row.
+    e = makeEnv({ rows: [row({ id: 's1', quote_number: 'Q-2' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 's1', { quote_number: 'Q-DANA' });
+    let releaseGet;
+    e.hold = new Promise(r => { releaseGet = r; });
+    const poll = e.P.refresh();
+    await tick();
+    qb = e.field('s1', 'quote_number');
+    qb.focus();
+    releaseGet();
+    await poll;
+    await sleep(10);
+    assert('(a refresh that lands while the box has focus leaves it as it is, marked)', qb.isConnected && qb.value === 'Q-2'
+      && e.$('tr[data-row="s1"] .c-quote_number').classList.contains('fctproc-chg'));
+    e.field('s1', 'email').focus();
+    await sleep(10);
+    assert('moving to another cell of the row: the box left shows what is saved now', e.field('s1', 'quote_number').value === 'Q-DANA');
+    qb = e.field('s1', 'quote_number');
+    qb.focus(); qb.value = 'Q-DANA-rev'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(80);
+    assert('…so an edit made on coming back is of the value that is there', e.db.rows[0].quote_number === 'Q-DANA-rev' && !e.$('.fctproc-modal'));
+
+    // Text typed in a picker, and the page closed or reloaded.
+    e = makeEnv({ rows: [row({ id: 'u1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const vb = e.field('u1', 'vendor');
+    vb.focus(); vb.value = 'New Ent'; e.fire(vb, 'input');
+    const ev = new e.w.Event('beforeunload', { cancelable: true });
+    e.w.dispatchEvent(ev);
+    assert('leaving with text typed in a picker asks first ("Leave site?")', ev.defaultPrevented);
+    e.w.dispatchEvent(new e.w.Event('pagehide'));
+    await sleep(30);
+    const up = e.patches().filter(p => p.q.id === 'u1').pop();
+    assert('…and on the way out it is committed and sent', up && up.keepalive && eq(up.body.fields, { vendor: 'New Ent' }), up && up.body);
+
+    // An action of the PM's own, answered while they type in another cell.
+    e = makeEnv({ rows: [row({ id: 'o1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    let releasePost;
+    e.postHold = new Promise(r => { releasePost = r; });
+    e.$('[data-act="add"]').click();
+    await sleep(20);
+    qb = e.field('o1', 'quote_number');
+    qb.focus(); qb.value = 'Q-12'; e.fire(qb, 'input');
+    qb.dispatchEvent(new e.w.KeyboardEvent('keydown', { key: '2', bubbles: true }));
+    releasePost();
+    await sleep(80);
+    assert('+ Add Row answered while the PM types in another cell: that box keeps the focus and the typing (not rebuilt, not moved to the new row)',
+      e.w.document.activeElement === qb && qb.isConnected && qb.value === 'Q-12', e.w.document.activeElement && e.w.document.activeElement.outerHTML.slice(0, 80));
+    qb.blur();
+    await sleep(40);
+    assert('…the new row is drawn once the cell is left', e.P._test.state().rows.length === 2 && rowsOf(e).length === 2, rowsOf(e));
+
+    // The sheet's start-up finishing (the tab drawn again) while a cell is being typed in.
+    qb = e.field('o1', 'quote_number');
+    qb.focus(); qb.value = 'Q-123'; e.fire(qb, 'input');
+    e.P.renderTab(e.root);
+    assert('the tab drawn again while a cell is typed in: redrawn around it, the box and its text kept',
+      e.w.document.activeElement === qb && qb.isConnected && qb.value === 'Q-123');
+    qb.blur();
+  }
+  console.log('\n[bug sweep: the sheet, its orders, its lists]');
+  {
+    const dana = (e, id, f) => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = 'Dana Reyes'; r.updated_at = new Date().toISOString(); };
+    const rowsOf = e => e.$$('tr.fctproc-row').map(t => t.dataset.row);
+    const key = (el, k) => { const ev = new el.ownerDocument.defaultView.KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }); el.dispatchEvent(ev); return ev; };
+
+    // Past midnight with the sheet open: Due soon turns Late on the next poll.
+    let e = makeEnv({ rows: [row({ id: 'n1', date_needed: '2026-03-20', lead_time_days: 10 })] });
+    let day = TODAY;
+    e.cfg.today = () => day;
+    e.P.configure(e.cfg);
+    e.P.renderTab(e.root);
+    await sleep(40);
+    assert('(Order By today: Due soon)', /Due soon/.test(e.$('tr[data-row="n1"]').textContent) && !/Late/.test(e.$('tr[data-row="n1"]').textContent));
+    day = '2026-03-11';
+    await e.P.refresh();
+    assert('past midnight, nothing changed on the server: the next poll shows it Late, and counts it', /Late/.test(e.$('tr[data-row="n1"]').textContent)
+      && !/Due soon/.test(e.$('tr[data-row="n1"]').textContent) && /Late\s*1/.test(e.$('.fctproc-counts, #fctproc-body').textContent.replace(/\s+/g, ' ')),
+      e.$('tr[data-row="n1"]').textContent.replace(/\s+/g, ' '));
+
+    // A row a colleague put on an order this page has not read yet.
+    e = makeEnv({ rows: [row({ id: 'q1', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain' })] });
+    let rereads = 0;
+    e.cfg.refreshPurchaseOrders = async () => { rereads++; return true; };
+    e.P.configure(e.cfg);
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 'q1', { po_id: 'po77' });
+    await e.P.refresh();
+    await sleep(10);
+    assert('a row linked to an order the page does not have yet: the order list is read again at once', rereads === 1, rereads);
+    await e.P.refresh();
+    await sleep(10);
+    assert('…once per set of such orders, not on every poll', rereads === 1, rereads);
+
+    // The arrow keys and the wheel in the grid.
+    e = makeEnv({ rows: [row({ id: 'a1', quantity: 400, created_at: '2026-03-01T10:00:00Z' }), row({ id: 'a2', quantity: 5, created_at: '2026-03-01T10:00:01Z' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const [top, bottom] = rowsOf(e);
+    let qn = e.field(top, 'quantity');
+    qn.focus();
+    let ev = key(qn, 'ArrowDown');
+    assert('↓ in Quantity moves to the next row\'s Quantity — it does not step the value', ev.defaultPrevented
+      && e.w.document.activeElement === e.field(bottom, 'quantity') && e.field(top, 'quantity').value === qn.value && !e.P._test.pending().pend.size);
+    ev = key(e.field(bottom, 'quantity'), 'ArrowUp');
+    assert('↑ moves back up', ev.defaultPrevented && e.w.document.activeElement === e.field(top, 'quantity'));
+    ev = key(e.field(top, 'date_needed'), 'ArrowDown');
+    assert('…and so in a date', ev.defaultPrevented);
+    const sca = e.field(top, 'sca_status');
+    ev = key(sca, 'ArrowDown');
+    assert('…and in the Sub Agmt choice, which is not stepped to the next one', ev.defaultPrevented && sca.value === 'Pending');
+    const vend = e.field(top, 'vendor');
+    ev = key(vend, 'ArrowDown');
+    assert('a picker keeps its arrows for its list', !ev.defaultPrevented);
+    qn = e.field(top, 'quantity');
+    qn.focus();
+    qn.dispatchEvent(new e.w.Event('wheel', { bubbles: true }));
+    assert('the wheel over a focused Quantity lets go of the box (the sheet scrolls; the value is not stepped)', e.w.document.activeElement !== qn);
+
+    // The column filter's Search, then Apply.
+    e = makeEnv({ rows: [row({ id: 'f1', vendor: 'LB Water' }), row({ id: 'f2', vendor: 'Acme Supply' }), row({ id: 'f3', vendor: 'Beta Corp' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.$('[data-pff="vendor"]').click();
+    const search = e.$('#fctproc-ff-search');
+    search.value = 'LB';
+    e.fire(search, 'input');
+    e.$('#fctproc-filter-dd [data-ff="apply"]').click();
+    assert('Search in a column filter, then Apply: only the matches are kept, as in Excel', eq(rowsOf(e), ['f1']), rowsOf(e));
+    e.$('[data-pff="vendor"]').click();
+    const s2 = e.$('#fctproc-ff-search');
+    s2.value = 'Corp';
+    e.fire(s2, 'input');
+    const all = e.$('#fctproc-ff-all');
+    all.checked = true;
+    e.fire(all, 'change');
+    e.$('#fctproc-filter-dd [data-ff="apply"]').click();
+    assert('…(Select All) with a search ticks the matches only (LB Water, ticked before but not a match, is not kept)', eq(rowsOf(e), ['f3']), rowsOf(e));
+
+    // A PO raised for one material is not taken by the materials beside it.
+    const PX = { id: 'pX', po_number: 'PO-0100', project_id: 'p1', cost_code: 'Stormwater', sub_code: '15" Perf drain', supplier: 'Acme Supply', date_created: '2026-03-09' };
+    const sib = row({ id: 'sib', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', date_needed: '2026-03-25', lead_time_days: 14 });
+    const linked = row({ id: 'own', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', po_id: 'pX' });
+    assert('a material under a bid line is not "on" the PO raised for the material beside it (linked to that one)',
+      T.effectivePO(sib, C({ purchaseOrders: [PX], rows: [linked, sib] })).kind === 'none'
+      && T.statusOf(sib, C({ purchaseOrders: [PX], rows: [linked, sib] })) === 'Not Ordered');
+    assert('…while a PO nobody is linked to still matches by its codes', T.effectivePO(sib, C({ purchaseOrders: [PX], rows: [sib] })).kind === 'auto');
+
+    // Create PO decides on the rows as stored, and links only while they are as decided.
+    e = makeEnv({ rows: [row({ id: 'cp1', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', vendor: 'Acme Supply' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.cfg.getPurchaseOrders().push({ id: 'poB', po_number: 'PO-0200', project_id: 'p1', cost_code: 'General', sub_code: 'Labor', supplier: 'Acme Supply', date_created: TODAY });
+    dana(e, 'cp1', { po_id: 'poB' });
+    let box = e.$('[data-sel="cp1"]'); box.checked = true; e.fire(box, 'change');
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(80);
+    assert('Create PO for a row a colleague just put on an order: asked first (the rows are read again), nothing raised',
+      !e.created.some(c => c[0] === 'po') && !!e.$('.fctproc-modal') && /already on <b>PO-0200/.test(e.$('.fctproc-modal [data-body]').innerHTML),
+      e.$('.fctproc-modal') && e.$('.fctproc-modal').textContent.replace(/\s+/g, ' '));
+    const cancelPO = e.$$('.fctproc-modal [data-choice]').pop();
+    if (cancelPO) cancelPO.click();
+    await sleep(20);
+    e = makeEnv({ rows: [row({ id: 'cp2', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', vendor: 'Acme Supply' })] });
+    const make = e.cfg.createPurchaseOrder;
+    e.cfg.createPurchaseOrder = async seed => {
+      const po = await make(seed);
+      // A colleague's link lands while the order is being raised.
+      e.cfg.getPurchaseOrders().push({ id: 'poC', po_number: 'PO-0300', project_id: 'p1', cost_code: 'General', sub_code: 'Labor', supplier: 'Acme Supply', date_created: TODAY });
+      dana(e, 'cp2', { po_id: 'poC' });
+      return po;
+    };
+    e.P.configure(e.cfg);
+    e.P.renderTab(e.root);
+    await sleep(40);
+    box = e.$('[data-sel="cp2"]'); box.checked = true; e.fire(box, 'change');
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(120);
+    const lk = e.patches().filter(p => p.q.action === 'bulk').pop();
+    assert('the link to the new PO is sent only while each row\'s PO cell is as decided (expect)', lk && eq(lk.body.expect, { po_id: null, po_auto: true }), lk && lk.body);
+    assert('…a row a colleague linked meanwhile stays on theirs, and the PM is told the new PO may be for ordered material',
+      e.db.rows[0].po_id === 'poC' && e.errors.some(m => /put on an order by someone else while it was being raised/.test(m)), e.errors);
+
+    // Re-picking a Sub Code under a quantity the PM typed.
+    e = makeEnv({ rows: [row({ id: 'rp1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.pick(e.field('rp1', 'codes'), 'Geofabric', 'b1');
+    await sleep(700);
+    assert('(the pick brings 8110 SF)', e.db.rows[0].unit === 'SF' && Number(e.db.rows[0].quantity) === 8110, e.db.rows[0]);
+    qn = e.field('rp1', 'quantity');
+    qn.focus(); qn.value = '400'; e.fire(qn, 'input'); qn.blur(); e.fire(qn, 'change');
+    await sleep(700);
+    e.pick(e.field('rp1', 'codes'), '15" Perf drain', 'b2');
+    await sleep(700);
+    assert('re-coded to a line bought by another unit: the quantity typed keeps its unit (400 SF does not become 400 LF)',
+      e.db.rows[0].bid_item_id === 'b2' && Number(e.db.rows[0].quantity) === 400 && e.db.rows[0].unit === 'SF', e.db.rows[0]);
+
+    // One sub code under two cost codes: two lines, each with its own list.
+    const L2 = [
+      { id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', unit: 'SF', quantity: 8110, index: 0 },
+      { id: 'b7', cost_code: 'Base', sub_code: 'Geofabric', unit: 'SY', quantity: 900, index: 1 },
+    ];
+    e = makeEnv({ bidLines: L2, rows: [
+      row({ id: 'gS', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' }),
+      row({ id: 'gB', source: 'bid', bid_item_id: 'b7', cost_code: 'Base', sub_code: 'Geofabric', description: 'Mirafi 140N' }),
+    ] });
+    e.db.materials = [{ material: 'Mirafi 140N', sub_code: 'Geofabric', cost_code: 'Stormwater', unit: 'SY', vendor: 'Acme Supply', jobs: 2 }];
+    e.P.renderTab(e.root);
+    await sleep(60);
+    const T3 = e.P._test;
+    assert('a material named on another cost code\'s line of the same sub code is not "already here" on this one',
+      T3.hasPastList(T3.state().rows.find(r => r.id === 'gS'), T3.makeCtx()));
+
+    // Add to Procurement closed while it reads "Adding…", and the send fails.
+    e = makeEnv({ rows: [] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.P.openSendModal('p1');
+    await sleep(60);
+    tickLines(e, ['Geofabric']);
+    e.db.failSend = true;
+    let releaseSend;
+    e.postHold = new Promise(r => { releaseSend = r; });
+    e.$('.fctproc-modal [data-send="go"]').click();
+    await sleep(10);
+    e.$('.fctproc-modal [data-send="cancel"]').click();
+    releaseSend();
+    await sleep(80);
+    assert('Add to Procurement closed mid-send, and the send failed: said on the page', !e.$('.fctproc-modal')
+      && e.errors.some(m => /may not have gone through/.test(m)), e.errors);
+
+    // A bulk edit sent in parts, the second failing.
+    e = makeEnv({ rows: [row({ id: 'bp1', vendor: 'Acme Supply', contact: 'Dana', email: 'dana@acme.test' }), row({ id: 'bp2', vendor: 'Acme Supply' })],
+      contacts: [{ id: 'c1', supplier_name: 'Acme Supply', name: 'Dana', email: 'dana@acme.test', phone: '' }] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    ['bp1', 'bp2'].forEach(id => { const b = e.$(`[data-sel="${id}"]`); b.checked = true; e.fire(b, 'change'); });
+    e.$('#fctproc-bulk-field').value = 'vendor';
+    e.fire(e.$('#fctproc-bulk-field'), 'change');
+    e.$('#fctproc-bulk-valbox .cb-input').value = 'LB Water';
+    e.db.bulkOk = 1;
+    e.$('[data-act="bulk-apply"]').click();
+    await sleep(120);
+    assert('a bulk edit whose second part fails says how many rows it did change, and shows them changed',
+      e.errors.some(m => /saved on 1 of the 2 rows/.test(m)) && e.field('bp2', 'vendor').value === 'LB Water' && e.db.rows[1].vendor === 'LB Water', e.errors);
+
+    // Deleting several hundred rows at once.
+    const many = Array.from({ length: 450 }, (_, i) => row({ id: 'z' + String(i).padStart(3, '0') }));
+    e = makeEnv({ rows: many });
+    e.P.renderTab(e.root);
+    await sleep(60);
+    e.$('#fctproc-selall').checked = true;
+    e.fire(e.$('#fctproc-selall'), 'change');
+    e.$('[data-act="bulk-del"]').click();
+    e.$('[data-act="bulk-del-yes"]').click();
+    await sleep(400);
+    const dels = e.calls.filter(c => c.method === 'DELETE');
+    assert('deleting 450 rows at once goes in parts of 200 (the ids ride in the address, which the host caps)',
+      eq(dels.map(d => d.q.ids.split(',').length), [200, 200, 50]) && !rowsOf(e).length && e.db.rows.every(r => r.deleted_at), dels.map(d => d.q.ids && d.q.ids.split(',').length));
+
+    // The Excel file with a character XML cannot carry.
+    const xp = T.xlsxParts([row({ id: 'x1', description: 'Bad ￾ char', vendor: 'Half \uD800 pair', quote_number: 'Ok 😀' })], C());
+    const xs = xp.find(p => p.name === 'xl/worksheets/sheet1.xml').data;
+    const xtext = typeof xs === 'string' ? xs : new TextDecoder().decode(xs);
+    assert('Excel: U+FFFE and half a surrogate pair are left out (one of them made the whole file unreadable); a whole pair stays',
+      !/[￾￿]/.test(xtext) && !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(xtext) && /Bad  char/.test(xtext) && /😀/.test(xtext), xtext.slice(0, 200));
+  }
+  {
+    // The automatic re-link after a Replace all, racing a colleague's pick.
+    const dana = (e, id, f) => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = 'Dana Reyes'; r.updated_at = new Date().toISOString(); };
+    const NEWL = [
+      { id: 'n1', cost_code: 'Stormwater', sub_code: 'Geofabric', unit: 'SF', quantity: 8110, index: 0 },
+      { id: 'n6', cost_code: 'Stormwater', sub_code: 'Elbows', unit: 'EA', quantity: 12, index: 1 },
+    ];
+    const ex = makeEnv({ rows: [row({ id: 'RX', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' })] });
+    ex.P.configure({ getBidLines: id => (id === 'p1' ? NEWL : []), getFreshBidLines: async () => NEWL });
+    const h = ex.handle;
+    let raced = false;
+    ex.handle = c => {
+      if (!raced && c.method === 'PATCH' && c.q.id === 'RX') { raced = true; dana(ex, 'RX', { bid_item_id: 'n6', sub_code: 'Elbows' }); }
+      return h(c);
+    };
+    ex.P.renderTab(ex.root);
+    await sleep(120);
+    const rx = ex.patches().filter(p => p.q.id === 'RX');
+    assert('the automatic re-link is sent only while the row is as it was read (expect)',
+      rx[0] && eq(rx[0].body.expect, { bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' }), rx.map(p => p.body));
+    assert('…so a colleague\'s Sub Code pick made while it ran is kept, with nothing said', ex.db.rows[0].bid_item_id === 'n6'
+      && rx.length === 1 && !ex.errors.length && !ex.$('.fctproc-modal') && !ex.warns.some(w => /re-link failed/.test(w)), [ex.db.rows[0].bid_item_id, ex.errors, ex.warns]);
+    assert('…and the row is drawn with the colleague\'s pick, marked as theirs (left as it was, the next edit of it would expect theirs unseen)',
+      /Elbows/.test(ex.$('tr[data-row="RX"]').textContent) && !!ex.$('tr[data-row="RX"] .fctproc-chg'), ex.$('tr[data-row="RX"]').textContent.replace(/\s+/g, ' '));
+  }
+
+  console.log('\n[bug sweep: the review of its fixes]');
+  {
+    const dana = (e, id, f, by = 'Dana Reyes') => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = by; r.updated_at = new Date().toISOString(); };
+    const rowsOf = e => e.$$('tr.fctproc-row').map(t => t.dataset.row);
+    const later = async (e, ms, fn) => {
+      const realW = e.w.Date.now, real = Date.now, t = Date.now() + ms;
+      e.w.Date.now = () => t; Date.now = () => t;
+      try { return await fn(); } finally { e.w.Date.now = realW; Date.now = real; }
+    };
+
+    // The window switched away while the caret sits in a box, a refresh,
+    // and the PM back in it: the save still expects what the box showed.
+    let e = makeEnv({ rows: [row({ id: 'w1', quote_number: 'Q1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    let qb = e.field('w1', 'quote_number');
+    qb.focus();
+    qb.dispatchEvent(new e.w.FocusEvent('focusout', { bubbles: true }));     // the window loses the focus; the box keeps it
+    await sleep(450);
+    dana(e, 'w1', { quote_number: 'Q-COLLEAGUE' });
+    await later(e, 5000, () => e.P.refresh());
+    assert('(nothing was put under the box in use)', qb.isConnected && qb.value === 'Q1');
+    qb.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));      // the window comes back
+    qb.value = 'Q1-9'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(80);
+    assert('back from another window: the save expects what the box showed, so the colleague\'s change is asked about, not written over',
+      e.db.rows[0].quote_number === 'Q-COLLEAGUE' && !!e.$('.fctproc-modal') && eq(e.patches()[0].body.expect, { quote_number: 'Q1' }), e.patches().map(p => p.body));
+
+    // A row button pressed with the caret in a box of the same row.
+    e = makeEnv({ rows: [row({ id: 'b1', quote_number: 'Q1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.field('b1', 'quote_number').focus();
+    const del = e.$('tr[data-row="b1"] [data-act="del"]');
+    del.focus();                                       // the press moves the focus to it
+    await sleep(10);
+    assert('the caret moved from a box to a row button of the same row: the button is not redrawn under the press (its click lands)',
+      del.isConnected && e.$('tr[data-row="b1"] [data-act="del"]') === del && e.w.document.activeElement === del);
+
+    // The PM's own save of another cell landed after the colleague's change.
+    e = makeEnv({ rows: [row({ id: 'o1', quote_number: 'Q-OLD', quantity: 5 })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 'o1', { quote_number: 'Q-DANA' });
+    const qn = e.field('o1', 'quantity');
+    qn.focus(); qn.value = '6'; e.fire(qn, 'input');
+    qb = e.field('o1', 'quote_number');
+    qb.focus();
+    await sleep(700);                                  // the quantity goes on the pause
+    assert('(the quantity went in, saved under the PM\'s name)', Number(e.db.rows[0].quantity) === 6 && e.db.rows[0].updated_by === 'Pat PM');
+    qb.value = 'Q-PM'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(80);
+    const dlg = e.$('.fctproc-modal');
+    assert('a colleague\'s change, the row last saved by the PM\'s own other save: "Changed by someone else", naming nobody — not "you, in another window"',
+      !!dlg && /Changed by someone else/.test(dlg.textContent) && !/another window/.test(dlg.textContent) && !/last saved by/.test(dlg.textContent),
+      dlg && dlg.textContent.replace(/\s+/g, ' '));
+
+    // A Vendor pick made while another save of the row was out, both refused.
+    e = makeEnv({ rows: [row({ id: 'p1r', vendor: 'Acme Supply', contact: 'Dana', email: 'dana@acme.test', quote_number: 'Q-1' })],
+      contacts: [{ id: 'c1', supplier_name: 'Acme Supply', name: 'Dana', email: 'dana@acme.test', phone: '' }] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 'p1r', { vendor: 'Beta Corp', quote_number: 'Q-D' });
+    let releaseQ;
+    e.patchHold = new Promise(r => { releaseQ = r; });
+    qb = e.field('p1r', 'quote_number');
+    qb.focus(); qb.value = 'Q-PM'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(30);
+    e.pick(e.field('p1r', 'vendor'), 'LB Water');
+    await sleep(10);
+    releaseQ();
+    await sleep(700);
+    const seen = [];
+    for (let i = 0; i < 3 && e.$('.fctproc-modal'); i++) {
+      seen.push([...e.$$('.fctproc-conflict tbody tr')].map(tr => tr.children[0].textContent));
+      e.$('.fctproc-modal [data-conflict="theirs"]').click();
+      await sleep(700);
+    }
+    assert('a Vendor pick made while another save was out, both refused: its Contact / Email are still asked about with it, and "Keep saved" keeps theirs',
+      seen.some(l => eq(l, ['Vendor', 'Contact', 'Email'])) && e.db.rows[0].vendor === 'Beta Corp' && e.db.rows[0].contact === 'Dana'
+        && e.db.rows[0].email === 'dana@acme.test', [seen, e.db.rows[0].vendor, e.db.rows[0].contact]);
+
+    // Create PO: a colleague's link brought in by a refresh while a question is open.
+    e = makeEnv({ rows: [
+      row({ id: 'cq1', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', vendor: 'Acme Supply' }),
+      row({ id: 'cq2', source: 'bid', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', vendor: 'Acme Supply' }),
+    ] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    ['cq1', 'cq2'].forEach(id => { const b = e.$(`[data-sel="${id}"]`); b.checked = true; e.fire(b, 'change'); });
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(80);
+    assert('(two sub codes: asked how)', /span <b>2<\/b> sub codes/.test(e.$('.fctproc-modal [data-body]').innerHTML));
+    e.cfg.getPurchaseOrders().push({ id: 'poZ', po_number: 'PO-0400', project_id: 'p1', cost_code: 'General', sub_code: 'Labor', supplier: 'Acme Supply', date_created: TODAY });
+    dana(e, 'cq1', { po_id: 'poZ' });
+    await e.P.refresh();
+    e.$('.fctproc-modal [data-choice="0"]').click();
+    await sleep(150);
+    assert('a colleague\'s link that a refresh brought in while the question was open is not written over: the row stays on theirs, and the PM is told',
+      e.db.rows[0].po_id === 'poZ' && e.errors.some(m => /put on an order by someone else/.test(m)), [e.db.rows[0].po_id, e.errors]);
+
+    // Create PO right after the PM's own PO # change, still on its way.
+    e = makeEnv({ rows: [row({ id: 'cw', source: 'bid', bid_item_id: 'b3', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', vendor: 'LB Water', po_id: 'po3' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.pick(e.field('cw', 'po'), 'Auto', '__none__');
+    const bw = e.$('[data-sel="cw"]'); bw.checked = true; e.fire(bw, 'change');
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(150);
+    const made = e.created.filter(c => c[0] === 'po');
+    assert('Create PO straight after the PM\'s own PO # change: the change goes first, and the row is linked — not refused as someone else\'s',
+      made.length === 1 && /^npo/.test(String(e.db.rows[0].po_id)) && !e.errors.some(m => /someone else/.test(m)), [made.length, e.db.rows[0].po_id, e.errors]);
+
+    // + Add Row answered while the PM types elsewhere, then Enter to the next row.
+    e = makeEnv({ rows: [row({ id: 'e1', created_at: '2026-03-01T10:00:00Z' }), row({ id: 'e2', created_at: '2026-03-01T10:00:01Z' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    let releaseP;
+    e.postHold = new Promise(r => { releaseP = r; });
+    e.$('[data-act="add"]').click();
+    await sleep(20);
+    const [top, bottom] = rowsOf(e);
+    qb = e.field(top, 'quote_number');
+    qb.focus(); qb.value = 'Q-7'; e.fire(qb, 'input');
+    qb.dispatchEvent(new e.w.KeyboardEvent('keydown', { key: '7', bubbles: true }));
+    releaseP();
+    await sleep(80);
+    assert('(the new row waits while the PM types)', rowsOf(e).length === 2);
+    e.field(top, 'quote_number').dispatchEvent(new e.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await sleep(40);
+    assert('…moved on to the next row with Enter: the new row is drawn, and the caret is where Enter put it',
+      rowsOf(e).length === 3 && e.w.document.activeElement === e.field(bottom, 'quote_number'), [rowsOf(e), e.w.document.activeElement && e.w.document.activeElement.outerHTML.slice(0, 80)]);
+
+    // Two rows on one PO by their codes; the PM links one of them.
+    e = makeEnv({ rows: [
+      row({ id: 'sA', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', created_at: '2026-03-01T10:00:00Z' }),
+      row({ id: 'sB', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: 'Staples', created_at: '2026-03-01T10:00:01Z' }),
+    ] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    assert('(both read Ordered on PO-0001 by their codes)', ['sA', 'sB'].every(id => e.$(`tr[data-row="${id}"] .fctproc-pill`).textContent === 'Ordered'));
+    e.pick(e.field('sA', 'po'), 'PO-0001', 'po1');
+    await sleep(20);
+    assert('one of them linked to it: the other is redrawn at once as not on it', e.$('tr[data-row="sA"] .fctproc-pill').textContent === 'Ordered'
+      && e.$('tr[data-row="sB"] .fctproc-pill').textContent === 'Not Ordered', ['sA', 'sB'].map(id => e.$(`tr[data-row="${id}"] .fctproc-pill`).textContent));
+
+    // A link re-pointed to another job takes nothing from this job's rows.
+    const PM = { id: 'pm', po_number: 'PO-0500', project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Geofabric', supplier: 'Acme Supply', date_created: '2026-03-09' };
+    const r1 = row({ id: 'R1', project_id: 'p1', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' });
+    const r2 = row({ id: 'R2', project_id: 'p2', bid_item_id: 'x1', cost_code: 'Stormwater', sub_code: 'Geofabric', po_id: 'pm' });
+    assert('a row whose PO was re-pointed to another job does not take that order from the rows of the job it is on now',
+      T.effectivePO(r2, C({ purchaseOrders: [PM], rows: [r1, r2], projectId: null })).kind === 'moved'
+        && T.effectivePO(r1, C({ purchaseOrders: [PM], rows: [r1, r2], projectId: null })).kind === 'auto');
+  }
+
+  console.log('\n[bug sweep: the second review of its fixes]');
+  {
+    const dana = (e, id, f, by = 'Dana Reyes') => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = by; r.updated_at = new Date().toISOString(); };
+    const shifted = async (e, ms, fn) => {
+      const realW = e.w.Date.now, real = Date.now, base = Date.now();
+      e.w.Date.now = () => real() + ms; Date.now = () => real() + ms;
+      try { return await fn(); } finally { e.w.Date.now = realW; Date.now = real; void base; }
+    };
+    // A full redraw owed: the PM's own + Add Row, answered while the caret
+    // is in `box` (the new row is drawn once it may be).
+    const oweRedraw = async (e, box) => {
+      let rel;
+      e.postHold = new Promise(r => { rel = r; });
+      e.$('[data-act="add"]').click();
+      await sleep(20);
+      box.focus();
+      rel();
+      await sleep(80);
+    };
+
+    // Enter down a Quantity column with a redraw owed: the next box is not
+    // drawn again under the caret (its select-all would be lost).
+    let e = makeEnv({ rows: [row({ id: 'q1', quantity: 700, created_at: '2026-03-01T10:00:00Z' }), row({ id: 'q2', quantity: 950, created_at: '2026-03-01T10:00:01Z' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    await oweRedraw(e, e.field('q1', 'quantity'));
+    assert('(the PM\'s own new row, answered while the caret was in a cell: drawn later)', e.$$('tr.fctproc-row').length === 2 && e.P._test.state().rows.length === 3);
+    e.field('q1', 'quantity').dispatchEvent(new e.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    const next = e.w.document.activeElement;
+    await sleep(30);
+    assert('Enter to the next row\'s Quantity with a redraw owed: that box is not rebuilt under the caret (Enter\'s select-all stays)',
+      next && next.dataset.pr === 'q2' && e.w.document.activeElement === next && next.isConnected);
+    e.field('q2', 'quote_number').focus();
+    await sleep(30);
+    assert('…the owed redraw is paid once the caret is in a text box nothing was typed in', e.$$('tr.fctproc-row').length === 3
+      && e.w.document.activeElement.dataset.pr === 'q2' && e.w.document.activeElement.dataset.pf === 'quote_number');
+
+    // A box typed in, the window switched away and back, a redraw owed.
+    e = makeEnv({ rows: [row({ id: 't1', created_at: '2026-03-01T10:00:00Z' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    let qb = e.field('t1', 'quote_number');
+    await oweRedraw(e, qb);
+    qb.dispatchEvent(new e.w.KeyboardEvent('keydown', { key: 'Q', bubbles: true }));
+    qb.value = 'Q-7'; e.fire(qb, 'input');
+    qb.dispatchEvent(new e.w.FocusEvent('focusout', { bubbles: true }));     // the window switched away…
+    qb.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));      // …and back: the owed redraw is tried
+    await sleep(30);
+    assert('a box typed in keeps counting as typed in when the window comes back to it: not rebuilt by the owed redraw',
+      e.w.document.activeElement === qb && qb.isConnected && qb.value === 'Q-7' && e.$$('tr.fctproc-row').length === 1);
+    qb.blur();
+    await sleep(700);
+
+    // Typed in, saved, a pause, a colleague's change of that cell, typed in again.
+    e = makeEnv({ rows: [row({ id: 's1', quote_number: 'Q1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    qb = e.field('s1', 'quote_number');
+    qb.focus(); qb.value = 'Q1-7'; e.fire(qb, 'input');
+    await sleep(700);
+    assert('(the first save landed)', e.db.rows[0].quote_number === 'Q1-7');
+    dana(e, 's1', { quote_number: 'Q-DANA' });
+    await shifted(e, 5000, () => e.P.refresh());
+    assert('(the refresh kept the box as the PM left it)', qb.isConnected && qb.value === 'Q1-7');
+    qb.value = 'Q1-78'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(80);
+    assert('typed in again after a pause: the save expects what the box showed (the PM\'s own saved value), so the colleague\'s change is asked about',
+      e.db.rows[0].quote_number === 'Q-DANA' && !!e.$('.fctproc-modal') && eq(e.patches().pop().body.expect, { quote_number: 'Q1-7' }), e.patches().map(p => p.body));
+
+    // A picker in use for more than ten minutes, a colleague's change, a click away.
+    e = makeEnv({ rows: [row({ id: 'p1v', vendor: 'LB Water' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const vb = e.field('p1v', 'vendor');
+    vb.focus();
+    await shifted(e, 11 * 60 * 1000, async () => {
+      dana(e, 'p1v', { vendor: 'Beta Corp' });
+      await e.P.refresh();
+      e.field('p1v', 'quote_number').focus();       // clicked away; the picker commits a moment later
+      e.pick(vb, 'Acme Supply');
+      await sleep(700);                               // (still in the row: the save goes on the pause)
+    });
+    assert('a picker in use for over ten minutes, committed on a click away: it still expects what it showed — the colleague\'s vendor is asked about',
+      e.db.rows[0].vendor === 'Beta Corp' && !!e.$('.fctproc-modal'), [e.db.rows[0].vendor, e.patches().map(p => p.body)]);
+
+    // A row button pressed without the focus moving to it (Safari), the row redrawn meanwhile.
+    e = makeEnv({ rows: [row({ id: 'm1', quote_number: 'Q1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    qb = e.field('m1', 'quote_number');
+    qb.focus();
+    const xb = e.$('tr[data-row="m1"] [data-act="del"]');
+    xb.dispatchEvent(new e.w.MouseEvent('mousedown', { bubbles: true, button: 0 }));
+    qb.blur();                                        // the box loses the focus to the page, not the button
+    await sleep(20);
+    assert('a row button pressed without taking the focus, the row redrawn as the box is left: the pressed button is kept (its click arrives)', xb.isConnected);
+    e.w.document.dispatchEvent(new e.w.MouseEvent('mouseup', { bubbles: true, button: 0 }));
+    xb.click();
+    await sleep(20);
+    assert('…the click lands ("Delete?"), and the row is drawn whole after it', /Delete\?/.test(e.$('tr[data-row="m1"] .c-actions').textContent));
+
+    // Job A scrolled, B opened, A opened again: A starts at the top.
+    e = makeEnv({ rows: [row({ id: 'w1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.P._test.state().wrapScroll = { top: 900, left: 0, sig: e.P._test.viewSig() };
+    e.P._test.selectProject('p2');
+    await sleep(20);
+    e.P._test.selectProject('p1');
+    await sleep(20);
+    assert('another job opened: the place in the last one is forgotten (A → B → A starts A at the top)', e.P._test.state().wrapScroll == null);
+  }
+
+  console.log('\n[bug sweep: the third review — a poll answer landing just as a cell takes the caret]');
+  {
+    const dana = (e, id, f, by = 'Dana Reyes') => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = by; r.updated_at = new Date().toISOString(); };
+    // A poll whose GET went out with the caret elsewhere, answered just after
+    // the PM clicked into `box`: the box is kept as it is, over a newer value.
+    const raceInto = async (e, box) => {
+      let rel;
+      e.hold = new Promise(r => { rel = r; });
+      const poll = e.P.refresh();
+      await tick();
+      box.focus();
+      rel();
+      await poll;
+      await sleep(10);
+    };
+
+    // Kept stale, then left for the row's own tick box.
+    let e = makeEnv({ rows: [row({ id: 'k1', quote_number: 'Q-1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 'k1', { quote_number: 'Q-DANA' });
+    let qb = e.field('k1', 'quote_number');
+    await raceInto(e, qb);
+    assert('(a poll answer landing as the box took the caret: the box kept as it was, marked stale)', qb.isConnected && qb.value === 'Q-1' && qb.dataset.stale === '1');
+    e.$('[data-sel="k1"]').focus();
+    await sleep(10);
+    assert('left for the row\'s own tick box: the box is drawn afresh with what is saved now', e.field('k1', 'quote_number').value === 'Q-DANA'
+      && !e.field('k1', 'quote_number').dataset.stale);
+    qb = e.field('k1', 'quote_number');
+    qb.focus(); qb.value = 'Q-DANA-2'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(80);
+    assert('…so coming back, the PM edits the value that is there', e.db.rows[0].quote_number === 'Q-DANA-2' && !e.$('.fctproc-modal'));
+
+    // Kept stale, then left for a button in the same cell (Use bid qty beside Quantity).
+    e = makeEnv({ rows: [row({ id: 'u1', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', quantity: 901, unit: 'LF', bid_qty_at_send: 901, bid_unit_at_send: 'LF' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 'u1', { quantity: 1000 });
+    const qn = e.field('u1', 'quantity');
+    await raceInto(e, qn);
+    const ub = e.$('tr[data-row="u1"] [data-act="use-bid"]');
+    assert('(the Quantity box kept stale, with Use bid qty in the same cell)', qn.dataset.stale === '1' && !!ub && qn.closest('td').contains(ub));
+    ub.focus();
+    await sleep(10);
+    assert('left for a button in the same cell: the box alone is drawn afresh (the button stays, its click arrives)',
+      e.field('u1', 'quantity') !== qn && /^1,?000$/.test(e.field('u1', 'quantity').value) && ub.isConnected, e.field('u1', 'quantity').value);
+
+    // Kept stale and idle, a redraw owed: not rebuilt under the caret.
+    e = makeEnv({ rows: [row({ id: 'i1', quote_number: 'Q-100', created_at: '2026-03-01T10:00:00Z' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 'i1', { quote_number: 'Q-2291-REV' });
+    e.db.rows.push(row({ id: 'i2', created_at: '2026-03-02T10:00:00Z', created_by: 'Dana Reyes', updated_by: 'Dana Reyes' }));
+    qb = e.field('i1', 'quote_number');
+    await raceInto(e, qb);
+    assert('(a colleague\'s row and a change of this very cell came in as it took the caret: a redraw is owed)', !e.$('tr[data-row="i2"]') && qb.dataset.stale === '1');
+    qb.dispatchEvent(new e.w.FocusEvent('focusout', { bubbles: true }));
+    qb.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    await sleep(30);
+    assert('a stale box nothing was typed in is not rebuilt by the owed redraw (its old selection would cut into the new value)',
+      e.w.document.activeElement === qb && qb.isConnected && qb.value === 'Q-100');
+    qb.value = 'Q-101'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(80);
+    assert('…typed over: what the PM saw is expected, so the colleague\'s value is asked about', e.db.rows[0].quote_number === 'Q-2291-REV' && !!e.$('.fctproc-modal'),
+      e.patches().map(p => p.body));
+
+    // Idle, its row about to leave the table (the Not ordered chip): not redrawn away.
+    e = makeEnv({ rows: [row({ id: 'n1', quote_number: 'Q-1', created_at: '2026-03-01T10:00:00Z' }), row({ id: 'n2', created_at: '2026-03-01T10:00:01Z' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.$('[data-chip="not_ordered"]').click();
+    dana(e, 'n1', { date_ordered: '2026-03-09' });
+    qb = e.field('n1', 'quote_number');
+    await raceInto(e, qb);
+    qb.dispatchEvent(new e.w.FocusEvent('focusout', { bubbles: true }));
+    qb.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    await sleep(30);
+    assert('an idle box whose row the owed redraw would hide (now ordered, under "Not ordered"): kept, and the focus with it',
+      e.w.document.activeElement === qb && qb.isConnected);
+    qb.value = 'Q-77'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(80);
+    assert('…so what is typed is saved, not lost', e.db.rows[0].quote_number === 'Q-77');
+
+    // A row's tick box with the focus, the row redrawn by a refresh.
+    e = makeEnv({ rows: [row({ id: 't1', vendor: 'LB Water' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const tickBox = e.$('[data-sel="t1"]');
+    tickBox.checked = true; e.fire(tickBox, 'change');
+    tickBox.focus();
+    dana(e, 't1', { vendor: 'Beta Corp' });
+    await e.P.refresh();
+    await sleep(10);
+    assert('a row\'s tick box keeps the focus when a refresh redraws the row', e.w.document.activeElement === e.$('[data-sel="t1"]')
+      && e.field('t1', 'vendor').value === 'Beta Corp');
+  }
+
+  console.log('\n[bug sweep: the final review]');
+  {
+    const dana = (e, id, f, by = 'Dana Reyes') => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = by; r.updated_at = new Date().toISOString(); };
+    const raceInto = async (e, box) => {
+      let rel;
+      e.hold = new Promise(r => { rel = r; });
+      const poll = e.P.refresh();
+      await tick();
+      box.focus();
+      rel();
+      await poll;
+      await sleep(10);
+    };
+
+    // The Sub Agmt choice kept stale, then left: its visible tag follows.
+    let e = makeEnv({ rows: [row({ id: 'a1', sca_status: 'Pending' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 'a1', { sca_status: 'Executed' });
+    const sel = e.field('a1', 'sca_status');
+    await raceInto(e, sel);
+    const tag = () => e.$('tr[data-row="a1"] .fctproc-scatag');
+    assert('(the Sub Agmt choice kept as it was while it had the focus: the tag still reads pending)', sel.dataset.stale === '1' && /pending/i.test(tag().textContent));
+    e.field('a1', 'quote_number').focus();
+    await sleep(10);
+    assert('left for another cell: the tag the PM reads is drawn afresh with the colleague\'s Executed, not only the hidden choice list',
+      !/pending/i.test(tag().textContent) && e.field('a1', 'sca_status').value === 'Executed', tag().textContent);
+    await e.P.refresh();
+    e.field('a1', 'sca_status').focus();
+    e.field('a1', 'sca_status').value = 'Needed';
+    e.fire(e.field('a1', 'sca_status'), 'change');
+    await sleep(700);
+    assert('…so a pick made then is made in sight of it', e.db.rows[0].sca_status === 'Needed' && eq(e.patches().pop().body.expect, { sca_status: 'Executed' }));
+
+    // The refresh owed while the caret was in a cell, and a press that leaves it.
+    e = makeEnv({ rows: [row({ id: 'm1' }), row({ id: 'm2' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const gets = () => e.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement').length;
+    const qb = e.field('m1', 'quote_number');
+    qb.focus();
+    await e.P.refresh();
+    const g0 = gets();
+    const add = e.$('[data-act="add"]');
+    add.dispatchEvent(new e.w.MouseEvent('mousedown', { bubbles: true, button: 0 }));
+    qb.blur();
+    await sleep(30);
+    assert('a press that leaves the cell: the refresh owed waits for the button to come up (its answer could replace what is pressed)', gets() === g0);
+    e.w.document.dispatchEvent(new e.w.MouseEvent('mouseup', { bubbles: true, button: 0 }));
+    await sleep(30);
+    assert('…and is read once it is up', gets() === g0 + 1);
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

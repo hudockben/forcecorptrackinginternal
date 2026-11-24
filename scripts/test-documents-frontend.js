@@ -1996,6 +1996,18 @@ console.log('\n[documents.js upload sequence]');
     closeAll();
     PDOCS.splice(PDOCS.findIndex(d => d.id === 'pd12'), 1);
 
+    // A site's Procurement sheet asks for every job's counts at once: each
+    // job's answer is its own, not thrown away because another job's was
+    // asked for after it.
+    await FD.refreshCostCodeCounts('p7', { fresh: true });
+    const stormNow = FD.costCodeCount('p7', 'Stormwater');
+    PDOCS.push(doc({ id: 'pd13', project_id: 'p7', filename: 'site-sheet.pdf', folder_ids: ['f-storm'] }));
+    const both = await Promise.all([FD.refreshCostCodeCounts('p7', { fresh: true }), FD.refreshCostCodeCounts('p1', { fresh: true })]);
+    assert('counts asked for two jobs at once: each job keeps its own answer (the first is not dropped for the second)',
+      !!both[0] && !!both[1] && FD.costCodeCount('p7', 'Stormwater') === stormNow + 1, `${stormNow} -> ${FD.costCodeCount('p7', 'Stormwater')}`);
+    PDOCS.splice(PDOCS.findIndex(d => d.id === 'pd13'), 1);
+    await FD.refreshCostCodeCounts('p7', { fresh: true });
+
     // ── A change that moves no count ──────────────────────────────────────
     // A colleague swaps the Stormwater quote for its new revision: Stormwater
     // still holds as many files as before. The counts cannot tell, but the

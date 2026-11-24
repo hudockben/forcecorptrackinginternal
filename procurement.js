@@ -256,9 +256,18 @@
   function ctxIndex(ctx) {
     let m = _ctxIndex.get(ctx);
     if (!m) {
-      m = { lineById: new Map(), poById: new Map(), lineByJob: null, costKeysByJob: new Map() };
+      m = { lineById: new Map(), poById: new Map(), lineByJob: null, costKeysByJob: new Map(), linkedPO: new Set() };
       (ctx.bidLines || []).forEach(l => { if (l && l.id != null) m.lineById.set(String(l.id), l); });
       (ctx.purchaseOrders || []).forEach(p => { if (p && p.id != null) m.poById.set(String(p.id), p); });
+      // A link that holds: its PO is listed and on the row's own job. One
+      // re-pointed to another job ("moved") or gone does not take the order
+      // from the rows of the job it is on now.
+      (ctx.rows || []).forEach(r => {
+        if (!r || !r.po_id || r.deleted_at) return;
+        const po = m.poById.get(String(r.po_id));
+        const pid = r.project_id || ctx.projectId;
+        if (po && (!pid || String(po.project_id || '') === String(pid))) m.linkedPO.add(String(r.po_id));
+      });
       if (ctx.bidLinesByProject) {
         m.lineByJob = new Map();
         ctx.bidLinesByProject.forEach((lines, pid) => {
@@ -381,7 +390,14 @@
     if (!codes.line && !sc) return out('none');
     if (!ctx.poLoaded) return out('loading');
     const pid = row.project_id || ctx.projectId;
+    // An order a row of the sheet is linked to is that row's — raised for it
+    // (Create PO from selected), or picked for it. It is not matched to
+    // the other rows under the same codes as well: the materials "+ Material"
+    // splits a bid line into read Ordered, with no Late flag, on the PO
+    // raised for the stone or the chambers beside them.
+    const linked = ctxIndex(ctx).linkedPO;
     const cands = (ctx.purchaseOrders || []).filter(po => po
+      && !linked.has(String(po.id))
       && String(po.project_id || '') === String(pid || '')
       && ck(k, po.cost_code) === cc && ck(k, po.sub_code) === sc
       && vendorCompatible(row.vendor, po.supplier));
@@ -931,8 +947,13 @@
 
   const xesc = s => String(s == null ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-    // XML 1.0 cannot carry these, and Excel refuses the whole file over one.
-    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+    // XML 1.0 cannot carry these, and Excel refuses the whole file over one
+    // (LibreOffice drops every row after it): the control characters, the
+    // two non-characters U+FFFE / U+FFFF (a paste out of a badly read PDF),
+    // and half a surrogate pair.
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '')
+    .replace(/[\uD800-\uDFFF]/g, (c, i, all) => (c <= '\uDBFF'
+      ? /[\uDC00-\uDFFF]/.test(all[i + 1] || '') : /[\uD800-\uDBFF]/.test(all[i - 1] || '')) ? c : '');
 
   function colName(n) {
     let s = '';
@@ -1111,10 +1132,26 @@
   // Cells other people changed, as polls brought them in: row id ->
   // { fields: Map(field -> { by, at }), added: { by, at } | null, until }.
   const recent = new Map();
-  let RECENT_MS = 2 * 60 * 1000;
+  let RECENT_MS = 2 * 60 * 1000;   // (a test shortens it: _test.setRecentMs)
   // Cells a conflict is waiting on the person for: "rowId\0field" → the
   // queued conflict (see onConflict, setField).
-  const held = new Map();          // (a test shortens it: _test.setRecentMs)
+  const held = new Map();
+  // What this page sent for a row and never heard back about (the
+  // connection dropped): the server may well have written it. A later save
+  // of the same cell finding that value there is no conflict with anyone —
+  // it is this page's own save, landed (onConflict).
+  const unanswered = new Map();    // row id -> { field: value }
+  // The row versions this page's own saves produced, by row id (the last
+  // few): a conflict whose row was last saved by this page names nobody —
+  // the colleague's change came before it, and the row's last saver is not
+  // who changed the cell (see showNextConflict).
+  const ownVersions = new Map();
+  function noteOwnVersion(item) {
+    if (!item || item.id == null || item.version == null) return;
+    const id = String(item.id), list = ownVersions.get(id) || [];
+    list.push(Number(item.version));
+    ownVersions.set(id, list.slice(-8));
+  }
 
   // ── Host helpers ────────────────────────────────────────────────────
   function canEdit() {
@@ -1268,6 +1305,8 @@
       // The open job; null on a site's sheet, where every row names its own.
       projectId: pid,
       site, bidLinesByProject, jobLabels,
+      // The sheet's rows: an order a row is linked to is that row's (effectivePO).
+      rows: st.rows,
       // Empty when the page's lists have not loaded: then nothing is marked
       // "not on the supplier list".
       supplierKeys: new Set(suppliers().map(lc)),
@@ -2177,10 +2216,14 @@
     const old = row.vendor.trim();
     const was = old && lc(old) !== lc(name) ? savedContactOf(old, row) : null;
     if (was) {
+      notePick(rowId, { vendor: name, contact: '', email: '' });
       setFields(rowId, { vendor: name, contact: '', email: '' });
       contactTouched.delete(row.id);
       toast(`Contact and Email cleared: ${was.name || was.email || 'that contact'} is a contact of ${old}, not of ${name || 'the new vendor'}.`);
-    } else setField(rowId, 'vendor', name);
+    } else {
+      notePick(rowId, { vendor: name });
+      setField(rowId, 'vendor', name);
+    }
     return true;
   }
 
@@ -2216,15 +2259,45 @@
     // Moved to another line by someone else: a re-link this page tried for
     // it (and would otherwise never try again) may be the right one now.
     if (known && known.bid_item_id !== r.bid_item_id) forgetRelinks(r.id);
+    if (known) pinSeenInUse(r.id);
     if (r.deleted_at) { dropRow(r.id); return null; }
     touched.set(r.id, ++touchSeq);
     server.set(r.id, { ...r });
     if (st.projectId && r.project_id && !isOpenJob(r.project_id)) return null;
     const local = rowById(r.id);
-    if (!local) { const copy = { ...r }; st.rows.push(copy); return copy; }
     const keep = { ...(fly.get(r.id) || {}), ...(pend.get(r.id) || {}) };
+    // New to the sheet (the job opened again after a save failed): it shows
+    // the edits still queued for it, as a row already on the sheet does —
+    // not the saved value, with the queued one sent over it later unseen.
+    if (!local) { const copy = { ...r, ...keep }; st.rows.push(copy); return copy; }
     for (const k of Object.keys(r)) if (!(k in keep)) local[k] = r[k];
     return local;
+  }
+
+  /**
+   * The box in use on a row a newer copy is about to change: refreshRow keeps
+   * it showing the value it was drawn with, so that value — not the new one —
+   * is what its next save "saw" (seenAtFocus). Without it, a box typed in,
+   * saved, and typed in again after a pause — the entry recorded at focus
+   * used up by the first change — expected the colleague's value a refresh
+   * had just brought in, and wrote over it with no dialog.
+   */
+  function pinSeenInUse(rowId) {
+    const a = document.activeElement;
+    if (!a || !a.dataset || a.dataset.pr !== rowId || !a.dataset.pf || !st.mountEl || !st.mountEl.contains(a)) return;
+    const p = pend.get(rowId) || {}, inFlight = fly.get(rowId) || {};
+    // The row as this page has it, before the copy is taken: what the box
+    // shows — the PM's own value just saved included.
+    const local = rowById(rowId);
+    (FOCUS_FIELDS[a.dataset.pf] || [a.dataset.pf]).forEach(f => {
+      if (f in p) return;
+      const key = rowId + '\u0000' + f;
+      const had = seenAtFocus.get(key);
+      if (had && had.el === a) return;
+      // A save of it still out (its answer may come after this copy, and be
+      // passed over as older): the box shows that value.
+      seenAtFocus.set(key, { v: f in inFlight ? inFlight[f] : local && f in local ? local[f] : baseOf(rowId, f), at: Date.now(), el: a });
+    });
   }
 
   function dropRow(id) {
@@ -2281,13 +2354,18 @@
     const inFlight = fly.get(rowId);
     return inFlight && field in inFlight ? inFlight[field] : (server.get(rowId) || {})[field];
   }
-  // A cell's value when it took focus, if it took focus lately; else `fallback`.
+  // A cell's value when it took focus, if it took focus lately — or if its
+  // box is still in the page, however long ago: a box in use is never
+  // redrawn under the PM (refreshRow), so what it shows is still that value,
+  // whatever a refresh brought in meanwhile, and its entry is dropped 400 ms
+  // after the box is really left (onSeenFocusOut) — past the 120 ms a picker
+  // takes to commit after a click away. Else `fallback`.
   const SEEN_MS = 10 * 60 * 1000;
   function takeSeen(rowId, field, fallback) {
     const key = rowId + '\u0000' + field;
     const s = seenAtFocus.get(key);
     seenAtFocus.delete(key);
-    return s && Date.now() - s.at < SEEN_MS ? s.v : fallback;
+    return s && (Date.now() - s.at < SEEN_MS || (s.el && s.el.isConnected)) ? s.v : fallback;
   }
   // The fields a box saves: most are their own; the Sub Code picker saves the
   // line and its codes, the PO picker the PO and its auto flag.
@@ -2297,10 +2375,21 @@
     const rowId = t && t.dataset && t.dataset.pr, pf = t && t.dataset && t.dataset.pf;
     if (!rowId || !pf || !rowById(rowId)) return;
     const pendNow = pend.get(rowId) || {};
+    // Only a box newly taken: the same one getting the focus back (the
+    // window switched away and back) may have been typed in already.
+    if (!(t === boxFocusEl && t.isConnected)) boxTyped = false;
+    boxFocusEl = t;
     (FOCUS_FIELDS[pf] || [pf]).forEach(f => {
       // A cell already being changed keeps the value recorded when that began.
       if (f in pendNow) return;
-      seenAtFocus.set(rowId + '\u0000' + f, { v: baseOf(rowId, f), at: Date.now() });
+      const key = rowId + '\u0000' + f;
+      // The same box taking the focus back — the window was switched away
+      // and back, the box never left: it shows what it showed then (a refresh
+      // meanwhile kept it as it was), so the value recorded then stands, not
+      // the colleague's value that refresh brought in.
+      const was = seenAtFocus.get(key);
+      if (was && was.el === t && t.isConnected) return;
+      seenAtFocus.set(key, { v: baseOf(rowId, f), at: Date.now(), el: t });
     });
   }
   function onSeenFocusOut(e) {
@@ -2310,7 +2399,11 @@
     // Kept a moment past the blur: a picker commits 120 ms after it is left.
     const keys = (FOCUS_FIELDS[pf] || [pf]).map(f => rowId + '\u0000' + f);
     const was = keys.map(k => seenAtFocus.get(k));
-    setTimeout(() => keys.forEach((k, i) => { if (seenAtFocus.get(k) === was[i]) seenAtFocus.delete(k); }), 400);
+    setTimeout(() => {
+      // Still the box in use: the window lost the focus, not the box.
+      if (document.activeElement === t && t.isConnected) return;
+      keys.forEach((k, i) => { if (seenAtFocus.get(k) === was[i]) seenAtFocus.delete(k); });
+    }, 400);
   }
   function setFields(rowId, fields, opts) {
     let any = false;
@@ -2341,14 +2434,25 @@
     fly.set(rowId, p);
     flyBases.set(rowId, ex);
     setSave('saving');
+    // Deleted here while this was out (✕ → Yes on a slow connection): its
+    // answer is news of a row that is gone, not one to put back.
+    const sentSeq = touchSeq;
+    const droppedSince = () => (gone.get(rowId) || 0) > sentSeq && !rowById(rowId);
     try {
       const data = await api('PATCH', '/procurement' + q({ id: rowId }), { fields: p, expect: ex }, { keepalive });
       if (fly.get(rowId) === p) { fly.delete(rowId); flyBases.delete(rowId); }
       failed.delete(rowId);
+      unanswered.delete(rowId);
+      // The picks this save carried in full are saved: nothing left to ask about.
+      const picks = (pickFill.get(rowId) || []).filter(g => !Object.keys(g).every(k => k in p && sameVal(p[k], g[k])));
+      if (picks.length) pickFill.set(rowId, picks); else pickFill.delete(rowId);
+      if (droppedSince()) { settleSave(); return; }
+      noteOwnVersion(data.item);
       const prev = server.get(rowId) ? { ...server.get(rowId) } : null;
       if (data.item) adoptServerRow(data.item);
       if (prev && data.item) noteChangesInAnswer(rowId, p, prev, data.item, data.was);
       refreshRow(rowId);
+      if (touchesPO(p)) repaintRows();
       updateCounts();
       if (touchesCode(p)) recountAfterRecode((data.item && data.item.project_id) || (rowById(rowId) || {}).project_id || st.projectId, [rowId]);
     } catch (err) {
@@ -2361,7 +2465,10 @@
         Object.keys(nb).forEach(k => { if (!(k in (pend.get(rowId) || {}))) delete nb[k]; });
         if (Object.keys(nb).length) bases.set(rowId, nb); else bases.delete(rowId);
       };
-      if (err.status === 409 && err.code === 'conflict' && !keepalive) {
+      if (droppedSince()) {
+        // Deleted here meanwhile (a 404 now, most likely): what this page
+        // wanted happened; nothing to say, nothing to keep.
+      } else if (err.status === 409 && err.code === 'conflict' && !keepalive) {
         // Someone else changed a cell of this save since the person saw it:
         // nothing was written. The rest goes again at once; for those cells
         // the person is asked.
@@ -2370,8 +2477,7 @@
         // Deleted by someone else while it was being edited: there is nothing
         // left to save into.
         dropRow(rowId);
-        renderTable();
-        updateCounts();
+        redrawSheet();
         showError('A row you were editing was deleted by someone else, so that change could not be saved.');
       } else if (err.status === 400 || err.code === 'stale_bid') {
         // Refused for good — a value the server will never take, or a bid
@@ -2384,6 +2490,8 @@
         pend.set(rowId, { ...p, ...(pend.get(rowId) || {}) });
         rebase(Object.keys(p));
         failed.add(rowId);
+        // No answer at all: it may have been written (see onConflict).
+        if (err.network) unanswered.set(rowId, { ...(unanswered.get(rowId) || {}), ...p });
         // Said here rather than left to the page's banner, which cannot tell
         // this failure (value kept, sent again) from the others (nothing kept).
         showError(`Procurement: a change could not be saved (${err.message}). It stays on screen and is sent again on your next edit.`);
@@ -2417,6 +2525,9 @@
       showError('Procurement: a change could not be saved (it was changed elsewhere meanwhile). It stays on screen and is sent again on your next edit.');
       return;
     }
+    // An answer — the server is there: whatever an earlier failure left
+    // waiting on this row goes again at once, with the rest of this save.
+    failed.delete(rowId);
     FIELD_GROUPS.forEach(g => { if (g.some(k => fields.includes(k))) fields = [...new Set(fields.concat(g.filter(k => k in p)))]; });
     // The Quantity / Unit a Sub Code pick filled in are part of that pick (as
     // refuseFields has it): asked about with it, not saved without it.
@@ -2425,6 +2536,13 @@
       fields = [...new Set(fields.concat(Object.keys(fill.fields).filter(k => k in p && sameVal(p[k], fill.fields[k]))))];
     }
     lineFill.delete(rowId);
+    // So are the cells any other pick set with a changed one (notePick).
+    const picks = pickFill.get(rowId) || [];
+    picks.forEach(g => {
+      const keys = Object.keys(g).filter(k => k in p && sameVal(p[k], g[k]));
+      if (keys.some(k => fields.includes(k))) fields = [...new Set(fields.concat(keys))];
+    });
+    FIELD_GROUPS.forEach(g => { if (g.some(k => fields.includes(k))) fields = [...new Set(fields.concat(g.filter(k => k in p)))]; });
     const item = normRow(data.item) || {};
     const newer = pend.get(rowId) || {};
     // Yours: the newest value typed in each changed cell (one typed while
@@ -2435,13 +2553,32 @@
     // conflict — two people set the same date — and nothing to ask about.
     const groupOf = k => (FIELD_GROUPS.find(g => g.includes(k)) || [k]).filter(x => fields.includes(x));
     const same = fields.filter(k => groupOf(k).every(x => sameVal(item[x], mine[x])));
-    fields = fields.filter(k => !same.includes(k));
+    // A cell holding what this page itself sent and never heard back about
+    // (the connection dropped) was changed by this page's own save, landed
+    // after all — not by anyone to ask about. What was typed in it since
+    // goes on, expecting that value.
+    const lost = unanswered.get(rowId) || {};
+    unanswered.delete(rowId);
+    const own = fields.filter(k => !same.includes(k) && groupOf(k).every(x => x in lost && sameVal(item[x], lost[x])));
+    fields = fields.filter(k => !same.includes(k) && !own.includes(k));
     same.forEach(k => delete mine[k]);
+    const resend = {};
+    own.forEach(k => { resend[k] = mine[k]; delete mine[k]; });
     const again = {};
-    Object.keys(p).forEach(k => { if (!fields.includes(k) && !same.includes(k)) again[k] = p[k]; });
-    const next = { ...again, ...newer };
+    Object.keys(p).forEach(k => { if (!fields.includes(k) && !same.includes(k) && !own.includes(k)) again[k] = p[k]; });
+    const next = { ...again, ...resend, ...newer };
     if (Object.keys(next).length) pend.set(rowId, next); else pend.delete(rowId);
+    // The picks whose cells still go out (a pick made while this save was
+    // out, a group re-sent with `again`) are kept: a conflict on that save
+    // asks about all of their cells too. The rest were this one's.
+    const keepPicks = picks.filter(g => Object.keys(g).some(k => k in next));
+    if (keepPicks.length) pickFill.set(rowId, keepPicks); else pickFill.delete(rowId);
     rebase(Object.keys(again));
+    if (own.length) {
+      const nb = bases.get(rowId) || {};
+      own.forEach(k => { nb[k] = item[k]; });
+      bases.set(rowId, nb);
+    }
     // The row as it is now: theirs in the changed cells, marked as theirs —
     // and so is any other cell of the row someone else changed meanwhile.
     const prev = server.get(rowId) ? { ...server.get(rowId) } : null;
@@ -2451,6 +2588,7 @@
       ? WATCH_FIELDS.filter(k => !fields.includes(k) && !(k in p) && !(k in busy) && !sameVal(prev[k], item[k])) : [];
     if (fields.length || others.length) markRecent(rowId, fields.concat(others), data.changed_by, data.changed_at);
     refreshRow(rowId);
+    if (touchesPO(p)) repaintRows();
     updateCounts();
     if (!fields.length) return;
     const c = { rowId, fields, mine, theirs: item, by: str(data.changed_by), at: data.changed_at || null, redraw: null };
@@ -2517,7 +2655,15 @@
     const name = materialOf(row, siteMode() && row.project_id ? makeCtx(row.project_id) : makeCtx()) || 'This row';
     // Who saved the row last: who changed these cells, unless someone else
     // saved another cell of it after them — so it is not put as more.
-    const last = c.by ? ` (last saved by <b>${esc(c.by)}</b>${clock(c.at) ? ` at ${esc(clock(c.at))}` : ''})` : '';
+    // Who saved the row last is who changed these cells — unless that was
+    // this page's own save of another cell of the row, landed after the
+    // colleague's change: then it names nobody (the server answers with the
+    // row's last saver, not the cell's). Saved under the person's own name
+    // by another window of theirs: "you, in another window", not "someone
+    // else", which would have them doubt their own value.
+    const ownLast = !!c.by && isMe(c.by) && (ownVersions.get(c.rowId) || []).includes(Number(c.theirs && c.theirs.version));
+    const self = !!c.by && isMe(c.by) && !ownLast;
+    const last = c.by && !ownLast ? ` (last saved by <b>${self ? 'you' : esc(c.by)}</b>${clock(c.at) ? ` at ${esc(clock(c.at))}` : ''}${self ? ', in another window' : ''})` : '';
     const linesHtml = () => conflictLines(c).map(([what, t, y]) =>
       `<tr><td>${esc(what)}</td><td class="theirs">${esc(t)}</td><td class="mine">${esc(y)}</td></tr>`).join('');
     const body = `<p style="margin:0 0 0.7rem;line-height:1.5">
@@ -2526,7 +2672,7 @@
       <table class="fctproc-conflict"><thead><tr><th></th><th>Saved now</th><th>Yours</th></tr></thead><tbody>${linesHtml()}</tbody></table>`;
     const foot = `<button type="button" class="btn btn-ghost fctproc-b" data-conflict="theirs">Keep saved</button>
       <button type="button" class="btn btn-green fctproc-b" data-conflict="mine">Keep mine</button>`;
-    const m = modal('Changed by someone else', body, { footHTML: foot });
+    const m = modal(self ? 'Changed in another window' : 'Changed by someone else', body, { footHTML: foot });
     // A picker left above commits a moment later: "Yours" follows.
     const tbody = m.body.querySelector('.fctproc-conflict tbody');
     c.redraw = () => { if (tbody) tbody.innerHTML = linesHtml(); };
@@ -2554,8 +2700,11 @@
         kept = true;
         release(c);
         if (rowById(c.rowId)) {
-          // Written over theirs knowingly: what was "seen" is now theirs.
-          Object.keys(c.mine).forEach(k => seenAtFocus.delete(c.rowId + '\u0000' + k));
+          // Written over theirs knowingly: what was "seen" is now theirs — the
+          // value this dialog showed, not whatever a refresh brought in behind
+          // it since. A third person's save meanwhile is asked about in turn,
+          // not written over unseen.
+          Object.keys(c.mine).forEach(k => seenAtFocus.set(c.rowId + '\u0000' + k, { v: c.theirs[k], at: Date.now() }));
           setFields(c.rowId, c.mine);
           refreshRow(c.rowId);
           flushRow(c.rowId);
@@ -2786,17 +2935,39 @@
     else if (failed.size) setSave('error');
     else if (st.saveState === 'saving') setSave('saved');
   }
+  // An action of its own done (a row added, rows deleted or copied in):
+  // "Saved" — unless an earlier edit is still out, or failed and is kept to
+  // be sent again, which "Saved" would hide.
+  function actionSaved() {
+    if (fly.size) setSave('saving');
+    else if (failed.size) setSave('error');
+    else setSave('saved');
+  }
 
+  // A picker in the sheet holding something typed or picked in it that it
+  // has not committed yet — it commits when it is left, and a page reloaded
+  // or closed from the keyboard is never "left" first.
+  function uncommittedCombo() {
+    const a = document.activeElement;
+    if (!isCb(a) || !a.dataset.pr || !a.dataset.pf || !st.mountEl || !st.mountEl.contains(a)) return null;
+    const s = cbSession.get(a);
+    return s && s.chosen && (a.value !== s.value || (a.dataset.cbValue || '') !== s.cbValue) ? a : null;
+  }
   // A save started as the page goes away (closed, reloaded, switched to
-  // another browser tab) has to be sent now and survive the unload.
-  window.addEventListener('pagehide', () => { flushAll({ keepalive: true }); });
+  // another browser tab) has to be sent now and survive the unload — with
+  // what is typed in a picker, committed first, as leaving the box would.
+  window.addEventListener('pagehide', () => {
+    const c = uncommittedCombo();
+    if (c) { delete c.dataset.pcommit; commitCombo(c.dataset.pr, c.dataset.pf, c); }
+    flushAll({ keepalive: true });
+  });
   // …but a save that has already failed (the server or the connection is
   // down) will fail again as the page closes, and one still out may never be
   // answered. The banner promised those edits are kept and sent again, so
   // leaving now asks first — the browser's own "Leave site?" — the way the
   // page already does for unsent Daily rows.
   window.addEventListener('beforeunload', e => {
-    if (!failed.size && !fly.size && !pend.size) return;
+    if (!failed.size && !fly.size && !pend.size && !uncommittedCombo()) return;
     e.preventDefault();
     e.returnValue = '';
   });
@@ -2849,18 +3020,28 @@
         ? new Map(items.filter(r => !since(touched, r.id)).map(r => [r.id, server.get(r.id) ? { ...server.get(r.id) } : null])) : null;
       items.forEach(adoptServerRow);
       if (known) noteOthersChanges(items.filter(r => known.has(r.id)), known);
+      askForNewPOs();
       const wasOk = st.loadState === 'ok' && st.loadedFor === sig;
       st.loadState = 'ok';
       st.loadedFor = sig;
+      // Past midnight since the sheet was drawn: Due soon is Late now, and
+      // the counts with it, though nobody changed a thing.
+      const newDay = !!st.drawnDay && st.drawnDay !== today();
       if (!wasOk || !quiet) renderBody();
-      else if (signature() !== before) {
+      else if (signature() !== before || newDay) {
         // The answer can land after the PM has started typing (the poll only
         // checks as it starts): then the rows are redrawn around the cell in
-        // use, never the table under it — see redrawAround.
-        if (cellInUse()) redrawAround();
-        else { renderTable(); updateCounts(); }
-        renderHead();
-      } else if (redrawDeferred && !cellInUse()) {
+        // use, never the table under it — see redrawAround. Landing while a
+        // mouse button is down, it is drawn once the button is up: drawn now,
+        // the button, chip or header under the pointer is replaced and the
+        // click never arrives (as rerender holds).
+        if (pressedAt && Date.now() - pressedAt < 5000) rerenderOwed = true;
+        else {
+          if (cellInUse()) redrawAround();
+          else { renderTable(); updateCounts(); }
+          renderHead();
+        }
+      } else if (redrawDeferred) {
         // A redraw still owed from an answer that landed mid-edit.
         redrawWhenFree();
       }
@@ -2986,10 +3167,20 @@
   let rerenderOwed = false;
   // When a mouse button went down in the sheet, until it comes up (0).
   let pressedAt = 0;
-  function onSheetMouseDown(e) { if (e.button === 0) pressedAt = Date.now(); }
+  // What the press went down on, while it is down; and the rows whose cell
+  // under it a redraw kept as it was (refreshRow), drawn whole after the click.
+  let pressedEl = null;
+  const pressKept = new Set();
+  function onSheetMouseDown(e) { if (e.button === 0) { pressedAt = Date.now(); pressedEl = e.target; } }
   function onDocMouseUp() {
     if (!pressedAt) return;
     pressedAt = 0;
+    pressedEl = null;
+    if (pressKept.size) {
+      const ids = [...pressKept];
+      pressKept.clear();
+      setTimeout(() => { if (!pressedAt) ids.forEach(id => refreshRow(id)); }, 0);
+    }
     // After the click the press was aimed at (it fires before this runs).
     if (rerenderOwed) setTimeout(() => {
       if (!rerenderOwed || pressedAt) return;       // drawn since, or pressed again
@@ -2997,6 +3188,8 @@
       window.FCTProcurement.rerender();
     }, 0);
     if (redrawDeferred) setTimeout(redrawWhenFree, 0);
+    // A refresh owed while the caret was in a cell, held for this press.
+    if (pollOwed) setTimeout(payOwedPoll, 0);
     // Counts that came in while the button was down (paintDocCounts).
     if (docCountsOwed) setTimeout(() => { if (docCountsOwed && !pressedAt) paintDocCounts(); }, 0);
   }
@@ -3023,6 +3216,37 @@
     return `${st.rows.length}/${rows.length}/${st.grouping}\n` + bands + groups.map(g => (st.grouping === 'none' ? '' : `G:${g.key}|${g.label}|${g.meta}\n`)
       + (st.grouping === 'none' || (!shut(g) && !st.collapsed.has(g.key)) ? g.rows.map(r => r.id).join('\n') : '')).join('\n');
   }
+  // Whether a box in the table is being typed in (a checkbox is not), or a
+  // combobox just left is about to commit.
+  function typingInSheet() {
+    const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
+    if (!wrap) return false;
+    const a = document.activeElement;
+    return !!((a && wrap.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox')
+      || wrap.querySelector('[data-pcommit]'));
+  }
+  /**
+   * The table drawn again once an action of the PM's own is answered (a row
+   * added or deleted, a bulk edit, a PO raised). The answer can come after
+   * they have gone on to type in another cell: the table is then redrawn
+   * around that cell, as a poll's answer is (redrawAround) — rebuilt under
+   * it, a date box restarts at its month and the rest of the date is saved
+   * wrong, a picker loses the word being typed.
+   */
+  function redrawSheet() {
+    if (typingInSheet()) redrawAround();
+    else { renderTable(); updateCounts(); }
+  }
+  // A picker left a moment ago commits 120 ms after it was left (marked
+  // data-pcommit), and a table rebuilt under it loses that commit. An action
+  // answered sooner waits for it — a few hundred ms at most — so the table
+  // is redrawn whole as before (the new row drawn, and focused), not held
+  // back until the PM next leaves a cell.
+  async function pickersSettled(ms = 600) {
+    const until = Date.now() + ms;
+    const busy = () => { const w = st.mountEl && st.mountEl.querySelector('#fctproc-wrap'); return !!(w && w.querySelector('[data-pcommit]')); };
+    while (busy() && Date.now() < until) await new Promise(res => setTimeout(res, 40));
+  }
   function redrawWhenFree() {
     if (!redrawDeferred || !isMounted()) return;
     // A press in the sheet (on a group header, a filter button) blurs the
@@ -3034,10 +3258,47 @@
     // A combobox still committing: shortly. Another cell taken: the next
     // time one is left.
     if (wrap && wrap.querySelector('[data-pcommit]')) { setTimeout(redrawWhenFree, 250); return; }
-    if (cellInUse()) return;
+    if (cellInUse() && !idleInSheet()) return;
     redrawDeferred = false;
     renderTable();
     updateCounts();
+  }
+  // The box in the sheet that last took the focus (onSeenFocusIn), and
+  // whether anything has been typed in it since (a key or an input in it).
+  let boxFocusEl = null, boxTyped = false;
+  /**
+   * Whether what has the focus in the table can be drawn again under it: a
+   * text box nothing has been typed in since it took the focus (Enter or
+   * Tab moved the caret there; the PM is reading), or a row's tick box.
+   * renderTable puts the focus back on its new copy, with its selection.
+   * Not a number or date box: a new copy loses the selection Enter made
+   * (the next digits go in front of the old value: 1200 typed over 950
+   * saved 1200950) or the date part clicked (the day typed went into the
+   * month). Not a choice list, whose open list it would close; not a
+   * picker, whose menu it would close (restoreFocus leaves those unfocused).
+   */
+  function idleInSheet() {
+    const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
+    const a = document.activeElement;
+    if (!wrap || !a || !wrap.contains(a)) return false;
+    // The row it is on must still be in the table drawn — not filtered out
+    // by a chip or search, not in a folded section — or the focus is lost
+    // and what is typed next goes nowhere.
+    const onRow = a.dataset.pr || a.dataset.sel;
+    if (onRow && !drawnAfterRedraw(onRow)) return false;
+    if (a.type === 'checkbox') return !!(a.dataset.sel || a.dataset.grpsel != null || a.id === 'fctproc-selall');
+    return a.tagName === 'INPUT' && !/^(number|date)$/.test(a.type) && !isCb(a) && !!a.dataset.pr
+      && a === boxFocusEl && !boxTyped && !a.dataset.badDate && !a.dataset.stale;
+  }
+  function drawnAfterRedraw(rowId) {
+    const row = rowById(rowId);
+    if (!row) return false;
+    const ctx = makeCtx();
+    const vis = visibleRows(ctx);
+    if (!vis.includes(row)) return false;
+    if (st.grouping === 'none') return true;
+    const g = groupRows(vis, ctx).find(x => x.rows.includes(row));
+    return !!g && !st.collapsed.has(g.key) && !(g.pid && st.collapsed.has(JOB + g.pid));
   }
 
   function selectProject(id) {
@@ -3047,6 +3308,7 @@
     loadGen++;                          // drop any answer still coming for the old job
     st.projectId = next;
     storeSet('project', next);
+    st.wrapScroll = null;
     st.rows = [];
     st.loadedFor = null;
     st.serverCanEdit = null;
@@ -3066,6 +3328,21 @@
     // their orders until the page's next poll. The host redraws the sheet
     // when the list it holds changes.
     if (next) refreshPOs();
+  }
+  // A row linked to an order this page's list does not have — one a
+  // colleague has just raised: the list is read again now, rather than the
+  // row shown as on a removed PO (Not Ordered, Late) until the page's next
+  // minute poll. Asked once for each set of such orders, so one that really
+  // was removed is not read for again on every poll.
+  let poAskedFor = '';
+  function askForNewPOs() {
+    const ctx = makeCtx();
+    if (!ctx.poLoaded) return;
+    const idx = ctxIndex(ctx);
+    const unknown = [...new Set(st.rows.filter(r => r.po_id && !idx.poById.has(String(r.po_id))).map(r => String(r.po_id)))].sort().join(',');
+    if (!unknown || unknown === poAskedFor) return;
+    poAskedFor = unknown;
+    refreshPOs();
   }
   function refreshPOs() {
     if (typeof cfg.refreshPurchaseOrders !== 'function') return Promise.resolve(false);
@@ -3423,6 +3700,8 @@
     if (!wrap) return;
     redrawDeferred = false;
     const ctx = makeCtx();
+    // The day the Late / Due soon flags were worked out for (load).
+    st.drawnDay = ctx.today;
     const edit = canEdit();
     const cols = colsFor(edit);
     const rows = visibleRows(ctx);
@@ -3628,8 +3907,11 @@
       act: a.tagName === 'BUTTON' && a.dataset.act && a.dataset.row ? [a.dataset.act, a.dataset.row] : null,
       // A section's folder chip, reached with Tab: the redraw after its
       // folder changed (a file attached from it) puts the focus back on it.
-      grpdocs: a.tagName === 'BUTTON' && a.dataset.grpdocs != null ? [a.dataset.grpdocs, a.dataset.pid || ''] : null };
+      grpdocs: a.tagName === 'BUTTON' && a.dataset.grpdocs != null ? [a.dataset.grpdocs, a.dataset.pid || ''] : null,
+      // A row's tick box, or a section's (ticked on the way to a bulk edit).
+      sel: a.dataset.sel || null, grpsel: a.dataset.grpsel != null ? a.dataset.grpsel : null };
     try { f.start = a.selectionStart; f.end = a.selectionEnd; } catch { /* not a text box */ }
+    f.value = 'value' in a ? a.value : null;
     return f;
   }
   function restoreFocus(scope, f) {
@@ -3638,12 +3920,25 @@
     if (f.pr && f.pf) el = scope.querySelector(`[data-pr="${cssEsc(f.pr)}"][data-pf="${cssEsc(f.pf)}"]`);
     else if (f.act) el = scope.querySelector(`button[data-act="${cssEsc(f.act[0])}"][data-row="${cssEsc(f.act[1])}"]`);
     else if (f.grpdocs != null) el = scope.querySelector(`button[data-grpdocs="${cssEsc(f.grpdocs[0])}"]${f.grpdocs[1] ? `[data-pid="${cssEsc(f.grpdocs[1])}"]` : ''}`);
+    else if (f.sel) el = scope.querySelector(`input[data-sel="${cssEsc(f.sel)}"]`);
+    else if (f.grpsel != null) el = scope.querySelector(`input[data-grpsel="${cssEsc(f.grpsel)}"]`);
     else if (f.id) el = scope.querySelector('#' + cssEsc(f.id));
     // Focusing a combobox opens its menu and selects its text — not what a
     // background redraw should do to someone. Those are left unfocused.
     if (!el || el.classList.contains('cb-input')) return;
     try { el.focus({ preventScroll: true }); } catch { el.focus(); }
-    if (f.start != null) { try { el.setSelectionRange(f.start, f.end); } catch { /* dates, numbers */ } }
+    if (f.start != null) {
+      // On another value now: a range from the old one would cut into it (and
+      // what is typed next be spliced in) — the whole of it is selected if the
+      // whole was, else the caret goes to its end.
+      const same = f.value == null || el.value === f.value;
+      const whole = f.value != null && f.start === 0 && f.end === f.value.length && f.end > 0;
+      try {
+        if (same) el.setSelectionRange(f.start, f.end);
+        else if (whole) el.select();
+        else el.setSelectionRange(el.value.length, el.value.length);
+      } catch { /* dates, numbers */ }
+    }
   }
   const cssEsc = s => (window.CSS && CSS.escape ? CSS.escape(String(s)) : String(s).replace(/["\\]/g, '\\$&'));
 
@@ -3957,8 +4252,14 @@
     // Tab out of Email lands on) stays on it when it is still there, or the
     // next Tab would start over from the top of the page.
     const btn = active && active.tagName === 'BUTTON' && tr.contains(active) && active.dataset.act ? active.dataset.act : null;
-    const busy = td => (typing && td.contains(active)) || (hold && td.contains(hold)) || td.querySelector('[data-pcommit]');
-    let host = fresh;
+    const tick = active && active.type === 'checkbox' && tr.contains(active) && active.dataset.sel ? active.dataset.sel : null;
+    // …and the cell a mouse button is down on: replaced before it comes up,
+    // the click would never arrive (Safari, where the press does not move the
+    // focus; a save's answer landing mid-press).
+    const pressed = pressedAt && pressedEl && Date.now() - pressedAt < 5000 && tr.contains(pressedEl) ? pressedEl : null;
+    if (pressed) pressKept.add(rowId);
+    const busy = td => (typing && td.contains(active)) || (hold && td.contains(hold)) || (pressed && td.contains(pressed)) || td.querySelector('[data-pcommit]');
+    let host = fresh, keptStale = false;
     if (![...tr.children].some(busy)) tr.replaceWith(fresh);
     else {
       host = tr;
@@ -3978,13 +4279,32 @@
         // Sub-Contractor Agreement tag is being picked; "changed by someone
         // else", gone once the cell is changed here).
         marksFrom(td, next[i]);
+        // A box kept as it is although the fresh copy draws another value:
+        // marked stale — the idle redraw passes it by, and it is drawn afresh
+        // once it is left (freshenBox).
+        td.querySelectorAll('[data-pr][data-pf]').forEach(box => {
+          const twin = next[i].querySelector(`[data-pr="${cssEsc(box.dataset.pr)}"][data-pf="${cssEsc(box.dataset.pf)}"]`);
+          if (twin && drawnValue(twin) !== drawnValue(box)) { box.dataset.stale = '1'; keptStale = true; }
+        });
       });
     }
-    drawnHtml.set(host, html);
+    // Parts of it still drawn from the old copy: not recorded as drawn from
+    // this one, so a later refresh (onlyIfChanged) draws it again.
+    if (keptStale) drawnHtml.delete(host); else drawnHtml.set(host, html);
     if (btn && !host.contains(document.activeElement)) {
       const again = host.querySelector(`button[data-act="${cssEsc(btn)}"]`);
       if (again) { try { again.focus({ preventScroll: true }); } catch { again.focus(); } }
     }
+    if (tick && !host.contains(document.activeElement)) {
+      const again = host.querySelector(`input[data-sel="${cssEsc(tick)}"]`);
+      if (again) { try { again.focus({ preventScroll: true }); } catch { again.focus(); } }
+    }
+  }
+
+  // The value a box was drawn with (not what has been typed in it since).
+  function drawnValue(el) {
+    if (el.tagName === 'SELECT') { const o = el.querySelector('option[selected]'); return o ? o.value : ''; }
+    return el.getAttribute('value') || '';
   }
 
   // ── Bulk bar ────────────────────────────────────────────────────────
@@ -4089,11 +4409,17 @@
       </div>`;
     document.body.appendChild(dd);
     const list = dd.querySelector('#fctproc-ff-list');
+    // With something typed in Search, the list is its matches, as in Excel:
+    // (Select All) ticks them, and Apply keeps only the ones ticked among
+    // them — the rest, hidden, count as unticked. Ticked but hidden, they
+    // made Apply see every box ticked and drop the filter altogether.
+    const searching = () => !!dd.querySelector('#fctproc-ff-search').value.trim();
+    const shown = cb => !searching() || cb.closest('.dff-item').style.display !== 'none';
     dd.addEventListener('change', e => {
-      if (e.target.id === 'fctproc-ff-all') list.querySelectorAll('.fctproc-ff-val').forEach(cb => { cb.checked = e.target.checked; });
+      if (e.target.id === 'fctproc-ff-all') list.querySelectorAll('.fctproc-ff-val').forEach(cb => { if (shown(cb)) cb.checked = e.target.checked; });
       else if (e.target.classList.contains('fctproc-ff-val')) {
         const all = list.querySelector('#fctproc-ff-all');
-        if (all) all.checked = [...list.querySelectorAll('.fctproc-ff-val')].every(c => c.checked);
+        if (all) all.checked = [...list.querySelectorAll('.fctproc-ff-val')].filter(shown).every(c => c.checked);
       }
     });
     dd.querySelector('#fctproc-ff-search').addEventListener('input', e => {
@@ -4108,7 +4434,7 @@
       if (b.dataset.ff === 'clear') delete st.filters[ffField];
       else {
         const boxes = [...list.querySelectorAll('.fctproc-ff-val')];
-        const ticked = boxes.filter(c => c.checked).map(c => c.value);
+        const ticked = boxes.filter(c => c.checked && shown(c)).map(c => c.value);
         if (ticked.length === boxes.length) delete st.filters[ffField];
         else st.filters[ffField] = new Set(ticked);
       }
@@ -4180,6 +4506,19 @@
     el.addEventListener('click', onClick);
     el.addEventListener('focusout', onFocusOut);
     el.addEventListener('keydown', onKeyDown);
+    // The wheel over a number box that has the focus steps its value — and
+    // the step is saved — rather than scrolling the sheet. The box is let go
+    // of first: the sheet scrolls, and the value stays as it was.
+    el.addEventListener('wheel', e => {
+      const t = e.target;
+      if (t && t.tagName === 'INPUT' && t.type === 'number' && t === document.activeElement) t.blur();
+    }, { passive: true });
+    // Where the table is scrolled to, for when its tab is shown again
+    // (hidden, the box forgets it).
+    el.addEventListener('scroll', e => {
+      const t = e.target;
+      if (t && t.id === 'fctproc-wrap' && (t.scrollTop || t.scrollLeft || t.offsetParent)) st.wrapScroll = { top: t.scrollTop, left: t.scrollLeft, sig: viewSig() };
+    }, true);
     // What a combobox held, and whether anything was chosen in it (see
     // cbUntouched). On the way down, before the combobox's own handlers.
     el.addEventListener('focusin', onCbFocusIn, true);
@@ -4208,6 +4547,7 @@
   let searchTimer = null;
   function onInput(e) {
     const el = e.target;
+    if (el === boxFocusEl) boxTyped = true;      // a paste with the mouse, too
     if (el.id === 'fctproc-search') {
       st.search = el.value;
       st.forceShow.clear();
@@ -4439,15 +4779,35 @@
     const prev = lineFor(row, ctx);
     const unit = lineUnit(line), u = normUnit(row.unit);
     if (u && u !== normUnit(unit) && !(prev && u === normUnit(lineUnit(prev)))) return {};
+    const q = numOrNull(row.quantity), qty = numOrNull(line.quantity);
+    const qtyOfPick = q == null || (prev && sameNum(q, numOrNull(prev.quantity)));
+    // …and the other way round: a quantity the PM typed is counted in the
+    // unit beside it, so that unit stays with it — re-coded to a line bought
+    // by the SY, 400 SF of fabric must not become 400 SY.
+    if (!qtyOfPick && u && u !== normUnit(unit)) return {};
     const out = {};
     if (str(row.unit) !== unit) out.unit = unit;
-    const q = numOrNull(row.quantity), qty = numOrNull(line.quantity);
-    if ((q == null || (prev && sameNum(q, numOrNull(prev.quantity)))) && !sameNum(q, qty)) out.quantity = qty;
+    if (qtyOfPick && !sameNum(q, qty)) out.quantity = qty;
     return out;
   }
   // The Quantity / Unit a Sub Code pick filled, by row id:
   // { bid_item_id, fields }. A pick the server refuses takes them with it.
   const lineFill = new Map();
+  // The cells other picks set together, by row id: { field: value } per
+  // pick, newest last — a Vendor that cleared the old vendor's Contact and
+  // Email, a Material from the library with its Unit and Vendor, "Use bid
+  // qty" with the Unit and the bid figures it takes, a copied material
+  // naming the line's own row. When one of them conflicts, the others are
+  // asked about with it (onConflict): saved on their own, "Keep saved"
+  // would leave them beside someone else's value — a row with that
+  // vendor and no contact, nobody having chosen it.
+  const pickFill = new Map();
+  function notePick(rowId, fields) {
+    const keys = Object.keys(fields);
+    const list = (pickFill.get(rowId) || []).filter(g => !Object.keys(g).some(k => keys.includes(k)));
+    if (keys.length > 1) list.push({ ...fields });
+    if (list.length) pickFill.set(rowId, list); else pickFill.delete(rowId);
+  }
 
   function commitCombo(rowId, field, input) {
     const row = rowById(rowId);
@@ -4501,6 +4861,7 @@
           fields.vendor = canonicalSupplier(vendor).slice(0, MAX_LEN.vendor);
         }
       }
+      if ('description' in fields) notePick(rowId, fields);
       if (Object.keys(fields).length) { setFields(rowId, fields); updateCounts(); }
       return;
     }
@@ -4545,9 +4906,19 @@
       if (v === '__auto__' || (!v && !typed)) next = { po_id: null, po_auto: true };
       else if (v === '__none__') next = { po_id: null, po_auto: false };
       else if (v && makeCtx().purchaseOrders.some(p => String(p.id) === v)) next = { po_id: v, po_auto: true };
-      if (next) { setFields(rowId, next); updateCounts(); }
+      if (next) { setFields(rowId, next); updateCounts(); repaintRows(); }
     }
   }
+  // Every row drawn again where its drawing changed (and a cell in use kept):
+  // an order linked to one row is no longer matched to the rows beside it
+  // (effectivePO), so one row's PO # changes their status too.
+  function repaintRows() {
+    const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
+    if (!wrap) return;
+    const ctx = makeCtx();
+    [...wrap.querySelectorAll('tr.fctproc-row')].forEach(tr => refreshRow(tr.dataset.row, null, ctx, true));
+  }
+  const touchesPO = f => Boolean(f) && (Object.prototype.hasOwnProperty.call(f, 'po_id') || Object.prototype.hasOwnProperty.call(f, 'po_auto'));
 
   async function addVendor(rowId, name, input) {
     if (!name) return;
@@ -4595,6 +4966,8 @@
       // Leaving the select-all box, a group header, a filter button: a
       // redraw held back while it had focus is due once focus is elsewhere.
       if (redrawDeferred) setTimeout(redrawWhenFree, 0);
+      // …and a refresh held while a bulk-bar box had it.
+      setTimeout(payOwedPoll, 0);
       return;
     }
     if (el.type === 'date' && el.dataset.badDate) {
@@ -4620,23 +4993,84 @@
       // The page's combobox commits 120 ms after blur. Mark it so nothing
       // redraws it out from under that commit, then tidy the row once it has.
       el.dataset.pcommit = '1';
-      setTimeout(() => { if (el.isConnected) { delete el.dataset.pcommit; refreshRow(rowId); } }, 220);
+      setTimeout(() => {
+        if (!el.isConnected) return;
+        delete el.dataset.pcommit;
+        refreshRow(rowId);
+        // A redraw held back for this commit (an action answered meanwhile).
+        if (redrawDeferred) setTimeout(redrawWhenFree, 0);
+      }, 220);
     }
     // Leaving the row sends its edits now rather than after the quiet spell,
     // and remembers the contact typed on it under its vendor.
     setTimeout(() => {
       const a = document.activeElement;
       const tr = st.mountEl && st.mountEl.querySelector(`tr[data-row="${cssEsc(rowId)}"]`);
-      if (tr && a && tr.contains(a)) return;
+      if (tr && a && tr.contains(a)) {
+        // Still in the row. A box an answer left showing an old value while
+        // it had the focus (refreshRow keeps the box in use; marked stale)
+        // is drawn afresh now — whatever took the focus: another box, the
+        // row's tick box, a button in the same cell. Coming back to it, the
+        // PM would edit that old value, and the save would expect the new
+        // one and go over a colleague's change without a word.
+        freshenBox(el);
+        if (redrawDeferred) setTimeout(redrawWhenFree, 0);
+        payOwedPoll();
+        return;
+      }
       flushRow(rowId);
       rememberContact(rowById(rowId));
       if (!el.classList.contains('cb-input')) refreshRow(rowId);
+      freshenBox(el);
       // A redraw held back while this cell was in use (redrawAround).
       if (redrawDeferred) setTimeout(redrawWhenFree, el.classList.contains('cb-input') ? 250 : 0);
+      payOwedPoll();
     }, 0);
   }
+  // A box marked stale (refreshRow kept it, in use, over a newer value) and
+  // left: replaced by its fresh copy — only it, even when what took the focus
+  // is in the same cell (whose cell refreshRow keeps). Its record of what it
+  // showed goes with it. A picker is redrawn after its commit instead.
+  function freshenBox(el) {
+    if (!el || !el.dataset || !el.dataset.stale || !el.isConnected || el === document.activeElement || isCb(el)) return;
+    const rowId = el.dataset.pr, f = el.dataset.pf;
+    const row = rowById(rowId);
+    if (!row) return;
+    const tmp = document.createElement('tbody');
+    tmp.innerHTML = rowHtml(row, makeCtx(), canEdit(), colsFor(canEdit()));
+    const twin = tmp.querySelector(`[data-pr="${cssEsc(rowId)}"][data-pf="${cssEsc(f)}"]`);
+    // The part the box is drawn in, when nothing else in it is in use: what
+    // the PM reads may be drawn beside the box, not in it — the Sub Agmt tag
+    // and its tooltip lie over a select that cannot be seen.
+    const near = x => x && (x.closest('.fctproc-scawrap') || x.closest('.fctproc-part'));
+    const part = near(el), freshPart = near(twin);
+    const busy = part && (part.contains(document.activeElement) || (pressedEl && part.contains(pressedEl)) || part.querySelector('[data-pcommit]'));
+    if (part && freshPart && !busy) part.replaceWith(freshPart);
+    else if (twin) el.replaceWith(twin);
+    else delete el.dataset.stale;
+    (FOCUS_FIELDS[f] || [f]).forEach(k => { const key = rowId + '\u0000' + k; const s0 = seenAtFocus.get(key); if (s0 && s0.el === el) seenAtFocus.delete(key); });
+  }
 
+  // A refresh held while the caret was in a cell, owed once it leaves them.
+  let pollOwed = false;
+  // Whether the caret is in a cell's box or a bulk-bar box (not a tick box).
+  function inCellBox(a = document.activeElement) {
+    if (!a || !st.mountEl || !st.mountEl.contains(a) || !/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) || a.type === 'checkbox') return false;
+    return !!(a.dataset.pr || (a.closest && a.closest('#fctproc-bulk')));
+  }
+  // Called once focus has settled after leaving a box: the refresh held for it.
+  function payOwedPoll() {
+    // A press that left the cell is still down: read after its click
+    // (onDocMouseUp), or the answer's redraw could replace what is pressed.
+    const pressing = () => pressedAt && Date.now() - pressedAt < 5000;
+    if (!pollOwed || inCellBox() || pressing()) return;
+    setTimeout(() => { if (pollOwed && !inCellBox() && !pressing()) window.FCTProcurement.refresh(); }, 0);
+  }
   function onKeyDown(e) {
+    // A key in the box in use (Enter or Tab moving on from it counts too: it
+    // is pressed in this box, before the next one takes the focus and starts
+    // afresh).
+    if (e.target === boxFocusEl) boxTyped = true;
     const el = e.target;
     if (el.id === 'fctproc-search' && e.key === 'Escape' && st.search) {
       e.preventDefault();
@@ -4646,15 +5080,26 @@
       updateCounts();
       return;
     }
-    // Enter moves down a row in the same column, as in the sheet it replaces.
-    if (e.key !== 'Enter' || e.defaultPrevented || el.classList.contains('cb-input') || el.tagName === 'SELECT') return;
+    // Enter moves down a row in the same column, as in the sheet it replaces;
+    // so do the down and up arrows, as in the page's daily table. Left to
+    // the browser, an arrow steps the box's value instead — Quantity 400 to
+    // 399, Date Needed back a year, Sub Agmt to the next choice — and each
+    // step is saved, with nothing to say so. (A picker's arrows move through
+    // its list, as before.)
+    const enter = e.key === 'Enter', arrow = e.key === 'ArrowDown' || e.key === 'ArrowUp';
+    if ((!enter && !arrow) || e.defaultPrevented || el.classList.contains('cb-input') || el.tagName === 'TEXTAREA') return;
+    if (enter && el.tagName === 'SELECT') return;
+    if (arrow && (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey)) return;
+    if (!/^(INPUT|SELECT)$/.test(el.tagName) || el.type === 'checkbox') return;
     const rowId = el.dataset && el.dataset.pr, field = el.dataset && el.dataset.pf;
     if (!rowId || !field) return;
     e.preventDefault();
-    let tr = el.closest('tr') && el.closest('tr').nextElementSibling;
-    while (tr && !tr.querySelector(`[data-pf="${cssEsc(field)}"]`)) tr = tr.nextElementSibling;
+    const up = e.key === 'ArrowUp';
+    const step = t => (up ? t.previousElementSibling : t.nextElementSibling);
+    let tr = el.closest('tr') && step(el.closest('tr'));
+    while (tr && !tr.querySelector(`[data-pf="${cssEsc(field)}"]`)) tr = step(tr);
     const next = tr && tr.querySelector(`[data-pf="${cssEsc(field)}"]`);
-    if (next) { next.focus(); try { next.select(); } catch { /* dates */ } } else el.blur();
+    if (next) { next.focus(); try { next.select(); } catch { /* dates */ } } else if (enter) el.blur();
   }
 
   function onClick(e) {
@@ -4773,13 +5218,17 @@
       }
       const row = adoptServerRow(data.item || item);
       if (row) st.forceShow.add(row.id);
-      setSave('saved');
-      renderTable();
-      updateCounts();
+      actionSaved();
+      await pickersSettled();
+      // Typed in since the click (the answer was slow): that box keeps the
+      // focus, and the keys — the new row is drawn once it is left.
+      const a = document.activeElement;
+      const free = !a || a === document.body || !/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) || a.type === 'checkbox';
+      redrawSheet();
       // Material to name — its picker opens on the names used under the
       // row's Sub Code before, which is what "+ Material" is for — or, with
       // it hidden, Quantity (the Sub Code picker is left for a click).
-      if (row) focusField(row.id, colHidden('description') ? 'quantity' : 'description');
+      if (row && free) focusField(row.id, colHidden('description') ? 'quantity' : 'description');
       return row;
     } catch (err) {
       setSave('error');
@@ -4917,12 +5366,16 @@
         const m = str(r.description).trim();
         if (!m) return;
         ix.named++;
-        ix.here.add(`${r.project_id}\u0000${ck(k, liveCodes(r, ctx).sub_code)}\u0000${ck(k, m)}`);
+        // By line — cost code and sub code: one sub code under two cost codes
+        // is two lines with lists of their own (Geofabric under Stormwater
+        // and under Base).
+        const c = liveCodes(r, ctx);
+        ix.here.add(`${r.project_id}\u0000${ck(k, c.cost_code)}\u0000${ck(k, c.sub_code)}\u0000${ck(k, m)}`);
       });
       _pastIndex.set(ctx, ix);
     }
     return (ix.bySub.get(sk) || []).some(e => (!cc || !ck(k, e.cost_code) || ck(k, e.cost_code) === cc)
-      && !ix.here.has(`${row.project_id}\u0000${sk}\u0000${ck(k, e.material)}`));
+      && !ix.here.has(`${row.project_id}\u0000${cc}\u0000${sk}\u0000${ck(k, e.material)}`));
   }
 
   /**
@@ -4937,9 +5390,16 @@
     const ctx = siteMode() && p.project_id ? makeCtx(p.project_id) : makeCtx();
     const k = keyFn(ctx);
     const codes = liveCodes(p, ctx);
-    const sk = ck(k, codes.sub_code);
+    const sk = ck(k, codes.sub_code), cc = ck(k, codes.cost_code);
     const pid = p.project_id || st.projectId;
-    const lineRows = st.rows.filter(r => r.project_id === pid && ck(k, liveCodes(r, ctx).sub_code) === sk);
+    // The rows under this line — its cost code and sub code: the same sub
+    // code under another cost code is another line, whose materials are not
+    // "already here" on this one.
+    const lineRows = st.rows.filter(r => {
+      if (r.project_id !== pid) return false;
+      const c = liveCodes(r, ctx);
+      return ck(k, c.sub_code) === sk && ck(k, c.cost_code) === cc;
+    });
     const have = new Set(lineRows.map(r => ck(k, materialOf(r, ctx))).filter(Boolean));
     const own = p.bid_item_id ? st.rows.find(r => r.project_id === pid && r.source === 'bid' && String(r.bid_item_id) === String(p.bid_item_id)) : null;
     // Read as the dialog is used, not once: a colleague (or the PM, in the
@@ -5127,6 +5587,7 @@
         else if (asSent) { f.unit = unit; f.quantity = null; }
       }
       if (!r.vendor.trim() && it.vendor && !['linked', 'auto', 'multiple', 'loading'].includes(effectivePO(r, ctx).kind)) f.vendor = vendorOf(it);
+      notePick(ownId, f);
       setFields(ownId, f);
       flushRow(ownId);
       named = true;
@@ -5138,9 +5599,9 @@
       naming = -1;
     }
     rows.forEach(r => st.forceShow.add(r.id));
-    if (rows.length) setSave('saved');
-    renderTable();
-    updateCounts();
+    if (rows.length) actionSaved();
+    await pickersSettled();
+    redrawSheet();
     const n = rows.length + (named ? 1 : 0);
     toast(`Added ${n} material${n === 1 ? '' : 's'} from ${from}${named ? ' (one names this line\'s own row)' : ''}${copyQty ? '' : ' — fill in this job\'s quantities'}`);
     // Fewer back than sent: an id already taken elsewhere. The sheet is read
@@ -5248,25 +5709,41 @@
     }
   }
 
+  // Ids per DELETE: they go in the address, which the host refuses past
+  // 14 KB — some 570 of them — before the API ever sees it.
+  const DELETE_CHUNK = 200;
   async function deleteRows(ids) {
     const list = ids.filter(id => rowById(id));
     if (!list.length || !canEdit()) return;
     setSave('saving');
+    const done = [];
     try {
-      const params = list.length === 1 ? { id: list[0] } : { ids: list.join(',') };
-      await api('DELETE', '/procurement' + q(params));
-      list.forEach(dropRow);
+      for (let i = 0; i < list.length; i += DELETE_CHUNK) {
+        const part = list.slice(i, i + DELETE_CHUNK);
+        const params = part.length === 1 ? { id: part[0] } : { ids: part.join(',') };
+        try {
+          await api('DELETE', '/procurement' + q(params));
+        } catch (err) {
+          // Not there to delete: someone else deleted it first, which is
+          // what was wanted — not "could not delete", with the row left on.
+          if (err.status !== 404) throw err;
+        }
+        part.forEach(id => { dropRow(id); done.push(id); });
+      }
       st.bulkConfirmDel = false;
-      setSave('saved');
+      actionSaved();
       renderBulk();
-      renderTable();
-      updateCounts();
+      await pickersSettled();
+      redrawSheet();
       if (list.length > 1) toast(`Deleted ${list.length} rows`);
     } catch (err) {
       setSave('error');
       st.confirmDel = null;
-      list.forEach(refreshRow);
-      showError(`Procurement: could not delete (${err.message}).`);
+      if (done.length) { renderBulk(); redrawSheet(); }
+      list.filter(id => !done.includes(id)).forEach(refreshRow);
+      showError(done.length
+        ? `Procurement: ${done.length} of the ${list.length} rows were deleted; the others could not be (${err.message}).`
+        : `Procurement: could not delete (${err.message}).`);
     }
   }
 
@@ -5277,6 +5754,7 @@
     if (!bc) { refreshRow(rowId); return; }
     const fields = { bid_qty_at_send: bc.toQty, bid_unit_at_send: str(bc.line.unit) };
     if (takeQty) { fields.quantity = bc.toQty; fields.unit = str(bc.line.unit); }
+    notePick(rowId, fields);
     setFields(rowId, fields);
     flushRow(rowId);
     refreshRow(rowId);
@@ -5314,7 +5792,14 @@
     }
   }
 
-  async function bulkPatch(ids, fields) {
+  /**
+   * One change to many rows. With `expect`, a row is written only while its
+   * cells still hold that (as one cell's save is): a row someone else changed
+   * meanwhile comes back in `conflicts`, as it is now, unwritten. A failure
+   * partway through a site's per-job batches is thrown with `changed`, the
+   * number of rows the batches before it did change.
+   */
+  async function bulkPatch(ids, fields, expect = null) {
     // Edits already typed into these rows land first; then the bulk value
     // wins over any of them for the fields it sets.
     await flushAll();
@@ -5342,15 +5827,26 @@
       if (st.projectId) body.project_id = st.projectId;
       batches.push(body);
     }
-    const data = { items: [], missing: [] };
+    if (expect) batches.forEach(body => { body.expect = expect; });
+    const data = { items: [], missing: [], conflicts: [] };
     for (const body of batches) {
-      const d = await api('PATCH', '/procurement' + q({ action: 'bulk' }), body);
+      let d;
+      try {
+        d = await api('PATCH', '/procurement' + q({ action: 'bulk' }), body);
+      } catch (err) {
+        err.changed = data.items.length;
+        settleSave();
+        throw err;
+      }
       (d.items || []).forEach(adoptServerRow);
+      (d.conflicts || []).forEach(adoptServerRow);
       // Set here, now: no longer "changed by someone else".
-      body.ids.forEach(id => Object.keys(body.fields).forEach(k => forgetRecent(id, k)));
+      const out = new Set((d.conflicts || []).map(r => String(r.id)));
+      body.ids.filter(id => !out.has(id)).forEach(id => Object.keys(body.fields).forEach(k => forgetRecent(id, k)));
       (d.missing || []).forEach(dropRow);
       data.items.push(...(d.items || []));
       data.missing.push(...(d.missing || []));
+      data.conflicts.push(...(d.conflicts || []));
     }
     settleSave();
     if (st.saveState === 'saving') setSave('saved');
@@ -5397,22 +5893,31 @@
         groups = [[ids.filter(id => !clear.includes(id)), fields], [clear, { ...fields, contact: '', email: '' }]].filter(g => g[0].length);
       }
     }
+    let changed = 0;
     try {
       let cleared = 0;
       for (const [gIds, gFields] of groups) {
-        await bulkPatch(gIds, gFields);
+        const d = await bulkPatch(gIds, gFields);
+        changed += (d.items || []).length;
         if ('contact' in gFields && !('contact' in fields)) { cleared += gIds.length; gIds.forEach(id => contactTouched.delete(id)); }
       }
       // Contact + Email set on purpose: remembered under each row's vendor.
       if ('contact' in fields) ids.forEach(id => contactTouched.add(id));
       ids.forEach(id => rememberContact(rowById(id)));
-      renderTable();
-      updateCounts();
+      await pickersSettled();
+      redrawSheet();
       toast(`Updated ${ids.length} row${ids.length === 1 ? '' : 's'}`
         + (cleared ? ` — Contact and Email cleared on ${cleared}, whose contact was the previous vendor's` : ''));
     } catch (err) {
       setSave('error');
-      showError(`Procurement: the bulk change could not be saved (${err.message}).`);
+      // Sent in parts (one per job of a site; a vendor change whose rows'
+      // contacts are cleared apart): the parts that went in are on the
+      // sheet now and said so — not "could not be saved" over rows that were.
+      changed += err.changed || 0;
+      if (changed) redrawSheet();
+      showError(changed
+        ? `Procurement: the bulk change was saved on ${changed} of the ${ids.length} rows; the rest could not be saved (${err.message}).`
+        : `Procurement: the bulk change could not be saved (${err.message}).`);
     }
   }
 
@@ -5479,6 +5984,10 @@
     // second order for rows already on one, without asking. A read that
     // fails leaves the list in hand.
     await refreshPOs();
+    // …and so is whether a row is linked to one: a colleague's link of these
+    // rows reaches this page only with its next read of them (the poll is up
+    // to 15 s behind, and the PM ticking rows has been in the sheet all along).
+    if (st.loadState === 'ok' && st.loadedFor === viewSig()) await load(st.projectId, { quiet: true });
     const ctx = makeCtx();
     let rows = sortRows([...st.selected].map(rowById).filter(Boolean), ctx);
     if (!rows.length) return;
@@ -5501,6 +6010,11 @@
     // So that is asked, never done quietly. A row several POs match is on
     // one of them; the PM picks which in the PO # column.
     const eps = new Map(rows.map(r => [r.id, effectivePO(r, ctx)]));
+    // Each row's PO # as decided on now — before any question below is
+    // answered or the order is raised: a colleague's link that a refresh
+    // brings in meanwhile is theirs, and the link to the new PO must not
+    // land over it (linkToPO).
+    const decided = new Map(rows.map(r => [r.id, { po_id: r.po_id == null || r.po_id === '' ? null : String(r.po_id), po_auto: r.po_auto !== false }]));
     const onPO = rows.filter(r => ['linked', 'auto'].includes(eps.get(r.id).kind));
     const multi = rows.filter(r => eps.get(r.id).kind === 'multiple');
     if (onPO.length || multi.length) {
@@ -5579,7 +6093,7 @@
       if (!pick) return;
       if (pick === 'one') plan = [{ project_id: top.project_id, cost_code: top.cost_code, sub_code: top.sub_code, rows }];
     }
-    const made = [];
+    const made = [], leftOff = [];
     for (const g of plan) {
       const quotes = [...new Set(g.rows.map(r => r.quote_number.trim()).filter(Boolean))];
       const seed = {
@@ -5598,8 +6112,9 @@
         break;
       }
       try {
-        await bulkPatch(g.rows.map(r => r.id), { po_id: String(po.id), po_auto: true });
+        const refused = await linkToPO(g.rows, po, decided);
         made.push(po);
+        if (refused.length) leftOff.push({ po, n: refused.length });
       } catch (err) {
         setSave('error');
         showError(`Procurement: ${str(po.po_number) || 'the PO'} was created but the rows could not be linked to it (${err.message}).`);
@@ -5609,11 +6124,46 @@
     if (made.length) {
       st.selected.clear();
       renderBulk();
-      renderTable();
-      updateCounts();
-      toast(made.length === 1 ? `Created ${str(made[0].po_number) || 'the PO'} and linked ${rows.length} row${rows.length === 1 ? '' : 's'}`
+      await pickersSettled();
+      redrawSheet();
+      const linked = rows.length - leftOff.reduce((a, x) => a + x.n, 0);
+      toast(made.length === 1 ? `Created ${str(made[0].po_number) || 'the PO'} and linked ${linked} row${linked === 1 ? '' : 's'}`
         : `Created ${made.length} POs${jobs.length > 1 ? `, each on its own job` : ''} (${made.map(p => str(p.po_number)).join(', ')})`);
     }
+    leftOff.forEach(({ po, n }) => showError(`Procurement: ${n} of the rows for ${str(po.po_number) || 'the new PO'} `
+      + `${n === 1 ? 'was' : 'were'} put on an order by someone else while it was being raised, so ${n === 1 ? 'it was' : 'they were'} left on that one `
+      + `and not linked to ${str(po.po_number) || 'the new PO'}. Check ${str(po.po_number) || 'it'} — it may now be for material that is already ordered.`));
+  }
+  /**
+   * Link rows to a PO just raised for them — each only while its PO # cell
+   * still holds what this page decided on. A row a colleague put on an
+   * order in the meantime is left on theirs, not moved off it unseen; the
+   * ids of those come back.
+   */
+  async function linkToPO(rows, po, decided) {
+    // The PM's own PO # changes still on their way to these rows go first,
+    // so they are not taken for someone else's.
+    await flushAll();
+    const groups = new Map();
+    rows.forEach(r => {
+      const s0 = server.get(r.id) || r;
+      const saved = { po_id: s0.po_id == null || s0.po_id === '' ? null : String(s0.po_id), po_auto: s0.po_auto !== false };
+      // What the decision saw — the row on screen, with the PM's own change
+      // in it. When that change could not be saved (still waiting to go),
+      // the cell as saved is what the link goes over, knowingly.
+      const own = { ...(fly.get(r.id) || {}), ...(pend.get(r.id) || {}) };
+      const expect = touchesPO(own) || !decided || !decided.get(r.id) ? saved : decided.get(r.id);
+      const key = JSON.stringify(expect);
+      if (!groups.has(key)) groups.set(key, { expect, ids: [] });
+      groups.get(key).ids.push(r.id);
+    });
+    const refused = [];
+    for (const { expect, ids } of groups.values()) {
+      const d = await bulkPatch(ids, { po_id: String(po.id), po_auto: true }, expect);
+      refused.push(...(d.conflicts || []).map(x => String(x.id)));
+    }
+    repaintRows();
+    return refused;
   }
 
   // ── Export ──────────────────────────────────────────────────────────
@@ -6074,6 +6624,12 @@
           const box = foot.querySelector('#fctproc-send-err');
           box.textContent = text;
           box.style.color = good ? 'var(--green,#22c55e)' : 'var(--red,#ef4444)';
+        } else {
+          // Closed while it read "Adding…": said on the page instead, or the
+          // PM goes on believing the lines went in.
+          const n = picked.length;
+          showError(`Procurement: adding ${n} line${n === 1 ? '' : 's'} to ${jobName} may not have gone through (${err.message}). `
+            + 'Open Add to Procurement again to check — lines that did go in show there as "already added".');
         }
       }
     });
@@ -6111,15 +6667,23 @@
    * the rows on screen are already the new versions by then.
    */
   async function applyRelinks(plan, rows, pid) {
-    const done = [], synced = new Set();
+    const done = [], synced = new Set(), theirs = [];
     let stale = false;
     for (const rl of plan) {
       relinkTried.add(tryKey(rl));
+      const before = (rows || []).find(r => r.id === rl.id) || {};
+      // Only while the row is still as read: a colleague who re-picked its
+      // Sub Code while this pass ran keeps their pick (the conflict is
+      // passed over quietly — the row has been seen to).
+      const was = k => (before[k] == null ? null : before[k]);
+      const expect = before.id
+        ? (rl.sync ? { cost_code: was('cost_code'), sub_code: was('sub_code') }
+          : { bid_item_id: before.bid_item_id == null ? null : String(before.bid_item_id), cost_code: was('cost_code'), sub_code: was('sub_code') })
+        : undefined;
       try {
         const data = await api('PATCH', '/procurement' + q({ id: rl.id }),
           { fields: rl.sync ? { cost_code: rl.cost_code, sub_code: rl.sub_code }
-            : { bid_item_id: rl.bid_item_id, cost_code: rl.cost_code, sub_code: rl.sub_code } });
-        const before = (rows || []).find(r => r.id === rl.id) || {};
+            : { bid_item_id: rl.bid_item_id, cost_code: rl.cost_code, sub_code: rl.sub_code }, expect });
         const item = normRow(data.item) || { ...before, bid_item_id: rl.bid_item_id, cost_code: rl.cost_code, sub_code: rl.sub_code };
         if (rl.sync) synced.add(item);
         done.push(item);
@@ -6135,10 +6699,22 @@
           stale = true;
           break;
         }
+        if (err.status === 409 && err.code === 'conflict') {
+          // Someone else changed the row meanwhile: theirs is taken in, marked
+          // and drawn — left undrawn, the box shows the old value and the
+          // PM's next edit of it would expect theirs and go over it unseen.
+          if (err.data && err.data.item && isOpenJob(pid)) {
+            const prev = server.get(rl.id) ? { ...server.get(rl.id) } : null;
+            adoptServerRow(err.data.item);
+            if (prev) noteOthersChanges([err.data.item], new Map([[rl.id, prev]]));
+            theirs.push(rl.id);
+          }
+          continue;
+        }
         console.warn('[procurement] re-link failed for', rl.id, err);
       }
     }
-    if (done.length && isOpenJob(pid) && isMounted()) {
+    if ((done.length || theirs.length) && isOpenJob(pid) && isMounted()) {
       if (cellInUse()) redrawAround(); else { renderTable(); updateCounts(); }
     }
     // Every one of these PATCHes carries the line's codes: its files may
@@ -6251,6 +6827,7 @@
     /** Draw the whole tab (job picker + table) into `el`. */
     renderTab(el) {
       if (!el) return;
+      const again = st.mountEl === el && el.isConnected;
       st.mountEl = el;
       wire(el);
       loadPrefs();
@@ -6266,7 +6843,26 @@
       // The contact pickers read from the shared cache.
       contacts.load().catch(err => console.warn('[procurement] contacts did not load', err));
       const cached = st.projectId && st.loadedFor === viewSig() && st.loadState === 'ok';
+      // Already drawn here, for this job: the tab clicked again, or the page
+      // finishing its start-up behind a sheet in use. Redrawn in place —
+      // around a cell being typed in, at the same scroll — not rebuilt,
+      // which threw the box in use away (a half-typed vendor saved, the
+      // rest of the typing lost) and put the PM back at the top of the sheet.
+      const wrap = again && cached && el.querySelector('#fctproc-wrap');
+      if (wrap) {
+        window.FCTProcurement.rerender();
+        const now = el.querySelector('#fctproc-wrap');
+        // Hidden with its tab, the box forgot where it was scrolled to —
+        // this sheet's place, not another job's opened since.
+        if (now && st.wrapScroll && st.wrapScroll.sig === viewSig() && !now.scrollTop && !now.scrollLeft) {
+          now.scrollTop = st.wrapScroll.top;
+          now.scrollLeft = st.wrapScroll.left;
+        }
+        load(st.projectId, { quiet: true });
+        return;
+      }
       if (st.projectId && !cached) st.loadState = 'loading';
+      st.wrapScroll = null;
       renderShell();
       if (st.projectId) load(st.projectId, { quiet: cached });
     },
@@ -6333,13 +6929,19 @@
       } else renderBody();
     },
 
-    /** Re-read the open job's rows (the page's poll). Skipped mid-edit. */
+    /**
+     * Re-read the open job's rows (the page's poll). Held while the caret is
+     * in one of the sheet's cells or the bulk bar's boxes — a colleague's
+     * value is never put under a box being edited — and read the moment it
+     * leaves them (pollOwed, onFocusOut): a sheet whose caret Enter had
+     * parked in a cell used to wait for some unrelated click. Not held by a
+     * ticked row box, the search box or Show all jobs, which held the sheet
+     * still for as long as they kept the focus.
+     */
     async refresh() {
       if (!isMounted() || !st.projectId || st.loadState === 'loading') return;
-      const a = document.activeElement;
-      const editing = a && st.mountEl.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)
-        && (a.dataset.pr || (a.closest && a.closest('#fctproc-bulk')));
-      if (editing) return;
+      if (inCellBox()) { pollOwed = true; return; }
+      pollOwed = false;
       if (pend.size) await flushAll();
       // A site whose jobs changed since is a new sheet, read as one.
       await load(st.projectId, { quiet: st.loadState === 'ok' && st.loadedFor === viewSig() });

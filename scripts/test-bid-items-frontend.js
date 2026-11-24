@@ -60,11 +60,13 @@ function structuralChecks(file, projectKeyPrefix, indexKey) {
   // _flushPendingProjectSaves drains pending bid-item patches first
   const flushFn = src.match(/function _flushPendingProjectSaves[\s\S]+?\n\}\n/);
   assert('flush drains _biSavePending',                !!flushFn && /Object\.keys\(_biSavePending\)/.test(flushFn[0]));
-  assert('flush calls _doBidItemPut with keepalive',   !!flushFn && /_doBidItemPut\(projId, biId, true\)/.test(flushFn[0]));
+  // (tracker.html: keepalive as the page goes, ordinary requests on leaving the bid view.)
+  assert('flush calls _doBidItemPut with keepalive',   !!flushFn && (/_doBidItemPut\(projId, biId, true\)/.test(flushFn[0])
+    || (/_doBidItemPut\(projId, biId, keepalive\)/.test(flushFn[0]) && /const keepalive = !\(opts && opts\.keepalive === false\);/.test(flushFn[0]))));
   assert('flush still hooks beforeunload',             /beforeunload['"], _flushPendingProjectSaves/.test(src));
   assert('flush still hooks visibilitychange',         /visibilitychange['"][\s\S]+_flushPendingProjectSaves/.test(src));
   // closeBidView should still flush before tearing down the view
-  assert('closeBidView flushes pending saves',         /function closeBidView[\s\S]+_flushPendingProjectSaves\(\)/.test(src));
+  assert('closeBidView flushes pending saves',         /function closeBidView[\s\S]+_flushPendingProjectSaves\((\{ keepalive: false \})?\)/.test(src));
   // The PUT body includes both bidItem and ts, and sets _lastProjIndexTs
   const putFn = src.match(/function _doBidItemPut[\s\S]+?\n\}\n/);
   assert('_doBidItemPut sends body {bidItem, ts}',     !!putFn && /JSON\.stringify\(\{ bidItem: item, ts \}\)/.test(putFn[0]));

@@ -4864,9 +4864,10 @@ function apiPut(key, value, opts = {}) {
   };
   if (opts.keepalive) init.keepalive = true;
   // Returned so a caller that has to know when a save has landed can wait on
-  // it (saveCrmCompanies does). It never rejects — failures are shown here.
+  // it (saveCrmCompanies does): true once it has, false when it failed. It
+  // never rejects — failures are shown here.
   return fetch(`${API_BASE}/data/${key}`, init).then(async r => {
-    if (r.ok) return;
+    if (r.ok) return true;
     console.warn(`[DB] PUT ${key} failed: HTTP ${r.status}`);
     // 409 = backend bulk-wipe protection refused the request. Surface
     // the detail message so the user knows which save was refused.
@@ -4874,12 +4875,14 @@ function apiPut(key, value, opts = {}) {
       let detail = 'A save was refused to prevent accidental data loss.';
       try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch {}
       _showSaveError(false, detail);
-      return;
+      return false;
     }
     _showSaveError(r.status === 401);
+    return false;
   }).catch(err => {
     console.warn(`[DB] PUT ${key} failed:`, err.message);
     _showSaveError(false);
+    return false;
   });
 }
 
@@ -7008,15 +7011,45 @@ function saveProject(id) {
   clearTimeout(_saveProjTimers[id]);
   _saveProjTimers[id] = setTimeout(() => {
     delete _saveProjTimers[id];
-    apiPut('fct_project_' + id, _projBlob(p));
+    _putProjectThenRenamedLines(id, p, {});
     saveProjectIndex();
   }, 600);
+}
+
+// Bid lines whose cost code a section rename changed, by job, waiting for the
+// whole-job save that carries the rename. Once that save has landed, each one
+// goes through the per-line save as well (patchBidItem), which copies the new
+// code onto the job's Procurement rows on the server — deleted ones too — and
+// moves their attached files; the whole-job save does neither. Sent after it,
+// not beside it: on a page closed straight after a rename, a big section's
+// many small keepalive saves went first and used up the browser's 64 KB
+// keepalive allowance, and the whole-job save — the measured quantity moved
+// to the new code with it — was refused. A page that closes before the
+// whole-job save has landed sends none of them; the sheet's own code sync
+// copies the new codes when the job is next opened there.
+const _bidRenamedLines = {};
+function _putProjectThenRenamedLines(id, p, opts) {
+  const lines = _bidRenamedLines[id] ? [..._bidRenamedLines[id]] : [];
+  delete _bidRenamedLines[id];
+  return apiPut('fct_project_' + id, _projBlob(p), opts).then(ok => {
+    if (ok) lines.forEach(bi => patchBidItem(id, bi));
+    else if (lines.length) {
+      // Not saved: they wait for the next whole-job save that lands.
+      const waiting = _bidRenamedLines[id] || (_bidRenamedLines[id] = new Set());
+      lines.forEach(bi => waiting.add(bi));
+    }
+    return ok;
+  });
 }
 
 // Flush any pending debounced project saves immediately (used on page unload /
 // tab hide / back navigation so date edits aren't lost inside the 600ms window).
 // Uses keepalive:true so the requests survive the navigation.
-function _flushPendingProjectSaves() {
+// `{ keepalive: false }` when the page is not going away (leaving the bid
+// view): the saves are ordinary requests then, which a whole-job save of any
+// size fits. Called with an event (beforeunload), or nothing: keepalive.
+function _flushPendingProjectSaves(opts) {
+  const keepalive = !(opts && opts.keepalive === false);
   // Flush per-bid-item PUTs first. Each payload is ~500 bytes so dozens
   // of in-flight requests can comfortably share the 64KB keepalive
   // budget, unlike a single full-blob PUT which can exceed it alone on
@@ -7027,7 +7060,7 @@ function _flushPendingProjectSaves() {
     clearTimeout(_biSaveTimers[biId]);
     delete _biSaveTimers[biId];
     delete _biSavePending[biId];
-    _doBidItemPut(projId, biId, true);
+    _doBidItemPut(projId, biId, keepalive);
   });
   // Flush any pending full-project saves (covers add/remove bid items,
   // project metadata changes, change orders, group renames).
@@ -7037,10 +7070,15 @@ function _flushPendingProjectSaves() {
     clearTimeout(_saveProjTimers[id]);
     delete _saveProjTimers[id];
     const p = getProj(id);
-    if (p) apiPut('fct_project_' + id, _projBlob(p), { keepalive: true });
+    // The lines a section rename changed go only after this save has landed
+    // (_putProjectThenRenamedLines) — never ahead of it, where their keepalive
+    // saves would use up the browser's 64 KB allowance and get it refused.
+    // A save too big to go as the page closes is refused either way; the
+    // rename is then not half saved (codes moved, measured quantity not).
+    if (p) _putProjectThenRenamedLines(id, p, { keepalive });
   });
   _lastProjIndexTs = Date.now();
-  apiPut('fct_projects_index', { ids: projectsList.map(p => p.id), _ts: _lastProjIndexTs }, { keepalive: true });
+  apiPut('fct_projects_index', { ids: projectsList.map(p => p.id), _ts: _lastProjIndexTs }, { keepalive });
 }
 window.addEventListener('beforeunload', _flushPendingProjectSaves);
 document.addEventListener('visibilitychange', () => {
@@ -14916,7 +14954,8 @@ function removeBidGroup(projId, costCode) {
 
 function updateBidGroupCode(projId, oldCode, newCode) {
   const p = getProj(projId); if (!p) return;
-  (p.bidItems || []).forEach(b => { if (b.cost_code === oldCode) b.cost_code = newCode; });
+  const renamed = [];
+  (p.bidItems || []).forEach(b => { if (b.cost_code === oldCode) { b.cost_code = newCode; renamed.push(b.id); } });
   // The section's measured quantity is keyed by its cost code, so it follows
   // the rename. Renaming onto a code that already has one merges the two
   // sections, and the one being merged into keeps its own.
@@ -14924,6 +14963,16 @@ function updateBidGroupCode(projId, oldCode, newCode) {
   if (ms && oldCode !== newCode && Object.prototype.hasOwnProperty.call(ms, oldCode)) {
     if (!Object.prototype.hasOwnProperty.call(ms, newCode)) ms[newCode] = ms[oldCode];
     delete ms[oldCode];
+  }
+  // Each renamed line also goes through the per-line save once the whole-job
+  // save has landed (_putProjectThenRenamedLines): that copies the new cost
+  // code onto the job's Procurement rows on the server and moves their files.
+  // Without it the rows followed only once someone opened the job's
+  // Procurement sheet, and a re-import before then left them "not on bid"
+  // for good and offered every line again as new.
+  if (oldCode !== newCode && renamed.length) {
+    const waiting = _bidRenamedLines[projId] || (_bidRenamedLines[projId] = new Set());
+    renamed.forEach(id => waiting.add(id));
   }
   saveProject(projId);
   renderBidTable(projId);
@@ -29766,8 +29815,10 @@ function closeBidView() {
   _bidMatPopClose();   // its tag is leaving the screen with the table
   // Flush any in-flight debounced bid-item edits (start/target dates, qty,
   // unit cost) before the view closes — otherwise navigating back within
-  // the 600ms debounce window drops the save.
-  _flushPendingProjectSaves();
+  // the 600ms debounce window drops the save. The page stays open, so as
+  // ordinary requests: a big job's whole-job save does not fit the
+  // browser's keepalive allowance.
+  _flushPendingProjectSaves({ keepalive: false });
   document.getElementById('bid-fullscreen').style.display = 'none';
   document.getElementById('bid-filter-dd').style.display = 'none';
   bidFilters = {};
@@ -33424,11 +33475,13 @@ const _bootReady = (async () => {
   // The open job's Procurement rows, re-read so other people's edits arrive.
   // Only while the tab is on screen: a hidden table has nothing to redraw,
   // and each job's rows are read when it is opened anyway. procurement.js
-  // keeps the caret and scroll, and itself skips a cell being typed in.
+  // keeps the caret and scroll, and itself holds the read while the caret is
+  // in one of its cells — reading it the moment the caret leaves them. Not
+  // _isEditing() here: that also held the sheet still for as long as a
+  // ticked row box, the search box or Show all jobs kept the focus.
   async function _pollProcurement() {
     if (_AUTO_REPORT || _fctPollsSuspended()) return;
     if (activeTab !== 'procurement' || !window.FCTProcurement || !_procConfigured) return;
-    if (_isEditing()) return;
     await FCTProcurement.refresh();
   }
   // Several people work one sheet, so it is read again every 15 seconds while
