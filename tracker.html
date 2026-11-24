@@ -7258,10 +7258,26 @@ function saveProject(id) {
 // whole-job save has landed sends none of them; the sheet's own code sync
 // copies the new codes when the job is next opened there.
 const _bidRenamedLines = {};
+// This page's saves of a job's bid that are out (the whole-job save and the
+// per-line ones), by job: Procurement's read of the bid waits for them as well
+// as for those still in their debounce (_procFlushProjectSaves). A rename
+// whose save had already left the debounce when the Procurement tab was
+// opened was read back — and the orders with it — before the server had
+// carried it, under the old codes.
+const _bidSavesOut = {};
+function _bidSaveOut(projId, pr) {
+  const out = _bidSavesOut[projId] || (_bidSavesOut[projId] = new Set());
+  const t = Promise.resolve(pr).catch(() => {}).then(() => {
+    out.delete(t);
+    if (!out.size && _bidSavesOut[projId] === out) delete _bidSavesOut[projId];
+  });
+  out.add(t);
+  return pr;
+}
 function _putProjectThenRenamedLines(id, p, opts) {
   const lines = _bidRenamedLines[id] ? [..._bidRenamedLines[id]] : [];
   delete _bidRenamedLines[id];
-  return apiPut('fct_project_' + id, _projBlob(p), opts).then(ok => {
+  return _bidSaveOut(id, apiPut('fct_project_' + id, _projBlob(p), opts).then(ok => {
     if (ok) lines.forEach(bi => patchBidItem(id, bi));
     else if (lines.length) {
       // Not saved: they wait for the next whole-job save that lands.
@@ -7269,7 +7285,7 @@ function _putProjectThenRenamedLines(id, p, opts) {
       lines.forEach(bi => waiting.add(bi));
     }
     return ok;
-  });
+  }));
 }
 
 // Flush any pending debounced project saves immediately (used on page unload /
@@ -7359,7 +7375,7 @@ function _doBidItemPut(projId, biId, keepalive) {
     + `?id=${encodeURIComponent(biId)}`
     + `&projectId=${encodeURIComponent(projId)}`
     + `&projectKey=${encodeURIComponent(projectKey)}`;
-  return fetch(url, init).then(async r => {
+  return _bidSaveOut(projId, fetch(url, init).then(async r => {
     if (r.ok) return;
     console.warn(`[bid-items] PUT ${biId} failed: HTTP ${r.status}`);
     if (r.status === 401) { _showSaveError(true); return; }
@@ -7373,7 +7389,7 @@ function _doBidItemPut(projId, biId, keepalive) {
     // on the unload path that would just exceed the keepalive cap.
     console.warn(`[bid-items] PUT ${biId} error:`, err.message);
     _showSaveError(false);
-  });
+  }));
 }
 
 // Save the ordered list of project IDs — called when projects are added/removed/edited.
@@ -13629,7 +13645,9 @@ function _syncINVRowField(entry, field) {
     r.material_cost   = String((parseFloat(entry.bags_produced) || 0) * (parseFloat(entry.unit_cost) || 0));
   }
   drPutNow(entry.inv_row_id, r);
-  saveProject(entry.project_id);
+  // Only the row changed (sent above), not the job record: before the jobs
+  // have loaded saveProject is refused, and its banner said nothing was saved.
+  if (_projectsLoaded) saveProject(entry.project_id);
 }
 
 function togglePin(projId) {
@@ -13763,6 +13781,10 @@ function deleteProject(id) {
 }
 
 function deleteDailyRowsBySubCode(costCode, subCode) {
+  // Not from this browser's copy of the jobs (see deleteProject): the rows'
+  // DELETE went, the bid lines' half was refused with saveProject, and the
+  // banner said nothing had been saved.
+  if (!_projectsLoaded) { _unloadedSaveRefused('jobs'); return; }
   // costCode is ignored — always operate cross-code by sub code name only
   let dailyCount = 0, dailyProjCount = 0;
   projectsList.forEach(p => {
@@ -20077,7 +20099,7 @@ function _procBidLinesOf(p) {
 /**
  * This page's edits to a job's bid that are still waiting to be sent (the
  * 600 ms debounce of saveProject and of the per-item PUTs), sent now and
- * waited for. Procurement reads the bid back from the server right after —
+ * waited for — and those already out (_bidSavesOut), waited for too. Procurement reads the bid back from the server right after —
  * and a "Replace all" from a Procore import is still in that debounce when
  * "Send the bid lines to Procurement now?" opens the checklist.
  */
@@ -20089,7 +20111,10 @@ async function _procFlushProjectSaves(projId) {
     delete _biSavePending[biId];
     return _doBidItemPut(projId, biId, false);
   }));
-  const waits = [sendLines()];
+  // Its saves already out are waited for too — and then the per-line saves a
+  // section rename sends once the whole-job save has landed.
+  const out = [...(_bidSavesOut[projId] || [])];
+  const waits = [sendLines(), Promise.all(out).then(sendLines)];
   if (_saveProjTimers[projId]) {
     clearTimeout(_saveProjTimers[projId]);
     delete _saveProjTimers[projId];
@@ -23567,7 +23592,8 @@ async function submitMobileEntry() {
   if (newRows.length === 0) { alert('Nothing to submit.'); return; }
 
   // Persist last project
-  localStorage.setItem('mob_last_proj', projId);
+  // Never in the way of the save below: with storage full it threw first.
+  try { localStorage.setItem('mob_last_proj', projId); } catch { _fctSetMakingRoom('mob_last_proj', projId); }
 
   // Save state for Repeat Last Entry
   _mobLastEntry = { projId, fieldType, codeBlocks, checkedEmps, equipBlocks,

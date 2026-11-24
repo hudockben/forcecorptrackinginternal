@@ -6411,6 +6411,65 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       rn.reads === rn.r0 + 1 && rn.stale === 0 && autoTag(rn.e, 'rn'), [rn.reads - rn.r0, rn.stale, drawn(rn.e, 'rn')]);
   }
 
+  console.log('\n[review 4]');
+  {
+    // A save of the PM's own Quote # whose answer (or 409) brings a
+    // colleague's PO # on the staples: Dana linked PO-0007 to them, so it is
+    // theirs alone now and comes off the line's own row beside them. That row
+    // is redrawn too — not only when this page sent the PO # itself.
+    const P7 = { id: 'p7', po_number: 'PO-0007', project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Geofabric', supplier: 'LB Water', date_created: '2026-03-01' };
+    const autoTag = (e, id) => !![...e.$$(`tr[data-row="${id}"] td.c-po .fctproc-tag`)].find(t => t.textContent === 'auto');
+    const late = (e, id) => /Late/.test(e.$(`tr[data-row="${id}"]`).textContent);
+    for (const how of ['saved', 'refused as a conflict']) {
+      const e = makeEnv({ rows: [
+        row({ id: 'gb', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', vendor: '', date_needed: '2026-03-12', lead_time_days: 10 }),
+        row({ id: 'gs', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: 'Fabric staples', vendor: '', created_at: '2026-03-05T10:00:00Z' }),
+      ], purchaseOrders: [{ ...P7 }] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      const before = autoTag(e, 'gb') && !late(e, 'gb') && autoTag(e, 'gs');
+      const srv = e.db.rows.find(r => r.id === 'gs');
+      Object.assign(srv, { po_id: 'p7', version: 2, updated_by: 'Dana Reyes', updated_at: '2026-03-10T09:00:00Z' });
+      if (how !== 'saved') srv.quote_number = 'Q-DANA';
+      const qn = e.field('gs', 'quote_number');
+      qn.focus(); qn.value = 'Q-77'; e.fire(qn, 'input'); qn.blur(); e.fire(qn, 'change');
+      await sleep(1200);
+      const sent = e.patches().map(c => Object.keys(c.body.fields).join());
+      assert(`a Quote # save (${how}) whose answer brings Dana's link of PO-0007 to the staples: the line's own row beside them is redrawn off it at once, Late`,
+        before && eq(sent, ['quote_number']) && e.field('gs', 'po').value === 'PO-0007' && !autoTag(e, 'gs') && !autoTag(e, 'gb') && late(e, 'gb'),
+        { before, sent, gb: [autoTag(e, 'gb'), late(e, 'gb')], gs: [e.field('gs', 'po').value, autoTag(e, 'gs')] });
+    }
+  }
+  {
+    // A value the server refused outright (400) while a conflict on another
+    // row waits for the box in use: "Not saved" stays the refused value's —
+    // not the waiting conflict's — and stays once that conflict is answered.
+    const e = makeEnv({ rows: [row({ id: 't1', quote_number: 'Q-1' }), row({ id: 't2', quantity: 5 })] });
+    const ind = () => { const el = e.$('#fctproc-save'); return { text: el.textContent.trim(), cls: el.className, title: el.title }; };
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const r1 = e.db.rows.find(x => x.id === 't1'); Object.assign(r1, { quote_number: 'Q-DANA', updated_by: 'Dana Reyes' }); r1.version++;
+    e.db.refuse = (k, v) => k === 'quantity' && Number(v) === 999;
+    let release; e.patchHold = new Promise(r => { release = r; });
+    const qn = e.field('t1', 'quote_number');
+    qn.focus(); qn.value = 'Q-77'; e.fire(qn, 'input'); e.fire(qn, 'change');
+    const qty = e.field('t2', 'quantity');
+    qty.focus(); qty.dispatchEvent(new e.w.KeyboardEvent('keydown', { key: '9', bubbles: true })); qty.value = '999'; e.fire(qty, 'input');
+    release();
+    await sleep(930);
+    const refused = ind();
+    assert('a Quantity refused outright while a conflict waits for the box in use: "Not saved", as a value thrown away, not as the conflict',
+      !e.$('.fctproc-modal') && refused.text === 'Not saved' && /\berror\b/.test(refused.cls) && !/\bheld\b/.test(refused.cls) && /could not be saved/.test(refused.title), refused);
+    qty.blur();
+    await sleep(40);
+    const keep = e.$('[data-conflict="theirs"]');
+    if (keep) keep.click();
+    await sleep(40);
+    const after = ind();
+    assert('…and once that conflict is answered "Keep saved", it still reads "Not saved" (it went blank)',
+      !!keep && !e.$('.fctproc-modal') && after.text === 'Not saved' && /\berror\b/.test(after.cls), after);
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => {
