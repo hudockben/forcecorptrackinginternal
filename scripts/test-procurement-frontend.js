@@ -6470,6 +6470,50 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       !!keep && !e.$('.fctproc-modal') && after.text === 'Not saved' && /\berror\b/.test(after.cls), after);
   }
 
+  {
+    // "+ Add" of a new supplier in Vendor takes a row off the PO it was
+    // matched to by its codes: the header counts and chips follow at once,
+    // and stay right if the save then fails.
+    const PO1 = { id: 'po1', po_number: 'PO-0001', project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Geofabric', supplier: 'Acme Supply', date_created: '2026-03-01', status: 'pending' };
+    const e = makeEnv({ rows: [row({ id: 'a1', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: 'Fabric', vendor: '', date_needed: '2026-03-30' })],
+      purchaseOrders: [{ ...PO1 }] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const counts = () => e.$('#fctproc-counts').textContent.replace(/\s+/g, ' ').trim();
+    const before = counts();
+    e.db.failPatch = 1;
+    e.pick(e.field('a1', 'vendor'), '+ Add "Zeta Pipe" as new supplier', '__new__:Zeta Pipe');
+    await sleep(150);
+    const now = counts();
+    await sleep(1500);
+    assert('"+ Add" of a new supplier takes the row off its matched PO: the header counts it Not Ordered at once, and still after the save fails',
+      /(^|[^t] )Ordered\s*1/.test(before) && /Not Ordered\s*1/.test(now) && /Not Ordered\s*1/.test(counts()) && e.$('tr[data-row="a1"] .fctproc-pill').textContent === 'Not Ordered',
+      { before, now, after: counts() });
+  }
+  {
+    // A row's "+ Material" offers the names its bid line does not have yet.
+    // One row's Sub Code or Material changing what the line has redraws the
+    // others' dots — on the line it left and the line it joined.
+    const LIB = [{ material: 'Gasket lube', sub_code: 'Elbows', cost_code: 'Stormwater', unit: 'GAL', vendor: '', jobs: 3 }];
+    const elbows = () => row({ id: 'k1', source: 'bid', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', quantity: 12, unit: 'EA', bid_qty_at_send: 12, bid_unit_at_send: 'EA' });
+    const cases = [
+      ['re-coded off the Elbows line: the Elbows row gains its dot', { bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows' }, e => e.pick(e.field('k2', 'codes'), 'Geofabric', 'b1'), true],
+      ['re-coded onto the Elbows line: the Elbows row loses its dot', { bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' }, e => e.pick(e.field('k2', 'codes'), 'Elbows', 'b6'), false],
+      ['renamed in Material: the Elbows row gains its dot', { bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows' }, e => e.pick(e.field('k2', 'description'), 'Pipe dope', ''), true],
+    ];
+    for (const [what, codes, act, want] of cases) {
+      const e = makeEnv({ rows: [elbows(), row({ id: 'k2', ...codes, description: 'Gasket lube', unit: 'GAL', quantity: 2, created_at: '2026-03-02T00:00:00Z' })] });
+      e.db.materials = LIB;
+      e.P.renderTab(e.root);
+      await sleep(80);
+      const dot = () => !!e.$('tr[data-row="k1"] [data-act="material"] .fctproc-pastdot');
+      const was = dot();
+      act(e);
+      await sleep(50);
+      assert(`"Gasket lube", bought under Elbows on other jobs, ${what} (its "+ Material" list)`, was === !want && dot() === want, { was, now: dot() });
+    }
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => {

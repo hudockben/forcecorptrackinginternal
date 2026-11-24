@@ -5288,7 +5288,7 @@
         }
       }
       if ('description' in fields) notePick(rowId, fields);
-      if (Object.keys(fields).length) { setFields(rowId, fields); updateCounts(); }
+      if (Object.keys(fields).length) { const was = lineNow(rowId); setFields(rowId, fields); repaintLines(rowId, was); updateCounts(); }
       return;
     }
     if (field === 'unit') {
@@ -5297,6 +5297,7 @@
       return;
     }
     if (field === 'codes') {
+      const was = lineNow(rowId);
       // The row's own job's bid lines (on a site's sheet, not the site's).
       const ctx = siteMode() && row.project_id ? makeCtx(row.project_id) : makeCtx();
       const line = v ? (ctx.bidLines || []).find(l => String(l.id) === v) : null;
@@ -5343,6 +5344,7 @@
         toast(n ? `Sub Code: "${typed.slice(0, 60)}" is not a line on this job's bid — pick one from the list.${desc ? ' Sub Code is the bid line the cost books to; this job\'s own name for the material goes in Material.' : ''}`
           : `Sub Code: this job has no bid lines yet, so there is no cost / sub code to pick. Add the bid items on the bid page first${desc ? '; the material\'s name can go in Material meanwhile' : ''}.`, 'error');
       }
+      repaintLines(rowId, was);
       updateCounts();
       return;
     }
@@ -5364,6 +5366,24 @@
     [...wrap.querySelectorAll('tr.fctproc-row')].forEach(tr => refreshRow(tr.dataset.row, null, ctx, true));
   }
   const touchesPO = f => Boolean(f) && (Object.prototype.hasOwnProperty.call(f, 'po_id') || Object.prototype.hasOwnProperty.call(f, 'po_auto'));
+  // A row's "+ Material" offers the names its bid line does not have yet
+  // (hasPastList), so one row's Material or Sub Code changes it on the other
+  // rows of the line it left and of the line it joined: those are drawn
+  // again too, where their drawing changed — not the whole sheet.
+  const lineOf = (r, ctx, k) => { const c = liveCodes(r, ctx); return `${r.project_id}\u0000${ck(k, c.cost_code)}\u0000${ck(k, c.sub_code)}`; };
+  function lineNow(rowId) {
+    const r = rowById(rowId);
+    if (!r) return null;
+    const ctx = makeCtx();
+    return lineOf(r, ctx, keyFn(ctx));
+  }
+  function repaintLines(rowId, was) {
+    const row = rowById(rowId);
+    if (!row) return;
+    const ctx = makeCtx(), k = keyFn(ctx);
+    const lines = new Set([was, lineOf(row, ctx, k)].filter(Boolean));
+    st.rows.forEach(r => { if (r.id !== rowId && lines.has(lineOf(r, ctx, k))) refreshRow(r.id, null, ctx, true); });
+  }
   // The row as the server answered it, against the copy held before: a save
   // of the Quote # can bring a colleague's PO # with it, and a link takes
   // that order off the rows beside it.
@@ -5372,7 +5392,7 @@
   async function addVendor(rowId, name, input) {
     if (!name) return;
     if (input) input.value = name;
-    changeVendor(rowId, name);
+    if (changeVendor(rowId, name)) updateCounts();
     if (typeof cfg.addSupplier !== 'function') return;
     try {
       const canon = String((await cfg.addSupplier(name)) || name).trim();
