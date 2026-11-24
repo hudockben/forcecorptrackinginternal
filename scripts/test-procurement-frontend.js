@@ -5908,6 +5908,14 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     e.P.renderTab(e.root);
     await sleep(20);
     assert('a line renamed on this page\'s bid: showing the tab again reads the order list again', rereads === r0 + 2, rereads - r0);
+    // A colleague's rename, brought by the page's job poll: the host redraws the tab (rerender).
+    lines.find(l => l.id === 'b2').sub_code = '15in Perf. drain';
+    e.P.rerender();
+    await sleep(20);
+    assert('a colleague\'s bid rename brought by the job poll (the page redraws the tab): the order list is read again at once', rereads === r0 + 3, rereads - r0);
+    e.P.rerender();
+    await sleep(20);
+    assert('…and a redraw with nothing moved reads nothing', rereads === r0 + 3, rereads - r0);
 
     // ── Create PO, one PO per sub code, the second not raised ──
     e = makeEnv({ rows: [
@@ -6003,6 +6011,24 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('a Vendor change on a row whose vendor the list does not know yet: the list is read again, and Dave (LB Water Supply\'s) is cleared off the row',
       t1.vendor === 'Acme Supply' && t1.contact === '' && t1.email === '' && e.$$('.fctproc-toast').some(t => /Contact and Email cleared/.test(t.textContent)),
       [t1, e.$$('.fctproc-toast').map(t => t.textContent)]);
+    // The same through the bulk bar: a supplier renamed elsewhere, then a bulk Vendor change.
+    e.db.contacts.forEach(c => { c.supplier_name = 'Acme Supply Co'; });
+    ['t1', 't2'].forEach(id => dana(e, id, { vendor: 'Acme Supply Co', contact: 'Dave Kline', email: 'dkline@lbwater-new.com' }));
+    await e.P.refresh();
+    await sleep(20);
+    skew += 20 * 1000;
+    const bg0 = cgets();
+    ['t1', 't2'].forEach(id => { const b = e.$(`[data-sel="${id}"]`); b.checked = true; e.fire(b, 'change'); });
+    await sleep(20);
+    const bf = e.$('#fctproc-bulk-field');
+    bf.value = 'vendor'; e.fire(bf, 'change');
+    await sleep(20);
+    e.$('#fctproc-bulk-valbox .cb-input').value = 'Beta Corp';
+    e.$('[data-act="bulk-apply"]').click();
+    await sleep(200);
+    const bulkRows = ['t1', 't2'].map(id => e.db.rows.find(r => r.id === id));
+    assert('a bulk Vendor change after a supplier renamed elsewhere: the contacts are read again first, and Dave is cleared off both rows',
+      cgets() === bg0 + 1 && bulkRows.every(r => r.vendor === 'Beta Corp' && r.contact === '' && r.email === ''), [cgets() - bg0, bulkRows]);
     e.w.Date.now = realNow;
 
     // ── The copy dialog: what a colleague copied onto the line while it was open is not added again ──

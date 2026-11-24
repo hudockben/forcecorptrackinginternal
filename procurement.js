@@ -3635,12 +3635,15 @@
     return read;
   }
   // Whether a row matched to an order by its codes has other codes than at
-  // the last look, stored or live; the first look at a sheet says nothing.
+  // the last look — the codes it is matched by (liveCodes: its bid line's,
+  // else its own); the first look at a sheet says nothing. Not the stored
+  // copy as such: the page's own re-link moving it onto the line's codes
+  // (autoRelink) moves nothing an order is matched by.
   function codesMoved(ctx) {
     const sig = viewSig(), k = keyFn(ctx);
     const now = new Map(st.rows.filter(r => !r.po_id && r.po_auto !== false).map(r => {
       const c = liveCodes(r, ctx);
-      return [r.id, [r.cost_code, r.sub_code, c.cost_code, c.sub_code].map(s => ck(k, s)).join('\u0000')];
+      return [r.id, [c.cost_code, c.sub_code].map(s => ck(k, s)).join('\u0000')];
     }));
     const was = codesSeen.sig === sig ? codesSeen.codes : null;
     codesSeen = { sig, codes: now };
@@ -6389,6 +6392,12 @@
     // them cleared in the same change (changeVendor, for many rows).
     let groups = [[ids, fields]];
     if ('vendor' in fields && !('contact' in fields)) {
+      // Whose contact each row holds is judged from the list as it is now,
+      // not as it was up to a minute ago (freshenContacts): a supplier
+      // renamed elsewhere since left its people under the old name, and
+      // their rows kept the old supplier's contact under the new vendor.
+      // A read that fails leaves the list in hand.
+      await freshenContacts(5000).catch(err => console.warn('[procurement] contacts did not load', err));
       const clear = ids.filter(id => {
         const r = rowById(id);
         return r && r.vendor.trim() && lc(r.vendor) !== lc(fields.vendor) && savedContactOf(r.vendor, r);
@@ -7444,6 +7453,11 @@
       // when there is nothing to do.
       if (st.projectId && st.loadState === 'ok' && st.loadedFor === viewSig()) {
         if (siteMode()) autoRelinkAll(openIds()); else autoRelink(st.projectId);
+        // A colleague's bid rename, brought by the page's job poll: the
+        // server carried it to the orders under the old codes, so the order
+        // list is read again now (askForNewPOs, codesMoved) — not left to
+        // the next poll of the rows, with the row Not Ordered and Late till then.
+        askForNewPOs();
       }
       if (cellInUse()) {
         // Someone is in a cell: redraw every row around it, not the table.
