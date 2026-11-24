@@ -1519,6 +1519,10 @@
         background: var(--bg,#0a0a0f); border:1px solid var(--border,#2a2a3a); border-radius:3px; color: var(--text,#e0e0e0);
         font-size:0.78rem; padding:0.22rem 0.4rem; outline:none; color-scheme: dark; }
       .fctproc-bulk .cb { width: 13rem; }
+      .fctproc-bulk.idle { position: relative; visibility: hidden; }
+      .fctproc-bulk-hint { position:absolute; top:0; right:-1px; bottom:-1px; left:-1px; visibility: visible; display:flex; align-items:center;
+        padding:0 0.75rem; background: var(--surface,#111118); border:1px solid var(--border,#2a2a3a); border-top:none;
+        color: var(--muted,#9ca3af); font-size:0.72rem; overflow:hidden; }
       .fctproc-bulk .cb-input { background: var(--bg,#0a0a0f); padding:0.22rem 0.4rem; }
       .fctproc-wrap { overflow:auto; max-height: calc(100vh - 15rem); min-height: 14rem; border:1px solid var(--border,#2a2a3a);
         border-top:none; border-radius:0 0 6px 6px; background: var(--bg,#0a0a0f); }
@@ -2300,6 +2304,13 @@
     });
   }
 
+  // A row taken off the sheet, its saves kept: its job is no longer on the
+  // sheet (load). What is queued or out for it still goes, and lands.
+  function offSheet(id) {
+    st.rows = st.rows.filter(r => r.id !== id);
+    st.selected.delete(id); st.forceShow.delete(id);
+    if (st.confirmDel === id) st.confirmDel = null;
+  }
   function dropRow(id) {
     gone.set(id, ++touchSeq);
     st.rows = st.rows.filter(r => r.id !== id);
@@ -3012,6 +3023,13 @@
       // the server after the GET went out ("+ Add Row" a moment ago, a row
       // sent or restored): the answer is older than those, not news of them.
       st.rows.filter(r => !ids.has(r.id) && !pend.has(r.id) && !fly.has(r.id) && !since(touched, r.id)).forEach(r => dropRow(r.id));
+      // A job no longer on the sheet (a site's field marked complete, its
+      // Site changed): its rows go with it, a row whose save is still out
+      // too — kept, it was counted in the head, exported, and still ticked,
+      // so a bulk edit wrote to it unseen. Its saves are kept, and land; the
+      // row is back, with them, if the job comes back (adoptServerRow).
+      const open = new Set(jobIds.map(String));
+      st.rows.filter(r => r.project_id && !open.has(String(r.project_id))).forEach(r => offSheet(r.id));
       // A refresh of the sheet already on screen: what other people changed
       // since is marked (noteOthersChanges), against the copies held now. A
       // row taken from the server after this GET went out is newer than the
@@ -3022,13 +3040,16 @@
       if (known) noteOthersChanges(items.filter(r => known.has(r.id)), known);
       askForNewPOs();
       const wasOk = st.loadState === 'ok' && st.loadedFor === sig;
+      // A site read again as other jobs (reloadSite) over its sheet on
+      // screen: redrawn in place, as a poll's answer is, not rebuilt.
+      const reshaped = quiet && !wasOk && st.loadState === 'ok' && isSiteKey(projectId) && jobIds.length > 0 && !!st.mountEl.querySelector('#fctproc-wrap');
       st.loadState = 'ok';
       st.loadedFor = sig;
       // Past midnight since the sheet was drawn: Due soon is Late now, and
       // the counts with it, though nobody changed a thing.
       const newDay = !!st.drawnDay && st.drawnDay !== today();
-      if (!wasOk || !quiet) renderBody();
-      else if (signature() !== before || newDay) {
+      if (!(wasOk || reshaped) || !quiet) renderBody();
+      else if (reshaped || signature() !== before || newDay) {
         // The answer can land after the PM has started typing (the poll only
         // checks as it starts): then the rows are redrawn around the cell in
         // use, never the table under it — see redrawAround. Landing while a
@@ -3040,6 +3061,8 @@
           if (cellInUse()) redrawAround();
           else { renderTable(); updateCounts(); }
           renderHead();
+          // The ticks on the rows of a job that left go from the bar's count.
+          if (reshaped) redrawBulk();
         }
       } else if (redrawDeferred) {
         // A redraw still owed from an answer that landed mid-edit.
@@ -3491,12 +3514,33 @@
     { key: 'sca_open', label: 'Sub agreement open', tone: 'amber' },
     { key: 'not_delivered', label: 'Not delivered' },
   ];
+  // A chip's count, and its class: on when it is the one applied, its tone
+  // once it counts something.
+  function chipState(c, ctx) {
+    const n = c.key === 'all' ? st.rows.length : st.rows.filter(r => chipMatch(c.key, r, ctx)).length;
+    return { n, cls: `fctproc-chip${st.chip === c.key ? ' on' : ''}${n && c.tone ? ' c-' + c.tone : ''}` };
+  }
   function chipsHtml(ctx) {
     return CHIPS.map(c => {
-      const n = c.key === 'all' ? st.rows.length : st.rows.filter(r => chipMatch(c.key, r, ctx)).length;
-      return `<button type="button" class="fctproc-chip${st.chip === c.key ? ' on' : ''}${n && c.tone ? ' c-' + c.tone : ''}"
+      const { n, cls } = chipState(c, ctx);
+      return `<button type="button" class="${cls}"
         data-chip="${c.key}">${esc(c.label)}<span class="n">${n}</span></button>`;
     }).join('');
+  }
+  // The chips' counts and marks put right in place. Drawn afresh instead,
+  // the chip under the pointer was replaced between the press and its
+  // release whenever something counted again meanwhile — a picker
+  // committing as the press took the focus from it, a save's answer — and
+  // the click never arrived.
+  function paintChips(box, ctx) {
+    const btns = [...box.querySelectorAll('[data-chip]')];
+    if (btns.length !== CHIPS.length || CHIPS.some((c, i) => btns[i].dataset.chip !== c.key)) { box.innerHTML = chipsHtml(ctx); return; }
+    CHIPS.forEach((c, i) => {
+      const { n, cls } = chipState(c, ctx);
+      const b = btns[i], num = b.querySelector('.n');
+      if (b.className !== cls) b.className = cls;
+      if (num && num.textContent !== String(n)) num.textContent = String(n);
+    });
   }
   function filtersActive() {
     return !!(st.search.trim() || st.chip !== 'all' || Object.keys(st.filters).length);
@@ -3526,7 +3570,7 @@
     const counts = st.mountEl.querySelector('#fctproc-counts');
     if (counts) counts.innerHTML = countsHtml(ctx);
     const chips = st.mountEl.querySelector('#fctproc-chips');
-    if (chips) chips.innerHTML = chipsHtml(ctx);
+    if (chips) paintChips(chips, ctx);
     const clear = st.mountEl.querySelector('#fctproc-clear');
     if (clear) clear.hidden = !filtersActive();
     updateGroupCounts(ctx);
@@ -3708,6 +3752,17 @@
     const groups = groupRows(rows, ctx);
     const width = cols.reduce((s, c) => s + c.w, 0);
     const drawn = new Map();
+    // A tick on a row the search, a filter or a chip now hides goes (a
+    // folded section's rows are still on the sheet, and keep theirs): left
+    // ticked, Apply, Delete selected and Create PO acted on rows the PM
+    // could not see — the gravel rows' Quote # overwritten from a search for
+    // pipe, rows deleted that were never on screen.
+    if (st.selected.size) {
+      const on = new Set(rows.map(r => r.id));
+      const before = st.selected.size;
+      st.selected.forEach(id => { if (!on.has(id)) st.selected.delete(id); });
+      if (st.selected.size !== before) redrawBulk();
+    }
     let body = '';
     if (!st.rows.length) {
       const hasBid = (ctx.bidLines || []).length > 0;
@@ -3745,6 +3800,13 @@
     wrap.innerHTML = `<table class="fctproc-table" style="width:${width}rem;min-width:${width}rem">
       <colgroup>${cols.map(c => `<col style="width:${c.w}rem">`).join('')}</colgroup>
       <thead>${headerHtml(cols)}</thead><tbody>${body}</tbody></table>`;
+    tipChanged(wrap);
+    // A box Tab, Shift+Tab or an arrow takes the caret to is scrolled clear
+    // of the pinned Select and Status columns, not just into the box's
+    // edge: the browser took one under them as in view, and the date or PO
+    // was typed and saved in a box the PM could not see.
+    const pinned = cols.filter(c => c.stick).reduce((s, c) => s + c.w, 0);
+    wrap.style.scrollPaddingLeft = pinned ? pinned + 'rem' : '';
     wrap.querySelectorAll('tr.fctproc-row').forEach(tr => { const h = drawn.get(tr.dataset.row); if (h) drawnHtml.set(tr, h); });
     drawnLayout = layoutOf(rows, ctx, groups);
     wrap.scrollTop = top;
@@ -3982,26 +4044,25 @@
     const flags = flagsOf(r, ctx);
     const red = flags.some(f => f.level === 'red'), amber = !red && flags.some(f => f.level === 'amber');
     const txt = (v, cls) => `<span class="fctproc-txt${cls ? ' ' + cls : ''}" title="${esc(v)}">${esc(v)}</span>`;
-    const dateIn = (f, v, extra = '') => `<input type="date" class="fctproc-in${ymdOf(v) ? '' : ' empty'}" ${at(f)} value="${esc(ymdOf(v))}" min="${DATE_MIN}" max="${DATE_MAX}"${extra}>`;
+    const dateIn = (f, v, extra = '', cls = '') => `<input type="date" class="fctproc-in${cls}${ymdOf(v) ? '' : ' empty'}" ${at(f)} value="${esc(ymdOf(v))}" min="${DATE_MIN}" max="${DATE_MAX}"${extra}>`;
     const textIn = (f, ph, extra = '') => `<input type="text" class="fctproc-in" ${at(f)} value="${esc(r[f])}" maxlength="${MAX_LEN[f] || 200}"
       placeholder="${esc(ph || '')}" title="${esc(r[f])}" autocomplete="off" spellcheck="false"${extra}>`;
     // One field of a cell that holds several (class c-<field>): refreshRow
     // redraws the parts around the one being typed in.
     // A cell (or part) someone else changed lately is marked, its tooltip
-    // saying who and when (recentTip).
-    // A box or text inside carries its own tooltip, which the browser shows
-    // over the cell's: the "Changed by" line is added to each of those too.
-    const withTip = (html, tip) => (tip ? html.replace(/ title="([^"]*)"/g, (m0, t) => ` title="${t ? t + '&#10;' : ''}${esc(tip)}"`) : html);
+    // saying who and when (recentTip). A box or text inside carries its own
+    // tooltip, which the browser shows over the cell's: the "Changed by" line
+    // is added to each of those once the row is parsed (tipChanged).
     const part = (f, inner, cls = '') => {
       const ch = recentTip(r.id, [f]);
-      return `<div class="fctproc-part c-${f}${cls}${ch ? ' fctproc-chg' : ''}"${ch ? ` title="${esc(ch)}"` : ''}>${withTip(inner, ch)}</div>`;
+      return `<div class="fctproc-part c-${f}${cls}${ch ? ' fctproc-chg' : ''}"${ch ? ` title="${esc(ch)}"` : ''}>${inner}</div>`;
     };
     let left = 0;
     const cells = cols.map(c => {
       const stick = c.stick ? ` stk${c.key === 'status' ? ' stk-edge' : ''}" style="left:${left}rem` : '';
       if (c.stick) left += c.w;
       const ch = COL_FIELDS[c.key] ? recentTip(r.id, COL_FIELDS[c.key]) : '';
-      const td = (cls, inner) => `<td class="c-${c.key}${cls ? ' ' + cls : ''}${ch ? ' fctproc-chg' : ''}${stick}"${ch ? ` title="${esc(ch)}"` : ''}>${withTip(inner, ch)}</td>`;
+      const td = (cls, inner) => `<td class="c-${c.key}${cls ? ' ' + cls : ''}${ch ? ' fctproc-chg' : ''}${stick}"${ch ? ` title="${esc(ch)}"` : ''}>${inner}</td>`;
       switch (c.key) {
         case 'sel':
           return td('', `<input type="checkbox" data-sel="${id}" ${st.selected.has(r.id) ? 'checked' : ''} aria-label="Select row">`);
@@ -4057,7 +4118,7 @@
           const derived = !own && eff;
           const why = derived ? `Date Ordered: the date ${str(ep.po && ep.po.po_number) || 'its PO'} was raised${edit ? ' — pick a date to set your own' : ''}` : 'Date Ordered';
           const ordered = edit
-            ? dateIn('date_ordered', own || eff, ` title="${esc(why)}" aria-label="Date Ordered"${derived ? ' data-derived="1"' : ''}`).replace('class="fctproc-in', `class="fctproc-in${derived ? ' derived' : ''}`)
+            ? dateIn('date_ordered', own || eff, ` title="${esc(why)}" aria-label="Date Ordered"${derived ? ' data-derived="1"' : ''}`, derived ? ' derived' : '')
             : derived ? `<span class="fctproc-txt fctproc-calc" title="${esc(why)}">${fmtDate(eff)}</span>` : `<span class="fctproc-txt" title="Date Ordered">${esc(fmtDate(own))}</span>`;
           const delivered = edit ? dateIn('date_delivered', r.date_delivered, ' title="Date Delivered" aria-label="Date Delivered"')
             : `<span class="fctproc-txt" title="Date Delivered">${esc(fmtDate(r.date_delivered))}</span>`;
@@ -4222,6 +4283,22 @@
   // last time is left alone. Never for an edit's own redraw, which also puts
   // back a box whose typing was refused.
   const drawnHtml = new WeakMap();      // tr → the HTML it was drawn from
+  // The "Changed by …" line of a cell or part someone else changed (its own
+  // tooltip) added to the tooltip of each box and text in it, which the
+  // browser shows over the cell's. Set on the rows once parsed, through the
+  // DOM — never by finding the titles in the row's HTML: a Material typed as
+  // 'Inlet title=' read as a title there, and the row's Sub Code beside it
+  // became live attributes of the box, a script run on the sheet of whoever
+  // had it open.
+  function tipChanged(scope) {
+    scope.querySelectorAll('.fctproc-chg[title]').forEach(cell => {
+      const tip = cell.getAttribute('title');
+      cell.querySelectorAll('[title]').forEach(el => {
+        const own = el.getAttribute('title');
+        el.setAttribute('title', own ? own + '\n' + tip : tip);
+      });
+    });
+  }
   // A box in use is not redrawn, but the cell or part around it takes the
   // fresh copy's class and tooltip.
   function marksFrom(el, fresh) {
@@ -4242,6 +4319,7 @@
     if (onlyIfChanged && drawnHtml.get(tr) === html) return;
     const tmp = document.createElement('tbody');
     tmp.innerHTML = html;
+    tipChanged(tmp);
     const fresh = tmp.firstElementChild;
     if (!fresh) return;
     // Only a box being typed in holds its cell; a button that was just
@@ -4359,10 +4437,17 @@
     }
     st.selected.forEach(id => { if (!rowById(id)) st.selected.delete(id); });
     const n = st.selected.size;
-    if (!canEdit() || !n) { box.innerHTML = ''; box.className = ''; st.bulkConfirmDel = false; fitWrap(); return; }
-    box.className = 'fctproc-bulk';
-    box.innerHTML = `
-      <b>${n}</b> selected
+    if (!canEdit()) { box.innerHTML = ''; box.className = ''; st.bulkConfirmDel = false; fitWrap(); return; }
+    // Nothing ticked: the bar keeps its room, its controls hidden under a
+    // word on what ticking does. Put in on the first tick (and taken out
+    // with the last), it pushed every row down by its height — two lines on
+    // a laptop — as the pointer went on to the next box, and that click
+    // landed on the row below, or on a section's box and ticked the whole
+    // section. A value left in it is not kept for the next selection.
+    if (!n) { st.bulkConfirmDel = false; keep.length = 0; }
+    box.className = n ? 'fctproc-bulk' : 'fctproc-bulk idle';
+    box.innerHTML = `${n ? '' : '<span class="fctproc-bulk-hint">Tick rows to set a field on all of them at once, raise a PO for them or delete them</span>'}
+      <b class="fctproc-bulk-n">${n}</b> selected
       <span class="fctproc-lbl" style="margin-left:0.5rem">Set</span>
       <select id="fctproc-bulk-field" aria-label="Field to set">${BULK_FIELDS.map(([k, l]) =>
         `<option value="${k}"${k === st.bulkField ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>
@@ -4385,6 +4470,32 @@
       if (cbValue) el.dataset.cbValue = cbValue; else delete el.dataset.cbValue;
     });
     fitWrap();
+  }
+
+  /**
+   * The bulk bar drawn again for what is selected now — but not while it is
+   * being typed in (its value box, a Vendor menu open): drawn again, the box
+   * would lose focus and the keys typed next would go nowhere. Its PO list
+   * catches up the next time it is drawn, and its count is put right in
+   * place. A focused button ("Apply to N", say) is no reason to keep a stale
+   * bar: it is drawn again and the same button gets focus back.
+   */
+  function redrawBulk() {
+    const bulk = st.mountEl && st.mountEl.querySelector('#fctproc-bulk');
+    const a = document.activeElement;
+    if (!bulk || !a || !bulk.contains(a)) { renderBulk(); return; }
+    if (!/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) {
+      const act = a.dataset && a.dataset.act;
+      renderBulk();
+      const again = act && bulk.querySelector(`[data-act="${cssEsc(act)}"]`);
+      if (again) again.focus();
+      return;
+    }
+    const n = st.selected.size;
+    const count = bulk.querySelector('.fctproc-bulk-n');
+    if (count) count.textContent = String(n);
+    const apply = bulk.querySelector('[data-act="bulk-apply"]');
+    if (apply) apply.textContent = `Apply to ${n}`;
   }
 
   // ── Column filter dropdown (the PO tab's pattern) ───────────────────
@@ -5038,6 +5149,7 @@
     if (!row) return;
     const tmp = document.createElement('tbody');
     tmp.innerHTML = rowHtml(row, makeCtx(), canEdit(), colsFor(canEdit()));
+    tipChanged(tmp);
     const twin = tmp.querySelector(`[data-pr="${cssEsc(rowId)}"][data-pf="${cssEsc(f)}"]`);
     // The part the box is drawn in, when nothing else in it is in use: what
     // the PM reads may be drawn beside the box, not in it — the Sub Agmt tag
@@ -5120,7 +5232,7 @@
     if (e.target.closest('.fctproc-grpsel')) return;
     // Nor does its + Add Row, which adds a row in it.
     const ga = e.target.closest('[data-grpadd]');
-    if (ga) { addToSection(ga.dataset.grpadd); return; }
+    if (ga) { addRowOnce(() => addToSection(ga.dataset.grpadd)); return; }
     // Nor a job band's Add to Procurement, which opens that job's checklist.
     const gs = e.target.closest('[data-grpsend]');
     if (gs) { openSendModal(gs.dataset.grpsend); return; }
@@ -5142,7 +5254,7 @@
     switch (b.dataset.act) {
       case 'retry': load(st.projectId); break;
       case 'send': openSendModal(); break;
-      case 'add': addRow({}); break;
+      case 'add': addRowOnce(() => addRow({})); break;
       case 'material': addMaterial(rowId); break;
       case 'del': st.confirmDel = rowId; refreshRow(rowId); break;
       case 'del-no': st.confirmDel = null; refreshRow(rowId); break;
@@ -5217,7 +5329,7 @@
         }
       }
       const row = adoptServerRow(data.item || item);
-      if (row) st.forceShow.add(row.id);
+      if (row) { st.forceShow.add(row.id); unfoldFor(row); }
       actionSaved();
       await pickersSettled();
       // Typed in since the click (the answer was slow): that box keeps the
@@ -5237,6 +5349,25 @@
         : `Procurement: the row could not be added (${err.message}).`);
       return null;
     }
+  }
+  // The section (and on a site, the job band) a new row lands in, opened:
+  // left folded, the row went in unseen and the caret stayed on the button —
+  // nothing seemed to happen, and a second press added another blank row.
+  function unfoldFor(row) {
+    if (st.grouping === 'none') return;
+    const ctx = makeCtx();
+    const g = groupRows(visibleRows(ctx), ctx).find(x => x.rows.includes(row));
+    if (g) st.collapsed.delete(g.key);
+    if (row.project_id) st.collapsed.delete(JOB + row.project_id);
+  }
+  // One + Add Row at a time: a double-click, or a second press while the
+  // first is still being added (a slow answer, a site's job still being
+  // picked), adds one row, not two blank ones.
+  let addingRow = null;
+  function addRowOnce(run) {
+    if (addingRow) return addingRow;
+    addingRow = Promise.resolve().then(run).finally(() => { addingRow = null; });
+    return addingRow;
   }
   /**
    * What a row added from a section header starts with, so that it lands in
@@ -6794,14 +6925,28 @@
   /**
    * A site's sheet whose jobs changed under it (Show all jobs ticked, a field
    * marked complete, the Site typed on another job): read again as the sheet
-   * it now is. Typed edits go first; ticks on rows no longer there go.
+   * it now is, in place — at the same scroll, around a cell in use — not
+   * through "Loading…". Typed edits go first; ticks on rows no longer there go.
+   *
+   * Not while the PM is typing in a cell (or the bulk bar), or pressing:
+   * flushed then, the half-typed value was saved (81 of 8100, "New Ent" of a
+   * vendor), and the box was thrown away with the rest of the typing. The
+   * read is owed instead, as a refresh is (pollOwed), and paid once the caret
+   * leaves the cells: payOwedPoll → refresh(), which finds the sheet's jobs
+   * changed and comes back here. A picker just left commits first.
    */
-  function reloadSite() {
+  async function reloadSite() {
+    const busy = () => inCellBox() || (pressedAt && Date.now() - pressedAt < 5000);
+    if (busy()) { pollOwed = true; return; }
+    const key = st.projectId;
+    await pickersSettled();
+    if (st.projectId !== key || st.loadedFor === viewSig()) return;
+    if (busy()) { pollOwed = true; return; }
     flushAll();
     st.forceShow.clear();
     st.confirmDel = null;
     st.bulkConfirmDel = false;
-    load(st.projectId);
+    await load(st.projectId, { quiet: st.loadState === 'ok' });
   }
 
   // Point the tab at a job without drawing anything yet — the page is about
@@ -6848,17 +6993,22 @@
       // around a cell being typed in, at the same scroll — not rebuilt,
       // which threw the box in use away (a half-typed vendor saved, the
       // rest of the typing lost) and put the PM back at the top of the sheet.
-      const wrap = again && cached && el.querySelector('#fctproc-wrap');
+      // So is a site's sheet whose jobs changed meanwhile (the page's own job
+      // list in after the one it started from): rerender reads it again as
+      // the sheet it now is, in place, once the PM is out of the cells.
+      const reshaped = siteMode() && st.loadState === 'ok' && !!st.loadedFor && !cached && keyExists(st.projectId);
+      const wrap = again && (cached || reshaped) && el.querySelector('#fctproc-wrap');
       if (wrap) {
+        const drawnFor = st.loadedFor;
         window.FCTProcurement.rerender();
         const now = el.querySelector('#fctproc-wrap');
         // Hidden with its tab, the box forgot where it was scrolled to —
         // this sheet's place, not another job's opened since.
-        if (now && st.wrapScroll && st.wrapScroll.sig === viewSig() && !now.scrollTop && !now.scrollLeft) {
+        if (now && st.wrapScroll && st.wrapScroll.sig === drawnFor && !now.scrollTop && !now.scrollLeft) {
           now.scrollTop = st.wrapScroll.top;
           now.scrollLeft = st.wrapScroll.left;
         }
-        load(st.projectId, { quiet: true });
+        if (cached) load(st.projectId, { quiet: true });
         return;
       }
       if (st.projectId && !cached) st.loadState = 'loading';
@@ -6891,7 +7041,8 @@
       if (picker && picker !== a && known) { picker.value = openLabel(); picker.dataset.cbValue = st.projectId; }
       if (st.projectId && !known) { renderBody(); return; }
       // A site whose jobs changed (a field finished, a Site typed on another
-      // job) is read again as the sheet it now is.
+      // job) is read again as the sheet it now is — once the PM is out of
+      // the cells, if they are typing in one (reloadSite).
       if (siteMode() && st.loadState === 'ok' && st.loadedFor !== viewSig()) { reloadSite(); return; }
       // The bid changed under the open job (a line renamed, a Replace all):
       // rows re-link and their stored codes follow now, not at the next read.
@@ -6911,21 +7062,7 @@
         renderHead();
         renderTable();
         updateCounts();
-        // The bulk bar is left alone while it is being typed in (its value
-        // box, a Vendor menu open): drawn again, the box would lose focus
-        // and the keys typed next would go nowhere. Its PO list catches up
-        // the next time it is drawn. A focused button ("Apply to N", say)
-        // is no reason to keep a stale bar: it is drawn again and the same
-        // button gets focus back.
-        const bulk = st.mountEl.querySelector('#fctproc-bulk');
-        const inBulk = bulk && a && bulk.contains(a);
-        if (!inBulk) renderBulk();
-        else if (!/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) {
-          const act = a.dataset && a.dataset.act;
-          renderBulk();
-          const again = act && bulk.querySelector(`[data-act="${cssEsc(act)}"]`);
-          if (again) again.focus();
-        }
+        redrawBulk();
       } else renderBody();
     },
 
@@ -6943,7 +7080,9 @@
       if (inCellBox()) { pollOwed = true; return; }
       pollOwed = false;
       if (pend.size) await flushAll();
-      // A site whose jobs changed since is a new sheet, read as one.
+      // A site whose jobs changed since is a new sheet, read as one — in
+      // place, over the sheet on screen (reloadSite).
+      if (siteMode() && st.loadState === 'ok' && st.loadedFor !== viewSig()) { await reloadSite(); return; }
       await load(st.projectId, { quiet: st.loadState === 'ok' && st.loadedFor === viewSig() });
     },
 
