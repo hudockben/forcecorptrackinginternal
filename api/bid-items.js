@@ -21,6 +21,9 @@ const {
 } = require('./lib/auth');
 // A renamed cost code moves the files attached to its Procurement rows (step 5).
 const procDocs = require('./lib/procurement-docs');
+// …and a renamed cost or sub code renames the job's purchase orders (step 6).
+// Called through the module so the tests can stand a failing one in.
+const poCodes = require('./lib/bid-po-codes');
 
 const STATUS_VALUES = new Set(['Active', 'Complete', 'On Hold', 'At Risk']);
 
@@ -128,8 +131,21 @@ module.exports = async (req, res) => {
     //    id, or appending if it doesn't exist yet (so the endpoint is
     //    safe to call before a structural saveProject has registered
     //    the item server-side).
+    //    It hands back the line as the blob held it before (`was`, read in
+    //    the same statement): step 6 carries a code renamed here to the
+    //    job's purchase orders.
     const itemJson = JSON.stringify(item);
     const result = await sql`
+      WITH was AS (
+        SELECT e.v AS line
+          FROM app_data a
+         CROSS JOIN LATERAL jsonb_array_elements(
+                CASE WHEN jsonb_typeof(a.value->'bidItems') = 'array' THEN a.value->'bidItems' ELSE '[]'::jsonb END)
+                WITH ORDINALITY AS e(v, ord)
+         WHERE a.key = ${scopedProjectKey} AND e.v->>'id' = ${id}
+         ORDER BY e.ord DESC
+         LIMIT 1
+      )
       UPDATE app_data
       SET value = jsonb_set(
             COALESCE(value, '{}'::jsonb),
@@ -151,7 +167,7 @@ module.exports = async (req, res) => {
           ),
           updated_at = NOW()
       WHERE key = ${scopedProjectKey}
-      RETURNING 1
+      RETURNING 1 AS found, (SELECT line FROM was) AS line_before
     `;
     if (!result.length) {
       return res.status(404).json({ error: 'Project blob not found — create the project first' });
@@ -317,6 +333,33 @@ module.exports = async (req, res) => {
         console.warn(
           `[bid-items] re-filing attachments after a cost code rename failed for company=${companyCode} ` +
           `project=${projectKey} bidItem=${item.id}: ${refileErr.message}`
+        );
+      }
+    }
+
+    // 6. The job's purchase orders keep a copy of the codes they were raised
+    //    under, and Procurement matches a row to its order by them. A code
+    //    renamed here (a sub code goes through this save alone) is carried to
+    //    the job's orders still on the old one, read off the line as the blob
+    //    held it before step 1 — not off the rows' copy, which an open
+    //    Procurement sheet may already have brought up to date. Left on the
+    //    old codes, an order read as none: the row Not Ordered and Late, and
+    //    Create PO raising a second order (api/lib/bid-po-codes.js). Same job
+    //    and division as step 4. Non-fatal, like steps 3-5.
+    //    An edit that renamed nothing (a quantity, a date) reads nothing more;
+    //    a rename reads the bid as stored now, since an order on codes another
+    //    line still has is that line's and stays.
+    const lineBefore = result[0] && result[0].line_before;
+    if (lineBefore && typeof lineBefore === 'object' && poCodes.bidCodeRenames([lineBefore], [item]).length) {
+      try {
+        const now = await sql`SELECT value->'bidItems' AS bid FROM app_data WHERE key = ${scopedProjectKey}`;
+        await poCodes.carryBidCodeRenames(sql, {
+          companyCode, division, projectId: keyProjectId, before: [lineBefore], after: now.length ? now[0].bid : null,
+        });
+      } catch (poErr) {
+        console.warn(
+          `[bid-items] renaming purchase-order codes failed for company=${companyCode} ` +
+          `project=${projectKey} bidItem=${item.id}: ${poErr.message}`
         );
       }
     }

@@ -32,6 +32,9 @@ const LIST_BLOB_KEYS = new Set(['fct_lists', 'fct_paving_lists', 'fct_kiewit_lis
 // project-blob prefixes is what stops it becoming a general key scanner.
 const KEY_SCAN_PREFIXES = ['fct_project_', 'fct_paving_project_', 'fct_kiewit_project_'];
 
+// A job's blob, whose bidItems is the job's bid (see the PUT handler).
+const PROJECT_BLOB_RE = /^fct_(?:paving_|kiewit_)?project_[a-zA-Z0-9_-]+$/;
+
 function isAllowedKey(k) {
   return ALLOWED_KEYS.includes(k)
     || /^fct_project_[a-zA-Z0-9_-]+$/.test(k)
@@ -291,17 +294,53 @@ module.exports = async (req, res) => {
     try { stored = await guardInjectedBlobWrite(sql, payload.companyCode, key, value); }
     catch (err) { console.error('[injected-blob-guard] PUT', key, err.message); }
 
-    await sql`
-      INSERT INTO app_data (key, value, updated_at)
-      VALUES (${scopedKey}, ${JSON.stringify(stored)}, NOW())
-      ON CONFLICT (key)
-      DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
-    `;
+    // A job's bid saved whole, as the bid page saves a section it renamed:
+    // the same write, handing back the bid it replaced, read in the same
+    // statement so it is the one this save overwrote. Its codes are what the
+    // job's purchase orders still carry (below).
+    const savesBid = PROJECT_BLOB_RE.test(key) && stored && typeof stored === 'object' && Array.isArray(stored.bidItems);
+    let bidBefore = null;
+    if (savesBid) {
+      const was = await sql`
+        WITH prev AS (SELECT value->'bidItems' AS bid FROM app_data WHERE key = ${scopedKey})
+        INSERT INTO app_data (key, value, updated_at)
+        VALUES (${scopedKey}, ${JSON.stringify(stored)}, NOW())
+        ON CONFLICT (key)
+        DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+        RETURNING (SELECT bid FROM prev) AS bid_before
+      `;
+      bidBefore = was.length ? was[0].bid_before : null;
+    } else {
+      await sql`
+        INSERT INTO app_data (key, value, updated_at)
+        VALUES (${scopedKey}, ${JSON.stringify(stored)}, NOW())
+        ON CONFLICT (key)
+        DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()
+      `;
+    }
     // Mirror into normalized tables — awaited before response so serverless doesn't kill it.
     // Mirrors what was stored, not what was sent, so the mirror can't delete the
     // payroll rows the guard just kept.
     try { await syncForKey(sql, payload.companyCode, key, stored); }
     catch (err) { console.error('[sync-normalized] PUT', key, err.message); }
+
+    // A cost or sub code renamed on the bid: the job's purchase orders on the
+    // old codes take the new ones. Procurement matches a row to its order by
+    // the codes, and an order left on the old ones read as no order at all —
+    // the row Not Ordered and Late, and Create PO raising a second one
+    // (api/lib/bid-po-codes.js). Non-fatal: the bid is saved either way.
+    if (savesBid && Array.isArray(bidBefore)) {
+      try {
+        const poCodes = require('../lib/bid-po-codes');
+        const job = poCodes.projectBlobOf(key);
+        if (job) {
+          await poCodes.carryBidCodeRenames(sql, {
+            companyCode: payload.companyCode, division: job.division, projectId: job.projectId,
+            before: bidBefore, after: stored.bidItems,
+          });
+        }
+      } catch (err) { console.error('[bid-po-codes] PUT', key, err.message); }
+    }
 
     // Emit audit entries for the Dust Other Billing tab. Diffed against what
     // was STORED rather than what was sent: the guard above now applies to this
