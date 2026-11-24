@@ -6102,6 +6102,222 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('a row\'s PO, looked up among the orders indexed by job and codes, is exactly the one reading the whole list found (300 rows, 400 orders)', !diff.length, diff.slice(0, 2));
   }
 
+  console.log('\n[review 3: ui]');
+  {
+    const dana = (e, id, f, by = 'Dana Reyes') => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = by; r.updated_at = new Date().toISOString(); };
+    const dlgText = e => (e.$('.fctproc-modal') ? e.$('.fctproc-modal').textContent.replace(/\s+/g, ' ') : '(no dialog)');
+    const indicator = e => e.$('#fctproc-save').textContent.trim();
+    const leaveAsks = e => { const ev = new e.w.Event('beforeunload', { cancelable: true }); e.w.dispatchEvent(ev); return ev.defaultPrevented; };
+    const setHidden = (e, hidden) => {
+      Object.defineProperty(e.w.document, 'visibilityState', { configurable: true, get: () => (hidden ? 'hidden' : 'visible') });
+      e.w.document.dispatchEvent(new e.w.Event('visibilitychange'));
+    };
+    const typeKey = (e, el, key) => el.dispatchEvent(new e.w.KeyboardEvent('keydown', { key, bubbles: true }));
+
+    // ── A conflict dialog held for the box being typed in, and leaving the page.
+    // Pat's Quote # on t1 is refused (Dana changed it); its dialog waits while
+    // he types in t2's Quantity, whose own save then lands.
+    const heldConflict = async ({ pause = true } = {}) => {
+      const e = makeEnv({ rows: [row({ id: 't1', quote_number: 'Q-1' }), row({ id: 't2', quantity: 5 })] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      dana(e, 't1', { quote_number: 'Q-DANA' });
+      let release;
+      e.patchHold = new Promise(r => { release = r; });
+      const q = e.field('t1', 'quote_number');
+      q.focus(); q.value = 'Q-77'; e.fire(q, 'input'); e.fire(q, 'change');
+      const qty = e.field('t2', 'quantity');
+      qty.focus();
+      typeKey(e, qty, '2');
+      qty.value = '200'; e.fire(qty, 'input');
+      release();
+      await sleep(30);
+      qty.value = '20000'; e.fire(qty, 'input');
+      if (pause) await sleep(800);
+      return { e, qty };
+    };
+    {
+      const { e, qty } = await heldConflict();
+      assert('a conflict dialog held while the PM types elsewhere, the other box saved meanwhile: the dialog still waits (the box keeps the caret)',
+        !e.$('.fctproc-modal') && e.w.document.activeElement === qty && e.db.rows[1].quantity === 20000, { dialog: dlgText(e), qty: e.db.rows[1].quantity });
+      assert('…the save indicator does not read "Saved" — his Quote # Q-77 is not saved', indicator(e) === 'Not saved', indicator(e));
+      assert('…and reloading or closing the page asks first (his Q-77 lives only in the waiting dialog)', leaveAsks(e));
+      setHidden(e, true);
+      await sleep(20);
+      assert('the page sent to the background: the held dialog is shown now, so it is there when he comes back',
+        /Changed by someone else/.test(dlgText(e)) && /Q-DANA/.test(dlgText(e)) && /Q-77/.test(dlgText(e)), dlgText(e));
+      assert('…and with it open, leaving the page still asks first', leaveAsks(e) && indicator(e) === 'Not saved', indicator(e));
+      setHidden(e, false);
+      const keepSaved = e.$('[data-conflict="theirs"]');
+      if (keepSaved) keepSaved.click();
+      await sleep(30);
+      assert('…"Keep saved": nothing waits any more — the indicator no longer reads "Not saved", and leaving asks nothing',
+        indicator(e) !== 'Not saved' && !leaveAsks(e) && e.db.rows[0].quote_number === 'Q-DANA', { ind: indicator(e), db: e.db.rows[0].quote_number });
+    }
+    {
+      // Sent to the background mid-typing, before the quiet spell: the box is
+      // left for the dialog, and what it holds is sent.
+      const { e } = await heldConflict({ pause: false });
+      setHidden(e, true);
+      await sleep(60);
+      assert('sent to the background while still typing in the other box: the dialog is shown, and the whole 20000 typed there is saved',
+        /Changed by someone else/.test(dlgText(e)) && /Q-77/.test(dlgText(e)) && e.db.rows[1].quantity === 20000
+          && !e.patches().some(p => p.q.id === 't2' && p.body.fields.quantity !== 20000), { dialog: dlgText(e), t2: e.patches().filter(p => p.q.id === 't2').map(p => p.body.fields) });
+      setHidden(e, false);
+      const keepMine = e.$('[data-conflict="mine"]');
+      if (keepMine) keepMine.click();
+      await sleep(60);
+      assert('…and "Keep mine" saves Q-77', e.db.rows[0].quote_number === 'Q-77', e.db.rows[0].quote_number);
+    }
+
+    // ── A conflict for a row no longer on the sheet, answered while the PM
+    // types on the job opened meanwhile: no dialog needs the caret, so the
+    // box keeps it and its half-typed value is not saved.
+    {
+      const e = makeEnv({ rows: [row({ id: 't1', quote_number: 'Q-1' }), row({ id: 'z1', project_id: 'p2', quantity: 5 })] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      dana(e, 't1', { quote_number: 'Q-DANA' });
+      let release;
+      e.patchHold = new Promise(r => { release = r; });
+      const q = e.field('t1', 'quote_number');
+      q.focus(); q.value = 'Q-77'; e.fire(q, 'input'); e.fire(q, 'change'); q.blur();
+      await tick();
+      e.P._test.selectProject('p2');
+      await sleep(60);
+      const qty = e.field('z1', 'quantity');
+      qty.focus();
+      typeKey(e, qty, '2');
+      qty.value = '200'; e.fire(qty, 'input');
+      release();
+      await sleep(40);
+      assert('a conflict for a row on the job left behind, answered while the PM types 20000 on the new job: the box keeps the caret',
+        e.w.document.activeElement === qty, e.w.document.activeElement && e.w.document.activeElement.outerHTML);
+      assert('…200 is not saved', !e.patches().some(p => p.q.id === 'z1'), e.patches().filter(p => p.q.id === 'z1').map(p => p.body.fields));
+      assert('…and the banner says Q-77 was not saved', e.errors.some(m => /Q-77/.test(m) && /not saved/.test(m)), e.errors);
+      qty.value = '20000'; e.fire(qty, 'input');
+      qty.blur();
+      await sleep(60);
+      assert('…the whole 20000 is saved once he leaves the box', eq(e.patches().filter(p => p.q.id === 'z1').map(p => p.body.fields), [{ quantity: 20000 }])
+        && e.db.rows[1].quantity === 20000, e.patches().filter(p => p.q.id === 'z1').map(p => p.body.fields));
+    }
+
+    // ── A site read again as other jobs (owed while the PM typed): what
+    // colleagues changed meanwhile is marked, as on any poll.
+    {
+      const SP = [
+        { id: 'h1', 'project-name': 'Hempfield Baseball', 'job-number': '26057', status: 'In Progress', site: 'Hempfield' },
+        { id: 'h2', 'project-name': 'Hempfield Softball', 'job-number': '26058', status: 'Awarded', site: 'Hempfield' },
+        { id: 'h3', 'project-name': 'Hempfield Track', 'job-number': '26059', status: 'Complete', site: 'Hempfield' },
+      ];
+      const projects = SP.map(p => ({ ...p }));
+      const e = makeEnv({ rows: [
+        row({ id: 'a1', project_id: 'h1', cost_code: 'Storm Water', sub_code: 'Geofabric', quantity: 8000, unit: 'SF', vendor: 'LB Water', created_at: '2026-03-01T00:00:00Z' }),
+        row({ id: 'a2', project_id: 'h1', cost_code: 'Storm Water', sub_code: 'Elbows', quantity: 3, unit: 'EA', created_at: '2026-03-01T00:00:01Z' }),
+        row({ id: 'b1', project_id: 'h2', cost_code: 'Storm Water', sub_code: 'Geofabric', quantity: 5000, unit: 'SF', created_at: '2026-03-01T00:00:02Z' }),
+        row({ id: 'c1', project_id: 'h3', cost_code: 'Storm Water', sub_code: 'Geofabric', quantity: 900, unit: 'SF', created_at: '2026-03-01T00:00:03Z', updated_by: 'Sam' }),
+      ], storage: { fct_proc_project_turf: 'site:hempfield', fct_proc_group_turf: 'cost' } });
+      e.P.configure({ getProjects: () => projects, getProject: id => projects.find(p => p.id === id) || null, getBidLines: () => [] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      const q = e.field('a1', 'quantity');
+      q.focus(); q.value = '81'; e.fire(q, 'input');
+      await e.P.refresh();
+      // Softball marked complete and Track reopened while he types.
+      projects.find(p => p.id === 'h2').status = 'Complete';
+      projects.find(p => p.id === 'h3').status = 'In Progress';
+      e.P.rerender();
+      dana(e, 'a2', { vendor: 'Acme Supply' });
+      e.db.rows.push(row({ id: 'a3', project_id: 'h1', cost_code: 'Storm Water', sub_code: 'Tees', created_at: new Date().toISOString(), created_by: 'Dana Reyes', updated_by: 'Dana Reyes' }));
+      await sleep(10);
+      q.value = '8100'; e.fire(q, 'input');
+      q.blur();
+      await sleep(150);
+      const shown = e.$$('tr.fctproc-row').map(t => t.dataset.row).sort();
+      const v = e.field('a2', 'vendor');
+      const part = v && v.closest('.fctproc-part');
+      assert('a site\'s jobs changed while the PM typed: the sheet read again shows the jobs it now has', eq(shown, ['a1', 'a2', 'a3', 'c1']), shown);
+      assert('…Dana\'s Vendor brought by that read is marked "Changed by Dana Reyes", as a poll marks it',
+        v && v.value === 'Acme Supply' && !!part && part.classList.contains('fctproc-chg') && /^Changed by Dana Reyes/.test(part.title),
+        { value: v && v.value, title: part && part.title });
+      assert('…a row she added meanwhile on a job already there is marked "Added by Dana Reyes"', e.$('tr[data-row="a3"]').classList.contains('fctproc-new')
+        && /^Added by Dana Reyes/.test(e.$('tr[data-row="a3"]').title), e.$('tr[data-row="a3"]').title);
+      assert('…but the rows of the job that just joined are not "Added"', !e.$('tr[data-row="c1"]').classList.contains('fctproc-new') && !e.$('tr[data-row="c1"]').title,
+        e.$('tr[data-row="c1"]').title);
+      assert('…and his own 8100 is saved', e.db.rows[0].quantity === 8100, e.db.rows[0].quantity);
+    }
+
+    // ── "Keep mine" on a row whose job left the site while its dialog was up.
+    {
+      const SP = [
+        { id: 'h1', 'project-name': 'Hempfield Baseball', 'job-number': '26057', status: 'In Progress', site: 'Hempfield' },
+        { id: 'h2', 'project-name': 'Hempfield Softball', 'job-number': '26058', status: 'Awarded', site: 'Hempfield' },
+      ];
+      const openSite = async () => {
+        const projects = SP.map(p => ({ ...p }));
+        const e = makeEnv({ rows: [
+          row({ id: 'a1', project_id: 'h1', cost_code: 'Storm Water', sub_code: 'Geofabric', quantity: 8000, unit: 'SF', created_at: '2026-03-01T00:00:00Z' }),
+          row({ id: 'b1', project_id: 'h2', cost_code: 'Storm Water', sub_code: 'Geofabric', quantity: 5000, unit: 'SF', created_at: '2026-03-01T00:00:02Z' }),
+        ], storage: { fct_proc_project_turf: 'site:hempfield', fct_proc_group_turf: 'cost' } });
+        e.P.configure({ getProjects: () => projects, getProject: id => projects.find(p => p.id === id) || null, getBidLines: () => [] });
+        e.softballDone = () => { projects.find(p => p.id === 'h2').status = 'Complete'; };
+        e.P.renderTab(e.root);
+        await sleep(40);
+        return e;
+      };
+      const keepMine = async e => { const b = e.$('.fctproc-modal [data-conflict="mine"]'); if (b) b.click(); await sleep(80); };
+      const b1 = e => e.db.rows.find(r => r.id === 'b1');
+      {
+        // The dialog open on Softball's row; the poll then reads the site
+        // without Softball, marked complete meanwhile.
+        const e = await openSite();
+        const q = e.field('b1', 'quote_number');
+        q.focus(); q.value = 'Q-MINE'; e.fire(q, 'input');
+        dana(e, 'b1', { quote_number: 'Q-DANA' });
+        q.blur();
+        await sleep(80);
+        const open = !!e.$('.fctproc-modal');
+        e.softballDone();
+        await e.P.refresh();
+        await sleep(40);
+        const rowsNow = e.P._test.state().rows.map(r => r.id);
+        await keepMine(e);
+        assert('a conflict dialog up on a Softball row as Softball leaves the site: "Keep mine" still saves Q-MINE',
+          open && eq(rowsNow, ['a1']) && b1(e).quote_number === 'Q-MINE', { open, rowsNow, server: b1(e).quote_number, errors: e.errors });
+        assert('…against the value the dialog showed (Q-DANA), as on the sheet', e.patches().slice(-1).map(p => p.body.expect.quote_number)[0] === 'Q-DANA',
+          e.patches().slice(-1).map(p => p.body));
+        assert('…with nothing left waiting (no prompt on leaving) and no error', !leaveAsks(e) && !e.errors.length && !e.$('.fctproc-modal'), e.errors);
+      }
+      {
+        // Held while he types in Baseball, Softball completed meanwhile:
+        // leaving the box shows the dialog, and the owed site read runs.
+        const e = await openSite();
+        const q = e.field('b1', 'quote_number');
+        q.focus(); q.value = 'Q-MINE'; e.fire(q, 'input');
+        dana(e, 'b1', { quote_number: 'Q-DANA' });
+        let rel;
+        e.patchHold = new Promise(r => { rel = r; });
+        q.blur();
+        await sleep(20);
+        const qa = e.field('a1', 'quantity');
+        qa.focus();
+        typeKey(e, qa, '8');
+        qa.value = '8100'; e.fire(qa, 'input');
+        rel();
+        await sleep(40);
+        e.softballDone();
+        e.P.rerender();
+        await sleep(20);
+        qa.blur();
+        await sleep(120);
+        const open = !!e.$('.fctproc-modal'), rowsNow = e.P._test.state().rows.map(r => r.id);
+        await keepMine(e);
+        assert('…the same with the dialog held while he typed elsewhere: shown as he leaves the box, the site read without Softball, "Keep mine" saves Q-MINE',
+          open && eq(rowsNow, ['a1']) && b1(e).quote_number === 'Q-MINE' && e.db.rows[0].quantity === 8100, { open, rowsNow, server: b1(e).quote_number, errors: e.errors });
+      }
+    }
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => {

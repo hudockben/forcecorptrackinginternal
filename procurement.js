@@ -1620,6 +1620,9 @@
         background: var(--bg,#0a0a0f); border:1px solid var(--border,#2a2a3a); border-radius:3px; color: var(--text,#e0e0e0);
         font-size:0.78rem; padding:0.22rem 0.4rem; outline:none; color-scheme: dark; }
       .fctproc-bulk .cb { width: 13rem; }
+      /* The PO list a site's sheet offers depends on the rows ticked: a set
+         width, so the first tick does not widen the bar onto another line. */
+      .fctproc-bulk #fctproc-bulk-valbox[data-field="po"] select { width: 16rem; text-overflow: ellipsis; }
       .fctproc-bulk.idle { position: relative; visibility: hidden; }
       .fctproc-bulk-hint { position:absolute; top:0; right:-1px; bottom:-1px; left:-1px; visibility: visible; display:flex; align-items:center;
         padding:0 0.75rem; background: var(--surface,#111118); border:1px solid var(--border,#2a2a3a); border-top:none;
@@ -2876,7 +2879,9 @@
       .forEach(k => lines.push([FIELD_LABEL[k] || k, shownValue(k, theirs[k]), shownValue(k, mine[k])]));
     return lines;
   }
-  function showNextConflict() {
+  // `force`: the page has gone to the background — shown, not held for a box
+  // nobody is typing in now (boxFocusEl and boxTyped stay as they were).
+  function showNextConflict({ force = false } = {}) {
     if (conflictOpen) return;
     const c = conflictQueue[0];
     if (!c) return;
@@ -2886,8 +2891,21 @@
     // "New Enterprise", "New"), and the rest of the keys would go to the
     // dialog. So the dialog waits until the PM leaves it, its own commit
     // made — as the refresh waits (pollOwed). Its cells stay held meanwhile.
-    if (rowById(c.rowId) && typingElsewhere(a, c)) { holdConflictFor(a); return; }
+    if (!force && rowById(c.rowId) && typingElsewhere(a, c)) { holdConflictFor(a); return; }
+    if (force) { conflictWaitFor = null; clearTimeout(conflictWaitTimer); }
     conflictQueue.shift();
+    const row = rowById(c.rowId);
+    if (!row) {
+      // Off the sheet now (another job opened while the save was out): said,
+      // not dropped without a word. No dialog takes the caret, so the box
+      // being typed in keeps it (left, it would save its half-typed value).
+      release(c);
+      const what = conflictLines(c).map(([w, , y]) => `${w} "${y}"`).join(', ');
+      showError(`Procurement: ${what} ${c.fields.length > 1 ? 'were' : 'was'} not saved — it was changed by someone else meanwhile${c.by ? ` (last by ${c.by})` : ''}. Open that job again to see what is saved and enter it again if yours should stand.`);
+      settleSave();
+      showNextConflict({ force });
+      return;
+    }
     // The box the person is in is left first: what it holds is committed —
     // into "Yours" if it is one of these cells (held, see setField) — before
     // the dialog shows it, and keys stop going into the sheet behind it.
@@ -2898,16 +2916,6 @@
       const input = menu.previousElementSibling;
       if (input && typeof window.cbClose === 'function') window.cbClose(input); else menu.hidden = true;
     });
-    const row = rowById(c.rowId);
-    if (!row) {
-      // Off the sheet now (another job opened while the save was out): said,
-      // not dropped without a word.
-      release(c);
-      const what = conflictLines(c).map(([w, , y]) => `${w} "${y}"`).join(', ');
-      showError(`Procurement: ${what} ${c.fields.length > 1 ? 'were' : 'was'} not saved — it was changed by someone else meanwhile${c.by ? ` (last by ${c.by})` : ''}. Open that job again to see what is saved and enter it again if yours should stand.`);
-      showNextConflict();
-      return;
-    }
     refreshRow(c.rowId);
     conflictOpen = true;
     const name = materialOf(row, siteMode() && row.project_id ? makeCtx(row.project_id) : makeCtx()) || 'This row';
@@ -2949,6 +2957,7 @@
       conflictOpen = false;
       c.redraw = null;
       if (!kept) { release(c); refreshRow(c.rowId); }
+      settleSave();
       setTimeout(showNextConflict, 0);
     };
     m.foot.addEventListener('click', e => {
@@ -2965,6 +2974,15 @@
           Object.keys(c.mine).forEach(k => seenAtFocus.set(c.rowId + '\u0000' + k, { v: c.theirs[k], at: Date.now() }));
           setFields(c.rowId, c.mine);
           refreshRow(c.rowId);
+          flushRow(c.rowId);
+        } else {
+          // Its job left the sheet while the dialog was open (a site's field
+          // marked complete): the pick is still sent — a row off the sheet
+          // keeps its saves — against what the dialog showed as saved.
+          pend.set(c.rowId, { ...(pend.get(c.rowId) || {}), ...c.mine });
+          const b = bases.get(c.rowId) || {};
+          Object.keys(c.mine).forEach(k => { if (c.theirs && k in c.theirs) b[k] = c.theirs[k]; });
+          bases.set(c.rowId, b);
           flushRow(c.rowId);
         }
       }
@@ -3181,17 +3199,23 @@
     clearTimeout(savedTimer);
     const el = st.mountEl && st.mountEl.querySelector('#fctproc-save');
     if (el) {
-      el.className = `save-indicator fctproc-save ${state}`;
-      const text = { saving: 'Saving…', saved: 'Saved', error: 'Not saved', idle: '' }[state] || '';
+      el.className = `save-indicator fctproc-save ${state === 'held' ? 'error held' : state}`;
+      const text = { saving: 'Saving…', saved: 'Saved', error: 'Not saved', held: 'Not saved', idle: '' }[state] || '';
       el.querySelector('.si-text').textContent = text;
-      el.title = state === 'error' ? 'A change could not be saved — the message at the top of the page says which, and what happens to it.' : '';
+      el.title = state === 'error' ? 'A change could not be saved — the message at the top of the page says which, and what happens to it.'
+        : state === 'held' ? 'A change of yours met a colleague\'s in the same cell: you are asked which to keep (once you leave the box you are typing in).' : '';
     }
     if (state === 'saved') savedTimer = setTimeout(() => setSave('idle'), 2500);
   }
+  // A conflict not answered yet — its dialog open, or waiting for the box in
+  // use (holdConflictFor) — holds the PM's value unsaved: "Not saved" (held),
+  // not "Saved", until it is answered (m.onClose settles it again).
   function settleSave() {
     if (fly.size) setSave('saving');
     else if (failed.size) setSave('error');
+    else if (held.size) setSave('held');
     else if (st.saveState === 'saving') setSave('saved');
+    else if (st.saveState === 'held') setSave('idle');
   }
   // An action of its own done (a row added, rows deleted or copied in):
   // "Saved" — unless an earlier edit is still out, or failed and is kept to
@@ -3199,7 +3223,7 @@
   function actionSaved() {
     if (fly.size) setSave('saving');
     else if (failed.size) setSave('error');
-    else setSave('saved');
+    else setSave(held.size ? 'held' : 'saved');
   }
 
   // A picker in the sheet holding something typed or picked in it that it
@@ -3224,8 +3248,10 @@
   // answered. The banner promised those edits are kept and sent again, so
   // leaving now asks first — the browser's own "Leave site?" — the way the
   // page already does for unsent Daily rows.
+  // So does a conflict not answered yet (open, or held for the box in use):
+  // the PM's value is only in its dialog.
   window.addEventListener('beforeunload', e => {
-    if (!failed.size && !fly.size && !pend.size && !uncommittedCombo()) return;
+    if (!failed.size && !fly.size && !pend.size && !held.size && !uncommittedCombo()) return;
     e.preventDefault();
     e.returnValue = '';
   });
@@ -3233,7 +3259,11 @@
   // the browser close it there — each row whose save is not already out (a
   // row's save still out sends the rest when it is answered).
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') flushAll({ keepalive: true });
+    if (document.visibilityState !== 'hidden') return;
+    // A dialog held for the box in use is shown first — its blur commits the
+    // box, so the flush sends it — and is there when the PM comes back.
+    if (conflictQueue.length) showNextConflict({ force: true });
+    flushAll({ keepalive: true });
   });
 
   // ── Loading ─────────────────────────────────────────────────────────
@@ -3284,8 +3314,13 @@
       // since is marked (noteOthersChanges), against the copies held now. A
       // row taken from the server after this GET went out is newer than the
       // answer, and not news.
-      const known = quiet && st.loadState === 'ok' && st.loadedFor === sig
-        ? new Map(items.filter(r => !since(touched, r.id)).map(r => [r.id, server.get(r.id) ? { ...server.get(r.id) } : null])) : null;
+      // A site read again as other jobs (reshaped, below) is marked so too,
+      // for the jobs it already had: a job that has just joined is not news.
+      const had = quiet && st.loadState === 'ok' && isSiteKey(projectId) && String(st.loadedFor || '').startsWith(projectId + '|')
+        ? new Set(st.loadedFor.slice(projectId.length + 1).split(',')) : null;
+      const known = quiet && st.loadState === 'ok' && (st.loadedFor === sig || had)
+        ? new Map(items.filter(r => !since(touched, r.id) && (!had || had.has(String(r.project_id))))
+          .map(r => [r.id, server.get(r.id) ? { ...server.get(r.id) } : null])) : null;
       items.forEach(adoptServerRow);
       if (known) noteOthersChanges(items.filter(r => known.has(r.id)), known);
       askForNewPOs();
@@ -4083,12 +4118,6 @@
       <colgroup>${cols.map(c => `<col style="width:${c.w}rem">`).join('')}</colgroup>
       <thead>${headerHtml(cols)}</thead><tbody>${body}</tbody></table>`;
     tipChanged(wrap);
-    // A box Tab, Shift+Tab or an arrow takes the caret to is scrolled clear
-    // of the pinned Select and Status columns, not just into the box's
-    // edge: the browser took one under them as in view, and the date or PO
-    // was typed and saved in a box the PM could not see.
-    const pinned = cols.filter(c => c.stick).reduce((s, c) => s + c.w, 0);
-    wrap.style.scrollPaddingLeft = pinned ? pinned + 'rem' : '';
     wrap.querySelectorAll('tr.fctproc-row').forEach(tr => { const h = drawn.get(tr.dataset.row); if (h) drawnHtml.set(tr, h); });
     drawnLayout = layoutOf(rows, ctx, groups);
     wrap.scrollTop = top;
@@ -4900,6 +4929,23 @@
   }
 
   // ── Events ──────────────────────────────────────────────────────────
+  /**
+   * A box Tab, Shift+Tab, an arrow or a click takes the caret to is scrolled
+   * clear of the pinned Select and Status columns: the browser takes one
+   * under them as in view, and the date or PO was typed and saved in a box
+   * the PM could not see. Not done with the container's scroll-padding:
+   * Chromium applies that to the pinned cells' own controls too, which never
+   * move, so the sheet ran back to its left edge on every one. Those (and a
+   * section's sticky label) are left alone, as is focus given back with no
+   * box left behind (a redraw, the window switched back).
+   */
+  function clearPinned(e) {
+    const t = e.target, wrap = t && t.closest && t.closest('#fctproc-wrap');
+    if (!wrap || !e.relatedTarget || t.closest('.stk, .gl')) return;
+    const edge = Math.max(0, ...[...wrap.querySelectorAll('thead th.stk')].map(th => th.getBoundingClientRect().right));
+    const over = edge - t.getBoundingClientRect().left;
+    if (edge && over > 0) wrap.scrollLeft -= over;
+  }
   const wired = new WeakSet();
   function wire(el) {
     if (wired.has(el)) return;
@@ -4922,6 +4968,7 @@
       const t = e.target;
       if (t && t.id === 'fctproc-wrap' && (t.scrollTop || t.scrollLeft || t.offsetParent)) st.wrapScroll = { top: t.scrollTop, left: t.scrollLeft, sig: viewSig() };
     }, true);
+    el.addEventListener('focusin', clearPinned);
     // What a combobox held, and whether anything was chosen in it (see
     // cbUntouched). On the way down, before the combobox's own handlers.
     el.addEventListener('focusin', onCbFocusIn, true);

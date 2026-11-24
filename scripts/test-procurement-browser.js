@@ -3244,6 +3244,135 @@ async function sweepTwoSave(browser) {
   await ctx.close();
 }
 
+// The third review's fixes to the sheet that only a real browser shows: a
+// control in the pinned columns no longer scrolls the sheet back to its left
+// edge, and on a site's sheet with the bar set to "PO link" the first tick
+// no longer grows the bulk bar.
+async function reviewThreeUI(browser) {
+  console.log('\n[review 3: ui] The pinned columns and the bulk bar');
+  const t = i => new Date(Date.UTC(2026, 9, 6) + i * 1000).toISOString();
+
+  // ── A control in the pinned Select and Status columns, the sheet scrolled right.
+  {
+    const W = makeWorld();
+    for (let i = 0; i < 8; i++) {
+      W.rows.push({ ...BLANK_ROW, id: 'K' + i, project_id: 'p1', created_at: t(i), updated_at: t(i), description: 'Item ' + i, quantity: 10 + i, vendor: 'LB Water' });
+    }
+    const { page, ctx, errors } = await openPage(browser, W, 'level2', { storage: { fct_proc_project_turf: 'p1' }, viewport: { width: 1280, height: 800 } });
+    await page.click('.tab-btn[data-tab="procurement"]');
+    await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(c => c === 8));
+    await sleep(300);
+    const sl = () => page.$eval('#fctproc-wrap', w => w.scrollLeft);
+    const toRight = async () => { await page.$eval('#fctproc-wrap', w => { w.scrollLeft = w.scrollWidth; }); await sleep(150); return sl(); };
+    const active = () => page.evaluate(() => {
+      const a = document.activeElement;
+      return a.dataset.pf ? `${a.dataset.pr}:${a.dataset.pf}` : a.dataset.sel ? `sel:${a.dataset.sel}` : a.dataset.act || a.tagName;
+    });
+
+    const right = await toRight();
+    const tag = await rowTr(page, 'K4').locator('.fctproc-scawrap').boundingBox();
+    await page.mouse.click(tag.x + tag.width / 2, tag.y + tag.height / 2, { delay: 60 });
+    await sleep(300);
+    const afterClick = await sl();
+    await page.keyboard.press('Escape');
+    ok(`the sheet scrolled right (${right} px), a click on a row's Sub Agmt in the pinned Status column leaves it there (not back at its left edge)`,
+      right > 300 && Math.abs(afterClick - right) < 2 && await active() === 'K4:sca_status', [right, afterClick, await active()]);
+
+    await clickAway(page);
+    const right2 = await toRight();
+    await page.evaluate(() => document.querySelector('#procurement-root [data-pr="K2"][data-pf="sca_status"]').focus({ preventScroll: true }));
+    await page.keyboard.press('ArrowDown');
+    await sleep(200);
+    ok('…↓ from one Sub Agmt to the next row\'s leaves the sheet where it is too', await active() === 'K3:sca_status' && Math.abs(await sl() - right2) < 2,
+      [right2, await sl(), await active()]);
+
+    // Tab from a row's last cell on, over the next row's pinned controls.
+    await clickAway(page);
+    const right3 = await toRight();
+    await page.evaluate(() => document.querySelector('#procurement-root [data-pr="K5"][data-pf="email"]').focus({ preventScroll: true }));
+    const seq = [];
+    for (let i = 0; i < 4; i++) {
+      await page.keyboard.press('Tab');
+      await sleep(120);
+      seq.push([await active(), await sl()]);
+    }
+    const pinnedStops = seq.filter(([a]) => /^sel:|files|sca_status/.test(a));
+    ok('…Tab from a row\'s last cell onto the next row\'s tick box, paperclip and Sub Agmt keeps the sheet where it is',
+      pinnedStops.length >= 2 && pinnedStops.every(([, x]) => Math.abs(x - right3) < 2), seq);
+    // On to the next box outside the pinned columns: scrolled clear of them.
+    let s = null;
+    for (let i = 0; i < 3 && !(s && s.free); i++) {
+      await page.keyboard.press('Tab');
+      await sleep(150);
+      s = await page.evaluate(() => {
+        const a = document.activeElement;
+        const r = a.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + 6, r.top + r.height / 2);
+        return { at: a.dataset.pf, free: !!a.dataset.pf && !a.closest('.stk'), seen: !!hit && (hit === a || a.contains(hit)) };
+      });
+    }
+    ok('…and Tab on to the first box past them scrolls it clear of the pinned columns (its left edge in sight)', s && s.free && s.seen, s);
+    ok('no page errors (the pinned columns)', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  }
+
+  // ── A site's sheet with the bulk bar set to "PO link": the first tick.
+  const SW = 'Storm Water Construction';
+  const bid = q => [
+    { id: 's1', cost_code: SW, sub_code: 'Drain Geo Fabric', unit: 'SF', quantity: String(q[0]) },
+    { id: 's2', cost_code: SW, sub_code: 'Perimeter Collector Drain 15"', unit: 'LF', quantity: String(q[1]) },
+  ];
+  PROJECTS.h1 = { id: 'h1', 'project-name': 'Hempfield Baseball', 'job-number': '26057', status: 'In Progress', site: 'Hempfield', bidItems: bid([8108, 900]) };
+  PROJECTS.h2 = { id: 'h2', 'project-name': 'Hempfield Softball', 'job-number': '26058', status: 'Awarded', site: 'Hempfield', bidItems: bid([5120, 610]) };
+  try {
+    for (const vp of [{ width: 1474, height: 900 }, { width: 1280, height: 800 }, { width: 1024, height: 768 }]) {
+      const W = makeWorld();
+      W.pos.push({ id: 'poh1', po_number: 'PO-0031', title: 'Fabric', supplier: 'Lehigh Valley Water Supply Company', status: 'pending', date_created: plusDays(-3),
+        project_id: 'h1', cost_code: SW, sub_code: 'Perimeter Collector Drain 15"', notes: '', lines: [] });
+      let n = 0;
+      for (const pid of ['h1', 'h2']) {
+        for (let i = 0; i < 6; i++) {
+          n++;
+          W.rows.push({ ...BLANK_ROW, id: `${pid}m${i}`, project_id: pid, cost_code: SW, description: 'Fitting ' + i, quantity: i + 1, unit: 'EA', vendor: 'LB Water',
+            created_at: t(n), updated_at: t(n) });
+        }
+      }
+      const { page, ctx, errors } = await openPage(browser, W, 'admin', { viewport: vp, storage: { fct_proc_group_turf: 'cost' } });
+      await page.click('.tab-btn[data-tab="procurement"]');
+      await page.waitForSelector('#fctproc-proj');
+      await cbPick(page, page.locator('#fctproc-proj'), 'hempfield', 'Hempfield — all 2 jobs');
+      await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(c => c === 12));
+      await sleep(400);
+      // The PM used the bar's PO link once, then cleared the selection.
+      const tickBox = id => page.locator(`#procurement-root input[data-sel="${id}"]`);
+      await tickBox('h1m0').check();
+      await sleep(150);
+      await page.selectOption('#fctproc-bulk-field', 'po');
+      await sleep(150);
+      await page.locator('#procurement-root [data-act="bulk-clear"]').click();
+      await sleep(250);
+      const bar = () => page.$eval('#fctproc-bulk', b => Math.round(b.getBoundingClientRect().height));
+      const h0 = await bar(), b1 = await tickBox('h1m1').boundingBox();
+      const b0 = await tickBox('h1m0').boundingBox();
+      await page.mouse.click(b0.x + b0.width / 2, b0.y + b0.height / 2, { delay: 60 });
+      await sleep(250);
+      const h1 = await bar(), b1after = await tickBox('h1m1').boundingBox();
+      const offered = await page.$$eval('#fctproc-bulk-val option', os => os.map(o => o.textContent));
+      ok(`${vp.width}×${vp.height}, a site's sheet, the bar set to PO link: the first tick does not grow the bulk bar (the job's long PO now offered)`,
+        h1 === h0 && Math.abs(b1after.y - b1.y) < 1 && offered.some(o => /PO-0031/.test(o)), { bar: [h0, h1], y: [Math.round(b1.y), Math.round(b1after.y)], offered });
+      await page.mouse.click(b1.x + b1.width / 2, b1.y + b1.height / 2, { delay: 60 });
+      await sleep(250);
+      const sel = await page.evaluate(() => [...FCTProcurement._test.state().selected].sort());
+      ok('…so the next click, where the next row\'s box was, ticks that row', eq(sel, ['h1m0', 'h1m1']), sel);
+      ok(`no page errors (${vp.width}×${vp.height}, the PO link bar)`, errors.length === 0, errors.join(' | '));
+      await ctx.close();
+    }
+  } finally {
+    delete PROJECTS.h1;
+    delete PROJECTS.h2;
+  }
+}
+
 (async () => {
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
@@ -3269,6 +3398,7 @@ async function sweepTwoSave(browser) {
     await sweepTwoSave(browser);
     await sweepTwoRender(browser);
     await sweepTwoPO(browser);
+    await reviewThreeUI(browser);
   } finally {
     await browser.close();
     server.close();
