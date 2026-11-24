@@ -4725,6 +4725,8 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       rx[0] && eq(rx[0].body.expect, { bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' }), rx.map(p => p.body));
     assert('…so a colleague\'s Sub Code pick made while it ran is kept, with nothing said', ex.db.rows[0].bid_item_id === 'n6'
       && rx.length === 1 && !ex.errors.length && !ex.$('.fctproc-modal') && !ex.warns.some(w => /re-link failed/.test(w)), [ex.db.rows[0].bid_item_id, ex.errors, ex.warns]);
+    assert('…and the row is drawn with the colleague\'s pick, marked as theirs (left as it was, the next edit of it would expect theirs unseen)',
+      /Elbows/.test(ex.$('tr[data-row="RX"]').textContent) && !!ex.$('tr[data-row="RX"] .fctproc-chg'), ex.$('tr[data-row="RX"]').textContent.replace(/\s+/g, ' '));
   }
 
   console.log('\n[bug sweep: the review of its fixes]');
@@ -5090,6 +5092,59 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     await sleep(10);
     assert('a row\'s tick box keeps the focus when a refresh redraws the row', e.w.document.activeElement === e.$('[data-sel="t1"]')
       && e.field('t1', 'vendor').value === 'Beta Corp');
+  }
+
+  console.log('\n[bug sweep: the final review]');
+  {
+    const dana = (e, id, f, by = 'Dana Reyes') => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = by; r.updated_at = new Date().toISOString(); };
+    const raceInto = async (e, box) => {
+      let rel;
+      e.hold = new Promise(r => { rel = r; });
+      const poll = e.P.refresh();
+      await tick();
+      box.focus();
+      rel();
+      await poll;
+      await sleep(10);
+    };
+
+    // The Sub Agmt choice kept stale, then left: its visible tag follows.
+    let e = makeEnv({ rows: [row({ id: 'a1', sca_status: 'Pending' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 'a1', { sca_status: 'Executed' });
+    const sel = e.field('a1', 'sca_status');
+    await raceInto(e, sel);
+    const tag = () => e.$('tr[data-row="a1"] .fctproc-scatag');
+    assert('(the Sub Agmt choice kept as it was while it had the focus: the tag still reads pending)', sel.dataset.stale === '1' && /pending/i.test(tag().textContent));
+    e.field('a1', 'quote_number').focus();
+    await sleep(10);
+    assert('left for another cell: the tag the PM reads is drawn afresh with the colleague\'s Executed, not only the hidden choice list',
+      !/pending/i.test(tag().textContent) && e.field('a1', 'sca_status').value === 'Executed', tag().textContent);
+    await e.P.refresh();
+    e.field('a1', 'sca_status').focus();
+    e.field('a1', 'sca_status').value = 'Needed';
+    e.fire(e.field('a1', 'sca_status'), 'change');
+    await sleep(700);
+    assert('…so a pick made then is made in sight of it', e.db.rows[0].sca_status === 'Needed' && eq(e.patches().pop().body.expect, { sca_status: 'Executed' }));
+
+    // The refresh owed while the caret was in a cell, and a press that leaves it.
+    e = makeEnv({ rows: [row({ id: 'm1' }), row({ id: 'm2' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const gets = () => e.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement').length;
+    const qb = e.field('m1', 'quote_number');
+    qb.focus();
+    await e.P.refresh();
+    const g0 = gets();
+    const add = e.$('[data-act="add"]');
+    add.dispatchEvent(new e.w.MouseEvent('mousedown', { bubbles: true, button: 0 }));
+    qb.blur();
+    await sleep(30);
+    assert('a press that leaves the cell: the refresh owed waits for the button to come up (its answer could replace what is pressed)', gets() === g0);
+    e.w.document.dispatchEvent(new e.w.MouseEvent('mouseup', { bubbles: true, button: 0 }));
+    await sleep(30);
+    assert('…and is read once it is up', gets() === g0 + 1);
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);

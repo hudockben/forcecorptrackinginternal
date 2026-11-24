@@ -3031,10 +3031,16 @@
       else if (signature() !== before || newDay) {
         // The answer can land after the PM has started typing (the poll only
         // checks as it starts): then the rows are redrawn around the cell in
-        // use, never the table under it — see redrawAround.
-        if (cellInUse()) redrawAround();
-        else { renderTable(); updateCounts(); }
-        renderHead();
+        // use, never the table under it — see redrawAround. Landing while a
+        // mouse button is down, it is drawn once the button is up: drawn now,
+        // the button, chip or header under the pointer is replaced and the
+        // click never arrives (as rerender holds).
+        if (pressedAt && Date.now() - pressedAt < 5000) rerenderOwed = true;
+        else {
+          if (cellInUse()) redrawAround();
+          else { renderTable(); updateCounts(); }
+          renderHead();
+        }
       } else if (redrawDeferred) {
         // A redraw still owed from an answer that landed mid-edit.
         redrawWhenFree();
@@ -3182,6 +3188,8 @@
       window.FCTProcurement.rerender();
     }, 0);
     if (redrawDeferred) setTimeout(redrawWhenFree, 0);
+    // A refresh owed while the caret was in a cell, held for this press.
+    if (pollOwed) setTimeout(payOwedPoll, 0);
     // Counts that came in while the button was down (paintDocCounts).
     if (docCountsOwed) setTimeout(() => { if (docCountsOwed && !pressedAt) paintDocCounts(); }, 0);
   }
@@ -4251,7 +4259,7 @@
     const pressed = pressedAt && pressedEl && Date.now() - pressedAt < 5000 && tr.contains(pressedEl) ? pressedEl : null;
     if (pressed) pressKept.add(rowId);
     const busy = td => (typing && td.contains(active)) || (hold && td.contains(hold)) || (pressed && td.contains(pressed)) || td.querySelector('[data-pcommit]');
-    let host = fresh;
+    let host = fresh, keptStale = false;
     if (![...tr.children].some(busy)) tr.replaceWith(fresh);
     else {
       host = tr;
@@ -4276,11 +4284,13 @@
         // once it is left (freshenBox).
         td.querySelectorAll('[data-pr][data-pf]').forEach(box => {
           const twin = next[i].querySelector(`[data-pr="${cssEsc(box.dataset.pr)}"][data-pf="${cssEsc(box.dataset.pf)}"]`);
-          if (twin && drawnValue(twin) !== drawnValue(box)) box.dataset.stale = '1';
+          if (twin && drawnValue(twin) !== drawnValue(box)) { box.dataset.stale = '1'; keptStale = true; }
         });
       });
     }
-    drawnHtml.set(host, html);
+    // Parts of it still drawn from the old copy: not recorded as drawn from
+    // this one, so a later refresh (onlyIfChanged) draws it again.
+    if (keptStale) drawnHtml.delete(host); else drawnHtml.set(host, html);
     if (btn && !host.contains(document.activeElement)) {
       const again = host.querySelector(`button[data-act="${cssEsc(btn)}"]`);
       if (again) { try { again.focus({ preventScroll: true }); } catch { again.focus(); } }
@@ -5029,7 +5039,15 @@
     const tmp = document.createElement('tbody');
     tmp.innerHTML = rowHtml(row, makeCtx(), canEdit(), colsFor(canEdit()));
     const twin = tmp.querySelector(`[data-pr="${cssEsc(rowId)}"][data-pf="${cssEsc(f)}"]`);
-    if (twin) el.replaceWith(twin); else delete el.dataset.stale;
+    // The part the box is drawn in, when nothing else in it is in use: what
+    // the PM reads may be drawn beside the box, not in it — the Sub Agmt tag
+    // and its tooltip lie over a select that cannot be seen.
+    const near = x => x && (x.closest('.fctproc-scawrap') || x.closest('.fctproc-part'));
+    const part = near(el), freshPart = near(twin);
+    const busy = part && (part.contains(document.activeElement) || (pressedEl && part.contains(pressedEl)) || part.querySelector('[data-pcommit]'));
+    if (part && freshPart && !busy) part.replaceWith(freshPart);
+    else if (twin) el.replaceWith(twin);
+    else delete el.dataset.stale;
     (FOCUS_FIELDS[f] || [f]).forEach(k => { const key = rowId + '\u0000' + k; const s0 = seenAtFocus.get(key); if (s0 && s0.el === el) seenAtFocus.delete(key); });
   }
 
@@ -5042,7 +5060,11 @@
   }
   // Called once focus has settled after leaving a box: the refresh held for it.
   function payOwedPoll() {
-    if (pollOwed && !inCellBox()) setTimeout(() => { if (pollOwed && !inCellBox()) window.FCTProcurement.refresh(); }, 0);
+    // A press that left the cell is still down: read after its click
+    // (onDocMouseUp), or the answer's redraw could replace what is pressed.
+    const pressing = () => pressedAt && Date.now() - pressedAt < 5000;
+    if (!pollOwed || inCellBox() || pressing()) return;
+    setTimeout(() => { if (pollOwed && !inCellBox() && !pressing()) window.FCTProcurement.refresh(); }, 0);
   }
   function onKeyDown(e) {
     // A key in the box in use (Enter or Tab moving on from it counts too: it
@@ -6645,7 +6667,7 @@
    * the rows on screen are already the new versions by then.
    */
   async function applyRelinks(plan, rows, pid) {
-    const done = [], synced = new Set();
+    const done = [], synced = new Set(), theirs = [];
     let stale = false;
     for (const rl of plan) {
       relinkTried.add(tryKey(rl));
@@ -6678,13 +6700,21 @@
           break;
         }
         if (err.status === 409 && err.code === 'conflict') {
-          if (err.data && err.data.item && isOpenJob(pid)) adoptServerRow(err.data.item);
+          // Someone else changed the row meanwhile: theirs is taken in, marked
+          // and drawn — left undrawn, the box shows the old value and the
+          // PM's next edit of it would expect theirs and go over it unseen.
+          if (err.data && err.data.item && isOpenJob(pid)) {
+            const prev = server.get(rl.id) ? { ...server.get(rl.id) } : null;
+            adoptServerRow(err.data.item);
+            if (prev) noteOthersChanges([err.data.item], new Map([[rl.id, prev]]));
+            theirs.push(rl.id);
+          }
           continue;
         }
         console.warn('[procurement] re-link failed for', rl.id, err);
       }
     }
-    if (done.length && isOpenJob(pid) && isMounted()) {
+    if ((done.length || theirs.length) && isOpenJob(pid) && isMounted()) {
       if (cellInUse()) redrawAround(); else { renderTable(); updateCounts(); }
     }
     // Every one of these PATCHes carries the line's codes: its files may
