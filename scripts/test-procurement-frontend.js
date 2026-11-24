@@ -4728,6 +4728,161 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       && rx.length === 1 && !ex.errors.length && !ex.$('.fctproc-modal') && !ex.warns.some(w => /re-link failed/.test(w)), [ex.db.rows[0].bid_item_id, ex.errors, ex.warns]);
   }
 
+  console.log('\n[bug sweep: the review of its fixes]');
+  {
+    const dana = (e, id, f, by = 'Dana Reyes') => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = by; r.updated_at = new Date().toISOString(); };
+    const rowsOf = e => e.$$('tr.fctproc-row').map(t => t.dataset.row);
+    const later = async (e, ms, fn) => {
+      const realW = e.w.Date.now, real = Date.now, t = Date.now() + ms;
+      e.w.Date.now = () => t; Date.now = () => t;
+      try { return await fn(); } finally { e.w.Date.now = realW; Date.now = real; }
+    };
+
+    // The window switched away while the caret sits in a box, a refresh,
+    // and the PM back in it: the save still expects what the box showed.
+    let e = makeEnv({ rows: [row({ id: 'w1', quote_number: 'Q1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    let qb = e.field('w1', 'quote_number');
+    qb.focus();
+    qb.dispatchEvent(new e.w.FocusEvent('focusout', { bubbles: true }));     // the window loses the focus; the box keeps it
+    await sleep(450);
+    dana(e, 'w1', { quote_number: 'Q-COLLEAGUE' });
+    await later(e, 5000, () => e.P.refresh());
+    assert('(the refresh ran, and left the box in use as it was)', qb.isConnected && qb.value === 'Q1' && e.calls.filter(c => c.method === 'GET' && c.q.project_id === 'p1').length >= 2);
+    qb.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));      // the window comes back
+    qb.value = 'Q1-9'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(80);
+    assert('back from another window: the save expects what the box showed, so the colleague\'s change is asked about, not written over',
+      e.db.rows[0].quote_number === 'Q-COLLEAGUE' && !!e.$('.fctproc-modal') && eq(e.patches()[0].body.expect, { quote_number: 'Q1' }), e.patches().map(p => p.body));
+
+    // A row button pressed with the caret in a box of the same row.
+    e = makeEnv({ rows: [row({ id: 'b1', quote_number: 'Q1' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.field('b1', 'quote_number').focus();
+    const del = e.$('tr[data-row="b1"] [data-act="del"]');
+    del.focus();                                       // the press moves the focus to it
+    await sleep(10);
+    assert('the caret moved from a box to a row button of the same row: the button is not redrawn under the press (its click lands)',
+      del.isConnected && e.$('tr[data-row="b1"] [data-act="del"]') === del && e.w.document.activeElement === del);
+
+    // The PM's own save of another cell landed after the colleague's change.
+    e = makeEnv({ rows: [row({ id: 'o1', quote_number: 'Q-OLD', quantity: 5 })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 'o1', { quote_number: 'Q-DANA' });
+    const qn = e.field('o1', 'quantity');
+    qn.focus(); qn.value = '6'; e.fire(qn, 'input');
+    qb = e.field('o1', 'quote_number');
+    qb.focus();
+    await sleep(700);                                  // the quantity goes on the pause
+    assert('(the quantity went in, saved under the PM\'s name)', Number(e.db.rows[0].quantity) === 6 && e.db.rows[0].updated_by === 'Pat PM');
+    qb.value = 'Q-PM'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(80);
+    const dlg = e.$('.fctproc-modal');
+    assert('a colleague\'s change, the row last saved by the PM\'s own other save: "Changed by someone else", naming nobody — not "you, in another window"',
+      !!dlg && /Changed by someone else/.test(dlg.textContent) && !/another window/.test(dlg.textContent) && !/last saved by/.test(dlg.textContent),
+      dlg && dlg.textContent.replace(/\s+/g, ' '));
+
+    // A Vendor pick made while another save of the row was out, both refused.
+    e = makeEnv({ rows: [row({ id: 'p1r', vendor: 'Acme Supply', contact: 'Dana', email: 'dana@acme.test', quote_number: 'Q-1' })],
+      contacts: [{ id: 'c1', supplier_name: 'Acme Supply', name: 'Dana', email: 'dana@acme.test', phone: '' }] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    dana(e, 'p1r', { vendor: 'Beta Corp', quote_number: 'Q-D' });
+    let releaseQ;
+    e.patchHold = new Promise(r => { releaseQ = r; });
+    qb = e.field('p1r', 'quote_number');
+    qb.focus(); qb.value = 'Q-PM'; e.fire(qb, 'input'); qb.blur(); e.fire(qb, 'change');
+    await sleep(30);
+    e.pick(e.field('p1r', 'vendor'), 'LB Water');
+    await sleep(10);
+    releaseQ();
+    await sleep(700);
+    const seen = [];
+    for (let i = 0; i < 3 && e.$('.fctproc-modal'); i++) {
+      seen.push([...e.$$('.fctproc-conflict tbody tr')].map(tr => tr.children[0].textContent));
+      e.$('.fctproc-modal [data-conflict="theirs"]').click();
+      await sleep(700);
+    }
+    assert('a Vendor pick made while another save was out, both refused: its Contact / Email are still asked about with it, and "Keep saved" keeps theirs',
+      seen.some(l => eq(l, ['Vendor', 'Contact', 'Email'])) && e.db.rows[0].vendor === 'Beta Corp' && e.db.rows[0].contact === 'Dana'
+        && e.db.rows[0].email === 'dana@acme.test', [seen, e.db.rows[0].vendor, e.db.rows[0].contact]);
+
+    // Create PO: a colleague's link brought in by a refresh while a question is open.
+    e = makeEnv({ rows: [
+      row({ id: 'cq1', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', vendor: 'Acme Supply' }),
+      row({ id: 'cq2', source: 'bid', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', vendor: 'Acme Supply' }),
+    ] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    ['cq1', 'cq2'].forEach(id => { const b = e.$(`[data-sel="${id}"]`); b.checked = true; e.fire(b, 'change'); });
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(80);
+    assert('(two sub codes: asked how)', /span <b>2<\/b> sub codes/.test(e.$('.fctproc-modal [data-body]').innerHTML));
+    e.cfg.getPurchaseOrders().push({ id: 'poZ', po_number: 'PO-0400', project_id: 'p1', cost_code: 'General', sub_code: 'Labor', supplier: 'Acme Supply', date_created: TODAY });
+    dana(e, 'cq1', { po_id: 'poZ' });
+    await e.P.refresh();
+    e.$('.fctproc-modal [data-choice="0"]').click();
+    await sleep(150);
+    assert('a colleague\'s link that a refresh brought in while the question was open is not written over: the row stays on theirs, and the PM is told',
+      e.db.rows[0].po_id === 'poZ' && e.errors.some(m => /put on an order by someone else/.test(m)), [e.db.rows[0].po_id, e.errors]);
+
+    // Create PO right after the PM's own PO # change, still on its way.
+    e = makeEnv({ rows: [row({ id: 'cw', source: 'bid', bid_item_id: 'b3', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', vendor: 'LB Water', po_id: 'po3' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.pick(e.field('cw', 'po'), 'Auto', '__none__');
+    const bw = e.$('[data-sel="cw"]'); bw.checked = true; e.fire(bw, 'change');
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(150);
+    const made = e.created.filter(c => c[0] === 'po');
+    assert('Create PO straight after the PM\'s own PO # change: the change goes first, and the row is linked — not refused as someone else\'s',
+      made.length === 1 && /^npo/.test(String(e.db.rows[0].po_id)) && !e.errors.some(m => /someone else/.test(m)), [made.length, e.db.rows[0].po_id, e.errors]);
+
+    // + Add Row answered while the PM types elsewhere, then Enter to the next row.
+    e = makeEnv({ rows: [row({ id: 'e1', created_at: '2026-03-01T10:00:00Z' }), row({ id: 'e2', created_at: '2026-03-01T10:00:01Z' })] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    let releaseP;
+    e.postHold = new Promise(r => { releaseP = r; });
+    e.$('[data-act="add"]').click();
+    await sleep(20);
+    const [top, bottom] = rowsOf(e);
+    qb = e.field(top, 'quote_number');
+    qb.focus(); qb.value = 'Q-7'; e.fire(qb, 'input');
+    qb.dispatchEvent(new e.w.KeyboardEvent('keydown', { key: '7', bubbles: true }));
+    releaseP();
+    await sleep(80);
+    assert('(the new row waits while the PM types)', rowsOf(e).length === 2);
+    e.field(top, 'quote_number').dispatchEvent(new e.w.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await sleep(40);
+    assert('…moved on to the next row with Enter: the new row is drawn, and the caret is where Enter put it',
+      rowsOf(e).length === 3 && e.w.document.activeElement === e.field(bottom, 'quote_number'), [rowsOf(e), e.w.document.activeElement && e.w.document.activeElement.outerHTML.slice(0, 80)]);
+
+    // Two rows on one PO by their codes; the PM links one of them.
+    e = makeEnv({ rows: [
+      row({ id: 'sA', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', created_at: '2026-03-01T10:00:00Z' }),
+      row({ id: 'sB', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: 'Staples', created_at: '2026-03-01T10:00:01Z' }),
+    ] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    assert('(both read Ordered on PO-0001 by their codes)', ['sA', 'sB'].every(id => e.$(`tr[data-row="${id}"] .fctproc-pill`).textContent === 'Ordered'));
+    e.pick(e.field('sA', 'po'), 'PO-0001', 'po1');
+    await sleep(20);
+    assert('one of them linked to it: the other is redrawn at once as not on it', e.$('tr[data-row="sA"] .fctproc-pill').textContent === 'Ordered'
+      && e.$('tr[data-row="sB"] .fctproc-pill').textContent === 'Not Ordered', ['sA', 'sB'].map(id => e.$(`tr[data-row="${id}"] .fctproc-pill`).textContent));
+
+    // A link re-pointed to another job takes nothing from this job's rows.
+    const PM = { id: 'pm', po_number: 'PO-0500', project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Geofabric', supplier: 'Acme Supply', date_created: '2026-03-09' };
+    const r1 = row({ id: 'R1', project_id: 'p1', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' });
+    const r2 = row({ id: 'R2', project_id: 'p2', bid_item_id: 'x1', cost_code: 'Stormwater', sub_code: 'Geofabric', po_id: 'pm' });
+    assert('a row whose PO was re-pointed to another job does not take that order from the rows of the job it is on now',
+      T.effectivePO(r2, C({ purchaseOrders: [PM], rows: [r1, r2], projectId: null })).kind === 'moved'
+        && T.effectivePO(r1, C({ purchaseOrders: [PM], rows: [r1, r2], projectId: null })).kind === 'auto');
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => {

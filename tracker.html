@@ -4864,9 +4864,10 @@ function apiPut(key, value, opts = {}) {
   };
   if (opts.keepalive) init.keepalive = true;
   // Returned so a caller that has to know when a save has landed can wait on
-  // it (saveCrmCompanies does). It never rejects — failures are shown here.
+  // it (saveCrmCompanies does): true once it has, false when it failed. It
+  // never rejects — failures are shown here.
   return fetch(`${API_BASE}/data/${key}`, init).then(async r => {
-    if (r.ok) return;
+    if (r.ok) return true;
     console.warn(`[DB] PUT ${key} failed: HTTP ${r.status}`);
     // 409 = backend bulk-wipe protection refused the request. Surface
     // the detail message so the user knows which save was refused.
@@ -4874,12 +4875,14 @@ function apiPut(key, value, opts = {}) {
       let detail = 'A save was refused to prevent accidental data loss.';
       try { const j = await r.json(); if (j && j.detail) detail = j.detail; } catch {}
       _showSaveError(false, detail);
-      return;
+      return false;
     }
     _showSaveError(r.status === 401);
+    return false;
   }).catch(err => {
     console.warn(`[DB] PUT ${key} failed:`, err.message);
     _showSaveError(false);
+    return false;
   });
 }
 
@@ -7008,9 +7011,30 @@ function saveProject(id) {
   clearTimeout(_saveProjTimers[id]);
   _saveProjTimers[id] = setTimeout(() => {
     delete _saveProjTimers[id];
-    apiPut('fct_project_' + id, _projBlob(p));
+    _putProjectThenRenamedLines(id, p, {});
     saveProjectIndex();
   }, 600);
+}
+
+// Bid lines whose cost code a section rename changed, by job, waiting for the
+// whole-job save that carries the rename. Once that save has landed, each one
+// goes through the per-line save as well (patchBidItem), which copies the new
+// code onto the job's Procurement rows on the server — deleted ones too — and
+// moves their attached files; the whole-job save does neither. Sent after it,
+// not beside it: on a page closed straight after a rename, a big section's
+// many small keepalive saves went first and used up the browser's 64 KB
+// keepalive allowance, and the whole-job save — the measured quantity moved
+// to the new code with it — was refused. A page that closes before the
+// whole-job save has landed sends none of them; the sheet's own code sync
+// copies the new codes when the job is next opened there.
+const _bidRenamedLines = {};
+function _putProjectThenRenamedLines(id, p, opts) {
+  const lines = _bidRenamedLines[id] ? [..._bidRenamedLines[id]] : [];
+  delete _bidRenamedLines[id];
+  return apiPut('fct_project_' + id, _projBlob(p), opts).then(ok => {
+    if (ok) lines.forEach(bi => patchBidItem(id, bi));
+    return ok;
+  });
 }
 
 // Flush any pending debounced project saves immediately (used on page unload /
@@ -7037,7 +7061,7 @@ function _flushPendingProjectSaves() {
     clearTimeout(_saveProjTimers[id]);
     delete _saveProjTimers[id];
     const p = getProj(id);
-    if (p) apiPut('fct_project_' + id, _projBlob(p), { keepalive: true });
+    if (p) _putProjectThenRenamedLines(id, p, { keepalive: true });
   });
   _lastProjIndexTs = Date.now();
   apiPut('fct_projects_index', { ids: projectsList.map(p => p.id), _ts: _lastProjIndexTs }, { keepalive: true });
@@ -14926,14 +14950,17 @@ function updateBidGroupCode(projId, oldCode, newCode) {
     if (!Object.prototype.hasOwnProperty.call(ms, newCode)) ms[newCode] = ms[oldCode];
     delete ms[oldCode];
   }
+  // Each renamed line also goes through the per-line save once the whole-job
+  // save has landed (_putProjectThenRenamedLines): that copies the new cost
+  // code onto the job's Procurement rows on the server and moves their files.
+  // Without it the rows followed only once someone opened the job's
+  // Procurement sheet, and a re-import before then left them "not on bid"
+  // for good and offered every line again as new.
+  if (oldCode !== newCode && renamed.length) {
+    const waiting = _bidRenamedLines[projId] || (_bidRenamedLines[projId] = new Set());
+    renamed.forEach(id => waiting.add(id));
+  }
   saveProject(projId);
-  // Each renamed line also goes through the per-line save, which copies its
-  // new cost code onto the job's Procurement rows on the server — deleted
-  // ones too — and moves their attached files to the new code's folder.
-  // The whole-job save above does neither: the rows followed only once
-  // someone opened the job's Procurement sheet, and a re-import before then
-  // left them "not on bid" for good and offered every line again as new.
-  if (oldCode !== newCode) renamed.forEach(id => patchBidItem(projId, id));
   renderBidTable(projId);
 }
 

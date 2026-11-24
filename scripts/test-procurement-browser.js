@@ -2717,6 +2717,10 @@ async function sweepInputs(browser) {
     W.rows.push({ ...BLANK_ROW, id, project_id: 'p1', created_at: t(i), updated_at: t(i), description: 'Item ' + i, quantity: 400 + i,
       date_needed: plusDays(30), lead_time_days: 10, sca_status: 'Pending' });
   }
+  for (let i = 0; i < 40; i++) {
+    const id = 'F' + String(i).padStart(2, '0');
+    W.rows.push({ ...BLANK_ROW, id, project_id: 'p2', created_at: t(i), updated_at: t(i), description: 'Franklin ' + i, quantity: 10 + i });
+  }
   const storage = { fct_proc_project_turf: 'p1', fct_proc_group_turf: 'none' };
   const { page, ctx, errors } = await openPage(browser, W, 'level2', { viewport: { width: 1474, height: 700 }, storage });
   await page.click('.tab-btn[data-tab="procurement"]');
@@ -2766,6 +2770,33 @@ async function sweepInputs(browser) {
   await sleep(400);
   const back = await page.$eval('#fctproc-wrap', w => w.scrollTop);
   ok('the sheet comes back where it was left, not at the top', Math.abs(back - 900) < 5, back);
+
+  // A row's ✕ pressed the way a person does (the button held ~100 ms) with
+  // the caret in a box of the same row: the click lands.
+  const delBtn = rowTr(page, r0).locator('[data-act="del"]');
+  await delBtn.scrollIntoViewIfNeeded();
+  await page.evaluate(id => document.querySelector(`#procurement-root [data-pr="${id}"][data-pf="quote_number"]`).focus({ preventScroll: true }), r0);
+  const x = await delBtn.boundingBox();
+  await page.mouse.move(x.x + x.width / 2, x.y + x.height / 2);
+  await page.mouse.down();
+  await sleep(100);
+  await page.mouse.up();
+  await sleep(150);
+  ok('a row\'s ✕ pressed for 100 ms with the caret in a box of that row: the click lands ("Delete?")',
+    /Delete\?/.test(await rowTr(page, r0).locator('.c-actions').textContent()));
+  await rowTr(page, r0).locator('[data-act="del-no"]').click();
+
+  // Another job opened, its tab left and come back to: that job's sheet is
+  // not put at the first one's place.
+  await page.evaluate(() => FCTProcurement._test.selectProject('p2'));
+  await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 40));
+  await sleep(200);
+  await page.click('.tab-btn[data-tab="po"]');
+  await sleep(300);
+  await page.click('.tab-btn[data-tab="procurement"]');
+  await sleep(400);
+  ok('another job\'s sheet, left and come back to, starts at its own place (the top), not the first job\'s',
+    await page.$eval('#fctproc-wrap', w => w.scrollTop) === 0, await page.$eval('#fctproc-wrap', w => w.scrollTop));
   ok('no page errors', errors.length === 0, errors.join(' | '));
   await ctx.close();
 }

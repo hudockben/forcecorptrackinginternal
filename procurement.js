@@ -259,7 +259,15 @@
       m = { lineById: new Map(), poById: new Map(), lineByJob: null, costKeysByJob: new Map(), linkedPO: new Set() };
       (ctx.bidLines || []).forEach(l => { if (l && l.id != null) m.lineById.set(String(l.id), l); });
       (ctx.purchaseOrders || []).forEach(p => { if (p && p.id != null) m.poById.set(String(p.id), p); });
-      (ctx.rows || []).forEach(r => { if (r && r.po_id && !r.deleted_at) m.linkedPO.add(String(r.po_id)); });
+      // A link that holds: its PO is listed and on the row's own job. One
+      // re-pointed to another job ("moved") or gone does not take the order
+      // from the rows of the job it is on now.
+      (ctx.rows || []).forEach(r => {
+        if (!r || !r.po_id || r.deleted_at) return;
+        const po = m.poById.get(String(r.po_id));
+        const pid = r.project_id || ctx.projectId;
+        if (po && (!pid || String(po.project_id || '') === String(pid))) m.linkedPO.add(String(r.po_id));
+      });
       if (ctx.bidLinesByProject) {
         m.lineByJob = new Map();
         ctx.bidLinesByProject.forEach((lines, pid) => {
@@ -1133,6 +1141,17 @@
   // of the same cell finding that value there is no conflict with anyone —
   // it is this page's own save, landed (onConflict).
   const unanswered = new Map();    // row id -> { field: value }
+  // The row versions this page's own saves produced, by row id (the last
+  // few): a conflict whose row was last saved by this page names nobody —
+  // the colleague's change came before it, and the row's last saver is not
+  // who changed the cell (see showNextConflict).
+  const ownVersions = new Map();
+  function noteOwnVersion(item) {
+    if (!item || item.id == null || item.version == null) return;
+    const id = String(item.id), list = ownVersions.get(id) || [];
+    list.push(Number(item.version));
+    ownVersions.set(id, list.slice(-8));
+  }
 
   // ── Host helpers ────────────────────────────────────────────────────
   function canEdit() {
@@ -2308,13 +2327,16 @@
     const inFlight = fly.get(rowId);
     return inFlight && field in inFlight ? inFlight[field] : (server.get(rowId) || {})[field];
   }
-  // A cell's value when it took focus, if it took focus lately; else `fallback`.
+  // A cell's value when it took focus, if it took focus lately — or if its
+  // box has had the focus ever since, however long: a box in use is never
+  // redrawn under the PM (refreshRow), so what it shows is still that value,
+  // whatever a refresh brought in meanwhile. Else `fallback`.
   const SEEN_MS = 10 * 60 * 1000;
   function takeSeen(rowId, field, fallback) {
     const key = rowId + '\u0000' + field;
     const s = seenAtFocus.get(key);
     seenAtFocus.delete(key);
-    return s && Date.now() - s.at < SEEN_MS ? s.v : fallback;
+    return s && (Date.now() - s.at < SEEN_MS || (s.el && s.el === document.activeElement)) ? s.v : fallback;
   }
   // The fields a box saves: most are their own; the Sub Code picker saves the
   // line and its codes, the PO picker the PO and its auto flag.
@@ -2324,10 +2346,18 @@
     const rowId = t && t.dataset && t.dataset.pr, pf = t && t.dataset && t.dataset.pf;
     if (!rowId || !pf || !rowById(rowId)) return;
     const pendNow = pend.get(rowId) || {};
+    boxFocusAt = Date.now();
     (FOCUS_FIELDS[pf] || [pf]).forEach(f => {
       // A cell already being changed keeps the value recorded when that began.
       if (f in pendNow) return;
-      seenAtFocus.set(rowId + '\u0000' + f, { v: baseOf(rowId, f), at: Date.now() });
+      const key = rowId + '\u0000' + f;
+      // The same box taking the focus back — the window was switched away
+      // and back, the box never left: it shows what it showed then (a refresh
+      // meanwhile kept it as it was), so the value recorded then stands, not
+      // the colleague's value that refresh brought in.
+      const was = seenAtFocus.get(key);
+      if (was && was.el === t && t.isConnected) return;
+      seenAtFocus.set(key, { v: baseOf(rowId, f), at: Date.now(), el: t });
     });
   }
   function onSeenFocusOut(e) {
@@ -2337,7 +2367,11 @@
     // Kept a moment past the blur: a picker commits 120 ms after it is left.
     const keys = (FOCUS_FIELDS[pf] || [pf]).map(f => rowId + '\u0000' + f);
     const was = keys.map(k => seenAtFocus.get(k));
-    setTimeout(() => keys.forEach((k, i) => { if (seenAtFocus.get(k) === was[i]) seenAtFocus.delete(k); }), 400);
+    setTimeout(() => {
+      // Still the box in use: the window lost the focus, not the box.
+      if (document.activeElement === t && t.isConnected) return;
+      keys.forEach((k, i) => { if (seenAtFocus.get(k) === was[i]) seenAtFocus.delete(k); });
+    }, 400);
   }
   function setFields(rowId, fields, opts) {
     let any = false;
@@ -2381,10 +2415,12 @@
       const picks = (pickFill.get(rowId) || []).filter(g => !Object.keys(g).every(k => k in p && sameVal(p[k], g[k])));
       if (picks.length) pickFill.set(rowId, picks); else pickFill.delete(rowId);
       if (droppedSince()) { settleSave(); return; }
+      noteOwnVersion(data.item);
       const prev = server.get(rowId) ? { ...server.get(rowId) } : null;
       if (data.item) adoptServerRow(data.item);
       if (prev && data.item) noteChangesInAnswer(rowId, p, prev, data.item, data.was);
       refreshRow(rowId);
+      if (touchesPO(p)) repaintRows();
       updateCounts();
       if (touchesCode(p)) recountAfterRecode((data.item && data.item.project_id) || (rowById(rowId) || {}).project_id || st.projectId, [rowId]);
     } catch (err) {
@@ -2469,11 +2505,11 @@
     }
     lineFill.delete(rowId);
     // So are the cells any other pick set with a changed one (notePick).
-    (pickFill.get(rowId) || []).forEach(g => {
+    const picks = pickFill.get(rowId) || [];
+    picks.forEach(g => {
       const keys = Object.keys(g).filter(k => k in p && sameVal(p[k], g[k]));
       if (keys.some(k => fields.includes(k))) fields = [...new Set(fields.concat(keys))];
     });
-    pickFill.delete(rowId);
     FIELD_GROUPS.forEach(g => { if (g.some(k => fields.includes(k))) fields = [...new Set(fields.concat(g.filter(k => k in p)))]; });
     const item = normRow(data.item) || {};
     const newer = pend.get(rowId) || {};
@@ -2500,6 +2536,11 @@
     Object.keys(p).forEach(k => { if (!fields.includes(k) && !same.includes(k) && !own.includes(k)) again[k] = p[k]; });
     const next = { ...again, ...resend, ...newer };
     if (Object.keys(next).length) pend.set(rowId, next); else pend.delete(rowId);
+    // The picks whose cells still go out (a pick made while this save was
+    // out, a group re-sent with `again`) are kept: a conflict on that save
+    // asks about all of their cells too. The rest were this one's.
+    const keepPicks = picks.filter(g => Object.keys(g).some(k => k in next));
+    if (keepPicks.length) pickFill.set(rowId, keepPicks); else pickFill.delete(rowId);
     rebase(Object.keys(again));
     if (own.length) {
       const nb = bases.get(rowId) || {};
@@ -2515,6 +2556,7 @@
       ? WATCH_FIELDS.filter(k => !fields.includes(k) && !(k in p) && !(k in busy) && !sameVal(prev[k], item[k])) : [];
     if (fields.length || others.length) markRecent(rowId, fields.concat(others), data.changed_by, data.changed_at);
     refreshRow(rowId);
+    if (touchesPO(p)) repaintRows();
     updateCounts();
     if (!fields.length) return;
     const c = { rowId, fields, mine, theirs: item, by: str(data.changed_by), at: data.changed_at || null, redraw: null };
@@ -2581,10 +2623,15 @@
     const name = materialOf(row, siteMode() && row.project_id ? makeCtx(row.project_id) : makeCtx()) || 'This row';
     // Who saved the row last: who changed these cells, unless someone else
     // saved another cell of it after them — so it is not put as more.
-    // Saved under this person's own name: from another window or device of
-    // theirs — not "someone else", which would have them doubt their own value.
-    const self = !!c.by && isMe(c.by);
-    const last = c.by ? ` (last saved by <b>${self ? 'you' : esc(c.by)}</b>${clock(c.at) ? ` at ${esc(clock(c.at))}` : ''}${self ? ', in another window' : ''})` : '';
+    // Who saved the row last is who changed these cells — unless that was
+    // this page's own save of another cell of the row, landed after the
+    // colleague's change: then it names nobody (the server answers with the
+    // row's last saver, not the cell's). Saved under the person's own name
+    // by another window of theirs: "you, in another window", not "someone
+    // else", which would have them doubt their own value.
+    const ownLast = !!c.by && isMe(c.by) && (ownVersions.get(c.rowId) || []).includes(Number(c.theirs && c.theirs.version));
+    const self = !!c.by && isMe(c.by) && !ownLast;
+    const last = c.by && !ownLast ? ` (last saved by <b>${self ? 'you' : esc(c.by)}</b>${clock(c.at) ? ` at ${esc(clock(c.at))}` : ''}${self ? ', in another window' : ''})` : '';
     const linesHtml = () => conflictLines(c).map(([what, t, y]) =>
       `<tr><td>${esc(what)}</td><td class="theirs">${esc(t)}</td><td class="mine">${esc(y)}</td></tr>`).join('');
     const body = `<p style="margin:0 0 0.7rem;line-height:1.5">
@@ -2956,7 +3003,7 @@
         if (cellInUse()) redrawAround();
         else { renderTable(); updateCounts(); }
         renderHead();
-      } else if (redrawDeferred && !cellInUse()) {
+      } else if (redrawDeferred) {
         // A redraw still owed from an answer that landed mid-edit.
         redrawWhenFree();
       }
@@ -3161,10 +3208,26 @@
     // A combobox still committing: shortly. Another cell taken: the next
     // time one is left.
     if (wrap && wrap.querySelector('[data-pcommit]')) { setTimeout(redrawWhenFree, 250); return; }
-    if (cellInUse()) return;
+    if (cellInUse() && !idleInSheet()) return;
     redrawDeferred = false;
     renderTable();
     updateCounts();
+  }
+  // When a box in the sheet last took the focus (onSeenFocusIn).
+  let boxFocusAt = 0;
+  /**
+   * Whether what has the focus in the table can be drawn again under it: a
+   * box nothing has been typed in since it took the focus (Enter or Tab
+   * moved the caret there; the PM is reading), or a row's tick box.
+   * renderTable puts the focus back on its new copy. Not a picker, whose
+   * menu a redraw would close (restoreFocus leaves those unfocused).
+   */
+  function idleInSheet() {
+    const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
+    const a = document.activeElement;
+    if (!wrap || !a || !wrap.contains(a)) return false;
+    if (a.type === 'checkbox') return !!(a.dataset.sel || a.dataset.grpsel != null || a.id === 'fctproc-selall');
+    return /^(INPUT|SELECT)$/.test(a.tagName) && !isCb(a) && !!a.dataset.pr && lastKeyAt <= boxFocusAt && !a.dataset.badDate;
   }
 
   function selectProject(id) {
@@ -3772,7 +3835,9 @@
       act: a.tagName === 'BUTTON' && a.dataset.act && a.dataset.row ? [a.dataset.act, a.dataset.row] : null,
       // A section's folder chip, reached with Tab: the redraw after its
       // folder changed (a file attached from it) puts the focus back on it.
-      grpdocs: a.tagName === 'BUTTON' && a.dataset.grpdocs != null ? [a.dataset.grpdocs, a.dataset.pid || ''] : null };
+      grpdocs: a.tagName === 'BUTTON' && a.dataset.grpdocs != null ? [a.dataset.grpdocs, a.dataset.pid || ''] : null,
+      // A row's tick box, or a section's (ticked on the way to a bulk edit).
+      sel: a.dataset.sel || null, grpsel: a.dataset.grpsel != null ? a.dataset.grpsel : null };
     try { f.start = a.selectionStart; f.end = a.selectionEnd; } catch { /* not a text box */ }
     return f;
   }
@@ -3782,6 +3847,8 @@
     if (f.pr && f.pf) el = scope.querySelector(`[data-pr="${cssEsc(f.pr)}"][data-pf="${cssEsc(f.pf)}"]`);
     else if (f.act) el = scope.querySelector(`button[data-act="${cssEsc(f.act[0])}"][data-row="${cssEsc(f.act[1])}"]`);
     else if (f.grpdocs != null) el = scope.querySelector(`button[data-grpdocs="${cssEsc(f.grpdocs[0])}"]${f.grpdocs[1] ? `[data-pid="${cssEsc(f.grpdocs[1])}"]` : ''}`);
+    else if (f.sel) el = scope.querySelector(`input[data-sel="${cssEsc(f.sel)}"]`);
+    else if (f.grpsel != null) el = scope.querySelector(`input[data-grpsel="${cssEsc(f.grpsel)}"]`);
     else if (f.id) el = scope.querySelector('#' + cssEsc(f.id));
     // Focusing a combobox opens its menu and selects its text — not what a
     // background redraw should do to someone. Those are left unfocused.
@@ -4341,7 +4408,7 @@
     // (hidden, the box forgets it).
     el.addEventListener('scroll', e => {
       const t = e.target;
-      if (t && t.id === 'fctproc-wrap' && (t.scrollTop || t.scrollLeft || t.offsetParent)) st.wrapScroll = { top: t.scrollTop, left: t.scrollLeft };
+      if (t && t.id === 'fctproc-wrap' && (t.scrollTop || t.scrollLeft || t.offsetParent)) st.wrapScroll = { top: t.scrollTop, left: t.scrollLeft, sig: viewSig() };
     }, true);
     // What a combobox held, and whether anything was chosen in it (see
     // cbUntouched). On the way down, before the combobox's own handlers.
@@ -4729,9 +4796,19 @@
       if (v === '__auto__' || (!v && !typed)) next = { po_id: null, po_auto: true };
       else if (v === '__none__') next = { po_id: null, po_auto: false };
       else if (v && makeCtx().purchaseOrders.some(p => String(p.id) === v)) next = { po_id: v, po_auto: true };
-      if (next) { setFields(rowId, next); updateCounts(); }
+      if (next) { setFields(rowId, next); updateCounts(); repaintRows(); }
     }
   }
+  // Every row drawn again where its drawing changed (and a cell in use kept):
+  // an order linked to one row is no longer matched to the rows beside it
+  // (effectivePO), so one row's PO # changes their status too.
+  function repaintRows() {
+    const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
+    if (!wrap) return;
+    const ctx = makeCtx();
+    [...wrap.querySelectorAll('tr.fctproc-row')].forEach(tr => refreshRow(tr.dataset.row, null, ctx, true));
+  }
+  const touchesPO = f => Boolean(f) && (Object.prototype.hasOwnProperty.call(f, 'po_id') || Object.prototype.hasOwnProperty.call(f, 'po_auto'));
 
   async function addVendor(rowId, name, input) {
     if (!name) return;
@@ -4824,8 +4901,12 @@
         // PM would edit that stale value, and the save would expect the new
         // one and go over a colleague's change without a word. The box now
         // in use is kept as it is; so is a row button's focus.
+        // A row button the press moved the focus to (✕, + Material, the
+        // paperclip) keeps its cell: replaced between the mouse going down
+        // and coming up, its click would never arrive.
         const kept = (/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox') || (a.tagName === 'BUTTON' && a.dataset.act);
-        if (kept && !el.classList.contains('cb-input') && el.isConnected) refreshRow(rowId);
+        if (kept && !el.classList.contains('cb-input') && el.isConnected) refreshRow(rowId, a.tagName === 'BUTTON' ? a : null);
+        if (redrawDeferred) setTimeout(redrawWhenFree, 0);
         return;
       }
       flushRow(rowId);
@@ -5781,6 +5862,11 @@
     // So that is asked, never done quietly. A row several POs match is on
     // one of them; the PM picks which in the PO # column.
     const eps = new Map(rows.map(r => [r.id, effectivePO(r, ctx)]));
+    // Each row's PO # as decided on now — before any question below is
+    // answered or the order is raised: a colleague's link that a refresh
+    // brings in meanwhile is theirs, and the link to the new PO must not
+    // land over it (linkToPO).
+    const decided = new Map(rows.map(r => [r.id, { po_id: r.po_id == null || r.po_id === '' ? null : String(r.po_id), po_auto: r.po_auto !== false }]));
     const onPO = rows.filter(r => ['linked', 'auto'].includes(eps.get(r.id).kind));
     const multi = rows.filter(r => eps.get(r.id).kind === 'multiple');
     if (onPO.length || multi.length) {
@@ -5878,7 +5964,7 @@
         break;
       }
       try {
-        const refused = await linkToPO(g.rows, po);
+        const refused = await linkToPO(g.rows, po, decided);
         made.push(po);
         if (refused.length) leftOff.push({ po, n: refused.length });
       } catch (err) {
@@ -5906,11 +5992,19 @@
    * order in the meantime is left on theirs, not moved off it unseen; the
    * ids of those come back.
    */
-  async function linkToPO(rows, po) {
+  async function linkToPO(rows, po, decided) {
+    // The PM's own PO # changes still on their way to these rows go first,
+    // so they are not taken for someone else's.
+    await flushAll();
     const groups = new Map();
     rows.forEach(r => {
       const s0 = server.get(r.id) || r;
-      const expect = { po_id: s0.po_id == null || s0.po_id === '' ? null : String(s0.po_id), po_auto: s0.po_auto !== false };
+      const saved = { po_id: s0.po_id == null || s0.po_id === '' ? null : String(s0.po_id), po_auto: s0.po_auto !== false };
+      // What the decision saw — the row on screen, with the PM's own change
+      // in it. When that change could not be saved (still waiting to go),
+      // the cell as saved is what the link goes over, knowingly.
+      const own = { ...(fly.get(r.id) || {}), ...(pend.get(r.id) || {}) };
+      const expect = touchesPO(own) || !decided || !decided.get(r.id) ? saved : decided.get(r.id);
       const key = JSON.stringify(expect);
       if (!groups.has(key)) groups.set(key, { expect, ids: [] });
       groups.get(key).ids.push(r.id);
@@ -5920,6 +6014,7 @@
       const d = await bulkPatch(ids, { po_id: String(po.id), po_auto: true }, expect);
       refused.push(...(d.conflicts || []).map(x => String(x.id)));
     }
+    repaintRows();
     return refused;
   }
 
@@ -6601,8 +6696,9 @@
       if (wrap) {
         window.FCTProcurement.rerender();
         const now = el.querySelector('#fctproc-wrap');
-        // Hidden with its tab, the box forgot where it was scrolled to.
-        if (now && st.wrapScroll && !now.scrollTop && !now.scrollLeft) {
+        // Hidden with its tab, the box forgot where it was scrolled to —
+        // this sheet's place, not another job's opened since.
+        if (now && st.wrapScroll && st.wrapScroll.sig === viewSig() && !now.scrollTop && !now.scrollLeft) {
           now.scrollTop = st.wrapScroll.top;
           now.scrollLeft = st.wrapScroll.left;
         }
