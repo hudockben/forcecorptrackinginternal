@@ -999,7 +999,7 @@ async function asAdmin(browser, W) {
   ok('the rows show the new PO number', await cell(page, drain, 'po').inputValue() === 'PO-0008' && await cell(page, mat, 'po').inputValue() === 'PO-0008');
   ok('…and are Ordered now', (await rowTr(page, drain).locator('td.c-status .fctproc-pill').textContent()).trim() === 'Ordered');
   ok('…which the PO tab has too', await page.evaluate(() => purchaseOrders.some(p => p.po_number === 'PO-0008')));
-  ok('the selection clears', !(await page.textContent('#fctproc-bulk')).trim());
+  ok('the selection clears', await page.$eval('#fctproc-bulk', b => b.classList.contains('idle')));
 
   // Grouping.
   await page.click('[data-group="vendor"]');
@@ -2888,6 +2888,199 @@ async function sweep2Host(browser) {
   }
 }
 
+// The second bug sweep's fixes to the drawing of the sheet that only a real
+// browser shows: a colleague's text that looks like markup, a site's jobs
+// changing under real typing, a box Shift+Tab reaches under the pinned
+// columns, and the rows staying put as the first box is ticked.
+async function sweepTwoRender(browser) {
+  console.log('\nsweep 2: the sheet as it is drawn');
+  const t = i => new Date(Date.UTC(2026, 9, 6) + i * 1000).toISOString();
+
+  // ── A Material ending in ' title=' beside a Sub Code written as attributes.
+  {
+    const W = makeWorld();
+    W.rows.push({ ...BLANK_ROW, id: 'X1', project_id: 'p1', source: 'manual', created_at: t(1), updated_at: t(1), description: 'Inlet grate',
+      quantity: 4, unit: 'EA', created_by: 'Ada', updated_by: 'Ada' });
+    const { page, ctx, errors } = await openPage(browser, W, 'admin', { storage: { fct_proc_project_turf: 'p1' } });
+    await page.click('.tab-btn[data-tab="procurement"]');
+    await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 1));
+    await sleep(300);
+    // The attributes the page's own picker gives a Material box.
+    const names0 = await cell(page, 'X1', 'description').evaluate(i => [...i.attributes].map(a => a.name).sort());
+    // Two ordinary saves by another editor of the job, brought in by the poll.
+    const evil = 'x style=animation:spin onanimationstart=window.__xss=localStorage.fct_token y';
+    const r = W.rows.find(x => x.id === 'X1');
+    Object.assign(r, { description: 'Inlet title=', sub_code: evil, version: r.version + 1, updated_by: 'mallory', updated_at: new Date().toISOString() });
+    await page.evaluate(() => FCTProcurement.refresh());
+    await sleep(1200);
+    const box = await cell(page, 'X1', 'description').evaluate(i => ({ names: [...i.attributes].map(a => a.name).sort(), placeholder: i.placeholder, title: i.title, value: i.value }));
+    ok('a colleague\'s Material "Inlet title=" beside a Sub Code written as attributes, brought in by the poll: no script runs on the PM\'s sheet',
+      await page.evaluate(() => window.__xss) === undefined, await page.evaluate(() => String(window.__xss)));
+    ok('…the Material box has the attributes the page\'s picker gives it and no others (no handler, no style from the row\'s text); its placeholder is the Sub Code as text',
+      eq(box.names, names0) && !box.names.includes('style') && box.placeholder === evil && box.value === 'Inlet title=', [box.names, names0]);
+    ok('…and its tooltip says what it is, then who changed it', /^Inlet title= — books to x style=.* y\nChanged by mallory/.test(box.title), box.title);
+    ok('no page errors (a colleague\'s text that looks like markup)', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  }
+
+  // ── A site's jobs changing while the PM types in it.
+  const SW = 'Storm Water Construction';
+  const bid = q => [
+    { id: 's1', cost_code: SW, sub_code: 'Drain Geo Fabric', unit: 'SF', quantity: String(q[0]) },
+    { id: 's2', cost_code: SW, sub_code: 'Perimeter Collector Drain 15"', unit: 'LF', quantity: String(q[1]) },
+  ];
+  PROJECTS.h1 = { id: 'h1', 'project-name': 'Hempfield Baseball', 'job-number': '26057', status: 'In Progress', site: 'Hempfield', bidItems: bid([8108, 900]) };
+  PROJECTS.h2 = { id: 'h2', 'project-name': 'Hempfield Softball', 'job-number': '26058', status: 'Awarded', site: 'Hempfield', bidItems: bid([5120, 610]) };
+  try {
+    const W = makeWorld();
+    let n = 0;
+    for (const pid of ['h1', 'h2']) {
+      for (const b of PROJECTS[pid].bidItems) {
+        n++;
+        W.rows.push({ ...BLANK_ROW, id: `${pid}r${b.id}`, project_id: pid, source: 'bid', bid_item_id: b.id, cost_code: b.cost_code, sub_code: b.sub_code,
+          quantity: Number(b.quantity), unit: b.unit, bid_qty_at_send: Number(b.quantity), bid_unit_at_send: b.unit,
+          vendor: 'LB Water', quote_number: '224818', created_at: t(n), updated_at: t(n) });
+      }
+    }
+    // Enough of Baseball's own rows that the sheet scrolls.
+    for (let i = 0; i < 16; i++) {
+      n++;
+      W.rows.push({ ...BLANK_ROW, id: `h1m${String(i).padStart(2, '0')}`, project_id: 'h1', source: 'manual', cost_code: SW, description: 'Fitting ' + i,
+        quantity: i + 1, unit: 'EA', created_at: t(n), updated_at: t(n) });
+    }
+    const { page, ctx, errors } = await openPage(browser, W, 'admin', { viewport: { width: 1474, height: 700 }, storage: { fct_proc_group_turf: 'cost' } });
+    await page.click('.tab-btn[data-tab="procurement"]');
+    await page.waitForSelector('#fctproc-proj');
+    await cbPick(page, page.locator('#fctproc-proj'), 'hempfield', 'Hempfield — all 2 jobs');
+    await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(c => c === 20));
+    await sleep(400);
+    const setSoftball = status => page.evaluate(s => {
+      // What the page's job-list poll does after a colleague changes Softball.
+      projectsList.find(p => p.id === 'h2').status = s;
+      _procRerender();
+    }, status);
+    const softballRows = () => page.locator('#procurement-root tr.fctproc-row[data-row^="h2"]').count();
+    await page.$eval('#fctproc-wrap', w => { w.scrollTop = 120; });
+    await sleep(150);
+    const target = 'h1m06';
+    await cell(page, target, 'quantity').click();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('81', { delay: 80 });
+    const topTyping = await page.$eval('#fctproc-wrap', w => w.scrollTop);
+    await setSoftball('Complete');
+    await page.keyboard.type('00', { delay: 80 });
+    await page.keyboard.press('Tab');
+    await until(() => Number(W.rows.find(x => x.id === target).quantity) !== 7, 4000);
+    ok('Softball marked complete while the PM types 8100 in a Quantity: 8100 is saved, not 81',
+      Number(W.rows.find(x => x.id === target).quantity) === 8100 && eq(patchesFor(W, target).map(l => l.body.fields), [{ quantity: 8100 }]),
+      patchesFor(W, target).map(l => l.body.fields));
+    ok('…Tab still goes on to the row\'s Unit', await page.evaluate(() => { const a = document.activeElement; return a && a.dataset.pf; }) === 'unit');
+    const top0 = await page.$eval('#fctproc-wrap', w => w.scrollTop);
+    ok('…and the sheet is not read again, or moved, while the caret is in its cells', await softballRows() === 2 && Math.abs(top0 - topTyping) < 2, [topTyping, top0]);
+    await clickAway(page);
+    await until(() => softballRows().then(c => c === 0), 4000);
+    ok('once the PM is out of the cells the site is read again as it now is: Softball\'s rows go', await softballRows() === 0
+      && await page.locator('#procurement-root tr.fctproc-jobband').count() === 1);
+    ok('…in place, at the same scroll, not through "Loading…"', Math.abs(await page.$eval('#fctproc-wrap', w => w.scrollTop) - top0) < 2
+      && !(await page.locator('#procurement-root .fctproc-empty').count()), [top0, await page.$eval('#fctproc-wrap', w => w.scrollTop)]);
+
+    // Half a vendor typed in a picker, the rest typed after Softball comes back.
+    const vrow = 'h1m03';
+    await cell(page, vrow, 'vendor').click();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.type('New Ent', { delay: 80 });
+    await setSoftball('Awarded');
+    await page.keyboard.type('erprise', { delay: 80 });
+    await page.keyboard.press('Enter');
+    await sleep(600);
+    ok('Softball back on the site while the PM types "New Enterprise" in a Vendor picker: "New Enterprise" is saved, not "New Ent"',
+      W.rows.find(x => x.id === vrow).vendor === 'New Enterprise' && !patchesFor(W, vrow).some(l => l.body.fields.vendor === 'New Ent'),
+      patchesFor(W, vrow).map(l => l.body.fields));
+    await clickAway(page);
+    await until(() => softballRows().then(c => c === 2), 4000);
+    ok('…and Softball\'s rows are back once the PM is out of the cells', await softballRows() === 2);
+
+    // A date typed part way.
+    const drow = 'h1m01';
+    await cell(page, drow, 'date_needed').click();
+    await page.keyboard.type('04', { delay: 80 });
+    await setSoftball('Complete');
+    await page.keyboard.type('152027', { delay: 80 });
+    await page.keyboard.press('Tab');
+    await until(() => W.rows.find(x => x.id === drow).date_needed, 4000);
+    ok('Softball off the site again while the PM types 04/15/2027 in Date Needed: the whole date is saved',
+      W.rows.find(x => x.id === drow).date_needed === '2027-04-15', W.rows.find(x => x.id === drow).date_needed);
+    ok('no page errors (a site\'s jobs changing under the typing)', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  } finally {
+    delete PROJECTS.h1;
+    delete PROJECTS.h2;
+  }
+
+  // ── Shift+Tab to a box the pinned columns would cover.
+  {
+    const W = makeWorld();
+    for (let i = 0; i < 6; i++) W.rows.push({ ...BLANK_ROW, id: 'K' + i, project_id: 'p1', created_at: t(i), updated_at: t(i), description: 'Item ' + i, quantity: 10 + i });
+    const { page, ctx, errors } = await openPage(browser, W, 'level2', { storage: { fct_proc_project_turf: 'p1' }, viewport: { width: 1100, height: 800 } });
+    await page.click('.tab-btn[data-tab="procurement"]');
+    await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(c => c === 6));
+    await sleep(300);
+    const seen = () => page.evaluate(() => {
+      const a = document.activeElement;
+      const r = a.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { field: a.dataset.pf, seen: !!hit && (hit === a || a.contains(hit)), at: hit && hit.closest('td') ? hit.closest('td').className.split(' ')[0] : hit && hit.tagName };
+    });
+    for (const sl of [200, 280]) {
+      await clickAway(page);
+      await page.$eval('#fctproc-wrap', (w, x) => { w.scrollLeft = x; }, sl);
+      await sleep(100);
+      await page.evaluate(() => document.querySelector('#procurement-root [data-pr="K1"][data-pf="lead_time_days"]').focus({ preventScroll: true }));
+      await page.keyboard.press('Shift+Tab');
+      await sleep(200);
+      const s = await seen();
+      ok(`the sheet scrolled ${sl} px sideways, Shift+Tab from Lead Time to Date Needed: the box is in sight, not under the pinned Status column`,
+        s.field === 'date_needed' && s.seen, s);
+    }
+    await page.keyboard.press('ArrowDown');
+    await sleep(150);
+    ok('…and ↓ from there keeps it in sight', (await seen()).seen, await seen());
+    ok('no page errors (Shift+Tab under the pinned columns)', errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  }
+
+  // ── The rows stay put as the first box is ticked.
+  for (const vp of [{ width: 1474, height: 900 }, { width: 1024, height: 768 }]) {
+    const W = makeWorld();
+    for (let i = 0; i < 12; i++) {
+      W.rows.push({ ...BLANK_ROW, id: 'K' + String(i).padStart(2, '0'), project_id: 'p1', created_at: t(i), updated_at: t(i), description: 'Item ' + i,
+        cost_code: 'Stormwater', quantity: 10 + i });
+    }
+    const { page, ctx, errors } = await openPage(browser, W, 'level2', { storage: { fct_proc_project_turf: 'p1' }, viewport: vp });
+    await page.click('.tab-btn[data-tab="procurement"]');
+    await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(c => c === 12));
+    await sleep(300);
+    const box = id => page.locator(`#procurement-root input[data-sel="${id}"]`).boundingBox();
+    const b0 = await box('K00'), b1 = await box('K01');
+    await page.mouse.click(b0.x + b0.width / 2, b0.y + b0.height / 2, { delay: 70 });
+    await sleep(250);
+    const b1after = await box('K01');
+    ok(`${vp.width}×${vp.height}: ticking the first row's box leaves the next row where it was (the bulk bar takes room kept for it)`,
+      Math.abs(b1after.y - b1.y) < 1, [Math.round(b1.y), Math.round(b1after.y)]);
+    await page.mouse.click(b1.x + b1.width / 2, b1.y + b1.height / 2, { delay: 70 });
+    await sleep(250);
+    const sel = await page.evaluate(() => [...FCTProcurement._test.state().selected].sort());
+    ok('…so the next click, where its box was, ticks that row (not the first again, not the whole section)', eq(sel, ['K00', 'K01']), sel);
+    ok('…and the bar says 2 selected', /2\s*selected/.test(await page.textContent('#fctproc-bulk')));
+    await page.locator('#procurement-root [data-act="bulk-clear"]').click();
+    await sleep(200);
+    const b1clear = await box('K01');
+    ok('…Clear selection hides the bar\'s controls without moving the rows back up', Math.abs(b1clear.y - b1.y) < 1, [Math.round(b1.y), Math.round(b1clear.y)]);
+    ok(`no page errors (${vp.width}×${vp.height}, ticking)`, errors.length === 0, errors.join(' | '));
+    await ctx.close();
+  }
+}
+
 // ── Second bug sweep: the save path ──────────────────────────────────────────
 async function sweepTwoSave(browser) {
   console.log('\nsweep 2: Escape in a Sub Code picker saves nothing; a conflict waits for the box being typed in');
@@ -2996,6 +3189,7 @@ async function sweepTwoSave(browser) {
     await sweepInputs(browser);
     await sweep2Host(browser);
     await sweepTwoSave(browser);
+    await sweepTwoRender(browser);
   } finally {
     await browser.close();
     server.close();

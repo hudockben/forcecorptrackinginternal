@@ -1216,7 +1216,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   env.fire(env.$('#fctproc-selall'), 'change');
   assert('select-all ticks every row shown', env.$$('[data-sel]').every(b => b.checked) && /5\s*selected/.test(env.$('#fctproc-bulk').textContent));
   env.$('[data-act="bulk-clear"]').click();
-  assert('Clear selection', !env.$('#fctproc-bulk').textContent.trim() && env.$$('[data-sel]').every(b => !b.checked));
+  assert('Clear selection', env.$('#fctproc-bulk').classList.contains('idle') && env.$$('[data-sel]').every(b => !b.checked));
 
   // Create PO from selected
   console.log('\n[create PO from selected]');
@@ -1240,7 +1240,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     && seed[0].sub_code === '15" Perf drain' && seed[0].supplier === 'LB Water' && seed[0].title === 'LB Water materials' && seed[0].notes === 'Quote QT2242818', seed);
   const link = env.patches().filter(p => p.q.action === 'bulk').pop();
   assert('…and the rows are linked to its id', eq(link.body.ids, ['r2', 'r3']) && /^npo/.test(link.body.fields.po_id), link.body);
-  assert('selection clears after', !env.$('#fctproc-bulk').textContent.trim());
+  assert('selection clears after', env.$('#fctproc-bulk').classList.contains('idle'));
   // Rows on two sub codes -> asked.
   // (In the stub's store too: Create PO reads the rows again before it decides.)
   ['r1', 'r4'].forEach(id => { env.P._test.state().rows.find(r => r.id === id).vendor = ''; env.db.rows.find(r => r.id === id).vendor = ''; });
@@ -5471,6 +5471,332 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       box.blur(); commit(box);
       await e.P._test.flushAll(); await sleep(30);
       assert('the row\'s own line picked from the list (Enter, Tab or a click on it) still fills a blank Quantity', db('m1').quantity === 950, db('m1'));
+    }
+  }
+
+  console.log('\n[sweep 2: render]');
+  {
+    const dana = (e, id, f, by = 'Dana Reyes') => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = by; r.updated_at = new Date().toISOString(); };
+    const shown = e => e.$$('tr.fctproc-row').map(t => t.dataset.row);
+    const ticked = e => [...e.P._test.state().selected].sort();
+    const tickRow = (e, id) => { const b = e.$(`[data-sel="${id}"]`); b.checked = true; e.fire(b, 'change'); };
+    const search = (e, text) => { const s = e.$('#fctproc-search'); s.value = text; e.fire(s, 'input'); };
+    // The count the bar shows: none while it is idle (its controls hidden).
+    const barSays = e => (e.$('#fctproc-bulk').classList.contains('idle') ? '' : (/(\d+)\s*selected/.exec(e.$('#fctproc-bulk').textContent) || [])[1] || '');
+    const getsOf = e => e.calls.filter(c => c.method === 'GET' && c.path === '/api/procurement' && !c.q.action && !c.q.include_deleted).length;
+
+    // ── A Material and a Sub Code made to look like attributes ────────────
+    // A colleague's change marks the cell "Changed by …", and that line is
+    // added to each box's own tooltip. The box's other attributes hold the
+    // row's text (a Material ending in ' title=', a Sub Code written as
+    // attributes) and must stay text.
+    {
+      const evil = 'x style=animation:spin onanimationstart=window.__xss=localStorage.fct_token y';
+      const e = makeEnv({ rows: [row({ id: 'x1', description: 'Inlet grate', quantity: 4, unit: 'EA', created_at: '2026-03-01T10:00:00Z' }),
+        row({ id: 'x2', description: 'Frame', created_at: '2026-03-01T10:00:01Z' })] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      dana(e, 'x1', { description: 'Inlet title=', sub_code: evil, quote_number: 'Q-9' });
+      await e.P.refresh();
+      await sleep(10);
+      const box = e.field('x1', 'description');
+      const names = [...box.attributes].map(a => a.name);
+      assert('a colleague saves Material "Inlet title=" beside a Sub Code written as attributes: the Material box gets no handler or style from the row\'s text',
+        !names.some(n => /^on/.test(n) || n === 'style') && names.includes('placeholder'), names);
+      assert('…its placeholder reads the Sub Code, as text, and its value the Material as typed', box.getAttribute('placeholder') === evil && box.value === 'Inlet title=');
+      assert('…and its tooltip is its own, then who changed it', /^Inlet title= — books to x style=animation:spin onanimationstart=window\.__xss=localStorage\.fct_token y\nChanged by Dana Reyes/.test(box.title), box.title);
+      assert('the cell itself says who changed it, and is marked', /^Changed by Dana Reyes/.test(box.closest('td').title) && box.closest('td').classList.contains('fctproc-chg'));
+      assert('a part of a stacked cell (Quote #) changed: its box\'s tooltip gets the line too', /^Q-9\nChanged by Dana Reyes/.test(e.field('x1', 'quote_number').title), e.field('x1', 'quote_number').title);
+      assert('a cell nobody else changed keeps its tooltip as it was', e.field('x1', 'unit').closest('td').title === '' && !/Changed by/.test(e.field('x1', 'quantity').title || ''));
+      // The same change drawn row by row (refreshRow): a poll answered just
+      // as the PM clicked into the other row.
+      dana(e, 'x1', { description: 'Grate title=', sub_code: evil + ' z' });
+      let rel;
+      e.hold = new Promise(r => { rel = r; });
+      const poll = e.P.refresh();
+      await tick();
+      e.field('x2', 'quote_number').focus();
+      rel();
+      await poll;
+      await sleep(10);
+      const box2 = e.field('x1', 'description');
+      assert('drawn row by row (the PM in another row): still no attribute from the row\'s text, and the tooltip as before',
+        ![...box2.attributes].some(a => /^on/.test(a.name) || a.name === 'style') && box2.getAttribute('placeholder') === evil + ' z'
+        && /^Grate title= — books to .* z\nChanged by Dana Reyes/.test(box2.title), [...box2.attributes].map(a => a.name));
+    }
+
+    // ── A site's jobs changing while the PM types ─────────────────────────
+    const SP = [
+      { id: 'h1', 'project-name': 'Hempfield Baseball', 'job-number': '26057', status: 'In Progress', site: 'Hempfield' },
+      { id: 'h2', 'project-name': 'Hempfield Softball', 'job-number': '26058', status: 'Awarded', site: 'Hempfield' },
+    ];
+    const openSite = async () => {
+      const projects = SP.map(p => ({ ...p }));
+      const e = makeEnv({ rows: [
+        row({ id: 'a1', project_id: 'h1', cost_code: 'Storm Water', sub_code: 'Geofabric', quantity: 8000, unit: 'SF', vendor: 'LB Water', created_at: '2026-03-01T00:00:00Z' }),
+        row({ id: 'a2', project_id: 'h1', cost_code: 'Storm Water', sub_code: 'Elbows', quantity: 3, unit: 'EA', created_at: '2026-03-01T00:00:01Z' }),
+        row({ id: 'b1', project_id: 'h2', cost_code: 'Storm Water', sub_code: 'Geofabric', quantity: 5000, unit: 'SF', created_at: '2026-03-01T00:00:02Z' }),
+        row({ id: 'b2', project_id: 'h2', cost_code: 'Storm Water', sub_code: 'Elbows', quantity: 2, unit: 'EA', created_at: '2026-03-01T00:00:03Z' }),
+      ], storage: { fct_proc_project_turf: 'site:hempfield', fct_proc_group_turf: 'cost' } });
+      e.P.configure({ getProjects: () => projects, getProject: id => projects.find(p => p.id === id) || null, getBidLines: () => [] });
+      e.projects = projects;
+      e.P.renderTab(e.root);
+      await sleep(40);
+      return e;
+    };
+    const softballDone = e => { e.projects.find(p => p.id === 'h2').status = 'Complete'; };
+    {
+      let e = await openSite();
+      assert('(the site opens with both jobs\' rows)', eq(shown(e), ['a1', 'a2', 'b1', 'b2']), shown(e));
+      const wrap0 = e.$('#fctproc-wrap');
+      const g0 = getsOf(e);
+      const q = e.field('a1', 'quantity');
+      q.focus(); q.value = '81'; e.fire(q, 'input');
+      softballDone(e);
+      e.P.rerender();
+      await sleep(20);
+      assert('a colleague marks Softball complete while the PM is typing 81 of 8100 in Baseball\'s Quantity: the box stays, with the caret and what was typed',
+        q.isConnected && e.w.document.activeElement === q && q.value === '81' && !e.$('.fctproc-empty'));
+      assert('…nothing is saved under the typing, and the site is not read again yet', e.patches().length === 0 && getsOf(e) === g0, e.patches().map(p => p.body.fields));
+      q.value = '8100'; e.fire(q, 'input');
+      q.blur();
+      await sleep(80);
+      assert('…the rest of the number lands: 8100 is saved, once', eq(e.patches().map(p => p.body.fields), [{ quantity: 8100 }]), e.patches().map(p => p.body.fields));
+      assert('…and once the caret is out of the cells the site is read again as it now is, in place (no "Loading…", the same sheet)',
+        getsOf(e) > g0 && e.$('#fctproc-wrap') === wrap0 && eq(shown(e), ['a1', 'a2']) && e.$$('tr.fctproc-jobband').length === 1, shown(e));
+
+      // A picker with half a vendor typed in it, not picked yet.
+      e = await openSite();
+      const v = e.field('a2', 'vendor');
+      v.focus(); v.value = 'Acme Sup'; e.fire(v, 'input');
+      softballDone(e);
+      e.P.rerender();
+      await sleep(20);
+      assert('a Vendor half typed ("Acme Sup") when the site changes: the picker stays as it is and nothing is saved', v.isConnected && e.w.document.activeElement === v
+        && v.value === 'Acme Sup' && e.patches().length === 0);
+      e.pick(v, 'Acme Supply');
+      v.blur();
+      await sleep(400);                 // the picker's commit, then the owed read
+      assert('…the vendor picked then is the one saved', eq(e.patches().map(p => p.body.fields), [{ vendor: 'Acme Supply' }]) && eq(shown(e), ['a1', 'a2']),
+        e.patches().map(p => p.body.fields));
+
+      // A date typed part way.
+      e = await openSite();
+      const d = e.field('a1', 'date_needed');
+      d.focus();
+      softballDone(e);
+      e.P.rerender();
+      await sleep(20);
+      assert('a Date Needed being typed when the site changes: the date box stays, with the caret', d.isConnected && e.w.document.activeElement === d);
+
+      // The page's poll finding the site changed (no cell in use): read again in place.
+      e = await openSite();
+      const wrap1 = e.$('#fctproc-wrap');
+      softballDone(e);
+      await e.P.refresh();
+      await sleep(20);
+      assert('a poll that finds the site\'s jobs changed reads it again in place, not through "Loading…"', e.$('#fctproc-wrap') === wrap1 && eq(shown(e), ['a1', 'a2']));
+
+      // The page drawing the tab again (its start-up finishing with its own
+      // job list) while the PM types, the site's jobs changed meanwhile.
+      e = await openSite();
+      const wrap2 = e.$('#fctproc-wrap');
+      const q2 = e.field('a2', 'quantity');
+      q2.focus(); q2.value = '4'; e.fire(q2, 'input');
+      softballDone(e);
+      e.P.renderTab(e.root);
+      await sleep(20);
+      assert('the tab drawn again by the page while the PM types, the site\'s jobs changed: the box stays, and nothing is saved under the typing',
+        q2.isConnected && e.w.document.activeElement === q2 && e.patches().length === 0);
+      q2.value = '475'; e.fire(q2, 'input');
+      q2.blur();
+      await sleep(80);
+      assert('…475 is saved, and the site is read again in place once the caret is out', eq(e.patches().map(p => p.body.fields), [{ quantity: 475 }])
+        && e.$('#fctproc-wrap') === wrap2 && eq(shown(e), ['a1', 'a2']), e.patches().map(p => p.body.fields));
+    }
+
+    // ── A job leaving the site while a save of its row is out ─────────────
+    for (const order of ['the rows first', 'the save first']) {
+      const e = await openSite();
+      tickRow(e, 'a1'); tickRow(e, 'b1');
+      let relPatch;
+      e.patchHold = new Promise(r => { relPatch = r; });
+      const qb = e.field('b1', 'quote_number');
+      qb.focus(); qb.value = 'Q-9'; e.fire(qb, 'input'); qb.blur();
+      await sleep(20);
+      assert(`(${order}: Softball's row b1 has its save out)`, e.P._test.pending().fly.has('b1'));
+      let relGet;
+      if (order === 'the save first') e.hold = new Promise(r => { relGet = r; });
+      softballDone(e);
+      e.P.rerender();
+      await sleep(20);
+      if (order === 'the save first') { relPatch(); await sleep(20); relGet(); } else { relPatch(); }
+      await sleep(40);
+      const ids = e.P._test.state().rows.map(r => r.id).sort();
+      assert(`Softball leaves the site with a save of its row out (${order}): its rows leave the sheet — not counted, not exported`,
+        eq(ids, ['a1', 'a2']) && /Not Ordered\s*2/.test(e.$('#fctproc-counts').textContent), [ids, e.$('#fctproc-counts').textContent.replace(/\s+/g, ' ')]);
+      assert('…its tick goes with it: the bar says 1 selected, as the one tick on screen does', eq(ticked(e), ['a1']) && barSays(e) === '1', [ticked(e), barSays(e)]);
+      assert('…and the save still lands', e.db.rows.find(r => r.id === 'b1').quote_number === 'Q-9');
+    }
+
+    // ── Ticks the search, a filter or a chip hides ───────────────────────
+    {
+      const mk = () => makeEnv({ rows: [
+        row({ id: 'g1', description: 'Gravel 2A', vendor: 'LB Water', created_at: '2026-03-01T10:00:00Z' }),
+        row({ id: 'g2', description: 'Gravel #57', vendor: 'LB Water', created_at: '2026-03-01T10:00:01Z' }),
+        row({ id: 'p1r', description: 'Pipe 15in', vendor: 'Acme Supply', created_at: '2026-03-01T10:00:02Z' }),
+        row({ id: 'p2r', description: 'Pipe 12in', vendor: 'Acme Supply', date_ordered: '2026-03-02', created_at: '2026-03-01T10:00:03Z' }),
+      ], storage: { fct_proc_project_turf: 'p1', fct_proc_group_turf: 'cost' } });
+      let e = mk();
+      e.P.renderTab(e.root);
+      await sleep(40);
+      search(e, 'gravel');
+      e.$('#fctproc-selall').checked = true; e.fire(e.$('#fctproc-selall'), 'change');
+      assert('(the two gravel rows ticked)', eq(ticked(e), ['g1', 'g2']) && barSays(e) === '2');
+      search(e, 'pipe');
+      assert('a search that hides ticked rows lets their ticks go: none ticked on screen, and the bar does not count them', ticked(e).length === 0 && barSays(e) === '',
+        [ticked(e), e.$('#fctproc-bulk').textContent.replace(/\s+/g, ' ')]);
+      e.$('#fctproc-selall').checked = true; e.fire(e.$('#fctproc-selall'), 'change');
+      e.$('#fctproc-bulk-field').value = 'quote_number'; e.fire(e.$('#fctproc-bulk-field'), 'change');
+      e.$('#fctproc-bulk-val').value = 'Q-PIPE';
+      e.$('[data-act="bulk-apply"]').click();
+      await sleep(40);
+      const bulk = e.patches().filter(p => p.q.action === 'bulk').pop();
+      assert('…so Apply writes to the two pipe rows on screen, and the gravel rows keep their Quote #', bulk && eq(bulk.body.ids, ['p1r', 'p2r'])
+        && e.db.rows.filter(r => r.id[0] === 'g').every(r => r.quote_number === ''), bulk && bulk.body);
+
+      // Delete selected: only what is ticked on screen.
+      e = mk();
+      e.P.renderTab(e.root);
+      await sleep(40);
+      search(e, 'gravel');
+      tickRow(e, 'g1');
+      search(e, 'pipe');
+      tickRow(e, 'p1r');
+      e.$('[data-act="bulk-del"]').click();
+      assert('a gravel row ticked, then the search changed to pipe and a pipe row ticked: Delete asks about the 1 row on screen', /Delete 1 row\?/.test(e.$('#fctproc-bulk').textContent),
+        e.$('#fctproc-bulk').textContent.replace(/\s+/g, ' '));
+      e.$('[data-act="bulk-del-yes"]').click();
+      await sleep(30);
+      const del = e.calls.filter(c => c.method === 'DELETE').pop();
+      assert('…and deletes only that one', del && (del.q.ids || del.q.id) === 'p1r' && !e.db.rows.find(r => r.id === 'g1').deleted_at, del && del.q);
+
+      // A chip, and a column filter.
+      e = mk();
+      e.P.renderTab(e.root);
+      await sleep(40);
+      tickRow(e, 'p1r'); tickRow(e, 'p2r');
+      e.$('[data-chip="not_ordered"]').click();
+      assert('the Not ordered chip hides a ticked row that is ordered: its tick goes, the other stays', eq(ticked(e), ['p1r']) && barSays(e) === '1', ticked(e));
+      e.$('[data-chip="all"]').click();
+      tickRow(e, 'g1');
+      e.$('[data-pff="vendor"]').click();
+      [...e.$$('#fctproc-filter-dd .fctproc-ff-val')].forEach(cb => { cb.checked = cb.value === 'Acme Supply'; });
+      e.$('#fctproc-filter-dd [data-ff="apply"]').click();
+      assert('a Vendor filter that hides a ticked row lets its tick go', eq(ticked(e), ['p1r']) && barSays(e) === '1', ticked(e));
+
+      // A section folded keeps its ticks: folded rows are still on the sheet.
+      e = mk();
+      e.P.renderTab(e.root);
+      await sleep(40);
+      const grp = e.$('tr.fctproc-grp');
+      const box = grp.querySelector('.fctproc-grpsel');
+      box.checked = true; e.fire(box, 'change');
+      grp.click();
+      assert('a section ticked, then folded: its rows stay ticked (folding hides nothing from the sheet)', ticked(e).length === 4 && barSays(e) === '4' && !e.$('tr.fctproc-row'));
+
+      // A colleague's change brought in by the poll hides a ticked row.
+      e = mk();
+      e.P.renderTab(e.root);
+      await sleep(40);
+      e.$('[data-chip="not_ordered"]').click();
+      tickRow(e, 'g1'); tickRow(e, 'g2');
+      dana(e, 'g2', { date_ordered: '2026-03-09' });
+      await e.P.refresh();
+      await sleep(10);
+      assert('the poll brings in a colleague\'s Date Ordered under the Not ordered chip: that row leaves the screen, and its tick with it',
+        eq(shown(e), ['g1', 'p1r']) && eq(ticked(e), ['g1']) && barSays(e) === '1', [shown(e), ticked(e)]);
+    }
+
+    // ── A chip pressed while the counts are worked out again ─────────────
+    {
+      const e = makeEnv({ rows: [row({ id: 'c1', vendor: '', created_at: '2026-03-01T10:00:00Z' }), row({ id: 'c2', date_ordered: '2026-03-02', created_at: '2026-03-01T10:00:01Z' })] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      const chip = e.$('[data-chip="not_delivered"]');
+      const v = e.field('c1', 'vendor');
+      v.focus(); v.value = 'Beta';
+      chip.dispatchEvent(new e.w.MouseEvent('mousedown', { bubbles: true, button: 0 }));
+      e.pick(v, 'Beta Corp');        // the picker commits as the press takes the focus
+      v.blur();
+      await sleep(10);
+      assert('a vendor picked, committed while a chip is held down: the chip under the pointer is the same button (so its click arrives)', chip.isConnected
+        && e.$('[data-chip="not_delivered"]') === chip);
+      e.w.document.dispatchEvent(new e.w.MouseEvent('mouseup', { bubbles: true, button: 0 }));
+      chip.click();
+      assert('…and the click applies it', chip.classList.contains('on') && !e.$('[data-chip="all"]').classList.contains('on'));
+      const before = e.$('[data-chip="not_ordered"] .n').textContent;
+      const d = e.field('c1', 'date_ordered');
+      d.focus(); d.value = '2026-03-05'; e.fire(d, 'change');
+      assert('the counts on the chips still follow the rows', before === '1' && e.$('[data-chip="not_ordered"] .n').textContent === '0',
+        [before, e.$('[data-chip="not_ordered"] .n').textContent]);
+    }
+
+    // ── + Add Row into a folded section ─────────────────────────────────
+    {
+      const e = makeEnv({ rows: [row({ id: 'n1', cost_code: 'Stormwater', created_at: '2026-03-01T10:00:00Z' }),
+        row({ id: 'n2', created_at: '2026-03-01T10:00:01Z' }), row({ id: 'n3', created_at: '2026-03-01T10:00:02Z' })],
+        storage: { fct_proc_project_turf: 'p1', fct_proc_group_turf: 'cost' } });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      const none = e.$$('tr.fctproc-grp').find(t => /No cost code/.test(t.textContent));
+      none.click();
+      assert('(the No cost code section folded)', !e.$('tr[data-row="n2"]'));
+      const posts = () => e.calls.filter(c => c.method === 'POST' && c.path === '/api/procurement' && !c.q.action);
+      e.$('[data-act="add"]').click();
+      e.$('[data-act="add"]').click();       // a double-click
+      await sleep(40);
+      assert('a double-click on + Add Row adds one row, not two', posts().length === 1, posts().length);
+      const id = posts()[0] && posts()[0].body.item.id;
+      assert('…the folded section it goes into opens, so the new row is seen going in', !!e.$(`tr[data-row="${id}"]`) && !!e.$('tr[data-row="n2"]'));
+      assert('…and its Material box has the caret', e.w.document.activeElement === e.field(id, 'description'));
+      e.w.document.activeElement.blur();
+      await sleep(20);
+      e.$('[data-act="add"]').click();
+      await sleep(40);
+      assert('once that add is answered, + Add Row adds again', posts().length === 2);
+    }
+    {
+      // A site: the job's band folded.
+      const e = await openSite();
+      e.$('tr.fctproc-jobband[data-jobband="h2"]').click();
+      assert('(Softball folded)', !e.$('tr[data-row="b1"]'));
+      e.$('[data-act="add"]').click();
+      await sleep(10);
+      e.$$('.fctproc-modal [data-choice]').find(b => /Softball/.test(b.textContent)).click();
+      await sleep(40);
+      const post = e.calls.filter(c => c.method === 'POST' && c.path === '/api/procurement' && !c.q.action).pop();
+      const id = post && post.body.item.id;
+      assert('a site: + Add Row for a job whose band is folded opens the band, and the row is drawn with the caret in it', !!id && !!e.$(`tr[data-row="${id}"]`)
+        && !!e.$('tr[data-row="b1"]') && e.w.document.activeElement === e.field(id, 'description'));
+    }
+
+    // ── The bulk bar keeps its room ─────────────────────────────────────
+    {
+      const e = makeEnv({ rows: [row({ id: 'k1' }), row({ id: 'k2' })] });
+      e.P.renderTab(e.root);
+      await sleep(40);
+      const bar = e.$('#fctproc-bulk');
+      assert('an editor\'s sheet with nothing ticked keeps the bulk bar\'s room (its controls hidden), so the first tick does not push the rows down',
+        bar.classList.contains('fctproc-bulk') && bar.classList.contains('idle') && barSays(e) === '' && !!bar.querySelector('[data-act="bulk-apply"]'));
+      tickRow(e, 'k1');
+      assert('…a tick shows the bar in that same room', !bar.classList.contains('idle') && barSays(e) === '1' && e.$('#fctproc-bulk') === bar);
+      e.$('[data-act="bulk-clear"]').click();
+      assert('…and Clear selection hides its controls again, keeping the room', bar.classList.contains('idle') && barSays(e) === '');
+      const v = makeEnv({ perm: { canView: true, canEdit: false }, serverCanEdit: false, rows: [row({ id: 'k1' })] });
+      v.P.renderTab(v.root);
+      await sleep(40);
+      assert('a view-only sheet has no bulk bar, and no room kept for one', !v.$('#fctproc-bulk').className && !v.$('#fctproc-bulk').innerHTML);
     }
   }
 
