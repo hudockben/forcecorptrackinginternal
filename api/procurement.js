@@ -21,8 +21,8 @@
 //            deleted_at when include_deleted=1 (Send to Procurement needs the
 //            deleted ones to offer "removed earlier"). Ordered created_at, id.
 // GET    ?division=…&action=materials
-//          → { ok, materials:[{ material, sub_code, cost_code, unit, vendor,
-//            jobs, last_used }], canEdit }   every Material (description)
+//          → { ok, materials:[{ material, sub_code, cost_code, cost_codes, unit,
+//            vendor, jobs, last_used }], canEdit }   every Material (description)
 //            named on the division's live rows, once per sub code it was
 //            bought under — the Material picker's suggestions on the next job
 //            (materialLibrary below). Same readers as the rows.
@@ -67,7 +67,9 @@
 // Files attached to a line live in the Job Document Vault (api/documents.js),
 // filed in the folder for the line's cost code as well as the one picked. A
 // write here that changes a line's code moves its files to the new code's
-// folder (refileAfter below); that never changes the answer to the write.
+// folder, and a line brought back from "removed earlier" is filed in its
+// code's folder again (refileAfter below); that never changes the answer to
+// the write.
 //
 // Who: every non-sales user with the division reads; admin, level3 and level2
 // write; level1 gets 403 read_only on every write; sales is refused outright
@@ -353,6 +355,14 @@ const MATERIALS_MAX  = 1500;
  * compares codes (procDocs.codeKey: case, spacing, dashes, quotes). A name
  * that is just its sub code again says nothing and is left out. Sorted by
  * the number of jobs, then most recently used.
+ *
+ * `cost_code` is the newest row's; `cost_codes` is every cost code the name
+ * was bought under with that sub code, newest first, each once (compared
+ * the same way) in its newest spelling, blanks left out. One sub code can sit
+ * under two cost codes (Geofabric under Stormwater and under Base), and
+ * "+ Material" offers another job's list only on a line whose cost code the
+ * entry names: with the newest code alone, a name bought last under Base hid
+ * the Stormwater job's list from every Stormwater line.
  */
 function materialLibrary(rows) {
   const k = procDocs.codeKey;
@@ -363,17 +373,19 @@ function materialLibrary(rows) {
     const sub = oneLine(r.sub_code || '');
     if (k(material) === k(sub)) continue;
     const key = k(sub) + '\u0000' + k(material);
+    const cost = oneLine(r.cost_code || '');
     let e = byKey.get(key);
     if (!e) {
-      e = { material, sub_code: sub, cost_code: oneLine(r.cost_code || ''), unit: '', vendor: '', jobs: new Set(), last_used: iso(r.updated_at) };
+      e = { material, sub_code: sub, cost_code: cost, unit: '', vendor: '', jobs: new Set(), last_used: iso(r.updated_at), costs: new Map() };
       byKey.set(key, e);
     }
     if (!e.unit) e.unit = oneLine(r.unit || '');
     if (!e.vendor) e.vendor = oneLine(r.vendor || '');
+    if (k(cost) && !e.costs.has(k(cost))) e.costs.set(k(cost), cost);
     e.jobs.add(String(r.project_id));
   }
   return [...byKey.values()]
-    .map(e => ({ ...e, jobs: e.jobs.size }))
+    .map(({ costs, ...e }) => ({ ...e, cost_codes: [...costs.values()], jobs: e.jobs.size }))
     .sort((a, b) => b.jobs - a.jobs || String(b.last_used || '').localeCompare(String(a.last_used || '')) || a.material.localeCompare(b.material))
     .slice(0, MATERIALS_MAX);
 }
@@ -639,10 +651,19 @@ async function codesBefore(sql, { company, division }, ids) {
  * renamed on the bid page changes the live code straight away, and the save
  * that brings the copy up to date is the moment the files can follow.
  *
+ * `restored`: the rows were just brought back from "removed earlier", and
+ * each is filed in its live code's folder even where its code did not
+ * change. While a line is deleted it holds nothing in its section, so a
+ * file it shares with a line re-coded meanwhile leaves that section's folder
+ * (refileProcurementDocs). Brought back, the line has the file on its
+ * paperclip again, but its folder would not: nothing later files it there,
+ * because the line's stored code already matches its live one. The way
+ * api/documents.js files a restored document again (refileOnRestore).
+ *
  * Never throws and never changes the answer to the write that triggered it —
  * that write has landed whatever happens here.
  */
-async function refileAfter(sql, { company, division, who }, payload, before, rows) {
+async function refileAfter(sql, { company, division, who }, payload, before, rows, { restored = false } = {}) {
   try {
     if (!before || !before.size || !Array.isArray(rows) || !rows.length) return;
     const written = rows.filter(r => r && before.has(r.id));
@@ -653,7 +674,14 @@ async function refileAfter(sql, { company, division, who }, payload, before, row
       const now = live.get(r.id);
       if (!now) continue;
       const fromCode = before.get(r.id);
-      if (procDocs.codeKey(fromCode) === procDocs.codeKey(now.code)) continue;
+      if (procDocs.codeKey(fromCode) === procDocs.codeKey(now.code)) {
+        // From no folder: into the live code's, out of none. A file already
+        // there stays as it is, and nothing is written to the trail.
+        if (restored && procDocs.codeKey(now.code)) {
+          changes.push({ rowId: r.id, projectId: r.project_id, fromCode: '', toCode: now.rawCode });
+        }
+        continue;
+      }
       changes.push({ rowId: r.id, projectId: r.project_id, fromCode, toCode: now.rawCode });
     }
     if (!changes.length) return;
@@ -872,9 +900,10 @@ module.exports = async (req, res) => {
       // primary-key clash is answered the same way rather than as an error.
       // created_at is clock_timestamp() so the rows keep the bid's order.
       const rl = id => relink.get(id) || {};
-      // Only a re-tied restore can change a row's code; a plain restore and a
-      // new line cannot have moved any file.
-      const codesWas = relink.size ? await codesBefore(sql, scope, [...relink.keys()]) : null;
+      // Every restored row with files: a re-tied one may change code, and a
+      // plain one may have lost its section's folder while it was deleted
+      // (refileAfter). A new line has nothing attached yet.
+      const codesWas = restore.value.length ? await codesBefore(sql, scope, restore.value) : null;
       let out = [];
       if (restore.value.length || lines.length) {
         try {
@@ -935,7 +964,7 @@ module.exports = async (req, res) => {
       // The RETURNING order of each half: the inserted rows in send order.
       const restored = out.filter(r => r.send_kind === 'restored');
       const created  = out.filter(r => r.send_kind === 'created');
-      await refileAfter(sql, scope, payload, codesWas, restored);
+      await refileAfter(sql, scope, payload, codesWas, restored, { restored: true });
 
       return res.json({
         ok: true,
