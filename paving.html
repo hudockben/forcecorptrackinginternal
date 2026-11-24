@@ -3381,6 +3381,24 @@ const fctUser     = (() => { try { return JSON.parse(localStorage.getItem('fct_u
 const fctDivision = localStorage.getItem('fct_division');
 const DIVISION    = 'paving';
 
+// Whose copies these are. The page keeps some of the company's data in the
+// browser: the job list it draws before the server answers, the inventory,
+// daily-row writes not yet confirmed. One browser is signed into by more than
+// one company (a shared office PC, a support sign-in with ?company=CODE), and
+// signing out leaves these behind. Kept under names everyone shared, they were
+// drawn for the next person to sign in, and where that company's server held
+// no jobs yet the page saved them into it: another company's jobs and bid
+// lines in its data for good. So each copy is kept under the company and user
+// it came from and read back only by them, and someone signing back in finds
+// their place where they left it.
+const _FCT_CACHE_SCOPE = '@' + encodeURIComponent(String((fctUser && fctUser.companyCode) || '')) + '/' + encodeURIComponent(String((fctUser && fctUser.username) || ''));
+// The copies kept under the shared names say nothing about whose they are,
+// so they are never read again. (Unsent daily-row writes are sorted out by
+// job instead: _walAdoptLegacy.)
+try {
+  ['fct_paving_projects', 'fct_paving_inventory'].forEach(k => localStorage.removeItem(k));
+} catch { /* storage blocked: nothing was kept either */ }
+
 // Opened by the scheduled-report robot (Manage Users → Auto Reports) rather
 // than a person. It runs inside a 2 GB server function, Chrome included, and
 // this page as a person sees it — every tab drawn, the map, the CRM — does not
@@ -3544,8 +3562,41 @@ async function _fetchRetry(url, opts, retries) {
    On success the entry is removed. On page load, surviving entries are
    replayed — so even a browser crash or force-close cannot lose data.
 ═══════════════════════════════════════════ */
-const _WAL_KEY = 'fct_dr_wal_' + DIVISION;
+// Per company and user (_FCT_CACHE_SCOPE): replayed into whichever company
+// signed in next, one company's owed rows were posted into another's jobs.
+const _WAL_KEY = 'fct_dr_wal_' + DIVISION + _FCT_CACHE_SCOPE;
 const _WAL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+// Writes still owed from before the log was kept per company and user, under
+// the name everyone on the browser shared. Each one is taken over (and so
+// sent) only by a company whose jobs it belongs to — job ids are random, so no
+// two companies share one. The rest wait there for their own company's user
+// until they are a week old. Once a page, after the jobs have been read.
+const _WAL_LEGACY_KEY = 'fct_dr_wal_' + DIVISION;
+let _walLegacyChecked = false;
+function _walAdoptLegacy() {
+  if (_walLegacyChecked || !_projectsLoaded) return;
+  _walLegacyChecked = true;
+  let legacy = null;
+  try { legacy = JSON.parse(localStorage.getItem(_WAL_LEGACY_KEY)); } catch {}
+  if (!legacy || typeof legacy !== 'object') return;
+  const jobs = new Set(projectsList.map(p => String(p.id)));
+  const rows = new Set();
+  projectsList.forEach(p => (p.dailyRows || []).forEach(r => rows.add(String(r.id))));
+  const wal = _walRead();
+  let taken = 0;
+  Object.keys(legacy).forEach(id => {
+    const e = legacy[id];
+    if (!e || (Date.now() - (e._ts || 0)) > _WAL_MAX_AGE_MS) { delete legacy[id]; return; }
+    const ours = (e.projectId != null && jobs.has(String(e.projectId))) || (e.rowId != null && rows.has(String(e.rowId)));
+    if (ours) { wal[id] = e; delete legacy[id]; taken++; }
+  });
+  if (taken) _walWrite(wal);
+  try {
+    if (Object.keys(legacy).length) localStorage.setItem(_WAL_LEGACY_KEY, JSON.stringify(legacy));
+    else localStorage.removeItem(_WAL_LEGACY_KEY);
+  } catch {}
+}
 
 let _walCache = null;
 function _walRead() {
@@ -3580,6 +3631,7 @@ async function _walReplay() {
   if (_walReplaying) return;
   _walReplaying = true;
   try {
+    _walAdoptLegacy();
     const ids = Object.keys(_walRead());
     if (!ids.length) return;
     const now = Date.now();
@@ -4323,21 +4375,30 @@ function _unloadedSaveRefused(what) {
     'Reload the page, then make it again.', false);
 }
 
-/** Fetch multiple keys in one request. Returns { key1: value1, key2: value2, ... } */
-async function apiBatchGet(keys) {
-  if (!keys.length) return {};
+/**
+ * Fetch multiple keys in one request: { ok, values: { key1: value1, ... } }.
+ * A key nothing is stored under is left out of `values`, and so is every key
+ * when the request failed — `ok` says which it was (see apiGetChecked).
+ */
+async function apiBatchGetChecked(keys) {
+  if (!keys.length) return { ok: true, values: {} };
   try {
     const r = await fetch(`${API_BASE}/data/_batch?keys=${keys.join(',')}`, {
       headers: { 'Authorization': `Bearer ${fctToken}` }
     });
-    if (r.status === 401) { logout(); return {}; }
+    if (r.status === 401) { logout(); return { ok: false, values: {} }; }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const { values } = await r.json();
-    return values || {};
+    return { ok: true, values: values || {} };
   } catch (err) {
     console.warn('[DB] batch GET failed:', err.message);
-    return {};
+    return { ok: false, values: {} };
   }
+}
+
+/** Fetch multiple keys in one request. Returns { key1: value1, key2: value2, ... } */
+async function apiBatchGet(keys) {
+  return (await apiBatchGetChecked(keys)).values;
 }
 
 /** Partially update fields in an existing JSONB blob (no full rewrite needed). */
@@ -6091,10 +6152,19 @@ renderHeaderActions();
 /* ═══════════════════════════════════════════
    PROJECTS — multi-project card system
 ═══════════════════════════════════════════ */
-const PROJECTS_KEY = 'fct_paving_projects';
+// This browser's copy of the job list: this company's and this user's only.
+const PROJECTS_KEY = 'fct_paving_projects' + _FCT_CACHE_SCOPE;
 const INFO_KEY_LEGACY = 'fct_paving_project_info'; // for migration only
 
 let projectsList = [];
+// Whether the job list in hand is the server's. Until a read of the job index
+// has been answered it is this browser's copy — drawn at boot so the home tab
+// shows at once, or kept after a read that failed — and that copy can be a day
+// old: a bid line a colleague added since, or a job they made, is not in it.
+// Saving a job or the list of jobs from it put the old copy back over theirs,
+// so nothing is saved from it (saveProject, saveProjects, saveProjectIndex)
+// and a failed read is tried again until one works (_retryLoadProjects).
+let _projectsLoaded = false;
 // Settles once loadProjects' background fetch of daily rows older than 90 days
 // has landed (or failed). Running quantities, averages and the Daily Summary
 // read the whole history, and a person who has had the page open a few
@@ -6142,16 +6212,62 @@ function _countFilledQty(data) {
   return data.reduce((n, p) => n + (p.dailyRows || []).filter(r => parseFloat(r.quantity) > 0).length, 0);
 }
 
+/**
+ * A read loadProjects needs could not be made. Nothing is known about what the
+ * server holds, so nothing is written: the jobs in hand stay as they are (this
+ * browser's copy at boot, read-only until a read works; the list already
+ * loaded, in a reload) and the read is tried again. Nothing is shown for it —
+ * a job edit made meanwhile says it was not saved. Returns false: the jobs
+ * were not read.
+ */
+function _projectsReadFailed() {
+  if (!_projectsLoaded) _retryLoadProjects();
+  return false;
+}
+
+// A boot read that failed is tried again soon, then every minute until one
+// works: until then the PM's job edits are not saved.
+const _PROJ_RETRY_MS = [2000, 5000, 15000, 30000, 60000];
+let _projRetries = 0;
+let _projRetryTimer = null;
+function _retryLoadProjects() {
+  if (_projRetryTimer || _AUTO_REPORT) return;
+  _projRetryTimer = setTimeout(async () => {
+    _projRetryTimer = null;
+    _projRetries++;
+    if (_projectsLoaded || _fctSessionOver()) return;
+    // Typing in a box: the redraw would take it away. Tried again shortly.
+    const el = document.activeElement;
+    if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) { _retryLoadProjects(); return; }
+    if (!(await loadProjects())) return;
+    if (activeTab === 'home') renderHomeTab();
+    if (activeTab === 'info') renderProjectInfoComputed();
+  }, _PROJ_RETRY_MS[Math.min(_projRetries, _PROJ_RETRY_MS.length - 1)]);
+}
+
+/**
+ * Read the job list from the server. True once it has been; false when a read
+ * it needs failed, which leaves the list in hand as it was.
+ */
 async function loadProjects() {
   // ── New architecture: per-project keys + a lightweight index ──
-  const _indexRaw = await apiGet('fct_paving_projects_index');
+  // A failed read is not an empty index. Taken for one, it sent the page down
+  // the migration branch below, which saved this browser's copy of every job
+  // over the server's (a bid line a colleague added since was gone) and cut
+  // the index down to the jobs in that copy.
+  const _indexGot = await apiGetChecked('fct_paving_projects_index');
+  if (!_indexGot.ok) return _projectsReadFailed();
+  const _indexRaw = _indexGot.value;
   const index = Array.isArray(_indexRaw) ? _indexRaw : (Array.isArray(_indexRaw?.ids) ? _indexRaw.ids : null);
-  if (index) _lastProjIndexTs = _indexRaw?._ts || 0;
 
   if (Array.isArray(index) && index.length) {
     // Batch-load all project blobs in one request instead of N individual fetches
     const projKeys = index.map(id => 'fct_paving_project_' + id);
-    const batchResult = await apiBatchGet(projKeys);
+    const batchGot = await apiBatchGetChecked(projKeys);
+    // Failed, the jobs below would be this browser's copies, taken as the server's.
+    if (!batchGot.ok) return _projectsReadFailed();
+    const batchResult = batchGot.values;
+    _lastProjIndexTs = _indexRaw?._ts || 0;
     // Build the list in index order. A project whose blob is missing on the
     // server — e.g. a brand-new project whose debounced blob write never
     // landed before a refresh — would otherwise be silently dropped here and
@@ -6172,6 +6288,7 @@ async function loadProjects() {
       if (_lsById[id]) { results.push(_lsById[id]); _missingBlobIds.push(id); }
     });
     projectsList = results;
+    _projectsLoaded = true;
     projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
     // Re-save recovered blobs only when the batch fetch clearly succeeded (at
     // least one blob came back). If none came back, the request itself likely
@@ -6190,7 +6307,7 @@ async function loadProjects() {
     // The report robot stops here. The recovery passes below mend a person's
     // project list by writing it back, which the robot may not do; two of
     // them read the whole pre-migration blob and every daily row again.
-    if (_AUTO_REPORT) return;
+    if (_AUTO_REPORT) return true;
 
     // ── Recovery: for any project still with no rows, check the legacy
     //    fct_projects blob (never deleted, may still have embedded dailyRows
@@ -6286,11 +6403,18 @@ async function loadProjects() {
     }
 
     try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
-    return;
+    return true;
   }
 
   // ── Migration: first load after upgrade from single-blob storage ──
-  let saved = await apiGet('fct_paving_projects');
+  // Only once the server has answered that it holds neither an index nor the
+  // old single list. The copy below is then this user's own (PROJECTS_KEY
+  // names the company and user), so saving it as the company's jobs puts back
+  // only what this user had.
+  const _legacyGot = await apiGetChecked('fct_paving_projects');
+  if (!_legacyGot.ok) return _projectsReadFailed();
+  if (index) _lastProjIndexTs = _indexRaw?._ts || 0;
+  let saved = _legacyGot.value;
   let localSaved = null;
   try {
     const raw = JSON.parse(localStorage.getItem(PROJECTS_KEY));
@@ -6305,6 +6429,7 @@ async function loadProjects() {
 
   if (Array.isArray(saved) && saved.length) {
     projectsList = saved;
+    _projectsLoaded = true;
     projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
     // Migrate to per-project blob storage; _loadAndMigrateDailyRows handles the rows
     projectsList.forEach(p => {
@@ -6314,7 +6439,7 @@ async function loadProjects() {
     saveProjectIndex();
     await _loadAndMigrateDailyRows();
     try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
-    return;
+    return true;
   }
 
   // Nothing in the index and nothing in the legacy blob. Before concluding
@@ -6342,18 +6467,21 @@ async function loadProjects() {
           console.warn('[recovery] project index was empty —', rescued.length,
             'project blob(s) still on the server; restoring and rewriting the index');
           projectsList = rescued;
+          _projectsLoaded = true;
           projectsList.forEach(p => { if (!Array.isArray(p.dailyRows)) p.dailyRows = []; });
           await _loadAndMigrateDailyRows();
           saveProjectIndex();
           try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
-          return;
+          return true;
         }
       }
     }
   } catch (e) { console.warn('[recovery] empty-index blob scan failed:', e.message); }
 
   projectsList = [];
+  _projectsLoaded = true;
   await _loadAndMigrateDailyRows();
+  return true;
 }
 
 /**
@@ -6456,6 +6584,8 @@ async function _loadAndMigrateDailyRows() {
 const _saveProjTimers = {};
 function saveProject(id) {
   const p = getProj(id); if (!p) return;
+  // Not from this browser's copy of the job: it would go over the server's.
+  if (!_projectsLoaded) { _unloadedSaveRefused('jobs'); return; }
   try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
   // Debounce server writes — coalesces rapid field edits into one PUT per project
   clearTimeout(_saveProjTimers[id]);
@@ -6492,6 +6622,8 @@ function _flushPendingProjectSaves() {
     const p = getProj(id);
     if (p) apiPut('fct_paving_project_' + id, _projBlob(p), { keepalive: true });
   });
+  // Not from this browser's copy of the job list (see saveProjectIndex).
+  if (!_projectsLoaded) return;
   _lastProjIndexTs = Date.now();
   apiPut('fct_paving_projects_index', { ids: projectsList.map(p => p.id), _ts: _lastProjIndexTs }, { keepalive: true });
 }
@@ -6557,13 +6689,20 @@ function _doBidItemPut(projId, biId, keepalive) {
 
 // Save the ordered list of project IDs — called when projects are added/removed/edited.
 // Includes _ts so the 60s poll on other clients detects the change.
+//
+// Not while the list in hand is only this browser's copy (_projectsLoaded):
+// every daily-row save calls this, and a copy missing the job a colleague
+// made since would take that job off everyone's list. Skipped quietly — it
+// holds nothing the PM typed.
 function saveProjectIndex() {
+  if (!_projectsLoaded) { console.warn('[projects] index not saved: the job list has not loaded from the server'); return; }
   _lastProjIndexTs = Date.now();
   apiPut('fct_paving_projects_index', { ids: projectsList.map(p => p.id), _ts: _lastProjIndexTs });
 }
 
 // Save every project blob — only used for bulk operations that touch all projects
 function saveProjects() {
+  if (!_projectsLoaded) { _unloadedSaveRefused('jobs'); return; }
   try { localStorage.setItem(PROJECTS_KEY, JSON.stringify(projectsList.map(_projBlob))); } catch {}
   projectsList.forEach(p => apiPut('fct_paving_project_' + p.id, _projBlob(p)));
   saveProjectIndex();
@@ -8068,8 +8207,10 @@ async function loadInventoryEntries() {
     // The server has never held inventory: carry over this browser's copy
     // from before it moved there. Not when the server holds an empty list —
     // that is a list someone emptied, and the old copy would bring it back.
+    // Only this company's and user's copy: another company's, left on a
+    // shared browser, was carried into a new company's empty server.
     try {
-      const local = JSON.parse(localStorage.getItem('fct_paving_inventory'));
+      const local = JSON.parse(localStorage.getItem('fct_paving_inventory' + _FCT_CACHE_SCOPE));
       if (Array.isArray(local) && local.length) { saved = local; apiPut('fct_paving_inventory', saved); }
     } catch {}
   }
@@ -8079,7 +8220,7 @@ async function loadInventoryEntries() {
 
 function saveInventoryEntries() {
   if (!_inventoryLoaded) { _unloadedSaveRefused('inventory entries'); return; }
-  localStorage.setItem('fct_paving_inventory', JSON.stringify(inventoryEntries));
+  localStorage.setItem('fct_paving_inventory' + _FCT_CACHE_SCOPE, JSON.stringify(inventoryEntries));
   apiPut('fct_paving_inventory', inventoryEntries);
 }
 

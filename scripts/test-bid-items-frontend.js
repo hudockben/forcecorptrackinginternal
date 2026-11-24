@@ -142,6 +142,7 @@ function makeSandbox(prefix) {
     projectsList:        [projects.p1],
     _lastProjIndexTs:    0,
     _saveProjTimers:     {},
+    _projectsLoaded:     true,   // the job list has been read from the server
     _biSaveTimers:       {},
     _biSavePending:      {},
 

@@ -570,7 +570,11 @@ async function openPage(browser, W, role, { viewport = { width: 1474, height: 90
     localStorage.setItem('fct_token', 'x.y.z');
     localStorage.setItem('fct_user', JSON.stringify(user));
     localStorage.setItem('fct_division', 'turf');
-    for (const [k, v] of Object.entries(storage)) localStorage.setItem(k, v);
+    // The page keeps Procurement's remembered job, grouping and "show all"
+    // per company and user (tracker.html, _FCT_CACHE_SCOPE): a test's
+    // fct_proc_* entries are the signed-in user's own.
+    const scope = '@' + encodeURIComponent(user.companyCode) + '/' + encodeURIComponent(user.username);
+    for (const [k, v] of Object.entries(storage)) localStorage.setItem(/^fct_proc_/.test(k) ? k + scope : k, v);
   }, { user, storage });
 
   await page.route('**/api/**', async route => {
@@ -760,7 +764,9 @@ async function asAdmin(browser, W) {
   ok('…shows its name and Job #', (await page.textContent('#procurement-root .fctproc-head')).includes('Penn Cambria')
     && (await page.textContent('#procurement-root .fctproc-head')).includes('Job #26119'));
   ok('…and, with no rows yet, says how to bring them in', /No procurement rows for this job yet/.test(await page.textContent('#fctproc-wrap')));
-  ok('the job is remembered for next time', await page.evaluate(() => localStorage.getItem('fct_proc_project_turf')) === 'p1');
+  ok('the job is remembered for next time, for this company\'s user only',
+    await page.evaluate(() => localStorage.getItem('fct_proc_project_turf@FCT/ada')) === 'p1'
+      && await page.evaluate(() => localStorage.getItem('fct_proc_project_turf')) === null);
 
   // Leave the tab, open the bid, Send to Procurement from there.
   await page.click('.tab-btn[data-tab="info"]');
@@ -1008,7 +1014,7 @@ async function asAdmin(browser, W) {
   await page.click('[data-group="none"]');
   await sleep(150);
   ok('None has no headers', await page.locator('#procurement-root tr.fctproc-grp').count() === 0);
-  ok('the grouping is remembered', await page.evaluate(() => localStorage.getItem('fct_proc_group_turf')) === 'none');
+  ok('the grouping is remembered', await page.evaluate(() => localStorage.getItem('fct_proc_group_turf@FCT/ada')) === 'none');
   await page.click('[data-group="cost"]');
   await sleep(150);
 
@@ -2821,6 +2827,67 @@ async function sweepInputs(browser) {
   await ctx.close();
 }
 
+// ── Sweep 2: the host page ───────────────────────────────────────────────────
+// A section renamed on the bid page, then the bid page's Send to Procurement
+// as the very next click. The checklist sends the page's pending bid saves
+// and reads the bid back; the whole-job save went out on its own there, so
+// the renamed lines never went through the per-line save that copies the new
+// code onto the job's Procurement rows (deleted ones too) and moves their
+// files. A later re-import under the new name then found no line for them.
+async function sweep2Host(browser) {
+  console.log('\n[sweep 2: host]');
+  const orig = JSON.parse(JSON.stringify(PROJECTS.p1));
+  const W = makeWorld();
+  const { page, ctx, errors } = await openPage(browser, W, 'admin');
+  try {
+    const seen = [];
+    // The whole-job save really stores the blob, so the checklist reads back
+    // what was saved; each per-line save is logged.
+    await page.route('**/api/data/fct_project_p1', async route => {
+      const req = route.request();
+      if (req.method() === 'PUT') {
+        PROJECTS.p1 = JSON.parse(req.postData()).value;
+        seen.push('whole-job');
+        return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+      }
+      seen.push('read');
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ value: PROJECTS.p1 }) });
+    });
+    await page.route('**/api/bid-items**', async route => {
+      await sleep(150);   // a line save takes a moment to land
+      seen.push('line ' + new URL(route.request().url()).searchParams.get('id'));
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+    });
+    await page.evaluate(() => openBidView('p1'));
+    await sleep(300);
+    const box = page.locator('#bid-fullscreen .bid-grp-input').first();
+    ok('the bid page shows the Stormwater section\'s cost code', await box.inputValue() === 'Stormwater', await box.inputValue());
+    await box.click();
+    await box.fill('Storm Drainage');
+    // The PM's next click, pressed the way a person does: leaving the box
+    // saves the rename, then the click opens the checklist.
+    await page.click('#bid-fs-procurement', { delay: 100 });
+    await page.waitForSelector('.fctproc-modal .fctproc-send-line, .fctproc-modal .fctproc-err', { timeout: 8000 });
+    const lines = seen.filter(s => s.startsWith('line ')).sort();
+    ok('rename then Send to Procurement: each renamed line goes through the per-line save, so the Procurement rows take the new code',
+      eq(lines, ['line b1', 'line b2']), seen);
+    const firstRead = seen.indexOf('read', seen.indexOf('whole-job'));
+    ok('  after the whole-job save, and landed before the checklist read the bid back',
+      seen.indexOf('whole-job') >= 0 && seen.indexOf('line b1') > seen.indexOf('whole-job') && seen.indexOf('line b2') > seen.indexOf('whole-job')
+        && firstRead > seen.lastIndexOf('line b1') && firstRead > seen.lastIndexOf('line b2'), seen);
+    ok('  the checklist offers the lines under the new name', /Storm Drainage/.test(await page.textContent('.fctproc-modal')));
+    await page.click('.fctproc-modal [data-send="cancel"]').catch(() => page.click('.fctproc-modal [data-close]'));
+    await page.evaluate(() => closeBidView());
+    await sleep(900);
+    ok('  nothing is left waiting for a later save, and no line is saved twice',
+      await page.evaluate(() => !_bidRenamedLines.p1) && seen.filter(s => s.startsWith('line ')).length === 2, seen);
+    ok('no page errors', errors.length === 0, errors.join(' | '));
+  } finally {
+    PROJECTS.p1 = orig;
+    await ctx.close();
+  }
+}
+
 (async () => {
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
@@ -2842,6 +2909,7 @@ async function sweepInputs(browser) {
     await attachments(browser);
     await siteSheet(browser);
     await sweepInputs(browser);
+    await sweep2Host(browser);
   } finally {
     await browser.close();
     server.close();

@@ -1113,6 +1113,7 @@ function planDom(page, src, role) {
     'const fctUser = window.__user;',
     permSource(src),
     liftLine(src, 'const _cbEsc =', page.file),
+    liftLine(src, 'const _FCT_CACHE_SCOPE', page.file),
     liftLine(src, 'const PROJECTS_KEY', page.file),
     liftLine(src, 'const _biSaveTimers', page.file),
     liftLine(src, 'const _biSavePending', page.file),
