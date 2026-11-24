@@ -256,9 +256,19 @@
   function ctxIndex(ctx) {
     let m = _ctxIndex.get(ctx);
     if (!m) {
-      m = { lineById: new Map(), poById: new Map(), lineByJob: null, costKeysByJob: new Map(), linkedPO: new Set() };
+      m = { lineById: new Map(), poById: new Map(), poByJob: new Map(), poByCode: new Map(), lineByJob: null, costKeysByJob: new Map(), linkedPO: new Set(), takers: null };
       (ctx.bidLines || []).forEach(l => { if (l && l.id != null) m.lineById.set(String(l.id), l); });
-      (ctx.purchaseOrders || []).forEach(p => { if (p && p.id != null) m.poById.set(String(p.id), p); });
+      // The orders by job (and, once a row of the job asks, by codes —
+      // posUnder), so each row looks up the few under its own codes: read
+      // whole for every row, the division's thousands of orders froze a big
+      // job's sheet for seconds on every poll that redrew it.
+      (ctx.purchaseOrders || []).forEach(p => {
+        if (!p) return;
+        if (p.id != null) m.poById.set(String(p.id), p);
+        const job = String(p.project_id || '');
+        if (!m.poByJob.has(job)) m.poByJob.set(job, []);
+        m.poByJob.get(job).push(p);
+      });
       // A link that holds: its PO is listed and on the row's own job. One
       // re-pointed to another job ("moved") or gone does not take the order
       // from the rows of the job it is on now.
@@ -366,7 +376,7 @@
    *        'loading'  the page's PO list has not loaded, so we cannot say
    */
   function effectivePO(row, ctx) {
-    const out = (kind, po, candidates) => ({ kind, po: po || null, candidates: candidates || [] });
+    const out = (kind, po, candidates, more) => ({ kind, po: po || null, candidates: candidates || [], ...more });
     if (row.po_id) {
       if (!ctx.poLoaded) return out('loading');
       const po = ctxIndex(ctx).poById.get(String(row.po_id));
@@ -376,34 +386,116 @@
       return out('linked', po, [po]);
     }
     if (row.po_auto === false) return out('nopo');
+    const codes = autoCodes(row, ctx);
+    if (!codes) return out('none');
+    if (!ctx.poLoaded) return out('loading');
+    const cands = codeMatches(row, ctx, codes);
+    if (!cands.length) return out('none');
+    // An order more rows than this one would be matched to is given to the
+    // one it is most clearly for (autoTaker), and to none of them when that
+    // cannot be told: a material added under a bid line ("+ Material", the
+    // copy list) read Ordered, with no Late flag, on the order raised on the
+    // Purchase Orders tab for the line's own material beside it.
+    const takers = autoTakers(ctx);
+    const mine = [], open = [];
+    let others = 0, by = '';
+    cands.forEach(po => {
+      const t = takers.get(po) || [];
+      const here = t.some(r => r.id === row.id);
+      // A row not taking orders as the sheet has it (its PO # being set
+      // back to Auto, say) is weighed with the rows that do.
+      const all = here ? t.map(r => (r.id === row.id ? row : r)) : t.concat(row);
+      if (all.length === 1) { mine.push(po); return; }
+      const win = autoTaker(po, all);
+      if (win && win.row.id === row.id) { mine.push(po); others = Math.max(others, all.length - 1); by = win.by; } else if (!win) open.push(po);
+    });
+    if (mine.length === 1) return out('auto', mine[0], mine, others ? { others, by } : null);
+    if (mine.length > 1) return out('multiple', null, mine);
+    // On no order. `candidates` names those it could be on that no row is
+    // given: the PM picks, in the PO # column.
+    return out('none', null, open);
+  }
+
+  /**
+   * A row's live codes, keyed, when it can be matched to an order by them at
+   * all; else null.
+   */
+  function autoCodes(row, ctx) {
     const k = keyFn(ctx);
     const codes = liveCodes(row, ctx);
     const cc = ck(k, codes.cost_code), sc = ck(k, codes.sub_code);
     // A row with no codes would otherwise "match" every PO raised with blank
     // codes — and '+ New PO' saves one exactly like that. It matches none
     // whatever the list holds, so it does not wait for the list either.
-    if (!cc && !sc) return out('none');
+    if (!cc && !sc) return null;
     // Nor does a hand-added row with a cost code and no sub code (one added
     // from a section header): a cost code alone names no material, and it
     // would take the order a sibling row raised for that code — a blank row
     // reading Ordered on someone else's PO.
-    if (!codes.line && !sc) return out('none');
-    if (!ctx.poLoaded) return out('loading');
+    if (!codes.line && !sc) return null;
+    return { cc, sc };
+  }
+  /** The orders on the row's job with its live codes and a vendor it can take. */
+  function codeMatches(row, ctx, codes) {
+    const m = ctxIndex(ctx);
     const pid = row.project_id || ctx.projectId;
     // An order a row of the sheet is linked to is that row's — raised for it
     // (Create PO from selected), or picked for it. It is not matched to
     // the other rows under the same codes as well: the materials "+ Material"
     // splits a bid line into read Ordered, with no Late flag, on the PO
     // raised for the stone or the chambers beside them.
-    const linked = ctxIndex(ctx).linkedPO;
-    const cands = (ctx.purchaseOrders || []).filter(po => po
-      && !linked.has(String(po.id))
-      && String(po.project_id || '') === String(pid || '')
-      && ck(k, po.cost_code) === cc && ck(k, po.sub_code) === sc
-      && vendorCompatible(row.vendor, po.supplier));
-    if (cands.length === 1) return out('auto', cands[0], cands);
-    if (cands.length > 1) return out('multiple', null, cands);
-    return out('none', null, cands);
+    return posUnder(ctx, String(pid || ''), codes.cc, codes.sc)
+      .filter(po => !m.linkedPO.has(String(po.id)) && vendorCompatible(row.vendor, po.supplier));
+  }
+  /** A job's orders with these (keyed) codes, in list order. */
+  function posUnder(ctx, job, cc, sc) {
+    const m = ctxIndex(ctx);
+    let byCode = m.poByCode.get(job);
+    if (!byCode) {
+      byCode = new Map();
+      const k = keyFn(ctx);
+      (m.poByJob.get(job) || []).forEach(p => {
+        const key = ck(k, p.cost_code) + '\u0000' + ck(k, p.sub_code);
+        if (!byCode.has(key)) byCode.set(key, []);
+        byCode.get(key).push(p);
+      });
+      m.poByCode.set(job, byCode);
+    }
+    return byCode.get(cc + '\u0000' + sc) || [];
+  }
+  /**
+   * For each order, the rows of the sheet that would be matched to it by
+   * their codes (no link, not "No PO"). Worked out once per ctx.
+   */
+  function autoTakers(ctx) {
+    const m = ctxIndex(ctx);
+    if (m.takers) return m.takers;
+    const takers = new Map();
+    (ctx.rows || []).forEach(r => {
+      if (!r || r.deleted_at || r.po_id || r.po_auto === false) return;
+      const codes = autoCodes(r, ctx);
+      if (!codes) return;
+      codeMatches(r, ctx, codes).forEach(po => {
+        if (!takers.has(po)) takers.set(po, []);
+        takers.get(po).push(r);
+      });
+    });
+    m.takers = takers;
+    return takers;
+  }
+  /**
+   * Which of several rows an order is for: the one whose vendor is its
+   * supplier, else the bid line's own row (sent from the bid — the order a PM
+   * raises for a line on the Purchase Orders tab is for that), else none —
+   * they read as not ordered, and the PM picks it on the right one.
+   */
+  function autoTaker(po, rows) {
+    const sup = lc(po.supplier);
+    const named = sup ? rows.filter(r => lc(r.vendor) === sup) : [];
+    if (named.length === 1) return { row: named[0], by: 'vendor' };
+    const own = rows.filter(r => r.source === 'bid');
+    if (own.length === 1) return { row: own[0], by: 'bid' };
+    return null;
   }
 
   /** The row's own Date Ordered, else the date its PO was raised, else ''. */
@@ -1833,7 +1925,9 @@
     const e = row ? effectivePO({ ...row, po_id: null, po_auto: true }, ctx) : { kind: 'none', candidates: [] };
     const autoMeta = !ctx.poLoaded ? 'POs still loading'
       : e.kind === 'auto' ? `matches ${str(e.po.po_number) || 'a PO'}`
-      : e.kind === 'multiple' ? `${e.candidates.length} POs match` : 'no PO matches yet';
+      : e.kind === 'multiple' ? `${e.candidates.length} POs match`
+      : e.candidates.length ? `${e.candidates.map(p => str(p.po_number) || '(no number)').join(', ')} also fit${e.candidates.length === 1 ? 's' : ''} other rows — pick it below`
+      : 'no PO matches yet';
     const opts = [
       { value: '__auto__', label: 'Auto', meta: autoMeta },
       { value: '__none__', label: 'No PO', meta: 'not bought on a PO' },
@@ -1884,6 +1978,8 @@
           .filter(m => m && typeof m.material === 'string' && m.material.trim())
           .map(m => ({
             material: m.material.trim(), sub_code: str(m.sub_code), cost_code: str(m.cost_code),
+            // Every cost code it was bought under, newest first (hasPastList).
+            ...(Array.isArray(m.cost_codes) ? { cost_codes: m.cost_codes.map(str) } : {}),
             unit: str(m.unit), vendor: str(m.vendor), jobs: Math.max(0, intOrNull(m.jobs) || 0),
             last_used: str(m.last_used),
           }));
@@ -2028,10 +2124,31 @@
   // ── Shared supplier-contacts client ─────────────────────────────────
   // The contacts remembered under each supplier, read once per division and
   // kept here so the Procurement grid and the Suppliers tab see one list.
-  const cc = { division: null, list: [], loaded: false, loading: null, listeners: new Set() };
+  const cc = { division: null, list: [], loaded: false, loading: null, at: 0, failedAt: 0, listeners: new Set() };
   function ccFresh() {
-    if (cc.division !== cfg.division) { cc.division = cfg.division; cc.list = []; cc.loaded = false; cc.loading = null; }
+    if (cc.division !== cfg.division) { cc.division = cfg.division; cc.list = []; cc.loaded = false; cc.loading = null; cc.at = 0; cc.failedAt = 0; }
     return cc;
+  }
+  /**
+   * The list read again once it is `maxAge` old. A PM who keeps the sheet
+   * open all day — as the 15 s poll means them to — was offered the contacts
+   * as they were in the morning: an address an admin has since corrected
+   * (picked, and saved on the row, and emailed), no new contact, and after a
+   * supplier renamed elsewhere a Vendor change left the old supplier's person
+   * on the row, since the list still had them under the old name. A level2
+   * PM has no Admin > Suppliers to read it again for them. Nothing is redrawn
+   * by it: the pickers read the list as they open.
+   */
+  const CONTACTS_STALE_MS = 60 * 1000;
+  function freshenContacts(maxAge = CONTACTS_STALE_MS) {
+    const c = ccFresh();
+    if (c.loading) return c.loading;
+    // A read that failed a moment ago is not tried again on every poll; the
+    // list in hand stays meanwhile.
+    const at = Math.max(c.at, c.loaded ? c.failedAt || 0 : 0);
+    if (c.loaded && Date.now() - at < maxAge) return Promise.resolve(c.list.slice());
+    const division = cfg.division;
+    return contacts.load(true).catch(err => { if (cc.division === division) cc.failedAt = Date.now(); throw err; });
   }
   function ccNotify() { cc.listeners.forEach(f => { try { f(cc.list.slice()); } catch (e) { console.warn(e); } }); }
   function ccPut(c) {
@@ -2053,6 +2170,7 @@
         cc.list = [];
         (data.contacts || []).forEach(ccPut);
         cc.loaded = true;
+        cc.at = Date.now();
         ccNotify();
         return cc.list.slice();
       }).finally(() => { if (cc.loading === p) cc.loading = null; });
@@ -2223,6 +2341,35 @@
     } else {
       notePick(rowId, { vendor: name });
       setField(rowId, 'vendor', name);
+      // Not a saved contact of the old vendor as this page's list has them —
+      // but the list may be behind the row: a supplier renamed elsewhere
+      // reaches the rows on the next poll, its contacts only with the next
+      // read of the list, and until then this left the old supplier's person
+      // beside the new vendor, to be emailed. Asked again, then cleared after
+      // all if they are that supplier's.
+      const shown = { contact: row.contact, email: row.email };
+      if (old && lc(old) !== lc(name) && (shown.contact.trim() || shown.email.trim()) && Date.now() - cc.at > 5000) {
+        freshenContacts(0).then(() => {
+          const r = rowById(rowId);
+          // Only the row as it was left: a Vendor changed again, or a Contact
+          // or Email typed since, is the PM's own and stays.
+          if (!r || r.vendor !== name || r.contact !== shown.contact || r.email !== shown.email) return;
+          const was2 = savedContactOf(old, r);
+          if (!was2) return;
+          // The box the PM is in shows what it showed; the cells are not
+          // emptied under it.
+          const a = document.activeElement;
+          if (a && a.dataset && a.dataset.pr === rowId && (a.dataset.pf === 'contact' || a.dataset.pf === 'email')) {
+            toast(`${was2.name || was2.email || 'That contact'} is a contact of ${old}, not of ${name || 'the new vendor'} — check Contact and Email.`, 'error');
+            return;
+          }
+          notePick(rowId, { vendor: name, contact: '', email: '' });
+          setFields(rowId, { contact: '', email: '' });
+          contactTouched.delete(rowId);
+          refreshRow(rowId);
+          toast(`Contact and Email cleared: ${was2.name || was2.email || 'that contact'} is a contact of ${old}, not of ${name || 'the new vendor'}.`);
+        }).catch(err => console.warn('[procurement] contacts did not load', err));
+      }
     }
     return true;
   }
@@ -3054,6 +3201,8 @@
       // type one — read after the rows (never ahead of them), and only every
       // few minutes; every load in between is a no-op.
       if (canEdit() && !colHidden('description')) loadLibrary();
+      // The contacts the pickers offer, once a minute old (freshenContacts).
+      if (canEdit()) freshenContacts().catch(err => console.warn('[procurement] contacts did not load', err));
     } catch (err) {
       if (gen !== loadGen) return;
       // A failed poll leaves what is on screen alone. A failed first read is
@@ -3334,15 +3483,37 @@
   // row shown as on a removed PO (Not Ordered, Late) until the page's next
   // minute poll. Asked once for each set of such orders, so one that really
   // was removed is not read for again on every poll.
+  //
+  // So is a row whose codes moved since the last read — its stored copy, or
+  // its bid line's: a section or sub code renamed on the bid page. The
+  // server carries the rename to the job's orders under the old codes, but
+  // the page's copy of them is up to a minute old, and until it is read
+  // again the row matches no order — Not Ordered and Late, and Create PO
+  // raising a second order for it without asking. Once per read of the rows
+  // however many rows a rename moved.
   let poAskedFor = '';
+  let codesSeen = { sig: null, codes: new Map() };
   function askForNewPOs() {
     const ctx = makeCtx();
+    const moved = codesMoved(ctx);
     if (!ctx.poLoaded) return;
     const idx = ctxIndex(ctx);
     const unknown = [...new Set(st.rows.filter(r => r.po_id && !idx.poById.has(String(r.po_id))).map(r => String(r.po_id)))].sort().join(',');
-    if (!unknown || unknown === poAskedFor) return;
-    poAskedFor = unknown;
-    refreshPOs();
+    const ask = !!unknown && unknown !== poAskedFor;
+    if (ask) poAskedFor = unknown;
+    if (ask || moved) refreshPOs();
+  }
+  // Whether a row matched to an order by its codes has other codes than at
+  // the last look, stored or live; the first look at a sheet says nothing.
+  function codesMoved(ctx) {
+    const sig = viewSig(), k = keyFn(ctx);
+    const now = new Map(st.rows.filter(r => !r.po_id && r.po_auto !== false).map(r => {
+      const c = liveCodes(r, ctx);
+      return [r.id, [r.cost_code, r.sub_code, c.cost_code, c.sub_code].map(s => ck(k, s)).join('\u0000')];
+    }));
+    const was = codesSeen.sig === sig ? codesSeen.codes : null;
+    codesSeen = { sig, codes: now };
+    return !!was && [...now].some(([id, c]) => was.has(id) && was.get(id) !== c);
   }
   function refreshPOs() {
     if (typeof cfg.refreshPurchaseOrders !== 'function') return Promise.resolve(false);
@@ -4191,10 +4362,19 @@
     const id = esc(r.id);
     const num = ep.po ? str(ep.po.po_number) || '(no number)' : '';
     const cls = ep.kind === 'multiple' ? 'po-multi' : (ep.kind === 'removed' || ep.kind === 'moved') ? 'po-removed' : ep.kind === 'nopo' ? 'po-nopo' : '';
-    const autoTag = ep.kind === 'auto'
-      ? '<span class="fctproc-tag" title="Matched automatically: the only PO on this job with this cost code, sub code and vendor">auto</span>' : '';
+    // Fits other rows under these codes too, and given to this one: said, so
+    // the PM knows the rows beside it are not on it.
+    const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
+    const autoTip = !ep.others ? 'Matched automatically: the only PO on this job with this cost code, sub code and vendor'
+      : `Matched automatically: the PO on this job with this cost code, sub code and vendor. It is this row's, not the ${n(ep.others, 'other row', 'other rows')} `
+        + `under these codes: ${ep.by === 'vendor' ? 'its supplier is this row\'s vendor' : 'this is the bid line\'s own row'}`;
+    const autoTag = ep.kind === 'auto' ? `<span class="fctproc-tag" title="${esc(autoTip)}">auto</span>` : '';
     const open = ep.po ? `<button type="button" class="fctproc-open" data-act="open-po" data-po="${esc(ep.po.id)}" title="Open ${esc(num)} on the Purchase Orders tab">&#8599;</button>` : '';
     let multiTitle = ep.kind === 'multiple' ? ep.candidates.map(p => str(p.po_number)).join(', ') : '';
+    // An order that fits this row and others beside it, none of them more
+    // than the rest: no row is on it until the PM picks it on the right one.
+    const fits = ep.kind === 'none' && ep.candidates.length ? ep.candidates.map(p => str(p.po_number) || '(no number)') : null;
+    if (fits) multiTitle = `${fits.join(', ')} ${fits.length === 1 ? 'fits' : 'fit'} this row and others under the same codes, so no row is on ${fits.length === 1 ? 'it' : 'them'} yet. Pick ${fits.length === 1 ? 'it' : 'one'} here if this row is what ${fits.length === 1 ? 'it was' : 'they were'} raised for.`;
     if (ep.kind === 'moved') {
       // Linked here, then re-pointed to another job on the Purchase Orders
       // tab: it is not this job's order any more, so the row is not ordered.
@@ -4207,6 +4387,7 @@
     }
     const value = ep.kind === 'linked' || ep.kind === 'auto' ? num : ep.kind === 'nopo' ? 'No PO' : '';
     const placeholder = ep.kind === 'multiple' ? `${ep.candidates.length} POs match — pick`
+      : fits ? `${fits.length === 1 ? fits[0] : `${fits.length} POs`} fit${fits.length === 1 ? 's' : ''} several rows — pick`
       : ep.kind === 'removed' ? 'PO removed' : ep.kind === 'moved' ? `${num} is on another job` : ep.kind === 'loading' ? '…' : '—';
     const cbv = r.po_id ? r.po_id : r.po_auto === false ? '__none__' : '__auto__';
     return td(cls, `<div class="fctproc-po">${cbCell('proc_pos:' + r.id, value, placeholder,
@@ -5355,12 +5536,18 @@
     if (!sk) return false;
     let ix = _pastIndex.get(ctx);
     if (!ix || ix.list !== lib.list || ix.rows !== st.rows.length || ix.named !== st.rows.reduce((n, r) => n + (str(r.description).trim() ? 1 : 0), 0)) {
-      ix = { list: lib.list, rows: st.rows.length, named: 0, bySub: new Map(), here: new Set() };
+      ix = { list: lib.list, rows: st.rows.length, named: 0, bySub: new Map(), here: new Set(), costs: new Map() };
       lib.list.forEach(e => {
         const s = ck(k, e.sub_code);
         if (!s || !(e.jobs > 0)) return;
         if (!ix.bySub.has(s)) ix.bySub.set(s, []);
         ix.bySub.get(s).push(e);
+        // Every cost code the name was bought under, when the server says
+        // (cost_codes): with the newest alone, a list bought under this line
+        // on one job was never offered once another job bought the same name
+        // under another cost code. An older server sends just the newest.
+        const all = Array.isArray(e.cost_codes) && e.cost_codes.length ? e.cost_codes : [e.cost_code];
+        ix.costs.set(e, new Set(all.map(c => ck(k, c)).filter(Boolean)));
       });
       st.rows.forEach(r => {
         const m = str(r.description).trim();
@@ -5374,7 +5561,7 @@
       });
       _pastIndex.set(ctx, ix);
     }
-    return (ix.bySub.get(sk) || []).some(e => (!cc || !ck(k, e.cost_code) || ck(k, e.cost_code) === cc)
+    return (ix.bySub.get(sk) || []).some(e => (!cc || !ix.costs.get(e).size || ix.costs.get(e).has(cc))
       && !ix.here.has(`${row.project_id}\u0000${cc}\u0000${sk}\u0000${ck(k, e.material)}`));
   }
 
@@ -5395,12 +5582,50 @@
     // The rows under this line — its cost code and sub code: the same sub
     // code under another cost code is another line, whose materials are not
     // "already here" on this one.
-    const lineRows = st.rows.filter(r => {
+    const rowsOfLine = c0 => st.rows.filter(r => {
       if (r.project_id !== pid) return false;
-      const c = liveCodes(r, ctx);
+      const c = liveCodes(r, c0);
       return ck(k, c.sub_code) === sk && ck(k, c.cost_code) === cc;
     });
+    const lineRows = rowsOfLine(ctx);
     const have = new Set(lineRows.map(r => ck(k, materialOf(r, ctx))).filter(Boolean));
+    const openIds0 = new Set(lineRows.map(r => r.id));
+    /**
+     * Just before Add: the rows read again, quietly (as Create PO does before
+     * it decides), and the ticked materials put on this line since the dialog
+     * opened — a colleague copying the same list onto it a moment before
+     * this PM — left out: added again, the job listed each one twice, ready
+     * to be ordered twice. Returns what to tell the PM, or null.
+     */
+    async function leaveOutAddedSince() {
+      if (st.loadState === 'ok' && st.loadedFor === viewSig()) await load(st.projectId, { quiet: true });
+      const now = siteMode() && p.project_id ? makeCtx(p.project_id) : makeCtx();
+      // This dialog's own rows — an earlier Add whose answer was lost — are
+      // not someone else's: sent again with the same ids, they go in once.
+      const ours = new Set([].concat(...ids));
+      const byName = new Map();
+      rowsOfLine(now).forEach(r => {
+        const m0 = ck(k, materialOf(r, now));
+        if (m0 && !ours.has(r.id) && !byName.has(m0)) byName.set(m0, r);
+      });
+      const items = lists[pick].items;
+      // A material that was here already when the dialog opened, and ticked
+      // all the same, is the PM's own choice (a second delivery) and goes in.
+      const since = items.map((it, i) => i).filter(i => ticks[pick][i] && !have.has(ck(k, items[i].material)) && byName.has(ck(k, items[i].material)));
+      if (!since.length) return null;
+      since.forEach(i => { ticks[pick][i] = false; });
+      byName.forEach((r, m0) => have.add(m0));
+      // Who put them there: whoever added the row — or, for a row already on
+      // the line (its own row, named since), whoever named it.
+      const names = [...new Set(since.map(i => {
+        const r = byName.get(ck(k, items[i].material));
+        const by = openIds0.has(r.id) ? r.updated_by : (r.created_by || r.updated_by);
+        return by ? (isMe(by) ? 'you, in another window' : str(by)) : '';
+      }).filter(Boolean))];
+      const who = !names.length ? 'added since this list was opened'
+        : `added by ${names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`}`;
+      return `${since.length} already here — ${who}`;
+    }
     const own = p.bid_item_id ? st.rows.find(r => r.project_id === pid && r.source === 'bid' && String(r.bid_item_id) === String(p.bid_item_id)) : null;
     // Read as the dialog is used, not once: a colleague (or the PM, in the
     // sheet behind) can name that row while it is open.
@@ -5497,9 +5722,16 @@
       if (token) token.adding = true;
       go.disabled = true;
       go.textContent = 'Adding…';
-      let done = false;
+      let done = false, note = null;
       try {
-        done = await copyMaterials(p, lists[pick], ticks[pick], { copyQty, nameOwn: namer(), ownId: own ? own.id : null, ids: ids[pick] });
+        note = await leaveOutAddedSince();
+        // Everything ticked is on the line now: nothing is added.
+        if (note && !ticks[pick].some(Boolean)) {
+          toast(`Nothing added: ${note}.`);
+          done = true;
+        } else {
+          done = await copyMaterials(p, lists[pick], ticks[pick], { copyQty, nameOwn: namer(), ownId: own ? own.id : null, ids: ids[pick], note });
+        }
       } finally {
         busy = false;
         if (token) {
@@ -5508,7 +5740,7 @@
         }
       }
       if (done) m.close();
-      else if (m.el.isConnected) sync();
+      else if (m.el.isConnected) { if (note) draw(); else sync(); }
     });
     return m;
   }
@@ -5521,7 +5753,7 @@
    * retry after an answer lost on the way back sends the same ids, so a row
    * goes in once. True when it went in.
    */
-  async function copyMaterials(p, list, ticked, { copyQty = false, nameOwn = -1, ownId = null, ids = null } = {}) {
+  async function copyMaterials(p, list, ticked, { copyQty = false, nameOwn = -1, ownId = null, ids = null, note = null } = {}) {
     const ctx = siteMode() && p.project_id ? makeCtx(p.project_id) : makeCtx();
     const codes = liveCodes(p, ctx);
     const pid = p.project_id || st.projectId;
@@ -5603,7 +5835,9 @@
     await pickersSettled();
     redrawSheet();
     const n = rows.length + (named ? 1 : 0);
-    toast(`Added ${n} material${n === 1 ? '' : 's'} from ${from}${named ? ' (one names this line\'s own row)' : ''}${copyQty ? '' : ' — fill in this job\'s quantities'}`);
+    // What was left out as already here (leaveOutAddedSince) is said in the same toast.
+    toast(`Added ${n} material${n === 1 ? '' : 's'} from ${from}${named ? ' (one names this line\'s own row)' : ''}${copyQty ? '' : ' — fill in this job\'s quantities'}`
+      + (note ? `. ${note}, so not added again.` : ''));
     // Fewer back than sent: an id already taken elsewhere. The sheet is read
     // again rather than guessed at.
     if (rows.length < items.length) setTimeout(() => { if (isOpenJob(pid)) load(st.projectId, { quiet: true }); }, 0);
@@ -6017,8 +6251,12 @@
     const decided = new Map(rows.map(r => [r.id, { po_id: r.po_id == null || r.po_id === '' ? null : String(r.po_id), po_auto: r.po_auto !== false }]));
     const onPO = rows.filter(r => ['linked', 'auto'].includes(eps.get(r.id).kind));
     const multi = rows.filter(r => eps.get(r.id).kind === 'multiple');
-    if (onPO.length || multi.length) {
-      const free = rows.filter(r => !onPO.includes(r) && !multi.includes(r));
+    // On no order, but under the codes of one that fits these rows and
+    // others beside them, none more than the rest (effectivePO): it may be
+    // the order for them already.
+    const fits = rows.filter(r => eps.get(r.id).kind === 'none' && eps.get(r.id).candidates.length);
+    if (onPO.length || multi.length || fits.length) {
+      const free = rows.filter(r => !onPO.includes(r) && !multi.includes(r) && !fits.includes(r));
       const nums = [...new Set(onPO.map(r => str(eps.get(r.id).po.po_number) || '(no number)'))];
       const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
       const said = [];
@@ -6028,6 +6266,11 @@
       }
       if (multi.length) {
         said.push(`<b>${multi.length}</b> ${multi.length === 1 ? 'matches' : 'match'} several existing POs — pick the right one in the PO # column instead.`);
+      }
+      if (fits.length) {
+        const fitNums = [...new Set([].concat(...fits.map(r => eps.get(r.id).candidates.map(p => str(p.po_number) || '(no number)'))))];
+        said.push(`<b>${fits.length}</b> ${fits.length === 1 ? 'is' : 'are'} under the codes of <b>${fitNums.slice(0, 4).map(esc).join(', ')}</b>${fitNums.length > 4 ? ` and ${fitNums.length - 4} more` : ''}, `
+          + `which ${fitNums.length === 1 ? 'fits' : 'fit'} other rows too — if ${fits.length === 1 ? 'it is' : 'they are'} on ${fitNums.length === 1 ? 'it' : 'one'}, pick it in the PO # column instead.`);
       }
       const opts = [];
       if (free.length) opts.push({ value: 'free', cls: 'btn-green', label: `Only the ${n(free.length, 'row', 'rows')} with no PO` });
@@ -6093,7 +6336,7 @@
       if (!pick) return;
       if (pick === 'one') plan = [{ project_id: top.project_id, cost_code: top.cost_code, sub_code: top.sub_code, rows }];
     }
-    const made = [], leftOff = [];
+    const made = [], leftOff = [], reached = [];
     for (const g of plan) {
       const quotes = [...new Set(g.rows.map(r => r.quote_number.trim()).filter(Boolean))];
       const seed = {
@@ -6114,6 +6357,7 @@
       try {
         const refused = await linkToPO(g.rows, po, decided);
         made.push(po);
+        reached.push(g);
         if (refused.length) leftOff.push({ po, n: refused.length });
       } catch (err) {
         setSave('error');
@@ -6122,13 +6366,22 @@
       }
     }
     if (made.length) {
-      st.selected.clear();
+      // Only the rows whose PO was raised come off the selection: when a
+      // later one could not be (the server down for a moment), the rows it
+      // was for stay ticked, so Create PO is simply clicked again for them —
+      // cleared with the rest, nothing on screen said which were left over.
+      const keep = new Set([].concat(...plan.filter(g => !reached.includes(g)).map(g => g.rows.map(r => r.id))));
+      [...st.selected].forEach(id => { if (!keep.has(id)) st.selected.delete(id); });
       renderBulk();
       await pickersSettled();
       redrawSheet();
-      const linked = rows.length - leftOff.reduce((a, x) => a + x.n, 0);
-      toast(made.length === 1 ? `Created ${str(made[0].po_number) || 'the PO'} and linked ${linked} row${linked === 1 ? '' : 's'}`
-        : `Created ${made.length} POs${jobs.length > 1 ? `, each on its own job` : ''} (${made.map(p => str(p.po_number)).join(', ')})`);
+      // …and only they are counted as linked: the toast said every selected
+      // row was, beside the banner saying the next PO was never raised.
+      const linked = reached.reduce((a, g) => a + g.rows.length, 0) - leftOff.reduce((a, x) => a + x.n, 0);
+      const left = keep.size;
+      toast((made.length === 1 ? `Created ${str(made[0].po_number) || 'the PO'} and linked ${linked} row${linked === 1 ? '' : 's'}`
+        : `Created ${made.length} POs${jobs.length > 1 ? `, each on its own job` : ''} (${made.map(p => str(p.po_number)).join(', ')})`)
+        + (left ? ` — ${left} row${left === 1 ? ' is' : 's are'} still ticked, on no new PO yet` : ''));
     }
     leftOff.forEach(({ po, n }) => showError(`Procurement: ${n} of the rows for ${str(po.po_number) || 'the new PO'} `
       + `${n === 1 ? 'was' : 'were'} put on an order by someone else while it was being raised, so ${n === 1 ? 'it was' : 'they were'} left on that one `
@@ -6840,8 +7093,10 @@
         st.projectId = null;
         storeSet('project', null);
       }
-      // The contact pickers read from the shared cache.
-      contacts.load().catch(err => console.warn('[procurement] contacts did not load', err));
+      // The contact pickers read from the shared cache — read again as the
+      // tab is shown (freshenContacts), unless it was just read: the page
+      // draws the tab twice as it starts.
+      freshenContacts(5000).catch(err => console.warn('[procurement] contacts did not load', err));
       const cached = st.projectId && st.loadedFor === viewSig() && st.loadState === 'ok';
       // Already drawn here, for this job: the tab clicked again, or the page
       // finishing its start-up behind a sheet in use. Redrawn in place —

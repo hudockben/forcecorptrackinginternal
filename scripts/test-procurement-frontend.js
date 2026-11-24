@@ -4273,6 +4273,7 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('the dialog offers to name the line\'s own row', /names this line's own row/.test(e.$('.fctproc-modal [data-copy="count"]').textContent));
     const k1 = e.P._test.state().rows.find(r => r.id === 'k1');
     k1.description = 'Named by a colleague';
+    Object.assign(e.db.rows.find(r => r.id === 'k1'), { description: 'Named by a colleague', version: 2, updated_by: 'Dana Reyes' });
     e.$('.fctproc-modal [data-copy="go"]').click();
     await sleep(80);
     const add = e.calls.filter(c => c.q.action === 'add').pop();
@@ -4869,11 +4870,12 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     ] });
     e.P.renderTab(e.root);
     await sleep(40);
-    assert('(both read Ordered on PO-0001 by their codes)', ['sA', 'sB'].every(id => e.$(`tr[data-row="${id}"] .fctproc-pill`).textContent === 'Ordered'));
-    e.pick(e.field('sA', 'po'), 'PO-0001', 'po1');
+    assert('(the line\'s own row reads Ordered on PO-0001 by its codes; the staples added under it do not)',
+      e.$('tr[data-row="sA"] .fctproc-pill').textContent === 'Ordered' && e.$('tr[data-row="sB"] .fctproc-pill').textContent === 'Not Ordered');
+    e.pick(e.field('sB', 'po'), 'PO-0001', 'po1');
     await sleep(20);
-    assert('one of them linked to it: the other is redrawn at once as not on it', e.$('tr[data-row="sA"] .fctproc-pill').textContent === 'Ordered'
-      && e.$('tr[data-row="sB"] .fctproc-pill').textContent === 'Not Ordered', ['sA', 'sB'].map(id => e.$(`tr[data-row="${id}"] .fctproc-pill`).textContent));
+    assert('the staples linked to it: the line\'s own row is redrawn at once as not on it', e.$('tr[data-row="sB"] .fctproc-pill').textContent === 'Ordered'
+      && e.$('tr[data-row="sA"] .fctproc-pill').textContent === 'Not Ordered', ['sA', 'sB'].map(id => e.$(`tr[data-row="${id}"] .fctproc-pill`).textContent));
 
     // A link re-pointed to another job takes nothing from this job's rows.
     const PM = { id: 'pm', po_number: 'PO-0500', project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Geofabric', supplier: 'Acme Supply', date_created: '2026-03-09' };
@@ -5145,6 +5147,280 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     e.w.document.dispatchEvent(new e.w.MouseEvent('mouseup', { bubbles: true, button: 0 }));
     await sleep(30);
     assert('…and is read once it is up', gets() === g0 + 1);
+  }
+
+  console.log('\n[sweep 2: po]');
+  {
+    const dana = (e, id, f) => { const r = e.db.rows.find(x => x.id === id); Object.assign(r, f); r.version++; r.updated_by = 'Dana Reyes'; r.updated_at = new Date().toISOString(); };
+    const tickRow = (e, id) => { const b = e.$(`[data-sel="${id}"]`); b.checked = true; e.fire(b, 'change'); };
+    const counts = e => e.$('#fctproc-counts').textContent.replace(/\s+/g, ' ');
+    const modalText = e => (e.$('.fctproc-modal') ? e.$('.fctproc-modal').textContent.replace(/\s+/g, ' ') : '');
+    const autoTag = (e, id) => !![...e.$$(`tr[data-row="${id}"] td.c-po .fctproc-tag`)].find(t => t.textContent === 'auto');
+
+    // ── An order raised on the Purchase Orders tab, for one of a bid line's materials ──
+    const P7 = { id: 'p7', po_number: 'PO-0007', project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Geofabric', supplier: 'LB Water', date_created: '2026-03-01' };
+    const geoBid = (o = {}) => row({ id: 'gb', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', vendor: 'LB Water', ...o });
+    // Needed in 2 days, a 10-day lead time: its Order By was eight days ago.
+    const staples = (o = {}) => row({ id: 'gs', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: 'Fabric staples',
+      date_needed: '2026-03-12', lead_time_days: 10, created_at: '2026-03-05T10:00:00Z', ...o });
+    let cx = C({ purchaseOrders: [P7], rows: [geoBid(), staples()] });
+    assert('an unlinked PO the line\'s own row and a "+ Material" row would both take: the line\'s own row (its vendor is the supplier) reads Ordered on it',
+      T.effectivePO(geoBid(), cx).kind === 'auto' && T.effectivePO(geoBid(), cx).po.id === 'p7' && T.statusOf(geoBid(), cx) === 'Ordered');
+    assert('…the material added under it reads Not Ordered, and Late (its Order By has passed)', T.effectivePO(staples(), cx).kind === 'none'
+      && T.statusOf(staples(), cx) === 'Not Ordered' && T.flagsOf(staples(), cx).some(f => f.key === 'late') && T.effectiveDateOrdered(staples(), cx) === '',
+      [T.effectivePO(staples(), cx).kind, T.flagsOf(staples(), cx).map(f => f.key)]);
+    cx = C({ purchaseOrders: [P7], rows: [geoBid({ vendor: '' }), staples({ vendor: 'LB Water' })] });
+    assert('the one row whose vendor is the PO\'s supplier takes it, though it is not the line\'s own row',
+      T.effectivePO(staples({ vendor: 'LB Water' }), cx).kind === 'auto' && T.effectivePO(geoBid({ vendor: '' }), cx).kind === 'none');
+    cx = C({ purchaseOrders: [P7], rows: [geoBid({ vendor: '' }), staples()] });
+    assert('no row names the supplier: the line\'s own row takes it', T.effectivePO(geoBid({ vendor: '' }), cx).kind === 'auto' && T.effectivePO(staples(), cx).kind === 'none');
+    cx = C({ purchaseOrders: [P7], rows: [geoBid({ vendor: 'LB Water' }), staples({ vendor: 'LB Water' })] });
+    assert('both name the supplier: the line\'s own row takes it', T.effectivePO(geoBid(), cx).kind === 'auto' && T.effectivePO(staples({ vendor: 'LB Water' }), cx).kind === 'none');
+    const pins = row({ id: 'gp', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: 'Pins', created_at: '2026-03-06T10:00:00Z' });
+    cx = C({ purchaseOrders: [P7], rows: [geoBid({ po_auto: false }), staples(), pins] });
+    const amb = T.effectivePO(staples(), cx);
+    assert('two added materials and nothing to tell them apart: neither is on it (the PM picks), and the PO is named for the pick',
+      amb.kind === 'none' && T.effectivePO(pins, cx).kind === 'none' && T.statusOf(pins, cx) === 'Not Ordered' && amb.candidates.length === 1 && amb.candidates[0].id === 'p7', amb);
+    cx = C({ purchaseOrders: [P7], rows: [staples()] });
+    assert('a PO only one row would take is still that row\'s, as before', T.effectivePO(staples(), cx).kind === 'auto');
+    assert('…and so with no rows in hand at all', T.effectivePO(staples(), C({ purchaseOrders: [P7] })).kind === 'auto');
+    cx = C({ purchaseOrders: [P7], rows: [geoBid({ po_id: 'po3' }), staples()] });
+    assert('the line\'s own row on another PO is no taker: the added material is alone with it', T.effectivePO(staples(), cx).kind === 'auto');
+    // The PO # picker's "Auto" for a row on another order: what it would match if set back to Auto.
+    cx = C({ purchaseOrders: [P7], rows: [geoBid(), staples({ po_id: 'po3' })] });
+    assert('a row linked elsewhere, asked what Auto would match: not the order its line\'s own row has',
+      T.effectivePO({ ...staples(), po_id: null, po_auto: true }, cx).kind === 'none');
+
+    // On the page: Status, the header counts, the PO cell, Create PO.
+    let e = makeEnv({ rows: [geoBid(), staples()], purchaseOrders: [{ ...P7 }] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    assert('the sheet: the line\'s own row Ordered on PO-0007 "auto", the staples Late and not on it',
+      autoTag(e, 'gb') && !autoTag(e, 'gs') && /Late/.test(e.$('tr[data-row="gs"]').textContent) && e.field('gs', 'po').value === '',
+      e.$('tr[data-row="gs"]').textContent.replace(/\s+/g, ' '));
+    assert('…and the header counts it Not Ordered and Late', /Not Ordered\s*1/.test(counts(e)) && /Late\s*1/.test(counts(e)), counts(e));
+    tickRow(e, 'gs');
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(80);
+    assert('Create PO for the staples: not told they are "already on PO-0007" — a PO is raised for them', !/already on/.test(modalText(e))
+      && e.created.filter(c => c[0] === 'po').length === 1 && e.db.rows.find(r => r.id === 'gs').po_id, modalText(e));
+    e = makeEnv({ rows: [geoBid({ po_auto: false }), staples(), pins], purchaseOrders: [{ ...P7 }] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    assert('two added materials PO-0007 could be for: each PO # box says so, to be picked', /PO-0007/.test(e.field('gs', 'po').placeholder)
+      && /pick/.test(e.field('gs', 'po').placeholder) && !autoTag(e, 'gs') && !autoTag(e, 'gp'), e.field('gs', 'po').placeholder);
+    assert('…and its picker\'s "Auto" says the PO fits other rows too, with PO-0007 listed to pick', /PO-0007 also fits other rows/.test(e.P.cbOptions('proc_pos:gs')[0].meta)
+      && e.P.cbOptions('proc_pos:gs').some(o => o.label === 'PO-0007'), e.P.cbOptions('proc_pos:gs'));
+    tickRow(e, 'gs');
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(80);
+    assert('…and Create PO for one of them asks first (PO-0007 may be its order), raising nothing yet', /PO-0007/.test(modalText(e))
+      && !e.created.some(c => c[0] === 'po'), modalText(e));
+    const cancel = e.$$('.fctproc-modal [data-choice]').pop();
+    if (cancel) cancel.click();
+    await sleep(20);
+
+    // ── A bid line renamed: the orders under its old codes follow on the server; the page reads them again ──
+    const lines = LINES.map(l => ({ ...l }));
+    const orders = [{ id: 'pq', po_number: 'PO-0030', project_id: 'p1', cost_code: 'Stormwater', sub_code: '15" Perf drain', supplier: 'Acme Supply', date_created: '2026-03-01' }];
+    e = makeEnv({ rows: [row({ id: 'rn', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', vendor: 'Acme Supply', date_needed: '2026-03-12', lead_time_days: 10 }),
+      row({ id: 'rm', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', description: 'Couplers', vendor: 'Beta Corp', po_auto: false })],
+      bidLines: lines, purchaseOrders: orders });
+    let rereads = 0;
+    e.cfg.refreshPurchaseOrders = async () => {
+      rereads++;
+      // What the server holds now: the order carries the line's new codes.
+      orders.forEach(po => { if (po.sub_code === '15" Perf drain') po.sub_code = '15in Perf drain'; });
+      e.P.rerender();
+      return true;
+    };
+    e.P.configure(e.cfg);
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const r0 = rereads;
+    assert('(before: the drain row is Ordered on PO-0030)', autoTag(e, 'rn') && !/Late/.test(e.$('tr[data-row="rn"]').textContent));
+    // Renamed by the estimator on the bid page: the bid line, and the rows' stored copy on the server.
+    lines.find(l => l.id === 'b2').sub_code = '15in Perf drain';
+    ['rn', 'rm'].forEach(id => dana(e, id, { sub_code: '15in Perf drain' }));
+    await e.P.refresh();
+    await sleep(20);
+    assert('a poll bringing rows whose codes moved: the order list is read again at once — once, not once per row', rereads === r0 + 1, rereads - r0);
+    assert('…so the row is on its order again, not Not Ordered and Late', autoTag(e, 'rn') && !/Late/.test(e.$('tr[data-row="rn"]').textContent),
+      e.$('tr[data-row="rn"]').textContent.replace(/\s+/g, ' '));
+    await e.P.refresh();
+    await sleep(20);
+    assert('…and not on the polls after, where nothing moved', rereads === r0 + 1, rereads - r0);
+    // The page's own rename on the bid page, then the tab shown again.
+    lines.find(l => l.id === 'b2').sub_code = '15in Perforated drain';
+    e.P.renderTab(e.root);
+    await sleep(20);
+    assert('a line renamed on this page\'s bid: showing the tab again reads the order list again', rereads === r0 + 2, rereads - r0);
+
+    // ── Create PO, one PO per sub code, the second not raised ──
+    e = makeEnv({ rows: [
+      row({ id: 'a1', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', vendor: 'Beta Corp' }),
+      row({ id: 'a2', source: 'bid', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', vendor: 'Beta Corp' }),
+    ] });
+    const make = e.cfg.createPurchaseOrder;
+    let nMade = 0;
+    e.cfg.createPurchaseOrder = async seed => (++nMade === 1 ? make(seed) : null);
+    e.P.configure(e.cfg);
+    e.P.renderTab(e.root);
+    await sleep(40);
+    tickRow(e, 'a1'); tickRow(e, 'a2');
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(80);
+    const per = e.$$('.fctproc-modal [data-choice]').find(b => /One PO per sub code/.test(b.textContent));
+    per.click();
+    await sleep(150);
+    const toasts = e.$$('.fctproc-toast').map(t => t.textContent);
+    assert('the second PO not raised: the toast counts only the row that was linked', toasts.some(t => /linked 1 row\b/.test(t)) && !toasts.some(t => /linked 2 rows/.test(t)), toasts);
+    assert('…and the row left with no PO stays ticked, so Create PO can simply be clicked again',
+      e.$('[data-sel="a2"]').checked && !e.$('[data-sel="a1"]').checked && e.db.rows.find(r => r.id === 'a2').po_id === null);
+    e.cfg.createPurchaseOrder = make;
+    e.P.configure(e.cfg);
+    const again = e.$('[data-act="bulk-po"]');
+    if (again) again.click();
+    await sleep(120);
+    assert('…which raises its PO and links it', e.db.rows.find(r => r.id === 'a2').po_id && e.$$('.fctproc-toast').some(t => /^Created \S+ and linked 1 row$/.test(t.textContent)),
+      [e.db.rows.map(r => [r.id, r.po_id]), e.$$('.fctproc-toast').map(t => t.textContent)]);
+
+    // ── "+ Material": a list bought under this line, though the same name was bought later under another cost code ──
+    e = makeEnv({ rows: [row({ id: 'm1', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' })] });
+    e.db.materials = [{ material: 'Mirafi 140N', sub_code: 'Geofabric', cost_code: 'Base', cost_codes: ['Base', 'Stormwater'], unit: 'SY', vendor: 'LB Water', jobs: 2 }];
+    e.db.breakdowns = [{ project_id: 'p2', last_used: '2026-02-01T00:00:00Z', items: [
+      { id: 'z1', source: 'bid', material: 'Mirafi 140N', cost_code: 'Stormwater', sub_code: 'Geofabric', quantity: 900, unit: 'SY', vendor: 'LB Water' }] }];
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const m1 = () => e.P._test.state().rows.find(r => r.id === 'm1');
+    assert('a name the library has under this line\'s cost code among others: "+ Material" offers its list',
+      e.P._test.hasPastList(m1(), e.P._test.makeCtx()) && !!e.$('tr[data-row="m1"] [data-act="material"] .fctproc-pastdot'));
+    e.$('tr[data-row="m1"] [data-act="material"]').click();
+    await sleep(40);
+    assert('…and clicking it reads the lists and opens the copy dialog', e.calls.some(c => c.q.action === 'breakdowns') && /Add materials/.test(modalText(e)), modalText(e));
+    const shut = e.$('.fctproc-modal [data-copy="cancel"]');
+    if (shut) shut.click();
+    e.db.materials = [{ material: 'Mirafi 140N', sub_code: 'Geofabric', cost_code: 'Base', unit: 'SY', vendor: 'LB Water', jobs: 2 }];
+    await e.P._test.loadLibrary({ force: true });
+    assert('an older server (one cost code per name): as before, only that code', !e.P._test.hasPastList(m1(), e.P._test.makeCtx()));
+    e.db.materials = [{ material: 'Mirafi 140N', sub_code: 'Geofabric', cost_code: '', cost_codes: [], unit: 'SY', vendor: 'LB Water', jobs: 2 }];
+    await e.P._test.loadLibrary({ force: true });
+    assert('…and a name bought under no cost code is offered on any', e.P._test.hasPastList(m1(), e.P._test.makeCtx()));
+
+    // ── The contact list: read again when the tab is shown, and on the poll once it is a minute old ──
+    const realNow = Date.now;
+    let skew = 0;
+    e = makeEnv({ contacts: [{ id: 'c1', supplier_name: 'LB Water', name: 'Dave Kline', email: 'dave@lbwater.com', phone: '' }],
+      rows: [row({ id: 't1', vendor: 'LB Water', contact: 'Dave Kline', email: 'dave@lbwater.com' }), row({ id: 't2', vendor: 'LB Water' })] });
+    e.w.Date.now = () => realNow() + skew;
+    const cgets = () => e.calls.filter(c => c.path === '/api/supplier-contacts' && c.method === 'GET').length;
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const g0 = cgets();
+    // Elsewhere: Dave's address corrected, Erin added.
+    e.db.contacts[0].email = 'dkline@lbwater-new.com';
+    e.db.contacts.push({ id: 'c2', supplier_name: 'LB Water', name: 'Erin Shaw', email: 'erin@lbwater.com', phone: '' });
+    await e.P.refresh();
+    await sleep(20);
+    assert('a poll a moment after the read does not read the contacts again', cgets() === g0, cgets() - g0);
+    skew += 61 * 1000;
+    await e.P.refresh();
+    await sleep(20);
+    const offers = () => e.P.cbOptions('proc_contacts:t2').map(o => o.label + ' ' + o.meta);
+    assert('a poll once the list is a minute old reads it again: the picker offers Erin, and Dave\'s new address', cgets() === g0 + 1
+      && eq(offers(), ['Dave Kline dkline@lbwater-new.com', 'Erin Shaw erin@lbwater.com']), offers());
+    e.db.contacts.push({ id: 'c3', supplier_name: 'LB Water', name: 'Lou Park', email: 'lou@lbwater.com', phone: '' });
+    skew += 15 * 1000;
+    e.P.renderTab(e.root);
+    await sleep(40);
+    assert('showing the tab again reads them again', cgets() === g0 + 2 && offers().some(o => /Lou Park/.test(o)), offers());
+    // Renamed elsewhere: the contacts and the rows' Vendor move; this page's list is a moment old.
+    e.db.contacts.forEach(c => { c.supplier_name = 'LB Water Supply'; });
+    dana(e, 't1', { vendor: 'LB Water Supply' });
+    skew += 20 * 1000;
+    await e.P.refresh();
+    await sleep(20);
+    assert('(the poll brings the new vendor name onto the row)', e.P._test.state().rows.find(r => r.id === 't1').vendor === 'LB Water Supply');
+    const vb = e.field('t1', 'vendor');
+    vb.dispatchEvent(new e.w.FocusEvent('focusin', { bubbles: true }));
+    e.pick(vb, 'Acme Supply');
+    vb.blur();
+    await sleep(900);
+    const t1 = e.db.rows.find(r => r.id === 't1');
+    assert('a Vendor change on a row whose vendor the list does not know yet: the list is read again, and Dave (LB Water Supply\'s) is cleared off the row',
+      t1.vendor === 'Acme Supply' && t1.contact === '' && t1.email === '' && e.$$('.fctproc-toast').some(t => /Contact and Email cleared/.test(t.textContent)),
+      [t1, e.$$('.fctproc-toast').map(t => t.textContent)]);
+    e.w.Date.now = realNow;
+
+    // ── The copy dialog: what a colleague copied onto the line while it was open is not added again ──
+    const BD = [{ project_id: 'p2', last_used: '2026-03-01T00:00:00Z', items: [
+      { id: 'x1', source: 'manual', material: 'Perforated 15" SLCPP', cost_code: 'Stormwater', sub_code: 'Elbows', quantity: 4, unit: 'LF', vendor: 'LB Water' },
+      { id: 'x2', source: 'manual', material: '15" TEE watertight w/ gasket', cost_code: 'Stormwater', sub_code: 'Elbows', quantity: 2, unit: 'EA', vendor: 'LB Water' },
+      { id: 'x3', source: 'manual', material: '15" End cap', cost_code: 'Stormwater', sub_code: 'Elbows', quantity: 3, unit: 'EA', vendor: 'LB Water' },
+    ] }];
+    const LIB = BD[0].items.map(it => ({ material: it.material, sub_code: 'Elbows', cost_code: 'Stormwater', unit: it.unit, vendor: it.vendor, jobs: 1 }));
+    const own = () => row({ id: 'k1', source: 'bid', bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows', description: 'Elbows 15"', quantity: 12, unit: 'EA' });
+    const danaAdds = (e2, names) => names.forEach((n, i) => e2.db.rows.push(row({ id: 'dn' + i + n.length, bid_item_id: 'b6', cost_code: 'Stormwater', sub_code: 'Elbows',
+      description: n, created_by: 'Dana Reyes', updated_by: 'Dana Reyes', created_at: new Date().toISOString(), updated_at: new Date().toISOString() })));
+    e = makeEnv({ rows: [own()] });
+    e.db.materials = LIB; e.db.breakdowns = BD;
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.$('tr[data-row="k1"] [data-act="material"]').click();
+    await sleep(40);
+    assert('(the dialog opens with the three materials ticked)', e.$$('.fctproc-modal [data-cx]').filter(c => c.checked).length === 3);
+    danaAdds(e, ['Perforated 15" SLCPP', '15" End cap']);
+    e.$('.fctproc-modal [data-copy="go"]').click();
+    await sleep(120);
+    const adds = e.calls.filter(c => c.method === 'POST' && c.q.action === 'add');
+    assert('Add pressed after a colleague copied two of them: only the one still missing is added', adds.length === 1
+      && eq(adds[0].body.items.map(it => it.description), ['15" TEE watertight w/ gasket']), adds.map(a => a.body.items.map(it => it.description)));
+    assert('…and the PM is told the other two were already here, and who added them',
+      e.$$('.fctproc-toast').some(t => /2 already here/.test(t.textContent) && /Dana Reyes/.test(t.textContent)), e.$$('.fctproc-toast').map(t => t.textContent));
+    assert('…so the job lists each material once', ['Perforated 15" SLCPP', '15" TEE watertight w/ gasket', '15" End cap']
+      .every(n => e.db.rows.filter(r => !r.deleted_at && r.description === n).length === 1), e.db.rows.map(r => r.description));
+    e = makeEnv({ rows: [own()] });
+    e.db.materials = LIB; e.db.breakdowns = BD;
+    e.P.renderTab(e.root);
+    await sleep(40);
+    e.$('tr[data-row="k1"] [data-act="material"]').click();
+    await sleep(40);
+    danaAdds(e, BD[0].items.map(it => it.material));
+    e.$('.fctproc-modal [data-copy="go"]').click();
+    await sleep(120);
+    assert('…all three copied meanwhile: nothing is added, and the PM is told why', !e.calls.some(c => c.method === 'POST' && c.q.action === 'add')
+      && e.$$('.fctproc-toast').some(t => /3 already here/.test(t.textContent) && /Dana Reyes/.test(t.textContent)) && !e.$('.fctproc-modal'),
+      e.$$('.fctproc-toast').map(t => t.textContent));
+
+    // ── The order list indexed by job and codes: the same answers as reading it whole ──
+    const SUP = ['', 'LB Water', 'Acme Supply'];
+    let seedN = 7;
+    const rnd = n => { seedN = (seedN * 1103515245 + 12345) & 0x7fffffff; return seedN % n; };
+    const many = [];
+    for (let i = 0; i < 400; i++) {
+      const l = LINES[rnd(LINES.length)];
+      many.push({ id: 'q' + i, po_number: 'PO-' + i, project_id: ['p1', 'p2', ''][rnd(3)], cost_code: rnd(5) ? l.cost_code : l.cost_code.toUpperCase() + ' ',
+        sub_code: rnd(7) ? l.sub_code : '', supplier: SUP[rnd(3)], date_created: '2026-03-01' });
+    }
+    const oldMatch = (r, ctx) => {
+      const k = CK, codes = T.liveCodes(r, ctx), cc = k(codes.cost_code), sc = k(codes.sub_code);
+      return many.filter(po => String(po.project_id || '') === String(r.project_id || ctx.projectId || '') && k(po.cost_code || '') === cc
+        && k(po.sub_code || '') === sc && T.vendorCompatible(r.vendor, po.supplier)).map(po => po.id);
+    };
+    let same = 0, diff = [];
+    for (let i = 0; i < 300; i++) {
+      const l = LINES[rnd(LINES.length)];
+      const r = row({ id: 'z' + i, source: rnd(2) ? 'bid' : 'manual', bid_item_id: rnd(4) ? l.id : null, cost_code: l.cost_code, sub_code: rnd(6) ? l.sub_code : '',
+        vendor: SUP[rnd(3)], project_id: rnd(4) ? 'p1' : 'p2' });
+      const ctx = C({ purchaseOrders: many });
+      const want = oldMatch(r, ctx), got = T.effectivePO(r, ctx);
+      const ok = !r.cost_code && !r.sub_code ? got.kind === 'none'
+        : (!T.liveCodes(r, ctx).line && !T.liveCodes(r, ctx).sub_code) ? got.kind === 'none'
+        : want.length === 1 ? got.kind === 'auto' && got.po.id === want[0]
+        : want.length > 1 ? got.kind === 'multiple' && eq(got.candidates.map(p => p.id), want) : got.kind === 'none';
+      if (ok) same++; else diff.push([r, want, got.kind]);
+    }
+    assert('a row\'s PO, looked up among the orders indexed by job and codes, is exactly the one reading the whole list found (300 rows, 400 orders)', !diff.length, diff.slice(0, 2));
   }
 
   console.log(`\n${passed} passed, ${failed} failed`);
