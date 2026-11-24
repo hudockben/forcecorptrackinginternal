@@ -1121,6 +1121,8 @@ function planDom(page, src, role) {
     // test sets the jobs from a later one.
     'var _lastProjIndexTs = 0;',
     'var projectsList = [];',
+    // The job list has been read from the server: per-line saves go.
+    'var _projectsLoaded = true;',
     'function getProj(id) { return projectsList.find(p => p.id === id); }',
     'function _projBlob(p) { return p; }',
     'function renderBidFooter() {}', 'function saveProject() {}', 'function _showSaveError() {}',
