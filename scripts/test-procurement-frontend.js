@@ -6102,6 +6102,160 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     assert('a row\'s PO, looked up among the orders indexed by job and codes, is exactly the one reading the whole list found (300 rows, 400 orders)', !diff.length, diff.slice(0, 2));
   }
 
+  console.log('\n[review 3: po]');
+  {
+    const tickRow = (e, id) => { const b = e.$(`[data-sel="${id}"]`); b.checked = true; e.fire(b, 'change'); };
+    const modalText = e => (e.$('.fctproc-modal') ? e.$('.fctproc-modal').textContent.replace(/\s+/g, ' ') : '');
+    const autoTag = (e, id) => !![...e.$$(`tr[data-row="${id}"] td.c-po .fctproc-tag`)].find(t => t.textContent === 'auto');
+    const late = (e, id) => /Late/.test(e.$(`tr[data-row="${id}"]`).textContent);
+    const drawn = (e, id) => `auto=${autoTag(e, id)} late=${late(e, id)}`;
+    const P7 = { id: 'p7', po_number: 'PO-0007', project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Geofabric', supplier: 'LB Water', date_created: '2026-03-01' };
+    const P8 = { ...P7, id: 'p8', po_number: 'PO-0008', date_created: '2026-03-02' };
+    // The line's own row; Order By (needed in 2 days, 10-day lead) has passed.
+    const geoBid = (o = {}) => row({ id: 'gb', source: 'bid', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', vendor: 'LB Water',
+      date_needed: '2026-03-12', lead_time_days: 10, ...o });
+    const staples = (o = {}) => row({ id: 'gs', bid_item_id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric', description: 'Fabric staples',
+      date_needed: '2026-03-12', lead_time_days: 10, created_at: '2026-03-05T10:00:00Z', ...o });
+
+    // ── Two orders raised for one bid line, both from the supplier both rows name ──
+    let cx = C({ purchaseOrders: [P7, P8], rows: [geoBid(), staples({ vendor: 'LB Water' })] });
+    const gbE = T.effectivePO(geoBid(), cx), gsE = T.effectivePO(staples({ vendor: 'LB Water' }), cx);
+    assert('two POs the line\'s own row wins both of: it reads "2 POs match", on neither', gbE.kind === 'multiple' && eq(gbE.candidates.map(p => p.id), ['p7', 'p8']), gbE);
+    assert('…so they stay open to the material beside it: on none, with both named for the pick',
+      gsE.kind === 'none' && eq(gsE.candidates.map(p => p.id), ['p7', 'p8']), [gsE.kind, gsE.candidates.map(p => p.id)]);
+    cx = C({ purchaseOrders: [P7, { ...P8, supplier: 'Acme Supply' }], rows: [geoBid({ vendor: '' }), staples({ vendor: 'Acme Supply' })] });
+    assert('each row winning one PO of its own still reads "auto" on it',
+      T.effectivePO(geoBid({ vendor: '' }), cx).kind === 'auto' && T.effectivePO(geoBid({ vendor: '' }), cx).po.id === 'p7'
+      && T.effectivePO(staples({ vendor: 'Acme Supply' }), cx).kind === 'auto' && T.effectivePO(staples({ vendor: 'Acme Supply' }), cx).po.id === 'p8');
+    let e = makeEnv({ rows: [geoBid(), staples({ vendor: 'LB Water' })], purchaseOrders: [{ ...P7 }, { ...P8 }] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    assert('on the sheet the staples\' PO # box says both POs fit several rows, to be picked', /2 POs fit several rows — pick/.test(e.field('gs', 'po').placeholder),
+      e.field('gs', 'po').placeholder);
+    tickRow(e, 'gs');
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(80);
+    assert('…and Create PO for the staples asks first (PO-0007 or PO-0008 may be theirs), raising nothing yet',
+      /PO-0007/.test(modalText(e)) && /PO-0008/.test(modalText(e)) && !e.created.some(c => c[0] === 'po'), [modalText(e), e.created]);
+    const cancel = e.$$('.fctproc-modal [data-choice]').pop();
+    if (cancel) cancel.click();
+    await sleep(20);
+
+    // ── The PM's own Vendor, Material or Sub Code pick moving an unlinked PO to another row ──
+    e = makeEnv({ rows: [geoBid({ vendor: '' }), staples({ date_needed: null, lead_time_days: null })], purchaseOrders: [{ ...P7 }] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    assert('(before: the line\'s own row is on PO-0007 "auto", the staples not)', autoTag(e, 'gb') && !late(e, 'gb') && !autoTag(e, 'gs'));
+    let v = e.field('gs', 'vendor');
+    v.focus();
+    e.pick(v, 'LB Water', 'LB Water');
+    await sleep(20);
+    assert('the staples given Vendor LB Water take PO-0007, and the line\'s own row beside them is redrawn Not Ordered and Late at once',
+      autoTag(e, 'gs') && !autoTag(e, 'gb') && late(e, 'gb'), [drawn(e, 'gb'), drawn(e, 'gs')]);
+    e.pick(v, 'Acme Supply', 'Acme Supply');
+    await sleep(20);
+    assert('…and their Vendor changed away again: the line\'s own row is redrawn on PO-0007', autoTag(e, 'gb') && !late(e, 'gb') && !autoTag(e, 'gs'),
+      [drawn(e, 'gb'), drawn(e, 'gs')]);
+    v.blur();
+    await sleep(900);
+    // A Material from the library that fills in the Vendor.
+    e = makeEnv({ rows: [geoBid({ vendor: '' }), staples({ description: '', date_needed: null, lead_time_days: null })], purchaseOrders: [{ ...P7 }] });
+    e.db.materials = [{ material: 'Fabric staples 6in', sub_code: 'Geofabric', cost_code: 'Stormwater', unit: 'EA', vendor: 'LB Water', jobs: 3 }];
+    e.P.renderTab(e.root);
+    await sleep(60);
+    const lib = e.P.cbOptions('proc_materials:gs')[0];
+    const m = e.field('gs', 'description');
+    m.focus();
+    e.pick(m, lib.label, lib.value);
+    await sleep(20);
+    assert('a library Material whose usual vendor is LB Water fills the staples\' Vendor: the line\'s own row is redrawn off PO-0007, Late',
+      e.P._test.state().rows.find(r => r.id === 'gs').vendor === 'LB Water' && autoTag(e, 'gs') && !autoTag(e, 'gb') && late(e, 'gb'), [drawn(e, 'gb'), drawn(e, 'gs')]);
+    m.blur();
+    await sleep(900);
+    // A Sub Code pick moving an LB Water row of another line onto this one.
+    e = makeEnv({ rows: [geoBid({ vendor: '' }), row({ id: 'gx', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', description: 'Fabric staples', vendor: 'LB Water' })],
+      purchaseOrders: [{ ...P7 }] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    const c = e.field('gx', 'codes');
+    c.focus();
+    e.pick(c, 'Stormwater / Geofabric', 'b1');
+    await sleep(20);
+    assert('a Sub Code pick moving an LB Water row onto the Geofabric line: the line\'s own row is redrawn off PO-0007, Late',
+      autoTag(e, 'gx') && !autoTag(e, 'gb') && late(e, 'gb'), [drawn(e, 'gb'), drawn(e, 'gx')]);
+    c.blur();
+    await sleep(900);
+    // A Vendor save refused: a colleague had set LB Water. Theirs is what the
+    // row holds now, and it takes PO-0007 from the line's own row.
+    e = makeEnv({ rows: [geoBid({ vendor: '' }), staples({ date_needed: null, lead_time_days: null })], purchaseOrders: [{ ...P7 }] });
+    e.P.renderTab(e.root);
+    await sleep(40);
+    Object.assign(e.db.rows.find(r => r.id === 'gs'), { vendor: 'LB Water', version: 2, updated_by: 'Dana Reyes' });
+    v = e.field('gs', 'vendor');
+    v.focus();
+    e.pick(v, 'Acme Supply', 'Acme Supply');
+    v.blur();
+    await sleep(900);
+    assert('(a Vendor save refused: a colleague had set LB Water, which the row holds now)', !!e.$('.fctproc-modal')
+      && e.P._test.state().rows.find(r => r.id === 'gs').vendor === 'LB Water', [modalText(e), e.P._test.state().rows.find(r => r.id === 'gs').vendor]);
+    assert('…so the staples take PO-0007, and the line\'s own row is redrawn off it, Late', autoTag(e, 'gs') && !autoTag(e, 'gb') && late(e, 'gb'),
+      [drawn(e, 'gb'), drawn(e, 'gs')]);
+
+    // ── A line renamed on this page's bid, the tab shown at once: the order list read only once the bid's save has landed ──
+    // The host as tracker.html is: the bid's save waits out a 600 ms debounce,
+    // getFreshBidLines sends it at once (_procFlushProjectSaves), and the
+    // server renames the order and the row's stored codes as it takes it, 250 ms on.
+    const renamed = async (perm) => {
+      const lines = LINES.map(l => ({ ...l }));
+      const serverPOs = [{ id: 'pq', po_number: 'PO-0030', project_id: 'p1', cost_code: 'Stormwater', sub_code: '15" Perf drain', supplier: 'Acme Supply', date_created: '2026-03-01' }];
+      const pagePOs = serverPOs.map(p => ({ ...p }));
+      const e2 = makeEnv({ perm, rows: [row({ id: 'rn', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: '15" Perf drain', vendor: 'Acme Supply',
+        date_needed: '2026-03-12', lead_time_days: 10 })], bidLines: lines, purchaseOrders: pagePOs });
+      const out = { e: e2, reads: 0, stale: 0 };
+      let owed = null, landing = null;
+      const land = () => landing || (landing = (async () => {
+        clearTimeout(owed);
+        await sleep(250);
+        serverPOs[0].cost_code = 'Storm Drainage';
+        Object.assign(e2.db.rows.find(r => r.id === 'rn'), { cost_code: 'Storm Drainage', version: 2, updated_by: 'Pat PM' });
+      })());
+      e2.cfg.getFreshBidLines = async () => {
+        if (owed) { const l = land(); owed = null; await l; }
+        return lines.map(l => ({ ...l }));
+      };
+      e2.cfg.refreshPurchaseOrders = async () => {
+        out.reads++;
+        if (serverPOs[0].cost_code === 'Stormwater' && lines[1].cost_code !== 'Stormwater') out.stale++;
+        await sleep(30);
+        if (JSON.stringify(serverPOs) === JSON.stringify(pagePOs)) return false;
+        pagePOs.splice(0, pagePOs.length, ...serverPOs.map(p => ({ ...p })));
+        e2.P.rerender();
+        return true;
+      };
+      e2.P.configure(e2.cfg);
+      e2.P.renderTab(e2.root);
+      await sleep(60);
+      out.before = autoTag(e2, 'rn') && !late(e2, 'rn');
+      out.r0 = out.reads;
+      // Renamed on the bid tab: in the page's bid at once; its save owed.
+      lines.forEach(l => { if (l.cost_code === 'Stormwater') l.cost_code = 'Storm Drainage'; });
+      owed = setTimeout(() => { owed = null; land(); }, 600);
+      e2.P.renderTab(e2.root);
+      await sleep(400);
+      return out;
+    };
+    let rn = await renamed(undefined);
+    assert('(before: the drain row is on PO-0030 "auto")', rn.before);
+    assert('a line renamed on this page\'s bid and the tab shown at once: the order list is read once the bid\'s save has landed — the row is on PO-0030, not Not Ordered and Late',
+      rn.reads === rn.r0 + 1 && rn.stale === 0 && autoTag(rn.e, 'rn') && !late(rn.e, 'rn'), [rn.reads - rn.r0, rn.stale, drawn(rn.e, 'rn')]);
+    await rn.e.P.refresh();
+    await sleep(100);
+    assert('…and the rows poll after, bringing the row\'s renamed stored codes, reads nothing more', rn.reads === rn.r0 + 1, rn.reads - rn.r0);
+    rn = await renamed({ canView: true, canEdit: false });
+    assert('…the same on a sheet the PM cannot edit (no re-link out to wait on): the list is read after the save, not before',
+      rn.reads === rn.r0 + 1 && rn.stale === 0 && autoTag(rn.e, 'rn'), [rn.reads - rn.r0, rn.stale, drawn(rn.e, 'rn')]);
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => {
