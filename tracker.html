@@ -20130,6 +20130,11 @@ async function _procFlushProjectSaves(projId) {
     if (p) { waits.push(_putProjectThenRenamedLines(projId, p, {}).then(sendLines)); saveProjectIndex(); }
   }
   await Promise.all(waits);
+  // …and whatever of this job's is out by now: two reads of the bid at once
+  // (the sheet's re-link and Add to Procurement) both wait for the rename's
+  // whole-job save, and the renamed lines' saves it then sends are taken by
+  // whichever read's sendLines runs first — the other waits for them here.
+  await Promise.all([...(_bidSavesOut[projId] || [])]);
 }
 
 /**

@@ -524,12 +524,12 @@ async function runRenameFlushChecks() {
   const mk = new Function('getProj', 'apiPut', '_doBidItemPut', 'renderBidTable', 'saveProjectIndex', '_projBlob', 'localStorage',
     'projectsList', 'PROJECTS_KEY', '_saveProjTimers', '_biSaveTimers', '_biSavePending', 'setTimeout', 'clearTimeout', '_bidRenamedLines',
     '_projectsLoaded', '_unloadedSaveRefused', '_bidSavesOut',
-    `${fns}; return { updateBidGroupCode, saveProject, _procFlushProjectSaves, get waiting() { return _bidRenamedLines; } };`);
+    `${fns}; return { updateBidGroupCode, saveProject, _procFlushProjectSaves, _bidSaveOut, get waiting() { return _bidRenamedLines; } };`);
   // Each save lands a tick after it is sent, and says when it has.
   const later = (what, ok) => new Promise(res => setTimeout(() => { did.push(['landed', what]); res(ok); }, 5));
   const page = mk(() => proj,
     (key, v) => { did.push(['put', key]); return later(key, landed); },
-    (pid, id) => { did.push(['line', pid, id]); return later('line ' + id); },
+    (pid, id) => { did.push(['line', pid, id]); return page._bidSaveOut(pid, later('line ' + id)); },
     () => {}, () => {}, x => x, { setItem() {} }, [proj], 'k', {}, {}, {},
     fn => { timers.set(++tid, fn); return tid; }, id => { timers.delete(id); }, {}, true, () => did.push(['refused']), {});
   page.updateBidGroupCode('j1', 'Stormwater', 'Storm Drainage');
@@ -561,6 +561,21 @@ async function runRenameFlushChecks() {
   assert('a rename whose whole-job save is already out: the bid read waits for it to land, and for the renamed lines it then sends',
     JSON.stringify(outFirst) === '["put fct_project_j1"]' && did.filter(d => d[0] === 'landed').map(d => d[1]).join() === 'fct_project_j1,line a,line b'
       && !page.waiting.j1 && timers.size === 0, JSON.stringify(did));
+  // Two reads of the bid at once (the sheet's re-link and Add to
+  // Procurement), the rename's whole-job save out: when it lands, the first
+  // read sends the renamed lines' saves — and the second waits for them too,
+  // rather than reading the bid back before they have landed.
+  did.length = 0;
+  page.updateBidGroupCode('j1', 'Drainage', 'Storm');
+  [...timers].forEach(([id, fn]) => { timers.delete(id); fn(); });
+  const landedNow = () => did.filter(d => d[0] === 'landed').map(d => d[1]).join();
+  let first = null, second = null;
+  await Promise.all([
+    page._procFlushProjectSaves('j1').then(() => { first = landedNow(); }),
+    page._procFlushProjectSaves('j1').then(() => { second = landedNow(); }),
+  ]);
+  assert('two reads of the bid at once with the rename\'s save out: neither goes before the renamed lines\' saves have landed',
+    first === 'fct_project_j1,line a,line b' && second === first && did.filter(d => d[0] === 'line').length === 2, { first, second, did: JSON.stringify(did) });
 }
 
 async function runAdminChecks(b, cfg) {
