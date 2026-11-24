@@ -39,7 +39,10 @@ function assert(label, cond, detail) {
 // tests can pattern-match the issued SQL. Each call returns an array
 // (the postgres-driver shape used by the rest of the codebase).
 // ─────────────────────────────────────────────────────────────────────
-function makeMockSql({ projectBlobExists = true, mirrorThrows = false } = {}) {
+// lineBefore: what the blob UPDATE hands back as the line before the write;
+// bidAfter: the bid a later read of the blob finds. poThrows: reading the
+// job's purchase-order list fails.
+function makeMockSql({ projectBlobExists = true, mirrorThrows = false, lineBefore, bidAfter, poThrows = false } = {}) {
   const calls = [];
   let mirrorCallSeen = false;
   function sql(strings, ...vals) {
@@ -53,7 +56,17 @@ function makeMockSql({ projectBlobExists = true, mirrorThrows = false } = {}) {
 
     // Project blob UPDATE ... RETURNING 1
     if (/UPDATE app_data[\s\S]+RETURNING 1/i.test(str)) {
-      return Promise.resolve(projectBlobExists ? [{ '?column?': 1 }] : []);
+      if (!projectBlobExists) return Promise.resolve([]);
+      return Promise.resolve([lineBefore === undefined ? { '?column?': 1 } : { found: 1, line_before: lineBefore }]);
+    }
+    // The bid as stored, read for a rename (step 6)
+    if (/SELECT value->'bidItems' AS bid FROM app_data/i.test(str)) {
+      return Promise.resolve([{ bid: bidAfter || [] }]);
+    }
+    // The division's purchase-order list (api/lib/bid-po-codes.js, step 6)
+    if (vals.some(v => typeof v === 'string' && v.includes(':fct_purchase_orders:'))) {
+      if (poThrows) return Promise.reject(new Error('connection reset'));
+      return Promise.resolve([]);
     }
     // Index _ts UPDATE (no RETURNING)
     if (/jsonb_set\(\s*COALESCE\(value,\s*'\{"ids":\s*\[\]\}/i.test(str)) {
@@ -413,6 +426,44 @@ async function run() {
     assert('  turf: the blob item has it…', t.item.planned_rate === 4000);
     assert('  …and the bid_items mirror ignores it cleanly (no column, value not passed)',
       mirror && !/planned_rate/i.test(mirror.sql) && !mirror.values.includes(4000), mirror && mirror.sql.slice(0, 200));
+  }
+
+  console.log('\n[a code renamed on the bid reaches the job\'s purchase orders (step 6)]');
+  {
+    // scripts/test-procurement-sql.js runs the rename itself against a real
+    // Postgres; here, only when the order list is read at all.
+    const run1 = async (opts, projectKey = 'fct_project_p1', item = { id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric 8oz' }) => {
+      const sql = makeMockSql({ projectBlobExists: true, ...opts });
+      const handler = loadEndpoint({ sql, authPayload: goodAuth });
+      const res = makeRes();
+      const origWarn = console.warn;
+      console.warn = () => {};
+      try {
+        await handler(makeReq({ query: { id: item.id, projectId: 'p1', projectKey }, body: { bidItem: item } }), res);
+      } finally { console.warn = origWarn; }
+      return { res, sql, poCalls: sql._calls.filter(c => c.values.some(v => typeof v === 'string' && v.includes(':fct_purchase_orders:'))) };
+    };
+    const was = { id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' };
+    let t = await run1({ lineBefore: was, bidAfter: [{ ...was, quantity: 5 }] }, 'fct_project_p1', { ...was, quantity: 5 });
+    assert('a line saved with its codes unchanged reads neither the bid again nor the order list', t.res.statusCode === 200
+      && t.poCalls.length === 0 && t.sql._calls.length === 4, `calls=${t.sql._calls.length}`);
+    t = await run1({ lineBefore: null, bidAfter: [was] }, 'fct_project_p1', was);
+    assert('…nor does a line new to the bid', t.res.statusCode === 200 && t.poCalls.length === 0);
+    t = await run1({ lineBefore: was, bidAfter: [{ ...was, sub_code: 'Geofabric 8oz' }] });
+    assert('a sub code renamed: the turf job\'s order list is read to carry it', t.res.statusCode === 200
+      && t.poCalls.length > 0 && t.poCalls.every(c => c.values.includes('forcecorp:fct_purchase_orders:turf')), JSON.stringify(t.poCalls.map(c => c.values)));
+    t = await run1({ lineBefore: was, bidAfter: [{ ...was, sub_code: 'Geofabric 8oz' }] }, 'fct_paving_project_p1');
+    assert('…on a paving job, paving\'s list', t.res.statusCode === 200 && t.poCalls.length > 0
+      && t.poCalls.every(c => c.values.includes('forcecorp:fct_purchase_orders:paving')));
+    t = await run1({ lineBefore: was, bidAfter: [{ ...was, sub_code: '' }] }, 'fct_project_p1', { ...was, sub_code: '' });
+    assert('a sub code blanked half way through a rename reads no order list', t.res.statusCode === 200 && t.poCalls.length === 0
+      && t.sql._calls.length === 4);
+    t = await run1({ lineBefore: was, bidAfter: [{ ...was, sub_code: 'Geofabric 8oz' }, { ...was, id: 'b2' }] });
+    assert('a line renamed while another line of the bid still has its old codes reads no order list', t.res.statusCode === 200
+      && t.poCalls.length === 0);
+    t = await run1({ lineBefore: was, bidAfter: [{ ...was, sub_code: 'Geofabric 8oz' }], poThrows: true });
+    assert('the order list failing to read never fails the bid edit (200)', t.res.statusCode === 200 && t.res.body && t.res.body.ok === true
+      && t.poCalls.length > 0);
   }
 
   console.log('\n[SQL safety — no obvious injection vectors]');

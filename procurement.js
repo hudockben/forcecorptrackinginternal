@@ -256,9 +256,19 @@
   function ctxIndex(ctx) {
     let m = _ctxIndex.get(ctx);
     if (!m) {
-      m = { lineById: new Map(), poById: new Map(), lineByJob: null, costKeysByJob: new Map(), linkedPO: new Set() };
+      m = { lineById: new Map(), poById: new Map(), poByJob: new Map(), poByCode: new Map(), lineByJob: null, costKeysByJob: new Map(), linkedPO: new Set(), takers: null, won: null };
       (ctx.bidLines || []).forEach(l => { if (l && l.id != null) m.lineById.set(String(l.id), l); });
-      (ctx.purchaseOrders || []).forEach(p => { if (p && p.id != null) m.poById.set(String(p.id), p); });
+      // The orders by job (and, once a row of the job asks, by codes —
+      // posUnder), so each row looks up the few under its own codes: read
+      // whole for every row, the division's thousands of orders froze a big
+      // job's sheet for seconds on every poll that redrew it.
+      (ctx.purchaseOrders || []).forEach(p => {
+        if (!p) return;
+        if (p.id != null) m.poById.set(String(p.id), p);
+        const job = String(p.project_id || '');
+        if (!m.poByJob.has(job)) m.poByJob.set(job, []);
+        m.poByJob.get(job).push(p);
+      });
       // A link that holds: its PO is listed and on the row's own job. One
       // re-pointed to another job ("moved") or gone does not take the order
       // from the rows of the job it is on now.
@@ -366,7 +376,7 @@
    *        'loading'  the page's PO list has not loaded, so we cannot say
    */
   function effectivePO(row, ctx) {
-    const out = (kind, po, candidates) => ({ kind, po: po || null, candidates: candidates || [] });
+    const out = (kind, po, candidates, more) => ({ kind, po: po || null, candidates: candidates || [], ...more });
     if (row.po_id) {
       if (!ctx.poLoaded) return out('loading');
       const po = ctxIndex(ctx).poById.get(String(row.po_id));
@@ -376,34 +386,127 @@
       return out('linked', po, [po]);
     }
     if (row.po_auto === false) return out('nopo');
+    const codes = autoCodes(row, ctx);
+    if (!codes) return out('none');
+    if (!ctx.poLoaded) return out('loading');
+    const cands = codeMatches(row, ctx, codes);
+    if (!cands.length) return out('none');
+    // An order more rows than this one would be matched to is given to the
+    // one it is most clearly for (autoTaker), and to none of them when that
+    // cannot be told: a material added under a bid line ("+ Material", the
+    // copy list) read Ordered, with no Late flag, on the order raised on the
+    // Purchase Orders tab for the line's own material beside it.
+    const takers = autoTakers(ctx), won = ctxIndex(ctx).won;
+    const mine = [], open = [];
+    let others = 0, by = '';
+    cands.forEach(po => {
+      const t = takers.get(po) || [];
+      const here = t.some(r => r.id === row.id);
+      // A row not taking orders as the sheet has it (its PO # being set
+      // back to Auto, say) is weighed with the rows that do.
+      const all = here ? t.map(r => (r.id === row.id ? row : r)) : t.concat(row);
+      if (all.length === 1) { mine.push(po); return; }
+      const win = autoTaker(po, all);
+      if (win && win.row.id === row.id) { mine.push(po); others = Math.max(others, all.length - 1); by = win.by; }
+      // Given to a row that wins several, so reads 'multiple' and is on none
+      // of them: still open to this one, to be picked.
+      else if (!win || won.get(win.row.id) > 1) open.push(po);
+    });
+    if (mine.length === 1) return out('auto', mine[0], mine, others ? { others, by } : null);
+    if (mine.length > 1) return out('multiple', null, mine);
+    // On no order. `candidates` names those it could be on that no row is
+    // given: the PM picks, in the PO # column.
+    return out('none', null, open);
+  }
+
+  /**
+   * A row's live codes, keyed, when it can be matched to an order by them at
+   * all; else null.
+   */
+  function autoCodes(row, ctx) {
     const k = keyFn(ctx);
     const codes = liveCodes(row, ctx);
     const cc = ck(k, codes.cost_code), sc = ck(k, codes.sub_code);
     // A row with no codes would otherwise "match" every PO raised with blank
     // codes — and '+ New PO' saves one exactly like that. It matches none
     // whatever the list holds, so it does not wait for the list either.
-    if (!cc && !sc) return out('none');
+    if (!cc && !sc) return null;
     // Nor does a hand-added row with a cost code and no sub code (one added
     // from a section header): a cost code alone names no material, and it
     // would take the order a sibling row raised for that code — a blank row
     // reading Ordered on someone else's PO.
-    if (!codes.line && !sc) return out('none');
-    if (!ctx.poLoaded) return out('loading');
+    if (!codes.line && !sc) return null;
+    return { cc, sc };
+  }
+  /** The orders on the row's job with its live codes and a vendor it can take. */
+  function codeMatches(row, ctx, codes) {
+    const m = ctxIndex(ctx);
     const pid = row.project_id || ctx.projectId;
     // An order a row of the sheet is linked to is that row's — raised for it
     // (Create PO from selected), or picked for it. It is not matched to
     // the other rows under the same codes as well: the materials "+ Material"
     // splits a bid line into read Ordered, with no Late flag, on the PO
     // raised for the stone or the chambers beside them.
-    const linked = ctxIndex(ctx).linkedPO;
-    const cands = (ctx.purchaseOrders || []).filter(po => po
-      && !linked.has(String(po.id))
-      && String(po.project_id || '') === String(pid || '')
-      && ck(k, po.cost_code) === cc && ck(k, po.sub_code) === sc
-      && vendorCompatible(row.vendor, po.supplier));
-    if (cands.length === 1) return out('auto', cands[0], cands);
-    if (cands.length > 1) return out('multiple', null, cands);
-    return out('none', null, cands);
+    return posUnder(ctx, String(pid || ''), codes.cc, codes.sc)
+      .filter(po => !m.linkedPO.has(String(po.id)) && vendorCompatible(row.vendor, po.supplier));
+  }
+  /** A job's orders with these (keyed) codes, in list order. */
+  function posUnder(ctx, job, cc, sc) {
+    const m = ctxIndex(ctx);
+    let byCode = m.poByCode.get(job);
+    if (!byCode) {
+      byCode = new Map();
+      const k = keyFn(ctx);
+      (m.poByJob.get(job) || []).forEach(p => {
+        const key = ck(k, p.cost_code) + '\u0000' + ck(k, p.sub_code);
+        if (!byCode.has(key)) byCode.set(key, []);
+        byCode.get(key).push(p);
+      });
+      m.poByCode.set(job, byCode);
+    }
+    return byCode.get(cc + '\u0000' + sc) || [];
+  }
+  /**
+   * For each order, the rows of the sheet that would be matched to it by
+   * their codes (no link, not "No PO"). Worked out once per ctx.
+   */
+  function autoTakers(ctx) {
+    const m = ctxIndex(ctx);
+    if (m.takers) return m.takers;
+    const takers = new Map();
+    (ctx.rows || []).forEach(r => {
+      if (!r || r.deleted_at || r.po_id || r.po_auto === false) return;
+      const codes = autoCodes(r, ctx);
+      if (!codes) return;
+      codeMatches(r, ctx, codes).forEach(po => {
+        if (!takers.has(po)) takers.set(po, []);
+        takers.get(po).push(r);
+      });
+    });
+    // How many orders each row ends up with (effectivePO): a row with
+    // several reads 'multiple', on none of them.
+    const won = new Map();
+    takers.forEach((rows, po) => {
+      const win = rows.length === 1 ? { row: rows[0] } : autoTaker(po, rows);
+      if (win) won.set(win.row.id, (won.get(win.row.id) || 0) + 1);
+    });
+    m.takers = takers;
+    m.won = won;
+    return takers;
+  }
+  /**
+   * Which of several rows an order is for: the one whose vendor is its
+   * supplier, else the bid line's own row (sent from the bid — the order a PM
+   * raises for a line on the Purchase Orders tab is for that), else none —
+   * they read as not ordered, and the PM picks it on the right one.
+   */
+  function autoTaker(po, rows) {
+    const sup = lc(po.supplier);
+    const named = sup ? rows.filter(r => lc(r.vendor) === sup) : [];
+    if (named.length === 1) return { row: named[0], by: 'vendor' };
+    const own = rows.filter(r => r.source === 'bid');
+    if (own.length === 1) return { row: own[0], by: 'bid' };
+    return null;
   }
 
   /** The row's own Date Ordered, else the date its PO was raised, else ''. */
@@ -1437,7 +1540,16 @@
       </div>`;
     document.body.appendChild(back);
     let onClose = null;
-    function onEsc(e) { if (e.key === 'Escape') close(); }
+    function onEsc(e) {
+      if (e.key !== 'Escape') return;
+      // Only the dialog on top: one opened over another (a conflict over the
+      // checklist being ticked, Create PO's question) closes alone, and the
+      // one under it — with what was ticked or typed in it — stays.
+      const open = document.querySelectorAll('.fctproc-modal');
+      if (open[open.length - 1] !== back) return;
+      e.stopImmediatePropagation();
+      close();
+    }
     const close = () => {
       document.removeEventListener('keydown', onEsc);
       back.remove();
@@ -1519,6 +1631,13 @@
         background: var(--bg,#0a0a0f); border:1px solid var(--border,#2a2a3a); border-radius:3px; color: var(--text,#e0e0e0);
         font-size:0.78rem; padding:0.22rem 0.4rem; outline:none; color-scheme: dark; }
       .fctproc-bulk .cb { width: 13rem; }
+      /* The PO list a site's sheet offers depends on the rows ticked: a set
+         width, so the first tick does not widen the bar onto another line. */
+      .fctproc-bulk #fctproc-bulk-valbox[data-field="po"] select { width: 16rem; text-overflow: ellipsis; }
+      .fctproc-bulk.idle { position: relative; visibility: hidden; }
+      .fctproc-bulk-hint { position:absolute; top:0; right:-1px; bottom:-1px; left:-1px; visibility: visible; display:flex; align-items:center;
+        padding:0 0.75rem; background: var(--surface,#111118); border:1px solid var(--border,#2a2a3a); border-top:none;
+        color: var(--muted,#9ca3af); font-size:0.72rem; overflow:hidden; }
       .fctproc-bulk .cb-input { background: var(--bg,#0a0a0f); padding:0.22rem 0.4rem; }
       .fctproc-wrap { overflow:auto; max-height: calc(100vh - 15rem); min-height: 14rem; border:1px solid var(--border,#2a2a3a);
         border-top:none; border-radius:0 0 6px 6px; background: var(--bg,#0a0a0f); }
@@ -1833,7 +1952,9 @@
     const e = row ? effectivePO({ ...row, po_id: null, po_auto: true }, ctx) : { kind: 'none', candidates: [] };
     const autoMeta = !ctx.poLoaded ? 'POs still loading'
       : e.kind === 'auto' ? `matches ${str(e.po.po_number) || 'a PO'}`
-      : e.kind === 'multiple' ? `${e.candidates.length} POs match` : 'no PO matches yet';
+      : e.kind === 'multiple' ? `${e.candidates.length} POs match`
+      : e.candidates.length ? `${e.candidates.map(p => str(p.po_number) || '(no number)').join(', ')} also fit${e.candidates.length === 1 ? 's' : ''} other rows — pick it below`
+      : 'no PO matches yet';
     const opts = [
       { value: '__auto__', label: 'Auto', meta: autoMeta },
       { value: '__none__', label: 'No PO', meta: 'not bought on a PO' },
@@ -1884,6 +2005,8 @@
           .filter(m => m && typeof m.material === 'string' && m.material.trim())
           .map(m => ({
             material: m.material.trim(), sub_code: str(m.sub_code), cost_code: str(m.cost_code),
+            // Every cost code it was bought under, newest first (hasPastList).
+            ...(Array.isArray(m.cost_codes) ? { cost_codes: m.cost_codes.map(str) } : {}),
             unit: str(m.unit), vendor: str(m.vendor), jobs: Math.max(0, intOrNull(m.jobs) || 0),
             last_used: str(m.last_used),
           }));
@@ -2028,10 +2151,31 @@
   // ── Shared supplier-contacts client ─────────────────────────────────
   // The contacts remembered under each supplier, read once per division and
   // kept here so the Procurement grid and the Suppliers tab see one list.
-  const cc = { division: null, list: [], loaded: false, loading: null, listeners: new Set() };
+  const cc = { division: null, list: [], loaded: false, loading: null, at: 0, failedAt: 0, listeners: new Set() };
   function ccFresh() {
-    if (cc.division !== cfg.division) { cc.division = cfg.division; cc.list = []; cc.loaded = false; cc.loading = null; }
+    if (cc.division !== cfg.division) { cc.division = cfg.division; cc.list = []; cc.loaded = false; cc.loading = null; cc.at = 0; cc.failedAt = 0; }
     return cc;
+  }
+  /**
+   * The list read again once it is `maxAge` old. A PM who keeps the sheet
+   * open all day — as the 15 s poll means them to — was offered the contacts
+   * as they were in the morning: an address an admin has since corrected
+   * (picked, and saved on the row, and emailed), no new contact, and after a
+   * supplier renamed elsewhere a Vendor change left the old supplier's person
+   * on the row, since the list still had them under the old name. A level2
+   * PM has no Admin > Suppliers to read it again for them. Nothing is redrawn
+   * by it: the pickers read the list as they open.
+   */
+  const CONTACTS_STALE_MS = 60 * 1000;
+  function freshenContacts(maxAge = CONTACTS_STALE_MS) {
+    const c = ccFresh();
+    if (c.loading) return c.loading;
+    // A read that failed a moment ago is not tried again on every poll; the
+    // list in hand stays meanwhile.
+    const at = Math.max(c.at, c.loaded ? c.failedAt || 0 : 0);
+    if (c.loaded && Date.now() - at < maxAge) return Promise.resolve(c.list.slice());
+    const division = cfg.division;
+    return contacts.load(true).catch(err => { if (cc.division === division) cc.failedAt = Date.now(); throw err; });
   }
   function ccNotify() { cc.listeners.forEach(f => { try { f(cc.list.slice()); } catch (e) { console.warn(e); } }); }
   function ccPut(c) {
@@ -2053,6 +2197,7 @@
         cc.list = [];
         (data.contacts || []).forEach(ccPut);
         cc.loaded = true;
+        cc.at = Date.now();
         ccNotify();
         return cc.list.slice();
       }).finally(() => { if (cc.loading === p) cc.loading = null; });
@@ -2223,6 +2368,35 @@
     } else {
       notePick(rowId, { vendor: name });
       setField(rowId, 'vendor', name);
+      // Not a saved contact of the old vendor as this page's list has them —
+      // but the list may be behind the row: a supplier renamed elsewhere
+      // reaches the rows on the next poll, its contacts only with the next
+      // read of the list, and until then this left the old supplier's person
+      // beside the new vendor, to be emailed. Asked again, then cleared after
+      // all if they are that supplier's.
+      const shown = { contact: row.contact, email: row.email };
+      if (old && lc(old) !== lc(name) && (shown.contact.trim() || shown.email.trim()) && Date.now() - cc.at > 5000) {
+        freshenContacts(0).then(() => {
+          const r = rowById(rowId);
+          // Only the row as it was left: a Vendor changed again, or a Contact
+          // or Email typed since, is the PM's own and stays.
+          if (!r || r.vendor !== name || r.contact !== shown.contact || r.email !== shown.email) return;
+          const was2 = savedContactOf(old, r);
+          if (!was2) return;
+          // The box the PM is in shows what it showed; the cells are not
+          // emptied under it.
+          const a = document.activeElement;
+          if (a && a.dataset && a.dataset.pr === rowId && (a.dataset.pf === 'contact' || a.dataset.pf === 'email')) {
+            toast(`${was2.name || was2.email || 'That contact'} is a contact of ${old}, not of ${name || 'the new vendor'} — check Contact and Email.`, 'error');
+            return;
+          }
+          notePick(rowId, { vendor: name, contact: '', email: '' });
+          setFields(rowId, { contact: '', email: '' });
+          contactTouched.delete(rowId);
+          refreshRow(rowId);
+          toast(`Contact and Email cleared: ${was2.name || was2.email || 'that contact'} is a contact of ${old}, not of ${name || 'the new vendor'}.`);
+        }).catch(err => console.warn('[procurement] contacts did not load', err));
+      }
     }
     return true;
   }
@@ -2300,6 +2474,13 @@
     });
   }
 
+  // A row taken off the sheet, its saves kept: its job is no longer on the
+  // sheet (load). What is queued or out for it still goes, and lands.
+  function offSheet(id) {
+    st.rows = st.rows.filter(r => r.id !== id);
+    st.selected.delete(id); st.forceShow.delete(id);
+    if (st.confirmDel === id) st.confirmDel = null;
+  }
   function dropRow(id) {
     gone.set(id, ++touchSeq);
     st.rows = st.rows.filter(r => r.id !== id);
@@ -2329,7 +2510,15 @@
     const base = baseOf(row.id, field);
     const p = pend.get(row.id) || {};
     const b = bases.get(row.id) || {};
-    if (sameVal(base, value)) { delete p[field]; delete b[field]; }
+    // Typed back to the saved value, a cell is nothing to send — unless its
+    // last save failed or went unanswered: that one may have been written
+    // all the same (only its answer lost), and with nothing here left to
+    // send, the wrong value would stay on the server, come back on the next
+    // refresh under the PM's own name, and the row say "Not saved" for good.
+    // Sent expecting what was seen, it is written where nothing landed, and
+    // put back over the PM's own value where it did (onConflict, own).
+    const unsure = field in (unanswered.get(row.id) || {}) || (failed.has(row.id) && field in p);
+    if (sameVal(base, value) && !unsure) { delete p[field]; delete b[field]; }
     else {
       // The first change to a cell records what the person saw in it; later
       // keystrokes in the same cell keep that.
@@ -2346,6 +2535,10 @@
       pend.delete(row.id);
       clearTimeout(timers.get(row.id));
       timers.delete(row.id);
+      // Nothing of the row left to send, and none of it out: a failure
+      // earlier on it is nothing to report any more ("Not saved", the
+      // browser's "Leave site?").
+      if (!fly.has(row.id) && failed.delete(row.id)) settleSave();
     }
     return true;
   }
@@ -2415,13 +2608,17 @@
     timers.set(rowId, setTimeout(() => { flushRow(rowId); }, ms));
   }
 
-  async function flushRow(rowId, { keepalive = false } = {}) {
+  async function flushRow(rowId, { keepalive = false, unloading = false } = {}) {
     clearTimeout(timers.get(rowId));
     timers.delete(rowId);
     // One request per row at a time, so answers cannot arrive out of order;
     // whatever was edited meanwhile goes when this one is answered. The page
-    // closing is the exception — there is no "afterwards" then.
-    if (fly.has(rowId) && !keepalive) return;
+    // closing is the exception — there is no "afterwards" then. Switched
+    // away from (another app, another browser tab) is not: the page is still
+    // there when the answer comes, and two saves of one row out at once can
+    // be answered either way round — the older one failing last put its
+    // value back over the newer one, to be sent over it later.
+    if (fly.has(rowId) && !unloading) return;
     const p = pend.get(rowId);
     if (!p || !Object.keys(p).length) { pend.delete(rowId); bases.delete(rowId); return; }
     pend.delete(rowId);
@@ -2450,9 +2647,11 @@
       noteOwnVersion(data.item);
       const prev = server.get(rowId) ? { ...server.get(rowId) } : null;
       if (data.item) adoptServerRow(data.item);
+      // The answer can link the row to an order a colleague has just raised.
+      if (data.item && data.item.po_id) askForNewPOs();
       if (prev && data.item) noteChangesInAnswer(rowId, p, prev, data.item, data.was);
       refreshRow(rowId);
-      if (touchesPO(p)) repaintRows();
+      if (movesPO(p)) repaintRows();
       updateCounts();
       if (touchesCode(p)) recountAfterRecode((data.item && data.item.project_id) || (rowById(rowId) || {}).project_id || st.projectId, [rowId]);
     } catch (err) {
@@ -2468,7 +2667,7 @@
       if (droppedSince()) {
         // Deleted here meanwhile (a 404 now, most likely): what this page
         // wanted happened; nothing to say, nothing to keep.
-      } else if (err.status === 409 && err.code === 'conflict' && !keepalive) {
+      } else if (err.status === 409 && err.code === 'conflict' && !unloading) {
         // Someone else changed a cell of this save since the person saw it:
         // nothing was written. The rest goes again at once; for those cells
         // the person is asked.
@@ -2487,18 +2686,37 @@
         rebase(Object.keys(p));
       } else {
         // Keep the user's values and try again on the next edit or refresh.
-        pend.set(rowId, { ...p, ...(pend.get(rowId) || {}) });
-        rebase(Object.keys(p));
-        failed.add(rowId);
-        // No answer at all: it may have been written (see onConflict).
-        if (err.network) unanswered.set(rowId, { ...(unanswered.get(rowId) || {}), ...p });
-        // Said here rather than left to the page's banner, which cannot tell
-        // this failure (value kept, sent again) from the others (nothing kept).
-        showError(`Procurement: a change could not be saved (${err.message}). It stays on screen and is sent again on your next edit.`);
+        const kept = putBack(rowId, p, rebase);
+        if (kept.length) {
+          failed.add(rowId);
+          // No answer at all: it may have been written (see onConflict).
+          if (err.network) unanswered.set(rowId, { ...(unanswered.get(rowId) || {}), ...onlyKeys(p, kept) });
+          // Said here rather than left to the page's banner, which cannot tell
+          // this failure (value kept, sent again) from the others (nothing kept).
+          showError(`Procurement: a change could not be saved (${err.message}). It stays on screen and is sent again on your next edit.`);
+        }
       }
     }
-    if (pend.has(rowId) && !failed.has(rowId)) flushRow(rowId);
+    // What was edited meanwhile goes now — made to outlive the page if it
+    // has gone to the background, as the save made on the way there was.
+    if (pend.has(rowId) && !failed.has(rowId)) flushRow(rowId, { keepalive: document.visibilityState === 'hidden' });
     settleSave();
+  }
+  const onlyKeys = (o, keys) => Object.fromEntries(keys.map(k => [k, o[k]]));
+  /**
+   * A failed save's cells, put back to be sent again: all but those a later
+   * save of the row still out carries (one sent as the page was closing,
+   * with what was typed since). Its value is the newer: put back over it,
+   * the older would be the one sent next, written over the newer one. Says
+   * which cells were put back.
+   */
+  function putBack(rowId, p, rebase) {
+    const later = fly.get(rowId) || {};
+    const kept = Object.keys(p).filter(k => !(k in later));
+    const next = { ...onlyKeys(p, kept), ...(pend.get(rowId) || {}) };
+    if (Object.keys(next).length) pend.set(rowId, next);
+    rebase(kept);
+    return kept;
   }
 
   // ── Someone else changed it meanwhile ──────────────────────────────
@@ -2519,10 +2737,10 @@
     let fields = (Array.isArray(data.fields) ? data.fields : []).filter(k => k in p);
     if (!fields.length || !data.item) {
       // Not one this page can show: kept, and sent again on the next edit.
-      pend.set(rowId, { ...p, ...(pend.get(rowId) || {}) });
-      rebase(Object.keys(p));
-      failed.add(rowId);
-      showError('Procurement: a change could not be saved (it was changed elsewhere meanwhile). It stays on screen and is sent again on your next edit.');
+      if (putBack(rowId, p, rebase).length) {
+        failed.add(rowId);
+        showError('Procurement: a change could not be saved (it was changed elsewhere meanwhile). It stays on screen and is sent again on your next edit.');
+      }
       return;
     }
     // An answer — the server is there: whatever an earlier failure left
@@ -2565,7 +2783,9 @@
     const resend = {};
     own.forEach(k => { resend[k] = mine[k]; delete mine[k]; });
     const again = {};
-    Object.keys(p).forEach(k => { if (!fields.includes(k) && !same.includes(k) && !own.includes(k)) again[k] = p[k]; });
+    // …but not a cell a later save of the row still out carries (putBack).
+    const later = fly.get(rowId) || {};
+    Object.keys(p).forEach(k => { if (!fields.includes(k) && !same.includes(k) && !own.includes(k) && !(k in later)) again[k] = p[k]; });
     const next = { ...again, ...resend, ...newer };
     if (Object.keys(next).length) pend.set(rowId, next); else pend.delete(rowId);
     // The picks whose cells still go out (a pick made while this save was
@@ -2581,21 +2801,59 @@
     }
     // The row as it is now: theirs in the changed cells, marked as theirs —
     // and so is any other cell of the row someone else changed meanwhile.
+    // Only the cells the server says moved: not those asked about only
+    // because they were picked with one (the Contact and Email a Vendor
+    // pick cleared), which nobody else touched.
     const prev = server.get(rowId) ? { ...server.get(rowId) } : null;
     adoptServerRow(data.item);
+    // A colleague's new order this page's list does not have yet: read for.
+    const poRead = askForNewPOs();
     const busy = { ...(fly.get(rowId) || {}), ...next };
     const others = prev && !isMe(data.changed_by)
       ? WATCH_FIELDS.filter(k => !fields.includes(k) && !(k in p) && !(k in busy) && !sameVal(prev[k], item[k])) : [];
-    if (fields.length || others.length) markRecent(rowId, fields.concat(others), data.changed_by, data.changed_at);
+    const moved = fields.filter(k => data.fields.includes(k));
+    if (moved.length || others.length) markRecent(rowId, moved.concat(others), data.changed_by, data.changed_at);
     refreshRow(rowId);
-    if (touchesPO(p)) repaintRows();
+    if (movesPO(p)) repaintRows();
     updateCounts();
     if (!fields.length) return;
     const c = { rowId, fields, mine, theirs: item, by: str(data.changed_by), at: data.changed_at || null, redraw: null };
+    // The dialog names that order once the list is in (until then it is
+    // "a PO this page has not loaded yet", not one "no longer listed").
+    if (poRead) poRead.then(() => { if (c.redraw) c.redraw(); });
     // Held until the person picks: see setField.
     fields.forEach(k => held.set(rowId + '\u0000' + k, c));
     conflictQueue.push(c);
     showNextConflict();
+  }
+  // Whether `a` is a cell's box the PM has typed in since it took the focus,
+  // other than the conflict's own cells. One only just taken (Tab moved the
+  // caret there) has nothing in it to save, and is left for the dialog.
+  function typingElsewhere(a, c) {
+    if (!a || a !== boxFocusEl || !boxTyped || !a.dataset || !a.dataset.pr || !inCellBox(a)) return false;
+    return !(a.dataset.pr === c.rowId && (FOCUS_FIELDS[a.dataset.pf] || [a.dataset.pf]).some(f => c.fields.includes(f)));
+  }
+  // The box the next conflict's dialog waits for the PM to leave.
+  let conflictWaitFor = null, conflictWaitTimer = null;
+  function holdConflictFor(box) {
+    conflictWaitFor = box;
+    clearTimeout(conflictWaitTimer);
+    // A box taken out of the page while in use fires no focusout: looked at
+    // again now and then, so the dialog is never owed for good.
+    conflictWaitTimer = setTimeout(() => conflictBoxLeft(box), 2000);
+  }
+  // A box left (onFocusOut): the dialog held for it shows once its commit
+  // has run — a picker commits 120 ms after it is left.
+  function conflictBoxLeft(box) {
+    if (!box || box !== conflictWaitFor) return;
+    setTimeout(() => {
+      if (box !== conflictWaitFor) return;
+      // Still the box in use: the window lost the focus, not the box.
+      if (box.isConnected && document.activeElement === box) { holdConflictFor(box); return; }
+      conflictWaitFor = null;
+      clearTimeout(conflictWaitTimer);
+      showNextConflict();
+    }, isCb(box) ? 250 : 0);
   }
   // The cells a conflict holds, let go.
   function release(c) {
@@ -2615,7 +2873,14 @@
     const in_ = keys => keys.some(k => c.fields.includes(k));
     const codes = o => [str(o.cost_code).trim(), str(o.sub_code).trim()].filter(Boolean).join(' / ') || '(blank)';
     const po = o => {
-      if (o.po_id) { const x = (makeCtx().purchaseOrders || []).find(y => String(y.id) === String(o.po_id)); return x ? str(x.po_number) || '(no number)' : 'a PO no longer listed'; }
+      if (o.po_id) {
+        const ctx = makeCtx(), x = (ctx.purchaseOrders || []).find(y => String(y.id) === String(o.po_id));
+        if (x) return str(x.po_number) || '(no number)';
+        // Not in the list while it is still being read for (a colleague's
+        // new order): "no longer listed" would read as deleted, and invite
+        // "Keep mine" — taking the row off a live order.
+        return !ctx.poLoaded || poAsking ? 'a PO this page has not loaded yet' : 'a PO no longer listed';
+      }
       return o.po_auto === false ? 'No PO' : 'Auto';
     };
     const lines = [];
@@ -2625,14 +2890,36 @@
       .forEach(k => lines.push([FIELD_LABEL[k] || k, shownValue(k, theirs[k]), shownValue(k, mine[k])]));
     return lines;
   }
-  function showNextConflict() {
+  // `force`: the page has gone to the background — shown, not held for a box
+  // nobody is typing in now (boxFocusEl and boxTyped stay as they were).
+  function showNextConflict({ force = false } = {}) {
     if (conflictOpen) return;
-    const c = conflictQueue.shift();
+    const c = conflictQueue[0];
     if (!c) return;
+    const a = document.activeElement;
+    // A box being typed in that is not one of these cells: left for the
+    // dialog, it would save what it holds so far (20000 typed, 200 saved;
+    // "New Enterprise", "New"), and the rest of the keys would go to the
+    // dialog. So the dialog waits until the PM leaves it, its own commit
+    // made — as the refresh waits (pollOwed). Its cells stay held meanwhile.
+    if (!force && rowById(c.rowId) && typingElsewhere(a, c)) { holdConflictFor(a); return; }
+    if (force) { conflictWaitFor = null; clearTimeout(conflictWaitTimer); }
+    conflictQueue.shift();
+    const row = rowById(c.rowId);
+    if (!row) {
+      // Off the sheet now (another job opened while the save was out): said,
+      // not dropped without a word. No dialog takes the caret, so the box
+      // being typed in keeps it (left, it would save its half-typed value).
+      release(c);
+      const what = conflictLines(c).map(([w, , y]) => `${w} "${y}"`).join(', ');
+      showError(`Procurement: ${what} ${c.fields.length > 1 ? 'were' : 'was'} not saved — it was changed by someone else meanwhile${c.by ? ` (last by ${c.by})` : ''}. Open that job again to see what is saved and enter it again if yours should stand.`);
+      settleSave();
+      showNextConflict({ force });
+      return;
+    }
     // The box the person is in is left first: what it holds is committed —
     // into "Yours" if it is one of these cells (held, see setField) — before
     // the dialog shows it, and keys stop going into the sheet behind it.
-    const a = document.activeElement;
     if (a && a !== document.body && st.mountEl && st.mountEl.contains(a) && typeof a.blur === 'function') a.blur();
     // The page's pickers close their menus on a click or key elsewhere, not
     // when focus is moved for them.
@@ -2640,16 +2927,6 @@
       const input = menu.previousElementSibling;
       if (input && typeof window.cbClose === 'function') window.cbClose(input); else menu.hidden = true;
     });
-    const row = rowById(c.rowId);
-    if (!row) {
-      // Off the sheet now (another job opened while the save was out): said,
-      // not dropped without a word.
-      release(c);
-      const what = conflictLines(c).map(([w, , y]) => `${w} "${y}"`).join(', ');
-      showError(`Procurement: ${what} ${c.fields.length > 1 ? 'were' : 'was'} not saved — it was changed by someone else meanwhile${c.by ? ` (last by ${c.by})` : ''}. Open that job again to see what is saved and enter it again if yours should stand.`);
-      showNextConflict();
-      return;
-    }
     refreshRow(c.rowId);
     conflictOpen = true;
     const name = materialOf(row, siteMode() && row.project_id ? makeCtx(row.project_id) : makeCtx()) || 'This row';
@@ -2691,6 +2968,7 @@
       conflictOpen = false;
       c.redraw = null;
       if (!kept) { release(c); refreshRow(c.rowId); }
+      settleSave();
       setTimeout(showNextConflict, 0);
     };
     m.foot.addEventListener('click', e => {
@@ -2707,6 +2985,15 @@
           Object.keys(c.mine).forEach(k => seenAtFocus.set(c.rowId + '\u0000' + k, { v: c.theirs[k], at: Date.now() }));
           setFields(c.rowId, c.mine);
           refreshRow(c.rowId);
+          flushRow(c.rowId);
+        } else {
+          // Its job left the sheet while the dialog was open (a site's field
+          // marked complete): the pick is still sent — a row off the sheet
+          // keeps its saves — against what the dialog showed as saved.
+          pend.set(c.rowId, { ...(pend.get(c.rowId) || {}), ...c.mine });
+          const b = bases.get(c.rowId) || {};
+          Object.keys(c.mine).forEach(k => { if (c.theirs && k in c.theirs) b[k] = c.theirs[k]; });
+          bases.set(c.rowId, b);
           flushRow(c.rowId);
         }
       }
@@ -2923,17 +3210,23 @@
     clearTimeout(savedTimer);
     const el = st.mountEl && st.mountEl.querySelector('#fctproc-save');
     if (el) {
-      el.className = `save-indicator fctproc-save ${state}`;
-      const text = { saving: 'Saving…', saved: 'Saved', error: 'Not saved', idle: '' }[state] || '';
+      el.className = `save-indicator fctproc-save ${state === 'held' ? 'error held' : state}`;
+      const text = { saving: 'Saving…', saved: 'Saved', error: 'Not saved', held: 'Not saved', idle: '' }[state] || '';
       el.querySelector('.si-text').textContent = text;
-      el.title = state === 'error' ? 'A change could not be saved — the message at the top of the page says which, and what happens to it.' : '';
+      el.title = state === 'error' ? 'A change could not be saved — the message at the top of the page says which, and what happens to it.'
+        : state === 'held' ? 'A change of yours met a colleague\'s in the same cell: you are asked which to keep (once you leave the box you are typing in).' : '';
     }
     if (state === 'saved') savedTimer = setTimeout(() => setSave('idle'), 2500);
   }
+  // A conflict not answered yet — its dialog open, or waiting for the box in
+  // use (holdConflictFor) — holds the PM's value unsaved: "Not saved" (held),
+  // not "Saved", until it is answered (m.onClose settles it again).
   function settleSave() {
     if (fly.size) setSave('saving');
     else if (failed.size) setSave('error');
+    else if (held.size) setSave('held');
     else if (st.saveState === 'saving') setSave('saved');
+    else if (st.saveState === 'held') setSave('idle');
   }
   // An action of its own done (a row added, rows deleted or copied in):
   // "Saved" — unless an earlier edit is still out, or failed and is kept to
@@ -2941,7 +3234,7 @@
   function actionSaved() {
     if (fly.size) setSave('saving');
     else if (failed.size) setSave('error');
-    else setSave('saved');
+    else setSave(held.size ? 'held' : 'saved');
   }
 
   // A picker in the sheet holding something typed or picked in it that it
@@ -2959,20 +3252,29 @@
   window.addEventListener('pagehide', () => {
     const c = uncommittedCombo();
     if (c) { delete c.dataset.pcommit; commitCombo(c.dataset.pr, c.dataset.pf, c); }
-    flushAll({ keepalive: true });
+    flushAll({ keepalive: true, unloading: true });
   });
   // …but a save that has already failed (the server or the connection is
   // down) will fail again as the page closes, and one still out may never be
   // answered. The banner promised those edits are kept and sent again, so
   // leaving now asks first — the browser's own "Leave site?" — the way the
   // page already does for unsent Daily rows.
+  // So does a conflict not answered yet (open, or held for the box in use):
+  // the PM's value is only in its dialog.
   window.addEventListener('beforeunload', e => {
-    if (!failed.size && !fly.size && !pend.size && !uncommittedCombo()) return;
+    if (!failed.size && !fly.size && !pend.size && !held.size && !uncommittedCombo()) return;
     e.preventDefault();
     e.returnValue = '';
   });
+  // Gone to the background: sent now, and made to outlive the page should
+  // the browser close it there — each row whose save is not already out (a
+  // row's save still out sends the rest when it is answered).
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'hidden') flushAll({ keepalive: true });
+    if (document.visibilityState !== 'hidden') return;
+    // A dialog held for the box in use is shown first — its blur commits the
+    // box, so the flush sends it — and is there when the PM comes back.
+    if (conflictQueue.length) showNextConflict({ force: true });
+    flushAll({ keepalive: true });
   });
 
   // ── Loading ─────────────────────────────────────────────────────────
@@ -3012,23 +3314,38 @@
       // the server after the GET went out ("+ Add Row" a moment ago, a row
       // sent or restored): the answer is older than those, not news of them.
       st.rows.filter(r => !ids.has(r.id) && !pend.has(r.id) && !fly.has(r.id) && !since(touched, r.id)).forEach(r => dropRow(r.id));
+      // A job no longer on the sheet (a site's field marked complete, its
+      // Site changed): its rows go with it, a row whose save is still out
+      // too — kept, it was counted in the head, exported, and still ticked,
+      // so a bulk edit wrote to it unseen. Its saves are kept, and land; the
+      // row is back, with them, if the job comes back (adoptServerRow).
+      const open = new Set(jobIds.map(String));
+      st.rows.filter(r => r.project_id && !open.has(String(r.project_id))).forEach(r => offSheet(r.id));
       // A refresh of the sheet already on screen: what other people changed
       // since is marked (noteOthersChanges), against the copies held now. A
       // row taken from the server after this GET went out is newer than the
       // answer, and not news.
-      const known = quiet && st.loadState === 'ok' && st.loadedFor === sig
-        ? new Map(items.filter(r => !since(touched, r.id)).map(r => [r.id, server.get(r.id) ? { ...server.get(r.id) } : null])) : null;
+      // A site read again as other jobs (reshaped, below) is marked so too,
+      // for the jobs it already had: a job that has just joined is not news.
+      const had = quiet && st.loadState === 'ok' && isSiteKey(projectId) && String(st.loadedFor || '').startsWith(projectId + '|')
+        ? new Set(st.loadedFor.slice(projectId.length + 1).split(',')) : null;
+      const known = quiet && st.loadState === 'ok' && (st.loadedFor === sig || had)
+        ? new Map(items.filter(r => !since(touched, r.id) && (!had || had.has(String(r.project_id))))
+          .map(r => [r.id, server.get(r.id) ? { ...server.get(r.id) } : null])) : null;
       items.forEach(adoptServerRow);
       if (known) noteOthersChanges(items.filter(r => known.has(r.id)), known);
       askForNewPOs();
       const wasOk = st.loadState === 'ok' && st.loadedFor === sig;
+      // A site read again as other jobs (reloadSite) over its sheet on
+      // screen: redrawn in place, as a poll's answer is, not rebuilt.
+      const reshaped = quiet && !wasOk && st.loadState === 'ok' && isSiteKey(projectId) && jobIds.length > 0 && !!st.mountEl.querySelector('#fctproc-wrap');
       st.loadState = 'ok';
       st.loadedFor = sig;
       // Past midnight since the sheet was drawn: Due soon is Late now, and
       // the counts with it, though nobody changed a thing.
       const newDay = !!st.drawnDay && st.drawnDay !== today();
-      if (!wasOk || !quiet) renderBody();
-      else if (signature() !== before || newDay) {
+      if (!(wasOk || reshaped) || !quiet) renderBody();
+      else if (reshaped || signature() !== before || newDay) {
         // The answer can land after the PM has started typing (the poll only
         // checks as it starts): then the rows are redrawn around the cell in
         // use, never the table under it — see redrawAround. Landing while a
@@ -3040,6 +3357,8 @@
           if (cellInUse()) redrawAround();
           else { renderTable(); updateCounts(); }
           renderHead();
+          // The ticks on the rows of a job that left go from the bar's count.
+          if (reshaped) redrawBulk();
         }
       } else if (redrawDeferred) {
         // A redraw still owed from an answer that landed mid-edit.
@@ -3054,6 +3373,8 @@
       // type one — read after the rows (never ahead of them), and only every
       // few minutes; every load in between is a no-op.
       if (canEdit() && !colHidden('description')) loadLibrary();
+      // The contacts the pickers offer, once a minute old (freshenContacts).
+      if (canEdit()) freshenContacts().catch(err => console.warn('[procurement] contacts did not load', err));
     } catch (err) {
       if (gen !== loadGen) return;
       // A failed poll leaves what is on screen alone. A failed first read is
@@ -3334,20 +3655,69 @@
   // row shown as on a removed PO (Not Ordered, Late) until the page's next
   // minute poll. Asked once for each set of such orders, so one that really
   // was removed is not read for again on every poll.
+  //
+  // So is a row whose codes moved since the last read — its stored copy, or
+  // its bid line's: a section or sub code renamed on the bid page. The
+  // server carries the rename to the job's orders under the old codes, but
+  // the page's copy of them is up to a minute old, and until it is read
+  // again the row matches no order — Not Ordered and Late, and Create PO
+  // raising a second order for it without asking. Once per read of the rows
+  // however many rows a rename moved.
   let poAskedFor = '';
+  // That read while it is out (a promise), for what waits on it: the
+  // conflict dialog names such an order once the list has it.
+  let poAsking = null;
+  let codesSeen = { sig: null, codes: new Map() };
+  // Jobs whose moved codes a read failed to follow up: asked about again.
+  let codesOwed = [];
   function askForNewPOs() {
     const ctx = makeCtx();
-    if (!ctx.poLoaded) return;
+    const moved = codesMoved(ctx);
+    if (!ctx.poLoaded) return null;
     const idx = ctxIndex(ctx);
     const unknown = [...new Set(st.rows.filter(r => r.po_id && !idx.poById.has(String(r.po_id))).map(r => String(r.po_id)))].sort().join(',');
-    if (!unknown || unknown === poAskedFor) return;
-    poAskedFor = unknown;
-    refreshPOs();
+    const ask = !!unknown && unknown !== poAskedFor;
+    if (!ask && !moved) return unknown ? poAsking : null;
+    if (ask) poAskedFor = unknown;
+    // Codes moved: read once this page's own bid saves for those jobs have
+    // landed. The server carries a rename to the orders as it takes the
+    // save, and the tab shown straight after a rename on the bid page read
+    // the list in the same moment the save went — under the old codes.
+    const go = () => refreshPOs(moved ? () => { codesOwed = codesOwed.concat(moved); } : null);
+    const read = poAsking = (moved ? bidSaved(moved).then(go) : go()).finally(() => { if (poAsking === read) poAsking = null; });
+    return read;
   }
-  function refreshPOs() {
+  // Whether a row matched to an order by its codes has other codes than at
+  // the last look — the codes it is matched by (liveCodes: its bid line's,
+  // else its own); the first look at a sheet says nothing. Not the stored
+  // copy as such: the page's own re-link moving it onto the line's codes
+  // (autoRelink) moves nothing an order is matched by. The jobs of the rows
+  // that moved, or null.
+  function codesMoved(ctx) {
+    const sig = viewSig(), k = keyFn(ctx);
+    const now = new Map(st.rows.filter(r => !r.po_id && r.po_auto !== false).map(r => {
+      const c = liveCodes(r, ctx);
+      return [r.id, [c.cost_code, c.sub_code].map(s => ck(k, s)).join('\u0000')];
+    }));
+    const was = codesSeen.sig === sig ? codesSeen.codes : null;
+    const owed = codesSeen.sig === sig ? codesOwed : [];
+    codesSeen = { sig, codes: now };
+    codesOwed = [];
+    const jobs = new Set(owed);
+    if (was) st.rows.forEach(r => { if (now.has(r.id) && was.has(r.id) && was.get(r.id) !== now.get(r.id)) jobs.add(String(r.project_id || st.projectId || '')); });
+    return jobs.size ? [...jobs] : null;
+  }
+  // This page's own bid saves for these jobs, sent and waited for: the
+  // re-link's read of the bid when one is out (the host flushes them
+  // first), else a read of its own.
+  function bidSaved(jobs) {
+    return Promise.all(jobs.map(pid => (bidReads.get(pid) || serverBidLines(pid)).catch(() => null)));
+  }
+  function refreshPOs(onFail) {
     if (typeof cfg.refreshPurchaseOrders !== 'function') return Promise.resolve(false);
     return Promise.resolve().then(() => cfg.refreshPurchaseOrders()).catch(err => {
       console.warn('[procurement] could not read the purchase orders again', err);
+      if (onFail) onFail();
       return false;
     });
   }
@@ -3491,12 +3861,33 @@
     { key: 'sca_open', label: 'Sub agreement open', tone: 'amber' },
     { key: 'not_delivered', label: 'Not delivered' },
   ];
+  // A chip's count, and its class: on when it is the one applied, its tone
+  // once it counts something.
+  function chipState(c, ctx) {
+    const n = c.key === 'all' ? st.rows.length : st.rows.filter(r => chipMatch(c.key, r, ctx)).length;
+    return { n, cls: `fctproc-chip${st.chip === c.key ? ' on' : ''}${n && c.tone ? ' c-' + c.tone : ''}` };
+  }
   function chipsHtml(ctx) {
     return CHIPS.map(c => {
-      const n = c.key === 'all' ? st.rows.length : st.rows.filter(r => chipMatch(c.key, r, ctx)).length;
-      return `<button type="button" class="fctproc-chip${st.chip === c.key ? ' on' : ''}${n && c.tone ? ' c-' + c.tone : ''}"
+      const { n, cls } = chipState(c, ctx);
+      return `<button type="button" class="${cls}"
         data-chip="${c.key}">${esc(c.label)}<span class="n">${n}</span></button>`;
     }).join('');
+  }
+  // The chips' counts and marks put right in place. Drawn afresh instead,
+  // the chip under the pointer was replaced between the press and its
+  // release whenever something counted again meanwhile — a picker
+  // committing as the press took the focus from it, a save's answer — and
+  // the click never arrived.
+  function paintChips(box, ctx) {
+    const btns = [...box.querySelectorAll('[data-chip]')];
+    if (btns.length !== CHIPS.length || CHIPS.some((c, i) => btns[i].dataset.chip !== c.key)) { box.innerHTML = chipsHtml(ctx); return; }
+    CHIPS.forEach((c, i) => {
+      const { n, cls } = chipState(c, ctx);
+      const b = btns[i], num = b.querySelector('.n');
+      if (b.className !== cls) b.className = cls;
+      if (num && num.textContent !== String(n)) num.textContent = String(n);
+    });
   }
   function filtersActive() {
     return !!(st.search.trim() || st.chip !== 'all' || Object.keys(st.filters).length);
@@ -3526,7 +3917,7 @@
     const counts = st.mountEl.querySelector('#fctproc-counts');
     if (counts) counts.innerHTML = countsHtml(ctx);
     const chips = st.mountEl.querySelector('#fctproc-chips');
-    if (chips) chips.innerHTML = chipsHtml(ctx);
+    if (chips) paintChips(chips, ctx);
     const clear = st.mountEl.querySelector('#fctproc-clear');
     if (clear) clear.hidden = !filtersActive();
     updateGroupCounts(ctx);
@@ -3708,6 +4099,17 @@
     const groups = groupRows(rows, ctx);
     const width = cols.reduce((s, c) => s + c.w, 0);
     const drawn = new Map();
+    // A tick on a row the search, a filter or a chip now hides goes (a
+    // folded section's rows are still on the sheet, and keep theirs): left
+    // ticked, Apply, Delete selected and Create PO acted on rows the PM
+    // could not see — the gravel rows' Quote # overwritten from a search for
+    // pipe, rows deleted that were never on screen.
+    if (st.selected.size) {
+      const on = new Set(rows.map(r => r.id));
+      const before = st.selected.size;
+      st.selected.forEach(id => { if (!on.has(id)) st.selected.delete(id); });
+      if (st.selected.size !== before) redrawBulk();
+    }
     let body = '';
     if (!st.rows.length) {
       const hasBid = (ctx.bidLines || []).length > 0;
@@ -3745,6 +4147,7 @@
     wrap.innerHTML = `<table class="fctproc-table" style="width:${width}rem;min-width:${width}rem">
       <colgroup>${cols.map(c => `<col style="width:${c.w}rem">`).join('')}</colgroup>
       <thead>${headerHtml(cols)}</thead><tbody>${body}</tbody></table>`;
+    tipChanged(wrap);
     wrap.querySelectorAll('tr.fctproc-row').forEach(tr => { const h = drawn.get(tr.dataset.row); if (h) drawnHtml.set(tr, h); });
     drawnLayout = layoutOf(rows, ctx, groups);
     wrap.scrollTop = top;
@@ -3982,26 +4385,25 @@
     const flags = flagsOf(r, ctx);
     const red = flags.some(f => f.level === 'red'), amber = !red && flags.some(f => f.level === 'amber');
     const txt = (v, cls) => `<span class="fctproc-txt${cls ? ' ' + cls : ''}" title="${esc(v)}">${esc(v)}</span>`;
-    const dateIn = (f, v, extra = '') => `<input type="date" class="fctproc-in${ymdOf(v) ? '' : ' empty'}" ${at(f)} value="${esc(ymdOf(v))}" min="${DATE_MIN}" max="${DATE_MAX}"${extra}>`;
+    const dateIn = (f, v, extra = '', cls = '') => `<input type="date" class="fctproc-in${cls}${ymdOf(v) ? '' : ' empty'}" ${at(f)} value="${esc(ymdOf(v))}" min="${DATE_MIN}" max="${DATE_MAX}"${extra}>`;
     const textIn = (f, ph, extra = '') => `<input type="text" class="fctproc-in" ${at(f)} value="${esc(r[f])}" maxlength="${MAX_LEN[f] || 200}"
       placeholder="${esc(ph || '')}" title="${esc(r[f])}" autocomplete="off" spellcheck="false"${extra}>`;
     // One field of a cell that holds several (class c-<field>): refreshRow
     // redraws the parts around the one being typed in.
     // A cell (or part) someone else changed lately is marked, its tooltip
-    // saying who and when (recentTip).
-    // A box or text inside carries its own tooltip, which the browser shows
-    // over the cell's: the "Changed by" line is added to each of those too.
-    const withTip = (html, tip) => (tip ? html.replace(/ title="([^"]*)"/g, (m0, t) => ` title="${t ? t + '&#10;' : ''}${esc(tip)}"`) : html);
+    // saying who and when (recentTip). A box or text inside carries its own
+    // tooltip, which the browser shows over the cell's: the "Changed by" line
+    // is added to each of those once the row is parsed (tipChanged).
     const part = (f, inner, cls = '') => {
       const ch = recentTip(r.id, [f]);
-      return `<div class="fctproc-part c-${f}${cls}${ch ? ' fctproc-chg' : ''}"${ch ? ` title="${esc(ch)}"` : ''}>${withTip(inner, ch)}</div>`;
+      return `<div class="fctproc-part c-${f}${cls}${ch ? ' fctproc-chg' : ''}"${ch ? ` title="${esc(ch)}"` : ''}>${inner}</div>`;
     };
     let left = 0;
     const cells = cols.map(c => {
       const stick = c.stick ? ` stk${c.key === 'status' ? ' stk-edge' : ''}" style="left:${left}rem` : '';
       if (c.stick) left += c.w;
       const ch = COL_FIELDS[c.key] ? recentTip(r.id, COL_FIELDS[c.key]) : '';
-      const td = (cls, inner) => `<td class="c-${c.key}${cls ? ' ' + cls : ''}${ch ? ' fctproc-chg' : ''}${stick}"${ch ? ` title="${esc(ch)}"` : ''}>${withTip(inner, ch)}</td>`;
+      const td = (cls, inner) => `<td class="c-${c.key}${cls ? ' ' + cls : ''}${ch ? ' fctproc-chg' : ''}${stick}"${ch ? ` title="${esc(ch)}"` : ''}>${inner}</td>`;
       switch (c.key) {
         case 'sel':
           return td('', `<input type="checkbox" data-sel="${id}" ${st.selected.has(r.id) ? 'checked' : ''} aria-label="Select row">`);
@@ -4057,7 +4459,7 @@
           const derived = !own && eff;
           const why = derived ? `Date Ordered: the date ${str(ep.po && ep.po.po_number) || 'its PO'} was raised${edit ? ' — pick a date to set your own' : ''}` : 'Date Ordered';
           const ordered = edit
-            ? dateIn('date_ordered', own || eff, ` title="${esc(why)}" aria-label="Date Ordered"${derived ? ' data-derived="1"' : ''}`).replace('class="fctproc-in', `class="fctproc-in${derived ? ' derived' : ''}`)
+            ? dateIn('date_ordered', own || eff, ` title="${esc(why)}" aria-label="Date Ordered"${derived ? ' data-derived="1"' : ''}`, derived ? ' derived' : '')
             : derived ? `<span class="fctproc-txt fctproc-calc" title="${esc(why)}">${fmtDate(eff)}</span>` : `<span class="fctproc-txt" title="Date Ordered">${esc(fmtDate(own))}</span>`;
           const delivered = edit ? dateIn('date_delivered', r.date_delivered, ' title="Date Delivered" aria-label="Date Delivered"')
             : `<span class="fctproc-txt" title="Date Delivered">${esc(fmtDate(r.date_delivered))}</span>`;
@@ -4191,10 +4593,19 @@
     const id = esc(r.id);
     const num = ep.po ? str(ep.po.po_number) || '(no number)' : '';
     const cls = ep.kind === 'multiple' ? 'po-multi' : (ep.kind === 'removed' || ep.kind === 'moved') ? 'po-removed' : ep.kind === 'nopo' ? 'po-nopo' : '';
-    const autoTag = ep.kind === 'auto'
-      ? '<span class="fctproc-tag" title="Matched automatically: the only PO on this job with this cost code, sub code and vendor">auto</span>' : '';
+    // Fits other rows under these codes too, and given to this one: said, so
+    // the PM knows the rows beside it are not on it.
+    const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
+    const autoTip = !ep.others ? 'Matched automatically: the only PO on this job with this cost code, sub code and vendor'
+      : `Matched automatically: the PO on this job with this cost code, sub code and vendor. It is this row's, not the ${n(ep.others, 'other row', 'other rows')} `
+        + `under these codes: ${ep.by === 'vendor' ? 'its supplier is this row\'s vendor' : 'this is the bid line\'s own row'}`;
+    const autoTag = ep.kind === 'auto' ? `<span class="fctproc-tag" title="${esc(autoTip)}">auto</span>` : '';
     const open = ep.po ? `<button type="button" class="fctproc-open" data-act="open-po" data-po="${esc(ep.po.id)}" title="Open ${esc(num)} on the Purchase Orders tab">&#8599;</button>` : '';
     let multiTitle = ep.kind === 'multiple' ? ep.candidates.map(p => str(p.po_number)).join(', ') : '';
+    // An order that fits this row and others beside it, none of them more
+    // than the rest: no row is on it until the PM picks it on the right one.
+    const fits = ep.kind === 'none' && ep.candidates.length ? ep.candidates.map(p => str(p.po_number) || '(no number)') : null;
+    if (fits) multiTitle = `${fits.join(', ')} ${fits.length === 1 ? 'fits' : 'fit'} this row and others under the same codes, so no row is on ${fits.length === 1 ? 'it' : 'them'} yet. Pick ${fits.length === 1 ? 'it' : 'one'} here if this row is what ${fits.length === 1 ? 'it was' : 'they were'} raised for.`;
     if (ep.kind === 'moved') {
       // Linked here, then re-pointed to another job on the Purchase Orders
       // tab: it is not this job's order any more, so the row is not ordered.
@@ -4207,6 +4618,7 @@
     }
     const value = ep.kind === 'linked' || ep.kind === 'auto' ? num : ep.kind === 'nopo' ? 'No PO' : '';
     const placeholder = ep.kind === 'multiple' ? `${ep.candidates.length} POs match — pick`
+      : fits ? `${fits.length === 1 ? fits[0] : `${fits.length} POs`} fit${fits.length === 1 ? 's' : ''} several rows — pick`
       : ep.kind === 'removed' ? 'PO removed' : ep.kind === 'moved' ? `${num} is on another job` : ep.kind === 'loading' ? '…' : '—';
     const cbv = r.po_id ? r.po_id : r.po_auto === false ? '__none__' : '__auto__';
     return td(cls, `<div class="fctproc-po">${cbCell('proc_pos:' + r.id, value, placeholder,
@@ -4222,6 +4634,22 @@
   // last time is left alone. Never for an edit's own redraw, which also puts
   // back a box whose typing was refused.
   const drawnHtml = new WeakMap();      // tr → the HTML it was drawn from
+  // The "Changed by …" line of a cell or part someone else changed (its own
+  // tooltip) added to the tooltip of each box and text in it, which the
+  // browser shows over the cell's. Set on the rows once parsed, through the
+  // DOM — never by finding the titles in the row's HTML: a Material typed as
+  // 'Inlet title=' read as a title there, and the row's Sub Code beside it
+  // became live attributes of the box, a script run on the sheet of whoever
+  // had it open.
+  function tipChanged(scope) {
+    scope.querySelectorAll('.fctproc-chg[title]').forEach(cell => {
+      const tip = cell.getAttribute('title');
+      cell.querySelectorAll('[title]').forEach(el => {
+        const own = el.getAttribute('title');
+        el.setAttribute('title', own ? own + '\n' + tip : tip);
+      });
+    });
+  }
   // A box in use is not redrawn, but the cell or part around it takes the
   // fresh copy's class and tooltip.
   function marksFrom(el, fresh) {
@@ -4242,6 +4670,7 @@
     if (onlyIfChanged && drawnHtml.get(tr) === html) return;
     const tmp = document.createElement('tbody');
     tmp.innerHTML = html;
+    tipChanged(tmp);
     const fresh = tmp.firstElementChild;
     if (!fresh) return;
     // Only a box being typed in holds its cell; a button that was just
@@ -4359,10 +4788,17 @@
     }
     st.selected.forEach(id => { if (!rowById(id)) st.selected.delete(id); });
     const n = st.selected.size;
-    if (!canEdit() || !n) { box.innerHTML = ''; box.className = ''; st.bulkConfirmDel = false; fitWrap(); return; }
-    box.className = 'fctproc-bulk';
-    box.innerHTML = `
-      <b>${n}</b> selected
+    if (!canEdit()) { box.innerHTML = ''; box.className = ''; st.bulkConfirmDel = false; fitWrap(); return; }
+    // Nothing ticked: the bar keeps its room, its controls hidden under a
+    // word on what ticking does. Put in on the first tick (and taken out
+    // with the last), it pushed every row down by its height — two lines on
+    // a laptop — as the pointer went on to the next box, and that click
+    // landed on the row below, or on a section's box and ticked the whole
+    // section. A value left in it is not kept for the next selection.
+    if (!n) { st.bulkConfirmDel = false; keep.length = 0; }
+    box.className = n ? 'fctproc-bulk' : 'fctproc-bulk idle';
+    box.innerHTML = `${n ? '' : '<span class="fctproc-bulk-hint">Tick rows to set a field on all of them at once, raise a PO for them or delete them</span>'}
+      <b class="fctproc-bulk-n">${n}</b> selected
       <span class="fctproc-lbl" style="margin-left:0.5rem">Set</span>
       <select id="fctproc-bulk-field" aria-label="Field to set">${BULK_FIELDS.map(([k, l]) =>
         `<option value="${k}"${k === st.bulkField ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select>
@@ -4385,6 +4821,32 @@
       if (cbValue) el.dataset.cbValue = cbValue; else delete el.dataset.cbValue;
     });
     fitWrap();
+  }
+
+  /**
+   * The bulk bar drawn again for what is selected now — but not while it is
+   * being typed in (its value box, a Vendor menu open): drawn again, the box
+   * would lose focus and the keys typed next would go nowhere. Its PO list
+   * catches up the next time it is drawn, and its count is put right in
+   * place. A focused button ("Apply to N", say) is no reason to keep a stale
+   * bar: it is drawn again and the same button gets focus back.
+   */
+  function redrawBulk() {
+    const bulk = st.mountEl && st.mountEl.querySelector('#fctproc-bulk');
+    const a = document.activeElement;
+    if (!bulk || !a || !bulk.contains(a)) { renderBulk(); return; }
+    if (!/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) {
+      const act = a.dataset && a.dataset.act;
+      renderBulk();
+      const again = act && bulk.querySelector(`[data-act="${cssEsc(act)}"]`);
+      if (again) again.focus();
+      return;
+    }
+    const n = st.selected.size;
+    const count = bulk.querySelector('.fctproc-bulk-n');
+    if (count) count.textContent = String(n);
+    const apply = bulk.querySelector('[data-act="bulk-apply"]');
+    if (apply) apply.textContent = `Apply to ${n}`;
   }
 
   // ── Column filter dropdown (the PO tab's pattern) ───────────────────
@@ -4497,6 +4959,23 @@
   }
 
   // ── Events ──────────────────────────────────────────────────────────
+  /**
+   * A box Tab, Shift+Tab, an arrow or a click takes the caret to is scrolled
+   * clear of the pinned Select and Status columns: the browser takes one
+   * under them as in view, and the date or PO was typed and saved in a box
+   * the PM could not see. Not done with the container's scroll-padding:
+   * Chromium applies that to the pinned cells' own controls too, which never
+   * move, so the sheet ran back to its left edge on every one. Those (and a
+   * section's sticky label) are left alone, as is focus given back with no
+   * box left behind (a redraw, the window switched back).
+   */
+  function clearPinned(e) {
+    const t = e.target, wrap = t && t.closest && t.closest('#fctproc-wrap');
+    if (!wrap || !e.relatedTarget || t.closest('.stk, .gl')) return;
+    const edge = Math.max(0, ...[...wrap.querySelectorAll('thead th.stk')].map(th => th.getBoundingClientRect().right));
+    const over = edge - t.getBoundingClientRect().left;
+    if (edge && over > 0) wrap.scrollLeft -= over;
+  }
   const wired = new WeakSet();
   function wire(el) {
     if (wired.has(el)) return;
@@ -4519,6 +4998,7 @@
       const t = e.target;
       if (t && t.id === 'fctproc-wrap' && (t.scrollTop || t.scrollLeft || t.offsetParent)) st.wrapScroll = { top: t.scrollTop, left: t.scrollLeft, sig: viewSig() };
     }, true);
+    el.addEventListener('focusin', clearPinned);
     // What a combobox held, and whether anything was chosen in it (see
     // cbUntouched). On the way down, before the combobox's own handlers.
     el.addEventListener('focusin', onCbFocusIn, true);
@@ -4732,6 +5212,17 @@
     const el = e.target;
     if (!isCb(el)) return;
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { cbChosen(el, true); return; }
+    if (e.key === 'Escape') {
+      // Escape puts the box back as it was and leaves it (the page's
+      // combobox), and leaving commits what it holds 120 ms later: a commit
+      // of nothing chosen, whatever was typed or arrowed through first.
+      // Counted as chosen, a Sub Code box put back to its own line filled
+      // in the line's whole quantity, and one put back to blank cleared the
+      // row's cost code.
+      const s = cbSession.get(el);
+      if (s) { s.chosen = false; s.nav = false; s.cleared = false; }
+      return;
+    }
     if (e.key === 'Tab' || e.key === 'Enter') {
       // Seen before the combobox swaps in its highlighted option.
       const s = cbSession.get(el);
@@ -4819,7 +5310,7 @@
       if (v.startsWith('__new__:')) { addVendor(rowId, v.slice(8).trim(), input); return; }
       const name = canonicalSupplier(typed).slice(0, MAX_LEN.vendor);
       input.value = name;
-      if (changeVendor(rowId, name)) updateCounts();
+      if (changeVendor(rowId, name)) { repaintRows(); updateCounts(); }
       return;
     }
     if (field === 'contact') {
@@ -4862,7 +5353,7 @@
         }
       }
       if ('description' in fields) notePick(rowId, fields);
-      if (Object.keys(fields).length) { setFields(rowId, fields); updateCounts(); }
+      if (Object.keys(fields).length) { setFields(rowId, fields); if ('vendor' in fields) repaintRows(); updateCounts(); }
       return;
     }
     if (field === 'unit') {
@@ -4874,11 +5365,19 @@
       // The row's own job's bid lines (on a site's sheet, not the site's).
       const ctx = siteMode() && row.project_id ? makeCtx(row.project_id) : makeCtx();
       const line = v ? (ctx.bidLines || []).find(l => String(l.id) === v) : null;
+      // What the box showed as it took the focus.
+      const s = cbSession.get(input);
       if (v && v === String(row.bid_item_id || '')) {
         // The line it already has, picked again: nothing to re-code, but a
         // row coded before picks brought Quantity and Unit over (or with
-        // them emptied since) takes the blank ones now.
-        const fill = line ? fillFromLine(row, line, ctx) : {};
+        // them emptied since) takes the blank ones now. Picked — from the
+        // list, or its name typed — not merely still in the box: arrowed
+        // through and clicked away from, the box commits the line it held,
+        // and that filled the line's whole quantity into a "+ Material" row
+        // nobody had picked anything in.
+        const picked = input.dataset.cbPicked === '1' || !s || input.value !== s.value;
+        const fill = picked && line ? fillFromLine(row, line, ctx) : {};
+        if (Object.keys(fill).length > 1) notePick(rowId, fill);
         if (Object.keys(fill).length) setFields(rowId, fill);
         return;
       }
@@ -4886,9 +5385,20 @@
         const fill = fillFromLine(row, line, ctx);
         if (Object.keys(fill).length) lineFill.set(rowId, { bid_item_id: String(line.id), fields: fill });
         else lineFill.delete(rowId);
-        setFields(rowId, { bid_item_id: String(line.id), cost_code: str(line.cost_code), sub_code: str(line.sub_code), ...fill });
-      } else if (!typed) setFields(rowId, { bid_item_id: null, cost_code: '', sub_code: '' });
-      else {
+        const codes = { bid_item_id: String(line.id), cost_code: str(line.cost_code), sub_code: str(line.sub_code) };
+        // One pick, both ways: a colleague's change to the Quantity or Unit
+        // it fills is asked about with the line, as one to the line is with
+        // them (onConflict). Re-coded on its own, 400 SF of fabric someone
+        // had just counted became 400 LF of drain.
+        notePick(rowId, { ...codes, ...fill });
+        setFields(rowId, { ...codes, ...fill });
+      } else if (!typed) {
+        // Emptied: the row's codes go. Not from a box that was blank to
+        // begin with — a row given a cost code alone shows an empty Sub
+        // Code, and something typed there and rubbed out again is no
+        // clearing of a cost code the box never showed.
+        if (!s || str(s.value).trim()) setFields(rowId, { bid_item_id: null, cost_code: '', sub_code: '' });
+      } else {
         // Anything else typed matches no bid line: the codes are the bid's
         // (section 1), so the cell goes back to what it was (refreshRow
         // after the commit) — and says why, rather than just undoing it.
@@ -4898,6 +5408,7 @@
         toast(n ? `Sub Code: "${typed.slice(0, 60)}" is not a line on this job's bid — pick one from the list.${desc ? ' Sub Code is the bid line the cost books to; this job\'s own name for the material goes in Material.' : ''}`
           : `Sub Code: this job has no bid lines yet, so there is no cost / sub code to pick. Add the bid items on the bid page first${desc ? '; the material\'s name can go in Material meanwhile' : ''}.`, 'error');
       }
+      repaintRows();
       updateCounts();
       return;
     }
@@ -4911,7 +5422,8 @@
   }
   // Every row drawn again where its drawing changed (and a cell in use kept):
   // an order linked to one row is no longer matched to the rows beside it
-  // (effectivePO), so one row's PO # changes their status too.
+  // (effectivePO), so one row's PO # changes their status too — and so can
+  // its Vendor or codes, which decide who an unlinked order goes to (autoTaker).
   function repaintRows() {
     const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
     if (!wrap) return;
@@ -4919,11 +5431,12 @@
     [...wrap.querySelectorAll('tr.fctproc-row')].forEach(tr => refreshRow(tr.dataset.row, null, ctx, true));
   }
   const touchesPO = f => Boolean(f) && (Object.prototype.hasOwnProperty.call(f, 'po_id') || Object.prototype.hasOwnProperty.call(f, 'po_auto'));
+  const movesPO = f => touchesPO(f) || (Boolean(f) && ['vendor', 'cost_code', 'sub_code', 'bid_item_id'].some(k => Object.prototype.hasOwnProperty.call(f, k)));
 
   async function addVendor(rowId, name, input) {
     if (!name) return;
     if (input) input.value = name;
-    changeVendor(rowId, name);
+    if (changeVendor(rowId, name)) { repaintRows(); updateCounts(); }
     if (typeof cfg.addSupplier !== 'function') return;
     try {
       const canon = String((await cfg.addSupplier(name)) || name).trim();
@@ -4958,6 +5471,7 @@
 
   function onFocusOut(e) {
     const el = e.target;
+    conflictBoxLeft(el);
     // The row's own buttons count too: Tab out of Email lands on "+ Material",
     // and the click elsewhere that follows is the moment the row is left.
     const tr0 = el.closest && el.closest('tr.fctproc-row');
@@ -5038,6 +5552,7 @@
     if (!row) return;
     const tmp = document.createElement('tbody');
     tmp.innerHTML = rowHtml(row, makeCtx(), canEdit(), colsFor(canEdit()));
+    tipChanged(tmp);
     const twin = tmp.querySelector(`[data-pr="${cssEsc(rowId)}"][data-pf="${cssEsc(f)}"]`);
     // The part the box is drawn in, when nothing else in it is in use: what
     // the PM reads may be drawn beside the box, not in it — the Sub Agmt tag
@@ -5120,7 +5635,7 @@
     if (e.target.closest('.fctproc-grpsel')) return;
     // Nor does its + Add Row, which adds a row in it.
     const ga = e.target.closest('[data-grpadd]');
-    if (ga) { addToSection(ga.dataset.grpadd); return; }
+    if (ga) { addRowOnce(() => addToSection(ga.dataset.grpadd)); return; }
     // Nor a job band's Add to Procurement, which opens that job's checklist.
     const gs = e.target.closest('[data-grpsend]');
     if (gs) { openSendModal(gs.dataset.grpsend); return; }
@@ -5142,7 +5657,7 @@
     switch (b.dataset.act) {
       case 'retry': load(st.projectId); break;
       case 'send': openSendModal(); break;
-      case 'add': addRow({}); break;
+      case 'add': addRowOnce(() => addRow({})); break;
       case 'material': addMaterial(rowId); break;
       case 'del': st.confirmDel = rowId; refreshRow(rowId); break;
       case 'del-no': st.confirmDel = null; refreshRow(rowId); break;
@@ -5217,7 +5732,7 @@
         }
       }
       const row = adoptServerRow(data.item || item);
-      if (row) st.forceShow.add(row.id);
+      if (row) { st.forceShow.add(row.id); unfoldFor(row); }
       actionSaved();
       await pickersSettled();
       // Typed in since the click (the answer was slow): that box keeps the
@@ -5237,6 +5752,25 @@
         : `Procurement: the row could not be added (${err.message}).`);
       return null;
     }
+  }
+  // The section (and on a site, the job band) a new row lands in, opened:
+  // left folded, the row went in unseen and the caret stayed on the button —
+  // nothing seemed to happen, and a second press added another blank row.
+  function unfoldFor(row) {
+    if (st.grouping === 'none') return;
+    const ctx = makeCtx();
+    const g = groupRows(visibleRows(ctx), ctx).find(x => x.rows.includes(row));
+    if (g) st.collapsed.delete(g.key);
+    if (row.project_id) st.collapsed.delete(JOB + row.project_id);
+  }
+  // One + Add Row at a time: a double-click, or a second press while the
+  // first is still being added (a slow answer, a site's job still being
+  // picked), adds one row, not two blank ones.
+  let addingRow = null;
+  function addRowOnce(run) {
+    if (addingRow) return addingRow;
+    addingRow = Promise.resolve().then(run).finally(() => { addingRow = null; });
+    return addingRow;
   }
   /**
    * What a row added from a section header starts with, so that it lands in
@@ -5355,12 +5889,18 @@
     if (!sk) return false;
     let ix = _pastIndex.get(ctx);
     if (!ix || ix.list !== lib.list || ix.rows !== st.rows.length || ix.named !== st.rows.reduce((n, r) => n + (str(r.description).trim() ? 1 : 0), 0)) {
-      ix = { list: lib.list, rows: st.rows.length, named: 0, bySub: new Map(), here: new Set() };
+      ix = { list: lib.list, rows: st.rows.length, named: 0, bySub: new Map(), here: new Set(), costs: new Map() };
       lib.list.forEach(e => {
         const s = ck(k, e.sub_code);
         if (!s || !(e.jobs > 0)) return;
         if (!ix.bySub.has(s)) ix.bySub.set(s, []);
         ix.bySub.get(s).push(e);
+        // Every cost code the name was bought under, when the server says
+        // (cost_codes): with the newest alone, a list bought under this line
+        // on one job was never offered once another job bought the same name
+        // under another cost code. An older server sends just the newest.
+        const all = Array.isArray(e.cost_codes) && e.cost_codes.length ? e.cost_codes : [e.cost_code];
+        ix.costs.set(e, new Set(all.map(c => ck(k, c)).filter(Boolean)));
       });
       st.rows.forEach(r => {
         const m = str(r.description).trim();
@@ -5374,7 +5914,7 @@
       });
       _pastIndex.set(ctx, ix);
     }
-    return (ix.bySub.get(sk) || []).some(e => (!cc || !ck(k, e.cost_code) || ck(k, e.cost_code) === cc)
+    return (ix.bySub.get(sk) || []).some(e => (!cc || !ix.costs.get(e).size || ix.costs.get(e).has(cc))
       && !ix.here.has(`${row.project_id}\u0000${cc}\u0000${sk}\u0000${ck(k, e.material)}`));
   }
 
@@ -5395,12 +5935,50 @@
     // The rows under this line — its cost code and sub code: the same sub
     // code under another cost code is another line, whose materials are not
     // "already here" on this one.
-    const lineRows = st.rows.filter(r => {
+    const rowsOfLine = c0 => st.rows.filter(r => {
       if (r.project_id !== pid) return false;
-      const c = liveCodes(r, ctx);
+      const c = liveCodes(r, c0);
       return ck(k, c.sub_code) === sk && ck(k, c.cost_code) === cc;
     });
+    const lineRows = rowsOfLine(ctx);
     const have = new Set(lineRows.map(r => ck(k, materialOf(r, ctx))).filter(Boolean));
+    const openIds0 = new Set(lineRows.map(r => r.id));
+    /**
+     * Just before Add: the rows read again, quietly (as Create PO does before
+     * it decides), and the ticked materials put on this line since the dialog
+     * opened — a colleague copying the same list onto it a moment before
+     * this PM — left out: added again, the job listed each one twice, ready
+     * to be ordered twice. Returns what to tell the PM, or null.
+     */
+    async function leaveOutAddedSince() {
+      if (st.loadState === 'ok' && st.loadedFor === viewSig()) await load(st.projectId, { quiet: true });
+      const now = siteMode() && p.project_id ? makeCtx(p.project_id) : makeCtx();
+      // This dialog's own rows — an earlier Add whose answer was lost — are
+      // not someone else's: sent again with the same ids, they go in once.
+      const ours = new Set([].concat(...ids));
+      const byName = new Map();
+      rowsOfLine(now).forEach(r => {
+        const m0 = ck(k, materialOf(r, now));
+        if (m0 && !ours.has(r.id) && !byName.has(m0)) byName.set(m0, r);
+      });
+      const items = lists[pick].items;
+      // A material that was here already when the dialog opened, and ticked
+      // all the same, is the PM's own choice (a second delivery) and goes in.
+      const since = items.map((it, i) => i).filter(i => ticks[pick][i] && !have.has(ck(k, items[i].material)) && byName.has(ck(k, items[i].material)));
+      if (!since.length) return null;
+      since.forEach(i => { ticks[pick][i] = false; });
+      byName.forEach((r, m0) => have.add(m0));
+      // Who put them there: whoever added the row — or, for a row already on
+      // the line (its own row, named since), whoever named it.
+      const names = [...new Set(since.map(i => {
+        const r = byName.get(ck(k, items[i].material));
+        const by = openIds0.has(r.id) ? r.updated_by : (r.created_by || r.updated_by);
+        return by ? (isMe(by) ? 'you, in another window' : str(by)) : '';
+      }).filter(Boolean))];
+      const who = !names.length ? 'added since this list was opened'
+        : `added by ${names.length === 1 ? names[0] : `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`}`;
+      return `${since.length} already here — ${who}`;
+    }
     const own = p.bid_item_id ? st.rows.find(r => r.project_id === pid && r.source === 'bid' && String(r.bid_item_id) === String(p.bid_item_id)) : null;
     // Read as the dialog is used, not once: a colleague (or the PM, in the
     // sheet behind) can name that row while it is open.
@@ -5497,9 +6075,16 @@
       if (token) token.adding = true;
       go.disabled = true;
       go.textContent = 'Adding…';
-      let done = false;
+      let done = false, note = null;
       try {
-        done = await copyMaterials(p, lists[pick], ticks[pick], { copyQty, nameOwn: namer(), ownId: own ? own.id : null, ids: ids[pick] });
+        note = await leaveOutAddedSince();
+        // Everything ticked is on the line now: nothing is added.
+        if (note && !ticks[pick].some(Boolean)) {
+          toast(`Nothing added: ${note}.`);
+          done = true;
+        } else {
+          done = await copyMaterials(p, lists[pick], ticks[pick], { copyQty, nameOwn: namer(), ownId: own ? own.id : null, ids: ids[pick], note });
+        }
       } finally {
         busy = false;
         if (token) {
@@ -5508,7 +6093,7 @@
         }
       }
       if (done) m.close();
-      else if (m.el.isConnected) sync();
+      else if (m.el.isConnected) { if (note) draw(); else sync(); }
     });
     return m;
   }
@@ -5521,7 +6106,7 @@
    * retry after an answer lost on the way back sends the same ids, so a row
    * goes in once. True when it went in.
    */
-  async function copyMaterials(p, list, ticked, { copyQty = false, nameOwn = -1, ownId = null, ids = null } = {}) {
+  async function copyMaterials(p, list, ticked, { copyQty = false, nameOwn = -1, ownId = null, ids = null, note = null } = {}) {
     const ctx = siteMode() && p.project_id ? makeCtx(p.project_id) : makeCtx();
     const codes = liveCodes(p, ctx);
     const pid = p.project_id || st.projectId;
@@ -5603,7 +6188,9 @@
     await pickersSettled();
     redrawSheet();
     const n = rows.length + (named ? 1 : 0);
-    toast(`Added ${n} material${n === 1 ? '' : 's'} from ${from}${named ? ' (one names this line\'s own row)' : ''}${copyQty ? '' : ' — fill in this job\'s quantities'}`);
+    // What was left out as already here (leaveOutAddedSince) is said in the same toast.
+    toast(`Added ${n} material${n === 1 ? '' : 's'} from ${from}${named ? ' (one names this line\'s own row)' : ''}${copyQty ? '' : ' — fill in this job\'s quantities'}`
+      + (note ? `. ${note}, so not added again.` : ''));
     // Fewer back than sent: an id already taken elsewhere. The sheet is read
     // again rather than guessed at.
     if (rows.length < items.length) setTimeout(() => { if (isOpenJob(pid)) load(st.projectId, { quiet: true }); }, 0);
@@ -5885,6 +6472,12 @@
     // them cleared in the same change (changeVendor, for many rows).
     let groups = [[ids, fields]];
     if ('vendor' in fields && !('contact' in fields)) {
+      // Whose contact each row holds is judged from the list as it is now,
+      // not as it was up to a minute ago (freshenContacts): a supplier
+      // renamed elsewhere since left its people under the old name, and
+      // their rows kept the old supplier's contact under the new vendor.
+      // A read that fails leaves the list in hand.
+      await freshenContacts(5000).catch(err => console.warn('[procurement] contacts did not load', err));
       const clear = ids.filter(id => {
         const r = rowById(id);
         return r && r.vendor.trim() && lc(r.vendor) !== lc(fields.vendor) && savedContactOf(r.vendor, r);
@@ -6017,8 +6610,12 @@
     const decided = new Map(rows.map(r => [r.id, { po_id: r.po_id == null || r.po_id === '' ? null : String(r.po_id), po_auto: r.po_auto !== false }]));
     const onPO = rows.filter(r => ['linked', 'auto'].includes(eps.get(r.id).kind));
     const multi = rows.filter(r => eps.get(r.id).kind === 'multiple');
-    if (onPO.length || multi.length) {
-      const free = rows.filter(r => !onPO.includes(r) && !multi.includes(r));
+    // On no order, but under the codes of one that fits these rows and
+    // others beside them, none more than the rest (effectivePO): it may be
+    // the order for them already.
+    const fits = rows.filter(r => eps.get(r.id).kind === 'none' && eps.get(r.id).candidates.length);
+    if (onPO.length || multi.length || fits.length) {
+      const free = rows.filter(r => !onPO.includes(r) && !multi.includes(r) && !fits.includes(r));
       const nums = [...new Set(onPO.map(r => str(eps.get(r.id).po.po_number) || '(no number)'))];
       const n = (k, one, many) => `${k} ${k === 1 ? one : many}`;
       const said = [];
@@ -6028,6 +6625,11 @@
       }
       if (multi.length) {
         said.push(`<b>${multi.length}</b> ${multi.length === 1 ? 'matches' : 'match'} several existing POs — pick the right one in the PO # column instead.`);
+      }
+      if (fits.length) {
+        const fitNums = [...new Set([].concat(...fits.map(r => eps.get(r.id).candidates.map(p => str(p.po_number) || '(no number)'))))];
+        said.push(`<b>${fits.length}</b> ${fits.length === 1 ? 'is' : 'are'} under the codes of <b>${fitNums.slice(0, 4).map(esc).join(', ')}</b>${fitNums.length > 4 ? ` and ${fitNums.length - 4} more` : ''}, `
+          + `which ${fitNums.length === 1 ? 'fits' : 'fit'} other rows too — if ${fits.length === 1 ? 'it is' : 'they are'} on ${fitNums.length === 1 ? 'it' : 'one'}, pick it in the PO # column instead.`);
       }
       const opts = [];
       if (free.length) opts.push({ value: 'free', cls: 'btn-green', label: `Only the ${n(free.length, 'row', 'rows')} with no PO` });
@@ -6093,7 +6695,7 @@
       if (!pick) return;
       if (pick === 'one') plan = [{ project_id: top.project_id, cost_code: top.cost_code, sub_code: top.sub_code, rows }];
     }
-    const made = [], leftOff = [];
+    const made = [], leftOff = [], reached = [];
     for (const g of plan) {
       const quotes = [...new Set(g.rows.map(r => r.quote_number.trim()).filter(Boolean))];
       const seed = {
@@ -6114,6 +6716,7 @@
       try {
         const refused = await linkToPO(g.rows, po, decided);
         made.push(po);
+        reached.push(g);
         if (refused.length) leftOff.push({ po, n: refused.length });
       } catch (err) {
         setSave('error');
@@ -6122,13 +6725,22 @@
       }
     }
     if (made.length) {
-      st.selected.clear();
+      // Only the rows whose PO was raised come off the selection: when a
+      // later one could not be (the server down for a moment), the rows it
+      // was for stay ticked, so Create PO is simply clicked again for them —
+      // cleared with the rest, nothing on screen said which were left over.
+      const keep = new Set([].concat(...plan.filter(g => !reached.includes(g)).map(g => g.rows.map(r => r.id))));
+      [...st.selected].forEach(id => { if (!keep.has(id)) st.selected.delete(id); });
       renderBulk();
       await pickersSettled();
       redrawSheet();
-      const linked = rows.length - leftOff.reduce((a, x) => a + x.n, 0);
-      toast(made.length === 1 ? `Created ${str(made[0].po_number) || 'the PO'} and linked ${linked} row${linked === 1 ? '' : 's'}`
-        : `Created ${made.length} POs${jobs.length > 1 ? `, each on its own job` : ''} (${made.map(p => str(p.po_number)).join(', ')})`);
+      // …and only they are counted as linked: the toast said every selected
+      // row was, beside the banner saying the next PO was never raised.
+      const linked = reached.reduce((a, g) => a + g.rows.length, 0) - leftOff.reduce((a, x) => a + x.n, 0);
+      const left = keep.size;
+      toast((made.length === 1 ? `Created ${str(made[0].po_number) || 'the PO'} and linked ${linked} row${linked === 1 ? '' : 's'}`
+        : `Created ${made.length} POs${jobs.length > 1 ? `, each on its own job` : ''} (${made.map(p => str(p.po_number)).join(', ')})`)
+        + (left ? ` — ${left} row${left === 1 ? ' is' : 's are'} still ticked, on no new PO yet` : ''));
     }
     leftOff.forEach(({ po, n }) => showError(`Procurement: ${n} of the rows for ${str(po.po_number) || 'the new PO'} `
       + `${n === 1 ? 'was' : 'were'} put on an order by someone else while it was being raised, so ${n === 1 ? 'it was' : 'they were'} left on that one `
@@ -6326,14 +6938,22 @@
       // only its own copy to go by.
       try { return cfg.getBidLines(pid) || []; } catch { return null; }
     }
+    const key = String(pid);
+    let read = null;
     try {
-      const lines = await cfg.getFreshBidLines(pid);
+      read = Promise.resolve(cfg.getFreshBidLines(pid));
+      bidReads.set(key, read);
+      const lines = await read;
       return Array.isArray(lines) ? lines : null;
     } catch (err) {
       console.warn('[procurement] could not read the bid', err);
       return null;
+    } finally {
+      if (bidReads.get(key) === read) bidReads.delete(key);
     }
   }
+  // Each job's read of its bid while it is out (bidSaved waits on it).
+  const bidReads = new Map();
   /** Whether two copies of a bid have the same lines with the same codes. */
   function sameBid(a, b, codeKey) {
     const k = typeof codeKey === 'function' ? codeKey : defaultCodeKey;
@@ -6794,14 +7414,28 @@
   /**
    * A site's sheet whose jobs changed under it (Show all jobs ticked, a field
    * marked complete, the Site typed on another job): read again as the sheet
-   * it now is. Typed edits go first; ticks on rows no longer there go.
+   * it now is, in place — at the same scroll, around a cell in use — not
+   * through "Loading…". Typed edits go first; ticks on rows no longer there go.
+   *
+   * Not while the PM is typing in a cell (or the bulk bar), or pressing:
+   * flushed then, the half-typed value was saved (81 of 8100, "New Ent" of a
+   * vendor), and the box was thrown away with the rest of the typing. The
+   * read is owed instead, as a refresh is (pollOwed), and paid once the caret
+   * leaves the cells: payOwedPoll → refresh(), which finds the sheet's jobs
+   * changed and comes back here. A picker just left commits first.
    */
-  function reloadSite() {
+  async function reloadSite() {
+    const busy = () => inCellBox() || (pressedAt && Date.now() - pressedAt < 5000);
+    if (busy()) { pollOwed = true; return; }
+    const key = st.projectId;
+    await pickersSettled();
+    if (st.projectId !== key || st.loadedFor === viewSig()) return;
+    if (busy()) { pollOwed = true; return; }
     flushAll();
     st.forceShow.clear();
     st.confirmDel = null;
     st.bulkConfirmDel = false;
-    load(st.projectId);
+    await load(st.projectId, { quiet: st.loadState === 'ok' });
   }
 
   // Point the tab at a job without drawing anything yet — the page is about
@@ -6840,25 +7474,32 @@
         st.projectId = null;
         storeSet('project', null);
       }
-      // The contact pickers read from the shared cache.
-      contacts.load().catch(err => console.warn('[procurement] contacts did not load', err));
+      // The contact pickers read from the shared cache — read again as the
+      // tab is shown (freshenContacts), unless it was just read: the page
+      // draws the tab twice as it starts.
+      freshenContacts(5000).catch(err => console.warn('[procurement] contacts did not load', err));
       const cached = st.projectId && st.loadedFor === viewSig() && st.loadState === 'ok';
       // Already drawn here, for this job: the tab clicked again, or the page
       // finishing its start-up behind a sheet in use. Redrawn in place —
       // around a cell being typed in, at the same scroll — not rebuilt,
       // which threw the box in use away (a half-typed vendor saved, the
       // rest of the typing lost) and put the PM back at the top of the sheet.
-      const wrap = again && cached && el.querySelector('#fctproc-wrap');
+      // So is a site's sheet whose jobs changed meanwhile (the page's own job
+      // list in after the one it started from): rerender reads it again as
+      // the sheet it now is, in place, once the PM is out of the cells.
+      const reshaped = siteMode() && st.loadState === 'ok' && !!st.loadedFor && !cached && keyExists(st.projectId);
+      const wrap = again && (cached || reshaped) && el.querySelector('#fctproc-wrap');
       if (wrap) {
+        const drawnFor = st.loadedFor;
         window.FCTProcurement.rerender();
         const now = el.querySelector('#fctproc-wrap');
         // Hidden with its tab, the box forgot where it was scrolled to —
         // this sheet's place, not another job's opened since.
-        if (now && st.wrapScroll && st.wrapScroll.sig === viewSig() && !now.scrollTop && !now.scrollLeft) {
+        if (now && st.wrapScroll && st.wrapScroll.sig === drawnFor && !now.scrollTop && !now.scrollLeft) {
           now.scrollTop = st.wrapScroll.top;
           now.scrollLeft = st.wrapScroll.left;
         }
-        load(st.projectId, { quiet: true });
+        if (cached) load(st.projectId, { quiet: true });
         return;
       }
       if (st.projectId && !cached) st.loadState = 'loading';
@@ -6891,7 +7532,8 @@
       if (picker && picker !== a && known) { picker.value = openLabel(); picker.dataset.cbValue = st.projectId; }
       if (st.projectId && !known) { renderBody(); return; }
       // A site whose jobs changed (a field finished, a Site typed on another
-      // job) is read again as the sheet it now is.
+      // job) is read again as the sheet it now is — once the PM is out of
+      // the cells, if they are typing in one (reloadSite).
       if (siteMode() && st.loadState === 'ok' && st.loadedFor !== viewSig()) { reloadSite(); return; }
       // The bid changed under the open job (a line renamed, a Replace all):
       // rows re-link and their stored codes follow now, not at the next read.
@@ -6899,6 +7541,11 @@
       // when there is nothing to do.
       if (st.projectId && st.loadState === 'ok' && st.loadedFor === viewSig()) {
         if (siteMode()) autoRelinkAll(openIds()); else autoRelink(st.projectId);
+        // A colleague's bid rename, brought by the page's job poll: the
+        // server carried it to the orders under the old codes, so the order
+        // list is read again now (askForNewPOs, codesMoved) — not left to
+        // the next poll of the rows, with the row Not Ordered and Late till then.
+        askForNewPOs();
       }
       if (cellInUse()) {
         // Someone is in a cell: redraw every row around it, not the table.
@@ -6911,21 +7558,7 @@
         renderHead();
         renderTable();
         updateCounts();
-        // The bulk bar is left alone while it is being typed in (its value
-        // box, a Vendor menu open): drawn again, the box would lose focus
-        // and the keys typed next would go nowhere. Its PO list catches up
-        // the next time it is drawn. A focused button ("Apply to N", say)
-        // is no reason to keep a stale bar: it is drawn again and the same
-        // button gets focus back.
-        const bulk = st.mountEl.querySelector('#fctproc-bulk');
-        const inBulk = bulk && a && bulk.contains(a);
-        if (!inBulk) renderBulk();
-        else if (!/^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName)) {
-          const act = a.dataset && a.dataset.act;
-          renderBulk();
-          const again = act && bulk.querySelector(`[data-act="${cssEsc(act)}"]`);
-          if (again) again.focus();
-        }
+        redrawBulk();
       } else renderBody();
     },
 
@@ -6943,7 +7576,9 @@
       if (inCellBox()) { pollOwed = true; return; }
       pollOwed = false;
       if (pend.size) await flushAll();
-      // A site whose jobs changed since is a new sheet, read as one.
+      // A site whose jobs changed since is a new sheet, read as one — in
+      // place, over the sheet on screen (reloadSite).
+      if (siteMode() && st.loadState === 'ok' && st.loadedFor !== viewSig()) { await reloadSite(); return; }
       await load(st.projectId, { quiet: st.loadState === 'ok' && st.loadedFor === viewSig() });
     },
 

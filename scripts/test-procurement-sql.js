@@ -33,7 +33,11 @@
  *     code (a re-picked Sub Code, the page's code sync, a bulk edit, a
  *     restore onto a new bid line) moves them to the new code's Document
  *     Vault folder, never strands one, and never fails the write when the
- *     move goes wrong.
+ *     move goes wrong; a line brought back from "removed earlier" is filed
+ *     in its code's folder again;
+ *   - a cost or sub code renamed on the bid page (the whole-job save or the
+ *     per-line one) renames the job's purchase orders still on the old
+ *     codes, so Procurement keeps matching its rows to them.
  */
 
 const fs     = require('fs');
@@ -143,6 +147,8 @@ async function cleanUp() {
     await q('DELETE FROM projects WHERE company_code = $1', [co]).catch(() => {});
     await q('DELETE FROM procurement_items WHERE company_code = $1', [co]).catch(() => {});
     await q('DELETE FROM supplier_contacts WHERE company_code = $1', [co]).catch(() => {});
+    // The purchase orders' normalized mirror (a bid code rename carries them).
+    await q('DELETE FROM purchase_orders WHERE company_code = $1', [co]).catch(() => {});
     // The attached files, folders and trail of the cost-code re-file checks.
     await q('DELETE FROM document_audit_log WHERE company_code = $1', [co]).catch(() => {});
     await q('DELETE FROM document_links WHERE company_code = $1', [co]).catch(() => {});
@@ -972,6 +978,163 @@ function schemaStatements() {
   }
 
   // ─────────────────────────────────────────────────────────────────────
+  console.log('\nA bid code renamed on the bid page renames the job\'s purchase orders that carry it');
+  {
+    // Procurement matches a row to an order nobody linked it to by the row's
+    // live bid codes against the codes the order keeps of its own
+    // (procurement.js effectivePO). An order left on the old codes drops the
+    // row to Not Ordered and Late, and Create PO raises a second order.
+    const dataHandler = require(path.join(ROOT, 'api/data/[key].js'));
+    const bidHandler = require(path.join(ROOT, 'api/bid-items.js'));
+    const poCodes = require(path.join(ROOT, 'api/lib/bid-po-codes.js'));
+    const PID = 'prtest-pocodes';
+    const auth = user => ({ authorization: 'Bearer ' + user.token });
+    // The bid page's whole-job save (saveProject), and its per-line save.
+    const putJob = async (user, items, key = `fct_project_${PID}`) => {
+      const res = fakeRes();
+      await dataHandler({ method: 'PUT', query: { key }, body: { value: { id: PID, name: 'PO codes job', bidItems: items } }, headers: auth(user) }, res);
+      return res;
+    };
+    const putLine = async (user, item, key = `fct_project_${PID}`) => {
+      const res = fakeRes();
+      await bidHandler({ method: 'PUT', query: { id: item.id, projectId: PID, projectKey: key },
+        body: { bidItem: item, ts: Date.now() }, headers: auth(user) }, res);
+      return res;
+    };
+    const BL = (id, cost, sub) => ({ id, cost_code: cost, sub_code: sub, quantity: 10, unit: 'LF' });
+    let bid = [BL('pc1', 'Stormwater', 'Geofabric'), BL('pc2', 'Stormwater', 'Perf Drain 15"'), BL('pc3', 'E&S', 'Silt Sock'),
+      BL('pc4', 'Stormwater', 'Inlet'), BL('pc5', 'Stormwater', 'Inlet')];
+    await q(`INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [`${CO}:fct_project_${PID}`, JSON.stringify({ id: PID, name: 'PO codes job', bidItems: bid })]);
+    await q("INSERT INTO projects (id, company_code, name) VALUES ($1, $2, 'PO codes job') ON CONFLICT (id) DO NOTHING", [PID, CO]);
+
+    const poKey = (division, co = CO) => `${co}:fct_purchase_orders:${division}`;
+    const putList = (k, list) => q(`INSERT INTO app_data (key, value, updated_at) VALUES ($1, $2::jsonb, NOW())
+      ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = NOW()`, [k, JSON.stringify(list)]);
+    const listOf = async k => ((await q('SELECT value FROM app_data WHERE key = $1', [k]))[0] || {}).value || [];
+    const stampOf = async k => ((await q('SELECT updated_at::text AS t FROM app_data WHERE key = $1', [k]))[0] || {}).t;
+    // jsonb keeps no key order: compared with the keys sorted.
+    const canon = v => JSON.stringify(v, (k, x) => (x && typeof x === 'object' && !Array.isArray(x)
+      ? Object.fromEntries(Object.keys(x).sort().map(n => [n, x[n]])) : x));
+    const PO = (id, cost, sub, extra = {}) => ({ id, po_number: id.toUpperCase(), title: 'Geofabric', supplier: 'LB Water', status: 'pending',
+      date_created: '2026-11-01', project_id: PID, cost_code: cost, sub_code: sub, notes: 'call before delivery',
+      lines: [{ id: `${id}-l1`, qty: '10', unit_cost: '5' }], ...extra });
+    const turf = [
+      PO('pc-po7', 'Stormwater', 'Geofabric'),                 // raised the normal way, matched by its codes
+      PO('pc-po8', ' stormwater ', 'PERF DRAIN 15"'),           // spelled its own way; a row is linked to it
+      PO('pc-po9', 'E&S', 'Silt Sock'),
+      PO('pc-po10', 'Stormwater', 'Inlet'),                    // two lines of the bid carry these codes
+      PO('pc-po11', 'Stormwater', 'Geofabric', { project_id: 'prtest-pocodes-other' }),
+    ];
+    await putList(poKey('turf'), turf);
+    await putList(poKey('paving'), [PO('pc-po21', 'Stormwater', 'Geofabric')]);
+    await putList(poKey('turf', CO2), [PO('pc-po31', 'Stormwater', 'Geofabric')]);
+    for (const po of turf) {
+      await q(`INSERT INTO purchase_orders (id, company_code, division, project_id, po_num, supplier, cost_code, sub_code, status, updated_at)
+               VALUES ($1, $2, 'turf', $3, $4, 'LB Water', $5, $6, 'pending', '2000-01-01T00:00:00Z')`,
+        [po.id, CO, po.project_id, po.po_number, po.cost_code, po.sub_code]);
+    }
+    const linked = (await create(L2, { id: uid('m'), project_id: PID, bid_item_id: 'pc2', cost_code: 'Stormwater', sub_code: 'Perf Drain 15"', po_id: 'pc-po8' })).body.item;
+    let list = await listOf(poKey('turf'));
+    const po = id => list.find(p => p.id === id) || {};
+    const mirror = async () => Object.fromEntries((await q(
+      "SELECT id, cost_code, sub_code, updated_at > '2000-01-02' AS bumped FROM purchase_orders WHERE company_code = $1", [CO])).map(x => [x.id, x]));
+
+    // ── A section renamed: the whole-job save first, then each line's ──
+    const stamp0 = await stampOf(poKey('turf'));
+    bid = bid.map(l => (l.cost_code === 'Stormwater' ? { ...l, cost_code: 'Storm Drainage' } : l));
+    let r = await putJob(L2, bid);
+    list = await listOf(poKey('turf'));
+    assert('a section renamed on the bid page (the whole-job save, 200): the order raised for its line takes the new cost code, so its row still reads Ordered on it',
+      r.statusCode === 200 && po('pc-po7').cost_code === 'Storm Drainage' && po('pc-po7').sub_code === 'Geofabric', JSON.stringify([show(r), po('pc-po7')]));
+    assert('…and nothing else about the order changes', canon(po('pc-po7')) === canon({ ...turf[0], cost_code: 'Storm Drainage' }), JSON.stringify(po('pc-po7')));
+    assert('…an order spelled its own way (case, spaces) has the same codes, and the order a row is linked to follows too, onto the line\'s codes',
+      po('pc-po8').cost_code === 'Storm Drainage' && po('pc-po8').sub_code === 'Perf Drain 15"' && linked && linked.po_id === 'pc-po8', JSON.stringify(po('pc-po8')));
+    assert('…two lines with the same codes renamed alike take their order along', po('pc-po10').cost_code === 'Storm Drainage' && po('pc-po10').sub_code === 'Inlet');
+    assert('…an order under another section is untouched', canon(po('pc-po9')) === canon(turf[2]));
+    assert('…so is another job\'s order on the old codes', canon(po('pc-po11')) === canon(turf[4]));
+    assert('…and paving\'s orders and another company\'s', (await listOf(poKey('paving')))[0].cost_code === 'Stormwater'
+      && (await listOf(poKey('turf', CO2)))[0].cost_code === 'Stormwater');
+    assert('…the order list\'s version moved, so the pages holding it read it again', await stampOf(poKey('turf')) !== stamp0);
+    let m = await mirror();
+    assert('the normalized mirror follows for the renamed orders only, their updated_at moved',
+      m['pc-po7'].cost_code === 'Storm Drainage' && m['pc-po7'].bumped && m['pc-po8'].sub_code === 'Perf Drain 15"' && m['pc-po8'].bumped
+        && m['pc-po10'].bumped && m['pc-po9'].cost_code === 'E&S' && !m['pc-po9'].bumped && !m['pc-po11'].bumped, JSON.stringify(m));
+    const stamp1 = await stampOf(poKey('turf'));
+    for (const l of bid.filter(x => x.cost_code === 'Storm Drainage')) r = await putLine(L2, l);
+    assert('the per-line saves that follow (200) find the orders renamed already: the order list is not written again',
+      r.statusCode === 200 && await stampOf(poKey('turf')) === stamp1);
+
+    // ── A sub code renamed through the per-line save alone ──
+    // An open Procurement sheet may bring the rows' stored copy up to date
+    // (its code sync) before that save lands: the order follows all the same.
+    const silt = (await send(L2, { project_id: PID, items: [line('pc3', { cost_code: 'E&S', sub_code: 'Silt Sock' })] })).body.created[0];
+    r = await patch(L2, silt.id, { bid_item_id: 'pc3', cost_code: 'E&S', sub_code: 'Silt Sock 12in' });
+    assert('(the sheet\'s code sync lands first)', r.statusCode === 200 && r.body.item.sub_code === 'Silt Sock 12in', show(r));
+    r = await putLine(L2, BL('pc3', 'E&S', 'Silt Sock 12in'));
+    bid = bid.map(l => (l.id === 'pc3' ? BL('pc3', 'E&S', 'Silt Sock 12in') : l));
+    list = await listOf(poKey('turf'));
+    assert('a sub code renamed on the bid page (200) renames its order\'s sub code too',
+      r.statusCode === 200 && po('pc-po9').cost_code === 'E&S' && po('pc-po9').sub_code === 'Silt Sock 12in', JSON.stringify([show(r), po('pc-po9')]));
+    assert('…and its mirror', (await mirror())['pc-po9'].sub_code === 'Silt Sock 12in');
+
+    // ── What does not rename an order ──
+    const stamp2 = await stampOf(poKey('turf'));
+    r = await putLine(L2, BL('pc4', 'Storm Drainage', 'Inlet Type M'));
+    list = await listOf(poKey('turf'));
+    assert('one of two lines with the same codes renamed: the order stays on them (the other line still has them)',
+      r.statusCode === 200 && po('pc-po10').sub_code === 'Inlet' && await stampOf(poKey('turf')) === stamp2, JSON.stringify(po('pc-po10')));
+    r = await putLine(L2, BL('pc1', 'Storm Drainage', ''));
+    list = await listOf(poKey('turf'));
+    assert('a sub code blanked half way through a rename leaves the order as it was', r.statusCode === 200 && po('pc-po7').sub_code === 'Geofabric');
+    await putLine(L2, BL('pc1', 'Storm Drainage', 'Geofabric'));
+    bid = bid.map(l => (l.id === 'pc4' ? BL('pc4', 'Storm Drainage', 'Inlet Type M') : l));
+    r = await putJob(L2, bid.map(l => (l.id === 'pc1' ? { ...l, cost_code: '  ' } : l)));
+    list = await listOf(poKey('turf'));
+    assert('…so does a cost code blanked in the whole-job save', r.statusCode === 200 && po('pc-po7').cost_code === 'Storm Drainage');
+    r = await putJob(L2, bid);
+    const stamp3 = await stampOf(poKey('turf'));
+    r = await putJob(L2, bid.map(l => ({ ...l, quantity: 99 })));
+    list = await listOf(poKey('turf'));
+    assert('a whole-job save that renames nothing writes no order', r.statusCode === 200 && po('pc-po7').cost_code === 'Storm Drainage'
+      && await stampOf(poKey('turf')) === stamp3);
+
+    // ── Paving's job and its orders ──
+    await q(`INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [`${CO}:fct_paving_project_${PID}`, JSON.stringify({ id: PID, bidItems: [BL('pv1', 'Stormwater', 'Geofabric')] })]);
+    const turfNow = canon(await listOf(poKey('turf')));
+    r = await putJob(PAVE, [BL('pv1', 'Base', 'Geofabric')], `fct_paving_project_${PID}`);
+    assert('a paving job\'s section renamed (200): paving\'s order follows, and turf\'s orders for a job of the same id do not',
+      r.statusCode === 200 && (await listOf(poKey('paving')))[0].cost_code === 'Base' && canon(await listOf(poKey('turf'))) === turfNow, show(r));
+
+    // ── Never fails the bid save ──
+    const realCarry = poCodes.carryBidCodeRenames;
+    poCodes.carryBidCodeRenames = async () => { throw new Error('order rename exploded'); };
+    let r2;
+    try {
+      r = await putJob(L2, bid.map(l => (l.id === 'pc3' ? BL('pc3', 'Erosion Control', 'Silt Sock 12in') : l)));
+      r2 = await putLine(L2, BL('pc2', 'Storm Drainage', 'Perf Drain 15in'));
+    } finally { poCodes.carryBidCodeRenames = realCarry; }
+    const stored = ((await q('SELECT value FROM app_data WHERE key = $1', [`${CO}:fct_project_${PID}`]))[0].value.bidItems || []);
+    assert('an order rename that throws never fails the bid save (200 both ways), and the bid is stored',
+      r.statusCode === 200 && r2.statusCode === 200 && stored.find(l => l.id === 'pc3').cost_code === 'Erosion Control'
+        && stored.find(l => l.id === 'pc2').sub_code === 'Perf Drain 15in', JSON.stringify([show(r), show(r2)]));
+    assert('the real rename is back in place', poCodes.carryBidCodeRenames === realCarry);
+
+    // The rules on their own (bidCodeRenames).
+    const R = poCodes.bidCodeRenames;
+    assert('lines with the same codes renamed two different ways: no telling which way their order goes, so it stays',
+      eq(R([BL('a', 'Stormwater', 'Inlet'), BL('b', 'Stormwater', 'Inlet')], [BL('a', 'Stormwater', 'Inlet A'), BL('b', 'Stormwater', 'Inlet B')]), []));
+    assert('a line that had no codes at all renames no order (an order saved with none is no line\'s)',
+      eq(R([BL('a', '', '')], [BL('a', 'Stormwater', 'Inlet')]), []));
+    assert('a code changed only in case or spaces is no rename (Procurement still matches the order)',
+      eq(R([BL('a', 'Stormwater', 'Inlet')], [BL('a', ' STORMWATER', 'inlet ')]), []));
+    assert('a rename names the old codes as Procurement compares them and the new ones as the line holds them',
+      eq(R([BL('a', 'Stormwater', 'Inlet')], [BL('a', 'Storm Drainage', 'Inlet')]),
+        [{ from: 'stormwater\u0000inlet', cost_code: 'Storm Drainage', sub_code: 'Inlet' }]));
+  }
+
+  // ─────────────────────────────────────────────────────────────────────
   console.log('\nA line\'s attached files follow its cost code (the Job Document Vault\'s cost-code folders)');
   {
     // A file attached to a line is filed in the folder picked AND in the
@@ -1207,6 +1370,52 @@ function schemaStatements() {
     assert('…while one restored under the same code spelled differently stays put',
       same(await foldersOf(d11), [SAFETY, ES]) && (await trail(d11)).length === 0, JSON.stringify(await foldersOf(d11)));
 
+    // ── Send: a line brought back whose file left its section while it was deleted ──
+    // One supplier quote on two Stormwater lines. One line is deleted, the
+    // other re-coded onto E&S: the quote leaves the Stormwater folder, since
+    // a deleted line holds nothing there. Brought back from "removed
+    // earlier", the first is a Stormwater line with the quote on its
+    // paperclip again, and nothing later would file it back: its stored code
+    // already matches its live one.
+    bid = bid.concat([BL('fb8', 'Stormwater', 'Perf Drain'), BL('fb9', 'Stormwater', 'Inlet'), BL('fb10', 'E&S', 'Inlet Protection'),
+      BL('fb11', 'E&S', 'Wattle'), BL('fb12', 'E&S', 'Wattle 12in')]);
+    await putBid();
+    const CC = require(path.join(ROOT, 'api/lib/cost-code-counts.js'));
+    const chip = async code => ((await CC.costCodeCounts(makeSql(pool), { companyCode: CO, division: 'turf', projectId: PID })) || {})[code] || 0;
+    const [px, py] = (await send(L2, { project_id: PID, items: [line('fb8', { cost_code: 'Stormwater', sub_code: 'Perf Drain' }),
+      line('fb9', { cost_code: 'Stormwater', sub_code: 'Inlet' })] })).body.created;
+    const d13 = await doc([px.id, py.id], [SAFETY, STORM]);
+    const storm0 = await chip('Stormwater');
+    await del(L2, { id: px.id });
+    r = await patch(L2, py.id, { bid_item_id: 'fb10', cost_code: 'E&S', sub_code: 'Inlet Protection' });
+    assert('(the quote leaves Stormwater once its live line moves to E&S and the other is deleted)',
+      r.statusCode === 200 && same(await foldersOf(d13), [SAFETY, ES]) && await chip('Stormwater') === storm0 - 1, JSON.stringify(await foldersOf(d13)));
+    const before13 = (await trail(d13)).length;
+    r = await send(ADMIN, { project_id: PID, items: [], restore_ids: [px.id] });
+    assert('a line brought back from "removed earlier" (200) is filed in its section again: the Stormwater folder has the quote and its chip counts it',
+      r.statusCode === 200 && r.body.restored.length === 1 && same(await foldersOf(d13), [SAFETY, STORM, ES]) && await chip('Stormwater') === storm0,
+      JSON.stringify({ r: show(r).slice(0, 200), now: await foldersOf(d13), chip: await chip('Stormwater'), storm0 }));
+    const t13 = (await trail(d13)).slice(before13);
+    assert('…the filing is in the document trail, by the person who brought the line back, naming the line',
+      t13.length === 1 && t13[0].action === 'LINK' && t13[0].folder_id === STORM && t13[0].actor === 'p_admin'
+        && t13[0].detail.via === 'procurement_cost_code' && t13[0].detail.procurement_id === px.id, JSON.stringify(t13));
+    await del(L2, { id: px.id });
+    r = await send(L2, { project_id: PID, items: [], restore_ids: [px.id] });
+    assert('…brought back again with the quote still there, nothing moves and the trail stays quiet',
+      r.statusCode === 200 && same(await foldersOf(d13), [SAFETY, STORM, ES]) && (await trail(d13)).length === before13 + 1, JSON.stringify(await foldersOf(d13)));
+    // The same, restored onto its line's new id under the same code (a
+    // Procore "Replace all" in between).
+    const [pa, pb] = (await send(L2, { project_id: PID, items: [line('fb11', { cost_code: 'E&S', sub_code: 'Wattle' }),
+      line('fb12', { cost_code: 'E&S', sub_code: 'Wattle 12in' })] })).body.created;
+    const d14 = await doc([pa.id, pb.id], [SAFETY, ES]);
+    await del(L2, { id: pa.id });
+    r = await patch(L2, pb.id, { bid_item_id: 'fb9', cost_code: 'Stormwater', sub_code: 'Inlet' });
+    bid = bid.filter(x => x.id !== 'fb11').concat([BL('fb11n', 'e&s', 'Wattle')]);
+    await putBid();
+    r = await send(L2, { project_id: PID, items: [], restore_ids: [{ id: pa.id, bid_item_id: 'fb11n', cost_code: 'e&s', sub_code: 'Wattle' }] });
+    assert('…and a line restored onto its new bid line under the same code is filed in that section again too',
+      r.statusCode === 200 && r.body.restored.length === 1 && same(await foldersOf(d14), [SAFETY, ES, STORM]), JSON.stringify(await foldersOf(d14)));
+
     // ── Only this company's live files, in this line's own job ──
     const iso = await manualRow('Stormwater');
     const isoLive  = await doc([iso.id], [SAFETY, STORM]);
@@ -1308,7 +1517,10 @@ function schemaStatements() {
     assert('…the same name under another sub code is its own entry',
       r.body.materials[3].sub_code === 'Ball Catcher Foundations/Install' && r.body.materials[1].sub_code === '12" Concrete Curb' && r.body.materials[1].vendor === 'Three Rivers Concrete');
     assert('…a name with no codes is kept (a dumpster is bought too)', r.body.materials[2].sub_code === '' && r.body.materials[2].unit === 'EA');
-    assert('…and the shape is exactly what the page reads', r.body.materials.every(m => eq(Object.keys(m).sort(), ['cost_code', 'jobs', 'last_used', 'material', 'sub_code', 'unit', 'vendor'])));
+    assert('…and the shape is exactly what the page reads', r.body.materials.every(m => eq(Object.keys(m).sort(), ['cost_code', 'cost_codes', 'jobs', 'last_used', 'material', 'sub_code', 'unit', 'vendor'])),
+      JSON.stringify(r.body.materials[0]));
+    assert('…every cost code a name was bought under comes with it, one per code however it was spelled, none for a name bought with no cost code',
+      eq(infill.cost_codes, ['turf installation']) && eq(r.body.materials[2].cost_codes, []), JSON.stringify(r.body.materials.map(x => x.cost_codes)));
     assert('the Sub Code again, blank, blanks and deleted rows are no names', !names.some(n => /geofabric|skipped/i.test(n) || !n.trim()));
     assert('another division\'s and another company\'s names are not in it', !names.includes('Turf-division name') && !names.includes('Rival company name'));
     r = await get(RIVAL, { action: 'materials' }, 'paving');
@@ -1326,6 +1538,20 @@ function schemaStatements() {
     DB.log = null;
     assert('one read, scoped by company and division, live named rows only, capped',
       /company_code = \?/.test(stmt) && /division = \?/.test(stmt) && /deleted_at IS NULL/.test(stmt) && /btrim\(description\) <> ''/.test(stmt) && /LIMIT \?/.test(stmt), stmt);
+
+    // One name bought on one line of one job, and on another cost code's line
+    // with the same sub code later: "+ Material" on the first line's code
+    // still has the first job's list to offer, so the entry names both codes.
+    await ins(uid('m'), { job: 'kG', cost: 'stormwater ', sub: 'Geofabric', desc: 'mirafi 140n', at: '2026-04-01T12:00:00Z' });
+    await ins(uid('m'), { job: 'kA', cost: 'Stormwater', sub: 'Geofabric', desc: 'Mirafi 140N', at: '2026-05-01T12:00:00Z' });
+    await ins(uid('m'), { job: 'kH', sub: 'Geofabric', desc: 'Mirafi 140N', at: '2026-05-02T12:00:00Z' });
+    await ins(uid('m'), { job: 'kB', cost: ' Base ', sub: 'GEOFABRIC', desc: 'Mirafi 140N', at: '2026-05-03T12:00:00Z' });
+    r = await get(KIEW, { action: 'materials' }, 'kiewit');
+    const mirafi = (r.body.materials || []).filter(x => /mirafi/i.test(x.material));
+    assert('a name bought under two cost codes with one sub code is one entry, its newest cost code shown',
+      mirafi.length === 1 && mirafi[0].cost_code === 'Base' && mirafi[0].sub_code === 'GEOFABRIC' && mirafi[0].jobs === 4, JSON.stringify(mirafi));
+    assert('…carrying every cost code it was bought under, newest first, each once (case and spaces ignored), blank left out',
+      mirafi[0] && eq(mirafi[0].cost_codes, ['Base', 'Stormwater']), JSON.stringify(mirafi[0] && mirafi[0].cost_codes));
   }
 
   // ─────────────────────────────────────────────────────────────────────

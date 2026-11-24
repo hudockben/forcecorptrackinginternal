@@ -14,6 +14,8 @@
  *   - missing project blob does not match (RETURNING returns 0 rows)
  *   - index _ts bump uses the supplied numeric ts
  *   - concurrent updates to the same project serialize cleanly
+ *   - it hands back the line as stored before it (the codes a rename
+ *     carries to the job's purchase orders come from there)
  */
 
 const { Client } = require('pg');
@@ -48,6 +50,16 @@ async function patchBidItem(c, { projectKey, biId, itemJson, indexKey, indexTs, 
   const scopedProjectKey = `${companyCode}:${projectKey}`;
   const scopedIndexKey   = `${companyCode}:${indexKey}`;
   const blobRes = await c.query(`
+    WITH was AS (
+      SELECT e.v AS line
+        FROM app_data a
+       CROSS JOIN LATERAL jsonb_array_elements(
+              CASE WHEN jsonb_typeof(a.value->'bidItems') = 'array' THEN a.value->'bidItems' ELSE '[]'::jsonb END)
+              WITH ORDINALITY AS e(v, ord)
+       WHERE a.key = $3 AND e.v->>'id' = $1
+       ORDER BY e.ord DESC
+       LIMIT 1
+    )
     UPDATE app_data
     SET value = jsonb_set(
           COALESCE(value, '{}'::jsonb),
@@ -69,9 +81,10 @@ async function patchBidItem(c, { projectKey, biId, itemJson, indexKey, indexTs, 
         ),
         updated_at = NOW()
     WHERE key = $3
-    RETURNING 1
+    RETURNING 1 AS found, (SELECT line FROM was) AS line_before
   `, [biId, itemJson, scopedProjectKey]);
   if (!blobRes.rows.length) return { matched: false };
+  const lineBefore = blobRes.rows[0].line_before;
 
   await c.query(`
     UPDATE app_data
@@ -83,7 +96,7 @@ async function patchBidItem(c, { projectKey, biId, itemJson, indexKey, indexTs, 
         updated_at = NOW()
     WHERE key = $2
   `, [indexTs, scopedIndexKey]);
-  return { matched: true };
+  return { matched: true, lineBefore };
 }
 
 async function getBlob(c, key) {
@@ -198,6 +211,43 @@ async function main() {
       assert('matched even with NULL value',           r.matched);
       const blob = await getBlob(c, `${COMPANY}:${KEY}`);
       assert('blob now {bidItems: [item]}',            blob.bidItems.length === 1 && blob.bidItems[0].id === 'b1');
+    }
+
+    console.log('\n[the line as it was before the write]');
+    {
+      // A rename on the bid page is carried to the job's purchase orders
+      // from the line's codes as the blob held them before this write.
+      const KEY = 'fct_project_pbefore';
+      await c.query(`INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb)`, [`${COMPANY}:${KEY}`, JSON.stringify({ bidItems: [
+        { id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric' },
+        { id: 'b2', cost_code: 'Stormwater', sub_code: 'Perf Drain' },
+        { id: 'b2', cost_code: 'Stormwater', sub_code: 'Perf Drain (last copy)' },
+      ] })]);
+      let r = await patchBidItem(c, {
+        projectKey: KEY, biId: 'b1', itemJson: JSON.stringify({ id: 'b1', cost_code: 'Stormwater', sub_code: 'Geofabric 8oz' }),
+        indexKey: INDEX_KEY, indexTs: 6500, companyCode: COMPANY,
+      });
+      assert('a renamed line comes back as it was stored before the write',
+        r.matched && r.lineBefore && r.lineBefore.sub_code === 'Geofabric', JSON.stringify(r.lineBefore));
+      const after = (await getBlob(c, `${COMPANY}:${KEY}`)).bidItems;
+      assert('…while the blob holds it renamed, in place', after.length === 3 && after[0].sub_code === 'Geofabric 8oz', JSON.stringify(after));
+      r = await patchBidItem(c, {
+        projectKey: KEY, biId: 'b2', itemJson: JSON.stringify({ id: 'b2', cost_code: 'Stormwater', sub_code: 'Perf Drain 15in' }),
+        indexKey: INDEX_KEY, indexTs: 6501, companyCode: COMPANY,
+      });
+      assert('a line id twice: the last copy is the one read (as the page indexes it)',
+        r.lineBefore && r.lineBefore.sub_code === 'Perf Drain (last copy)', JSON.stringify(r.lineBefore));
+      r = await patchBidItem(c, {
+        projectKey: KEY, biId: 'b9', itemJson: JSON.stringify({ id: 'b9', cost_code: 'E&S', sub_code: 'Silt Sock' }),
+        indexKey: INDEX_KEY, indexTs: 6502, companyCode: COMPANY,
+      });
+      assert('a line new to the bid had nothing before it', r.matched && r.lineBefore === null, JSON.stringify(r));
+      await c.query(`INSERT INTO app_data (key, value) VALUES ($1, $2::jsonb)`, [`${COMPANY}:fct_project_pnobid`, JSON.stringify({ name: 'x' })]);
+      r = await patchBidItem(c, {
+        projectKey: 'fct_project_pnobid', biId: 'b1', itemJson: JSON.stringify({ id: 'b1', cost_code: 'X' }),
+        indexKey: INDEX_KEY, indexTs: 6503, companyCode: COMPANY,
+      });
+      assert('…nor did one on a blob with no bid yet', r.matched && r.lineBefore === null, JSON.stringify(r));
     }
 
     console.log('\n[index row missing — UPDATE no-op, no crash]');

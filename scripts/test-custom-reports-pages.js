@@ -1113,6 +1113,7 @@ function planDom(page, src, role) {
     'const fctUser = window.__user;',
     permSource(src),
     liftLine(src, 'const _cbEsc =', page.file),
+    liftLine(src, 'const _FCT_CACHE_SCOPE', page.file),
     liftLine(src, 'const PROJECTS_KEY', page.file),
     liftLine(src, 'const _biSaveTimers', page.file),
     liftLine(src, 'const _biSavePending', page.file),
@@ -1120,6 +1121,8 @@ function planDom(page, src, role) {
     // test sets the jobs from a later one.
     'var _lastProjIndexTs = 0;',
     'var projectsList = [];',
+    // The job list has been read from the server: per-line saves go.
+    'var _projectsLoaded = true;',
     'function getProj(id) { return projectsList.find(p => p.id === id); }',
     'function _projBlob(p) { return p; }',
     'function renderBidFooter() {}', 'function saveProject() {}', 'function _showSaveError() {}',

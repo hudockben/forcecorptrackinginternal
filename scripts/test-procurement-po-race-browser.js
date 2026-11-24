@@ -129,9 +129,11 @@ const daysAgo = n => { const d = new Date(); d.setHours(12, 0, 0, 0); d.setDate(
 // Two orders on job p1 (PO-0009 has two deliveries, each with its cost row),
 // and Procurement rows on p1: by default r1/r2 on 04-300 / 0700 from Acme
 // Supply (on no order yet) and r3, which PO-0009 matches by codes and vendor.
+// r1 is the bid line's own row and r2 a material added under it, so an order
+// raised for the line elsewhere is r1's (procurement.js autoTaker), not both.
 const DEFAULT_ROWS = [
-  { id: 'r1', cost_code: '04-300', sub_code: '0700', description: 'Drain pipe',     vendor: 'Acme Supply' },
-  { id: 'r2', cost_code: '04-300', sub_code: '0700', description: 'Drain fittings', vendor: 'Acme Supply' },
+  { id: 'r1', cost_code: '04-300', sub_code: '0700', description: 'Drain pipe',     vendor: 'Acme Supply', source: 'bid', bid_item_id: 'b3' },
+  { id: 'r2', cost_code: '04-300', sub_code: '0700', description: 'Drain fittings', vendor: 'Acme Supply', bid_item_id: 'b3' },
   { id: 'r3', cost_code: '03-200', sub_code: '0610', description: 'Infill',         vendor: 'Acme Supply' },
 ];
 async function seed(rows = DEFAULT_ROWS) {
@@ -153,9 +155,9 @@ async function seed(rows = DEFAULT_ROWS) {
       [row, CO, d, cc, sc, sup, po, qty, qty * 10]);
   }
   for (const r of rows) {
-    await q(`INSERT INTO procurement_items (id, company_code, division, project_id, source, cost_code, sub_code, description, vendor, date_needed, lead_time_days)
-             VALUES ($1, $2, 'turf', 'p1', 'manual', $3, $4, $5, $6, $7, 3)`,
-      [r.id, CO, r.cost_code, r.sub_code, r.description, r.vendor, daysAgo(-20)]);
+    await q(`INSERT INTO procurement_items (id, company_code, division, project_id, source, bid_item_id, cost_code, sub_code, description, vendor, date_needed, lead_time_days)
+             VALUES ($1, $2, 'turf', 'p1', $8, $9, $3, $4, $5, $6, $7, 3)`,
+      [r.id, CO, r.cost_code, r.sub_code, r.description, r.vendor, daysAgo(-20), r.source || 'manual', r.bid_item_id || null]);
   }
 }
 const storedPOs = async () => (await callApi('GET', '/api/purchase-orders?division=turf')).body.purchaseOrders || [];
@@ -181,7 +183,8 @@ async function openPage(browser, W) {
     localStorage.setItem('fct_user', JSON.stringify({ id: 7, username: 'procpo_admin', name: 'Ada', role: 'admin', companyCode: 'PROCPORACE',
       divisionRoles: { turf: 'admin', paving: 'admin', kiewit: 'admin' }, allowedDivisions: ['turf', 'paving', 'kiewit'] }));
     localStorage.setItem('fct_division', 'turf');
-    localStorage.setItem('fct_proc_project_turf', 'p1');
+    // Procurement's remembered job is kept per company and user.
+    localStorage.setItem('fct_proc_project_turf@PROCPORACE/procpo_admin', 'p1');
   });
   const LISTS = { equipment: [], employees: [{ name: 'Sam' }],
     suppliers: [{ name: 'Acme Supply' }, { name: 'LB Water' }, { name: 'Turf Co' }] };
@@ -292,8 +295,8 @@ const shot = async (page, name) => { if (SHOTS) await page.screenshot({ path: pa
         { answer: (put.resp.orders || []).map(o => o.po_number), page: await pagePOs(page) });
       await until(async () => isOrdered(await rowSays(page, 'r1')), 2000);
       const r1 = await rowSays(page, 'r1'), r2 = await rowSays(page, 'r2');
-      ok('  r1 and r2 now read Ordered on PO-0010 — without waiting for a poll',
-        isOrdered(r1) && isOrdered(r2) && r1.pos === 'PO-0010' && r2.pos === 'PO-0010', { r1, r2 });
+      ok('  r1 (the line\'s own row) now reads Ordered on PO-0010 — without waiting for a poll; r2, added under it, is not on it',
+        isOrdered(r1) && r1.pos === 'PO-0010' && !isOrdered(r2) && r2.pos !== 'PO-0010', { r1, r2 });
       const stored = await storedPOs();
       ok('  the PO-tab edit is stored, and the colleague\'s order kept',
         stored.find(p => p.id === 'po7').title === 'Geofabric rolls' && stored.some(p => p.po_number === 'PO-0010'));
