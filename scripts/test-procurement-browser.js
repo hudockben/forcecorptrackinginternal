@@ -3373,6 +3373,65 @@ async function reviewThreeUI(browser) {
   }
 }
 
+// The third review's PO fix only a real browser shows: a line renamed on the
+// bid page and the Procurement tab clicked straight away. The tab's read of
+// the order list went out in the same moment as the bid save the host
+// flushes for the re-link, so it carried the old codes.
+async function reviewThreePO(browser) {
+  console.log('\n[review 3: po] A line renamed on the bid page, the Procurement tab shown at once');
+  const t = i => new Date(Date.UTC(2026, 9, 6) + i * 1000).toISOString();
+  const W = makeWorld();
+  W.rows.length = 0;
+  W.rows.push({ ...BLANK_ROW, id: 'D1', project_id: 'p1', source: 'bid', bid_item_id: 'b2', cost_code: 'Stormwater', sub_code: DRAIN, vendor: 'New Enterprise',
+    date_needed: plusDays(3), lead_time_days: 10, created_at: t(3), updated_at: t(3) });
+  W.pos.push({ id: 'po20', po_number: 'PO-0020', title: 'Drain', supplier: 'New Enterprise', status: 'pending', date_created: plusDays(-2),
+    project_id: 'p1', cost_code: 'Stormwater', sub_code: DRAIN, notes: '', lines: [] });
+  const saved = PROJECTS.p1.bidItems;
+  const NEW = 'Perimeter Drain 15in Perf';
+  const { page, ctx, errors } = await openPage(browser, W, 'level2', { storage: { fct_proc_project_turf: 'p1', fct_proc_group_turf: 'none' } });
+  // What the server's order held as each read of the list went out.
+  const reads = [];
+  await page.route('**/api/purchase-orders**', route => {
+    if (route.request().method() === 'GET') reads.push(W.pos.find(x => x.id === 'po20').sub_code);
+    return route.fallback();
+  });
+  // The line's save, as the server takes it: the line written, its codes
+  // copied onto the rows, the order under the old codes renamed (bid-po-codes).
+  await page.route('**/api/bid-items**', async route => {
+    let body = null;
+    try { body = JSON.parse(route.request().postData() || 'null'); } catch { body = null; }
+    if (route.request().method() !== 'PUT' || !body || !body.bidItem) return route.fallback();
+    await sleep(250);
+    PROJECTS.p1.bidItems = PROJECTS.p1.bidItems.map(b => (b.id === body.bidItem.id ? { ...b, ...body.bidItem } : b));
+    const d1 = W.rows.find(r => r.id === 'D1');
+    if (d1.sub_code !== body.bidItem.sub_code) Object.assign(d1, { sub_code: body.bidItem.sub_code, version: d1.version + 1, updated_at: t(50) });
+    W.pos.find(x => x.id === 'po20').sub_code = body.bidItem.sub_code;
+    W.posAt = new Date(Date.parse(W.posAt) + 1000).toISOString();
+    return route.fulfill({ status: 200, contentType: 'application/json', body: '{"ok":true}' });
+  });
+  try {
+    await page.click('.tab-btn[data-tab="procurement"]');
+    await until(() => page.locator('#procurement-root tr.fctproc-row').count().then(n => n === 1));
+    await sleep(500);
+    const pill = id => rowTr(page, id).locator('.fctproc-pill').textContent();
+    ok('(before: the drain row is Ordered on PO-0020)', await pill('D1') === 'Ordered', await pill('D1'));
+    await page.click('.tab-btn[data-tab="po"]');
+    await sleep(300);
+    const n0 = reads.length;
+    await page.evaluate(sub => updateBidItem('p1', 'b2', 'sub_code', sub), NEW);
+    await page.click('.tab-btn[data-tab="procurement"]');
+    await until(async () => await pill('D1') === 'Ordered', 4000);
+    ok('a line renamed on the bid page and the tab shown at once: the order list is read once the save has landed, so the drain row is on PO-0020 within seconds',
+      await pill('D1') === 'Ordered' && await cell(page, 'D1', 'po').inputValue() === 'PO-0020' && !/Late/.test(await rowTr(page, 'D1').textContent()),
+      [await pill('D1'), reads.slice(n0)]);
+    ok('…and no read of the list after the rename went out before the server renamed the order', reads.length > n0 && reads.slice(n0).every(s => s === NEW), reads.slice(n0));
+    ok('no page errors', errors.length === 0, errors.join(' | '));
+  } finally {
+    PROJECTS.p1.bidItems = saved;
+    await ctx.close();
+  }
+}
+
 (async () => {
   const browser = await chromium.launch({ executablePath: CHROME });
   try {
@@ -3399,6 +3458,7 @@ async function reviewThreeUI(browser) {
     await sweepTwoRender(browser);
     await sweepTwoPO(browser);
     await reviewThreeUI(browser);
+    await reviewThreePO(browser);
   } finally {
     await browser.close();
     server.close();

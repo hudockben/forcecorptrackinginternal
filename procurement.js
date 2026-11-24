@@ -256,7 +256,7 @@
   function ctxIndex(ctx) {
     let m = _ctxIndex.get(ctx);
     if (!m) {
-      m = { lineById: new Map(), poById: new Map(), poByJob: new Map(), poByCode: new Map(), lineByJob: null, costKeysByJob: new Map(), linkedPO: new Set(), takers: null };
+      m = { lineById: new Map(), poById: new Map(), poByJob: new Map(), poByCode: new Map(), lineByJob: null, costKeysByJob: new Map(), linkedPO: new Set(), takers: null, won: null };
       (ctx.bidLines || []).forEach(l => { if (l && l.id != null) m.lineById.set(String(l.id), l); });
       // The orders by job (and, once a row of the job asks, by codes —
       // posUnder), so each row looks up the few under its own codes: read
@@ -396,7 +396,7 @@
     // cannot be told: a material added under a bid line ("+ Material", the
     // copy list) read Ordered, with no Late flag, on the order raised on the
     // Purchase Orders tab for the line's own material beside it.
-    const takers = autoTakers(ctx);
+    const takers = autoTakers(ctx), won = ctxIndex(ctx).won;
     const mine = [], open = [];
     let others = 0, by = '';
     cands.forEach(po => {
@@ -407,7 +407,10 @@
       const all = here ? t.map(r => (r.id === row.id ? row : r)) : t.concat(row);
       if (all.length === 1) { mine.push(po); return; }
       const win = autoTaker(po, all);
-      if (win && win.row.id === row.id) { mine.push(po); others = Math.max(others, all.length - 1); by = win.by; } else if (!win) open.push(po);
+      if (win && win.row.id === row.id) { mine.push(po); others = Math.max(others, all.length - 1); by = win.by; }
+      // Given to a row that wins several, so reads 'multiple' and is on none
+      // of them: still open to this one, to be picked.
+      else if (!win || won.get(win.row.id) > 1) open.push(po);
     });
     if (mine.length === 1) return out('auto', mine[0], mine, others ? { others, by } : null);
     if (mine.length > 1) return out('multiple', null, mine);
@@ -480,7 +483,15 @@
         takers.get(po).push(r);
       });
     });
+    // How many orders each row ends up with (effectivePO): a row with
+    // several reads 'multiple', on none of them.
+    const won = new Map();
+    takers.forEach((rows, po) => {
+      const win = rows.length === 1 ? { row: rows[0] } : autoTaker(po, rows);
+      if (win) won.set(win.row.id, (won.get(win.row.id) || 0) + 1);
+    });
     m.takers = takers;
+    m.won = won;
     return takers;
   }
   /**
@@ -2640,7 +2651,7 @@
       if (data.item && data.item.po_id) askForNewPOs();
       if (prev && data.item) noteChangesInAnswer(rowId, p, prev, data.item, data.was);
       refreshRow(rowId);
-      if (touchesPO(p)) repaintRows();
+      if (movesPO(p)) repaintRows();
       updateCounts();
       if (touchesCode(p)) recountAfterRecode((data.item && data.item.project_id) || (rowById(rowId) || {}).project_id || st.projectId, [rowId]);
     } catch (err) {
@@ -2803,7 +2814,7 @@
     const moved = fields.filter(k => data.fields.includes(k));
     if (moved.length || others.length) markRecent(rowId, moved.concat(others), data.changed_by, data.changed_at);
     refreshRow(rowId);
-    if (touchesPO(p)) repaintRows();
+    if (movesPO(p)) repaintRows();
     updateCounts();
     if (!fields.length) return;
     const c = { rowId, fields, mine, theirs: item, by: str(data.changed_by), at: data.changed_at || null, redraw: null };
@@ -3657,6 +3668,8 @@
   // conflict dialog names such an order once the list has it.
   let poAsking = null;
   let codesSeen = { sig: null, codes: new Map() };
+  // Jobs whose moved codes a read failed to follow up: asked about again.
+  let codesOwed = [];
   function askForNewPOs() {
     const ctx = makeCtx();
     const moved = codesMoved(ctx);
@@ -3666,14 +3679,20 @@
     const ask = !!unknown && unknown !== poAskedFor;
     if (!ask && !moved) return unknown ? poAsking : null;
     if (ask) poAskedFor = unknown;
-    const read = poAsking = refreshPOs().finally(() => { if (poAsking === read) poAsking = null; });
+    // Codes moved: read once this page's own bid saves for those jobs have
+    // landed. The server carries a rename to the orders as it takes the
+    // save, and the tab shown straight after a rename on the bid page read
+    // the list in the same moment the save went — under the old codes.
+    const go = () => refreshPOs(moved ? () => { codesOwed = codesOwed.concat(moved); } : null);
+    const read = poAsking = (moved ? bidSaved(moved).then(go) : go()).finally(() => { if (poAsking === read) poAsking = null; });
     return read;
   }
   // Whether a row matched to an order by its codes has other codes than at
   // the last look — the codes it is matched by (liveCodes: its bid line's,
   // else its own); the first look at a sheet says nothing. Not the stored
   // copy as such: the page's own re-link moving it onto the line's codes
-  // (autoRelink) moves nothing an order is matched by.
+  // (autoRelink) moves nothing an order is matched by. The jobs of the rows
+  // that moved, or null.
   function codesMoved(ctx) {
     const sig = viewSig(), k = keyFn(ctx);
     const now = new Map(st.rows.filter(r => !r.po_id && r.po_auto !== false).map(r => {
@@ -3681,13 +3700,24 @@
       return [r.id, [c.cost_code, c.sub_code].map(s => ck(k, s)).join('\u0000')];
     }));
     const was = codesSeen.sig === sig ? codesSeen.codes : null;
+    const owed = codesSeen.sig === sig ? codesOwed : [];
     codesSeen = { sig, codes: now };
-    return !!was && [...now].some(([id, c]) => was.has(id) && was.get(id) !== c);
+    codesOwed = [];
+    const jobs = new Set(owed);
+    if (was) st.rows.forEach(r => { if (now.has(r.id) && was.has(r.id) && was.get(r.id) !== now.get(r.id)) jobs.add(String(r.project_id || st.projectId || '')); });
+    return jobs.size ? [...jobs] : null;
   }
-  function refreshPOs() {
+  // This page's own bid saves for these jobs, sent and waited for: the
+  // re-link's read of the bid when one is out (the host flushes them
+  // first), else a read of its own.
+  function bidSaved(jobs) {
+    return Promise.all(jobs.map(pid => (bidReads.get(pid) || serverBidLines(pid)).catch(() => null)));
+  }
+  function refreshPOs(onFail) {
     if (typeof cfg.refreshPurchaseOrders !== 'function') return Promise.resolve(false);
     return Promise.resolve().then(() => cfg.refreshPurchaseOrders()).catch(err => {
       console.warn('[procurement] could not read the purchase orders again', err);
+      if (onFail) onFail();
       return false;
     });
   }
@@ -5280,7 +5310,7 @@
       if (v.startsWith('__new__:')) { addVendor(rowId, v.slice(8).trim(), input); return; }
       const name = canonicalSupplier(typed).slice(0, MAX_LEN.vendor);
       input.value = name;
-      if (changeVendor(rowId, name)) updateCounts();
+      if (changeVendor(rowId, name)) { repaintRows(); updateCounts(); }
       return;
     }
     if (field === 'contact') {
@@ -5323,7 +5353,7 @@
         }
       }
       if ('description' in fields) notePick(rowId, fields);
-      if (Object.keys(fields).length) { setFields(rowId, fields); updateCounts(); }
+      if (Object.keys(fields).length) { setFields(rowId, fields); if ('vendor' in fields) repaintRows(); updateCounts(); }
       return;
     }
     if (field === 'unit') {
@@ -5378,6 +5408,7 @@
         toast(n ? `Sub Code: "${typed.slice(0, 60)}" is not a line on this job's bid — pick one from the list.${desc ? ' Sub Code is the bid line the cost books to; this job\'s own name for the material goes in Material.' : ''}`
           : `Sub Code: this job has no bid lines yet, so there is no cost / sub code to pick. Add the bid items on the bid page first${desc ? '; the material\'s name can go in Material meanwhile' : ''}.`, 'error');
       }
+      repaintRows();
       updateCounts();
       return;
     }
@@ -5391,7 +5422,8 @@
   }
   // Every row drawn again where its drawing changed (and a cell in use kept):
   // an order linked to one row is no longer matched to the rows beside it
-  // (effectivePO), so one row's PO # changes their status too.
+  // (effectivePO), so one row's PO # changes their status too — and so can
+  // its Vendor or codes, which decide who an unlinked order goes to (autoTaker).
   function repaintRows() {
     const wrap = st.mountEl && st.mountEl.querySelector('#fctproc-wrap');
     if (!wrap) return;
@@ -5399,11 +5431,12 @@
     [...wrap.querySelectorAll('tr.fctproc-row')].forEach(tr => refreshRow(tr.dataset.row, null, ctx, true));
   }
   const touchesPO = f => Boolean(f) && (Object.prototype.hasOwnProperty.call(f, 'po_id') || Object.prototype.hasOwnProperty.call(f, 'po_auto'));
+  const movesPO = f => touchesPO(f) || (Boolean(f) && ['vendor', 'cost_code', 'sub_code', 'bid_item_id'].some(k => Object.prototype.hasOwnProperty.call(f, k)));
 
   async function addVendor(rowId, name, input) {
     if (!name) return;
     if (input) input.value = name;
-    changeVendor(rowId, name);
+    if (changeVendor(rowId, name)) { repaintRows(); updateCounts(); }
     if (typeof cfg.addSupplier !== 'function') return;
     try {
       const canon = String((await cfg.addSupplier(name)) || name).trim();
@@ -6905,14 +6938,22 @@
       // only its own copy to go by.
       try { return cfg.getBidLines(pid) || []; } catch { return null; }
     }
+    const key = String(pid);
+    let read = null;
     try {
-      const lines = await cfg.getFreshBidLines(pid);
+      read = Promise.resolve(cfg.getFreshBidLines(pid));
+      bidReads.set(key, read);
+      const lines = await read;
       return Array.isArray(lines) ? lines : null;
     } catch (err) {
       console.warn('[procurement] could not read the bid', err);
       return null;
+    } finally {
+      if (bidReads.get(key) === read) bidReads.delete(key);
     }
   }
+  // Each job's read of its bid while it is out (bidSaved waits on it).
+  const bidReads = new Map();
   /** Whether two copies of a bid have the same lines with the same codes. */
   function sameBid(a, b, codeKey) {
     const k = typeof codeKey === 'function' ? codeKey : defaultCodeKey;
