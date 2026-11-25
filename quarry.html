@@ -455,6 +455,17 @@
     .ms-opt.ms-all { font-weight: 700; }
     .ms-sep { height: 1px; background: var(--border); margin: 0.25rem; }
 
+    /* ── Download menu (Excel / CSV) — rides the multi-select menu's open/close ── */
+    .export-menu { position: relative; display: inline-block; }
+    .export-menu .ms-menu { min-width: 15rem; }
+    .export-caret { font-size: 0.6rem; margin-left: 0.15rem; transition: transform 0.15s; display: inline-block; }
+    .export-menu.is-open .export-caret { transform: rotate(180deg); }
+    .export-opt {
+      width: 100%; background: none; border: 0; font-family: inherit; text-align: left;
+      flex-direction: column; align-items: flex-start; gap: 0.1rem;
+    }
+    .export-opt small { font-size: 0.66rem; color: var(--muted); }
+
     /* ── Home dashboard ── */
     .home-wrap { padding: 1rem 1.25rem 2rem; }
     /* ── Shared dashboard components ──
@@ -1635,6 +1646,13 @@
       <div class="sales-toolbar">
         <button class="btn-add-row" id="salesAddBtn" onclick="addSalesRow()">+ Add Row</button>
         <button class="btn-add-row btn-bulk-upload" id="salesBulkBtn" onclick="openBulk('sales')">⇪ Bulk Upload CSV</button>
+        <div class="export-menu" id="salesExportMenu">
+          <button type="button" class="btn-add-row btn-bulk-upload export-toggle" id="salesExportBtn" onclick="toggleExportMenu('sales')" aria-haspopup="true" aria-expanded="false" title="Download the rows the table is showing — filters included" disabled>⇩ Download <span class="export-caret">▾</span></button>
+          <div class="ms-menu" role="menu" hidden>
+            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadSalesExport('xlsx')">Excel (.xlsx)<small>Formatted, with totals and live formulas</small></button>
+            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadSalesExport('csv')">CSV (.csv)<small>Plain rows — re-imports through Bulk Upload</small></button>
+          </div>
+        </div>
         <div class="year-filter-wrap">
           Year
           <select class="year-filter-select" id="salesYearFilter" onchange="setYearFilter('sales', this.value)" disabled></select>
@@ -3649,7 +3667,8 @@
       const menu = el.querySelector('.ms-menu');
       if (menu) menu.hidden = true;
       el.classList.remove('is-open');
-      const btn = el.querySelector('.ms-toggle');
+      // .export-toggle: the Download menu opens and closes through here too.
+      const btn = el.querySelector('.ms-toggle, .export-toggle');
       if (btn) btn.setAttribute('aria-expanded', 'false');
       if (msOpenId === id) msOpenId = null;
     }
@@ -4051,6 +4070,8 @@
         updateSalesSummary();
         return;
       }
+      // visibleSalesEntries() below is this same list for the Download button;
+      // a change to one is a change to both.
       const visibleEntries = salesRows
         .map((row, originalIdx) => ({ row, originalIdx }))
         .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesMonth('sales', row) && rowMatchesLocation('sales', row) && rowMatchesCustomer('sales', row) && rowMatchesProduct('sales', row))
@@ -4136,6 +4157,440 @@
       });
       el.innerHTML = `Rows<strong>${count}</strong>· Total Tons<strong>${formatTons(totalTons)}</strong>· Net Sales<strong>${formatMoney(totalSales)}</strong>· Sales Tax<strong>${formatMoney(totalTax)}</strong>· Total Due<strong>${formatMoney(totalSales + totalTax)}</strong>`;
       refreshDeleteFilteredBtn('sales');
+      // Nothing on screen, nothing to download.
+      const exportBtn = document.getElementById('salesExportBtn');
+      if (exportBtn) exportBtn.disabled = !salesLoaded || count === 0;
+      if (exportBtn && exportBtn.disabled) msClose('salesExportMenu');
+    }
+
+    // The rows the Sales table shows, in the order it shows them — renderSales'
+    // own filter and sort, for the Download button. Kept in step with it by
+    // scripts/test-quarry-sales-export.js, which checks the file against the
+    // rendered table row for row.
+    function visibleSalesEntries() {
+      return salesRows
+        .map((row, originalIdx) => ({ row, originalIdx }))
+        .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesMonth('sales', row) && rowMatchesLocation('sales', row) && rowMatchesCustomer('sales', row) && rowMatchesProduct('sales', row))
+        .sort(byDateDesc);
+    }
+
+    // ── Sales Tracking → Excel / CSV ────────────────────────────
+    // ⇩ Download hands over exactly what the table is showing: the same year /
+    // month / location / customer / product filters, newest first, the scale
+    // house's submitted sales included — "download what I'm looking at" does
+    // what it says.
+    //
+    // CSV is the flat one: the on-screen columns under the Bulk Upload
+    // template's own headers, plain numbers, no totals row — so it pivots
+    // cleanly, and a corrected copy goes straight back in through
+    // ⇪ Bulk Upload CSV (after "Delete N Rows", or the importer skips every
+    // row as a duplicate).
+    //
+    // Excel is the one to work in: dates as real dates, money as money, the
+    // customer's tax rate in a column of its own, and Net Sales / Sales Tax /
+    // Total Due as formulas off it — re-price a load and the row follows. The
+    // Totals row is SUBTOTALs, so it follows Excel's own filters as well, and
+    // its Price / Ton is the average sold at, Net Sales ÷ Tons.
+    //
+    // Written by hand like every other export in this app: a ZIP of XML parts
+    // with stored (uncompressed) entries, no library.
+    function toggleExportMenu(tab) {
+      const id = tab + 'ExportMenu';
+      if (msOpenId && msOpenId !== id) msClose(msOpenId);
+      const el = document.getElementById(id);
+      const menu = el && el.querySelector('.ms-menu');
+      const btn = el && el.querySelector('.export-toggle');
+      if (!menu || !btn || btn.disabled) return;
+      const open = menu.hidden;
+      menu.hidden = !open;
+      el.classList.toggle('is-open', open);
+      btn.setAttribute('aria-expanded', String(open));
+      msOpenId = open ? id : null;
+    }
+
+    function downloadSalesExport(kind) {
+      msClose('salesExportMenu');
+      if (!salesLoaded) return;
+      const entries = visibleSalesEntries();
+      if (!entries.length) { alert('Nothing to download — no sales match the filters.'); return; }
+      const blob = kind === 'csv'
+        ? new Blob([buildSalesCsv(entries)], { type: 'text/csv;charset=utf-8' })
+        : buildSalesXlsx(entries);
+      qxSaveBlob(blob, salesExportFileName(kind === 'csv' ? 'csv' : 'xlsx'));
+    }
+
+    // quarry-sales-2026-2026-11-25.xlsx — the year the table is on, "-filtered"
+    // when anything narrower is set, then the day it was pulled, so two pulls
+    // of different slices never land on the same name.
+    function salesExportFileName(ext) {
+      const y = yearFilters.sales;
+      const scope = (!y || y === 'all') ? 'all-years' : String(y);
+      const narrowed = ['month', 'location', 'customer', 'product']
+        .some(k => (MS_CONFIG[k].state.sales || new Set()).size > 0);
+      return `quarry-sales-${scope}${narrowed ? '-filtered' : ''}-${todayIso()}.${ext}`;
+    }
+
+    function salesExportFilterDesc() {
+      return [yearFilterLabel('sales'), monthFilterLabel('sales'), locationFilterLabel('sales'),
+              customerFilterLabel('sales'), productFilterLabel('sales')].join(' · ');
+    }
+
+    // The columns match BULK_CONFIGS.sales.templateLayout's headers, so the
+    // importer reads a downloaded file back as it reads its own template.
+    // Numbers go out bare — no $ or thousands commas — with the three
+    // computed money columns rounded to the cent the table shows.
+    const SALES_CSV_HEADER = ['Date', 'Location', 'Employee', 'Customer', 'Product', 'Tons',
+                              'Payment', 'Price / Ton', 'Sales Tax', 'Net Sales', 'Total Due'];
+    function buildSalesCsv(entries) {
+      const cell = v => {
+        const s = v == null ? '' : String(v);
+        return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      const num   = v => (v === '' || v == null || !Number.isFinite(Number(v))) ? '' : String(Number(v));
+      const cents = v => (Math.round(v * 100) / 100).toFixed(2);
+      const lines = [SALES_CSV_HEADER.map(cell).join(',')];
+      entries.forEach(({ row }) => {
+        const net = rowTotal(row), tax = rowSalesTax(row);
+        lines.push([
+          row.date, row.locationName, row.employeeName, row.customerName, row.productName,
+          num(row.tons), row.payment, num(row.pricePerTon),
+          cents(tax), cents(net), cents(net + tax),
+        ].map(cell).join(','));
+      });
+      // BOM so Excel opens it as UTF-8 rather than mangling an accented name;
+      // the importer's header trim drops it on the way back in.
+      return '﻿' + lines.join('\r\n') + '\r\n';
+    }
+
+    function buildSalesXlsx(entries) {
+      const S = qxStyles();
+      const INK = { title: '1F2A44', muted: '6B7280', white: 'FFFFFF' };
+      const FMT = {
+        date:  'yyyy-mm-dd',
+        tons:  '#,##0.00',
+        price: '"$"#,##0.00##',
+        rate:  '0.00#%;-0.00#%;"—"',
+        money: '"$"#,##0.00;-"$"#,##0.00;"—"',
+      };
+      const TOT = { fill: 'EDEFF3', top: ['thin', '9CA3AF'] };
+      const head = (a) => S.xf({ font: { b: true, color: INK.white }, fill: INK.title,
+                                 ...(a && typeof a === 'object' ? a : { align: a }) });
+      const tot  = (fmt, align) => S.xf({ font: { b: true }, fmt, align, ...TOT });
+
+      // [header, width, style for a data cell, header alignment]
+      const COLS = [
+        ['Date',        12, S.xf({ fmt: FMT.date, align: 'left' }), null],
+        ['Location',    16, 0, null],
+        ['Employee',    18, 0, null],
+        ['Customer',    28, 0, null],
+        ['Product',     16, 0, null],
+        ['Tons',        11, S.xf({ fmt: FMT.tons }),  'right'],
+        ['Payment',     10, S.xf({ align: 'center' }), 'center'],
+        ['Price / Ton', 12, S.xf({ fmt: FMT.price }), 'right'],
+        ['Tax Rate',    10, S.xf({ fmt: FMT.rate }),  'right'],
+        ['Sales Tax',   12, S.xf({ fmt: FMT.money }), 'right'],
+        ['Net Sales',   14, S.xf({ fmt: FMT.money }), 'right'],
+        ['Total Due',   14, S.xf({ fmt: FMT.money }), 'right'],
+        // Indented: it sits right after Total Due's right-aligned figure.
+        ['Source',      20, S.xf({ align: 'left', indent: 1 }), { align: 'left', indent: 1 }],
+      ];
+      const lastCol = qxCol(COLS.length);
+      const HEAD_ROW = 5;
+      const first = HEAD_ROW + 1, last = HEAD_ROW + entries.length, totRow = last + 1;
+
+      const co = (user && (user.companyName || user.companyCode)) || '';
+      const now = new Date();
+      const stamp = `${todayIso()} ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
+      const rows = [
+        [{ v: `Sales Tracking${co ? ' — ' + co : ''}`, s: S.xf({ font: { b: true, sz: 14, color: INK.title } }) }],
+        [{ v: `Filters: ${salesExportFilterDesc()}`, s: S.xf({ font: { color: INK.muted } }) }],
+        [{ v: `${entries.length} row${entries.length === 1 ? '' : 's'} · exported ${stamp}${user && user.username ? ' by ' + user.username : ''}`,
+           s: S.xf({ font: { color: INK.muted } }) }],
+        [],
+        COLS.map(([label, , , align]) => ({ v: label, s: head(align) })),
+      ];
+
+      let sumTons = 0, sumNet = 0, sumTax = 0;
+      entries.forEach(({ row }, i) => {
+        const r = first + i;
+        const t = Number(row.tons), p = Number(row.pricePerTon);
+        const tons  = row.tons === '' || !Number.isFinite(t) ? '' : t;
+        const price = row.pricePerTon === '' || !Number.isFinite(p) ? '' : p;
+        const rate  = rowTaxRate(row) / 100;
+        const net = rowTotal(row), tax = net * rate;
+        sumTons += tons === '' ? 0 : tons; sumNet += net; sumTax += tax;
+        const serial = qxDateSerial(row.date);
+        rows.push([
+          { v: serial != null ? serial : (row.date || ''), s: serial != null ? COLS[0][2] : 0 },
+          { v: row.locationName },
+          { v: row.employeeName },
+          { v: row.customerName },
+          { v: row.productName },
+          { v: tons,  s: COLS[5][2] },
+          { v: row.payment, s: COLS[6][2] },
+          { v: price, s: COLS[7][2] },
+          { v: rate,  s: COLS[8][2] },
+          { f: `K${r}*I${r}`, v: tax,       s: COLS[9][2] },
+          { f: `F${r}*H${r}`, v: net,       s: COLS[10][2] },
+          { f: `K${r}+J${r}`, v: net + tax, s: COLS[11][2] },
+          { v: isSalesSubmissionRow(row) ? 'Quarry Sales form' : 'Sales Tracking', s: COLS[12][2] },
+        ]);
+      });
+
+      const sub = col => `SUBTOTAL(9,${col}${first}:${col}${last})`;
+      rows.push([
+        { v: 'Totals', s: tot(null) },
+        { s: tot(null) }, { s: tot(null) }, { s: tot(null) }, { s: tot(null) },
+        { f: sub('F'), v: sumTons, s: tot(FMT.tons) },
+        { s: tot(null) },
+        // The average sold at, weighted by the tons — not a mean of the prices.
+        { f: `IF(F${totRow}=0,0,K${totRow}/F${totRow})`, v: sumTons ? sumNet / sumTons : 0, s: tot(FMT.money) },
+        { s: tot(null) },
+        { f: sub('J'), v: sumTax,          s: tot(FMT.money) },
+        { f: sub('K'), v: sumNet,          s: tot(FMT.money) },
+        { f: sub('L'), v: sumNet + sumTax, s: tot(FMT.money) },
+        { s: tot(null) },
+      ]);
+
+      const sheet = qxSheetXml({
+        widths: COLS.map(c => c[1]),
+        rows,
+        freezeRow: HEAD_ROW,
+        filterRef: `A${HEAD_ROW}:${lastCol}${last}`,
+      });
+      return qxBook([{
+        name: 'Sales', xml: sheet,
+        printTitles: `$${HEAD_ROW}:$${HEAD_ROW}`,
+        filterDb: `$A$${HEAD_ROW}:$${lastCol}$${last}`,
+      }], S.xml());
+    }
+
+    // ── XLSX writer (one sheet or several, stored ZIP, no library) ──
+    const QX_MIME = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+    let _qxCrcTable = null;
+    function qxCrc32(bytes) {
+      if (!_qxCrcTable) {
+        _qxCrcTable = new Uint32Array(256);
+        for (let i = 0; i < 256; i++) {
+          let c = i;
+          for (let k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+          _qxCrcTable[i] = c >>> 0;
+        }
+      }
+      let crc = 0xFFFFFFFF;
+      for (let i = 0; i < bytes.length; i++) crc = _qxCrcTable[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+      return (crc ^ 0xFFFFFFFF) >>> 0;
+    }
+    function qxZip(files, mime) {
+      const enc = new TextEncoder();
+      const chunks = [], central = [];
+      let offset = 0;
+      for (const f of files) {
+        const name = enc.encode(f.name);
+        const data = enc.encode(f.data);
+        const crc = qxCrc32(data);
+        const local = new Uint8Array(30 + name.length);
+        const lv = new DataView(local.buffer);
+        lv.setUint32(0, 0x04034b50, true);   // local file header
+        lv.setUint16(4, 20, true);           // version needed
+        lv.setUint16(6, 0x0800, true);       // UTF-8 names
+        lv.setUint32(14, crc, true);
+        lv.setUint32(18, data.length, true); // stored: compressed = uncompressed
+        lv.setUint32(22, data.length, true);
+        lv.setUint16(26, name.length, true);
+        local.set(name, 30);
+        chunks.push(local, data);
+
+        const cd = new Uint8Array(46 + name.length);
+        const cv = new DataView(cd.buffer);
+        cv.setUint32(0, 0x02014b50, true);   // central directory entry
+        cv.setUint16(4, 20, true);
+        cv.setUint16(6, 20, true);
+        cv.setUint16(8, 0x0800, true);
+        cv.setUint32(16, crc, true);
+        cv.setUint32(20, data.length, true);
+        cv.setUint32(24, data.length, true);
+        cv.setUint16(28, name.length, true);
+        cv.setUint32(42, offset, true);
+        cd.set(name, 46);
+        central.push(cd);
+        offset += local.length + data.length;
+      }
+      const cdSize = central.reduce((n, c) => n + c.length, 0);
+      const end = new Uint8Array(22);
+      const ev = new DataView(end.buffer);
+      ev.setUint32(0, 0x06054b50, true);     // end of central directory
+      ev.setUint16(8, files.length, true);
+      ev.setUint16(10, files.length, true);
+      ev.setUint32(12, cdSize, true);
+      ev.setUint32(16, offset, true);
+      return new Blob(chunks.concat(central, [end]), { type: mime });
+    }
+    function qxEsc(s) {
+      return String(s == null ? '' : s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+        // XML 1.0 cannot carry these, and Excel refuses the whole file over one.
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+    }
+    function qxCol(n) {
+      let s = '';
+      for (; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s;
+      return s;
+    }
+    // Days since 1899-12-30, read off the ISO date's own fields so a sale
+    // never slips a day through the local-time parser.
+    function qxDateSerial(iso) {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
+      return m ? Math.round(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000) + 25569 : null;
+    }
+    // Styles are asked for by what they look like and numbered as first used,
+    // so no index into a hand-kept list can drift out of step with the list.
+    function qxStyles() {
+      const fonts = [], fills = [
+        '<fill><patternFill patternType="none"/></fill>',
+        '<fill><patternFill patternType="gray125"/></fill>',
+      ];
+      const borders = ['<border><left/><right/><top/><bottom/><diagonal/></border>'];
+      const fmts = [];
+      const xfs = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'];
+      const cache = new Map();
+      const intern = (list, x) => { let i = list.indexOf(x); if (i < 0) { i = list.length; list.push(x); } return i; };
+      const font = ({ b, sz = 11, color = '1F2937' } = {}) => intern(fonts,
+        `<font>${b ? '<b/>' : ''}<sz val="${sz}"/><color rgb="FF${color}"/><name val="Calibri"/><family val="2"/></font>`);
+      font();   // font 0 is the default
+      const fill = rgb => rgb ? intern(fills,
+        `<fill><patternFill patternType="solid"><fgColor rgb="FF${rgb}"/><bgColor indexed="64"/></patternFill></fill>`) : 0;
+      const border = top => top ? intern(borders,
+        `<border><left/><right/><top style="${top[0]}"><color rgb="FF${top[1]}"/></top><bottom/><diagonal/></border>`) : 0;
+      const numFmt = code => code ? 164 + intern(fmts, code) : 0;
+      function xf(spec) {
+        const key = JSON.stringify(spec);
+        if (cache.has(key)) return cache.get(key);
+        const nf = numFmt(spec.fmt), fo = font(spec.font), fi = fill(spec.fill), bo = border(spec.top);
+        const al = spec.align ? `<alignment horizontal="${spec.align}"${spec.indent ? ` indent="${spec.indent}"` : ''}/>` : '';
+        const x = `<xf numFmtId="${nf}" fontId="${fo}" fillId="${fi}" borderId="${bo}" xfId="0"`
+          + (nf ? ' applyNumberFormat="1"' : '') + (fo ? ' applyFont="1"' : '')
+          + (fi ? ' applyFill="1"' : '') + (bo ? ' applyBorder="1"' : '')
+          + (al ? ` applyAlignment="1">${al}</xf>` : '/>');
+        const idx = xfs.length;
+        xfs.push(x);
+        cache.set(key, idx);
+        return idx;
+      }
+      function xml() {
+        return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+          + '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+          + (fmts.length ? `<numFmts count="${fmts.length}">`
+              + fmts.map((c, i) => `<numFmt numFmtId="${164 + i}" formatCode="${qxEsc(c)}"/>`).join('') + '</numFmts>' : '')
+          + `<fonts count="${fonts.length}">${fonts.join('')}</fonts>`
+          + `<fills count="${fills.length}">${fills.join('')}</fills>`
+          + `<borders count="${borders.length}">${borders.join('')}</borders>`
+          + '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>'
+          + `<cellXfs count="${xfs.length}">${xfs.join('')}</cellXfs>`
+          + '<cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>'
+          + '</styleSheet>';
+      }
+      return { xf, xml };
+    }
+    // A cell is { v, s } — a string or number — or { f, v, s } for a formula,
+    // where v is what it works out to. Excel recalculates on open regardless;
+    // the cached value is what a preview pane or a phone shows without running it.
+    function qxCellXml(ref, c) {
+      if (!c) return '';
+      const st  = c.s ? ` s="${c.s}"` : '';
+      const num = v => Math.round(Number(v) * 1e6) / 1e6;
+      if (c.f) {
+        if (typeof c.v === 'number' && isFinite(c.v)) return `<c r="${ref}"${st}><f>${qxEsc(c.f)}</f><v>${num(c.v)}</v></c>`;
+        return `<c r="${ref}"${st}><f>${qxEsc(c.f)}</f></c>`;
+      }
+      if (typeof c.v === 'number') return isFinite(c.v) ? `<c r="${ref}"${st}><v>${num(c.v)}</v></c>` : `<c r="${ref}"${st}/>`;
+      if (c.v == null || c.v === '') return st ? `<c r="${ref}"${st}/>` : '';
+      return `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${qxEsc(c.v)}</t></is></c>`;
+    }
+    function qxSheetXml({ widths, rows, freezeRow, filterRef }) {
+      const lastCol = qxCol(widths.length);
+      const cols = widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('');
+      const pane = freezeRow
+        ? `<pane ySplit="${freezeRow}" topLeftCell="A${freezeRow + 1}" activePane="bottomLeft" state="frozen"/>`
+          + `<selection pane="bottomLeft" activeCell="A${freezeRow + 1}" sqref="A${freezeRow + 1}"/>`
+        : '';
+      const body = rows.map((cells, i) => {
+        const r = i + 1;
+        return `<row r="${r}">${(cells || []).map((c, j) => qxCellXml(qxCol(j + 1) + r, c)).join('')}</row>`;
+      }).join('');
+      return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+        + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+        + ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+        + '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>'
+        + `<dimension ref="A1:${lastCol}${Math.max(rows.length, 1)}"/>`
+        + `<sheetViews><sheetView tabSelected="1" workbookViewId="0">${pane}</sheetView></sheetViews>`
+        + '<sheetFormatPr defaultRowHeight="15"/>'
+        + `<cols>${cols}</cols>`
+        + `<sheetData>${body}</sheetData>`
+        + (filterRef ? `<autoFilter ref="${filterRef}"/>` : '')
+        + '<pageMargins left="0.4" right="0.4" top="0.6" bottom="0.6" header="0.3" footer="0.3"/>'
+        + '<pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/>'
+        + '</worksheet>';
+    }
+    // [{ name, xml, printTitles?, filterDb? }] + styles.xml → a finished .xlsx Blob.
+    // printTitles repeats the header row on every printed page; filterDb is
+    // the hidden name Excel itself keeps for a sheet's AutoFilter range.
+    function qxBook(sheets, stylesXml) {
+      // Excel refuses a sheet name with []:*?/\ or over 31 characters, and says
+      // "unreadable content" rather than naming the sheet.
+      const sheetName = n => (String(n || '').replace(/[[\]:*?/\\]/g, ' ').trim() || 'Sheet').slice(0, 31);
+      const quoted = n => `'${sheetName(n).replace(/'/g, "''")}'`;
+      const names = [];
+      sheets.forEach((s, i) => {
+        if (s.filterDb)    names.push(`<definedName name="_xlnm._FilterDatabase" localSheetId="${i}" hidden="1">${qxEsc(quoted(s.name) + '!' + s.filterDb)}</definedName>`);
+        if (s.printTitles) names.push(`<definedName name="_xlnm.Print_Titles" localSheetId="${i}">${qxEsc(quoted(s.name) + '!' + s.printTitles)}</definedName>`);
+      });
+      const files = [
+        { name: '[Content_Types].xml', data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+          + '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">'
+          + '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>'
+          + '<Default Extension="xml" ContentType="application/xml"/>'
+          + '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>'
+          + sheets.map((_, i) => `<Override PartName="/xl/worksheets/sheet${i + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')
+          + '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>'
+          + '</Types>' },
+        { name: '_rels/.rels', data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+          + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+          + '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>'
+          + '</Relationships>' },
+        { name: 'xl/workbook.xml', data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+          + '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
+          + ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+          + '<workbookPr/>'
+          + '<bookViews><workbookView xWindow="0" yWindow="0" windowWidth="24000" windowHeight="14000" activeTab="0"/></bookViews>'
+          + '<sheets>' + sheets.map((s, i) => `<sheet name="${qxEsc(sheetName(s.name))}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join('') + '</sheets>'
+          + (names.length ? `<definedNames>${names.join('')}</definedNames>` : '')
+          + '<calcPr calcId="191029" fullCalcOnLoad="1"/>'
+          + '</workbook>' },
+        { name: 'xl/_rels/workbook.xml.rels', data:
+          '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+          + '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+          + sheets.map((_, i) => `<Relationship Id="rId${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${i + 1}.xml"/>`).join('')
+          + `<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>`
+          + '</Relationships>' },
+        { name: 'xl/styles.xml', data: stylesXml },
+        ...sheets.map((s, i) => ({ name: `xl/worksheets/sheet${i + 1}.xml`, data: s.xml })),
+      ];
+      return qxZip(files, QX_MIME);
+    }
+    function qxSaveBlob(blob, filename) {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      // Revoked on a timer rather than at once: Safari reads the blob after
+      // the click returns, and pulling it out from under it saves an empty file.
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
     }
 
     function addSalesRow() {
