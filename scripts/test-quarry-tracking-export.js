@@ -12,8 +12,8 @@
  * back:
  *
  *   - each file carries exactly the rows the table RENDERED, in its order —
- *     checked against the DOM, including after a cell edit the table does not
- *     re-render for
+ *     checked against the DOM, including while a re-dated row's date box
+ *     still has focus (the table holds still until it lets go) and after
  *   - the .xlsx unzips the way Excel reads a ZIP and every part parses as XML —
  *     one malformed part is enough for Excel to refuse the whole file — with
  *     dates as date serials, numbers as numbers, each row's arithmetic as
@@ -567,21 +567,36 @@ async function main() {
   eq('…so the cell keeps the text as stored', win.eval('qxDateCell("2026-02-30")'), { v: '2026-02-30', s: 0 });
   eq('a leap day is a date', win.eval('qxDateSerial("2028-02-29")'), serial('2028-02-29'));
 
-  // ── After an edit the table does not re-render for ──
+  // ── A cell edit: the file follows the table ──
   console.log('\n— Cell edits —');
   {
-    // Sales re-dated out of the Year filter: the row stays on screen until the
-    // next render, so it stays in the file too, where the table shows it.
+    // Sales re-dated out of the Year filter, in its date box. While the box
+    // still has focus — a date being typed — the table holds still, so the
+    // row stays on screen and in the file, where the table shows it. Once
+    // the box lets go the table re-renders, and the row leaves both.
     win.setYearFilter('sales', '2026');
     win.eval("msSet('location', 'sales').clear(); msSet('location', 'sales').add('Homer City'); msApply('sales', 'location');");
     const i = win.eval("salesRows.findIndex(r => r.id === 's2')");
-    win.eval(`updateSalesCell(${i}, 'date', '2025-11-20')`);
-    const onScreen = domRows(doc, 'salesTbody', [3, 5]).length;
-    const cv = await download(win, 'sales', 'csv');
-    const lines = csvLines(cv.buf.toString('utf8')).split('\r\n').filter(Boolean);
-    eq('sales: a row re-dated out of the filter is still on screen, and still in the file', [onScreen, lines.length - 1], [SALES_IDS.length, SALES_IDS.length]);
+    const box = doc.querySelector(`#salesTbody tr[data-row="${i}"] input[type="date"]`);
+    box.focus();
+    box.value = '2025-11-20';
+    box.dispatchEvent(new win.Event('change', { bubbles: true }));
+    await sleep(20);
+    let cv = await download(win, 'sales', 'csv');
+    let lines = csvLines(cv.buf.toString('utf8')).split('\r\n').filter(Boolean);
+    eq('sales: re-dated while its date box has focus — still on screen, and still in the file',
+      [domRows(doc, 'salesTbody', [0]).length, lines.length - 1], [SALES_IDS.length, SALES_IDS.length]);
     eq('…at the place the table shows it, with its new date', lines[1 + SALES_IDS.indexOf('s2')].slice(0, 10), '2025-11-20');
-    win.eval(`updateSalesCell(${i}, 'date', '2026-11-20'); renderSales(true);`);
+    box.blur();
+    await sleep(20);
+    cv = await download(win, 'sales', 'csv');
+    lines = csvLines(cv.buf.toString('utf8')).split('\r\n').filter(Boolean);
+    eq('…once the box lets go, the row leaves the table and the file',
+      [domRows(doc, 'salesTbody', [0]).length, lines.length - 1], [SALES_IDS.length - 1, SALES_IDS.length - 1]);
+    eq('…and the file is the rest of the table, in its order',
+      lines.slice(1).map(l => l.slice(0, 10)), domRows(doc, 'salesTbody', [0]).map(r => r[0]));
+    win.eval(`updateSalesCell(${i}, 'date', '2026-11-20')`);
+    eq('…dated back (not from the box): on screen again at once', win.eval('salesShown.map(e => e.row.id)'), SALES_IDS);
   }
 
   // ── Disabled when nothing is on screen ──
