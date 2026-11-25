@@ -4221,12 +4221,12 @@
     //
     // CSV is the flat one, for other software: the on-screen columns under
     // the Bulk Upload template's own headers, plain numbers, no totals row,
-    // and a Source column saying which rows Payroll or the Quarry Sales form
-    // own. Bulk Upload reads it back, but deleting rows and re-importing a
-    // copy is NOT a safe way to edit them: the importer keeps one of two
-    // identical rows, rejects rows missing what it requires (hours, price,
-    // date…) that the grid allows, and an edited Payroll / form row comes
-    // back as a manual copy beside the original.
+    // then a Source column saying which rows Payroll or the Quarry Sales form
+    // own and a Row ID column. Bulk Upload reads it back — the Delete N Rows
+    // dialog's Download → delete → re-upload loop brings every row back: the
+    // Row ID pairs each line with its row (updated in place, never added
+    // beside itself, a Payroll / form row never copied), identical loads each
+    // count, and blank cells import blank. See bulkMatchExisting.
     //
     // Excel is the one to work in: dates as real dates, money as money, and
     // each row's arithmetic as formulas — change an input and the row follows.
