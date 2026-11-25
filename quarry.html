@@ -457,14 +457,16 @@
 
     /* ── Download menu (Excel / CSV) — rides the multi-select menu's open/close ── */
     .export-menu { position: relative; display: inline-block; }
-    .export-menu .ms-menu { min-width: 15rem; }
+    .export-menu .ms-menu { min-width: 15rem; max-width: calc(100vw - 2rem); }
+    /* Flipped to the button's right edge when it would run off the screen. */
+    .export-menu .ms-menu.is-right { left: auto; right: 0; }
     .export-caret { font-size: 0.6rem; margin-left: 0.15rem; transition: transform 0.15s; display: inline-block; }
     .export-menu.is-open .export-caret { transform: rotate(180deg); }
     .export-opt {
       width: 100%; background: none; border: 0; font-family: inherit; text-align: left;
       flex-direction: column; align-items: flex-start; gap: 0.1rem;
     }
-    .export-opt small { font-size: 0.66rem; color: var(--muted); }
+    .export-opt small { font-size: 0.66rem; color: var(--muted); white-space: normal; }
 
     /* ── Home dashboard ── */
     .home-wrap { padding: 1rem 1.25rem 2rem; }
@@ -1548,7 +1550,7 @@
           <button type="button" class="btn-add-row btn-bulk-upload export-toggle" id="dailyExportBtn" onclick="toggleExportMenu('daily')" aria-haspopup="true" aria-expanded="false" title="Download the rows the table is showing — filters included" disabled>⇩ Download <span class="export-caret">▾</span></button>
           <div class="ms-menu" role="menu" hidden>
             <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('daily', 'xlsx')">Excel (.xlsx)<small>Formatted, with totals and live formulas</small></button>
-            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('daily', 'csv')">CSV (.csv)<small>Plain rows — re-imports through Bulk Upload</small></button>
+            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('daily', 'csv')">CSV (.csv)<small>Plain rows for other software</small></button>
           </div>
         </div>
         <div class="year-filter-wrap">
@@ -1601,7 +1603,7 @@
           <button type="button" class="btn-add-row btn-bulk-upload export-toggle" id="crushingExportBtn" onclick="toggleExportMenu('crushing')" aria-haspopup="true" aria-expanded="false" title="Download the rows the table is showing — filters included" disabled>⇩ Download <span class="export-caret">▾</span></button>
           <div class="ms-menu" role="menu" hidden>
             <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('crushing', 'xlsx')">Excel (.xlsx)<small>Entries plus a Days sheet — tons/hr and cost/ton by day</small></button>
-            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('crushing', 'csv')">CSV (.csv)<small>Plain rows — re-imports through Bulk Upload</small></button>
+            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('crushing', 'csv')">CSV (.csv)<small>Plain rows for other software</small></button>
           </div>
         </div>
         <div class="year-filter-wrap">
@@ -1664,7 +1666,7 @@
           <button type="button" class="btn-add-row btn-bulk-upload export-toggle" id="salesExportBtn" onclick="toggleExportMenu('sales')" aria-haspopup="true" aria-expanded="false" title="Download the rows the table is showing — filters included" disabled>⇩ Download <span class="export-caret">▾</span></button>
           <div class="ms-menu" role="menu" hidden>
             <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('sales', 'xlsx')">Excel (.xlsx)<small>Formatted, with totals and live formulas</small></button>
-            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('sales', 'csv')">CSV (.csv)<small>Plain rows — re-imports through Bulk Upload</small></button>
+            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('sales', 'csv')">CSV (.csv)<small>Plain rows for other software</small></button>
           </div>
         </div>
         <div class="year-filter-wrap">
@@ -3249,6 +3251,11 @@
     let salesSavePending = null;
     let salesSaveInFlight = false;
     let salesFetchedOnce = false;
+    // The entries the table last rendered, in its order — what ⇩ Download
+    // hands over. Read off the render rather than re-filtered, because a cell
+    // edit (a date typed out of the Year filter, a re-picked customer) saves
+    // without re-rendering: the row stays on screen, so it stays in the file.
+    let salesShown = [];
 
     function todayIso() {
       const d = new Date();
@@ -4069,6 +4076,7 @@
       if (addBtn) addBtn.disabled = !salesLoaded;
       const bulkBtn = document.getElementById('salesBulkBtn');
       if (bulkBtn) bulkBtn.disabled = !salesLoaded;
+      salesShown = [];
 
       if (!salesLoaded) {
         tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">Loading…</td></tr>`;
@@ -4084,12 +4092,11 @@
         updateSalesSummary();
         return;
       }
-      // visibleSalesEntries() below is this same list for the Download button;
-      // a change to one is a change to both.
       const visibleEntries = salesRows
         .map((row, originalIdx) => ({ row, originalIdx }))
         .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesMonth('sales', row) && rowMatchesLocation('sales', row) && rowMatchesCustomer('sales', row) && rowMatchesProduct('sales', row))
         .sort(byDateDesc);
+      salesShown = visibleEntries;
       if (!visibleEntries.length) {
         tbody.innerHTML = `<tr><td colspan="12" class="sales-empty">No sales for ${escapeHtml(yearFilterLabel('sales'))} · ${escapeHtml(monthFilterLabel('sales'))} · ${escapeHtml(locationFilterLabel('sales'))} · ${escapeHtml(customerFilterLabel('sales'))} · ${escapeHtml(productFilterLabel('sales'))}. Adjust the filters above.</td></tr>`;
         updateSalesSummary();
@@ -4171,32 +4178,25 @@
       });
       el.innerHTML = `Rows<strong>${count}</strong>· Total Tons<strong>${formatTons(totalTons)}</strong>· Net Sales<strong>${formatMoney(totalSales)}</strong>· Sales Tax<strong>${formatMoney(totalTax)}</strong>· Total Due<strong>${formatMoney(totalSales + totalTax)}</strong>`;
       refreshDeleteFilteredBtn('sales');
-      setExportEnabled('sales', salesLoaded && count > 0);
+      setExportEnabled('sales', salesLoaded && salesShown.length > 0);
     }
 
-    // The rows the Sales table shows, in the order it shows them — renderSales'
-    // own filter and sort, for the Download button. Kept in step with it by
-    // scripts/test-quarry-tracking-export.js, which checks the file against the
-    // rendered table row for row.
-    function visibleSalesEntries() {
-      return salesRows
-        .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('sales', row) && rowMatchesMonth('sales', row) && rowMatchesLocation('sales', row) && rowMatchesCustomer('sales', row) && rowMatchesProduct('sales', row))
-        .sort(byDateDesc);
-    }
 
     // ── Tracking tabs → Excel / CSV ─────────────────────────────
     // ⇩ Download on Daily, Crushing and Sales hands over exactly what the
-    // table is showing: the tab's own filters, in the table's order (newest
-    // first), the rows Payroll and the scale house put there included —
-    // "download what I'm looking at" does what it says.
+    // table is showing — the entries its last render drew (salesShown,
+    // dailyShown, crushShown), in its order, the rows Payroll and the scale
+    // house put there included: "download what I'm looking at" does what it
+    // says.
     //
-    // CSV is the flat one: the on-screen columns under the Bulk Upload
-    // template's own headers, plain numbers, no totals row — so it pivots
-    // cleanly, and a corrected copy goes straight back in through
-    // ⇪ Bulk Upload CSV (after "Delete N Rows", or the importer skips every
-    // row as a duplicate). The computed columns ride along to be read; the
-    // importer ignores them and works them out again.
+    // CSV is the flat one, for other software: the on-screen columns under
+    // the Bulk Upload template's own headers, plain numbers, no totals row,
+    // and a Source column saying which rows Payroll or the Quarry Sales form
+    // own. Bulk Upload reads it back, but deleting rows and re-importing a
+    // copy is NOT a safe way to edit them: the importer keeps one of two
+    // identical rows, rejects rows missing what it requires (hours, price,
+    // date…) that the grid allows, and an edited Payroll / form row comes
+    // back as a manual copy beside the original.
     //
     // Excel is the one to work in: dates as real dates, money as money, and
     // each row's arithmetic as formulas — change an input and the row follows.
@@ -4213,9 +4213,9 @@
     // before that tab's section of the script has declared it.
     function exportTabCfg(tab) {
       switch (tab) {
-        case 'daily':    return { slug: 'daily',    label: 'Daily Tracking',    loaded: dailyLoaded, entries: visibleDailyEntries, csv: buildDailyCsv, xlsx: buildDailyXlsx };
-        case 'crushing': return { slug: 'crushing', label: 'Crushing Tracking', loaded: crushLoaded, entries: visibleCrushEntries, csv: buildCrushCsv, xlsx: buildCrushXlsx };
-        case 'sales':    return { slug: 'sales',    label: 'Sales Tracking',    loaded: salesLoaded, entries: visibleSalesEntries, csv: buildSalesCsv, xlsx: buildSalesXlsx };
+        case 'daily':    return { slug: 'daily',    label: 'Daily Tracking',    loaded: dailyLoaded, shown: dailyShown, csv: buildDailyCsv, xlsx: buildDailyXlsx };
+        case 'crushing': return { slug: 'crushing', label: 'Crushing Tracking', loaded: crushLoaded, shown: crushShown, csv: buildCrushCsv, xlsx: buildCrushXlsx };
+        case 'sales':    return { slug: 'sales',    label: 'Sales Tracking',    loaded: salesLoaded, shown: salesShown, csv: buildSalesCsv, xlsx: buildSalesXlsx };
         default:         return null;
       }
     }
@@ -4241,13 +4241,19 @@
       el.classList.toggle('is-open', open);
       btn.setAttribute('aria-expanded', String(open));
       msOpenId = open ? id : null;
+      // On a narrow screen the button can sit far enough right that a menu
+      // hung off its left edge runs past the viewport; hang it off the right.
+      menu.classList.remove('is-right');
+      if (open && menu.getBoundingClientRect().right > document.documentElement.clientWidth - 8) {
+        menu.classList.add('is-right');
+      }
     }
 
     function downloadTrackingExport(tab, kind) {
       msClose(tab + 'ExportMenu');
       const cfg = exportTabCfg(tab);
       if (!cfg || !cfg.loaded) return;
-      const entries = cfg.entries();
+      const entries = cfg.shown.slice();
       if (!entries.length) { alert(`Nothing to download — no ${cfg.label} rows match the filters.`); return; }
       const csv = kind === 'csv';
       const blob = csv
@@ -4285,7 +4291,11 @@
     // An input as stored: bare, or blank when blank. A computed figure: to the
     // cent the table shows.
     function csvNum(v)   { return (v === '' || v == null || !Number.isFinite(Number(v))) ? '' : String(Number(v)); }
-    function csvCents(v) { return (Math.round(v * 100) / 100).toFixed(2); }
+    // Rounded by Intl, as formatMoney / formatTons round the table's cells —
+    // not Math.round(v * 100), which a half cent like 5.05 × 14.50 = 73.225
+    // (stored as 73.22499…) takes the other way: $73.23 on screen, 73.22 here.
+    const CSV_CENTS = new Intl.NumberFormat('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2, useGrouping: false });
+    function csvCents(v) { return CSV_CENTS.format(Number.isFinite(v) ? (v || 0) : 0); }
     // BOM so Excel opens it as UTF-8 rather than mangling an accented name;
     // the importer's parser steps over it on the way back in.
     function csvText(header, lines) {
@@ -4301,6 +4311,9 @@
       money: '"$"#,##0.00;-"$"#,##0.00;"—"',
       price: '"$"#,##0.00##',
       rate:  '0.00#%;-0.00#%;"—"',
+      // Cost / Ton: a day that crushed rock for nothing is $0.00, not "—" —
+      // the dash is the text "—", written only where there are no tons.
+      cost:  '"$"#,##0.00',
     };
     // A date cell: the ISO date as an Excel date, or as text when it is not
     // one (it prints as typed rather than vanishing), or blank.
@@ -4386,16 +4399,18 @@
     const qxPer = (num, den, row) => `IF(${den}${row}=0,0,${num}${row}/${den}${row})`;
 
     // ── Sales ──
-    // Its CSV columns are BULK_CONFIGS.sales.templateLayout's, in order.
+    // Its CSV columns are BULK_CONFIGS.sales.templateLayout's, in order, then
+    // Source (which Bulk Upload ignores).
     const SALES_CSV_HEADER = ['Date', 'Location', 'Employee', 'Customer', 'Product', 'Tons',
-                              'Payment', 'Price / Ton', 'Sales Tax', 'Net Sales', 'Total Due'];
+                              'Payment', 'Price / Ton', 'Sales Tax', 'Net Sales', 'Total Due', 'Source'];
+    const salesSource = row => isSalesSubmissionRow(row) ? 'Quarry Sales form' : 'Sales Tracking';
     function buildSalesCsv(entries) {
       return csvText(SALES_CSV_HEADER, entries.map(({ row }) => {
         const net = rowTotal(row), tax = rowSalesTax(row);
         return [
           row.date, row.locationName, row.employeeName, row.customerName, row.productName,
           csvNum(row.tons), row.payment, csvNum(row.pricePerTon),
-          csvCents(tax), csvCents(net), csvCents(net + tax),
+          csvCents(tax), csvCents(net), csvCents(net + tax), salesSource(row),
         ];
       }));
     }
@@ -4440,7 +4455,7 @@
           { f: `K${r}*I${r}`, v: x },
           { f: `F${r}*H${r}`, v: n },
           { f: `K${r}+J${r}`, v: n + x },
-          { v: isSalesSubmissionRow(row) ? 'Quarry Sales form' : 'Sales Tracking' },
+          { v: salesSource(row) },
         ];
       });
       const sheet = qxTrackingSheet(S, {
@@ -4460,9 +4475,11 @@
     }
 
     // ── Daily ──
-    // Its CSV columns are BULK_CONFIGS.daily.templateLayout's, in order.
+    // Its CSV columns are BULK_CONFIGS.daily.templateLayout's, in order, then
+    // Source (which Bulk Upload ignores).
     const DAILY_CSV_HEADER = ['Date', 'Location', 'Employee', 'Equipment', 'Task', 'Hours', 'Rate',
-                              'Labor Cost', 'Fuel / Gallons', 'PPG', 'Fuel Cost', 'Total Cost'];
+                              'Labor Cost', 'Fuel / Gallons', 'PPG', 'Fuel Cost', 'Total Cost', 'Source'];
+    const dailySource = row => isTimesheetRow(row) ? 'Payroll timesheet' : 'Daily Tracking';
     function buildDailyCsv(entries) {
       return csvText(DAILY_CSV_HEADER, entries.map(({ row }) => {
         const c = dailyCalc(row);
@@ -4470,6 +4487,7 @@
           row.date, row.locationName, row.employeeName, row.equipmentName, row.taskName,
           csvNum(row.hours), csvNum(row.rate), csvCents(c.laborCost),
           csvNum(row.fuelGallons), csvNum(row.ppg), csvCents(c.fuelCost), csvCents(c.totalCost),
+          dailySource(row),
         ];
       }));
     }
@@ -4513,7 +4531,7 @@
           gallons, qxNumCell(row.ppg),
           { f: `I${r}*J${r}`, v: c.fuelCost },
           { f: `H${r}+K${r}`, v: c.totalCost },
-          { v: isTimesheetRow(row) ? 'Payroll timesheet' : 'Daily Tracking' },
+          { v: dailySource(row) },
         ];
       });
       const sheet = qxTrackingSheet(S, {
@@ -4534,29 +4552,32 @@
 
     // ── Crushing ──
     // The template's labels, in the TABLE's order rather than the template's
-    // (which carries Product last); the importer matches by header, not by
-    // position, so the file reads back either way.
+    // (which carries Product last), then Source; the importer matches by
+    // header, not by position, so the file reads back either way.
     const CRUSH_CSV_HEADER = ['Date', 'Location', 'Employee', 'Product', 'Hourly Rate', 'Hours',
                               'Total Payroll', 'Fuel Gallons', '$/Gal', 'Fuel Cost', 'Loads to Crusher',
                               'Tons / Load', 'Estimated Tons', 'Hours Crushing', 'Tons / Hour',
-                              'Total Cost', 'Cost / Ton', 'Comments'];
-    // The day-at-a-pit blend each row's Cost / Ton shows — the WHOLE day's
-    // cost over the whole day's tons, rows a Product filter hides included,
-    // exactly as renderCrush works it (see crushDayKey). Keyed by day key.
-    function crushExportDays(entries) {
-      const groups = crushGroupByDay(entries, crushDayMembers());
-      const byKey = new Map();
-      groups.forEach(g => {
-        g.day = crushDayTotals(g.memberIdx.map(idx => crushRows[idx]));
-        byKey.set(g.key, g);
+                              'Total Cost', 'Cost / Ton', 'Comments', 'Source'];
+    const crushSource = row => isTimesheetRow(row) ? 'Payroll timesheet' : 'Crushing Tracking';
+    // The day groups the table drew (renderCrush keeps them), each with the
+    // day-at-a-pit blend its rows' Cost / Ton shows — the WHOLE day's cost
+    // over the whole day's tons, rows a Product filter hides included, worked
+    // off the day's rows as they stand now, as refreshCrushDay does while
+    // someone types. byRow maps an entry's row index to its group.
+    function crushExportDays() {
+      const byRow = new Map();
+      const groups = crushShownGroups.map(g => {
+        const day = crushDayTotals(g.memberIdx.map(idx => crushRows[idx]));
+        g.entries.forEach(e => byRow.set(e.originalIdx, day));
+        return { ...g, day };
       });
-      return { groups, byKey };
+      return { groups, byRow };
     }
     function buildCrushCsv(entries) {
-      const { byKey } = crushExportDays(entries);
-      return csvText(CRUSH_CSV_HEADER, entries.map(({ row }) => {
+      const { byRow } = crushExportDays();
+      return csvText(CRUSH_CSV_HEADER, entries.map(({ row, originalIdx }) => {
         const c = crushCalc(row);
-        const day = byKey.get(crushDayKey(row)).day;
+        const day = byRow.get(originalIdx);
         return [
           row.date, row.locationName, row.employeeName, row.productName,
           csvNum(row.hourlyRate), csvNum(row.hours), csvCents(c.totalPayroll),
@@ -4565,7 +4586,7 @@
           csvNum(row.hoursCrushing), csvCents(c.tonsPerHour), csvCents(c.totalCost),
           // Blank, as the table's "—", when the day crushed nothing.
           day.hasTons ? csvCents(day.costPerTon) : '',
-          row.comments,
+          row.comments, crushSource(row),
         ];
       }));
     }
@@ -4576,7 +4597,7 @@
     // the grid groups by.
     function buildCrushXlsx(entries) {
       const S = qxStyles();
-      const { groups, byKey } = crushExportDays(entries);
+      const { groups, byRow } = crushExportDays();
       const filters = `Filters: ${exportFilterDesc('crushing')}`;
       const lines = [
         filters,
@@ -4602,7 +4623,7 @@
         { label: 'Hours Crushing',   width: 11, fmt: QX_FMT.qty },    // N
         { label: 'Tons / Hour',      width: 10, fmt: QX_FMT.qty },    // O
         { label: 'Total Cost',       width: 13, fmt: QX_FMT.money },  // P
-        { label: 'Day Cost / Ton',   width: 12, fmt: QX_FMT.money },  // Q
+        { label: 'Day Cost / Ton',   width: 12, fmt: QX_FMT.cost, align: 'right' },  // Q
         // Indented: it sits right after Day Cost / Ton's right-aligned figure.
         { label: 'Source',           width: 19, align: 'left', indent: 1 },
         // Last, so a long note runs on into the empty cells beside it rather
@@ -4610,10 +4631,10 @@
         { label: 'Comments',         width: 40 },
       ];
       const sum = { hours: 0, payroll: 0, gallons: 0, fuel: 0, loads: 0, tons: 0, hc: 0 };
-      const data = entries.map(({ row }, i) => {
+      const data = entries.map(({ row, originalIdx }, i) => {
         const r = first + i;
         const c = crushCalc(row);
-        const day = byKey.get(crushDayKey(row)).day;
+        const day = byRow.get(originalIdx);
         const hours = qxNumCell(row.hours), gallons = qxNumCell(row.fuelGallons);
         const loads = qxNumCell(row.loadsToCrusher), hc = qxNumCell(row.hoursCrushing);
         sum.hours   += hours.v === '' ? 0 : hours.v;
@@ -4636,9 +4657,10 @@
           { f: `IF(N${r}>0,M${r}/N${r},0)`, v: c.tonsPerHour },
           { f: `G${r}+J${r}`, v: c.totalCost },
           // A figure, not a formula: the day can include rows a Product
-          // filter kept off this sheet. 0 reads "—", as the table's does.
-          { v: day.hasTons ? day.costPerTon : 0 },
-          { v: isTimesheetRow(row) ? 'Payroll timesheet' : 'Crushing Tracking' },
+          // filter kept off this sheet. "—" where the day crushed nothing,
+          // as the table shows it.
+          { v: day.hasTons ? day.costPerTon : '—' },
+          { v: crushSource(row) },
           { v: row.comments },
         ];
       });
@@ -4659,7 +4681,7 @@
           { f: qxPer('M', 'N', row), v: sum.hc ? sum.tons / sum.hc : 0 },
           { f: qxSub('P', a, b), v: sum.payroll + sum.fuel },
           // Over these rows — the summary bar's Avg Cost/Ton.
-          { f: qxPer('P', 'M', row), v: sum.tons ? (sum.payroll + sum.fuel) / sum.tons : 0 },
+          { f: `IF(M${row}=0,"—",P${row}/M${row})`, v: sum.tons ? (sum.payroll + sum.fuel) / sum.tons : '—' },
         ],
       });
 
@@ -4684,7 +4706,7 @@
         { label: 'Hours Crushing', width: 11, fmt: QX_FMT.qty },     // J
         { label: 'Tons / Hour',    width: 10, fmt: QX_FMT.qty },     // K
         { label: 'Total Cost',     width: 13, fmt: QX_FMT.money },   // L
-        { label: 'Cost / Ton',     width: 11, fmt: QX_FMT.money },   // M
+        { label: 'Cost / Ton',     width: 11, fmt: QX_FMT.cost, align: 'right' },  // M
         { label: 'Note',           width: 34, align: 'left', indent: 1 },
       ];
       const dsum = { n: 0, hours: 0, payroll: 0, gallons: 0, fuel: 0, loads: 0, tons: 0, hc: 0 };
@@ -4702,7 +4724,7 @@
           { v: d.loads }, { v: d.tons }, { v: d.hoursCrushing },
           { f: `IF(J${r}>0,I${r}/J${r},0)`, v: d.tonsPerHour },
           { f: `E${r}+G${r}`, v: d.cost },
-          { f: `IF(I${r}>0,L${r}/I${r},0)`, v: d.costPerTon },
+          { f: `IF(I${r}>0,L${r}/I${r},"—")`, v: d.hasTons ? d.costPerTon : '—' },
           { v: hidden ? `Whole day — ${g.entries.length} of its ${g.memberIdx.length} entries match the filters` : '' },
         ];
       });
@@ -4720,7 +4742,7 @@
           { f: qxSub('J', a, b), v: dsum.hc },
           { f: qxPer('I', 'J', row), v: dsum.hc ? dsum.tons / dsum.hc : 0 },
           { f: qxSub('L', a, b), v: dsum.payroll + dsum.fuel },
-          { f: qxPer('L', 'I', row), v: dsum.tons ? (dsum.payroll + dsum.fuel) / dsum.tons : 0 },
+          { f: `IF(I${row}=0,"—",L${row}/I${row})`, v: dsum.tons ? (dsum.payroll + dsum.fuel) / dsum.tons : '—' },
         ],
       });
       return qxBook([entriesSheet, daysSheet], S.xml());
@@ -4790,8 +4812,15 @@
     function qxEsc(s) {
       return String(s == null ? '' : s)
         .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
-        // XML 1.0 cannot carry these, and Excel refuses the whole file over one.
-        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '');
+        // XML 1.0 cannot carry these (U+FFFE / U+FFFF included), and Excel
+        // refuses the whole file over one — LibreOffice silently drops every
+        // row after it.
+        .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFE\uFFFF]/g, '');
+    }
+    // Cell text: in a spreadsheet's strings "_xHHHH_" is an escaped character,
+    // so a note reading "_x0041_" would open as "A". Escape the underscore.
+    function qxText(s) {
+      return qxEsc(String(s).replace(/_(x[0-9A-Fa-f]{4}_)/g, '_x005F_$1'));
     }
     function qxCol(n) {
       let s = '';
@@ -4800,9 +4829,19 @@
     }
     // Days since 1899-12-30, read off the ISO date's own fields so a sale
     // never slips a day through the local-time parser.
+    //
+    // A date that does not exist — "2026-02-30", or a day-first "19/11/2026"
+    // that Bulk Upload stored as "2026-19-11" — is null, not the day Date.UTC
+    // rolls it over to (2026-03-02, 2027-07-11): the cell then carries the
+    // text as stored rather than a real-looking date nobody entered.
     function qxDateSerial(iso) {
       const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ''));
-      return m ? Math.round(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000) + 25569 : null;
+      if (!m) return null;
+      const y = +m[1], mo = +m[2] - 1, d = +m[3];
+      const t = Date.UTC(y, mo, d);
+      const back = new Date(t);
+      if (back.getUTCFullYear() !== y || back.getUTCMonth() !== mo || back.getUTCDate() !== d) return null;
+      return Math.round(t / 86400000) + 25569;
     }
     // Styles are asked for by what they look like and numbered as first used,
     // so no index into a hand-kept list can drift out of step with the list.
@@ -4865,11 +4904,12 @@
       const num = v => Math.round(Number(v) * 1e6) / 1e6;
       if (c.f) {
         if (typeof c.v === 'number' && isFinite(c.v)) return `<c r="${ref}"${st}><f>${qxEsc(c.f)}</f><v>${num(c.v)}</v></c>`;
+        if (typeof c.v === 'string') return `<c r="${ref}"${st} t="str"><f>${qxEsc(c.f)}</f><v>${qxText(c.v)}</v></c>`;
         return `<c r="${ref}"${st}><f>${qxEsc(c.f)}</f></c>`;
       }
       if (typeof c.v === 'number') return isFinite(c.v) ? `<c r="${ref}"${st}><v>${num(c.v)}</v></c>` : `<c r="${ref}"${st}/>`;
       if (c.v == null || c.v === '') return st ? `<c r="${ref}"${st}/>` : '';
-      return `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${qxEsc(c.v)}</t></is></c>`;
+      return `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${qxText(c.v)}</t></is></c>`;
     }
     // `selected` marks the sheet the book opens on. Only one may carry it:
     // two selected sheets open GROUPED in Excel, and a cell typed into one is
@@ -5090,6 +5130,10 @@
     let crushSavePending = null;
     let crushSaveInFlight = false;
     let crushFetchedOnce = false;
+    // The entries the table last rendered and the day groups it drew them in —
+    // what ⇩ Download hands over (see salesShown).
+    let crushShown = [];
+    let crushShownGroups = [];
     // Row index → the day group it is in, as the grid last rendered it, so a
     // keystroke can re-blend that day without a re-render.
     let crushDayByRow = new Map();
@@ -5413,6 +5457,8 @@
       // Cleared up front so the early returns below can't leave the index
       // pointing at day cells that are no longer on the page.
       crushDayByRow = new Map();
+      crushShown = [];
+      crushShownGroups = [];
       const addBtn = document.getElementById('crushAddBtn');
       if (addBtn) addBtn.disabled = !crushLoaded;
       const bulkBtn = document.getElementById('crushBulkBtn');
@@ -5432,8 +5478,6 @@
         updateCrushSummary();
         return;
       }
-      // visibleCrushEntries() is this same list for the Download button; a
-      // change to one is a change to both.
       const visibleEntries = crushRows
         .map((row, originalIdx) => ({ row, originalIdx }))
         .filter(({ row }) => rowMatchesYear('crushing', row) && rowMatchesMonth('crushing', row) && rowMatchesLocation('crushing', row) && rowMatchesProduct('crushing', row))
@@ -5453,6 +5497,8 @@
       // rather than re-rendering, which would take focus out of the cell.
       const groups = crushGroupByDay(visibleEntries, crushDayMembers());
       groups.forEach(g => g.memberIdx.forEach(idx => crushDayByRow.set(idx, g)));
+      crushShown = visibleEntries;
+      crushShownGroups = groups;
 
       tbody.innerHTML = groups.map(g => {
         const day = crushDayTotals(g.memberIdx.map(idx => crushRows[idx]));
@@ -5577,19 +5623,9 @@
       const avgCostPerTon = totalEstTons > 0 ? totalCost / totalEstTons : 0;
       el.innerHTML = `Rows<strong>${count}</strong>· Hours Crushing<strong>${formatTons(totalHours)}</strong>· Est. Tons<strong>${formatTons(totalEstTons)}</strong>· Total Cost<strong>${formatMoney(totalCost)}</strong>· Avg Cost/Ton<strong>${formatMoney(avgCostPerTon)}</strong>`;
       refreshDeleteFilteredBtn('crushing');
-      setExportEnabled('crushing', crushLoaded && count > 0);
+      setExportEnabled('crushing', crushLoaded && crushShown.length > 0);
     }
 
-    // The rows the Crushing table shows, in the order it shows them —
-    // renderCrush's own filter and sort, for the Download button. Kept in step
-    // with it by scripts/test-quarry-tracking-export.js, which checks each file
-    // against the rendered table row for row.
-    function visibleCrushEntries() {
-      return crushRows
-        .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('crushing', row) && rowMatchesMonth('crushing', row) && rowMatchesLocation('crushing', row) && rowMatchesProduct('crushing', row))
-        .sort((a, b) => byDateDesc(a, b) || crushByLocation(a, b));
-    }
 
     function addCrushRow() {
       if (!crushLoaded) return;
@@ -5677,6 +5713,9 @@
     let dailySavePending = null;
     let dailySaveInFlight = false;
     let dailyFetchedOnce = false;
+    // The entries the table last rendered, in its order — what ⇩ Download
+    // hands over (see salesShown).
+    let dailyShown = [];
 
     const DAILY_NUM_FIELDS = ['hours', 'rate', 'fuelGallons', 'ppg'];
 
@@ -5845,6 +5884,7 @@
       if (addBtn) addBtn.disabled = !dailyLoaded;
       const bulkBtn = document.getElementById('dailyBulkBtn');
       if (bulkBtn) bulkBtn.disabled = !dailyLoaded;
+      dailyShown = [];
 
       if (!dailyLoaded) {
         tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">Loading…</td></tr>`;
@@ -5860,8 +5900,6 @@
         updateDailySummary();
         return;
       }
-      // visibleDailyEntries() is this same list for the Download button; a
-      // change to one is a change to both.
       const visibleEntries = dailyRows
         .map((row, originalIdx) => ({ row, originalIdx }))
         .filter(({ row }) => rowMatchesYear('daily', row) && rowMatchesMonth('daily', row) && rowMatchesLocation('daily', row))
@@ -5870,6 +5908,7 @@
         // bottom — "invisible" under a long list of older manual rows. Shared
         // with Crushing and Sales — see byDateDesc.
         .sort(byDateDesc);
+      dailyShown = visibleEntries;
       if (!visibleEntries.length) {
         tbody.innerHTML = `<tr><td colspan="13" class="sales-empty">No daily entries for ${escapeHtml(yearFilterLabel('daily'))} · ${escapeHtml(monthFilterLabel('daily'))} · ${escapeHtml(locationFilterLabel('daily'))}. Adjust the filters above.</td></tr>`;
         updateDailySummary();
@@ -5942,19 +5981,9 @@
       });
       el.innerHTML = `Rows<strong>${count}</strong>· Hours<strong>${formatTons(totalHours)}</strong>· Total Cost<strong>${formatMoney(totalCost)}</strong>`;
       refreshDeleteFilteredBtn('daily');
-      setExportEnabled('daily', dailyLoaded && count > 0);
+      setExportEnabled('daily', dailyLoaded && dailyShown.length > 0);
     }
 
-    // The rows the Daily table shows, in the order it shows them — renderDaily's
-    // own filter and sort, for the Download button. Kept in step with it by
-    // scripts/test-quarry-tracking-export.js, which checks each file against the
-    // rendered table row for row.
-    function visibleDailyEntries() {
-      return dailyRows
-        .map((row, originalIdx) => ({ row, originalIdx }))
-        .filter(({ row }) => rowMatchesYear('daily', row) && rowMatchesMonth('daily', row) && rowMatchesLocation('daily', row))
-        .sort(byDateDesc);
-    }
 
     function addDailyRow() {
       if (!dailyLoaded) return;

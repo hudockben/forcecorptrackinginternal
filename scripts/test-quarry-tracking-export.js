@@ -12,8 +12,8 @@
  * back:
  *
  *   - each file carries exactly the rows the table RENDERED, in its order —
- *     read off the DOM, so the export's own copy of the filter and sort cannot
- *     drift from the table's unnoticed
+ *     checked against the DOM, including after a cell edit the table does not
+ *     re-render for
  *   - the .xlsx unzips the way Excel reads a ZIP and every part parses as XML —
  *     one malformed part is enough for Excel to refuse the whole file — with
  *     dates as date serials, numbers as numbers, each row's arithmetic as
@@ -51,6 +51,8 @@ const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const money = n => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const serial = iso => Math.round(Date.parse(iso + 'T00:00:00Z') / 86400000) + 25569;
 const isoOf = n => new Date((Number(n) - 25569) * 86400000).toISOString().slice(0, 10);
+// A Cost / Ton cell as the sheet shows it: the text "—", or a dollar figure.
+const cptShown = v => v === '—' ? '—' : money(Number(v));
 const COLS = n => Array.from({ length: n }, (_, i) => String.fromCharCode(65 + i));
 
 // ── Fixture ────────────────────────────────────────────────────────────────
@@ -105,7 +107,9 @@ const CRUSH = [
   // Same date, other pit: its own day, never blended with Homer City's.
   { id: 'k5', date: '2026-08-27', locationName: 'McGees Mills', employeeName: 'Nick Detwiler', productName: '2A Modified', hourlyRate: 28, hours: 5, fuelGallons: 20, fuelCost: 3.4, loadsToCrusher: 10, tonsPerLoad: 25, hoursCrushing: 4, comments: '' },
   // A day that crushed nothing: no cost per ton, "—" on screen.
-  { id: 'k6', date: '2026-08-28', locationName: 'Homer City', employeeName: 'Nick Detwiler', productName: '', hourlyRate: 25, hours: 4, fuelGallons: '', fuelCost: '', loadsToCrusher: '', tonsPerLoad: '', hoursCrushing: '', comments: 'teardown' },
+  { id: 'k6', date: '2026-08-28', locationName: 'Homer City', employeeName: 'Nick Detwiler', productName: '', hourlyRate: 25, hours: 4, fuelGallons: '', fuelCost: '', loadsToCrusher: '', tonsPerLoad: '', hoursCrushing: '', comments: 'teardown _x0041_ \uFFFE end' },
+  // Tons and no cost recorded: $0.00 a ton on screen — not "—", which means no tons.
+  { id: 'k8', date: '2026-08-29', locationName: 'McGees Mills', employeeName: 'Nick Detwiler', productName: '', hourlyRate: '', hours: '', fuelGallons: '', fuelCost: '', loadsToCrusher: 4, tonsPerLoad: 25, hoursCrushing: 2, comments: '' },
   { id: 'k7', date: '2025-08-27', locationName: 'Homer City', employeeName: 'Nick Detwiler', productName: '2A Modified', hourlyRate: 25, hours: 4, fuelGallons: '', fuelCost: '', loadsToCrusher: 5, tonsPerLoad: 20, hoursCrushing: 2, comments: '' },
 ];
 const HOMER_DAY = { payroll: 772, fuel: 420, tons: 810, cost: 1192 };
@@ -292,7 +296,7 @@ async function main() {
   console.log('\n— Sales · Excel —');
   win.setYearFilter('sales', '2026');
   win.eval("msSet('location', 'sales').add('Homer City'); msApply('sales', 'location');");
-  eq('sales: table shows the filtered rows, newest first', win.eval('visibleSalesEntries().map(e => e.row.id)'), SALES_IDS);
+  eq('sales: table shows the filtered rows, newest first', win.eval('salesShown.map(e => e.row.id)'), SALES_IDS);
   const salesSummary = doc.getElementById('salesSummary').textContent;
   {
     const xl = await download(win, 'sales', 'xlsx');
@@ -344,10 +348,10 @@ async function main() {
     const text = cv.buf.toString('utf8');
     assert('sales: UTF-8 BOM', text.charCodeAt(0) === 0xFEFF);
     const lines = csvLines(text).split('\r\n').filter(Boolean);
-    eq('sales: header is the Bulk Upload template\'s', lines[0], templateHeader(win, 'sales').join(','));
+    eq('sales: header is the Bulk Upload template\'s, then Source', lines[0], templateHeader(win, 'sales').concat('Source').join(','));
     eq('sales: one line per row on screen', lines.length - 1, SALES_IDS.length);
-    eq('sales: s1', lines[1 + SALES_IDS.indexOf('s1')], '2026-11-19,Homer City,Jaimie Boring,Force Turf Solutions,6-,21.88,Credit,12.75,0.00,278.97,278.97');
-    eq('sales: quoted name', lines[1 + SALES_IDS.indexOf('qss-41-row')], '2026-11-19,Homer City,Jaimie Boring,"CASH ""TAXABLE"" <A&B>, Inc",1B Limestone,4.16,Cash,27,7.13,112.32,119.45');
+    eq('sales: s1', lines[1 + SALES_IDS.indexOf('s1')], '2026-11-19,Homer City,Jaimie Boring,Force Turf Solutions,6-,21.88,Credit,12.75,0.00,278.97,278.97,Sales Tracking');
+    eq('sales: quoted name, form-submitted', lines[1 + SALES_IDS.indexOf('qss-41-row')], '2026-11-19,Homer City,Jaimie Boring,"CASH ""TAXABLE"" <A&B>, Inc",1B Limestone,4.16,Cash,27,7.13,112.32,119.45,Quarry Sales form');
     win.__csv = text;
     win.eval("parseBulk('sales', window.__csv)");
     const parsed = win.eval('bulkParsed.sales.parsed');
@@ -362,7 +366,7 @@ async function main() {
   await sleep(30);
   win.setYearFilter('daily', '2026');
   win.eval("msSet('location', 'daily').add('Homer City'); msApply('daily', 'location');");
-  eq('daily: table shows the filtered rows, newest first', win.eval('visibleDailyEntries().map(e => e.row.id)'), DAILY_IDS);
+  eq('daily: table shows the filtered rows, newest first', win.eval('dailyShown.map(e => e.row.id)'), DAILY_IDS);
   const dailySummary = doc.getElementById('dailySummary').textContent;
   {
     const xl = await download(win, 'daily', 'xlsx');
@@ -405,10 +409,11 @@ async function main() {
     assert('daily: csv name', /^quarry-daily-2026-filtered-\d{4}-\d{2}-\d{2}\.csv$/.test(cv.name), cv.name);
     const text = cv.buf.toString('utf8');
     const lines = csvLines(text).split('\r\n').filter(Boolean);
-    eq('daily: header is the Bulk Upload template\'s', lines[0], templateHeader(win, 'daily').join(','));
+    eq('daily: header is the Bulk Upload template\'s, then Source', lines[0], templateHeader(win, 'daily').concat('Source').join(','));
     eq('daily: one line per row on screen', lines.length - 1, DAILY_IDS.length);
-    eq('daily: d1', lines[1 + DAILY_IDS.indexOf('d1')], '2026-11-19,Homer City,Jaimie Boring,Loader 980,Loading,8,26,208.00,30,3.459,103.77,311.77');
-    eq('daily: d2 (no fuel)', lines[1 + DAILY_IDS.indexOf('d2')], '2026-11-20,Homer City,Nick Detwiler,Excavator 336,Stripping,9.5,28.5,270.75,,,0.00,270.75');
+    eq('daily: d1', lines[1 + DAILY_IDS.indexOf('d1')], '2026-11-19,Homer City,Jaimie Boring,Loader 980,Loading,8,26,208.00,30,3.459,103.77,311.77,Daily Tracking');
+    eq('daily: d2 (no fuel)', lines[1 + DAILY_IDS.indexOf('d2')], '2026-11-20,Homer City,Nick Detwiler,Excavator 336,Stripping,9.5,28.5,270.75,,,0.00,270.75,Daily Tracking');
+    eq('daily: timesheet row says so', lines[1 + DAILY_IDS.indexOf('tsq-77-a')].split(',').pop(), 'Payroll timesheet');
     win.__csv = text;
     win.eval("parseBulk('daily', window.__csv)");
     const parsed = win.eval('bulkParsed.daily.parsed');
@@ -422,9 +427,9 @@ async function main() {
   win.switchTab('crushing');
   await sleep(30);
   win.setYearFilter('crushing', '2026');
-  const CRUSH_IDS = win.eval('visibleCrushEntries().map(e => e.row.id)');
+  const CRUSH_IDS = win.eval('crushShown.map(e => e.row.id)');
   // Newest first; a date's pits in name order, each day's rows in stored order.
-  eq('crushing: table order', CRUSH_IDS, ['k6', 'k1', 'k2', 'k3', 'tsq-90-c', 'k5']);
+  eq('crushing: table order', CRUSH_IDS, ['k8', 'k6', 'k1', 'k2', 'k3', 'tsq-90-c', 'k5']);
   {
     const xl = await download(win, 'crushing', 'xlsx');
     assert('crushing: file name (year only → not "-filtered")', /^quarry-crushing-2026-\d{4}-\d{2}-\d{2}\.xlsx$/.test(xl.name), xl.name);
@@ -439,7 +444,7 @@ async function main() {
     const R = id => 7 + CRUSH_IDS.indexOf(id);
     // The DOM's entry rows: date, employee, and the day-blend Cost / Ton text.
     eq('crushing: the file is the rendered table, row for row',
-      CRUSH_IDS.map(id => { const r = R(id); return [isoOf(E.val('A' + r)), E.val('C' + r) || '', Number(E.val('Q' + r)) ? money(Number(E.val('Q' + r))) : '—']; }),
+      CRUSH_IDS.map(id => { const r = R(id); return [isoOf(E.val('A' + r)), E.val('C' + r) || '', cptShown(E.val('Q' + r))]; }),
       domRows(doc, 'crushTbody', [0, 2, 16]));
     const r1 = R('k1');
     eq('crushing: row arithmetic is formulas',
@@ -451,15 +456,23 @@ async function main() {
       ['k1', 'k2', 'k3', 'tsq-90-c'].map(id => near(E.val('Q' + R(id)), dayCpt)), [true, true, true, true]);
     assert('crushing: …which is not the operator row\'s own $0.30', !near(E.val('Q' + r1), 240 / 810));
     assert('crushing: McGees Mills, same date, is its own day', near(E.val('Q' + R('k5')), (5 * 28 + 20 * 3.4) / 250));
-    eq('crushing: a day with no tons has no cost per ton (0, shown "—")', Number(E.val('Q' + R('k6'))), 0);
+    eq('crushing: a day with no tons has no cost per ton — "—", as the table shows', E.val('Q' + R('k6')), '—');
+    eq('crushing: a day with tons and no cost is $0.00 a ton, a number', Number(E.val('Q' + R('k8'))), 0);
+    eq('crushing: …shown as $0.00 (the table\'s), not the "—" of no tons', domRows(doc, 'crushTbody', [16])[0][0], '$0.00');
+    assert('crushing: Day Cost / Ton\'s format has no "—" for zero',
+      /formatCode="&quot;\$&quot;#,##0\.00"/.test(book.parts['xl/styles.xml']));
+    const k6 = E.cells['S' + R('k6')];
+    eq('crushing: "_x0041_" is escaped so it does not open as "A"; U+FFFE is dropped',
+      (book.parts['xl/worksheets/sheet1.xml'].match(/teardown[^<]*/) || [''])[0], 'teardown _x005F_x0041_  end');
+    assert('crushing: no U+FFFE anywhere in the sheet', !book.parts['xl/worksheets/sheet1.xml'].includes('\uFFFE'));
     eq('crushing: comments with quotes, commas and a line break survive', E.val('S' + r1), CRUSH[0].comments);
     eq('crushing: timesheet row marked', E.val('R' + R('tsq-90-c')), 'Payroll timesheet');
     const T = 7 + CRUSH_IDS.length;
     eq('crushing: Totals are SUBTOTALs', ['F','G','H','J','K','M','N','P'].map(c => E.fml(c + T)),
       ['F','G','H','J','K','M','N','P'].map(c => `SUBTOTAL(9,${c}7:${c}${T - 1})`));
     eq('crushing: Totals rate columns are weighted', ['E','I','L','O','Q'].map(c => E.fml(c + T)),
-      [`IF(F${T}=0,0,G${T}/F${T})`, `IF(H${T}=0,0,J${T}/H${T})`, `IF(K${T}=0,0,M${T}/K${T})`, `IF(N${T}=0,0,M${T}/N${T})`, `IF(M${T}=0,0,P${T}/M${T})`]);
-    const cost = 772 + 420 + 100 + 140 + 68, tons = 810 + 250;
+      [`IF(F${T}=0,0,G${T}/F${T})`, `IF(H${T}=0,0,J${T}/H${T})`, `IF(K${T}=0,0,M${T}/K${T})`, `IF(N${T}=0,0,M${T}/N${T})`, `IF(M${T}=0,"—",P${T}/M${T})`]);
+    const cost = 772 + 420 + 100 + 140 + 68, tons = 810 + 250 + 100;
     assert('crushing: Totals cost / tons', near(E.val('P' + T), cost) && near(E.val('M' + T), tons), `${E.val('P' + T)} / ${E.val('M' + T)}`);
     const crushSummary = doc.getElementById('crushSummary').textContent;
     assert('crushing: Totals Cost / Ton is the summary bar\'s Avg Cost/Ton', crushSummary.includes(money(cost / tons)) && near(E.val('Q' + T), cost / tons), crushSummary);
@@ -468,18 +481,19 @@ async function main() {
     const heads = [...doc.querySelectorAll('#crushTbody tr.crush-day')];
     eq('crushing: Days header', COLS(14).map(c => D.val(c + '5')),
       ['Date','Location','Entries','Hours','Total Payroll','Fuel Gallons','Fuel Cost','Loads','Estimated Tons','Hours Crushing','Tons / Hour','Total Cost','Cost / Ton','Note']);
-    eq('crushing: one Days line per day header on screen', heads.length, 3);
+    eq('crushing: one Days line per day header on screen', heads.length, 4);
     eq('crushing: Days lines are the headers, in order (cost / tons / cost per ton)',
-      heads.map((_, i) => { const r = 6 + i; return [D.val('B' + r), money(Number(D.val('L' + r))), String(Number(Number(D.val('I' + r)).toFixed(2))), Number(D.val('M' + r)) ? money(Number(D.val('M' + r))) : '—']; }),
+      heads.map((_, i) => { const r = 6 + i; return [D.val('B' + r), money(Number(D.val('L' + r))), String(Number(Number(D.val('I' + r)).toFixed(2))), cptShown(D.val('M' + r))]; }),
       heads.map(h => {
         const id = k => h.querySelector(`[id$="-${k}"]`).textContent.trim();
         return [h.querySelector('.crush-day-meta').textContent.split('·')[1].trim(), id('cost'), id('tons').replace(/,/g, ''), id('costPerTon')];
       }));
-    const homer = 6 + 1;   // k6's day first, then 8/27 Homer City
+    const homer = 6 + 2;   // k8's day, k6's, then 8/27 Homer City
     eq('crushing: 8/27 Homer City line', [D.val('B' + homer), Number(D.val('C' + homer)), Number(D.val('E' + homer)), Number(D.val('G' + homer)), Number(D.val('I' + homer))],
       ['Homer City', 4, HOMER_DAY.payroll, HOMER_DAY.fuel, HOMER_DAY.tons]);
     eq('crushing: Days Tons / Hour and Cost / Ton are formulas', [D.fml('K' + homer), D.fml('L' + homer), D.fml('M' + homer)],
-      [`IF(J${homer}>0,I${homer}/J${homer},0)`, `E${homer}+G${homer}`, `IF(I${homer}>0,L${homer}/I${homer},0)`]);
+      [`IF(J${homer}>0,I${homer}/J${homer},0)`, `E${homer}+G${homer}`, `IF(I${homer}>0,L${homer}/I${homer},"—")`]);
+    eq('crushing: Days — no tons is "—" (text), tons at no cost is 0', [D.val('M7'), Number(D.val('M6'))], ['—', 0]);
     assert('crushing: Days cached cost per ton', near(D.val('M' + homer), dayCpt));
     eq('crushing: no note when the whole day is on the sheet', D.val('N' + homer), null);
   }
@@ -487,7 +501,7 @@ async function main() {
   console.log('\n— Crushing · Excel (Product filter hides part of a day) —');
   win.eval("msSet('product', 'crushing').add('2A Modified'); msApply('crushing', 'product');");
   {
-    const ids = win.eval('visibleCrushEntries().map(e => e.row.id)');
+    const ids = win.eval('crushShown.map(e => e.row.id)');
     eq('crushing: the filter leaves the two runs that made 2A Modified', ids, ['k1', 'k5']);
     const xl = await download(win, 'crushing', 'xlsx');
     assert('crushing: now "-filtered"', /^quarry-crushing-2026-filtered-/.test(xl.name), xl.name);
@@ -507,7 +521,8 @@ async function main() {
     const text = cv.buf.toString('utf8');
     const rows = win.eval(`parseCSV(${JSON.stringify(text)})`);
     const header = rows[0];
-    eq('crushing: header carries every template label', [...templateHeader(win, 'crushing')].sort(), [...header].sort());
+    eq('crushing: header carries every template label, then Source', [...templateHeader(win, 'crushing'), 'Source'].sort(), [...header].sort());
+    eq('crushing: Source is last', header[header.length - 1], 'Source');
     eq('crushing: in the table\'s column order', header.slice(0, 4), ['Date', 'Location', 'Employee', 'Product']);
     eq('crushing: one line per row on screen (line breaks in comments stay inside their quotes)', rows.length - 1, 2);
     const k1 = rows[1];
@@ -525,7 +540,48 @@ async function main() {
     const cv2 = await download(win, 'crushing', 'csv');
     const rows2 = win.eval(`parseCSV(${JSON.stringify(cv2.buf.toString('utf8'))})`);
     const cpt = rows2.slice(1).map(r => r[rows2[0].indexOf('Cost / Ton')]);
-    eq('crushing: the no-tons day\'s Cost / Ton is blank, as the table\'s "—"', cpt[0], '');
+    eq('crushing: Cost / Ton — 0.00 for tons at no cost, blank (the table\'s "—") for no tons', [cpt[0], cpt[1]], ['0.00', '']);
+  }
+
+  // ── Rounding: the CSV's cents are the table's ──
+  console.log('\n— Rounding —');
+  {
+    // Half cents: 5.05 t × $14.50 = 73.225, 1.41 gal × $3.50 = 4.935, a 6%
+    // tax of 4.725. Math.round(v * 100) takes each of these the other way.
+    eq('csvCents rounds half cents as the table does', ['5.05*14.5', '1.41*3.5', '5.25*15*0.06', '5*13.25*1.06'].map(x => win.eval(`csvCents(${x})`)),
+      ['73.23', '4.94', '4.73', '70.23']);
+    const bad = win.eval(`(() => { const out = [];
+      for (let t = 1; t <= 4000; t++) for (const p of [3.5, 12.75, 13.25, 14.5, 15, 27, 3.459]) {
+        const v = t / 100 * p;
+        if (csvCents(v) !== formatMoney(v).replace(/[$,]/g, '')) out.push(t / 100 + ' x ' + p);
+      }
+      return out; })()`);
+    eq('csvCents agrees with formatMoney on 28,000 tons × price products', bad.slice(0, 5), []);
+  }
+
+  // ── Dates that are not dates ──
+  console.log('\n— Impossible dates —');
+  eq('qxDateSerial: a real date is a serial', win.eval('qxDateSerial("2026-11-19")'), serial('2026-11-19'));
+  eq('qxDateSerial: 2026-02-30 / 2026-19-11 / 2026-00-10 are not rolled over into other dates',
+    win.eval('[qxDateSerial("2026-02-30"), qxDateSerial("2026-19-11"), qxDateSerial("2026-00-10")]'), [null, null, null]);
+  eq('…so the cell keeps the text as stored', win.eval('qxDateCell("2026-02-30")'), { v: '2026-02-30', s: 0 });
+  eq('a leap day is a date', win.eval('qxDateSerial("2028-02-29")'), serial('2028-02-29'));
+
+  // ── After an edit the table does not re-render for ──
+  console.log('\n— Cell edits —');
+  {
+    // Sales re-dated out of the Year filter: the row stays on screen until the
+    // next render, so it stays in the file too, where the table shows it.
+    win.setYearFilter('sales', '2026');
+    win.eval("msSet('location', 'sales').clear(); msSet('location', 'sales').add('Homer City'); msApply('sales', 'location');");
+    const i = win.eval("salesRows.findIndex(r => r.id === 's2')");
+    win.eval(`updateSalesCell(${i}, 'date', '2025-11-20')`);
+    const onScreen = domRows(doc, 'salesTbody', [3, 5]).length;
+    const cv = await download(win, 'sales', 'csv');
+    const lines = csvLines(cv.buf.toString('utf8')).split('\r\n').filter(Boolean);
+    eq('sales: a row re-dated out of the filter is still on screen, and still in the file', [onScreen, lines.length - 1], [SALES_IDS.length, SALES_IDS.length]);
+    eq('…at the place the table shows it, with its new date', lines[1 + SALES_IDS.indexOf('s2')].slice(0, 10), '2025-11-20');
+    win.eval(`updateSalesCell(${i}, 'date', '2026-11-20'); renderSales(true);`);
   }
 
   // ── Disabled when nothing is on screen ──
