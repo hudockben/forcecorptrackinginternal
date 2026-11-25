@@ -1129,6 +1129,15 @@
     .bulk-preview td.status.bad { color: #ef4444; }
     .bulk-preview td.status.dup { color: #f59e0b; }
     .bulk-summary .dup { color: #f59e0b; }
+    /* An update in place, and a row another screen owns (skipped). */
+    .bulk-preview tr.upd td  { background: rgba(56,189,248,0.06); }
+    .bulk-preview tr.lock td { background: rgba(148,163,184,0.07); }
+    .bulk-preview td.status.upd  { color: #38bdf8; }
+    .bulk-preview td.status.lock { color: var(--muted); }
+    .bulk-preview td.status .blank-note { color: var(--muted); }
+    .bulk-summary .upd  { color: #38bdf8; }
+    .bulk-summary .lock { color: var(--muted); }
+    .bulk-summary .note { color: var(--muted); }
     .bulk-preview .new-tag {
       color: var(--accent); font-style: normal; font-size: 0.65rem;
       margin-left: 0.25rem;
@@ -2738,8 +2747,9 @@
           Upload a CSV with these columns (header row required):
           <code>Date</code>, <code>Location</code>, <code>Employee</code>, <code>Equipment</code>, <code>Task</code>,
           <code>Hours</code>, <code>Rate</code>, <code>Fuel / Gallons</code>, <code>PPG</code>.
-          Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
-          Date may be <code>YYYY-MM-DD</code> or <code>M/D/YYYY</code>. Labor / fuel / total cost columns are
+          Required columns: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
+          A blank cell in them imports blank, as the grid keeps it, and the preview names it. A CSV from <strong>⇩ Download</strong> carries each row's <code>Row ID</code>: upload it back and a row still here is updated in place (or skipped, unchanged) rather than added twice; Payroll timesheet and Quarry Sales form rows are never copied.
+          Date may be <code>YYYY-MM-DD</code> or <code>M/D/YYYY</code> (month first). Labor / fuel / total cost columns are
           included in the downloaded template for layout but are recomputed on import.
         </div>
         <div class="bulk-actions">
@@ -2775,7 +2785,9 @@
           <code>Date</code>, <code>Location</code>, <code>Employee</code>, <code>Hourly Rate</code>, <code>Hours</code>,
           <code>Fuel Gallons</code>, <code>$/Gal</code>, <code>Loads to Crusher</code>,
           <code>Tons / Load</code>, <code>Hours Crushing</code>, <code>Comments</code>, <code>Product</code>.
-          Required: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
+          Required columns: <strong>Date</strong>, <strong>Employee</strong>, <strong>Hours</strong>.
+          A blank cell in them imports blank, as the grid keeps it, and the preview names it. A CSV from <strong>⇩ Download</strong> carries each row's <code>Row ID</code>: upload it back and a row still here is updated in place (or skipped, unchanged) rather than added twice; Payroll timesheet and Quarry Sales form rows are never copied.
+          Date may be <code>YYYY-MM-DD</code> or <code>M/D/YYYY</code> (month first).
           <strong>Product</strong> is what the run was making — leave it blank and the tons land in
           Inventory's <em>Untagged</em> bucket.
           <code>$/Gal</code> is the pump price per gallon (e.g. <code>4.50</code>), not the day's fuel
@@ -2817,8 +2829,10 @@
           Upload a CSV with these columns (header row required):
           <code>Date</code>, <code>Location</code>, <code>Employee</code>, <code>Customer</code>, <code>Product</code>,
           <code>Tons</code>, <code>Payment</code>, <code>Price / Ton</code>.
-          Required: <strong>Date</strong>, <strong>Customer</strong>, <strong>Product</strong>, <strong>Tons</strong>, <strong>Price / Ton</strong>.
-          Payment must be <code>Cash</code> or <code>Credit</code>. Total sales is computed automatically.
+          Required columns: <strong>Date</strong>, <strong>Customer</strong>, <strong>Product</strong>, <strong>Tons</strong>, <strong>Price / Ton</strong>.
+          A blank cell in them imports blank, as the grid keeps it, and the preview names it. A CSV from <strong>⇩ Download</strong> carries each row's <code>Row ID</code>: upload it back and a row still here is updated in place (or skipped, unchanged) rather than added twice; Payroll timesheet and Quarry Sales form rows are never copied.
+          On a Quarry Sales form row only <code>Price / Ton</code> updates — the rest is the scale house's.
+          Date may be <code>YYYY-MM-DD</code> or <code>M/D/YYYY</code> (month first). Payment must be <code>Cash</code> or <code>Credit</code>. Total sales is computed automatically.
         </div>
         <div class="bulk-actions">
           <label class="btn-add-row">
@@ -3809,10 +3823,26 @@
       if (tab === 'sales') parts.push(customerFilterLabel(tab));
       if (tab === 'sales' || tab === 'crushing') parts.push(productFilterLabel(tab));
       const filterDesc = parts.join(' · ');
+      // The tip below sends these rows out through ⇩ Download and back in
+      // through Bulk Upload. A row the importer would refuse as it stands —
+      // an impossible date saved before dates were checked, a fuel bill in
+      // the per-gallon column — only comes back once fixed in the file, so
+      // name it now, while it is still here.
+      const stuck = toDelete.map(r => ({ r, why: bulkRowProblems(tab, r) })).filter(x => x.why.length);
+      let stuckNote = '';
+      if (stuck.length) {
+        const one = stuck.length === 1;
+        const lines = stuck.slice(0, 5).map(({ r, why }) =>
+          `  • ${r.date || 'Undated'}${r.locationName ? ' · ' + r.locationName : ''} — ${why[0]}`);
+        if (stuck.length > 5) lines.push(`  • …and ${stuck.length - 5} more`);
+        stuckNote = `\n\n⚠ ${stuck.length} of ${one ? 'these rows' : 'them'} can't be re-imported until ` +
+          `${one ? 'it is' : 'they are'} fixed in the CSV:\n${lines.join('\n')}`;
+      }
       const ok = window.confirm(
         `Delete ${toDelete.length} ${cfg.label} row${toDelete.length === 1 ? '' : 's'} ` +
         `matching ${filterDesc}?\n\n` +
-        `This cannot be undone. Tip: re-upload the corrected CSV after deleting.`
+        `This cannot be undone. Tip: ⇩ Download the CSV first, then re-upload the corrected copy after deleting.` +
+        stuckNote
       );
       if (!ok) return;
 
@@ -4400,9 +4430,11 @@
 
     // ── Sales ──
     // Its CSV columns are BULK_CONFIGS.sales.templateLayout's, in order, then
-    // Source (which Bulk Upload ignores).
+    // Source and Row ID — not fields, but what lets Bulk Upload take the file
+    // back: a line whose Row ID is still in the grid is that row (updated in
+    // place if it changed), and a Quarry Sales form row is never copied.
     const SALES_CSV_HEADER = ['Date', 'Location', 'Employee', 'Customer', 'Product', 'Tons',
-                              'Payment', 'Price / Ton', 'Sales Tax', 'Net Sales', 'Total Due', 'Source'];
+                              'Payment', 'Price / Ton', 'Sales Tax', 'Net Sales', 'Total Due', 'Source', 'Row ID'];
     const salesSource = row => isSalesSubmissionRow(row) ? 'Quarry Sales form' : 'Sales Tracking';
     function buildSalesCsv(entries) {
       return csvText(SALES_CSV_HEADER, entries.map(({ row }) => {
@@ -4410,7 +4442,7 @@
         return [
           row.date, row.locationName, row.employeeName, row.customerName, row.productName,
           csvNum(row.tons), row.payment, csvNum(row.pricePerTon),
-          csvCents(tax), csvCents(net), csvCents(net + tax), salesSource(row),
+          csvCents(tax), csvCents(net), csvCents(net + tax), salesSource(row), row.id,
         ];
       }));
     }
@@ -4476,9 +4508,9 @@
 
     // ── Daily ──
     // Its CSV columns are BULK_CONFIGS.daily.templateLayout's, in order, then
-    // Source (which Bulk Upload ignores).
+    // Source and Row ID (see Sales).
     const DAILY_CSV_HEADER = ['Date', 'Location', 'Employee', 'Equipment', 'Task', 'Hours', 'Rate',
-                              'Labor Cost', 'Fuel / Gallons', 'PPG', 'Fuel Cost', 'Total Cost', 'Source'];
+                              'Labor Cost', 'Fuel / Gallons', 'PPG', 'Fuel Cost', 'Total Cost', 'Source', 'Row ID'];
     const dailySource = row => isTimesheetRow(row) ? 'Payroll timesheet' : 'Daily Tracking';
     function buildDailyCsv(entries) {
       return csvText(DAILY_CSV_HEADER, entries.map(({ row }) => {
@@ -4487,7 +4519,7 @@
           row.date, row.locationName, row.employeeName, row.equipmentName, row.taskName,
           csvNum(row.hours), csvNum(row.rate), csvCents(c.laborCost),
           csvNum(row.fuelGallons), csvNum(row.ppg), csvCents(c.fuelCost), csvCents(c.totalCost),
-          dailySource(row),
+          dailySource(row), row.id,
         ];
       }));
     }
@@ -4552,12 +4584,13 @@
 
     // ── Crushing ──
     // The template's labels, in the TABLE's order rather than the template's
-    // (which carries Product last), then Source; the importer matches by
-    // header, not by position, so the file reads back either way.
+    // (which carries Product last), then Source and Row ID (see Sales); the
+    // importer matches by header, not by position, so the file reads back
+    // either way.
     const CRUSH_CSV_HEADER = ['Date', 'Location', 'Employee', 'Product', 'Hourly Rate', 'Hours',
                               'Total Payroll', 'Fuel Gallons', '$/Gal', 'Fuel Cost', 'Loads to Crusher',
                               'Tons / Load', 'Estimated Tons', 'Hours Crushing', 'Tons / Hour',
-                              'Total Cost', 'Cost / Ton', 'Comments', 'Source'];
+                              'Total Cost', 'Cost / Ton', 'Comments', 'Source', 'Row ID'];
     const crushSource = row => isTimesheetRow(row) ? 'Payroll timesheet' : 'Crushing Tracking';
     // The day groups the table drew (renderCrush keeps them), each with the
     // day-at-a-pit blend its rows' Cost / Ton shows — the WHOLE day's cost
@@ -4586,7 +4619,7 @@
           csvNum(row.hoursCrushing), csvCents(c.tonsPerHour), csvCents(c.totalCost),
           // Blank, as the table's "—", when the day crushed nothing.
           day.hasTons ? csvCents(day.costPerTon) : '',
-          row.comments, crushSource(row),
+          row.comments, crushSource(row), row.id,
         ];
       }));
     }
@@ -6055,6 +6088,9 @@
     // a day's fuel bill is never that low, which separates the two cleanly.
     const MAX_PER_GALLON = 25;
     const PER_GALLON_NOTE = "this column is the pump price per gallon (e.g. 4.50); the day's fuel bill is computed as gallons × it";
+    // `required`: the file must have the column. A blank cell in it is not an
+    // error — each grid saves rows with any cell blank, so the row imports
+    // blank and the preview names the cell (see bulkParseCells).
     const BULK_CONFIGS = {
       daily: {
         title: 'Daily Tracking',
@@ -6200,18 +6236,44 @@
       return rows;
     }
 
+    // A date cell as YYYY-MM-DD, '' when blank, or null when it is not a date.
+    // The shape alone is not enough: "2/30/2026" used to be stored as
+    // 2026-02-30 and a day-first "19/11/2026" as 2026-19-11 — strings the
+    // grid's date input cannot show, so the cell read blank while the row
+    // went on counting in its year's totals. M/D/YYYY is month first.
+    const BULK_MDY_RE = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})$/;
+    function isRealDate(y, mo, d) {
+      const back = new Date(Date.UTC(y, mo - 1, d));
+      return back.getUTCFullYear() === y && back.getUTCMonth() === mo - 1 && back.getUTCDate() === d;
+    }
     function parseAnyDate(s) {
       const str = String(s || '').trim();
       if (!str) return '';
+      let y, mo, d;
       let m = str.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
-      if (m) return `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}`;
-      m = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
-      if (m) {
-        let yr = m[3];
-        if (yr.length === 2) yr = (Number(yr) >= 50 ? '19' : '20') + yr;
-        return `${yr}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+      if (m) { [, y, mo, d] = m; }
+      else {
+        m = str.match(BULK_MDY_RE);
+        if (!m) return null;
+        [, mo, d, y] = m;
+        if (y.length === 2) y = (Number(y) >= 50 ? '19' : '20') + y;
       }
-      return null;
+      if (!isRealDate(Number(y), Number(mo), Number(d))) return null;
+      return `${y}-${mo.padStart(2, '0')}-${d.padStart(2, '0')}`;
+    }
+    // Why parseAnyDate refused a cell, worded for the preview.
+    function bulkDateError(f, cell) {
+      const s = String(cell).trim();
+      const m = s.match(BULK_MDY_RE);
+      if (m) {
+        const y = m[3].length === 2 ? (Number(m[3]) >= 50 ? 1900 : 2000) + Number(m[3]) : Number(m[3]);
+        if (Number(m[1]) > 12 && isRealDate(y, Number(m[2]), Number(m[1]))) {
+          return `${f.label} "${s}" is day first — write it month first, ${Number(m[2])}/${Number(m[1])}/${m[3]}`;
+        }
+        return `${f.label} "${s}" is not a real date`;
+      }
+      if (/^\d{4}-\d{1,2}-\d{1,2}$/.test(s)) return `${f.label} "${s}" is not a real date`;
+      return `Invalid ${f.label.toLowerCase()} "${s}"`;
     }
 
     function parseAnyNum(s) {
@@ -6242,6 +6304,164 @@
         out[f.name] = f.type === 'list' ? row[f.nameKey] : row[f.outKey];
       });
       return out;
+    }
+
+    // One line's cells → its typed values, the errors that keep it out, and
+    // the `required` columns it left blank. get(name) is a field's cell text.
+    //
+    // A blank cell is not an error. Every grid saves a row with any cell
+    // blank — a fuel-only Daily row, a Crushing row carrying only the day's
+    // loads, a sale not priced yet, a row not dated yet — and ⇩ Download hands
+    // those rows over as they are. Refused here, they were rows the tab's own
+    // repair loop (Download → Delete N Rows → re-upload) lost for good. So a
+    // blank imports blank, as the grid shows it, and the preview names it.
+    function bulkParseCells(cfg, get) {
+      const out = {}, errors = [], blanks = [];
+      cfg.fields.forEach(f => {
+        const cell = get(f.name);
+        if (f.type === 'date') {
+          const d = parseAnyDate(cell);
+          if (d === null) errors.push(bulkDateError(f, cell));
+          else if (!d && f.required) blanks.push(f.label);
+          out[f.name] = d || '';
+        } else if (f.type === 'num') {
+          const n = parseAnyNum(cell);
+          if (n === null) errors.push(`Invalid ${f.label.toLowerCase()} "${cell}"`);
+          else if (n === '' && f.required) blanks.push(f.label);
+          else if (f.max != null && n !== '' && n > f.max) {
+            errors.push(`${f.label} "${cell}" is over ${f.max}${f.maxNote ? ` — ${f.maxNote}` : ''}`);
+          }
+          out[f.name] = n === null ? '' : n;
+        } else if (f.type === 'list') {
+          if (!cell && f.required) blanks.push(f.label);
+          out[f.name] = cell;
+        } else if (f.type === 'enum') {
+          if (!cell) {
+            if (f.required) blanks.push(f.label);
+            out[f.name] = '';
+          } else {
+            const match = (f.options || []).find(o => o.toLowerCase() === cell.toLowerCase());
+            if (!match) errors.push(`Invalid ${f.label.toLowerCase()} "${cell}" (use ${f.options.join('/')})`);
+            out[f.name] = match || '';
+          }
+        } else { // text
+          if (!cell && f.required) blanks.push(f.label);
+          out[f.name] = cell;
+        }
+      });
+      return { out, errors, blanks };
+    }
+
+    // What would keep a stored row out of a re-import of its own ⇩ Download
+    // line: its cells as the CSV writes them, through the same checks. An
+    // impossible date saved before dates were checked, or a fuel bill typed
+    // into the per-gallon column, comes back only once fixed in the file.
+    function bulkRowProblems(key, row) {
+      const cfg = BULK_CONFIGS[key];
+      if (!cfg || !row) return [];
+      const byName = new Map(cfg.fields.map(f => [f.name, f]));
+      return bulkParseCells(cfg, name => {
+        const f = byName.get(name);
+        const v = f.type === 'list' ? row[f.nameKey] : row[f.outKey];
+        return f.type === 'num' ? csvNum(v) : String(v == null ? '' : v).trim();
+      }).errors;
+    }
+
+    // Ids the injectors mint — Payroll's approved timesheets ("tsq-", and
+    // "tst-" / "tso-" on the other divisions) and the Quarry Sales form
+    // ("qss-"). The importer never creates a row under one.
+    const BULK_INJECTED_ID_RE = /^(tsq|qss|tst|tso)-/;
+    const bulkInjectedKind = id => { const m = BULK_INJECTED_ID_RE.exec(String(id || '')); return m ? m[1] : null; };
+    // The Source ⇩ Download writes on a row another screen owns, for a line
+    // whose Row ID was dropped on the way.
+    const BULK_INJECTED_SOURCES = { 'payroll timesheet': 'tsq', 'quarry sales form': 'qss' };
+    const BULK_OWNER_NAME = { tsq: 'Payroll timesheet', tst: 'Payroll timesheet', tso: 'Payroll timesheet', qss: 'Quarry Sales form' };
+    // The columns of an injected row an import may change: the ones its grid
+    // leaves editable — Price / Ton on a Quarry Sales form row, nothing on a
+    // Payroll one. api/lib/injected-blob-guard.js holds a save to the same.
+    const BULK_INJECTED_TAB_FIELDS = { qss: ['pricePerTon'] };
+    // A Row ID a re-imported row may keep. Anything Excel has turned into
+    // 1.73E+12, or another shape the grid never minted, gets a fresh one.
+    const BULK_KEEP_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+
+    // A field as a line and a stored row compare: names without case,
+    // numbers by value, text and dates trimmed.
+    function bulkCmp(f, v) {
+      if (f.type === 'num') return (v === '' || v == null || !Number.isFinite(Number(v))) ? '' : String(Number(v));
+      const s = String(v == null ? '' : v).trim();
+      return f.type === 'list' ? s.toLowerCase() : s;
+    }
+
+    // What each line does: 'new' (adds a row), 'update' (changes the row it
+    // was downloaded from, in place), 'dup' (already here — skipped) or
+    // 'locked' (another screen owns the row — skipped, with why).
+    //
+    // A line whose Row ID is still in the grid IS that row, however many
+    // others look like it: skipped unchanged, updated changed, never added
+    // beside itself. Lines without one — a template, a dropped ID column,
+    // rows deleted since the download — match on content, one stored row per
+    // line: two identical loads in the file against one in the grid add the
+    // second, and after Delete N Rows both come back. (A Set of signatures
+    // used to fold every identical line into one.)
+    function bulkMatchExisting(cfg, parsed, colIdx) {
+      const rows = cfg.state.rows();
+      const byId = new Map();
+      rows.forEach(r => { if (r && r.id != null && r.id !== '') byId.set(String(r.id), r); });
+      const claimed = new Set();
+      parsed.forEach(p => {
+        const row = p.rowId ? byId.get(p.rowId) : undefined;
+        if (row && !claimed.has(row)) { claimed.add(row); p.match = row; }
+      });
+      const left = new Map();   // signature → how many unclaimed stored rows carry it
+      rows.forEach(r => {
+        if (claimed.has(r)) return;
+        const sig = bulkRowSig(cfg, existingRowSigParts(cfg, r));
+        left.set(sig, (left.get(sig) || 0) + 1);
+      });
+      const inFile = cfg.fields.filter(f => colIdx[f.name] !== undefined);
+      const keptIds = new Set();
+      parsed.forEach(p => {
+        if (p.errors.length) return;
+        const owner = bulkInjectedKind(p.match ? p.match.id : p.rowId)
+          || (p.match ? null : BULK_INJECTED_SOURCES[p.source.toLowerCase()]) || null;
+        const ownerName = BULK_OWNER_NAME[owner] || 'another screen';
+        if (p.match) {
+          const stored = existingRowSigParts(cfg, p.match);
+          const changes = inFile
+            .filter(f => bulkCmp(f, p[f.name]) !== bulkCmp(f, stored[f.name]))
+            .map(f => ({ field: f.name, label: f.label, from: stored[f.name], to: p[f.name] }));
+          if (!changes.length) { p.action = 'dup'; p.duplicate = true; return; }
+          const mine = owner ? (BULK_INJECTED_TAB_FIELDS[owner] || []) : null;
+          const take = mine ? changes.filter(c => mine.includes(c.field)) : changes;
+          const keep = mine ? changes.filter(c => !mine.includes(c.field)).map(c => c.label) : [];
+          if (take.length) {
+            p.action = 'update'; p.changes = take;
+            if (keep.length) p.ignored = `${keep.join(', ')} not changed — the ${ownerName}'s`;
+            return;
+          }
+          p.action = 'locked';
+          p.why = owner === 'qss'
+            ? `${ownerName} row — only Price / Ton is the office's; ${keep.join(', ')} stay${keep.length === 1 ? 's' : ''} as submitted`
+            : `${ownerName} row — change ${keep.join(', ')} in Payroll, not here`;
+          return;
+        }
+        const sig = bulkRowSig(cfg, p);
+        if ((left.get(sig) || 0) > 0) { left.set(sig, left.get(sig) - 1); p.action = 'dup'; p.duplicate = true; return; }
+        if (owner) {
+          // Imported as a new row it would be the sale / the timesheet's hours
+          // a second time, beside the one its owner keeps here.
+          p.action = 'locked';
+          p.why = p.rowId && bulkInjectedKind(p.rowId)
+            ? `${ownerName} row no longer in ${cfg.title} — ${owner === 'qss' ? 'the sale was removed' : 'Payroll removed it'}; it isn't re-created by hand`
+            : `${ownerName} row that no longer matches its row — ${owner === 'qss' ? 'keep the Row ID column to update its Price / Ton' : 'change it in Payroll'}; imported, it would count twice`;
+          return;
+        }
+        p.action = 'new';
+        if (p.rowId && BULK_KEEP_ID_RE.test(p.rowId) && !byId.has(p.rowId) && !keptIds.has(p.rowId)) {
+          p.keepId = p.rowId;
+          keptIds.add(p.rowId);
+        }
+      });
     }
 
     function openBulk(key) {
@@ -6338,63 +6558,36 @@
         showBulkError(key, `Missing required column(s): ${missing.join(', ')}. Expected headers: ${expected}.`);
         return;
       }
+      // ⇩ Download's last two columns, neither of them a field: Row ID pairs a
+      // line with the row it was downloaded from, Source says who owns it.
+      const idCol  = headerRow.indexOf('rowid');
+      const srcCol = headerRow.indexOf('source');
 
       const parsed = [];
       for (let r = 1; r < rows.length; r++) {
         const raw = rows[r];
-        if (raw.every(c => String(c).trim() === '')) continue;
-        const get = name => colIdx[name] !== undefined ? String(raw[colIdx[name]] ?? '').trim() : '';
-        const errors = [];
-        const out = { rowNum: r + 1, errors, duplicate: false };
-
-        cfg.fields.forEach(f => {
-          const cell = get(f.name);
-          if (f.type === 'date') {
-            const d = parseAnyDate(cell);
-            if (d === null) errors.push(`Invalid ${f.label.toLowerCase()} "${cell}"`);
-            else if (!d && f.required) errors.push(`${f.label} is required`);
-            out[f.name] = d || '';
-          } else if (f.type === 'num') {
-            const n = parseAnyNum(cell);
-            if (n === null) errors.push(`Invalid ${f.label.toLowerCase()} "${cell}"`);
-            else if (n === '' && f.required) errors.push(`${f.label} is required`);
-            else if (f.max != null && n !== '' && n > f.max) {
-              errors.push(`${f.label} "${cell}" is over ${f.max}${f.maxNote ? ` — ${f.maxNote}` : ''}`);
-            }
-            out[f.name] = n === null ? '' : n;
-          } else if (f.type === 'list') {
-            if (!cell && f.required) errors.push(`${f.label} is required`);
-            out[f.name] = cell;
-          } else if (f.type === 'enum') {
-            if (!cell) {
-              if (f.required) errors.push(`${f.label} is required`);
-              out[f.name] = '';
-            } else {
-              const match = (f.options || []).find(o => o.toLowerCase() === cell.toLowerCase());
-              if (!match) errors.push(`Invalid ${f.label.toLowerCase()} "${cell}" (use ${f.options.join('/')})`);
-              out[f.name] = match || '';
-            }
-          } else { // text
-            if (!cell && f.required) errors.push(`${f.label} is required`);
-            out[f.name] = cell;
-          }
+        const cellAt = i => (i === undefined || i < 0) ? '' : String(raw[i] ?? '').trim();
+        const get = name => cellAt(colIdx[name]);
+        // Nothing typed in any field: a blank line, or a grid row nobody
+        // filled in (whose computed columns still read 0.00).
+        if (cfg.fields.every(f => get(f.name) === '')) continue;
+        const { out, errors, blanks } = bulkParseCells(cfg, get);
+        parsed.push({
+          rowNum: r + 1, ...out, errors, blanks,
+          rowId: cellAt(idCol), source: cellAt(srcCol),
+          action: 'new', duplicate: false,
         });
-        parsed.push(out);
       }
-
-      // Flag duplicates against rows already in the database, and against
-      // earlier valid rows in this same CSV.
-      const existingSigs = new Set(cfg.state.rows().map(r => bulkRowSig(cfg, existingRowSigParts(cfg, r))));
-      const seenSigs = new Set();
-      parsed.forEach(p => {
-        if (p.errors.length) return;
-        const sig = bulkRowSig(cfg, p);
-        if (existingSigs.has(sig) || seenSigs.has(sig)) p.duplicate = true;
-        else seenSigs.add(sig);
-      });
+      bulkMatchExisting(cfg, parsed, colIdx);
 
       bulkParsed[key] = { parsed };
       renderBulkPreview(key);
+    }
+
+    // "Price / Ton — → 27", for an update's status cell.
+    function bulkChangeText(c) {
+      const v = x => (x === '' || x == null) ? '—' : String(x);
+      return `${c.label} ${v(c.from)} → ${v(c.to)}`;
     }
 
     function renderBulkPreview(key) {
@@ -6403,9 +6596,14 @@
       const result = document.getElementById(bulkResultId(key));
       if (!data) { result.innerHTML = ''; return; }
 
-      const importable = data.parsed.filter(r => !r.errors.length && !r.duplicate).length;
-      const dupCount   = data.parsed.filter(r => !r.errors.length &&  r.duplicate).length;
+      const ok = data.parsed.filter(r => !r.errors.length);
+      const importable = ok.filter(r => r.action === 'new').length;
+      const updCount   = ok.filter(r => r.action === 'update').length;
+      const dupCount   = ok.filter(r => r.action === 'dup').length;
+      const lockCount  = ok.filter(r => r.action === 'locked').length;
       const errCount   = data.parsed.filter(r =>  r.errors.length).length;
+      const blankRows  = ok.filter(r => r.action === 'new' && r.blanks.length);
+      const blankCols  = [...new Set(blankRows.flatMap(r => r.blanks))];
 
       const listMaps = {};
       cfg.fields.forEach(f => {
@@ -6414,20 +6612,25 @@
       });
       const newByList = {};
       cfg.fields.forEach(f => { if (f.type === 'list') newByList[f.list] = new Set(); });
-      data.parsed.forEach(p => {
-        if (p.errors.length || p.duplicate) return;
+      ok.forEach(p => {
+        if (p.action !== 'new' && p.action !== 'update') return;
+        const writes = p.action === 'new' ? null : new Set(p.changes.map(c => c.field));
         cfg.fields.forEach(f => {
-          if (f.type !== 'list') return;
+          if (f.type !== 'list' || (writes && !writes.has(f.name))) return;
           const v = p[f.name];
           if (v && !listMaps[f.list].has(v.toLowerCase())) newByList[f.list].add(v);
         });
       });
       const newCount = Object.values(newByList).reduce((sum, s) => sum + s.size, 0);
+      const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
 
       const summary = `
         <div class="bulk-summary">
           <span class="ok">✓ ${importable} valid row${importable === 1 ? '' : 's'}</span>
+          ${updCount ? `<span class="upd">↻ ${plural(updCount, 'row updates', 'rows update')} in place</span>` : ''}
+          ${blankRows.length ? `<span class="note" title="The grid keeps these cells blank too — fill them in there or in the file.">• ${plural(blankRows.length, 'row', 'rows')} with blank ${escapeHtml(blankCols.join(' / '))} (imported blank)</span>` : ''}
           ${dupCount ? `<span class="dup">⚠ ${dupCount} duplicate row${dupCount === 1 ? '' : 's'} (skipped)</span>` : ''}
+          ${lockCount ? `<span class="lock" title="Payroll timesheet and Quarry Sales form rows are changed where they came from; an import never adds a hand-entered copy of one.">🔒 ${plural(lockCount, 'row', 'rows')} owned by Payroll or the Quarry Sales form (skipped)</span>` : ''}
           ${errCount ? `<span class="bad">✕ ${errCount} row${errCount === 1 ? '' : 's'} with errors (skipped)</span>` : ''}
           ${newCount ? `<span>+ ${newCount} new list item${newCount === 1 ? '' : 's'} will be added</span>` : ''}
         </div>`;
@@ -6448,9 +6651,19 @@
         if (p.errors.length) {
           cls = 'bad';
           status = `<td class="status bad" title="${escapeHtml(p.errors.join('; '))}">${escapeHtml(p.errors[0])}</td>`;
-        } else if (p.duplicate) {
+        } else if (p.action === 'dup') {
           cls = 'dup';
           status = `<td class="status dup" title="Already in ${escapeHtml(cfg.title)}">Duplicate</td>`;
+        } else if (p.action === 'locked') {
+          cls = 'lock';
+          status = `<td class="status lock" title="${escapeHtml(p.why)}">${escapeHtml(p.why)}</td>`;
+        } else if (p.action === 'update') {
+          cls = 'upd';
+          const text = 'Updates ' + p.changes.map(bulkChangeText).join(' · ');
+          const full = p.ignored ? `${text} · ${p.ignored}` : text;
+          status = `<td class="status upd" title="${escapeHtml(full)}">${escapeHtml(full)}</td>`;
+        } else if (p.blanks.length) {
+          status = `<td class="status ok" title="Imported with these cells blank, as the grid keeps them">OK <span class="blank-note">· no ${escapeHtml(p.blanks.join(', '))}</span></td>`;
         } else {
           status = `<td class="status ok">OK</td>`;
         }
@@ -6471,53 +6684,81 @@
         </div>`;
 
       const btn = document.getElementById(bulkConfirmId(key));
-      btn.disabled = importable === 0;
-      btn.textContent = `Import ${importable} Row${importable === 1 ? '' : 's'}`;
+      btn.disabled = importable + updCount === 0;
+      const rowsWord = n => `${n} Row${n === 1 ? '' : 's'}`;
+      btn.textContent = !updCount ? `Import ${rowsWord(importable)}`
+        : importable ? `Import ${rowsWord(importable)} · Update ${updCount}`
+        : `Update ${rowsWord(updCount)}`;
     }
 
     function confirmBulk(key) {
       const cfg = BULK_CONFIGS[key];
       if (!bulkParsed[key] || !cfg.state.isLoaded()) return;
       const autoCreate = document.getElementById(bulkAutoCreateId(key))?.checked !== false;
-      const valid = bulkParsed[key].parsed.filter(r => !r.errors.length && !r.duplicate);
-      if (!valid.length) return;
+      const ok = bulkParsed[key].parsed.filter(r => !r.errors.length);
+      const valid   = ok.filter(r => r.action === 'new');
+      const updates = ok.filter(r => r.action === 'update');
+      if (!valid.length && !updates.length) return;
 
+      const findItem = (listKey, name) => {
+        const lower = String(name || '').toLowerCase();
+        return lower ? (quarryLists[listKey] || []).find(it => String(it.name).trim().toLowerCase() === lower) || null : null;
+      };
       const ensureItem = (listKey, name) => {
         if (!name) return { item: null, created: false };
-        const lower = name.toLowerCase();
-        const list = quarryLists[listKey] || (quarryLists[listKey] = []);
-        const found = list.find(it => String(it.name).trim().toLowerCase() === lower);
+        const found = findItem(listKey, name);
         if (found) return { item: found, created: false };
         if (!autoCreate) return { item: null, created: false };
+        const list = quarryLists[listKey] || (quarryLists[listKey] = []);
         const item = { id: Date.now() + '-' + Math.random().toString(36).slice(2, 7), name };
         if (listKey === 'employees') item.rate = null;
         list.push(item);
         return { item, created: true };
       };
 
+      // Write a line's `fields` onto `target`, in the config's order so the
+      // employee is settled before a blank Rate is filled from it.
       let listsChanged = false;
-      valid.forEach(p => {
-        const out = {};
+      const write = (target, fields, p) => {
         const ensured = {};
         cfg.fields.forEach(f => {
+          if (!fields.has(f.name)) return;
           if (f.type === 'list') {
             const e = ensureItem(f.list, p[f.name]);
             ensured[f.name] = e;
             if (e.created) listsChanged = true;
-            out[f.idKey]   = e.item ? e.item.id   : '';
-            out[f.nameKey] = e.item ? e.item.name : (p[f.name] || '');
+            target[f.idKey]   = e.item ? e.item.id   : '';
+            target[f.nameKey] = e.item ? e.item.name : (p[f.name] || '');
           } else {
             let v = p[f.name];
             if (f.fillFromEmployee && (v === '' || v === undefined || v === null)) {
-              const emp = ensured.employee && ensured.employee.item;
+              const emp = ensured.employee ? ensured.employee.item : findItem('employees', p.employee);
               if (emp && Number.isFinite(Number(emp[f.fillFromEmployee]))) {
                 v = Number(emp[f.fillFromEmployee]);
               }
             }
-            out[f.outKey] = v === undefined ? '' : v;
+            target[f.outKey] = v === undefined ? '' : v;
           }
         });
+      };
+
+      const all = new Set(cfg.fields.map(f => f.name));
+      valid.forEach(p => {
+        const out = {};
+        write(out, all, p);
+        // Kept, so the next upload of this file finds the row again rather
+        // than adding it a second time.
+        if (p.keepId) out.id = p.keepId;
         cfg.state.push(cfg.state.normalize(out));
+      });
+      // Found again by id, not by the reference the preview held: a refresh
+      // since then may have replaced the array.
+      const byId = new Map(cfg.state.rows().map(r => [String(r.id), r]));
+      updates.forEach(p => {
+        const row = byId.get(String(p.match.id));
+        if (!row) return;
+        write(row, new Set(p.changes.map(c => c.field)), p);
+        Object.assign(row, cfg.state.normalize({ ...row }));
       });
 
       if (listsChanged) scheduleSave();

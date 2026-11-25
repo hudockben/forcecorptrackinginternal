@@ -22,8 +22,12 @@
  *   - Crushing's Cost / Ton is the DAY's blend, as the table shows it, even
  *     with a Product filter hiding some of the day; its Days sheet is the
  *     table's day header lines
- *   - the .csv's headers are the Bulk Upload template's, and the page's own
- *     importer reads it straight back
+ *   - the .csv's headers are the Bulk Upload template's, then Source and Row
+ *     ID, and the page's own importer reads it straight back
+ *   - the repair loop the Delete N Rows dialog suggests — Download, delete,
+ *     re-upload — brings every row back as it was: identical loads, rows with
+ *     blank cells, Payroll / Quarry Sales form rows (updated in place, never
+ *     copied); impossible dates are refused, and named before the delete
  *
  * No DB, server or browser required.
  */
@@ -145,6 +149,8 @@ function loadPage() {
       }));
       win.fetch = stubFetch(BLOBS);
       win.alert = (msg) => { (win.__alerts = win.__alerts || []).push(String(msg)); };
+      win.__confirms = [];
+      win.confirm = (msg) => { win.__confirms.push(String(msg)); return win.__confirmAnswer !== false; };
       win.print = () => {};
       // jsdom has no object URLs — catch the Blob and the name it was saved under.
       win.__saved = [];
@@ -247,6 +253,39 @@ function domRows(doc, tbodyId, pick) {
 function csvLines(text) {
   return text.replace(/^﻿/, '');
 }
+
+// ── Bulk Upload, driven the way the modal does ──
+// The tab's rows as the importer compares them (names, values, the date), by
+// id — list ids aside, which an import fills in from Manage Lists.
+function rowsOf(win, tab) {
+  return JSON.parse(JSON.stringify(win.eval(
+    `BULK_CONFIGS.${tab}.state.rows().map(r => Object.assign({ id: r.id }, existingRowSigParts(BULK_CONFIGS.${tab}, r)))`)));
+}
+const byId = rows => Object.fromEntries([...rows].sort((a, b) => (a.id < b.id ? -1 : 1)).map(r => [r.id, r]));
+function upload(win, tab, text) {
+  win.__csv = text;
+  win.eval(`parseBulk('${tab}', window.__csv)`);
+  return win.eval(`bulkParsed.${tab}.parsed`);
+}
+const actionOf = (parsed, id) => (parsed.find(p => p.rowId === id) || {}).action;
+// A downloaded CSV with cells changed, as someone fixing it in Excel would:
+// edits are { id, col, value }, the line found by its Row ID.
+const csvCellN = v => (/[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v);
+function editCsv(win, text, edits) {
+  const rows = win.eval(`parseCSV(${JSON.stringify(text)})`);
+  const head = rows[0], idc = head.indexOf('Row ID');
+  for (const { id, col, value } of edits) {
+    const line = rows.find((r, i) => i && r[idc] === id);
+    if (!line) throw new Error(`no line for ${id}`);
+    line[head.indexOf(col)] = value;
+  }
+  return rows.map(r => r.map(c => csvCellN(String(c))).join(',')).join('\r\n') + '\r\n';
+}
+function dropCol(win, text, col) {
+  const rows = win.eval(`parseCSV(${JSON.stringify(text)})`);
+  const i = rows[0].indexOf(col);
+  return rows.map(r => r.filter((_, j) => j !== i).map(c => csvCellN(String(c))).join(',')).join('\r\n') + '\r\n';
+}
 function templateHeader(win, tab) {
   return win.eval(`BULK_CONFIGS.${tab}.templateLayout.map(it => typeof it === 'string'
       ? BULK_CONFIGS.${tab}.fields.find(f => f.name === it).label : it.label)`);
@@ -348,16 +387,16 @@ async function main() {
     const text = cv.buf.toString('utf8');
     assert('sales: UTF-8 BOM', text.charCodeAt(0) === 0xFEFF);
     const lines = csvLines(text).split('\r\n').filter(Boolean);
-    eq('sales: header is the Bulk Upload template\'s, then Source', lines[0], templateHeader(win, 'sales').concat('Source').join(','));
+    eq('sales: header is the Bulk Upload template\'s, then Source and Row ID', lines[0], templateHeader(win, 'sales').concat('Source', 'Row ID').join(','));
     eq('sales: one line per row on screen', lines.length - 1, SALES_IDS.length);
-    eq('sales: s1', lines[1 + SALES_IDS.indexOf('s1')], '2026-11-19,Homer City,Jaimie Boring,Force Turf Solutions,6-,21.88,Credit,12.75,0.00,278.97,278.97,Sales Tracking');
-    eq('sales: quoted name, form-submitted', lines[1 + SALES_IDS.indexOf('qss-41-row')], '2026-11-19,Homer City,Jaimie Boring,"CASH ""TAXABLE"" <A&B>, Inc",1B Limestone,4.16,Cash,27,7.13,112.32,119.45,Quarry Sales form');
+    eq('sales: s1', lines[1 + SALES_IDS.indexOf('s1')], '2026-11-19,Homer City,Jaimie Boring,Force Turf Solutions,6-,21.88,Credit,12.75,0.00,278.97,278.97,Sales Tracking,s1');
+    eq('sales: quoted name, form-submitted', lines[1 + SALES_IDS.indexOf('qss-41-row')], '2026-11-19,Homer City,Jaimie Boring,"CASH ""TAXABLE"" <A&B>, Inc",1B Limestone,4.16,Cash,27,7.13,112.32,119.45,Quarry Sales form,qss-41-row');
     win.__csv = text;
     win.eval("parseBulk('sales', window.__csv)");
     const parsed = win.eval('bulkParsed.sales.parsed');
-    eq('sales: importer reads every complete row back clean (the unfinished one lacks required tons/price)',
-      parsed.filter(p => p.errors.length).map(p => p.rowNum), [2 + SALES_IDS.indexOf('s7')]);
-    assert('sales: …and skips them as duplicates of rows already here', parsed.filter(p => !p.errors.length).every(p => p.duplicate));
+    eq('sales: importer reads every row back clean, the unfinished one too', parsed.filter(p => p.errors.length).map(p => p.errors), []);
+    eq('sales: …noting the unfinished one\'s blank tons and price', parsed[SALES_IDS.indexOf('s7')].blanks, ['Tons', 'Price / Ton']);
+    assert('sales: …and skips them all as rows already here', parsed.every(p => p.duplicate && p.action === 'dup'));
   }
 
   // ══ Daily ══════════════════════════════════════════════════════════════════
@@ -409,17 +448,17 @@ async function main() {
     assert('daily: csv name', /^quarry-daily-2026-filtered-\d{4}-\d{2}-\d{2}\.csv$/.test(cv.name), cv.name);
     const text = cv.buf.toString('utf8');
     const lines = csvLines(text).split('\r\n').filter(Boolean);
-    eq('daily: header is the Bulk Upload template\'s, then Source', lines[0], templateHeader(win, 'daily').concat('Source').join(','));
+    eq('daily: header is the Bulk Upload template\'s, then Source and Row ID', lines[0], templateHeader(win, 'daily').concat('Source', 'Row ID').join(','));
     eq('daily: one line per row on screen', lines.length - 1, DAILY_IDS.length);
-    eq('daily: d1', lines[1 + DAILY_IDS.indexOf('d1')], '2026-11-19,Homer City,Jaimie Boring,Loader 980,Loading,8,26,208.00,30,3.459,103.77,311.77,Daily Tracking');
-    eq('daily: d2 (no fuel)', lines[1 + DAILY_IDS.indexOf('d2')], '2026-11-20,Homer City,Nick Detwiler,Excavator 336,Stripping,9.5,28.5,270.75,,,0.00,270.75,Daily Tracking');
-    eq('daily: timesheet row says so', lines[1 + DAILY_IDS.indexOf('tsq-77-a')].split(',').pop(), 'Payroll timesheet');
+    eq('daily: d1', lines[1 + DAILY_IDS.indexOf('d1')], '2026-11-19,Homer City,Jaimie Boring,Loader 980,Loading,8,26,208.00,30,3.459,103.77,311.77,Daily Tracking,d1');
+    eq('daily: d2 (no fuel)', lines[1 + DAILY_IDS.indexOf('d2')], '2026-11-20,Homer City,Nick Detwiler,Excavator 336,Stripping,9.5,28.5,270.75,,,0.00,270.75,Daily Tracking,d2');
+    eq('daily: timesheet row says so, and carries its id', lines[1 + DAILY_IDS.indexOf('tsq-77-a')].split(',').slice(-2), ['Payroll timesheet', 'tsq-77-a']);
     win.__csv = text;
     win.eval("parseBulk('daily', window.__csv)");
     const parsed = win.eval('bulkParsed.daily.parsed');
-    eq('daily: importer reads every row back clean but the fuel-only one (hours are required)',
-      parsed.filter(p => p.errors.length).map(p => p.rowNum), [2 + DAILY_IDS.indexOf('d6')]);
-    assert('daily: …and skips the clean ones as duplicates', parsed.filter(p => !p.errors.length).every(p => p.duplicate));
+    eq('daily: importer reads every row back clean, the fuel-only one too', parsed.filter(p => p.errors.length).map(p => p.errors), []);
+    eq('daily: …noting its blank hours', parsed[DAILY_IDS.indexOf('d6')].blanks, ['Hours']);
+    assert('daily: …and skips them all as rows already here', parsed.every(p => p.duplicate && p.action === 'dup'));
   }
 
   // ══ Crushing ═══════════════════════════════════════════════════════════════
@@ -521,8 +560,8 @@ async function main() {
     const text = cv.buf.toString('utf8');
     const rows = win.eval(`parseCSV(${JSON.stringify(text)})`);
     const header = rows[0];
-    eq('crushing: header carries every template label, then Source', [...templateHeader(win, 'crushing'), 'Source'].sort(), [...header].sort());
-    eq('crushing: Source is last', header[header.length - 1], 'Source');
+    eq('crushing: header carries every template label, then Source and Row ID', [...templateHeader(win, 'crushing'), 'Source', 'Row ID'].sort(), [...header].sort());
+    eq('crushing: Source, then Row ID, last', header.slice(-2), ['Source', 'Row ID']);
     eq('crushing: in the table\'s column order', header.slice(0, 4), ['Date', 'Location', 'Employee', 'Product']);
     eq('crushing: one line per row on screen (line breaks in comments stay inside their quotes)', rows.length - 1, 2);
     const k1 = rows[1];
@@ -582,6 +621,178 @@ async function main() {
     eq('sales: a row re-dated out of the filter is still on screen, and still in the file', [onScreen, lines.length - 1], [SALES_IDS.length, SALES_IDS.length]);
     eq('…at the place the table shows it, with its new date', lines[1 + SALES_IDS.indexOf('s2')].slice(0, 10), '2025-11-20');
     win.eval(`updateSalesCell(${i}, 'date', '2026-11-20'); renderSales(true);`);
+  }
+
+  // ══ The repair loop: ⇩ Download → Delete N Rows → ⇪ Bulk Upload ══════════
+  // The Delete dialog's tip. Every row the download carried has to come back
+  // as it was — or the preview has to say which did not, and why.
+  console.log('\n— Round trip · Sales —');
+  win.setYearFilter('sales', '2026');
+  win.eval("msSet('location', 'sales').clear(); msSet('location', 'sales').add('Homer City'); msApply('sales', 'location');");
+  // Two real loads that look alike, and a form sale the office hasn't priced.
+  win.eval(`
+    salesRows.push(normalizeSalesRow({ id: 'twin-a', date: '2026-11-22', locationName: 'Homer City', employeeName: 'Nick Detwiler', customerName: 'Kunkle Excavating', productName: '2B', tons: 12, payment: 'Cash', pricePerTon: 14.5 }));
+    salesRows.push(normalizeSalesRow({ id: 'twin-b', date: '2026-11-22', locationName: 'Homer City', employeeName: 'Nick Detwiler', customerName: 'Kunkle Excavating', productName: '2B', tons: 12, payment: 'Cash', pricePerTon: 14.5 }));
+    salesRows.push(normalizeSalesRow({ id: 'qss-42-row', date: '2026-11-22', locationName: 'Homer City', employeeName: 'Jaimie Boring', customerName: 'Force Turf Solutions', productName: '6-', tons: 8, payment: 'Credit', pricePerTon: '' }));
+    renderSales(true);`);
+  {
+    const before = rowsOf(win, 'sales');
+    const csv = (await download(win, 'sales', 'csv')).buf.toString('utf8');
+    let parsed = upload(win, 'sales', csv);
+    assert('sales: the file uploaded as downloaded is all rows already here', parsed.every(p => p.action === 'dup'),
+      JSON.stringify(parsed.map(p => [p.rowId, p.action])));
+    eq('…both twins included, each its own row', ['twin-a', 'twin-b'].map(id => actionOf(parsed, id)), ['dup', 'dup']);
+    assert('…so there is nothing to import', doc.getElementById('salesUploadConfirm').disabled);
+
+    win.__confirms.length = 0;
+    win.deleteFilteredRows('sales');
+    eq('sales: Delete N Rows takes the hand-entered rows on screen, not the form sales',
+      rowsOf(win, 'sales').map(r => r.id).sort(), ['qss-41-row', 'qss-42-row', 's5', 's6']);
+    assert('…its dialog says to download first', /Download the CSV first/.test(win.__confirms[0]), win.__confirms[0]);
+    assert('…and warns of nothing — every one of them re-imports', !/can't be re-imported/.test(win.__confirms[0]), win.__confirms[0]);
+
+    // The office prices the form sale in the file before uploading it back.
+    const fixed = editCsv(win, csv, [{ id: 'qss-42-row', col: 'Price / Ton', value: '13.25' }]);
+    parsed = upload(win, 'sales', fixed);
+    eq('sales: after the delete every hand-entered row is new again — both twins',
+      ['s7', 's2', 's1', 's3', 'twin-a', 'twin-b'].map(id => actionOf(parsed, id)), Array(6).fill('new'));
+    eq('…the unfinished sale too, its blanks noted', (parsed.find(p => p.rowId === 's7') || {}).blanks, ['Tons', 'Price / Ton']);
+    eq('…the form sale that got a price updates in place', actionOf(parsed, 'qss-42-row'), 'update');
+    eq('…the untouched form sale is already here', actionOf(parsed, 'qss-41-row'), 'dup');
+    const preview = doc.getElementById('salesUploadResult').textContent;
+    assert('sales: the preview says what the update changes', /Updates Price \/ Ton — → 13\.25/.test(preview), preview);
+    assert('…and which rows import with blanks', /1 row with blank Tons \/ Price \/ Ton \(imported blank\)/.test(preview), preview);
+    eq('sales: the button says what it will do', doc.getElementById('salesUploadConfirm').textContent, 'Import 6 Rows · Update 1');
+    win.eval("confirmBulk('sales')");
+    const expect = byId(before);
+    expect['qss-42-row'].pricePerTon = 13.25;
+    eq('sales: every row is back as it was, under its own id — the form sale priced', byId(rowsOf(win, 'sales')), expect);
+    eq('…one form sale, not a hand-entered copy beside it',
+      win.eval("salesRows.filter(r => r.customerName === 'Force Turf Solutions' && r.tons === 8).map(r => r.id)"), ['qss-42-row']);
+    parsed = upload(win, 'sales', fixed);
+    assert('sales: uploading the same file again changes nothing', parsed.every(p => p.action === 'dup'),
+      JSON.stringify(parsed.filter(p => p.action !== 'dup').map(p => [p.rowId, p.action])));
+
+    // Corrected without deleting first: the row changes where it is.
+    const count = win.eval('salesRows.length');
+    parsed = upload(win, 'sales', editCsv(win, fixed, [{ id: 's1', col: 'Tons', value: '22.5' }]));
+    eq('sales: a hand-entered row corrected in the file, not deleted first, updates in place',
+      [actionOf(parsed, 's1'), (parsed.find(p => p.rowId === 's1') || {}).changes.map(c => c.field)], ['update', ['tons']]);
+    win.eval("confirmBulk('sales')");
+    eq('…one row, not the old and the new side by side', [win.eval('salesRows.length'), win.eval("salesRows.find(r => r.id === 's1').tons")], [count, 22.5]);
+    win.eval("salesRows.find(r => r.id === 's1').tons = 21.88");
+    // A line copied to record a second, identical load is a new row.
+    const copied = fixed.replace(/^(.*,twin-a)\r\n/m, '$1\r\n$1\r\n');
+    parsed = upload(win, 'sales', copied);
+    eq('sales: a copied line (same Row ID) is a second load: the first is its row, the copy is new',
+      parsed.filter(p => p.rowId === 'twin-a').map(p => [p.action, p.keepId || null]), [['dup', null], ['new', null]]);
+
+    // The scale house's columns are theirs; the price is the office's.
+    parsed = upload(win, 'sales', editCsv(win, fixed, [{ id: 'qss-41-row', col: 'Tons', value: '40' }]));
+    const q1 = parsed.find(p => p.rowId === 'qss-41-row');
+    eq('sales: a form sale\'s tons changed in the file are not imported', q1.action, 'locked');
+    assert('…and the preview says why', /only Price \/ Ton is the office's; Tons stays as submitted/.test(q1.why), q1.why);
+    parsed = upload(win, 'sales', editCsv(win, fixed, [
+      { id: 'qss-41-row', col: 'Tons', value: '40' }, { id: 'qss-41-row', col: 'Price / Ton', value: '28' }]));
+    const q2 = parsed.find(p => p.rowId === 'qss-41-row');
+    eq('sales: with its price changed too, only the price updates', [q2.action, q2.changes.map(c => c.field)], ['update', ['pricePerTon']]);
+    assert('…and the preview says the tons stay', /Tons not changed — the Quarry Sales form's/.test(q2.ignored || ''), q2.ignored);
+    win.eval("confirmBulk('sales')");
+    eq('…so the sale is still 4.16 t, now at $28', win.eval("(r => [r.tons, r.pricePerTon])(salesRows.find(r => r.id === 'qss-41-row'))"), [4.16, 28]);
+
+    // Without its Row ID, a changed form sale can't be matched to its row:
+    // it is refused rather than added as a hand-entered second sale.
+    const fresh = (await download(win, 'sales', 'csv')).buf.toString('utf8');
+    parsed = upload(win, 'sales', dropCol(win, editCsv(win, fresh, [{ id: 'qss-42-row', col: 'Price / Ton', value: '15' }]), 'Row ID'));
+    const q3 = parsed.find(p => p.source === 'Quarry Sales form' && p.tons === 8);
+    eq('sales: a changed form sale with no Row ID is not imported as a copy', q3 && q3.action, 'locked');
+    assert('…the preview says to keep the Row ID', /keep the Row ID column/.test(q3 && q3.why), q3 && q3.why);
+    eq('…and every other line, the twins one each, is already here', parsed.filter(p => p !== q3).map(p => p.action), Array(parsed.length - 1).fill('dup'));
+    // A form sale removed since the download stays removed.
+    parsed = upload(win, 'sales', fresh.replace(',qss-42-row\r\n', ',qss-99-row\r\n').replace(',8,Credit,13.25,', ',9,Credit,13.25,'));
+    const q4 = parsed.find(p => p.rowId === 'qss-99-row');
+    eq('sales: a form sale no longer here is not re-created by hand', q4 && q4.action, 'locked');
+    assert('…and says so', /no longer in Sales Tracking/.test(q4 && q4.why), q4 && q4.why);
+
+    // A template carries no Row ID: identical lines match one stored row each.
+    const twin = '2026-11-22,Homer City,Nick Detwiler,Kunkle Excavating,2B,12,Cash,14.5';
+    parsed = upload(win, 'sales', [templateHeader(win, 'sales').join(','), twin, twin, twin].join('\r\n') + '\r\n');
+    eq('sales: three identical template lines against the two loads here — two duplicates, one new', parsed.map(p => p.action), ['dup', 'dup', 'new']);
+    // An undated, unpriced sale is a row the grid keeps; it imports that way.
+    parsed = upload(win, 'sales', [templateHeader(win, 'sales').join(','), ',Homer City,,Kunkle Excavating,2B,3,,'].join('\r\n') + '\r\n');
+    eq('sales: an undated, unpriced line imports, its blanks noted', [parsed[0].action, parsed[0].errors, parsed[0].blanks], ['new', [], ['Date', 'Price / Ton']]);
+  }
+
+  console.log('\n— Round trip · Daily —');
+  win.setYearFilter('daily', '2026');
+  win.eval("msSet('location', 'daily').clear(); msSet('location', 'daily').add('Homer City'); msApply('daily', 'location');");
+  {
+    const before = rowsOf(win, 'daily');
+    const csv = (await download(win, 'daily', 'csv')).buf.toString('utf8');
+    win.__confirms.length = 0;
+    win.deleteFilteredRows('daily');
+    eq('daily: Delete N Rows takes the hand-entered rows on screen, not Payroll\'s',
+      rowsOf(win, 'daily').map(r => r.id).sort(), ['d4', 'd5', 'tsq-77-a']);
+    // Someone corrects a timesheet row's hours in the file — Payroll's to change.
+    const parsed = upload(win, 'daily', editCsv(win, csv, [{ id: 'tsq-77-a', col: 'Hours', value: '7' }]));
+    eq('daily: the deleted rows are new again — the fuel-only one too', ['d6', 'd2', 'd1'].map(id => actionOf(parsed, id)), ['new', 'new', 'new']);
+    eq('…its blank hours noted', (parsed.find(p => p.rowId === 'd6') || {}).blanks, ['Hours']);
+    const ts = parsed.find(p => p.rowId === 'tsq-77-a');
+    eq('daily: a timesheet row changed in the file is not imported', ts.action, 'locked');
+    assert('…the preview sends the change to Payroll', /Payroll timesheet row — change Hours in Payroll/.test(ts.why), ts.why);
+    const preview = doc.getElementById('dailyUploadResult').textContent;
+    assert('daily: the preview flags the fuel-only row\'s blank hours', /OK · no Hours/.test(preview), preview);
+    assert('…and counts the Payroll row it skips', /1 row owned by Payroll or the Quarry Sales form \(skipped\)/.test(preview), preview);
+    win.eval("confirmBulk('daily')");
+    eq('daily: every row is back as it was — the timesheet row\'s 6 hours untouched', byId(rowsOf(win, 'daily')), byId(before));
+    eq('…the fuel-only row with its 40 gallons and no hours', win.eval("(r => [r.hours, r.fuelGallons, r.ppg])(dailyRows.find(r => r.id === 'd6'))"), ['', 40, 3.399]);
+  }
+
+  console.log('\n— Round trip · Crushing —');
+  {
+    const before = rowsOf(win, 'crushing');
+    const csv = (await download(win, 'crushing', 'csv')).buf.toString('utf8');
+    win.deleteFilteredRows('crushing');
+    eq('crushing: Delete N Rows leaves last year and Payroll\'s row', rowsOf(win, 'crushing').map(r => r.id).sort(), ['k7', 'tsq-90-c']);
+    const parsed = upload(win, 'crushing', csv);
+    eq('crushing: the deleted rows are new again — the loads-only one too', ['k8', 'k6', 'k1', 'k2', 'k3', 'k5'].map(id => actionOf(parsed, id)), Array(6).fill('new'));
+    eq('…its blank hours noted', (parsed.find(p => p.rowId === 'k8') || {}).blanks, ['Hours']);
+    eq('…and Payroll\'s row is already here', actionOf(parsed, 'tsq-90-c'), 'dup');
+    win.eval("confirmBulk('crushing')");
+    eq('crushing: every row is back as it was — comments, line breaks and all', byId(rowsOf(win, 'crushing')), byId(before));
+  }
+
+  console.log('\n— Impossible dates on import —');
+  {
+    const dates = ['2/30/2026', '19/11/2026', '2026-02-30', '2026-13-01', '2/29/2026', '31/2/2026', '2/29/2028', '11/19/26'];
+    const text = [templateHeader(win, 'daily').join(','), ...dates.map(d => `${d},Homer City,Nick Detwiler,Loader 980,Loading,1,28.5`)].join('\r\n') + '\r\n';
+    const parsed = upload(win, 'daily', text);
+    eq('daily: a date that is not on the calendar is refused, and says why', parsed.map(p => p.errors[0] || p.date), [
+      'Date "2/30/2026" is not a real date',
+      'Date "19/11/2026" is day first — write it month first, 11/19/2026',
+      'Date "2026-02-30" is not a real date',
+      'Date "2026-13-01" is not a real date',
+      'Date "2/29/2026" is not a real date',
+      'Date "31/2/2026" is not a real date',
+      '2028-02-29',
+      '2026-11-19',
+    ]);
+    assert('…in the preview, beside the line', /Date "19\/11\/2026" is day first/.test(doc.getElementById('dailyUploadResult').textContent));
+    eq('…and only the real dates import', doc.getElementById('dailyUploadConfirm').textContent, 'Import 2 Rows');
+
+    // One saved before dates were checked: the Delete dialog names it, since
+    // the CSV it suggests re-uploading would not bring it back.
+    win.eval("dailyRows.push(normalizeDailyRow({ id: 'bad-date', date: '2026-02-30', locationName: 'Homer City', employeeName: 'Nick Detwiler', hours: 2, rate: 28.5 })); renderDaily(true);");
+    const n = rowsOf(win, 'daily').length;
+    win.__confirms.length = 0;
+    win.__confirmAnswer = false;
+    win.deleteFilteredRows('daily');
+    win.__confirmAnswer = true;
+    eq('daily: cancelling the dialog deletes nothing', rowsOf(win, 'daily').length, n);
+    assert('daily: the Delete dialog names the row a re-upload would not bring back',
+      (win.__confirms[0] || '').includes('⚠ 1 of these rows can\'t be re-imported until it is fixed in the CSV:\n  • 2026-02-30 · Homer City — Date "2026-02-30" is not a real date'),
+      win.__confirms[0]);
+    win.eval("dailyRows = dailyRows.filter(r => r.id !== 'bad-date'); renderDaily(true);");
   }
 
   // ── Disabled when nothing is on screen ──
