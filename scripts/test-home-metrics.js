@@ -295,14 +295,15 @@ function jobYear(file) {
     return _homeJobYear;`)();
 }
 
-// The strip's fixtures, dated, plus a substantially complete job. Every daily
-// row carries the job's whole cost on its first date; the rest are $0, there
-// only to set the span of dates the job was worked.
+// The strip's fixtures, dated, plus a substantially complete job. Unless the
+// fixture says how its cost splits across its days (costs), every daily row
+// carries the job's whole cost on its first date; the rest are $0, there only
+// to set the span of dates the job was worked.
 const dated = (o) => {
   const j = job(o);
   j['start-date'] = o.start || '';
   j['end-date']   = o.end || '';
-  if (o.days) j.dailyRows = o.days.map((d, i) => ({ date: d, cost: i === 0 ? o.actual : 0 }));
+  if (o.days) j.dailyRows = o.days.map((d, i) => ({ date: d, cost: o.costs ? o.costs[i] : i === 0 ? o.actual : 0 }));
   return j;
 };
 const STAGED = [
@@ -312,7 +313,7 @@ const STAGED = [
   dated({ id: 'a', name: 'Live A', status: 'In Progress', contract: 500000, bid: 400000, actual: 150000, projected: 420000,
           days: ['2026-04-02', '2026-06-10'] }),
   dated({ id: 'b', name: 'Live B', status: 'In Progress', contract: 300000, bid: 250000, actual: 100000, projected: 240000,
-          start: '2026-03-01', days: ['2025-10-01', '2026-05-01'] }),
+          start: '2026-03-01', days: ['2025-10-01', '2026-05-01'], costs: [60000, 40000] }),
   dated({ id: 'c', name: 'Live Unpriced', status: 'In Progress', contract: 0, bid: 90000, actual: 20000, projected: 90000,
           start: '2026-05-01' }),
   // Completed: A finished in 2025 by its last entry, whatever its plan said;
@@ -345,10 +346,10 @@ for (const file of STAGE_FILES) {
   assert('three in progress, three completed, two awarded',
     T.ip.jobs === 3 && T.done.jobs === 3 && T.aw.jobs === 2, `got ${T.ip.jobs} / ${T.done.jobs} / ${T.aw.jobs}`);
   assert('  Bidding and On Hold are in none of them',
-    !['ip', 'done', 'aw'].some(k => T[k].names.includes('Bidding') || T[k].names.includes('On Hold')));
+    !['ip', 'done', 'aw'].some(k => T[k].list.some(j => j.name === 'Bidding' || j.name === 'On Hold')));
   assert('  and are never projected', !projCalls.f && !projCalls.h, JSON.stringify(projCalls));
   assert('Substantially Complete counts with Completed, and is flagged',
-    T.done.names.includes('Nearly Done') && T.done.subst === 1);
+    T.done.list.some(j => j.name === 'Nearly Done' && j.subst) && T.done.subst === 1);
 
   console.log('\n[In Progress carries the live figures]');
   assert('contract', near(T.ip.contract, 800000), `got ${T.ip.contract}`);
@@ -382,12 +383,14 @@ for (const file of STAGE_FILES) {
 
   console.log('\n[each stage breaks down by year]');
   assert('In Progress: 2026 holds A and the unpriced job, 2025 holds B (its first entry beats its plan)',
-    Y.ip['2026']?.jobs === 2 && Y.ip['2025']?.jobs === 1 && Y.ip['2025']?.names[0] === 'Live B',
+    Y.ip['2026']?.jobs === 2 && Y.ip['2025']?.jobs === 1 && Y.ip['2025']?.list[0].name === 'Live B',
     JSON.stringify(Object.keys(Y.ip)));
   assert('Completed: 2025 by A\'s last entry, 2026 for B\'s plan and the nearly-done job',
-    Y.done['2025']?.names.join() === 'Done A' && Y.done['2026']?.jobs === 2, JSON.stringify(Object.keys(Y.done)));
+    Y.done['2025']?.list.map(j => j.name).join() === 'Done A' && Y.done['2026']?.jobs === 2,
+    JSON.stringify(Object.keys(Y.done)));
   assert('Awarded: 2027 by its Start Date, and a job with no dates under ""',
-    Y.aw['2027']?.jobs === 1 && Y.aw['']?.names.join() === 'Awarded Unpriced', JSON.stringify(Object.keys(Y.aw)));
+    Y.aw['2027']?.jobs === 1 && Y.aw['']?.list.map(j => j.name).join() === 'Awarded Unpriced',
+    JSON.stringify(Object.keys(Y.aw)));
   for (const k of ['ip', 'done', 'aw']) {
     const sum = f => Object.values(Y[k]).reduce((s, c) => s + c[f], 0);
     assert(`  ${k}: the years add up to the stage totals`,
@@ -397,8 +400,44 @@ for (const file of STAGE_FILES) {
   assert('each job is projected at most once', Object.values(projCalls).every(n => n === 1), JSON.stringify(projCalls));
   assert('  and a job no figure can read — no contract — never is', !projCalls.c && !projCalls.i, JSON.stringify(projCalls));
 
+  // The hover breakdown lists these records, so a figure can only show what
+  // it really added up if every bucket's records sum to the bucket.
+  console.log('\n[every figure keeps the jobs it was summed from]');
+  const FIGS = ['contract', 'bid', 'actual', 'profit', 'profitBase', 'gp', 'gpJobs'];
+  for (const k of ['ip', 'done', 'aw']) {
+    const buckets = [['all years', T[k]], ...Object.entries(Y[k])];
+    assert(`  ${k}: each bucket's job records add up to its figures`,
+      buckets.every(([, c]) => c.list.length === c.jobs
+        && FIGS.every(f => near(c.list.reduce((s, j) => s + j[f], 0), c[f]))),
+      buckets.map(([y, c]) => `${y}: ${c.list.length}/${c.jobs}`).join(', '));
+  }
+  const rec = id => T.ip.list.concat(T.done.list, T.aw.list).find(j => j.id === id);
+  assert('a year row and its stage total share the same record', Y.ip['2025'].list[0] === rec('b'));
+  assert('a record says which date put it in its year',
+    rec('b').basis.year === '2025' && rec('b').basis.from === 'first daily entry' && rec('b').basis.date === '2025-10-01'
+    && rec('e').basis.from === 'Projected Completion' && rec('g').basis.from === 'Start Date'
+    && rec('i').basis.year === '' && rec('i').basis.from === '', JSON.stringify(rec('b').basis));
+  assert('  and how its cost splits across the years its entries are dated in',
+    near(rec('b').actualByYear['2025'], 60000) && near(rec('b').actualByYear['2026'], 40000)
+    && Object.keys(rec('b').actualByYear).length === 2, JSON.stringify(rec('b').actualByYear));
+  assert('  undated entries split out under "", still part of the cost',
+    near(rec('c').actualByYear[''], 20000) && near(rec('c').actual, 20000), JSON.stringify(rec('c').actualByYear));
+  assert('  the projected cost behind its profit, only where it has a contract',
+    near(rec('a').cost, 420000) && rec('c').cost === null && rec('i').cost === null && near(rec('e').cost, 110000));
+  // Live A: 150/420 complete, so it has earned 500,000 × 150/420 = 178,571.43.
+  assert('  and the earned share behind its GP, only on live work with a contract and spend',
+    near(rec('a').earned.pct, 150 / 420) && near(rec('a').earned.earned, 178571.43) && near(rec('a').earned.gp, rec('a').gp)
+    && rec('c').earned === null && rec('g').earned === null && rec('d').earned === null);
+  const co = aggregateStages(file, [dated({ id: 'co', name: 'With COs', status: 'In Progress', contract: 20000,
+    bid: 0, actual: 0, days: ['2026-05-01'] })].map(j => ({ ...j,
+    bidItems: [{ quantity: 10, unit_cost: 1000, change_orders: [{ qty_delta: 2 }, { qty_delta: -1 }] }] })));
+  assert('  and its bid lines apart from what change orders added',
+    near(co.stageTotals.ip.list[0].bidLines, 10000) && near(co.stageTotals.ip.list[0].bid, 11000),
+    JSON.stringify({ lines: co.stageTotals.ip.list[0].bidLines, bid: co.stageTotals.ip.list[0].bid }));
+
   console.log('\n[the year a job counts under]');
-  const yr = jobYear(file);
+  const basisOf = jobYear(file);
+  const yr = (p, stage) => basisOf(p, stage).year;
   const rows = (...ds) => ds.map(date => ({ date }));
   assert('Completed reads its last daily entry over its plan',
     yr({ dailyRows: rows('2025-03-01', '2026-01-10'), 'end-date': '2025-12-01' }, 'done') === '2026');
@@ -417,6 +456,11 @@ for (const file of STAGE_FILES) {
   assert('a blank daily date is skipped, not read as today',
     yr({ dailyRows: rows('', '2024-06-01') }, 'done') === '2024');
   assert('no dates at all gives ""', yr({}, 'aw') === '' && yr({ dailyRows: rows('') }, 'done') === '');
+  const b1 = basisOf({ dailyRows: rows('10/3/2025', '2026-02-01'), 'start-date': '2026-04-01' }, 'ip');
+  assert('it names the date it read, in ISO form',
+    b1.from === 'first daily entry' && b1.date === '2025-10-03', JSON.stringify(b1));
+  const b2 = basisOf({ 'end-date': '2027-08-01' }, 'aw');
+  assert('  whichever date that was', b2.from === 'Projected Completion' && b2.date === '2027-08-01', JSON.stringify(b2));
 
   console.log('\n[nothing to report]');
   const empty = aggregateStages(file, []);
@@ -524,13 +568,25 @@ for (const file of FILES) {
     assert('each stage draws its totals on the shared strip component',
       home.includes('class="home-metric-strip stage-strip"')
       && home.includes('<span class="home-metric-label">${x.label}</span>'));
-    assert('every year row lists its jobs on hover',
-      home.includes('title="${esc(stageRowTip(st, y, c))}"'));
+    // Every figure names its stage, year and field, which is what the hover
+    // breakdown is built from — the totals tiles with '*' for all years.
+    assert('every tile carries the figure its breakdown lists',
+      home.includes('data-sb="${st.key}|*|${x.f}"')
+      && (home.match(/\{ f: '(jobs|contract|bid|actual|variance|profit|gp)',/g) || []).length === 17);
+    assert('  and so does every cell of every year row, the year included',
+      home.includes('<td data-sb="${st.key}|${y}|year">${y || \'No date\'}</td>')
+      && home.includes('<td data-sb="${st.key}|${y}|${k}">${CELL[k](c)}</td>'));
+    assert('  the plain-text row tooltip it replaced is gone', !home.includes('stageRowTip'));
+    assert('  the breakdown is rebuilt on every draw, and a pinned one follows its figure',
+      home.includes('_homeStageTipBuild = (key, full) =>')
+      && /`;\n  _stageTipAfterRender\(\);\n  loadDeadlines\(\);/.test(home));
+    const tipCode = home.slice(home.indexOf('// ── How each figure was compiled'), home.indexOf('// ── Status bar widths'));
+    assert('  job names reach it escaped', tipCode.includes('_cbEsc(j.name)') && !/\$\{j\.name\}/.test(tipCode));
 
     const agg = home.slice(home.indexOf('  const homeStageOf'), home.indexOf('  const allDaily'));
     assert('  the aggregation projects through one memoised call',
       (agg.match(/projectedCostForProject\(/g) || []).length === 1
-      && agg.includes('if (projContract) { job.profit = projContract - projCost();')
+      && agg.includes('if (projContract) { cost = projCost(); job.profit = projContract - cost;')
       && agg.includes('gpEarnedToDate(projContract, projActual, projCost())'),
       `${(agg.match(/projectedCostForProject\(/g) || []).length} calls in the loop`);
     for (const dead of ['ipCount', 'ipContract', 'ipBid', 'ipActual', 'ipProfit', 'ipProfitBase', 'awCount',
