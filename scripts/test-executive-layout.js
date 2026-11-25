@@ -90,10 +90,17 @@ const METRICS = [
 const report = read('api/executive/report.js');
 for (const label of METRICS) {
   assert(`the API builds "${label}"`, report.includes(`label: '${label}'`));
-  for (const [name, html] of [['tracker', tracker], ['paving', paving], ['kiewit-pinetree', kiewit]]) {
-    assert(`  and ${name}.html still shows it`,
-      html.includes(`>${label}</span>`));
-  }
+  assert(`  and kiewit-pinetree.html still shows it`, kiewit.includes(`>${label}</span>`));
+}
+// Turf and Paving dropped that strip for Completed / In Progress / Awarded
+// sections broken out by year. The report's book figures are the In Progress
+// and Awarded sections added together (scripts/test-home-metrics.js checks
+// that arithmetic), so the report still summarises what those pages show.
+for (const [name, html] of [['tracker', tracker], ['paving', paving]]) {
+  assert(`${name}.html breaks the same figures out by stage and year instead`,
+    html.includes('Jobs by Stage &amp; Year')
+    && ["label: 'Awarded Backlog'", "label: 'Actual Spend'", "label: 'Projected Profit'", "label: 'GP Earned to Date'"]
+      .every(l => html.includes(l)));
 }
 assert('the strip is exactly those eight figures, no more',
   (report.match(/^\s+label: '(?:Active Projects|Total [A-Za-z ]+|Awarded Backlog)',$/gm) || []).length === METRICS.length);
