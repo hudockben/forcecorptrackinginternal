@@ -1489,32 +1489,41 @@
     }
 
     /* ── Jobs by stage & year ── */
-    /* Every job split three ways — completed, in progress, awarded — and each
-       stage broken down by year, so the finished work, the work in flight and
-       the backlog read side by side under the strip. */
-    .stage-grid {
-      display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-      gap: 0.75rem;
+    /* This replaced the single summary strip. Every job is split three ways —
+       completed, in progress, awarded — and each stage carries its own totals
+       on the shared metric strip with the same figures year by year under it. */
+    .stage-risk { color: var(--red); font-weight: 600; letter-spacing: 0.08em; }
+    .stage-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 0.85rem;
       margin-bottom: 2rem;
     }
     .stage-card {
-      min-width: 0;
       border: 1px solid var(--border);
       border-top: 2px solid var(--stage, var(--border));
       border-radius: 6px;
       background: var(--surface);
-      overflow-x: auto;
+      overflow: hidden;
     }
     .stage-card-head {
       display: flex;
       align-items: center;
       gap: 0.45rem;
-      padding: 0.7rem 0.85rem 0.55rem;
+      padding: 0.65rem 1.25rem 0.55rem;
     }
     .stage-dot   { width: 6px; height: 6px; border-radius: 50%; background: var(--stage); flex-shrink: 0; }
-    .stage-name  { font-size: 0.6rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text); }
-    .stage-count { margin-left: auto; font-size: 0.66rem; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .stage-name  { font-size: 0.62rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text); }
+    .stage-basis { margin-left: auto; font-size: 0.62rem; color: var(--muted); white-space: nowrap; }
+    /* The shared strip, set inside the card — the card draws the frame. */
+    .home-metric-strip.stage-strip {
+      border: 0;
+      border-top: 1px solid var(--border);
+      border-radius: 0;
+      margin: 0;
+      background: transparent;
+    }
+    .stage-table-wrap { overflow-x: auto; border-top: 1px solid var(--border); }
     .stage-table {
       width: 100%;
       border-collapse: collapse;
@@ -1522,7 +1531,7 @@
       font-variant-numeric: tabular-nums;
     }
     .stage-table th {
-      padding: 0.3rem 0.6rem;
+      padding: 0.35rem 0.75rem;
       font-size: 0.55rem;
       font-weight: 500;
       letter-spacing: 0.12em;
@@ -1533,7 +1542,7 @@
       white-space: nowrap;
     }
     .stage-table td {
-      padding: 0.4rem 0.6rem;
+      padding: 0.4rem 0.75rem;
       text-align: right;
       /* The page-wide td rule boxes every cell; these rows only want a rule
          underneath, like the strip's cards. */
@@ -1541,18 +1550,14 @@
       border-bottom: 1px solid var(--border);
       white-space: nowrap;
     }
-    .stage-table th:first-child, .stage-table td:first-child { text-align: left; padding-left: 0.85rem; }
-    .stage-table th:last-child,  .stage-table td:last-child  { padding-right: 0.85rem; }
+    .stage-table th:first-child, .stage-table td:first-child { text-align: left; padding-left: 1.25rem; }
+    .stage-table th:last-child,  .stage-table td:last-child  { padding-right: 1.25rem; }
     .stage-table tbody tr:last-child td { border-bottom: none; }
     .stage-table tbody tr:hover td { background: var(--surface2); }
-    .stage-table tr.stage-yr-now td:first-child { color: var(--stage); font-weight: 700; }
+    .stage-table tr.stage-yr-now td:first-child  { color: var(--stage); font-weight: 700; }
     .stage-table tr.stage-yr-none td:first-child { color: var(--muted); font-style: italic; }
-    .stage-table tfoot td { font-weight: 700; background: var(--surface2); border-top: 1px solid var(--border); border-bottom: none; }
-    .stage-empty { padding: 0.2rem 0.85rem 0.9rem; font-size: 0.74rem; color: var(--muted); }
-    .stage-note  { padding: 0.45rem 0.85rem 0.55rem; font-size: 0.62rem; color: var(--muted); border-top: 1px solid var(--border); }
-    @media (max-width: 1100px) {
-      .stage-grid { grid-template-columns: minmax(0, 1fr); }
-    }
+    .stage-empty { padding: 0.1rem 1.25rem 0.9rem; font-size: 0.74rem; color: var(--muted); }
+    .stage-note  { padding: 0.45rem 1.25rem 0.55rem; font-size: 0.62rem; color: var(--muted); border-top: 1px solid var(--border); }
 
     /* ── Project table ── */
     /* Still scrollable on narrow screens, but the scrollbar chrome is hidden —
@@ -5726,26 +5731,42 @@ function renderHomeTab() {
   const todayNoon = new Date(_localDateStr() + 'T12:00:00');
   const weekAgo = _localDateStr(new Date(today - 7 * 24 * 60 * 60 * 1000));
 
-  // ── Cross-project aggregates (sum from each project's own data) ──
-  // The strip covers the live book: work in progress, and work awarded but not
-  // yet started. Awarded jobs are totalled apart from the in-progress ones
-  // rather than merged into them, because the widening is not safe for every
-  // figure. An awarded job carries a contract and a bid budget but has spent
-  // nothing against either, so rolling it into Actual Spend or Total Variance
-  // would report the company further under budget every time it won a job —
-  // those two watch live work burn its budget, so they stay on live work.
-  // GP Earned to Date is earned on the work in place whatever a job's status,
-  // so it totals every job with a contract and spend — the rows the Financials
-  // tab totals. It covered completed jobs only while it was contract minus
-  // cost-to-date, which meant nothing until a job's costs had finished landing.
-  let ipCount = 0, ipContract = 0, ipBid = 0, ipActual = 0;
-  let ipProfit = 0, ipProfitBase = 0, gpEarned = 0, gpCount = 0, gpDone = 0;
-  let awCount = 0, awContract = 0, awBid = 0, awProfit = 0, awProfitBase = 0;
+  // ── Jobs by stage & year ──
+  // Every job that has been won counts in one of three stages, and within its
+  // stage under one year (_homeJobYear says which date each stage reads). Each
+  // stage carries the figures that mean something for it:
+  //   Completed   — contract, bid budget, actual cost, variance, and the GP the
+  //                 job closed at. Substantially Complete sits here — the field
+  //                 work is done — though its last costs may still be landing,
+  //                 so its GP reads off projected cost like a live job's.
+  //   In Progress — contract, bid budget, actual spend, variance, projected
+  //                 profit, and the GP earned to date on the work in place.
+  //   Awarded     — contract (the backlog), bid budget, and projected profit,
+  //                 which with nothing spent is the margin it was bid at. Spend
+  //                 and variance stay off it: an untouched budget would read as
+  //                 money saved on work nobody has started, and spend booked
+  //                 early against an awarded job is not swept into live burn.
+  // Bidding and On Hold are in none of the three. This replaced one strip that
+  // totalled in progress plus awarded; those totals are the two sections added.
+  const homeStageOf = p => {
+    const s = p['status'] || '';
+    return (projIsDone(p) || s === 'Substantially Complete') ? 'done'
+         : s === 'In Progress' ? 'ip'
+         : s === 'Awarded'     ? 'aw' : null;
+  };
+  const stageBucket = () => ({ jobs: 0, contract: 0, bid: 0, actual: 0, profit: 0, profitBase: 0,
+                               gp: 0, gpJobs: 0, subst: 0, noContract: 0, names: [] });
+  const stageYears  = { done: {}, ip: {}, aw: {} };
+  const stageTotals = { done: stageBucket(), ip: stageBucket(), aw: stageBucket() };
   let statusCounts = { Active: 0, Complete: 0, 'On Hold': 0, 'At Risk': 0 };
-  // Jobs by stage, then by year — see _homeJobYear for the year each reads.
-  const stageYears = { done: {}, ip: {}, aw: {} };
 
   projectsList.forEach(p => {
+    // status counts from bid items
+    (p.bidItems||[]).forEach(b => {
+      if (b.status) statusCounts[b.status] = (statusCounts[b.status] || 0) + 1;
+    });
+    const stage = homeStageOf(p);
+    if (!stage) return;
     const _effBidQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
     const projBid    = (p.bidItems||[]).reduce((s,b) => s + _effBidQty(b) * (parseFloat(b.unit_cost)||0), 0);
     const projActual = (p.dailyRows||[]).reduce((s,r) => s + dailyRowCost(r), 0);
@@ -5754,82 +5775,40 @@ function renderHomeTab() {
     // once per job and only where a figure reads it.
     let _proj;
     const projCost = () => (_proj === undefined ? (_proj = projectedCostForProject(p)) : _proj);
-    if ((p['status'] || '') === 'In Progress') {
-      ipCount++;
-      ipContract  += projContract;
-      ipBid       += projBid;
-      ipActual    += projActual;
-      // Only a job carrying a contract can contribute a profit figure; without
-      // one there is no revenue to subtract the cost from.
-      if (projContract) { ipProfit += projContract - projCost(); ipProfitBase += projContract; }
-    } else if ((p['status'] || '') === 'Awarded') {
-      // Won, not started. With nothing spent against it yet its projected cost
-      // is still the bid budget, so the profit it contributes is the margin the
-      // job was bid at — the same figure, read forward instead of in flight.
-      awCount++;
-      awContract += projContract;
-      awBid      += projBid;
-      if (projContract) { awProfit += projContract - projCost(); awProfitBase += projContract; }
+    const job = { contract: projContract, bid: projBid, actual: projActual,
+                  profit: 0, profitBase: 0, gp: 0, gpJobs: 0 };
+    // Only a job carrying a contract can contribute a profit figure; without
+    // one there is no revenue to subtract the cost from. A finished job's
+    // projected cost is its final cost, so there this is the GP it closed at.
+    if (projContract) { job.profit = projContract - projCost(); job.profitBase = projContract; }
+    // Earned profit needs both a contract and real spend behind it. Each job
+    // earns its contract in proportion to cost to date over projected cost.
+    if (stage === 'ip' && projContract > 0 && projActual > 0) {
+      job.gp = gpEarnedToDate(projContract, projActual, projCost()).gp;
+      job.gpJobs = 1;
     }
-    // Earned profit needs both a contract and real spend behind it.
-    if (projContract > 0 && projActual > 0) {
-      gpEarned += gpEarnedToDate(projContract, projActual, projCost()).gp;
-      gpCount++;
-      if (projIsDone(p)) gpDone++;
-    }
-    // Stage × year. Substantially Complete sits with Completed — the field
-    // work is done — and the card calls it out, since its last costs may still
-    // be landing. Bidding and On Hold are in none of the three.
-    const _status = p['status'] || '';
-    const _stage  = (projIsDone(p) || _status === 'Substantially Complete') ? 'done'
-                  : _status === 'In Progress' ? 'ip'
-                  : _status === 'Awarded'     ? 'aw' : null;
-    if (_stage) {
-      const yr = _homeJobYear(p, _stage);
-      const c  = stageYears[_stage][yr] || (stageYears[_stage][yr] =
-                 { jobs: 0, contract: 0, profit: 0, profitBase: 0, subst: 0, noContract: 0, names: [] });
+    const name  = p['project-name'] || 'Untitled Project';
+    const subst = (p['status'] || '') === 'Substantially Complete';
+    const yr    = _homeJobYear(p, stage);
+    const byYr  = stageYears[stage][yr] || (stageYears[stage][yr] = stageBucket());
+    for (const c of [byYr, stageTotals[stage]]) {
       c.jobs++;
-      c.contract += projContract;
-      c.names.push(p['project-name'] || 'Untitled Project');
-      if (_status === 'Substantially Complete') c.subst++;
-      // Same rule as the strip: no contract, no revenue to set the cost against.
-      // On a completed job the projected cost is the final cost, so this is the
-      // GP it closed at; on the others it is the profit it is tracking to.
-      if (projContract) { c.profit += projContract - projCost(); c.profitBase += projContract; }
-      else c.noContract++;
+      for (const k in job) c[k] += job[k];
+      if (!projContract) c.noContract++;
+      if (subst) c.subst++;
+      c.names.push(name);
     }
-    // status counts from bid items
-    (p.bidItems||[]).forEach(b => {
-      if (b.status) statusCounts[b.status] = (statusCounts[b.status] || 0) + 1;
-    });
   });
 
-  const ipVariance = ipBid - ipActual;
-  const ipPct      = ipBid ? (ipActual / ipBid) * 100 : 0;
-  const ipOverClass = ipPct >= 100 ? 'red' : ipPct >= 85 ? 'yellow' : 'green';
-  // The book — in progress plus awarded — for the figures that still mean the
-  // same thing over work that has not broken ground.
-  const bookCount      = ipCount + awCount;
-  const bookContract   = ipContract + awContract;
-  const bookBid        = ipBid + awBid;
-  const bookProfit     = ipProfit + awProfit;
-  const bookProfitBase = ipProfitBase + awProfitBase;
   const money0 = v => (v < 0 ? '-$' : '$') + fmt(Math.abs(v), 0);
   const posNeg = v => 'color:var(--' + (v >= 0 ? 'green' : 'red') + ')';
   const allDaily   = getAllDailyRows();
   const atRiskCt   = statusCounts['At Risk'] || 0;
-  // At Risk takes a slot on the strip only when it has something to report. It
-  // used to share a card with a count of the week's daily entries, shown
-  // whenever nothing was at risk — a figure that measured how much got typed in
-  // rather than how the work is going, sitting on a strip that is otherwise all
-  // money. Dropping it costs nothing: the entries themselves are a click away
-  // under Cost Tracking, and Recent Activity below already shows the latest.
-  const atRiskHTML = atRiskCt === 0 ? '' : `
-      <div class="home-metric-item">
-        <span class="home-metric-label">At Risk</span>
-        <span class="home-metric-value" style="color:var(--red)">${atRiskCt}</span>
-        <span class="home-metric-sub">${atRiskCt === 1 ? 'item needs' : 'items need'} attention</span>
-      </div>`;
+  // At Risk is a count of bid items across every job, so it belongs to no one
+  // stage. It rides on the section heading, and only when it has something to
+  // report; the items themselves are listed under Items Needing Attention.
+  const atRiskHTML = atRiskCt === 0 ? '' :
+    ` <span class="stage-risk" title="Bid items marked At Risk, across every job — listed under Items Needing Attention below.">&#9888; ${atRiskCt} ${atRiskCt === 1 ? 'item' : 'items'} at risk</span>`;
 
   // ── Job ticker — every in-progress / awarded job on one running tape ──
   // This replaces the collapsed budget alert. That alert only spoke up once a
@@ -5906,89 +5885,143 @@ function renderHomeTab() {
       </div>
     </div>`;
 
-  // ── Jobs by stage & year ──
-  // The strip above totals the live book in single figures. This splits every
-  // job by where it stands and by year, so it shows how the finished work, the
-  // work in flight and the backlog are spread across seasons. Contract and
-  // profit are worked exactly as the strip works them, so the In Progress and
-  // Awarded totals tie to its Total Contract Value, Awarded Backlog and Total
-  // Projected Profit.
+  // ── Jobs by stage & year: markup ──
+  // Each stage opens on its totals, on the same metric strip the other
+  // division pages use, then the same figures year by year, newest first.
   const thisYear = String(new Date().getFullYear());
+  const pctOf    = (a, b) => (b ? a / b * 100 : 0);
+  const burnClr  = pct => 'color:var(--' + (pct >= 100 ? 'red' : pct >= 85 ? 'yellow' : 'green') + ')';
+  const marginOf = c => (c.profitBase ? c.profit / c.profitBase * 100 : null);
+  const signed   = v => `<span style="${posNeg(v)}">${money0(v)}</span>`;
+  const plural   = (n, w) => `${n} ${w}${n === 1 ? '' : 's'}`;
+  // Table cells, by figure. A dash where the figure has nothing to stand on.
+  const CELL = {
+    jobs:     c => c.jobs,
+    contract: c => '$' + fmt(c.contract, 0),
+    bid:      c => '$' + fmt(c.bid, 0),
+    actual:   c => '$' + fmt(c.actual, 0),
+    pct:      c => c.bid ? `<span style="${burnClr(pctOf(c.actual, c.bid))}">${fmtPct(pctOf(c.actual, c.bid))}</span>` : '—',
+    variance: c => c.bid ? signed(c.bid - c.actual) : '—',
+    profit:   c => c.profitBase ? signed(c.profit) : '—',
+    margin:   c => c.profitBase ? `<span style="${posNeg(c.profit)}">${fmtPct(marginOf(c))}</span>` : '—',
+    gp:       c => c.gpJobs ? signed(c.gp) : '—',
+  };
+  const TIP = {
+    contract: 'Contract value — the revised amount where there is one.',
+    bid:      'Bid budget, change orders included.',
+    variance: 'Bid budget less actual cost. Positive is under budget.',
+    margin:   'Profit as a share of contract value, over the jobs that carry a contract.',
+  };
+  const yearsSpan = st => {
+    const ys = Object.keys(stageYears[st]).filter(Boolean).sort();
+    return !ys.length ? 'no dates set' : ys.length === 1 ? ys[0] : `${ys[0]} – ${ys[ys.length - 1]}`;
+  };
+  const marginSub = (t, what) => t.profitBase ? `${fmtPct(marginOf(t))} ${what}` : 'no contract values';
   const STAGES = [
-    { key: 'done', label: 'Completed',   color: statusTextColor('Complete'),
-      profitHead: 'GP',
-      profitTip:  'Contract value less final cost — the gross profit the job closed at. A substantially complete job uses its projected cost while its last costs land.',
-      yearTip:    'The year the job finished: its last daily entry, else its Projected Completion, else its Start Date.',
-      none:       'No completed jobs yet.' },
-    { key: 'ip',   label: 'In Progress', color: statusTextColor('In Progress'),
-      profitHead: 'Proj. Profit',
-      profitTip:  'Contract value less projected final cost.',
-      yearTip:    'The year the job started: its first daily entry, else its Start Date, else its Projected Completion.',
-      none:       'Nothing in progress.' },
-    { key: 'aw',   label: 'Awarded',     color: statusTextColor('Awarded'),
-      profitHead: 'Proj. Profit',
-      profitTip:  'Contract value less projected cost — with nothing spent yet, the margin the job was bid at.',
-      yearTip:    'The year the job is set to start: its Start Date, else its Projected Completion.',
-      none:       'Nothing awarded and waiting.' },
+    { key: 'done', label: 'Completed', color: statusTextColor('Complete'),
+      basis: 'by year finished',
+      yearTip: 'The year the job finished: its last daily entry, else its Projected Completion, else its Start Date.',
+      none: 'No completed jobs yet.',
+      cols: [['jobs', 'Jobs'], ['contract', 'Contract'], ['bid', 'Bid Budget'], ['actual', 'Actual Cost'],
+             ['pct', '% of Budget'], ['variance', 'Variance'], ['profit', 'GP'], ['margin', 'Margin']],
+      tiles: t => [
+        { label: 'Completed Jobs', value: t.jobs, style: `color:${statusTextColor('Complete')}`, sub: yearsSpan('done') },
+        { label: 'Contract Value', value: '$' + fmt(t.contract, 0), style: 'color:var(--blue)', sub: 'completed work' },
+        { label: 'Bid Budget',     value: '$' + fmt(t.bid, 0), style: 'color:var(--green)', sub: 'with change orders' },
+        { label: 'Actual Cost',    value: '$' + fmt(t.actual, 0), style: burnClr(pctOf(t.actual, t.bid)),
+          sub: `${fmtPct(pctOf(t.actual, t.bid))} of bid budget` },
+        { label: 'Variance',       value: money0(t.bid - t.actual), style: posNeg(t.bid - t.actual),
+          sub: `${t.bid - t.actual >= 0 ? 'under' : 'over'} budget` },
+        { label: 'Gross Profit',   value: money0(t.profit), style: posNeg(t.profit), sub: marginSub(t, 'margin'),
+          tip: 'Contract value less final cost — the GP the jobs closed at. A substantially complete job uses its projected cost while its last costs land.' },
+      ] },
+    { key: 'ip', label: 'In Progress', color: statusTextColor('In Progress'),
+      basis: 'by year started',
+      yearTip: 'The year the job started: its first daily entry, else its Start Date, else its Projected Completion.',
+      none: 'Nothing in progress.',
+      cols: [['jobs', 'Jobs'], ['contract', 'Contract'], ['bid', 'Bid Budget'], ['actual', 'Actual Spend'],
+             ['pct', '% Spent'], ['variance', 'Variance'], ['profit', 'Proj. Profit'], ['margin', 'Margin'],
+             ['gp', 'GP Earned']],
+      tiles: t => [
+        { label: 'Jobs In Progress', value: t.jobs, style: `color:${statusTextColor('In Progress')}`, sub: yearsSpan('ip') },
+        { label: 'Contract Value',   value: '$' + fmt(t.contract, 0), style: 'color:var(--blue)', sub: 'in progress jobs' },
+        { label: 'Bid Budget',       value: '$' + fmt(t.bid, 0), style: 'color:var(--green)', sub: 'with change orders' },
+        { label: 'Actual Spend',     value: '$' + fmt(t.actual, 0), style: burnClr(pctOf(t.actual, t.bid)),
+          sub: `${fmtPct(pctOf(t.actual, t.bid))} of bid budget` },
+        { label: 'Variance',         value: money0(t.bid - t.actual), style: posNeg(t.bid - t.actual),
+          sub: `${t.bid - t.actual >= 0 ? 'under' : 'over'} budget` },
+        { label: 'Projected Profit', value: money0(t.profit), style: posNeg(t.profit), sub: marginSub(t, 'margin'),
+          tip: 'Contract value less projected final cost.' },
+        { label: 'GP Earned to Date', value: money0(t.gp), style: posNeg(t.gp), sub: `${plural(t.gpJobs, 'job')} with spend`,
+          tip: 'Gross profit the work in place has earned so far. Each job earns its contract in proportion to cost to date over projected cost.' },
+      ] },
+    { key: 'aw', label: 'Awarded', color: statusTextColor('Awarded'),
+      basis: 'by scheduled start',
+      yearTip: 'The year the job is set to start: its Start Date, else its Projected Completion.',
+      none: 'Nothing awarded and waiting.',
+      cols: [['jobs', 'Jobs'], ['contract', 'Contract'], ['bid', 'Bid Budget'], ['profit', 'Proj. Profit'], ['margin', 'Margin']],
+      tiles: t => [
+        { label: 'Awarded Jobs',     value: t.jobs, style: `color:${statusTextColor('Awarded')}`, sub: yearsSpan('aw') },
+        { label: 'Awarded Backlog',  value: '$' + fmt(t.contract, 0), style: `color:${statusTextColor('Awarded')}`,
+          sub: 'won, not started', tip: 'Contract value already won but not started — the work sitting in front of the crews.' },
+        { label: 'Bid Budget',       value: '$' + fmt(t.bid, 0), style: 'color:var(--green)', sub: 'with change orders' },
+        { label: 'Projected Profit', value: money0(t.profit), style: posNeg(t.profit), sub: marginSub(t, 'bid margin'),
+          tip: 'Contract value less projected cost — with nothing spent yet, the margin the jobs were bid at.' },
+      ] },
   ];
+  const tileHTML = x => `
+        <div class="home-metric-item"${x.tip ? ` title="${esc(x.tip)}"` : ''}>
+          <span class="home-metric-label">${x.label}</span>
+          <span class="home-metric-value" style="${x.style}">${x.value}</span>
+          <span class="home-metric-sub">${x.sub}</span>
+        </div>`;
+  const stageRowTip = (st, y, c) => {
+    const names = c.names.slice().sort((a, b) => a.localeCompare(b));
+    const list  = names.slice(0, 20).join('\n') + (names.length > 20 ? `\n…and ${names.length - 20} more` : '');
+    const noCt  = c.noContract ? `\n(${c.noContract} with no contract value — counted, but left out of contract and profit)` : '';
+    return `${y || 'No date'} — ${plural(c.jobs, st.label.toLowerCase() + ' job')}${noCt}\n${list}`;
+  };
   const stageCardHTML = st => {
+    const t      = stageTotals[st.key];
     const byYear = stageYears[st.key];
     // Newest year first; a job with no date at all sinks to the bottom.
     const years  = Object.keys(byYear).sort((a, b) => (a === '' ? 1 : b === '' ? -1 : b.localeCompare(a)));
-    const tot    = years.reduce((t, y) => {
-      const c = byYear[y];
-      t.jobs += c.jobs; t.contract += c.contract; t.profit += c.profit; t.profitBase += c.profitBase; t.subst += c.subst;
-      return t;
-    }, { jobs: 0, contract: 0, profit: 0, profitBase: 0, subst: 0 });
-    const margin = c => c.profitBase ? `<span style="${posNeg(c.profit)}">${fmtPct(c.profit / c.profitBase * 100)}</span>` : '—';
-    const profit = c => c.profitBase ? `<span style="${posNeg(c.profit)}">${money0(c.profit)}</span>` : '—';
-    const rowTip = (y, c) => {
-      const shown = c.names.slice().sort((a, b) => a.localeCompare(b));
-      const list  = shown.slice(0, 20).join('\n') + (shown.length > 20 ? `\n…and ${shown.length - 20} more` : '');
-      const noCt  = c.noContract ? `\n(${c.noContract} with no contract value — counted, but left out of contract and profit)` : '';
-      return `${y || 'No date'} — ${c.jobs} ${st.label.toLowerCase()} job${c.jobs === 1 ? '' : 's'}${noCt}\n${list}`;
-    };
-    const rows = years.map(y => {
-      const c = byYear[y];
+    const rows   = years.map(y => {
+      const c   = byYear[y];
       const cls = y === '' ? 'stage-yr-none' : y === thisYear ? 'stage-yr-now' : '';
-      return `<tr${cls ? ` class="${cls}"` : ''} title="${esc(rowTip(y, c))}">
-        <td>${y || 'No date'}</td>
-        <td>${c.jobs}</td>
-        <td>$${fmt(c.contract, 0)}</td>
-        <td>${profit(c)}</td>
-        <td>${margin(c)}</td>
-      </tr>`;
+      return `<tr${cls ? ` class="${cls}"` : ''} title="${esc(stageRowTip(st, y, c))}">
+            <td>${y || 'No date'}</td>${st.cols.map(([k]) => `<td>${CELL[k](c)}</td>`).join('')}
+          </tr>`;
     }).join('');
-    return `<div class="stage-card" style="--stage:${st.color}">
+    const notes = [
+      t.subst      ? `Includes ${plural(t.subst, 'substantially complete job')}.` : '',
+      t.noContract ? `${plural(t.noContract, 'job')} with no contract value ${t.noContract === 1 ? 'is' : 'are'} counted but left out of contract and profit.` : '',
+    ].filter(Boolean).join(' ');
+    return `
+    <section class="stage-card" style="--stage:${st.color}">
       <div class="stage-card-head">
         <span class="stage-dot"></span>
         <span class="stage-name">${st.label}</span>
-        <span class="stage-count">${tot.jobs} job${tot.jobs === 1 ? '' : 's'}</span>
+        <span class="stage-basis" title="${esc(st.yearTip)}">${st.basis}</span>
       </div>
-      ${tot.jobs === 0 ? `<div class="stage-empty">${st.none}</div>` : `
-      <table class="stage-table">
-        <thead><tr>
-          <th title="${esc(st.yearTip)}">Year</th>
-          <th>Jobs</th>
-          <th title="Contract value — revised amount where there is one.">Contract</th>
-          <th title="${esc(st.profitTip)}">${st.profitHead}</th>
-          <th title="${esc(st.profitHead)} as a share of contract value, over the jobs that carry a contract.">Margin</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-        ${years.length > 1 ? `<tfoot><tr>
-          <td>Total</td>
-          <td>${tot.jobs}</td>
-          <td>$${fmt(tot.contract, 0)}</td>
-          <td>${profit(tot)}</td>
-          <td>${margin(tot)}</td>
-        </tr></tfoot>` : ''}
-      </table>
-      ${tot.subst ? `<div class="stage-note">Includes ${tot.subst} substantially complete job${tot.subst === 1 ? '' : 's'}.</div>` : ''}`}
-    </div>`;
+      ${t.jobs === 0 ? `<div class="stage-empty">${st.none}</div>` : `
+      <div class="home-metric-strip stage-strip">${st.tiles(t).map(tileHTML).join('')}
+      </div>
+      <div class="stage-table-wrap">
+        <table class="stage-table">
+          <thead><tr>
+            <th title="${esc(st.yearTip)}">Year</th>${st.cols.map(([k, h]) => `<th${TIP[k] ? ` title="${esc(TIP[k])}"` : ''}>${h}</th>`).join('')}
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      ${notes ? `<div class="stage-note">${notes}</div>` : ''}`}
+    </section>`;
   };
   const stageHTML = projectsList.length === 0 ? '' : `
-    <p class="home-section-title">Jobs by Stage &amp; Year</p>
-    <div class="stage-grid">${STAGES.map(stageCardHTML).join('')}</div>`;
+    <p class="home-section-title">Jobs by Stage &amp; Year${atRiskHTML}</p>
+    <div class="stage-stack">${STAGES.map(stageCardHTML).join('')}
+    </div>`;
 
   // ── Status bar widths ──
   const statusTotal = Object.values(statusCounts).reduce((a, b) => a + b, 0) || 1;
@@ -6277,50 +6310,6 @@ function renderHomeTab() {
   <div class="home-wrap">
 
     ${tickerHTML}
-
-    <div class="home-metric-strip">
-      <div class="home-metric-item" title="Jobs in progress, plus jobs awarded and not yet started, of ${projectsList.length} projects.">
-        <span class="home-metric-label">Active Projects</span>
-        <span class="home-metric-value" style="color:var(--blue)">${bookCount}</span>
-        <span class="home-metric-sub">${awCount ? `${ipCount} in progress · ${awCount} awarded` : `in progress of ${projectsList.length}`}</span>
-      </div>
-      <div class="home-metric-item" title="Contract value on jobs in progress ($${fmt(ipContract, 0)}) and on awarded jobs ($${fmt(awContract, 0)}).">
-        <span class="home-metric-label">Total Contract Value</span>
-        <span class="home-metric-value" style="color:var(--blue)">$${fmt(bookContract, 0)}</span>
-        <span class="home-metric-sub">${awCount ? 'in progress + awarded' : 'in progress jobs'}</span>
-      </div>
-      <div class="home-metric-item" title="Contract value already won but not started — the work sitting in front of the crews.">
-        <span class="home-metric-label">Awarded Backlog</span>
-        <span class="home-metric-value"${awContract ? ` style="color:${statusTextColor('Awarded')}"` : ''}>$${fmt(awContract, 0)}</span>
-        <span class="home-metric-sub">${awCount ? `${awCount} awarded job${awCount === 1 ? '' : 's'} not started` : 'nothing awarded'}</span>
-      </div>
-      <div class="home-metric-item" title="Bid budget on jobs in progress ($${fmt(ipBid, 0)}) and on awarded jobs ($${fmt(awBid, 0)}).">
-        <span class="home-metric-label">Total Bid Budget</span>
-        <span class="home-metric-value" style="color:var(--green)">$${fmt(bookBid, 0)}</span>
-        <span class="home-metric-sub">${awCount ? 'in progress + awarded' : 'in progress jobs'}</span>
-      </div>
-      <div class="home-metric-item" title="Spend on the jobs in progress, against their $${fmt(ipBid, 0)} bid budget. Awarded work is left out — nothing has been spent on it, so its budget would only dilute the percentage.">
-        <span class="home-metric-label">Total Actual Spend</span>
-        <span class="home-metric-value" style="color:var(--${ipOverClass})">$${fmt(ipActual, 0)}</span>
-        <span class="home-metric-sub">${fmtPct(ipPct)} of in-progress budget</span>
-      </div>
-      <div class="home-metric-item" title="Bid budget less actual spend on the jobs in progress. Awarded work is left out — an untouched budget would read here as money saved.">
-        <span class="home-metric-label">Total Variance</span>
-        <span class="home-metric-value" style="${posNeg(ipVariance)}">${money0(ipVariance)}</span>
-        <span class="home-metric-sub">${ipVariance >= 0 ? 'under' : 'over'} budget · in progress</span>
-      </div>
-      <div class="home-metric-item" title="Contract value less projected cost: $${fmt(ipProfit, 0)} from jobs in progress, $${fmt(awProfit, 0)} from awarded jobs at the margin they were bid at.">
-        <span class="home-metric-label">Total Projected Profit</span>
-        <span class="home-metric-value" style="${posNeg(bookProfit)}">${money0(bookProfit)}</span>
-        <span class="home-metric-sub">${bookProfitBase ? fmtPct(bookProfit / bookProfitBase * 100) + ' margin' : awCount ? 'in progress + awarded' : 'in progress jobs'}</span>
-      </div>
-      <div class="home-metric-item" title="Gross profit the work in place has earned so far, across every job with a contract and spend. Each job earns its contract in proportion to cost to date over projected cost.">
-        <span class="home-metric-label">Total GP Earned to Date</span>
-        <span class="home-metric-value" style="${posNeg(gpEarned)}">${money0(gpEarned)}</span>
-        <span class="home-metric-sub">${gpCount} job${gpCount === 1 ? '' : 's'} · ${gpDone} completed</span>
-      </div>
-      ${atRiskHTML}
-    </div>
 
     ${stageHTML}
 

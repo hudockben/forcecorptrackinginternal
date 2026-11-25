@@ -32,12 +32,24 @@
  *
  * The aggregation is lifted out of renderHomeTab() and run over fixtures, so
  * these check the arithmetic rather than the markup around it.
+ *
+ * Turf (tracker.html) and Paving (paving.html) no longer carry that strip.
+ * Their Home tab splits every won job into three stages — Completed, In
+ * Progress, Awarded — each with its own totals and the same figures year by
+ * year. The rules above carry over stage by stage: spend and variance are
+ * shown for live and finished work but never for awarded work, and the old
+ * book figures are the In Progress and Awarded sections added together. The
+ * second block checks those sections, and the year each job counts under.
  */
 
 const fs   = require('fs');
 const path = require('path');
 
 const FILES = ['tracker.html', 'paving.html', 'kiewit-pinetree.html'];
+// Kiewit still opens on the eight-figure strip; Turf and Paving break the
+// same figures out by stage and year.
+const STRIP_FILES = ['kiewit-pinetree.html'];
+const STAGE_FILES = ['tracker.html', 'paving.html'];
 
 let passed = 0, failed = 0;
 function assert(label, cond, detail) {
@@ -135,7 +147,7 @@ const JOBS = [
 // "nothing to report" cases below must not silently start testing another job.
 const byId = id => JOBS.find(j => j.id === id);
 
-for (const file of FILES) {
+for (const file of STRIP_FILES) {
   console.log(`\n══════════ ${file} ══════════`);
   const m = aggregate(file, JOBS);
 
@@ -250,6 +262,169 @@ for (const file of FILES) {
     && awaitingStart.ipPct === 0);
 }
 
+// ── Turf and Paving: jobs by stage and year ─────────────────────────────────
+// The same lift-and-run, over the stage aggregation that replaced the strip's.
+function aggregateStages(file, projects) {
+  const src  = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  const home = extractFunction(src, 'renderHomeTab');
+  const from = home.indexOf('  const homeStageOf');
+  const to   = home.indexOf('  const allDaily');
+  if (from < 0 || to < 0) throw new Error(`stage aggregation block not found in ${file}`);
+  const projCalls = {};
+  const out = new Function('projectsList', 'dailyRowCost', 'projIsDone', 'projectedCostForProject', 'fmt',
+    `${contractHelperCode(src)}
+     ${extractFunction(src, 'gpEarnedToDate')}
+     ${extractFunction(src, '_dailySortDate')}
+     ${extractFunction(src, '_homeJobYear')}
+     ${home.slice(from, to)}
+     return { stageTotals, stageYears };`
+  )(
+    projects,
+    r => r.cost || 0,
+    p => ['complete', 'closed'].includes((p && p['status'] || '').toLowerCase()),
+    p => { projCalls[p.id] = (projCalls[p.id] || 0) + 1; return p._projected; },
+    (n, d = 2) => Number(n).toFixed(d),
+  );
+  return { ...out, projCalls };
+}
+
+function jobYear(file) {
+  const src = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  return new Function(`${extractFunction(src, '_dailySortDate')}
+    ${extractFunction(src, '_homeJobYear')}
+    return _homeJobYear;`)();
+}
+
+// The strip's fixtures, dated, plus a substantially complete job. Every daily
+// row carries the job's whole cost on its first date; the rest are $0, there
+// only to set the span of dates the job was worked.
+const dated = (o) => {
+  const j = job(o);
+  j['start-date'] = o.start || '';
+  j['end-date']   = o.end || '';
+  if (o.days) j.dailyRows = o.days.map((d, i) => ({ date: d, cost: i === 0 ? o.actual : 0 }));
+  return j;
+};
+const STAGED = [
+  // In progress: A started 2026; B was set to start in 2026 but its first
+  // daily entry is 2025, and the work done wins over the plan; the unpriced
+  // one has undated rows only, so it reads its Start Date.
+  dated({ id: 'a', name: 'Live A', status: 'In Progress', contract: 500000, bid: 400000, actual: 150000, projected: 420000,
+          days: ['2026-04-02', '2026-06-10'] }),
+  dated({ id: 'b', name: 'Live B', status: 'In Progress', contract: 300000, bid: 250000, actual: 100000, projected: 240000,
+          start: '2026-03-01', days: ['2025-10-01', '2026-05-01'] }),
+  dated({ id: 'c', name: 'Live Unpriced', status: 'In Progress', contract: 0, bid: 90000, actual: 20000, projected: 90000,
+          start: '2026-05-01' }),
+  // Completed: A finished in 2025 by its last entry, whatever its plan said;
+  // B has no dated rows and reads its Projected Completion.
+  dated({ id: 'd', name: 'Done A', status: 'Complete', contract: 200000, bid: 180000, actual: 170000, projected: 170000,
+          end: '2026-06-01', days: ['2025-05-01', '2025-08-30'] }),
+  dated({ id: 'e', name: 'Done B', status: 'Complete', contract: 100000, bid: 95000, actual: 110000, projected: 110000,
+          end: '2026-07-01' }),
+  // Field work done, last costs still landing: it sits with Completed, at its
+  // projected profit.
+  dated({ id: 's', name: 'Nearly Done', status: 'Substantially Complete', contract: 400000, bid: 350000, actual: 300000,
+          projected: 340000, days: ['2026-06-01', '2026-10-15'] }),
+  // Awarded: one scheduled for 2027 (with early spend that must stay out of
+  // live burn), one with no dates at all.
+  dated({ id: 'g', name: 'Awarded', status: 'Awarded', contract: 777777, bid: 666666, actual: 5555, projected: 666666,
+          start: '2027-04-01', end: '2027-09-01' }),
+  dated({ id: 'i', name: 'Awarded Unpriced', status: 'Awarded', contract: 0, bid: 50000, actual: 0, projected: 50000 }),
+  // In no stage.
+  dated({ id: 'f', name: 'Bidding', status: 'Bidding', contract: 999999, bid: 888888, actual: 7777, projected: 888888,
+          start: '2026-01-01' }),
+  dated({ id: 'h', name: 'On Hold', status: 'On Hold', contract: 555555, bid: 444444, actual: 3333, projected: 444444,
+          start: '2026-01-01' }),
+];
+
+for (const file of STAGE_FILES) {
+  console.log(`\n══════════ ${file} — jobs by stage & year ══════════`);
+  const { stageTotals: T, stageYears: Y, projCalls } = aggregateStages(file, STAGED);
+
+  console.log('\n[every won job lands in exactly one stage]');
+  assert('three in progress, three completed, two awarded',
+    T.ip.jobs === 3 && T.done.jobs === 3 && T.aw.jobs === 2, `got ${T.ip.jobs} / ${T.done.jobs} / ${T.aw.jobs}`);
+  assert('  Bidding and On Hold are in none of them',
+    !['ip', 'done', 'aw'].some(k => T[k].names.includes('Bidding') || T[k].names.includes('On Hold')));
+  assert('  and are never projected', !projCalls.f && !projCalls.h, JSON.stringify(projCalls));
+  assert('Substantially Complete counts with Completed, and is flagged',
+    T.done.names.includes('Nearly Done') && T.done.subst === 1);
+
+  console.log('\n[In Progress carries the live figures]');
+  assert('contract', near(T.ip.contract, 800000), `got ${T.ip.contract}`);
+  assert('bid budget', near(T.ip.bid, 740000), `got ${T.ip.bid}`);
+  assert('actual spend — live work only', near(T.ip.actual, 270000), `got ${T.ip.actual}`);
+  assert('  spend booked against an awarded job is not swept in', !near(T.ip.actual, 270000 + 5555));
+  assert('projected profit, from the jobs with a contract', near(T.ip.profit, 140000) && near(T.ip.profitBase, 800000),
+    `got ${T.ip.profit} over ${T.ip.profitBase}`);
+  // Live A 500,000 × 150/420 − 150,000 = 28,571.43; Live B 300,000 × 100/240 − 100,000 = 25,000.
+  assert('GP earned to date on the work in place', near(T.ip.gp, 53571.43) && T.ip.gpJobs === 2, `got ${T.ip.gp}`);
+  assert('  the unpriced job is counted but carries no contract', T.ip.noContract === 1);
+
+  console.log('\n[Completed carries what the jobs closed at]');
+  assert('contract', near(T.done.contract, 700000), `got ${T.done.contract}`);
+  assert('bid budget', near(T.done.bid, 625000), `got ${T.done.bid}`);
+  assert('actual cost', near(T.done.actual, 580000), `got ${T.done.actual}`);
+  // 200,000 − 170,000, plus 100,000 − 110,000, plus 400,000 − 340,000 projected.
+  assert('GP: contract less final cost, projected for the substantially complete job',
+    near(T.done.profit, 80000), `got ${T.done.profit}`);
+
+  console.log('\n[Awarded carries the backlog]');
+  assert('backlog is the awarded contracts', near(T.aw.contract, 777777), `got ${T.aw.contract}`);
+  assert('bid budget includes the unpriced job', near(T.aw.bid, 716666), `got ${T.aw.bid}`);
+  assert('projected profit is the margin it was bid at', near(T.aw.profit, 111111) && near(T.aw.profitBase, 777777));
+  assert('  and nothing on it is counted as earned', T.aw.gp === 0 && T.aw.gpJobs === 0);
+
+  console.log('\n[the old strip figures are the In Progress and Awarded sections added]');
+  assert('Total Contract Value', near(T.ip.contract + T.aw.contract, 1577777));
+  assert('Total Bid Budget', near(T.ip.bid + T.aw.bid, 1456666));
+  assert('Total Projected Profit', near(T.ip.profit + T.aw.profit, 251111));
+
+  console.log('\n[each stage breaks down by year]');
+  assert('In Progress: 2026 holds A and the unpriced job, 2025 holds B (its first entry beats its plan)',
+    Y.ip['2026']?.jobs === 2 && Y.ip['2025']?.jobs === 1 && Y.ip['2025']?.names[0] === 'Live B',
+    JSON.stringify(Object.keys(Y.ip)));
+  assert('Completed: 2025 by A\'s last entry, 2026 for B\'s plan and the nearly-done job',
+    Y.done['2025']?.names.join() === 'Done A' && Y.done['2026']?.jobs === 2, JSON.stringify(Object.keys(Y.done)));
+  assert('Awarded: 2027 by its Start Date, and a job with no dates under ""',
+    Y.aw['2027']?.jobs === 1 && Y.aw['']?.names.join() === 'Awarded Unpriced', JSON.stringify(Object.keys(Y.aw)));
+  for (const k of ['ip', 'done', 'aw']) {
+    const sum = f => Object.values(Y[k]).reduce((s, c) => s + c[f], 0);
+    assert(`  ${k}: the years add up to the stage totals`,
+      ['jobs', 'contract', 'bid', 'actual', 'profit', 'profitBase', 'gp', 'gpJobs', 'subst', 'noContract']
+        .every(f => near(sum(f), T[k][f])));
+  }
+  assert('each job is projected at most once', Object.values(projCalls).every(n => n === 1), JSON.stringify(projCalls));
+  assert('  and a job no figure can read — no contract — never is', !projCalls.c && !projCalls.i, JSON.stringify(projCalls));
+
+  console.log('\n[the year a job counts under]');
+  const yr = jobYear(file);
+  const rows = (...ds) => ds.map(date => ({ date }));
+  assert('Completed reads its last daily entry over its plan',
+    yr({ dailyRows: rows('2025-03-01', '2026-01-10'), 'end-date': '2025-12-01' }, 'done') === '2026');
+  assert('  then its Projected Completion, then its Start Date',
+    yr({ 'end-date': '2024-11-01', 'start-date': '2023-05-01' }, 'done') === '2024'
+    && yr({ 'start-date': '2023-05-01' }, 'done') === '2023');
+  assert('In Progress reads its first daily entry over its plan',
+    yr({ dailyRows: rows('2026-05-01', '2025-10-03'), 'start-date': '2026-04-01' }, 'ip') === '2025');
+  assert('  then its Start Date, then its Projected Completion',
+    yr({ 'start-date': '2026-04-01', 'end-date': '2027-01-01' }, 'ip') === '2026'
+    && yr({ 'end-date': '2027-01-01' }, 'ip') === '2027');
+  assert('Awarded reads its Start Date, then its Projected Completion',
+    yr({ 'start-date': '2027-03-01', 'end-date': '2028-08-01' }, 'aw') === '2027'
+    && yr({ 'end-date': '2028-08-01' }, 'aw') === '2028');
+  assert('an imported M/D/YYYY entry still reads', yr({ dailyRows: rows('10/3/2025') }, 'ip') === '2025');
+  assert('a blank daily date is skipped, not read as today',
+    yr({ dailyRows: rows('', '2024-06-01') }, 'done') === '2024');
+  assert('no dates at all gives ""', yr({}, 'aw') === '' && yr({ dailyRows: rows('') }, 'done') === '');
+
+  console.log('\n[nothing to report]');
+  const empty = aggregateStages(file, []);
+  assert('no projects gives empty stages, not NaN',
+    ['ip', 'done', 'aw'].every(k => empty.stageTotals[k].jobs === 0 && empty.stageTotals[k].contract === 0
+      && Object.keys(empty.stageYears[k]).length === 0));
+}
+
 // The labels the figures sit under, and the one they replaced.
 console.log('\n══════════ labels ══════════');
 const LABELS = ['Active Projects', 'Total Contract Value', 'Awarded Backlog', 'Total Bid Budget',
@@ -268,25 +443,108 @@ const WIRING = [
   ['Total Projected Profit reads the book profit',    '${money0(bookProfit)}'],
   ['Total GP Earned to Date reads the earned total',  '${money0(gpEarned)}'],
 ];
-for (const file of FILES) {
-  const src = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
-  console.log(`\n[${file}]`);
-  for (const l of LABELS) {
-    assert(`${l} is on the strip`, src.includes(`<span class="home-metric-label">${l}</span>`));
-  }
-  for (const [label, wire] of WIRING) {
-    assert(`  ${label}`, src.includes(wire), `no card reads ${wire}`);
-  }
-  // The subtitle carrying the scope is the only thing on screen saying which
-  // jobs a figure covers, so a widened figure must not keep the old wording.
-  assert('  and the spend subtitle names the budget it is a percentage of',
-    src.includes('${fmtPct(ipPct)} of in-progress budget')
-    && !src.includes('${fmtPct(ipPct)} of bid budget'));
-  assert('  while the variance subtitle says it is live work only',
-    src.includes("${ipVariance >= 0 ? 'under' : 'over'} budget · in progress"));
+// What each Turf / Paving stage shows on its totals strip.
+const STAGE_TILES = {
+  done: ['Completed Jobs', 'Contract Value', 'Bid Budget', 'Actual Cost', 'Variance', 'Gross Profit'],
+  ip:   ['Jobs In Progress', 'Contract Value', 'Bid Budget', 'Actual Spend', 'Variance', 'Projected Profit',
+         'GP Earned to Date'],
+  aw:   ['Awarded Jobs', 'Awarded Backlog', 'Bid Budget', 'Projected Profit'],
+};
 
-  // The old subtitle counted bid ITEMS with an Active status, so 55 projects
-  // reported 149 active. There is no project status called Active at all.
+for (const file of FILES) {
+  const src  = fs.readFileSync(path.resolve(__dirname, '..', file), 'utf8');
+  const home = extractFunction(src, 'renderHomeTab');
+  console.log(`\n[${file}]`);
+
+  if (STRIP_FILES.includes(file)) {
+    for (const l of LABELS) {
+      assert(`${l} is on the strip`, src.includes(`<span class="home-metric-label">${l}</span>`));
+    }
+    for (const [label, wire] of WIRING) {
+      assert(`  ${label}`, src.includes(wire), `no card reads ${wire}`);
+    }
+    // The subtitle carrying the scope is the only thing on screen saying which
+    // jobs a figure covers, so a widened figure must not keep the old wording.
+    assert('  and the spend subtitle names the budget it is a percentage of',
+      src.includes('${fmtPct(ipPct)} of in-progress budget')
+      && !src.includes('${fmtPct(ipPct)} of bid budget'));
+    assert('  while the variance subtitle says it is live work only',
+      src.includes("${ipVariance >= 0 ? 'under' : 'over'} budget · in progress"));
+    const cards = (src.match(/<div class="home-metric-item/g) || []).length;
+    assert(`  ${cards} cards are on the strip`, cards >= LABELS.length);
+
+    // Scoped to the aggregation loop — the projects table below it projects
+    // costs too, legitimately, for its own rows.
+    const agg = home.slice(home.indexOf('  let ipCount = 0'), home.indexOf('  const allDaily'));
+    // Three figures read a projection now, so it is memoised per job rather
+    // than called at each — the behaviour is pinned by projCalls above.
+    assert('  the aggregation projects through one memoised call',
+      (agg.match(/projectedCostForProject\(/g) || []).length === 1
+      && /if \(projContract\) \{ ipProfit \+= projContract - projCost\(\)/.test(agg)
+      && /if \(projContract\) \{ awProfit \+= projContract - projCost\(\)/.test(agg)
+      && /gpEarnedToDate\(projContract, projActual, projCost\(\)\)/.test(agg),
+      `${(agg.match(/projectedCostForProject\(/g) || []).length} calls in the loop`);
+
+    // The strip is a financial summary. A count of the week's daily entries
+    // measured how much got typed in, not how the work is going, and it held a
+    // card every week nothing was at risk — the two figures shared one slot.
+    assert('  At Risk, which shared its card with the weekly count, takes a slot only when it has one',
+      /const atRiskHTML = atRiskCt === 0 \? '' :/.test(home)
+      && /home-metric-label">At Risk<\/span>/.test(home));
+
+    assert('  Active Projects counts projects whose status is In Progress',
+      /if \(\(p\['status'\] \|\| ''\) === 'In Progress'\) \{\s*\n\s*ipCount\+\+;/.test(src));
+    // Awarded is its own branch of the same chain, so a job counted there can
+    // never also land in the in-progress totals.
+    assert('  plus the ones whose status is Awarded, on their own branch',
+      /\} else if \(\(p\['status'\] \|\| ''\) === 'Awarded'\) \{/.test(agg)
+      && /\n\s*awCount\+\+;/.test(agg));
+  } else {
+    // Turf and Paving: the single strip is gone, and its figures sit in the
+    // stage sections, each drawn on the same shared strip component.
+    assert('the eight-figure strip is gone', !src.includes('<div class="home-metric-strip">'));
+    for (const l of LABELS.filter(l => l !== 'Awarded Backlog')) {
+      assert(`  "${l}" with it`, !home.includes(`>${l}</span>`) && !home.includes(`label: '${l}'`));
+    }
+    const stageDef = k => {
+      const from = home.indexOf(`{ key: '${k}',`);
+      const next = ['done', 'ip', 'aw'].map(o => home.indexOf(`{ key: '${o}',`)).filter(i => i > from);
+      return from < 0 ? '' : home.slice(from, next.length ? Math.min(...next) : home.indexOf('const tileHTML'));
+    };
+    for (const [k, labels] of Object.entries(STAGE_TILES)) {
+      const def = stageDef(k);
+      assert(`${k} totals: ${labels.join(', ')}`, labels.every(l => def.includes(`label: '${l}'`)),
+        labels.filter(l => !def.includes(`label: '${l}'`)).join(', '));
+    }
+    // The strip kept spend and variance off awarded work for a reason that
+    // still holds: an untouched budget reads as money saved.
+    const aw = stageDef('aw');
+    assert('  and Awarded shows no spend, variance or earned GP, by year or in total',
+      aw && !/\['(actual|pct|variance|gp)',/.test(aw) && !/label: '(Actual|Variance|GP Earned)/.test(aw));
+    assert('each stage draws its totals on the shared strip component',
+      home.includes('class="home-metric-strip stage-strip"')
+      && home.includes('<span class="home-metric-label">${x.label}</span>'));
+    assert('every year row lists its jobs on hover',
+      home.includes('title="${esc(stageRowTip(st, y, c))}"'));
+
+    const agg = home.slice(home.indexOf('  const homeStageOf'), home.indexOf('  const allDaily'));
+    assert('  the aggregation projects through one memoised call',
+      (agg.match(/projectedCostForProject\(/g) || []).length === 1
+      && agg.includes('if (projContract) { job.profit = projContract - projCost();')
+      && agg.includes('gpEarnedToDate(projContract, projActual, projCost())'),
+      `${(agg.match(/projectedCostForProject\(/g) || []).length} calls in the loop`);
+    for (const dead of ['ipCount', 'ipContract', 'ipBid', 'ipActual', 'ipProfit', 'ipProfitBase', 'awCount',
+                        'awContract', 'awBid', 'awProfit', 'awProfitBase', 'bookCount', 'bookContract', 'bookBid',
+                        'bookProfit', 'bookProfitBase', 'ipVariance', 'ipPct', 'ipOverClass', 'gpCount', 'gpDone']) {
+      assert(`  the strip's ${dead} is gone with it`, !new RegExp(`\\b${dead}\\b`).test(home));
+    }
+    // At Risk counts bid items across every job, so it belongs to no stage.
+    assert('At Risk rides on the section heading, and only when it has one',
+      /const atRiskHTML = atRiskCt === 0 \? '' :/.test(home)
+      && home.includes('Jobs by Stage &amp; Year${atRiskHTML}'));
+  }
+
+  // The strip component itself is still in use on every page.
   // The cards do not fit one flex row on most screens, and the values are
   // nowrap + ellipsis over min-width:0 — without wrapping the money gets cut
   // off mid-number, which on a financial strip reads as a different figure.
@@ -295,37 +553,16 @@ for (const file of FILES) {
     /\.home-metric-strip\s*\{[^}]*flex-wrap:\s*wrap/.test(strip), strip.slice(0, 160));
   assert('  and each card keeps a readable width',
     /\.home-metric-item\s*\{[^}]*flex:\s*1 1 \d+px/.test(strip));
-  const cards = (src.match(/<div class="home-metric-item/g) || []).length;
-  assert(`  ${cards} cards are on the strip`, cards >= LABELS.length);
 
   // The old portfolio-wide totals fed nothing after the rebuild, but the loop
   // still projected a cost for every project to compute them. thisWeek and
   // openPOs joined them when their two cards left the strip.
-  const home = extractFunction(src, 'renderHomeTab');
   for (const dead of ['totalBid', 'totalActual', 'totalProjected', 'overallPct', 'overClass',
                       'ipProjected', 'thisWeek', 'openPOs']) {
     assert(`  ${dead} is gone rather than computed and ignored`, !new RegExp(`\\b${dead}\\b`).test(home));
   }
-  // Scoped to the aggregation loop — the projects table below it projects
-  // costs too, legitimately, for its own rows.
-  const agg = home.slice(home.indexOf('  let ipCount = 0'), home.indexOf('  const allDaily'));
-  // Three figures read a projection now, so it is memoised per job rather
-  // than called at each — the behaviour is pinned by projCalls above.
-  assert('  the aggregation projects through one memoised call',
-    (agg.match(/projectedCostForProject\(/g) || []).length === 1
-    && /if \(projContract\) \{ ipProfit \+= projContract - projCost\(\)/.test(agg)
-    && /if \(projContract\) \{ awProfit \+= projContract - projCost\(\)/.test(agg)
-    && /gpEarnedToDate\(projContract, projActual, projCost\(\)\)/.test(agg),
-    `${(agg.match(/projectedCostForProject\(/g) || []).length} calls in the loop`);
-
-  // The strip is a financial summary. A count of the week's daily entries
-  // measured how much got typed in, not how the work is going, and it held a
-  // card every week nothing was at risk — the two figures shared one slot.
-  assert('the weekly daily-entry count is off the strip',
+  assert('the weekly daily-entry count is off the Home tab',
     !/home-metric-sub">daily entries</.test(home) && !/'This Week'/.test(home));
-  assert('  and At Risk, which shared its card, takes a slot only when it has one',
-    /const atRiskHTML = atRiskCt === 0 \? '' :/.test(home)
-    && /home-metric-label">At Risk<\/span>/.test(home));
 
   // Open POs counted a queue that lives two tabs away, and its card was the
   // only clickable one on the strip — a card that navigated rather than
@@ -337,15 +574,10 @@ for (const file of FILES) {
   assert('  with no clickable-card rule left over',
     !/home-metric-item\.clickable/.test(src));
 
+  // The old subtitle counted bid ITEMS with an Active status, so 55 projects
+  // reported 149 active. There is no project status called Active at all.
   assert('the old bid-item "N active" subtitle is gone',
     !/home-metric-sub">\$\{statusCounts\.Active \|\| 0\} active/.test(src));
-  assert('  and Active Projects counts projects whose status is In Progress',
-    /if \(\(p\['status'\] \|\| ''\) === 'In Progress'\) \{\s*\n\s*ipCount\+\+;/.test(src));
-  // Awarded is its own branch of the same chain, so a job counted there can
-  // never also land in the in-progress totals.
-  assert('  plus the ones whose status is Awarded, on their own branch',
-    /\} else if \(\(p\['status'\] \|\| ''\) === 'Awarded'\) \{/.test(agg)
-    && /\n\s*awCount\+\+;/.test(agg));
 }
 
 // ── Where the pending-PO count went ──────────────────────────────────────────
