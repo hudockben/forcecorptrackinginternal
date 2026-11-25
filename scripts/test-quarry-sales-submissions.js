@@ -824,11 +824,12 @@ function pageTests() {
   // Daily and Crushing have sorted newest-first since payroll started injecting
   // into them, but off their own copies of the rule, which put an undated row
   // at the BOTTOM where Sales puts it at the top. Three tabs, one comparator,
-  // so they cannot drift apart again. The fourth is Sales' ⇩ Download
-  // (visibleSalesEntries), which hands over the table in the table's order.
+  // so they cannot drift apart again. The other three are each tab's
+  // ⇩ Download list (visibleDailyEntries / visibleCrushEntries /
+  // visibleSalesEntries), which hands over the table in the table's order.
   const SORTED_BY_DATE = /\.sort\((?:byDateDesc\b|\(a, b\) => byDateDesc\()/g;
   assert('and so do Daily and Crushing, off the same comparator',
-    (grid.match(SORTED_BY_DATE) || []).length === 4,
+    (grid.match(SORTED_BY_DATE) || []).length === 6,
     String((grid.match(SORTED_BY_DATE) || []).length));
   {
     // Scoped to the three tracking grids — the ones that carry injected rows.

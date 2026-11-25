@@ -1544,6 +1544,13 @@
       <div class="sales-toolbar">
         <button class="btn-add-row" id="dailyAddBtn" onclick="addDailyRow()">+ Add Row</button>
         <button class="btn-add-row btn-bulk-upload" id="dailyBulkBtn" onclick="openBulk('daily')">⇪ Bulk Upload CSV</button>
+        <div class="export-menu" id="dailyExportMenu">
+          <button type="button" class="btn-add-row btn-bulk-upload export-toggle" id="dailyExportBtn" onclick="toggleExportMenu('daily')" aria-haspopup="true" aria-expanded="false" title="Download the rows the table is showing — filters included" disabled>⇩ Download <span class="export-caret">▾</span></button>
+          <div class="ms-menu" role="menu" hidden>
+            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('daily', 'xlsx')">Excel (.xlsx)<small>Formatted, with totals and live formulas</small></button>
+            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('daily', 'csv')">CSV (.csv)<small>Plain rows — re-imports through Bulk Upload</small></button>
+          </div>
+        </div>
         <div class="year-filter-wrap">
           Year
           <select class="year-filter-select" id="dailyYearFilter" onchange="setYearFilter('daily', this.value)" disabled></select>
@@ -1590,6 +1597,13 @@
       <div class="sales-toolbar">
         <button class="btn-add-row" id="crushAddBtn" onclick="addCrushRow()">+ Add Row</button>
         <button class="btn-add-row btn-bulk-upload" id="crushBulkBtn" onclick="openBulk('crushing')">⇪ Bulk Upload CSV</button>
+        <div class="export-menu" id="crushingExportMenu">
+          <button type="button" class="btn-add-row btn-bulk-upload export-toggle" id="crushingExportBtn" onclick="toggleExportMenu('crushing')" aria-haspopup="true" aria-expanded="false" title="Download the rows the table is showing — filters included" disabled>⇩ Download <span class="export-caret">▾</span></button>
+          <div class="ms-menu" role="menu" hidden>
+            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('crushing', 'xlsx')">Excel (.xlsx)<small>Entries plus a Days sheet — tons/hr and cost/ton by day</small></button>
+            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('crushing', 'csv')">CSV (.csv)<small>Plain rows — re-imports through Bulk Upload</small></button>
+          </div>
+        </div>
         <div class="year-filter-wrap">
           Year
           <select class="year-filter-select" id="crushingYearFilter" onchange="setYearFilter('crushing', this.value)" disabled></select>
@@ -1649,8 +1663,8 @@
         <div class="export-menu" id="salesExportMenu">
           <button type="button" class="btn-add-row btn-bulk-upload export-toggle" id="salesExportBtn" onclick="toggleExportMenu('sales')" aria-haspopup="true" aria-expanded="false" title="Download the rows the table is showing — filters included" disabled>⇩ Download <span class="export-caret">▾</span></button>
           <div class="ms-menu" role="menu" hidden>
-            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadSalesExport('xlsx')">Excel (.xlsx)<small>Formatted, with totals and live formulas</small></button>
-            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadSalesExport('csv')">CSV (.csv)<small>Plain rows — re-imports through Bulk Upload</small></button>
+            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('sales', 'xlsx')">Excel (.xlsx)<small>Formatted, with totals and live formulas</small></button>
+            <button type="button" class="ms-opt export-opt" role="menuitem" onclick="downloadTrackingExport('sales', 'csv')">CSV (.csv)<small>Plain rows — re-imports through Bulk Upload</small></button>
           </div>
         </div>
         <div class="year-filter-wrap">
@@ -4157,15 +4171,12 @@
       });
       el.innerHTML = `Rows<strong>${count}</strong>· Total Tons<strong>${formatTons(totalTons)}</strong>· Net Sales<strong>${formatMoney(totalSales)}</strong>· Sales Tax<strong>${formatMoney(totalTax)}</strong>· Total Due<strong>${formatMoney(totalSales + totalTax)}</strong>`;
       refreshDeleteFilteredBtn('sales');
-      // Nothing on screen, nothing to download.
-      const exportBtn = document.getElementById('salesExportBtn');
-      if (exportBtn) exportBtn.disabled = !salesLoaded || count === 0;
-      if (exportBtn && exportBtn.disabled) msClose('salesExportMenu');
+      setExportEnabled('sales', salesLoaded && count > 0);
     }
 
     // The rows the Sales table shows, in the order it shows them — renderSales'
     // own filter and sort, for the Download button. Kept in step with it by
-    // scripts/test-quarry-sales-export.js, which checks the file against the
+    // scripts/test-quarry-tracking-export.js, which checks the file against the
     // rendered table row for row.
     function visibleSalesEntries() {
       return salesRows
@@ -4174,26 +4185,50 @@
         .sort(byDateDesc);
     }
 
-    // ── Sales Tracking → Excel / CSV ────────────────────────────
-    // ⇩ Download hands over exactly what the table is showing: the same year /
-    // month / location / customer / product filters, newest first, the scale
-    // house's submitted sales included — "download what I'm looking at" does
-    // what it says.
+    // ── Tracking tabs → Excel / CSV ─────────────────────────────
+    // ⇩ Download on Daily, Crushing and Sales hands over exactly what the
+    // table is showing: the tab's own filters, in the table's order (newest
+    // first), the rows Payroll and the scale house put there included —
+    // "download what I'm looking at" does what it says.
     //
     // CSV is the flat one: the on-screen columns under the Bulk Upload
     // template's own headers, plain numbers, no totals row — so it pivots
     // cleanly, and a corrected copy goes straight back in through
     // ⇪ Bulk Upload CSV (after "Delete N Rows", or the importer skips every
-    // row as a duplicate).
+    // row as a duplicate). The computed columns ride along to be read; the
+    // importer ignores them and works them out again.
     //
-    // Excel is the one to work in: dates as real dates, money as money, the
-    // customer's tax rate in a column of its own, and Net Sales / Sales Tax /
-    // Total Due as formulas off it — re-price a load and the row follows. The
-    // Totals row is SUBTOTALs, so it follows Excel's own filters as well, and
-    // its Price / Ton is the average sold at, Net Sales ÷ Tons.
+    // Excel is the one to work in: dates as real dates, money as money, and
+    // each row's arithmetic as formulas — change an input and the row follows.
+    // The Totals row is SUBTOTALs, so it follows Excel's own filters as well,
+    // and its rate columns ($/hr, $/gal, $/ton, tons/hr) are the weighted
+    // average — the total cost over the total quantity — never a mean of the
+    // rates above it.
     //
     // Written by hand like every other export in this app: a ZIP of XML parts
     // with stored (uncompressed) entries, no library.
+
+    // Per tab: its file-name slug, what it is called, and its two builders.
+    // A function rather than a table so nothing here reads a tab's state
+    // before that tab's section of the script has declared it.
+    function exportTabCfg(tab) {
+      switch (tab) {
+        case 'daily':    return { slug: 'daily',    label: 'Daily Tracking',    loaded: dailyLoaded, entries: visibleDailyEntries, csv: buildDailyCsv, xlsx: buildDailyXlsx };
+        case 'crushing': return { slug: 'crushing', label: 'Crushing Tracking', loaded: crushLoaded, entries: visibleCrushEntries, csv: buildCrushCsv, xlsx: buildCrushXlsx };
+        case 'sales':    return { slug: 'sales',    label: 'Sales Tracking',    loaded: salesLoaded, entries: visibleSalesEntries, csv: buildSalesCsv, xlsx: buildSalesXlsx };
+        default:         return null;
+      }
+    }
+
+    // Each tab's summary bar counts the rows on screen; it calls this with
+    // whether there are any. Nothing on screen, nothing to download.
+    function setExportEnabled(tab, enabled) {
+      const btn = document.getElementById(tab + 'ExportBtn');
+      if (!btn) return;
+      btn.disabled = !enabled;
+      if (!enabled) msClose(tab + 'ExportMenu');
+    }
+
     function toggleExportMenu(tab) {
       const id = tab + 'ExportMenu';
       if (msOpenId && msOpenId !== id) msClose(msOpenId);
@@ -4208,161 +4243,487 @@
       msOpenId = open ? id : null;
     }
 
-    function downloadSalesExport(kind) {
-      msClose('salesExportMenu');
-      if (!salesLoaded) return;
-      const entries = visibleSalesEntries();
-      if (!entries.length) { alert('Nothing to download — no sales match the filters.'); return; }
-      const blob = kind === 'csv'
-        ? new Blob([buildSalesCsv(entries)], { type: 'text/csv;charset=utf-8' })
-        : buildSalesXlsx(entries);
-      qxSaveBlob(blob, salesExportFileName(kind === 'csv' ? 'csv' : 'xlsx'));
+    function downloadTrackingExport(tab, kind) {
+      msClose(tab + 'ExportMenu');
+      const cfg = exportTabCfg(tab);
+      if (!cfg || !cfg.loaded) return;
+      const entries = cfg.entries();
+      if (!entries.length) { alert(`Nothing to download — no ${cfg.label} rows match the filters.`); return; }
+      const csv = kind === 'csv';
+      const blob = csv
+        ? new Blob([cfg.csv(entries)], { type: 'text/csv;charset=utf-8' })
+        : cfg.xlsx(entries);
+      qxSaveBlob(blob, exportFileName(tab, csv ? 'csv' : 'xlsx'));
     }
 
-    // quarry-sales-2026-2026-11-25.xlsx — the year the table is on, "-filtered"
-    // when anything narrower is set, then the day it was pulled, so two pulls
-    // of different slices never land on the same name.
-    function salesExportFileName(ext) {
-      const y = yearFilters.sales;
+    // quarry-crushing-2026-2026-11-25.xlsx — the tab, the year it is on,
+    // "-filtered" when anything narrower is set, then the day it was pulled,
+    // so two pulls of different slices never land on the same name.
+    function exportFileName(tab, ext) {
+      const cfg = exportTabCfg(tab);
+      const y = yearFilters[tab];
       const scope = (!y || y === 'all') ? 'all-years' : String(y);
       const narrowed = ['month', 'location', 'customer', 'product']
-        .some(k => (MS_CONFIG[k].state.sales || new Set()).size > 0);
-      return `quarry-sales-${scope}${narrowed ? '-filtered' : ''}-${todayIso()}.${ext}`;
+        .some(k => (MS_CONFIG[k].state[tab] || new Set()).size > 0);
+      return `quarry-${cfg.slug}-${scope}${narrowed ? '-filtered' : ''}-${todayIso()}.${ext}`;
     }
 
-    function salesExportFilterDesc() {
-      return [yearFilterLabel('sales'), monthFilterLabel('sales'), locationFilterLabel('sales'),
-              customerFilterLabel('sales'), productFilterLabel('sales')].join(' · ');
+    // The tab's filters, worded as the empty-table message words them.
+    // Customer is Sales-only; Product is on Sales and Crushing.
+    function exportFilterDesc(tab) {
+      const parts = [yearFilterLabel(tab), monthFilterLabel(tab), locationFilterLabel(tab)];
+      if (tab === 'sales') parts.push(customerFilterLabel(tab));
+      if (tab === 'sales' || tab === 'crushing') parts.push(productFilterLabel(tab));
+      return parts.join(' · ');
     }
 
-    // The columns match BULK_CONFIGS.sales.templateLayout's headers, so the
-    // importer reads a downloaded file back as it reads its own template.
-    // Numbers go out bare — no $ or thousands commas — with the three
-    // computed money columns rounded to the cent the table shows.
+    // ── CSV, shared ──
+    function csvCell(v) {
+      const s = v == null ? '' : String(v);
+      return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    }
+    // An input as stored: bare, or blank when blank. A computed figure: to the
+    // cent the table shows.
+    function csvNum(v)   { return (v === '' || v == null || !Number.isFinite(Number(v))) ? '' : String(Number(v)); }
+    function csvCents(v) { return (Math.round(v * 100) / 100).toFixed(2); }
+    // BOM so Excel opens it as UTF-8 rather than mangling an accented name;
+    // the importer's parser steps over it on the way back in.
+    function csvText(header, lines) {
+      return '﻿' + [header, ...lines].map(r => r.map(csvCell).join(',')).join('\r\n') + '\r\n';
+    }
+
+    // ── XLSX, shared ──
+    // Number formats. A zero reads "—" where the table shows a dash or a
+    // dimmed $0.00, while the cell still holds a 0 that sums.
+    const QX_FMT = {
+      date:  'yyyy-mm-dd',
+      qty:   '#,##0.00',
+      money: '"$"#,##0.00;-"$"#,##0.00;"—"',
+      price: '"$"#,##0.00##',
+      rate:  '0.00#%;-0.00#%;"—"',
+    };
+    // A date cell: the ISO date as an Excel date, or as text when it is not
+    // one (it prints as typed rather than vanishing), or blank.
+    function qxDateCell(iso) {
+      const serial = qxDateSerial(iso);
+      if (serial != null) return { v: serial };
+      return { v: iso || '', s: 0 };
+    }
+    // A number the user typed: a number, or a blank cell (a formula reads it
+    // as 0, as the table does) — never NaN.
+    function qxNumCell(v) {
+      const n = Number(v);
+      return { v: (v === '' || v == null || !Number.isFinite(n)) ? '' : n };
+    }
+    // The block every tracking sheet shares: a title, a few lines of what it
+    // is, then the header row (frozen, filtered, repeated on each printed
+    // page), the data, and a Totals row under it.
+    //   cols:   [{ label, width, fmt?, align?, indent? }] — each data cell takes
+    //           its column's style unless it sets `s` itself
+    //   data:   rows of cells, built for sheet rows `first` onwards (see below)
+    //   totals: ({ first, last, row }) => cells — blanks are filled in banded
+    // Returns the sheet for qxBook, plus `first` so a caller can lay its rows
+    // out before building them.
+    function qxTrackingLayout(lines) {
+      const head = lines.length + 3;            // title, lines, a blank row, header
+      return { head, first: head + 1 };
+    }
+    function qxTrackingSheet(S, { name, title, lines, cols, data, totals, selected }) {
+      const { head, first } = qxTrackingLayout(lines);
+      const last = head + data.length, totRow = last + 1;
+      const colStyle = cols.map(c => S.xf({ fmt: c.fmt, align: c.align, indent: c.indent }));
+      // Headers wrap onto a two-line row: "Loads to Crusher" over a column
+      // sized for the loads, not for its own name.
+      const headStyle = cols.map(c => S.xf({
+        font: { b: true, color: 'FFFFFF' }, fill: '1F2A44', wrap: true,
+        align: c.align || (c.fmt && c.fmt !== QX_FMT.date ? 'right' : undefined), indent: c.indent,
+      }));
+      const totStyle = (fmt, align) => S.xf({ font: { b: true }, fmt, align, fill: 'EDEFF3', top: ['thin', '9CA3AF'] });
+      const rows = [
+        [{ v: title, s: S.xf({ font: { b: true, sz: 14, color: '1F2A44' } }) }],
+        ...lines.map(t => [{ v: t, s: S.xf({ font: { color: '6B7280' } }) }]),
+        [],
+        cols.map((c, j) => ({ v: c.label, s: headStyle[j] })),
+        ...data.map(cells => cols.map((_, j) => {
+          const c = cells[j] || { v: '' };
+          return c.s === undefined ? { ...c, s: colStyle[j] } : c;
+        })),
+      ];
+      if (totals) {
+        const t = totals({ first, last, row: totRow });
+        rows.push(cols.map((c, j) => {
+          const cell = t[j];
+          if (!cell) return { s: totStyle(null) };
+          return { ...cell, s: totStyle(cell.fmt === undefined ? c.fmt : cell.fmt, c.align) };
+        }));
+      }
+      const lastCol = qxCol(cols.length);
+      return {
+        name,
+        xml: qxSheetXml({
+          widths: cols.map(c => c.width), rows, selected, heights: { [head]: 30 },
+          freezeRow: head, filterRef: `A${head}:${lastCol}${last}`,
+        }),
+        printTitles: `$${head}:$${head}`,
+        filterDb: `$A$${head}:$${lastCol}$${last}`,
+      };
+    }
+    function qxExportStamp() {
+      const t = new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      return `exported ${todayIso()} ${t}${user && user.username ? ' by ' + user.username : ''}`;
+    }
+    function qxTitle(what) {
+      const co = (user && (user.companyName || user.companyCode)) || '';
+      return `${what}${co ? ' — ' + co : ''}`;
+    }
+    const qxRows = n => `${n} row${n === 1 ? '' : 's'}`;
+    // SUBTOTAL(9, …) sums only what Excel's filter leaves showing, so the
+    // Totals row follows a filter applied in Excel the way the summary bar
+    // follows the tab's.
+    const qxSub = (col, first, last) => `SUBTOTAL(9,${col}${first}:${col}${last})`;
+    // A weighted rate: what the column above costs in total over how much of
+    // it there was. 0 (shown "—") when there was none.
+    const qxPer = (num, den, row) => `IF(${den}${row}=0,0,${num}${row}/${den}${row})`;
+
+    // ── Sales ──
+    // Its CSV columns are BULK_CONFIGS.sales.templateLayout's, in order.
     const SALES_CSV_HEADER = ['Date', 'Location', 'Employee', 'Customer', 'Product', 'Tons',
                               'Payment', 'Price / Ton', 'Sales Tax', 'Net Sales', 'Total Due'];
     function buildSalesCsv(entries) {
-      const cell = v => {
-        const s = v == null ? '' : String(v);
-        return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-      };
-      const num   = v => (v === '' || v == null || !Number.isFinite(Number(v))) ? '' : String(Number(v));
-      const cents = v => (Math.round(v * 100) / 100).toFixed(2);
-      const lines = [SALES_CSV_HEADER.map(cell).join(',')];
-      entries.forEach(({ row }) => {
+      return csvText(SALES_CSV_HEADER, entries.map(({ row }) => {
         const net = rowTotal(row), tax = rowSalesTax(row);
-        lines.push([
+        return [
           row.date, row.locationName, row.employeeName, row.customerName, row.productName,
-          num(row.tons), row.payment, num(row.pricePerTon),
-          cents(tax), cents(net), cents(net + tax),
-        ].map(cell).join(','));
-      });
-      // BOM so Excel opens it as UTF-8 rather than mangling an accented name;
-      // the importer's header trim drops it on the way back in.
-      return '﻿' + lines.join('\r\n') + '\r\n';
+          csvNum(row.tons), row.payment, csvNum(row.pricePerTon),
+          csvCents(tax), csvCents(net), csvCents(net + tax),
+        ];
+      }));
     }
 
+    // The customer's tax rate gets a column of its own so Sales Tax can be a
+    // formula off it, and Price / Ton in the Totals row is the average sold
+    // at — Net Sales ÷ Tons.
     function buildSalesXlsx(entries) {
       const S = qxStyles();
-      const INK = { title: '1F2A44', muted: '6B7280', white: 'FFFFFF' };
-      const FMT = {
-        date:  'yyyy-mm-dd',
-        tons:  '#,##0.00',
-        price: '"$"#,##0.00##',
-        rate:  '0.00#%;-0.00#%;"—"',
-        money: '"$"#,##0.00;-"$"#,##0.00;"—"',
-      };
-      const TOT = { fill: 'EDEFF3', top: ['thin', '9CA3AF'] };
-      const head = (a) => S.xf({ font: { b: true, color: INK.white }, fill: INK.title,
-                                 ...(a && typeof a === 'object' ? a : { align: a }) });
-      const tot  = (fmt, align) => S.xf({ font: { b: true }, fmt, align, ...TOT });
-
-      // [header, width, style for a data cell, header alignment]
-      const COLS = [
-        ['Date',        12, S.xf({ fmt: FMT.date, align: 'left' }), null],
-        ['Location',    16, 0, null],
-        ['Employee',    18, 0, null],
-        ['Customer',    28, 0, null],
-        ['Product',     16, 0, null],
-        ['Tons',        11, S.xf({ fmt: FMT.tons }),  'right'],
-        ['Payment',     10, S.xf({ align: 'center' }), 'center'],
-        ['Price / Ton', 12, S.xf({ fmt: FMT.price }), 'right'],
-        ['Tax Rate',    10, S.xf({ fmt: FMT.rate }),  'right'],
-        ['Sales Tax',   12, S.xf({ fmt: FMT.money }), 'right'],
-        ['Net Sales',   14, S.xf({ fmt: FMT.money }), 'right'],
-        ['Total Due',   14, S.xf({ fmt: FMT.money }), 'right'],
+      const lines = [`Filters: ${exportFilterDesc('sales')}`, `${qxRows(entries.length)} · ${qxExportStamp()}`];
+      const { first } = qxTrackingLayout(lines);
+      const cols = [
+        { label: 'Date',        width: 12, fmt: QX_FMT.date, align: 'left' },
+        { label: 'Location',    width: 16 },
+        { label: 'Employee',    width: 18 },
+        { label: 'Customer',    width: 28 },
+        { label: 'Product',     width: 16 },
+        { label: 'Tons',        width: 11, fmt: QX_FMT.qty },     // F
+        { label: 'Payment',     width: 10, align: 'center' },
+        { label: 'Price / Ton', width: 12, fmt: QX_FMT.price },   // H
+        { label: 'Tax Rate',    width: 10, fmt: QX_FMT.rate },    // I
+        { label: 'Sales Tax',   width: 12, fmt: QX_FMT.money },   // J
+        { label: 'Net Sales',   width: 14, fmt: QX_FMT.money },   // K
+        { label: 'Total Due',   width: 14, fmt: QX_FMT.money },   // L
         // Indented: it sits right after Total Due's right-aligned figure.
-        ['Source',      20, S.xf({ align: 'left', indent: 1 }), { align: 'left', indent: 1 }],
+        { label: 'Source',      width: 20, align: 'left', indent: 1 },
       ];
-      const lastCol = qxCol(COLS.length);
-      const HEAD_ROW = 5;
-      const first = HEAD_ROW + 1, last = HEAD_ROW + entries.length, totRow = last + 1;
-
-      const co = (user && (user.companyName || user.companyCode)) || '';
-      const now = new Date();
-      const stamp = `${todayIso()} ${now.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}`;
-      const rows = [
-        [{ v: `Sales Tracking${co ? ' — ' + co : ''}`, s: S.xf({ font: { b: true, sz: 14, color: INK.title } }) }],
-        [{ v: `Filters: ${salesExportFilterDesc()}`, s: S.xf({ font: { color: INK.muted } }) }],
-        [{ v: `${entries.length} row${entries.length === 1 ? '' : 's'} · exported ${stamp}${user && user.username ? ' by ' + user.username : ''}`,
-           s: S.xf({ font: { color: INK.muted } }) }],
-        [],
-        COLS.map(([label, , , align]) => ({ v: label, s: head(align) })),
-      ];
-
-      let sumTons = 0, sumNet = 0, sumTax = 0;
-      entries.forEach(({ row }, i) => {
+      let tons = 0, net = 0, tax = 0;
+      const data = entries.map(({ row }, i) => {
         const r = first + i;
-        const t = Number(row.tons), p = Number(row.pricePerTon);
-        const tons  = row.tons === '' || !Number.isFinite(t) ? '' : t;
-        const price = row.pricePerTon === '' || !Number.isFinite(p) ? '' : p;
-        const rate  = rowTaxRate(row) / 100;
-        const net = rowTotal(row), tax = net * rate;
-        sumTons += tons === '' ? 0 : tons; sumNet += net; sumTax += tax;
-        const serial = qxDateSerial(row.date);
-        rows.push([
-          { v: serial != null ? serial : (row.date || ''), s: serial != null ? COLS[0][2] : 0 },
-          { v: row.locationName },
-          { v: row.employeeName },
-          { v: row.customerName },
-          { v: row.productName },
-          { v: tons,  s: COLS[5][2] },
-          { v: row.payment, s: COLS[6][2] },
-          { v: price, s: COLS[7][2] },
-          { v: rate,  s: COLS[8][2] },
-          { f: `K${r}*I${r}`, v: tax,       s: COLS[9][2] },
-          { f: `F${r}*H${r}`, v: net,       s: COLS[10][2] },
-          { f: `K${r}+J${r}`, v: net + tax, s: COLS[11][2] },
-          { v: isSalesSubmissionRow(row) ? 'Quarry Sales form' : 'Sales Tracking', s: COLS[12][2] },
-        ]);
+        const rate = rowTaxRate(row) / 100;
+        const n = rowTotal(row), x = n * rate;
+        const t = qxNumCell(row.tons);
+        tons += t.v === '' ? 0 : t.v; net += n; tax += x;
+        return [
+          qxDateCell(row.date),
+          { v: row.locationName }, { v: row.employeeName }, { v: row.customerName }, { v: row.productName },
+          t,
+          { v: row.payment },
+          qxNumCell(row.pricePerTon),
+          { v: rate },
+          { f: `K${r}*I${r}`, v: x },
+          { f: `F${r}*H${r}`, v: n },
+          { f: `K${r}+J${r}`, v: n + x },
+          { v: isSalesSubmissionRow(row) ? 'Quarry Sales form' : 'Sales Tracking' },
+        ];
+      });
+      const sheet = qxTrackingSheet(S, {
+        name: 'Sales', title: qxTitle('Sales Tracking'), lines, cols, data, selected: true,
+        totals: ({ first: a, last: b, row }) => [
+          { v: 'Totals' }, , , , ,
+          { f: qxSub('F', a, b), v: tons },
+          ,
+          { f: qxPer('K', 'F', row), v: tons ? net / tons : 0, fmt: QX_FMT.money },
+          ,
+          { f: qxSub('J', a, b), v: tax },
+          { f: qxSub('K', a, b), v: net },
+          { f: qxSub('L', a, b), v: net + tax },
+        ],
+      });
+      return qxBook([sheet], S.xml());
+    }
+
+    // ── Daily ──
+    // Its CSV columns are BULK_CONFIGS.daily.templateLayout's, in order.
+    const DAILY_CSV_HEADER = ['Date', 'Location', 'Employee', 'Equipment', 'Task', 'Hours', 'Rate',
+                              'Labor Cost', 'Fuel / Gallons', 'PPG', 'Fuel Cost', 'Total Cost'];
+    function buildDailyCsv(entries) {
+      return csvText(DAILY_CSV_HEADER, entries.map(({ row }) => {
+        const c = dailyCalc(row);
+        return [
+          row.date, row.locationName, row.employeeName, row.equipmentName, row.taskName,
+          csvNum(row.hours), csvNum(row.rate), csvCents(c.laborCost),
+          csvNum(row.fuelGallons), csvNum(row.ppg), csvCents(c.fuelCost), csvCents(c.totalCost),
+        ];
+      }));
+    }
+
+    // Labor Cost is Hours × Rate, Fuel Cost Gallons × PPG, Total Cost the two
+    // together — the table's own arithmetic (dailyCalc). Rate and PPG in the
+    // Totals row are what the hours and the gallons cost on average.
+    function buildDailyXlsx(entries) {
+      const S = qxStyles();
+      const lines = [`Filters: ${exportFilterDesc('daily')}`, `${qxRows(entries.length)} · ${qxExportStamp()}`];
+      const { first } = qxTrackingLayout(lines);
+      const cols = [
+        { label: 'Date',           width: 12, fmt: QX_FMT.date, align: 'left' },
+        { label: 'Location',       width: 16 },
+        { label: 'Employee',       width: 18 },
+        { label: 'Equipment',      width: 18 },
+        { label: 'Task',           width: 18 },
+        { label: 'Hours',          width: 9,  fmt: QX_FMT.qty },    // F
+        { label: 'Rate',           width: 10, fmt: QX_FMT.price },  // G
+        { label: 'Labor Cost',     width: 13, fmt: QX_FMT.money },  // H
+        { label: 'Fuel / Gallons', width: 12, fmt: QX_FMT.qty },    // I
+        { label: 'PPG',            width: 9,  fmt: QX_FMT.price },  // J
+        { label: 'Fuel Cost',      width: 12, fmt: QX_FMT.money },  // K
+        { label: 'Total Cost',     width: 13, fmt: QX_FMT.money },  // L
+        { label: 'Source',         width: 19, align: 'left', indent: 1 },
+      ];
+      const sum = { hours: 0, labor: 0, gallons: 0, fuel: 0 };
+      const data = entries.map(({ row }, i) => {
+        const r = first + i;
+        const c = dailyCalc(row);
+        const hours = qxNumCell(row.hours), gallons = qxNumCell(row.fuelGallons);
+        sum.hours   += hours.v === '' ? 0 : hours.v;
+        sum.gallons += gallons.v === '' ? 0 : gallons.v;
+        sum.labor   += c.laborCost;
+        sum.fuel    += c.fuelCost;
+        return [
+          qxDateCell(row.date),
+          { v: row.locationName }, { v: row.employeeName }, { v: row.equipmentName }, { v: row.taskName },
+          hours, qxNumCell(row.rate),
+          { f: `F${r}*G${r}`, v: c.laborCost },
+          gallons, qxNumCell(row.ppg),
+          { f: `I${r}*J${r}`, v: c.fuelCost },
+          { f: `H${r}+K${r}`, v: c.totalCost },
+          { v: isTimesheetRow(row) ? 'Payroll timesheet' : 'Daily Tracking' },
+        ];
+      });
+      const sheet = qxTrackingSheet(S, {
+        name: 'Daily', title: qxTitle('Daily Tracking'), lines, cols, data, selected: true,
+        totals: ({ first: a, last: b, row }) => [
+          { v: 'Totals' }, , , , ,
+          { f: qxSub('F', a, b), v: sum.hours },
+          { f: qxPer('H', 'F', row), v: sum.hours ? sum.labor / sum.hours : 0, fmt: QX_FMT.money },
+          { f: qxSub('H', a, b), v: sum.labor },
+          { f: qxSub('I', a, b), v: sum.gallons },
+          { f: qxPer('K', 'I', row), v: sum.gallons ? sum.fuel / sum.gallons : 0, fmt: QX_FMT.money },
+          { f: qxSub('K', a, b), v: sum.fuel },
+          { f: qxSub('L', a, b), v: sum.labor + sum.fuel },
+        ],
+      });
+      return qxBook([sheet], S.xml());
+    }
+
+    // ── Crushing ──
+    // The template's labels, in the TABLE's order rather than the template's
+    // (which carries Product last); the importer matches by header, not by
+    // position, so the file reads back either way.
+    const CRUSH_CSV_HEADER = ['Date', 'Location', 'Employee', 'Product', 'Hourly Rate', 'Hours',
+                              'Total Payroll', 'Fuel Gallons', '$/Gal', 'Fuel Cost', 'Loads to Crusher',
+                              'Tons / Load', 'Estimated Tons', 'Hours Crushing', 'Tons / Hour',
+                              'Total Cost', 'Cost / Ton', 'Comments'];
+    // The day-at-a-pit blend each row's Cost / Ton shows — the WHOLE day's
+    // cost over the whole day's tons, rows a Product filter hides included,
+    // exactly as renderCrush works it (see crushDayKey). Keyed by day key.
+    function crushExportDays(entries) {
+      const groups = crushGroupByDay(entries, crushDayMembers());
+      const byKey = new Map();
+      groups.forEach(g => {
+        g.day = crushDayTotals(g.memberIdx.map(idx => crushRows[idx]));
+        byKey.set(g.key, g);
+      });
+      return { groups, byKey };
+    }
+    function buildCrushCsv(entries) {
+      const { byKey } = crushExportDays(entries);
+      return csvText(CRUSH_CSV_HEADER, entries.map(({ row }) => {
+        const c = crushCalc(row);
+        const day = byKey.get(crushDayKey(row)).day;
+        return [
+          row.date, row.locationName, row.employeeName, row.productName,
+          csvNum(row.hourlyRate), csvNum(row.hours), csvCents(c.totalPayroll),
+          csvNum(row.fuelGallons), csvNum(row.fuelCost), csvCents(c.totalFuel),
+          csvNum(row.loadsToCrusher), csvNum(row.tonsPerLoad), csvCents(c.estimatedTons),
+          csvNum(row.hoursCrushing), csvCents(c.tonsPerHour), csvCents(c.totalCost),
+          // Blank, as the table's "—", when the day crushed nothing.
+          day.hasTons ? csvCents(day.costPerTon) : '',
+          row.comments,
+        ];
+      }));
+    }
+
+    // Two sheets. Entries is the table's rows, each with its own arithmetic as
+    // formulas. Days is the table's day header lines — one per day at a pit,
+    // with the day's tons per hour and cost per ton — the production figures
+    // the grid groups by.
+    function buildCrushXlsx(entries) {
+      const S = qxStyles();
+      const { groups, byKey } = crushExportDays(entries);
+      const filters = `Filters: ${exportFilterDesc('crushing')}`;
+      const lines = [
+        filters,
+        `${qxRows(entries.length)} · ${groups.length} day${groups.length === 1 ? '' : 's'} · ${qxExportStamp()}`,
+        'Day Cost / Ton is the whole day’s cost ÷ its tons at that pit — the same on every row of the day. Each day is a line on the Days sheet.',
+      ];
+      const { first } = qxTrackingLayout(lines);
+      const cols = [
+        { label: 'Date',             width: 12, fmt: QX_FMT.date, align: 'left' },
+        { label: 'Location',         width: 15 },
+        { label: 'Employee',         width: 18 },
+        { label: 'Product',          width: 15 },
+        { label: 'Hourly Rate',      width: 11, fmt: QX_FMT.price },  // E
+        { label: 'Hours',            width: 9,  fmt: QX_FMT.qty },    // F
+        { label: 'Total Payroll',    width: 13, fmt: QX_FMT.money },  // G
+        { label: 'Fuel Gallons',     width: 11, fmt: QX_FMT.qty },    // H
+        { label: '$/Gal',            width: 9,  fmt: QX_FMT.price },  // I
+        { label: 'Fuel Cost',        width: 12, fmt: QX_FMT.money },  // J
+        // General, not #,##0.##: that prints a whole number of loads as "20.".
+        { label: 'Loads to Crusher', width: 10, align: 'right' },     // K
+        { label: 'Tons / Load',      width: 10, fmt: QX_FMT.qty },    // L
+        { label: 'Estimated Tons',   width: 12, fmt: QX_FMT.qty },    // M
+        { label: 'Hours Crushing',   width: 11, fmt: QX_FMT.qty },    // N
+        { label: 'Tons / Hour',      width: 10, fmt: QX_FMT.qty },    // O
+        { label: 'Total Cost',       width: 13, fmt: QX_FMT.money },  // P
+        { label: 'Day Cost / Ton',   width: 12, fmt: QX_FMT.money },  // Q
+        // Indented: it sits right after Day Cost / Ton's right-aligned figure.
+        { label: 'Source',           width: 19, align: 'left', indent: 1 },
+        // Last, so a long note runs on into the empty cells beside it rather
+        // than being cut off at the next column.
+        { label: 'Comments',         width: 40 },
+      ];
+      const sum = { hours: 0, payroll: 0, gallons: 0, fuel: 0, loads: 0, tons: 0, hc: 0 };
+      const data = entries.map(({ row }, i) => {
+        const r = first + i;
+        const c = crushCalc(row);
+        const day = byKey.get(crushDayKey(row)).day;
+        const hours = qxNumCell(row.hours), gallons = qxNumCell(row.fuelGallons);
+        const loads = qxNumCell(row.loadsToCrusher), hc = qxNumCell(row.hoursCrushing);
+        sum.hours   += hours.v === '' ? 0 : hours.v;
+        sum.gallons += gallons.v === '' ? 0 : gallons.v;
+        sum.loads   += loads.v === '' ? 0 : loads.v;
+        sum.hc      += hc.v === '' ? 0 : hc.v;
+        sum.payroll += c.totalPayroll;
+        sum.fuel    += c.totalFuel;
+        sum.tons    += c.estimatedTons;
+        return [
+          qxDateCell(row.date),
+          { v: row.locationName }, { v: row.employeeName }, { v: row.productName },
+          qxNumCell(row.hourlyRate), hours,
+          { f: `E${r}*F${r}`, v: c.totalPayroll },
+          gallons, qxNumCell(row.fuelCost),
+          { f: `H${r}*I${r}`, v: c.totalFuel },
+          loads, qxNumCell(row.tonsPerLoad),
+          { f: `K${r}*L${r}`, v: c.estimatedTons },
+          hc,
+          { f: `IF(N${r}>0,M${r}/N${r},0)`, v: c.tonsPerHour },
+          { f: `G${r}+J${r}`, v: c.totalCost },
+          // A figure, not a formula: the day can include rows a Product
+          // filter kept off this sheet. 0 reads "—", as the table's does.
+          { v: day.hasTons ? day.costPerTon : 0 },
+          { v: isTimesheetRow(row) ? 'Payroll timesheet' : 'Crushing Tracking' },
+          { v: row.comments },
+        ];
+      });
+      const entriesSheet = qxTrackingSheet(S, {
+        name: 'Entries', title: qxTitle('Crushing Tracking'), lines, cols, data, selected: true,
+        totals: ({ first: a, last: b, row }) => [
+          { v: 'Totals' }, , , ,
+          { f: qxPer('G', 'F', row), v: sum.hours ? sum.payroll / sum.hours : 0, fmt: QX_FMT.money },
+          { f: qxSub('F', a, b), v: sum.hours },
+          { f: qxSub('G', a, b), v: sum.payroll },
+          { f: qxSub('H', a, b), v: sum.gallons },
+          { f: qxPer('J', 'H', row), v: sum.gallons ? sum.fuel / sum.gallons : 0, fmt: QX_FMT.money },
+          { f: qxSub('J', a, b), v: sum.fuel },
+          { f: qxSub('K', a, b), v: sum.loads },
+          { f: qxPer('M', 'K', row), v: sum.loads ? sum.tons / sum.loads : 0 },
+          { f: qxSub('M', a, b), v: sum.tons },
+          { f: qxSub('N', a, b), v: sum.hc },
+          { f: qxPer('M', 'N', row), v: sum.hc ? sum.tons / sum.hc : 0 },
+          { f: qxSub('P', a, b), v: sum.payroll + sum.fuel },
+          // Over these rows — the summary bar's Avg Cost/Ton.
+          { f: qxPer('P', 'M', row), v: sum.tons ? (sum.payroll + sum.fuel) / sum.tons : 0 },
+        ],
       });
 
-      const sub = col => `SUBTOTAL(9,${col}${first}:${col}${last})`;
-      rows.push([
-        { v: 'Totals', s: tot(null) },
-        { s: tot(null) }, { s: tot(null) }, { s: tot(null) }, { s: tot(null) },
-        { f: sub('F'), v: sumTons, s: tot(FMT.tons) },
-        { s: tot(null) },
-        // The average sold at, weighted by the tons — not a mean of the prices.
-        { f: `IF(F${totRow}=0,0,K${totRow}/F${totRow})`, v: sumTons ? sumNet / sumTons : 0, s: tot(FMT.money) },
-        { s: tot(null) },
-        { f: sub('J'), v: sumTax,          s: tot(FMT.money) },
-        { f: sub('K'), v: sumNet,          s: tot(FMT.money) },
-        { f: sub('L'), v: sumNet + sumTax, s: tot(FMT.money) },
-        { s: tot(null) },
-      ]);
-
-      const sheet = qxSheetXml({
-        widths: COLS.map(c => c[1]),
-        rows,
-        freezeRow: HEAD_ROW,
-        filterRef: `A${HEAD_ROW}:${lastCol}${last}`,
+      // Days: the day header lines, in the table's order. Each totals the
+      // WHOLE day at its pit, as the header does — say so when a Product
+      // filter is holding some of a day's rows off the Entries sheet.
+      const dayLines = [
+        filters,
+        `${groups.length} day${groups.length === 1 ? '' : 's'} · each line is every entry of that day at that pit · ${qxExportStamp()}`,
+      ];
+      const dFirst = qxTrackingLayout(dayLines).first;
+      const dCols = [
+        { label: 'Date',           width: 12, fmt: QX_FMT.date, align: 'left' },
+        { label: 'Location',       width: 16 },
+        { label: 'Entries',        width: 8,  fmt: '0' },            // C
+        { label: 'Hours',          width: 9,  fmt: QX_FMT.qty },     // D
+        { label: 'Total Payroll',  width: 13, fmt: QX_FMT.money },   // E
+        { label: 'Fuel Gallons',   width: 11, fmt: QX_FMT.qty },     // F
+        { label: 'Fuel Cost',      width: 12, fmt: QX_FMT.money },   // G
+        { label: 'Loads',          width: 9,  align: 'right' },      // H
+        { label: 'Estimated Tons', width: 12, fmt: QX_FMT.qty },     // I
+        { label: 'Hours Crushing', width: 11, fmt: QX_FMT.qty },     // J
+        { label: 'Tons / Hour',    width: 10, fmt: QX_FMT.qty },     // K
+        { label: 'Total Cost',     width: 13, fmt: QX_FMT.money },   // L
+        { label: 'Cost / Ton',     width: 11, fmt: QX_FMT.money },   // M
+        { label: 'Note',           width: 34, align: 'left', indent: 1 },
+      ];
+      const dsum = { n: 0, hours: 0, payroll: 0, gallons: 0, fuel: 0, loads: 0, tons: 0, hc: 0 };
+      const dData = groups.map((g, i) => {
+        const r = dFirst + i, d = g.day;
+        dsum.n += g.memberIdx.length; dsum.hours += d.hours; dsum.payroll += d.payroll;
+        dsum.gallons += d.fuelGallons; dsum.fuel += d.fuel; dsum.loads += d.loads;
+        dsum.tons += d.tons; dsum.hc += d.hoursCrushing;
+        const hidden = g.entries.length !== g.memberIdx.length;
+        return [
+          g.date ? qxDateCell(g.date) : { v: 'No date', s: 0 },
+          { v: g.location || CRUSH_NO_LOCATION },
+          { v: g.memberIdx.length },
+          { v: d.hours }, { v: d.payroll }, { v: d.fuelGallons }, { v: d.fuel },
+          { v: d.loads }, { v: d.tons }, { v: d.hoursCrushing },
+          { f: `IF(J${r}>0,I${r}/J${r},0)`, v: d.tonsPerHour },
+          { f: `E${r}+G${r}`, v: d.cost },
+          { f: `IF(I${r}>0,L${r}/I${r},0)`, v: d.costPerTon },
+          { v: hidden ? `Whole day — ${g.entries.length} of its ${g.memberIdx.length} entries match the filters` : '' },
+        ];
       });
-      return qxBook([{
-        name: 'Sales', xml: sheet,
-        printTitles: `$${HEAD_ROW}:$${HEAD_ROW}`,
-        filterDb: `$A$${HEAD_ROW}:$${lastCol}$${last}`,
-      }], S.xml());
+      const daysSheet = qxTrackingSheet(S, {
+        name: 'Days', title: qxTitle('Crushing Days'), lines: dayLines, cols: dCols, data: dData,
+        totals: ({ first: a, last: b, row }) => [
+          { v: 'Totals' }, ,
+          { f: qxSub('C', a, b), v: dsum.n },
+          { f: qxSub('D', a, b), v: dsum.hours },
+          { f: qxSub('E', a, b), v: dsum.payroll },
+          { f: qxSub('F', a, b), v: dsum.gallons },
+          { f: qxSub('G', a, b), v: dsum.fuel },
+          { f: qxSub('H', a, b), v: dsum.loads },
+          { f: qxSub('I', a, b), v: dsum.tons },
+          { f: qxSub('J', a, b), v: dsum.hc },
+          { f: qxPer('I', 'J', row), v: dsum.hc ? dsum.tons / dsum.hc : 0 },
+          { f: qxSub('L', a, b), v: dsum.payroll + dsum.fuel },
+          { f: qxPer('L', 'I', row), v: dsum.tons ? (dsum.payroll + dsum.fuel) / dsum.tons : 0 },
+        ],
+      });
+      return qxBook([entriesSheet, daysSheet], S.xml());
     }
 
     // ── XLSX writer (one sheet or several, stored ZIP, no library) ──
@@ -4467,7 +4828,10 @@
         const key = JSON.stringify(spec);
         if (cache.has(key)) return cache.get(key);
         const nf = numFmt(spec.fmt), fo = font(spec.font), fi = fill(spec.fill), bo = border(spec.top);
-        const al = spec.align ? `<alignment horizontal="${spec.align}"${spec.indent ? ` indent="${spec.indent}"` : ''}/>` : '';
+        const al = (spec.align || spec.wrap)
+          ? `<alignment${spec.align ? ` horizontal="${spec.align}"` : ''}${spec.indent ? ` indent="${spec.indent}"` : ''}`
+            + `${spec.wrap ? ' vertical="center" wrapText="1"' : ''}/>`
+          : '';
         const x = `<xf numFmtId="${nf}" fontId="${fo}" fillId="${fi}" borderId="${bo}" xfId="0"`
           + (nf ? ' applyNumberFormat="1"' : '') + (fo ? ' applyFont="1"' : '')
           + (fi ? ' applyFill="1"' : '') + (bo ? ' applyBorder="1"' : '')
@@ -4507,7 +4871,11 @@
       if (c.v == null || c.v === '') return st ? `<c r="${ref}"${st}/>` : '';
       return `<c r="${ref}"${st} t="inlineStr"><is><t xml:space="preserve">${qxEsc(c.v)}</t></is></c>`;
     }
-    function qxSheetXml({ widths, rows, freezeRow, filterRef }) {
+    // `selected` marks the sheet the book opens on. Only one may carry it:
+    // two selected sheets open GROUPED in Excel, and a cell typed into one is
+    // typed into both.
+    // `heights` sets a row's height in points, { rowNumber: pt }.
+    function qxSheetXml({ widths, rows, freezeRow, filterRef, selected, heights }) {
       const lastCol = qxCol(widths.length);
       const cols = widths.map((w, i) => `<col min="${i + 1}" max="${i + 1}" width="${w}" customWidth="1"/>`).join('');
       const pane = freezeRow
@@ -4516,14 +4884,15 @@
         : '';
       const body = rows.map((cells, i) => {
         const r = i + 1;
-        return `<row r="${r}">${(cells || []).map((c, j) => qxCellXml(qxCol(j + 1) + r, c)).join('')}</row>`;
+        const ht = heights && heights[r] ? ` ht="${heights[r]}" customHeight="1"` : '';
+        return `<row r="${r}"${ht}>${(cells || []).map((c, j) => qxCellXml(qxCol(j + 1) + r, c)).join('')}</row>`;
       }).join('');
       return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
         + '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
         + ' xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
         + '<sheetPr><pageSetUpPr fitToPage="1"/></sheetPr>'
         + `<dimension ref="A1:${lastCol}${Math.max(rows.length, 1)}"/>`
-        + `<sheetViews><sheetView tabSelected="1" workbookViewId="0">${pane}</sheetView></sheetViews>`
+        + `<sheetViews><sheetView${selected ? ' tabSelected="1"' : ''} workbookViewId="0">${pane}</sheetView></sheetViews>`
         + '<sheetFormatPr defaultRowHeight="15"/>'
         + `<cols>${cols}</cols>`
         + `<sheetData>${body}</sheetData>`
@@ -5063,6 +5432,8 @@
         updateCrushSummary();
         return;
       }
+      // visibleCrushEntries() is this same list for the Download button; a
+      // change to one is a change to both.
       const visibleEntries = crushRows
         .map((row, originalIdx) => ({ row, originalIdx }))
         .filter(({ row }) => rowMatchesYear('crushing', row) && rowMatchesMonth('crushing', row) && rowMatchesLocation('crushing', row) && rowMatchesProduct('crushing', row))
@@ -5206,6 +5577,18 @@
       const avgCostPerTon = totalEstTons > 0 ? totalCost / totalEstTons : 0;
       el.innerHTML = `Rows<strong>${count}</strong>· Hours Crushing<strong>${formatTons(totalHours)}</strong>· Est. Tons<strong>${formatTons(totalEstTons)}</strong>· Total Cost<strong>${formatMoney(totalCost)}</strong>· Avg Cost/Ton<strong>${formatMoney(avgCostPerTon)}</strong>`;
       refreshDeleteFilteredBtn('crushing');
+      setExportEnabled('crushing', crushLoaded && count > 0);
+    }
+
+    // The rows the Crushing table shows, in the order it shows them —
+    // renderCrush's own filter and sort, for the Download button. Kept in step
+    // with it by scripts/test-quarry-tracking-export.js, which checks each file
+    // against the rendered table row for row.
+    function visibleCrushEntries() {
+      return crushRows
+        .map((row, originalIdx) => ({ row, originalIdx }))
+        .filter(({ row }) => rowMatchesYear('crushing', row) && rowMatchesMonth('crushing', row) && rowMatchesLocation('crushing', row) && rowMatchesProduct('crushing', row))
+        .sort((a, b) => byDateDesc(a, b) || crushByLocation(a, b));
     }
 
     function addCrushRow() {
@@ -5477,6 +5860,8 @@
         updateDailySummary();
         return;
       }
+      // visibleDailyEntries() is this same list for the Download button; a
+      // change to one is a change to both.
       const visibleEntries = dailyRows
         .map((row, originalIdx) => ({ row, originalIdx }))
         .filter(({ row }) => rowMatchesYear('daily', row) && rowMatchesMonth('daily', row) && rowMatchesLocation('daily', row))
@@ -5557,6 +5942,18 @@
       });
       el.innerHTML = `Rows<strong>${count}</strong>· Hours<strong>${formatTons(totalHours)}</strong>· Total Cost<strong>${formatMoney(totalCost)}</strong>`;
       refreshDeleteFilteredBtn('daily');
+      setExportEnabled('daily', dailyLoaded && count > 0);
+    }
+
+    // The rows the Daily table shows, in the order it shows them — renderDaily's
+    // own filter and sort, for the Download button. Kept in step with it by
+    // scripts/test-quarry-tracking-export.js, which checks each file against the
+    // rendered table row for row.
+    function visibleDailyEntries() {
+      return dailyRows
+        .map((row, originalIdx) => ({ row, originalIdx }))
+        .filter(({ row }) => rowMatchesYear('daily', row) && rowMatchesMonth('daily', row) && rowMatchesLocation('daily', row))
+        .sort(byDateDesc);
     }
 
     function addDailyRow() {
