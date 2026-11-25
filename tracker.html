@@ -1488,6 +1488,72 @@
       .tick-item { padding: 0 0.7rem; gap: 0.3rem; }
     }
 
+    /* ── Jobs by stage & year ── */
+    /* Every job split three ways — completed, in progress, awarded — and each
+       stage broken down by year, so the finished work, the work in flight and
+       the backlog read side by side under the strip. */
+    .stage-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 0.75rem;
+      margin-bottom: 2rem;
+    }
+    .stage-card {
+      min-width: 0;
+      border: 1px solid var(--border);
+      border-top: 2px solid var(--stage, var(--border));
+      border-radius: 6px;
+      background: var(--surface);
+      overflow-x: auto;
+    }
+    .stage-card-head {
+      display: flex;
+      align-items: center;
+      gap: 0.45rem;
+      padding: 0.7rem 0.85rem 0.55rem;
+    }
+    .stage-dot   { width: 6px; height: 6px; border-radius: 50%; background: var(--stage); flex-shrink: 0; }
+    .stage-name  { font-size: 0.6rem; font-weight: 700; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text); }
+    .stage-count { margin-left: auto; font-size: 0.66rem; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+    .stage-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.76rem;
+      font-variant-numeric: tabular-nums;
+    }
+    .stage-table th {
+      padding: 0.3rem 0.6rem;
+      font-size: 0.55rem;
+      font-weight: 500;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      text-align: right;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .stage-table td {
+      padding: 0.4rem 0.6rem;
+      text-align: right;
+      /* The page-wide td rule boxes every cell; these rows only want a rule
+         underneath, like the strip's cards. */
+      border: 0;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    .stage-table th:first-child, .stage-table td:first-child { text-align: left; padding-left: 0.85rem; }
+    .stage-table th:last-child,  .stage-table td:last-child  { padding-right: 0.85rem; }
+    .stage-table tbody tr:last-child td { border-bottom: none; }
+    .stage-table tbody tr:hover td { background: var(--surface2); }
+    .stage-table tr.stage-yr-now td:first-child { color: var(--stage); font-weight: 700; }
+    .stage-table tr.stage-yr-none td:first-child { color: var(--muted); font-style: italic; }
+    .stage-table tfoot td { font-weight: 700; background: var(--surface2); border-top: 1px solid var(--border); border-bottom: none; }
+    .stage-empty { padding: 0.2rem 0.85rem 0.9rem; font-size: 0.74rem; color: var(--muted); }
+    .stage-note  { padding: 0.45rem 0.85rem 0.55rem; font-size: 0.62rem; color: var(--muted); border-top: 1px solid var(--border); }
+    @media (max-width: 1100px) {
+      .stage-grid { grid-template-columns: minmax(0, 1fr); }
+    }
+
     /* ── Project table ── */
     /* Still scrollable on narrow screens, but the scrollbar chrome is hidden —
        it rendered as a pale bar straight across the bottom of the dark table. */
@@ -5625,6 +5691,34 @@ function updateMobEntryBadge() {
   else           { badge.style.display = 'none'; }
 }
 
+/* The year a job counts under in the Home tab's stage-by-year breakdown.
+   Each stage reads the date that means something for it, and an actual date
+   (a daily entry) wins over a planned one wherever the work has produced any:
+     done — the year it finished: last daily entry, else Projected Completion,
+            else Start Date.
+     ip   — the year it started:  first daily entry, else Start Date, else
+            Projected Completion.
+     aw   — the year it is set to start: Start Date, else Projected
+            Completion, else a first daily entry logged ahead of the start.
+   '' when the job carries no date at all. */
+function _homeJobYear(p, stage) {
+  let first = '', last = '';
+  (p.dailyRows || []).forEach(r => {
+    const d = _dailySortDate(r.date, '');
+    if (!d) return;
+    if (!first || d < first) first = d;
+    if (!last  || d > last)  last  = d;
+  });
+  const picks = stage === 'done' ? [last,  p['end-date'],   p['start-date']]
+              : stage === 'ip'   ? [first, p['start-date'], p['end-date']]
+              :                    [p['start-date'], p['end-date'], first];
+  for (const d of picks) {
+    const m = /^(\d{4})-\d{2}-\d{2}/.exec(String(d || '').trim());
+    if (m) return m[1];
+  }
+  return '';
+}
+
 function renderHomeTab() {
   if (window.innerWidth <= 768) renderMobileProjCards();
   updateMobEntryBadge();
@@ -5648,6 +5742,8 @@ function renderHomeTab() {
   let ipProfit = 0, ipProfitBase = 0, gpEarned = 0, gpCount = 0, gpDone = 0;
   let awCount = 0, awContract = 0, awBid = 0, awProfit = 0, awProfitBase = 0;
   let statusCounts = { Active: 0, Complete: 0, 'On Hold': 0, 'At Risk': 0 };
+  // Jobs by stage, then by year — see _homeJobYear for the year each reads.
+  const stageYears = { done: {}, ip: {}, aw: {} };
 
   projectsList.forEach(p => {
     const _effBidQty = b => (parseFloat(b.quantity)||0) + (b.change_orders||[]).reduce((s,co)=>s+(parseFloat(co.qty_delta)||0),0);
@@ -5680,6 +5776,27 @@ function renderHomeTab() {
       gpEarned += gpEarnedToDate(projContract, projActual, projCost()).gp;
       gpCount++;
       if (projIsDone(p)) gpDone++;
+    }
+    // Stage × year. Substantially Complete sits with Completed — the field
+    // work is done — and the card calls it out, since its last costs may still
+    // be landing. Bidding and On Hold are in none of the three.
+    const _status = p['status'] || '';
+    const _stage  = (projIsDone(p) || _status === 'Substantially Complete') ? 'done'
+                  : _status === 'In Progress' ? 'ip'
+                  : _status === 'Awarded'     ? 'aw' : null;
+    if (_stage) {
+      const yr = _homeJobYear(p, _stage);
+      const c  = stageYears[_stage][yr] || (stageYears[_stage][yr] =
+                 { jobs: 0, contract: 0, profit: 0, profitBase: 0, subst: 0, noContract: 0, names: [] });
+      c.jobs++;
+      c.contract += projContract;
+      c.names.push(p['project-name'] || 'Untitled Project');
+      if (_status === 'Substantially Complete') c.subst++;
+      // Same rule as the strip: no contract, no revenue to set the cost against.
+      // On a completed job the projected cost is the final cost, so this is the
+      // GP it closed at; on the others it is the profit it is tracking to.
+      if (projContract) { c.profit += projContract - projCost(); c.profitBase += projContract; }
+      else c.noContract++;
     }
     // status counts from bid items
     (p.bidItems||[]).forEach(b => {
@@ -5788,6 +5905,90 @@ function renderHomeTab() {
         </div>
       </div>
     </div>`;
+
+  // ── Jobs by stage & year ──
+  // The strip above totals the live book in single figures. This splits every
+  // job by where it stands and by year, so it shows how the finished work, the
+  // work in flight and the backlog are spread across seasons. Contract and
+  // profit are worked exactly as the strip works them, so the In Progress and
+  // Awarded totals tie to its Total Contract Value, Awarded Backlog and Total
+  // Projected Profit.
+  const thisYear = String(new Date().getFullYear());
+  const STAGES = [
+    { key: 'done', label: 'Completed',   color: statusTextColor('Complete'),
+      profitHead: 'GP',
+      profitTip:  'Contract value less final cost — the gross profit the job closed at. A substantially complete job uses its projected cost while its last costs land.',
+      yearTip:    'The year the job finished: its last daily entry, else its Projected Completion, else its Start Date.',
+      none:       'No completed jobs yet.' },
+    { key: 'ip',   label: 'In Progress', color: statusTextColor('In Progress'),
+      profitHead: 'Proj. Profit',
+      profitTip:  'Contract value less projected final cost.',
+      yearTip:    'The year the job started: its first daily entry, else its Start Date, else its Projected Completion.',
+      none:       'Nothing in progress.' },
+    { key: 'aw',   label: 'Awarded',     color: statusTextColor('Awarded'),
+      profitHead: 'Proj. Profit',
+      profitTip:  'Contract value less projected cost — with nothing spent yet, the margin the job was bid at.',
+      yearTip:    'The year the job is set to start: its Start Date, else its Projected Completion.',
+      none:       'Nothing awarded and waiting.' },
+  ];
+  const stageCardHTML = st => {
+    const byYear = stageYears[st.key];
+    // Newest year first; a job with no date at all sinks to the bottom.
+    const years  = Object.keys(byYear).sort((a, b) => (a === '' ? 1 : b === '' ? -1 : b.localeCompare(a)));
+    const tot    = years.reduce((t, y) => {
+      const c = byYear[y];
+      t.jobs += c.jobs; t.contract += c.contract; t.profit += c.profit; t.profitBase += c.profitBase; t.subst += c.subst;
+      return t;
+    }, { jobs: 0, contract: 0, profit: 0, profitBase: 0, subst: 0 });
+    const margin = c => c.profitBase ? `<span style="${posNeg(c.profit)}">${fmtPct(c.profit / c.profitBase * 100)}</span>` : '—';
+    const profit = c => c.profitBase ? `<span style="${posNeg(c.profit)}">${money0(c.profit)}</span>` : '—';
+    const rowTip = (y, c) => {
+      const shown = c.names.slice().sort((a, b) => a.localeCompare(b));
+      const list  = shown.slice(0, 20).join('\n') + (shown.length > 20 ? `\n…and ${shown.length - 20} more` : '');
+      const noCt  = c.noContract ? `\n(${c.noContract} with no contract value — counted, but left out of contract and profit)` : '';
+      return `${y || 'No date'} — ${c.jobs} ${st.label.toLowerCase()} job${c.jobs === 1 ? '' : 's'}${noCt}\n${list}`;
+    };
+    const rows = years.map(y => {
+      const c = byYear[y];
+      const cls = y === '' ? 'stage-yr-none' : y === thisYear ? 'stage-yr-now' : '';
+      return `<tr${cls ? ` class="${cls}"` : ''} title="${esc(rowTip(y, c))}">
+        <td>${y || 'No date'}</td>
+        <td>${c.jobs}</td>
+        <td>$${fmt(c.contract, 0)}</td>
+        <td>${profit(c)}</td>
+        <td>${margin(c)}</td>
+      </tr>`;
+    }).join('');
+    return `<div class="stage-card" style="--stage:${st.color}">
+      <div class="stage-card-head">
+        <span class="stage-dot"></span>
+        <span class="stage-name">${st.label}</span>
+        <span class="stage-count">${tot.jobs} job${tot.jobs === 1 ? '' : 's'}</span>
+      </div>
+      ${tot.jobs === 0 ? `<div class="stage-empty">${st.none}</div>` : `
+      <table class="stage-table">
+        <thead><tr>
+          <th title="${esc(st.yearTip)}">Year</th>
+          <th>Jobs</th>
+          <th title="Contract value — revised amount where there is one.">Contract</th>
+          <th title="${esc(st.profitTip)}">${st.profitHead}</th>
+          <th title="${esc(st.profitHead)} as a share of contract value, over the jobs that carry a contract.">Margin</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+        ${years.length > 1 ? `<tfoot><tr>
+          <td>Total</td>
+          <td>${tot.jobs}</td>
+          <td>$${fmt(tot.contract, 0)}</td>
+          <td>${profit(tot)}</td>
+          <td>${margin(tot)}</td>
+        </tr></tfoot>` : ''}
+      </table>
+      ${tot.subst ? `<div class="stage-note">Includes ${tot.subst} substantially complete job${tot.subst === 1 ? '' : 's'}.</div>` : ''}`}
+    </div>`;
+  };
+  const stageHTML = projectsList.length === 0 ? '' : `
+    <p class="home-section-title">Jobs by Stage &amp; Year</p>
+    <div class="stage-grid">${STAGES.map(stageCardHTML).join('')}</div>`;
 
   // ── Status bar widths ──
   const statusTotal = Object.values(statusCounts).reduce((a, b) => a + b, 0) || 1;
@@ -6120,6 +6321,8 @@ function renderHomeTab() {
       </div>
       ${atRiskHTML}
     </div>
+
+    ${stageHTML}
 
     ${invSectionHTML}
     <p class="home-section-title">Projects <span style="font-weight:400">(${titleDetail})</span></p>
