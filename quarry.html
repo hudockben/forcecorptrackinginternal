@@ -3252,9 +3252,11 @@
     let salesSaveInFlight = false;
     let salesFetchedOnce = false;
     // The entries the table last rendered, in its order — what ⇩ Download
-    // hands over. Read off the render rather than re-filtered, because a cell
-    // edit (a date typed out of the Year filter, a re-picked customer) saves
-    // without re-rendering: the row stays on screen, so it stays in the file.
+    // hands over. Read off the render rather than re-filtered, because not
+    // every edit re-renders at once: a date still being typed waits for its
+    // cell to lose focus (renderWhenDateDone), and until then the row stays
+    // on screen, so it stays in the file. A committed date, or a combobox
+    // pick outside the filters, re-renders and the file follows.
     let salesShown = [];
 
     function todayIso() {
@@ -3614,6 +3616,12 @@
     function rowMatchesMonth(tab, row)    { return msMatches('month', tab, row); }
     function rowMatchesCustomer(tab, row) { return msMatches('customer', tab, row); }
     function rowMatchesProduct(tab, row)  { return msMatches('product', tab, row); }
+    // Every filter at once. Customer / Product match everything on a tab
+    // that has no such filter (an absent Set reads as empty).
+    function rowMatchesFilters(tab, row) {
+      return rowMatchesYear(tab, row) && rowMatchesMonth(tab, row) && rowMatchesLocation(tab, row)
+          && rowMatchesCustomer(tab, row) && rowMatchesProduct(tab, row);
+    }
 
     function locationFilterLabel(tab) { return msDescLabel('location', tab); }
     function monthFilterLabel(tab)    { return msDescLabel('month', tab); }
@@ -3894,8 +3902,15 @@
         salesRows[idx][idField]   = item ? item.id : '';
         salesRows[idx][nameField] = value;
         scheduleSalesSave();
+        // A Location / Customer / Product filter the new value is outside of
+        // takes the row off the table: re-render, filter menus kept (see
+        // updateSalesCell). Only then — Sales orders by date alone, so a row
+        // still inside the filters is already where it belongs, and re-rendering
+        // would take focus out of the cell Tab just moved it to. The combobox
+        // has closed by now (cbCommitInput closes it before dispatching).
+        if (!rowMatchesFilters('sales', salesRows[idx])) renderSales(true);
         // The tax cell is driven by which customer the row points at.
-        if (field === 'customer') refreshSalesRowTotals(idx);
+        else if (field === 'customer') refreshSalesRowTotals(idx);
       } else if (tab === 'crush') {
         if (!crushLoaded || !crushRows[idx]) return;
         const oldId = String(crushRows[idx][idField] || '');
@@ -4069,6 +4084,76 @@
       return db < da ? -1 : 1;   // ISO dates compare as text in date order
     }
 
+    // A tracking row's date decides whether it is on screen at all (Year,
+    // Month) and where it sits (newest first; on Crushing, which day it
+    // blends into), so a re-dated row re-renders its table. Not on the
+    // date input's `change` alone, though: Chrome fires change at every
+    // keystroke in a date field — typing 2025 into the year goes 0002, 0020,
+    // 0202, 2025 — and a re-render at the first of those takes the cell out
+    // from under the rest of the date (with Year = 2026 the row leaves the
+    // table at "0002", and that is the date it keeps). So while the date
+    // box still has focus, the re-render waits for it to lose focus; a
+    // change from anything but the box (a script), or from a box that no
+    // longer has focus, re-renders now. Each keystroke is still saved as it
+    // lands.
+    //
+    // The box passes itself in, and whether it has focus is read a tick
+    // after its change, not during it: Chrome dispatches the change of a
+    // finished segment (the month's second digit) while focus is moving to
+    // the next one, when document.activeElement reads as <body> and the box
+    // does not match :focus, though it never blurs.
+    //
+    // Whatever took focus from the date is in the table that is about to be
+    // redrawn, so the re-render waits for a press in progress to finish
+    // (otherwise the click lands on a row that is no longer there), then
+    // puts focus back in the same cell of the same row, wherever that row
+    // now sits — Tab out of a date lands where Tab was going.
+    const _dateRenderWaiting = new WeakSet();
+    let _pointerDown = false;
+    let _afterPointer = [];
+    document.addEventListener('pointerdown', () => { _pointerDown = true; }, true);
+    const _pointerDone = () => {
+      _pointerDown = false;
+      const waiting = _afterPointer;
+      _afterPointer = [];
+      // After the click this press makes, which dispatches in the same task.
+      if (waiting.length) setTimeout(() => waiting.forEach(f => f()), 0);
+    };
+    document.addEventListener('pointerup', _pointerDone, true);
+    document.addEventListener('pointercancel', _pointerDone, true);
+
+    function renderWhenDateDone(tbodyId, box, render) {
+      if (!box) { render(); return; }
+      if (_dateRenderWaiting.has(box)) return;   // already waiting on this box
+      _dateRenderWaiting.add(box);
+      const done = () => {
+        // Still in the box — or the window lost focus, not the box: wait for
+        // the box's own blur.
+        if (document.activeElement === box) { box.addEventListener('blur', onBlur, { once: true }); return; }
+        if (_pointerDown) { _afterPointer.push(done); return; }
+        _dateRenderWaiting.delete(box);
+        renderKeepingFocus(tbodyId, render);
+      };
+      const onBlur = () => setTimeout(done, 0);
+      setTimeout(done, 0);
+    }
+
+    // Re-render a tracking table and, if focus was in one of its rows, put it
+    // back in the same cell of that row (rows carry data-row, their index).
+    function renderKeepingFocus(tbodyId, render) {
+      const tbody = document.getElementById(tbodyId);
+      const at = document.activeElement;
+      const tr = at && tbody && tbody.contains(at) ? at.closest('tr[data-row]') : null;
+      const td = tr && at.closest('td');
+      const spot = td ? { row: tr.dataset.row, cell: td.cellIndex } : null;
+      render();
+      if (!spot || !tbody) return;
+      const back = tbody.querySelector(`tr[data-row="${spot.row}"]`);
+      const cell = back && back.cells[spot.cell];
+      const target = cell && cell.querySelector('input, select, button');
+      if (target) target.focus();
+    }
+
     function renderSales(keepFilters) {
       const tbody = document.getElementById('salesTbody');
       if (!tbody) return;
@@ -4124,7 +4209,7 @@
         if (isSalesSubmissionRow(row)) {
           const ro = v => `<div class="cell-readonly">${(v === '' || v == null) ? '' : escapeHtml(String(v))}</div>`;
           return `
-            <tr class="qss-locked" title="Submitted on the Quarry Sales form. Price / Ton is the price the scale house sold at — correct it here if it was entered wrong; to take the sale back out, use the ✕.">
+            <tr class="qss-locked" data-row="${i}" title="Submitted on the Quarry Sales form. Price / Ton is the price the scale house sold at — correct it here if it was entered wrong; to take the sale back out, use the ✕.">
               <td class="col-date">${ro(row.date)}</td>
               <td>${ro(row.locationName)}</td>
               <td>${ro(row.employeeName)}</td>
@@ -4140,8 +4225,8 @@
             </tr>`;
         }
         return `
-          <tr>
-            <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateSalesCell(${i}, 'date', this.value)" /></td>
+          <tr data-row="${i}">
+            <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateSalesCell(${i}, 'date', this.value, this)" /></td>
             <td>${cbHtml('sales:' + i, 'location', row.locationName || '')}</td>
             <td>${cbHtml('sales:' + i, 'employee', row.employeeName || '')}</td>
             <td>${cbHtml('sales:' + i, 'customer', row.customerName || '')}</td>
@@ -5057,10 +5142,16 @@
       await refreshSales();
     }
 
-    function updateSalesCell(index, field, value) {
+    // `box` is the date input when the change comes from one (see renderWhenDateDone).
+    function updateSalesCell(index, field, value, box) {
       if (!salesLoaded || !salesRows[index]) return;
       salesRows[index][field] = value;
       scheduleSalesSave();
+      // Re-dated: the row may leave the Year / Month filters, and it moves in
+      // date order. Filter menus are left as they are (true) — rebuilding them
+      // drops a selection no row carries any more, which would turn "the
+      // filter this row just left" into no filter at all.
+      if (field === 'date') renderWhenDateDone('salesTbody', box, () => renderSales(true));
     }
 
     function updateSalesSelect(index, kind, selectEl) {
@@ -5558,7 +5649,7 @@
       if (isTimesheetRow(row)) {
         const ro = v => `<div class="cell-readonly">${(v === '' || v == null) ? '' : escapeHtml(String(v))}</div>`;
         return `
-          <tr class="ts-locked" title="Injected from an approved timesheet entry — edit or remove it in Payroll, not here.">
+          <tr class="ts-locked" data-row="${i}" title="Injected from an approved timesheet entry — edit or remove it in Payroll, not here.">
             <td class="col-date">${ro(row.date)}</td>
             <td>${ro(row.locationName)}</td>
             <td>${ro(row.employeeName)}</td>
@@ -5581,8 +5672,8 @@
           </tr>`;
       }
       return `
-        <tr>
-          <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateCrushCell(${i}, 'date', this.value)" /></td>
+        <tr data-row="${i}">
+          <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateCrushCell(${i}, 'date', this.value, this)" /></td>
           <td>${cbHtml('crush:' + i, 'location', row.locationName || '')}</td>
           <td>${cbHtml('crush:' + i, 'employee', row.employeeName || '')}</td>
           <td>${cbHtml('crush:' + i, 'product',  row.productName  || '')}</td>
@@ -5639,15 +5730,15 @@
       scheduleCrushSave();
       renderCrush();
     }
-    function updateCrushCell(index, field, value) {
+    function updateCrushCell(index, field, value, box) {
       if (!crushLoaded || !crushRows[index]) return;
       crushRows[index][field] = value;
       scheduleCrushSave();
       // A row's date decides which day it belongs to, so re-date it and both
-      // days have to re-blend — a re-render is the honest way to move it. Safe
-      // here only because the date cell commits on change; comments come
+      // days have to re-blend — a re-render is the honest way to move it, once
+      // the date is done being typed (see renderWhenDateDone). Comments come
       // through this same setter on every keystroke and must not re-render.
-      if (field === 'date') renderCrush();
+      if (field === 'date') renderWhenDateDone('crushTbody', box, () => renderCrush());
     }
     function updateCrushEmployee(index, selectEl) {
       if (!crushLoaded || !crushRows[index]) return;
@@ -5929,7 +6020,7 @@
         if (isTimesheetRow(row)) {
           const ro = v => `<div class="cell-readonly">${(v === '' || v == null) ? '' : escapeHtml(String(v))}</div>`;
           return `
-            <tr class="ts-locked" title="Injected from an approved timesheet entry — edit or remove it in Payroll, not here.">
+            <tr class="ts-locked" data-row="${i}" title="Injected from an approved timesheet entry — edit or remove it in Payroll, not here.">
               <td class="col-date">${ro(row.date)}</td>
               <td>${ro(row.locationName)}</td>
               <td>${ro(row.employeeName)}</td>
@@ -5946,8 +6037,8 @@
             </tr>`;
         }
         return `
-          <tr>
-            <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateDailyCell(${i}, 'date', this.value)" /></td>
+          <tr data-row="${i}">
+            <td class="col-date"><input class="cell-input" type="date" value="${escapeHtml(row.date)}" onchange="updateDailyCell(${i}, 'date', this.value, this)" /></td>
             <td>${cbHtml('daily:' + i, 'location',  row.locationName  || '')}</td>
             <td>${cbHtml('daily:' + i, 'employee',  row.employeeName  || '')}</td>
             <td>${cbHtml('daily:' + i, 'equipment', row.equipmentName || '')}</td>
@@ -5997,10 +6088,12 @@
       scheduleDailySave();
       renderDaily();
     }
-    function updateDailyCell(index, field, value) {
+    function updateDailyCell(index, field, value, box) {
       if (!dailyLoaded || !dailyRows[index]) return;
       dailyRows[index][field] = value;
       scheduleDailySave();
+      // Re-dated: see updateSalesCell.
+      if (field === 'date') renderWhenDateDone('dailyTbody', box, () => renderDaily(true));
     }
     function updateDailySelect(index, kind, selectEl) {
       if (!dailyLoaded || !dailyRows[index]) return;
