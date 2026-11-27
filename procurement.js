@@ -265,9 +265,11 @@
       (ctx.purchaseOrders || []).forEach(p => {
         if (!p) return;
         if (p.id != null) m.poById.set(String(p.id), p);
-        const job = String(p.project_id || '');
-        if (!m.poByJob.has(job)) m.poByJob.set(job, []);
-        m.poByJob.get(job).push(p);
+        // Under every job it books to: a split order is each of its jobs' order.
+        poJobs(p).forEach(j => {
+          if (!m.poByJob.has(j.project_id)) m.poByJob.set(j.project_id, []);
+          m.poByJob.get(j.project_id).push(p);
+        });
       });
       // A link that holds: its PO is listed and on the row's own job. One
       // re-pointed to another job ("moved") or gone does not take the order
@@ -276,7 +278,7 @@
         if (!r || !r.po_id || r.deleted_at) return;
         const po = m.poById.get(String(r.po_id));
         const pid = r.project_id || ctx.projectId;
-        if (po && (!pid || String(po.project_id || '') === String(pid))) m.linkedPO.add(String(r.po_id));
+        if (po && (!pid || poOnJob(po, pid))) m.linkedPO.add(String(r.po_id));
       });
       if (ctx.bidLinesByProject) {
         m.lineByJob = new Map();
@@ -354,6 +356,37 @@
     return !keys.has(ck(k, cost));
   }
 
+  // ── Split purchase orders ───────────────────────────────────────────
+  // One order can book to several jobs: its own (project_id, cost_code,
+  // sub_code) and, when it is split, each of its `splits` ({ id, project_id,
+  // cost_code, sub_code }) — the silt sock for every field of a site on one
+  // PO. It is each of those jobs' order, under that job's codes. See "One
+  // order, several jobs" in api/lib/po-sync.js.
+  /** The jobs an order books to — its own first — each once, with its codes there. */
+  function poJobs(po) {
+    if (!po) return [];
+    const own = { project_id: str(po.project_id), cost_code: str(po.cost_code), sub_code: str(po.sub_code) };
+    const out = [own];
+    const seen = new Set([own.project_id]);
+    (Array.isArray(po.splits) ? po.splits : []).forEach(x => {
+      const pid = x && x.project_id != null ? String(x.project_id) : '';
+      if (!pid || seen.has(pid)) return;
+      seen.add(pid);
+      out.push({ project_id: pid, cost_code: str(x.cost_code), sub_code: str(x.sub_code) });
+    });
+    return out;
+  }
+  /** Does the order book to job `pid` — its own, or one of its splits? */
+  function poOnJob(po, pid) {
+    const want = str(pid);
+    return poJobs(po).some(j => j.project_id === want);
+  }
+  /** The order's codes on job `pid` (its split's there), or null when it does not book there. */
+  function poCodesOn(po, pid) {
+    const want = str(pid);
+    return poJobs(po).find(j => j.project_id === want) || null;
+  }
+
   // Blank on either side matches: a row with no vendor yet takes any PO, and a
   // PO with no supplier yet is taken by any row.
   function vendorCompatible(a, b) {
@@ -367,7 +400,8 @@
    *        'removed'  po_id set but the PO is gone (shown red, counts as no PO)
    *        'moved'    po_id set but that PO now belongs to another job (or to
    *                   none) — re-pointed on the Purchase Orders tab. Shown
-   *                   red like 'removed' and, like it, not this job's order
+   *                   red like 'removed' and, like it, not this job's order.
+   *                   A split order is still this job's while it books here
    *        'auto'     no link, and exactly one PO on the job has the row's
    *                   live cost + sub code and a compatible vendor
    *        'multiple' several such POs — the user has to pick
@@ -382,7 +416,7 @@
       const po = ctxIndex(ctx).poById.get(String(row.po_id));
       if (!po) return out('removed');
       const pid = row.project_id || ctx.projectId;
-      if (pid && String(po.project_id || '') !== String(pid)) return out('moved', po, [po]);
+      if (pid && !poOnJob(po, pid)) return out('moved', po, [po]);
       return out('linked', po, [po]);
     }
     if (row.po_auto === false) return out('nopo');
@@ -440,7 +474,9 @@
       byCode = new Map();
       const k = keyFn(ctx);
       (m.poByJob.get(job) || []).forEach(p => {
-        const key = ck(k, p.cost_code) + '\u0000' + ck(k, p.sub_code);
+        // A split order under the codes it has on THIS job.
+        const c = poCodesOn(p, job) || p;
+        const key = ck(k, c.cost_code) + '\u0000' + ck(k, c.sub_code);
         if (!byCode.has(key)) byCode.set(key, []);
         byCode.get(key).push(p);
       });
@@ -1889,6 +1925,8 @@
   function poOptions(row) {
     const ctx = makeCtx();
     const pid = (row && row.project_id) || st.projectId;
+    // Rows ticked on several jobs of a site: the orders split between all of them.
+    const pids = row && Array.isArray(row.project_ids) && row.project_ids.length ? row.project_ids.map(String) : null;
     const e = row ? effectivePO({ ...row, po_id: null, po_auto: true }, ctx) : { kind: 'none', candidates: [] };
     const autoMeta = !ctx.poLoaded ? 'POs still loading'
       : e.kind === 'auto' ? `matches ${str(e.po.po_number) || 'a PO'}`
@@ -1898,12 +1936,13 @@
       { value: '__none__', label: 'No PO', meta: 'not bought on a PO' },
     ];
     const codes = c => [c.cost_code, c.sub_code].filter(Boolean).join(' / ');
-    (ctx.purchaseOrders || []).filter(p => p && String(p.project_id || '') === String(pid || ''))
+    (ctx.purchaseOrders || []).filter(p => p && (pids ? pids.every(x => poOnJob(p, x)) : poOnJob(p, pid || '')))
       .slice().sort((a, b) => str(b.po_number).localeCompare(str(a.po_number), undefined, { numeric: true }))
       .forEach(p => opts.push({
         value: String(p.id),
         label: str(p.po_number) || '(no number)',
-        meta: [str(p.supplier) || 'no supplier', codes(p) || 'no code'].join(' — '),
+        meta: [str(p.supplier) || 'no supplier',
+          (pids ? `split between ${poJobs(p).filter(j => j.project_id).length} jobs` : codes(poCodesOn(p, pid || '') || p) || 'no code')].join(' — '),
       }));
     return opts;
   }
@@ -4691,13 +4730,13 @@
       case 'date_needed': case 'date_ordered': case 'date_delivered': return `<input type="date" id="fctproc-bulk-val" aria-label="Date" min="${DATE_MIN}" max="${DATE_MAX}">`;
       case 'lead_time_days': return '<input type="number" id="fctproc-bulk-val" min="0" max="3650" step="1" style="width:5rem" aria-label="Days">';
       case 'po': {
-        // A PO is one job's. On a site's sheet the ticked rows' job's orders
-        // are offered when they are all on one job; across jobs, only Auto
-        // and No PO (Create PO from selected raises one per job).
+        // On a site's sheet the ticked rows' job's orders are offered when they
+        // are all on one job; across jobs, the orders split between every one
+        // of those jobs (and Auto and No PO).
         let forRow = null;
         if (siteMode()) {
           const jobs = [...new Set([...st.selected].map(rowById).filter(Boolean).map(r => r.project_id))];
-          forRow = jobs.length === 1 ? { project_id: jobs[0] } : { project_id: '' };
+          forRow = jobs.length === 1 ? { project_id: jobs[0] } : { project_id: '', project_ids: jobs };
         }
         return `<select id="fctproc-bulk-val">${poOptions(forRow).map(o =>
         `<option value="${esc(o.value)}">${esc(o.label)}${o.value.startsWith('__') ? '' : ' — ' + esc(o.meta)}</option>`).join('')}</select>`;
@@ -6602,9 +6641,11 @@
     }
     const vendor = vendors[0] || '';
     const k = keyFn(ctx);
-    // A PO is one job's: it books its cost to that job. Rows from several
-    // jobs of a site (one supplier, one quote, bought at one time) make one
-    // PO per job, so each field carries its own cost.
+    // Rows from several jobs of a site (one supplier, one quote, bought at one
+    // time) make one PO per job, or ONE PO split across the jobs — each job
+    // still charged for its own deliveries under its own sub code (see "One
+    // order, several jobs" in api/lib/po-sync.js). Either way each field
+    // carries its own cost.
     const jobs = [...new Set(rows.map(r => String(r.project_id || st.projectId)))];
     const byCode = new Map();
     rows.forEach(r => {
@@ -6624,16 +6665,28 @@
         const top = mine.slice().sort((a, b) => b.rows.length - a.rows.length)[0];
         return { project_id: pid, cost_code: top.cost_code, sub_code: top.sub_code, rows: [].concat(...mine.map(g => g.rows)) };
       });
+      // One PO for the whole site: one number to the supplier, the job with
+      // the most rows as its own job and the rest as its splits, each under
+      // its main sub code. Recommended when every job's rows are under one
+      // sub code, which is when nothing is lost by it.
+      const splitOpt = { value: 'split', label: `One PO split across the ${jobs.length} jobs — one PO number${vendor ? ` to ${vendor}` : ''}, each job charged under ${plan.length > jobs.length ? 'its main' : 'its own'} sub code` };
       const opts = plan.length > jobs.length
-        ? [{ value: 'per', cls: 'btn-green', label: `One PO per job and sub code (recommended — a PO books its cost to one sub code) — ${plan.length} POs` },
+        ? [{ value: 'per', cls: 'btn-green', label: `One PO per job and sub code (recommended — a PO books its cost to one sub code per job) — ${plan.length} POs` },
+           splitOpt,
            { value: 'one', label: `One PO per job, each coded to that job's main sub code — ${jobs.length} POs` }]
-        : [{ value: 'per', cls: 'btn-green', label: `Create ${jobs.length} POs, one per job` }];
+        : [{ ...splitOpt, cls: 'btn-green' },
+           { value: 'per', label: `Create ${jobs.length} POs, one per job` }];
       opts.push({ value: null, label: 'Cancel' });
       const pick = await choose('Create purchase orders',
         `<p style="margin:0 0 0.45rem;line-height:1.5">The ${rows.length} selected rows are on <b>${jobs.length}</b> jobs: ${names.join(', ')}.</p>`
-        + `<p style="margin:0;line-height:1.5">Each job gets its own PO${vendor ? ` to ${esc(vendor)}` : ''}, so each job's cost stays on that job.</p>`, opts);
+        + `<p style="margin:0;line-height:1.5">Either way each job's cost stays on that job: a split PO charges each delivery to the job it is for.</p>`, opts);
       if (!pick) return;
       if (pick === 'one') plan = perJob;
+      if (pick === 'split') {
+        const main = perJob.slice().sort((a, b) => b.rows.length - a.rows.length)[0];
+        plan = [{ ...main, rows: [].concat(...perJob.map(g => g.rows)),
+          splits: perJob.filter(g => g !== main).map(g => ({ project_id: g.project_id, cost_code: g.cost_code, sub_code: g.sub_code })) }];
+      }
     } else if (plan.length > 1) {
       const top = plan.slice().sort((a, b) => b.rows.length - a.rows.length)[0];
       const name = [top.cost_code, top.sub_code].filter(Boolean).join(' / ') || 'no code';
@@ -6656,6 +6709,8 @@
         supplier: vendor,
         title: poTitle(g, vendor),
         notes: quotes.length === 1 ? `Quote ${quotes[0]}` : '',
+        // The site's other jobs, on a PO split across them.
+        ...(g.splits && g.splits.length ? { splits: g.splits } : {}),
       };
       let po = null;
       try { po = await cfg.createPurchaseOrder(seed); } catch (err) { console.warn('[procurement] createPurchaseOrder failed', err); }
@@ -6689,7 +6744,9 @@
       // row was, beside the banner saying the next PO was never raised.
       const linked = reached.reduce((a, g) => a + g.rows.length, 0) - leftOff.reduce((a, x) => a + x.n, 0);
       const left = keep.size;
-      toast((made.length === 1 ? `Created ${str(made[0].po_number) || 'the PO'} and linked ${linked} row${linked === 1 ? '' : 's'}`
+      const across = made.length === 1 && Array.isArray(made[0].splits) && made[0].splits.length
+        ? `, split across ${made[0].splits.length + 1} jobs,` : '';
+      toast((made.length === 1 ? `Created ${str(made[0].po_number) || 'the PO'}${across} and linked ${linked} row${linked === 1 ? '' : 's'}`
         : `Created ${made.length} POs${jobs.length > 1 ? `, each on its own job` : ''} (${made.map(p => str(p.po_number)).join(', ')})`)
         + (left ? ` — ${left} row${left === 1 ? ' is' : 's are'} still ticked, on no new PO yet` : ''));
     }

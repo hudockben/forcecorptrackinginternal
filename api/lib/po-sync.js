@@ -134,6 +134,170 @@ function lineHasCost(line) {
   return Boolean(line && (line.qty || line.unit_cost));
 }
 
+// ── One order, several jobs ─────────────────────────────────────────────────
+// An order books to its own job — project_id, cost_code, sub_code — and, when
+// it is split, to the jobs in `splits` as well: the silt sock for all four
+// Hempfield fields is one order to one supplier under one number, and each
+// field still carries its own share of the cost under its own sub code.
+//
+//   po.splits   [{ id, project_id, cost_code, sub_code }] — the order's other
+//               jobs. Absent or empty on an order that is not split.
+//   line.split  the id of the split a delivery is for; blank (or absent) for
+//               the order's own job.
+//
+// A delivery is still ONE job row: its row is raised on its job, under that
+// job's codes. An invoice that covers several jobs is entered as a delivery
+// per job, each with that job's own quantity, so every field's running
+// quantity and unit cost stay true. Nothing splits a delivery's money behind
+// anyone's back.
+//
+// A delivery naming a split the order no longer has, or one with no job
+// picked yet, is on the order's own job. keepSplitsInUse stops a save from
+// dropping a split a delivery is still on, so that fallback is only ever for
+// a malformed request, never a race.
+//
+// Mirrored in the division pages (_poLineJob and friends — "Keep identical in
+// tracker.html, paving.html and kiewit-pinetree.html"), purchase-orders.html
+// and procurement.js.
+
+const MAX_SPLITS = 50;
+
+const _txt = v => (v == null ? '' : String(v));
+
+/** The order's splits, cleaned up: objects with an id, each id once, all text. */
+function poSplits(po) {
+  if (!po || !Array.isArray(po.splits)) return [];
+  const out = [], seen = new Set();
+  for (const s of po.splits) {
+    if (!s || typeof s !== 'object') continue;
+    const id = _txt(s.id).trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push({ id, project_id: _txt(s.project_id), cost_code: _txt(s.cost_code), sub_code: _txt(s.sub_code) });
+    if (out.length >= MAX_SPLITS) break;
+  }
+  return out;
+}
+
+/** The job a delivery books to: its split's, else the order's own. */
+function lineJob(po, line) {
+  const id = _txt(line && line.split).trim();
+  if (id) {
+    const s = poSplits(po).find(x => x.id === id);
+    if (s && s.project_id) return { split: s.id, project_id: s.project_id, cost_code: s.cost_code, sub_code: s.sub_code };
+  }
+  return {
+    split: '',
+    project_id: _txt(po && po.project_id),
+    cost_code:  _txt(po && po.cost_code),
+    sub_code:   _txt(po && po.sub_code),
+  };
+}
+
+/** Every job the order books to — its own first — each once. */
+function poProjectIds(po) {
+  const out = [];
+  const add = v => { const s = _txt(v); if (s && !out.includes(s)) out.push(s); };
+  add(po && po.project_id);
+  poSplits(po).forEach(s => add(s.project_id));
+  return out;
+}
+
+function poHasProject(po, projectId) {
+  const want = _txt(projectId);
+  return Boolean(want) && poProjectIds(po).includes(want);
+}
+
+/**
+ * Which of the order's jobs a job row on `projectId` is under: '' for the
+ * order's own, a split's id, or null when the order does not book there.
+ */
+function splitForProject(po, projectId) {
+  const want = _txt(projectId);
+  if (!want || !po) return null;
+  if (_txt(po.project_id) === want) return '';
+  const s = poSplits(po).find(x => x.project_id === want);
+  return s ? s.id : null;
+}
+
+/** Set a delivery's split, leaving no empty key behind. Returns true when it changed. */
+function setLineSplit(line, splitId) {
+  if (!line) return false;
+  const want = _txt(splitId);
+  if (_txt(line.split) === want) return false;
+  if (want) line.split = want; else delete line.split;
+  return true;
+}
+
+/**
+ * Bring an order's splits into shape, in place. A division with no job ledger
+ * (quarry, the general list) has nothing to split between, so its orders carry
+ * none — the same rule that clears project_id there. An order with no splits
+ * keeps no empty key: every order a save returns is compared with what the
+ * page sent, and a key added to all of them would mark every one as changed.
+ */
+function sanitizeSplits(po, division) {
+  if (!po || typeof po !== 'object') return;
+  const noJobs = division && !PO_JOB_DIVISIONS.includes(division);
+  if (noJobs) {
+    if ('splits' in po) delete po.splits;
+    (Array.isArray(po.lines) ? po.lines : []).forEach(l => { if (l && 'split' in l) delete l.split; });
+    return;
+  }
+  if (!('splits' in po)) return;
+  const clean = poSplits(po);
+  if (clean.length) po.splits = clean; else delete po.splits;
+}
+
+/**
+ * Put back any split a delivery of `po` is on that `po` no longer lists,
+ * taken from the first of `copies` that has it. Mutates `po`; returns how
+ * many came back.
+ *
+ * A page removes a split only once nothing is on it. But its copy can be a
+ * minute behind: a delivery somebody else put on that job meanwhile is merged
+ * back (unseenLines), and without its split it would fall onto the order's
+ * own job — moving that field's cost onto another field with nobody asking.
+ */
+function keepSplitsInUse(po, copies) {
+  if (!po || !Array.isArray(po.lines)) return 0;
+  const have = new Set(poSplits(po).map(s => s.id));
+  const want = [];
+  for (const l of po.lines) {
+    const id = _txt(l && l.split).trim();
+    if (id && !have.has(id) && !want.includes(id)) want.push(id);
+  }
+  if (!want.length) return 0;
+  const back = [];
+  for (const id of want) {
+    for (const c of (copies || [])) {
+      const s = poSplits(c).find(x => x.id === id);
+      if (s) { back.push(s); have.add(id); break; }
+    }
+  }
+  if (!back.length) return 0;
+  po.splits = poSplits(po).concat(back);
+  return back.length;
+}
+
+/**
+ * The deliveries whose job a save changes: on both copies, on a different job
+ * in `po` than in `was`. Their rows sit on the old job and cannot follow it —
+ * every write to a row is pinned to its job — so each is removed and raised
+ * again on the new one, the way moving the whole order always has worked.
+ */
+function movedLineIds(po, was) {
+  const out = new Set();
+  if (!po || !was || !Array.isArray(po.lines) || !Array.isArray(was.lines)) return out;
+  const before = new Map(was.lines.filter(l => l && l.id != null).map(l => [String(l.id), l]));
+  for (const l of po.lines) {
+    if (!l || l.id == null) continue;
+    const b = before.get(String(l.id));
+    if (b && lineJob(was, b).project_id !== lineJob(po, l).project_id) out.add(String(l.id));
+  }
+  return out;
+}
+
 // ── Deliveries recorded from Daily Tracking ─────────────────────────────────
 // A job row that names one of its job's purchase orders and carries material
 // IS a delivery on that order. Before, only the other direction existed — a
@@ -170,9 +334,13 @@ const DAILY_SOURCE = 'daily';
 // A delivery line's own figures — what a page types into it. po_row_id is the
 // link to its job row and has rules of its own; a Daily Tracking line's codes
 // come from its row.
-const LINE_KEYS = ['invoice_num', 'date', 'qty', 'unit_cost', 'tax_pct', 'tax', 'employee'];
-// The ones a job row carries. The invoice # is the order's alone.
-const LINE_ROW_KEYS = ['date', 'qty', 'unit_cost', 'tax_pct', 'tax', 'employee'];
+// `split` is which of the order's jobs the delivery is for (see "One order,
+// several jobs") — a key like the rest, so a stale copy cannot move a delivery
+// back to the job it was on.
+const LINE_KEYS = ['invoice_num', 'date', 'qty', 'unit_cost', 'tax_pct', 'tax', 'employee', 'split'];
+// The ones a job row carries. The invoice # is the order's alone; the split
+// decides which job the row is on and under which codes.
+const LINE_ROW_KEYS = ['date', 'qty', 'unit_cost', 'tax_pct', 'tax', 'employee', 'split'];
 // The ones a line's money is made of. Tax follows the other three wherever a
 // percentage is set.
 const LINE_MONEY_KEYS = ['qty', 'unit_cost', 'tax_pct', 'tax'];
@@ -326,14 +494,25 @@ function newDailyLine(rowId) {
   };
 }
 
-/** The order a row's PO # names: that number, on the row's own job. */
+/**
+ * The order a row's PO # names: that number, booking to the row's own job —
+ * the order's job, or one of its splits'.
+ */
 function orderForRow(list, row, aliases) {
   const want = normPONum(row && row.po_num);
   if (!want || !row.project_id) return null;
-  return (list || []).find(po => po && po.project_id
-    && String(po.project_id) === String(row.project_id)
+  return (list || []).find(po => po && poHasProject(po, row.project_id)
     && (normPONum(po.po_number) === want
         || ((aliases && aliases.get(po.id)) || []).some(a => normPONum(a) === want))) || null;
+}
+
+/**
+ * A Daily Tracking delivery is on the job its row is on: the order's own, or
+ * the split for that job. Returns true when the line changed.
+ */
+function placeDailyLine(po, line, row) {
+  const split = splitForProject(po, row && row.project_id);
+  return setLineSplit(line, split == null ? '' : split);
 }
 
 function raisedRowIdsOf(list) {
@@ -414,6 +593,9 @@ function deriveDailyLines(list, rows, opts) {
         po.lines.push(line);
         changed.add(po.id);
       }
+      // Which of the order's jobs it is under is the row's, whatever a page
+      // kept: the row is on one job, and that is where the delivery is.
+      if (placeDailyLine(po, line, row)) changed.add(po.id);
       const keep = keepFor(po, line);
       if (keep === ALL) continue;
       if (applyRowToLine(line, row, true, keep)) changed.add(po.id);
@@ -477,6 +659,7 @@ function applyRowsToOrders(list, rowsById, rowIds, opts) {
       target.lines = (Array.isArray(target.lines) ? target.lines : []).concat([line]);
       changed.add(target.id);
     }
+    if (placeDailyLine(target, line, row)) changed.add(target.id);
     if (applyRowToLine(line, row, true)) changed.add(target.id);
   }
   return changed;
@@ -503,7 +686,8 @@ function linkScope(list) {
   const rowIds = new Set(), projectIds = new Set();
   (list || []).forEach(po => {
     if (!po) return;
-    if (po.project_id) projectIds.add(String(po.project_id));
+    // Every job the order books to: a row on any of them can name it.
+    poProjectIds(po).forEach(id => projectIds.add(id));
     ((Array.isArray(po.lines) ? po.lines : [])).forEach(l => {
       if (isDailyLine(l) && l.po_row_id) rowIds.add(String(l.po_row_id));
     });
@@ -601,11 +785,15 @@ async function reconcileDailyLines(sql, { companyCode, division }) {
  * scoped to the order's job and this division, and never a payroll row.
  */
 async function writeDailyRows(sql, { companyCode, division, po, editedLineIds, rowsById }) {
-  if (!po || !po.project_id || !PO_JOB_DIVISIONS.includes(division)) return 0;
+  if (!po || !poProjectIds(po).length || !PO_JOB_DIVISIONS.includes(division)) return 0;
   const edited = new Set((editedLineIds || []).map(String));
   let n = 0;
   for (const line of (Array.isArray(po.lines) ? po.lines : [])) {
     if (!isDailyLine(line) || !line.po_row_id) continue;
+    // The job the row is on — the order's own, or a split's (the derivation
+    // placed the line there from the row itself).
+    const projectId = lineJob(po, line).project_id;
+    if (!projectId) continue;
     const row = rowsById && rowsById.get(String(line.po_row_id));
     const renumber = row && String(row.po_num || '') !== String(po.po_number || '');
     if (edited.has(String(line.id))) {
@@ -619,7 +807,7 @@ async function writeDailyRows(sql, { companyCode, division, po, editedLineIds, r
           po_num          = ${po.po_number || null},
           updated_at      = NOW()
         WHERE company_code = ${companyCode} AND division = ${division}
-          AND project_id = ${po.project_id} AND row_id = ${String(line.po_row_id)}
+          AND project_id = ${projectId} AND row_id = ${String(line.po_row_id)}
           AND timesheet_entry_id IS NULL
       `;
       n++;
@@ -627,7 +815,7 @@ async function writeDailyRows(sql, { companyCode, division, po, editedLineIds, r
       await sql`
         UPDATE daily_tracking SET po_num = ${po.po_number || null}, updated_at = NOW()
         WHERE company_code = ${companyCode} AND division = ${division}
-          AND project_id = ${po.project_id} AND row_id = ${String(line.po_row_id)}
+          AND project_id = ${projectId} AND row_id = ${String(line.po_row_id)}
           AND timesheet_entry_id IS NULL
       `;
       n++;
@@ -656,19 +844,40 @@ async function writeDailyRows(sql, { companyCode, division, po, editedLineIds, r
  *    supervisor's re-coding on the job stands otherwise. Only ever an UPDATE.
  *  - a Daily Tracking delivery: writeDailyRows, as on a purchasing save.
  *
+ * Each delivery's row is on ITS job — the order's own, or its split's — under
+ * that job's codes (see "One order, several jobs"). A split's codes reach its
+ * rows only when this save changed them, or put the delivery on that split;
+ * `prevPO`, the order as stored before the save, is what says so.
+ *
  * Never on an order whose job the tab just moved: the tab re-minted those rows
  * from its own figures, and they are the job's now.
  */
-async function writeTabRows(sql, { companyCode, division, po, headerEdits, lineEdits, rowsById }) {
-  if (!po || !po.project_id || !PO_JOB_DIVISIONS.includes(division)) return 0;
+async function writeTabRows(sql, { companyCode, division, po, prevPO, headerEdits, lineEdits, rowsById }) {
+  if (!po || !poProjectIds(po).length || !PO_JOB_DIVISIONS.includes(division)) return 0;
   const h = headerEdits || new Set();
-  const codes  = h.has('cost_code') || h.has('sub_code');
-  const header = codes || h.has('title') || h.has('supplier') || h.has('po_number');
+  const ownCodes = h.has('cost_code') || h.has('sub_code');
+  const named = h.has('title') || h.has('supplier') || h.has('po_number');
   const figures = rowEditedLineIds(lineEdits);
-  const projectId = String(po.project_id);
+  const prevById = new Map(((prevPO && Array.isArray(prevPO.lines)) ? prevPO.lines : [])
+    .filter(l => l && l.id != null).map(l => [String(l.id), l]));
+  // Whether a delivery's row takes its job's codes in this save.
+  const codesFor = (line, job) => {
+    const keys = lineEdits && lineEdits.get(String(line.id));
+    if (keys && keys.has('split')) return true;   // put on this job in this save
+    if (!job.split) return ownCodes;              // the order's own job, as always
+    if (!h.has('splits')) return false;
+    if (!prevPO) return true;
+    const was = lineJob(prevPO, prevById.get(String(line.id)) || line);
+    return was.split !== job.split || was.cost_code !== job.cost_code || was.sub_code !== job.sub_code;
+  };
   let n = 0;
   for (const line of (Array.isArray(po.lines) ? po.lines : [])) {
     if (!line || !line.po_row_id || isDailyLine(line) || isInjectedRowId(line.po_row_id)) continue;
+    const job = lineJob(po, line);
+    const projectId = job.project_id;
+    if (!projectId) continue;
+    const codes = codesFor(line, job);
+    const header = codes || named;
     const rowId = String(line.po_row_id);
     if (figures.has(String(line.id)) && lineHasCost(line)) {
       const date = safeDate(line.date) || safeDate(po.date_created) || new Date().toISOString().slice(0, 10);
@@ -681,7 +890,7 @@ async function writeTabRows(sql, { companyCode, division, po, headerEdits, lineE
         ) VALUES (
           ${rowId}, ${projectId}, ${companyCode}, ${division},
           ${date}, 'Material', ${line.employee || null},
-          ${po.cost_code || null}, ${po.sub_code || null},
+          ${job.cost_code || null}, ${job.sub_code || null},
           ${po.title || null}, ${po.supplier || null}, ${po.po_number || null},
           ${floatOrZero(line.qty)}, ${lineUnitCostWithTax(line)}, ${lineAmt(line) + lineTax(line)}
         )
@@ -721,8 +930,8 @@ async function writeTabRows(sql, { companyCode, division, po, headerEdits, lineE
           material   = ${po.title || null},
           supplier   = ${po.supplier || null},
           po_num     = ${po.po_number || null},
-          cost_code  = CASE WHEN ${codes} THEN ${po.cost_code || null} ELSE cost_code END,
-          sub_code   = CASE WHEN ${codes} THEN ${po.sub_code || null}  ELSE sub_code  END,
+          cost_code  = CASE WHEN ${codes} THEN ${job.cost_code || null} ELSE cost_code END,
+          sub_code   = CASE WHEN ${codes} THEN ${job.sub_code || null}  ELSE sub_code  END,
           updated_at = NOW()
         WHERE company_code = ${companyCode} AND division = ${division}
           AND project_id = ${projectId} AND row_id = ${rowId}
@@ -736,11 +945,17 @@ async function writeTabRows(sql, { companyCode, division, po, headerEdits, lineE
   // whatever the save managed to read of them: left to writeDailyRows alone,
   // a failed read left the rows on the old number, and the next save — no
   // longer seeing two numbers — dropped those deliveries from the order.
+  // One statement per job: a split order's rows are on several.
   if (h.has('po_number')) {
-    const dailyRowIds = (Array.isArray(po.lines) ? po.lines : [])
-      .filter(l => l && isDailyLine(l) && l.po_row_id && !isInjectedRowId(l.po_row_id))
-      .map(l => String(l.po_row_id));
-    if (dailyRowIds.length) {
+    const byJob = new Map();
+    for (const l of (Array.isArray(po.lines) ? po.lines : [])) {
+      if (!l || !isDailyLine(l) || !l.po_row_id || isInjectedRowId(l.po_row_id)) continue;
+      const pid = lineJob(po, l).project_id;
+      if (!pid) continue;
+      if (!byJob.has(pid)) byJob.set(pid, []);
+      byJob.get(pid).push(String(l.po_row_id));
+    }
+    for (const [projectId, dailyRowIds] of byJob) {
       await sql`
         UPDATE daily_tracking SET po_num = ${po.po_number || null}, updated_at = NOW()
         WHERE company_code = ${companyCode} AND division = ${division}
@@ -846,10 +1061,14 @@ function settleCreationStamps(list, storedList, ctx) {
 // says nothing (one still running the code from before this) is stored whole,
 // as it always was.
 
-/** The order-level fields a page edits. Lines and the creation stamp have rules of their own. */
+/**
+ * The order-level fields a page edits. Lines and the creation stamp have rules
+ * of their own. `splits` is the order's other jobs, taken whole — the list is
+ * one field, edited as one.
+ */
 const HEADER_KEYS = [
   'po_number', 'date_created', 'project_id', 'cost_code', 'sub_code',
-  'title', 'supplier', 'status', 'notes',
+  'title', 'supplier', 'status', 'notes', 'splits',
 ];
 // Who set the status and when. They travel with the status they describe:
 // taken from the page only when the page changed the status.
@@ -877,6 +1096,12 @@ function editedFieldsByOrder(v) {
 }
 
 const _headerText = v => (v == null ? '' : String(v));
+// The splits list compared as what it says: no list and an empty one are the
+// same, and String() of an array of objects would call every two lists equal.
+const _splitsText = v => (Array.isArray(v) && v.length ? JSON.stringify(v) : '');
+const _sameHeader = (k, a, b) => (k === 'splits'
+  ? _splitsText(a) === _splitsText(b)
+  : _headerText(a) === _headerText(b));
 
 /**
  * Put back the stored value of every order-level field `edited` does not name.
@@ -890,8 +1115,10 @@ function settleHeaderFields(po, stored, edited, keys) {
   const scope = keys || HEADER_KEYS;
   const kept = [];
   const keep = k => {
-    if (_headerText(po[k]) === _headerText(stored[k])) return;
-    if (stored[k] === undefined) delete po[k]; else po[k] = stored[k];
+    if (_sameHeader(k, po[k], stored[k])) return;
+    if (stored[k] === undefined) delete po[k];
+    // A copy, never the stored list itself: the order is changed in place below.
+    else po[k] = k === 'splits' ? JSON.parse(JSON.stringify(stored[k])) : stored[k];
     kept.push(k);
   };
   for (const k of scope) if (!edited.has(k)) keep(k);
@@ -990,6 +1217,8 @@ function legacyTaxConverted(stored, pctText) {
  * opts.raisedOnly leaves Daily Tracking lines alone — for a settle made after
  * they were derived from their rows, which are newer than any stored copy.
  * opts.skip: line ids to leave exactly as they are.
+ * opts.keys: settle only these keys (default: all of LINE_KEYS) — the full-list
+ * save settles `split` first, to learn which deliveries moved job.
  */
 function settleLineFigures(po, stored, edits, opts) {
   if (!po || !stored || !edits || !Array.isArray(po.lines) || !Array.isArray(stored.lines)) return [];
@@ -1010,8 +1239,9 @@ function settleLineFigures(po, stored, edits, opts) {
       out = out || { ...l };
       if (was[k] === undefined) delete out[k]; else out[k] = was[k];
     };
-    LINE_KEYS.forEach(k => { if (k !== 'tax') take(k); });
-    if (!mine.has('tax')) {
+    const scope = (opts && opts.keys) || LINE_KEYS;
+    scope.forEach(k => { if (k !== 'tax') take(k); });
+    if (scope.includes('tax') && !mine.has('tax')) {
       if ((out || l).tax_pct == null) take('tax');
       else if (out) recalcLineTax(out);
     }
@@ -1117,6 +1347,12 @@ async function mutatePOBlob(sql, blobKey, mutate) {
 // write mirrors only its own row, never the division-wide delete-and-reinsert
 // the full-list PUT does — that would wipe every order purchasing did not send.
 
+/** The order's splits as JSON text for the mirror's jsonb column, or null. */
+function splitsJson(po) {
+  const s = poSplits(po);
+  return s.length ? JSON.stringify(s) : null;
+}
+
 async function mirrorOnePO(sql, companyCode, division, po) {
   // The row's created_at is the order's own creation stamp when it has one. An
   // order raised before the stamp existed keeps the time its row was first
@@ -1128,7 +1364,7 @@ async function mirrorOnePO(sql, companyCode, division, po) {
       id, company_code, division, po_num, title, supplier, project_id,
       cost_code, sub_code, status, notes, origin,
       date_created, status_changed_at, status_changed_by, updated_at,
-      created_at, created_by
+      created_at, created_by, splits
     ) VALUES (
       ${po.id}, ${companyCode}, ${division},
       ${po.po_number      || ''},
@@ -1145,7 +1381,8 @@ async function mirrorOnePO(sql, companyCode, division, po) {
       ${po.status_changed_by || null},
       NOW(),
       COALESCE(${createdAt}::timestamptz, NOW()),
-      ${po.created_by     || null}
+      ${po.created_by     || null},
+      ${splitsJson(po)}::jsonb
     )
     ON CONFLICT (id) DO UPDATE SET
       division           = EXCLUDED.division,
@@ -1163,7 +1400,8 @@ async function mirrorOnePO(sql, companyCode, division, po) {
       status_changed_by  = EXCLUDED.status_changed_by,
       updated_at         = NOW(),
       created_at         = COALESCE(${createdAt}::timestamptz, purchase_orders.created_at),
-      created_by         = EXCLUDED.created_by
+      created_by         = EXCLUDED.created_by,
+      splits             = EXCLUDED.splits
     WHERE purchase_orders.company_code = ${companyCode}
   `;
 
@@ -1181,7 +1419,7 @@ async function mirrorOnePO(sql, companyCode, division, po) {
         po_id, company_code,
         line_id, invoice_num, delivery_date,
         units_delivered, unit_cost, delivery_cost,
-        tax, employee, po_row_id
+        tax, employee, po_row_id, split_id
       ) VALUES (
         ${po.id}, ${companyCode},
         ${line.id          || null},
@@ -1190,7 +1428,8 @@ async function mirrorOnePO(sql, companyCode, division, po) {
         ${qty}, ${uc}, ${qty * uc},
         ${lineTax(line)},
         ${line.employee    || null},
-        ${line.po_row_id   || null}
+        ${line.po_row_id   || null},
+        ${lineJob(po, line).split || null}
       )
     `;
   }
@@ -1241,14 +1480,32 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
   // after the DELETE above had already removed the rows for the old job. The
   // page clears the job when the division changes, but that is client-side: a
   // stale tab, a replayed request or any non-browser client with the same
-  // token still sends one.
+  // token still sends one. Its splits go the same way (sanitizeSplits).
   if (!PO_JOB_DIVISIONS.includes(division) && po.project_id) po.project_id = '';
-  const projectId = po.project_id || '';
+  sanitizeSplits(po, division);
 
   const prevLines   = (prevPO && Array.isArray(prevPO.lines)) ? prevPO.lines : [];
-  const movedJob    = Boolean(prevPO) && (prevPO.project_id || '') !== projectId;
   const movedDiv    = Boolean(prevDivision) && prevDivision !== division;
-  const startAfresh = movedJob || movedDiv;
+
+  // Each delivery's job — the order's own, or its split's (see "One order,
+  // several jobs") — now, and as stored before this save. A delivery whose job
+  // changed is MOVED: its row sits on the old job, and writeRow's conflict arm
+  // pins project_id, so the row cannot follow. It goes, and the delivery gets a
+  // fresh row on its new job. Moving the order's own job moves every delivery
+  // on it; a delivery on a split stays where it is. Moving the division moves
+  // them all.
+  const jobOf = line => lineJob(po, line);
+  const prevJobById = new Map();
+  if (prevPO) {
+    for (const l of prevLines) if (l && l.id != null) prevJobById.set(String(l.id), lineJob(prevPO, l));
+  }
+  const movedIds = new Set();
+  for (const line of lines) {
+    if (!line || line.id == null) continue;
+    const was = prevJobById.get(String(line.id));
+    if (was && was.project_id !== jobOf(line).project_id) movedIds.add(String(line.id));
+  }
+  const isMoved = line => movedDiv || Boolean(line && line.id != null && movedIds.has(String(line.id)));
 
   // The link from a delivery to its cost row is minted here and travels back in
   // the response, so a client that never saw that response sends the line with
@@ -1259,11 +1516,11 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
   // since nothing would name it any more. So the stored list is what the link
   // is read from; the client's copy only adds to it.
   //
-  // Not consulted when the order MOVED: every row it had is being deleted, so
-  // reusing one of their ids would resurrect the id the move just retired and
-  // undo the reset a few lines below.
+  // Not consulted for a delivery that MOVED: its row is being deleted, so
+  // reusing its id would resurrect the id the move just retired and undo the
+  // reset a few lines below (the loop skips moved deliveries).
   const storedRowIdFor = new Map();
-  if (!startAfresh) {
+  if (!movedDiv) {
     for (const l of prevLines) {
       if (l && l.id && l.po_row_id) storedRowIdFor.set(l.id, l.po_row_id);
     }
@@ -1294,35 +1551,39 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
   }
   const ownsRow = id => Boolean(id) && ownedRowIds.has(String(id));
 
-  // Whether the ORDER's own cost/sub code changed in this save. A PO-generated
-  // material row is fully editable on the job's own cost tab, and re-coding one
-  // is a real workflow — so purchasing flipping a status or fixing a typo must
-  // not drag it back. Only a change to the order's codes carries through, which
-  // is exactly the `syncCodes` distinction _syncPOHeaderToLines draws in
-  // tracker.html. A brand-new row takes the order's codes regardless: there is
-  // no supervisor decision on it yet to preserve.
-  const codesChanged = !prevPO
-    || startAfresh
-    || (prevPO.cost_code || '') !== (po.cost_code || '')
-    || (prevPO.sub_code  || '') !== (po.sub_code  || '');
+  // Whether the codes of a delivery's JOB changed in this save — the order's own
+  // codes for a delivery on the order's job, its split's for one on a split. A
+  // PO-generated material row is fully editable on the job's own cost tab, and
+  // re-coding one is a real workflow — so purchasing flipping a status or fixing
+  // a typo must not drag it back. Only a change to the job's codes carries
+  // through, which is exactly the `syncCodes` distinction _syncPOHeaderToLines
+  // draws in tracker.html. A brand-new row takes its job's codes regardless:
+  // there is no supervisor decision on it yet to preserve.
+  const codesChangedFor = (line, job) => {
+    if (!prevPO || isMoved(line)) return true;
+    // The delivery's job as it stood: its own, or — a delivery new to the order
+    // — the same split (or the order's own job) as stored.
+    const was = prevJobById.get(String(line.id)) || lineJob(prevPO, line);
+    return was.project_id !== job.project_id
+      || (was.cost_code || '') !== (job.cost_code || '')
+      || (was.sub_code  || '') !== (job.sub_code  || '');
+  };
 
-  // Rows that must go: everything from the previous project when the order
-  // moved, otherwise the rows of lines that were deleted or emptied out.
+  // Rows that must go: those of deliveries that moved (all of them when the
+  // division moved), and of lines that were deleted or emptied out.
   const liveLineIds = new Set(lines.filter(lineHasCost).map(l => l.id));
   const stale = prevLines
     .filter(l => l && l.po_row_id)
-    .filter(l => startAfresh || !liveLineIds.has(l.id))
+    .filter(l => movedDiv || !liveLineIds.has(l.id) || movedIds.has(String(l.id)))
     .map(l => l.po_row_id);
 
-  // When the order moved, the rows the INCOMING lines point at go too. Normally
-  // those are the same ids prevLines carries — but not after a move that only
-  // half landed: the caller retries with lines already pointing at rows on the
-  // NEW job, while the stored copy still names the old ones. Without this the
-  // retry re-creates every row and leaves the first attempt's behind, and the
-  // job is charged for the delivery twice.
-  if (startAfresh) {
-    for (const line of lines) if (line && ownsRow(line.po_row_id)) stale.push(line.po_row_id);
-  }
+  // When a delivery moved, the row its INCOMING line points at goes too.
+  // Normally that is the same id prevLines carries — but not after a move that
+  // only half landed: the caller retries with lines already pointing at rows on
+  // the NEW job, while the stored copy still names the old ones. Without this
+  // the retry re-creates every row and leaves the first attempt's behind, and
+  // the job is charged for the delivery twice.
+  for (const line of lines) if (line && isMoved(line) && ownsRow(line.po_row_id)) stale.push(line.po_row_id);
 
   // A line the caller sent with a po_row_id but no cost left on it — the user
   // cleared the quantity. Its row goes too, and the stale link with it. Only
@@ -1334,20 +1595,20 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
       line.po_row_id = null;
     }
   }
-  if (startAfresh) {
-    for (const line of lines) if (line) line.po_row_id = null;
-  }
+  for (const line of lines) if (line && isMoved(line)) line.po_row_id = null;
 
   // The stale rows are named here but deleted by the CALLER, once the order is
   // actually stored. Deleting them now loses them outright when the write then
   // fails — the save is reported as a conflict while the job has quietly lost
   // a cost row. Nothing can collide in the gap: a cleared line has its link
-  // nulled just above and is skipped by lineHasCost, and under startAfresh
-  // every line is nulled and takes a fresh id.
+  // nulled just above and is skipped by lineHasCost, and a moved delivery is
+  // nulled and takes a fresh id.
   const staleIds = stale;
 
   // An order with no job has no cost rows at all — that is the general-purchase
-  // case, and it is a first-class state rather than an incomplete order.
+  // case, and it is a first-class state rather than an incomplete order. Nor
+  // does a delivery on a split with no job picked yet, which books to the
+  // order's own job (lineJob) — none, here.
   //
   // Nor can it gain a link to one here. A po_row_id the stored order does not
   // already name came from the request, and returning before writeRow would
@@ -1355,10 +1616,11 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
   // that row by id wherever it lives. The job path below never keeps such a
   // link; this is the same rule for an order with no job, which every quarry
   // order is.
-  if (!projectId) {
-    for (const line of lines) {
-      if (line && line.po_row_id && !ownsRow(line.po_row_id)) line.po_row_id = null;
-    }
+  const dropForeignLink = line => {
+    if (line && line.po_row_id && !ownsRow(line.po_row_id)) line.po_row_id = null;
+  };
+  if (!poProjectIds(po).length) {
+    for (const line of lines) dropForeignLink(line);
     return { staleIds, written: 0, writtenIds: [], createdIds: [], figuresWritten: new Set() };
   }
 
@@ -1368,8 +1630,11 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
    * One statement for both the create and the update. The INSERT arm matches
    * defaultDailyRow()'s material shape; the UPDATE arm sets only the columns a
    * purchase order owns, so a supervisor's re-categorisation on the job's own
-   * cost tab survives — cost and sub code included, unless the ORDER's own
-   * codes are what changed.
+   * cost tab survives — cost and sub code included, unless the codes of the
+   * delivery's job are what changed.
+   *
+   * The row goes on the delivery's JOB (`job`, from lineJob): the order's own,
+   * or its split's, under that job's codes.
    *
    * The conflict arm is scoped to this company, the mirror of the DELETE above.
    * daily_tracking.row_id is globally unique, and po_row_id arrives in the
@@ -1378,7 +1643,8 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
    * is what makes that safe to act on: a row the WHERE excludes comes back
    * empty instead of silently doing nothing.
    */
-  async function writeRow(rowId, line, withFigures) {
+  async function writeRow(rowId, line, withFigures, job, codesChanged) {
+    const projectId = job.project_id;
     const cost = lineAmt(line) + lineTax(line);
     const date = safeDate(line.date) || safeDate(po.date_created) || new Date().toISOString().slice(0, 10);
     const out = await sql`
@@ -1390,7 +1656,7 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
       ) VALUES (
         ${rowId}, ${projectId}, ${companyCode}, ${division},
         ${date}, 'Material', ${line.employee || null},
-        ${po.cost_code || null}, ${po.sub_code || null},
+        ${job.cost_code || null}, ${job.sub_code || null},
         ${po.title || null}, ${po.supplier || null}, ${po.po_number || null},
         ${floatOrZero(line.qty)}, ${lineUnitCostWithTax(line)}, ${cost}
       )
@@ -1430,11 +1696,18 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
   for (const line of lines) {
     if (!line || !lineHasCost(line)) continue;
 
+    // The job this delivery's row goes on. None — a delivery on the order's
+    // own job when that is blank — means no row, as for an order with no job.
+    const job = jobOf(line);
+    if (!job.project_id) { dropForeignLink(line); continue; }
+
     // The stored order is the authority on which row a delivery already owns —
     // an id the request supplied is honoured only when the stored order names
-    // it too, so a crafted one falls through to a fresh row of its own.
+    // it too, so a crafted one falls through to a fresh row of its own. A
+    // delivery that moved job has had its link cleared above, and takes no
+    // stored one either: that row is on the old job and is on its way out.
     const linked = (ownsRow(line.po_row_id) && line.po_row_id)
-      || storedRowIdFor.get(line.id)
+      || (!isMoved(line) && storedRowIdFor.get(line.id))
       || null;
     // Nothing here may touch a payroll-injected row, however a link came to
     // point at one. Only payroll creates and removes those.
@@ -1446,16 +1719,17 @@ async function syncPOCostRows(sql, { companyCode, division, po, prevPO, prevDivi
     // cost from its own copy, putting back whatever a supervisor had re-figured
     // on the job since that copy was read. `figureLineIds` is null for a page
     // that does not say which deliveries it changed: as before, all of them.
-    const withFigures = !figureLineIds || startAfresh || figureLineIds.has(String(line.id));
+    const withFigures = !figureLineIds || isMoved(line) || figureLineIds.has(String(line.id));
+    const codesChanged = codesChangedFor(line, job);
     let rowId = linked || crypto.randomUUID();
-    let ok = await writeRow(rowId, line, withFigures);
+    let ok = await writeRow(rowId, line, withFigures, job, codesChanged);
     if (!ok && linked) {
       // The id named a row this caller has no claim to — another tenant's, or
       // one payroll owns. Give the delivery a row of its own rather than
       // dropping it: a fresh uuid cannot collide, so this write always lands,
       // and the job gets charged exactly once either way.
       rowId = crypto.randomUUID();
-      ok = await writeRow(rowId, line, true);
+      ok = await writeRow(rowId, line, true, job, true);
     }
     if (!ok) continue;
 
@@ -1562,12 +1836,18 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
   // syncPOCostRows makes the same call; made here first because the Daily
   // Tracking lines below are derived against the job the order is saved with.
   if (!PO_JOB_DIVISIONS.includes(division) && po.project_id) po.project_id = '';
+  sanitizeSplits(po, division);
 
   // Deliveries somebody else added while this caller was holding a stale copy.
   // Merged back BEFORE the cost rows are reconciled, so their rows are not read
   // as belonging to deleted lines and swept away.
   const recovered = unseenLines(po, priorCopies, deletedLineIds);
   if (recovered.length) po.lines = (Array.isArray(po.lines) ? po.lines : []).concat(recovered);
+  // ...and the split each delivery is on, for one this copy dropped while
+  // somebody else still had a delivery on it. Only from the copy in THIS
+  // division's list: a split names a job of its division, and an order moving
+  // in from another division must not bring that division's jobs with it.
+  if (PO_JOB_DIVISIONS.includes(division)) keepSplitsInUse(po, targetCopy ? [targetCopy] : []);
 
   // The order's Daily Tracking lines are whatever its job's rows say — never
   // what this copy happened to carry. A purchasing tab a minute behind still
@@ -1612,6 +1892,7 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
     priorCopies: priorCopies.map(raisedOnly), figureLineIds,
   });
   po.project_id = raisedView.project_id;
+  if (Array.isArray(raisedView.splits)) po.splits = raisedView.splits; else delete po.splits;
 
   // The new list is written FIRST, and only then is the old one emptied.
   // The reverse order has a window where the order is in neither list, and a
@@ -1629,11 +1910,11 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
   // So merge again here, from the list actually being written over.
   let lateMerged = 0;
   const lateStale = [];
-  // The same test syncPOCostRows makes, recomputed here because it is local to
-  // that function. po.project_id has already been through its clearing pass, so
-  // this reads the value the rows were actually reconciled against.
-  const movedOrder = (Boolean(prevPO) && (prevPO.project_id || '') !== (po.project_id || ''))
-    || (Boolean(prevDivision) && prevDivision !== division);
+  // The division move syncPOCostRows tests for, recomputed here because it is
+  // local to that function. A move of a JOB is judged per delivery below, the
+  // same way: the order's own job moving moves the deliveries on it, a split's
+  // moves the deliveries on that split.
+  const movedDivision = Boolean(prevDivision) && prevDivision !== division;
   const saved = await mutatePOBlob(sql, blobKeyFor(companyCode, division), list => {
     const idx = list.findIndex(p => p && p.id === po.id);
     if (idx === -1) return [...list, po];
@@ -1665,27 +1946,40 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
       .filter(l => !(isDailyLine(l) && priorDailyIds.has(String(l.id))));
     if (late.length) {
       lateMerged += late.length;
+      // The split a late delivery is on stays on the order, as at the top
+      // (keepSplitsInUse) — before deciding whether it moved, which reads it.
+      if (PO_JOB_DIVISIONS.includes(division)) {
+        const probe = { splits: po.splits, lines: late };
+        if (keepSplitsInUse(probe, [list[idx]])) po.splits = probe.splits;
+      }
       // Normally the other writer's po_row_id is kept: that row is live and
       // correct for this delivery, and syncPOCostRows has already run, so
       // nothing here would reconcile a fresh one.
       //
-      // Not when this save MOVED the order. writeRow's ON CONFLICT predicate
-      // pins project_id and division, so a row sitting on the old job can never
-      // be re-pointed at the new one — the UPDATE matches nothing, RETURNING
-      // comes back empty, and the next save mints a SECOND row instead. Both
-      // jobs then carry the delivery. So the link is cleared, and the row it
-      // named goes out with the rest of the move's stale rows.
+      // Not when this save MOVED the delivery's job (or the order's division).
+      // writeRow's ON CONFLICT predicate pins project_id and division, so a row
+      // sitting on the old job can never be re-pointed at the new one — the
+      // UPDATE matches nothing, RETURNING comes back empty, and the next save
+      // mints a SECOND row instead. Both jobs then carry the delivery. So the
+      // link is cleared, and the row it named goes out with the rest of the
+      // move's stale rows.
       //
       // A Daily Tracking line that arrived in the window was derived from its
-      // row a moment ago and is kept as it is — unless the order moved, when
-      // its row (on the old job) no longer names it. Its row is never swept.
-      po.lines = (Array.isArray(po.lines) ? po.lines : []).concat(
-        movedOrder
-          ? late.filter(l => !isDailyLine(l)).map(l => {
-              if (l && l.po_row_id && !isInjectedRowId(l.po_row_id)) lateStale.push(String(l.po_row_id));
-              return { ...l, po_row_id: null };
-            })
-          : late);
+      // row a moment ago and is kept as it is — unless the order no longer
+      // books to the job its row is on, when the row no longer names it. Its
+      // row is never swept.
+      const add = [];
+      for (const l of late) {
+        const was = lineJob(list[idx], l).project_id;
+        if (isDailyLine(l)) {
+          if (!movedDivision && poHasProject(po, was)) add.push(l);
+          continue;
+        }
+        if (!movedDivision && was === lineJob(po, l).project_id) { add.push(l); continue; }
+        if (l && l.po_row_id && !isInjectedRowId(l.po_row_id)) lateStale.push(String(l.po_row_id));
+        add.push({ ...l, po_row_id: null });
+      }
+      po.lines = (Array.isArray(po.lines) ? po.lines : []).concat(add);
       dropShadowedDailyLines(po);
     }
 
@@ -1896,6 +2190,16 @@ module.exports = {
   lineTax,
   lineUnitCostWithTax,
   lineHasCost,
+  poSplits,
+  lineJob,
+  poProjectIds,
+  poHasProject,
+  splitForProject,
+  setLineSplit,
+  sanitizeSplits,
+  keepSplitsInUse,
+  movedLineIds,
+  splitsJson,
   isInjectedRowId,
   isDailyLine,
   dailyLineId,

@@ -72,16 +72,42 @@ const codeText = v => {
 };
 
 /**
+ * The split a delivery is on, when its order is split between jobs and the
+ * split has a job — see "One order, several jobs" in api/lib/po-sync.js
+ * (lineJob there makes the same call; kept here so this file stays pure).
+ */
+function lineSplit(po, line) {
+  const id = line && line.split != null ? String(line.split).trim() : '';
+  if (!id || !po || !Array.isArray(po.splits)) return null;
+  const s = po.splits.find(x => x && typeof x === 'object' && String(x.id == null ? '' : x.id).trim() === id);
+  return s && s.project_id ? s : null;
+}
+
+/**
  * The cost code a delivery's file compiles under: the line's own code when it
  * carries one (a Daily Tracking line carries its row's code, which can differ
- * from the order header's — api/lib/po-sync.js applyRowToLine), else the
- * order's. Raw, as stored: the cost-code folder lookup matches the exact raw
- * code first. null when neither has one.
+ * from the order header's — api/lib/po-sync.js applyRowToLine), else its
+ * split's when the order is split between jobs, else the order's. Raw, as
+ * stored: the cost-code folder lookup matches the exact raw code first. null
+ * when none has one.
  */
 function lineCostCode(po, line) {
   const own = line && typeof line.cost_code === 'string' && line.cost_code.trim() ? line.cost_code : null;
   if (own) return own;
+  const split = lineSplit(po, line);
+  if (split) return codeText(split.cost_code);
   return po ? codeText(po.cost_code) : null;
+}
+
+/**
+ * The job whose cost-code folder a delivery's file compiles in: its split's,
+ * else the order's. The file itself is filed under the order, in the order's
+ * job — only the cost-code copy follows the delivery to its own job.
+ */
+function lineProjectId(po, line) {
+  const split = lineSplit(po, line);
+  if (split) return String(split.project_id);
+  return po && po.project_id ? String(po.project_id) : null;
 }
 
 module.exports = {
@@ -91,4 +117,5 @@ module.exports = {
   parsePoLineTarget,
   findLine,
   lineCostCode,
+  lineProjectId,
 };

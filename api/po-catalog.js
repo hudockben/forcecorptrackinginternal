@@ -190,12 +190,16 @@ module.exports = async (req, res) => {
       for (const id of wantedByDivision[division]) {
         const blob = projectBlobs[`${prefix}project_${id}`];
         if (!blob || typeof blob !== 'object') continue;
+        // The job page's Site (turf: the Hempfield fields share one), so an
+        // order split between jobs can offer the rest of its job's site.
+        const site = String(blob.site == null ? '' : blob.site).replace(/\s+/g, ' ').trim();
         projects.push({
           id:        String(blob.id || id),
           name:      blob['project-name'] || 'Untitled',
           jobNumber: blob['job-number']   || '',
           codes:     codesFromProject(blob),
           done:      projectIsDone(blob),
+          ...(site ? { site } : {}),
         });
       }
       projects.sort((a, b) => a.name.localeCompare(b.name));

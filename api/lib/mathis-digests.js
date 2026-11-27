@@ -31,6 +31,7 @@ const auth     = require('./auth');
 const ctx      = require('./mathis-context');
 const quarryM  = require('./quarry-metrics');
 const { numericOrZero } = require('./numeric');
+const poSync   = require('./po-sync');
 const dustM    = require('./dust-metrics');
 const dustCost = require('./dust-cost-metrics');
 const dailyM   = require('./daily-cost-metrics');
@@ -214,6 +215,32 @@ const poValue = po => (Array.isArray(po && po.lines) ? po.lines : []).reduce((su
   const tax  = numericOrZero(l && l.tax);
   return sum + qty * cost + tax;
 }, 0);
+// One delivery's worth, the way poValue counts it.
+const lineValue = l => poValue({ lines: [l] });
+
+/**
+ * A split order's jobs, each with its codes and what its deliveries come to —
+ * the order's own first (see "One order, several jobs" in api/lib/po-sync.js).
+ * null for an order that is not split. `nameOf` turns a job id into what the
+ * digest calls it.
+ */
+function poJobBreakdown(po, nameOf) {
+  const splits = poSync.poSplits(po).filter(s => s.project_id);
+  if (!splits.length) return null;
+  const jobs = [{ split: '', projectId: String(po.project_id || ''), costCode: po.cost_code, subCode: po.sub_code }]
+    .concat(splits.map(s => ({ split: s.id, projectId: s.project_id, costCode: s.cost_code, subCode: s.sub_code })));
+  const value = new Map(jobs.map(j => [j.split, 0]));
+  for (const l of (Array.isArray(po.lines) ? po.lines : [])) {
+    const k = poSync.lineJob(po, l).split;
+    value.set(k, (value.get(k) || 0) + lineValue(l));
+  }
+  return jobs.map(j => ({
+    job:      nameOf(j.projectId),
+    costCode: safeText(j.costCode, 20),
+    subCode:  safeText(j.subCode, 20),
+    value:    round2(value.get(j.split) || 0),
+  }));
+}
 
 /**
  * Purchase orders for one job division.
@@ -256,6 +283,11 @@ async function purchaseOrders(c, division, projectNames) {
       dated:    safeText(po.date_created, 20),
       value,
       lines:    Array.isArray(po.lines) ? po.lines.length : 0,
+      // One order split between several jobs: each job's codes and share.
+      ...(() => {
+        const jobs = poJobBreakdown(po, id => projectNames.get(String(id || '')) || null);
+        return jobs ? { jobs } : {};
+      })(),
     });
   }
   rows.sort((a, b) => b.value - a.value);
@@ -1872,6 +1904,12 @@ async function purchasingDigest(c) {
         raisedBy: po.origin === 'purchasing' ? 'purchasing' : 'division',
         value,
         lines:    Array.isArray(po.lines) ? po.lines.length : 0,
+        // One order split between several jobs: each job (by id, as above),
+        // its codes and its share.
+        ...(() => {
+          const jobs = poJobBreakdown(po, id => (id ? safeText(id, 60) : null));
+          return jobs ? { jobs: jobs.map(j => ({ jobId: j.job, costCode: j.costCode, subCode: j.subCode, value: j.value })) } : {};
+        })(),
       });
     }
     byDivision[division] = { count: divCount, value: round2(divTotal) };

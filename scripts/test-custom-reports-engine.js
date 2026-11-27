@@ -976,6 +976,31 @@ function deepNear(a, b, at = '') {
     const mtot = PE.buildSectionData(def.sections[0], PE.normalizeDefinition(Object.assign({}, def, { layout: 'combined' })), mk(def, ['p1', 'p2'])).blocks[0].totals;
     assert('a quantity total only when every line is one material', mtot.qty === null && near(mtot.tax, 22.5 * 61.37 * 0.06 + 20 * 61.37 * 0.06 + 10));
 
+    // A PO split between jobs ("One order, several jobs" in api/lib/po-sync.js):
+    // each job's report shows the deliveries for that job, under its codes.
+    {
+      const splitPO = { id: 'pos', po_number: 'PO-5001', title: 'Silt sock', supplier: 'Frank Roberts', status: 'approved',
+        project_id: 'p1', cost_code: 'Paving', sub_code: 'Base Course',
+        splits: [{ id: 's2', project_id: 'p2', cost_code: 'E&S', sub_code: 'Silt Sock' }],
+        lines: [
+          { id: 'sl1', date: '2026-10-27', invoice_num: 'S-1', qty: '10', unit_cost: '3', tax_pct: '' },
+          { id: 'sl2', date: '2026-10-27', invoice_num: 'S-2', qty: '30', unit_cost: '3', tax_pct: '', split: 's2' },
+        ] };
+      const cfgS = { getPurchaseOrders: () => [splitPO] };
+      def = all('materials');
+      const onP1 = rowsOf(PE.buildSectionData(def.sections[0], def, mk(def, ['p1'], null, cfgS)));
+      const onP2 = rowsOf(PE.buildSectionData(def.sections[0], def, mk(def, ['p2'], null, cfgS)));
+      assert('a split PO: each job shows only the deliveries for it',
+        onP1.map(r => r.invoice_num).join() === 'S-1' && onP2.map(r => r.invoice_num).join() === 'S-2', J({ onP1, onP2 }));
+      assert('…under that job\'s own codes', onP2.length === 1 && onP2[0].cost_code === 'E&S' && onP2[0].sub_code === 'Silt Sock'
+        && onP1.length === 1 && onP1[0].sub_code === 'Base Course' && near(onP2[0].line_total, 90), J({ onP1, onP2 }));
+      def = PE.normalizeDefinition(Object.assign({}, all('materials'), { filters: { costCodes: ['E&S'], subCodes: [] } }));
+      // Both jobs picked: a block each, so every block's rows.
+      const scoped = PE.buildSectionData(def.sections[0], def, mk(def, ['p1', 'p2'], null, cfgS)).blocks
+        .flatMap(b => b.groups.flatMap(g => g.rows.map(r => r.cells)));
+      assert('…and a cost-code filter reads the delivery\'s job\'s code', scoped.map(r => r.invoice_num).join() === 'S-2', J(scoped));
+    }
+
     def = all('trucking');
     rows = rowsOf(PE.buildSectionData(def.sections[0], def, mk(def, ['p1'])));
     assert('trucking: tickets in the range, cost = rate × hours',

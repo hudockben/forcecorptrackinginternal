@@ -27,8 +27,14 @@
  *   { id, po_number, date_created, project_id, cost_code, sub_code, title,
  *     supplier, status, notes, status_changed_at, status_changed_by,
  *     created_at, created_by,
+ *     splits: [{ id, project_id, cost_code, sub_code }],   (a split order only)
  *     lines: [{ id, invoice_num, date, qty, unit_cost, tax, tax_pct, employee,
- *              po_row_id }] }
+ *              po_row_id, split }] }
+ *
+ * `splits` are the jobs an order books to besides its own (project_id,
+ * cost_code, sub_code), and a delivery's `split` says which of them it is for
+ * — blank for the order's own. Each delivery's cost row is raised on its job,
+ * under that job's codes. See "One order, several jobs" in api/lib/po-sync.js.
  *
  * `created_at` / `created_by` are who raised the order and when. Set once, the
  * first time the order is stored, and kept from then on by every write here —
@@ -220,6 +226,8 @@ module.exports = async (req, res) => {
           tax:         d.tax             != null ? String(d.tax)             : '',
           employee:    d.employee        || '',
           po_row_id:   d.po_row_id       || null,
+          // Which of a split order's jobs it is for; none for the order's own.
+          ...(d.split_id ? { split: String(d.split_id) } : {}),
         });
       }
 
@@ -242,6 +250,9 @@ module.exports = async (req, res) => {
         // written. created_by is what tells the two apart.
         created_at:        r.created_by && r.created_at ? new Date(r.created_at).toISOString() : undefined,
         created_by:        r.created_by      || undefined,
+        // The order's other jobs, when it is split (see the column's note in
+        // neon-schema.sql).
+        ...(Array.isArray(r.splits) && r.splits.length ? { splits: r.splits } : {}),
         lines:             linesByPO[r.id]   || [],
       }));
 
@@ -392,27 +403,45 @@ module.exports = async (req, res) => {
           }
         }
 
+        // An order split between jobs ("One order, several jobs" in
+        // api/lib/po-sync.js): its splits in shape, and none at all on the
+        // general list, which has no jobs to split between.
+        toWrite = toWrite.map(po => {
+          if (!po || typeof po !== 'object' || (!('splits' in po) && PO_JOB_DIVISIONS.includes(division))) return po;
+          const copy = { ...po };
+          poSync.sanitizeSplits(copy, division);
+          return copy;
+        });
+
         // ...and the deliveries' figures, key by key — see settleLineFigures.
-        // Not on an order whose job the tab just moved: it re-minted those
-        // rows from its own figures, and the order must match them.
+        // Not on a delivery whose job the tab just moved — the order's own job,
+        // or the split the delivery is on, or the delivery to another split:
+        // the tab re-minted that row from its own figures, and the order must
+        // match it. Which job a delivery is on is settled first, to tell.
+        const movedById = new Map();   // order id → ids of its deliveries the tab moved job
         if (newProtocol && stored.length) {
           toWrite = toWrite.map(po => {
             const was = po && po.id ? storedById.get(po.id) : null;
             if (!was || po === was) return po;
-            if (String(po.project_id || '') !== String(was.project_id || '')) {
-              jobMovedIds.add(String(po.id));
-              return po;
-            }
             const copy = { ...po };
-            const kept = poSync.settleLineFigures(copy, was, lineEditsFor(po.id));
-            if (!kept.length) return po;
-            mergedLineFigures += kept.length;
+            const edits = lineEditsFor(po.id);
+            const keptSplit = poSync.settleLineFigures(copy, was, edits, { keys: ['split'] });
+            // A split this copy dropped while a delivery is still on it stays.
+            if (PO_JOB_DIVISIONS.includes(division)) poSync.keepSplitsInUse(copy, [was]);
+            const movedLines = poSync.movedLineIds(copy, was);
+            if (movedLines.size) movedById.set(String(po.id), movedLines);
+            if (String(po.project_id || '') !== String(was.project_id || '')) jobMovedIds.add(String(po.id));
+            const kept = poSync.settleLineFigures(copy, was, edits, { skip: movedLines });
+            const n = new Set(keptSplit.concat(kept)).size;
+            if (!n && copy.splits === po.splits) return po;
+            mergedLineFigures += n;
             return copy;
           });
           if (mergedLineFigures) {
             console.warn(`[purchase-orders] kept the stored figures of ${mergedLineFigures} delivery line(s) a stale copy had not changed for ${blobKey}`);
           }
         }
+        const movedLinesFor = id => movedById.get(String(id)) || new Set();
 
         // A delivery the tab deleted goes with the row the STORED order links it
         // to. The tab removes the row its own copy names, but a row purchasing
@@ -433,7 +462,9 @@ module.exports = async (req, res) => {
               goneRowIds.add(String(l.po_row_id));
               supersededRows.push({
                 rowId:     String(l.po_row_id),
-                projectId: String(was.project_id || ''),
+                // The job the row is on: the delivery's, as stored — the
+                // order's own, or its split's.
+                projectId: poSync.lineJob(was, l).project_id,
                 poNum:     String(was.po_number  || ''),
               });
             }
@@ -461,15 +492,21 @@ module.exports = async (req, res) => {
           // mints a replacement because the link reads as present, so the job is
           // silently UNDER-charged. Whether the row still exists is exactly the
           // distinction, so ask.
+          // The deliveries whose job the tab moved, per order — worked out with
+          // the settle above for a tab that says what it changed, here for one
+          // that does not. A moved delivery's link is the tab's own on purpose.
+          const movedFor = (po, was) => (movedById.has(String(po.id))
+            ? movedLinesFor(po.id) : poSync.movedLineIds(po, was));
           const candidateRows = [];
           for (const po of toWrite) {
             const was = po && po.id ? storedById.get(po.id) : null;
             if (!was || !Array.isArray(was.lines)) continue;
-            if (String(po.project_id || '') !== String(was.project_id || '')) continue;
+            const movedHere = movedFor(po, was);
             const mineIds = new Set((Array.isArray(po.lines) ? po.lines : [])
               .map(l => l && l.id).filter(Boolean).map(String));
             for (const l of was.lines) {
-              if (l && l.id && l.po_row_id && mineIds.has(String(l.id)) && !poSync.isDailyLine(l)) {
+              if (l && l.id && l.po_row_id && mineIds.has(String(l.id)) && !poSync.isDailyLine(l)
+                  && !movedHere.has(String(l.id))) {
                 candidateRows.push(String(l.po_row_id));
               }
             }
@@ -518,19 +555,21 @@ module.exports = async (req, res) => {
             // write po_row_id null -> new, or -> null, never one non-null value
             // over a different one.
             //
-            // Unless the JOB moved. Then the tab deleted every row and nulled
-            // every link deliberately, and restoring one would point the line at
-            // a row that no longer exists — after which _ensurePOLineRow never
-            // mints a replacement, because the link reads as present, and the
-            // job is silently UNDER-charged instead.
-            const jobMoved = String(po.project_id || '') !== String(was.project_id || '');
+            // Unless the delivery's JOB moved — the order's own job, the split
+            // it is on, or the delivery to another split. Then the tab deleted
+            // its row and nulled its link deliberately, and restoring one would
+            // point the line at a row that no longer exists — after which
+            // _ensurePOLineRow never mints a replacement, because the link reads
+            // as present, and the job is silently UNDER-charged instead.
+            const movedHere = movedFor(po, was);
             let relinked = 0;
             const superseded = [];
-            const kept = (jobMoved || !liveKnown) ? mine : mine.map(l => {
+            const kept = !liveKnown ? mine : mine.map(l => {
               if (!l || !l.id) return l;
               // A Daily Tracking line's link is its row, fixed for life, and
               // the derivation below decides whether the line stays at all.
               if (poSync.isDailyLine(l)) return l;
+              if (movedHere.has(String(l.id))) return l;
               const before = wasById.get(l.id);
               if (!before || !before.po_row_id) return l;
               if (String(l.po_row_id || '') === String(before.po_row_id)) return l;
@@ -551,7 +590,8 @@ module.exports = async (req, res) => {
               if (l.po_row_id) {
                 superseded.push({
                   rowId:     String(l.po_row_id),
-                  projectId: String(po.project_id || ''),
+                  // The job the tab's row is on: the delivery's (it did not move).
+                  projectId: poSync.lineJob(po, l).project_id,
                   poNum:     String(po.po_number  || ''),
                 });
               }
@@ -560,21 +600,21 @@ module.exports = async (req, res) => {
             });
             if (superseded.length) supersededRows.push(...superseded);
 
-            // The tab moved the job and removed the rows its copy named. A row
-            // purchasing raised for one of those deliveries after the tab loaded
-            // is one the tab never knew, so it stayed on the old job with
-            // nothing naming it — the old job charged for an order that now sits
-            // on another. It goes the way the tab's own did.
-            if (jobMoved && newProtocol) {
+            // The tab moved a delivery's job and removed the row its copy
+            // named. A row purchasing raised for that delivery after the tab
+            // loaded is one the tab never knew, so it stayed on the old job with
+            // nothing naming it — the old job charged for a delivery that now
+            // sits on another. It goes the way the tab's own did.
+            if (movedHere.size && newProtocol) {
               for (const l of mine) {
-                if (!l || !l.id || poSync.isDailyLine(l)) continue;
+                if (!l || !l.id || poSync.isDailyLine(l) || !movedHere.has(String(l.id))) continue;
                 const before = wasById.get(l.id);
                 if (!before || !before.po_row_id || poSync.isDailyLine(before)) continue;
                 if (String(l.po_row_id || '') === String(before.po_row_id)) continue;
                 if (/^ts\d+-/.test(String(before.po_row_id))) continue;
                 supersededRows.push({
                   rowId:     String(before.po_row_id),
-                  projectId: String(was.project_id || ''),
+                  projectId: poSync.lineJob(was, before).project_id,
                   poNum:     String(was.po_number  || po.po_number || ''),
                 });
               }
@@ -582,7 +622,7 @@ module.exports = async (req, res) => {
 
             mergedLinks += relinked;
 
-            // A delivery this client never saw. When the JOB moved it cannot
+            // A delivery this client never saw. When its JOB moved it cannot
             // keep its link either: that row is on the old job, and because the
             // link reads as present _ensurePOLineRow never mints a replacement
             // on the new one — so the new job is never charged for the
@@ -592,21 +632,29 @@ module.exports = async (req, res) => {
             // Not one the tab says it deleted: it removed the row with it, and
             // putting the delivery back left money on the order the job no
             // longer had — which the next purchasing save then charged again.
-            const missing = was.lines
-              .filter(l => l && l.id && !have.has(l.id) && !gone.has(String(l.id)))
-              .map(l => {
+            const unseen = was.lines.filter(l => l && l.id && !have.has(l.id) && !gone.has(String(l.id)));
+            // The split each is on stays on the order (keepSplitsInUse) — before
+            // deciding whether it moved, which reads it. A tab that never saw
+            // the delivery could not have seen that its split was still in use.
+            let base = po;
+            if (unseen.length && PO_JOB_DIVISIONS.includes(division)) {
+              const probe = { splits: po.splits, lines: unseen };
+              if (poSync.keepSplitsInUse(probe, [was])) base = { ...po, splits: probe.splits };
+            }
+            const missing = unseen.map(l => {
                 // A Daily Tracking line comes back as it was stored; the
                 // derivation below keeps it only while its row still names this
                 // order, and its row is the field's — never swept with a move.
                 if (poSync.isDailyLine(l)) return l;
-                if (!jobMoved || !l.po_row_id) return l;
+                const from = poSync.lineJob(was, l).project_id;
+                if (from === poSync.lineJob(base, l).project_id || !l.po_row_id) return l;
                 // Removed with the move, the way the tab removes the rows for
                 // the lines it did hold. Matched against the OLD job, which is
                 // where the row actually sits.
                 if (!/^ts\d+-/.test(String(l.po_row_id))) {
                   supersededRows.push({
                     rowId:     String(l.po_row_id),
-                    projectId: String(was.project_id || ''),
+                    projectId: from,
                     poNum:     String(was.po_number  || po.po_number || ''),
                   });
                 }
@@ -614,7 +662,7 @@ module.exports = async (req, res) => {
               });
             if (!missing.length && !relinked) return po;
             mergedLines += missing.length;
-            return { ...po, lines: kept.concat(missing) };
+            return { ...base, lines: kept.concat(missing) };
           });
           if (mergedLines) {
             console.warn(`[purchase-orders] merged ${mergedLines} delivery line(s) the client had not seen for ${blobKey}`);
@@ -773,13 +821,19 @@ module.exports = async (req, res) => {
       let rowsFailed = 0;
       if (newProtocol && PO_JOB_DIVISIONS.includes(division)) {
         const rowsById = new Map((result.linkRows || []).map(r => [String(r.row_id), r]));
+        // The orders as stored before this save: a split's codes reach its rows
+        // only when this save changed them (writeTabRows).
+        const prevById = new Map((result.stored || []).filter(p => p && p.id).map(p => [String(p.id), p]));
         for (const po of toWrite) {
           if (!po || !po.id || !sentById.has(String(po.id))) continue;
           const headerEdits = headerEditsFor(po.id);
           const lineEdits = lineEditsFor(po.id);
           if (!headerEdits.size && !lineEdits.size) continue;
           try {
-            await poSync.writeTabRows(sql, { companyCode, division, po, headerEdits, lineEdits, rowsById });
+            await poSync.writeTabRows(sql, {
+              companyCode, division, po, prevPO: prevById.get(String(po.id)) || null,
+              headerEdits, lineEdits, rowsById,
+            });
           } catch (err) {
             rowsFailed++;
             console.error('[purchase-orders] could not write an order\'s changes to its cost rows:', err.message);
@@ -1084,7 +1138,7 @@ async function _syncPOs(sql, companyCode, division, list) {
         id, company_code, division, po_num, title, supplier, project_id,
         cost_code, sub_code, status, notes, origin,
         date_created, status_changed_at, status_changed_by, updated_at,
-        created_at, created_by
+        created_at, created_by, splits
       ) VALUES (
         ${po.id}, ${companyCode}, ${division},
         ${po.po_number      || ''},
@@ -1101,7 +1155,8 @@ async function _syncPOs(sql, companyCode, division, list) {
         ${po.status_changed_by || null},
         NOW(),
         COALESCE(${createdAt}::timestamptz, NOW()),
-        ${po.created_by     || null}
+        ${po.created_by     || null},
+        ${poSync.splitsJson(po)}::jsonb
       )
       ON CONFLICT (id) DO UPDATE SET
         division           = EXCLUDED.division,
@@ -1119,7 +1174,8 @@ async function _syncPOs(sql, companyCode, division, list) {
         status_changed_by  = EXCLUDED.status_changed_by,
         updated_at         = NOW(),
         created_at         = COALESCE(${createdAt}::timestamptz, purchase_orders.created_at),
-        created_by         = EXCLUDED.created_by
+        created_by         = EXCLUDED.created_by,
+        splits             = EXCLUDED.splits
     `;
 
     // Bulk-wipe protection for delivery records: only wipe-and-reinsert
@@ -1152,7 +1208,7 @@ async function _syncPOs(sql, companyCode, division, list) {
           po_id, company_code,
           line_id, invoice_num, delivery_date,
           units_delivered, unit_cost, delivery_cost,
-          tax, employee, po_row_id
+          tax, employee, po_row_id, split_id
         ) VALUES (
           ${po.id}, ${companyCode},
           ${line.id          || null},
@@ -1161,7 +1217,8 @@ async function _syncPOs(sql, companyCode, division, list) {
           ${qty}, ${uc}, ${qty * uc},
           ${tax},
           ${line.employee    || null},
-          ${line.po_row_id   || null}
+          ${line.po_row_id   || null},
+          ${poSync.lineJob(po, line).split || null}
         )
       `;
     }

@@ -22,6 +22,15 @@ const path = require('path');
 const vm   = require('vm');
 const { JSDOM } = require('jsdom');
 const { requireFn, sliceSource } = require('./lib/fn-source');
+// "One order, several jobs" (api/lib/po-sync.js): the helpers the division
+// tabs' PO functions lean on to find which job a delivery is on. Lifted with
+// whatever calls them.
+// ...and the central page's own ("ONE ORDER, SEVERAL JOBS" in purchase-orders.html).
+const PAGE_SPLIT_FNS = ['poSplitsOf', 'splitOf', 'lineJobOf', 'poProjectIdsOf', 'isSplitPO', 'jobTotalsOf', 'jobNameOf',
+  'jobCodeLabel', 'matchCodesOn', 'siteJobsToAdd', 'splitChipHTML', 'updateJobTotalsInPlace'];
+const PO_SPLIT_FNS = ['_poSplits', '_poSplitById', '_poLineJob', '_poProjectIds', '_poHasProject', '_poSplitForProject',
+  '_poIsSplit', '_poLinesOnJob', '_poJobTotals', '_poProjectTotals', '_poProjName', '_poCodeLabel', '_poRenderProjects',
+  '_poPaintJobTotals'];
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
 
@@ -368,7 +377,7 @@ console.log('\n[re-tying an order]');
   `, ctx);
   vm.runInContext(EDIT_BOOKKEEPING, ctx);
   ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber', 'setDivision', 'setProject', 'setSubCode']
-    .forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
+    .concat(PAGE_SPLIT_FNS).forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
   const run = expr => vm.runInContext(expr, ctx);
 
   run("setDivision('x','turf')");
@@ -453,7 +462,7 @@ console.log('\n[filtering]');
       { id:'3', po_number:'PO-0003', _division:GENERAL,  project_id:'',   supplier:'Acme',  status:'pending',  title:'Office paper', lines:[] },
     ];
   `, ctx);
-  ['listDivs', 'divMeta', 'divLabel', 'projectFor', 'projectsFor', 'visiblePOs'].forEach(name =>
+  ['listDivs', 'divMeta', 'divLabel', 'projectFor', 'projectsFor', 'visiblePOs'].concat(PAGE_SPLIT_FNS).forEach(name =>
     vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
   const ids = expr => {
     vm.runInContext(expr, ctx);
@@ -885,9 +894,12 @@ console.log('\n[a cost row this page has not loaded]');
     // ...but only AFTER the job's rows have been read. The PUT is a full
     // upsert, so a reconstruction carries defaultDailyRow's blanks straight
     // over whatever the stored row held.
+    // The job is the delivery's own (a split order's deliveries are on
+    // several) — read as `job` from _poLineJob.
     assert(`${f}: the job's rows are read before a row is invented`,
       /if \(!proj\._drFullLoaded\)/.test(body) &&
-      body.indexOf('drGetAll({ projectId: po.project_id })') < body.indexOf('...defaultDailyRow()'));
+      body.indexOf('drGetAll({ projectId: job.project_id })') >= 0 &&
+      body.indexOf('drGetAll({ projectId: job.project_id })') < body.indexOf('...defaultDailyRow()'));
 
     // Its sibling had the same bail-out for the same reason: a retitled order,
     // a corrected supplier or a re-coded PO reached the order and never the job
@@ -896,16 +908,19 @@ console.log('\n[a cost row this page has not loaded]');
     // Bounded at its own closing brace — the next declaration is `async
     // function` too, so '\nfunction ' would run on past it.
     const hBody  = header.slice(0, header.indexOf('\n}\n') + 3);
+    // Each of the order's jobs in turn: a split order's deliveries are on several.
     assert(`${f}: the header sync reads the job's rows too`,
       /if \(!proj\._drFullLoaded/.test(hBody) &&
-      /drGetAll\(\{ projectId: po\.project_id \}\)/.test(hBody));
+      /drGetAll\(\{ projectId: projId \}\)/.test(hBody) &&
+      /for \(const projId of _poProjectIds\(po\)\)/.test(hBody));
     assert(`${f}: and still invents nothing when the row really is absent`,
       /if \(!r\) return;/.test(hBody) && !/defaultDailyRow/.test(hBody));
     // Every call site catches — the PO tab's two, and on tracker.html the
     // Suppliers tab's rename, which carries a new supplier name to the orders.
     const headerCalls = (src.match(/_syncPOHeaderToLines\(/g) || []).length
       - (src.match(/function _syncPOHeaderToLines\(/g) || []).length;
-    const caught = (src.match(/_syncPOHeaderToLines\(po(?:, true)?\)\.catch\(/g) || []).length;
+    // `true` re-codes the order's own job's rows; a split's id, that split's.
+    const caught = (src.match(/_syncPOHeaderToLines\(po(?:, (?:true|String\(s\.id\)))?\)\.catch\(/g) || []).length;
     assert(`${f}: every one of its call sites catches`, headerCalls >= 2 && caught === headerCalls, `${caught} of ${headerCalls}`);
 
     // The division tabs export the same purchase orders the purchasing page
@@ -1606,7 +1621,7 @@ console.log('\n[who raised an order, and when]');
       const _poEditedFields = {};
       let _poEditSeq = 0;
     `, hctx);
-    ['_poStampWhen', '_poNoteEdit', '_handlePOEvent'].forEach(n => vm.runInContext(requireFn(src, n, f), hctx));
+    ['_poStampWhen', '_poNoteEdit', '_handlePOEvent'].concat(PO_SPLIT_FNS).forEach(n => vm.runInContext(requireFn(src, n, f), hctx));
     dom.window.document.querySelector('select').value = 'closed';
     vm.runInContext('_handlePOEvent({ type: "change", target: document.querySelector("select") })', hctx);
     const meta = dom.window.document.getElementById('po-status-meta-a');
@@ -1661,6 +1676,7 @@ console.log('\n[a cost row this page has not loaded — run]');
     function _lineTax() { return 0; }
     function _lineUnitCostWithTax(l) { return parseFloat(l.unit_cost) || 0; }
   `, ctx);
+  PO_SPLIT_FNS.forEach(n => vm.runInContext(requireFn(read('tracker.html'), n, 'tracker.html'), ctx));
   vm.runInContext('async ' + requireFn(read('tracker.html'), '_syncPOLineToRow', 'tracker.html'), ctx);
   await vm.runInContext(`_syncPOLineToRow(
     { project_id:'p1', cost_code:'100', sub_code:'A', title:'Stone', supplier:'Acme', po_number:'PO-0007' },
@@ -2174,7 +2190,7 @@ console.log('\n[cost / sub code, vendor and received by are typeahead pickers]')
         'projectOptionLabel', 'codesFor', 'codeLabel', 'codeValue', 'subCodePickerHTML', 'vendorPickerHTML',
         'receivedByPickerHTML', 'updateCodeInPlace', 'cardJobLineHTML', 'divChipHTML', 'divColor', 'divLabel',
         'hasJobs', 'projectSelectHTML', 'setSubCode', 'setField', 'setLineField', 'onScanDivision', 'onScanProject',
-        'resetScanCode']
+        'resetScanCode'].concat(PAGE_SPLIT_FNS)
       .map(n => requireFn(PAGE, n, 'purchase-orders.html')),
     region,
   ].join('\n\n');
@@ -2468,7 +2484,7 @@ console.log('\n[a save says which of the order\'s fields it changed]');
   `, ctx);
   vm.runInContext(EDIT_BOOKKEEPING, ctx);
   ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber',
-   'setField', 'setSubCode', 'setProject', 'setDivision', 'savePO', '_savePONow', '_savePOWrite']
+   'setField', 'setSubCode', 'setProject', 'setDivision', 'savePO', '_savePONow', '_savePOWrite'].concat(PAGE_SPLIT_FNS)
     .forEach(n => vm.runInContext((n === '_savePOWrite' ? 'async ' : '') + requireFn(PAGE, n, 'purchase-orders.html'), ctx));
   const run = e => vm.runInContext(e, ctx);
   const fields = () => run('JSON.stringify(editedFieldsFor("po365"))');
@@ -2585,7 +2601,7 @@ console.log('\n[a save says which of the order\'s fields it changed]');
     `, tctx);
     vm.runInContext(sliceSource(src, 'const _poEditedFields = Object.create(null);', '// Whether a read of the purchase orders has worked.',
       f + ' PO edit state'), tctx);
-    ['savePurchaseOrders', '_poAdoptSaved', '_poMergeLine', '_poRowsFollowOrder']
+    ['savePurchaseOrders', '_poAdoptSaved', '_poMergeLine', '_poRowsFollowOrder'].concat(PO_SPLIT_FNS)
       .forEach(n => vm.runInContext(requireFn(src, n, f), tctx));
     const t = e => vm.runInContext(e, tctx);
     const J = e => JSON.stringify(t(e));
@@ -2855,7 +2871,7 @@ console.log('\n[a delivery\'s figures are kept key by key, and the tabs write no
   `;
   // The line math and the Daily Tracking test every tab context needs.
   const TAB_MATH = ['_normalizeNumeric', '_poNum', '_poNum0', '_lineAmt', '_lineTaxPct', '_lineTax', '_recalcLineTax',
-                    '_lineUnitCostWithTax', '_poTotals', '_poLineFromDaily'];
+                    '_lineUnitCostWithTax', '_poTotals', '_poLineFromDaily'].concat(PO_SPLIT_FNS);
   const liftTab = (src, f, ctx, names) => {
     vm.runInContext(sliceSource(src, 'const _poEditedFields = Object.create(null);', '// Whether a read of the purchase orders has worked.',
       f + ' PO edit state', '_poSaveEpoch'), ctx);
@@ -3211,7 +3227,7 @@ console.log('\n[the division tabs: a paperclip on every delivery]');
 {
   const CLIP = '\u{1F4CE}';
   const TAB_FNS = ['esc', 'escT', 'openPODocs', 'openPOLineDocs', '_poDocsTip', '_poLineDocCount', '_poLineDocsTip',
-                   '_poLineClipHTML', '_poDocClipsRepaint', '_poLineCountsRefresh'];
+                   '_poLineClipHTML', '_poDocClipsRepaint', '_poLineCountsRefresh'].concat(PO_SPLIT_FNS);
   // Quotes, an apostrophe, markup: whatever the full-list PUT let through.
   const PO_ID   = 'p"1 <b>x</b>';
   const LINE_ID = "l'1\"><img src=x onerror=\"window.__pwned=1\">";
@@ -3230,7 +3246,10 @@ console.log('\n[the division tabs: a paperclip on every delivery]');
     assert(`${f}:   once, on every line, whoever is looking (no role decides it)`,
       (rp.match(/_poLineClipHTML\(/g) || []).length === 1 && !/perm\.\w+ \? [^:]*_poLineClipHTML/.test(rp));
     const subHead = sliceSource(rp, '<thead><tr style="font-size:0.63rem', '</tr></thead>', `${f} deliveries header`, 'Employee');
-    assert(`${f}:   and adds no column to the deliveries table`, (subHead.match(/<th /g) || []).length === 9,
+    // Ten: the tenth is the Job column, drawn only on an order split between
+    // jobs ("One order, several jobs").
+    assert(`${f}:   and adds no column to the deliveries table`, (subHead.match(/<th /g) || []).length === 10
+        && /\$\{isSplit \? '<th [^']*>Job<\/th>' : ''\}/.test(subHead),
       String((subHead.match(/<th /g) || []).length));
     assert(`${f}: the delivery counts are asked for with the order counts, division-wide, when the tab first draws`,
       /_poDocCountsLoaded = true;\s*\n\s*_docsEnsureConfigured\(\);\s*\n\s*FCTDocuments\.refreshPoCounts\(\)\.then\(\(\) => _poDocClipsRepaint\(\)\);\s*\n\s*_poLineCountsRefresh\(\);/.test(rp));

@@ -373,9 +373,12 @@ const PO_LINE_ID_SHAPE   = 'poLineId and poId must each be 1 to 128 letters, dig
  * order, and losing the upload over the extra folder would be worse. Not
  * re-filed when the order's or the line's code changes later (v1).
  */
-async function fileLineUnderCostCode(sql, { companyCode, division, projectId, documentId, po, line, payload }) {
+async function fileLineUnderCostCode(sql, { companyCode, division, projectId: orderJob, documentId, po, line, payload }) {
   try {
-    if (!projectId) return null;
+    if (!orderJob) return null;
+    // A delivery on one of a split order's other jobs compiles in THAT job's
+    // cost-code folder, under its split's code (api/lib/po-line-docs.js).
+    const projectId = poLineDocs.lineProjectId(po, line) || orderJob;
     const code = poLineDocs.lineCostCode(po, line);
     if (!code) return null;
     const folderId = await procDocs.ensureCostCodeFolder(sql, {

@@ -433,6 +433,14 @@ ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS origin TEXT;
 -- first written — so created_at is the order's creation time only where this
 -- column is set.
 ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS created_by TEXT;
+-- An order split between jobs: the jobs it books to besides its own
+-- project_id, each with its codes — [{ id, project_id, cost_code, sub_code }]
+-- — and, per delivery, which of them it is for (split_id; NULL for the order's
+-- own job). A copy of the blob's `splits` and `split`, like every other column
+-- here, so the recovery fallback in api/purchase-orders.js rebuilds a split
+-- order as one. See "One order, several jobs" in api/lib/po-sync.js.
+ALTER TABLE purchase_orders ADD COLUMN IF NOT EXISTS splits   JSONB;
+ALTER TABLE po_deliveries   ADD COLUMN IF NOT EXISTS split_id TEXT;
 
 -- trucking_entries: add tr_row_id, status audit, and division columns
 ALTER TABLE trucking_entries ADD COLUMN IF NOT EXISTS tr_row_id          TEXT;

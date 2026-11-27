@@ -999,8 +999,11 @@ console.log('\n[a paperclip on every delivery]');
     /inp\('invoice_num','text', l\.invoice_num, 'placeholder="Invoice \/ Ticket #"'\) \+ lineClipHTML\(po, l\) \+ '<\/div>' \+\s*\n\s*dailyLineTagHTML\(l\)/.test(rows), rows);
   assert('  on both surfaces, through the one row builder', (PAGE.match(/lineClipHTML\(/g) || []).length === 2);
   assert('  and not in the lock / ✕ cell', !/isDailyLine\(l\)\s*\n\s*\?[\s\S]{0,500}lineClipHTML/.test(rows));
-  const head = (PAGE.match(/'<thead><tr><th>Invoice \/ Ticket #<\/th>[\s\S]*?<\/tr><\/thead>'/) || [''])[0];
-  assert('  so the deliveries table keeps its nine columns', (head.match(/<th[ >]/g) || []).length === 9, head);
+  // A Job column leads it only on an order split between jobs ("One order,
+  // several jobs") — drawn conditionally, ahead of the nine.
+  const head = (PAGE.match(/'<thead><tr>' \+ \(isSplitPO\(po\) \? '<th>Job<\/th>' : ''\) \+ '<th>Invoice \/ Ticket #<\/th>[\s\S]*?<\/tr><\/thead>'/) || [''])[0];
+  assert('  so the deliveries table keeps its nine columns', (head.match(/<th[ >]/g) || []).length === 10
+      && /\(isSplitPO\(po\) \? '<th>Job<\/th>' : ''\)/.test(head), head);
 }
 
 console.log('\n[counting each delivery\'s files]');
