@@ -6305,6 +6305,14 @@ let _projectsLoaded = false;
 // read the whole history, and a person who has had the page open a few
 // seconds has it — so a scheduled report (auto-report.js) waits for it too.
 let _drBackfillDone = Promise.resolve();
+// Settles the first time loadProjects has the jobs and their daily rows in
+// hand: the job records and the last 90 days of rows. Its recovery passes come
+// after that, and read the old single job list, every daily row the company
+// has and every stored job key, one after another, which can take many
+// seconds. The Home tab is drawn from this instead of waiting for them (see
+// _bootReady).
+let _jobRowsInResolve = () => {};
+const _jobRowsIn = new Promise(resolve => { _jobRowsInResolve = resolve; });
 let _lastProjIndexTs = 0;
 let projSearch   = '';
 let projPage     = 0;
@@ -6394,6 +6402,25 @@ function _retryLoadProjects() {
   }, _PROJ_RETRY_MS[Math.min(_projRetries, _PROJ_RETRY_MS.length - 1)]);
 }
 
+// The job figures on screen drawn again from the jobs and daily rows in hand:
+// the Home tab, or the Project Dashboard for a login that starts there. Boot
+// calls it once the jobs and their recent rows are in, and the daily-row
+// backfill once the history older than 90 days lands. Not while a box has the
+// caret — the redraw would take what is being typed — but once it is left.
+let _jobFiguresTimer = null;
+function _redrawJobFigures() {
+  clearTimeout(_jobFiguresTimer);
+  _jobFiguresTimer = null;
+  if (_AUTO_REPORT) return;
+  const el = document.activeElement;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
+    _jobFiguresTimer = setTimeout(_redrawJobFigures, 1000);
+    return;
+  }
+  if (activeTab === 'home') renderHomeTab();
+  if (activeTab === 'info') renderProjectInfoComputed();
+}
+
 // The report robot boots once and nobody sees its page: a failed read is
 // tried again a few times straight away, and if none works the boot fails
 // (_bootReady, and so AR.ready, reject) and the run is reported as failed.
@@ -6466,6 +6493,8 @@ async function loadProjects() {
     }
     // Load daily rows from DB (populates p.dailyRows; migrates any still-embedded rows)
     await _loadAndMigrateDailyRows();
+    // What the Home tab draws from is in; the passes below need not hold it.
+    _jobRowsInResolve();
 
     // The report robot stops here. The recovery passes below mend a person's
     // project list by writing it back, which the robot may not do; two of
@@ -6740,8 +6769,11 @@ async function _loadAndMigrateDailyRows(opts) {
       if (olderRows.length > recentRows.length && !(cached && _projectsLoaded)) {
         _distributeRows(olderRows, { merge: true });
         projectsList.forEach(p => p._drFullLoaded = true);
-        // Re-render if user is viewing schedule or a project
-        if (!_AUTO_REPORT && typeof renderCurrentTab === 'function') renderCurrentTab();
+        // The job figures on screen take the older rows in. This used to call
+        // a renderCurrentTab() the page never had, so nothing was redrawn: the
+        // Home tab kept the last 90 days, and a job finished before then read
+        // $0 actual cost until the tab was left and opened again.
+        _redrawJobFigures();
       }
     } catch (err) {
       console.warn('[daily-rows] backfill error:', err.message);
@@ -26087,10 +26119,30 @@ const _bootReady = (async () => {
   } catch {}
 
   // ── Load all data sources in parallel (none depend on each other) ──
+  const projectsRead = _AUTO_REPORT ? _loadProjectsForReport() : loadProjects();
+  const costRowsRead = loadCostRows();
+  // The Home tab is drawn from the jobs and their daily rows, the cost rows
+  // and which bid lines each job's schedule has closed out, and it is drawn as
+  // soon as those are in. It used to wait for every read here, and for
+  // loadProjects' recovery passes, which read every daily row again. Until
+  // then it was blank, or showed this browser's copy of the jobs, which holds
+  // no daily rows, so each job read $0 spent, for many seconds, while leaving
+  // the tab and opening it again showed the figures.
+  const homeDrawn = (async () => {
+    await Promise.race([_jobRowsIn, projectsRead]);
+    // Needs the project ids, so it can't join the reads below. One request, and
+    // projected cost reads the same on the home page as inside a project.
+    await _loadAllBidCsCompletion();
+    await costRowsRead;
+    // Not one of the reads: a draw that fails must not stop the boot (the
+    // replay of unsaved writes below), which draws the tab again anyway.
+    try { _redrawJobFigures(); } catch (err) { console.error('[home] first draw failed:', err); }
+  })();
   await Promise.all([
+    homeDrawn,
     loadLists(),
-    loadCostRows(),
-    _AUTO_REPORT ? _loadProjectsForReport() : loadProjects(),
+    costRowsRead,
+    projectsRead,
     loadPurchaseOrders(),
     loadTruckingEntries(),
     loadScaleManualEntries(),
@@ -26101,9 +26153,10 @@ const _bootReady = (async () => {
   // a person's, on their own device; the robot has none and may write none.
   if (!_AUTO_REPORT) _walReplay().then(() => _walStartPeriodicSync());
 
-  // Needs the project ids, so it can't join the batch above. One request, and
-  // projected cost reads the same on the home page as inside a project.
-  await _loadAllBidCsCompletion();
+  // The schedules were read with the jobs in hand when the Home tab was drawn.
+  // A job one of loadProjects' recovery passes brought back since has none
+  // read yet: read its own (normally there is no such job).
+  await Promise.all(projectsList.filter(p => p && p.id && !_bidCsComplete[p.id]).map(p => _loadBidCsCompletion(p.id)));
 
   // Each report draws its own; the robot draws none of the tabs.
   if (_AUTO_REPORT) return;
