@@ -85,6 +85,17 @@ function projectIsDone(project) {
   return ['complete', 'closed'].includes(String((project && project.status) || '').toLowerCase());
 }
 
+/**
+ * A job work is going on at: not one still being bid, finished or on hold —
+ * the rule the Scheduler, timesheets, Procurement's site sheet and the
+ * division tabs' "Add the other <Site> jobs" use. Only the site offer reads it:
+ * a job off that list can still be picked one at a time.
+ */
+const LIVE_STATUSES = new Set(['', 'awarded', 'in progress', 'substantially complete']);
+function projectIsLive(project) {
+  return LIVE_STATUSES.has(String((project && project.status) || '').trim().toLowerCase());
+}
+
 /** Vendors as the division tabs store them: objects, but strings historically. */
 function vendorName(entry) {
   if (typeof entry === 'string') return entry.trim();
@@ -199,6 +210,7 @@ module.exports = async (req, res) => {
           jobNumber: blob['job-number']   || '',
           codes:     codesFromProject(blob),
           done:      projectIsDone(blob),
+          live:      projectIsLive(blob),
           ...(site ? { site } : {}),
         });
       }

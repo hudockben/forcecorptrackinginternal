@@ -100,9 +100,9 @@ function lineCostCode(po, line) {
 }
 
 /**
- * The job whose cost-code folder a delivery's file compiles in: its split's,
- * else the order's. The file itself is filed under the order, in the order's
- * job — only the cost-code copy follows the delivery to its own job.
+ * The job a delivery is on: its split's, else the order's. The file itself is
+ * filed under the order, in the order's job, and compiles in a cost-code
+ * folder only when this is that job (api/documents.js fileLineUnderCostCode).
  */
 function lineProjectId(po, line) {
   const split = lineSplit(po, line);

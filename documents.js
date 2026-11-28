@@ -2664,9 +2664,11 @@
     // The cost code the server files this delivery's files under: the
     // delivery's own when it carries one (a Daily Tracking delivery carries
     // its row's), else the order's — and only on a job, since the General
-    // area has no cost-code folders.
+    // area has no cost-code folders. None for a delivery on one of a split
+    // order's other jobs: its files stay on it and under the order.
     const lineCode  = typeof line.cost_code === 'string' ? line.cost_code.trim() : '';
-    const code      = !projectId ? '' : (lineCode || String(po.cost_code == null ? '' : po.cost_code).trim());
+    const code      = !projectId || line.on_other_job ? ''
+      : (lineCode || String(po.cost_code == null ? '' : po.cost_code).trim());
 
     // The upload dialog's folder picker is built from whatever is loaded, and
     // the PO tab routinely shows orders on jobs the Documents tab is not

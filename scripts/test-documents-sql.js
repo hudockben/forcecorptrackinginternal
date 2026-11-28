@@ -1326,7 +1326,11 @@ async function upload(folderId, filename, auth, extra = {}) {
     const POGEN = { id: 'pol-po-gen', po_number: 'PO-503', project_id: null, cost_code: '420', lines: [{ id: 'G1' }] };
     const PONOCODE = { id: 'pol-po-nocode', po_number: 'PO-504', project_id: PJ, cost_code: '', lines: [{ id: 'N1' }] };
     const POJ2 = { id: 'pol-po-j2', po_number: 'PO-505', project_id: PJ2, cost_code: '420', lines: [{ id: 'J1' }] };
-    await setBlob('FCT:fct_purchase_orders:turf', [PO1, PO2, POGEN, PONOCODE, POJ2]);
+    // Split between this job and PJ2: S1 is on the order's own job, S2 on PJ2's share.
+    const POSPLIT = { id: 'pol-po-split', po_number: 'PO-506', project_id: PJ, cost_code: '420',
+      splits: [{ id: 'sB', project_id: PJ2, cost_code: '515', sub_code: 'Silt' }],
+      lines: [{ id: 'S1' }, { id: 'S2', split: 'sB' }] };
+    await setBlob('FCT:fct_purchase_orders:turf', [PO1, PO2, POGEN, PONOCODE, POJ2, POSPLIT]);
     await setBlob('FCT:fct_purchase_orders:paving', [{ id: 'pol-po-pav', po_number: 'PV-1', project_id: PJ, cost_code: '420', lines: [{ id: 'P1' }] }]);
     // The same order and line ids in another company.
     await setBlob('OTH:fct_purchase_orders:turf', [{ id: 'pol-po-1', po_number: 'R-1', project_id: PJ, cost_code: '420', lines: [{ id: 'L1' }] }]);
@@ -1463,6 +1467,20 @@ async function upload(folderId, filename, auth, extra = {}) {
       && JSON.stringify(upUuid.body.document.po_line_ids) === JSON.stringify([`pol-po-2:${UUID_LINE}`]), JSON.stringify(upUuid.body));
     const upL2 = await reg(PM, { folderId: fPoRoot.id, poId: 'pol-po-2', poLineId: 'L2' });
     assert('a line on a second order of the job (201)', upL2.statusCode === 201, JSON.stringify(upL2.body));
+
+    // A split order: the file is the order's job's either way. A delivery on
+    // the order's own job compiles in its cost-code folder; one on the other
+    // job's share is filed under the order only — no copy in PJ2's tree,
+    // where nothing on PJ2 would list it.
+    const upS1 = await reg(PM, { folderId: fPoRoot.id, poId: 'pol-po-split', poLineId: 'S1' });
+    assert('a split order\'s delivery on its own job is in that job\'s 420 folder', upS1.statusCode === 201
+      && upS1.body.costCodeFolderId === fPaving.id, JSON.stringify(upS1.body));
+    const upS2 = await reg(PM, { folderId: fPoRoot.id, poId: 'pol-po-split', poLineId: 'S2' });
+    const s2Folders = (await linksOf(upS2.documentId)).filter(x => x.link_type === 'folder').map(x => x.target_id);
+    const pj2Folders = (await client.query(`SELECT id FROM project_folders WHERE company_code = 'FCT' AND project_id = $1`, [PJ2])).rows.map(x => x.id);
+    assert('  one on the other job\'s share is filed under the order only, in no cost-code folder',
+      upS2.statusCode === 201 && upS2.body.costCodeFolderId === null && JSON.stringify(upS2.body.document.po_line_ids) === '["pol-po-split:S2"]'
+        && !s2Folders.some(id => pj2Folders.includes(id)), JSON.stringify({ body: upS2.body, s2Folders }));
 
     // An order on no job: filed in the General area, under Unassigned POs, never in a cost-code folder.
     const general = (await call('PUT', { division: 'turf' }, {}, PM)).body.folders;

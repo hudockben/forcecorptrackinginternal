@@ -30,7 +30,7 @@ const PAGE_SPLIT_FNS = ['poSplitsOf', 'splitOf', 'lineJobOf', 'poProjectIdsOf', 
   'jobCodeLabel', 'matchCodesOn', 'siteJobsToAdd', 'splitChipHTML', 'updateJobTotalsInPlace'];
 const PO_SPLIT_FNS = ['_poSplits', '_poSplitById', '_poLineJob', '_poProjectIds', '_poHasProject', '_poSplitForProject',
   '_poIsSplit', '_poLinesOnJob', '_poJobTotals', '_poProjectTotals', '_poProjName', '_poCodeLabel', '_poRenderProjects',
-  '_poPaintJobTotals'];
+  '_poPaintJobTotals', '_poMergeSplits'];
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
 
@@ -60,7 +60,9 @@ const EDIT_BOOKKEEPING = [
   // not lifted the real one gets a no-op.
   'var migratePO = typeof migratePO === "function" ? migratePO : function () {};',
   ...['noteEdit', 'pendingEdits', 'clearSentEdits', 'editedFieldsFor', 'adoptStoredFields', 'isTyping',
-      'lineEditKey', 'lineEditSplit', 'editedLinesFor', 'editedLineFieldsFor', 'adoptStoredLines']
+      'lineEditKey', 'lineEditSplit', 'editedLinesFor', 'editedLineFieldsFor', 'adoptStoredLines',
+      // adoptStoredFields takes the order's other jobs back one by one.
+      'poSplitsOf']
     .map(n => requireFn(PAGE, n, 'purchase-orders.html')),
 ].join('\n');
 
@@ -322,6 +324,15 @@ console.log('\n[the cascade]');
     assert('but not one still being worked',
       ['In Progress', 'Substantially Complete', 'On Hold', ''].every(st => isDone({ status: st }) === false));
     assert('and sends the flag with each job',          /done:\s+projectIsDone\(blob\)/.test(cat));
+    // ...and whether work is going on at it: what "+ Add the other <Site>
+    // jobs" offers, the same live set the division tabs and Procurement use.
+    const live = cat.match(/const LIVE_STATUSES = [^\n]*/);
+    const isLive = live && new Function(live[0] + '\n' + requireFn(cat, 'projectIsLive', 'api/po-catalog.js') + '; return projectIsLive;')();
+    assert('the catalogue flags a job being worked live',
+      !!isLive && ['', 'Awarded', 'In Progress', 'Substantially Complete', ' in progress '].every(st => isLive({ status: st }) === true));
+    assert('  but not one being bid, on hold or finished',
+      !!isLive && ['Bidding', 'On Hold', 'Complete', 'Closed', 'Lost'].every(st => isLive({ status: st }) === false));
+    assert('  and sends that flag with each job too',      /live:\s+projectIsLive\(blob\)/.test(cat));
   }
   assert('both job pickers read the filtered list',
     /const list = pickableProjects\(po\._division, po\.project_id\);/.test(PAGE) &&
@@ -1399,7 +1410,7 @@ console.log('\n[an order re-tied after a page reload]');
   `, ctx);
   vm.runInContext(EDIT_BOOKKEEPING, ctx);
   ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber', 'setDivision']
-    .forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
+    .concat(PAGE_SPLIT_FNS).forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
 
   vm.runInContext("setDivision('x','turf')", ctx);
   const sent = vm.runInContext('sent', ctx);

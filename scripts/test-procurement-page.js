@@ -279,6 +279,27 @@ console.log('\n[tracker.html — wiring]');
     /C\.rename\(from, target\)\)\.then\(ans => \{\s*_supAfterPORename\(from, target, ans \|\| \{\}\)/.test(renamed)
       && !/savePurchaseOrders\(\)/.test(renamed) && !/savePurchaseOrders\(\)/.test(afterRename) && !/_supCarryRenameToPOs/.test(SRC)
       && /ans\.po_ids/.test(afterRename) && /_poRereadWhenSettled\(\);\s*\}$/.test(afterRename) && /if \(ans\.po_error\)[\s\S]*_showSaveError\(/.test(afterRename));
+  {
+    // Run: a split order's deliveries are on two jobs, and each job's row takes
+    // the new name — the order's other job's row too.
+    const vm = require('vm');
+    const ctx = vm.createContext({ String, Set, Array, Map, Object, Boolean, JSON });
+    vm.runInContext(['_poSplits', '_poSplitById', '_poLineJob', '_poProjectIds', '_poLineFromDaily', '_supAfterPORename']
+      .map(n => requireFn(SRC, n)).join('\n') + `
+      const PO_DAILY_SOURCE = 'daily', activeTab = 'suppliers';
+      const projs = { hb: { dailyRows: [{ id: 'r1', supplier: 'Frank Roberts' }] }, hs: { dailyRows: [{ id: 'r2', supplier: 'Frank Roberts' }] } };
+      function getProj(id) { return projs[id] || null; }
+      const drawn = [];
+      function renderPOTab() {} function renderProjectPOs(id) { drawn.push(id); } function renderDailyTable() {}
+      function _procRerender() {} function _poRereadWhenSettled() {} function _showSaveError() {}
+      var purchaseOrders = [{ id: 'po1', supplier: 'Frank Roberts', project_id: 'hb',
+        splits: [{ id: 's1', project_id: 'hs', cost_code: '', sub_code: '' }],
+        lines: [{ id: 'L1', po_row_id: 'r1' }, { id: 'L2', split: 's1', po_row_id: 'r2' }] }];
+      _supAfterPORename('Frank Roberts', 'FR Supply', { po_ids: ['po1'] });`, ctx);
+    const out = vm.runInContext("({ hb: projs.hb.dailyRows[0].supplier, hs: projs.hs.dailyRows[0].supplier, drawn })", ctx);
+    assert('  a split order\'s rows on each of its jobs take the new name, and each job is redrawn',
+      out.hb === 'FR Supply' && out.hs === 'FR Supply' && out.drawn.includes('hb') && out.drawn.includes('hs'), JSON.stringify(out));
+  }
   // A save of the list out across the rename answers with the order as stored
   // before it: the re-read waits for that answer rather than being dropped.
   const settled = requireFn(SRC, '_poRereadWhenSettled');
