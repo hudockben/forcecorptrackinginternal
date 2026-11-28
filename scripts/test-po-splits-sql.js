@@ -721,10 +721,17 @@ const ORDER = () => ({
       try { r = await put(body); } finally { sqlHook = null; }
       ok('(the row write failed, and the save says it will be retried)', failedOnce && r.statusCode === 500, r.body);
       r = await put(body);
+      ok('  the retry lands', r.statusCode === 200, r.body);
+      // A link whose row is gone is not raised again from a tab's save — that
+      // is nearly always a row removed on purpose. The order's next purchasing
+      // save raises the row it names.
+      po = await stored('rx17');
+      po.notes = 'checked';
+      await post({ purchaseOrder: po, editedFields: ['notes'], editedLineFields: {} });
       po = await stored('rx17');
       const u1 = lineOf(po, 'u1');
       const u1row = u1 && u1.po_row_id ? await rowOf(u1.po_row_id) : null;
-      ok('the retry raises the delivery\'s row on the order\'s new job', r.statusCode === 200 && u1row && u1row.project_id === 'je', [r.body, u1, await rowsFor('PO-0217')]);
+      ok('the next purchasing save raises the delivery\'s row on the order\'s new job', u1row && u1row.project_id === 'je', [u1, await rowsFor('PO-0217')]);
       ok('  and the jobs carry the whole order: $225', (await charged('PO-0217')) === 225 && !(await unnamed('PO-0217', 'rx17')).length,
         await rowsFor('PO-0217'));
     }
@@ -812,6 +819,120 @@ const ORDER = () => ({
         [k2, k2row]);
       const left = await q("SELECT 1 FROM daily_tracking WHERE company_code = $1 AND division = 'turf' AND po_num = 'PO-0221'", [CO]);
       ok('  and nothing is left on turf', !left.length && !(await stored('rx21', 'turf')));
+    }
+
+    // Two saves at once, the second landing inside the first (sqlHook): what
+    // the first stores must leave every job charged what the order says.
+    const during = async (first, second) => {
+      let fired = false;
+      sqlHook = async text => {
+        if (fired || !/INSERT INTO daily_tracking/.test(text)) return;
+        fired = true;
+        sqlHook = null;
+        await second();
+      };
+      try { return { r: await first(), fired }; } finally { sqlHook = null; }
+    };
+    const blank = id => ({ ...dl(id, 0), qty: '', unit_cost: '' });
+
+    console.log('\n[purchasing moves the order\'s job while the tab gives a blank delivery its first row]');
+    {
+      await post({ purchaseOrder: SOCK('rx22', 'PO-0222', [dl('g1', 10), blank('g2')]) });
+      const tab = await tabRead();
+      const pageA = JSON.parse(JSON.stringify(await stored('rx22')));
+      Object.assign(pageA, { project_id: 'je', cost_code: '', sub_code: '' });
+      const { r: ra, fired } = await during(
+        () => post({ purchaseOrder: pageA, editedFields: ['project_id', 'cost_code', 'sub_code'], editedLineFields: {} }),
+        async () => {
+          await tabRaise('tab-g2', 'ja', 4, 5, 'PO-0222', 'OWN', 'O1');
+          Object.assign(lineOf(tab.list.find(x => x.id === 'rx22'), 'g2'), { qty: '4', unit_cost: '5', po_row_id: 'tab-g2' });
+          await put({ purchaseOrders: tab.list, baseUpdatedAt: tab.base, editedLineFields: { rx22: { g2: ['qty', 'unit_cost'] } } });
+        });
+      ok('(the tab saved inside the move)', fired && ra.body.ok);
+      ok('nothing is left on the job the order moved away from', !(await rowsOn('ja')).some(x => x.po_num === 'PO-0222'), await rowsFor('PO-0222'));
+      po = await stored('rx22');
+      po.notes = 'later';
+      await post({ purchaseOrder: po, editedFields: ['notes'], editedLineFields: {} });
+      ok('  and once the next save raises it, the order is charged once: $70',
+        (await charged('PO-0222')) === 70 && !(await unnamed('PO-0222', 'rx22')).length, await rowsFor('PO-0222'));
+    }
+
+    console.log('\n[a stale tab\'s routine saves do not bring back a row purchasing removed]');
+    {
+      await post({ purchaseOrder: SOCK('rx23', 'PO-0223', [dl('d1', 10), dl('d2', 20, 's1')], TWO_JOBS().slice(0, 1)) });
+      await post({ purchaseOrder: SOCK('rx23b', 'PO-0223B', [], undefined) });
+      const tab = await tabRead();
+      po = await stored('rx23');
+      const r2 = lineOf(po, 'd2').po_row_id;
+      po.lines = po.lines.filter(l => l.id !== 'd2');
+      await api('POST', '/api/purchase-orders?division=turf', { purchaseOrder: po, deletedLineIds: ['d2'], editedFields: [], editedLineFields: {} });
+      ok('(purchasing removed the delivery, and its row)', !(await rowOf(r2)));
+      for (const n of [1, 2]) {
+        tab.list.find(x => x.id === 'rx23b').notes = 'note ' + n;
+        await put({ purchaseOrders: tab.list, baseUpdatedAt: tab.base, editedFields: { rx23b: ['notes'] } });
+      }
+      ok('the removed row stays removed after two saves of a tab that loaded before', !(await rowOf(r2))
+        && (await charged('PO-0223')) === 50, await rowsFor('PO-0223'));
+    }
+
+    console.log('\n[purchasing clears a delivery while another save moves it to another job]');
+    {
+      await post({ purchaseOrder: SOCK('rx24', 'PO-0224', [dl('h1', 10), dl('hD', 10)], TWO_JOBS().slice(0, 1)) });
+      const pageA = JSON.parse(JSON.stringify(await stored('rx24')));
+      const pageB = JSON.parse(JSON.stringify(await stored('rx24')));
+      Object.assign(lineOf(pageA, 'hD'), { qty: '', unit_cost: '' });
+      const { fired } = await during(
+        () => post({ purchaseOrder: pageA, editedFields: [], editedLineFields: { hD: ['qty', 'unit_cost'] } }),
+        async () => {
+          lineOf(pageB, 'hD').split = 's1';
+          await post({ purchaseOrder: pageB, editedFields: [], editedLineFields: { hD: ['split'] } });
+        });
+      ok('(the move landed inside the clearing save)', fired);
+      ok('the cleared delivery charges no job: $50 in all', (await charged('PO-0224')) === 50, await rowsFor('PO-0224'));
+    }
+
+    console.log('\n[purchasing re-codes the order\'s job while the tab gives a blank delivery its first row]');
+    {
+      await post({ purchaseOrder: SOCK('rx25', 'PO-0225', [dl('w1', 10), blank('wD')]) });
+      const tab = await tabRead();
+      const pageA = JSON.parse(JSON.stringify(await stored('rx25')));
+      pageA.sub_code = 'O1b';
+      const { fired } = await during(
+        () => post({ purchaseOrder: pageA, editedFields: ['sub_code'], editedLineFields: {} }),
+        async () => {
+          await tabRaise('tab-wD', 'ja', 4, 5, 'PO-0225', 'OWN', 'O1');
+          Object.assign(lineOf(tab.list.find(x => x.id === 'rx25'), 'wD'), { qty: '4', unit_cost: '5', po_row_id: 'tab-wD' });
+          await put({ purchaseOrders: tab.list, baseUpdatedAt: tab.base, editedLineFields: { rx25: { wD: ['qty', 'unit_cost'] } } });
+        });
+      po = await stored('rx25');
+      const wD = lineOf(po, 'wD');
+      const wDrow = wD && wD.po_row_id ? await rowOf(wD.po_row_id) : null;
+      ok('(the tab saved inside the re-code)', fired);
+      ok('the delivery\'s row takes the order\'s new sub code', wDrow && wDrow.sub_code === 'O1b' && (await charged('PO-0225')) === 70,
+        [wD, await rowsFor('PO-0225')]);
+    }
+
+    console.log('\n[purchasing approves while another save adds a job and moves a delivery onto it]');
+    {
+      await post({ purchaseOrder: SOCK('rx26', 'PO-0226', [dl('v1', 10), dl('v2', 1)]) });
+      const pageA = JSON.parse(JSON.stringify(await stored('rx26')));
+      const pageB = JSON.parse(JSON.stringify(await stored('rx26')));
+      pageA.status = 'approved';
+      const { fired } = await during(
+        () => post({ purchaseOrder: pageA, editedFields: ['status'], editedLineFields: {} }),
+        async () => {
+          pageB.splits = [{ id: 's5', project_id: 'jd', cost_code: 'C', sub_code: 'D' }];
+          lineOf(pageB, 'v2').split = 's5';
+          await post({ purchaseOrder: pageB, editedFields: ['split:s5:add'], editedLineFields: { v2: ['split'] } });
+        });
+      po = await stored('rx26');
+      const v2 = lineOf(po, 'v2');
+      const v2row = v2 && v2.po_row_id ? await rowOf(v2.po_row_id) : null;
+      ok('(the other save landed inside the approval)', fired && po.status === 'approved');
+      ok('the new job and the delivery on it stand, with its row there', po.splits && po.splits.some(x => x.id === 's5' && x.project_id === 'jd')
+        && v2.split === 's5' && v2row && v2row.project_id === 'jd', [po.splits, v2, await rowsFor('PO-0226')]);
+      ok('  and the order is charged once: $55', (await charged('PO-0226')) === 55 && !(await unnamed('PO-0226', 'rx26')).length,
+        await rowsFor('PO-0226'));
     }
 
     console.log('\n[a view-only account cannot save the list]');

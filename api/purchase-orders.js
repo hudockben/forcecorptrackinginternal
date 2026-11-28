@@ -736,7 +736,6 @@ module.exports = async (req, res) => {
         // Only split orders are read — on any other the job is the order's own.
         if (newProtocol && PO_JOB_DIVISIONS.includes(division)) {
           const checks = [];
-          const heal = [];
           for (const po of toWrite) {
             if (!po || !po.id || !sentById.has(String(po.id))) continue;
             const was = storedById.get(po.id) || null;
@@ -753,20 +752,18 @@ module.exports = async (req, res) => {
               const want = poSync.lineJob(po, l).project_id;
               const wasJob = w ? poSync.lineJob(was, w).project_id : null;
               // A link the stored order already had, on a delivery whose job did
-              // not change, is the stored order's word — but its row has to be
-              // there. One this server minted for a delivery, whose write then
-              // failed, is named by the stored order and by nothing on any tab,
-              // and the save's retry changes nothing about the delivery: it
-              // would stay on no job. Read too, and raised again if gone.
-              if (link === storedLink && (wasJob === null || wasJob === want)) {
-                if (poSync.lineHasCost(l)) heal.push({ po, at, link });
-                return;
-              }
+              // not change, is the stored order's word: nothing to check. Its
+              // row being gone is no reason to raise it again from here — that
+              // is nearly always a row removed on purpose (the delivery deleted,
+              // the order moved on, the field's own delete), which a stale copy
+              // carried back; a purchasing save of the order raises a row it
+              // still names, as it always has.
+              if (link === storedLink && (wasJob === null || wasJob === want)) return;
               checks.push({ po, at, link, storedLink, want, was, sent });
             });
           }
-          if (checks.length || heal.length) {
-            const ids = [...new Set(checks.flatMap(c => [c.link, c.storedLink].filter(Boolean)).concat(heal.map(h => h.link)))];
+          if (checks.length) {
+            const ids = [...new Set(checks.flatMap(c => [c.link, c.storedLink].filter(Boolean)))];
             let where = null;
             try {
               const found = await sql`
@@ -819,8 +816,6 @@ module.exports = async (req, res) => {
                 c.po.lines = c.po.lines.slice();
                 c.po.lines[c.at] = { ...line, po_row_id: next };
               }
-              // Under the same id: the stored order already names it.
-              heal.forEach(h => { if (!where.has(h.link)) noteMint(h.po.id, h.po.lines[h.at].id); });
             }
           }
         }
