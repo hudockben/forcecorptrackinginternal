@@ -298,6 +298,33 @@ function movedLineIds(po, was) {
   return out;
 }
 
+/**
+ * The cost rows the copy of an order about to be written over names for its
+ * own deliveries, that the copy replacing it does not — rows nothing will name
+ * once it is stored. A save writes its rows from the order as it read it, and
+ * another save can land in between: one that moved a delivery to another of
+ * the order's jobs deletes the delivery's row and raises it on the new job,
+ * then this save puts the row back on the old job and stores the delivery
+ * there. The new job's row is then charged with nothing behind it — not a
+ * later save, not deleting the order would find it — and, on a job the order
+ * still books to, the next save records it as a Daily Tracking delivery beside
+ * the one this save stored: the delivery counted twice.
+ *
+ * Never a Daily Tracking delivery's row (the field's, not the order's), nor a
+ * payroll-injected one.
+ */
+function supersededRowIds(stored, next) {
+  const kept = new Set(((next && Array.isArray(next.lines)) ? next.lines : [])
+    .map(l => l && l.po_row_id).filter(Boolean).map(String));
+  const out = [];
+  for (const l of ((stored && Array.isArray(stored.lines)) ? stored.lines : [])) {
+    if (!l || isDailyLine(l) || !l.po_row_id || isInjectedRowId(l.po_row_id)) continue;
+    const id = String(l.po_row_id);
+    if (!kept.has(id) && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
+
 // ── Deliveries recorded from Daily Tracking ─────────────────────────────────
 // A job row that names one of its job's purchase orders and carries material
 // IS a delivery on that order. Before, only the other direction existed — a
@@ -852,20 +879,27 @@ async function writeDailyRows(sql, { companyCode, division, po, editedLineIds, r
  * Never on an order whose job the tab just moved: the tab re-minted those rows
  * from its own figures, and they are the job's now.
  */
-async function writeTabRows(sql, { companyCode, division, po, prevPO, headerEdits, lineEdits, rowsById }) {
+async function writeTabRows(sql, { companyCode, division, po, prevPO, headerEdits, lineEdits, rowsById, mintLineIds }) {
   if (!po || !poProjectIds(po).length || !PO_JOB_DIVISIONS.includes(division)) return 0;
   const h = headerEdits || new Set();
   const ownCodes = h.has('cost_code') || h.has('sub_code');
   const named = h.has('title') || h.has('supplier') || h.has('po_number');
   const figures = rowEditedLineIds(lineEdits);
+  // Deliveries the merge gave a row of the save's own (`mintLineIds`): their
+  // row is raised here, whole, on their job — see the link check in
+  // api/purchase-orders.js.
+  const minted = new Set(((mintLineIds && [...mintLineIds]) || []).map(String));
+  minted.forEach(id => figures.add(id));
   const prevById = new Map(((prevPO && Array.isArray(prevPO.lines)) ? prevPO.lines : [])
     .filter(l => l && l.id != null).map(l => [String(l.id), l]));
   // Whether a delivery's row takes its job's codes in this save.
   const codesFor = (line, job) => {
     const keys = lineEdits && lineEdits.get(String(line.id));
+    if (minted.has(String(line.id))) return true; // a row raised by this save
     if (keys && keys.has('split')) return true;   // put on this job in this save
     if (!job.split) return ownCodes;              // the order's own job, as always
-    if (!h.has('splits')) return false;
+    if (!h.has('splits') && !h.has(`split:${job.split}:codes`) && !h.has(`split:${job.split}:job`)
+        && !h.has(`split:${job.split}:add`)) return false;
     if (!prevPO) return true;
     const was = lineJob(prevPO, prevById.get(String(line.id)) || line);
     return was.split !== job.split || was.cost_code !== job.cost_code || was.sub_code !== job.sub_code;
@@ -1063,12 +1097,11 @@ function settleCreationStamps(list, storedList, ctx) {
 
 /**
  * The order-level fields a page edits. Lines and the creation stamp have rules
- * of their own. `splits` is the order's other jobs, taken whole — the list is
- * one field, edited as one.
+ * of their own, and so do the order's other jobs (`splits` — settleSplits).
  */
 const HEADER_KEYS = [
   'po_number', 'date_created', 'project_id', 'cost_code', 'sub_code',
-  'title', 'supplier', 'status', 'notes', 'splits',
+  'title', 'supplier', 'status', 'notes',
 ];
 // Who set the status and when. They travel with the status they describe:
 // taken from the page only when the page changed the status.
@@ -1077,7 +1110,9 @@ const STATUS_STAMP_KEYS = ['status_changed_at', 'status_changed_by'];
 /** A request's edited-field list as a Set, or null when it sent none. */
 function editedFieldSet(v) {
   if (!Array.isArray(v)) return null;
-  return new Set(v.slice(0, 50).map(String));
+  // Room for a split order's per-job marks ('split:<id>:job' and the rest —
+  // settleSplits) beside the order's own fields.
+  return new Set(v.slice(0, 400).map(String));
 }
 
 /**
@@ -1096,12 +1131,6 @@ function editedFieldsByOrder(v) {
 }
 
 const _headerText = v => (v == null ? '' : String(v));
-// The splits list compared as what it says: no list and an empty one are the
-// same, and String() of an array of objects would call every two lists equal.
-const _splitsText = v => (Array.isArray(v) && v.length ? JSON.stringify(v) : '');
-const _sameHeader = (k, a, b) => (k === 'splits'
-  ? _splitsText(a) === _splitsText(b)
-  : _headerText(a) === _headerText(b));
 
 /**
  * Put back the stored value of every order-level field `edited` does not name.
@@ -1115,15 +1144,64 @@ function settleHeaderFields(po, stored, edited, keys) {
   const scope = keys || HEADER_KEYS;
   const kept = [];
   const keep = k => {
-    if (_sameHeader(k, po[k], stored[k])) return;
-    if (stored[k] === undefined) delete po[k];
-    // A copy, never the stored list itself: the order is changed in place below.
-    else po[k] = k === 'splits' ? JSON.parse(JSON.stringify(stored[k])) : stored[k];
+    if (_headerText(po[k]) === _headerText(stored[k])) return;
+    if (stored[k] === undefined) delete po[k]; else po[k] = stored[k];
     kept.push(k);
   };
   for (const k of scope) if (!edited.has(k)) keep(k);
   if (scope.includes('status') && !edited.has('status')) STATUS_STAMP_KEYS.forEach(keep);
   return kept;
+}
+
+/**
+ * The order's other jobs, settled job by job and key by key — the way the
+ * order's own job and codes are settled field by field (settleHeaderFields).
+ * Mutates `po`; returns whether its splits changed.
+ *
+ * A page marks what it changed on a split, among the order's edited fields:
+ *   'split:<id>:add'     it added the job (every key of it is the page's)
+ *   'split:<id>:job'     it pointed the job at another project
+ *   'split:<id>:codes'   it re-coded it (cost and sub code, as one)
+ *   'split:<id>:remove'  it took the job off the order
+ * Every split, and every key of one, the page did not mark keeps its stored
+ * value. Taking the list whole let a page re-coding one job put its
+ * minutes-old copy of every OTHER job back: a job somebody had pointed
+ * elsewhere since went back, and the rows of its deliveries were swept off the
+ * job they had just moved to. A split the stored order has and the page's copy
+ * lacks stays unless the page removed it (somebody added it since); one the
+ * page's copy has and the stored order lacks stays off unless the page added
+ * it (somebody removed it since). A split a delivery is still on is put back
+ * afterwards whatever happened here (keepSplitsInUse).
+ *
+ * No stored copy — a new order — or no edited set — a page that did not say —
+ * leaves `po` as sent, as settleHeaderFields does. So does the bare mark
+ * 'splits': a caller saying it replaced the whole list.
+ */
+function settleSplits(po, stored, edited) {
+  if (!po || typeof po !== 'object' || !stored || !edited || edited.has('splits')) return false;
+  const before = JSON.stringify(poSplits(po));
+  const mine = new Map(poSplits(po).map(s => [s.id, s]));
+  const marked = (id, what) => edited.has(`split:${id}:${what}`);
+  const out = [];
+  for (const s of poSplits(stored)) {
+    if (marked(s.id, 'remove')) continue;
+    const page = mine.get(s.id);
+    const next = { ...s };
+    if (page && (marked(s.id, 'job') || marked(s.id, 'add'))) next.project_id = page.project_id;
+    if (page && (marked(s.id, 'codes') || marked(s.id, 'add'))) {
+      next.cost_code = page.cost_code;
+      next.sub_code  = page.sub_code;
+    }
+    out.push(next);
+  }
+  const have = new Set(out.map(s => s.id));
+  for (const s of poSplits(po)) {
+    if (have.has(s.id) || !marked(s.id, 'add') || marked(s.id, 'remove')) continue;
+    out.push({ ...s });
+    have.add(s.id);
+  }
+  if (out.length) po.splits = out; else delete po.splits;
+  return JSON.stringify(out) !== before;
 }
 
 // The order's fields no job row carries. Safe to settle again at the moment
@@ -1829,9 +1907,20 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
   // job or number it changed; settling against the old list's copy would
   // quietly move the order back.
   settleHeaderFields(po, targetCopy || prevPO, headerEdits);
+  // ...the order's other jobs, job by job (settleSplits)...
+  settleSplits(po, targetCopy || prevPO, headerEdits);
   // ...and every delivery's, key by key, for the same reason: the rows below
   // are written from these figures. See settleLineFigures.
   if (lineEdits) settleLineFigures(po, targetCopy || prevPO, lineEdits);
+  // An order moving to another division leaves its other jobs behind: they
+  // were jobs of the division it is leaving, and kept — from the copy there, by
+  // the settles above — their deliveries' rows would be raised under the new
+  // division on the old one's job ids. The page clears them when it moves an
+  // order; a copy from before the order was split never had them to clear.
+  if (prevDivision) {
+    delete po.splits;
+    (Array.isArray(po.lines) ? po.lines : []).forEach(l => { if (l && 'split' in l) delete l.split; });
+  }
 
   // syncPOCostRows makes the same call; made here first because the Daily
   // Tracking lines below are derived against the job the order is saved with.
@@ -1910,6 +1999,10 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
   // So merge again here, from the list actually being written over.
   let lateMerged = 0;
   const lateStale = [];
+  // Rows the copy being written over names that this one does not
+  // (supersededRowIds). Worked out again on each attempt — a lost
+  // compare-and-set writes over a different copy.
+  let superseded = [];
   // The division move syncPOCostRows tests for, recomputed here because it is
   // local to that function. A move of a JOB is judged per delivery below, the
   // same way: the order's own job moving moves the deliveries on it, a split's
@@ -1934,7 +2027,11 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
     // a delivery whose row this call just wrote the figures of: the order has
     // to say what the row says, and taking a figure somebody changed since
     // would leave the job charged one amount and the order showing another.
-    if (lineEdits) settleLineFigures(po, list[idx], lineEdits, { raisedOnly: true, skip: rows.figuresWritten });
+    // Not `split`: it decides which job a delivery's row is on, and the rows
+    // were written from the earlier read — taking a split somebody changed
+    // since would leave the order naming a row on the job it no longer says.
+    if (lineEdits) settleLineFigures(po, list[idx], lineEdits, { raisedOnly: true, skip: rows.figuresWritten,
+      keys: LINE_KEYS.filter(k => k !== 'split') });
     if (headerEdits) settleHeaderFields(po, list[idx], headerEdits, ROWLESS_HEADER_KEYS);
 
     // Idempotent across retries: unseenLines skips any id already in po.lines.
@@ -1983,6 +2080,11 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
       dropShadowedDailyLines(po);
     }
 
+    // A delivery somebody moved to another job while this call was writing
+    // rows from its earlier read is stored where THIS save wrote its row, so
+    // the row the other save raised on the new job goes once this is stored.
+    superseded = supersededRowIds(list[idx], po);
+
     // Replaced in place. The purchase-order tables sort by the time in the
     // order's id now, but an order whose id carries no time still falls back
     // to its place in the list, and moving it would churn every open tab's
@@ -2010,7 +2112,7 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
 
   // The order is stored, so the rows its old deliveries left behind can go.
   let removed = 0;
-  try { removed = await deletePORows(sql, companyCode, (rows.staleIds || []).concat(lateStale)); }
+  try { removed = await deletePORows(sql, companyCode, (rows.staleIds || []).concat(lateStale, superseded)); }
   catch (err) { console.error('[po-sync] could not clear replaced cost rows:', err.message); }
 
   await mirrorOnePO(sql, companyCode, division, po);
@@ -2175,6 +2277,7 @@ module.exports = {
   editedFieldSet,
   editedFieldsByOrder,
   settleHeaderFields,
+  settleSplits,
   LINE_KEYS,
   LINE_ROW_KEYS,
   editedLineFieldMap,
@@ -2199,6 +2302,7 @@ module.exports = {
   sanitizeSplits,
   keepSplitsInUse,
   movedLineIds,
+  supersededRowIds,
   splitsJson,
   isInjectedRowId,
   isDailyLine,

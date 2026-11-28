@@ -18260,6 +18260,30 @@ function _poSplits(po) {
     return true;
   });
 }
+/**
+ * The order's other jobs as the server stored them, with this tab's own
+ * unsaved changes to them kept — split by split, by the marks
+ * ('split:<id>:add|job|codes|remove') the save sends. Mirrors settleSplits in
+ * api/lib/po-sync.js, which is how the server settled them.
+ */
+function _poMergeSplits(mine, srv, pending) {
+  const marked = (id, what) => Boolean(pending && pending.has(`split:${id}:${what}`));
+  const own = new Map(_poSplits({ splits: mine }).map(s => [String(s.id), s]));
+  const out = [];
+  _poSplits({ splits: srv }).forEach(s => {
+    const id = String(s.id);
+    if (marked(id, 'remove')) return;
+    const m = own.get(id);
+    const next = { ...s };
+    if (m && (marked(id, 'job') || marked(id, 'add'))) next.project_id = m.project_id;
+    if (m && (marked(id, 'codes') || marked(id, 'add'))) { next.cost_code = m.cost_code; next.sub_code = m.sub_code; }
+    out.push(next);
+  });
+  const have = new Set(out.map(s => String(s.id)));
+  own.forEach((s, id) => { if (!have.has(id) && marked(id, 'add') && !marked(id, 'remove')) out.push({ ...s }); });
+  return out;
+}
+
 function _poSplitById(po, id) {
   const want = id == null ? '' : String(id);
   return want ? (_poSplits(po).find(s => String(s.id) === want) || null) : null;
@@ -18748,15 +18772,18 @@ function _poAdoptSaved(orders, sentLinks, at) {
     }
     const before = JSON.stringify(local);
     const pending = _poEditedFields[id];
+    const mySplits = local.splits;
     Object.keys(srv).forEach(k => {
-      if (k === 'lines' || k.charAt(0) === '_') return;
+      if (k === 'lines' || k === 'splits' || k.charAt(0) === '_') return;
       if (pending && (pending.has(k)
           || (pending.has('status') && (k === 'status_changed_at' || k === 'status_changed_by')))) return;
       local[k] = JSON.parse(JSON.stringify(srv[k]));
     });
-    // A split order whose other jobs were all taken off: the stored order has
-    // no `splits` at all, which the copy above cannot say.
-    if (!('splits' in srv) && 'splits' in local && !(pending && pending.has('splits'))) delete local.splits;
+    // The order's other jobs, split by split: the server's, with this tab's own
+    // changes it has not had stored kept — and none at all when the stored
+    // order has none and this tab added none.
+    const splitsNow = _poMergeSplits(mySplits, srv.splits, pending);
+    if (splitsNow.length) local.splits = splitsNow; else delete local.splits;
     const sent = sentLinks.get(id) || new Map();
     const gone = _poDeletedLines[id];
     const srvById = new Map((Array.isArray(srv.lines) ? srv.lines : [])
@@ -19631,7 +19658,9 @@ function addPOSplit(poId, projId) {
     Object.assign(split, _poMatchCodes(projId, po.cost_code, po.sub_code) || {});
   }
   po.splits = _poSplits(po).concat([split]);
-  _poNoteEdit(po.id, 'splits');
+  // Marked per job, so a save takes this job and nothing else of this tab's
+  // copy of the others (settleSplits in api/lib/po-sync.js).
+  _poNoteEdit(po.id, 'split:' + split.id + ':add');
   _poExpanded.add(po.id);
   savePurchaseOrders();
   renderPOTab();
@@ -19652,7 +19681,7 @@ function addPOSiteSplits(poId) {
   const added = jobs.map(p => Object.assign({ id: uid(), project_id: String(p.id), cost_code: '', sub_code: '' },
     _poMatchCodes(p.id, po.cost_code, po.sub_code) || {}));
   po.splits = _poSplits(po).concat(added);
-  _poNoteEdit(po.id, 'splits');
+  added.forEach(x => _poNoteEdit(po.id, 'split:' + x.id + ':add'));
   _poExpanded.add(po.id);
   savePurchaseOrders();
   renderPOTab();
@@ -19674,7 +19703,7 @@ function removePOSplit(poId, splitId) {
   const was = s.project_id;
   po.splits = _poSplits(po).filter(x => String(x.id) !== String(s.id));
   if (!po.splits.length) delete po.splits;
-  _poNoteEdit(po.id, 'splits');
+  _poNoteEdit(po.id, 'split:' + s.id + ':remove');
   savePurchaseOrders();
   renderPOTab();
   _poRenderProjects(po, [was]);
@@ -19763,7 +19792,7 @@ function _handlePOSplitEvent(el, po) {
       || _poMatchCodes(next, po.cost_code, po.sub_code) || { cost_code: '', sub_code: '' }) : { cost_code: '', sub_code: '' };
     po.splits = _poSplits(po).map(x => String(x.id) === String(s.id)
       ? { ...x, project_id: next, cost_code: codes.cost_code, sub_code: codes.sub_code } : x);
-    _poNoteEdit(po.id, 'splits');
+    _poNoteEdit(po.id, 'split:' + s.id + ':job', 'split:' + s.id + ':codes');
     const moved = _poSplitById(po, s.id);
     (po.lines || []).forEach(line => {
       if (line && String(line.split || '') === String(s.id) && (line.qty || line.unit_cost)) _ensurePOLineRow(po, line);
@@ -19791,7 +19820,7 @@ function _handlePOSplitEvent(el, po) {
     const [cc, sc] = mapped.split('||');
     if ((cc || '') === (s.cost_code || '') && (sc || '') === (s.sub_code || '')) return;
     po.splits = _poSplits(po).map(x => String(x.id) === String(s.id) ? { ...x, cost_code: cc || '', sub_code: sc || '' } : x);
-    _poNoteEdit(po.id, 'splits');
+    _poNoteEdit(po.id, 'split:' + s.id + ':codes');
     savePurchaseOrders();
     // This job's codes changed, so they reach its rows (on screen here; the
     // save writes them on the server).

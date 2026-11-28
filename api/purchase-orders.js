@@ -71,6 +71,7 @@ const {
   PO_JOB_DIVISIONS,
   PO_GENERAL_DIVISION,
 } = require('./lib/auth');
+const crypto = require('crypto');
 const poSync = require('./lib/po-sync');
 const { numeric } = require('./lib/numeric');
 
@@ -341,6 +342,18 @@ module.exports = async (req, res) => {
       // sent back is whatever came out different.
       const sentText = JSON.stringify(purchaseOrders);
       const sentById = new Map(purchaseOrders.filter(p => p && p.id).map(p => [String(p.id), JSON.stringify(p)]));
+      // An order as the tab sent it — the jobs and links ITS copy had.
+      const sentParsed = new Map();
+      const sentOrder = id => {
+        const k = String(id);
+        if (!sentById.has(k)) return null;
+        if (!sentParsed.has(k)) sentParsed.set(k, JSON.parse(sentById.get(k)));
+        return sentParsed.get(k);
+      };
+      // A split order in any copy: the only orders whose deliveries can be on
+      // more than one job, and so the only ones the link check below reads.
+      const isSplitOrder = (...copies) => copies.some(c => c && (poSync.poSplits(c).length
+        || (Array.isArray(c.lines) && c.lines.some(l => l && l.split))));
 
       /**
        * One pass of the merge, over `list` (the tab's copy) against `stored`
@@ -361,6 +374,15 @@ module.exports = async (req, res) => {
         let mergedLineFigures = 0;  // deliveries whose figures were kept the same way
         const supersededRows = [];  // cost rows a stale copy minted over a stored one
         const jobMovedIds = new Set();
+        // Deliveries this save raises a row for itself: order id → Set of line ids.
+        const mintedRows = new Map();
+        const noteMint = (orderId, lineId) => {
+          const k = String(orderId);
+          if (!mintedRows.has(k)) mintedRows.set(k, new Set());
+          mintedRows.get(k).add(String(lineId));
+        };
+        // Every job an order books to in any of the copies at hand.
+        const jobsOf = (...copies) => [...new Set(copies.flatMap(c => (c ? poSync.poProjectIds(c) : [])))];
         const storedById = new Map(stored.filter(p => p && p.id).map(p => [p.id, p]));
 
         if (moved && stored.length) {
@@ -394,8 +416,10 @@ module.exports = async (req, res) => {
             if (!was || po === was) return po;
             const copy = { ...po };
             const kept = poSync.settleHeaderFields(copy, was, headerEditsFor(po.id));
-            if (!kept.length) return po;
-            mergedFields += kept.length;
+            // ...and the order's other jobs, job by job — see settleSplits.
+            const splitsKept = poSync.settleSplits(copy, was, headerEditsFor(po.id)) ? 1 : 0;
+            if (!kept.length && !splitsKept) return po;
+            mergedFields += kept.length + splitsKept;
             return copy;
           });
           if (mergedFields) {
@@ -426,8 +450,10 @@ module.exports = async (req, res) => {
             const copy = { ...po };
             const edits = lineEditsFor(po.id);
             const keptSplit = poSync.settleLineFigures(copy, was, edits, { keys: ['split'] });
-            // A split this copy dropped while a delivery is still on it stays.
-            if (PO_JOB_DIVISIONS.includes(division)) poSync.keepSplitsInUse(copy, [was]);
+            // A split this copy dropped while a delivery is still on it stays —
+            // the stored one, or the one the tab's copy had (a job somebody else
+            // took off the order after the tab put a delivery on it).
+            if (PO_JOB_DIVISIONS.includes(division)) poSync.keepSplitsInUse(copy, [was, sentOrder(po.id)]);
             const movedLines = poSync.movedLineIds(copy, was);
             if (movedLines.size) movedById.set(String(po.id), movedLines);
             if (String(po.project_id || '') !== String(was.project_id || '')) jobMovedIds.add(String(po.id));
@@ -590,9 +616,13 @@ module.exports = async (req, res) => {
               if (l.po_row_id) {
                 superseded.push({
                   rowId:     String(l.po_row_id),
-                  // The job the tab's row is on: the delivery's (it did not move).
+                  // The job the tab's row is on: the delivery's (it did not move)
+                  // — or, on a split order, whichever of its jobs the tab minted it
+                  // on, read at the DELETE (`jobs`): its copy may have had the
+                  // delivery on another job than the order says now.
                   projectId: poSync.lineJob(po, l).project_id,
-                  poNum:     String(po.po_number  || ''),
+                  poNum:     String((sentOrder(po.id) || po).po_number || ''),
+                  ...(isSplitOrder(po, was, sentOrder(po.id)) ? { jobs: jobsOf(po, was, sentOrder(po.id)) } : {}),
                 });
               }
               relinked++;
@@ -658,6 +688,14 @@ module.exports = async (req, res) => {
                     poNum:     String(was.po_number  || po.po_number || ''),
                   });
                 }
+                // On a split order the tab moved this delivery's job without
+                // knowing of the delivery, so nothing on the tab will raise its
+                // row on the new job: this save does (writeTabRows, mintLineIds).
+                const to = poSync.lineJob(base, l).project_id;
+                if (isSplitOrder(base, was) && to && poSync.lineHasCost(l)) {
+                  noteMint(po.id, l.id);
+                  return { ...l, po_row_id: crypto.randomUUID() };
+                }
                 return { ...l, po_row_id: null };
               });
             if (!missing.length && !relinked) return po;
@@ -669,6 +707,87 @@ module.exports = async (req, res) => {
           }
           if (mergedLinks) {
             console.warn(`[purchase-orders] restored ${mergedLinks} cost-row link(s) a stale copy had dropped for ${blobKey}`);
+          }
+        }
+
+        // ── A split order: every link names a row on its delivery's job ────
+        // A delivery's job comes from two fields with different owners: its own
+        // `split` (the tab's, when it changed it) and the job that split points
+        // at (the stored one, unless the tab changed it). So the row a tab minted
+        // for a delivery it moved or added can be on a job the merged order does
+        // not put the delivery on — the tab moved it onto a split somebody had
+        // pointed elsewhere meanwhile, or moved the order's own job while
+        // somebody moved the delivery onto a split, or is a page from before
+        // splits that minted every delivery's row on the order's own job. Kept,
+        // the order would name a row on the wrong job, and the next save would
+        // raise a second one on the right job. So the link's row is read: one on
+        // another job goes (from the job it is on, when that is one of this
+        // order's), and the delivery takes its stored row back if that is on the
+        // right job, else a row of its own that this save raises there.
+        // Only split orders are read — on any other the job is the order's own.
+        if (newProtocol && PO_JOB_DIVISIONS.includes(division)) {
+          const checks = [];
+          for (const po of toWrite) {
+            if (!po || !po.id || !sentById.has(String(po.id))) continue;
+            const was = storedById.get(po.id) || null;
+            const sent = sentOrder(po.id);
+            if (!isSplitOrder(po, was, sent)) continue;
+            const wasById = new Map(((was && Array.isArray(was.lines)) ? was.lines : [])
+              .filter(l => l && l.id != null).map(l => [String(l.id), l]));
+            (Array.isArray(po.lines) ? po.lines : []).forEach((l, at) => {
+              if (!l || l.id == null || poSync.isDailyLine(l) || !l.po_row_id) return;
+              const link = String(l.po_row_id);
+              if (/^ts\d+-/.test(link)) return;
+              const w = wasById.get(String(l.id)) || null;
+              const storedLink = w && !poSync.isDailyLine(w) && w.po_row_id ? String(w.po_row_id) : '';
+              const want = poSync.lineJob(po, l).project_id;
+              const wasJob = w ? poSync.lineJob(was, w).project_id : null;
+              // A link the stored order already had, on a delivery whose job did
+              // not change, is the stored order's word: nothing to check.
+              if (link === storedLink && (wasJob === null || wasJob === want)) return;
+              checks.push({ po, at, link, storedLink, want, was, sent });
+            });
+          }
+          if (checks.length) {
+            const ids = [...new Set(checks.flatMap(c => [c.link, c.storedLink].filter(Boolean)))];
+            let where = null;
+            try {
+              const found = await sql`
+                SELECT row_id, project_id FROM daily_tracking
+                WHERE company_code = ${companyCode} AND division = ${division} AND row_id = ANY(${ids})
+              `;
+              where = new Map(found.map(r => [String(r.row_id), String(r.project_id || '')]));
+            } catch (err) {
+              // Advisory, like the liveness read above: on a failure the links
+              // stand as they came, and the next save reads them again.
+              console.error('[purchase-orders] could not read where split deliveries\' rows are:', err.message);
+            }
+            if (where) {
+              for (const c of checks) {
+                const on = where.get(c.link);
+                // On its job — or not written yet, when writeTabRows raises it
+                // there with the delivery's figures.
+                if (on === undefined || on === c.want) continue;
+                const jobs = jobsOf(c.po, c.was, c.sent);
+                if (jobs.includes(on)) {
+                  supersededRows.push({ rowId: c.link, projectId: on, poNum: String((c.sent || c.po).po_number || '') });
+                }
+                const line = c.po.lines[c.at];
+                let next;
+                if (c.storedLink && c.storedLink !== c.link && where.get(c.storedLink) === c.want) {
+                  next = c.storedLink;
+                  mergedLinks++;
+                } else if (c.want && poSync.lineHasCost(line)) {
+                  next = crypto.randomUUID();
+                  noteMint(c.po.id, line.id);
+                } else {
+                  next = null;
+                }
+                // A copy of the line: it may be the stored order's own object.
+                c.po.lines = c.po.lines.slice();
+                c.po.lines[c.at] = { ...line, po_row_id: next };
+              }
+            }
           }
         }
 
@@ -720,7 +839,7 @@ module.exports = async (req, res) => {
         poSync.settleCreationStamps(toWrite, stored, { username: payload.username });
 
         return {
-          toWrite, stored, derived, linkRows, jobMovedIds, supersededRows,
+          toWrite, stored, derived, linkRows, jobMovedIds, supersededRows, mintedRows,
           mergedLines, mergedLinks, mergedFields, mergedLineFigures,
         };
       }
@@ -828,11 +947,12 @@ module.exports = async (req, res) => {
           if (!po || !po.id || !sentById.has(String(po.id))) continue;
           const headerEdits = headerEditsFor(po.id);
           const lineEdits = lineEditsFor(po.id);
-          if (!headerEdits.size && !lineEdits.size) continue;
+          const mintLineIds = (result.mintedRows && result.mintedRows.get(String(po.id))) || null;
+          if (!headerEdits.size && !lineEdits.size && !(mintLineIds && mintLineIds.size)) continue;
           try {
             await poSync.writeTabRows(sql, {
               companyCode, division, po, prevPO: prevById.get(String(po.id)) || null,
-              headerEdits, lineEdits, rowsById,
+              headerEdits, lineEdits, rowsById, mintLineIds,
             });
           } catch (err) {
             rowsFailed++;
@@ -846,6 +966,23 @@ module.exports = async (req, res) => {
       // would lose the delivery's cost outright if the write then failed.
       // Payroll-injected rows are never ours to remove, the same exclusion
       // _syncPOs' orphan sweep makes.
+      // A split order's row (`jobs` set) is deleted from whichever of the
+      // order's jobs it is actually on — the tab may have minted it on a job
+      // its copy had the delivery on, not the one the order says now. Read
+      // here; a row on none of the order's jobs is not this order's to delete.
+      const loose = supersededRows.filter(r => r && r.rowId && Array.isArray(r.jobs));
+      if (loose.length) {
+        try {
+          const found = await sql`
+            SELECT row_id, project_id FROM daily_tracking
+            WHERE company_code = ${companyCode} AND division = ${division} AND row_id = ANY(${loose.map(r => r.rowId)})
+          `;
+          const on = new Map(found.map(x => [String(x.row_id), String(x.project_id || '')]));
+          loose.forEach(r => { const at = on.get(r.rowId); if (at && r.jobs.includes(at)) r.projectId = at; });
+        } catch (err) {
+          console.error('[purchase-orders] could not read where superseded rows are:', err.message);
+        }
+      }
       const dropRows = supersededRows.filter(r =>
         r && r.rowId && r.projectId && !/^ts\d+-/.test(r.rowId));
       // The rows this actually removed, for the tab to drop its own copies of

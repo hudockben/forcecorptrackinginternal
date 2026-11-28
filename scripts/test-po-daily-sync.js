@@ -35,7 +35,7 @@ const { requireFn, sliceSource, evalSlice } = require('./lib/fn-source');
 // whatever calls them.
 const PO_SPLIT_FNS = ['_poSplits', '_poSplitById', '_poLineJob', '_poProjectIds', '_poHasProject', '_poSplitForProject',
   '_poIsSplit', '_poLinesOnJob', '_poJobTotals', '_poProjectTotals', '_poProjName', '_poCodeLabel', '_poRenderProjects',
-  '_poPaintJobTotals'];
+  '_poPaintJobTotals', '_poMergeSplits'];
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
 

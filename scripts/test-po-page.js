@@ -30,7 +30,7 @@ const PAGE_SPLIT_FNS = ['poSplitsOf', 'splitOf', 'lineJobOf', 'poProjectIdsOf', 
   'jobCodeLabel', 'matchCodesOn', 'siteJobsToAdd', 'splitChipHTML', 'updateJobTotalsInPlace'];
 const PO_SPLIT_FNS = ['_poSplits', '_poSplitById', '_poLineJob', '_poProjectIds', '_poHasProject', '_poSplitForProject',
   '_poIsSplit', '_poLinesOnJob', '_poJobTotals', '_poProjectTotals', '_poProjName', '_poCodeLabel', '_poRenderProjects',
-  '_poPaintJobTotals'];
+  '_poPaintJobTotals', '_poMergeSplits'];
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
 
@@ -60,7 +60,9 @@ const EDIT_BOOKKEEPING = [
   // not lifted the real one gets a no-op.
   'var migratePO = typeof migratePO === "function" ? migratePO : function () {};',
   ...['noteEdit', 'pendingEdits', 'clearSentEdits', 'editedFieldsFor', 'adoptStoredFields', 'isTyping',
-      'lineEditKey', 'lineEditSplit', 'editedLinesFor', 'editedLineFieldsFor', 'adoptStoredLines']
+      'lineEditKey', 'lineEditSplit', 'editedLinesFor', 'editedLineFieldsFor', 'adoptStoredLines',
+      // adoptStoredFields takes the order's other jobs back one by one.
+      'poSplitsOf']
     .map(n => requireFn(PAGE, n, 'purchase-orders.html')),
 ].join('\n');
 
@@ -1399,7 +1401,7 @@ console.log('\n[an order re-tied after a page reload]');
   `, ctx);
   vm.runInContext(EDIT_BOOKKEEPING, ctx);
   ['listDivs', 'divMeta', 'divLabel', 'projectsFor', 'projectFor', 'codesFor', 'nextPONumber', 'setDivision']
-    .forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
+    .concat(PAGE_SPLIT_FNS).forEach(name => vm.runInContext(requireFn(PAGE, name, 'purchase-orders.html'), ctx));
 
   vm.runInContext("setDivision('x','turf')", ctx);
   const sent = vm.runInContext('sent', ctx);

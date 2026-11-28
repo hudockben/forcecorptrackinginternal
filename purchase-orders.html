@@ -1489,12 +1489,27 @@ function adoptStoredFields(po, stored) {
   };
   PO_HEADER_FIELDS.forEach(take);
   if (!(pending && pending.has('status'))) PO_STATUS_STAMP_FIELDS.forEach(take);
-  // The order's other jobs: a list, compared and copied as one.
-  if (!(pending && pending.has('splits'))) {
+  // The order's other jobs, split by split: the stored ones, with this page's
+  // own changes to them it has not had stored kept (the marks
+  // 'split:<id>:add|job|codes|remove' — settleSplits in api/lib/po-sync.js).
+  {
+    const marked = (id, what) => Boolean(pending && pending.has('split:' + id + ':' + what));
+    const own = new Map(poSplitsOf(po).map(sp => [String(sp.id), sp]));
+    const next = [];
+    poSplitsOf(stored).forEach(sp => {
+      const id = String(sp.id);
+      if (marked(id, 'remove')) return;
+      const m = own.get(id);
+      const out = Object.assign({}, sp);
+      if (m && (marked(id, 'job') || marked(id, 'add'))) out.project_id = m.project_id;
+      if (m && (marked(id, 'codes') || marked(id, 'add'))) { out.cost_code = m.cost_code; out.sub_code = m.sub_code; }
+      next.push(out);
+    });
+    const have = new Set(next.map(sp => String(sp.id)));
+    own.forEach((sp, id) => { if (!have.has(id) && marked(id, 'add') && !marked(id, 'remove')) next.push(Object.assign({}, sp)); });
     const text = v => (Array.isArray(v) && v.length ? JSON.stringify(v) : '');
-    if (text(po.splits) !== text(stored.splits)) {
-      if (Array.isArray(stored.splits) && stored.splits.length) po.splits = JSON.parse(JSON.stringify(stored.splits));
-      else delete po.splits;
+    if (text(po.splits) !== text(next)) {
+      if (next.length) po.splits = next; else delete po.splits;
       changed = true;
     }
   }
@@ -1968,7 +1983,8 @@ function setDivision(poId, value) {
   ['project_id', 'cost_code', 'sub_code', 'po_number'].forEach(k => noteEdit(_editedFields, poId, k));
   // ...and its other jobs, which were the old division's: off the order, and
   // off every delivery that was on one.
-  if ('splits' in po) { delete po.splits; noteEdit(_editedFields, poId, 'splits'); }
+  poSplitsOf(po).forEach(sp => noteEdit(_editedFields, poId, 'split:' + sp.id + ':remove'));
+  if ('splits' in po) delete po.splits;
   (po.lines || []).forEach(l => {
     if (l && 'split' in l) { delete l.split; noteEdit(_editedLines, poId, lineEditKey(l.id, 'split')); }
   });
@@ -2082,7 +2098,9 @@ function addSplit(poId, projId) {
     Object.assign(split, matchCodesOn(po, projId, po.cost_code, po.sub_code) || {});
   }
   po.splits = poSplitsOf(po).concat([split]);
-  noteEdit(_editedFields, poId, 'splits');
+  // Marked per job, so a save takes this job and nothing else of this page's
+  // copy of the others (settleSplits in api/lib/po-sync.js).
+  noteEdit(_editedFields, poId, 'split:' + split.id + ':add');
   expanded.add(poId);
   savePO(po, { immediate: true });
   render();
@@ -2094,10 +2112,11 @@ function addSiteSplits(poId) {
   if (!po || !capsFor(po._division).canEdit || !po.project_id) return;
   const jobs = siteJobsToAdd(po).jobs;
   if (!jobs.length) return;
-  po.splits = poSplitsOf(po).concat(jobs.map(p => Object.assign(
+  const added = jobs.map(p => Object.assign(
     { id: uid(), project_id: String(p.id), cost_code: '', sub_code: '' },
-    matchCodesOn(po, p.id, po.cost_code, po.sub_code) || {})));
-  noteEdit(_editedFields, poId, 'splits');
+    matchCodesOn(po, p.id, po.cost_code, po.sub_code) || {}));
+  po.splits = poSplitsOf(po).concat(added);
+  added.forEach(sp => noteEdit(_editedFields, poId, 'split:' + sp.id + ':add'));
   expanded.add(poId);
   savePO(po, { immediate: true });
   render();
@@ -2117,7 +2136,7 @@ function removeSplit(poId, splitId) {
   }
   po.splits = poSplitsOf(po).filter(x => String(x.id) !== String(s.id));
   if (!po.splits.length) delete po.splits;
-  noteEdit(_editedFields, poId, 'splits');
+  noteEdit(_editedFields, poId, 'split:' + s.id + ':remove');
   savePO(po, { immediate: true });
   render();
 }
@@ -2154,7 +2173,8 @@ function setSplitProject(poId, splitId, value) {
     ? Object.assign({}, x, { project_id: next, cost_code: codes.cost_code, sub_code: codes.sub_code }) : x);
   // A delivery recorded from Daily Tracking stays with its row on the old job.
   po.lines = (po.lines || []).filter(l => !(isDailyLine(l) && String(l.split || '') === String(s.id)));
-  noteEdit(_editedFields, poId, 'splits');
+  noteEdit(_editedFields, poId, 'split:' + s.id + ':job');
+  noteEdit(_editedFields, poId, 'split:' + s.id + ':codes');
   savePO(po, { immediate: true });
   render();
 }
@@ -2168,7 +2188,7 @@ function setSplitCodes(poId, splitId, value) {
   const parts = String(value || '').split('||');
   po.splits = poSplitsOf(po).map(x => String(x.id) === String(s.id)
     ? Object.assign({}, x, { cost_code: parts[0] || '', sub_code: parts[1] || '' }) : x);
-  noteEdit(_editedFields, poId, 'splits');
+  noteEdit(_editedFields, poId, 'split:' + s.id + ':codes');
   savePO(po, { immediate: true });
   render();
 }
