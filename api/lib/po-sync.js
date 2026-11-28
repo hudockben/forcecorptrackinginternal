@@ -1220,10 +1220,28 @@ function settleSplits(po, stored, edited) {
     out.push(next);
   }
   const have = new Set(out.map(s => s.id));
+  // A job the order already books to — its own, or another of its jobs as
+  // stored — is not taken a second time. Each page checks its own copy, and
+  // two pages adding the site's other jobs a moment apart both marked theirs:
+  // the order listed each job twice, and a job's own views read only the first
+  // entry's deliveries. A page's job a delivery of that page is already on
+  // stays (taking it away would leave the delivery on no split).
+  const onIt = id => (Array.isArray(po.lines) ? po.lines : []).some(l => l && _txt(l.split).trim() === id);
+  const taken = (projectId, exceptId) => Boolean(projectId) && (projectId === _txt(po.project_id)
+    || out.some(x => x.id !== exceptId && _txt(x.project_id) === projectId));
   for (const s of poSplits(po)) {
     if (have.has(s.id) || !marked(s.id, 'add') || marked(s.id, 'remove')) continue;
+    if (taken(_txt(s.project_id), s.id) && !onIt(s.id)) continue;
     out.push({ ...s });
     have.add(s.id);
+  }
+  // ...nor pointed at one: a re-point onto a job the order already has keeps
+  // the job the split had.
+  for (const s of out) {
+    if (!marked(s.id, 'job')) continue;
+    if (!taken(_txt(s.project_id), s.id)) continue;
+    const was = poSplits(stored).find(x => x.id === s.id);
+    if (was) { s.project_id = was.project_id; s.cost_code = was.cost_code; s.sub_code = was.sub_code; }
   }
   if (out.length) po.splits = out; else delete po.splits;
   return JSON.stringify(out) !== before;

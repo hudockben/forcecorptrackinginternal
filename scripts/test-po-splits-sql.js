@@ -749,6 +749,48 @@ const ORDER = () => ({
       await q("DELETE FROM daily_tracking WHERE company_code = $1 AND row_id = 'victim-pav-1'", [CO]);
     }
 
+    console.log('\n[a stale tab points a job elsewhere after purchasing moved a delivery onto it]');
+    {
+      r = await post({ purchaseOrder: SOCK('rx19', 'PO-0219', [dl('y1', 10), dl('y2', 20, 's1'), dl('y4', 4)], TWO_JOBS().slice(0, 1)) });
+      const tab = await tabRead();
+      po = await stored('rx19');
+      lineOf(po, 'y4').split = 's1';
+      await post({ purchaseOrder: po, editedFields: [], editedLineFields: { y4: ['split'] } });
+      const y4row = lineOf(await stored('rx19'), 'y4').po_row_id;
+      ok('(purchasing moved y4 onto the other job)', (await rowOf(y4row)).project_id === 'jb');
+      // The tab re-points that job: the rows of what ITS copy has there go
+      // and are raised again on jd. Its copy still has y4 on the order's own
+      // job, under the row purchasing just deleted.
+      const t = tab.list.find(x => x.id === 'rx19');
+      await dropRow(lineOf(t, 'y2').po_row_id);
+      await tabRaise('tab-y2', 'jd', 20, 5, 'PO-0219', 'C', 'A');
+      lineOf(t, 'y2').po_row_id = 'tab-y2';
+      t.splits = t.splits.map(x => (x.id === 's1' ? { ...x, project_id: 'jd' } : x));
+      r = await put({ purchaseOrders: tab.list, baseUpdatedAt: tab.base, editedFields: { rx19: ['split:s1:job', 'split:s1:codes'] } });
+      po = await stored('rx19');
+      const y4 = lineOf(po, 'y4');
+      const y4now = y4 && y4.po_row_id ? await rowOf(y4.po_row_id) : null;
+      ok('the tab saves, the job now on jd', r.statusCode === 200 && r.body.ok && po.splits.find(x => x.id === 's1').project_id === 'jd', r.body);
+      ok('y4, on that job, has a live row on jd', y4.split === 's1' && y4now && y4now.project_id === 'jd', [y4, await rowsFor('PO-0219')]);
+      ok('  and nothing is left on jb: the order is charged once, $170', !(await rowsOn('jb')).some(x => x.po_num === 'PO-0219')
+        && (await charged('PO-0219')) === 170 && !(await unnamed('PO-0219', 'rx19')).length, await rowsFor('PO-0219'));
+    }
+
+    console.log('\n[two pages add the site\'s other jobs a moment apart]');
+    {
+      await post({ purchaseOrder: SOCK('rx20', 'PO-0220', [dl('z1', 10)]) });
+      const tab = await tabRead();
+      po = await stored('rx20');
+      po.splits = [{ id: 'pA', project_id: 'jb', cost_code: 'C', sub_code: 'A' }, { id: 'pB', project_id: 'jc', cost_code: 'C', sub_code: 'B' }];
+      await post({ purchaseOrder: po, editedFields: ['split:pA:add', 'split:pB:add'], editedLineFields: {} });
+      const t = tab.list.find(x => x.id === 'rx20');
+      t.splits = [{ id: 'tA', project_id: 'jb', cost_code: 'C', sub_code: 'A' }, { id: 'tC', project_id: 'jd', cost_code: 'C', sub_code: 'D' }];
+      r = await put({ purchaseOrders: tab.list, baseUpdatedAt: tab.base, editedFields: { rx20: ['split:tA:add', 'split:tC:add'] } });
+      po = await stored('rx20');
+      const jobs = po.splits.map(x => x.project_id).sort();
+      ok('each job is on the order once — the one both added, and each one\'s own', r.body.ok && JSON.stringify(jobs) === '["jb","jc","jd"]', po.splits);
+    }
+
     console.log('\n[a view-only account cannot save the list]');
     {
       const vid = (await q("INSERT INTO users (username, company_code, password_hash, role, division_roles) VALUES ('posplit_view', $1, 'x', 'level1', $2) RETURNING id",

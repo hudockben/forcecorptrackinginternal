@@ -782,11 +782,26 @@ module.exports = async (req, res) => {
             if (where) {
               for (const c of checks) {
                 const on = where.get(c.link);
-                // On its job — or not written yet, when writeTabRows raises it
-                // there with the delivery's figures.
-                if (on === undefined || on === c.want) continue;
+                if (on === c.want) continue;
+                if (on === undefined) {
+                  // Not written yet — when somebody is writing it: this save, for a
+                  // delivery whose figures or job it marked or whose row it mints;
+                  // or the tab itself, for one its copy had on this very job (that
+                  // row's write rides beside the save). Otherwise nobody is: the
+                  // tab held the link from before purchasing replaced the row —
+                  // moving the delivery onto a job the tab has just re-pointed —
+                  // and kept, it named a row that is gone, the delivery charged to
+                  // no job and every later save taking the link as the stored one.
+                  const line = c.po.lines[c.at];
+                  const marks = lineEditsFor(c.po.id).get(String(line.id));
+                  const writes = Boolean(marks && poSync.LINE_ROW_KEYS.some(k => marks.has(k)))
+                    || Boolean(mintedRows.get(String(c.po.id)) && mintedRows.get(String(c.po.id)).has(String(line.id)));
+                  const sentLine = c.sent && Array.isArray(c.sent.lines)
+                    ? c.sent.lines.find(x => x && String(x.id) === String(line.id)) : null;
+                  if (writes || (sentLine && poSync.lineJob(c.sent, sentLine).project_id === c.want)) continue;
+                }
                 const jobs = jobsOf(c.po, c.was, c.sent);
-                if (jobs.includes(on)) {
+                if (on !== undefined && jobs.includes(on)) {
                   supersededRows.push({ rowId: c.link, projectId: on, poNum: String((c.sent || c.po).po_number || '') });
                 }
                 const line = c.po.lines[c.at];
