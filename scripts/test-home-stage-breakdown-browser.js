@@ -71,13 +71,15 @@ const job = (id, name, status, contract, bid, o = {}) => ({
 const TRICKY = 'Hempfield <b>Softball</b> & Sons';
 const PROJECTS = [
   job('ip1', 'Franklin Regional Multi', 'In Progress', 2150000, 1500000),
-  // Scheduled for 2026, but its first daily entry is 2025: it counts as 2025,
-  // and its spend splits across both years.
-  job('ip2', TRICKY, 'In Progress', 900000, 700000, { start: '2026-03-01', co: 0.1 }),
+  // No dates on the job, so its first daily entry (2025) sets its year, and
+  // its spend splits across both years.
+  job('ip2', TRICKY, 'In Progress', 900000, 700000, { co: 0.1 }),
   job('aw1', 'Mt Lebanon', 'Awarded', 596600, 450000, { start: '2027-03-15', end: '2027-07-01' }),
   job('aw2', 'Moon Township', 'Awarded', 1200000, 900000),
   job('sc1', 'Seneca Valley', 'Substantially Complete', 700000, 500000),
   job('c1', 'Peters Twp Field', 'Complete', 1100000, 850000),
+  // Brought in this year: every entry stamped 2026, the real year on the job.
+  job('imp1', 'Imported Field', 'Complete', 300000, 250000, { start: '2025-05-01', end: '2025-09-30' }),
   // Seventeen jobs finished in 2024 — more than the hover preview lists.
   ...Array.from({ length: 16 }, (_, i) => job('old' + i, `Archive Field ${String(i + 1).padStart(2, '0')}`,
     'Complete', 100000 + i * 1000, 80000, { end: `2024-0${1 + (i % 9)}-15` })),
@@ -89,6 +91,7 @@ const ROWS = [
   ['ip2', '2025-10-02', 300000], ['ip2', '2026-05-01', 100000],
   ['sc1', '2026-05-02', 300000], ['sc1', '2026-09-30', 150000],
   ['c1',  '2025-05-03', 400000], ['c1',  '2025-08-20', 420000],
+  ['imp1', '2026-03-15', 120000], ['imp1', '2026-03-16', 110000],
 ].map(([pid, date, cost], i) => ({ id: 'r' + i, _projectId: pid, date, cost_code: '100', sub_code: 'Turf',
   total_cost: String(cost), labor_hours: '8', rate: '30', quantity: '1' }));
 
@@ -101,6 +104,7 @@ async function openPage(browser, cfg, ctxOpts) {
   const ctx  = await browser.newContext(ctxOpts || { viewport: { width: 1500, height: 1000 } });
   const page = await ctx.newPage();
   const errors = [];
+  const puts = [];   // job records the page saved: { key, value }
   page.on('pageerror', e => errors.push(e.message));
   page.on('dialog', d => d.dismiss().catch(() => {}));
   await page.addInitScript(({ t, division }) => {
@@ -128,16 +132,20 @@ async function openPage(browser, cfg, ctxOpts) {
       return json({ values });
     }
     if (p === '/api/data/' + cfg.index) return json({ value: PROJECTS.map(pr => pr.id) });
+    if (m === 'PUT' && p.startsWith('/api/data/' + cfg.project)) {
+      puts.push({ key: p.slice('/api/data/'.length), value: (JSON.parse(req.postData() || '{}') || {}).value });
+      return json({ ok: true });
+    }
     if (p.startsWith('/api/data/')) return json({ value: null });
     return json({});
   });
   await page.goto((await BASE) + '/' + cfg.file);
-  await page.waitForFunction(n => typeof projectsList !== 'undefined' && projectsList.length === n
-    && getAllDailyRows().length === 8, PROJECTS.length, { timeout: 20000 });
+  await page.waitForFunction(({ n, r }) => typeof projectsList !== 'undefined' && projectsList.length === n
+    && getAllDailyRows().length === r, { n: PROJECTS.length, r: ROWS.length }, { timeout: 20000 });
   // Draw once more with every row in, wherever the background backfill got to.
   await page.evaluate(() => { activeTab = 'home'; renderHomeTab(); });
   await page.waitForSelector('#home-content .stage-card');
-  return { ctx, page, errors };
+  return { ctx, page, errors, puts };
 }
 
 // Scrolls a figure to the middle of the screen and waits out the scroll event.
@@ -148,7 +156,7 @@ async function centre(page, key) {
 
 async function run(browser, cfg) {
   console.log(`\n${cfg.file}`);
-  const { ctx, page, errors } = await openPage(browser, cfg);
+  const { ctx, page, errors, puts } = await openPage(browser, cfg);
   const tip    = () => page.locator('.stage-tip');
   const pinned = () => page.locator('.stage-tip.pinned');
   const fig    = key => page.locator(`#home-content [data-sb="${key}"]`);
@@ -222,6 +230,12 @@ async function run(browser, cfg) {
   ok('a job with no dates says so', (await tip().innerText()).includes('no dates set'));
   await away();
 
+  await hover('done|2025|year');
+  const imported = await tip().innerText();
+  ok('a job brought in this year counts in the year on its own dates, not its entries\' 2026 stamps',
+    imported.includes('Imported Field') && imported.includes('Projected Completion 09/30/2025'), imported.slice(0, 300));
+  await away();
+
   await hover('ip|*|bid');
   const bid = await tip().innerText();
   ok('the bid budget splits bid lines from change orders',
@@ -277,6 +291,65 @@ async function run(browser, cfg) {
   ok('a redraw keeps a pinned breakdown open, with the new figure',
     before === '$3,050,000' && after === '$3,150,000', `${before} → ${after}`);
   await close();
+
+  // ── Set years: filing jobs under a year without touching their dates ──
+  const jobsIn = key => page.evaluate(k => {
+    const el = document.querySelector(`#home-content [data-sb="${k}"]`);
+    return el ? Number(el.innerText) : 0;
+  }, key);
+  const yearsRow = name => page.locator('#home-years-body tbody tr', { hasText: name });
+  const filters  = () => page.$eval('#home-years-body .home-years-filters',
+    f => [...f.querySelectorAll('select')].map(s => s.value));
+  await click('done|2024|year');
+  const setBtn = page.locator('.stage-tip.pinned .stage-tip-act button');
+  ok('a year\'s pinned breakdown offers Set years for its jobs',
+    (await setBtn.count()) === 1 && (await setBtn.innerText()).includes('these 17 jobs'));
+  await setBtn.click();
+  ok('  which opens on that stage and year, listing those jobs',
+    (await page.locator('#home-years-overlay.open').count()) === 1 && !(await pinned().count())
+    && (await filters()).join('|') === 'done|2024'
+    && (await page.locator('#home-years-body tbody tr').count()) === 17);
+  const before24 = await jobsIn('done|2024|jobs');
+  await yearsRow('Archive Field 01').locator('input[type=checkbox]').check();
+  await yearsRow('Archive Field 02').locator('input[type=checkbox]').check();
+  const bulkTo = await page.$eval('#home-years-bulk-year', s => s.value);
+  await page.click('#home-years-body .home-years-bulk button');
+  const after24 = await jobsIn('done|2024|jobs'), now23 = await jobsIn('done|2023|jobs');
+  ok('ticking two jobs and moving them files both under a year — the year before, by default',
+    bulkTo === '2023' && after24 === before24 - 2 && now23 === 2, `${bulkTo}: 2024 ${before24} → ${after24}, 2023 ${now23}`);
+  const listed = await page.$$eval('#home-years-body tbody tr', trs => trs.map(t => t.innerText.replace(/\s+/g, ' ')));
+  ok('  they stay listed, marked as moved, now counted by a year set by hand',
+    listed.length === 17 && listed.filter(t => /moved/.test(t)).length === 2
+    && listed.some(t => t.includes('Archive Field 01') && t.includes('2023') && t.includes('year set by hand')),
+    listed.slice(0, 2).join(' / '));
+  await page.waitForTimeout(900);   // a job's save is debounced
+  const saved = puts.filter(x => x.value && x.value['home-year'] === '2023');
+  ok('  each is saved with its year, and its dates are left as they were',
+    saved.length === 2 && saved.every(x => /^2024-0\d-15$/.test(x.value['end-date']) && x.value['start-date'] === ''),
+    JSON.stringify(saved.map(x => [x.key, x.value['home-year'], x.value['end-date']])));
+  await yearsRow('Archive Field 03').locator('select').selectOption('2025');
+  ok('a single job can be set from its own row', (await jobsIn('done|2025|jobs')) === 3, await jobsIn('done|2025|jobs'));
+  await yearsRow('Archive Field 01').locator('select').selectOption('');
+  ok('"From dates" puts a job back under the year its dates give',
+    (await jobsIn('done|2023|jobs')) === 1 && (await page.evaluate(() => getProj('old0')['home-year'])) === '');
+  await page.keyboard.press('Escape');
+  ok('Esc closes the panel', !(await page.locator('#home-years-overlay.open').count()));
+  await page.mouse.move(5, 5);
+
+  await settle('done|2024|year');
+  await page.click('.stage-years-btn');
+  const thisYear = String(await page.evaluate(() => new Date().getFullYear()));
+  ok('Set years on the section heading opens on every stage, this year',
+    (await filters()).join('|') === '|' + thisYear, (await filters()).join('|'));
+  await page.click('#home-years-overlay .home-years-foot .btn');
+  ok('  and Done closes it', !(await page.locator('#home-years-overlay.open').count()));
+
+  await page.evaluate(() => { perm.canEdit = false; renderHomeTab(); });
+  await click('done|2024|year');
+  ok('someone who cannot edit jobs is offered no Set years',
+    !(await page.locator('.stage-years-btn').count()) && !(await page.locator('.stage-tip.pinned .stage-tip-act').count()));
+  await close();
+  await page.evaluate(() => { perm.canEdit = true; renderHomeTab(); });
 
   ok('no page errors', !errors.length, errors.join(' | '));
   await ctx.close();

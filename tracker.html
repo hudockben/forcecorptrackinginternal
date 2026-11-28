@@ -1614,6 +1614,45 @@
     .stage-tip-table th.hl { color: var(--stage, var(--text)); }
     .stage-tip-table tfoot td { font-weight: 700; background: var(--surface2); }
     .stage-tip-sub { font-size: 0.64rem; color: var(--muted); font-weight: 400; }
+    /* Set years: the button on the section heading, the one in a year's
+       breakdown, and the panel itself. */
+    .stage-years-btn {
+      margin-left: 0.75rem; padding: 0.15rem 0.55rem; background: none; cursor: pointer;
+      border: 1px solid var(--border); border-radius: 3px; color: var(--text);
+      font-size: 0.6rem; letter-spacing: 0.1em; text-transform: uppercase;
+    }
+    .stage-years-btn:hover { border-color: var(--green); color: var(--green); }
+    /* At the top of a year's job list, so a long list does not bury it. */
+    .stage-tip-act { padding: 0 0.75rem 0.6rem; }
+    .home-years-modal { width: 920px; }
+    .home-years-modal .modal-body { overflow-x: auto; }
+    .home-years-intro { color: var(--muted); font-size: 0.78rem; line-height: 1.5; margin-bottom: 0.85rem; max-width: 72ch; }
+    .home-years-filters, .home-years-bulk {
+      display: flex; align-items: center; flex-wrap: wrap; gap: 0.55rem 1rem;
+      margin-bottom: 0.75rem; font-size: 0.78rem; color: var(--muted);
+    }
+    .home-years-bulk { padding: 0.55rem 0.75rem; background: var(--surface2); border: 1px solid var(--border); border-radius: 4px; color: var(--text); }
+    .home-years-filters select, .home-years-bulk select, .home-years-table select {
+      background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 3px;
+      padding: 0.2rem 0.35rem; font-size: 0.78rem; font-family: inherit;
+    }
+    .home-years-bulk .btn[disabled] { opacity: 0.45; cursor: default; }
+    .home-years-count { margin-left: auto; }
+    .home-years-table { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+    .home-years-table th, .home-years-table td {
+      border: 0; border-bottom: 1px solid var(--border); padding: 0.4rem 0.5rem; text-align: left; white-space: nowrap;
+    }
+    .home-years-table th { font-size: 0.58rem; font-weight: 500; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+    .home-years-table td:nth-child(2) { white-space: normal; min-width: 12rem; }
+    .home-years-table td.basis { color: var(--muted); font-size: 0.74rem; }
+    .home-years-table tr.moved td { background: rgba(34,197,94,0.07); }
+    .home-years-moved { color: var(--green); font-size: 0.7rem; font-weight: 600; margin-left: 0.4rem; }
+    .home-years-none { color: var(--muted); text-align: center; padding: 1rem; }
+    /* Done on the left: the Mathis bubble sits over every modal's bottom-right. */
+    .home-years-foot {
+      display: flex; align-items: center; justify-content: flex-start; gap: 1rem;
+      padding: 0.85rem 1.25rem; border-top: 1px solid var(--border); font-size: 0.78rem; color: var(--green);
+    }
 
     /* ── Project table ── */
     /* Still scrollable on narrow screens, but the scrollbar chrome is hidden —
@@ -5775,18 +5814,26 @@ function updateMobEntryBadge() {
 }
 
 /* The year a job counts under in the Home tab's stage-by-year breakdown, and
-   the date that put it there. Each stage reads the date that means something
-   for it, and an actual date (a daily entry) wins over a planned one wherever
-   the work has produced any:
-     done — the year it finished: last daily entry, else Projected Completion,
-            else Start Date.
-     ip   — the year it started:  first daily entry, else Start Date, else
-            Projected Completion.
+   the date that put it there. The job's own dates come first — the Start Date
+   and Projected Completion set on the Project Dashboard — and its daily
+   entries only where it has neither. Entries are a poor witness to the year:
+   one saved without a date is stamped by the server with the day it was
+   saved, so a job imported or keyed in late reads as that year's, whenever it
+   was built. The dates on the job are how the office says when it was.
+     done — the year it finished: Projected Completion, else Start Date, else
+            its last daily entry.
+     ip   — the year it started: Start Date, else Projected Completion, else
+            its first daily entry.
      aw   — the year it is set to start: Start Date, else Projected
-            Completion, else a first daily entry logged ahead of the start.
+            Completion, else a daily entry logged ahead of the start.
+   A year set by hand with Set years (p['home-year']) comes before all of
+   these: it is how the office files a job whose dates were never put right.
    { year, from, date }: `from` names the date that was read and `date` is it,
-   YYYY-MM-DD. All three are '' when the job carries no date at all. */
+   YYYY-MM-DD ('' for a year set by hand). All three are '' when the job
+   carries no date at all. */
 function _homeJobYear(p, stage) {
+  const set = String((p && p['home-year']) || '').trim();
+  if (/^\d{4}$/.test(set)) return { year: set, from: 'year set by hand', date: '' };
   let first = '', last = '';
   (p.dailyRows || []).forEach(r => {
     const d = _dailySortDate(r.date, '');
@@ -5796,9 +5843,7 @@ function _homeJobYear(p, stage) {
   });
   const FIRST = [first, 'first daily entry'], LAST = [last, 'last daily entry'];
   const START = [p['start-date'], 'Start Date'], END = [p['end-date'], 'Projected Completion'];
-  const picks = stage === 'done' ? [LAST, END, START]
-              : stage === 'ip'   ? [FIRST, START, END]
-              :                    [START, END, FIRST];
+  const picks = stage === 'done' ? [END, START, LAST] : [START, END, FIRST];
   for (const [d, from] of picks) {
     const m = /^(\d{4})-\d{2}-\d{2}/.exec(String(d || '').trim());
     if (m) return { year: m[1], from, date: m[0] };
@@ -5894,6 +5939,200 @@ function _stageTipAfterRender() {
   window.addEventListener('resize', () => _stageTipClose());
 })();
 
+/* The stage a job counts in on the Home tab: Completed (finished, or
+   substantially complete), In Progress or Awarded; null for the rest. */
+function _homeStageOf(p) {
+  const s = p['status'] || '';
+  return (projIsDone(p) || s === 'Substantially Complete') ? 'done'
+       : s === 'In Progress' ? 'ip'
+       : s === 'Awarded'     ? 'aw' : null;
+}
+
+/* What _homeJobYear read, as the breakdown and Set years show it:
+   "Projected Completion 09/30/2025", "year set by hand", "no dates set". */
+function _homeBasisText(b) {
+  if (!b || !b.from) return 'no dates set';
+  return b.date ? `${b.from} ${b.date.slice(5, 7)}/${b.date.slice(8, 10)}/${b.date.slice(0, 4)}` : b.from;
+}
+
+/* ── Jobs by stage & year: Set years ─────────────────────────────────────────
+   Jobs brought into the system late carry daily entries stamped with the day
+   they were saved, and putting each one's dates right, job by job, is slow.
+   This files them in one place, several at a time: it sets p['home-year'], the
+   year a job counts in on the Home tab, which _homeJobYear reads before any
+   date. The job's Start Date, Projected Completion and daily entries are left
+   as they are — they drive schedules, pace and deadline flags, and a year is
+   not a date. "From dates" clears it. Each change saves at once (saveProject)
+   and redraws Home behind the panel. A job moved while the panel is open
+   stays listed, marked, until the filters change, so the list does not jump
+   under the pointer. */
+const HOME_STAGE_LABEL = { done: 'Completed', ip: 'In Progress', aw: 'Awarded' };
+let _homeYears = null;   // { stage, year, checked: Set<id>, moved: Set<id>, bulkYear }
+
+const _homeProj = id => projectsList.find(p => String(p.id) === String(id));
+
+function _homeYearOptions() {
+  const now = new Date().getFullYear();
+  const ys = new Set();
+  for (let y = now + 1; y >= now - 6; y--) ys.add(String(y));
+  projectsList.forEach(p => {
+    const st = _homeStageOf(p);
+    const y  = st ? _homeJobYear(p, st).year : '';
+    if (y) ys.add(y);
+  });
+  return [...ys].sort((a, b) => b.localeCompare(a));
+}
+
+// The jobs the panel lists: those in the chosen stage and year, plus any moved
+// since the panel opened. Year '*' is every year; '' is the No date row.
+function _homeYearsRows() {
+  const hy = _homeYears;
+  return projectsList.map(p => {
+    const stage = _homeStageOf(p);
+    return stage ? { p, stage, basis: _homeJobYear(p, stage) } : null;
+  }).filter(r => r && (hy.moved.has(String(r.p.id))
+      || ((!hy.stage || r.stage === hy.stage) && (hy.year === '*' || r.basis.year === hy.year))))
+    .sort((a, b) => String(a.p['project-name'] || '').localeCompare(String(b.p['project-name'] || '')));
+}
+
+function openHomeYears(stage, year) {
+  if (!perm.canEdit) return;
+  _stageTipClose();
+  const now = String(new Date().getFullYear());
+  _homeYears = { stage: stage || '', year: year === undefined ? now : year,
+                 checked: new Set(), moved: new Set(), bulkYear: null };
+  let ov = document.getElementById('home-years-overlay');
+  if (!ov) {
+    ov = document.createElement('div');
+    ov.className = 'modal-overlay';
+    ov.id = 'home-years-overlay';
+    ov.innerHTML = `
+      <div class="modal home-years-modal" role="dialog" aria-label="Set the year jobs count in">
+        <div class="modal-header">
+          <h2>Set the year jobs count in</h2>
+          <button type="button" class="modal-close" aria-label="Close" onclick="closeHomeYears()">&times;</button>
+        </div>
+        <div class="modal-body" id="home-years-body"></div>
+        <div class="home-years-foot">
+          <button type="button" class="btn btn-green" onclick="closeHomeYears()">Done</button>
+          <span id="home-years-status"></span>
+        </div>
+      </div>`;
+    ov.addEventListener('click', e => { if (e.target === ov) closeHomeYears(); });
+    document.body.appendChild(ov);
+  }
+  _homeYearsRender();
+  ov.classList.add('open');
+}
+
+function closeHomeYears() {
+  const ov = document.getElementById('home-years-overlay');
+  if (ov) ov.classList.remove('open');
+  _homeYears = null;
+}
+document.addEventListener('keydown', e => { if (e.key === 'Escape' && _homeYears) closeHomeYears(); });
+
+function _homeYearsRender() {
+  const hy   = _homeYears; if (!hy) return;
+  const body = document.getElementById('home-years-body'); if (!body) return;
+  const keep  = body.scrollTop;
+  const rows  = _homeYearsRows();
+  const years = _homeYearOptions();
+  const ids   = rows.map(r => String(r.p.id));
+  [...hy.checked].forEach(id => { if (!ids.includes(id)) hy.checked.delete(id); });
+  const allOn = ids.length > 0 && ids.every(id => hy.checked.has(id));
+  // Moving out of a year, the year before it is the likeliest target.
+  const bulk  = hy.bulkYear != null ? hy.bulkYear
+              : /^\d{4}$/.test(hy.year) ? String(Number(hy.year) - 1) : String(new Date().getFullYear() - 1);
+  const yearOpts = sel => `<option value=""${sel === '' ? ' selected' : ''}>From dates</option>`
+    + years.map(y => `<option value="${y}"${y === sel ? ' selected' : ''}>${y}</option>`).join('');
+  const stageOpts = `<option value="">All stages</option>` + Object.entries(HOME_STAGE_LABEL)
+    .map(([k, l]) => `<option value="${k}"${k === hy.stage ? ' selected' : ''}>${l}</option>`).join('');
+  const filterYears = `<option value="*"${hy.year === '*' ? ' selected' : ''}>All years</option>`
+    + years.map(y => `<option value="${y}"${y === hy.year ? ' selected' : ''}>${y}</option>`).join('')
+    + `<option value=""${hy.year === '' ? ' selected' : ''}>No date</option>`;
+  const n = hy.checked.size;
+  body.innerHTML = `
+    <p class="home-years-intro">Choose the year a job counts in on the Home tab — tick several and move them together,
+      or set one at a time. Its Start Date, Projected Completion and daily entries are not changed.
+      <strong>From dates</strong> goes back to reading the job's dates.</p>
+    <div class="home-years-filters">
+      <label>Stage <select onchange="_homeYearsFilter('stage', this.value)">${stageOpts}</select></label>
+      <label>Counting in <select onchange="_homeYearsFilter('year', this.value)">${filterYears}</select></label>
+      <span class="home-years-count">${rows.length} job${rows.length === 1 ? '' : 's'}</span>
+    </div>
+    <div class="home-years-bulk">
+      <label><input type="checkbox"${allOn ? ' checked' : ''}${ids.length ? '' : ' disabled'} onchange="_homeYearsCheckAll(this.checked)"> Select all</label>
+      <span>Move ${n} ticked job${n === 1 ? '' : 's'} to</span>
+      <select id="home-years-bulk-year" onchange="if(_homeYears)_homeYears.bulkYear=this.value">${yearOpts(bulk)}</select>
+      <button type="button" class="btn btn-green"${n ? '' : ' disabled'} onclick="_homeYearsBulk()">Move</button>
+    </div>
+    <table class="home-years-table">
+      <thead><tr><th></th><th>Job</th><th>Stage</th><th>Counting in</th><th>Counted by</th><th>Set year</th></tr></thead>
+      <tbody>${rows.length ? rows.map(r => {
+        const id  = String(r.p.id);
+        const mov = hy.moved.has(id);
+        return `<tr${mov ? ' class="moved"' : ''}>
+          <td><input type="checkbox" data-id="${_cbEsc(id)}"${hy.checked.has(id) ? ' checked' : ''} onchange="_homeYearsCheck(this)"></td>
+          <td>${_cbEsc(r.p['project-name'] || 'Untitled Project')}</td>
+          <td>${HOME_STAGE_LABEL[r.stage]}</td>
+          <td class="yr">${r.basis.year || 'No date'}${mov ? '<span class="home-years-moved">&#10003; moved</span>' : ''}</td>
+          <td class="basis">${_homeBasisText(r.basis)}</td>
+          <td><select data-id="${_cbEsc(id)}" onchange="_homeYearsRowSet(this)">${yearOpts(String(r.p['home-year'] || ''))}</select></td>
+        </tr>`;
+      }).join('') : '<tr><td colspan="6" class="home-years-none">No jobs here.</td></tr>'}</tbody>
+    </table>`;
+  body.scrollTop = keep;
+  const status = document.getElementById('home-years-status');
+  if (status) status.textContent = hy.moved.size ? `${hy.moved.size} job${hy.moved.size === 1 ? '' : 's'} moved — saved` : '';
+}
+
+/* Files jobs under a year (four digits), or back to their dates (''). */
+function _homeYearsSet(ids, year) {
+  const hy = _homeYears;
+  if (!hy || !perm.canEdit) return;
+  const y = /^\d{4}$/.test(year) ? year : '';
+  ids.forEach(id => {
+    const p = _homeProj(id); if (!p) return;
+    p['home-year'] = y;
+    saveProject(p.id);
+    hy.moved.add(String(p.id));
+  });
+  if (activeTab === 'home') renderHomeTab();
+  _homeYearsRender();
+}
+
+function _homeYearsRowSet(sel) { _homeYearsSet([sel.dataset.id], sel.value); }
+
+function _homeYearsBulk() {
+  const hy = _homeYears; if (!hy || !hy.checked.size) return;
+  const sel = document.getElementById('home-years-bulk-year');
+  hy.bulkYear = sel ? sel.value : '';
+  const ids = [...hy.checked];
+  hy.checked.clear();
+  _homeYearsSet(ids, hy.bulkYear);
+}
+
+function _homeYearsFilter(key, value) {
+  const hy = _homeYears; if (!hy) return;
+  hy[key] = value;
+  hy.moved.clear();     // a new filter starts a fresh list
+  hy.checked.clear();
+  _homeYearsRender();
+}
+
+function _homeYearsCheck(cb) {
+  const hy = _homeYears; if (!hy) return;
+  if (cb.checked) hy.checked.add(cb.dataset.id); else hy.checked.delete(cb.dataset.id);
+  _homeYearsRender();
+}
+
+function _homeYearsCheckAll(on) {
+  const hy = _homeYears; if (!hy) return;
+  _homeYearsRows().forEach(r => { const id = String(r.p.id); if (on) hy.checked.add(id); else hy.checked.delete(id); });
+  _homeYearsRender();
+}
+
 function renderHomeTab() {
   if (window.innerWidth <= 768) renderMobileProjCards();
   updateMobEntryBadge();
@@ -5921,12 +6160,7 @@ function renderHomeTab() {
   // A job counts in its one year whole — every daily entry, whatever its date.
   // Each bucket also keeps a record per job it summed, which the hover
   // breakdown lists, so a figure can always show what it added up.
-  const homeStageOf = p => {
-    const s = p['status'] || '';
-    return (projIsDone(p) || s === 'Substantially Complete') ? 'done'
-         : s === 'In Progress' ? 'ip'
-         : s === 'Awarded'     ? 'aw' : null;
-  };
+  const homeStageOf = _homeStageOf;
   const stageBucket = () => ({ jobs: 0, contract: 0, bid: 0, actual: 0, profit: 0, profitBase: 0,
                                gp: 0, gpJobs: 0, subst: 0, noContract: 0, list: [] });
   const stageYears  = { done: {}, ip: {}, aw: {} };
@@ -6110,7 +6344,7 @@ function renderHomeTab() {
   const STAGES = [
     { key: 'done', label: 'Completed', color: statusTextColor('Complete'),
       basis: 'by year finished',
-      yearTip: 'The year the job finished: its last daily entry, else its Projected Completion, else its Start Date.',
+      yearTip: 'The year the job finished: its Projected Completion, else its Start Date, else its last daily entry — unless a year is set for it with Set years.',
       none: 'No completed jobs yet.',
       cols: [['jobs', 'Jobs'], ['contract', 'Contract'], ['bid', 'Bid Budget'], ['actual', 'Actual Cost'],
              ['pct', '% of Budget'], ['variance', 'Variance'], ['profit', 'GP'], ['margin', 'Margin']],
@@ -6126,7 +6360,7 @@ function renderHomeTab() {
       ] },
     { key: 'ip', label: 'In Progress', color: statusTextColor('In Progress'),
       basis: 'by year started',
-      yearTip: 'The year the job started: its first daily entry, else its Start Date, else its Projected Completion.',
+      yearTip: 'The year the job started: its Start Date, else its Projected Completion, else its first daily entry — unless a year is set for it with Set years.',
       none: 'Nothing in progress.',
       cols: [['jobs', 'Jobs'], ['contract', 'Contract'], ['bid', 'Bid Budget'], ['actual', 'Actual Spend'],
              ['pct', '% Spent'], ['variance', 'Variance'], ['profit', 'Proj. Profit'], ['margin', 'Margin'],
@@ -6144,7 +6378,7 @@ function renderHomeTab() {
       ] },
     { key: 'aw', label: 'Awarded', color: statusTextColor('Awarded'),
       basis: 'by scheduled start',
-      yearTip: 'The year the job is set to start: its Start Date, else its Projected Completion, else a daily entry logged ahead of the start.',
+      yearTip: 'The year the job is set to start: its Start Date, else its Projected Completion, else a daily entry logged ahead of the start — unless a year is set for it with Set years.',
       none: 'Nothing awarded and waiting.',
       cols: [['jobs', 'Jobs'], ['contract', 'Contract'], ['bid', 'Bid Budget'], ['profit', 'Proj. Profit'], ['margin', 'Margin']],
       tiles: t => [
@@ -6199,7 +6433,7 @@ function renderHomeTab() {
     </section>`;
   };
   const stageHTML = projectsList.length === 0 ? '' : `
-    <p class="home-section-title">Jobs by Stage &amp; Year${atRiskHTML}<span class="stage-hint">Hover or tap any figure to see how it adds up</span></p>
+    <p class="home-section-title">Jobs by Stage &amp; Year${atRiskHTML}<span class="stage-hint">Hover or tap any figure to see how it adds up</span>${perm.canEdit ? '<button type="button" class="stage-years-btn" onclick="openHomeYears()">Set years&hellip;</button>' : ''}</p>
     <div class="stage-stack">${STAGES.map(stageCardHTML).join('')}
     </div>`;
 
@@ -6210,13 +6444,12 @@ function renderHomeTab() {
   const $0     = v => '$' + fmt(v, 0);
   const nz     = v => Math.abs(v) >= 0.5;     // shows as something other than $0
   const sumOf  = (list, f) => list.reduce((s, j) => s + (f(j) || 0), 0);
-  const fmtD   = d => `${d.slice(5, 7)}/${d.slice(8, 10)}/${d.slice(0, 4)}`;
   const byYearAsc  = (a, b) => (a === '' ? 1 : b === '' ? -1 : a.localeCompare(b));
   const byYearDesc = (a, b) => (a === '' ? 1 : b === '' ? -1 : b.localeCompare(a));
   const headOf = (st, k, fallback) => (st.cols.find(([c]) => c === k) || [])[1] || fallback;
   const TIP_COL = {
     year:     { h: () => 'Year',       cell: j => j.basis.year || 'No date', tot: () => '' },
-    basis:    { h: () => 'Counted by', cell: j => j.basis.from ? `${j.basis.from} ${fmtD(j.basis.date)}` : 'no dates set', tot: () => '' },
+    basis:    { h: () => 'Counted by', cell: j => _homeBasisText(j.basis), tot: () => '' },
     contract: { h: st => headOf(st, 'contract', 'Contract'), cell: j => j.profitBase ? $0(j.contract) : '—', tot: c => $0(c.contract) },
     bidLines: { h: () => 'Bid Lines',  cell: j => $0(j.bidLines), tot: c => $0(sumOf(c.list, j => j.bidLines)) },
     bidCOs:   { h: () => 'Change Orders',
@@ -6308,6 +6541,7 @@ function renderHomeTab() {
       <div class="stage-tip-head"><span>${st.label} · ${all ? 'all years' : (yr || 'no date')}</span>${full ? '<button type="button" class="stage-tip-close" aria-label="Close">&#10005;</button>' : ''}</div>
       <div class="stage-tip-fig"><span>${name}</span><strong>${CELL[f](c)}</strong></div>
       <div class="stage-tip-how">${HOW[f](st, all)}</div>
+      ${f === 'jobs' && full && perm.canEdit ? `<div class="stage-tip-act"><button type="button" class="btn btn-green" onclick="openHomeYears('${sk}','${yr}')">Set years for ${c.jobs === 1 ? 'this job' : `these ${c.jobs} jobs`}</button></div>` : ''}
       <table class="stage-tip-table">
         <thead><tr><th>Job</th>${cols.map(k => `<th${k === hl ? ' class="hl"' : ''}>${TIP_COL[k].h(st)}</th>`).join('')}</tr></thead>
         <tbody>${shown.map(j => `<tr><td>${nameCell(j, f)}</td>${cols.map(k => td(k, TIP_COL[k].cell(j))).join('')}</tr>`).join('')}</tbody>
@@ -7271,6 +7505,14 @@ let _projectsLoaded = false;
 // read the whole history, and a person who has had the page open a few
 // seconds has it — so a scheduled report (auto-report.js) waits for it too.
 let _drBackfillDone = Promise.resolve();
+// Settles the first time loadProjects has the jobs and their daily rows in
+// hand: the job records and the last 90 days of rows. Its recovery passes come
+// after that, and read the old single job list, every daily row the company
+// has and every stored job key, one after another, which can take many
+// seconds. The Home tab is drawn from this instead of waiting for them (see
+// _bootReady).
+let _jobRowsInResolve = () => {};
+const _jobRowsIn = new Promise(resolve => { _jobRowsInResolve = resolve; });
 let _lastProjIndexTs = 0;
 let projSearch   = '';
 let projPage     = 0;
@@ -7361,6 +7603,25 @@ function _retryLoadProjects() {
   }, _PROJ_RETRY_MS[Math.min(_projRetries, _PROJ_RETRY_MS.length - 1)]);
 }
 
+// The job figures on screen drawn again from the jobs and daily rows in hand:
+// the Home tab, or the Project Dashboard for a login that starts there. Boot
+// calls it once the jobs and their recent rows are in, and the daily-row
+// backfill once the history older than 90 days lands. Not while a box has the
+// caret — the redraw would take what is being typed — but once it is left.
+let _jobFiguresTimer = null;
+function _redrawJobFigures() {
+  clearTimeout(_jobFiguresTimer);
+  _jobFiguresTimer = null;
+  if (_AUTO_REPORT) return;
+  const el = document.activeElement;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT')) {
+    _jobFiguresTimer = setTimeout(_redrawJobFigures, 1000);
+    return;
+  }
+  if (activeTab === 'home') renderHomeTab();
+  if (activeTab === 'info') renderProjectInfoComputed();
+}
+
 // The report robot boots once and nobody sees its page: a failed read is
 // tried again a few times straight away, and if none works the boot fails
 // (_bootReady, and so AR.ready, reject) and the run is reported as failed.
@@ -7433,6 +7694,8 @@ async function loadProjects() {
     }
     // Load daily rows from DB (populates p.dailyRows; migrates any still-embedded rows)
     await _loadAndMigrateDailyRows();
+    // What the Home tab draws from is in; the passes below need not hold it.
+    _jobRowsInResolve();
 
     // The report robot stops here. The recovery passes below mend a person's
     // project list by writing it back, which the robot may not do; two of
@@ -7706,8 +7969,11 @@ async function _loadAndMigrateDailyRows(opts) {
       if (olderRows.length > recentRows.length && !(cached && _projectsLoaded)) {
         _distributeRows(olderRows, { merge: true });
         projectsList.forEach(p => p._drFullLoaded = true);
-        // Re-render if user is viewing schedule or a project
-        if (!_AUTO_REPORT && typeof renderCurrentTab === 'function') renderCurrentTab();
+        // The job figures on screen take the older rows in. This used to call
+        // a renderCurrentTab() the page never had, so nothing was redrawn: the
+        // Home tab kept the last 90 days, and a job finished before then read
+        // $0 actual cost until the tab was left and opened again.
+        _redrawJobFigures();
       }
     } catch (err) {
       console.warn('[daily-rows] backfill error:', err.message);
@@ -34192,6 +34458,11 @@ document.addEventListener('input', e => {
     const _r = p.dailyRows[i];
     const _isInj = _r.timesheet_entry_id != null && _r.timesheet_entry_id !== '';
     if (_isInj && !INJECTED_EDITABLE_FIELDS.has(f)) return;
+    // A daily entry always has a date. The server saves a blank one as the
+    // day it was saved, so clearing a date quietly moved the row to today —
+    // blank on screen until the next reload, today's date after it. A cleared
+    // date is not taken; the change handler puts the row's date back.
+    if (f === 'date' && !el.value) return;
     const _prevSubCode = p.dailyRows[i].sub_code;
     // Captured for the same reason as the sub code above: the haul re-pricing
     // below has to know whether this edit ENTERED or LEFT a Haul field type,
@@ -34339,6 +34610,13 @@ document.addEventListener('change', e => {
   const _r = p.dailyRows[i];
   const _isInj = _r.timesheet_entry_id != null && _r.timesheet_entry_id !== '';
   if (_isInj && !INJECTED_EDITABLE_FIELDS.has(el.dataset.f)) return;
+  // A cleared date is not saved (see the input handler): the cell gets the
+  // row's date back, and the save indicator says why.
+  if (el.dataset.f === 'date' && !el.value) {
+    el.value = p.dailyRows[i].date || '';
+    _drShowSave('error', "Date can't be blank — left as it was");
+    return;
+  }
   if (p.dailyRows[i][el.dataset.f] !== el.value) {
     p.dailyRows[i][el.dataset.f] = el.value;
   }
@@ -34496,13 +34774,35 @@ const _bootReady = (async () => {
   } catch {}
 
   // ── Load all data sources in parallel (none depend on each other) ──
+  const projectsRead  = _AUTO_REPORT ? _loadProjectsForReport() : loadProjects();
+  const costRowsRead  = loadCostRows();
+  const inventoryRead = loadInventoryEntries();
+  // The Home tab is drawn from the jobs and their daily rows, the cost rows,
+  // the infill inventory and which bid lines each job's schedule has closed
+  // out, and it is drawn as soon as those are in. It used to wait for every
+  // read here, and for loadProjects' recovery passes, which read every daily
+  // row again. Until then it was blank, or showed this browser's copy of the
+  // jobs, which holds no daily rows, so each job read $0 spent, for many
+  // seconds, while leaving the tab and opening it again showed the figures.
+  const homeDrawn = (async () => {
+    await Promise.race([_jobRowsIn, projectsRead]);
+    // Needs the project ids, so it can't join the reads below. One request, and
+    // projected cost reads the same on the home page as inside a project.
+    await _loadAllBidCsCompletion();
+    await costRowsRead;
+    await inventoryRead;
+    // Not one of the reads: a draw that fails must not stop the boot (the
+    // replay of unsaved writes below), which draws the tab again anyway.
+    try { _redrawJobFigures(); } catch (err) { console.error('[home] first draw failed:', err); }
+  })();
   await Promise.all([
+    homeDrawn,
     loadLists(),
-    loadCostRows(),
-    _AUTO_REPORT ? _loadProjectsForReport() : loadProjects(),
+    costRowsRead,
+    projectsRead,
     loadPurchaseOrders(),
     loadTruckingEntries(),
-    loadInventoryEntries(),
+    inventoryRead,
     // The CRM is no report's; the robot leaves it out.
     ...(_AUTO_REPORT ? [] : [
       loadCrmPeople(),
@@ -34521,9 +34821,10 @@ const _bootReady = (async () => {
   // a person's, on their own device; the robot has none and may write none.
   if (!_AUTO_REPORT) _walReplay().then(() => _walStartPeriodicSync());
 
-  // Needs the project ids, so it can't join the batch above. One request, and
-  // projected cost reads the same on the home page as inside a project.
-  await _loadAllBidCsCompletion();
+  // The schedules were read with the jobs in hand when the Home tab was drawn.
+  // A job one of loadProjects' recovery passes brought back since has none
+  // read yet: read its own (normally there is no such job).
+  await Promise.all(projectsList.filter(p => p && p.id && !_bidCsComplete[p.id]).map(p => _loadBidCsCompletion(p.id)));
 
   // Each report draws its own; the robot draws none of the tabs.
   if (_AUTO_REPORT) return;
