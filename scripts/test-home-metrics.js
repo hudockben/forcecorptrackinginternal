@@ -276,6 +276,7 @@ function aggregateStages(file, projects) {
      ${extractFunction(src, 'gpEarnedToDate')}
      ${extractFunction(src, '_dailySortDate')}
      ${extractFunction(src, '_homeJobYear')}
+     ${extractFunction(src, '_homeStageOf')}
      ${home.slice(from, to)}
      return { stageTotals, stageYears };`
   )(
@@ -307,19 +308,20 @@ const dated = (o) => {
   return j;
 };
 const STAGED = [
-  // In progress: A started 2026; B was set to start in 2026 but its first
-  // daily entry is 2025, and the work done wins over the plan; the unpriced
-  // one has undated rows only, so it reads its Start Date.
+  // In progress: A has no dates on the job, so its first daily entry sets the
+  // year; B's Start Date sets it, though its entries run on into 2026; the
+  // unpriced one has undated rows only and reads its Start Date.
   dated({ id: 'a', name: 'Live A', status: 'In Progress', contract: 500000, bid: 400000, actual: 150000, projected: 420000,
           days: ['2026-04-02', '2026-06-10'] }),
   dated({ id: 'b', name: 'Live B', status: 'In Progress', contract: 300000, bid: 250000, actual: 100000, projected: 240000,
-          start: '2026-03-01', days: ['2025-10-01', '2026-05-01'], costs: [60000, 40000] }),
+          start: '2025-09-15', days: ['2025-10-01', '2026-05-01'], costs: [60000, 40000] }),
   dated({ id: 'c', name: 'Live Unpriced', status: 'In Progress', contract: 0, bid: 90000, actual: 20000, projected: 90000,
           start: '2026-05-01' }),
-  // Completed: A finished in 2025 by its last entry, whatever its plan said;
+  // Completed: A was imported this year, every entry stamped 2026 by the
+  // server, and its Projected Completion says 2025 — which is what counts;
   // B has no dated rows and reads its Projected Completion.
   dated({ id: 'd', name: 'Done A', status: 'Complete', contract: 200000, bid: 180000, actual: 170000, projected: 170000,
-          end: '2026-06-01', days: ['2025-05-01', '2025-08-30'] }),
+          end: '2025-08-30', days: ['2026-03-15', '2026-03-16'] }),
   dated({ id: 'e', name: 'Done B', status: 'Complete', contract: 100000, bid: 95000, actual: 110000, projected: 110000,
           end: '2026-07-01' }),
   // Field work done, last costs still landing: it sits with Completed, at its
@@ -382,10 +384,10 @@ for (const file of STAGE_FILES) {
   assert('Total Projected Profit', near(T.ip.profit + T.aw.profit, 251111));
 
   console.log('\n[each stage breaks down by year]');
-  assert('In Progress: 2026 holds A and the unpriced job, 2025 holds B (its first entry beats its plan)',
+  assert('In Progress: 2026 holds A (its first entry; no dates on the job) and the unpriced job, 2025 holds B (its Start Date)',
     Y.ip['2026']?.jobs === 2 && Y.ip['2025']?.jobs === 1 && Y.ip['2025']?.list[0].name === 'Live B',
     JSON.stringify(Object.keys(Y.ip)));
-  assert('Completed: 2025 by A\'s last entry, 2026 for B\'s plan and the nearly-done job',
+  assert('Completed: 2025 for A — its Projected Completion outweighs entries stamped 2026 — and 2026 for B and the nearly-done job',
     Y.done['2025']?.list.map(j => j.name).join() === 'Done A' && Y.done['2026']?.jobs === 2,
     JSON.stringify(Object.keys(Y.done)));
   assert('Awarded: 2027 by its Start Date, and a job with no dates under ""',
@@ -414,7 +416,9 @@ for (const file of STAGE_FILES) {
   const rec = id => T.ip.list.concat(T.done.list, T.aw.list).find(j => j.id === id);
   assert('a year row and its stage total share the same record', Y.ip['2025'].list[0] === rec('b'));
   assert('a record says which date put it in its year',
-    rec('b').basis.year === '2025' && rec('b').basis.from === 'first daily entry' && rec('b').basis.date === '2025-10-01'
+    rec('b').basis.year === '2025' && rec('b').basis.from === 'Start Date' && rec('b').basis.date === '2025-09-15'
+    && rec('d').basis.from === 'Projected Completion' && rec('d').basis.date === '2025-08-30'
+    && rec('a').basis.from === 'first daily entry' && rec('s').basis.from === 'last daily entry'
     && rec('e').basis.from === 'Projected Completion' && rec('g').basis.from === 'Start Date'
     && rec('i').basis.year === '' && rec('i').basis.from === '', JSON.stringify(rec('b').basis));
   assert('  and how its cost splits across the years its entries are dated in',
@@ -439,26 +443,50 @@ for (const file of STAGE_FILES) {
   const basisOf = jobYear(file);
   const yr = (p, stage) => basisOf(p, stage).year;
   const rows = (...ds) => ds.map(date => ({ date }));
-  assert('Completed reads its last daily entry over its plan',
-    yr({ dailyRows: rows('2025-03-01', '2026-01-10'), 'end-date': '2025-12-01' }, 'done') === '2026');
-  assert('  then its Projected Completion, then its Start Date',
-    yr({ 'end-date': '2024-11-01', 'start-date': '2023-05-01' }, 'done') === '2024'
-    && yr({ 'start-date': '2023-05-01' }, 'done') === '2023');
-  assert('In Progress reads its first daily entry over its plan',
-    yr({ dailyRows: rows('2026-05-01', '2025-10-03'), 'start-date': '2026-04-01' }, 'ip') === '2025');
-  assert('  then its Start Date, then its Projected Completion',
-    yr({ 'start-date': '2026-04-01', 'end-date': '2027-01-01' }, 'ip') === '2026'
-    && yr({ 'end-date': '2027-01-01' }, 'ip') === '2027');
-  assert('Awarded reads its Start Date, then its Projected Completion',
+  assert('Completed reads its Projected Completion over its daily entries',
+    yr({ dailyRows: rows('2025-03-01', '2026-01-10'), 'end-date': '2025-12-01' }, 'done') === '2025');
+  assert('  then its Start Date, then its last daily entry',
+    yr({ 'start-date': '2023-05-01', dailyRows: rows('2026-01-10') }, 'done') === '2023'
+    && yr({ dailyRows: rows('2025-03-01', '2026-01-10') }, 'done') === '2026');
+  assert('In Progress reads its Start Date over its daily entries',
+    yr({ dailyRows: rows('2026-05-01', '2025-10-03'), 'start-date': '2026-04-01' }, 'ip') === '2026');
+  assert('  then its Projected Completion, then its first daily entry',
+    yr({ 'end-date': '2027-01-01', dailyRows: rows('2026-05-01') }, 'ip') === '2027'
+    && yr({ dailyRows: rows('2026-05-01', '2025-10-03') }, 'ip') === '2025');
+  assert('Awarded reads its Start Date, then its Projected Completion, then a daily entry',
     yr({ 'start-date': '2027-03-01', 'end-date': '2028-08-01' }, 'aw') === '2027'
-    && yr({ 'end-date': '2028-08-01' }, 'aw') === '2028');
+    && yr({ 'end-date': '2028-08-01', dailyRows: rows('2026-02-01') }, 'aw') === '2028'
+    && yr({ dailyRows: rows('2026-02-01') }, 'aw') === '2026');
+  // The office's case: jobs brought in this year, every entry stamped with the
+  // day it was saved, and the real year set on the job's own dates.
+  assert('entries stamped this year do not outvote the dates on the job',
+    yr({ dailyRows: rows('2026-03-15', '2026-03-16'), 'end-date': '2024-10-01', 'start-date': '2024-05-01' }, 'done') === '2024'
+    && yr({ dailyRows: rows('2026-03-15'), 'start-date': '2025-04-01' }, 'ip') === '2025');
   assert('an imported M/D/YYYY entry still reads', yr({ dailyRows: rows('10/3/2025') }, 'ip') === '2025');
   assert('a blank daily date is skipped, not read as today',
     yr({ dailyRows: rows('', '2024-06-01') }, 'done') === '2024');
   assert('no dates at all gives ""', yr({}, 'aw') === '' && yr({ dailyRows: rows('') }, 'done') === '');
-  const b1 = basisOf({ dailyRows: rows('10/3/2025', '2026-02-01'), 'start-date': '2026-04-01' }, 'ip');
+  const b1 = basisOf({ dailyRows: rows('10/3/2025', '2026-02-01') }, 'ip');
   assert('it names the date it read, in ISO form',
     b1.from === 'first daily entry' && b1.date === '2025-10-03', JSON.stringify(b1));
+  const b3 = basisOf({ dailyRows: rows('2026-03-15'), 'start-date': '2025-04-01' }, 'ip');
+  assert('  the job\'s own date when it has one', b3.from === 'Start Date' && b3.date === '2025-04-01', JSON.stringify(b3));
+  // Set years files a job under a year without touching any of its dates.
+  assert('a year set by hand outranks every date',
+    yr({ 'home-year': '2024', 'end-date': '2026-01-01', 'start-date': '2025-12-01', dailyRows: rows('2026-05-01') }, 'done') === '2024'
+    && yr({ 'home-year': '2025', 'start-date': '2026-04-01' }, 'ip') === '2025');
+  const b4 = basisOf({ 'home-year': '2024', 'end-date': '2026-01-01' }, 'done');
+  assert('  and says so', b4.from === 'year set by hand' && b4.date === '', JSON.stringify(b4));
+  assert('  a blank or malformed one is ignored',
+    yr({ 'home-year': '', 'end-date': '2025-03-01' }, 'done') === '2025'
+    && yr({ 'home-year': '25', 'end-date': '2025-03-01' }, 'done') === '2025'
+    && yr({ 'home-year': 'abcd', 'start-date': '2023-03-01' }, 'ip') === '2023');
+  const handSet = aggregateStages(file, [dated({ id: 'hs', name: 'Hand Set', status: 'Complete', contract: 1000,
+    bid: 900, actual: 800, projected: 800, end: '2026-02-01', days: ['2026-02-01'] })].map(j => ({ ...j, 'home-year': '2023' })));
+  assert('a job filed under a year by hand counts there, whatever its dates say',
+    handSet.stageYears.done['2023']?.jobs === 1 && !handSet.stageYears.done['2026']
+    && handSet.stageYears.done['2023'].list[0].basis.from === 'year set by hand',
+    JSON.stringify(Object.keys(handSet.stageYears.done)));
   const b2 = basisOf({ 'end-date': '2027-08-01' }, 'aw');
   assert('  whichever date that was', b2.from === 'Projected Completion' && b2.date === '2027-08-01', JSON.stringify(b2));
 
@@ -582,6 +610,26 @@ for (const file of FILES) {
       && /`;\n  _stageTipAfterRender\(\);\n  loadDeadlines\(\);/.test(home));
     const tipCode = home.slice(home.indexOf('// ── How each figure was compiled'), home.indexOf('// ── Status bar widths'));
     assert('  job names reach it escaped', tipCode.includes('_cbEsc(j.name)') && !/\$\{j\.name\}/.test(tipCode));
+
+    // Set years files jobs under a year in bulk. It writes the hand-set year
+    // and saves the job, and touches no date: Start Date, Projected
+    // Completion and daily entries drive schedules, pace and deadline flags.
+    const setYears = extractFunction(src, '_homeYearsSet');
+    assert('Set years writes the hand-set year and saves the job — and no date',
+      setYears.includes("p['home-year'] = y;") && setYears.includes('saveProject(p.id)')
+      && !/start-date|end-date|dailyRows|\.date\b/.test(setYears), setYears.slice(0, 200));
+    assert('  only for those who may edit jobs',
+      extractFunction(src, 'openHomeYears').includes('if (!perm.canEdit) return;') && setYears.includes('perm.canEdit')
+      && home.includes('${perm.canEdit ? \'<button type="button" class="stage-years-btn"')
+      && home.includes("f === 'jobs' && full && perm.canEdit"));
+    assert('  and the Home tab reads the stages from the one place Set years does',
+      home.includes('const homeStageOf = _homeStageOf;'));
+
+    // A daily entry always has a date: a cleared one is not taken, because the
+    // server would save it as the day it was saved.
+    assert('a cleared daily date is neither taken nor saved',
+      src.includes("    if (f === 'date' && !el.value) return;")
+      && /if \(el\.dataset\.f === 'date' && !el\.value\) \{\s*\n\s*el\.value = p\.dailyRows\[i\]\.date \|\| '';/.test(src));
 
     const agg = home.slice(home.indexOf('  const homeStageOf'), home.indexOf('  const allDaily'));
     assert('  the aggregation projects through one memoised call',
