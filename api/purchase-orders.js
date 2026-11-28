@@ -262,6 +262,15 @@ module.exports = async (req, res) => {
 
     // ── PUT (full sync) ───────────────────────────────────────────────────
     if (req.method === 'PUT') {
+      // Writing the list takes a role that may change orders — the check POST
+      // makes, and the one the tabs make before offering an edit. A view-only
+      // or sales account got through on division access alone: its copy was
+      // stored as sent, and the cost rows its links named were reconciled
+      // against it — re-pointed, re-coded, or swept away with an order it
+      // left out.
+      if (!poCapabilities(payload, division).canUpload) {
+        return res.status(403).json({ error: 'You do not have permission to change purchase orders' });
+      }
       const body = req.body || {};
       const { purchaseOrders } = body;
       if (!Array.isArray(purchaseOrders)) {
@@ -1265,6 +1274,7 @@ async function _syncPOs(sql, companyCode, division, list) {
     await sql`
       DELETE FROM daily_tracking
       WHERE company_code = ${companyCode} AND row_id = ANY(${orphanIds})
+        AND division = ${division} AND timesheet_entry_id IS NULL
     `;
   }
 

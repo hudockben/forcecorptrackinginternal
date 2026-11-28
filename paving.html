@@ -7638,8 +7638,27 @@ function _migratePOs(list = purchaseOrders) {
   });
 }
 
-function savePurchaseOrders() {
+// How long a save waits for the write of a row this tab raised for one of its
+// deliveries (savePurchaseOrders). A write that never settles must not hold
+// every save back, so after this the save goes as it always did.
+const _PO_ROW_WRITE_WAIT_MS = 5000;
+function savePurchaseOrders(afterRowWrites) {
   if (_poSaving) { _poSaveAgain = true; return; }
+  // A row this tab raised for a delivery — its first one, or one on the job it
+  // was moved to — is written beside the save that links it. A save landing
+  // first found no row behind the link: when the merge replaced it with one
+  // purchasing had raised, its delete missed, the row landed afterwards with
+  // nothing naming it, and it came back on the order as a second delivery. So
+  // the save waits for those writes first, for a few seconds at most.
+  if (!afterRowWrites && typeof _drRowWrites !== 'undefined' && typeof _drWaitForWrites === 'function') {
+    const own = [..._poLinkChanges.values()].filter(id => id && _drRowWrites[id]);
+    if (own.length) {
+      _poSaving = true;
+      Promise.race([_drWaitForWrites(own), new Promise(ok => setTimeout(ok, _PO_ROW_WRITE_WAIT_MS))])
+        .then(() => { _poSaving = false; _poSaveAgain = false; savePurchaseOrders(true); });
+      return;
+    }
+  }
   _poSaving = true;
   let sent;
   try {
@@ -14627,7 +14646,17 @@ function exportProjectPOsCSV(projId) {
       });
     }
   });
-  const csv = rows.map(r => r.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(',')).join('\n');
+  // Quoting makes the file parse; it does not stop a spreadsheet EVALUATING a
+  // field that begins with =, +, - or @ — a title, invoice # or receiver typed
+  // on purchasing reaches every job a split order books to. Defused as
+  // exportPOCSV does: a leading apostrophe, numbers left alone.
+  const NUMERIC = /^-?\d+(\.\d+)?([eE][-+]?\d+)?$/;
+  const cell = v => {
+    let t = String(v == null ? '' : v);
+    if (/^[=+\-@\t\r]/.test(t) && !NUMERIC.test(t)) t = "'" + t;
+    return '"' + t.replace(/"/g, '""') + '"';
+  };
+  const csv = rows.map(r => r.map(cell).join(',')).join('\n');
   const a = document.createElement('a');
   a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
   const projName = (proj && proj['project-name']) ? proj['project-name'].replace(/[^a-z0-9]/gi, '_') : projId;

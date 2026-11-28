@@ -1551,12 +1551,40 @@ async function unmirrorPO(sql, companyCode, poId) {
 // whole order instead. Same end state, and idempotent: re-saving an unchanged
 // order rewrites the same values.
 
-async function deletePORows(sql, companyCode, rowIds) {
+async function deletePORows(sql, companyCode, rowIds, divisions) {
   const ids = (rowIds || []).map(String).filter(id => id && !isInjectedRowId(id));
   if (!ids.length) return 0;
+  // Only where the order's rows can be: its division (and, for a move, the one
+  // it left). A link is an id, and an id named on an order — planted there, or
+  // gone stale — must not reach another division's rows, or a timesheet's.
+  const divs = (Array.isArray(divisions) ? divisions : [divisions]).filter(Boolean).map(String);
+  if (!divs.length) return 0;
   const gone = await sql`
     DELETE FROM daily_tracking
     WHERE company_code = ${companyCode} AND row_id = ANY(${ids})
+      AND division = ANY(${divs}) AND timesheet_entry_id IS NULL
+    RETURNING row_id
+  `;
+  return gone.length;
+}
+
+/**
+ * Remove rows a save found another save's copy of the order naming, that
+ * proved to be this order's: this division, on one of `jobs`, carrying one of
+ * the order's numbers, a material row with no timesheet behind it — the
+ * predicate the full-list PUT holds its superseded rows to. Anything else is
+ * not this order's to delete, whatever a stored link called it.
+ */
+async function deleteOrderRows(sql, { companyCode, division, rowIds, jobs, poNums }) {
+  const ids = [...new Set((rowIds || []).map(String).filter(id => id && !isInjectedRowId(id)))];
+  const js = [...new Set((jobs || []).filter(Boolean).map(String))];
+  const nums = [...new Set((poNums || []).map(n => _txt(n)))];
+  if (!ids.length || !js.length || !nums.length) return 0;
+  const gone = await sql`
+    DELETE FROM daily_tracking
+    WHERE company_code = ${companyCode} AND division = ${division} AND row_id = ANY(${ids})
+      AND project_id = ANY(${js}) AND COALESCE(po_num, '') = ANY(${nums})
+      AND field_type = 'Material' AND timesheet_entry_id IS NULL
     RETURNING row_id
   `;
   return gone.length;
@@ -2041,6 +2069,9 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
   // This call's own rows for deliveries whose link it gave up to another
   // writer's: deleted once the order is stored. Worked out on each attempt.
   let ceded = [];
+  // The jobs and numbers of the copy being written over: a superseded row was
+  // raised under them.
+  let supersededJobs = [], supersededNums = [];
   // The division move syncPOCostRows tests for, recomputed here because it is
   // local to that function. A move of a JOB is judged per delivery below, the
   // same way: the order's own job moving moves the deliveries on it, a split's
@@ -2160,6 +2191,8 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
     // does not, on one of the order's jobs — another save's row for a delivery
     // this save moved or re-figured itself. It goes once this is stored.
     superseded = supersededRowIds(list[idx], po);
+    supersededJobs = poProjectIds(list[idx]);
+    supersededNums = [list[idx].po_number];
 
     // Replaced in place. The purchase-order tables sort by the time in the
     // order's id now, but an order whose id carries no time still falls back
@@ -2180,7 +2213,7 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
     // names and the job still needs; deleting it turned a failed save into a
     // job quietly losing its material cost, every time.
     if (rows.createdIds && rows.createdIds.length) {
-      try { await deletePORows(sql, companyCode, rows.createdIds); }
+      try { await deletePORows(sql, companyCode, rows.createdIds, [division]); }
       catch (err) { console.error('[po-sync] could not roll back cost rows:', err.message); }
     }
     return { ok: false, reason: 'conflict' };
@@ -2188,8 +2221,15 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
 
   // The order is stored, so the rows its old deliveries left behind can go.
   let removed = 0;
-  try { removed = await deletePORows(sql, companyCode, (rows.staleIds || []).concat(lateStale, superseded, ceded)); }
+  try { removed = await deletePORows(sql, companyCode, (rows.staleIds || []).concat(lateStale), [division, prevDivision]); }
   catch (err) { console.error('[po-sync] could not clear replaced cost rows:', err.message); }
+  // Another save's rows this one superseded (supersededRowIds), and its own
+  // rows for deliveries it gave up to another save's link: ids read off a
+  // stored copy, so held to being this order's rows before they go.
+  try {
+    removed += await deleteOrderRows(sql, { companyCode, division, rowIds: superseded.concat(ceded),
+      jobs: poProjectIds(po).concat(supersededJobs), poNums: [po.po_number].concat(supersededNums) });
+  } catch (err) { console.error('[po-sync] could not clear superseded cost rows:', err.message); }
 
   await mirrorOnePO(sql, companyCode, division, po);
 
@@ -2280,7 +2320,7 @@ async function removePO(sql, { companyCode, division, poId }) {
   const rowIds = existing.lines && Array.isArray(existing.lines)
     ? existing.lines.filter(l => l && l.po_row_id && !isDailyLine(l)).map(l => l.po_row_id)
     : [];
-  const gone = await deletePORows(sql, companyCode, rowIds);
+  const gone = await deletePORows(sql, companyCode, rowIds, [division]);
 
   // ...and the mirror only when it is THIS division's copy being removed. A
   // half-landed move leaves the order in both lists on purpose, so `existing`
@@ -2379,6 +2419,7 @@ module.exports = {
   keepSplitsInUse,
   movedLineIds,
   supersededRowIds,
+  deleteOrderRows,
   splitsJson,
   isInjectedRowId,
   isDailyLine,

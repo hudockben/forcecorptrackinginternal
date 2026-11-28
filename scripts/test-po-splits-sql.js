@@ -728,6 +728,41 @@ const ORDER = () => ({
       ok('  and the jobs carry the whole order: $225', (await charged('PO-0217')) === 225 && !(await unnamed('PO-0217', 'rx17')).length,
         await rowsFor('PO-0217'));
     }
+
+    console.log('\n[a link to another division\'s row, planted on an order, reaches no row]');
+    {
+      // A paving labour row, on no order. A turf order is saved through the tab
+      // with a delivery whose link names it (the list is stored as sent).
+      await q(`INSERT INTO daily_tracking (row_id, company_code, division, project_id, date, field_type, employee, rate, labor_hours)
+               VALUES ('victim-pav-1', $1, 'paving', 'pv9', '2026-11-21', 'Labor', 'Sam', 52.5, 8)`, [CO]);
+      await post({ purchaseOrder: SOCK('rx18', 'PO-0218', [dl('t1', 10)], TWO_JOBS().slice(0, 1)) });
+      const tab = await tabRead();
+      lineOf(tab.list.find(x => x.id === 'rx18'), 't1').po_row_id = 'victim-pav-1';
+      tab.list.find(x => x.id === 'rx18').lines.push({ ...dl('t2', 4, 's1'), po_row_id: 'victim-pav-1' });
+      await put({ purchaseOrders: tab.list, baseUpdatedAt: tab.base, editedLineFields: { rx18: { t2: ['qty'] } } });
+      po = await stored('rx18');
+      po.status = 'approved';
+      r = await post({ purchaseOrder: po, editedFields: ['status'], editedLineFields: {} });
+      ok('an approval of that order leaves the other division\'s row alone', r.body.ok && !!(await rowOf('victim-pav-1')), r.body);
+      r = await api('DELETE', '/api/purchase-orders?division=turf&id=rx18');
+      ok('  and so does deleting the order', r.body.ok && !!(await rowOf('victim-pav-1')), r.body);
+      await q("DELETE FROM daily_tracking WHERE company_code = $1 AND row_id = 'victim-pav-1'", [CO]);
+    }
+
+    console.log('\n[a view-only account cannot save the list]');
+    {
+      const vid = (await q("INSERT INTO users (username, company_code, password_hash, role, division_roles) VALUES ('posplit_view', $1, 'x', 'level1', $2) RETURNING id",
+        [CO, JSON.stringify({ turf: 'level1' })]))[0].id;
+      const viewer = jwt.sign({ userId: vid, username: 'posplit_view', name: 'Vi', companyCode: CO, role: 'level1', divisionRoles: { turf: 'level1' } }, process.env.JWT_SECRET);
+      const tab = await tabRead();
+      const res = { statusCode: 200, body: null, setHeader() {}, status(c) { this.statusCode = c; return this; }, json(o) { this.body = o; return this; }, end() { return this; } };
+      await handler({ method: 'PUT', query: { division: 'turf' }, headers: { authorization: 'Bearer ' + viewer },
+        body: { purchaseOrders: tab.list, baseUpdatedAt: tab.base, editedFields: {}, editedLineFields: {}, deletedLineIds: {}, deletedOrderIds: [] } }, res);
+      ok('its PUT is refused, as its POST is (403)', res.statusCode === 403, res.body);
+      const res2 = { ...res, statusCode: 200, body: null };
+      await handler({ method: 'GET', query: { division: 'turf' }, headers: { authorization: 'Bearer ' + viewer } }, res2);
+      ok('  while it still reads the list', res2.statusCode === 200 && Array.isArray(res2.body.purchaseOrders), res2.statusCode);
+    }
   } catch (err) {
     failed++;
     console.log('  ✗ crashed: ' + (err && err.stack || err));
