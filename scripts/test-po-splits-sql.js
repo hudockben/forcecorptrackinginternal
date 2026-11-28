@@ -949,6 +949,44 @@ const ORDER = () => ({
       await handler({ method: 'GET', query: { division: 'turf' }, headers: { authorization: 'Bearer ' + viewer } }, res2);
       ok('  while it still reads the list', res2.statusCode === 200 && Array.isArray(res2.body.purchaseOrders), res2.statusCode);
     }
+
+    console.log('\n[who may save a division\'s list, and move an order out of a division]');
+    {
+      let seq = 0;
+      const as = async roles => {
+        const name = 'posplit_r' + (++seq);
+        const uid = (await q("INSERT INTO users (username, company_code, password_hash, role, division_roles) VALUES ($1, $2, 'x', 'level1', $3) RETURNING id",
+          [name, CO, JSON.stringify(roles)]))[0].id;
+        const tok = jwt.sign({ userId: uid, username: name, name: 'R', companyCode: CO, role: 'level1', divisionRoles: roles }, process.env.JWT_SECRET);
+        return async (method, url, body) => {
+          const u = new URL(url, 'http://x');
+          const res = { statusCode: 200, body: null, setHeader() {}, status(c) { this.statusCode = c; return this; }, json(o) { this.body = o; return this; }, end() { return this; } };
+          await handler({ method, query: Object.fromEntries(u.searchParams), body: body == null ? {} : body, headers: { authorization: 'Bearer ' + tok } }, res);
+          return res;
+        };
+      };
+      // A turf viewer who also clerks for purchasing: no edit on the turf tab.
+      const viewerClerk = await as({ turf: 'level1', purchase_orders: 'level2' });
+      const tab = await tabRead();
+      r = await viewerClerk('PUT', '/api/purchase-orders?division=turf', { purchaseOrders: tab.list, baseUpdatedAt: tab.base,
+        editedFields: {}, editedLineFields: {}, deletedLineIds: {}, deletedOrderIds: [] });
+      ok('a turf viewer\'s list save is refused, purchasing role or not (403)', r.statusCode === 403, r.body);
+      // An account that may edit turf, and only read paving.
+      await api('POST', '/api/purchase-orders?division=paving', { purchaseOrder: { ...SOCK('rx27', 'PV-0227', [dl('pz1', 10)]), project_id: 'pv7' } });
+      const pz1row = lineOf(await stored('rx27', 'paving'), 'pz1').po_row_id;
+      const turfEditor = await as({ turf: 'level2', purchase_orders: 'level1' });
+      const moving = { ...(await stored('rx27', 'paving')), project_id: 'ja', cost_code: '', sub_code: '', po_number: 'PO-0227' };
+      r = await turfEditor('POST', '/api/purchase-orders?division=turf&from=paving', { purchaseOrder: moving,
+        editedFields: ['project_id', 'cost_code', 'sub_code', 'po_number'], editedLineFields: {} });
+      ok('it cannot pull a paving order into turf (403)', r.statusCode === 403, r.body);
+      ok('  the paving order and its cost row stay where they are', !!(await stored('rx27', 'paving')) && !!(await rowOf(pz1row)));
+      // Central purchasing, with no role in either division, still moves it.
+      const clerk = await as({ purchase_orders: 'level2' });
+      r = await clerk('POST', '/api/purchase-orders?division=turf&from=paving', { purchaseOrder: moving,
+        editedFields: ['project_id', 'cost_code', 'sub_code', 'po_number'], editedLineFields: {} });
+      ok('central purchasing still moves an order between divisions', r.statusCode === 200 && r.body.ok
+        && !!(await stored('rx27', 'turf')) && !(await stored('rx27', 'paving')), r.body);
+    }
   } catch (err) {
     failed++;
     console.log('  ✗ crashed: ' + (err && err.stack || err));

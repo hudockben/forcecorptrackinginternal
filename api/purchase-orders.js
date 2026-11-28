@@ -66,6 +66,7 @@ const {
   requireDivision,
   normalizeDivision,
   canAccessPODivision,
+  capabilities,
   poCapabilities,
   PO_SOURCE_DIVISIONS,
   PO_JOB_DIVISIONS,
@@ -262,13 +263,16 @@ module.exports = async (req, res) => {
 
     // ── PUT (full sync) ───────────────────────────────────────────────────
     if (req.method === 'PUT') {
-      // Writing the list takes a role that may change orders — the check POST
-      // makes, and the one the tabs make before offering an edit. A view-only
-      // or sales account got through on division access alone: its copy was
-      // stored as sent, and the cost rows its links named were reconciled
-      // against it — re-pointed, re-coded, or swept away with an order it
-      // left out.
-      if (!poCapabilities(payload, division).canUpload) {
+      // Writing the list takes a role in THIS division that may change orders —
+      // the one the tabs check (perm.canEdit) before offering an edit. A
+      // view-only or sales account got through on division access alone: its
+      // copy was stored as sent, and the cost rows its links named were
+      // reconciled against it — re-pointed, re-coded, or swept away with an
+      // order it left out. The purchasing role does not count here: it is
+      // what single-order saves from Purchase Orders go on (POST), and a
+      // division viewer who also clerks for purchasing has no edit on the tab.
+      // For the general list the division IS purchasing.
+      if (!capabilities(payload, division).canUpload) {
         return res.status(403).json({ error: 'You do not have permission to change purchase orders' });
       }
       const body = req.body || {};
@@ -1174,6 +1178,13 @@ module.exports = async (req, res) => {
       }
       if (from && from !== division && !canAccessPODivision(payload, from)) {
         return res.status(403).json({ error: 'You do not have access to the division this order is moving from' });
+      }
+      // A move takes the order, and the cost rows behind it, out of the list it
+      // leaves: that takes the right to change that division's orders, as the
+      // central page asks before it offers the move. Read access let an account
+      // that may edit one division pull another's orders out of it.
+      if (from && from !== division && !poCapabilities(payload, from).canUpload) {
+        return res.status(403).json({ error: 'You do not have permission to change the purchase orders of the division this order is moving from' });
       }
 
       const result = await poSync.upsertPO(sql, {
