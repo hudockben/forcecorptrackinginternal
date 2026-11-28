@@ -372,13 +372,19 @@ const PO_LINE_ID_SHAPE   = 'poLineId and poId must each be 1 to 128 letters, dig
  * Never throws: the file is already filed where it was put and under its
  * order, and losing the upload over the extra folder would be worse. Not
  * re-filed when the order's or the line's code changes later (v1).
+ *
+ * Not for a delivery on one of a split order's other jobs. The document is
+ * the order's job's — it is registered there, in the order's folder — and a
+ * job lists only its own documents, so a copy linked into the other job's
+ * cost-code folder was shown by nothing on that job, while its folder id sat
+ * in the order's job's tree. Such a file stays on the delivery and under its
+ * order, as before an order could be split.
  */
 async function fileLineUnderCostCode(sql, { companyCode, division, projectId: orderJob, documentId, po, line, payload }) {
   try {
     if (!orderJob) return null;
-    // A delivery on one of a split order's other jobs compiles in THAT job's
-    // cost-code folder, under its split's code (api/lib/po-line-docs.js).
     const projectId = poLineDocs.lineProjectId(po, line) || orderJob;
+    if (String(projectId) !== String(orderJob)) return null;
     const code = poLineDocs.lineCostCode(po, line);
     if (!code) return null;
     const folderId = await procDocs.ensureCostCodeFolder(sql, {

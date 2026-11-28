@@ -324,6 +324,15 @@ console.log('\n[the cascade]');
     assert('but not one still being worked',
       ['In Progress', 'Substantially Complete', 'On Hold', ''].every(st => isDone({ status: st }) === false));
     assert('and sends the flag with each job',          /done:\s+projectIsDone\(blob\)/.test(cat));
+    // ...and whether work is going on at it: what "+ Add the other <Site>
+    // jobs" offers, the same live set the division tabs and Procurement use.
+    const live = cat.match(/const LIVE_STATUSES = [^\n]*/);
+    const isLive = live && new Function(live[0] + '\n' + requireFn(cat, 'projectIsLive', 'api/po-catalog.js') + '; return projectIsLive;')();
+    assert('the catalogue flags a job being worked live',
+      !!isLive && ['', 'Awarded', 'In Progress', 'Substantially Complete', ' in progress '].every(st => isLive({ status: st }) === true));
+    assert('  but not one being bid, on hold or finished',
+      !!isLive && ['Bidding', 'On Hold', 'Complete', 'Closed', 'Lost'].every(st => isLive({ status: st }) === false));
+    assert('  and sends that flag with each job too',      /live:\s+projectIsLive\(blob\)/.test(cat));
   }
   assert('both job pickers read the filtered list',
     /const list = pickableProjects\(po\._division, po\.project_id\);/.test(PAGE) &&

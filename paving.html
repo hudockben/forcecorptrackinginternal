@@ -7680,19 +7680,30 @@ function savePurchaseOrders() {
     if (r.ok) {
       _poSaveFailed = false;
       _poSaveRetries = 0;
+      // What this save carried is let go only once its answer is read and its
+      // version noted. A job row's write is sent beside the save — a delivery
+      // moved to another job deletes its old row and raises a new one — and
+      // its answer, carrying the order as stored BEFORE this save, can land
+      // while this body is still arriving. With the marks already gone it was
+      // taken: the delivery showed on its old job again, and this save's own
+      // answer, the order having come out as sent, never put it right.
+      let j = null;
+      try { j = await r.json(); } catch { j = null; }
+      if (j && j.updatedAt) {
+        sent.links.forEach((_, id) => _poSeenOrder(id, j.updatedAt));
+        (Array.isArray(j.orders) ? j.orders : []).forEach(o => { if (o) _poSeenOrder(o.id, j.updatedAt); });
+      }
       _poForgetSave(sent);
+      // An answer that could not be read says nothing more: the save landed,
+      // and the poll brings the list in.
+      if (!j) return;
       try {
-        const j = await r.json();
         _poForgetSentLinks(sent.links);
         // Rows the server deleted for this save (one minted here from a stale
         // copy, replaced by the row purchasing raised): this page's copies go
         // too. Only those it says it removed — see removedRowIds.
         if (j && Array.isArray(j.removedRowIds) && typeof _drForgetRow === 'function') {
           j.removedRowIds.forEach(id => _drForgetRow(id));
-        }
-        if (j && j.updatedAt) {
-          sent.links.forEach((_, id) => _poSeenOrder(id, j.updatedAt));
-          (Array.isArray(j.orders) ? j.orders : []).forEach(o => { if (o) _poSeenOrder(o.id, j.updatedAt); });
         }
         if (j && Array.isArray(j.orders)) {
           // The server's merge, taken on wherever this tab has nothing newer —
@@ -12935,11 +12946,11 @@ function openPOLineDocs(poId, lineId) {
     // under the delivery's own cost code when it has one, else the order's.
     line: {
       id: line.id, invoice_num: line.invoice_num, date: line.date,
-      // A delivery on one of a split order's other jobs files under that
-      // job's code (the server does the same — api/lib/po-line-docs.js).
-      cost_code: line.cost_code || (_poLineJob(po, line).split ? _poLineJob(po, line).cost_code : line.cost_code),
-      sub_code: line.sub_code || (_poLineJob(po, line).split ? _poLineJob(po, line).sub_code : line.sub_code),
+      cost_code: line.cost_code, sub_code: line.sub_code,
       source: line.source,
+      // On one of a split order's other jobs: filed under the order only, in
+      // no cost-code folder (api/documents.js fileLineUnderCostCode).
+      on_other_job: Boolean(_poLineJob(po, line).split),
     },
     // The dialog's name for it: the invoice / ticket #, else documents.js
     // names it by its date.
@@ -15051,9 +15062,13 @@ function openPOSplitDelivery(poId, lineId) {
       const td = dlg.querySelector(`[data-split-amt="${CSS.escape(p.key)}"]`);
       if (td) td.textContent = p.qty > 0 ? '$' + fmt(p.qty * uc) : '';
     });
-    const ok = Math.abs(sum - qty) < 1e-6;
+    // A share below zero would balance the total and then be dropped, leaving
+    // the delivery bigger than it was.
+    const negative = parts.some(p => p.qty < 0);
+    const ok = !negative && Math.abs(sum - qty) < 1e-6;
     const out = dlg.querySelector('#po-split-sum');
-    out.textContent = `Total ${fmt(sum)} of ${fmt(qty)}` + (ok ? '' : sum > qty ? ' — more than the delivery' : ' — less than the delivery');
+    out.textContent = `Total ${fmt(sum)} of ${fmt(qty)}` + (negative ? ' — a job\'s share can\'t be below zero'
+      : ok ? '' : sum > qty ? ' — more than the delivery' : ' — less than the delivery');
     out.style.color = ok ? 'var(--muted)' : 'var(--yellow)';
     dlg.querySelector('#po-split-ok').disabled = !ok || parts.filter(p => p.qty > 0).length < 1;
   };
@@ -15068,7 +15083,11 @@ function openPOSplitDelivery(poId, lineId) {
   dlg.querySelector('#po-split-cancel').addEventListener('click', close);
   dlg.addEventListener('mousedown', e => { if (e.target === dlg) close(); });
   dlg.querySelector('#po-split-ok').addEventListener('click', () => {
-    const parts = read().filter(p => p.qty > 0);
+    const all = read();
+    const parts = all.filter(p => p.qty > 0);
+    // What is applied has to be what was checked: every share at or above
+    // zero, and the ones taken adding up to the delivery.
+    if (all.some(p => p.qty < 0) || Math.abs(parts.reduce((a, p) => a + p.qty, 0) - qty) >= 1e-6) { paint(); return; }
     close();
     _poApplySplitDelivery(po.id, line.id, parts);
   });
@@ -15083,15 +15102,25 @@ function _poApplySplitDelivery(poId, lineId, parts) {
   const line = po && (po.lines || []).find(l => l && l.id === lineId);
   if (!line || !parts.length) return;
   const own = _poLineJob(po, line).split;
+  // A delivery taxed in flat dollars — an old entry no percentage reproduced,
+  // so it has no tax % — shares its tax out by quantity, the delivery itself
+  // taking what the rounding leaves: each job carries its own part of the tax,
+  // and the order still comes to what it did.
+  const flatTax = line.tax_pct == null ? _poNum0(line.tax) : 0;
+  const whole = parts.reduce((a, p) => a + p.qty, 0);
+  const taxOf = q => (flatTax && whole > 0 ? Math.round(flatTax * q / whole * 100) / 100 : 0);
   // The delivery itself keeps its own job's share where it has one (its row,
   // its attachments stay put), else takes the first job's.
   const mine = parts.find(p => p.key === own) || parts[0];
   const rest = parts.filter(p => p !== mine);
   if (mine.key !== own) _poMoveLine(po, line, mine.key);
-  if (String(line.qty) !== String(mine.qty)) {
-    line.qty = String(mine.qty);
+  const myTax = flatTax ? String(Math.round((flatTax - rest.reduce((a, p) => a + taxOf(p.qty), 0)) * 100) / 100) : null;
+  const qtyMoved = String(line.qty) !== String(mine.qty);
+  const taxMoved = myTax != null && String(line.tax) !== myTax;
+  if (qtyMoved || taxMoved) {
+    if (qtyMoved) { line.qty = String(mine.qty); _poNoteLineEdit(po.id, line.id, 'qty'); }
+    if (taxMoved) { line.tax = myTax; _poNoteLineEdit(po.id, line.id, 'tax'); }
     _recalcLineTax(line);
-    _poNoteLineEdit(po.id, line.id, 'qty');
     if (line.qty || line.unit_cost) _ensurePOLineRow(po, line);
     _syncPOLineToRow(po, line, 'qty').catch(err =>
       console.warn('[po] could not sync the delivery to its cost row:', err.message));
@@ -15102,11 +15131,12 @@ function _poApplySplitDelivery(poId, lineId, parts) {
       qty: String(p.qty), unit_cost: line.unit_cost || '', tax: '', tax_pct: line.tax_pct == null ? '' : line.tax_pct,
       employee: line.employee || '', po_row_id: null,
     };
-    if (line.tax_pct == null) copy.tax = '';
+    // Its share of a flat tax, kept flat (no tax %, as on the delivery it came from).
+    if (line.tax_pct == null) { delete copy.tax_pct; copy.tax = flatTax ? String(taxOf(p.qty)) : ''; }
     if (p.key) copy.split = p.key;
     _recalcLineTax(copy);
     po.lines.push(copy);
-    ['date', 'qty', 'unit_cost', 'tax_pct', 'employee', 'split', 'invoice_num'].forEach(k => _poNoteLineEdit(po.id, copy.id, k));
+    ['date', 'qty', 'unit_cost', 'tax_pct', 'tax', 'employee', 'split', 'invoice_num'].forEach(k => _poNoteLineEdit(po.id, copy.id, k));
     _ensurePOLineRow(po, copy);
   });
   savePurchaseOrders();
@@ -22248,7 +22278,9 @@ async function exportJobSummary(projId, opts = {}) {
 
   // ── Section B: Merged purchases (PO tab + direct job-row material) ─
   const allPOs = (typeof purchaseOrders !== 'undefined' && Array.isArray(purchaseOrders)) ? purchaseOrders : [];
-  const projPOs = allPOs.filter(po => po && po.project_id === projId);
+  // An order split between jobs is on every job it books to — each for its
+  // own share, the way the job's PO list shows it (renderProjectPOs).
+  const projPOs = allPOs.filter(po => po && _poHasProject(po, projId));
 
   // A daily row auto-created from a PO line is linked via the *line's*
   // po_row_id (which stores that row's id); the row itself carries no
@@ -22263,8 +22295,11 @@ async function exportJobSummary(projId, opts = {}) {
   let purchTotal = 0;
 
   projPOs.forEach(po => {
-    const t = _poTotals(po);
-    const codeLbl = [po.cost_code, po.sub_code].filter(Boolean).join(' / ');
+    // A split order: only the deliveries on this job, under this job's codes.
+    const split = _poIsSplit(po);
+    const t = split ? _poProjectTotals(po, projId) : _poTotals(po);
+    const onJob = split ? _poSplitById(po, _poSplitForProject(po, projId)) : null;
+    const codeLbl = [(onJob || po).cost_code, (onJob || po).sub_code].filter(Boolean).join(' / ');
     purchTotal += t.total;
     purchRowsHTML += `<tr>
       <td class="src">${escT(po.po_number) || dash}</td>

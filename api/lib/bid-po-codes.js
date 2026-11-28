@@ -92,7 +92,11 @@ function bidCodeRenames(before, after) {
  * Give the job's purchase orders that carry a renamed line's old codes its
  * new ones: this company's orders in this division's list, on this job,
  * linked to a Procurement row or not (the Purchase Orders tab shows the codes
- * either way). Only the two codes change.
+ * either way). Only the two codes change. An order split between jobs is on
+ * this job either as its own job or as one of its others (`splits`): each
+ * carries the codes it has on this job, and those are the ones renamed — a
+ * split left on the old codes read as no order on the job's Procurement rows,
+ * and its next deliveries were raised under a code the bid no longer has.
  *
  * Done on the stored list as it is at the instant of the write, a
  * compare-and-set that starts again from a fresh read whenever someone saved
@@ -111,10 +115,20 @@ async function renamePOCodes(sql, { companyCode, division, projectId, renames })
   const saved = await poSync.mutatePOBlob(sql, poSync.blobKeyFor(companyCode, division), list => {
     hit = [];
     const next = list.map(po => {
-      if (!po || typeof po !== 'object' || text(po.project_id) !== job) return po;
-      const r = byFrom.get(pairKey(po.cost_code, po.sub_code));
-      if (!r) return po;
-      const renamed = { ...po, cost_code: r.cost_code, sub_code: r.sub_code };
+      if (!po || typeof po !== 'object') return po;
+      let renamed = po;
+      if (text(po.project_id) === job) {
+        const r = byFrom.get(pairKey(po.cost_code, po.sub_code));
+        if (r) renamed = { ...renamed, cost_code: r.cost_code, sub_code: r.sub_code };
+      }
+      const splits = poSync.poSplits(po);
+      if (splits.some(sp => text(sp.project_id) === job && byFrom.has(pairKey(sp.cost_code, sp.sub_code)))) {
+        renamed = { ...renamed, splits: splits.map(sp => {
+          const r = text(sp.project_id) === job ? byFrom.get(pairKey(sp.cost_code, sp.sub_code)) : null;
+          return r ? { ...sp, cost_code: r.cost_code, sub_code: r.sub_code } : sp;
+        }) };
+      }
+      if (renamed === po) return po;
       hit.push(renamed);
       return renamed;
     });
@@ -126,9 +140,11 @@ async function renamePOCodes(sql, { companyCode, division, projectId, renames })
   try {
     await sql`
       UPDATE purchase_orders p
-         SET cost_code = NULLIF(t.cost_code, ''), sub_code = NULLIF(t.sub_code, ''), updated_at = NOW()
-        FROM unnest(${ids}::text[], ${hit.map(po => text(po.cost_code))}::text[], ${hit.map(po => text(po.sub_code))}::text[])
-             AS t(id, cost_code, sub_code)
+         SET cost_code = NULLIF(t.cost_code, ''), sub_code = NULLIF(t.sub_code, ''),
+             splits = t.splits::jsonb, updated_at = NOW()
+        FROM unnest(${ids}::text[], ${hit.map(po => text(po.cost_code))}::text[], ${hit.map(po => text(po.sub_code))}::text[],
+                    ${hit.map(po => poSync.splitsJson(po))}::text[])
+             AS t(id, cost_code, sub_code, splits)
        WHERE p.company_code = ${companyCode} AND p.division = ${division} AND p.id = t.id`;
   } catch (err) {
     console.warn(`[bid-po-codes] purchase-order mirror not updated for company=${companyCode} job=${job}: ${err.message}`);

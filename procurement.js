@@ -273,12 +273,14 @@
       });
       // A link that holds: its PO is listed and on the row's own job. One
       // re-pointed to another job ("moved") or gone does not take the order
-      // from the rows of the job it is on now.
+      // from the rows of the job it is on now. Kept per order AND job: a split
+      // order is each of its jobs' order, and a site sheet holds every job's
+      // rows — one field's row linking it must not take it from the others.
       (ctx.rows || []).forEach(r => {
         if (!r || !r.po_id || r.deleted_at) return;
         const po = m.poById.get(String(r.po_id));
         const pid = r.project_id || ctx.projectId;
-        if (po && (!pid || poOnJob(po, pid))) m.linkedPO.add(String(r.po_id));
+        if (po && (!pid || poOnJob(po, pid))) m.linkedPO.add(linkKey(r.po_id, pid));
       });
       if (ctx.bidLinesByProject) {
         m.lineByJob = new Map();
@@ -292,6 +294,8 @@
     }
     return m;
   }
+  /** An order linked from a row of one job: the key ctxIndex's linkedPO holds. */
+  function linkKey(poId, projId) { return String(poId) + '\u0000' + String(projId || ''); }
   function lineFor(row, ctx) {
     if (!row || row.bid_item_id == null) return null;
     const m = ctxIndex(ctx);
@@ -460,11 +464,12 @@
     const pid = row.project_id || ctx.projectId;
     // An order a row of the sheet is linked to is that row's — raised for it
     // (Create PO from selected), or picked for it. It is not matched to
-    // the other rows under the same codes as well: the materials "+ Material"
-    // splits a bid line into read Ordered, with no Late flag, on the PO
-    // raised for the stone or the chambers beside them.
+    // the other rows of that job under the same codes as well: the materials
+    // "+ Material" splits a bid line into read Ordered, with no Late flag, on
+    // the PO raised for the stone or the chambers beside them. A row of ANOTHER
+    // of a split order's jobs still matches it, on its own codes there.
     return posUnder(ctx, String(pid || ''), codes.cc, codes.sc)
-      .filter(po => !m.linkedPO.has(String(po.id)) && vendorCompatible(row.vendor, po.supplier));
+      .filter(po => !m.linkedPO.has(linkKey(po.id, pid)) && vendorCompatible(row.vendor, po.supplier));
   }
   /** A job's orders with these (keyed) codes, in list order. */
   function posUnder(ctx, job, cc, sc) {

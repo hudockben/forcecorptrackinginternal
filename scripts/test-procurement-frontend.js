@@ -6577,6 +6577,60 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     }
   }
 
+  console.log('\n[a split PO on a site sheet: one field\'s link does not take it from the others]');
+  {
+    // PO-2601 was raised from Baseball's silt-sock row (linked to it), then
+    // split to Softball on the PO tab under the same codes. Softball's row
+    // matches it on Softball's own sheet — and must on the site's sheet too,
+    // which holds both fields' rows.
+    const SP = [
+      { id: 'h1', 'project-name': 'Hempfield Baseball', 'job-number': '26057', status: 'In Progress', site: 'Hempfield' },
+      { id: 'h2', 'project-name': 'Hempfield Softball', 'job-number': '26058', status: 'In Progress', site: 'Hempfield' },
+    ];
+    const SL = {
+      h1: [{ id: 'L1', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', unit: 'LF', quantity: 800, index: 0 }],
+      h2: [{ id: 'L1', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', unit: 'LF', quantity: 500, index: 0 }],
+    };
+    const SPOS = [{ id: 'hpo1', po_number: 'PO-2601', project_id: 'h1', cost_code: 'E&S', sub_code: 'Silt Sock 12inch',
+      supplier: 'LB Water', date_created: '2026-03-01', status: 'pending',
+      splits: [{ id: 's2', project_id: 'h2', cost_code: 'E&S', sub_code: 'Silt Sock 12inch' }] }];
+    const SR = [
+      row({ id: 'a1', project_id: 'h1', source: 'bid', bid_item_id: 'L1', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', quantity: 800, unit: 'LF',
+        bid_qty_at_send: 800, bid_unit_at_send: 'LF', vendor: 'LB Water', po_id: 'hpo1', date_needed: '2026-03-05', created_at: '2026-03-01T00:00:00Z' }),
+      row({ id: 'b1', project_id: 'h2', source: 'bid', bid_item_id: 'L1', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', quantity: 500, unit: 'LF',
+        bid_qty_at_send: 500, bid_unit_at_send: 'LF', vendor: 'LB Water', date_needed: '2026-03-05', created_at: '2026-03-01T00:00:01Z' }),
+      // A second Baseball row under the same codes: the order is the linked
+      // row's on that job, as before.
+      row({ id: 'a2', project_id: 'h1', source: 'manual', cost_code: 'E&S', sub_code: 'Silt Sock 12inch', description: 'Stakes', quantity: 50, unit: 'EA',
+        vendor: 'LB Water', date_needed: '2026-03-05', created_at: '2026-03-01T00:00:02Z' }),
+    ];
+    const sheet = async key => {
+      const e = makeEnv({ rows: SR, purchaseOrders: SPOS.map(x => ({ ...x })), storage: { fct_proc_project_turf: 'h1' } });
+      e.P.configure({ getProjects: () => SP, getProject: id => SP.find(x => x.id === id) || null, getBidLines: id => SL[id] || [] });
+      e.P.renderTab(e.root);
+      await tick(); await tick(); await tick();
+      const o = e.P.cbOptions('proc_projects').find(x => x.value === key);
+      e.pick(e.$('#fctproc-proj'), o.label, o.value);
+      await sleep(30);
+      return e;
+    };
+    const pill = (e, id) => { const t = e.$(`tr[data-row="${id}"]`); return t ? (t.querySelector('.fctproc-pill') || {}).textContent : '(not shown)'; };
+    const poCell = (e, id) => { const t = e.$(`tr[data-row="${id}"]`); const c = t && t.querySelector('.fctproc-po'); return c ? c.textContent.replace(/\s+/g, ' ').trim() : '?'; };
+    const job = await sheet('h2');
+    const site = await sheet('site:hempfield');
+    assert('Softball\'s row reads Ordered, matched to the order, on its own sheet', pill(job, 'b1') === 'Ordered' && /auto/.test(poCell(job, 'b1')),
+      [pill(job, 'b1'), poCell(job, 'b1')]);
+    assert('  and the same on the site\'s sheet, Baseball\'s row being linked to it', pill(site, 'b1') === 'Ordered' && /auto/.test(poCell(site, 'b1'))
+      && pill(site, 'a1') === 'Ordered', [pill(site, 'b1'), poCell(site, 'b1'), pill(site, 'a1')]);
+    assert('  while Baseball\'s other row under those codes is not matched to the linked order', pill(site, 'a2') !== 'Ordered', pill(site, 'a2'));
+    const box = site.$('[data-sel="b1"]'); box.checked = true; site.fire(box, 'change');
+    site.$('[data-act="bulk-po"]').click();
+    await sleep(80);
+    const modal = site.$('.fctproc-modal');
+    assert('Create PO from selected on the site sheet asks before ordering it again', !!modal && /PO-2601/.test(modal.textContent)
+      && !site.created.some(c => c[0] === 'po'), modal ? modal.textContent.replace(/\s+/g, ' ').slice(0, 200) : 'no question asked');
+  }
+
   console.log(`\n${passed} passed, ${failed} failed`);
   process.exit(failed ? 1 : 0);
 })().catch(err => {

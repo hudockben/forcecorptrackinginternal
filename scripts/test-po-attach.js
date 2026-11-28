@@ -946,7 +946,7 @@ function pageSandbox({ answer, canEdit = true, settle, orders, body = '' } = {})
   `, ctx);
   ['esc', 'jsAttr', 'lineDocCount', 'setLineDocCount', 'countAttached', 'loadLineDocCounts',
    'lineClipHTML', 'lineClipLabel', 'paintLineClips', 'liveLineId', 'lineLabel', 'lineCostCodeFor',
-   'openDocs', 'lineDocsSubHTML', 'deliveryTagOf', 'docsRetryHTML']
+   'openDocs', 'lineDocsSubHTML', 'deliveryTagOf', 'docsRetryHTML', 'poSplitsOf', 'splitOf', 'lineJobOf']
     .forEach(n => evalSlice((/^(loadLineDocCounts|openDocs)$/.test(n) ? 'async ' : '') +
       requireFn(PAGE, n, 'purchase-orders.html'), ctx, n));
   const run = e => vm.runInContext(e, ctx);

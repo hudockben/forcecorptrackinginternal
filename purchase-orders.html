@@ -961,8 +961,12 @@ function siteJobsToAdd(po) {
   if (!name) return { name: '', jobs: [] };
   const taken = new Set(poProjectIdsOf(po));
   const key = name.toLowerCase();
+  // Only the live jobs, as the division tabs and Procurement's site sheet
+  // take them: not one still being bid, finished or on hold (`live`, from the
+  // catalogue; a catalogue without it falls back to "not finished").
   return { name, jobs: pickableProjects(po._division, null)
-    .filter(p => !taken.has(String(p.id)) && String(p.site || '').trim().toLowerCase() === key) };
+    .filter(p => !taken.has(String(p.id)) && String(p.site || '').trim().toLowerCase() === key
+      && (p.live === undefined ? !p.done : Boolean(p.live))) };
 }
 
 function newLine() {
@@ -2210,9 +2214,13 @@ function setLineJob(poId, lineId, value) {
 
 /** "Jobs on this PO": the order's jobs, their codes and their shares. */
 function jobsPanelHTML(po) {
-  if (!hasJobs(po._division) || !po.project_id) return '';
-  const edit = capsFor(po._division).canEdit;
+  if (!hasJobs(po._division)) return '';
   const splits = poSplitsOf(po);
+  // An order with no job of its own offers no split — but one that still has
+  // other jobs keeps showing them: they are on the order and charged, and this
+  // panel is the only place to see their shares or take them off.
+  if (!po.project_id && !splits.length) return '';
+  const edit = capsFor(po._division).canEdit;
   const site = edit ? siteJobsToAdd(po) : { name: '', jobs: [] };
   const btnStyle = 'font-size:0.7rem;padding:0.2rem 0.6rem';
   const siteBtn = site.jobs.length
@@ -2231,12 +2239,15 @@ function jobsPanelHTML(po) {
   const money = v => v !== 0 ? '$' + fmt(v) : '—';
   const totalsCells = key => {
     const t = jobTotalsOf(po, key);
-    const id = k => esc('job-' + k + '-' + po.id + '-' + (key || 'own'));
-    return '<td class="r" style="color:var(--muted)" id="' + id('qty') + '">' + (t.qty !== 0 ? qfmt(t.qty) : '—') + '</td>' +
-      '<td class="r" style="color:var(--ok)" id="' + id('amt') + '">' + money(t.amt) + '</td>' +
-      '<td class="r" style="color:var(--yellow)" id="' + id('tot') + '">' + money(t.total) + '</td>';
+    // Not an id: the panel is in the table AND in the phone card, and an id
+    // would find only the first — the table, hidden on a phone.
+    const at = k => 'data-jobtot="' + esc(k + '|' + po.id + '|' + (key || 'own')) + '"';
+    return '<td class="r" style="color:var(--muted)" ' + at('qty') + '>' + (t.qty !== 0 ? qfmt(t.qty) : '—') + '</td>' +
+      '<td class="r" style="color:var(--ok)" ' + at('amt') + '>' + money(t.amt) + '</td>' +
+      '<td class="r" style="color:var(--yellow)" ' + at('tot') + '>' + money(t.total) + '</td>';
   };
-  const own = '<tr><td>' + esc(jobNameOf(po, po.project_id)) + ' <span style="font-size:0.62rem;color:var(--muted)">(this order\'s job)</span></td>' +
+  const own = '<tr><td>' + (po.project_id ? esc(jobNameOf(po, po.project_id))
+      : '<span style="color:var(--muted)">— no job —</span>') + ' <span style="font-size:0.62rem;color:var(--muted)">(this order\'s job)</span></td>' +
     '<td>' + esc(orderCodeLabel(po) || '—') + '</td>' + totalsCells('') + '<td></td></tr>';
   const rows = splits.map(s => {
     const n = (po.lines || []).filter(l => l && String(l.split || '') === String(s.id)).length;
@@ -2268,7 +2279,8 @@ function jobsPanelHTML(po) {
     '<div style="overflow-x:auto"><table>' +
       '<thead><tr><th>Job</th><th>Cost / Sub Code</th><th style="text-align:right">Qty</th><th style="text-align:right">Amount</th><th style="text-align:right">Total</th><th></th></tr></thead>' +
       '<tbody>' + own + rows + '</tbody></table></div>' +
-    (edit ? '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.45rem">' +
+    // Adding a job needs the order's own job (addSplit says so); taking one off does not.
+    (edit && po.project_id ? '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.45rem">' +
       '<button class="btn" style="' + btnStyle + '" onclick="addSplit(\'' + jsAttr(po.id) + '\')">+ Add job</button>' + siteBtn + '</div>' : '') +
   '</div>';
 }
@@ -2296,7 +2308,9 @@ function lineJobCellHTML(po, l) {
 function updateJobTotalsInPlace(po) {
   [''].concat(poSplitsOf(po).map(s => String(s.id))).forEach(key => {
     const t = jobTotalsOf(po, key);
-    const set = (k, text) => { const el = document.getElementById('job-' + k + '-' + po.id + '-' + (key || 'own')); if (el) el.textContent = text; };
+    // Both copies of the panel: the table's and the phone card's.
+    const set = (k, text) => document.querySelectorAll('[data-jobtot="' + CSS.escape(k + '|' + po.id + '|' + (key || 'own')) + '"]')
+      .forEach(el => { el.textContent = text; });
     set('qty', t.qty !== 0 ? qfmt(t.qty) : '—');
     set('amt', t.amt !== 0 ? '$' + fmt(t.amt) : '—');
     set('tot', t.total !== 0 ? '$' + fmt(t.total) : '—');
@@ -2351,11 +2365,15 @@ function openSplitDelivery(poId, lineId) {
       const td = dlg.querySelector('[data-split-amt="' + CSS.escape(p.key) + '"]');
       if (td) td.textContent = p.qty > 0 ? '$' + fmt(p.qty * uc) : '';
     });
-    const ok = Math.abs(sum - qty) < 1e-6;
+    // A share below zero would balance the total and then be dropped, leaving
+    // the delivery bigger than it was.
+    const negative = parts.some(p => p.qty < 0);
+    const ok = !negative && Math.abs(sum - qty) < 1e-6;
     const out = dlg.querySelector('#split-sum');
-    out.textContent = 'Total ' + qfmt(sum) + ' of ' + qfmt(qty) + (ok ? '' : sum > qty ? ' — more than the delivery' : ' — less than the delivery');
+    out.textContent = 'Total ' + qfmt(sum) + ' of ' + qfmt(qty) + (negative ? ' — a job\'s share can\'t be below zero'
+      : ok ? '' : sum > qty ? ' — more than the delivery' : ' — less than the delivery');
     out.style.color = ok ? 'var(--muted)' : 'var(--yellow)';
-    dlg.querySelector('#split-ok').disabled = !ok;
+    dlg.querySelector('#split-ok').disabled = !ok || !parts.some(p => p.qty > 0);
   };
   inputs.forEach(i => i.addEventListener('input', paint));
   dlg.querySelector('#split-even').addEventListener('click', () => {
@@ -2367,7 +2385,11 @@ function openSplitDelivery(poId, lineId) {
   dlg.querySelector('#split-cancel').addEventListener('click', close);
   dlg.addEventListener('mousedown', e => { if (e.target === dlg) close(); });
   dlg.querySelector('#split-ok').addEventListener('click', () => {
-    const parts = read().filter(p => p.qty > 0);
+    const all = read();
+    const parts = all.filter(p => p.qty > 0);
+    // What is applied has to be what was checked: every share at or above
+    // zero, and the ones taken adding up to the delivery.
+    if (all.some(p => p.qty < 0) || !parts.length || Math.abs(parts.reduce((a, p) => a + p.qty, 0) - qty) >= 1e-6) { paint(); return; }
     close();
     applySplitDelivery(po.id, l.id, parts);
   });
@@ -2382,9 +2404,17 @@ function applySplitDelivery(poId, lineId, parts) {
   const l = po && (po.lines || []).find(x => x && x.id === lineId);
   if (!l || !parts.length) return;
   const own = lineJobOf(po, l).split;
+  // A delivery taxed in flat dollars — an old entry no percentage reproduced,
+  // so it has no tax % — shares its tax out by quantity, the delivery itself
+  // taking what the rounding leaves: each job carries its own part of the tax,
+  // and the order still comes to what it did.
+  const flatTax = l.tax_pct == null ? num0(l.tax) : 0;
+  const whole = parts.reduce((a, p) => a + p.qty, 0);
+  const taxOf = q => (flatTax && whole > 0 ? Math.round(flatTax * q / whole * 100) / 100 : 0);
   // The delivery keeps its own job's share where it has one (its attachments
   // stay put), else takes the first job's.
   const mine = parts.find(p => p.key === own) || parts[0];
+  const rest = parts.filter(p => p !== mine);
   if (mine.key !== own) {
     if (mine.key) l.split = mine.key; else delete l.split;
     noteEdit(_editedLines, poId, lineEditKey(lineId, 'split'));
@@ -2394,11 +2424,18 @@ function applySplitDelivery(poId, lineId, parts) {
     recalcLineTax(l);
     noteEdit(_editedLines, poId, lineEditKey(lineId, 'qty'));
   }
-  parts.filter(p => p !== mine).forEach(p => {
+  const myTax = flatTax ? String(Math.round((flatTax - rest.reduce((a, p) => a + taxOf(p.qty), 0)) * 100) / 100) : null;
+  if (myTax != null && String(l.tax) !== myTax) {
+    l.tax = myTax;
+    noteEdit(_editedLines, poId, lineEditKey(lineId, 'tax'));
+  }
+  rest.forEach(p => {
     const copy = Object.assign(newLine(), {
       invoice_num: l.invoice_num || '', date: l.date || localDateStr(), qty: String(p.qty),
       unit_cost: l.unit_cost || '', tax_pct: l.tax_pct == null ? '' : l.tax_pct, employee: l.employee || '',
     });
+    // Its share of a flat tax, kept flat (no tax %, as on the delivery it came from).
+    if (l.tax_pct == null) { delete copy.tax_pct; copy.tax = flatTax ? String(taxOf(p.qty)) : ''; }
     if (p.key) copy.split = p.key;
     recalcLineTax(copy);
     po.lines.push(copy);
@@ -3097,6 +3134,9 @@ function lineLabel(l) {
  */
 function lineCostCodeFor(po, l) {
   if (!po.project_id) return '';
+  // On one of a split order's other jobs: filed under the order only
+  // (api/documents.js fileLineUnderCostCode).
+  if (lineJobOf(po, l).split) return '';
   const own = l && typeof l.cost_code === 'string' ? l.cost_code.trim() : '';
   return own || String(po.cost_code == null ? '' : po.cost_code).trim();
 }
@@ -3247,7 +3287,9 @@ function cardJobLineHTML(po) {
 function splitChipHTML(po) {
   const more = poSplitsOf(po).filter(s => s.project_id);
   if (!more.length) return '';
-  return '<div onclick="expanded.add(\'' + jsAttr(po.id) + '\');render()" style="font-size:0.62rem;color:#93c5fd;margin-top:0.15rem;cursor:pointer;white-space:nowrap"' +
+  // Opened the way the row's arrow opens it, which also counts each delivery's
+  // attachments; left alone if it is already open.
+  return '<div onclick="if (!expanded.has(\'' + jsAttr(po.id) + '\')) toggleLines(\'' + jsAttr(po.id) + '\')" style="font-size:0.62rem;color:#93c5fd;margin-top:0.15rem;cursor:pointer;white-space:nowrap"' +
     ' title="' + esc('Split between jobs: ' + poProjectIdsOf(po).map(id => jobNameOf(po, id)).join(', ')) + '">+ ' + more.length +
     ' more job' + (more.length === 1 ? '' : 's') + ' &middot; split PO</div>';
 }

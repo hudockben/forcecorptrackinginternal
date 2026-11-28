@@ -410,6 +410,49 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
       assert('  nor by a save\'s answer', !other.lines.some(l => l.id === 'dr-rGone'), JSON.stringify(other.lines));
     }
 
+    console.log(`\n[${page}: a row write's answer that lands while a save's answer is still arriving]`);
+    {
+      // A delivery moved to another of the order's jobs: its old row's delete
+      // and its new row's write go out beside the save of the list. The
+      // delete's answer carries the order as stored BEFORE the save, and could
+      // land after the save's answer had begun — when this page had already
+      // let go of the move's mark, so the delivery went back on its old job,
+      // for good: the save's answer, the order having come out as sent, did
+      // not name it.
+      const { ctx, state } = sandbox(src, page);
+      evalSlice(requireFn(src, 'savePurchaseOrders', page), ctx, `savePurchaseOrders from ${page}`);
+      vm.runInContext("_poBaseUpdatedAt = '2026-11-18T12:00:00.000Z'", ctx);
+      const tick = () => new Promise(r => setTimeout(r, 0));
+      const SPLITS = [{ id: 's1', project_id: 'job2', cost_code: '', sub_code: '' }, { id: 's2', project_id: 'job3', cost_code: '', sub_code: '' }];
+      const before = order({ id: 'po9', po_number: 'PO-0009', splits: SPLITS,
+        lines: [{ id: 'M1', qty: '4', unit_cost: '5', split: 's1', po_row_id: 'rOld' }] });
+      ctx.purchaseOrders.push(JSON.parse(JSON.stringify(before)));
+      const m1 = () => ctx.purchaseOrders.find(p => p.id === 'po9').lines.find(l => l.id === 'M1');
+      // The move, as _poMoveLine makes it.
+      m1().split = 's2';
+      m1().po_row_id = 'rNew';
+      ctx._poNoteLineEdit('po9', 'M1', 'split');
+      ctx._poNoteLinkChange('M1', 'rNew');
+      let release;
+      const body = new Promise(r => { release = r; });
+      state.reply = () => Promise.resolve({ ok: true, status: 200, json: () => body });
+      ctx.savePurchaseOrders();
+      await tick();                                   // the save's answer has begun
+      const stale = JSON.parse(JSON.stringify(before));
+      stale.lines[0].po_row_id = null;                 // the old row gone, the new one not yet linked
+      ctx._drAdoptPO(json({ ok: true, po: { updatedAt: '2026-11-18T12:00:05.000Z', orders: [stale] } }));
+      await tick();
+      release({ ok: true, updatedAt: '2026-11-18T12:00:06.000Z', orders: [] });
+      await tick(); await tick();
+      assert('the delivery stays on the job it was moved to, on its new row',
+        m1().split === 's2' && m1().po_row_id === 'rNew', JSON.stringify(m1()));
+      assert('  and the move\'s mark goes once the save is in', !ctx._poLineEditPending('po9', 'M1', 'split'));
+      ctx._drAdoptPO(json({ ok: true, po: { updatedAt: '2026-11-18T12:00:05.500Z', orders: [stale] } }));
+      await tick();
+      assert('  after which an answer from before the save is not taken',
+        m1().split === 's2' && m1().po_row_id === 'rNew', JSON.stringify(m1()));
+    }
+
     console.log(`\n[${page}: deleting a row]`);
     {
       // The page's own row-write functions, against a stub network.

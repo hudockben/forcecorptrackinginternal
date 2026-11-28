@@ -251,33 +251,53 @@ function sanitizeSplits(po, division) {
 
 /**
  * Put back any split a delivery of `po` is on that `po` no longer lists,
- * taken from the first of `copies` that has it. Mutates `po`; returns how
- * many came back.
+ * taken from the first of `copies` that has it — and the job of one `po`
+ * still lists with its job cleared, from the first copy that has it on a job.
+ * Mutates `po`; returns how many came back.
  *
- * A page removes a split only once nothing is on it. But its copy can be a
- * minute behind: a delivery somebody else put on that job meanwhile is merged
- * back (unseenLines), and without its split it would fall onto the order's
- * own job — moving that field's cost onto another field with nobody asking.
+ * A page removes a split, or clears its job, only once nothing is on it. But
+ * its copy can be a minute behind: a delivery somebody else put on that job
+ * meanwhile is merged back (unseenLines), and without its split — or with a
+ * split that has no job — it would fall onto the order's own job, moving
+ * that field's cost onto another field with nobody asking.
  */
 function keepSplitsInUse(po, copies) {
   if (!po || !Array.isArray(po.lines)) return 0;
-  const have = new Set(poSplits(po).map(s => s.id));
-  const want = [];
+  const listed = poSplits(po);
+  const have = new Set(listed.map(s => s.id));
+  const jobless = new Set(listed.filter(s => !s.project_id).map(s => s.id));
+  const want = [];    // on a delivery, not on the order
+  const rejob = [];   // on a delivery, on the order without a job
   for (const l of po.lines) {
     const id = _txt(l && l.split).trim();
-    if (id && !have.has(id) && !want.includes(id)) want.push(id);
+    if (!id) continue;
+    if (!have.has(id)) { if (!want.includes(id)) want.push(id); }
+    else if (jobless.has(id) && !rejob.includes(id)) rejob.push(id);
   }
-  if (!want.length) return 0;
+  if (!want.length && !rejob.length) return 0;
+  const findIn = (id, onAJob) => {
+    for (const c of (copies || [])) {
+      const s = poSplits(c).find(x => x.id === id && (!onAJob || x.project_id));
+      if (s) return s;
+    }
+    return null;
+  };
+  let next = listed;
+  let count = 0;
+  for (const id of rejob) {
+    const s = findIn(id, true);
+    if (!s) continue;
+    next = next.map(x => (x.id === id ? { ...x, project_id: s.project_id, cost_code: s.cost_code, sub_code: s.sub_code } : x));
+    count++;
+  }
   const back = [];
   for (const id of want) {
-    for (const c of (copies || [])) {
-      const s = poSplits(c).find(x => x.id === id);
-      if (s) { back.push(s); have.add(id); break; }
-    }
+    const s = findIn(id, false);
+    if (s) { back.push(s); count++; }
   }
-  if (!back.length) return 0;
-  po.splits = poSplits(po).concat(back);
-  return back.length;
+  if (!count) return 0;
+  po.splits = next.concat(back);
+  return count;
 }
 
 /**
@@ -311,7 +331,11 @@ function movedLineIds(po, was) {
  * the one this save stored: the delivery counted twice.
  *
  * Never a Daily Tracking delivery's row (the field's, not the order's), nor a
- * payroll-injected one.
+ * payroll-injected one — nor one on a job `next` no longer books to: nothing
+ * records that one on the order again, and whether it should go is the
+ * question of the order's own job moving under a save, which this does not
+ * settle. (Most such rows never get here: a delivery somebody moved or gave a
+ * row in the window keeps THEIR link — see upsertPO.)
  */
 function supersededRowIds(stored, next) {
   const kept = new Set(((next && Array.isArray(next.lines)) ? next.lines : [])
@@ -319,6 +343,7 @@ function supersededRowIds(stored, next) {
   const out = [];
   for (const l of ((stored && Array.isArray(stored.lines)) ? stored.lines : [])) {
     if (!l || isDailyLine(l) || !l.po_row_id || isInjectedRowId(l.po_row_id)) continue;
+    if (!poHasProject(next, lineJob(stored, l).project_id)) continue;
     const id = String(l.po_row_id);
     if (!kept.has(id) && !out.includes(id)) out.push(id);
   }
@@ -1907,7 +1932,10 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
   // job or number it changed; settling against the old list's copy would
   // quietly move the order back.
   settleHeaderFields(po, targetCopy || prevPO, headerEdits);
-  // ...the order's other jobs, job by job (settleSplits)...
+  // ...the order's other jobs, job by job (settleSplits) — the page's own copy
+  // of them kept first: a job the page just put a delivery on, that somebody
+  // took off the order meanwhile, comes back from it (keepSplitsInUse below).
+  const sentSplits = poSplits(po);
   settleSplits(po, targetCopy || prevPO, headerEdits);
   // ...and every delivery's, key by key, for the same reason: the rows below
   // are written from these figures. See settleLineFigures.
@@ -1936,7 +1964,9 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
   // somebody else still had a delivery on it. Only from the copy in THIS
   // division's list: a split names a job of its division, and an order moving
   // in from another division must not bring that division's jobs with it.
-  if (PO_JOB_DIVISIONS.includes(division)) keepSplitsInUse(po, targetCopy ? [targetCopy] : []);
+  if (PO_JOB_DIVISIONS.includes(division)) {
+    keepSplitsInUse(po, [targetCopy, prevDivision || !sentSplits.length ? null : { splits: sentSplits }].filter(Boolean));
+  }
 
   // The order's Daily Tracking lines are whatever its job's rows say — never
   // what this copy happened to carry. A purchasing tab a minute behind still
@@ -2003,6 +2033,14 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
   // (supersededRowIds). Worked out again on each attempt — a lost
   // compare-and-set writes over a different copy.
   let superseded = [];
+  // Each raised delivery's link and job as this call wrote its rows — put back
+  // at the start of every attempt, before that attempt decides whose stand.
+  const ownLinks = new Map((Array.isArray(po.lines) ? po.lines : [])
+    .filter(l => l && l.id != null && !isDailyLine(l))
+    .map(l => [String(l.id), { po_row_id: l.po_row_id, split: l.split }]));
+  // This call's own rows for deliveries whose link it gave up to another
+  // writer's: deleted once the order is stored. Worked out on each attempt.
+  let ceded = [];
   // The division move syncPOCostRows tests for, recomputed here because it is
   // local to that function. A move of a JOB is judged per delivery below, the
   // same way: the order's own job moving moves the deliveries on it, a split's
@@ -2080,9 +2118,47 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
       dropShadowedDailyLines(po);
     }
 
-    // A delivery somebody moved to another job while this call was writing
-    // rows from its earlier read is stored where THIS save wrote its row, so
-    // the row the other save raised on the new job goes once this is stored.
+    // A delivery whose link somebody else changed while this call was writing
+    // its rows from the earlier read — its first row raised as its quantity
+    // was typed, or a move to another of the order's jobs — keeps THEIR link
+    // and job, when this save neither moved it nor wrote its figures, and its
+    // job here is the one they put it on. Storing this call's link over theirs
+    // left the delivery naming the row they had replaced, or none, and their
+    // new row read as a stray. This call's own row for it goes instead.
+    ceded = [];
+    (Array.isArray(po.lines) ? po.lines : []).forEach(l => {
+      const own = l && l.id != null && ownLinks.get(String(l.id));
+      if (!own) return;
+      l.po_row_id = own.po_row_id;
+      if (own.split === undefined) delete l.split; else l.split = own.split;
+    });
+    if (lineEdits && !movedDivision) {
+      const topById = new Map(((targetCopy || prevPO) && Array.isArray((targetCopy || prevPO).lines) ? (targetCopy || prevPO).lines : [])
+        .filter(l => l && l.id != null).map(l => [String(l.id), l]));
+      const nowById = new Map((Array.isArray(list[idx].lines) ? list[idx].lines : [])
+        .filter(l => l && l.id != null).map(l => [String(l.id), l]));
+      const written = rows.figuresWritten || new Set();
+      for (const l of (Array.isArray(po.lines) ? po.lines : [])) {
+        if (!l || l.id == null || isDailyLine(l) || !ownLinks.has(String(l.id))) continue;
+        const id = String(l.id);
+        const now = nowById.get(id);
+        if (!now || isDailyLine(now) || !now.po_row_id || isInjectedRowId(now.po_row_id)) continue;
+        const theirs = String(now.po_row_id);
+        const top = topById.get(id);
+        if (theirs === String((top && top.po_row_id) || '') || theirs === String(l.po_row_id || '')) continue;
+        const marks = lineEdits.get(id);
+        if ((marks && marks.has('split')) || written.has(id)) continue;
+        const probe = { ...l };
+        if (now.split) probe.split = now.split; else delete probe.split;
+        if (lineJob(po, probe).project_id !== lineJob(list[idx], now).project_id) continue;
+        if (l.po_row_id && !isInjectedRowId(l.po_row_id) && String(l.po_row_id) !== theirs) ceded.push(String(l.po_row_id));
+        l.po_row_id = theirs;
+        if (now.split) l.split = now.split; else delete l.split;
+      }
+    }
+    // What is left: a row the copy being written over names that this one
+    // does not, on one of the order's jobs — another save's row for a delivery
+    // this save moved or re-figured itself. It goes once this is stored.
     superseded = supersededRowIds(list[idx], po);
 
     // Replaced in place. The purchase-order tables sort by the time in the
@@ -2112,7 +2188,7 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
 
   // The order is stored, so the rows its old deliveries left behind can go.
   let removed = 0;
-  try { removed = await deletePORows(sql, companyCode, (rows.staleIds || []).concat(lateStale, superseded)); }
+  try { removed = await deletePORows(sql, companyCode, (rows.staleIds || []).concat(lateStale, superseded, ceded)); }
   catch (err) { console.error('[po-sync] could not clear replaced cost rows:', err.message); }
 
   await mirrorOnePO(sql, companyCode, division, po);
