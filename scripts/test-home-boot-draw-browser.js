@@ -2,7 +2,7 @@
 'use strict';
 /**
  * The Home tab fills in as soon as its own reads are in, and again when the
- * older daily rows land — on Turf and Paving, in a real browser.
+ * older daily rows land — on Turf, Paving and Kiewit, in a real browser.
  *
  * Run: node scripts/test-home-boot-draw-browser.js
  *      (skips cleanly when playwright is not installed: npm i --no-save playwright)
@@ -20,8 +20,8 @@
  * finish, and the background read of the older rows is held on its own:
  *
  *   - Home shows the jobs' recent spend while the rest of the boot is still out,
- *     and on Turf its first figures already count the bid lines each job's
- *     Construction Schedule has closed out (projected profit);
+ *     and where the page reads Construction Schedules at boot its first figures
+ *     already count the bid lines a schedule has closed out (projected profit);
  *   - the older rows, once they land, are drawn with no tab click;
  *   - not while the caret is in a box on the page — what is being typed is
  *     left alone — but as soon as it is left;
@@ -58,18 +58,37 @@ const ok = (l, c, d) => {
 };
 
 const TOKEN = 'x.y.z';
-// `own`: the keys Home draws from. Paving reads no schedules at boot and no
-// infill inventory (that tab reads its own).
+// `own`: the keys Home draws from, answered at once. `cs`: the key prefix of
+// the Construction Schedules the page reads at boot (Paving reads none). `fig`:
+// the Home figures checked — a stage tile's data-sb on Turf and Paving, a
+// metric-strip label on Kiewit — each with the values it should read:
+//   recent — the In Progress job's spend, from the last 90 days of rows;
+//   profit — projected profit, with the job's one bid line closed out on its
+//            schedule ($200,000 spent is its cost; open, it would project
+//            $1,000,000);
+//   older  — a figure the finished job's rows from 2025 move: before they
+//            land, and after.
 const PAGES = [
-  { file: 'tracker.html', division: 'turf', prefix: 'fct_', schedules: true,
-    own: ['fct_projects_index', 'fct_cost_rows', 'fct_inventory'] },
-  { file: 'paving.html', division: 'paving', prefix: 'fct_paving_', schedules: false,
-    own: ['fct_paving_projects_index', 'fct_paving_cost_rows'] },
+  { file: 'tracker.html', division: 'turf', prefix: 'fct_', cs: 'fct_conschedule_',
+    own: ['fct_projects_index', 'fct_cost_rows', 'fct_inventory'],
+    fig: { recent: ['ip|*|actual', '$200,000'], profit: ['ip|*|profit', '$1,950,000'],
+           older: ['done|*|actual', '$0', '$400,000'] } },
+  { file: 'paving.html', division: 'paving', prefix: 'fct_paving_', cs: null,
+    own: ['fct_paving_projects_index', 'fct_paving_cost_rows'],
+    fig: { recent: ['ip|*|actual', '$200,000'],
+           older: ['done|*|actual', '$0', '$400,000'] } },
+  // Kiewit keeps one metric strip: spend on the jobs in progress, projected
+  // profit over the book (Mt Lebanon adds $146,600 at its bid margin), and GP
+  // earned to date across every job with spend, which the finished job joins
+  // once its rows are in ($1,100,000 − $400,000).
+  { file: 'kiewit-pinetree.html', division: 'kiewit', prefix: 'fct_kiewit_', cs: 'fct_kiewit_conschedule_',
+    own: ['fct_kiewit_projects_index', 'fct_kiewit_cost_rows'],
+    fig: { recent: ['Total Actual Spend', '$200,000'], profit: ['Total Projected Profit', '$2,096,600'],
+           older: ['Total GP Earned to Date', '$1,950,000', '$2,650,000'] } },
 ];
 
 // ── The book ────────────────────────────────────────────────────────────────
-// Ten square yards bid, two put in: with the line open, its spend projects to
-// $1,000,000; closed out on the schedule, the $200,000 spent is its cost.
+// Ten square yards bid, two put in.
 const job = (id, name, status, contract, unitCost, o = {}) => ({
   id, 'project-name': name, status, 'contract-value': String(contract),
   'start-date': o.start || '', 'end-date': o.end || '',
@@ -94,11 +113,6 @@ const ROWS = [
 const SCHEDULE = { rows: [{ id: 't1', kind: 'task', code: '100', subcode: 'Turf', status: 'Complete', pct: 100 }] };
 
 const gate = () => { let open; const p = new Promise(r => { open = r; }); return { p, open }; };
-const TILE = {
-  ipActual: '#home-content [data-sb="ip|*|actual"] .home-metric-value',
-  ipProfit: '#home-content [data-sb="ip|*|profit"] .home-metric-value',
-  doneActual: '#home-content [data-sb="done|*|actual"] .home-metric-value',
-};
 
 /**
  * Opens a division page with the Home tab's own reads answered at once and
@@ -114,7 +128,7 @@ async function boot(browser, cfg, opts = {}) {
   const errors = [], reads = [];
   page.on('pageerror', e => errors.push(e.message));
   page.on('dialog', d => d.dismiss().catch(() => {}));
-  await page.addInitScript(({ t, division, cacheKey, cached, tiles }) => {
+  await page.addInitScript(({ t, division, cacheKey, cached, fig }) => {
     localStorage.setItem('fct_token', t);
     localStorage.setItem('fct_user', JSON.stringify({ id: 7, username: 'hudockben', role: 'admin',
       companyCode: 'FCT', isPlatformAdmin: true, allowedDivisions: ['turf', 'paving', 'kiewit'] }));
@@ -122,17 +136,26 @@ async function boot(browser, cfg, opts = {}) {
     // This browser's copy of the job list, as a returning user has one: the
     // job records with no daily rows in them.
     if (cached) localStorage.setItem(cacheKey, JSON.stringify(cached));
-    // Every value the In Progress tiles take, in order, until it changes no more.
-    window.__ipDraws = [];
+    // A Home figure by its stage tile (data-sb) or its metric-strip label.
+    window.__fig = key => {
+      const item = key.includes('|')
+        ? document.querySelector(`#home-content [data-sb="${key}"]`)
+        : [...document.querySelectorAll('#home-content .home-metric-item')]
+            .find(x => (x.querySelector('.home-metric-label') || {}).textContent === key);
+      const v = item && item.querySelector('.home-metric-value');
+      return v ? v.textContent.trim() : null;
+    };
+    // Every value the recent-spend and profit figures take, in order.
+    window.__draws = [];
     new MutationObserver(() => {
-      const a = document.querySelector(tiles.ipActual), p = document.querySelector(tiles.ipProfit);
-      if (!a) return;
-      const v = { actual: a.textContent.trim(), profit: p ? p.textContent.trim() : '' };
-      const last = window.__ipDraws[window.__ipDraws.length - 1];
-      if (!last || last.actual !== v.actual || last.profit !== v.profit) window.__ipDraws.push(v);
+      const recent = window.__fig(fig.recent[0]);
+      if (recent === null) return;
+      const v = { recent, profit: fig.profit ? window.__fig(fig.profit[0]) : '' };
+      const last = window.__draws[window.__draws.length - 1];
+      if (!last || last.recent !== v.recent || last.profit !== v.profit) window.__draws.push(v);
     }).observe(document, { subtree: true, childList: true, characterData: true });
   }, { t: TOKEN, division: cfg.division, cacheKey: cfg.prefix + 'projects@FCT/hudockben',
-       cached: opts.robot ? null : PROJECTS, tiles: TILE });
+       cached: opts.robot ? null : PROJECTS, fig: cfg.fig });
   let fullReads = 0;
   await page.route('**/api/**', async route => {
     const req = route.request();
@@ -152,11 +175,11 @@ async function boot(browser, cfg, opts = {}) {
     if (key === '_batch') {
       const values = {};
       for (const pr of [...PROJECTS, RECOVERED]) if (keys.includes(cfg.prefix + 'project_' + pr.id)) values[cfg.prefix + 'project_' + pr.id] = pr;
-      if (keys.includes('fct_conschedule_ip1')) values.fct_conschedule_ip1 = SCHEDULE;
+      if (cfg.cs && keys.includes(cfg.cs + 'ip1')) values[cfg.cs + 'ip1'] = SCHEDULE;
       return json({ values });
     }
     if (key === cfg.prefix + 'projects_index') return json({ value: PROJECTS.map(pr => pr.id) });
-    if (cfg.own.includes(key) || key.startsWith('fct_conschedule_')) return json({ value: null });
+    if (cfg.own.includes(key) || (cfg.cs && key.startsWith(cfg.cs))) return json({ value: null });
     // Everything else the boot reads waits: the boot cannot finish before it.
     if (!opts.robot) await rest.p;
     if (key === cfg.prefix + 'projects') return json({ value: opts.recovered ? [RECOVERED] : null });
@@ -165,34 +188,37 @@ async function boot(browser, cfg, opts = {}) {
   });
   await page.goto((await BASE) + '/' + cfg.file + (opts.robot ? '?autoreport=1' : ''));
   await page.evaluate(() => { window.__bootSettled = false; _bootReady.then(() => { window.__bootSettled = true; }, () => {}); });
-  const text = sel => page.evaluate(s => { const el = document.querySelector(s); return el ? el.textContent.trim() : null; }, sel);
-  const waitFor = (sel, want, timeout = 8000) => page.waitForFunction(([s, w]) => {
-    const el = document.querySelector(s);
-    return el && el.textContent.trim() === w;
-  }, [sel, want], { timeout }).then(() => true, () => false);
-  return { ctx, page, errors, reads, rest, older, olderAsked, text, waitFor };
+  const fig = key => page.evaluate(k => window.__fig(k), key);
+  const waitFig = (key, want, timeout = 8000) => page.waitForFunction(([k, w]) => window.__fig(k) === w,
+    [key, want], { timeout }).then(() => true, () => false);
+  const schedulesRead = () => {
+    const batched = reads.filter(r => r.key === '_batch').flatMap(r => r.keys).filter(k => k.startsWith(cfg.cs));
+    const single  = reads.filter(r => r.key.startsWith(cfg.cs)).map(r => r.key);
+    return { batched, single };
+  };
+  return { ctx, page, errors, reads, rest, older, olderAsked, fig, waitFig, schedulesRead };
 }
 
 async function run(browser, cfg) {
   console.log(`\n${cfg.file}`);
+  const [recentKey, recentWant] = cfg.fig.recent;
+  const [olderKey, olderBefore, olderAfter] = cfg.fig.older;
 
   // ── Home's own reads in, the rest of the boot still out ──
   {
     const b = await boot(browser, cfg);
-    const early = await b.waitFor(TILE.ipActual, '$200,000');
+    const early = await b.waitFig(recentKey, recentWant);
     ok("Home shows the jobs' recent spend while the rest of the boot is still out", early,
-      `In Progress Actual Spend reads ${await b.text(TILE.ipActual)}`);
+      `${recentKey} reads ${await b.fig(recentKey)}`);
     ok('  (the boot itself has not finished)', !(await b.page.evaluate(() => window.__bootSettled)));
     ok('  and no tab was opened to get it there', await b.page.evaluate(() => activeTab === 'home'));
-    if (cfg.schedules) {
-      const draws = await b.page.evaluate(() => window.__ipDraws);
-      const first = draws.find(d => d.actual === '$200,000');
-      // Closed out on its schedule, the line's $200,000 spent is its cost:
-      // $2,150,000 − $200,000. Open, it would project $1,000,000.
-      ok("  its first figures already count the bid lines each job's schedule closed out",
-        first && first.profit === '$1,950,000', JSON.stringify(draws));
+    if (cfg.fig.profit) {
+      const draws = await b.page.evaluate(() => window.__draws);
+      const first = draws.find(d => d.recent === recentWant);
+      ok("  its first figures already count the bid lines a job's schedule closed out",
+        first && first.profit === cfg.fig.profit[1], JSON.stringify(draws));
     }
-    ok('  a finished job has no older rows yet', (await b.text(TILE.doneActual)) === '$0', await b.text(TILE.doneActual));
+    ok('  the finished job has no older rows yet', (await b.fig(olderKey)) === olderBefore, await b.fig(olderKey));
 
     // The older rows are asked for in the background; hold them while the
     // rest of the boot finishes, so the boot's own last draw comes first.
@@ -200,16 +226,16 @@ async function run(browser, cfg) {
     b.rest.open();
     await b.page.evaluate(() => _bootReady);
     ok('  the rest of the boot then finishes', await b.page.evaluate(() => window.__bootSettled));
-    ok('  with the finished job still on the last 90 days', (await b.text(TILE.doneActual)) === '$0', await b.text(TILE.doneActual));
+    ok('  with the finished job still on the last 90 days', (await b.fig(olderKey)) === olderBefore, await b.fig(olderKey));
 
     b.older.open();
-    const drawn = await b.waitFor(TILE.doneActual, '$400,000');
-    ok('the older rows, once in, are drawn with no tab click', drawn,
-      `Completed Actual Cost reads ${await b.text(TILE.doneActual)}`);
+    const drawn = await b.waitFig(olderKey, olderAfter);
+    ok('the older rows, once in, are drawn with no tab click', drawn, `${olderKey} reads ${await b.fig(olderKey)}`);
     ok('  still on the Home tab', await b.page.evaluate(() => activeTab === 'home'));
-    if (cfg.schedules) {
-      const asked = b.reads.filter(r => r.key === '_batch').flatMap(r => r.keys).filter(k => k.startsWith('fct_conschedule_'));
-      ok('  every schedule read once, in one request', asked.length === 3 && new Set(asked).size === 3, asked.join(', '));
+    if (cfg.cs) {
+      const { batched, single } = b.schedulesRead();
+      ok('  every schedule read once, in one request', batched.length === 3 && new Set(batched).size === 3 && !single.length,
+        `batch: ${batched.join(', ')} · single: ${single.join(', ')}`);
     }
     ok('  no page errors', !b.errors.length, b.errors.join(' | '));
     await b.ctx.close();
@@ -218,7 +244,7 @@ async function run(browser, cfg) {
   // ── The caret in a box: the redraw waits for it to leave ──
   {
     const b = await boot(browser, cfg);
-    await b.waitFor(TILE.ipActual, '$200,000');
+    await b.waitFig(recentKey, recentWant);
     await b.olderAsked.p;
     b.rest.open();
     await b.page.evaluate(() => _bootReady);
@@ -227,24 +253,23 @@ async function run(browser, cfg) {
     b.older.open();
     await b.page.evaluate(() => _drBackfillDone);
     await b.page.waitForTimeout(1500);
-    ok('with the caret in a box, the older rows wait to be drawn', (await b.text(TILE.doneActual)) === '$0',
-      `Completed Actual Cost reads ${await b.text(TILE.doneActual)}`);
+    ok('with the caret in a box, the older rows wait to be drawn', (await b.fig(olderKey)) === olderBefore,
+      `${olderKey} reads ${await b.fig(olderKey)}`);
     ok('  and what is being typed is left alone',
       await b.page.evaluate(() => document.activeElement && document.activeElement.id === 'dl-input'
         && document.activeElement.value === 'Pour footings'));
     await b.page.evaluate(() => document.activeElement.blur());
-    ok('  drawn once the box is left', await b.waitFor(TILE.doneActual, '$400,000', 4000),
-      `Completed Actual Cost reads ${await b.text(TILE.doneActual)}`);
+    ok('  drawn once the box is left', await b.waitFig(olderKey, olderAfter, 4000), `${olderKey} reads ${await b.fig(olderKey)}`);
     ok('  no page errors', !b.errors.length, b.errors.join(' | '));
     await b.ctx.close();
   }
 
-  if (!cfg.schedules) return;
+  if (!cfg.cs) return;
 
   // ── A job a recovery pass brings back ──
   {
     const b = await boot(browser, cfg, { recovered: true });
-    await b.waitFor(TILE.ipActual, '$200,000');
+    await b.waitFig(recentKey, recentWant);
     await b.olderAsked.p;
     b.rest.open();
     await b.page.evaluate(() => _bootReady);
@@ -253,10 +278,9 @@ async function run(browser, cfg) {
       read: _bidCsComplete.rec1 instanceof Set,
     }));
     ok('a job a recovery pass brings back after the schedules were read has its own read', r.back && r.read, JSON.stringify(r));
-    const batched = b.reads.filter(x => x.key === '_batch').flatMap(x => x.keys).filter(k => k.startsWith('fct_conschedule_'));
-    const single  = b.reads.filter(x => x.key.startsWith('fct_conschedule_')).map(x => x.key);
-    ok('  and the others are not read again', batched.length === 3 && !batched.includes('fct_conschedule_rec1')
-      && single.length === 1 && single[0] === 'fct_conschedule_rec1', `batch: ${batched.join(', ')} · single: ${single.join(', ')}`);
+    const { batched, single } = b.schedulesRead();
+    ok('  and the others are not read again', batched.length === 3 && !batched.includes(cfg.cs + 'rec1')
+      && single.length === 1 && single[0] === cfg.cs + 'rec1', `batch: ${batched.join(', ')} · single: ${single.join(', ')}`);
     b.older.open();
     ok('  no page errors', !b.errors.length, b.errors.join(' | '));
     await b.ctx.close();
@@ -269,7 +293,7 @@ async function run(browser, cfg) {
     ok("the report robot's boot still settles", settled === true, settled);
     ok('  with every job\'s schedule read', await b.page.evaluate(() =>
       ['ip1', 'aw1', 'c1'].every(id => _bidCsComplete[id] instanceof Set) && _bidCsComplete.ip1.size === 1));
-    ok('  and the Home tab not drawn', await b.page.evaluate(() => !document.querySelector('#home-content .stage-card')));
+    ok('  and the Home tab not drawn', await b.page.evaluate(() => !document.querySelector('#home-content .home-metric-item')));
     ok('  no page errors', !b.errors.length, b.errors.join(' | '));
     await b.ctx.close();
   }
