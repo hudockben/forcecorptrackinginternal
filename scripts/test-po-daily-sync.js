@@ -247,7 +247,9 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
       fetch: async (url, opts) => { state.fetches.push({ url, opts }); return state.reply ? state.reply(url, opts) : { ok: false, status: 500 }; },
     });
     ctx.getProj = id => ctx.projectsList.find(p => p.id === id);
-    ctx.window = { addEventListener() {} };
+    // Listeners the page registers on window, kept so a test can fire one.
+    ctx.__on = {};
+    ctx.window = { addEventListener(ev, fn) { (ctx.__on[ev] = ctx.__on[ev] || []).push(fn); } };
     // What this tab has changed and not yet stored — the block below keeps
     // those keys over the server's when it takes orders on.
     evalSlice(sliceSource(src, 'const _poEditedFields = Object.create(null);', '// Whether a read of the purchase orders has worked.',
@@ -487,6 +489,74 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
       ctx2._poNoteLineEdit('po11', 'W2', 'qty');
       ctx2.savePurchaseOrders();
       assert('  one with no such write goes at once, as before', state2.fetches.length === 1, state2.fetches.length);
+    }
+
+    console.log(`\n[${page}: a save waiting for its rows' writes is built before it waits]`);
+    {
+      const mk = () => {
+        const { ctx, state } = sandbox(src, page);
+        ctx.setTimeout = setTimeout;
+        evalSlice(requireFn(src, 'savePurchaseOrders', page), ctx, `savePurchaseOrders from ${page}`);
+        evalSlice('const _drRowWrites = {}; const _DR_WRITE_WAIT_MS = 20000; const _PO_ROW_WRITE_WAIT_MS = 5000;\n'
+          + requireFn(src, '_drWaitForWrites', page), ctx, `_drWaitForWrites from ${page}`);
+        return { ctx, state, writes: vm.runInContext('_drRowWrites', ctx) };
+      };
+      const tick = () => new Promise(r => setTimeout(r, 0));
+      const typed = ctx => {
+        ctx.purchaseOrders.push(order({ id: 'po13', po_number: 'PO-0013', lines: [{ id: 'Q1', qty: '8', unit_cost: '2', po_row_id: 'rQ1' }] }));
+        ctx._poNoteLineEdit('po13', 'Q1', 'qty');
+        ctx._poNoteLinkChange('Q1', 'rQ1');
+      };
+      // A read that replaces the whole list lands during the wait.
+      {
+        const { ctx, state, writes } = mk();
+        state.reply = () => new Promise(() => {});
+        typed(ctx);
+        let written; writes.rQ1 = new Promise(r => { written = r; });
+        ctx.savePurchaseOrders();
+        vm.runInContext("purchaseOrders = [" + JSON.stringify(order({ id: 'po13', po_number: 'PO-0013', lines: [{ id: 'Q1', qty: '', unit_cost: '2', po_row_id: null }] })) + "]", ctx);
+        written(); await tick(); await tick();
+        const sent = state.fetches[0] ? JSON.parse(state.fetches[0].opts.body) : null;
+        const q1 = sent && sent.purchaseOrders[0].lines.find(l => l.id === 'Q1');
+        assert('a list replaced while it waits changes nothing it sends', q1 && q1.qty === '8' && q1.po_row_id === 'rQ1', JSON.stringify(q1));
+      }
+      // The page is left during the wait.
+      {
+        const { ctx, state, writes } = mk();
+        state.reply = () => new Promise(() => {});
+        typed(ctx);
+        writes.rQ1 = new Promise(() => {});
+        ctx.savePurchaseOrders();
+        await tick();
+        assert('(nothing sent yet)', state.fetches.length === 0);
+        (ctx.__on.beforeunload || []).forEach(fn => fn({ preventDefault() {}, returnValue: undefined }));
+        const out = state.fetches[0];
+        const body = out ? JSON.parse(out.opts.body) : null;
+        assert('leaving the page sends it, as built, with keepalive', out && out.opts.keepalive === true && out.opts.method === 'PUT'
+          && body.purchaseOrders[0].lines[0].qty === '8', JSON.stringify(out && out.opts));
+      }
+      // A row raised during the wait: the save after this one waits for it.
+      {
+        const { ctx, state, writes } = mk();
+        state.reply = () => Promise.resolve({ ok: true, status: 200, json: async () => ({ ok: true, updatedAt: '2026-11-18T12:00:09.000Z', orders: [] }) });
+        typed(ctx);
+        let w1, w2;
+        writes.rQ1 = new Promise(r => { w1 = r; });
+        ctx.savePurchaseOrders();
+        ctx.purchaseOrders[0].lines.push({ id: 'Q2', qty: '3', unit_cost: '2', po_row_id: 'rQ2' });
+        ctx._poNoteLineEdit('po13', 'Q2', 'qty');
+        ctx._poNoteLinkChange('Q2', 'rQ2');
+        writes.rQ2 = new Promise(r => { w2 = r; });
+        ctx.savePurchaseOrders();
+        w1(); await tick(); await tick(); await tick(); await tick();
+        assert('the first goes once its row is in', state.fetches.length === 1, state.fetches.length);
+        const first = JSON.parse(state.fetches[0].opts.body);
+        assert('  without the delivery typed during its wait', !first.purchaseOrders[0].lines.some(l => l.id === 'Q2'), JSON.stringify(first.purchaseOrders[0].lines));
+        assert('  and the next, which carries that one, waits for ITS row', state.fetches.length === 1);
+        w2(); await tick(); await tick(); await tick();
+        const second = state.fetches[1] ? JSON.parse(state.fetches[1].opts.body) : null;
+        assert('  then goes', second && second.purchaseOrders[0].lines.some(l => l.id === 'Q2' && l.po_row_id === 'rQ2'), state.fetches.length);
+      }
     }
 
     console.log(`\n[${page}: a job's "Export POs" CSV evaluates no formula]`);

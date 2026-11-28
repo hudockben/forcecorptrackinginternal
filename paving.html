@@ -7374,6 +7374,10 @@ function _poForgetSentEdits(store, sent) {
 // stored ones — with this tab's marks already forgotten, so nothing put them
 // right. An edit made while a save is out is sent by one follow-up save.
 let _poSaving = false;
+// A save built and waiting for the writes of rows it links (savePurchaseOrders):
+// the one that goes when they are in, and the one leaving the page sends
+// (beforeunload) — nothing of it is out yet.
+let _poHeldSave = null;
 let _poSaveAgain = false;
 // The last save did not land and is owed again: the poll and a returning
 // connection retry it. The edits stay marked until one does.
@@ -7495,9 +7499,11 @@ if (typeof document !== 'undefined' && document.addEventListener) {
 // last try that outlives the tab, when it is small enough to carry.
 window.addEventListener('beforeunload', e => {
   if (!(_poSaving || _poSaveAgain || _poSaveFailed)) return;
-  if (_poSaveFailed && !_poSaving) {
+  // A save still waiting for its rows' writes has sent nothing: it goes now,
+  // as built — or one that failed gets a last try.
+  if (_poHeldSave || (_poSaveFailed && !_poSaving)) {
     try {
-      const sent = _poBuildSave();
+      const sent = _poHeldSave || _poBuildSave();
       if (sent.body.length < 60000) {
         fetch(`${API_BASE}/purchase-orders?division=paving`, {
           method: 'PUT', keepalive: true,
@@ -7642,34 +7648,47 @@ function _migratePOs(list = purchaseOrders) {
 // deliveries (savePurchaseOrders). A write that never settles must not hold
 // every save back, so after this the save goes as it always did.
 const _PO_ROW_WRITE_WAIT_MS = 5000;
-function savePurchaseOrders(afterRowWrites) {
+function savePurchaseOrders(held) {
   if (_poSaving) { _poSaveAgain = true; return; }
-  // A row this tab raised for a delivery — its first one, or one on the job it
-  // was moved to — is written beside the save that links it. A save landing
-  // first found no row behind the link: when the merge replaced it with one
-  // purchasing had raised, its delete missed, the row landed afterwards with
-  // nothing naming it, and it came back on the order as a second delivery. So
-  // the save waits for those writes first, for a few seconds at most.
-  if (!afterRowWrites && typeof _drRowWrites !== 'undefined' && typeof _drWaitForWrites === 'function') {
-    const own = [..._poLinkChanges.values()].filter(id => id && _drRowWrites[id]);
-    if (own.length) {
-      _poSaving = true;
-      Promise.race([_drWaitForWrites(own), new Promise(ok => setTimeout(ok, _PO_ROW_WRITE_WAIT_MS))])
-        .then(() => { _poSaving = false; _poSaveAgain = false; savePurchaseOrders(true); });
+  _poSaving = true;
+  let sent = held || null;
+  if (!sent) {
+    try {
+      sent = _poBuildSave();
+    } catch (err) {
+      // Never left holding the queue: a save that cannot even be built is a
+      // failed one, and the poll tries it again.
+      console.warn('[po] could not build the purchase-order save:', err && err.message);
+      _poSaving = false;
+      _poSaveFailed = true;
       return;
     }
-  }
-  _poSaving = true;
-  let sent;
-  try {
-    sent = _poBuildSave();
-  } catch (err) {
-    // Never left holding the queue: a save that cannot even be built is a
-    // failed one, and the poll tries it again.
-    console.warn('[po] could not build the purchase-order save:', err && err.message);
-    _poSaving = false;
-    _poSaveFailed = true;
-    return;
+    // A row this tab raised for a delivery — its first one, or one on the job
+    // it was moved to — is written beside the save that links it. A save
+    // landing first found no row behind the link: when the merge replaced it
+    // with one purchasing had raised, its delete missed, the row landed
+    // afterwards with nothing naming it, and it came back on the order as a
+    // second delivery. So the save waits for those writes, a few seconds at
+    // most — built FIRST, so a read that replaces the list meanwhile changes
+    // nothing it carries. A row raised during the wait is the next save's,
+    // and that save waits for it in turn.
+    if (typeof _drRowWrites !== 'undefined' && typeof _drWaitForWrites === 'function') {
+      const own = [];
+      sent.links.forEach(lines => lines.forEach((rowId, lineId) => {
+        if (rowId && _drRowWrites[rowId] && _poLinkChanges.get(lineId) === String(rowId)) own.push(rowId);
+      }));
+      if (own.length) {
+        _poHeldSave = sent;
+        Promise.race([_drWaitForWrites(own), new Promise(ok => setTimeout(ok, _PO_ROW_WRITE_WAIT_MS))])
+          .then(() => {
+            if (_poHeldSave !== sent) return;
+            _poHeldSave = null;
+            _poSaving = false;
+            savePurchaseOrders(sent);
+          });
+        return;
+      }
+    }
   }
   const wasFailing = _poSaveFailed;
   const failed = (show) => {
