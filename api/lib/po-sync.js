@@ -1991,9 +1991,19 @@ async function upsertPO(sql, { companyCode, division, po, from, deletedLineIds, 
   // the settles above — their deliveries' rows would be raised under the new
   // division on the old one's job ids. The page clears them when it moves an
   // order; a copy from before the order was split never had them to clear.
+  // Only those, though: the page goes on sending the move (from=) until one
+  // lands, and the jobs the clerk added in the NEW division meanwhile — the
+  // page's own adds, or ones an earlier attempt stored there — ride with it.
   if (prevDivision) {
-    delete po.splits;
-    (Array.isArray(po.lines) ? po.lines : []).forEach(l => { if (l && 'split' in l) delete l.split; });
+    const fromOld = new Set(poSplits(prevPO).map(s => s.id));
+    const inTarget = new Set(poSplits(targetCopy).map(s => s.id));
+    const keep = poSplits(po).filter(s => !fromOld.has(s.id)
+      && (inTarget.has(s.id) || (headerEdits && headerEdits.has(`split:${s.id}:add`))));
+    if (keep.length) po.splits = keep; else delete po.splits;
+    const kept = new Set(keep.map(s => s.id));
+    (Array.isArray(po.lines) ? po.lines : []).forEach(l => {
+      if (l && 'split' in l && !kept.has(_txt(l.split).trim())) delete l.split;
+    });
   }
 
   // syncPOCostRows makes the same call; made here first because the Daily

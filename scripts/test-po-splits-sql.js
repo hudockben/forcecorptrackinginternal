@@ -791,6 +791,29 @@ const ORDER = () => ({
       ok('each job is on the order once — the one both added, and each one\'s own', r.body.ok && JSON.stringify(jobs) === '["jb","jc","jd"]', po.splits);
     }
 
+    console.log('\n[a move to another division, retried with a job added in the new one]');
+    {
+      // On turf with a turf job beside its own. The page moves it to paving;
+      // the move is still being retried when the clerk adds a paving job and
+      // puts a delivery on it, so one save carries all of it (from=turf).
+      await post({ purchaseOrder: SOCK('rx21', 'PO-0221', [dl('k1', 10), dl('k2', 4, 's1')], TWO_JOBS().slice(0, 1)) });
+      const page = JSON.parse(JSON.stringify(await stored('rx21')));
+      page.project_id = 'pv1'; page.cost_code = 'PC'; page.sub_code = 'PS'; page.po_number = 'PV-0221';
+      page.splits = [{ id: 'sP', project_id: 'pv2', cost_code: 'PC', sub_code: 'PS2' }];
+      lineOf(page, 'k2').split = 'sP';
+      r = await api('POST', '/api/purchase-orders?division=paving&from=turf', { purchaseOrder: page,
+        editedFields: ['project_id', 'cost_code', 'sub_code', 'po_number', 'split:s1:remove', 'split:sP:add'], editedLineFields: { k2: ['split'] } });
+      const moved = await stored('rx21', 'paving');
+      ok('it lands in paving with the paving job the clerk added, and not the turf one', r.body.ok && moved
+        && JSON.stringify(poSync.poSplits(moved).map(x => [x.id, x.project_id])) === '[["sP","pv2"]]', moved && moved.splits);
+      const k2 = lineOf(moved, 'k2');
+      const k2row = k2 && k2.po_row_id ? await rowOf(k2.po_row_id) : null;
+      ok('  the delivery put on it is charged there, in paving', k2.split === 'sP' && k2row && k2row.division === 'paving' && k2row.project_id === 'pv2',
+        [k2, k2row]);
+      const left = await q("SELECT 1 FROM daily_tracking WHERE company_code = $1 AND division = 'turf' AND po_num = 'PO-0221'", [CO]);
+      ok('  and nothing is left on turf', !left.length && !(await stored('rx21', 'turf')));
+    }
+
     console.log('\n[a view-only account cannot save the list]');
     {
       const vid = (await q("INSERT INTO users (username, company_code, password_hash, role, division_roles) VALUES ('posplit_view', $1, 'x', 'level1', $2) RETURNING id",
