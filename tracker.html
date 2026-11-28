@@ -5371,8 +5371,10 @@ function cbRenderMenu(input) {
 /* Opt-in (data-cb-fixed="1" on the .cb) fixed-position menu so the dropdown
    escapes any overflow-clipping / horizontally-scrolling ancestor. The
    construction-schedule Code/Subcode comboboxes sit inside an overflow-x:auto
-   table wrapper that would otherwise clip the list, and so do the Purchase
-   Orders and Trucking sub code pickers; other cb callers are unaffected.
+   table wrapper that would otherwise clip the list, and so do the Trucking
+   sub code picker and every picker on the Purchase Orders tab (an order's
+   jobs table cut a job's list off under its "+ Add job" row); other cb
+   callers are unaffected.
    Coordinates are viewport-relative (no transformed ancestors on this page),
    and open upward when there isn't room below. */
 function _cbPositionFixed(input, menu) {
@@ -19432,10 +19434,10 @@ function renderPOTab() {
             <span style="font-family:monospace;font-size:0.78rem;color:var(--muted)">${escT(po.po_number)}</span>${badge}
           </td>
           <td style="padding:0.35rem 0.6rem;min-width:110px" onclick="event.stopPropagation()">${inp('date_created','date',po.date_created,po.id,null)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${cbHtml('projects', poProjName, '— none —', `data-po-id="${esc(po.id)}" data-po-field="project_id"${po.project_id ? ` data-cb-value="${esc(po.project_id)}"` : ''}`)}${splitChip}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${cbHtml('projects', poProjName, '— none —', `data-po-id="${esc(po.id)}" data-po-field="project_id"${po.project_id ? ` data-cb-value="${esc(po.project_id)}"` : ''}`, 'data-cb-fixed="1"')}${splitChip}</td>
           <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${esc(po.id)}" onclick="event.stopPropagation()">${cbHtml('po_subcodes:' + po.id, poSubLabel, po.project_id ? '— select —' : '— pick project first —', `data-po-id="${esc(po.id)}" data-po-field="sub_code_sel"${(po.cost_code || po.sub_code) ? ` data-cb-value="${esc((po.cost_code||'') + '||' + (po.sub_code||''))}"` : ''}`, 'data-cb-fixed="1"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${inp('title','text',po.title,po.id,null,'placeholder="Material / Description"')}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${cbHtml('suppliers', po.supplier || '', '— select —', `data-po-id="${esc(po.id)}" data-po-field="supplier"`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${cbHtml('suppliers', po.supplier || '', '— select —', `data-po-id="${esc(po.id)}" data-po-field="supplier"`, 'data-cb-fixed="1"')}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.8rem;color:var(--muted)" id="po-qty-${esc(po.id)}">${tot.qty > 0 ? fmt(tot.qty) : '—'}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--green);font-size:0.8rem;white-space:nowrap" id="po-amt-${esc(po.id)}">${tot.amt > 0 ? '$'+fmt(tot.amt) : '—'}</td>
           <td style="padding:0.35rem 0.6rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600;white-space:nowrap" id="po-tot-${esc(po.id)}">${tot.total > 0 ? '$'+fmt(tot.total) : '—'}</td>
@@ -19466,7 +19468,7 @@ function renderPOTab() {
               <div id="po-line-tax-${esc(line.id)}" style="text-align:right;font-size:0.62rem;color:var(--muted);padding-right:0.6rem">${lineTax > 0 ? '$'+fmt(lineTax) : ''}</div>
             </td>
             <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--yellow);font-size:0.8rem;font-weight:600" id="po-line-tot-${esc(line.id)}">${lineTot > 0 ? '$'+fmt(lineTot) : '—'}</td>
-            <td style="padding:0.3rem 0.5rem;min-width:130px">${cbHtml('employees', line.employee || '', '— select —', `data-po-id="${esc(po.id)}" data-line-id="${esc(line.id)}" data-line-field="employee"`)}</td>
+            <td style="padding:0.3rem 0.5rem;min-width:130px">${cbHtml('employees', line.employee || '', '— select —', `data-po-id="${esc(po.id)}" data-line-id="${esc(line.id)}" data-line-field="employee"`, 'data-cb-fixed="1"')}</td>
             ${_poLineFromDaily(line) ? `<td style="padding:0.3rem 0.4rem;text-align:center;color:var(--muted);font-size:0.7rem;opacity:0.6" title="Entered on Daily Tracking — change or clear the row's PO # there to take it off this order">&#128274;</td>`
               : perm.canEdit ? `<td style="padding:0.3rem 0.4rem;text-align:center"><button onclick="deletePOLine('${escJs(po.id)}','${escJs(line.id)}')" style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.8rem;opacity:0.6" title="Remove delivery">&#10005;</button></td>` : '<td></td>'}
           </tr>`;
@@ -19930,7 +19932,7 @@ function _poJobsHTML(po) {
     const n = (po.lines || []).filter(l => l && String(l.split || '') === String(s.id)).length;
     const projCell = edit
       ? `<div id="po-split-proj-${esc(s.id)}">${cbHtml('po_split_projects:' + po.id + '|' + s.id, _poProjName(s.project_id), '— pick a job —',
-          `data-po-id="${esc(po.id)}" data-po-split="${esc(s.id)}" data-split-field="project_id"${s.project_id ? ` data-cb-value="${esc(s.project_id)}"` : ''}`)}</div>`
+          `data-po-id="${esc(po.id)}" data-po-split="${esc(s.id)}" data-split-field="project_id"${s.project_id ? ` data-cb-value="${esc(s.project_id)}"` : ''}`, 'data-cb-fixed="1"')}</div>`
       : escT(_poProjName(s.project_id) || '—');
     const subLabel = _poCodeLabel(s.project_id, s.cost_code, s.sub_code);
     const subCell = edit

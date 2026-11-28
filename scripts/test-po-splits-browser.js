@@ -303,6 +303,35 @@ const rowsFor = async () => q("SELECT row_id, project_id, cost_code, sub_code, u
       await settled(page);
       const blank = (await stored()).splits.find(s => !s.project_id);
       ok('a blank job is added to the order', !!blank && (await stored()).splits.length === before + 1);
+      // A picker's list opens over everything around it. The jobs table and
+      // the order rows sit in scrolling boxes, which cut off a list drawn
+      // inside them: the job's list went under the "+ Add job" row.
+      const listOnTop = async sel => {
+        await page.evaluate(() => { document.activeElement && document.activeElement.blur && document.activeElement.blur(); });
+        await sleep(150);
+        await page.click(sel);
+        await sleep(200);
+        const out = await page.evaluate(sel => {
+          const menu = document.querySelector(sel)?.nextElementSibling;
+          const opt = menu && !menu.hidden && menu.querySelector('.cb-opt');
+          if (!opt) return { open: false };
+          const r = opt.getBoundingClientRect();
+          const hit = document.elementFromPoint(r.left + Math.min(20, r.width / 2), r.top + r.height / 2);
+          return { open: true, position: getComputedStyle(menu).position, onTop: !!hit && menu.contains(hit),
+            hit: hit ? hit.tagName + ' ' + (hit.textContent || '').trim().slice(0, 30) : null };
+        }, sel);
+        await page.keyboard.press('Escape');
+        await sleep(150);
+        return out;
+      };
+      const jobList = await listOnTop(`#po-split-proj-${blank.id} .cb-input`);
+      ok('  its Job list opens on top, not under the "+ Add job" row', jobList.open && jobList.position === 'fixed' && jobList.onTop, jobList);
+      await page.evaluate(() => { _poExpanded.delete('po385'); renderPOTab(); });
+      await sleep(300);
+      const supplierList = await listOnTop('[data-po-id="po385"][data-po-field="supplier"]');
+      ok('  so does the order\'s Supplier list, on the last order row with the order closed', supplierList.open && supplierList.onTop, supplierList);
+      await page.evaluate(() => { _poExpanded.add('po385'); renderPOTab(); });
+      await sleep(300);
       await page.click(`#po-split-proj-${blank.id} .cb-input`);
       await sleep(150);
       await page.keyboard.type('Penn Cambria');
