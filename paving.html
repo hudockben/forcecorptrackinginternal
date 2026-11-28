@@ -4728,6 +4728,26 @@ function cbOptionsFor(listKey) {
     if (!proj || !Array.isArray(proj.bidItems)) return [];
     return proj.bidItems.filter(b => b.cost_code || b.sub_code).sort((a,b) => ((a.cost_code||'')+(a.sub_code||'')).localeCompare((b.cost_code||'')+(b.sub_code||''))).map(b => ({ value: (b.cost_code||'') + '||' + (b.sub_code||''), label: [b.cost_code, b.sub_code].filter(Boolean).join(' / ') + (b.description ? ' — ' + b.description : '') }));
   }
+  // A split order's other jobs ("Jobs on this PO"): any job not already on
+  // the order for its Job, and that job's own bid lines for its Sub Code.
+  if (listKey.startsWith('po_split_projects:') || listKey.startsWith('po_split_subcodes:')) {
+    const rest = listKey.slice(listKey.indexOf(':') + 1);
+    const bar = rest.indexOf('|');
+    if (bar < 0) return [];
+    const po = purchaseOrders.find(p => p.id === rest.slice(0, bar));
+    if (!po) return [];
+    const s = _poSplitById(po, rest.slice(bar + 1));
+    if (listKey.startsWith('po_split_projects:')) {
+      const taken = new Set(_poProjectIds(po));
+      if (s && s.project_id) taken.delete(String(s.project_id));
+      return projectsList.filter(p => p && !taken.has(String(p.id)))
+        .slice().sort((a,b) => (a['project-name']||'').localeCompare(b['project-name']||''))
+        .map(p => ({ value: p.id, label: p['project-name'] || 'Untitled' }));
+    }
+    const proj = s && s.project_id ? getProj(s.project_id) : null;
+    if (!proj || !Array.isArray(proj.bidItems)) return [];
+    return proj.bidItems.filter(b => b.cost_code || b.sub_code).sort((a,b) => ((a.cost_code||'')+(a.sub_code||'')).localeCompare((b.cost_code||'')+(b.sub_code||''))).map(b => ({ value: (b.cost_code||'') + '||' + (b.sub_code||''), label: [b.cost_code, b.sub_code].filter(Boolean).join(' / ') + (b.description ? ' — ' + b.description : '') }));
+  }
   // Bid line sub codes: every name already in use anywhere, ranked by how much
   // production history each one carries.
   if (listKey.startsWith('bid_subcodes:')) return _bidSubCodeOptions(listKey);
@@ -12915,7 +12935,11 @@ function openPOLineDocs(poId, lineId) {
     // under the delivery's own cost code when it has one, else the order's.
     line: {
       id: line.id, invoice_num: line.invoice_num, date: line.date,
-      cost_code: line.cost_code, sub_code: line.sub_code, source: line.source,
+      // A delivery on one of a split order's other jobs files under that
+      // job's code (the server does the same — api/lib/po-line-docs.js).
+      cost_code: line.cost_code || (_poLineJob(po, line).split ? _poLineJob(po, line).cost_code : line.cost_code),
+      sub_code: line.sub_code || (_poLineJob(po, line).split ? _poLineJob(po, line).sub_code : line.sub_code),
+      source: line.source,
     },
     // The dialog's name for it: the invoice / ticket #, else documents.js
     // names it by its date.
@@ -13267,6 +13291,85 @@ function _poTotals(po) {
   return { qty, amt, tax, total: amt + tax };
 }
 
+/* ── One order, several jobs ──────────────────────────────────────────────
+   An order books to its own job (its Project and Sub Code) and, once split,
+   to the jobs listed under "Jobs on this PO" as well: the silt sock for all
+   four Hempfield fields is one order to one supplier under one number, and
+   each field still carries its own share under its own sub code.
+   po.splits holds those other jobs — [{ id, project_id, cost_code, sub_code }]
+   — and each delivery's `split` says which one it is for (blank: the order's
+   own job). A delivery's cost row is raised on its job, under that job's
+   codes. An invoice that covers several jobs is a delivery per job, each with
+   that job's own quantity, so every field's running quantity and unit cost
+   stay true. Mirrors "One order, several jobs" in api/lib/po-sync.js.
+   Keep identical in tracker.html, paving.html and kiewit-pinetree.html. */
+function _poSplits(po) {
+  if (!po || !Array.isArray(po.splits)) return [];
+  const seen = new Set();
+  return po.splits.filter(s => {
+    if (!s || typeof s !== 'object' || s.id == null || s.id === '') return false;
+    const id = String(s.id);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+function _poSplitById(po, id) {
+  const want = id == null ? '' : String(id);
+  return want ? (_poSplits(po).find(s => String(s.id) === want) || null) : null;
+}
+/** The job a delivery books to: { split, project_id, cost_code, sub_code }. */
+function _poLineJob(po, line) {
+  const s = _poSplitById(po, line && line.split);
+  if (s && s.project_id) {
+    return { split: String(s.id), project_id: String(s.project_id), cost_code: s.cost_code || '', sub_code: s.sub_code || '' };
+  }
+  return { split: '', project_id: (po && po.project_id) || '', cost_code: (po && po.cost_code) || '', sub_code: (po && po.sub_code) || '' };
+}
+/** Every job the order books to, its own first, each once. */
+function _poProjectIds(po) {
+  const out = [];
+  const add = v => { const s = v == null ? '' : String(v); if (s && !out.includes(s)) out.push(s); };
+  add(po && po.project_id);
+  _poSplits(po).forEach(s => add(s.project_id));
+  return out;
+}
+function _poHasProject(po, projId) { return !!projId && _poProjectIds(po).includes(String(projId)); }
+/** '' for the order's own job, a split's id, or null when the order does not book to `projId`. */
+function _poSplitForProject(po, projId) {
+  const want = projId == null ? '' : String(projId);
+  if (!want || !po) return null;
+  if (String(po.project_id || '') === want) return '';
+  const s = _poSplits(po).find(x => String(x.project_id || '') === want);
+  return s ? String(s.id) : null;
+}
+/** Is the order split between jobs — another job picked under "Jobs on this PO"? */
+function _poIsSplit(po) { return _poSplits(po).some(s => s.project_id); }
+/** The deliveries on one of the order's jobs ('' = its own). */
+function _poLinesOnJob(po, splitId) {
+  const want = splitId || '';
+  return (po.lines || []).filter(l => l && _poLineJob(po, l).split === want);
+}
+/** What the deliveries on one job come to — that job's share of the order. */
+function _poJobTotals(po, splitId) { return _poTotals({ lines: _poLinesOnJob(po, splitId) }); }
+/** ...by project, for the job's own views. Nothing when the order does not book there. */
+function _poProjectTotals(po, projId) {
+  const k = _poSplitForProject(po, projId);
+  return k == null ? _poTotals({ lines: [] }) : _poJobTotals(po, k);
+}
+function _poProjName(id) {
+  const p = id ? getProj(id) : null;
+  return p ? (p['project-name'] || 'Untitled') : '';
+}
+/** A job's codes as the Sub Code column shows them, with its bid line's description. */
+function _poCodeLabel(projId, cc, sc) {
+  if (!projId || (!cc && !sc)) return '';
+  const proj = getProj(projId);
+  const bi = ((proj && proj.bidItems) || []).find(b => (b.cost_code||'') === (cc||'') && (b.sub_code||'') === (sc||''));
+  const base = [cc, sc].filter(Boolean).join(' / ');
+  return bi && bi.description ? base + ' — ' + bi.description : base;
+}
+
 // The date and time a purchase-order byline shows. Two share the status
 // cell: who raised the order, and who set the status it is in.
 function _poStampWhen(d) {
@@ -13300,11 +13403,15 @@ function addPO() {
   renderPOTab();
 }
 
-function addPOLine(poId) {
+function addPOLine(poId, splitId) {
   const po = purchaseOrders.find(p => p.id === poId);
   if (!po) return;
   if (!po.lines) po.lines = [];
-  po.lines.push({ id: uid(), invoice_num: '', date: _localDateStr(), qty: '', unit_cost: '', tax: '', tax_pct: '', employee: '', po_row_id: null });
+  const line = { id: uid(), invoice_num: '', date: _localDateStr(), qty: '', unit_cost: '', tax: '', tax_pct: '', employee: '', po_row_id: null };
+  // On one of a split order's other jobs (its "+ Delivery" in Jobs on this PO).
+  const onJob = _poSplitById(po, splitId);
+  if (onJob && onJob.project_id) line.split = String(onJob.id);
+  po.lines.push(line);
   _poExpanded.add(poId);
   savePurchaseOrders();
   renderPOTab();
@@ -13317,8 +13424,10 @@ function deletePOLine(poId, lineId) {
   // Recorded from a Daily Tracking row: the row says which order it is on, and
   // the server would only put it back. Change or clear the row's PO # instead.
   if (_poLineFromDaily(line)) return;
-  if (line && line.po_row_id && po.project_id) {
-    const proj = getProj(po.project_id);
+  // Its row is on its own job: the order's, or the split it is for.
+  const lineProj = line ? _poLineJob(po, line).project_id : '';
+  if (line && line.po_row_id && lineProj) {
+    const proj = getProj(lineProj);
     if (proj) {
       proj.dailyRows = proj.dailyRows.filter(r => String(r.id) !== String(line.po_row_id));
       _poRowDelete(line.po_row_id);
@@ -13328,26 +13437,27 @@ function deletePOLine(poId, lineId) {
   (_poDeletedLines[poId] || (_poDeletedLines[poId] = new Set())).add(String(lineId));
   savePurchaseOrders();
   renderPOTab();
-  if (po.project_id) renderProjectPOs(po.project_id);
+  _poRenderProjects(po);
 }
 
 function deletePO(id) {
   const po = purchaseOrders.find(p => p.id === id);
-  const oldProj = po ? po.project_id : '';
-  if (po && oldProj) {
+  // Every job the order books to: its own, and a split order's others.
+  const oldProjs = po ? _poProjectIds(po) : [];
+  oldProjs.forEach(oldProj => {
     const proj = getProj(oldProj);
-    if (proj) {
-      (po.lines || []).forEach(line => {
-        // A Daily Tracking row is the field's entry on the job and stays; its
-        // PO # then shows in this tab's notice of numbers with no order.
-        if (line.po_row_id && !_poLineFromDaily(line)) {
-          proj.dailyRows = proj.dailyRows.filter(r => String(r.id) !== String(line.po_row_id));
-          _poRowDelete(line.po_row_id);
-        }
-      });
-      renderDailyTable(oldProj);
-    }
-  }
+    if (!proj) return;
+    (po.lines || []).forEach(line => {
+      if (_poLineJob(po, line).project_id !== oldProj) return;
+      // A Daily Tracking row is the field's entry on the job and stays; its
+      // PO # then shows in this tab's notice of numbers with no order.
+      if (line.po_row_id && !_poLineFromDaily(line)) {
+        proj.dailyRows = proj.dailyRows.filter(r => String(r.id) !== String(line.po_row_id));
+        _poRowDelete(line.po_row_id);
+      }
+    });
+    renderDailyTable(oldProj);
+  });
   _poExpanded.delete(id);
   delete _poEditedFields[id];
   delete _poEditedLines[id];
@@ -13356,73 +13466,80 @@ function deletePO(id) {
   purchaseOrders = purchaseOrders.filter(p => p.id !== id);
   savePurchaseOrders();
   renderPOTab();
-  if (oldProj) renderProjectPOs(oldProj);
+  oldProjs.forEach(oldProj => renderProjectPOs(oldProj));
 }
 
 // Sync all of a PO's lines to their daily rows after a header field changes.
-// The cost/sub code pair only rides along when the PO's own codes are what
-// changed (syncCodes). Editing an unrelated header field — title, supplier,
-// date, status — used to stamp the PO's codes onto the daily row as well,
-// silently undoing any re-categorization a supervisor had made there.
+// The cost/sub code pair only rides along when the codes of the delivery's JOB
+// are what changed (syncCodes): `true` for the order's own codes, a split's id
+// for that split's. Editing an unrelated header field — title, supplier, date,
+// status — used to stamp the PO's codes onto the daily row as well, silently
+// undoing any re-categorization a supervisor had made there. Each delivery's
+// row is on its own job: the order's, or the split it is for.
 async function _syncPOHeaderToLines(po, syncCodes) {
-  if (!po.project_id) return;
-  const proj = getProj(po.project_id);
-  if (!proj) return;
+  for (const projId of _poProjectIds(po)) {
+    const proj = getProj(projId);
+    if (!proj) continue;
+    const lines = (po.lines || []).filter(l => l && l.po_row_id && _poLineJob(po, l).project_id === projId);
+    if (!lines.length) continue;
 
-  // The same reason _syncPOLineToRow reads before it writes: a row older than
-  // the first load's ninety days is not in memory until a background pass that
-  // can fail or be truncated brings it in, and giving up here meant a retitled
-  // order, a corrected supplier or a re-coded PO reached the order and never
-  // the job. Read once, and only if that pass has not already run.
-  if (!proj._drFullLoaded && (po.lines || []).some(l =>
-        l.po_row_id && !proj.dailyRows.some(r => String(r.id) === String(l.po_row_id)))) {
-    try {
-      const answer = await drGetAll({ projectId: po.project_id });
-      const fetched = Array.isArray(answer) ? answer : (answer && answer.rows) || [];
-      fetched.forEach(row => {
-        if (!proj.dailyRows.some(x => String(x.id) === String(row.id))) proj.dailyRows.push(row);
-      });
-      proj._drFullLoaded = true;
-    } catch (err) {
-      console.warn('[po] could not load the job rows for a PO header sync:', err.message);
-    }
-  }
-
-  (po.lines || []).forEach(line => {
-    if (!line.po_row_id) return;
-    const r = proj.dailyRows.find(r => String(r.id) === String(line.po_row_id));
-    // Still absent after the read: the order names a row nothing has. Nothing
-    // to update, and nothing here should invent one — the delivery's own sync
-    // owns that decision.
-    if (!r) return;
-    r.po_num    = po.po_number|| '';
-    // A delivery recorded from Daily Tracking keeps the row's own description,
-    // supplier and codes — the server leaves them alone on a purchasing save
-    // too. Only the order's number is the order's. See "Deliveries recorded
-    // from Daily Tracking" in api/lib/po-sync.js.
-    if (!_poLineFromDaily(line)) {
-      r.material  = po.title    || '';
-      r.supplier  = po.supplier || '';
-      if (syncCodes) {
-        r.cost_code = po.cost_code|| '';
-        r.sub_code  = po.sub_code || '';
+    // The same reason _syncPOLineToRow reads before it writes: a row older than
+    // the first load's ninety days is not in memory until a background pass that
+    // can fail or be truncated brings it in, and giving up here meant a retitled
+    // order, a corrected supplier or a re-coded PO reached the order and never
+    // the job. Read once, and only if that pass has not already run.
+    if (!proj._drFullLoaded && lines.some(l =>
+          !proj.dailyRows.some(r => String(r.id) === String(l.po_row_id)))) {
+      try {
+        const answer = await drGetAll({ projectId: projId });
+        const fetched = Array.isArray(answer) ? answer : (answer && answer.rows) || [];
+        fetched.forEach(row => {
+          if (!proj.dailyRows.some(x => String(x.id) === String(row.id))) proj.dailyRows.push(row);
+        });
+        proj._drFullLoaded = true;
+      } catch (err) {
+        console.warn('[po] could not load the job rows for a PO header sync:', err.message);
       }
     }
-    // On screen only. The order's save writes these columns to the row on the
-    // server (writeTabRows in api/lib/po-sync.js). PUTting the row from here
-    // sent it WHOLE from this page's copy of the job — which nothing refreshes
-    // when purchasing or the job's own tab changes it — so approving or
-    // retitling an order put back every delivery's old quantity and cost.
-  });
-  _aggCacheRowCount = -1;
-  _projSubAggCacheRowCount = -1;
-  renderDailyTable(po.project_id);
+
+    lines.forEach(line => {
+      const r = proj.dailyRows.find(r => String(r.id) === String(line.po_row_id));
+      // Still absent after the read: the order names a row nothing has. Nothing
+      // to update, and nothing here should invent one — the delivery's own sync
+      // owns that decision.
+      if (!r) return;
+      r.po_num    = po.po_number|| '';
+      // A delivery recorded from Daily Tracking keeps the row's own description,
+      // supplier and codes — the server leaves them alone on a purchasing save
+      // too. Only the order's number is the order's. See "Deliveries recorded
+      // from Daily Tracking" in api/lib/po-sync.js.
+      if (!_poLineFromDaily(line)) {
+        r.material  = po.title    || '';
+        r.supplier  = po.supplier || '';
+        const job = _poLineJob(po, line);
+        if (syncCodes === true ? !job.split : (syncCodes && job.split === String(syncCodes))) {
+          r.cost_code = job.cost_code || '';
+          r.sub_code  = job.sub_code  || '';
+        }
+      }
+      // On screen only. The order's save writes these columns to the row on the
+      // server (writeTabRows in api/lib/po-sync.js). PUTting the row from here
+      // sent it WHOLE from this page's copy of the job — which nothing refreshes
+      // when purchasing or the job's own tab changes it — so approving or
+      // retitling an order put back every delivery's old quantity and cost.
+    });
+    _aggCacheRowCount = -1;
+    _projSubAggCacheRowCount = -1;
+    renderDailyTable(projId);
+  }
 }
 
 // Sync one line's fields to its daily row
 async function _syncPOLineToRow(po, line, key) {
-  if (!po.project_id || !line.po_row_id) return;
-  const proj = getProj(po.project_id);
+  // Its row is on its own job: the order's, or the split it is for.
+  const job = _poLineJob(po, line);
+  if (!job.project_id || !line.po_row_id) return;
+  const proj = getProj(job.project_id);
   if (!proj) return;
   let r = proj.dailyRows.find(r => String(r.id) === String(line.po_row_id));
 
@@ -13445,7 +13562,7 @@ async function _syncPOLineToRow(po, line, key) {
     // already brought everything in.
     if (!proj._drFullLoaded) {
       try {
-        const answer = await drGetAll({ projectId: po.project_id });
+        const answer = await drGetAll({ projectId: job.project_id });
         const fetched = Array.isArray(answer) ? answer : (answer && answer.rows) || [];
         fetched.forEach(row => {
           if (!proj.dailyRows.some(x => String(x.id) === String(row.id))) proj.dailyRows.push(row);
@@ -13473,9 +13590,9 @@ async function _syncPOLineToRow(po, line, key) {
     r = {
       ...defaultDailyRow(),
       id:         line.po_row_id,
-      _projectId: po.project_id,
-      cost_code:  po.cost_code || '',
-      sub_code:   po.sub_code  || '',
+      _projectId: job.project_id,
+      cost_code:  job.cost_code || '',
+      sub_code:   job.sub_code  || '',
       material:   po.title     || '',
       supplier:   po.supplier  || '',
       po_num:     po.po_number || '',
@@ -13498,22 +13615,25 @@ async function _syncPOLineToRow(po, line, key) {
   // page held stale put its old quantity and cost back on the job.
   _aggCacheRowCount = -1;
   _projSubAggCacheRowCount = -1;
-  renderDailyTable(po.project_id);
+  renderDailyTable(job.project_id);
 }
 
 // Create a daily row for a line when it gets qty/cost data and a project is linked
 function _ensurePOLineRow(po, line) {
-  if (!po.project_id || line.po_row_id) return;
-  const proj = getProj(po.project_id);
+  if (line.po_row_id) return;
+  // On the delivery's own job: the order's, or the split it is for.
+  const job = _poLineJob(po, line);
+  if (!job.project_id) return;
+  const proj = getProj(job.project_id);
   if (!proj) return;
   const row = {
     ...defaultDailyRow(),
     id:              uid(),
-    _projectId:      po.project_id,
+    _projectId:      job.project_id,
     date:            line.date     || po.date_created || _localDateStr(),
     employee:        line.employee || '',
-    cost_code:       po.cost_code  || '',
-    sub_code:        po.sub_code   || '',
+    cost_code:       job.cost_code  || '',
+    sub_code:        job.sub_code   || '',
     material:        po.title      || '',
     supplier:        po.supplier   || '',
     po_num:          po.po_number  || '',
@@ -13525,8 +13645,8 @@ function _ensurePOLineRow(po, line) {
   proj.dailyRows.push(row);
   line.po_row_id = row.id;
   _poNoteLinkChange(line.id, row.id);
-  drPost(po.project_id, row);
-  renderDailyTable(po.project_id);
+  drPost(job.project_id, row);
+  renderDailyTable(job.project_id);
 }
 
 /* ── Daily Tracking → Purchase Orders ─────────────────────────────────────
@@ -13571,12 +13691,15 @@ function _poRowRaisedByOrder(rowId) {
   return Boolean(link && !_poLineFromDaily(link.line));
 }
 
-/** The order a job row's PO # names: the one with that number on the row's own job. */
+/**
+ * The order a job row's PO # names: the one with that number booking to the
+ * row's own job — the order's job, or one of a split order's others.
+ */
 function _poForRowNumber(projId, poNum) {
   const want = String(poNum == null ? '' : poNum).trim().toLowerCase();
   if (!want || !projId) return null;
   return (Array.isArray(purchaseOrders) ? purchaseOrders : []).find(po => po
-    && String(po.project_id || '') === String(projId)
+    && _poHasProject(po, projId)
     && String(po.po_number || '').trim().toLowerCase() === want) || null;
 }
 
@@ -13596,7 +13719,7 @@ function _poAdoptServerOrders(orders) {
   orders.forEach(srv => {
     if (!srv || !srv.id || _poDeletedOrders.has(String(srv.id))) return;
     const local = purchaseOrders.find(p => p && p.id === srv.id);
-    if (!local) { purchaseOrders.push(JSON.parse(JSON.stringify(srv))); n++; if (srv.project_id) projects.add(srv.project_id); return; }
+    if (!local) { purchaseOrders.push(JSON.parse(JSON.stringify(srv))); n++; _poProjectIds(srv).forEach(p => projects.add(p)); return; }
     const srvLines = Array.isArray(srv.lines) ? srv.lines : [];
     const srvById  = new Map(srvLines.filter(l => l && l.id).map(l => [String(l.id), l]));
     const localById = new Map((local.lines || []).filter(l => l && l.id).map(l => [String(l.id), l]));
@@ -13620,7 +13743,7 @@ function _poAdoptServerOrders(orders) {
     const next = raised.concat(daily);
     if (JSON.stringify(next) !== JSON.stringify(local.lines || [])) {
       local.lines = next; n++;
-      if (local.project_id) projects.add(local.project_id);
+      _poProjectIds(local).forEach(p => projects.add(p));
     }
   });
   if (n) {
@@ -13640,7 +13763,7 @@ function _poAdoptServerOrders(orders) {
 function _poMergeLine(poId, local, srv) {
   const out = JSON.parse(JSON.stringify(srv));
   const money = ['qty', 'unit_cost', 'tax_pct'].some(k => _poLineEditPending(poId, local.id, k));
-  ['invoice_num', 'date', 'qty', 'unit_cost', 'tax_pct', 'tax', 'employee'].forEach(k => {
+  ['invoice_num', 'date', 'qty', 'unit_cost', 'tax_pct', 'tax', 'employee', 'split'].forEach(k => {
     if (_poLineEditPending(poId, local.id, k) || (k === 'tax' && money)) {
       if (local[k] === undefined) delete out[k]; else out[k] = local[k];
     }
@@ -13674,7 +13797,7 @@ function _poAdoptSaved(orders, sentLinks, at) {
       _migratePOs([copy]);
       purchaseOrders.push(copy);
       n++;
-      if (copy.project_id) projects.add(copy.project_id);
+      _poProjectIds(copy).forEach(p => projects.add(p));
       return;
     }
     const before = JSON.stringify(local);
@@ -13685,6 +13808,9 @@ function _poAdoptSaved(orders, sentLinks, at) {
           || (pending.has('status') && (k === 'status_changed_at' || k === 'status_changed_by')))) return;
       local[k] = JSON.parse(JSON.stringify(srv[k]));
     });
+    // A split order whose other jobs were all taken off: the stored order has
+    // no `splits` at all, which the copy above cannot say.
+    if (!('splits' in srv) && 'splits' in local && !(pending && pending.has('splits'))) delete local.splits;
     const sent = sentLinks.get(id) || new Map();
     const gone = _poDeletedLines[id];
     const srvById = new Map((Array.isArray(srv.lines) ? srv.lines : [])
@@ -13723,7 +13849,7 @@ function _poAdoptSaved(orders, sentLinks, at) {
     _migratePOs([local]);
     if (JSON.stringify(local) !== before) {
       n++;
-      if (local.project_id) projects.add(local.project_id);
+      _poProjectIds(local).forEach(p => projects.add(p));
       _poRowsFollowOrder(local);
     }
   });
@@ -13743,36 +13869,39 @@ function _poAdoptSaved(orders, sentLinks, at) {
  * Tracking sends the row whole, old figures and all.
  */
 function _poRowsFollowOrder(po) {
-  if (!po || !po.project_id) return;
-  const proj = getProj(po.project_id);
-  if (!proj || !Array.isArray(proj.dailyRows)) return;
-  let n = 0;
-  (po.lines || []).forEach(line => {
-    if (!line || !line.po_row_id) return;
-    const r = proj.dailyRows.find(x => String(x.id) === String(line.po_row_id));
-    if (!r) return;
-    const want = {
-      date:            line.date || r.date,
-      employee:        line.employee || '',
-      units_purchased: line.qty || '',
-      unit_cost:       line.unit_cost ? String(_lineUnitCostWithTax(line)) : '',
-      material_cost:   String(_lineAmt(line) + _lineTax(line)),
-      po_num:          po.po_number || '',
-    };
-    // A Daily Tracking delivery's description and supplier are the row's own.
-    if (!_poLineFromDaily(line)) {
-      want.material = po.title || '';
-      want.supplier = po.supplier || '';
-    }
-    Object.keys(want).forEach(k => {
-      if (String(r[k] == null ? '' : r[k]) !== String(want[k] == null ? '' : want[k])) { r[k] = want[k]; n++; }
+  if (!po) return;
+  // Each delivery's row is on its own job: the order's, or a split's.
+  _poProjectIds(po).forEach(projId => {
+    const proj = getProj(projId);
+    if (!proj || !Array.isArray(proj.dailyRows)) return;
+    let n = 0;
+    (po.lines || []).forEach(line => {
+      if (!line || !line.po_row_id || _poLineJob(po, line).project_id !== projId) return;
+      const r = proj.dailyRows.find(x => String(x.id) === String(line.po_row_id));
+      if (!r) return;
+      const want = {
+        date:            line.date || r.date,
+        employee:        line.employee || '',
+        units_purchased: line.qty || '',
+        unit_cost:       line.unit_cost ? String(_lineUnitCostWithTax(line)) : '',
+        material_cost:   String(_lineAmt(line) + _lineTax(line)),
+        po_num:          po.po_number || '',
+      };
+      // A Daily Tracking delivery's description and supplier are the row's own.
+      if (!_poLineFromDaily(line)) {
+        want.material = po.title || '';
+        want.supplier = po.supplier || '';
+      }
+      Object.keys(want).forEach(k => {
+        if (String(r[k] == null ? '' : r[k]) !== String(want[k] == null ? '' : want[k])) { r[k] = want[k]; n++; }
+      });
     });
+    if (n) {
+      _aggCacheRowCount = -1;
+      _projSubAggCacheRowCount = -1;
+      renderDailyTable(projId);
+    }
   });
-  if (n) {
-    _aggCacheRowCount = -1;
-    _projSubAggCacheRowCount = -1;
-    renderDailyTable(po.project_id);
-  }
 }
 
 /**
@@ -13855,7 +13984,7 @@ function _dailyPONumbersWithoutOrder() {
     if (!po) return;
     const n = String(po.po_number || '').trim().toLowerCase();
     if (!n) return;
-    if (po.project_id) onJob.add(String(po.project_id) + '\u0000' + n);
+    _poProjectIds(po).forEach(pid => onJob.add(String(pid) + '\u0000' + n));
     if (!byNum.has(n)) byNum.set(n, po);
   });
   const groups = new Map();
@@ -13999,6 +14128,14 @@ function _poFieldVal(po, field) {
   }
   return String(po[field] ?? '');
 }
+/** Every value an order has in a column: a split order is under each of its jobs and sub codes. */
+function _poFieldVals(po, field) {
+  const own = _poFieldVal(po, field);
+  if (field !== 'project_id' && field !== 'sub_code') return [own];
+  const more = _poSplits(po).filter(s => s.project_id)
+    .map(s => field === 'project_id' ? (_poProjName(s.project_id) || '') : String(s.sub_code ?? ''));
+  return [...new Set([own].concat(more))];
+}
 
 /** Is the table currently narrowed to nothing but the pending orders? */
 function poPendingOnly() {
@@ -14025,13 +14162,14 @@ function applyPOFilters() {
   return purchaseOrders.filter(po => {
     for (const [field, valueSet] of Object.entries(poFilters)) {
       if (!valueSet || valueSet.size === 0) continue;
-      if (!valueSet.has(_poFieldVal(po, field))) return false;
+      if (!_poFieldVals(po, field).some(v => valueSet.has(v))) return false;
     }
     if (q) {
-      const proj = projectsList.find(p => p.id === po.project_id);
-      const projName = proj ? (proj['project-name'] || '') : '';
+      // Every job and sub code a split order books to, not only its own.
+      const projName = _poFieldVals(po, 'project_id').join(' ');
+      const subCodes = _poFieldVals(po, 'sub_code').join(' ');
       const lineHay = (po.lines || []).map(l => [l.invoice_num, l.employee, l.date].join(' ')).join(' ');
-      const hay = [po.po_number, projName, po.sub_code, po.title, po.supplier, po.status, po.date_created, lineHay].join(' ').toLowerCase();
+      const hay = [po.po_number, projName, subCodes, po.title, po.supplier, po.status, po.date_created, lineHay].join(' ').toLowerCase();
       if (!hay.includes(q)) return false;
     }
     return true;
@@ -14061,16 +14199,19 @@ function exportPOCSV() {
     const proj = projectsList.find(p => p.id === po.project_id);
     const projName = proj ? (proj['project-name'] || '') : '';
     const lines = (po.lines || []);
+    // A split order's deliveries are on different jobs: each says its own.
+    const split = _poIsSplit(po);
     if (lines.length === 0) {
       csvLines.push([po.po_number, projName, po.sub_code||'', po.title||'', po.supplier||'', '', '', '', '', '', '', '', '', '', po.status||''].map(escape).join(','));
     } else {
       lines.forEach((l, i) => {
         const q = _poNum0(l.qty), u = _poNum0(l.unit_cost);
         const amt = _lineAmt(l), t = _lineTax(l), pct = _lineTaxPct(l);
+        const job = _poLineJob(po, l);
         csvLines.push([
           i === 0 ? po.po_number : '', // only show PO # on first line
-          i === 0 ? projName : '',
-          i === 0 ? (po.sub_code||'') : '',
+          split ? _poProjName(job.project_id) : (i === 0 ? projName : ''),
+          split ? (job.sub_code||'') : (i === 0 ? (po.sub_code||'') : ''),
           i === 0 ? (po.title||'') : '',
           po.supplier||'',
           l.invoice_num||'', l.date||'',
@@ -14091,7 +14232,7 @@ function exportPOCSV() {
 
 function openPOFilter(field, btn) {
   _pffField = field;
-  const unique = [...new Set(purchaseOrders.map(po => _poFieldVal(po, field)))].sort();
+  const unique = [...new Set(purchaseOrders.flatMap(po => _poFieldVals(po, field)))].sort();
   const active = poFilters[field] || null;
   _pffPending = active ? new Set(active) : null;
 
@@ -14225,6 +14366,13 @@ function renderPOTab() {
           const base = [po.cost_code, po.sub_code].filter(Boolean).join(' / ');
           return bi && bi.description ? base + ' — ' + bi.description : base;
         })();
+        // A split order says so under its job, and opens on its jobs list.
+        const splitJobs = _poSplits(po).filter(s => s.project_id);
+        const splitChip = splitJobs.length
+          ? `<div onclick="_poShowJobs('${escJs(po.id)}')" title="${esc('Split between jobs: ' + _poProjectIds(po).map(id => _poProjName(id) || 'Job').join(', '))}"
+               style="font-size:0.62rem;color:#93c5fd;margin-top:0.15rem;cursor:pointer;white-space:nowrap">+ ${splitJobs.length} more job${splitJobs.length === 1 ? '' : 's'} &middot; split PO</div>`
+          : '';
+        const isSplit = splitJobs.length > 0;
         const statusOpts = [['pending','Pending'],['approved','Approved'],['closed','Closed']];
 
         const statusColor = po.status==='approved' ? '#86efac' : po.status==='closed' ? 'var(--muted)' : 'var(--yellow)';
@@ -14262,7 +14410,7 @@ function renderPOTab() {
             <span style="font-family:monospace;font-size:0.78rem;color:var(--muted)">${escT(po.po_number)}</span>${badge}
           </td>
           <td style="padding:0.35rem 0.6rem;min-width:110px" onclick="event.stopPropagation()">${inp('date_created','date',po.date_created,po.id,null)}</td>
-          <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${cbHtml('projects', poProjName, '— none —', `data-po-id="${esc(po.id)}" data-po-field="project_id"${po.project_id ? ` data-cb-value="${esc(po.project_id)}"` : ''}`)}</td>
+          <td style="padding:0.35rem 0.6rem;min-width:160px" onclick="event.stopPropagation()">${cbHtml('projects', poProjName, '— none —', `data-po-id="${esc(po.id)}" data-po-field="project_id"${po.project_id ? ` data-cb-value="${esc(po.project_id)}"` : ''}`)}${splitChip}</td>
           <td style="padding:0.35rem 0.6rem;min-width:180px" id="po-subcode-cell-${esc(po.id)}" onclick="event.stopPropagation()">${cbHtml('po_subcodes:' + po.id, poSubLabel, po.project_id ? '— select —' : '— pick project first —', `data-po-id="${esc(po.id)}" data-po-field="sub_code_sel"${(po.cost_code || po.sub_code) ? ` data-cb-value="${esc((po.cost_code||'') + '||' + (po.sub_code||''))}"` : ''}`, 'data-cb-fixed="1"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${inp('title','text',po.title,po.id,null,'placeholder="Material / Description"')}</td>
           <td style="padding:0.35rem 0.6rem;min-width:130px" onclick="event.stopPropagation()">${cbHtml('suppliers', po.supplier || '', '— select —', `data-po-id="${esc(po.id)}" data-po-field="supplier"`)}</td>
@@ -14282,7 +14430,7 @@ function renderPOTab() {
         const lineRows = (po.lines||[]).map(line => {
           const lineAmt = _lineAmt(line), lineTax = _lineTax(line), lineTot = lineAmt + lineTax;
           return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
-            <td style="padding:0.3rem 0.5rem;min-width:120px"><div style="display:flex;align-items:flex-start;gap:0.35rem"><div style="flex:1 1 auto;min-width:0">${inp('invoice_num','text',line.invoice_num,po.id,line.id,'placeholder="Invoice / Ticket #"')}${_poLineFromDaily(line) ? `<div title="Entered on Daily Tracking. Edits here update that job row; change or clear the row's PO # to take it off this order." style="font-size:0.6rem;color:var(--muted);white-space:nowrap">from Daily Tracking${(line.cost_code || line.sub_code) ? ' &middot; ' + escT([line.cost_code, line.sub_code].filter(Boolean).join(' / ')) : ''}</div>` : ''}</div>${_poLineClipHTML(po, line)}</div></td>
+            ${isSplit ? _poLineJobCellHTML(po, line) : ''}<td style="padding:0.3rem 0.5rem;min-width:120px"><div style="display:flex;align-items:flex-start;gap:0.35rem"><div style="flex:1 1 auto;min-width:0">${inp('invoice_num','text',line.invoice_num,po.id,line.id,'placeholder="Invoice / Ticket #"')}${_poLineFromDaily(line) ? `<div title="Entered on Daily Tracking. Edits here update that job row; change or clear the row's PO # to take it off this order." style="font-size:0.6rem;color:var(--muted);white-space:nowrap">from Daily Tracking${(line.cost_code || line.sub_code) ? ' &middot; ' + escT([line.cost_code, line.sub_code].filter(Boolean).join(' / ')) : ''}</div>` : ''}</div>${_poLineClipHTML(po, line)}</div></td>
             <td style="padding:0.3rem 0.5rem;min-width:115px">${inp('date','date',line.date,po.id,line.id)}</td>
             <td style="padding:0.3rem 0.5rem;min-width:70px">${inp('qty','number',line.qty,po.id,line.id,'step="any" placeholder="0"')}</td>
             <td style="padding:0.3rem 0.5rem;min-width:90px">${inp('unit_cost','number',line.unit_cost,po.id,line.id,'step="any" placeholder="0.00"')}
@@ -14304,7 +14452,7 @@ function renderPOTab() {
 
         const totRow = (po.lines||[]).length > 1 ? `
           <tr style="border-top:1px solid var(--border);background:rgba(255,255,255,0.03)">
-            <td colspan="2" style="padding:0.3rem 0.5rem;font-size:0.72rem;color:var(--muted);font-weight:600;white-space:nowrap">RUNNING TOTAL — ${lCount} deliveries</td>
+            <td colspan="${isSplit ? 3 : 2}" style="padding:0.3rem 0.5rem;font-size:0.72rem;color:var(--muted);font-weight:600;white-space:nowrap">RUNNING TOTAL — ${lCount} deliveries</td>
             <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--text);font-size:0.8rem;font-weight:700" id="po-sub-qty-${esc(po.id)}">${qfmt(tot.qty)}</td>
             <td></td>
             <td style="padding:0.3rem 0.5rem;text-align:right;color:var(--green);font-size:0.8rem;font-weight:700" id="po-sub-amt-${esc(po.id)}">$${fmt(tot.amt)}</td>
@@ -14316,11 +14464,12 @@ function renderPOTab() {
         const linesRow = `<tr id="po-lines-${esc(po.id)}" style="display:${expanded?'table-row':'none'}">
           <td colspan="${COLS}" style="padding:0;background:#0b0b14;border-bottom:2px solid var(--border)">
             <div style="padding:0.5rem 1.25rem 0.75rem 2.5rem">
+              ${_poJobsHTML(po)}
               <div style="font-size:0.62rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted);margin-bottom:0.4rem;margin-top:0.4rem">Deliveries / Invoices</div>
               <div style="overflow-x:auto">
                 <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
                   <thead><tr style="font-size:0.63rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em">
-                    <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Invoice / Ticket #</th>
+                    ${isSplit ? '<th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Job</th>' : ''}<th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Invoice / Ticket #</th>
                     <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Delivery Date</th>
                     <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Qty</th>
                     <th style="padding:0.25rem 0.5rem;text-align:left;font-weight:600">Unit Cost</th>
@@ -14425,10 +14574,11 @@ function _togglePOLines(poId) {
 
 function exportProjectPOsCSV(projId) {
   const proj = getProj(projId);
-  const linked = purchaseOrders.filter(po => po.project_id === projId);
+  // A split order is on each of its jobs' lists, with that job's share.
+  const linked = purchaseOrders.filter(po => _poHasProject(po, projId));
   const rows = [['PO #', 'Title', 'Invoice #', 'Delivery Date', 'Qty', 'Unit Cost', 'Amount', 'Tax %', 'Tax', 'Total', 'Employee', 'Status']];
   linked.forEach(po => {
-    const lines = po.lines || [];
+    const lines = _poIsSplit(po) ? _poLinesOnJob(po, _poSplitForProject(po, projId)) : (po.lines || []);
     if (lines.length === 0) {
       rows.push([po.po_number||'', po.title||'', '', '', '', '', '', '', '', '', '', po.status||'']);
     } else {
@@ -14450,24 +14600,489 @@ function exportProjectPOsCSV(projId) {
 function renderProjectPOs(projId, bodyIdOverride) {
   const body = document.getElementById(bodyIdOverride || 'po-proj-body-' + projId);
   if (!body) return;
-  const linked = purchaseOrders.filter(po => po.project_id === projId);
+  // A split order is on each of its jobs' lists, with that job's share.
+  const linked = purchaseOrders.filter(po => _poHasProject(po, projId));
   if (linked.length === 0) {
     body.innerHTML = '<tr><td colspan="5" style="padding:0.75rem 0.6rem;color:var(--muted);font-size:0.82rem">No purchase orders linked to this project.</td></tr>';
     return;
   }
   body.innerHTML = linked.map(po => {
-    const tot  = _poTotals(po);
-    const lCount = (po.lines||[]).length;
+    const split = _poIsSplit(po);
+    const tot  = split ? _poProjectTotals(po, projId) : _poTotals(po);
+    const lCount = split ? _poLinesOnJob(po, _poSplitForProject(po, projId)).length : (po.lines||[]).length;
     const sc = po.status === 'approved' ? 'color:#86efac' : po.status === 'closed' ? 'color:var(--muted)' : 'color:var(--yellow)';
     const delivNote = lCount > 1 ? `<span style="font-size:0.68rem;color:var(--muted);margin-left:0.35rem">(${lCount} deliveries)</span>` : '';
     return `<tr>
       <td style="padding:0.35rem 0.6rem;font-family:monospace;font-size:0.78rem;color:var(--muted)">${escT(po.po_number)}</td>
-      <td style="padding:0.35rem 0.6rem;font-size:0.82rem">${escT(po.title || '—')}${delivNote}</td>
+      <td style="padding:0.35rem 0.6rem;font-size:0.82rem">${escT(po.title || '—')}${delivNote}${split ? `<span title="This PO is split between ${_poProjectIds(po).length} jobs; the figures are this job's deliveries" style="font-size:0.64rem;color:#93c5fd;margin-left:0.35rem">split PO &middot; this job's share</span>` : ''}</td>
       <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--muted)">${tot.qty > 0 ? fmt(tot.qty) : '—'}</td>
       <td style="padding:0.35rem 0.6rem;text-align:right;font-size:0.82rem;color:var(--yellow);font-weight:600">$${fmt(tot.total)}</td>
       <td style="padding:0.35rem 0.6rem;font-size:0.78rem;text-transform:capitalize;${sc}">${escT(po.status || '')}</td>
     </tr>`;
   }).join('');
+}
+
+/* ── Split orders: the "Jobs on this PO" list and moving deliveries ─────── */
+
+/** Redraw the PO lists of every job the order books to (and of `also`). */
+function _poRenderProjects(po, also) {
+  const ids = new Set(_poProjectIds(po));
+  (also || []).forEach(id => { if (id) ids.add(String(id)); });
+  ids.forEach(id => renderProjectPOs(id));
+}
+
+/** Open an order and bring its jobs list into view. */
+function _poShowJobs(poId) {
+  _poExpanded.add(poId);
+  renderPOTab();
+  const el = document.getElementById('po-jobs-' + poId);
+  if (el && el.scrollIntoView) el.scrollIntoView({ block: 'nearest' });
+}
+
+/**
+ * The bid line on `projId` the codes `cc` / `sc` name — the same line, or one
+ * with the same sub code — so a sister field added to an order starts coded
+ * the way the order is. null when its bid has neither.
+ */
+function _poMatchCodes(projId, cc, sc) {
+  const proj = getProj(projId);
+  const items = ((proj && proj.bidItems) || []).filter(b => b && (b.cost_code || b.sub_code));
+  const same = items.find(b => (b.cost_code||'') === (cc||'') && (b.sub_code||'') === (sc||''));
+  const bySub = sc ? items.filter(b => (b.sub_code||'').trim().toLowerCase() === String(sc).trim().toLowerCase()) : [];
+  const b = same || (bySub.length === 1 ? bySub[0] : null);
+  return b ? { cost_code: b.cost_code || '', sub_code: b.sub_code || '' } : null;
+}
+
+/**
+ * The jobs that share the order's job's Site (the job page's Site field: the
+ * Hempfield fields, say) and are not on the order yet. Turf jobs have a Site;
+ * elsewhere this is always empty.
+ */
+function _poSiteJobsToAdd(po) {
+  const own = po && po.project_id ? getProj(po.project_id) : null;
+  const name = own ? String(own.site || '').replace(/\s+/g, ' ').trim() : '';
+  if (!name) return { name: '', jobs: [] };
+  const taken = new Set(_poProjectIds(po));
+  const key = name.toLowerCase();
+  // The live jobs, as Procurement's site sheet takes them: not one still
+  // being bid, finished or on hold.
+  const live = new Set(['', 'awarded', 'in progress', 'substantially complete']);
+  const jobs = (Array.isArray(projectsList) ? projectsList : []).filter(p => p && !taken.has(String(p.id))
+    && String(p.site || '').replace(/\s+/g, ' ').trim().toLowerCase() === key
+    && live.has(String(p.status || '').trim().toLowerCase()))
+    .sort((a, b) => (a['project-name'] || '').localeCompare(b['project-name'] || ''));
+  return { name, jobs };
+}
+
+/** Add a job to the order (blank until one is picked, or `projId`). */
+function addPOSplit(poId, projId) {
+  if (!perm.canEdit) return;
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !po.project_id) return;
+  const split = { id: uid(), project_id: '', cost_code: '', sub_code: '' };
+  if (projId && !_poHasProject(po, projId)) {
+    split.project_id = String(projId);
+    Object.assign(split, _poMatchCodes(projId, po.cost_code, po.sub_code) || {});
+  }
+  po.splits = _poSplits(po).concat([split]);
+  _poNoteEdit(po.id, 'splits');
+  _poExpanded.add(po.id);
+  savePurchaseOrders();
+  renderPOTab();
+  _poRenderProjects(po);
+  if (!split.project_id) {
+    const box = document.querySelector(`#po-split-proj-${split.id} .cb-input`);
+    if (box) box.focus();
+  }
+}
+
+/** Add every other job on the order's Site, each coded like the order where its bid allows. */
+function addPOSiteSplits(poId) {
+  if (!perm.canEdit) return;
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !po.project_id) return;
+  const { jobs } = _poSiteJobsToAdd(po);
+  if (!jobs.length) return;
+  const added = jobs.map(p => Object.assign({ id: uid(), project_id: String(p.id), cost_code: '', sub_code: '' },
+    _poMatchCodes(p.id, po.cost_code, po.sub_code) || {}));
+  po.splits = _poSplits(po).concat(added);
+  _poNoteEdit(po.id, 'splits');
+  _poExpanded.add(po.id);
+  savePurchaseOrders();
+  renderPOTab();
+  _poRenderProjects(po);
+}
+
+/** Take a job off the order — only once no delivery is on it. */
+function removePOSplit(poId, splitId) {
+  if (!perm.canEdit) return;
+  const po = purchaseOrders.find(p => p.id === poId);
+  const s = po ? _poSplitById(po, splitId) : null;
+  if (!s) return;
+  const on = (po.lines || []).filter(l => l && String(l.split || '') === String(s.id));
+  if (on.length) {
+    alert(`${_poProjName(s.project_id) || 'This job'} still has ${on.length} deliver${on.length === 1 ? 'y' : 'ies'} on this PO. `
+      + 'Move them to another job (the Job column) or delete them first.');
+    return;
+  }
+  const was = s.project_id;
+  po.splits = _poSplits(po).filter(x => String(x.id) !== String(s.id));
+  if (!po.splits.length) delete po.splits;
+  _poNoteEdit(po.id, 'splits');
+  savePurchaseOrders();
+  renderPOTab();
+  _poRenderProjects(po, [was]);
+}
+
+/**
+ * Move a delivery to another of the order's jobs. Its row cannot follow —
+ * a job row belongs to its job — so the row on the old job goes, and the
+ * delivery raises one on the new job under that job's codes: the same thing
+ * moving the whole order to another job does, one delivery at a time.
+ */
+function _poMoveLine(po, line, toSplit) {
+  if (!perm.canEdit || !line || _poLineFromDaily(line)) return;
+  const to = _poSplitById(po, toSplit);
+  const want = to && to.project_id ? String(to.id) : '';
+  const from = _poLineJob(po, line);
+  if (from.split === want) return;
+  if (line.po_row_id && !_poLineFromDaily(line)) {
+    const oldP = from.project_id ? getProj(from.project_id) : null;
+    if (oldP) oldP.dailyRows = oldP.dailyRows.filter(r => String(r.id) !== String(line.po_row_id));
+    _poRowDelete(line.po_row_id);
+    line.po_row_id = null;
+    _poNoteLinkChange(line.id, null);
+    if (from.project_id) renderDailyTable(from.project_id);
+  }
+  if (want) line.split = want; else delete line.split;
+  _poNoteLineEdit(po.id, line.id, 'split');
+  if (line.qty || line.unit_cost) _ensurePOLineRow(po, line);
+  savePurchaseOrders();
+  renderPOTab();
+  _poRenderProjects(po, [from.project_id]);
+}
+
+/**
+ * A job of a split order changed in "Jobs on this PO": its Job or Sub Code.
+ * A new job moves the deliveries on it, the way the order's own Project does;
+ * a new sub code re-codes their rows, the way the order's own Sub Code does.
+ */
+function _handlePOSplitEvent(el, po) {
+  if (!perm.canEdit) return;
+  const s = _poSplitById(po, el.dataset.poSplit);
+  if (!s) return;
+  const field = el.dataset.splitField;
+  const cellId = (field === 'project_id' ? 'po-split-proj-' : 'po-split-sub-') + s.id;
+  const onIt = (po.lines || []).filter(l => l && String(l.split || '') === String(s.id));
+
+  if (field === 'project_id') {
+    let next = el.dataset.cbValue || '';
+    if (!next && el.value.trim()) {
+      const typed = el.value.trim().toLowerCase();
+      const hit = cbOptionsFor('po_split_projects:' + po.id + '|' + s.id)
+        .find(o => typeof o === 'object' && String(o.label).toLowerCase() === typed);
+      if (hit) next = String(hit.value);
+    }
+    const putBack = () => {
+      el.value = _poProjName(s.project_id);
+      if (s.project_id) el.dataset.cbValue = s.project_id; else delete el.dataset.cbValue;
+    };
+    if (next === String(s.project_id || '')) { putBack(); return; }
+    // Cleared or unreadable: a job with deliveries keeps its job (they would
+    // otherwise fall onto the order's own job); an empty one simply has none.
+    if (!next) {
+      if (onIt.length || el.value.trim()) { putBack(); return; }
+    } else if (_poHasProject(po, next)) {
+      putBack();
+      alert(`${_poProjName(next) || 'That job'} is already on this PO.`);
+      return;
+    }
+    const oldProj = String(s.project_id || '');
+    // The rows on the old job go, as for the order's own job.
+    onIt.forEach(line => {
+      if (!line.po_row_id || _poLineFromDaily(line)) return;
+      const oldP = oldProj ? getProj(oldProj) : null;
+      if (oldP) oldP.dailyRows = oldP.dailyRows.filter(r => String(r.id) !== String(line.po_row_id));
+      _poRowDelete(line.po_row_id);
+      line.po_row_id = null;
+      _poNoteLinkChange(line.id, null);
+    });
+    if (oldProj) renderDailyTable(oldProj);
+    // Deliveries recorded from Daily Tracking stay with their rows on the old
+    // job; the server drops them from the order on this save.
+    po.lines = (po.lines || []).filter(l => !(l && _poLineFromDaily(l) && String(l.split || '') === String(s.id)));
+    // Coded the way it was, where the new job's bid has those codes — and a
+    // job just added (no codes yet) the way the order is.
+    const codes = next ? (_poMatchCodes(next, s.cost_code, s.sub_code)
+      || _poMatchCodes(next, po.cost_code, po.sub_code) || { cost_code: '', sub_code: '' }) : { cost_code: '', sub_code: '' };
+    po.splits = _poSplits(po).map(x => String(x.id) === String(s.id)
+      ? { ...x, project_id: next, cost_code: codes.cost_code, sub_code: codes.sub_code } : x);
+    _poNoteEdit(po.id, 'splits');
+    const moved = _poSplitById(po, s.id);
+    (po.lines || []).forEach(line => {
+      if (line && String(line.split || '') === String(s.id) && (line.qty || line.unit_cost)) _ensurePOLineRow(po, line);
+    });
+    savePurchaseOrders();
+    renderPOTab();
+    _poRenderProjects(po, [oldProj]);
+    if (moved && moved.project_id && !moved.cost_code && !moved.sub_code) {
+      const box = document.querySelector(`#po-split-sub-${moved.id} .cb-input`);
+      if (box) box.focus();
+    }
+    return;
+  }
+
+  if (field === 'sub_code_sel') {
+    let mapped = el.dataset.cbValue || '';
+    el.dataset.cbValue = mapped;
+    if (!mapped && el.value.trim()) {
+      const typed = el.value.trim().toLowerCase();
+      const hit = cbOptionsFor('po_split_subcodes:' + po.id + '|' + s.id)
+        .find(o => typeof o === 'object' && String(o.label).toLowerCase() === typed);
+      if (hit) { mapped = hit.value; el.dataset.cbValue = mapped; }
+      else { _restoreSubCodeCell(cellId, s.project_id, s.cost_code, s.sub_code); return; }
+    }
+    const [cc, sc] = mapped.split('||');
+    if ((cc || '') === (s.cost_code || '') && (sc || '') === (s.sub_code || '')) return;
+    po.splits = _poSplits(po).map(x => String(x.id) === String(s.id) ? { ...x, cost_code: cc || '', sub_code: sc || '' } : x);
+    _poNoteEdit(po.id, 'splits');
+    savePurchaseOrders();
+    // This job's codes changed, so they reach its rows (on screen here; the
+    // save writes them on the server).
+    _syncPOHeaderToLines(po, String(s.id)).catch(err =>
+      console.warn('[po] could not sync a job\'s codes to its cost rows:', err.message));
+    _poRenderProjects(po);
+  }
+}
+
+/** "Jobs on this PO": the order's jobs, their codes and their shares. */
+function _poJobsHTML(po) {
+  const edit = perm.canEdit;
+  const splits = _poSplits(po);
+  const site = edit && po.project_id ? _poSiteJobsToAdd(po) : { name: '', jobs: [] };
+  const btn = 'font-size:0.68rem;padding:0.18rem 0.6rem;background:rgba(96,165,250,0.12);border:1px solid rgba(96,165,250,0.4);color:#93c5fd;border-radius:4px;cursor:pointer';
+  const siteBtn = site.jobs.length
+    ? `<button onclick="addPOSiteSplits('${escJs(po.id)}')" style="${btn}"
+        title="${esc('Add ' + site.jobs.map(p => p['project-name'] || 'Untitled').join(', ') + ' — each coded like this PO where its bid has the same sub code')}">+ Add the other ${escT(site.name)} job${site.jobs.length === 1 ? '' : 's'} (${site.jobs.length})</button>` : '';
+  const label = '<span style="font-size:0.62rem;text-transform:uppercase;letter-spacing:0.08em;color:var(--muted)">Jobs on this PO</span>';
+  if (!splits.length) {
+    if (!edit || !po.project_id) return '';
+    return `<div id="po-jobs-${esc(po.id)}" style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;margin:0.4rem 0 0.2rem">
+      ${label}
+      <span style="font-size:0.75rem;color:var(--text)">${escT(_poProjName(po.project_id))}</span>
+      <button onclick="addPOSplit('${escJs(po.id)}')" style="${btn}"
+        title="Book part of this order to another job — one supplier and one PO number, each job charged for its own deliveries under its own sub code">+ Split across jobs</button>
+      ${siteBtn}
+    </div>`;
+  }
+  const cell = 'padding:0.25rem 0.5rem';
+  const money = (v, color) => `<td style="${cell};text-align:right;color:${color};white-space:nowrap">${v > 0 ? '$' + fmt(v) : '—'}</td>`;
+  const totals = (key) => {
+    const t = _poJobTotals(po, key);
+    const k = esc(po.id) + '-' + esc(key || 'own');
+    return `<td style="${cell};text-align:right;color:var(--muted)" id="po-job-qty-${k}">${t.qty > 0 ? fmt(t.qty) : '—'}</td>`
+      + money(t.amt, 'var(--green)').replace('<td ', `<td id="po-job-amt-${k}" `)
+      + money(t.total, 'var(--yellow)').replace('<td ', `<td id="po-job-tot-${k}" `);
+  };
+  const addDel = (key) => edit
+    ? `<button onclick="addPOLine('${escJs(po.id)}','${escJs(key)}')" title="Add a delivery on this job" style="background:none;border:1px solid rgba(74,222,128,0.35);color:#4ade80;border-radius:4px;cursor:pointer;font-size:0.68rem;padding:0.05rem 0.4rem">+ Delivery</button>` : '';
+  const own = `<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
+      <td style="${cell};color:var(--text)">${escT(_poProjName(po.project_id) || '— no job —')} <span style="font-size:0.6rem;color:var(--muted)">(this PO's job)</span></td>
+      <td style="${cell};color:var(--text)">${escT(_poCodeLabel(po.project_id, po.cost_code, po.sub_code) || '—')}</td>
+      ${totals('')}
+      <td style="${cell};text-align:right;white-space:nowrap">${addDel('')}</td>
+    </tr>`;
+  const rows = splits.map(s => {
+    const n = (po.lines || []).filter(l => l && String(l.split || '') === String(s.id)).length;
+    const projCell = edit
+      ? `<div id="po-split-proj-${esc(s.id)}">${cbHtml('po_split_projects:' + po.id + '|' + s.id, _poProjName(s.project_id), '— pick a job —',
+          `data-po-id="${esc(po.id)}" data-po-split="${esc(s.id)}" data-split-field="project_id"${s.project_id ? ` data-cb-value="${esc(s.project_id)}"` : ''}`)}</div>`
+      : escT(_poProjName(s.project_id) || '—');
+    const subLabel = _poCodeLabel(s.project_id, s.cost_code, s.sub_code);
+    const subCell = edit
+      ? `<div id="po-split-sub-${esc(s.id)}">${cbHtml('po_split_subcodes:' + po.id + '|' + s.id, subLabel, s.project_id ? '— select —' : '— pick a job first —',
+          `data-po-id="${esc(po.id)}" data-po-split="${esc(s.id)}" data-split-field="sub_code_sel"${(s.cost_code || s.sub_code) ? ` data-cb-value="${esc((s.cost_code||'') + '||' + (s.sub_code||''))}"` : ''}`, 'data-cb-fixed="1"')}</div>`
+      : escT(subLabel || '—');
+    const del = edit
+      ? `<button onclick="removePOSplit('${escJs(po.id)}','${escJs(s.id)}')" title="${n ? esc(`Move or delete its ${n} deliver${n === 1 ? 'y' : 'ies'} first`) : 'Take this job off the PO'}"
+          style="background:none;border:none;color:var(--muted);cursor:pointer;font-size:0.8rem;opacity:${n ? 0.3 : 0.6}">&#10005;</button>` : '';
+    return `<tr style="border-bottom:1px solid rgba(255,255,255,0.04)">
+      <td style="${cell};min-width:170px">${projCell}</td>
+      <td style="${cell};min-width:200px">${subCell}</td>
+      ${totals(s.id)}
+      <td style="${cell};text-align:right;white-space:nowrap">${s.project_id ? addDel(s.id) : ''} ${del}</td>
+    </tr>`;
+  }).join('');
+  const th = (t, right) => `<th style="${cell};text-align:${right ? 'right' : 'left'};font-weight:600">${t}</th>`;
+  return `<div id="po-jobs-${esc(po.id)}" style="margin:0.4rem 0 0.6rem">
+    <div style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.3rem">
+      ${label}
+      <span style="font-size:0.68rem;color:var(--muted)">Each delivery is charged to the job it is on, under that job's sub code.</span>
+    </div>
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse;font-size:0.8rem">
+        <thead><tr style="font-size:0.63rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em">
+          ${th('Job')}${th('Sub Code')}${th('Qty', 1)}${th('Amount', 1)}${th('Total', 1)}<th></th>
+        </tr></thead>
+        <tbody>${own}${rows}</tbody>
+      </table>
+    </div>
+    ${edit ? `<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.4rem">
+      <button onclick="addPOSplit('${escJs(po.id)}')" style="${btn}">+ Add job</button>${siteBtn}
+    </div>` : ''}
+  </div>`;
+}
+
+/** A delivery's Job cell on a split order: which of its jobs the delivery is for. */
+function _poLineJobCellHTML(po, line) {
+  const job = _poLineJob(po, line);
+  const cell = 'padding:0.3rem 0.5rem;min-width:185px';
+  if (_poLineFromDaily(line) || !perm.canEdit) {
+    return `<td style="${cell};font-size:0.78rem;color:var(--text)"${_poLineFromDaily(line) ? ' title="On the job of its Daily Tracking row"' : ''}>${escT(_poProjName(job.project_id) || '—')}</td>`;
+  }
+  const opts = [['', _poProjName(po.project_id) || '— this PO\'s job —']]
+    .concat(_poSplits(po).filter(s => s.project_id).map(s => [String(s.id), _poProjName(s.project_id) || 'Job']));
+  const sel = `<select data-po-id="${esc(po.id)}" data-line-id="${esc(line.id)}" data-line-field="split"
+      title="The job this delivery is charged to"
+      style="background:var(--surface);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.8rem;outline:none;width:100%;padding:0.1rem 0.2rem">${
+      opts.map(([v, l]) => `<option value="${esc(v)}" ${v === job.split ? 'selected' : ''}>${escT(l)}</option>`).join('')}</select>`;
+  const splitBtn = `<button onclick="openPOSplitDelivery('${escJs(po.id)}','${escJs(line.id)}')"
+      title="Split this delivery across the PO's jobs — a delivery per job, each with its own quantity"
+      style="background:none;border:1px solid var(--border);border-radius:4px;color:#93c5fd;cursor:pointer;font-size:0.72rem;padding:0.05rem 0.35rem;flex:0 0 auto">&#8644;</button>`;
+  return `<td style="${cell}"><div style="display:flex;align-items:center;gap:0.3rem"><div style="flex:1 1 auto;min-width:0">${sel}</div>${splitBtn}</div></td>`;
+}
+
+/** Repaint the jobs list's totals in place (a delivery's figures typed). */
+function _poPaintJobTotals(po) {
+  [''].concat(_poSplits(po).map(s => String(s.id))).forEach(key => {
+    const t = _poJobTotals(po, key);
+    const k = po.id + '-' + (key || 'own');
+    const q = document.getElementById('po-job-qty-' + k);
+    const a = document.getElementById('po-job-amt-' + k);
+    const o = document.getElementById('po-job-tot-' + k);
+    if (q) q.textContent = t.qty > 0 ? fmt(t.qty) : '—';
+    if (a) a.textContent = t.amt > 0 ? '$' + fmt(t.amt) : '—';
+    if (o) o.textContent = t.total > 0 ? '$' + fmt(t.total) : '—';
+  });
+}
+
+/**
+ * "⇄" on a delivery of a split order: share one delivery out across the
+ * order's jobs by quantity. Each job gets a delivery of its own — the same
+ * invoice #, date, unit cost, tax % and employee, with that job's quantity —
+ * so each is charged for exactly what went to it.
+ */
+function openPOSplitDelivery(poId, lineId) {
+  if (!perm.canEdit) return;
+  const po = purchaseOrders.find(p => p.id === poId);
+  const line = po && (po.lines || []).find(l => l && l.id === lineId);
+  if (!line || _poLineFromDaily(line)) return;
+  const jobs = [{ key: '', projId: po.project_id }].concat(_poSplits(po).filter(s => s.project_id)
+    .map(s => ({ key: String(s.id), projId: s.project_id })));
+  if (jobs.length < 2) return;
+  const qty = _poNum0(line.qty);
+  if (!(qty > 0)) { alert('Enter the delivery\'s quantity first, then split it across the jobs.'); return; }
+  const uc = _poNum0(line.unit_cost);
+  const own = _poLineJob(po, line).split;
+  const old = document.getElementById('po-split-dlg');
+  if (old) old.remove();
+  const dlg = document.createElement('div');
+  dlg.id = 'po-split-dlg';
+  dlg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:1rem';
+  const what = [String(line.invoice_num || '').trim(), `${fmt(qty)} @ $${fmt(uc)}`].filter(Boolean).join(' · ');
+  dlg.innerHTML = `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.2rem;width:min(30rem,100%);box-shadow:0 10px 30px rgba(0,0,0,0.5)">
+    <div style="font-weight:700;color:var(--text);margin-bottom:0.25rem">Split this delivery across jobs</div>
+    <div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.7rem;line-height:1.45">${escT(what)}. Each job gets its own delivery with the same invoice #, date, unit cost and tax %, so each is charged for its own quantity.</div>
+    <table style="width:100%;border-collapse:collapse;font-size:0.82rem">
+      <thead><tr style="font-size:0.62rem;color:var(--muted);text-transform:uppercase;letter-spacing:0.06em">
+        <th style="text-align:left;padding:0.2rem 0.3rem">Job</th><th style="text-align:right;padding:0.2rem 0.3rem">Qty</th><th style="text-align:right;padding:0.2rem 0.3rem">Amount</th></tr></thead>
+      <tbody>${jobs.map(j => `<tr>
+        <td style="padding:0.25rem 0.3rem;color:var(--text)">${escT(_poProjName(j.projId) || 'Job')}</td>
+        <td style="padding:0.25rem 0.3rem;text-align:right"><input type="number" step="any" min="0" data-split-key="${esc(j.key)}" value="${j.key === own ? esc(String(qty)) : ''}"
+          style="width:7rem;background:var(--bg);border:1px solid var(--border);border-radius:3px;color:var(--text);font-size:0.82rem;padding:0.2rem 0.35rem;text-align:right"></td>
+        <td style="padding:0.25rem 0.3rem;text-align:right;color:var(--green);white-space:nowrap" data-split-amt="${esc(j.key)}"></td>
+      </tr>`).join('')}</tbody>
+    </table>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;margin-top:0.55rem;flex-wrap:wrap">
+      <span id="po-split-sum" style="font-size:0.75rem"></span>
+      <button type="button" id="po-split-even" style="font-size:0.72rem;padding:0.2rem 0.6rem;background:var(--border);color:var(--text);border:none;border-radius:4px;cursor:pointer">Split evenly</button>
+    </div>
+    <div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.85rem">
+      <button type="button" id="po-split-cancel" style="font-size:0.78rem;padding:0.3rem 0.8rem;background:var(--border);color:var(--text);border:none;border-radius:4px;cursor:pointer">Cancel</button>
+      <button type="button" id="po-split-ok" class="btn btn-green" style="font-size:0.78rem;padding:0.3rem 0.8rem">Split delivery</button>
+    </div>
+  </div>`;
+  document.body.appendChild(dlg);
+  const inputs = [...dlg.querySelectorAll('input[data-split-key]')];
+  const read = () => inputs.map(i => ({ key: i.dataset.splitKey, qty: _poNum0(i.value) }));
+  const paint = () => {
+    const parts = read();
+    const sum = parts.reduce((a, p) => a + p.qty, 0);
+    parts.forEach(p => {
+      const td = dlg.querySelector(`[data-split-amt="${CSS.escape(p.key)}"]`);
+      if (td) td.textContent = p.qty > 0 ? '$' + fmt(p.qty * uc) : '';
+    });
+    const ok = Math.abs(sum - qty) < 1e-6;
+    const out = dlg.querySelector('#po-split-sum');
+    out.textContent = `Total ${fmt(sum)} of ${fmt(qty)}` + (ok ? '' : sum > qty ? ' — more than the delivery' : ' — less than the delivery');
+    out.style.color = ok ? 'var(--muted)' : 'var(--yellow)';
+    dlg.querySelector('#po-split-ok').disabled = !ok || parts.filter(p => p.qty > 0).length < 1;
+  };
+  inputs.forEach(i => i.addEventListener('input', paint));
+  dlg.querySelector('#po-split-even').addEventListener('click', () => {
+    // Four places, the last job taking the rounding, so the parts add back up.
+    const each = Math.floor(qty / inputs.length * 1e4) / 1e4;
+    inputs.forEach((i, n) => { i.value = String(n === inputs.length - 1 ? Math.round((qty - each * (inputs.length - 1)) * 1e4) / 1e4 : each); });
+    paint();
+  });
+  const close = () => dlg.remove();
+  dlg.querySelector('#po-split-cancel').addEventListener('click', close);
+  dlg.addEventListener('mousedown', e => { if (e.target === dlg) close(); });
+  dlg.querySelector('#po-split-ok').addEventListener('click', () => {
+    const parts = read().filter(p => p.qty > 0);
+    close();
+    _poApplySplitDelivery(po.id, line.id, parts);
+  });
+  paint();
+  const first = inputs.find(i => !i.value) || inputs[0];
+  if (first) first.focus();
+}
+
+/** Share a delivery out as `parts` ([{ key, qty }]) — see openPOSplitDelivery. */
+function _poApplySplitDelivery(poId, lineId, parts) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  const line = po && (po.lines || []).find(l => l && l.id === lineId);
+  if (!line || !parts.length) return;
+  const own = _poLineJob(po, line).split;
+  // The delivery itself keeps its own job's share where it has one (its row,
+  // its attachments stay put), else takes the first job's.
+  const mine = parts.find(p => p.key === own) || parts[0];
+  const rest = parts.filter(p => p !== mine);
+  if (mine.key !== own) _poMoveLine(po, line, mine.key);
+  if (String(line.qty) !== String(mine.qty)) {
+    line.qty = String(mine.qty);
+    _recalcLineTax(line);
+    _poNoteLineEdit(po.id, line.id, 'qty');
+    if (line.qty || line.unit_cost) _ensurePOLineRow(po, line);
+    _syncPOLineToRow(po, line, 'qty').catch(err =>
+      console.warn('[po] could not sync the delivery to its cost row:', err.message));
+  }
+  rest.forEach(p => {
+    const copy = {
+      id: uid(), invoice_num: line.invoice_num || '', date: line.date || _localDateStr(),
+      qty: String(p.qty), unit_cost: line.unit_cost || '', tax: '', tax_pct: line.tax_pct == null ? '' : line.tax_pct,
+      employee: line.employee || '', po_row_id: null,
+    };
+    if (line.tax_pct == null) copy.tax = '';
+    if (p.key) copy.split = p.key;
+    _recalcLineTax(copy);
+    po.lines.push(copy);
+    ['date', 'qty', 'unit_cost', 'tax_pct', 'employee', 'split', 'invoice_num'].forEach(k => _poNoteLineEdit(po.id, copy.id, k));
+    _ensurePOLineRow(po, copy);
+  });
+  savePurchaseOrders();
+  renderPOTab();
+  _poRenderProjects(po);
 }
 
 // ── PO event delegation (handles both header fields and line fields) ──────
@@ -14477,6 +15092,13 @@ function _handlePOEvent(e) {
   if (!poId) return;
   const po = purchaseOrders.find(p => p.id === poId);
   if (!po) return;
+
+  // One of a split order's jobs, in "Jobs on this PO": its Job and Sub Code
+  // pickers are comboboxes that commit on `change`.
+  if (el.dataset.splitField) {
+    if (e.type === 'change') _handlePOSplitEvent(el, po);
+    return;
+  }
 
   // project_id / sub_code_sel / supplier / employee are searchable comboboxes
   // (cbHtml) that commit via a synthetic input+change pair. Apply them on
@@ -14491,6 +15113,11 @@ function _handlePOEvent(e) {
   if (lineId && lineField) {
     const line = (po.lines || []).find(l => l.id === lineId);
     if (!line) return;
+    // Which of a split order's jobs the delivery is for: its row moves there.
+    if (lineField === 'split') {
+      if (e.type === 'change') _poMoveLine(po, line, el.value);
+      return;
+    }
     // No-op commit (e.g. focus+blur of the employee combobox) — skip redundant work.
     if (line[lineField] === el.value) return;
     line[lineField] = el.value;
@@ -14524,16 +15151,18 @@ function _handlePOEvent(e) {
       if (sAmt) sAmt.textContent = '$'+fmt(tot.amt);
       if (sTax) sTax.textContent = '$'+fmt(tot.tax);
       if (sTot) sTot.textContent = '$'+fmt(tot.total);
+      // …and each job's share, on a split order.
+      _poPaintJobTotals(po);
     }
-    // Ensure a daily row exists once we have qty data
-    if (po.project_id && (line.qty || line.unit_cost)) _ensurePOLineRow(po, line);
+    // Ensure a daily row exists once we have qty data (on the delivery's job)
+    if (line.qty || line.unit_cost) _ensurePOLineRow(po, line);
     // Fire and forget: it may now have to read the job's rows before it can
     // safely write one, and nothing after this depends on its result. Caught so
     // a failed read is a warning rather than an unhandled rejection.
     _syncPOLineToRow(po, line, lineField).catch(err =>
       console.warn('[po] could not sync the delivery to its cost row:', err.message));
     savePurchaseOrders();
-    if (po.project_id) renderProjectPOs(po.project_id);
+    _poRenderProjects(po);
     return;
   }
 
@@ -14583,7 +15212,7 @@ function _handlePOEvent(e) {
     // this depends on its result.
     _syncPOHeaderToLines(po, true).catch(err =>
       console.warn('[po] could not sync the order header to its cost rows:', err.message));
-    if (po.project_id) renderProjectPOs(po.project_id);
+    _poRenderProjects(po);
     return;
   }
 
@@ -14598,6 +15227,14 @@ function _handlePOEvent(e) {
     // re-resolves to it) must NOT clear the sub code or delete/recreate the
     // linked daily rows in the block below.
     if (newProj === oldProj) return;
+    // A job the order is already split to cannot be its own job as well: put
+    // back the job it had.
+    if (newProj && _poSplits(po).some(s => String(s.project_id || '') === newProj)) {
+      el.value = _poProjName(oldProj);
+      if (oldProj) el.dataset.cbValue = oldProj; else delete el.dataset.cbValue;
+      alert(`${_poProjName(newProj) || 'That job'} is already on this PO under "Jobs on this PO". Take it off there first, or pick another job.`);
+      return;
+    }
     po.project_id = newProj;
     // The codes are cleared below: they belonged to the old job.
     _poNoteEdit(po.id, 'project_id', 'cost_code', 'sub_code');
@@ -14631,7 +15268,9 @@ function _handlePOEvent(e) {
       const oldP = getProj(oldProj);
       if (oldP) {
         (po.lines||[]).forEach(line => {
-          if (line.po_row_id && !_poLineFromDaily(line)) {
+          // Only the deliveries on the order's own job: a split order's other
+          // jobs keep theirs.
+          if (line.po_row_id && !_poLineFromDaily(line) && !_poLineJob(po, line).split) {
             oldP.dailyRows = oldP.dailyRows.filter(r => String(r.id) !== String(line.po_row_id));
             _poRowDelete(line.po_row_id);
             line.po_row_id = null;
@@ -14644,7 +15283,7 @@ function _handlePOEvent(e) {
     // Deliveries recorded from Daily Tracking stay with their rows on the old
     // job; they no longer name an order there, and the server drops the lines
     // on this save too.
-    po.lines = (po.lines || []).filter(l => !_poLineFromDaily(l));
+    po.lines = (po.lines || []).filter(l => !(_poLineFromDaily(l) && !_poLineJob(po, l).split));
     po.cost_code = '';
     po.sub_code  = '';
     // Reset the sub code combobox (options recompute for the new project on focus)
@@ -14658,13 +15297,13 @@ function _handlePOEvent(e) {
       (po.lines||[]).forEach(line => { if (line.qty || line.unit_cost) _ensurePOLineRow(po, line); });
     }
     if (oldProj)       renderProjectPOs(oldProj);
-    if (po.project_id) renderProjectPOs(po.project_id);
+    _poRenderProjects(po);
   } else {
     // title / supplier / date_created changes — push to daily rows, but leave
     // the row's cost/sub code alone: nothing about them changed here.
     _syncPOHeaderToLines(po).catch(err =>
       console.warn('[po] could not sync the order header to its cost rows:', err.message));
-    if (po.project_id) renderProjectPOs(po.project_id);
+    _poRenderProjects(po);
   }
 
   savePurchaseOrders();
@@ -14751,7 +15390,8 @@ function _detachLinkedRows(pred, opts) {
         nPo += po.lines.length - keep.length; po.lines = keep;
       }
       po.lines.forEach(ln => { if (hit(ln.po_row_id)) { ln.po_row_id = null; _poNoteLinkChange(ln.id, null); nPo++; } });
-      if (nPo !== before && po.project_id) poJobs.add(po.project_id);
+      // Every job the order books to: a split order's rows are on several.
+      if (nPo !== before) _poProjectIds(po).forEach(pid => poJobs.add(pid));
     });
   }
   if (nTr) saveTruckingEntries();
@@ -20567,8 +21207,9 @@ function makePOSelect(projId, selected, dataI, link) {
       <option value="${esc(num)}" selected>${escT(num || '—')}</option>
     </select>`;
   }
+  // A split order is one of each of its jobs' orders.
   const projPOs = purchaseOrders
-    .filter(po => po.project_id === projId)
+    .filter(po => _poHasProject(po, projId))
     .map(po => po.po_number)
     .filter(Boolean)
     .sort();

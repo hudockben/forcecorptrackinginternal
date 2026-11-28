@@ -2072,6 +2072,22 @@
     return c;
   }
 
+  // A purchase order split between jobs ("One order, several jobs" in
+  // api/lib/po-sync.js) books to its own job and to each of its `splits`; each
+  // delivery's `split` says which, and the delivery is that job's, under that
+  // job's codes. A delivery naming no split (or one the order no longer has)
+  // is on the order's own job.
+  function poSplitList(po) {
+    return Array.isArray(po && po.splits)
+      ? po.splits.filter(s => s && typeof s === 'object' && s.id != null && s.id !== '' && s.project_id != null && s.project_id !== '')
+      : [];
+  }
+  function poLineJob(po, l) {
+    const id = l && l.split != null ? String(l.split) : '';
+    const s = id ? poSplitList(po).find(x => String(x.id) === id) : null;
+    return s ? { project_id: String(s.project_id), cost_code: s.cost_code, sub_code: s.sub_code }
+      : { project_id: po.project_id == null ? '' : String(po.project_id), cost_code: po.cost_code, sub_code: po.sub_code };
+  }
   function posByJob(ctx) {
     const st = stateOf(ctx);
     if (st.pos) return st.pos;
@@ -2079,10 +2095,15 @@
     let list = [];
     try { list = typeof ctx.cfg.getPurchaseOrders === 'function' ? (ctx.cfg.getPurchaseOrders() || []) : []; } catch (_) { list = []; }
     (Array.isArray(list) ? list : []).forEach(po => {
-      if (!po || po.project_id == null || po.project_id === '') return;
-      const k = String(po.project_id);
-      if (!m.has(k)) m.set(k, []);
-      m.get(k).push(po);
+      if (!po) return;
+      // Under every job it books to: a split order is each of its jobs' order.
+      const jobs = new Set();
+      if (po.project_id != null && po.project_id !== '') jobs.add(String(po.project_id));
+      poSplitList(po).forEach(s => jobs.add(String(s.project_id)));
+      jobs.forEach(k => {
+        if (!m.has(k)) m.set(k, []);
+        m.get(k).push(po);
+      });
     });
     st.pos = m;
     return m;
@@ -2090,9 +2111,14 @@
   function materialRecs(ctx, p, opts, scope) {
     const H = helpersOf(ctx), range = ctx.range;
     const sc = scope || NO_SCOPE;
+    const jk = jobKey(p);
     let out = [];
-    (posByJob(ctx).get(jobKey(p)) || []).forEach(po => (Array.isArray(po.lines) && (!sc.active || sc.codes(po.cost_code, po.sub_code)) ? po.lines : []).forEach(l => {
+    (posByJob(ctx).get(jk) || []).forEach(po => (Array.isArray(po.lines) ? po.lines : []).forEach(l => {
       if (!l || typeof l !== 'object') return;
+      // Only this job's deliveries, under this job's codes.
+      const job = poLineJob(po, l);
+      if (job.project_id !== jk) return;
+      if (sc.active && !sc.codes(job.cost_code, job.sub_code)) return;
       const date = dayOf(l.date);
       if (!inPeriod(range, date)) return;
       const qty = poNum(l.qty), amt = H.lineAmt(l), tax = H.lineTax(l);
@@ -2103,7 +2129,7 @@
       out.push({
         c: {
           date: date || null, po_number: txt(po.po_number), supplier: txt(po.supplier), material: txt(po.title),
-          invoice_num: txt(l.invoice_num), qty, cost_code: txt(po.cost_code), sub_code: txt(po.sub_code),
+          invoice_num: txt(l.invoice_num), qty, cost_code: txt(job.cost_code), sub_code: txt(job.sub_code),
           po_status: cap1(po.status), unit_cost: poNum(l.unit_cost), tax, line_total: amt + tax, deliveries: 1,
         },
         m: { unit: txt(po.title).toLowerCase(), amt },

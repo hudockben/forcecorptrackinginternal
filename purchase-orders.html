@@ -881,6 +881,90 @@ function poTotals(po) {
   (po.lines || []).forEach(l => { qty += num0(l.qty); amt += lineAmt(l); tax += lineTax(l); });
   return { qty, amt, tax, total: amt + tax };
 }
+/* ═══════════════════════════════════════════
+   ONE ORDER, SEVERAL JOBS
+   An order books to its own job (Job / Cost & Sub Code) and, once split, to
+   the jobs under "Jobs on this PO" as well — the silt sock for all four
+   Hempfield fields is one order to one vendor under one number, and each
+   field still carries its own share under its own sub code. po.splits holds
+   those other jobs ([{ id, project_id, cost_code, sub_code }]); each
+   delivery's `split` says which it is for (blank: the order's own job). The
+   server raises each delivery's cost row on its job, under that job's codes
+   ("One order, several jobs" in api/lib/po-sync.js). An invoice covering
+   several jobs is a delivery per job, each with that job's own quantity.
+═══════════════════════════════════════════ */
+function poSplitsOf(po) {
+  if (!po || !Array.isArray(po.splits)) return [];
+  const seen = new Set();
+  return po.splits.filter(s => {
+    if (!s || typeof s !== 'object' || s.id == null || s.id === '') return false;
+    const id = String(s.id);
+    if (seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
+}
+function splitOf(po, id) {
+  const want = id == null ? '' : String(id);
+  return want ? (poSplitsOf(po).find(s => String(s.id) === want) || null) : null;
+}
+/** The job a delivery books to: { split, project_id, cost_code, sub_code }. */
+function lineJobOf(po, l) {
+  const s = splitOf(po, l && l.split);
+  if (s && s.project_id) return { split: String(s.id), project_id: String(s.project_id), cost_code: s.cost_code || '', sub_code: s.sub_code || '' };
+  return { split: '', project_id: (po && po.project_id) || '', cost_code: (po && po.cost_code) || '', sub_code: (po && po.sub_code) || '' };
+}
+/** Every job the order books to, its own first, each once. */
+function poProjectIdsOf(po) {
+  const out = [];
+  const add = v => { const s = v == null ? '' : String(v); if (s && !out.includes(s)) out.push(s); };
+  add(po && po.project_id);
+  poSplitsOf(po).forEach(s => add(s.project_id));
+  return out;
+}
+/** Is the order split between jobs — another job picked under "Jobs on this PO"? */
+function isSplitPO(po) { return poSplitsOf(po).some(s => s.project_id); }
+/** What the deliveries on one of the order's jobs come to ('' = its own). */
+function jobTotalsOf(po, key) {
+  const want = key || '';
+  return poTotals({ lines: (po.lines || []).filter(l => l && lineJobOf(po, l).split === want) });
+}
+/** A job's name on this order's division, as the Job picker shows it. */
+function jobNameOf(po, projId) {
+  if (!projId) return '';
+  const p = projectFor(po._division, projId);
+  return p ? p.name + (p.jobNumber ? ' (#' + p.jobNumber + ')' : '') : String(projId);
+}
+/** A job's codes as the code picker labels them. */
+function jobCodeLabel(po, projId, cc, sc) {
+  if (!cc && !sc) return '';
+  const value = (cc || '') + '||' + (sc || '');
+  const hit = codesFor(po._division, projId).find(c => codeValue(c) === value);
+  return hit ? codeLabel(hit) : [cc, sc].filter(Boolean).join(' / ') + ' (not on this job)';
+}
+/**
+ * The code on job `projId` that `cc` / `sc` name — the same pair, or the one
+ * code there with the same sub code — so a sister field added to an order
+ * starts coded the way the order is. null when that job's bid has neither.
+ */
+function matchCodesOn(po, projId, cc, sc) {
+  const codes = codesFor(po._division, projId);
+  const same = codes.find(c => (c.cost_code || '') === (cc || '') && (c.sub_code || '') === (sc || ''));
+  const bySub = sc ? codes.filter(c => String(c.sub_code || '').trim().toLowerCase() === String(sc).trim().toLowerCase()) : [];
+  const c = same || (bySub.length === 1 ? bySub[0] : null);
+  return c ? { cost_code: c.cost_code || '', sub_code: c.sub_code || '' } : null;
+}
+/** The open jobs that share the order's job's Site and are not on the order yet. */
+function siteJobsToAdd(po) {
+  const own = po && po.project_id ? projectFor(po._division, po.project_id) : null;
+  const name = own && own.site ? String(own.site).trim() : '';
+  if (!name) return { name: '', jobs: [] };
+  const taken = new Set(poProjectIdsOf(po));
+  const key = name.toLowerCase();
+  return { name, jobs: pickableProjects(po._division, null)
+    .filter(p => !taken.has(String(p.id)) && String(p.site || '').trim().toLowerCase() === key) };
+}
+
 function newLine() {
   return { id: uid(), invoice_num: '', date: localDateStr(), qty: '', unit_cost: '', tax: '', tax_pct: '', employee: '', po_row_id: null };
 }
@@ -1405,13 +1489,22 @@ function adoptStoredFields(po, stored) {
   };
   PO_HEADER_FIELDS.forEach(take);
   if (!(pending && pending.has('status'))) PO_STATUS_STAMP_FIELDS.forEach(take);
+  // The order's other jobs: a list, compared and copied as one.
+  if (!(pending && pending.has('splits'))) {
+    const text = v => (Array.isArray(v) && v.length ? JSON.stringify(v) : '');
+    if (text(po.splits) !== text(stored.splits)) {
+      if (Array.isArray(stored.splits) && stored.splits.length) po.splits = JSON.parse(JSON.stringify(stored.splits));
+      else delete po.splits;
+      changed = true;
+    }
+  }
   return changed;
 }
 
 // A delivery's own keys, as the server stores them. A Daily Tracking line's
 // codes come from its row, so they are taken too.
 const PO_LINE_FIELDS = ['invoice_num', 'date', 'qty', 'unit_cost', 'tax_pct', 'tax', 'employee',
-                        'cost_code', 'sub_code', 'source'];
+                        'cost_code', 'sub_code', 'source', 'split'];
 const PO_LINE_MONEY = ['qty', 'unit_cost', 'tax_pct'];
 
 /**
@@ -1873,6 +1966,12 @@ function setDivision(poId, value) {
   po.sub_code   = '';
   po.po_number  = nextNum;
   ['project_id', 'cost_code', 'sub_code', 'po_number'].forEach(k => noteEdit(_editedFields, poId, k));
+  // ...and its other jobs, which were the old division's: off the order, and
+  // off every delivery that was on one.
+  if ('splits' in po) { delete po.splits; noteEdit(_editedFields, poId, 'splits'); }
+  (po.lines || []).forEach(l => {
+    if (l && 'split' in l) { delete l.split; noteEdit(_editedLines, poId, lineEditKey(l.id, 'split')); }
+  });
   savePO(po, { immediate: true });
   render();
 }
@@ -1881,6 +1980,11 @@ function setProject(poId, value) {
   const po = purchaseOrders.find(p => p.id === poId);
   if (!po || !capsFor(po._division).canEdit) return;
   if ((po.project_id || '') === (value || '')) return;
+  if (value && poSplitsOf(po).some(s => String(s.project_id || '') === String(value))) {
+    toast(jobNameOf(po, value) + ' is already on this order under "Jobs on this PO". Take it off there first, or pick another job.', 'err');
+    render();
+    return;
+  }
   po.project_id = value || '';
   // Codes come from the job's own bid items, so they cannot survive a job change.
   po.cost_code = '';
@@ -1963,6 +2067,324 @@ function updateTotalsInPlace(po, line) {
   set('run-amt-' + po.id, '$' + fmt(tot.amt));
   set('run-tax-' + po.id, '$' + fmt(tot.tax));
   set('run-tot-' + po.id, '$' + fmt(tot.total));
+  updateJobTotalsInPlace(po);
+}
+
+/* ── Split orders: the jobs on an order, and which one each delivery is for ── */
+
+/** Add a job to the order (blank until one is picked, or `projId`). */
+function addSplit(poId, projId) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !capsFor(po._division).canEdit || !po.project_id) return;
+  const split = { id: uid(), project_id: '', cost_code: '', sub_code: '' };
+  if (projId && !poProjectIdsOf(po).includes(String(projId))) {
+    split.project_id = String(projId);
+    Object.assign(split, matchCodesOn(po, projId, po.cost_code, po.sub_code) || {});
+  }
+  po.splits = poSplitsOf(po).concat([split]);
+  noteEdit(_editedFields, poId, 'splits');
+  expanded.add(poId);
+  savePO(po, { immediate: true });
+  render();
+}
+
+/** Every other open job on the order's Site, each coded like the order where its bid allows. */
+function addSiteSplits(poId) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !capsFor(po._division).canEdit || !po.project_id) return;
+  const jobs = siteJobsToAdd(po).jobs;
+  if (!jobs.length) return;
+  po.splits = poSplitsOf(po).concat(jobs.map(p => Object.assign(
+    { id: uid(), project_id: String(p.id), cost_code: '', sub_code: '' },
+    matchCodesOn(po, p.id, po.cost_code, po.sub_code) || {})));
+  noteEdit(_editedFields, poId, 'splits');
+  expanded.add(poId);
+  savePO(po, { immediate: true });
+  render();
+}
+
+/** Take a job off the order — only once no delivery is on it. */
+function removeSplit(poId, splitId) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !capsFor(po._division).canEdit) return;
+  const s = splitOf(po, splitId);
+  if (!s) return;
+  const on = (po.lines || []).filter(l => l && String(l.split || '') === String(s.id)).length;
+  if (on) {
+    toast((jobNameOf(po, s.project_id) || 'That job') + ' still has ' + on + ' deliver' + (on === 1 ? 'y' : 'ies') +
+      ' on this order. Move them to another job (the Job column) or delete them first.', 'err');
+    return;
+  }
+  po.splits = poSplitsOf(po).filter(x => String(x.id) !== String(s.id));
+  if (!po.splits.length) delete po.splits;
+  noteEdit(_editedFields, poId, 'splits');
+  savePO(po, { immediate: true });
+  render();
+}
+
+/**
+ * Point one of the order's jobs at another job. The deliveries on it move with
+ * it — the server raises their rows on the new job — as they do when the
+ * order's own Job changes. A job with deliveries is never left blank: they
+ * would fall onto the order's own job.
+ */
+function setSplitProject(poId, splitId, value) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !capsFor(po._division).canEdit) return;
+  const s = splitOf(po, splitId);
+  if (!s) return;
+  const next = value || '';
+  if (next === String(s.project_id || '')) return;
+  const on = (po.lines || []).some(l => l && String(l.split || '') === String(s.id));
+  if (!next && on) {
+    toast('Move or delete this job\'s deliveries before taking its job away.', 'err');
+    render();
+    return;
+  }
+  if (next && poProjectIdsOf(po).includes(next)) {
+    toast(jobNameOf(po, next) + ' is already on this order.', 'err');
+    render();
+    return;
+  }
+  // Coded the way it was, where the new job's bid has those codes — and a job
+  // just added (no codes yet) the way the order is.
+  const codes = next ? (matchCodesOn(po, next, s.cost_code, s.sub_code)
+    || matchCodesOn(po, next, po.cost_code, po.sub_code) || { cost_code: '', sub_code: '' }) : { cost_code: '', sub_code: '' };
+  po.splits = poSplitsOf(po).map(x => String(x.id) === String(s.id)
+    ? Object.assign({}, x, { project_id: next, cost_code: codes.cost_code, sub_code: codes.sub_code }) : x);
+  // A delivery recorded from Daily Tracking stays with its row on the old job.
+  po.lines = (po.lines || []).filter(l => !(isDailyLine(l) && String(l.split || '') === String(s.id)));
+  noteEdit(_editedFields, poId, 'splits');
+  savePO(po, { immediate: true });
+  render();
+}
+
+/** One of the order's jobs' codes (its own bid's), from its code picker. */
+function setSplitCodes(poId, splitId, value) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !capsFor(po._division).canEdit) return;
+  const s = splitOf(po, splitId);
+  if (!s) return;
+  const parts = String(value || '').split('||');
+  po.splits = poSplitsOf(po).map(x => String(x.id) === String(s.id)
+    ? Object.assign({}, x, { cost_code: parts[0] || '', sub_code: parts[1] || '' }) : x);
+  noteEdit(_editedFields, poId, 'splits');
+  savePO(po, { immediate: true });
+  render();
+}
+
+/** Which of the order's jobs a delivery is for. Its row follows on the server. */
+function setLineJob(poId, lineId, value) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  if (!po || !capsFor(po._division).canEdit) return;
+  const l = (po.lines || []).find(x => x && x.id === lineId);
+  if (!l || isDailyLine(l)) return;
+  const to = splitOf(po, value);
+  const want = to && to.project_id ? String(to.id) : '';
+  if (lineJobOf(po, l).split === want) return;
+  if (want) l.split = want; else delete l.split;
+  noteEdit(_editedLines, poId, lineEditKey(lineId, 'split'));
+  savePO(po, { immediate: true });
+  render();
+}
+
+/** "Jobs on this PO": the order's jobs, their codes and their shares. */
+function jobsPanelHTML(po) {
+  if (!hasJobs(po._division) || !po.project_id) return '';
+  const edit = capsFor(po._division).canEdit;
+  const splits = poSplitsOf(po);
+  const site = edit ? siteJobsToAdd(po) : { name: '', jobs: [] };
+  const btnStyle = 'font-size:0.7rem;padding:0.2rem 0.6rem';
+  const siteBtn = site.jobs.length
+    ? '<button class="btn" style="' + btnStyle + '" onclick="addSiteSplits(\'' + jsAttr(po.id) + '\')" title="' +
+        esc('Add ' + site.jobs.map(p => p.name).join(', ') + ' — each coded like this order where its bid has the same sub code') + '">+ Add the other ' +
+        esc(site.name) + ' job' + (site.jobs.length === 1 ? '' : 's') + ' (' + site.jobs.length + ')</button>'
+    : '';
+  if (!splits.length) {
+    if (!edit) return '';
+    return '<div class="jobs-panel" style="display:flex;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.6rem">' +
+      '<span class="section-label" style="margin:0">Jobs on this PO</span>' +
+      '<span style="font-size:0.76rem">' + esc(jobNameOf(po, po.project_id)) + '</span>' +
+      '<button class="btn" style="' + btnStyle + '" onclick="addSplit(\'' + jsAttr(po.id) + '\')" title="Book part of this order to another job — one vendor and one PO number, each job charged for its own deliveries under its own sub code">+ Split across jobs</button>' +
+      siteBtn + '</div>';
+  }
+  const money = v => v !== 0 ? '$' + fmt(v) : '—';
+  const totalsCells = key => {
+    const t = jobTotalsOf(po, key);
+    const id = k => esc('job-' + k + '-' + po.id + '-' + (key || 'own'));
+    return '<td class="r" style="color:var(--muted)" id="' + id('qty') + '">' + (t.qty !== 0 ? qfmt(t.qty) : '—') + '</td>' +
+      '<td class="r" style="color:var(--ok)" id="' + id('amt') + '">' + money(t.amt) + '</td>' +
+      '<td class="r" style="color:var(--yellow)" id="' + id('tot') + '">' + money(t.total) + '</td>';
+  };
+  const own = '<tr><td>' + esc(jobNameOf(po, po.project_id)) + ' <span style="font-size:0.62rem;color:var(--muted)">(this order\'s job)</span></td>' +
+    '<td>' + esc(orderCodeLabel(po) || '—') + '</td>' + totalsCells('') + '<td></td></tr>';
+  const rows = splits.map(s => {
+    const n = (po.lines || []).filter(l => l && String(l.split || '') === String(s.id)).length;
+    const taken = new Set(poProjectIdsOf(po));
+    const projOpts = ['<option value=""' + (!s.project_id ? ' selected' : '') + '>— pick a job —</option>']
+      .concat(pickableProjects(po._division, s.project_id)
+        .filter(p => String(p.id) === String(s.project_id) || !taken.has(String(p.id)))
+        .map(p => '<option value="' + esc(p.id) + '"' + (String(s.project_id) === String(p.id) ? ' selected' : '') + '>' + esc(projectOptionLabel(p)) + '</option>'));
+    if (s.project_id && !projectFor(po._division, s.project_id)) {
+      projOpts.push('<option value="' + esc(s.project_id) + '" selected>' + esc(s.project_id) + ' (missing)</option>');
+    }
+    const projCell = '<select ' + (edit ? '' : 'disabled ') + 'aria-label="Job" onchange="setSplitProject(\'' + jsAttr(po.id) + '\',\'' + jsAttr(s.id) + '\', this.value)">' + projOpts.join('') + '</select>';
+    const codeCell = !s.project_id ? '<span style="color:var(--muted);font-size:0.76rem">Pick a job first</span>'
+      : !codesFor(po._division, s.project_id).length ? '<span style="color:var(--muted);font-size:0.76rem">No bid items on this job</span>'
+      : cbHtml('split-codes', jobCodeLabel(po, s.project_id, s.cost_code, s.sub_code), {
+          value: (s.cost_code || s.sub_code) ? (s.cost_code || '') + '||' + (s.sub_code || '') : '',
+          placeholder: 'Search codes…', label: 'Cost and sub code for this job',
+          disabled: !edit, data: { po: po.id, split: s.id },
+        });
+    const del = edit
+      ? '<button class="del-btn" style="opacity:' + (n ? 0.35 : 1) + '" onclick="removeSplit(\'' + jsAttr(po.id) + '\',\'' + jsAttr(s.id) + '\')" title="' +
+          esc(n ? 'Move or delete its ' + n + ' deliver' + (n === 1 ? 'y' : 'ies') + ' first' : 'Take this job off the order') + '">&#10005;</button>'
+      : '';
+    return '<tr><td style="min-width:170px">' + projCell + '</td><td style="min-width:190px">' + codeCell + '</td>' +
+      totalsCells(s.id) + '<td style="text-align:center">' + del + '</td></tr>';
+  }).join('');
+  return '<div class="jobs-panel" style="margin-bottom:0.7rem">' +
+    '<div class="section-label">Jobs on this PO <span style="text-transform:none;letter-spacing:0;font-weight:400">— each delivery is charged to the job it is on, under that job\'s sub code</span></div>' +
+    '<div style="overflow-x:auto"><table>' +
+      '<thead><tr><th>Job</th><th>Cost / Sub Code</th><th style="text-align:right">Qty</th><th style="text-align:right">Amount</th><th style="text-align:right">Total</th><th></th></tr></thead>' +
+      '<tbody>' + own + rows + '</tbody></table></div>' +
+    (edit ? '<div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.45rem">' +
+      '<button class="btn" style="' + btnStyle + '" onclick="addSplit(\'' + jsAttr(po.id) + '\')">+ Add job</button>' + siteBtn + '</div>' : '') +
+  '</div>';
+}
+
+/** A delivery's Job cell on a split order. */
+function lineJobCellHTML(po, l) {
+  const job = lineJobOf(po, l);
+  if (isDailyLine(l) || !capsFor(po._division).canEdit) {
+    return '<td style="min-width:140px;font-size:0.78rem">' + esc(jobNameOf(po, job.project_id) || '—') + '</td>';
+  }
+  // The name alone: the job number is on the jobs list above, and the cell is narrow.
+  const short = id => { const p = projectFor(po._division, id); return p ? p.name : String(id || ''); };
+  const opts = [['', short(po.project_id) || 'This order\'s job']]
+    .concat(poSplitsOf(po).filter(s => s.project_id).map(s => [String(s.id), short(s.project_id)]));
+  return '<td style="min-width:190px"><div style="display:flex;align-items:center;gap:0.3rem">' +
+    '<select aria-label="Job" title="The job this delivery is charged to" onchange="setLineJob(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\', this.value)">' +
+      opts.map(([v, t]) => '<option value="' + esc(v) + '"' + (v === job.split ? ' selected' : '') + '>' + esc(t) + '</option>').join('') +
+    '</select>' +
+    '<button class="btn" style="font-size:0.72rem;padding:0.1rem 0.4rem" onclick="openSplitDelivery(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\')"' +
+      ' title="Split this delivery across the order\'s jobs — a delivery per job, each with its own quantity">&#8644;</button>' +
+  '</div></td>';
+}
+
+/** Repaint the jobs list's totals in place (a delivery's figures typed). */
+function updateJobTotalsInPlace(po) {
+  [''].concat(poSplitsOf(po).map(s => String(s.id))).forEach(key => {
+    const t = jobTotalsOf(po, key);
+    const set = (k, text) => { const el = document.getElementById('job-' + k + '-' + po.id + '-' + (key || 'own')); if (el) el.textContent = text; };
+    set('qty', t.qty !== 0 ? qfmt(t.qty) : '—');
+    set('amt', t.amt !== 0 ? '$' + fmt(t.amt) : '—');
+    set('tot', t.total !== 0 ? '$' + fmt(t.total) : '—');
+  });
+}
+
+/**
+ * "⇄" on a delivery of a split order: share it out across the order's jobs by
+ * quantity. Each job gets a delivery of its own — the same invoice #, date,
+ * unit cost, tax % and receiver, with that job's quantity — so each is charged
+ * for exactly what went to it.
+ */
+function openSplitDelivery(poId, lineId) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  const l = po && (po.lines || []).find(x => x && x.id === lineId);
+  if (!l || isDailyLine(l) || !capsFor(po._division).canEdit) return;
+  const jobs = [{ key: '', projId: po.project_id }].concat(poSplitsOf(po).filter(s => s.project_id)
+    .map(s => ({ key: String(s.id), projId: s.project_id })));
+  if (jobs.length < 2) return;
+  const qty = num0(l.qty);
+  if (!(qty > 0)) { toast('Enter the delivery\'s quantity first, then split it across the jobs.', 'err'); return; }
+  const uc = num0(l.unit_cost);
+  const own = lineJobOf(po, l).split;
+  const old = document.getElementById('split-dlg');
+  if (old) old.remove();
+  const dlg = document.createElement('div');
+  dlg.id = 'split-dlg';
+  dlg.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:10000;display:flex;align-items:center;justify-content:center;padding:1rem';
+  const what = [String(l.invoice_num || '').trim(), qfmt(qty) + ' @ $' + fmt(uc)].filter(Boolean).join(' · ');
+  dlg.innerHTML = '<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:1rem 1.2rem;width:min(30rem,100%)">' +
+    '<div style="font-weight:700;margin-bottom:0.25rem">Split this delivery across jobs</div>' +
+    '<div style="font-size:0.75rem;color:var(--muted);margin-bottom:0.7rem;line-height:1.45">' + esc(what) +
+      '. Each job gets its own delivery with the same invoice #, date, unit cost and tax %, so each is charged for its own quantity.</div>' +
+    '<table style="width:100%"><thead><tr><th>Job</th><th style="text-align:right">Qty</th><th style="text-align:right">Amount</th></tr></thead><tbody>' +
+    jobs.map(j => '<tr><td>' + esc(jobNameOf(po, j.projId) || 'Job') + '</td>' +
+      '<td style="text-align:right"><input type="number" class="boxed" step="any" min="0" style="width:7rem;text-align:right" data-split-key="' + esc(j.key) + '" value="' + (j.key === own ? esc(String(qty)) : '') + '"></td>' +
+      '<td class="r" style="color:var(--ok)" data-split-amt="' + esc(j.key) + '"></td></tr>').join('') +
+    '</tbody></table>' +
+    '<div style="display:flex;align-items:center;justify-content:space-between;gap:0.5rem;margin-top:0.55rem;flex-wrap:wrap">' +
+      '<span id="split-sum" style="font-size:0.75rem"></span>' +
+      '<button type="button" class="btn" id="split-even" style="font-size:0.72rem;padding:0.2rem 0.6rem">Split evenly</button></div>' +
+    '<div style="display:flex;justify-content:flex-end;gap:0.5rem;margin-top:0.85rem">' +
+      '<button type="button" class="btn" id="split-cancel">Cancel</button>' +
+      '<button type="button" class="btn btn-green" id="split-ok">Split delivery</button></div></div>';
+  document.body.appendChild(dlg);
+  const inputs = [...dlg.querySelectorAll('input[data-split-key]')];
+  const read = () => inputs.map(i => ({ key: i.dataset.splitKey, qty: num0(i.value) }));
+  const paint = () => {
+    const parts = read();
+    const sum = parts.reduce((a, p) => a + p.qty, 0);
+    parts.forEach(p => {
+      const td = dlg.querySelector('[data-split-amt="' + CSS.escape(p.key) + '"]');
+      if (td) td.textContent = p.qty > 0 ? '$' + fmt(p.qty * uc) : '';
+    });
+    const ok = Math.abs(sum - qty) < 1e-6;
+    const out = dlg.querySelector('#split-sum');
+    out.textContent = 'Total ' + qfmt(sum) + ' of ' + qfmt(qty) + (ok ? '' : sum > qty ? ' — more than the delivery' : ' — less than the delivery');
+    out.style.color = ok ? 'var(--muted)' : 'var(--yellow)';
+    dlg.querySelector('#split-ok').disabled = !ok;
+  };
+  inputs.forEach(i => i.addEventListener('input', paint));
+  dlg.querySelector('#split-even').addEventListener('click', () => {
+    const each = Math.floor(qty / inputs.length * 1e4) / 1e4;
+    inputs.forEach((i, n) => { i.value = String(n === inputs.length - 1 ? Math.round((qty - each * (inputs.length - 1)) * 1e4) / 1e4 : each); });
+    paint();
+  });
+  const close = () => dlg.remove();
+  dlg.querySelector('#split-cancel').addEventListener('click', close);
+  dlg.addEventListener('mousedown', e => { if (e.target === dlg) close(); });
+  dlg.querySelector('#split-ok').addEventListener('click', () => {
+    const parts = read().filter(p => p.qty > 0);
+    close();
+    applySplitDelivery(po.id, l.id, parts);
+  });
+  paint();
+  const first = inputs.find(i => !i.value) || inputs[0];
+  if (first) first.focus();
+}
+
+/** Share a delivery out as `parts` ([{ key, qty }]) — see openSplitDelivery. */
+function applySplitDelivery(poId, lineId, parts) {
+  const po = purchaseOrders.find(p => p.id === poId);
+  const l = po && (po.lines || []).find(x => x && x.id === lineId);
+  if (!l || !parts.length) return;
+  const own = lineJobOf(po, l).split;
+  // The delivery keeps its own job's share where it has one (its attachments
+  // stay put), else takes the first job's.
+  const mine = parts.find(p => p.key === own) || parts[0];
+  if (mine.key !== own) {
+    if (mine.key) l.split = mine.key; else delete l.split;
+    noteEdit(_editedLines, poId, lineEditKey(lineId, 'split'));
+  }
+  if (String(l.qty) !== String(mine.qty)) {
+    l.qty = String(mine.qty);
+    recalcLineTax(l);
+    noteEdit(_editedLines, poId, lineEditKey(lineId, 'qty'));
+  }
+  parts.filter(p => p !== mine).forEach(p => {
+    const copy = Object.assign(newLine(), {
+      invoice_num: l.invoice_num || '', date: l.date || localDateStr(), qty: String(p.qty),
+      unit_cost: l.unit_cost || '', tax_pct: l.tax_pct == null ? '' : l.tax_pct, employee: l.employee || '',
+    });
+    if (p.key) copy.split = p.key;
+    recalcLineTax(copy);
+    po.lines.push(copy);
+  });
+  savePO(po, { immediate: true });
+  render();
 }
 
 /* ═══════════════════════════════════════════
@@ -2003,9 +2425,14 @@ function visiblePOs() {
     if (!q) return true;
     const proj = projectFor(po._division, po.project_id);
     const lineHay = (po.lines || []).map(l => [l.invoice_num, l.employee, l.date].join(' ')).join(' ');
+    // A split order's other jobs, and their codes, find it too.
+    const splitHay = poSplitsOf(po).map(s => {
+      const sp = projectFor(po._division, s.project_id);
+      return [sp ? sp.name : '', sp ? sp.jobNumber : '', s.cost_code, s.sub_code].join(' ');
+    }).join(' ');
     const hay = [
       po.po_number, divLabel(po._division), proj ? proj.name : '', proj ? proj.jobNumber : '',
-      po.cost_code, po.sub_code, po.title, po.supplier, po.status, po.date_created, po.notes, lineHay,
+      po.cost_code, po.sub_code, po.title, po.supplier, po.status, po.date_created, po.notes, lineHay, splitHay,
     ].join(' ').toLowerCase();
     return hay.indexOf(q) !== -1;
   });
@@ -2109,6 +2536,11 @@ function cbOptionsFor(cb) {
   if (list === 'codes') {
     const po = purchaseOrders.find(p => p.id === cb.dataset.po);
     return po ? codeOptions(codesFor(po._division, po.project_id)) : [];
+  }
+  if (list === 'split-codes') {
+    const po = purchaseOrders.find(p => p.id === cb.dataset.po);
+    const sp = po ? splitOf(po, cb.dataset.split) : null;
+    return sp && sp.project_id ? codeOptions(codesFor(po._division, sp.project_id)) : [];
   }
   if (list === 'scan-codes') {
     const div  = document.getElementById('sc-division');
@@ -2291,6 +2723,11 @@ function cbCommit(cb, value) {
     if (line && (line.employee || '') !== value) setLineField(po.id, line.id, 'employee', value);
   } else if (list === 'codes') {
     if (value !== orderCodeValue(po)) setSubCode(po.id, value);
+  } else if (list === 'split-codes') {
+    const sp = splitOf(po, cb.dataset.split);
+    if (sp && value !== ((sp.cost_code || sp.sub_code) ? (sp.cost_code || '') + '||' + (sp.sub_code || '') : '')) {
+      setSplitCodes(po.id, sp.id, value);
+    }
   }
 }
 
@@ -2553,7 +2990,7 @@ function lineRowsHTML(po, surface) {
       '<input type="' + type + '" class="boxed" value="' + esc(val == null ? '' : val) + '" ' +
       (capsFor(po._division).canEdit ? '' : 'disabled ') + (extra || '') +
       ' oninput="setLineField(\'' + jsAttr(po.id) + '\',\'' + jsAttr(l.id) + '\',\'' + field + '\', this.value)">';
-    return '<tr>' +
+    return '<tr>' + (isSplitPO(po) ? lineJobCellHTML(po, l) : '') +
       '<td style="min-width:150px"><div class="line-inv">' +
         inp('invoice_num','text', l.invoice_num, 'placeholder="Invoice / Ticket #"') + lineClipHTML(po, l) + '</div>' +
         dailyLineTagHTML(l) + '</td>' +
@@ -2664,7 +3101,7 @@ function linesPanelHTML(po, colspan) {
   const count = (po.lines || []).length;
   const totalRow = count > 1
     ? '<tr style="border-top:1px solid var(--border);background:rgba(255,255,255,0.03)">' +
-        '<td colspan="2" style="font-size:0.72rem;color:var(--muted);font-weight:600;white-space:nowrap">RUNNING TOTAL — ' + count + ' deliveries</td>' +
+        '<td colspan="' + (isSplitPO(po) ? 3 : 2) + '" style="font-size:0.72rem;color:var(--muted);font-weight:600;white-space:nowrap">RUNNING TOTAL — ' + count + ' deliveries</td>' +
         '<td class="r" style="font-weight:700" id="run-qty-' + idAttr(po.id) + '">' + qfmt(tot.qty) + '</td><td></td>' +
         '<td class="r" style="color:var(--ok);font-weight:700" id="run-amt-' + idAttr(po.id) + '">$' + fmt(tot.amt) + '</td>' +
         '<td class="r" style="color:var(--muted);font-weight:700" id="run-tax-' + idAttr(po.id) + '">$' + fmt(tot.tax) + '</td>' +
@@ -2673,9 +3110,10 @@ function linesPanelHTML(po, colspan) {
     : '';
   return '<td colspan="' + colspan + '" style="padding:0;border-bottom:2px solid var(--border)">' +
     '<div class="lines-wrap">' +
+      jobsPanelHTML(po) +
       '<div class="section-label">Deliveries / Invoices</div>' +
       '<div style="overflow-x:auto"><table>' +
-        '<thead><tr><th>Invoice / Ticket #</th><th>Delivery Date</th><th>Qty</th><th>Unit Cost</th>' +
+        '<thead><tr>' + (isSplitPO(po) ? '<th>Job</th>' : '') + '<th>Invoice / Ticket #</th><th>Delivery Date</th><th>Qty</th><th>Unit Cost</th>' +
         '<th style="text-align:right">Amount</th><th>Tax %</th><th style="text-align:right">Total</th>' +
         '<th>Received By</th><th></th></tr></thead>' +
         '<tbody>' + lineRowsHTML(po, 'tbl') + '</tbody>' + totalRow +
@@ -2720,7 +3158,7 @@ function renderTable(rows) {
       '<td><input type="date" class="boxed" value="' + esc(po.date_created || '') + '" ' + (capsFor(po._division).canEdit ? '' : 'disabled ') +
         'onchange="setField(\'' + jsAttr(po.id) + '\',\'date_created\', this.value)"></td>' +
       '<td>' + divisionSelectHTML(po) + '</td>' +
-      '<td>' + projectSelectHTML(po) + '</td>' +
+      '<td>' + projectSelectHTML(po) + splitChipHTML(po) + '</td>' +
       '<td>' + subCodePickerHTML(po) + '</td>' +
       '<td><input type="text" class="boxed" placeholder="Material / description" value="' + esc(po.title || '') + '" ' +
         (capsFor(po._division).canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'title\', this.value)"></td>' +
@@ -2780,7 +3218,18 @@ function cardJobLineHTML(po) {
     ? (proj ? proj.name + (proj.jobNumber ? ' · #' + proj.jobNumber : '') : po.project_id)
     : 'General — no job';
   const codes = [po.cost_code, po.sub_code].filter(Boolean).join(' / ');
-  return divChipHTML(po._division) + ' ' + esc(jobLine) + (codes ? ' · ' + esc(codes) : '');
+  const more = poSplitsOf(po).filter(s => s.project_id).length;
+  return divChipHTML(po._division) + ' ' + esc(jobLine) + (codes ? ' · ' + esc(codes) : '') +
+    (more ? ' <span style="color:#93c5fd">+ ' + more + ' more job' + (more === 1 ? '' : 's') + '</span>' : '');
+}
+
+/** Under the Job picker: "+ N more jobs · split PO", opening the order's jobs list. */
+function splitChipHTML(po) {
+  const more = poSplitsOf(po).filter(s => s.project_id);
+  if (!more.length) return '';
+  return '<div onclick="expanded.add(\'' + jsAttr(po.id) + '\');render()" style="font-size:0.62rem;color:#93c5fd;margin-top:0.15rem;cursor:pointer;white-space:nowrap"' +
+    ' title="' + esc('Split between jobs: ' + poProjectIdsOf(po).map(id => jobNameOf(po, id)).join(', ')) + '">+ ' + more.length +
+    ' more job' + (more.length === 1 ? '' : 's') + ' &middot; split PO</div>';
 }
 
 /** The full editor for one order on a phone — the table's columns, stacked. */
@@ -2796,9 +3245,11 @@ function cardEditorHTML(po) {
     '<div class="field"><label>Description</label><input type="text" value="' + esc(po.title || '') + '" ' +
       (capsFor(po._division).canEdit ? '' : 'disabled ') + 'oninput="setField(\'' + jsAttr(po.id) + '\',\'title\', this.value)"></div>' +
     '<div class="field"><label>Vendor</label>' + vendorPickerHTML(po) + '</div>' +
+    jobsPanelHTML(po) +
     '<div class="section-label">Deliveries</div>' +
     '<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:0.8rem;min-width:700px">' +
-      '<thead><tr><th style="text-align:left;font-size:0.62rem;color:var(--muted)">Invoice</th>' +
+      '<thead><tr>' + (isSplitPO(po) ? '<th style="text-align:left;font-size:0.62rem;color:var(--muted)">Job</th>' : '') +
+      '<th style="text-align:left;font-size:0.62rem;color:var(--muted)">Invoice</th>' +
       '<th style="text-align:left;font-size:0.62rem;color:var(--muted)">Date</th>' +
       '<th style="text-align:left;font-size:0.62rem;color:var(--muted)">Qty</th>' +
       '<th style="text-align:left;font-size:0.62rem;color:var(--muted)">Unit</th>' +
@@ -2916,11 +3367,21 @@ function exportCSV() {
       out.push(base.concat(['','','','','','','','','']).map(q).join(','));
       return;
     }
+    const split = isSplitPO(po);
     lines.forEach((l, i) => {
       const amt = lineAmt(l), tax = lineTax(l), pct = lineTaxPct(l);
       // The header repeats only on the first delivery, so an order reads as one
-      // block in a spreadsheet instead of the same job restated per line.
-      const lead = i === 0 ? base : base.map(() => '');
+      // block in a spreadsheet instead of the same job restated per line —
+      // except a split order's job and codes, which are each delivery's own.
+      const lead = i === 0 ? base.slice() : base.map(() => '');
+      if (split) {
+        const job = lineJobOf(po, l);
+        const jp = projectFor(po._division, job.project_id);
+        lead[2] = jp ? jp.name : job.project_id;
+        lead[3] = jp ? jp.jobNumber : '';
+        lead[4] = job.cost_code || '';
+        lead[5] = job.sub_code || '';
+      }
       out.push(lead.concat([
         l.invoice_num || '', l.date || '',
         (num(l.qty) || '') , (num(l.unit_cost) || ''),

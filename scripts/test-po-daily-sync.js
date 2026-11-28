@@ -30,6 +30,12 @@ const path   = require('path');
 const vm     = require('vm');
 const Module = require('module');
 const { requireFn, sliceSource, evalSlice } = require('./lib/fn-source');
+// "One order, several jobs" (api/lib/po-sync.js): the helpers the division
+// tabs' PO functions lean on to find which job a delivery is on. Lifted with
+// whatever calls them.
+const PO_SPLIT_FNS = ['_poSplits', '_poSplitById', '_poLineJob', '_poProjectIds', '_poHasProject', '_poSplitForProject',
+  '_poIsSplit', '_poLinesOnJob', '_poJobTotals', '_poProjectTotals', '_poProjName', '_poCodeLabel', '_poRenderProjects',
+  '_poPaintJobTotals'];
 
 const read = f => fs.readFileSync(path.resolve(__dirname, '..', f), 'utf8');
 
@@ -194,9 +200,11 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
     assert(`${page}: deleting an order leaves Daily Tracking rows`,
       /if \(line\.po_row_id && !_poLineFromDaily\(line\)\) \{\s*\n\s*proj\.dailyRows = proj\.dailyRows\.filter/.test(requireFn(src, 'deletePO', page)));
     const ev = requireFn(src, '_handlePOEvent', page);
+    // Only the deliveries on the order's OWN job move with it: a split order's
+    // other jobs keep theirs (see "One order, several jobs" in po-sync.js).
     assert(`${page}: re-jobbing an order leaves them on the old job, and drops their lines`,
-      /if \(line\.po_row_id && !_poLineFromDaily\(line\)\) \{\s*\n\s*oldP\.dailyRows/.test(ev)
-      && /po\.lines = \(po\.lines \|\| \[\]\)\.filter\(l => !_poLineFromDaily\(l\)\);/.test(ev));
+      /if \(line\.po_row_id && !_poLineFromDaily\(line\) && !_poLineJob\(po, line\)\.split\) \{\s*\n\s*oldP\.dailyRows/.test(ev)
+      && /po\.lines = \(po\.lines \|\| \[\]\)\.filter\(l => !\(_poLineFromDaily\(l\) && !_poLineJob\(po, l\)\.split\)\);/.test(ev));
     assert(`${page}: a Daily Tracking line's row is never rebuilt from the order`,
       /if \(!r && _poLineFromDaily\(line\)\) return;/.test(requireFn(src, '_syncPOLineToRow', page)));
     assert(`${page}: the PO tab shows a lock, not a ✕, on a Daily Tracking line`,
@@ -214,7 +222,8 @@ const block = (src, page) => sliceSource(src, BLOCK_FROM, BLOCK_TO,
 
   // The pages' own functions, lifted and run.
   const LIFTED = ['_normalizeNumeric', '_poNum', '_poNum0', '_detachLinkedRows', 'makePOSelect',
-                  '_syncPOHeaderToLines', 'deletePOLine', '_migratePOs', '_lineAmt', '_lineTaxPct', '_lineTax', '_recalcLineTax'];
+                  '_syncPOHeaderToLines', 'deletePOLine', '_migratePOs', '_lineAmt', '_lineTaxPct', '_lineTax', '_recalcLineTax',
+                  '_poTotals'].concat(PO_SPLIT_FNS);
   function sandbox(src, page) {
     const state = { saves: 0, rowPuts: [], fetches: [], renders: 0, errors: [], projectRenders: [] };
     let n = 0;

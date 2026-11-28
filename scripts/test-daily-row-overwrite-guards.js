@@ -71,8 +71,11 @@ function structuralChecks(file) {
   // — PO header sync —
   assert('_syncPOHeaderToLines takes a syncCodes flag',
     /function _syncPOHeaderToLines\(po, syncCodes\) \{/.test(src));
+  // Under the flag, and only for the delivery's own job: `true` is the order's
+  // own codes (a delivery on the order's job), a split's id that split's — see
+  // "One order, several jobs" in api/lib/po-sync.js.
   assert('the codes are written only under that flag',
-    /if \(syncCodes\) \{\s*\n\s*r\.cost_code = po\.cost_code\|\| '';\s*\n\s*r\.sub_code  = po\.sub_code \|\| '';\s*\n\s*\}/.test(src));
+    /if \(syncCodes === true \? !job\.split : \(syncCodes && job\.split === String\(syncCodes\)\)\) \{\s*\n\s*r\.cost_code = job\.cost_code \|\| '';\s*\n\s*r\.sub_code  = job\.sub_code  \|\| '';\s*\n\s*\}/.test(src));
   assert('no unconditional code write survives',
     !/r\.supplier  = po\.supplier \|\| '';\s*\n\s*r\.cost_code = po\.cost_code/.test(src));
   // The order's number always reaches its rows. Its title and supplier reach
@@ -120,6 +123,11 @@ function poSyncChecks(file) {
   const fn  = 'async ' + extractFn(src, 'function _syncPOHeaderToLines(po, syncCodes) {');
   assert('extracted _syncPOHeaderToLines', !!fn);
   if (!fn) return;
+  // The helpers it finds each delivery's job with ("One order, several jobs").
+  const helperSrc = ['_poSplits', '_poSplitById', '_poLineJob', '_poProjectIds']
+    .map(n => extractFn(src, `function ${n}(`));
+  assert('extracted the split helpers it uses', helperSrc.every(Boolean));
+  const helpers = helperSrc.filter(Boolean).join('\n');
 
   // The supervisor re-categorized the material row after the PO created it:
   // the PO still says Paving / Base, the row says Excavation / Haul.
@@ -144,6 +152,7 @@ function poSyncChecks(file) {
     };
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
+    vm.runInContext(helpers, sandbox);
     vm.runInContext(fn, sandbox);
     // proj.dailyRows already holds r1, so the "read the job's rows first"
     // branch is not taken and the body runs to completion before it yields.
@@ -183,6 +192,7 @@ function poSyncChecks(file) {
                       getProj: () => proj, drPutNow: () => {}, renderDailyTable: () => {} };
     sandbox.globalThis = sandbox;
     vm.createContext(sandbox);
+    vm.runInContext(helpers, sandbox);
     vm.runInContext(fn, sandbox);
     sandbox._syncPOHeaderToLines(po);
     assert('an uncoded PO cannot blank the row it is linked to',

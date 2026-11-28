@@ -457,6 +457,34 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
   assert('a hand-added row matches on its typed codes', e.kind === 'auto' && e.po.id === 'po3');
   assert('vendorCompatible: blank either side matches', T.vendorCompatible('', 'X') && T.vendorCompatible('X', '') && !T.vendorCompatible('A', 'B'));
 
+  // ── A PO split between jobs ("One order, several jobs" in po-sync.js) ──
+  // The silt sock for every field of a site on one order: its own job p1
+  // under E&S / Silt Sock 12inch, and p2 under its own codes. It is each of
+  // those jobs' order, under the codes it has THERE.
+  console.log('\n[effectivePO — a PO split between jobs]');
+  {
+    const split = { id: 'pos', po_number: 'PO-0020', project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Elbows',
+      supplier: 'LB Water', date_created: '2026-03-04', status: 'pending',
+      splits: [{ id: 's2', project_id: 'p2', cost_code: 'E&S', sub_code: 'Silt Sock 12inch' }] };
+    const others = POS.filter(p => p.id !== 'po3');
+    const ctxS = (o) => C({ purchaseOrders: others.concat(split), ...(o || {}) });
+    const silt = row({ id: 'rs', project_id: 'p2', cost_code: 'E&S', sub_code: 'Silt Sock 12inch' });
+    let es = T.effectivePO(silt, ctxS({ projectId: 'p2' }));
+    assert('a row on one of its other jobs, under that job\'s codes -> auto', es.kind === 'auto' && es.po.id === 'pos', es.kind);
+    assert('…and it reads Ordered on the PO\'s date', T.statusOf(silt, ctxS({ projectId: 'p2' })) === 'Ordered'
+      && T.effectiveDateOrdered(silt, ctxS({ projectId: 'p2' })) === '2026-03-04');
+    es = T.effectivePO(row({ id: 'rs2', project_id: 'p2', cost_code: 'Stormwater', sub_code: 'Elbows' }), ctxS({ projectId: 'p2' }));
+    assert('the codes it has on ITS OWN job do not match a row on the other job', es.kind === 'none', es.kind);
+    es = T.effectivePO(row({ id: 'rs3', project_id: 'p1', cost_code: 'Stormwater', sub_code: 'Elbows' }), ctxS());
+    assert('a row on its own job, under its own codes -> auto', es.kind === 'auto' && es.po.id === 'pos', es.kind);
+    es = T.effectivePO({ ...silt, po_id: 'pos' }, ctxS({ projectId: 'p2' }));
+    assert('linked from one of its other jobs -> linked, not "moved"', es.kind === 'linked' && es.po.id === 'pos', es.kind);
+    es = T.effectivePO(row({ id: 'rs4', project_id: 'p3', po_id: 'pos' }), ctxS({ projectId: 'p3' }));
+    assert('linked from a job it does not book to -> still "moved"', es.kind === 'moved', es.kind);
+    es = T.effectivePO(silt, C({ purchaseOrders: others.concat({ ...split, splits: [] }), projectId: 'p2' }));
+    assert('a PO with no splits is its own job\'s only', es.kind === 'none', es.kind);
+  }
+
   // ── effectiveDateOrdered ──────────────────────────────────────────────
   console.log('\n[effectiveDateOrdered]');
   assert('the row\'s own date wins', T.effectiveDateOrdered({ ...r1, date_ordered: '2026-02-01' }, C()) === '2026-02-01');
@@ -3372,12 +3400,15 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
     e.$('[data-act="bulk-po"]').click();
     await sleep(30);
     let ch = e.$$('.fctproc-modal [data-choice]');
-    assert('rows on two jobs -> asked, saying each job gets its own PO', ch.length === 3
+    // One PO per job (and sub code), or one PO split across the jobs — each
+    // way each job's cost stays on that job ("One order, several jobs").
+    assert('rows on two jobs -> asked, saying each job keeps its own cost', ch.length === 4
       && /are on <b>2<\/b> jobs/.test(e.$('.fctproc-modal [data-body]').innerHTML)
-      && /Each job gets its own PO to LB Water/.test(e.$('.fctproc-modal [data-body]').textContent)
-      && /One PO per job and sub code/.test(ch[0].textContent) && /One PO per job, each coded/.test(ch[1].textContent),
+      && /each job's cost stays on that job/.test(e.$('.fctproc-modal [data-body]').textContent)
+      && /One PO per job and sub code/.test(ch[0].textContent) && /One PO split across the 2 jobs — one PO number to LB Water/.test(ch[1].textContent)
+      && /One PO per job, each coded/.test(ch[2].textContent),
       e.$('.fctproc-modal') && e.$('.fctproc-modal').textContent.replace(/\s+/g, ' '));
-    ch[1].click();
+    ch[2].click();
     await sleep(80);
     const sseeds = e.created.filter(c => c[0] === 'po').map(c => c[1]);
     assert('"one per job" makes one PO on each job', sseeds.length === 2 && sseeds[0].project_id === 'h1' && sseeds[1].project_id === 'h2'
@@ -3388,6 +3419,38 @@ function makeEnv({ perm = { canView: true, canEdit: true }, rows = [], serverCan
       && links.some(l => l.body.project_id === 'h2' && eq(l.body.ids.slice().sort(), ['b1', 'b2']) && l.body.fields.po_id === 'npo2'),
       links.map(l => l.body));
     assert('  said in the toast', e.$$('.fctproc-toast').some(t => /Created 2 POs, each on its own job/.test(t.textContent)));
+
+    // ...or ONE PO split across the jobs: one number to the supplier, the job
+    // with the most rows as its own and the other as its split, each under
+    // its own codes.
+    const createdBefore = e.created.length;
+    sel2('a2'); sel2('b1'); sel2('b2');
+    e.$('[data-act="bulk-po"]').click();
+    await sleep(30);
+    let ask = e.$$('.fctproc-modal [data-choice]');
+    const anyway = ask.find(b => /Create a new PO anyway/.test(b.textContent));
+    assert('(rows already on a PO: asked about that first)', !!anyway, ask.map(b => b.textContent));
+    if (anyway) anyway.click();
+    await sleep(30);
+    ask = e.$$('.fctproc-modal [data-choice]');
+    const splitBtn = ask.find(b => /One PO split across the 2 jobs/.test(b.textContent));
+    assert('a PO split across the jobs is offered', !!splitBtn, ask.map(b => b.textContent));
+    if (splitBtn) splitBtn.click();
+    await sleep(80);
+    const madeSplit = e.created.slice(createdBefore).filter(c => c[0] === 'po').map(c => c[1]);
+    assert('  one PO, on the job with the most rows, split to the other under that job\'s codes', madeSplit.length === 1
+      && madeSplit[0].project_id === 'h2' && Array.isArray(madeSplit[0].splits) && madeSplit[0].splits.length === 1
+      && madeSplit[0].splits[0].project_id === 'h1' && madeSplit[0].splits[0].cost_code === 'Storm Water'
+      && madeSplit[0].splits[0].sub_code === '15" Elbows' && madeSplit[0].supplier === 'LB Water', madeSplit);
+    const splitId = 'npo' + (createdBefore + 1);
+    assert('  every selected row, on both jobs, is linked to it',
+      ['a2', 'b1', 'b2'].every(id => e.db.rows.find(r => r.id === id).po_id === splitId),
+      ['a2', 'b1', 'b2'].map(id => e.db.rows.find(r => r.id === id).po_id));
+    assert('  and the rows on its other job read Ordered on it, not "PO on another job"',
+      T2.effectivePO(e.db.rows.find(r => r.id === 'a2'), T2.makeCtx()).kind === 'linked',
+      T2.effectivePO(e.db.rows.find(r => r.id === 'a2'), T2.makeCtx()).kind);
+    assert('  said in the toast', e.$$('.fctproc-toast').some(t => /split across 2 jobs/.test(t.textContent)),
+      e.$$('.fctproc-toast').map(t => t.textContent));
 
     // Grouped by vendor: one LB Water section across the site, Job column says whose.
     e.$('[data-group="vendor"]').click();
